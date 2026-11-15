@@ -555,11 +555,11 @@ impl Checker<'_> {
             UnOp::Try => {
                 let o = self.synth(x)?;
                 let ty = Ty::Data {
-                    def: self.schema.prelude_type("Result"),
+                    def: self.schema.prelude().result(),
                     args: vec![
                         o.ty,
                         Ty::Data {
-                            def: self.schema.prelude_type("Fault"),
+                            def: self.schema.prelude().fault(),
                             args: Vec::new(),
                             ctors: None,
                         },
@@ -970,7 +970,7 @@ impl Checker<'_> {
             return Ok(self.out(tm));
         }
         let hint = match &o.ty {
-            Ty::Data { def, .. } if *def == self.schema.prelude_type("Option") => {
+            Ty::Data { def, .. } if *def == self.schema.prelude().option() => {
                 "; a path stops at an `Option`: match it".to_string()
             }
             Ty::Data {
@@ -1145,7 +1145,7 @@ impl Checker<'_> {
         }
         let (target, optional) = match &fty {
             Ty::Key { rel: t, .. } => (*t, false),
-            Ty::Data { def: o, args, .. } if *o == self.schema.prelude_type("Option") => {
+            Ty::Data { def: o, args, .. } if *o == self.schema.prelude().option() => {
                 match args.as_slice() {
                     [Ty::Key { rel: t, .. }] => (*t, true),
                     _ => {
@@ -1207,7 +1207,8 @@ impl Checker<'_> {
         let xt = self.var_tm(xi);
         let field = self.b().field(xt, f.text.clone());
         let rhs = if optional {
-            self.b().ctor(1, vec![("value".into(), kappa.tm)], fty)
+            self.b()
+                .ctor(ctor::SOME, vec![("value".into(), kappa.tm)], fty)
         } else {
             kappa.tm
         };

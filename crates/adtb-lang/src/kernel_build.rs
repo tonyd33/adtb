@@ -207,9 +207,12 @@ impl<'a> Build<'a> {
                 }))),
                 other => return Err(format!("`tag` of `{}`", show(other))),
             },
-            Kind::Try(e) => Some(self.prelude(
-                "Result",
-                vec![ty(e).clone(), self.prelude("Fault", Vec::new())],
+            Kind::Try(e) => Some(self.data(
+                self.schema.prelude().result(),
+                vec![
+                    ty(e).clone(),
+                    self.data(self.schema.prelude().fault(), Vec::new()),
+                ],
             )),
             Kind::Rel(r, s) | Kind::Transition(_, r, s) => {
                 Some(Ty::Set(Box::new(self.row(*r, s.clone()))))
@@ -223,7 +226,9 @@ impl<'a> Build<'a> {
             Kind::Agg {
                 op, source, body, ..
             } => Some(self.aggregate(*op, ty(source), ty(body))),
-            Kind::IsEmpty(_) | Kind::Exists(_) => Some(self.prelude("Bool", Vec::new())),
+            Kind::IsEmpty(_) | Kind::Exists(_) => {
+                Some(self.data(self.schema.prelude().bool(), Vec::new()))
+            }
             Kind::Group { var, by, .. } => Some(Ty::Set(Box::new(Ty::Record(vec![
                 ("key".into(), ty(by).clone()),
                 (
@@ -269,7 +274,7 @@ impl<'a> Build<'a> {
     fn aggregate(&self, op: Agg, source: &Ty, body: &Ty) -> Ty {
         let partial = |r: &Ty| match source {
             Ty::NonEmpty(_) => r.clone(),
-            _ => self.prelude("Option", vec![r.clone()]),
+            _ => self.data(self.schema.prelude().option(), vec![r.clone()]),
         };
         match op {
             Agg::Count => Ty::Base(Base::I64),
@@ -285,10 +290,6 @@ impl<'a> Build<'a> {
             args,
             ctors: None,
         }
-    }
-
-    fn prelude(&self, name: &str, args: Vec<Ty>) -> Ty {
-        self.data(self.schema.prelude_type(name), args)
     }
 
     fn row(&self, rel: RelId, ctors: Option<CtorSet>) -> Ty {

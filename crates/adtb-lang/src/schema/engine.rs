@@ -1,3 +1,4 @@
+use super::prelude::ctor;
 use super::{CtorRef, SchemaDefs, ValueDef};
 use crate::types::Ty;
 
@@ -48,9 +49,14 @@ impl EngineCtors {
             matches!(kind, Some(Ty::Data { def, .. }) if *def == deployment.def()),
             "catalog RoleGrant declares its GrantKind as `kind`"
         );
+        let bool_ctor = |at: u32| {
+            defs.types[defs.prelude().bool().0 as usize]
+                .ctor_at(at)
+                .expect("the prelude's `Bool` has its two constructors")
+        };
         EngineCtors {
-            bool_false: in_type("prelude", "Bool", "False"),
-            bool_true: in_type("prelude", "Bool", "True"),
+            bool_false: bool_ctor(ctor::FALSE),
+            bool_true: bool_ctor(ctor::TRUE),
             service: defs.types[defs.principal.0 as usize]
                 .ctor_named("Service")
                 .expect("the schema's `Principal` declares `Service`"),

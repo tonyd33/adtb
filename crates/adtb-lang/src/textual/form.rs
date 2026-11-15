@@ -64,7 +64,7 @@ pub fn key_field_ty(schema: &Schema, rel: RelId, f: &str) -> Ty {
     if schema.self_key(rel, f) {
         return match r.generate {
             Some(Generator::Uuidv7) => Ty::Data {
-                def: schema.prelude_type("Uuid"),
+                def: schema.prelude().uuid(),
                 args: Vec::new(),
                 ctors: None,
             },
@@ -96,14 +96,12 @@ impl Form {
             Ty::Data { def, args, ctors } => {
                 let d = schema.ty(*def);
                 match &d.kind {
-                    TypeDefKind::Newtype { .. } if *def == schema.prelude_type("Uuid") => {
-                        Form::Uuid
-                    }
+                    TypeDefKind::Newtype { .. } if *def == schema.prelude().uuid() => Form::Uuid,
                     TypeDefKind::Newtype { base, .. } => Form::Newtype {
                         name: d.name.clone(),
                         base: Box::new(Form::of(schema, &base.subst(args))),
                     },
-                    TypeDefKind::Sum { .. } if *def == schema.prelude_type("Span") => {
+                    TypeDefKind::Sum { .. } if *def == schema.prelude().span() => {
                         Form::Span(Box::new(Form::of(schema, &args[0])))
                     }
                     TypeDefKind::Sum {

@@ -477,8 +477,10 @@ A term names declarations by id; a consumer reads them from the
   is that field's value. For a `catalog::` or `sys::` relation whose
   one key field is a `Key r` of `r` itself, with no generator, it is
   `I64`.
-- Prelude types are found with `Schema::prelude_type`; their
-  constructors are in the prelude's declaration order.
+- A consumer reaches a prelude type through `SchemaDefs::prelude()`
+  and the position of a prelude constructor through the constants of
+  `schema::prelude::ctor`, never by the type's name or by a literal
+  position. A prelude sum's constructors are in its declaration order.
 - `Schema::self_key(r, f)` holds when key field `f` of `r` is a `Key r`
   of `r` itself.
 - `Schema::reference_fields(r)` returns every field of `r`'s sum whose

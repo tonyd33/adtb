@@ -226,7 +226,7 @@ fn root_principal_resolves_from_empty_imports_and_the_prelude() {
                 lookup_type(&schema, &Visible::of(Vec::new()), &qualified)
             );
         } else {
-            assert_eq!(schema.principal, schema.prelude_type("Principal"));
+            assert_eq!(schema.principal, schema.prelude().principal());
             assert_eq!(
                 Some(37),
                 schema.ids().type_id(schema.principal).map(u64::from)

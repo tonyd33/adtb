@@ -1330,7 +1330,7 @@ impl Checker<'_> {
     }
 
     fn is_bool(&self, t: Tm, value: bool) -> bool {
-        matches!(self.terms.kind(t), Kind::Ctor { ctor, fields } if *ctor == u32::from(value) && fields.is_empty())
+        matches!(self.terms.kind(t), Kind::Ctor { ctor: c, fields } if *c == ctor::bool(value) && fields.is_empty())
             && self.terms.ty(t) == &self.bool_ty()
     }
 

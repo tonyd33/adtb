@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::kernel::{Kind, Prim, Terms, Tm, Var};
+use crate::schema::prelude::ctor;
 
 /// Where a subterm of a `fix` body sits, for stratification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -105,7 +106,14 @@ impl Strata<'_> {
 
     /// Returns whether `t`, a term of type `Bool`, is the literal `value`.
     fn is_bool(&self, t: Tm, value: bool) -> bool {
-        matches!(self.terms.kind(t), Kind::Ctor { ctor, fields } if fields.is_empty() && *ctor == u32::from(value))
+        matches!(self.terms.kind(t), Kind::Ctor { ctor: c, fields } if fields.is_empty() && *c == ctor::bool(value))
+    }
+}
+
+fn ctor_of(terms: &Terms, t: Tm) -> Option<u32> {
+    match terms.kind(t) {
+        Kind::Ctor { ctor, .. } => Some(*ctor),
+        _ => None,
     }
 }
 
@@ -114,8 +122,8 @@ fn reason(terms: &Terms, k: &Kind) -> Option<&'static str> {
     Some(match k {
         Kind::IsEmpty(_) => "the argument of `empty`",
         Kind::If(_, a, b)
-            if matches!(terms.kind(*a), Kind::Ctor { ctor: 0, .. })
-                && matches!(terms.kind(*b), Kind::Ctor { ctor: 1, .. }) =>
+            if ctor_of(terms, *a) == Some(ctor::FALSE)
+                && ctor_of(terms, *b) == Some(ctor::TRUE) =>
         {
             "the operand of `not`"
         }

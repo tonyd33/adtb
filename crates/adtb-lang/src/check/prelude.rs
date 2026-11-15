@@ -23,9 +23,9 @@ impl Checker<'_> {
         self.out(tm)
     }
 
-    fn named_ty(&self, name: &str) -> Ty {
+    fn named_ty(def: TypeId) -> Ty {
         Ty::Data {
-            def: self.schema.prelude_type(name),
+            def,
             args: Vec::new(),
             ctors: None,
         }
@@ -146,7 +146,7 @@ impl Checker<'_> {
                     ));
                 }
                 let ty = Ty::Data {
-                    def: self.schema.prelude_type("Span"),
+                    def: self.schema.prelude().span(),
                     args: vec![t],
                     ctors: None,
                 };
@@ -207,7 +207,7 @@ impl Checker<'_> {
                     unreachable!()
                 };
                 let x = self.check(a, &text)?;
-                let ty = self.named_ty("Uuid");
+                let ty = Self::named_ty(self.schema.prelude().uuid());
                 Ok(self.prim(Prim::ParseUuid, vec![x.tm], ty))
             }
             "text" => {
@@ -230,7 +230,7 @@ impl Checker<'_> {
                             )
                     }
                     Ty::Data { def, .. } => {
-                        *def == self.schema.prelude_type("Uuid")
+                        *def == self.schema.prelude().uuid()
                             || matches!(
                                 &self.schema.ty(*def).kind,
                                 TypeDefKind::Newtype {
@@ -371,7 +371,7 @@ impl Checker<'_> {
                     return Err(diag(u.span, "a decimal scale is at most 38"));
                 }
                 let ut = self.check(u, &i64t)?;
-                let rt = self.check(r, &self.named_ty("Rounding"))?;
+                let rt = self.check(r, &Self::named_ty(self.schema.prelude().rounding()))?;
                 Ok(self.prim(
                     Prim::DecimalDiv,
                     vec![x.tm, y.tm, ut.tm, rt.tm],
@@ -407,7 +407,8 @@ impl Checker<'_> {
                 }
                 let mut tms = vec![x.tm, self.check(&args[1], &i64t)?.tm];
                 if name == "round" {
-                    let rt = self.check(&args[2], &self.named_ty("Rounding"))?;
+                    let rt =
+                        self.check(&args[2], &Self::named_ty(self.schema.prelude().rounding()))?;
                     tms.push(rt.tm);
                 }
                 let p = if name == "round" {
@@ -449,7 +450,10 @@ impl Checker<'_> {
                 match es {
                     [_] if Self::is_integer(&x.ty) => {}
                     [_, r] if Self::is_decimal(&x.ty) || Self::is_float(&x.ty) => {
-                        tms.push(self.check(r, &self.named_ty("Rounding"))?.tm);
+                        tms.push(
+                            self.check(r, &Self::named_ty(self.schema.prelude().rounding()))?
+                                .tm,
+                        );
                     }
                     [_] if Self::is_decimal(&x.ty) || Self::is_float(&x.ty) => {
                         return Err(diag(
@@ -485,7 +489,10 @@ impl Checker<'_> {
                 match r {
                     None if Self::is_integer(&xo.ty) => {}
                     Some(r) if Self::is_float(&xo.ty) => {
-                        tms.push(self.check(r, &self.named_ty("Rounding"))?.tm);
+                        tms.push(
+                            self.check(r, &Self::named_ty(self.schema.prelude().rounding()))?
+                                .tm,
+                        );
                     }
                     _ => return Err(self.wrong(name, &[&xo.ty], span)),
                 }
@@ -645,7 +652,7 @@ impl Checker<'_> {
                 }
                 let p = self.base_arg(b, Base::Period)?;
                 let reject = self.constant_overflow(o)?;
-                let ot = self.check(o, &self.named_ty("Overflow"))?;
+                let ot = self.check(o, &Self::named_ty(self.schema.prelude().overflow()))?;
                 let ty = if reject {
                     self.option_ty(x.ty.clone())
                 } else {
@@ -660,7 +667,7 @@ impl Checker<'_> {
                 let x = self.base_arg(a, Base::DateTime)?;
                 let z = self.base_arg(b, Base::Text)?;
                 let reject = self.constant_overflow(o)?;
-                let ot = self.check(o, &self.named_ty("Overflow"))?;
+                let ot = self.check(o, &Self::named_ty(self.schema.prelude().overflow()))?;
                 let t = Ty::Base(Base::ZonedDateTime);
                 let ty = if reject { self.option_ty(t) } else { t };
                 Ok(self.prim(Prim::Zoned, vec![x, z, ot.tm], ty))
@@ -840,7 +847,7 @@ impl Checker<'_> {
 
     fn span_arg(&self, ty: &Ty) -> Option<Ty> {
         match ty {
-            Ty::Data { def, args, .. } if *def == self.schema.prelude_type("Span") => {
+            Ty::Data { def, args, .. } if *def == self.schema.prelude().span() => {
                 args.first().cloned()
             }
             _ => None,

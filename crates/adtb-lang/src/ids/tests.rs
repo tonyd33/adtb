@@ -34,7 +34,7 @@ fn field(s: &Schema, n: u32) -> FieldRef {
 
 const REVERSED: [fn(&Schema, u32) -> Slot; 9] = [
     |_, n| Slot::Type(TypeId(n)),
-    |s, n| Slot::Ctor(s.ty(s.prelude_type("Rounding")).ctor_at(n).unwrap()),
+    |s, n| Slot::Ctor(s.ty(s.prelude().rounding()).ctor_at(n).unwrap()),
     |_, n| Slot::Relation(RelId(n)),
     |s, n| Slot::Field(field(s, n)),
     |_, n| Slot::Set(RelId(n), format!("s{n}")),

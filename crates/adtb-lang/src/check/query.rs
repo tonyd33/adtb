@@ -33,7 +33,7 @@ impl Checker<'_> {
             Ty::Base(Base::Instant)
         } else {
             Ty::Data {
-                def: self.schema.prelude_type("Position"),
+                def: self.schema.prelude().position(),
                 args: Vec::new(),
                 ctors: None,
             }
@@ -467,7 +467,7 @@ impl Checker<'_> {
         let [Ty::Record(fs)] = args.as_slice() else {
             return None;
         };
-        if *def != self.schema.prelude_type("Option") || fs.len() != keys.len() {
+        if *def != self.schema.prelude().option() || fs.len() != keys.len() {
             return None;
         }
         let fields = fs
@@ -489,7 +489,7 @@ impl Checker<'_> {
         take: Option<Tm>,
     ) -> R<Out> {
         let fields = match &o.ty {
-            Ty::Data { def, args, .. } if *def == self.schema.prelude_type("Option") => {
+            Ty::Data { def, args, .. } if *def == self.schema.prelude().option() => {
                 match args.as_slice() {
                     [Ty::Record(fs)] => fs.clone(),
                     _ => Vec::new(),

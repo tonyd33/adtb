@@ -24,10 +24,12 @@ impl Builder<'_> {
 
     pub(super) fn run(&mut self) {
         let d = self.collect();
+        let prelude = Prelude::of(&self.schema);
+        self.schema.defs_mut().prelude = Some(prelude);
         self.declare_ahead();
         self.schema.defs_mut().principal = match d.principal {
             Some((id, _, _)) => id,
-            None => self.schema.prelude_type("Principal"),
+            None => prelude.principal(),
         };
         if !self.relation_heads(&d) {
             return;

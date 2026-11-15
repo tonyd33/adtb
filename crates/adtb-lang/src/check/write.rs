@@ -753,7 +753,7 @@ impl Checker<'_> {
             }
             Err(e) => return Err(diag(j.span(), e)),
         };
-        if self.schema.relation(into).elem_def != self.schema.prelude_type("RejectedRow") {
+        if self.schema.relation(into).elem_def != self.schema.prelude().rejected_row() {
             return Err(diag(
                 j.span(),
                 format!(

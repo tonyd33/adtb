@@ -112,7 +112,7 @@ pub(crate) fn key_value_ty(schema: &Schema, rel: RelId) -> Result<Ty, String> {
                 Some(crate::schema::Generator::Sequence) => Ok(Ty::Base(Base::I64)),
                 None if schema.module(r.module).engine => Ok(Ty::Base(Base::I64)),
                 Some(crate::schema::Generator::Uuidv7) => Ok(Ty::Data {
-                    def: schema.prelude_type("Uuid"),
+                    def: schema.prelude().uuid(),
                     args: Vec::new(),
                     ctors: None,
                 }),

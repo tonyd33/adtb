@@ -106,9 +106,9 @@ fn f (n: I64) -> I64 = n";
         }
     }
 
-    fn prelude(&self, name: &str) -> Ty {
+    fn bool(&self) -> Ty {
         Ty::Data {
-            def: self.schema.prelude_type(name),
+            def: self.schema.prelude().bool(),
             args: Vec::new(),
             ctors: None,
         }
@@ -188,8 +188,8 @@ fn binding_refusals() -> Vec<(&'static str, Build)> {
         (
             "the then branch is `Text`, not a subtype of `I64`",
             |fx, terms| {
-                let b = terms.var("b", fx.prelude("Bool"));
-                let test = terms.add(Kind::Var(b), fx.prelude("Bool"));
+                let b = terms.var("b", fx.bool());
+                let test = terms.add(Kind::Var(b), fx.bool());
                 let (w, c) = (word(terms), one(terms));
                 let t = terms.add(Kind::If(test, w, c), int());
                 (t, vec![b], t)
@@ -381,7 +381,7 @@ fn value_refusals() -> Vec<(&'static str, Build)> {
         }),
         ("a test of a term that is not a set", |fx, terms| {
             let c = one(terms);
-            let t = terms.add(Kind::IsEmpty(c), fx.prelude("Bool"));
+            let t = terms.add(Kind::IsEmpty(c), fx.bool());
             (t, Vec::new(), t)
         }),
         ("a set test is not `Bool`", |_, terms| {
@@ -603,7 +603,7 @@ fn kind_refusals() -> Vec<(&'static str, Build)> {
             |fx, terms| {
                 let c = one(terms);
                 let result = Ty::Data {
-                    def: fx.schema.prelude_type("Result"),
+                    def: fx.schema.prelude().result(),
                     args: vec![int(), text()],
                     ctors: None,
                 };
@@ -728,7 +728,7 @@ fn shape_refusals() -> Vec<(&'static str, Build)> {
     vec![
         ("`tag` of `T` is `Tag Bool`", |fx, terms| {
             let (r, read) = row_var(fx, terms, None);
-            let t = terms.add(Kind::Tag(read), Ty::Tag(Box::new(fx.prelude("Bool"))));
+            let t = terms.add(Kind::Tag(read), Ty::Tag(Box::new(fx.bool())));
             (t, vec![r], t)
         }),
         (
@@ -1053,7 +1053,7 @@ fn validate_accepts_a_min_over_a_nonempty_source_at_its_body_type_or_an_option_o
     let fx = Fixture::new();
     let mut terms = Terms::default();
     let option = Ty::Data {
-        def: fx.schema.prelude_type("Option"),
+        def: fx.schema.prelude().option(),
         args: vec![int()],
         ctors: None,
     };

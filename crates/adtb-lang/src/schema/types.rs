@@ -205,7 +205,7 @@ impl Builder<'_> {
     pub(super) fn is_option_key(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Data { def, args, .. } => {
-                *def == self.schema.prelude_type("Option")
+                *def == self.schema.prelude().option()
                     && matches!(args.as_slice(), [Ty::Key { .. }])
             }
             _ => false,
@@ -525,7 +525,7 @@ impl Resolver<'_> {
             TypeName::Decl(def) => {
                 arity(schema.ty(def).params.len())?;
                 let targs = self.type_args(args, ordered_args)?;
-                if def == schema.prelude_type("Span") {
+                if def == schema.prelude().span() {
                     ordered_args.push((targs[0].clone(), self.file, t.span));
                 }
                 Ok(Ty::Data {

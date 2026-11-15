@@ -7,6 +7,7 @@ use std::rc::Rc;
 use crate::ast;
 use crate::kernel::{Build, Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
+use crate::schema::prelude::ctor;
 use crate::schema::{
     DefaultValue, PRELUDE, Schema, TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
 };
@@ -323,7 +324,7 @@ impl<'a> Checker<'a> {
 
     fn bool_ty(&self) -> Ty {
         Ty::Data {
-            def: self.schema.prelude_type("Bool"),
+            def: self.schema.prelude().bool(),
             args: Vec::new(),
             ctors: None,
         }
@@ -331,12 +332,12 @@ impl<'a> Checker<'a> {
 
     fn bool_tm(&mut self, value: bool) -> Tm {
         let ty = self.bool_ty();
-        self.b().ctor(u32::from(value), Vec::new(), ty)
+        self.b().ctor(ctor::bool(value), Vec::new(), ty)
     }
 
     fn option_ty(&self, t: Ty) -> Ty {
         Ty::Data {
-            def: self.schema.prelude_type("Option"),
+            def: self.schema.prelude().option(),
             args: vec![t],
             ctors: None,
         }

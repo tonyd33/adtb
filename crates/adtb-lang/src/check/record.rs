@@ -231,7 +231,7 @@ impl Checker<'_> {
         if let Target::Decl(def, _) = &target {
             self.note(at, Ref::Ctor(*def, c));
             let t = self.schema.ty(*def);
-            if *def == self.schema.prelude_type("Span") {
+            if *def == self.schema.prelude().span() {
                 return Err(diag(span, "a span is built only by `span(start, end)`"));
             }
             if matches!(t.kind, TypeDefKind::Newtype { .. }) {

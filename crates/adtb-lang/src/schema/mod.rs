@@ -29,6 +29,7 @@ mod ahead;
 mod build;
 mod engine;
 mod inputs;
+pub mod prelude;
 mod refs;
 mod relation;
 mod scope;
@@ -37,6 +38,7 @@ mod types;
 
 pub use engine::EngineCtors;
 pub use inputs::{States, build_with};
+pub use prelude::Prelude;
 pub use refs::{CtorRef, FieldPart, FieldRef};
 pub use scope::Scope;
 pub(crate) use temps::{Temp, TempRow};
@@ -386,11 +388,18 @@ pub struct SchemaDefs {
     /// The relation variables, by module and name, that the migration being applied adds with
     /// their type: a reference type's selection of their constructors resolves when it ends.
     pub late_sels: Vec<(ModuleId, String)>,
+    /// `None` until the builder collects the declarations.
+    prelude: Option<Prelude>,
     /// `None` until the schema builds.
     engine_ctors: Option<EngineCtors>,
 }
 
 impl SchemaDefs {
+    pub fn prelude(&self) -> Prelude {
+        self.prelude
+            .expect("a schema past collection holds the prelude's types")
+    }
+
     /// Append a record type `name` of `module`, its one constructor named after it, declared at
     /// `ctor_span` within `span`; returns its id.
     fn push_record(
@@ -1201,7 +1210,7 @@ impl Schema {
     /// field `f` of `rel`'s sum holds a reference.
     fn reference(&self, rel: RelId, f: &FieldDef) -> Option<(RelRef, Option<CtorSet>, bool)> {
         let r = self.relation(rel);
-        let option = self.prelude_type("Option");
+        let option = self.prelude().option();
         let (key, optional) = match f.ty.subst(r.elem_args()) {
             k @ Ty::Key { .. } => (k, false),
             Ty::Data { def, mut args, .. } if def == option && args.len() == 1 => {
@@ -1326,6 +1335,7 @@ pub fn build_ahead(
                 principal: TypeId(0),
                 ahead: Vec::new(),
                 late_sels: Vec::new(),
+                prelude: None,
                 engine_ctors: None,
             }),
             ids: CatalogIds::default(),

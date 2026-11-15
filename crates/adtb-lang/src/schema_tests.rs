@@ -55,9 +55,44 @@ fn module(body: &str) -> String {
 #[test]
 fn prelude_builds_alone() {
     let s = build_src(&[]).unwrap();
-    let bool_ = s.ty(s.prelude_type("Bool"));
+    let bool_ = s.ty(s.prelude().bool());
     assert!(bool_.ordered);
     assert_eq!(bool_.ctors().len(), 2);
+}
+
+/// Returns `ctor` in upper case with `_` between its words: `HalfEven` as `HALF_EVEN`.
+fn shouted(ctor: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in ctor.chars().enumerate() {
+        if i > 0 && ch.is_uppercase() {
+            out.push('_');
+        }
+        out.extend(ch.to_uppercase());
+    }
+    out
+}
+
+#[test]
+fn every_prelude_constructor_constant_is_named_for_its_constructor_at_its_parsed_position() {
+    let s = build_src(&[]).unwrap();
+    let mut unmatched: BTreeSet<(&str, &str)> = prelude::ctor::NAMED
+        .iter()
+        .map(|&(_, t, c, _)| (t, c))
+        .collect();
+    for (name, &def) in &s.module(PRELUDE).types {
+        for (at, c) in s.ty(def).ctors().iter().enumerate() {
+            let Some(&(constant, t, n, pos)) = prelude::ctor::NAMED
+                .iter()
+                .find(|&&(_, t, n, _)| t == name && n == c.name)
+            else {
+                continue;
+            };
+            assert_eq!(shouted(n), constant, "the constant of `{t}.{n}`");
+            assert_eq!(at as u32, pos, "`{t}.{n}` is at {at}");
+            unmatched.remove(&(t, n));
+        }
+    }
+    assert_eq!(BTreeSet::new(), unmatched);
 }
 
 #[test]
@@ -562,7 +597,7 @@ fn the_schema_may_declare_principal_once() {
         "{RUNNING}\ntype Principal = EndUser {{ user: Text }} | Service {{ name: Text }} | Anonymous"
     )])
     .unwrap();
-    assert_ne!(s.principal, s.prelude_type("Principal"));
+    assert_ne!(s.principal, s.prelude().principal());
     assert_error(
         &[
             &module("type Principal = EndUser { u: Text } | Service { name: Text } | Anonymous"),
@@ -943,13 +978,13 @@ constraint nameless = from u in users where u.name == \"\" select u
 #[test]
 fn engine_types_constructors_and_relations_take_their_fixed_ids() {
     let s = build_src(&[]).unwrap();
-    let bool_ = s.prelude_type("Bool");
+    let bool_ = s.prelude().bool();
     assert_eq!(Some(0), s.ids.type_id(bool_).map(u64::from));
     assert_eq!(
         Some(2),
         s.ids.ctor_id(ctor_ref(&s, bool_, 1)).map(u64::from)
     );
-    let fault = s.prelude_type("RejectReason");
+    let fault = s.prelude().reject_reason();
     let mig = s.ty(fault).ctor_index("MigrationInProgress").unwrap();
     assert_eq!(
         Some(372),
@@ -1014,7 +1049,7 @@ fn row_too_large_takes_the_field_ids_after_internal() {
             .and_then(|f| s.ids.field_id(f))
             .map(u64::from)
     };
-    let reject = s.prelude_type("RejectReason");
+    let reject = s.prelude().reject_reason();
     let too_large = s.ty(reject).ctor_index("RowTooLarge").unwrap();
     assert_eq!(Some(70), field(reject, Some(too_large), "relation"));
     assert_eq!(Some(73), field(reject, Some(too_large), "limit"));
@@ -1023,7 +1058,7 @@ fn row_too_large_takes_the_field_ids_after_internal() {
 #[test]
 fn key_too_large_appends_fields_without_renumbering_engine_fields() {
     let s = build_src(&[]).unwrap();
-    let reject = s.prelude_type("RejectReason");
+    let reject = s.prelude().reject_reason();
     let ctor = s.ty(reject).ctor_index("KeyTooLarge").unwrap();
     assert_eq!(
         Some(471),
@@ -1040,7 +1075,7 @@ fn key_too_large_appends_fields_without_renumbering_engine_fields() {
                 .map(u64::from)
         );
     }
-    let limit = s.prelude_type("Limit");
+    let limit = s.prelude().limit();
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(
         Some(563),
@@ -1058,9 +1093,9 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
             .and_then(|f| s.ids.field_id(f))
             .map(u64::from)
     };
-    let option = s.prelude_type("Option");
+    let option = s.prelude().option();
     assert_eq!(Some(0), field(option, Some(1), "value"));
-    let result = s.prelude_type("Result");
+    let result = s.prelude().result();
     assert_eq!(Some(1), field(result, Some(0), "value"));
     assert_eq!(Some(2), field(result, Some(1), "error"));
     assert_eq!(
@@ -1107,12 +1142,12 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
             assert!(s.ids.index_id(rel, k).unwrap().raw() < 1024);
         }
     }
-    let reject = s.prelude_type("RejectReason");
+    let reject = s.prelude().reject_reason();
     let damaged = s.ty(reject).ctor_index("DumpDamaged").unwrap();
     assert_eq!(Some(68), field(reject, Some(damaged), "part"));
     let internal = s.ty(reject).ctor_index("Internal").unwrap();
     assert_eq!(Some(69), field(reject, Some(internal), "what"));
-    let limit = s.prelude_type("Limit");
+    let limit = s.prelude().limit();
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(Some(563), field(limit, Some(rounds), "rounds"));
     assert_eq!(Some(574), s.ids.field_ids().map(|(_, id)| id.raw()).max());

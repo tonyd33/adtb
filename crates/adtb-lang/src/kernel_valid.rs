@@ -6,7 +6,7 @@ use crate::ast::FnBody;
 use crate::check::rel::key_value_ty;
 use crate::check::ty::{ctor_fields, ctor_names, elem, fields, restrict, subtype};
 use crate::schema::{Generator, Schema};
-use crate::types::{Base, CtorSet, RelId, RelRef, Ty};
+use crate::types::{Base, CtorSet, RelId, RelRef, Ty, TypeId};
 
 /// A node that breaks the kernel's typing invariants, with the invariant it breaks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,20 +212,20 @@ impl Validator<'_> {
         })
     }
 
-    fn prelude(&self, name: &str, args: Vec<Ty>) -> Ty {
+    fn data(def: TypeId, args: Vec<Ty>) -> Ty {
         Ty::Data {
-            def: self.schema.prelude_type(name),
+            def,
             args,
             ctors: None,
         }
     }
 
     fn is_bool(&self, ty: &Ty) -> bool {
-        self.is_prelude("Bool", ty)
+        Self::is_data(self.schema.prelude().bool(), ty)
     }
 
-    fn is_prelude(&self, name: &str, ty: &Ty) -> bool {
-        matches!(ty, Ty::Data { def, .. } if *def == self.schema.prelude_type(name))
+    fn is_data(of: TypeId, ty: &Ty) -> bool {
+        matches!(ty, Ty::Data { def, .. } if *def == of)
     }
 
     fn row(&self, rel: RelId, ctors: &Option<CtorSet>) -> Ty {
@@ -424,12 +424,12 @@ impl Validator<'_> {
             },
             Kind::Tag(e) => self.tag(*e, ty),
             Kind::Try(e) => match ty {
-                Ty::Data { def, args, .. } if *def == self.schema.prelude_type("Result") => {
+                Ty::Data { def, args, .. } if *def == self.schema.prelude().result() => {
                     self.within("the tried value", self.ty(*e), &args[0])?;
                     self.same(
                         "the failure of `try`",
                         &args[1],
-                        &self.prelude("Fault", Vec::new()),
+                        &Self::data(self.schema.prelude().fault(), Vec::new()),
                     )
                 }
                 _ => Err("`try` is not a `Result`".into()),
@@ -522,7 +522,8 @@ impl Validator<'_> {
                 ..
             } => {
                 let pt = self.ty(*point);
-                let position = matches!(pt, Ty::Data { def, .. } if *def == self.schema.prelude_type("Position"));
+                let position =
+                    matches!(pt, Ty::Data { def, .. } if *def == self.schema.prelude().position());
                 expect(
                     *pt == Ty::Base(Base::Instant) || (!instant && position),
                     || format!("the point is `{}`", self.schema.show_ty(pt)),
@@ -658,12 +659,14 @@ impl Validator<'_> {
             | Prim::CheckedDiv
             | Prim::CheckedRem
             | Prim::Parse
-            | Prim::Convert { checked: true } => expect(self.is_prelude("Option", ty), || {
-                format!("`{p:?}` is not an `Option`")
-            }),
+            | Prim::Convert { checked: true } => {
+                expect(Self::is_data(self.schema.prelude().option(), ty), || {
+                    format!("`{p:?}` is not an `Option`")
+                })
+            }
             Prim::CheckedNeg => {
                 arity(1)?;
-                expect(self.is_prelude("Option", ty), || {
+                expect(Self::is_data(self.schema.prelude().option(), ty), || {
                     "`CheckedNeg` is not an `Option`".into()
                 })
             }
@@ -682,7 +685,7 @@ impl Validator<'_> {
             }
             Prim::ParseUuid => {
                 arity(1)?;
-                expect(self.is_prelude("Uuid", ty), || {
+                expect(Self::is_data(self.schema.prelude().uuid(), ty), || {
                     "`ParseUuid` is not a `Uuid`".into()
                 })
             }
@@ -926,7 +929,7 @@ impl Validator<'_> {
         };
         self.within("the aggregate's element", se, &self.terms.var_info(var).ty)?;
         let partial = |r: &Ty| -> Checked {
-            let optional = self.prelude("Option", vec![r.clone()]);
+            let optional = Self::data(self.schema.prelude().option(), vec![r.clone()]);
             if matches!(st, Ty::NonEmpty(_)) && self.sub(r, ty) {
                 return Ok(());
             }

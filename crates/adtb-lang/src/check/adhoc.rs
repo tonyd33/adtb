@@ -768,7 +768,7 @@ impl Checker<'_> {
             }
             ast::RestorePoint::AtPosition(e) => {
                 let position = Ty::Data {
-                    def: self.schema.prelude_type("Position"),
+                    def: self.schema.prelude().position(),
                     args: Vec::new(),
                     ctors: None,
                 };

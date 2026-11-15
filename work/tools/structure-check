@@ -89,6 +89,10 @@ found_counts() {
     count id_sentinels '\b(RelId|TypeId|FnId|ModuleId)\(u32::MAX|\.0 (==|!=) u32::MAX\b'
     count kernel_door '(\.|Terms::)add_unchecked\('
     count kernel_overwrite '(\.|Terms::)overwrite_kind\('
+    count prelude_type_names 'prelude_type\("'
+    for dir in crates apps; do
+      count_under prelude_positions "$dir" '(Value::Ctor|Val::tag|Val::Ctor|Val::ctor|of_ctor|\.ctor)\((u32::from|[0-9])|\bctor: ([0-9]\b|u32::from)|\bctor == ([0-9]\b|u32::from)|== u32::from\(|c @ \(0 \| 1\)|\*c <= 1|\btag\(\) (==|!=) Some\([0-9]|\b[0-9] => Rounding::' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
+    done
     for dir in crates apps; do
       count_under denial_zips "$dir" '\.zip\([^);]*\b(checks|constraints)\b|\b(checks|constraints)\b[^;{}]*?\.zip\(' -P -U -g '!**/target/**'
     done
@@ -139,7 +143,7 @@ found=$(found_counts)
 awk -v list="$allowlist" '
   function note(msg) { print "structure-check: " msg; bad = 1 }
   BEGIN {
-    split("crate_fields pub_fields disallowed_methods database_marks structure_listings mark_setters index_marks marked_readers api_aborts crash_loops crash_allows id_sentinels kernel_door kernel_overwrite denial_zips sim_test_opens sim_test_damage sim_test_offsets", names, " ")
+    split("crate_fields pub_fields disallowed_methods database_marks structure_listings mark_setters index_marks marked_readers api_aborts crash_loops crash_allows id_sentinels kernel_door kernel_overwrite prelude_type_names prelude_positions denial_zips sim_test_opens sim_test_damage sim_test_offsets", names, " ")
     for (i in names) row[names[i]] = 1
     while ((getline line < list) > 0) {
       if (line ~ /^[[:space:]]*(#|$)/) continue

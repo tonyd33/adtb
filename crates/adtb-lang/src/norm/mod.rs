@@ -1206,7 +1206,7 @@ impl<'a> Normaliser<'a> {
     }
 
     fn is_bool(&self, t: Tm) -> bool {
-        matches!(self.out.ty(t), Ty::Data { def, .. } if *def == self.tot.schema().prelude_type("Bool"))
+        matches!(self.out.ty(t), Ty::Data { def, .. } if *def == self.tot.schema().prelude().bool())
     }
 
     /// Bind `var` to `bound` in `body`: substituting a copyable value that does not branch or is

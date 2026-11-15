@@ -220,6 +220,34 @@ counts=$("$checker" --counts "$scratch")
 grep -qxF 'kernel_overwrite prod 3 crates/lang/src/k.rs' <<<"$counts" || fail "not counted: kernel_overwrite: $counts"
 rm -r crates/lang
 
+# prelude_type_names counts a lookup with a literal name, in tests too, not the definition or a
+# lookup by a variable.
+mkdir -p crates/lang/src
+printf '%s\n' 'pub fn prelude_type(&self, name: &str) {}' 'fn f() { s.prelude_type("Bool"); s.prelude_type(name); s.prelude().bool(); }' >crates/lang/src/p.rs
+cp crates/lang/src/p.rs crates/lang/src/p_tests.rs
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'prelude_type_names prod 1 crates/lang/src/p.rs' <<<"$counts" || fail "not counted: prelude_type_names: $counts"
+grep -qxF 'prelude_type_names test 1 crates/lang/src/p_tests.rs' <<<"$counts" || fail "test not counted: prelude_type_names: $counts"
+rm -r crates/lang
+
+# prelude_positions counts each literal constructor position form in production sources, not a
+# named position or a test.
+mkdir -p crates/lang/src
+cat >crates/lang/src/p.rs <<'RS'
+m! {
+    Value::Ctor(1, fs); Val::tag(0); Val::Ctor(2, _); Val::ctor(1, vs); V::of_ctor(u32::from(b), v);
+    b.ctor(0, tms, ty); Kind::Ctor { ctor: 1, .. }; ctor == 1; *c == u32::from(value);
+    Value::Ctor(c @ (0 | 1), fs); *c <= 1; v.tag() == Some(1); v.tag() != Some(0); 3 => Rounding::Up,
+    Val::ctor(ctor::SOME, vs); Kind::Ctor { ctor: ctor::TRUE, .. }; ctor == ctor::bool(b);
+    v.tag() == Some(ctor::REJECT); ctor::UP => Rounding::Up,
+}
+RS
+cp crates/lang/src/p.rs crates/lang/src/p_tests.rs
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'prelude_positions prod 14 crates/lang/src/p.rs' <<<"$counts" || fail "not counted: prelude_positions: $counts"
+! grep -q 'prelude_positions .*p_tests.rs' <<<"$counts" || fail "counted a test: $counts"
+rm -r crates/lang
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then
