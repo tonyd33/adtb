@@ -1,6 +1,6 @@
 //! NDJSON files: one JSON value per line, read by the JSON mapping.
 
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Schema, prelude};
 use adtb_lang::textual::Textual;
 use adtb_lang::types::{Base, Ty};
 
@@ -63,7 +63,7 @@ fn read<V: Textual>(schema: &Schema, j: &Json, ty: &Ty) -> Result<V, String> {
             _ => Err(format!("{j:?} is not a value of {ty:?}")),
         },
         Shape::Bool => match j {
-            Json::Bool(b) => Ok(of_ctor(u32::from(*b), Vec::new())),
+            Json::Bool(b) => Ok(of_ctor(prelude::ctor::bool(*b), Vec::new())),
             _ => Err(format!("{j:?} is not a Bool")),
         },
         Shape::Text => match j {

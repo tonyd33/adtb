@@ -179,7 +179,7 @@ impl<'a> Interp<'a> {
         let mut t = self.terms.borrow_mut();
         let (x, y) = (t.var("%a", ty.clone()), t.var("%b", ty.clone()));
         let bool_ty = Ty::Data {
-            def: self.schema.prelude_type("Bool"),
+            def: self.schema.prelude().bool(),
             args: Vec::new(),
             ctors: None,
         };

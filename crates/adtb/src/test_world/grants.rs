@@ -133,16 +133,8 @@ pub fn deployment_row<R: Runtime>(
     let schema = catalog.schema();
     let (r, c) = catalog_relation(schema, "grants", "RoleGrant");
     let target = match target {
-        Some(t) => {
-            let Value::Sum { ctor, .. } = values::tag(schema, "prelude", "Option", "Some") else {
-                unreachable!("a tag is a sum");
-            };
-            Value::Sum {
-                ctor,
-                fields: vec![Value::Text(t.to_owned())],
-            }
-        }
-        None => values::tag(schema, "prelude", "Option", "None"),
+        Some(t) => values::some(Value::Text(t.to_owned())),
+        None => values::none(),
     };
     let grant = values::row(
         schema,
@@ -158,8 +150,8 @@ pub fn deployment_row<R: Runtime>(
             ("target", target),
             ("grantee", Value::Text(grantee.to_owned())),
             ("grantor", Value::Text(grantor.to_owned())),
-            ("grant_option", values::boolean(schema, grant_option)),
-            ("dormant", values::boolean(schema, dormant)),
+            ("grant_option", values::boolean(grant_option)),
+            ("dormant", values::boolean(dormant)),
         ],
     );
     deploy(catalog, pager, txns, "grants", "RoleGrant", grant);

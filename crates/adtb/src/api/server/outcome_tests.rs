@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use adtb_lang::textual::parse;
-use adtb_lang::types::Ty;
+use adtb_lang::types::{Ty, TypeId};
 
 use crate::api::{
     CallOptions, Error, FatalReason, Fault, Limit, Log, Position, RejectReason, RetryReason, TxnId,
@@ -520,7 +520,7 @@ fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
     got.sort();
     assert_eq!(errors.len(), got.len());
     let outcome_form = &fields[1].1;
-    let failed = prelude_ctor(&engine.schema, "Outcome", "Failed");
+    let failed = prelude_ctor(&engine.schema, engine.schema.prelude().outcome(), "Failed");
     let held = errors
         .iter()
         .zip(&got)
@@ -543,7 +543,7 @@ fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
     let error_form = Form::of(
         &engine.schema,
         &Ty::Data {
-            def: engine.schema.prelude_type("Error"),
+            def: engine.schema.prelude().error(),
             args: Vec::new(),
             ctors: None,
         },
@@ -586,9 +586,9 @@ fn a_violated_calls_audit_row_holds_the_violation_returned_with_its_report() {
     let schema = crate::catalog::engine_schema();
     let report: Vec<u8> = [0x04, 0x01].into_iter().chain(1i64.to_le_bytes()).collect();
     let expected = Val::ctor(
-        prelude_ctor(&schema, "Error", "Rejected"),
+        prelude_ctor(&schema, schema.prelude().error(), "Rejected"),
         vec![Val::ctor(
-            prelude_ctor(&schema, "RejectReason", "Violated"),
+            prelude_ctor(&schema, schema.prelude().reject_reason(), "Violated"),
             vec![
                 Val::text("shop::paid"),
                 Val::Bytes(report.into()),
@@ -605,9 +605,8 @@ fn a_violated_calls_audit_row_holds_the_violation_returned_with_its_report() {
 }
 
 /// Returns the index of constructor `name` of the prelude type `ty`.
-fn prelude_ctor(schema: &adtb_lang::schema::Schema, ty: &str, name: &str) -> u32 {
-    schema
-        .ty(schema.prelude_type(ty))
-        .ctor_index(name)
-        .unwrap_or_else(|| panic!("the prelude's {ty} declares {name}"))
+fn prelude_ctor(schema: &adtb_lang::schema::Schema, ty: TypeId, name: &str) -> u32 {
+    let def = schema.ty(ty);
+    def.ctor_index(name)
+        .unwrap_or_else(|| panic!("the prelude's {} declares {name}", def.name))
 }

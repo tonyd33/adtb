@@ -177,7 +177,7 @@ fn columns(schema: &Schema, elem: &Ty) -> Result<(Vec<Field>, exec::Rows), Error
 fn is_sum(schema: &Schema, t: &Ty) -> bool {
     match t {
         Ty::Data { def, .. } => {
-            let prelude = [schema.prelude_type("Bool"), schema.prelude_type("Option")];
+            let prelude = [schema.prelude().bool(), schema.prelude().option()];
             !prelude.contains(def) && schema.ty(*def).ctors().len() >= 2
         }
         Ty::Sum { ctors, .. } => ctors.len() >= 2,

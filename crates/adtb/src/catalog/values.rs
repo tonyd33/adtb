@@ -1,5 +1,6 @@
 //! Values of catalog rows, named by module, type, relation, constructor and field.
 
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
 
@@ -31,8 +32,27 @@ pub fn tag(schema: &Schema, module: &str, ty: &str, ctor: &str) -> Value {
 }
 
 /// Returns `b` as a value of the prelude's `Bool`.
-pub fn boolean(schema: &Schema, b: bool) -> Value {
-    tag(schema, "prelude", "Bool", if b { "True" } else { "False" })
+pub fn boolean(b: bool) -> Value {
+    Value::Sum {
+        ctor: ctor::bool(b),
+        fields: Vec::new(),
+    }
+}
+
+/// Returns the prelude's `None`.
+pub fn none() -> Value {
+    Value::Sum {
+        ctor: ctor::NONE,
+        fields: Vec::new(),
+    }
+}
+
+/// Returns the prelude's `Some v`.
+pub fn some(v: Value) -> Value {
+    Value::Sum {
+        ctor: ctor::SOME,
+        fields: vec![v],
+    }
 }
 
 /// Returns the stored row of constructor `ctor` of relation `r` whose fields `fields` gives by

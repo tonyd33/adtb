@@ -9,7 +9,7 @@ use crate::heap::{FieldType, put_uvarint};
 use crate::key::Value;
 
 use super::layout;
-use super::values::boolean;
+use super::values::{self, boolean};
 
 /// A BLAKE3-256 hash.
 pub type Hash = [u8; 32];
@@ -259,7 +259,7 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
             &[
                 ("ctor", id(*ctor)),
                 ("decl", text(decl)),
-                ("routing", optional(schema, ty, "Merge", "routing", routing)),
+                ("routing", optional(routing)),
             ],
         ),
         Resolved::Nest { ctor, decl } => two("Nest", "ctor", *ctor, "decl", decl),
@@ -285,8 +285,8 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
             "MoveField",
             &[
                 ("field", id(*field)),
-                ("header", boolean(schema, *header)),
-                ("fill", optional(schema, ty, "MoveField", "fill", fill)),
+                ("header", boolean(*header)),
+                ("fill", optional(fill)),
             ],
         ),
         other => derived(schema, ty, other),
@@ -397,11 +397,11 @@ fn granted(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
     let target = Some(target.clone());
     let mut fields = vec![
         ("privilege", text(privilege)),
-        ("target", optional(schema, ty, ctor, "target", &target)),
+        ("target", optional(&target)),
         ("grantee", text(grantee)),
     ];
     if let Some(g) = grant_option {
-        fields.push(("grant_option", boolean(schema, g)));
+        fields.push(("grant_option", boolean(g)));
     }
     sum(schema, ty, ctor, &fields)
 }
@@ -436,7 +436,7 @@ fn added_index(
         &[
             ("index", id(index)),
             ("relation", id(relation)),
-            ("interval", boolean(schema, interval)),
+            ("interval", boolean(interval)),
             ("fields", text(fields)),
         ],
     )
@@ -463,13 +463,11 @@ fn added_ctor(schema: &Schema, ty: &Ty, ctor: u64, of: u64, decl: &str, place: &
     )
 }
 
-/// Returns the value of the optional text field `name` of constructor `ctor` of the operator
-/// sum `ty`.
-fn optional(schema: &Schema, ty: &Ty, ctor: &str, name: &str, t: &Option<String>) -> Value {
-    let o = field_of(schema, ty, ctor, name);
+/// Returns `t` as a value of `Option Term`.
+fn optional(t: &Option<String>) -> Value {
     match t {
-        Some(t) => sum(schema, &o, "Some", &[("value", text(t))]),
-        None => sum(schema, &o, "None", &[]),
+        Some(t) => values::some(text(t)),
+        None => values::none(),
     }
 }
 
@@ -550,10 +548,7 @@ fn clause(schema: &Schema, ty: &Ty, c: &Clause) -> Value {
                 "Privilege",
                 &[
                     ("privilege", text(privilege)),
-                    (
-                        "target",
-                        optional(schema, ty, "Privilege", "target", &target),
-                    ),
+                    ("target", optional(&target)),
                 ],
             )
         }

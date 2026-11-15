@@ -3,6 +3,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use adtb_lang::schema::prelude::ctor;
 use adtb_sys::lock::Lock;
 
 use crate::batch::Batch;
@@ -240,13 +241,13 @@ impl<R: Runtime> Ctx<R> {
                 let mut out: Vec<(u32, Val)> = self
                     .eval_rows(a, f, &mut s, &mut inner, par)?
                     .into_iter()
-                    .map(|(r, v)| (r, Val::ctor(0, vec![v])))
+                    .map(|(r, v)| (r, Val::ctor(ctor::OK, vec![v])))
                     .collect();
                 out.extend(
                     inner
                         .faults
                         .iter()
-                        .map(|(r, x)| (*r, Val::ctor(1, vec![self.sh().fault_value(*x)]))),
+                        .map(|(r, x)| (*r, Val::ctor(ctor::ERR, vec![Val::tag(x.ctor())]))),
                 );
                 Ok(out)
             }

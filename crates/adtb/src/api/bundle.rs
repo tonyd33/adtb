@@ -9,6 +9,7 @@ use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit
 use adtb_lang::check::Command;
 use adtb_lang::parse::reads_as_bundle_name;
 use adtb_lang::schema::Schema;
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::{Lock, Ranked, RankedGuard};
 
@@ -436,8 +437,8 @@ impl<'s> Tables<'s> {
             _ => Err(field(n)),
         };
         let some = |n: &str| match f.get(n) {
-            Some(Val::Ctor(1, inner)) => Ok(inner.first().cloned()),
-            Some(Val::Ctor(0, _)) => Ok(None),
+            Some(Val::Ctor(ctor::SOME, inner)) => Ok(inner.first().cloned()),
+            Some(Val::Ctor(ctor::NONE, _)) => Ok(None),
             _ => Err(field(n)),
         };
         let name = text("name")?;

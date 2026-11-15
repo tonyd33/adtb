@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use adtb_lang::kernel::FileFormat;
-use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::schema::{Schema, TypeDefKind, prelude};
 use adtb_lang::textual::{Textual, key_field_ty, key_names};
 use adtb_lang::types::{Base, CtorSet, RelId, Ty};
 use unicode_normalization::UnicodeNormalization;
@@ -467,13 +467,13 @@ fn shape(schema: &Schema, ty: &Ty) -> Shape {
         Ty::Sum { ctors, sel } => sum_shape(Vec::new(), ctors.clone(), sel.clone()),
         Ty::Data { def, args, ctors } => {
             let d = schema.ty(*def);
-            let prelude = |name: &str| *def == schema.prelude_type(name);
+            let p = schema.prelude();
             match &d.kind {
-                TypeDefKind::Newtype { .. } if prelude("Uuid") => Shape::Scalar,
+                TypeDefKind::Newtype { .. } if *def == p.uuid() => Shape::Scalar,
                 TypeDefKind::Newtype { base, .. } => Shape::Newtype(base.subst(args)),
-                TypeDefKind::Sum { .. } if prelude("Span") => Shape::Scalar,
-                TypeDefKind::Sum { .. } if prelude("Bool") => Shape::Bool,
-                TypeDefKind::Sum { .. } if prelude("Option") => Shape::Option(args[0].clone()),
+                TypeDefKind::Sum { .. } if *def == p.span() => Shape::Scalar,
+                TypeDefKind::Sum { .. } if *def == p.bool() => Shape::Bool,
+                TypeDefKind::Sum { .. } if *def == p.option() => Shape::Option(args[0].clone()),
                 TypeDefKind::Sum {
                     header,
                     ctors: all,
@@ -560,11 +560,11 @@ fn text<V: Textual>(t: &str) -> V {
 }
 
 fn none<V: Textual>() -> V {
-    V::of_ctor(0, Vec::new())
+    V::of_ctor(prelude::ctor::NONE, Vec::new())
 }
 
 fn some<V: Textual>(v: V) -> V {
-    V::of_ctor(1, vec![("value", v)])
+    V::of_ctor(prelude::ctor::SOME, vec![("value", v)])
 }
 
 /// Returns `text` read in the textual syntax at `ty`.

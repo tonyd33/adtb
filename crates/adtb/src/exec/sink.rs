@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::Base;
 
 use crate::runtime::Runtime;
@@ -482,8 +483,8 @@ fn present_bounds(
     let take = take.transpose()?;
     let after = after.transpose()?;
     let cursor = match after {
-        Some(Val::Ctor(1, fs)) if keys == 1 => Some(vec![fs[0].clone()]),
-        Some(Val::Ctor(1, fs)) => Some(fs[0].fields()?.to_vec()),
+        Some(Val::Ctor(ctor::SOME, fs)) if keys == 1 => Some(vec![fs[0].clone()]),
+        Some(Val::Ctor(ctor::SOME, fs)) => Some(fs[0].fields()?.to_vec()),
         _ => None,
     };
     let n = match take.as_ref().map(Val::int).transpose()? {

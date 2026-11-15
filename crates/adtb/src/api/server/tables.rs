@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow};
-use adtb_lang::schema::{CtorRef, Schema, TypeDef, ValueDef};
+use adtb_lang::schema::prelude::ctor;
+use adtb_lang::schema::{CtorRef, Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
 
@@ -362,16 +363,12 @@ impl<'s> Tables<'s> {
     }
 
     fn optional_text(&self, value: &Val) -> Result<Option<String>, Error> {
-        let option = self.schema.ty(self.schema.prelude_type("Option"));
-        let Val::Ctor(ctor, fields) = value else {
+        let Val::Ctor(c, fields) = value else {
             return Err(malformed("a grant target is Option Text"));
         };
-        match (
-            option.ctors().get(*ctor as usize).map(|c| c.name.as_str()),
-            fields.as_ref(),
-        ) {
-            (Some("None"), []) => Ok(None),
-            (Some("Some"), [Val::Text(text)]) => Ok(Some(text.to_string())),
+        match (*c, fields.as_ref()) {
+            (ctor::NONE, []) => Ok(None),
+            (ctor::SOME, [Val::Text(text)]) => Ok(Some(text.to_string())),
             _ => Err(malformed("a grant target is Option Text")),
         }
     }
@@ -496,7 +493,7 @@ impl<'s> Tables<'s> {
     }
 
     fn origin(&self, origin: &CallOrigin) -> Result<Val, Error> {
-        let def = self.prelude_type("Origin")?;
+        let def = self.schema.ty(self.schema.prelude().origin());
         let ctor = |name: &str| {
             def.ctor_index(name)
                 .ok_or_else(|| malformed(format!("`Origin` declares `{name}`")))
@@ -514,7 +511,7 @@ impl<'s> Tables<'s> {
     }
 
     fn outcome(&self, failed: Option<&Error>) -> Result<Val, Error> {
-        let def = self.prelude_type("Outcome")?;
+        let def = self.schema.ty(self.schema.prelude().outcome());
         let ctor = |name: &str| {
             def.ctor_index(name)
                 .ok_or_else(|| malformed(format!("`Outcome` declares `{name}`")))
@@ -534,20 +531,6 @@ impl<'s> Tables<'s> {
                 .prelude_value(self.schema)
                 .unwrap_or_else(|e| unreachable!("an `Internal` error holds no report: {e:?}")),
         }
-    }
-
-    fn prelude_type(&self, name: &str) -> Result<&'s TypeDef, Error> {
-        let prelude = self
-            .schema
-            .module_named("prelude")
-            .ok_or_else(|| malformed("the schema has module prelude"))?;
-        let id = self
-            .schema
-            .module(prelude)
-            .types
-            .get(name)
-            .ok_or_else(|| malformed(format!("module prelude declares `{name}`")))?;
-        Ok(self.schema.ty(*id))
     }
 
     fn audit_row<R: Runtime>(

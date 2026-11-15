@@ -34,7 +34,7 @@ impl Error {
     /// Preconditions: the prelude of `schema` declares every constructor and field of the error.
     pub(super) fn prelude_value(&self, schema: &Schema) -> Result<Val, NoValue> {
         let ty = Ty::Data {
-            def: schema.prelude_type("Error"),
+            def: schema.prelude().error(),
             args: Vec::new(),
             ctors: None,
         };
@@ -316,8 +316,8 @@ fn value(schema: &Schema, part: Part<'_>, ty: &Ty) -> Result<Val, NoValue> {
             (Part::Txn(t), TypeDefKind::Newtype { base, .. }) => {
                 value(schema, Part::Int(t.0), base)
             }
-            (Part::Bool(b), _) => ctor(schema, ty, if b { "True" } else { "False" }, Vec::new()),
-            (Part::Fault(f), _) => ctor(schema, ty, f.name(), Vec::new()),
+            (Part::Bool(b), _) if *def == schema.prelude().bool() => Ok(Val::bool(b)),
+            (Part::Fault(f), _) if *def == schema.prelude().fault() => Ok(Val::tag(f.ctor())),
             (Part::Position(p), _) => ctor(
                 schema,
                 ty,

@@ -136,7 +136,7 @@ pub fn base(schema: &Schema, ty: &Ty) -> Option<Base> {
 /// Returns the type an `Option` type holds.
 pub fn option_arg(schema: &Schema, ty: &Ty) -> Option<Ty> {
     match repr(schema, ty) {
-        Ty::Data { def, args, .. } if def == schema.prelude_type("Option") => args.first().cloned(),
+        Ty::Data { def, args, .. } if def == schema.prelude().option() => args.first().cloned(),
         _ => None,
     }
 }

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use adtb_file::{Disk, Files, Record};
 use adtb_lang::check::Program;
 use adtb_lang::kernel::{Agg, Const, FileFormat, Kind, Terms, Tm, Transition, Var};
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::PrintError;
 use adtb_lang::types::{Base, CtorSet, FnId, RelId, RelRef, Ty, TypeId};
@@ -42,6 +43,23 @@ pub enum Fault {
 }
 
 impl Fault {
+    /// Returns the position of the prelude constructor.
+    pub(crate) const fn ctor(self) -> u32 {
+        match self {
+            Fault::DivisionByZero => ctor::DIVISION_BY_ZERO,
+            Fault::ArithmeticOverflow => ctor::ARITHMETIC_OVERFLOW,
+            Fault::OutOfRange => ctor::OUT_OF_RANGE,
+            Fault::NotFinite => ctor::NOT_FINITE,
+            Fault::NoSuchDate => ctor::NO_SUCH_DATE,
+            Fault::UnknownZone => ctor::UNKNOWN_ZONE,
+            Fault::InvalidText => ctor::INVALID_TEXT,
+            Fault::InvalidSpan => ctor::INVALID_SPAN,
+            Fault::NegativeCount => ctor::NEGATIVE_COUNT,
+            Fault::NoSuchRow => ctor::NO_SUCH_ROW,
+            Fault::FunctionFailed => ctor::FUNCTION_FAILED,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Fault::DivisionByZero => "DivisionByZero",
@@ -330,15 +348,11 @@ impl<'a> Interpreter<'a> {
 
     /// Returns the prelude `Fault` constructor value of `f`.
     pub fn fault_value(&self, f: Fault) -> Value {
-        let def = self.schema.ty(self.schema.prelude_type("Fault"));
-        let c = def
-            .ctor_index(f.name())
-            .expect("the prelude declares every fault");
-        Value::Ctor(c, Vec::new())
+        Value::Ctor(f.ctor(), Vec::new())
     }
 
-    pub(crate) fn is_prelude(&self, ty: &Ty, name: &str) -> bool {
-        matches!(ty, Ty::Data { def, .. } if *def == self.schema.prelude_type(name))
+    pub(crate) fn is_span(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Data { def, .. } if *def == self.schema.prelude().span())
     }
 
     /// Returns the key of `row`, a row of `rel`.
@@ -669,10 +683,11 @@ impl Run<'_, '_> {
                 Ok(Value::Ctor(c, Vec::new()))
             }
             Kind::Try(x) => match self.eval(h, *x, env) {
-                Ok(v) => Ok(Value::Ctor(0, vec![("value".into(), v)])),
-                Err(Abort::Fault(f)) => {
-                    Ok(Value::Ctor(1, vec![("error".into(), it.fault_value(f))]))
-                }
+                Ok(v) => Ok(Value::Ctor(ctor::OK, vec![("value".into(), v)])),
+                Err(Abort::Fault(f)) => Ok(Value::Ctor(
+                    ctor::ERR,
+                    vec![("error".into(), it.fault_value(f))],
+                )),
                 Err(other) => Err(other),
             },
             Kind::Rel(r, s) => Ok(Value::Set(it.rows(it.db, *r, s))),
@@ -768,8 +783,8 @@ impl Run<'_, '_> {
                 };
                 let cursor = match after {
                     Some(c) => match self.eval(h, *c, env)? {
-                        Value::Ctor(0, _) => None,
-                        Value::Ctor(1, mut fs) => {
+                        Value::Ctor(ctor::NONE, _) => None,
+                        Value::Ctor(ctor::SOME, mut fs) => {
                             let Some((_, v)) = fs.pop() else {
                                 return internal("`Some` has a value");
                             };

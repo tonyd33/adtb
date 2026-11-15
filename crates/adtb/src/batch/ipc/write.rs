@@ -1,5 +1,7 @@
 use std::io::{self, Write};
 
+use adtb_lang::schema::prelude;
+
 use super::flat::{self, Table, Val};
 use super::{FileCtor, FileSchema, Form, form, schema, to_text, union_kids, width};
 use crate::batch::types::{Cell, union_group};
@@ -238,5 +240,5 @@ impl Body {
 
 fn some(d: &Datum) -> Option<&Datum> {
     let (ctor, fields) = d.as_sum();
-    (ctor == 1).then(|| &fields[0])
+    (ctor == prelude::ctor::SOME).then(|| &fields[0])
 }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{Const, Kind, Terms, Tm};
 use adtb_lang::schema::Schema;
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::{Base, FnId, RelRef, Ty};
 
 use crate::catalog::layout::batch_type;
@@ -205,15 +206,7 @@ pub struct Shared {
     pub caller: Option<Val>,
     /// The grant of the running call, charged for what a value grows to.
     pub grant: Option<Arc<Grant>>,
-    /// The `Fault` constructor of each fault, by `Fault as usize`.
-    pub fault_ctors: Vec<u32>,
     pub hosts: Arc<Hosts>,
-}
-
-impl Shared {
-    pub fn fault_value(&self, f: Fault) -> Val {
-        Val::tag(self.fault_ctors[f as usize])
-    }
 }
 
 /// Returns the rows of `sel` where `value` holds, then the others.
@@ -529,7 +522,7 @@ impl Code {
                         .map(|&r| {
                             (
                                 r,
-                                Val::ctor(0, vec![self.get(body.out, f, regs, r).clone()]),
+                                Val::ctor(ctor::OK, vec![self.get(body.out, f, regs, r).clone()]),
                             )
                         })
                         .collect();
@@ -537,7 +530,7 @@ impl Code {
                         inner
                             .faults
                             .iter()
-                            .map(|(r, x)| (*r, Val::ctor(1, vec![sh.fault_value(*x)]))),
+                            .map(|(r, x)| (*r, Val::ctor(ctor::ERR, vec![Val::tag(x.ctor())]))),
                     );
                     Code::put(regs, len, *dst, out);
                 }

@@ -171,7 +171,7 @@ fn sum<'v>(schema: &Schema, ty: &Ty, value: &'v Val, work: &mut Vec<Work<'v>>) -
     let Some(fields) = constructors.get(*ctor as usize) else {
         return false;
     };
-    if matches!(ty, Ty::Data { def, .. } if *def == schema.prelude_type("Span")) {
+    if matches!(ty, Ty::Data { def, .. } if *def == schema.prelude().span()) {
         work.push(Work::Span(value));
     }
     fields_match(fields, values, work)

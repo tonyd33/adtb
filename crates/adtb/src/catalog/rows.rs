@@ -436,7 +436,7 @@ impl Builder<'_> {
     }
 
     fn none(&self) -> Value {
-        values::tag(self.schema, "prelude", "Option", "None")
+        values::none()
     }
 
     fn stage(&self, s: Stage) -> Value {
@@ -465,7 +465,7 @@ impl Builder<'_> {
             ];
             let ctor = match &td.kind {
                 TypeDefKind::Sum { .. } => {
-                    fields.push(("ordered", values::boolean(self.schema, td.ordered)));
+                    fields.push(("ordered", values::boolean(td.ordered)));
                     "SumType"
                 }
                 TypeDefKind::Newtype { base, .. } => {
@@ -806,10 +806,7 @@ impl Builder<'_> {
                 ("module", Value::Text(f.module)),
                 ("name", Value::Text(f.name)),
                 ("signature", Value::Text(f.signature)),
-                (
-                    "deterministic",
-                    values::boolean(self.schema, f.deterministic),
-                ),
+                ("deterministic", values::boolean(f.deterministic)),
                 (
                     "hash",
                     Value::Bytes(blake3::hash(hashed.as_bytes()).as_bytes().to_vec()),

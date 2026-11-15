@@ -149,7 +149,7 @@ fn a_top_level_binder_outside_a_for_or_let_is_an_internal_error() {
     let rows = terms.var("rows", set.clone());
     let x = terms.var("x", int());
     let bool_ty = Ty::Data {
-        def: s.prelude_type("Bool"),
+        def: s.prelude().bool(),
         args: Vec::new(),
         ctors: None,
     };

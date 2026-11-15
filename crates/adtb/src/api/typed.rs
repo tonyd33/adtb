@@ -4,6 +4,7 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+use adtb_lang::schema::prelude::ctor;
 pub use adtb_lang::textual::{Scalar, Textual};
 pub use adtb_lang::types::Base;
 use adtb_lang::types::Ty;
@@ -252,13 +253,13 @@ impl HostValue for String {
 
 impl HostValue for bool {
     fn to_value(&self) -> Val {
-        Val::of_ctor(u32::from(*self), Vec::new())
+        Val::of_ctor(ctor::bool(*self), Vec::new())
     }
 
     fn from_value(v: &Val) -> Option<Self> {
         match v.ctor()? {
-            0 => Some(false),
-            1 => Some(true),
+            ctor::FALSE => Some(false),
+            ctor::TRUE => Some(true),
             _ => None,
         }
     }
@@ -277,15 +278,15 @@ impl HostValue for () {
 impl<T: HostValue> HostValue for Option<T> {
     fn to_value(&self) -> Val {
         match self {
-            None => Val::of_ctor(0, Vec::new()),
-            Some(x) => Val::of_ctor(1, vec![("value", x.to_value())]),
+            None => Val::of_ctor(ctor::NONE, Vec::new()),
+            Some(x) => Val::of_ctor(ctor::SOME, vec![("value", x.to_value())]),
         }
     }
 
     fn from_value(v: &Val) -> Option<Self> {
         match v.ctor()? {
-            0 => Some(None),
-            1 => next(&mut Textual::fields(v)?).map(Some),
+            ctor::NONE => Some(None),
+            ctor::SOME => next(&mut Textual::fields(v)?).map(Some),
             _ => None,
         }
     }

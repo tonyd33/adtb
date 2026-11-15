@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::Base;
 
 use crate::big::Big;
@@ -22,13 +23,13 @@ impl Rounding {
     /// Returns the mode of a constructor of the prelude sum `Rounding`.
     pub fn from_ctor(c: u32) -> R<Rounding> {
         Ok(match c {
-            0 => Rounding::HalfEven,
-            1 => Rounding::HalfUp,
-            2 => Rounding::HalfDown,
-            3 => Rounding::Up,
-            4 => Rounding::Down,
-            5 => Rounding::Ceiling,
-            6 => Rounding::Floor,
+            ctor::HALF_EVEN => Rounding::HalfEven,
+            ctor::HALF_UP => Rounding::HalfUp,
+            ctor::HALF_DOWN => Rounding::HalfDown,
+            ctor::UP => Rounding::Up,
+            ctor::DOWN => Rounding::Down,
+            ctor::CEILING => Rounding::Ceiling,
+            ctor::FLOOR => Rounding::Floor,
             _ => return internal(format!("`Rounding` has seven constructors, given {c}")),
         })
     }

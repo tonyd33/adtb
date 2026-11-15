@@ -4,6 +4,8 @@
 mod big;
 mod boundary;
 mod eval;
+#[cfg(test)]
+mod fault_tests;
 mod num;
 mod prim;
 mod stmt;

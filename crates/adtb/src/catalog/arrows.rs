@@ -52,8 +52,8 @@ fn file_type(schema: &Schema, ty: &Ty) -> FileType {
 /// Returns which sum `t` is, by the identity of its declaration.
 fn kind(schema: &Schema, t: &Ty) -> SumKind {
     match t {
-        Ty::Data { def, .. } if *def == schema.prelude_type("Bool") => SumKind::Bool,
-        Ty::Data { def, .. } if *def == schema.prelude_type("Option") => SumKind::Option,
+        Ty::Data { def, .. } if *def == schema.prelude().bool() => SumKind::Bool,
+        Ty::Data { def, .. } if *def == schema.prelude().option() => SumKind::Option,
         _ => SumKind::Other,
     }
 }

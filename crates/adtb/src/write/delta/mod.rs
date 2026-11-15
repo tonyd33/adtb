@@ -385,7 +385,7 @@ impl Compiler<'_> {
 
     fn bool_ty(&self) -> Ty {
         Ty::Data {
-            def: self.schema.prelude_type("Bool"),
+            def: self.schema.prelude().bool(),
             args: Vec::new(),
             ctors: None,
         }

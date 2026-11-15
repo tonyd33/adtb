@@ -1,6 +1,7 @@
 //! Apply kernel primitives to values.
 
 use adtb_lang::kernel::Prim;
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::textual::parse_uuid;
 use adtb_lang::types::{Base, Ty};
 
@@ -402,7 +403,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
             let Period { months, days } = v[1] else {
                 return internal("`add_period` adds a period");
             };
-            let reject = v[2].tag() == Some(1);
+            let reject = v[2].tag() == Some(ctor::REJECT);
             let shifted = |date: i64| -> R<Option<i64>> {
                 match add_period(date, months, days, !reject) {
                     Some(d) if date_in_range(d) => Ok(Some(d)),
@@ -443,7 +444,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                 return internal("`zoned` of a date and time");
             };
             let z = text(&v[1])?;
-            let reject = v[2].tag() == Some(1);
+            let reject = v[2].tag() == Some(ctor::REJECT);
             let r = zone::resolve(c, z, !reject)?.map(|(c, _)| Zoned(c, z.to_string()));
             Ok(match (reject, r) {
                 (true, Some(x)) => Value::some(x),
@@ -480,7 +481,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         }
         Prim::Covers => {
             let (xs, xe) = span_of(&v[0])?;
-            if it.is_prelude(&tys[1], "Span") {
+            if it.is_span(&tys[1]) {
                 let (ys, ye) = span_of(&v[1])?;
                 Ok(Value::bool(xs <= ys && ye <= xe))
             } else {

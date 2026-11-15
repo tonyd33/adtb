@@ -63,8 +63,6 @@
 # kernel_overwrite:   calls of `Terms::overwrite_kind`, which replaces a node's kind in place,
 #                     unchecked, under every parent that shares it. Rewrites build new nodes
 #                     through `Terms::substitute`. No line allows one.
-# prelude_type_names: `prelude_type("`: a prelude type looked up by its name. Prelude types are
-#                     reached through `Schema::prelude()`, minted once per build.
 # prelude_positions:  in production sources, a constructor position written as a literal or as
 #                     `u32::from` of a bool: `Value::Ctor`, `Val::tag`, `Val::Ctor`, `Val::ctor`,
 #                     `of_ctor` or `.ctor(` applied to one, `ctor:` or `ctor ==` one, `== u32::from(`,
@@ -248,7 +246,7 @@ pub_fields prod 4 crates/adtb/src/catalog/kept.rs
 pub_fields prod 8 crates/adtb/src/catalog/readers.rs
 pub_fields prod 8 crates/adtb/src/catalog/root.rs
 pub_fields prod 7 crates/adtb/src/catalog/rows.rs
-pub_fields prod 8 crates/adtb/src/exec/code.rs
+pub_fields prod 7 crates/adtb/src/exec/code.rs
 pub_fields prod 7 crates/adtb/src/exec/host.rs
 pub_fields prod 47 crates/adtb/src/exec/ir.rs
 pub_fields prod 4 crates/adtb/src/exec/join.rs
@@ -383,43 +381,15 @@ sim_test_opens test 2 crates/adtb/src/catalog/oplog_tests.rs
 sim_test_opens test 2 crates/adtb/src/catalog/grant_rows_tests.rs
 sim_test_opens test 5 crates/adtb/src/catalog/catalog_tests.rs
 prelude_positions prod 1 crates/adtb-codegen/src/emit.rs
-prelude_positions prod 1 crates/adtb-file/src/json.rs
-prelude_positions prod 3 crates/adtb-file/src/lib.rs
+prelude_positions prod 1 crates/adtb-file/src/lib.rs
 prelude_positions prod 1 crates/adtb-lang/src/check/record.rs
 prelude_positions prod 1 crates/adtb-lang/src/textual/read.rs
-prelude_positions prod 1 crates/adtb-reference/src/boundary.rs
-prelude_positions prod 4 crates/adtb-reference/src/eval.rs
-prelude_positions prod 7 crates/adtb-reference/src/num.rs
-prelude_positions prod 2 crates/adtb-reference/src/prim.rs
 prelude_positions prod 1 crates/adtb-reference/src/stmt.rs
-prelude_positions prod 4 crates/adtb-reference/src/value.rs
 prelude_positions prod 1 crates/adtb-simkit/src/elle.rs
 prelude_positions prod 1 crates/adtb-testkit/src/draw.rs
-prelude_positions prod 3 crates/adtb/src/api/bundle.rs
-prelude_positions prod 3 crates/adtb/src/api/typed.rs
+prelude_positions prod 1 crates/adtb/src/api/bundle.rs
 prelude_positions prod 2 crates/adtb/src/api/verify.rs
-prelude_positions prod 1 crates/adtb/src/batch/ipc/write.rs
-prelude_positions prod 2 crates/adtb/src/exec/code.rs
 prelude_positions prod 1 crates/adtb/src/exec/prim/mod.rs
-prelude_positions prod 7 crates/adtb/src/exec/prim/num.rs
-prelude_positions prod 2 crates/adtb/src/exec/run.rs
-prelude_positions prod 2 crates/adtb/src/exec/sink.rs
 prelude_positions prod 1 crates/adtb/src/exec/store.rs
-prelude_positions prod 4 crates/adtb/src/exec/value.rs
-prelude_positions prod 2 crates/adtb/src/write/eval.rs
+prelude_positions prod 1 crates/adtb/src/write/eval.rs
 prelude_positions prod 1 crates/adtb/src/write/past.rs
-prelude_type_names prod 1 crates/adtb-reference/src/eval.rs
-prelude_type_names prod 2 crates/adtb/src/api/arrow.rs
-prelude_type_names prod 1 crates/adtb/src/api/error_value.rs
-prelude_type_names test 1 crates/adtb/src/api/server/outcome_tests.rs
-prelude_type_names prod 3 crates/adtb/src/api/server/tables.rs
-prelude_type_names prod 1 crates/adtb/src/api/value.rs
-prelude_type_names test 3 crates/adtb/src/api/value_tests.rs
-prelude_type_names prod 2 crates/adtb/src/catalog/arrows.rs
-prelude_type_names prod 1 crates/adtb/src/exec/ir.rs
-prelude_type_names test 1 crates/adtb/src/exec/tests.rs
-prelude_type_names prod 1 crates/adtb/src/exec/types.rs
-prelude_type_names prod 1 crates/adtb/src/plan/lower/mod.rs
-prelude_type_names test 1 crates/adtb/src/plan/tests/interp.rs
-prelude_type_names prod 1 crates/adtb/src/write/delta/mod.rs
-prelude_type_names test 1 crates/adtb/src/write/delta/tests.rs

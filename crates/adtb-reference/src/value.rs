@@ -4,6 +4,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use adtb_lang::schema::prelude::ctor;
+
 use crate::big::Big;
 use crate::eval::Closure;
 
@@ -49,7 +51,7 @@ pub enum Value {
 
 impl Value {
     pub fn bool(b: bool) -> Value {
-        Value::Ctor(u32::from(b), Vec::new())
+        Value::Ctor(ctor::bool(b), Vec::new())
     }
 
     pub fn unit() -> Value {
@@ -57,11 +59,11 @@ impl Value {
     }
 
     pub fn none() -> Value {
-        Value::Ctor(0, Vec::new())
+        Value::Ctor(ctor::NONE, Vec::new())
     }
 
     pub fn some(v: Value) -> Value {
-        Value::Ctor(1, vec![("value".into(), v)])
+        Value::Ctor(ctor::SOME, vec![("value".into(), v)])
     }
 
     pub fn key(v: Value) -> Value {
@@ -109,7 +111,9 @@ impl Value {
 
     pub fn as_bool(&self) -> Option<bool> {
         match self {
-            Value::Ctor(c @ (0 | 1), fs) if fs.is_empty() => Some(*c == 1),
+            Value::Ctor(c @ (ctor::FALSE | ctor::TRUE), fs) if fs.is_empty() => {
+                Some(*c == ctor::TRUE)
+            }
             _ => None,
         }
     }

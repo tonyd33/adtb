@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 
 use adtb_file::Record;
 use adtb_lang::kernel::{Build, Conflict, Kind, Terms, Tm, Var};
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Generator, OnDelete, Schema, Stage};
 use adtb_lang::textual::key_names;
 use adtb_lang::types::{RelId, Ty};
@@ -1033,7 +1034,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             return Ok(Some(v.clone()));
         }
         Ok(match v {
-            Val::Ctor(1, fs) => fs.first().cloned(),
+            Val::Ctor(ctor::SOME, fs) => fs.first().cloned(),
             _ => None,
         })
     }

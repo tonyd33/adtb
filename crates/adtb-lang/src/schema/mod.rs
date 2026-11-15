@@ -586,10 +586,6 @@ impl Schema {
             .expect("a built schema holds the engine's constructors")
     }
 
-    pub fn prelude_type(&self, name: &str) -> TypeId {
-        self.module(PRELUDE).types[name]
-    }
-
     /// Resolve unqualified `Principal` from the root, and other type names from the module, prelude or built-ins.
     pub fn lookup_type(&self, module: ModuleId, name: &ast::QName) -> Result<TypeName, String> {
         self.lookup_type_in(module, name, None)

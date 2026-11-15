@@ -104,13 +104,7 @@ impl Shape {
 
     /// Returns the `Log` row of grant `g` with row id `id`.
     fn log_row(&self, schema: &Schema, g: &LogGrant, id: i64) -> Result<Vec<Value>, Error> {
-        let Value::Sum { ctor: some, .. } = tag(schema, "prelude", "Option", "Some") else {
-            unreachable!("a tag is a sum");
-        };
-        let target = Value::Sum {
-            ctor: some,
-            fields: vec![Value::Text(target(schema, g)?)],
-        };
+        let target = values::some(Value::Text(target(schema, g)?));
         let fields = vec![
             ("id", Value::I64(id)),
             ("kind", tag(schema, "catalog", "GrantKind", "Log")),
@@ -121,8 +115,8 @@ impl Shape {
             ("target", target),
             ("grantee", Value::Text(g.role.clone())),
             ("grantor", Value::Text(OWNER_ROLE.to_owned())),
-            ("grant_option", boolean(schema, g.grant_option)),
-            ("dormant", boolean(schema, g.dormant)),
+            ("grant_option", boolean(g.grant_option)),
+            ("dormant", boolean(g.dormant)),
         ];
         Ok(values::row(schema, self.grants, self.ctor, fields))
     }
@@ -197,7 +191,7 @@ impl Catalog {
     ) -> Result<(), Error> {
         let shape = Shape::of(&self.schema);
         let stored = self.stored_grants(m.pager, m.txns, m.hold)?;
-        let held = boolean(&self.schema, true);
+        let held = boolean(true);
         let rows = stored
             .iter()
             .map(|s| shape.grant_row(&s.row, &held))
@@ -301,7 +295,7 @@ impl Catalog {
         let stored = self.stored_grants(pager, txns, &hold);
         drop(hold);
         let shape = Shape::of(&self.schema);
-        let yes = boolean(&self.schema, true);
+        let yes = boolean(true);
         stored?
             .iter()
             .filter(|s| !s.log)

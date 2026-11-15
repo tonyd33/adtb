@@ -3,6 +3,8 @@ use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
+use adtb_lang::schema::prelude::ctor;
+
 use super::{Broken, Error};
 
 /// An `F32` with `-0.0` replaced by `0.0` and every NaN by one NaN, ordered with NaN greatest.
@@ -170,15 +172,15 @@ impl Val {
     }
 
     pub fn bool(b: bool) -> Val {
-        Val::tag(u32::from(b))
+        Val::tag(ctor::bool(b))
     }
 
     pub fn none() -> Val {
-        Val::tag(0)
+        Val::tag(ctor::NONE)
     }
 
     pub fn some(v: Val) -> Val {
-        Val::ctor(1, vec![v])
+        Val::ctor(ctor::SOME, vec![v])
     }
 
     pub fn empty_set() -> Val {
@@ -202,7 +204,7 @@ impl Val {
     /// Fails unless it is a `Bool`.
     pub fn truth(&self) -> Result<bool, Error> {
         match self {
-            Val::Ctor(c, fs) if fs.is_empty() && *c <= 1 => Ok(*c == 1),
+            Val::Ctor(c @ (ctor::FALSE | ctor::TRUE), fs) if fs.is_empty() => Ok(*c == ctor::TRUE),
             v => Err(mistyped("a Bool", v)),
         }
     }

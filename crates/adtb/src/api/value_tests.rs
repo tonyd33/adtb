@@ -95,7 +95,7 @@ fn scalar_representations_and_boundaries_are_checked_without_narrowing() {
 fn exact_fields_constructor_restrictions_and_nonempty_sets_are_enforced() {
     let schema = crate::catalog::engine_schema();
     let boolean = Ty::Data {
-        def: schema.prelude_type("Bool"),
+        def: schema.prelude().bool(),
         args: vec![],
         ctors: Some(vec![0]),
     };
@@ -106,7 +106,7 @@ fn exact_fields_constructor_restrictions_and_nonempty_sets_are_enforced() {
     assert!(!valid(&schema, &tag, &Val::tag(1)));
     assert!(!valid(&schema, &tag, &Val::ctor(0, vec![Val::Int(1)])));
     let option = Ty::Data {
-        def: schema.prelude_type("Option"),
+        def: schema.prelude().option(),
         args: vec![Ty::Base(Base::I8)],
         ctors: None,
     };
@@ -177,7 +177,7 @@ fn shared_value_dags_are_validated_without_expanding_every_path() {
     };
     assert!(valid(&schema, &ty, &value));
     let span = Ty::Data {
-        def: schema.prelude_type("Span"),
+        def: schema.prelude().span(),
         args: vec![ty],
         ctors: None,
     };

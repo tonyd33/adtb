@@ -663,7 +663,6 @@ fn eval_term(schema: &Schema, terms: &Terms, t: Tm) -> Result<Val, Error> {
     let shared = Shared {
         caller: None,
         grant: None,
-        fault_ctors: Vec::new(),
         hosts: Arc::default(),
     };
     code.eval_one(&mut Frame::unit(terms.vars().len()), &shared)
@@ -680,7 +679,7 @@ fn evaluating_unreachable_is_an_internal_error() {
 /// Returns `match s | False _ -> unreachable | True _ -> 1` over the `Bool` constructor `scrutinee`.
 fn true_only_case(schema: &Schema, terms: &mut Terms, scrutinee: u32) -> Tm {
     let at = |ctors| Ty::Data {
-        def: schema.prelude_type("Bool"),
+        def: schema.prelude().bool(),
         args: Vec::new(),
         ctors,
     };
@@ -773,4 +772,14 @@ fn a_condition_or_scrutinee_that_is_not_a_constructor_is_an_internal_error() {
         m("a constructor value"),
         broken(eval_term(&schema, &terms, tag))
     );
+}
+
+#[test]
+fn each_fault_is_the_prelude_constructor_of_its_name() {
+    let schema = build(&[]).expect("the engine's declarations build");
+    let def = schema.ty(schema.prelude().fault());
+    assert_eq!(Fault::ALL.len(), def.ctors().len());
+    for f in Fault::ALL {
+        assert_eq!(f.name(), def.ctors()[f.ctor() as usize].name, "{f:?}");
+    }
 }

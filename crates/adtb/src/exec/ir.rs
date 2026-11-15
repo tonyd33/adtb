@@ -266,18 +266,6 @@ impl Program {
     }
 }
 
-/// The fault constructors of the prelude's `Fault`, by the executor's fault order.
-pub(super) fn fault_ctors(schema: &Schema) -> Vec<u32> {
-    let def = schema.ty(schema.prelude_type("Fault"));
-    super::Fault::ALL
-        .iter()
-        .map(|f| {
-            def.ctor_index(f.name())
-                .unwrap_or_else(|| panic!("the prelude declares fault {}", f.name()))
-        })
-        .collect()
-}
-
 struct Lower<'a> {
     c: Compiler<'a>,
     heaps: BTreeMap<HeapId, (RelId, u32)>,
@@ -330,7 +318,6 @@ pub fn compile(
         shared: Shared {
             caller,
             grant: None,
-            fault_ctors: fault_ctors(schema),
             hosts: Arc::default(),
         },
         reads: Arc::new(plan.reads.clone()),

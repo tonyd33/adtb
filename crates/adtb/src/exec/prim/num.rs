@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 
+use adtb_lang::schema::prelude::ctor;
+
 use super::super::{Error, Fault};
 use super::{Val, Width, mistyped};
 
@@ -20,13 +22,13 @@ pub enum Rounding {
 impl Rounding {
     pub fn of(v: &Val) -> Result<Rounding, Error> {
         Ok(match v {
-            Val::Ctor(0, _) => Rounding::HalfEven,
-            Val::Ctor(1, _) => Rounding::HalfUp,
-            Val::Ctor(2, _) => Rounding::HalfDown,
-            Val::Ctor(3, _) => Rounding::Up,
-            Val::Ctor(4, _) => Rounding::Down,
-            Val::Ctor(5, _) => Rounding::Ceiling,
-            Val::Ctor(6, _) => Rounding::Floor,
+            Val::Ctor(ctor::HALF_EVEN, _) => Rounding::HalfEven,
+            Val::Ctor(ctor::HALF_UP, _) => Rounding::HalfUp,
+            Val::Ctor(ctor::HALF_DOWN, _) => Rounding::HalfDown,
+            Val::Ctor(ctor::UP, _) => Rounding::Up,
+            Val::Ctor(ctor::DOWN, _) => Rounding::Down,
+            Val::Ctor(ctor::CEILING, _) => Rounding::Ceiling,
+            Val::Ctor(ctor::FLOOR, _) => Rounding::Floor,
             other => return Err(mistyped("a Rounding", other)),
         })
     }

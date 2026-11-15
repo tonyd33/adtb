@@ -59,6 +59,7 @@ use std::time::Duration;
 
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::schema::Schema;
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::textual::PrintError;
 
 use crate::batch::{self, Batch, BatchBuilder, Datum};
@@ -96,6 +97,23 @@ impl Fault {
         Fault::NoSuchRow,
         Fault::FunctionFailed,
     ];
+
+    /// Returns the position of the prelude constructor.
+    pub(crate) const fn ctor(self) -> u32 {
+        match self {
+            Fault::DivisionByZero => ctor::DIVISION_BY_ZERO,
+            Fault::ArithmeticOverflow => ctor::ARITHMETIC_OVERFLOW,
+            Fault::OutOfRange => ctor::OUT_OF_RANGE,
+            Fault::NotFinite => ctor::NOT_FINITE,
+            Fault::NoSuchDate => ctor::NO_SUCH_DATE,
+            Fault::UnknownZone => ctor::UNKNOWN_ZONE,
+            Fault::InvalidText => ctor::INVALID_TEXT,
+            Fault::InvalidSpan => ctor::INVALID_SPAN,
+            Fault::NegativeCount => ctor::NEGATIVE_COUNT,
+            Fault::NoSuchRow => ctor::NO_SUCH_ROW,
+            Fault::FunctionFailed => ctor::FUNCTION_FAILED,
+        }
+    }
 
     /// Returns the name of the prelude constructor.
     pub fn name(self) -> &'static str {
@@ -228,7 +246,6 @@ impl Scalar {
             shared: code::Shared {
                 caller: None,
                 grant: None,
-                fault_ctors: ir::fault_ctors(schema),
                 hosts: Arc::default(),
             },
         })

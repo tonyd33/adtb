@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{OnDelete, Stage as SchemaStage, TypeDefKind};
 use adtb_lang::types::{CtorSet, RelId, RelRef, Ty, TypeId};
 
@@ -32,7 +33,7 @@ impl RefField {
             return Some(v);
         }
         match v {
-            Value::Ctor(1, fs) => fs.first().map(|(_, k)| k),
+            Value::Ctor(ctor::SOME, fs) => fs.first().map(|(_, k)| k),
             _ => None,
         }
     }
