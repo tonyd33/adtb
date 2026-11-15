@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
+closed: 2026-11-14
 kind: feature
 priority: 765
 summary: "file scans build Bool and Option values by constructor position, and three places build Bool literals separately"
@@ -26,3 +27,7 @@ Fix: resolve the constructor index through the schema once, behind one shared he
 ## Also by spelling
 
 crates/adtb/src/api/error_value.rs:319 and catalog/values.rs:35 build a Bool from the spellings "True"/"False" (quality review of 2026-11-13).
+
+## Resolved
+
+Resolved by structure-lang-identity steps 9a (qsvnzzws 4385d774) and 9b (xoqlkpzz 50de734f, 2 rounds, full check 0, 3785 tests). Prelude constructor positions are named once in `schema::prelude::ctor` (Bool, Option, Result, Rounding, Overflow, Fault), each checked against the parsed prelude's position and constructor name by `every_prelude_constructor_constant_is_named_for_its_constructor_at_its_parsed_position`; the engine's and the reference's `Val`/`Value` helpers, `Rounding`, `try`, Option reads and `Fault::ctor()` use them (each crate's `each_fault_is_the_prelude_constructor_of_its_name` checks its fault table). Prelude types are reached through `SchemaDefs::prelude()`; `Schema::prelude_type` is removed. structure-check row `prelude_positions` counts what is left (one-constructor sums and verify's two lines, step 9c). Filed beside: error-sums-by-spelling.
