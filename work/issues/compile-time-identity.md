@@ -4,6 +4,9 @@ status: open
 kind: bug
 priority: 402
 summary: Kind analyses compile with wildcards and catalog rows decode by hand and by position
+tags:
+  - engine
+  - class-identity-by-spelling
 ---
 
 # Compile time identity
