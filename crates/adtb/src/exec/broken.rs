@@ -53,6 +53,10 @@ pub enum Broken {
         values: Vec<Val>,
         types: Vec<batch::Type>,
     },
+    KeyComponents {
+        key: usize,
+        types: usize,
+    },
     Print(PrintError),
     NoArm(u32),
     RejectNotText,
@@ -151,6 +155,12 @@ impl fmt::Display for Broken {
                 values.len(),
                 types.len()
             ),
+            Broken::KeyComponents { key, types } => {
+                write!(
+                    f,
+                    "an index key has one type per component: {key} components, {types} types"
+                )
+            }
             Broken::Print(e) => f.write_str(&e.message),
             Broken::NoArm(c) => write!(f, "a case has an arm for constructor {c}"),
             Broken::RejectNotText => f.write_str("`reject` takes a Text"),

@@ -9,10 +9,12 @@ use adtb_lang::kernel;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Schema, Stage};
+use adtb_lang::textual::{self, Form};
 use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::Index;
+use crate::exec::{self, conv, from_stored};
 use crate::heap::{self, FieldType, Heap};
 use crate::key::{CtorId, Value};
 use crate::mvcc::{Scope, Transactions};
@@ -25,12 +27,14 @@ use super::codec::{Codec, MigrationRow};
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::ids::{stored, type_ctor_id};
+use super::keying::broken;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, Error, HEAP_ROOT, Hash,
     INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys, Readers, change,
-    ctor_count, ctor_id, ctor_index, ctor_relations, delete_rows, heap_root, index_ctors,
-    index_keys, index_program, indexes, int, key_schema, layout, moved, oplog, owner, pending,
-    planned, reasons, rel_id, relation, row_key, row_type, rows, steps, update_root, visible,
+    ctor_count, ctor_id, ctor_index, ctor_relations, delete_rows, element_types, heap_root,
+    index_ctors, index_keys, index_program, indexes, int, key_schema, layout, moved, oplog, owner,
+    pending, planned, reasons, rel_id, relation, row_key, row_type, rows, steps, update_root,
+    visible,
 };
 
 impl Catalog {
@@ -755,11 +759,13 @@ fn duplicates(
         let mut seen = BTreeSet::new();
         let mut shared = Vec::new();
         for &c in &spec.ctors {
+            let types =
+                element_types(schema, normal, spec.relation, c, &spec.elements).map_err(broken)?;
             for row in &ctors[&ctor_id(schema, spec.relation, c)] {
                 if let Some(key) = row_key(&keyed[id], &ks, c, row)?
                     && !seen.insert(ks.encode(&key))
                 {
-                    shared.push(shown_key(&key));
+                    shared.push(shown_key(schema, &types, &key)?);
                 }
             }
         }
@@ -779,25 +785,29 @@ fn duplicates(
     }
 }
 
-/// Returns the components of index key `key`, printed.
-fn shown_key(key: &[Value]) -> String {
-    let parts: Vec<String> = key.iter().map(shown_value).collect();
-    match parts.as_slice() {
+/// Returns the components of index key `key`, of types `types`, in the textual syntax of values.
+fn shown_key(schema: &Schema, types: &[Ty], key: &[Value]) -> Result<String, Error> {
+    if types.len() != key.len() {
+        return Err(broken(
+            exec::Broken::KeyComponents {
+                key: key.len(),
+                types: types.len(),
+            }
+            .into(),
+        ));
+    }
+    let parts = types
+        .iter()
+        .zip(key)
+        .map(|(t, v)| {
+            textual::print(&from_stored(&conv(schema, t), v), &Form::of(schema, t))
+                .map_err(|e| broken(e.into()))
+        })
+        .collect::<Result<Vec<String>, Error>>()?;
+    Ok(match parts.as_slice() {
         [one] => one.clone(),
         _ => format!("({})", parts.join(", ")),
-    }
-}
-
-fn shown_value(v: &Value) -> String {
-    match v {
-        Value::Text(t) => format!("{t:?}"),
-        Value::I8(x) => x.to_string(),
-        Value::I16(x) => x.to_string(),
-        Value::I32(x) => x.to_string(),
-        Value::I64(x) => x.to_string(),
-        Value::Record(vs) => shown_key(vs),
-        other => format!("{other:?}"),
-    }
+    })
 }
 
 /// Returns whether `v`, stored as `t`, holds a value of the constructor stored as `id`.
