@@ -558,3 +558,84 @@ pub const RELATIONS: &[(&str, &str, u64)] = &[
     ("sys", "commit_times", 370),
     ("sys", "safe_snapshots", 371),
 ];
+
+const _: () = {
+    let mut t = 0;
+    while t < TYPES.len() {
+        let ctors = TYPES[t].3;
+        let mut c = 0;
+        while c < ctors.len() {
+            assert!(
+                ctors[c].1 != 0,
+                "no constructor holds fixed id 0: a kept row stores no constructor as 0"
+            );
+            c += 1;
+        }
+        t += 1;
+    }
+};
+
+const fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Returns the fixed id of constructor `ctor` of type `module::ty` in [`TYPES`]. Fails to compile
+/// when [`TYPES`] has no such constructor.
+const fn fixed_ctor(module: &str, ty: &str, ctor: &str) -> super::CatCtorId {
+    let mut t = 0;
+    while t < TYPES.len() {
+        let (m, name, _, ctors) = TYPES[t];
+        if same(m, module) && same(name, ty) {
+            let mut c = 0;
+            while c < ctors.len() {
+                if same(ctors[c].0, ctor) {
+                    return super::CatCtorId::from_raw(ctors[c].1);
+                }
+                c += 1;
+            }
+        }
+        t += 1;
+    }
+    panic!("`engine_ctor` names a constructor `TYPES` holds")
+}
+
+macro_rules! engine_ctors {
+    ($($module:literal $ty:literal { $($name:ident $ctor:literal),* $(,)? })*) => {
+        $($(pub const $name: CatCtorId = fixed_ctor($module, $ty, $ctor);)*)*
+
+        /// Every constant of this module with its module's, type's and constructor's names.
+        #[cfg(test)]
+        pub(crate) const NAMED: &[(&str, &str, &str, CatCtorId)] =
+            &[$($(($module, $ty, $ctor, $name),)*)*];
+    };
+}
+
+/// The fixed ids of the engine-defined constructors the engine names.
+pub mod engine_ctor {
+    use super::super::CatCtorId;
+    use super::fixed_ctor;
+
+    engine_ctors! {
+        "sys" "JobKind" { JOB_REINDEX "Reindex", JOB_VERIFY "Verify" }
+        "sys" "Finding" {
+            FINDING_CHECKSUM "Checksum",
+            FINDING_STALE_PAGE "StalePage",
+            FINDING_ORDER "Order",
+            FINDING_ORPHAN "Orphan",
+            FINDING_MISSING "Missing",
+            FINDING_VIOLATION "Violation",
+            FINDING_STRUCTURE "Structure",
+        }
+    }
+}

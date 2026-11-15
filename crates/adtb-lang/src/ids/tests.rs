@@ -115,3 +115,24 @@ fn objects_of_different_spaces_hold_one_id_each() {
         assert_eq!(Some(Some(x.clone())), found(&ids, x, 1024), "{x:?}");
     }
 }
+
+#[test]
+fn each_engine_constructor_constant_is_the_engine_constructor_of_its_name() {
+    let s = build(&[]).expect("the engine's schema builds");
+    for &(module, ty, ctor, id) in engine_ctor::NAMED {
+        let c = s
+            .ids()
+            .ctor_of(id)
+            .unwrap_or_else(|| panic!("{id:?} names a constructor"));
+        let def = s.ty(c.def());
+        assert_eq!(
+            (module, ty, ctor),
+            (
+                s.module(def.module).name.as_str(),
+                def.name.as_str(),
+                def.ctor_def(c).name.as_str()
+            ),
+            "{id:?}"
+        );
+    }
+}

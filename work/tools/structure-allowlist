@@ -388,7 +388,6 @@ prelude_positions prod 1 crates/adtb-reference/src/stmt.rs
 prelude_positions prod 1 crates/adtb-simkit/src/elle.rs
 prelude_positions prod 1 crates/adtb-testkit/src/draw.rs
 prelude_positions prod 1 crates/adtb/src/api/bundle.rs
-prelude_positions prod 2 crates/adtb/src/api/verify.rs
 prelude_positions prod 1 crates/adtb/src/exec/prim/mod.rs
 prelude_positions prod 1 crates/adtb/src/exec/store.rs
 prelude_positions prod 1 crates/adtb/src/write/eval.rs

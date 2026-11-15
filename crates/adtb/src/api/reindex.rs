@@ -66,7 +66,7 @@ impl<R: Runtime> Engine<R> {
         let table = engine_relation(schema, "sys", "jobs")?;
         let me = self.reindexing.me.lock(&self.rt).clone();
         let target = schema.relation(rel).name.clone();
-        let started = self.reindex_row(table, target.clone()).hand_over();
+        let started = self.reindex_row(schema, table, target.clone()).hand_over();
         let run = started.run;
         let work = Work {
             rel,
@@ -123,7 +123,7 @@ impl<R: Runtime> Engine<R> {
     fn run_reindex(&self, work: &Work, started: Started) {
         let schema = self.schema.clone();
         let schema = schema.as_ref();
-        let job = self.reindex_row_of(work.table, started);
+        let job = self.reindex_row_of(schema, work.table, started);
         self.rebuild_all(schema, work, &job);
     }
 

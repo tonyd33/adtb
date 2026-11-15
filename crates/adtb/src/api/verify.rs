@@ -4,9 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::ids::{CatRelId, held_id};
+use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor, held_id};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::{RelId, Ty, TypeId};
 use adtb_sys::lock::Lock;
 
 use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow};
@@ -21,12 +21,6 @@ use super::cause::Corruption;
 use super::command::engine_relation;
 use super::text::{DynRows, rows};
 use super::{Engine, OpenError, corrupt, micros};
-
-/// The constructor of `Verify` in `JobKind`.
-const VERIFY_JOB: u32 = 3;
-
-/// The constructor of `Reindex` in `JobKind`.
-const REINDEX_JOB: u32 = 0;
 
 /// The group of the kept row holding the next run number and finding id.
 const COUNTERS: &str = "counters";
@@ -46,11 +40,20 @@ pub(super) struct Cursor {
     pub(super) started: i64,
 }
 
+/// Returns the position of `JobKind` constructor `kind`.
+fn job_kind(schema: &Schema, kind: CatCtorId) -> u32 {
+    let ctor = schema.ids().ctor_of(kind);
+    ctor.expect("the engine declares each `JobKind` constructor `engine_ctor` names")
+        .index()
+}
+
 /// What the engine holds of `verify` between and during runs.
 #[derive(Debug)]
 pub(super) struct Findings {
-    /// The rows of `sys::verify_findings`, by id.
+    /// The rows of `sys::verify_findings`, by id, each naming a constructor of `Finding`.
     rows: BTreeMap<i64, KeptRow>,
+    /// The type `sys::Finding`.
+    finding: TypeId,
     next_run: i64,
     next_id: i64,
     /// The row of `sys::jobs` of each running run, by run number.
@@ -65,9 +68,13 @@ fn int(f: &KeptField) -> Option<i64> {
     }
 }
 
-fn val(row: &KeptRow) -> Val {
-    Val::ctor(
-        row.ctor,
+/// Returns the value of `row`, `None` when it names no constructor of `finding`, the type
+/// `sys::Finding`.
+fn val(row: &KeptRow, schema: &Schema, finding: TypeId) -> Option<Val> {
+    let ctor = schema.ids().ctor_of(row.ctor?)?;
+    (ctor.def() == finding).then_some(())?;
+    Some(Val::ctor(
+        ctor.index(),
         row.fields
             .iter()
             .map(|f| match f {
@@ -76,29 +83,38 @@ fn val(row: &KeptRow) -> Val {
                 KeptField::Text(t) => Val::text(t),
             })
             .collect(),
-    )
+    ))
 }
 
 /// Returns the constructor of `f` in `Finding` and the fields after its header.
-fn fields(f: Found) -> (u32, Vec<KeptField>) {
+fn fields(f: Found) -> (CatCtorId, Vec<KeptField>) {
     use KeptField::{Int, Text};
+    use engine_ctor::{
+        FINDING_CHECKSUM, FINDING_MISSING, FINDING_ORDER, FINDING_ORPHAN, FINDING_STALE_PAGE,
+        FINDING_STRUCTURE, FINDING_VIOLATION,
+    };
     let id = |n: u64| Int(i64::try_from(n).unwrap_or(i64::MAX));
     match f {
-        Found::Checksum { at, .. } => (0, vec![Text(at)]),
-        Found::StalePage { at, .. } | Found::Settled { at, .. } => (1, vec![Text(at)]),
-        Found::Order { index, at } => (2, vec![id(index), Text(at)]),
-        Found::Orphan { index, ctor, at } => (3, vec![id(index), id(ctor), Text(at)]),
+        Found::Checksum { at, .. } => (FINDING_CHECKSUM, vec![Text(at)]),
+        Found::StalePage { at, .. } | Found::Settled { at, .. } => {
+            (FINDING_STALE_PAGE, vec![Text(at)])
+        }
+        Found::Order { index, at } => (FINDING_ORDER, vec![id(index), Text(at)]),
+        Found::Orphan { index, ctor, at } => (FINDING_ORPHAN, vec![id(index), id(ctor), Text(at)]),
         Found::Missing {
             relation,
             ctor,
             index,
             at,
-        } => (4, vec![id(relation), id(ctor), id(index), Text(at)]),
+        } => (
+            FINDING_MISSING,
+            vec![id(relation), id(ctor), id(index), Text(at)],
+        ),
         Found::Violation {
             constraint,
             witness,
-        } => (5, vec![id(constraint), Text(witness)]),
-        Found::Structure { at } => (6, vec![Text(at)]),
+        } => (FINDING_VIOLATION, vec![id(constraint), Text(witness)]),
+        Found::Structure { at } => (FINDING_STRUCTURE, vec![Text(at)]),
     }
 }
 
@@ -118,10 +134,16 @@ fn removed(group: &str, schema: &Schema) -> bool {
 }
 
 impl Findings {
-    /// Returns what `kept` holds of relation `id`, the catalog id of `sys::verify_findings`.
-    pub(super) fn of(kept: Vec<KeptRow>, id: u64) -> Result<Findings, OpenError> {
+    /// Returns what `kept` holds of `table`, `sys::verify_findings` of `schema`.
+    pub(super) fn of(
+        kept: Vec<KeptRow>,
+        schema: &Schema,
+        table: RelId,
+    ) -> Result<Findings, OpenError> {
+        let id = held_id(schema.ids().relation_id(table)).raw();
         let mut out = Findings {
             rows: BTreeMap::new(),
+            finding: schema.relation(table).elem_def,
             next_run: 1,
             next_id: 1,
             jobs: BTreeMap::new(),
@@ -130,7 +152,7 @@ impl Findings {
         for row in kept.into_iter().filter(|k| k.relation == id) {
             let bad = || corrupt(Corruption::Finding(row.clone()));
             if row.group == COUNTERS {
-                let [run, next] = row.fields.as_slice() else {
+                let (None, [run, next]) = (row.ctor, row.fields.as_slice()) else {
                     return Err(bad());
                 };
                 out.next_run = out.next_run.max(int(run).ok_or_else(bad)?);
@@ -138,7 +160,7 @@ impl Findings {
                 continue;
             }
             if row.group == CURSOR {
-                let [next, started] = row.fields.as_slice() else {
+                let (None, [next, started]) = (row.ctor, row.fields.as_slice()) else {
                     return Err(bad());
                 };
                 let next = u64::try_from(int(next).ok_or_else(bad)?).map_err(|_| bad())?;
@@ -148,6 +170,7 @@ impl Findings {
                 });
                 continue;
             }
+            val(&row, schema, out.finding).ok_or_else(bad)?;
             let key = row.fields.first().and_then(int).ok_or_else(bad)?;
             let run = row.fields.get(1).and_then(int).ok_or_else(bad)?;
             out.next_run = out.next_run.max(run + 1);
@@ -157,8 +180,12 @@ impl Findings {
         Ok(out)
     }
 
-    pub(super) fn vals(&self) -> BTreeSet<Val> {
-        self.rows.values().map(val).collect()
+    pub(super) fn vals(&self, schema: &Schema) -> BTreeSet<Val> {
+        self.rows.values().map(|r| self.val(r, schema)).collect()
+    }
+
+    fn val(&self, row: &KeptRow, schema: &Schema) -> Val {
+        val(row, schema, self.finding).expect("a held finding names a constructor of `Finding`")
     }
 }
 
@@ -196,6 +223,7 @@ pub(super) struct Job<'e, R: Runtime> {
     verifier: &'e Verifier<R>,
     table: RelId,
     run: i64,
+    /// The position of the job's constructor of `JobKind`.
     kind: u32,
     target: String,
     started: i64,
@@ -269,14 +297,14 @@ impl<R: Runtime> Verifier<R> {
     }
 
     /// Returns the row of `sys::jobs` of a new pass of the scrub, and its run number and start.
-    pub(super) fn scrub_row(&self, table: RelId) -> (Job<'_, R>, i64, i64) {
+    pub(super) fn scrub_row(&self, schema: &Schema, table: RelId) -> (Job<'_, R>, i64, i64) {
         let run = self.next_run();
         let started = self.clock();
         let job = Job {
             verifier: self,
             table,
             run,
-            kind: VERIFY_JOB,
+            kind: job_kind(schema, engine_ctor::JOB_VERIFY),
             target: String::new(),
             started,
         };
@@ -299,7 +327,7 @@ impl<R: Runtime> Verifier<R> {
         let row = KeptRow {
             relation: held_id(schema.ids().relation_id(table)).raw(),
             group: CURSOR.into(),
-            ctor: 0,
+            ctor: None,
             fields: vec![KeptField::Int(next), KeptField::Int(cursor.started)],
         };
         if !self.keeps() {
@@ -335,7 +363,7 @@ impl<R: Runtime> Verifier<R> {
         };
         let states = |f: &Found, r: &KeptRow| {
             let (ctor, rest) = fields(f.clone());
-            r.ctor == ctor && r.fields.get(3..) == Some(rest.as_slice())
+            r.ctor == Some(ctor) && r.fields.get(3..) == Some(rest.as_slice())
         };
         let fresh: BTreeSet<Found> = found
             .iter()
@@ -382,7 +410,7 @@ impl<R: Runtime> Verifier<R> {
             KeptRow {
                 relation: id,
                 group: group.to_owned(),
-                ctor,
+                ctor: Some(ctor),
                 fields,
             }
         };
@@ -400,7 +428,7 @@ impl<R: Runtime> Verifier<R> {
         let counters = KeptRow {
             relation: id,
             group: COUNTERS.into(),
-            ctor: 0,
+            ctor: None,
             fields: vec![KeptField::Int(held.next_run), KeptField::Int(held.next_id)],
         };
         let kept = if keep {
@@ -419,8 +447,8 @@ impl<R: Runtime> Verifier<R> {
                 held.rows.insert(key, r.clone());
             }
         }
-        self.db.set_volatile(table, held.vals());
-        written.iter().map(val).collect()
+        self.db.set_volatile(table, held.vals(schema));
+        written.iter().map(|r| held.val(r, schema)).collect()
     }
 
     fn keep_findings(
@@ -474,13 +502,13 @@ impl<R: Runtime> Verifier<R> {
 
 impl<R: Runtime> Engine<R> {
     /// Returns the row of `sys::jobs` of a new rebuild job, which its [`Job`] will remove.
-    pub(super) fn reindex_row(&self, table: RelId, target: String) -> Job<'_, R> {
+    pub(super) fn reindex_row(&self, schema: &Schema, table: RelId, target: String) -> Job<'_, R> {
         let run = self.verifier.next_run();
         let job = Job {
             verifier: &self.verifier,
             table,
             run,
-            kind: REINDEX_JOB,
+            kind: job_kind(schema, engine_ctor::JOB_REINDEX),
             target,
             started: self.clock(),
         };
@@ -489,12 +517,17 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Returns what a job's thread holds of its row.
-    pub(super) fn reindex_row_of(&self, table: RelId, started: Started) -> Job<'_, R> {
+    pub(super) fn reindex_row_of(
+        &self,
+        schema: &Schema,
+        table: RelId,
+        started: Started,
+    ) -> Job<'_, R> {
         Job {
             verifier: &self.verifier,
             table,
             run: started.run,
-            kind: REINDEX_JOB,
+            kind: job_kind(schema, engine_ctor::JOB_REINDEX),
             target: started.target,
             started: started.at,
         }
@@ -552,7 +585,7 @@ impl<R: Runtime> Engine<R> {
             verifier: &self.verifier,
             table: engine_relation(schema, "sys", "jobs")?,
             run,
-            kind: VERIFY_JOB,
+            kind: job_kind(schema, engine_ctor::JOB_VERIFY),
             target: match scope {
                 VerifyScope::Relation(r) => schema.relation(r).name.clone(),
                 VerifyScope::Database => String::new(),
@@ -692,3 +725,7 @@ impl<R: Runtime> Engine<R> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "verify_tests.rs"]
+mod tests;

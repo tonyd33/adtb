@@ -3,6 +3,8 @@
 
 use std::collections::BTreeSet;
 
+use adtb_lang::ids::CatCtorId;
+
 use crate::heap::{self, FieldType, WriteTarget};
 use crate::key::{CtorId, Scalar, Value};
 use crate::mvcc::{Scope, Transactions, Xid};
@@ -15,8 +17,8 @@ use super::{Catalog, Error, ROOTS, insert_row, int, uint, visible};
 /// The constructor of a roots row holding a row of a volatile relation.
 const KEPT: u32 = 14;
 
-/// The only encoding of a kept row's fields this engine reads.
-pub(super) const ROW_FORMAT: u64 = 1;
+/// The only encoding of a kept row's constructor and fields this engine reads.
+pub(super) const ROW_FORMAT: u64 = 2;
 
 /// One field of a kept row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,8 +35,9 @@ pub struct KeptRow {
     pub relation: u64,
     /// What a writer replaces together.
     pub group: String,
-    /// The constructor of the row, by position.
-    pub ctor: u32,
+    /// The catalog id of the row's constructor, `None` for a row that is no value of a sum. The
+    /// file holds `None` as 0, an id no constructor holds.
+    pub ctor: Option<CatCtorId>,
     pub fields: Vec<KeptField>,
 }
 
@@ -124,7 +127,10 @@ fn row_of(fields: &[Value]) -> Result<KeptRow, Error> {
     Ok(KeptRow {
         relation: uint(relation)?,
         group: group.clone(),
-        ctor: u32::try_from(uint(ctor)?).map_err(|_| bad())?,
+        ctor: match uint(ctor)? {
+            0 => None,
+            id => Some(CatCtorId::from_raw(id)),
+        },
         fields: decode(row).ok_or_else(bad)?,
     })
 }
@@ -210,7 +216,7 @@ impl Catalog {
                 fields: vec![
                     int(r.relation),
                     Value::Text(r.group.clone()),
-                    int(u64::from(r.ctor)),
+                    int(r.ctor.map_or(0, CatCtorId::raw)),
                     int(ROW_FORMAT),
                     Value::Bytes(encode(&r.fields)),
                 ],
@@ -225,11 +231,11 @@ impl Catalog {
 mod tests {
     use super::*;
 
-    fn stored(format: u64) -> Vec<Value> {
+    fn stored(ctor: u64, format: u64) -> Vec<Value> {
         vec![
             int(339),
             Value::Text("database".into()),
-            int(2),
+            int(ctor),
             int(format),
             Value::Bytes(encode(&[
                 KeptField::Int(7),
@@ -241,8 +247,8 @@ mod tests {
 
     #[test]
     fn a_kept_row_of_this_format_reads_back() {
-        let row = row_of(&stored(ROW_FORMAT)).unwrap();
-        assert_eq!(2, row.ctor);
+        let row = row_of(&stored(318, ROW_FORMAT)).unwrap();
+        assert_eq!(Some(CatCtorId::from_raw(318)), row.ctor);
         assert_eq!(
             vec![
                 KeptField::Int(7),
@@ -255,7 +261,19 @@ mod tests {
 
     #[test]
     fn a_kept_row_of_another_format_is_refused() {
-        let got = row_of(&stored(ROW_FORMAT + 1));
+        let got = row_of(&stored(318, ROW_FORMAT + 1));
         assert_eq!(Err(Rot::KeptFormat(ROW_FORMAT + 1).into()), got);
+    }
+
+    #[test]
+    fn a_kept_row_of_format_1_holding_a_constructor_position_is_refused() {
+        let got = row_of(&stored(2, 1));
+        assert_eq!(Err(Rot::KeptFormat(1).into()), got);
+    }
+
+    #[test]
+    fn a_kept_row_of_constructor_0_holds_no_constructor() {
+        let row = row_of(&stored(0, ROW_FORMAT)).unwrap();
+        assert_eq!(None, row.ctor);
     }
 }

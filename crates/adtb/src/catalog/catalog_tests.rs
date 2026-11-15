@@ -990,7 +990,7 @@ fn a_kept_row_written_into_a_full_roots_page_of_dead_versions_reuses_it() {
         let row = KeptRow {
             relation: 339,
             group: "database".into(),
-            ctor: 0,
+            ctor: None,
             fields: vec![KeptField::Text("k".repeat(400))],
         };
         let keep = || {

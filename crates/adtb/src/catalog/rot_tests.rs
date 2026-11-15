@@ -31,7 +31,7 @@ fn after(r: Option<&Rot>) -> Option<(Rot, &'static str)> {
         Some(R::GrantNoId) => (R::RoleRow(row()), "a role row is [I64(1)]"),
         Some(R::RoleRow(_)) => (R::UntaggedGrant(9), "grant row 9 records no grant of the log"),
         Some(R::UntaggedGrant(_)) => (R::KeptRow(row()), "a kept row holds [I64(1)]"),
-        Some(R::KeptRow(_)) => (R::KeptFormat(9), "a kept row has format 9; this engine reads format 1"),
+        Some(R::KeptRow(_)) => (R::KeptFormat(9), "a kept row has format 9; this engine reads format 2"),
         Some(R::KeptFormat(_)) => (R::DroppedTwice { module: "app".into(), name: "t".into(), first: 2, second: 3 }, "app::t is held as dropped at versions 2 and 3"),
         Some(R::DroppedTwice { .. }) => (R::DropVersion(9), "a pending drop names version 9, which the log does not hold"),
         Some(R::DropVersion(_)) => (R::UniqueNotDropped { index: CatIndexId::from_raw(5), version: 9 }, "unique 5 is held as dropped at version 9, which does not drop it"),
