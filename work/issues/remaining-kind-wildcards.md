@@ -4,6 +4,9 @@ status: open
 kind: bug
 priority: 610
 summary: "Other Kind wildcards in translation, single form wildcards and Prim operators are not named"
+tags:
+  - lang
+  - class-copied-rules
 ---
 
 # Remaining kind wildcards
