@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-15
-status: open
+status: resolved
+closed: 2026-11-15
 kind: bug
 priority: 450
 summary: "a catalog codec checks only the fields its reader reads, so a settings row's id may hold any value, and decode_val drops a value's surplus fields"
@@ -21,3 +22,7 @@ Found by the quality review of reviewed..582d7af5 (10a, dc62bc7b). `Codec::decod
 The step 10 contract is that a row whose constructor or field shape does not match the declaration is refused as damage with its whole reason.
 
 Fix direction: have `Codec::new` record each field's stored type and `decode` check every field against it before the reader runs, so readers only convert; check a settings row's `id` against its constructor's catalog id; refuse a `Val::Ctor` whose field count is not the layout's in `decode_val`. Tests: a settings row with a `Text` id, a settings row with another setting's id, a value with a surplus field, each refused with its reason. 10b's codecs can take the same check.
+
+## Resolved
+
+Resolved in structure-lang-identity step 10b-1, yzxywwvs c3d9181c. `decode` type-checks every declared field of a row before its reader runs, read or not; `decode_val` refuses surplus or missing fields ("holds 1 field, not 2"); a settings row's `id` must equal its constructor's catalog id. Readers return plain values and a mismatch after that check is an invariant panic, not damage.
