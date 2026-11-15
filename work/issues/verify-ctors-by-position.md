@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: resolved
+closed: 2026-11-15
 kind: bug
 priority: 500
 summary: "verify writes Finding and JobKind constructors as literal positions and stores them in the file by position, so a constructor declared earlier renumbers kept findings"
@@ -21,3 +22,7 @@ A new `Finding` constructor declared anywhere but last renumbers the rows of eve
 The `bool-ctor-by-position` ticket covers file scans only.
 
 Fix direction: resolve the positions by name from the schema at open, and store the catalog constructor id in a kept row, mapping it back on read. Add a test that a file's kept finding keeps its kind after a later constructor is declared before it, or refuse by format if that is the ruling.
+
+## Resolved
+
+Landed as structure-lang-identity step 9c, nlzuqomn c85d1afb (2 rounds, full check 0, 3790 tests). verify names `JobKind` and `Finding` constructors by engine fixed ids (`ids::engine_ctor`, resolved by name in `TYPES` at compile time, so a missing name or another type's constructor fails to compile; `each_engine_constructor_constant_is_the_engine_constructor_of_its_name` checks them against catalog.adt). `KeptRow.ctor` is `Option<CatCtorId>`, stored as the id with no constructor as 0 (a const assert keeps 0 off every constructor); `ROW_FORMAT` 2, and a file whose kept rows are format 1 refuses at open with "a kept row has format 1; this engine reads format 2". A finding row whose id is not a `Finding` constructor, or that has none, is refused as damage with the whole text pinned. The reorder test cannot be written (the engine's declarations are compiled in); the fixed-id test, a round trip by constructor name and the refusal tests stand in. Filed beside: kept-finding-fields-unchecked.

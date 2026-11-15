@@ -142,3 +142,7 @@ Step 9 counted on 03d7e265: about 60 prelude type lookups by name outside tests 
 ## 2026-11-14, step 9b landed
 
 Landed as xoqlkpzz 50de734f (2 rounds), full check 0 (3785 tests). The engine, the reference and adtb-file take prelude constructor positions from `schema::prelude::ctor` and prelude types from `SchemaDefs::prelude()`; `Schema::prelude_type` removed and the `prelude_type_names` row with it; `prelude_positions` 61 to 14 (one-constructor sums and verify's 2). `Fault::ctor()` (pub(crate)) replaces the by-name fault tables, checked per crate by a test. Resolved: bool-ctor-by-position. Filed: error-sums-by-spelling. Next: 9c (verify-ctors-by-position: kept rows store the engine fixed constructor id), then step 10.
+
+## 2026-11-15, step 9c landed
+
+Landed as nlzuqomn c85d1afb (2 rounds), full check 0 (3790 tests); round 2's slot check timed out one evolve laws test under load and passed on a rerun alone. verify keeps findings and jobs by engine fixed constructor id; kept row format 2. `prelude_positions` 14 to 12 (one-constructor sums only). Resolved: verify-ctors-by-position. Filed: kept-finding-fields-unchecked. Step 9 done. Next: step 10 (catalog row codecs from catalog.adt keyed by constructor id, a reorder test, `expr_text`/`shown_value` through canon).
