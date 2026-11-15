@@ -130,3 +130,7 @@ Landed as mlksvrul 7847d575 (3 rounds), full check 0 (3772 tests). The engine bu
 ## 2026-11-14, translate typed
 
 translate-output-ill-typed landed as ookywzux 9751992c: `add_unchecked` and `kernel_door` are gone, and every kernel term outside tests is built through `kernel::Build` (`add_ill_typed` under cfg(test) or `testing` only). The plan-exit and `Stmt::new` hooks are live. Left for 8c: `Terms::overwrite_kind` (`kernel_overwrite`, 3), `Restoring::check`'s dummy root, `pub vars`.
+
+## 2026-11-14, step 8c landed
+
+Landed as opwtwlrn 258cde73 (2 rounds), full check 0. No kernel node is rewritten in place: `Terms::substitute` (iterative, memoised, rebuilds through `rebuild_kept`, shares untouched terms; an image has the type of the term it replaces or a subtype) serves the input rewrite, delta compile and `Restoring::check`; `overwrite_kind` is gone and `kernel_overwrite` allows no line. `Restoring::check` runs one `Stmt` per denial over its real root (restore about 4% slower on `dump_validate`, growing with denials times arena size). `Terms.vars` is private (`vars()` read-only); `Stmt::new` asserts `assert_valid` with params and inputs free. `rebuild_kept` keeps the transport mark. Step 8 (Q6) is complete: every kernel term is built through `kernel::Build` and validated at every exit under debug and `testing`.
