@@ -7,6 +7,7 @@ summary: "verify writes Finding and JobKind constructors as literal positions an
 tags:
   - quality
   - engine
+  - class-identity-by-spelling
 ---
 
 # verify writes Finding and JobKind constructors as literal positions, and keeps them in the file by position
