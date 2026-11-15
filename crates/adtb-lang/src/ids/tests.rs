@@ -117,6 +117,23 @@ fn objects_of_different_spaces_hold_one_id_each() {
 }
 
 #[test]
+fn each_engine_relation_constant_is_the_engine_relation_of_its_name() {
+    let s = build(&[]).expect("the engine's schema builds");
+    for &(module, name, id) in engine_rel::NAMED {
+        let r = s
+            .ids()
+            .relation_of(id)
+            .unwrap_or_else(|| panic!("{id:?} names a relation"));
+        let rel = s.relation(r);
+        assert_eq!(
+            (module, name),
+            (s.module(rel.module).name.as_str(), rel.name.as_str()),
+            "{id:?}"
+        );
+    }
+}
+
+#[test]
 fn each_engine_constructor_constant_is_the_engine_constructor_of_its_name() {
     let s = build(&[]).expect("the engine's schema builds");
     for &(module, ty, ctor, id) in engine_ctor::NAMED {

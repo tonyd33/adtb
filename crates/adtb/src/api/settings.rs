@@ -7,8 +7,9 @@ use std::time::Duration;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
 
-use crate::catalog::{Catalog, layout};
-use crate::exec::{self, F64, Val};
+use crate::catalog::codec::{Codec, SettingRow};
+use crate::catalog::{Catalog, Error};
+use crate::exec::{F64, Val};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -56,57 +57,51 @@ impl Settings {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Settings, OpenError> {
-        let schema = catalog.schema();
-        let rel = relation(schema);
+        let codec = Codec::<SettingRow>::new(catalog.schema());
         let mut out = Settings::default();
-        for (c, row) in catalog.committed_rows(pager, txns, rel).map_err(corrupt)? {
-            let fields = layout::row(schema, rel, c)
-                .iter()
-                .zip(&row)
-                .map(|((_, t), v)| exec::from_stored(&exec::conv(schema, t), v))
-                .collect();
-            out.set(schema, &Val::ctor(c, fields));
+        for (c, row) in catalog
+            .committed_rows(pager, txns, codec.relation())
+            .map_err(corrupt)?
+        {
+            let row = codec
+                .decode(c, &row)
+                .map_err(Error::from)
+                .map_err(corrupt)?;
+            out.set(&row);
         }
         Ok(out)
     }
 
-    /// Take the setting `row`, a row of `catalog::settings`, in place of the one it replaces.
-    pub(super) fn set(&mut self, schema: &Schema, row: &Val) {
-        let Val::Ctor(c, fields) = row else {
-            return;
-        };
-        let def = schema.relation(relation(schema)).elem_def;
-        let name = schema.ty(def).ctors()[*c as usize].name.as_str();
-        match (name, fields.get(1)) {
-            ("DefaultLease", Some(Val::Duration(d))) => self.lease = *d,
-            ("LeaseGrace", Some(Val::Duration(d))) => self.grace = *d,
-            ("RetryLimit", Some(Val::Int(n))) => self.retries = u64::try_from(*n).unwrap_or(0),
-            ("RetentionWindow", Some(Val::Duration(d))) => {
-                self.window = Duration::from_micros(u64::try_from(*d).unwrap_or(0));
+    /// Take the setting `row` in place of the one it replaces.
+    pub(super) fn set(&mut self, row: &SettingRow) {
+        use SettingRow as S;
+        match *row {
+            S::DefaultLease(d) => self.lease = d,
+            S::LeaseGrace(d) => self.grace = d,
+            S::RetryLimit(n) => self.retries = u64::try_from(n).unwrap_or(0),
+            S::RetentionWindow(d) => {
+                self.window = Duration::from_micros(u64::try_from(d).unwrap_or(0));
             }
-            ("ScrubInterval", Some(Val::Ctor(_, every))) => {
-                self.scrub = match every.first() {
-                    Some(Val::Duration(d)) => {
-                        Some(Duration::from_micros(u64::try_from(*d).unwrap_or(0)))
-                    }
-                    _ => None,
-                };
+            S::ScrubInterval(every) => {
+                self.scrub = every.map(|d| Duration::from_micros(u64::try_from(d).unwrap_or(0)));
             }
-            ("VacuumBudget", Some(Val::F64(io))) => {
-                let cpu = match fields.get(2) {
-                    Some(Val::F64(cpu)) => cpu.get(),
-                    _ => 1.0,
-                };
-                self.budget = F64::new(io.get().min(cpu));
-            }
-            _ => {}
+            S::VacuumBudget { io, cpu } => self.budget = F64::new(io.get().min(cpu.get())),
+            S::StatementLimit(_)
+            | S::TransactionLimit(_)
+            | S::IdleLimit(_)
+            | S::StreamIdleLimit(_)
+            | S::RequestWindow(_)
+            | S::SafePointDelay(_)
+            | S::ReplicaWait(_)
+            | S::FeedRetention(_)
+            | S::StatsWindow(_)
+            | S::StatsRetention(_)
+            | S::WaitSampling { .. }
+            | S::ConflictLog(_)
+            | S::BlockingNoticePeriod(_)
+            | S::ReplicaVacuumWait(_) => {}
         }
     }
-}
-
-/// Returns the relation `catalog::settings` of `schema`.
-fn relation(schema: &Schema) -> RelId {
-    engine_relation(schema, "catalog", "settings")
 }
 
 /// Returns the relation `module::name` the engine declares in `schema`.

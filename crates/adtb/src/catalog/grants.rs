@@ -14,6 +14,7 @@ use crate::storage::Pager;
 use crate::write::{self, Sequences};
 
 use super::Rot;
+use super::codec::{Codec, RoleRow};
 use super::values::{self, boolean, relation, tag};
 use super::{Broken, Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int, layout};
 
@@ -247,30 +248,17 @@ impl Catalog {
     }
 
     /// Returns the name of each role the snapshot of `hold` sees, by id.
-    pub fn roles<R: Runtime>(
+    fn roles<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         hold: &Hold,
     ) -> Result<BTreeMap<i64, String>, Error> {
-        let roles = relation(&self.schema, "roles");
-        let mut out = BTreeMap::new();
-        for (c, row) in self.rows(pager, txns, hold, roles)? {
-            let fields = layout::row(&self.schema, roles, c);
-            let at = |name: &str| {
-                fields
-                    .iter()
-                    .position(|(n, _)| n == name)
-                    .unwrap_or_else(|| panic!("catalog Role declares {name}"))
-            };
-            match (row.get(at("id")), row.get(at("name"))) {
-                (Some(Value::I64(id)), Some(Value::Text(name))) => {
-                    out.insert(*id, name.clone());
-                }
-                _ => return Err(Rot::RoleRow(row).into()),
-            }
-        }
-        Ok(out)
+        let codec = Codec::<RoleRow>::new(&self.schema);
+        self.rows(pager, txns, hold, codec.relation())?
+            .into_iter()
+            .map(|(c, row)| Ok(codec.decode(c, &row)?.into_parts()))
+            .collect()
     }
 
     /// Returns the name of each role of the latest commit, by id.

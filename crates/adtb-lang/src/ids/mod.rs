@@ -15,7 +15,7 @@ mod key;
 mod named;
 mod objects;
 mod reach;
-pub use fixed::{FixedType, RELATIONS, TYPES, engine_ctor};
+pub use fixed::{FixedType, RELATIONS, TYPES, engine_ctor, engine_rel};
 pub use key::{KeyKind, ObjectKey, Owner, Path, PathStep, forget};
 pub use named::{is_named, named_ids};
 pub use objects::{Object, assign, objects};

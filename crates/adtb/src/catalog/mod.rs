@@ -3,6 +3,7 @@
 pub mod arrows;
 mod broken;
 mod change;
+pub(crate) mod codec;
 mod deploy;
 mod deployment;
 mod grants;

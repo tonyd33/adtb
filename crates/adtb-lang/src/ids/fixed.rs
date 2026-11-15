@@ -610,6 +610,40 @@ const fn fixed_ctor(module: &str, ty: &str, ctor: &str) -> super::CatCtorId {
     panic!("`engine_ctor` names a constructor `TYPES` holds")
 }
 
+/// Returns the fixed id of relation `module::name` in [`RELATIONS`]. Fails to compile when
+/// [`RELATIONS`] has no such relation.
+const fn fixed_rel(module: &str, name: &str) -> super::CatRelId {
+    let mut r = 0;
+    while r < RELATIONS.len() {
+        let (m, n, id) = RELATIONS[r];
+        if same(m, module) && same(n, name) {
+            return super::CatRelId::from_raw(id);
+        }
+        r += 1;
+    }
+    panic!("`engine_rel` names a relation `RELATIONS` holds")
+}
+
+macro_rules! engine_rels {
+    ($($module:literal { $($name:ident $rel:literal),* $(,)? })*) => {
+        $($(pub const $name: CatRelId = fixed_rel($module, $rel);)*)*
+
+        /// Every constant of this module with its module's and relation's names.
+        #[cfg(test)]
+        pub(crate) const NAMED: &[(&str, &str, CatRelId)] = &[$($(($module, $rel, $name),)*)*];
+    };
+}
+
+/// The fixed ids of the engine-defined relations the engine names.
+pub mod engine_rel {
+    use super::super::CatRelId;
+    use super::fixed_rel;
+
+    engine_rels! {
+        "catalog" { SETTINGS "settings", ROLES "roles" }
+    }
+}
+
 macro_rules! engine_ctors {
     ($($module:literal $ty:literal { $($name:ident $ctor:literal),* $(,)? })*) => {
         $($(pub const $name: CatCtorId = fixed_ctor($module, $ty, $ctor);)*)*
@@ -628,6 +662,29 @@ pub mod engine_ctor {
 
     engine_ctors! {
         "sys" "JobKind" { JOB_REINDEX "Reindex", JOB_VERIFY "Verify" }
+        "catalog" "Role" { ROLE "Role" }
+        "catalog" "Setting" {
+            SETTING_STATEMENT_LIMIT "StatementLimit",
+            SETTING_TRANSACTION_LIMIT "TransactionLimit",
+            SETTING_IDLE_LIMIT "IdleLimit",
+            SETTING_STREAM_IDLE_LIMIT "StreamIdleLimit",
+            SETTING_REQUEST_WINDOW "RequestWindow",
+            SETTING_SAFE_POINT_DELAY "SafePointDelay",
+            SETTING_REPLICA_WAIT "ReplicaWait",
+            SETTING_DEFAULT_LEASE "DefaultLease",
+            SETTING_FEED_RETENTION "FeedRetention",
+            SETTING_STATS_WINDOW "StatsWindow",
+            SETTING_STATS_RETENTION "StatsRetention",
+            SETTING_WAIT_SAMPLING "WaitSampling",
+            SETTING_CONFLICT_LOG "ConflictLog",
+            SETTING_VACUUM_BUDGET "VacuumBudget",
+            SETTING_SCRUB_INTERVAL "ScrubInterval",
+            SETTING_LEASE_GRACE "LeaseGrace",
+            SETTING_BLOCKING_NOTICE_PERIOD "BlockingNoticePeriod",
+            SETTING_REPLICA_VACUUM_WAIT "ReplicaVacuumWait",
+            SETTING_RETRY_LIMIT "RetryLimit",
+            SETTING_RETENTION_WINDOW "RetentionWindow",
+        }
         "sys" "Finding" {
             FINDING_CHECKSUM "Checksum",
             FINDING_STALE_PAGE "StalePage",

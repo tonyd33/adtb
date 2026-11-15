@@ -238,6 +238,47 @@ grep -qxF 'prelude_positions prod 14 crates/lang/src/p.rs' <<<"$counts" || fail 
 ! grep -q 'prelude_positions .*p_tests.rs' <<<"$counts" || fail "counted a test: $counts"
 rm -r crates/lang
 
+# catalog_row_fields counts hand reads of catalog row fields in adtb's api and catalog, not the
+# codec, verify, a test or another module.
+mkdir -p "$adtb/api" "$adtb/catalog" "$adtb/exec"
+cat >"$adtb/api/r.rs" <<'RS'
+fn f() { shape.at("id"); field(schema, grants, row, "kind"); t.integer(t.credentials, &row, "role");
+    f.get("name"); text("family"); fields.get(1); row.get(name); fields.iter().position(|(n, _)| n == "name");
+    fields.get(i); }
+RS
+for f in api/r_tests.rs api/verify.rs catalog/codec.rs exec/r.rs; do
+  cp "$adtb/api/r.rs" "$adtb/$f"
+done
+cp "$adtb/api/r.rs" "$adtb/catalog/r.rs"
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'catalog_row_fields prod 8 crates/adtb/src/api/r.rs' <<<"$counts" || fail "not counted: catalog_row_fields: $counts"
+grep -qxF 'catalog_row_fields prod 8 crates/adtb/src/catalog/r.rs' <<<"$counts" || fail "not counted in catalog: $counts"
+! grep -q 'catalog_row_fields .*\(r_tests.rs\|verify.rs\|codec.rs\|exec/\)' <<<"$counts" ||
+  fail "counted a test, verify, the codec or another module: $counts"
+rm -r "$adtb/api" "$adtb/catalog" "$adtb/exec"
+
+# catalog_row_ctors counts constructors of catalog rows told by name in adtb's api and catalog,
+# not the codec or a test.
+mkdir -p "$adtb/api" "$adtb/catalog"
+cat >"$adtb/api/c.rs" <<'RS'
+fn f() { match (self.ctor_name("BundleState", *c).as_str(), at.first()) {
+    ("Active", _) => 1,
+    ("Retired", Some(t)) => 2,
+    _ => 3, }
+  match k {
+    "Query" => "Query",
+    _ => "x" }
+  matches!(n, "DefaultLease" | "LeaseGrace"); priority(&ctor); s.types["GrantKind"];
+  tag(&self.schema, "catalog", "GrantKind", "Log"); tag(schema, "catalog", "GrantKind", "Log");
+  ("Serialization", &[1]); }
+RS
+cp "$adtb/api/c.rs" "$adtb/api/c_tests.rs"
+cp "$adtb/api/c.rs" "$adtb/catalog/codec.rs"
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'catalog_row_ctors prod 8 crates/adtb/src/api/c.rs' <<<"$counts" || fail "not counted: catalog_row_ctors: $counts"
+! grep -q 'catalog_row_ctors .*\(c_tests.rs\|codec.rs\)' <<<"$counts" || fail "counted a test or the codec: $counts"
+rm -r "$adtb/api" "$adtb/catalog"
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then

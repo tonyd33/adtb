@@ -95,6 +95,10 @@ found_counts() {
     for dir in crates apps; do
       count_under denial_zips "$dir" '\.zip\([^);]*\b(checks|constraints)\b|\b(checks|constraints)\b[^;{}]*?\.zip\(' -P -U -g '!**/target/**'
     done
+    for dir in crates/adtb/src/api crates/adtb/src/catalog; do
+      count_under catalog_row_fields "$dir" '\bat\("|\bself\.at\(name\b|\bfield\((&?schema|self\.schema), \w+, \w+, "|\b(self|t)\.(field|text|integer|flag)\((self|t)\.\w+, &?row, "|\bf\.get\("|\b(text|number|some)\("[a-z_]+"\)|position\(\|\((n|name), _\)\| (n|name) == "|fields\.get\(\d\)|row\.get\((name|id|kind)\)|\[Value::I64\(version\)|name\.as_str\(\) == "applied"|self\.integer\(relation, row, field\)' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/catalog/codec.rs' -g '!**/api/verify.rs'
+      count_under catalog_row_ctors "$dir" 'self\.ctor_name\(|^\s*\("[A-Z]\w+", (_|Some)|^\s*"[A-Z]\w+" =>|"[A-Z]\w+" \| "[A-Z]\w+"|priority\(&ctor\)|types\["[A-Z]\w+"\]|\btag\(&self\.schema, "' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/catalog/codec.rs' -g '!**/api/verify.rs'
+    done
     count_under structure_listings crates/adtb/src '\bfn (holders|opens_from|inventory)\b|(?<!fn |self\.)\bholders_(of|meeting)\(|\.walk\(Holder::|\bInventory \{' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/catalog/structures.rs'
     count_under sim_test_opens crates/adtb-sim/tests '\bfn ((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)(<[^>]*>)?\((?!\))|\blet (mut )?(re)?open(ed|s|ing)? = (move )?\||\bfn engine\b[^{;]*\{\s*(let \w+ = )?Engine::open' -P -U
     count_adtb_tests sim_test_opens '\bfn ((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)(<[^>]*>)?\((?!\))|\blet (mut )?(re)?open(ed|s|ing)? = (move )?\||\bfn engine\b[^{;]*\{\s*(let \w+ = )?Engine::open' -P -U
@@ -142,7 +146,7 @@ found=$(found_counts)
 awk -v list="$allowlist" '
   function note(msg) { print "structure-check: " msg; bad = 1 }
   BEGIN {
-    split("crate_fields pub_fields disallowed_methods database_marks structure_listings mark_setters index_marks marked_readers api_aborts crash_loops crash_allows id_sentinels kernel_door kernel_overwrite prelude_positions denial_zips sim_test_opens sim_test_damage sim_test_offsets", names, " ")
+    split("crate_fields pub_fields disallowed_methods database_marks structure_listings mark_setters index_marks marked_readers api_aborts crash_loops crash_allows id_sentinels kernel_door kernel_overwrite prelude_positions denial_zips catalog_row_fields catalog_row_ctors sim_test_opens sim_test_damage sim_test_offsets", names, " ")
     for (i in names) row[names[i]] = 1
     while ((getline line < list) > 0) {
       if (line ~ /^[[:space:]]*(#|$)/) continue

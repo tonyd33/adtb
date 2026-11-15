@@ -1313,7 +1313,22 @@ pub fn build_ahead(
     files: &[(FileId, ast::SchemaFile)],
     ahead: &[Ahead],
 ) -> Result<Schema, Vec<FileDiag>> {
-    let all: Vec<_> = BUILT_IN
+    build_over(&BUILT_IN, files, ahead)
+}
+
+/// Returns the schema `build` returns for no files, the engine's declarations read from `engine`
+/// in place of the ones the engine holds.
+#[cfg(feature = "testing")]
+pub fn build_engine_from(engine: &str) -> Result<Schema, Vec<FileDiag>> {
+    build_over(&built_in(engine), &[], &[])
+}
+
+fn build_over(
+    built_in: &[(FileId, ast::SchemaFile)],
+    files: &[(FileId, ast::SchemaFile)],
+    ahead: &[Ahead],
+) -> Result<Schema, Vec<FileDiag>> {
+    let all: Vec<_> = built_in
         .iter()
         .chain(files)
         .map(|(id, f)| (*id, f))
@@ -1396,18 +1411,25 @@ fn tag_former(id: TypeId) -> TypeDef {
 }
 
 /// The prelude and the engine's own module files, parsed once.
-static BUILT_IN: LazyLock<Vec<(FileId, ast::SchemaFile)>> = LazyLock::new(|| {
+static BUILT_IN: LazyLock<Vec<(FileId, ast::SchemaFile)>> = LazyLock::new(|| built_in(ENGINE_SRC));
+
+/// Returns the prelude and the module files of the engine's declarations `engine`, parsed.
+fn built_in(engine: &str) -> Vec<(FileId, ast::SchemaFile)> {
     let prelude = parse::parse_schema(PRELUDE_SRC, Options::default())
         .ok()
         .expect("the prelude parses");
     let mut all = vec![(FileId::PRELUDE, prelude)];
-    all.extend(engine_files().into_iter().map(|f| (FileId::ENGINE, f)));
+    all.extend(
+        engine_files(engine)
+            .into_iter()
+            .map(|f| (FileId::ENGINE, f)),
+    );
     all
-});
+}
 
-/// The module files of the engine's own declarations.
-fn engine_files() -> Vec<ast::SchemaFile> {
-    let items = parse::parse_example(ENGINE_SRC, Options::default())
+/// Returns the module files of the engine's declarations `engine`.
+fn engine_files(engine: &str) -> Vec<ast::SchemaFile> {
+    let items = parse::parse_example(engine, Options::default())
         .ok()
         .expect("the engine's declarations parse");
     let mut files: Vec<ast::SchemaFile> = Vec::new();

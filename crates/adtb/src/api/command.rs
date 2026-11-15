@@ -12,6 +12,7 @@ use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{Base, CtorSet, RelId, RelRef, Ty};
 
+use crate::catalog::codec::{Codec, SettingRow};
 use crate::exec::Val;
 use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
@@ -782,7 +783,8 @@ impl<R: Runtime> Engine<R> {
         held: &VacuumHold<'_, R>,
     ) -> Result<DynRows, write::Error> {
         let schema = p.schema();
-        let settings = engine_relation(schema, "catalog", "settings")?;
+        let codec = Codec::<SettingRow>::new(schema);
+        let settings = codec.relation();
         let def = schema.relation(settings).elem_def;
         let given = self.text_of(p, std::slice::from_ref(&value));
         let mut got = self
@@ -812,14 +814,20 @@ impl<R: Runtime> Engine<R> {
             fields.push((*v).clone());
         }
         let row = Val::ctor(setting, fields);
+        let decoded = codec
+            .decode_val(schema, &row)
+            .map_err(|r| write::Broken::CatalogError(r.into()))?;
         let writer = self.deployed.write(&self.rt);
-        if matches!(ctor.name.as_str(), "DefaultLease" | "LeaseGrace") {
+        if matches!(
+            decoded,
+            SettingRow::DefaultLease(_) | SettingRow::LeaseGrace(_)
+        ) {
             self.latch_expired(&writer)?;
         }
         self.swap_row(schema, settings, Old::Ctor(setting), row.clone())?;
         let window = {
             let mut settings = self.settings.lock(&self.rt);
-            settings.set(schema, &row);
+            settings.set(&decoded);
             self.background.configure(&settings);
             settings.window
         };

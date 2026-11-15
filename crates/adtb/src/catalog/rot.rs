@@ -44,7 +44,12 @@ pub enum Rot {
         found: Option<Value>,
     },
     GrantNoId,
-    RoleRow(Vec<Value>),
+    /// A row of a catalog relation, `row` naming the relation and its constructor when it has one,
+    /// that does not have the shape the relation declares.
+    CatalogRow {
+        row: String,
+        detail: String,
+    },
     UntaggedGrant(i64),
     KeptRow(Vec<Value>),
     KeptFormat(u64),
@@ -113,7 +118,7 @@ impl fmt::Display for Rot {
             Rot::IndexKeying(e) => f.write_str(&detail(e)),
             Rot::GrantField { field, found } => write!(f, "a grant row's {field} is {found:?}"),
             Rot::GrantNoId => f.write_str("a grant row has no I64 id"),
-            Rot::RoleRow(row) => write!(f, "a role row is {row:?}"),
+            Rot::CatalogRow { row, detail } => write!(f, "a row of {row} {detail}"),
             Rot::UntaggedGrant(id) => write!(f, "grant row {id} records no grant of the log"),
             Rot::KeptRow(fields) => write!(f, "a kept row holds {fields:?}"),
             Rot::KeptFormat(format) => write!(

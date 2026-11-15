@@ -39,6 +39,8 @@ pub use large::LargeStore;
 pub(crate) use named::before_next_refusal;
 pub use named::{OrphanEntry, refuse_named, vacant};
 #[cfg(test)]
+pub(crate) use row::Layout;
+#[cfg(test)]
 pub use row::Pointer;
 pub(crate) use row::put_uvarint;
 pub use row::{CtorType, FieldType};
