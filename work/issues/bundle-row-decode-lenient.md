@@ -7,6 +7,7 @@ summary: "bundle and registered rows decode an unknown Registered constructor as
 tags:
   - quality
   - engine
+  - class-identity-by-spelling
 ---
 
 # Bundle rows decode malformed values as defaults instead of refusing them

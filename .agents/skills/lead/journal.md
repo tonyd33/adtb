@@ -773,3 +773,11 @@ Periodic checkpoint change 2 added crash searches whose deep seeds lose acknowle
 ## 2026-11-07: a week of instances, structure unreviewed
 
 The maintainer found a raw page guard handed out of the pager by reading one commit, and froze ticket work. The cause was mine: my blocker rule counted only lost data and wrong answers, so every review brief I wrote hunted bugs and no reviewer was asked about structure; my M1 and checkpoint rulings added maps to the pager's `Meta` (`blanked`, `reserved`, `records.retired`) instead of an owner for them; the quality review, scoped to diffs, cannot see structure, and ran ten tracks late. Changed the same day: a blocker now includes ownerless state, internals made visible and unstated contracts; every code brief carries a `## Contract` section and every review the same table first. Bet: within two restructure tracks the storage counts (crate-visible pager fields, `.meta()` sites outside the owner) fall, and no damage ticket is filed whose cause is two maps disagreeing.
+
+## 2026-11-15: lang identity steps 9 and 10a
+
+Held: the 2026-11-07 structure bet. Steps 9a to 10a each removed a by-spelling family and left a structure-check row whose count only falls (`prelude_type_names` reached 0 and was removed; `prelude_positions`, `catalog_row_fields`, `catalog_row_ctors` fall per step), and every review brief asked about structure first. Each of the five tracks needed two rounds and no third; asking authors to count and propose a split before code (steps 9 and 10) kept every round inside one track.
+
+Went poorly: two `slot` refusals on tickets with no class tag, each costing a round trip; a review of 10a found that fields were still looked up by name per read after I had ruled "once per build", which I had not checked in the author's report; main's working copy went stale while a slot's jj operations ran beside my `jj file track`, dropping a ticket file's tracking (recovered from a backup). A slot check that timed out under load (9c) I deferred to a rerun alone instead of treating it as a failure of the change; that held.
+
+Changed: before writing a brief I check its ticket's class tag; I back up and re-check tracked ticket files after any concurrent jj operation and before `land`. Bet: step 10b and 10c land with both catalog rows at 0 and no ruling of mine contradicted by its review.

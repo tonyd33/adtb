@@ -2,7 +2,7 @@
 created-at: 2026-11-14
 status: open
 kind: feature
-priority: 360
+priority: 30
 summary: "Schema::declared panics on a mid-migration schema, held only by a runtime check; a committed schema type carrying declared would make the precondition a type"
 tags:
   - structure
