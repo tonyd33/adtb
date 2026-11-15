@@ -7,15 +7,16 @@ use std::sync::Arc;
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
 use adtb_lang::check::Command;
+use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor as k, engine_rel};
 use adtb_lang::parse::reads_as_bundle_name;
 use adtb_lang::schema::Schema;
-use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::{Lock, Ranked, RankedGuard};
 
-use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, layout, values};
+use crate::catalog::codec::{self, Codec, Ctor, Decode, Field, Fields, Sum, field, sum};
+use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, Rot, layout, values};
 use crate::exec::{self, Val};
-use crate::key::Value;
+use crate::key::{Scalar, Value};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -115,56 +116,17 @@ const PRIORITIES: [(&str, exec::Priority); 3] = [
     ("Regular", exec::Priority::Regular),
 ];
 
-/// A row of `catalog::bundles` or `catalog::registered` the engine did not write.
+/// A value the engine built as a row of `catalog::bundles` or `catalog::registered` that is no
+/// constructor's value.
 #[derive(Debug)]
 pub(super) enum BadRow {
     NotARow(Val),
-    Registered(Val),
-    Field {
-        row: &'static str,
-        field: String,
-        found: Option<Val>,
-    },
-    Bundle {
-        bundle: String,
-        field: &'static str,
-        found: String,
-    },
-    Range(std::num::TryFromIntError),
-}
-
-impl BadRow {
-    fn field(row: &'static str, field: &str, found: Option<&Val>) -> BadRow {
-        BadRow::Field {
-            row,
-            field: field.to_owned(),
-            found: found.cloned(),
-        }
-    }
-
-    fn bundle(bundle: &str, field: &'static str, found: String) -> BadRow {
-        BadRow::Bundle {
-            bundle: bundle.to_owned(),
-            field,
-            found,
-        }
-    }
 }
 
 impl fmt::Display for BadRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BadRow::NotARow(v) => write!(f, "a catalog row is {v:?}"),
-            BadRow::Registered(v) => write!(f, "a registered row is {v:?}"),
-            BadRow::Field { row, field, found } => {
-                write!(f, "field `{field}` of a {row} row is {:?}", found.as_ref())
-            }
-            BadRow::Bundle {
-                bundle,
-                field,
-                found,
-            } => write!(f, "bundle {bundle} has {field} {found}"),
-            BadRow::Range(e) => write!(f, "{e}"),
         }
     }
 }
@@ -260,11 +222,29 @@ pub(super) struct Passed<'a> {
     pub(super) text: &'a str,
 }
 
+/// What a registered call is: a query, a transaction or an imported function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Callable {
+    Query,
+    Txn,
+    Fn,
+}
+
+impl Callable {
+    /// Returns the constructor of `catalog::Registered` a call of this kind is a row of.
+    fn ctor(self) -> CatCtorId {
+        match self {
+            Callable::Query => k::REGISTERED_QUERY,
+            Callable::Txn => k::REGISTERED_TXN,
+            Callable::Fn => k::REGISTERED_IMPORTED_FN,
+        }
+    }
+}
+
 /// One registered call of a bundle, as a row of `catalog::registered` holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CallRow {
-    /// The constructor of `catalog::Registered`: `Query`, `Txn` or `ImportedFn`.
-    pub(super) kind: &'static str,
+    pub(super) kind: Callable,
     pub(super) name: String,
     pub(super) ordinal: i64,
     pub(super) signature: String,
@@ -344,6 +324,174 @@ impl Stored {
     }
 }
 
+const BUNDLE: Fields = &[
+    "id",
+    "name",
+    "family",
+    "owner",
+    "pins",
+    "hash",
+    "edition",
+    "catalog",
+    "hides_new",
+    "lease",
+    "renewed",
+    "priority",
+    "memory_share",
+    "workers",
+    "state",
+];
+const BUNDLE_ID: Field = field(BUNDLE, "id");
+const BUNDLE_NAME: Field = field(BUNDLE, "name");
+const FAMILY: Field = field(BUNDLE, "family");
+const OWNER: Field = field(BUNDLE, "owner");
+const PINS: Field = field(BUNDLE, "pins");
+const HASH: Field = field(BUNDLE, "hash");
+const EDITION_F: Field = field(BUNDLE, "edition");
+const CATALOG: Field = field(BUNDLE, "catalog");
+const HIDES_NEW: Field = field(BUNDLE, "hides_new");
+const LEASE: Field = field(BUNDLE, "lease");
+const RENEWED: Field = field(BUNDLE, "renewed");
+const PRIORITY: Sum = sum(
+    field(BUNDLE, "priority"),
+    &[
+        (k::PRIORITY_AD_HOC, &[]),
+        (k::PRIORITY_BACKGROUND, &[]),
+        (k::PRIORITY_REGULAR, &[]),
+    ],
+);
+const STATE: Sum = sum(
+    field(BUNDLE, "state"),
+    &[
+        (k::BUNDLE_ACTIVE, &[]),
+        (k::BUNDLE_SUPERSEDED, &[Scalar::Instant]),
+        (k::BUNDLE_RETIRED, &[Scalar::Instant]),
+    ],
+);
+
+impl Decode for Row {
+    const RELATION: CatRelId = engine_rel::BUNDLES;
+    const CTORS: &'static [Ctor<Row>] =
+        &[Ctor::new(k::BUNDLE, BUNDLE, bundle_row).with_sums(&[PRIORITY, STATE])];
+}
+
+/// Returns the bundle row `r` holds, its lease not latched.
+fn bundle_row(r: &codec::Row<'_>) -> Result<Row, Rot> {
+    let (name, family) = (r.text(BUNDLE_NAME), r.text(FAMILY));
+    if !reads_as_bundle_name(name) {
+        return Err(r.refused(format!(
+            "names `{name}`, not a bundle name of a family, a hyphen and a version"
+        )));
+    }
+    let (named, version) = name
+        .rsplit_once('-')
+        .expect("a bundle name holds a hyphen before its version");
+    if named != family {
+        return Err(r.refused(format!(
+            "names bundle `{name}` under family `{family}`, not `{named}`"
+        )));
+    }
+    let catalog = match r.optional_int(CATALOG) {
+        Some(c) => Some(u64::try_from(c).map_err(|_| r.bad(CATALOG))?),
+        None => None,
+    };
+    let priority = match r.ctor(PRIORITY).0 {
+        k::PRIORITY_AD_HOC => exec::Priority::AdHoc,
+        k::PRIORITY_BACKGROUND => exec::Priority::Background,
+        k::PRIORITY_REGULAR => exec::Priority::Regular,
+        other => unlisted(other),
+    };
+    let state = match r.ctor(STATE) {
+        (k::BUNDLE_ACTIVE, _) => State::Active,
+        (k::BUNDLE_SUPERSEDED, at) => State::Superseded(codec::payload_instant(at)),
+        (k::BUNDLE_RETIRED, at) => State::Retired(codec::payload_instant(at)),
+        (other, _) => unlisted(other),
+    };
+    Ok(Row {
+        id: r.int(BUNDLE_ID),
+        header: Header {
+            name: name.to_owned(),
+            family: family.to_owned(),
+            version: version.to_owned(),
+            pins: u64::try_from(r.int(PINS)).map_err(|_| r.bad(PINS))?,
+            hash: r.bytes(HASH).iter().map(|x| format!("{x:02x}")).collect(),
+            catalog,
+            edition: r.text(EDITION_F).to_owned(),
+            lease: r.optional_duration(LEASE),
+            hides_new: r.flag(HIDES_NEW),
+            priority,
+        },
+        owner: r.text(OWNER).to_owned(),
+        renewed: r.instant(RENEWED),
+        state,
+        latched: false,
+    })
+}
+
+/// Abort on nested constructor `id` its `Sum` does not list, which `Codec::new` rules out.
+fn unlisted(id: CatCtorId) -> ! {
+    panic!("Codec::new checks constructor {id} is listed by its Sum")
+}
+
+/// A row of `catalog::registered`: a call with its row id and its bundle's id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Registered {
+    id: i64,
+    bundle: i64,
+    call: CallRow,
+}
+
+impl Registered {
+    /// Returns the id of the call's bundle.
+    pub(super) fn bundle(&self) -> i64 {
+        self.bundle
+    }
+}
+
+const CALL: Fields = &[
+    "id",
+    "bundle",
+    "name",
+    "ordinal",
+    "signature",
+    "text",
+    "limit",
+];
+const CALL_ID: Field = field(CALL, "id");
+const CALL_BUNDLE: Field = field(CALL, "bundle");
+const CALL_NAME: Field = field(CALL, "name");
+const ORDINAL: Field = field(CALL, "ordinal");
+const SIGNATURE: Field = field(CALL, "signature");
+const TEXT: Field = field(CALL, "text");
+
+impl Decode for Registered {
+    const RELATION: CatRelId = engine_rel::REGISTERED;
+    const CTORS: &'static [Ctor<Registered>] = &[
+        Ctor::new(k::REGISTERED_QUERY, CALL, |r| {
+            registered(r, Callable::Query)
+        }),
+        Ctor::new(k::REGISTERED_TXN, CALL, |r| registered(r, Callable::Txn)),
+        Ctor::new(k::REGISTERED_IMPORTED_FN, CALL, |r| {
+            registered(r, Callable::Fn)
+        }),
+    ];
+}
+
+/// Returns the registered call of kind `kind` that `r` holds.
+fn registered(r: &codec::Row<'_>, kind: Callable) -> Result<Registered, Rot> {
+    Ok(Registered {
+        id: r.int(CALL_ID),
+        bundle: r.int(CALL_BUNDLE),
+        call: CallRow {
+            kind,
+            name: r.text(CALL_NAME).to_owned(),
+            ordinal: r.int32(ORDINAL),
+            signature: r.text(SIGNATURE).to_owned(),
+            text: r.text(TEXT).to_owned(),
+        },
+    })
+}
+
 /// The relations and types the deployment rows live in.
 struct Tables<'s> {
     schema: &'s Schema,
@@ -370,14 +518,6 @@ impl<'s> Tables<'s> {
         s.ty(def)
             .ctor_index(name)
             .unwrap_or_else(|| panic!("`catalog::{ty}` has constructor `{name}`"))
-    }
-
-    fn ctor_name(&self, ty: &str, c: u32) -> String {
-        let s = self.schema;
-        let m = s
-            .module_named("catalog")
-            .expect("the engine declares module `catalog`");
-        s.ty(s.module(m).types[ty]).ctors()[c as usize].name.clone()
     }
 
     /// Returns the value of `row`.
@@ -424,81 +564,14 @@ impl<'s> Tables<'s> {
         Val::ctor(0, self.ordered(self.bundles, 0, &fields))
     }
 
-    /// Returns the row `v`, a value of `catalog::Bundle`.
-    fn bundle_row(&self, v: &Val) -> Result<Row, BadRow> {
-        let f = self.named(self.bundles, v)?;
-        let field = |n: &str| BadRow::field("bundle", n, f.get(n));
-        let text = |n: &str| match f.get(n) {
-            Some(Val::Text(t)) => Ok(t.to_string()),
-            _ => Err(field(n)),
-        };
-        let number = |n: &str| match f.get(n) {
-            Some(Val::Int(i)) => Ok(*i),
-            _ => Err(field(n)),
-        };
-        let some = |n: &str| match f.get(n) {
-            Some(Val::Ctor(ctor::SOME, inner)) => Ok(inner.first().cloned()),
-            Some(Val::Ctor(ctor::NONE, _)) => Ok(None),
-            _ => Err(field(n)),
-        };
-        let name = text("name")?;
-        let state = match f.get("state") {
-            Some(Val::Ctor(c, at)) => {
-                match (self.ctor_name("BundleState", *c).as_str(), at.first()) {
-                    ("Active", _) => State::Active,
-                    ("Superseded", Some(Val::Instant(t))) => State::Superseded(*t),
-                    ("Retired", Some(Val::Instant(t))) => State::Retired(*t),
-                    other => return Err(BadRow::bundle(&name, "state", format!("{other:?}"))),
-                }
-            }
-            other => return Err(BadRow::bundle(&name, "state", format!("{other:?}"))),
-        };
-        let header = Header {
-            version: name
-                .rsplit_once('-')
-                .map(|(_, v)| v.to_owned())
-                .unwrap_or_default(),
-            family: text("family")?,
-            pins: u64::try_from(number("pins")?).map_err(BadRow::Range)?,
-            hash: match f.get("hash") {
-                Some(Val::Bytes(b)) => b.iter().map(|x| format!("{x:02x}")).collect(),
-                other => return Err(BadRow::bundle(&name, "hash", format!("{other:?}"))),
-            },
-            catalog: match some("catalog")? {
-                Some(Val::Int(c)) => Some(u64::try_from(c).map_err(BadRow::Range)?),
-                _ => None,
-            },
-            edition: text("edition")?,
-            lease: match some("lease")? {
-                Some(Val::Duration(d)) => Some(d),
-                _ => None,
-            },
-            hides_new: matches!(f.get("hides_new"), Some(v) if v.truth().unwrap_or(false)),
-            priority: match f.get("priority") {
-                Some(Val::Ctor(c, _)) => {
-                    let ctor = self.ctor_name("Priority", *c);
-                    priority(&ctor).ok_or_else(|| BadRow::bundle(&name, "priority", ctor))?
-                }
-                other => return Err(BadRow::bundle(&name, "priority", format!("{other:?}"))),
-            },
-            name,
-        };
-        Ok(Row {
-            id: number("id")?,
-            owner: text("owner")?,
-            renewed: match f.get("renewed") {
-                Some(Val::Instant(t)) => *t,
-                _ => return Err(field("renewed")),
-            },
-            state,
-            latched: false,
-            header,
-        })
-    }
-
     /// Returns the value of call `c`, row `id` of bundle `bundle`.
     fn call_value(&self, id: i64, bundle: i64, c: &CallRow) -> Val {
-        let kind = self.ctor("Registered", c.kind);
+        let kind = self
+            .schema
+            .ids()
+            .ctor_of(c.kind.ctor())
+            .expect("the engine declares each `Registered` constructor")
+            .index();
         let fields = BTreeMap::from([
             ("id", Val::Int(id)),
             ("bundle", Val::Int(bundle)),
@@ -509,39 +582,6 @@ impl<'s> Tables<'s> {
             ("limit", Val::none()),
         ]);
         Val::ctor(kind, self.ordered(self.registered, kind, &fields))
-    }
-
-    /// Returns the row id, bundle id and call of `v`, a value of `catalog::Registered`.
-    fn call_row(&self, v: &Val) -> Result<(i64, i64, CallRow), BadRow> {
-        let Val::Ctor(kind, _) = v else {
-            return Err(BadRow::Registered(v.clone()));
-        };
-        let f = self.named(self.registered, v)?;
-        let field = |n: &str| BadRow::field("registered", n, f.get(n));
-        let text = |n: &str| match f.get(n) {
-            Some(Val::Text(t)) => Ok(t.to_string()),
-            _ => Err(field(n)),
-        };
-        let number = |n: &str| match f.get(n) {
-            Some(Val::Int(i)) => Ok(*i),
-            _ => Err(field(n)),
-        };
-        let kind = match self.ctor_name("Registered", *kind).as_str() {
-            "Query" => "Query",
-            "Txn" => "Txn",
-            _ => "ImportedFn",
-        };
-        Ok((
-            number("id")?,
-            number("bundle")?,
-            CallRow {
-                kind,
-                name: text("name")?,
-                ordinal: number("ordinal")?,
-                signature: text("signature")?,
-                text: text("text")?,
-            },
-        ))
     }
 
     /// Returns the values of `fields` in the order of a row of constructor `c` of `rel`.
@@ -557,18 +597,6 @@ impl<'s> Tables<'s> {
             .collect()
     }
 
-    /// Returns the fields of `v`, a row of `rel`, by name.
-    fn named(&self, rel: RelId, v: &Val) -> Result<BTreeMap<String, Val>, BadRow> {
-        let Val::Ctor(c, fs) = v else {
-            return Err(BadRow::NotARow(v.clone()));
-        };
-        Ok(layout::row(self.schema, rel, *c)
-            .into_iter()
-            .map(|(n, _)| n)
-            .zip(fs.iter().cloned())
-            .collect())
-    }
-
     /// Returns the stored form of `v`, a row of `rel`.
     fn stored(&self, rel: RelId, v: &Val) -> Result<(u32, Vec<Value>), OpenError> {
         let Val::Ctor(c, fs) = v else {
@@ -581,16 +609,6 @@ impl<'s> Tables<'s> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(corrupt)?;
         Ok((*c, fields))
-    }
-
-    /// Returns the value of `row`, a stored row of constructor `c` of `rel`.
-    fn value(&self, rel: RelId, c: u32, row: &[Value]) -> Val {
-        let fields = layout::row(self.schema, rel, c)
-            .iter()
-            .zip(row)
-            .map(|((_, t), v)| exec::from_stored(&exec::conv(self.schema, t), v))
-            .collect();
-        Val::ctor(c, fields)
     }
 }
 
@@ -611,25 +629,15 @@ pub(super) fn stored<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
 ) -> Result<Stored, OpenError> {
-    let t = Tables::of(catalog.schema());
+    let schema = catalog.schema();
     let mut out = Stored::default();
-    for (c, row) in catalog
-        .committed_rows(pager, txns, t.bundles)
-        .map_err(corrupt)?
-    {
-        let row = t
-            .bundle_row(&t.value(t.bundles, c, &row))
-            .map_err(corrupt)?;
+    let bundles = catalog.committed(pager, txns, &Codec::<Row>::new(schema));
+    for row in bundles.map_err(corrupt)? {
         out.bundles.insert(row.header.name.clone(), row);
     }
-    for (c, row) in catalog
-        .committed_rows(pager, txns, t.registered)
-        .map_err(corrupt)?
-    {
-        let (id, bundle, call) = t
-            .call_row(&t.value(t.registered, c, &row))
-            .map_err(corrupt)?;
-        out.calls.entry(bundle).or_default().push((id, call));
+    let calls = catalog.committed(pager, txns, &Codec::<Registered>::new(schema));
+    for r in calls.map_err(corrupt)? {
+        out.calls.entry(r.bundle).or_default().push((r.id, r.call));
     }
     for calls in out.calls.values_mut() {
         calls.sort_by_key(|(_, c)| c.ordinal);

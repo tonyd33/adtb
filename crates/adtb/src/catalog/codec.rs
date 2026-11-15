@@ -9,7 +9,8 @@ use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::RelId;
 
 use crate::exec::{self, Val};
-use crate::key::{F64, Value};
+use crate::heap::FieldType;
+use crate::key::{F64, Scalar, Value};
 
 use super::Rot;
 use super::ids::{CatCtorId, CatRelId, ctor_id, relation};
@@ -18,6 +19,10 @@ use super::layout;
 #[cfg(test)]
 #[path = "codec_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "codec_testing.rs"]
+pub(crate) mod testing;
 
 /// The names of all the fields of one constructor, the header's included.
 pub type Fields = &'static [&'static str];
@@ -57,16 +62,43 @@ pub const fn field(fields: Fields, name: &str) -> Field {
     panic!("a codec reads a field its constructor lists")
 }
 
-/// One constructor a codec reads: its fixed id, its fields, and how a row of it reads.
+/// The fixed id of a constructor of a sum with the stored types of its fields.
+pub type Payload = (CatCtorId, &'static [Scalar]);
+
+/// A field of a constructor whose type is a sum, with each of its constructors.
+#[derive(Clone, Copy, Debug)]
+pub struct Sum {
+    field: Field,
+    ctors: &'static [Payload],
+}
+
+/// Returns sum field `field`, whose type's constructors are `ctors` in any order.
+pub const fn sum(field: Field, ctors: &'static [Payload]) -> Sum {
+    Sum { field, ctors }
+}
+
+/// One constructor a codec reads: its fixed id, its fields, the sum fields it reads, and how a
+/// row of it reads.
 pub struct Ctor<T> {
     id: CatCtorId,
     fields: Fields,
+    sums: &'static [Sum],
     read: fn(&Row<'_>) -> Result<T, Rot>,
 }
 
 impl<T> Ctor<T> {
     pub const fn new(id: CatCtorId, fields: Fields, read: fn(&Row<'_>) -> Result<T, Rot>) -> Self {
-        Ctor { id, fields, read }
+        Ctor {
+            id,
+            fields,
+            sums: &[],
+            read,
+        }
+    }
+
+    /// Returns this constructor reading the sum fields `sums` by [`Row::ctor`].
+    pub const fn with_sums(self, sums: &'static [Sum]) -> Self {
+        Ctor { sums, ..self }
     }
 }
 
@@ -90,13 +122,19 @@ struct Shape<T: 'static> {
     name: String,
     /// The stored position of each field of `ctor.fields`, in its order.
     positions: Vec<usize>,
+    /// For each field of `ctor.fields` that `ctor.sums` lists, the fixed id of each constructor
+    /// of its type by position.
+    sums: Vec<Option<Vec<CatCtorId>>>,
+    /// The stored type of each field of `ctor.fields`, in its order.
+    types: Vec<FieldType>,
 }
 
 impl<T: Decode> Codec<T> {
     /// Returns the codec of `T` over `schema`.
     ///
     /// Preconditions: `schema` declares `T::RELATION` with exactly the constructors and fields
-    /// `T::CTORS` lists, fields in any order.
+    /// `T::CTORS` lists, fields in any order, and each sum field a constructor lists with
+    /// exactly the constructors it lists.
     pub fn new(schema: &Schema) -> Codec<T> {
         let r = relation(schema, T::RELATION)
             .unwrap_or_else(|| panic!("the schema declares engine relation {}", T::RELATION));
@@ -112,10 +150,8 @@ impl<T: Decode> Codec<T> {
             .map(|c| {
                 let c = u32::try_from(c).expect("a constructor position fits 32 bits");
                 let id = ctor_id(schema, r, c);
-                let stored: Vec<String> = layout::row(schema, r, c)
-                    .into_iter()
-                    .map(|(n, _)| n)
-                    .collect();
+                let declared_fields = layout::row(schema, r, c);
+                let stored: Vec<String> = declared_fields.iter().map(|(n, _)| n.clone()).collect();
                 let ctor = T::CTORS
                     .iter()
                     .find(|k| k.id == id)
@@ -137,11 +173,53 @@ impl<T: Decode> Codec<T> {
                             .position(|s| s == f)
                             .expect("each listed field is declared")
                     })
+                    .collect::<Vec<usize>>();
+                let mut sums = vec![None; ctor.fields.len()];
+                for s in ctor.sums {
+                    assert!(
+                        s.field.fields == ctor.fields,
+                        "the codec of {name} lists a sum field of constructor {id} among its fields"
+                    );
+                    let field = s.field.fields[s.field.at];
+                    let FieldType::Sum(cs) =
+                        layout::field_type(schema, &declared_fields[positions[s.field.at]].1)
+                    else {
+                        panic!("field `{field}` of constructor {id} of {name} is a sum");
+                    };
+                    let table: Vec<CatCtorId> = cs
+                        .iter()
+                        .map(|c| CatCtorId::from_raw(u64::from(c.id.0)))
+                        .collect();
+                    for c in &cs {
+                        let id = CatCtorId::from_raw(u64::from(c.id.0));
+                        let listed = s.ctors.iter().find(|(k, _)| *k == id).map(|(_, p)| {
+                            p.iter().map(|s| FieldType::Scalar(*s)).collect::<Vec<_>>()
+                        });
+                        assert!(
+                            listed.is_none_or(|p| p == c.fields),
+                            "the codec of {name} lists the payload of constructor {id} of field `{field}`"
+                        );
+                    }
+                    let mut want: Vec<CatCtorId> = s.ctors.iter().map(|(k, _)| *k).collect();
+                    let mut have = table.clone();
+                    want.sort_unstable();
+                    have.sort_unstable();
+                    assert_eq!(
+                        want, have,
+                        "the codec of {name} lists the constructors of field `{field}` of constructor {id}"
+                    );
+                    sums[s.field.at] = Some(table);
+                }
+                let types = positions
+                    .iter()
+                    .map(|&at| layout::field_type(schema, &declared_fields[at].1))
                     .collect();
                 Shape {
                     ctor,
                     name: declared[c as usize].name.clone(),
                     positions,
+                    sums,
+                    types,
                 }
             })
             .collect();
@@ -169,31 +247,38 @@ impl<T: Decode> Codec<T> {
     /// Returns the typed row of `values`, a stored row of the constructor at position `ctor`.
     ///
     /// Fail with [`Rot::CatalogRow`] when the relation has no constructor at `ctor`, `values`
-    /// holds another count of fields than its constructor, or a field holds a value not of its
-    /// type.
+    /// holds another count of fields than its constructor, a field holds a value not of its
+    /// declared type, or the constructor's reader refuses a value.
     pub fn decode(&self, ctor: u32, values: &[Value]) -> Result<T, Rot> {
         let shape = self.shape(ctor)?;
         let row = Row {
             relation: &self.name,
             name: &shape.name,
+            ctor: shape.ctor.id,
             fields: shape.ctor.fields,
             positions: &shape.positions,
+            sums: &shape.sums,
             values,
         };
         if values.len() != shape.positions.len() {
-            return Err(row.refused(format!(
-                "holds {} fields, not {}",
-                values.len(),
-                shape.positions.len()
-            )));
+            return Err(row.refused(counted(values.len(), shape.positions.len())));
+        }
+        for (at, t) in shape.types.iter().enumerate() {
+            let f = Field {
+                fields: shape.ctor.fields,
+                at,
+            };
+            if !fits(t, row.get(f)) {
+                return Err(row.bad(f));
+            }
         }
         (shape.ctor.read)(&row)
     }
 
     /// Returns the typed row of `v`, a value of the relation's element type.
     ///
-    /// Fail as [`Codec::decode`] does, and when `v` is not a constructor's value or a field of it
-    /// has no stored form of its type.
+    /// Fail as [`Codec::decode`] does, and when `v` is not a constructor's value, holds another
+    /// count of fields than its constructor, or a field of it has no stored form of its type.
     pub fn decode_val(&self, schema: &Schema, v: &Val) -> Result<T, Rot> {
         let Val::Ctor(c, fields) = v else {
             return Err(Rot::CatalogRow {
@@ -201,8 +286,15 @@ impl<T: Decode> Codec<T> {
                 detail: format!("is {v:?}"),
             });
         };
-        self.shape(*c)?;
-        let stored = layout::row(schema, self.relation, *c)
+        let shape = self.shape(*c)?;
+        let declared = layout::row(schema, self.relation, *c);
+        if fields.len() != declared.len() {
+            return Err(Rot::CatalogRow {
+                row: format!("{}.{}", self.name, shape.name),
+                detail: counted(fields.len(), declared.len()),
+            });
+        }
+        let stored = declared
             .iter()
             .zip(fields.iter())
             .map(|((_, t), v)| exec::to_stored(&layout::field_type(schema, t), v).ok())
@@ -215,17 +307,65 @@ impl<T: Decode> Codec<T> {
     }
 }
 
+/// Returns the detail of a row holding `held` fields where its constructor declares `declared`.
+fn counted(held: usize, declared: usize) -> String {
+    let fields = if held == 1 { "field" } else { "fields" };
+    format!("holds {held} {fields}, not {declared}")
+}
+
+/// Returns whether `v` is a value of stored type `t`.
+fn fits(t: &FieldType, v: &Value) -> bool {
+    match (t, v) {
+        (FieldType::Scalar(s), v) => scalar_fits(*s, v),
+        (FieldType::Record(ts), Value::Record(vs)) => all_fit(ts, vs),
+        (FieldType::Sum(cs), Value::Sum { ctor, fields }) => cs
+            .get(*ctor as usize)
+            .is_some_and(|c| all_fit(&c.fields, fields)),
+        _ => false,
+    }
+}
+
+fn all_fit(ts: &[FieldType], vs: &[Value]) -> bool {
+    ts.len() == vs.len() && ts.iter().zip(vs).all(|(t, v)| fits(t, v))
+}
+
+fn scalar_fits(s: Scalar, v: &Value) -> bool {
+    matches!(
+        (s, v),
+        (Scalar::I8, Value::I8(_))
+            | (Scalar::I16, Value::I16(_))
+            | (Scalar::I32, Value::I32(_))
+            | (Scalar::I64, Value::I64(_))
+            | (Scalar::F32, Value::F32(_))
+            | (Scalar::F64, Value::F64(_))
+            | (Scalar::Decimal(_), Value::Decimal(_))
+            | (Scalar::Text, Value::Text(_))
+            | (Scalar::Bytes, Value::Bytes(_))
+            | (Scalar::SortKey, Value::SortKey(_))
+            | (Scalar::Instant, Value::Instant(_))
+            | (Scalar::Date, Value::Date(_))
+            | (Scalar::Time, Value::Time(_))
+            | (Scalar::DateTime, Value::DateTime(_))
+            | (Scalar::ZonedDateTime, Value::ZonedDateTime { .. })
+            | (Scalar::Duration, Value::Duration(_))
+            | (Scalar::Period, Value::Period { .. })
+    )
+}
+
 /// One stored row of a catalog relation, its fields read by [`Field`].
 pub struct Row<'a> {
     relation: &'a str,
     name: &'a str,
+    ctor: CatCtorId,
     fields: Fields,
     positions: &'a [usize],
+    sums: &'a [Option<Vec<CatCtorId>>],
     values: &'a [Value],
 }
 
 impl Row<'_> {
-    fn refused(&self, detail: String) -> Rot {
+    /// Returns the refusal of this row as damage, `detail` saying why.
+    pub fn refused(&self, detail: String) -> Rot {
         Rot::CatalogRow {
             row: format!("{}.{}", self.relation, self.name),
             detail,
@@ -240,7 +380,13 @@ impl Row<'_> {
         &self.values[self.positions[f.at]]
     }
 
-    fn bad(&self, f: Field) -> Rot {
+    /// Returns the fixed id of the row's constructor.
+    pub fn ctor_id(&self) -> CatCtorId {
+        self.ctor
+    }
+
+    /// Returns the refusal of the value field `f` holds.
+    pub fn bad(&self, f: Field) -> Rot {
         self.refused(format!(
             "holds {:?} in field `{}`",
             self.get(f),
@@ -248,57 +394,120 @@ impl Row<'_> {
         ))
     }
 
-    pub fn int(&self, f: Field) -> Result<i64, Rot> {
+    /// Abort on field `f` holding another type than its reader takes, which `decode` refuses first.
+    fn unchecked(&self, f: Field) -> ! {
+        panic!(
+            "decode checks field `{}` of {}.{} against its stored type before a reader reads it",
+            f.fields[f.at], self.relation, self.name
+        )
+    }
+
+    pub fn int(&self, f: Field) -> i64 {
         match self.get(f) {
-            Value::I64(n) => Ok(*n),
-            _ => Err(self.bad(f)),
+            Value::I64(n) => *n,
+            _ => self.unchecked(f),
         }
     }
 
-    pub fn text(&self, f: Field) -> Result<&str, Rot> {
+    /// Returns the integer in field `f`, an `I32` widened.
+    pub fn int32(&self, f: Field) -> i64 {
         match self.get(f) {
-            Value::Text(t) => Ok(t),
-            _ => Err(self.bad(f)),
+            Value::I32(n) => i64::from(*n),
+            _ => self.unchecked(f),
         }
     }
 
-    pub fn instant(&self, f: Field) -> Result<i64, Rot> {
+    pub fn bytes(&self, f: Field) -> &[u8] {
         match self.get(f) {
-            Value::Instant(t) => Ok(*t),
-            _ => Err(self.bad(f)),
+            Value::Bytes(b) => b,
+            _ => self.unchecked(f),
+        }
+    }
+
+    /// Returns the truth of the `Bool` in field `f`.
+    pub fn flag(&self, f: Field) -> bool {
+        match self.get(f) {
+            Value::Sum { ctor, .. } => *ctor == ctor::TRUE,
+            _ => self.unchecked(f),
+        }
+    }
+
+    /// Returns the fixed id of the constructor sum field `s` holds, with that constructor's
+    /// fields, of the types `s` lists for it.
+    pub fn ctor(&self, s: Sum) -> (CatCtorId, &[Value]) {
+        let table = self.sums[s.field.at]
+            .as_ref()
+            .expect("a codec reads a sum field its constructor lists");
+        match self.get(s.field) {
+            Value::Sum { ctor, fields } => (table[*ctor as usize], fields.as_slice()),
+            _ => self.unchecked(s.field),
+        }
+    }
+
+    pub fn text(&self, f: Field) -> &str {
+        match self.get(f) {
+            Value::Text(t) => t,
+            _ => self.unchecked(f),
+        }
+    }
+
+    pub fn instant(&self, f: Field) -> i64 {
+        match self.get(f) {
+            Value::Instant(t) => *t,
+            _ => self.unchecked(f),
         }
     }
 
     /// Returns the duration in field `f`, in microseconds.
-    pub fn duration(&self, f: Field) -> Result<i64, Rot> {
+    pub fn duration(&self, f: Field) -> i64 {
         match self.get(f) {
-            Value::Duration(d) => Ok(*d),
-            _ => Err(self.bad(f)),
+            Value::Duration(d) => *d,
+            _ => self.unchecked(f),
         }
     }
 
-    pub fn float(&self, f: Field) -> Result<F64, Rot> {
+    pub fn float(&self, f: Field) -> F64 {
         match self.get(f) {
-            Value::F64(x) => Ok(*x),
-            _ => Err(self.bad(f)),
+            Value::F64(x) => *x,
+            _ => self.unchecked(f),
         }
     }
 
     /// Returns the duration an `Option Duration` field holds, in microseconds.
-    pub fn optional_duration(&self, f: Field) -> Result<Option<i64>, Rot> {
+    pub fn optional_duration(&self, f: Field) -> Option<i64> {
+        self.optional(f, |v| match v {
+            Value::Duration(d) => Some(*d),
+            _ => None,
+        })
+    }
+
+    /// Returns the integer an `Option I64` field holds.
+    pub fn optional_int(&self, f: Field) -> Option<i64> {
+        self.optional(f, |v| match v {
+            Value::I64(n) => Some(*n),
+            _ => None,
+        })
+    }
+
+    fn optional<T>(&self, f: Field, inner: impl Fn(&Value) -> Option<T>) -> Option<T> {
         match self.get(f) {
-            Value::Sum {
-                ctor: ctor::NONE,
-                fields,
-            } if fields.is_empty() => Ok(None),
             Value::Sum {
                 ctor: ctor::SOME,
                 fields,
-            } => match fields.as_slice() {
-                [Value::Duration(d)] => Ok(Some(*d)),
-                _ => Err(self.bad(f)),
-            },
-            _ => Err(self.bad(f)),
+            } => Some(inner(&fields[0]).unwrap_or_else(|| self.unchecked(f))),
+            Value::Sum { .. } => None,
+            _ => self.unchecked(f),
+        }
+    }
+}
+
+/// Returns the instant of `payload`, the fields of a sum constructor whose [`Sum`] lists them as
+/// one `Instant`.
+pub fn payload_instant(payload: &[Value]) -> i64 {
+    match payload {
+        [Value::Instant(t)] => *t,
+        _ => {
+            panic!("Codec::new checks a sum constructor's payload against the types its Sum lists")
         }
     }
 }
@@ -320,15 +529,13 @@ impl RoleRow {
 const ROLE: Fields = &["id", "name", "created"];
 const ROLE_ID: Field = field(ROLE, "id");
 const ROLE_NAME: Field = field(ROLE, "name");
-const ROLE_CREATED: Field = field(ROLE, "created");
 
 impl Decode for RoleRow {
     const RELATION: CatRelId = engine_rel::ROLES;
     const CTORS: &'static [Ctor<RoleRow>] = &[Ctor::new(k::ROLE, ROLE, |row| {
-        row.instant(ROLE_CREATED)?;
         Ok(RoleRow {
-            id: row.int(ROLE_ID)?,
-            name: row.text(ROLE_NAME)?.to_owned(),
+            id: row.int(ROLE_ID),
+            name: row.text(ROLE_NAME).to_owned(),
         })
     })];
 }
@@ -388,76 +595,111 @@ const GRACE_F: Field = field(GRACE, "grace");
 const PERIOD_F: Field = field(PERIOD, "period");
 const RETRIES_F: Field = field(RETRIES, "retries");
 
+const BUDGET_ID: Field = field(BUDGET, "id");
+const DELAY_ID: Field = field(DELAY, "id");
+const EVERY_ID: Field = field(EVERY, "id");
+const GRACE_ID: Field = field(GRACE, "id");
+const KEEP_ID: Field = field(KEEP, "id");
+const LEASE_ID: Field = field(LEASE, "id");
+const LENGTH_ID: Field = field(LENGTH, "id");
+const LIMIT_ID: Field = field(LIMIT, "id");
+const PERIOD_ID: Field = field(PERIOD, "id");
+const RETRIES_ID: Field = field(RETRIES, "id");
+const ROWS_ID: Field = field(ROWS, "id");
+const SAMPLING_ID: Field = field(SAMPLING, "id");
+const WAIT_ID: Field = field(WAIT, "id");
+
+/// Returns `setting`, once the header field `id` of `r` holds its constructor's catalog id.
+fn keyed(r: &Row<'_>, id: Field, setting: SettingRow) -> Result<SettingRow, Rot> {
+    if u64::try_from(r.int(id)) == Ok(r.ctor_id().raw()) {
+        Ok(setting)
+    } else {
+        Err(r.bad(id))
+    }
+}
+
 impl Decode for SettingRow {
     const RELATION: CatRelId = engine_rel::SETTINGS;
     const CTORS: &'static [Ctor<SettingRow>] = {
         use SettingRow as S;
         &[
             Ctor::new(k::SETTING_STATEMENT_LIMIT, LIMIT, |r| {
-                Ok(S::StatementLimit(r.optional_duration(LIMIT_F)?))
+                keyed(r, LIMIT_ID, S::StatementLimit(r.optional_duration(LIMIT_F)))
             }),
             Ctor::new(k::SETTING_TRANSACTION_LIMIT, LIMIT, |r| {
-                Ok(S::TransactionLimit(r.optional_duration(LIMIT_F)?))
+                keyed(
+                    r,
+                    LIMIT_ID,
+                    S::TransactionLimit(r.optional_duration(LIMIT_F)),
+                )
             }),
             Ctor::new(k::SETTING_IDLE_LIMIT, LIMIT, |r| {
-                Ok(S::IdleLimit(r.optional_duration(LIMIT_F)?))
+                keyed(r, LIMIT_ID, S::IdleLimit(r.optional_duration(LIMIT_F)))
             }),
             Ctor::new(k::SETTING_STREAM_IDLE_LIMIT, LIMIT, |r| {
-                Ok(S::StreamIdleLimit(r.duration(LIMIT_F)?))
+                keyed(r, LIMIT_ID, S::StreamIdleLimit(r.duration(LIMIT_F)))
             }),
             Ctor::new(k::SETTING_REQUEST_WINDOW, KEEP, |r| {
-                Ok(S::RequestWindow(r.duration(KEEP_F)?))
+                keyed(r, KEEP_ID, S::RequestWindow(r.duration(KEEP_F)))
             }),
             Ctor::new(k::SETTING_SAFE_POINT_DELAY, DELAY, |r| {
-                Ok(S::SafePointDelay(r.duration(DELAY_F)?))
+                keyed(r, DELAY_ID, S::SafePointDelay(r.duration(DELAY_F)))
             }),
             Ctor::new(k::SETTING_REPLICA_WAIT, WAIT, |r| {
-                Ok(S::ReplicaWait(r.duration(WAIT_F)?))
+                keyed(r, WAIT_ID, S::ReplicaWait(r.duration(WAIT_F)))
             }),
             Ctor::new(k::SETTING_DEFAULT_LEASE, LEASE, |r| {
-                Ok(S::DefaultLease(r.duration(LEASE_F)?))
+                keyed(r, LEASE_ID, S::DefaultLease(r.duration(LEASE_F)))
             }),
             Ctor::new(k::SETTING_FEED_RETENTION, KEEP, |r| {
-                Ok(S::FeedRetention(r.duration(KEEP_F)?))
+                keyed(r, KEEP_ID, S::FeedRetention(r.duration(KEEP_F)))
             }),
             Ctor::new(k::SETTING_STATS_WINDOW, LENGTH, |r| {
-                Ok(S::StatsWindow(r.duration(LENGTH_F)?))
+                keyed(r, LENGTH_ID, S::StatsWindow(r.duration(LENGTH_F)))
             }),
             Ctor::new(k::SETTING_STATS_RETENTION, KEEP, |r| {
-                Ok(S::StatsRetention(r.duration(KEEP_F)?))
+                keyed(r, KEEP_ID, S::StatsRetention(r.duration(KEEP_F)))
             }),
             Ctor::new(k::SETTING_WAIT_SAMPLING, SAMPLING, |r| {
-                Ok(S::WaitSampling {
-                    every: r.duration(SAMPLING_EVERY)?,
-                    keep: r.duration(SAMPLING_KEEP)?,
-                })
+                keyed(
+                    r,
+                    SAMPLING_ID,
+                    S::WaitSampling {
+                        every: r.duration(SAMPLING_EVERY),
+                        keep: r.duration(SAMPLING_KEEP),
+                    },
+                )
             }),
             Ctor::new(k::SETTING_CONFLICT_LOG, ROWS, |r| {
-                Ok(S::ConflictLog(r.int(ROWS_F)?))
+                keyed(r, ROWS_ID, S::ConflictLog(r.int(ROWS_F)))
             }),
             Ctor::new(k::SETTING_VACUUM_BUDGET, BUDGET, |r| {
-                Ok(S::VacuumBudget {
-                    io: r.float(IO)?,
-                    cpu: r.float(CPU)?,
-                })
+                keyed(
+                    r,
+                    BUDGET_ID,
+                    S::VacuumBudget {
+                        io: r.float(IO),
+                        cpu: r.float(CPU),
+                    },
+                )
             }),
             Ctor::new(k::SETTING_SCRUB_INTERVAL, EVERY, |r| {
-                Ok(S::ScrubInterval(r.optional_duration(EVERY_F)?))
+                keyed(r, EVERY_ID, S::ScrubInterval(r.optional_duration(EVERY_F)))
             }),
             Ctor::new(k::SETTING_LEASE_GRACE, GRACE, |r| {
-                Ok(S::LeaseGrace(r.duration(GRACE_F)?))
+                keyed(r, GRACE_ID, S::LeaseGrace(r.duration(GRACE_F)))
             }),
             Ctor::new(k::SETTING_BLOCKING_NOTICE_PERIOD, PERIOD, |r| {
-                Ok(S::BlockingNoticePeriod(r.duration(PERIOD_F)?))
+                keyed(r, PERIOD_ID, S::BlockingNoticePeriod(r.duration(PERIOD_F)))
             }),
             Ctor::new(k::SETTING_REPLICA_VACUUM_WAIT, WAIT, |r| {
-                Ok(S::ReplicaVacuumWait(r.duration(WAIT_F)?))
+                keyed(r, WAIT_ID, S::ReplicaVacuumWait(r.duration(WAIT_F)))
             }),
             Ctor::new(k::SETTING_RETRY_LIMIT, RETRIES, |r| {
-                Ok(S::RetryLimit(r.int(RETRIES_F)?))
+                keyed(r, RETRIES_ID, S::RetryLimit(r.int(RETRIES_F)))
             }),
             Ctor::new(k::SETTING_RETENTION_WINDOW, LENGTH, |r| {
-                Ok(S::RetentionWindow(r.duration(LENGTH_F)?))
+                keyed(r, LENGTH_ID, S::RetentionWindow(r.duration(LENGTH_F)))
             }),
         ]
     };

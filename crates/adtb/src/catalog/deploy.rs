@@ -9,6 +9,7 @@ use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::codec::{Codec, Decode};
 use super::{Catalog, Error, Fact, Migrating, delete_rows};
 
 /// The rows of one relation [`Catalog::deploy`] deletes and inserts, each a constructor and its
@@ -32,6 +33,19 @@ impl Catalog {
         let rows = self.rows(pager, txns, &hold, r);
         drop(hold);
         Ok(rows?)
+    }
+
+    /// Returns the rows of `codec`'s relation the latest commit holds, each read by `codec`.
+    pub fn committed<T: Decode, R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        codec: &Codec<T>,
+    ) -> Result<Vec<T>, Error> {
+        self.committed_rows(pager, txns, codec.relation())?
+            .into_iter()
+            .map(|(c, row)| codec.decode(c, &row).map_err(Error::from))
+            .collect()
     }
 
     /// Delete and insert the rows of `writes` as one transaction, returning once it is durable.

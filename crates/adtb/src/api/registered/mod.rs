@@ -21,7 +21,7 @@ use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 
 use super::arrow::{self, ArrowStream};
-use super::bundle::{self, CallRow, EDITION, Header, Passed, Stored};
+use super::bundle::{self, CallRow, Callable, EDITION, Header, Passed, Stored};
 use super::cause::{Broken, internal};
 use super::error::{Error, RejectReason};
 use super::pinned;
@@ -116,24 +116,6 @@ pub enum InTxn {
     Rows(DynRows),
     /// The one result of a registered transaction, committed with the transaction.
     Pending(DynRows),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Callable {
-    Query,
-    Txn,
-    Fn,
-}
-
-impl Callable {
-    /// Returns the constructor of `catalog::Registered` a call of this kind is a row of.
-    fn ctor(self) -> &'static str {
-        match self {
-            Callable::Query => "Query",
-            Callable::Txn => "Txn",
-            Callable::Fn => "ImportedFn",
-        }
-    }
 }
 
 /// One callable of a registration, normalised at the schema version it was registered at.

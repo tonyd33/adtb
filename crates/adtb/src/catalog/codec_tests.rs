@@ -1,52 +1,16 @@
 use adtb_lang::ids::engine_ctor as k;
 use adtb_lang::schema::prelude::ctor;
-use adtb_lang::schema::{self, ENGINE_SRC, Schema};
+use adtb_lang::schema::{self, ENGINE_SRC};
 
 use crate::exec::Val;
-use crate::heap::{FieldType, Layout};
+use crate::heap::FieldType;
 use crate::key::{F64, Scalar, Value};
 
-use super::super::ids::ctor_index;
-use super::super::{engine_schema, row_type};
+use super::super::{engine_schema, layout, row_type};
+use super::testing::{position, reread, reversed};
 use super::{Codec, Decode, RoleRow, Rot, SettingRow};
 
 const SECOND: i64 = 1_000_000;
-
-/// Returns `text` with the constructors of each sum written one per line in reverse order.
-fn reversed_sums(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if !lines[i].starts_with("  = ") {
-            out.push(lines[i].to_owned());
-            i += 1;
-            continue;
-        }
-        let mut ctors: Vec<Vec<&str>> = Vec::new();
-        while i < lines.len() {
-            let line = lines[i];
-            if line.starts_with("  = ") || line.starts_with("  | ") {
-                ctors.push(vec![&line[4..]]);
-            } else if line.starts_with("    ") {
-                ctors
-                    .last_mut()
-                    .expect("a continuation follows a constructor")
-                    .push(line);
-            } else {
-                break;
-            }
-            i += 1;
-        }
-        ctors.reverse();
-        for (n, ctor) in ctors.iter().enumerate() {
-            let lead = if n == 0 { "  = " } else { "  | " };
-            out.push(format!("{lead}{}", ctor[0]));
-            out.extend(ctor[1..].iter().map(|l| (*l).to_owned()));
-        }
-    }
-    out.join("\n")
-}
 
 /// Returns a value stored as `t`: seven, five seconds, a quarter, or `Some` of one of those.
 fn sample(t: &FieldType) -> Value {
@@ -91,12 +55,6 @@ fn sampled(id: adtb_lang::ids::CatCtorId) -> SettingRow {
     }
 }
 
-/// Returns the position of `id` among the constructors of `T`'s relation in `schema`.
-fn position<T: Decode>(schema: &Schema, codec: &Codec<T>, id: adtb_lang::ids::CatCtorId) -> u32 {
-    ctor_index(schema, codec.relation(), id)
-        .unwrap_or_else(|| panic!("{id} is a constructor of the relation"))
-}
-
 #[test]
 fn each_codec_lists_the_constructors_and_fields_its_relation_declares() {
     let schema = engine_schema();
@@ -118,8 +76,7 @@ fn a_codec_listing_a_field_its_relation_does_not_declare_does_not_build() {
 #[test]
 fn a_catalog_with_its_constructors_reversed_reads_each_stored_setting_row_the_same() {
     let shipped = engine_schema();
-    let reversed =
-        schema::build_engine_from(&reversed_sums(ENGINE_SRC)).expect("the reversed catalog builds");
+    let reversed = reversed();
     let (old, new) = (
         Codec::<SettingRow>::new(&shipped),
         Codec::<SettingRow>::new(&reversed),
@@ -127,10 +84,21 @@ fn a_catalog_with_its_constructors_reversed_reads_each_stored_setting_row_the_sa
     let mut moved = 0;
     for id in SettingRow::CTORS.iter().map(|c| c.id) {
         let (was, now) = (position(&shipped, &old, id), position(&reversed, &new, id));
+        let names = layout::row(&shipped, old.relation(), was);
         let types = row_type(&shipped, old.relation(), was);
-        let row: Vec<Value> = types.iter().map(sample).collect();
-        let (fixed, vars) = Layout::new(types).encode(&row);
-        let read = Layout::new(row_type(&reversed, new.relation(), now)).decode(&fixed, &vars);
+        let row: Vec<Value> = names
+            .iter()
+            .zip(&types)
+            .map(|((n, _), t)| match n.as_str() {
+                "id" => Value::I64(i64::try_from(id.raw()).expect("an id fits 63 bits")),
+                _ => sample(t),
+            })
+            .collect();
+        let read = reread(
+            (&shipped, old.relation(), was),
+            (&reversed, new.relation(), now),
+            &row,
+        );
         assert_eq!(Ok(sampled(id)), old.decode(was, &row), "{id}");
         assert_eq!(Ok(sampled(id)), new.decode(now, &read), "{id}");
         moved += usize::from(was != now);
@@ -205,7 +173,7 @@ fn a_row_past_the_relations_constructors_is_refused_as_damage() {
 fn a_role_row_reads_by_field_name_and_one_holding_another_type_is_refused() {
     let schema = engine_schema();
     let codec = Codec::<RoleRow>::new(&schema);
-    let names: Vec<String> = super::super::layout::row(&schema, codec.relation(), 0)
+    let names: Vec<String> = layout::row(&schema, codec.relation(), 0)
         .into_iter()
         .map(|(n, _)| n)
         .collect();
@@ -245,4 +213,98 @@ fn a_value_past_the_relations_constructors_is_refused_before_its_fields_are_read
     };
     let v = Val::ctor(past, vec![Val::Int(1)]);
     assert_eq!(Err(damage), codec.decode_val(&schema, &v));
+}
+
+#[test]
+fn a_setting_row_whose_id_is_not_its_constructors_is_refused_as_damage() {
+    let schema = engine_schema();
+    let codec = Codec::<SettingRow>::new(&schema);
+    let at = position(&schema, &codec, k::SETTING_RETRY_LIMIT);
+    let other = codec.decode(at, &[Value::I64(207), Value::I64(3)]);
+    let damage = Rot::CatalogRow {
+        row: "catalog::settings.RetryLimit".into(),
+        detail: "holds I64(207) in field `id`".into(),
+    };
+    assert_eq!(
+        "a row of catalog::settings.RetryLimit holds I64(207) in field `id`",
+        damage.to_string()
+    );
+    assert_eq!(Err(damage), other);
+    let text = codec.decode(at, &[Value::Text("x".into()), Value::I64(3)]);
+    let damage = Rot::CatalogRow {
+        row: "catalog::settings.RetryLimit".into(),
+        detail: "holds Text(\"x\") in field `id`".into(),
+    };
+    assert_eq!(Err(damage), text);
+}
+
+#[test]
+fn a_role_row_holding_another_type_in_a_field_no_reader_reads_is_refused() {
+    let schema = engine_schema();
+    let codec = Codec::<RoleRow>::new(&schema);
+    let row = super::testing::row(
+        &schema,
+        codec.relation(),
+        0,
+        &[
+            ("id", Value::I64(3)),
+            ("name", Value::Text("ops".into())),
+            ("created", Value::Text("x".into())),
+        ],
+    );
+    let damage = Rot::CatalogRow {
+        row: "catalog::roles.Role".into(),
+        detail: "holds Text(\"x\") in field `created`".into(),
+    };
+    assert_eq!(
+        "a row of catalog::roles.Role holds Text(\"x\") in field `created`",
+        damage.to_string()
+    );
+    assert_eq!(Err(damage), codec.decode(0, &row));
+}
+
+#[test]
+fn a_value_with_another_count_of_fields_than_its_constructor_is_refused() {
+    let schema = engine_schema();
+    let codec = Codec::<SettingRow>::new(&schema);
+    let at = position(&schema, &codec, k::SETTING_RETRY_LIMIT);
+    let surplus = Val::ctor(at, vec![Val::Int(451), Val::Int(3), Val::Int(4)]);
+    let damage = Rot::CatalogRow {
+        row: "catalog::settings.RetryLimit".into(),
+        detail: "holds 3 fields, not 2".into(),
+    };
+    assert_eq!(
+        "a row of catalog::settings.RetryLimit holds 3 fields, not 2",
+        damage.to_string()
+    );
+    assert_eq!(Err(damage), codec.decode_val(&schema, &surplus));
+    let short = Val::ctor(at, vec![Val::Int(451)]);
+    let damage = Rot::CatalogRow {
+        row: "catalog::settings.RetryLimit".into(),
+        detail: "holds 1 field, not 2".into(),
+    };
+    assert_eq!(
+        "a row of catalog::settings.RetryLimit holds 1 field, not 2",
+        damage.to_string()
+    );
+    assert_eq!(Err(damage), codec.decode_val(&schema, &short));
+}
+
+#[test]
+fn reversing_the_catalogs_sums_moves_the_constructors_of_one_line_sums() {
+    let (shipped, reversed) = (engine_schema(), reversed());
+    for id in [
+        k::PRIORITY_AD_HOC,
+        k::PRIORITY_REGULAR,
+        k::BUNDLE_ACTIVE,
+        k::BUNDLE_RETIRED,
+    ] {
+        let at = |s: &schema::Schema| {
+            s.ids()
+                .ctor_of(id)
+                .unwrap_or_else(|| panic!("{id} is declared"))
+                .index()
+        };
+        assert_ne!(at(&shipped), at(&reversed), "{id}");
+    }
 }

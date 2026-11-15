@@ -640,7 +640,14 @@ pub mod engine_rel {
     use super::fixed_rel;
 
     engine_rels! {
-        "catalog" { SETTINGS "settings", ROLES "roles" }
+        "catalog" {
+            SETTINGS "settings",
+            ROLES "roles",
+            BUNDLES "bundles",
+            REGISTERED "registered",
+            FEEDS "feeds",
+            FEED_MEMBERS "feed_members"
+        }
     }
 }
 
@@ -663,6 +670,24 @@ pub mod engine_ctor {
     engine_ctors! {
         "sys" "JobKind" { JOB_REINDEX "Reindex", JOB_VERIFY "Verify" }
         "catalog" "Role" { ROLE "Role" }
+        "catalog" "Priority" {
+            PRIORITY_AD_HOC "AdHoc",
+            PRIORITY_BACKGROUND "Background",
+            PRIORITY_REGULAR "Regular",
+        }
+        "catalog" "BundleState" {
+            BUNDLE_ACTIVE "Active",
+            BUNDLE_SUPERSEDED "Superseded",
+            BUNDLE_RETIRED "Retired",
+        }
+        "catalog" "Bundle" { BUNDLE "Bundle" }
+        "catalog" "Registered" {
+            REGISTERED_QUERY "Query",
+            REGISTERED_TXN "Txn",
+            REGISTERED_IMPORTED_FN "ImportedFn",
+        }
+        "catalog" "Feed" { FEED "Feed" }
+        "catalog" "FeedMember" { FEED_MEMBER "FeedMember" }
         "catalog" "Setting" {
             SETTING_STATEMENT_LIMIT "StatementLimit",
             SETTING_TRANSACTION_LIMIT "TransactionLimit",

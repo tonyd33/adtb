@@ -15,7 +15,7 @@ use crate::catalog;
 use crate::runtime::Runtime;
 use crate::write::Txn;
 
-use super::super::bundle::{Row, Stored};
+use super::super::bundle::{Callable, Row, Stored};
 use super::super::cause::Broken;
 use super::super::registered::{self, Checked, Lacking, Over};
 use super::super::{Engine, Error, OWNER_ID};
@@ -217,7 +217,7 @@ impl<R: Runtime> CallSignatures for Calls<'_, R> {
         Some(
             calls
                 .iter()
-                .any(|c| c.name == query && c.kind != "ImportedFn"),
+                .any(|c| c.name == query && c.kind != Callable::Fn),
         )
     }
 }
@@ -387,7 +387,7 @@ impl<R: Runtime> Giving<'_, R> {
                         "`{target}` names no registered query or transaction of bundle {bundle}"
                     )));
                 }
-                Some(c) if c.kind == "ImportedFn" => {
+                Some(c) if c.kind == Callable::Fn => {
                     return Err(Error::invalid(format!(
                         "`{target}` names a schema function the bundle imports; it takes `grant call fn`"
                     )));

@@ -402,13 +402,11 @@ prelude_positions prod 1 crates/adtb/src/exec/prim/mod.rs
 prelude_positions prod 1 crates/adtb/src/exec/store.rs
 prelude_positions prod 1 crates/adtb/src/write/eval.rs
 prelude_positions prod 1 crates/adtb/src/write/past.rs
-catalog_row_fields prod 18 crates/adtb/src/api/dump.rs
+catalog_row_fields prod 11 crates/adtb/src/api/dump.rs
 catalog_row_fields prod 1 crates/adtb/src/api/maintenance.rs
 catalog_row_fields prod 1 crates/adtb/src/api/server/mod.rs
-catalog_row_fields prod 19 crates/adtb/src/api/bundle.rs
 catalog_row_fields prod 13 crates/adtb/src/api/server/tables.rs
 catalog_row_fields prod 1 crates/adtb/src/catalog/migration.rs
 catalog_row_fields prod 8 crates/adtb/src/catalog/grants.rs
-catalog_row_ctors prod 9 crates/adtb/src/api/bundle.rs
 catalog_row_ctors prod 1 crates/adtb/src/api/server/tables.rs
 catalog_row_ctors prod 1 crates/adtb/src/catalog/grants.rs

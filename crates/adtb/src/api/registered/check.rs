@@ -132,7 +132,7 @@ fn entry(
         name: name.to_owned(),
         kind,
         row: CallRow {
-            kind: kind.ctor(),
+            kind,
             name: name.to_owned(),
             ordinal: 0,
             signature: String::new(),

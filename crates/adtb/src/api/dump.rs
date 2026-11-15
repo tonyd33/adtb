@@ -2,14 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ids::{CatRelId, held_id};
+use adtb_lang::ids::{CatRelId, engine_ctor as k, engine_rel, held_id};
 use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
 
+use crate::catalog::codec::{self, Codec, Ctor, Decode, Field, Fields};
 use crate::catalog::{
-    self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, arrows, layout, values,
+    self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, Rot, arrows, layout, values,
 };
 use crate::exec::Val;
 use crate::runtime::Runtime;
@@ -17,13 +18,17 @@ use crate::storage::{self, BackupError, DumpManifest, Envelope, Passphrase};
 use crate::write::{self, Bounds, Local, Text, Txn};
 
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
-use super::bundle::EDITION;
+use super::bundle::{self, EDITION, Registered};
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::{
     CallOptions, CreateOptions, Database, Engine, Error, Log, OWNER_ID, OpenError, OpenOptions,
     Position,
 };
+
+#[cfg(test)]
+#[path = "dump_tests.rs"]
+mod tests;
 
 const LOG: &str = "log";
 const IDS: &str = "ids";
@@ -252,33 +257,12 @@ fn bundle_entries(
     schema: &Schema,
     rows: &Rows,
     d: &Deployed,
-) -> Vec<(String, String)> {
-    let [bundles, registered, feeds, members] = BUNDLED.map(|n| values::relation(schema, n));
-    let of = |r: RelId, name: &str, among: &BTreeSet<&Val>| -> BTreeSet<Val> {
-        let held = |row: &&Val| field(schema, r, row, name).is_some_and(|v| among.contains(v));
-        rows[&r].iter().filter(held).cloned().collect()
-    };
+) -> Result<Vec<(String, String)>, Rot> {
+    let b = Bundled::new(schema);
     let (mut index, mut out) = (header_line(e), Vec::new());
-    for row in &rows[&bundles] {
-        let at = |name| field(schema, bundles, row, name);
-        let (Some(id @ Val::Int(n)), Some(Val::Text(name))) = (at("id"), at("name")) else {
-            panic!("a row of `catalog::bundles` holds its id and name");
-        };
-        let own = BTreeSet::from([id]);
-        let fed = of(feeds, "bundle", &own);
-        let member = of(
-            members,
-            "feed",
-            &fed.iter()
-                .filter_map(|f| field(schema, feeds, f, "id"))
-                .collect(),
-        );
-        let mine = Rows::from([
-            (bundles, BTreeSet::from([row.clone()])),
-            (registered, of(registered, "bundle", &own)),
-            (members, member),
-            (feeds, fed),
-        ]);
+    for (bundle, row) in decoded(schema, &b.bundles, rows)? {
+        let (n, name) = (&bundle.id, &bundle.header.name);
+        let mine = b.owned(schema, rows, *n, row)?;
         let mut text = header_line(e);
         if let Some(m) = d.registered.get(n) {
             let origin = match m.origin {
@@ -305,7 +289,104 @@ fn bundle_entries(
         index.push_str(&format!("family {role} {family}\n"));
     }
     out.push((INDEX.to_owned(), index));
-    out
+    Ok(out)
+}
+
+/// Returns each row of `codec`'s relation in `rows` with its typed row.
+fn decoded<'r, T: Decode>(
+    schema: &Schema,
+    codec: &Codec<T>,
+    rows: &'r Rows,
+) -> Result<Vec<(T, &'r Val)>, Rot> {
+    rows.get(&codec.relation())
+        .into_iter()
+        .flatten()
+        .map(|v| Ok((codec.decode_val(schema, v)?, v)))
+        .collect()
+}
+
+/// The codecs of the relations of [`BUNDLED`].
+struct Bundled {
+    bundles: Codec<bundle::Row>,
+    registered: Codec<Registered>,
+    feeds: Codec<FeedRow>,
+    members: Codec<FeedMemberRow>,
+}
+
+impl Bundled {
+    fn new(schema: &Schema) -> Bundled {
+        Bundled {
+            bundles: Codec::new(schema),
+            registered: Codec::new(schema),
+            feeds: Codec::new(schema),
+            members: Codec::new(schema),
+        }
+    }
+
+    /// Returns the rows of `rows` that bundle `id`, whose row is `row`, holds, by relation.
+    fn owned(&self, schema: &Schema, rows: &Rows, id: i64, row: &Val) -> Result<Rows, Rot> {
+        let fed = decoded(schema, &self.feeds, rows)?;
+        let fed: Vec<_> = fed.into_iter().filter(|(f, _)| f.bundle == id).collect();
+        let feeds: BTreeSet<i64> = fed.iter().map(|(f, _)| f.id).collect();
+        let calls = decoded(schema, &self.registered, rows)?;
+        let members = decoded(schema, &self.members, rows)?;
+        let calls = calls.into_iter().filter(|(c, _)| c.bundle() == id);
+        let members = members.into_iter().filter(|(m, _)| feeds.contains(&m.feed));
+        Ok(Rows::from([
+            (self.bundles.relation(), BTreeSet::from([row.clone()])),
+            (
+                self.registered.relation(),
+                calls.map(|(_, v)| v.clone()).collect(),
+            ),
+            (
+                self.members.relation(),
+                members.map(|(_, v)| v.clone()).collect(),
+            ),
+            (
+                self.feeds.relation(),
+                fed.into_iter().map(|(_, v)| v.clone()).collect(),
+            ),
+        ]))
+    }
+}
+
+/// A row of `catalog::feeds`, the fields a dump reads.
+#[derive(Debug, PartialEq, Eq)]
+struct FeedRow {
+    id: i64,
+    bundle: i64,
+}
+
+const FEED: Fields = &["id", "bundle", "name", "ordinal", "relation", "set"];
+const FEED_ID: Field = codec::field(FEED, "id");
+const FEED_BUNDLE: Field = codec::field(FEED, "bundle");
+
+impl Decode for FeedRow {
+    const RELATION: CatRelId = engine_rel::FEEDS;
+    const CTORS: &'static [Ctor<FeedRow>] = &[Ctor::new(k::FEED, FEED, |r| {
+        Ok(FeedRow {
+            id: r.int(FEED_ID),
+            bundle: r.int(FEED_BUNDLE),
+        })
+    })];
+}
+
+/// A row of `catalog::feed_members`, the field a dump reads.
+#[derive(Debug, PartialEq, Eq)]
+struct FeedMemberRow {
+    feed: i64,
+}
+
+const MEMBER: Fields = &["feed", "relation", "ctor"];
+const MEMBER_FEED: Field = codec::field(MEMBER, "feed");
+
+impl Decode for FeedMemberRow {
+    const RELATION: CatRelId = engine_rel::FEED_MEMBERS;
+    const CTORS: &'static [Ctor<FeedMemberRow>] = &[Ctor::new(k::FEED_MEMBER, MEMBER, |r| {
+        Ok(FeedMemberRow {
+            feed: r.int(MEMBER_FEED),
+        })
+    })];
 }
 
 /// Returns the rows of every bundle the [`INDEX`] entry names, by relation of `schema`, the
@@ -403,30 +484,14 @@ fn read_bundle(
         mark = Some(Mark { role, origin, text });
     }
     let rows = sections(schema, rest, &BUNDLED)?;
-    let [bundles, registered, feeds, members] = BUNDLED.map(|n| values::relation(schema, n));
-    let [row] = &rows[&bundles].iter().collect::<Vec<_>>()[..] else {
+    let b = Bundled::new(schema);
+    let [(bundle, row)] = &decoded(schema, &b.bundles, &rows).ok()?[..] else {
         return None;
     };
-    let at = |n| field(schema, bundles, row, n);
-    let (Some(Val::Text(n)), Some(&Val::Int(id)), Some(Val::Text(family))) =
-        (at("name"), at("id"), at("family"))
-    else {
-        return None;
-    };
-    let held = |r: RelId, key: &str, among: &BTreeSet<Val>| {
-        let of = |row: &Val| field(schema, r, row, key).is_some_and(|v| among.contains(v));
-        rows[&r].iter().all(of)
-    };
-    let own = BTreeSet::from([Val::Int(id)]);
-    let fed = rows[&feeds]
-        .iter()
-        .filter_map(|f| field(schema, feeds, f, "id").cloned());
-    let owned = &**n == name
-        && held(registered, "bundle", &own)
-        && held(feeds, "bundle", &own)
-        && held(members, "feed", &fed.collect());
-    let family = family.to_string();
-    owned.then_some((id, family, mark, rows))
+    let owned = b.owned(schema, &rows, bundle.id, row).ok()?;
+    let id = bundle.id;
+    let family = bundle.header.family.clone();
+    (bundle.header.name == name && owned == rows).then_some((id, family, mark, rows))
 }
 
 fn sequenced(schema: &Schema, r: RelId) -> bool {
@@ -520,7 +585,9 @@ impl<R: Runtime> Engine<R> {
         let deployed = self.db.deployed(tx, &self.deployment);
         let deployed = deployed.map_err(|e| self.met(id, e.into()))?;
         let bundled = rows_of(schema, &BUNDLED, rows)?;
-        entries.extend(bundle_entries(&envelope, schema, &bundled, &deployed));
+        let bundles = bundle_entries(&envelope, schema, &bundled, &deployed)
+            .map_err(|r| failed(write::Error::from(write::Broken::CatalogError(r.into()))))?;
+        entries.extend(bundles);
         let mut streams = Vec::new();
         for r in dumped(schema) {
             let mut by_ctor: BTreeMap<u32, BTreeSet<Val>> = BTreeMap::new();

@@ -6,7 +6,7 @@ use adtb_lang::types::Ty;
 use crate::exec::Val;
 use crate::runtime::Runtime;
 
-use super::super::bundle::{EDITION, Row, Stored};
+use super::super::bundle::{Callable, EDITION, Row, Stored};
 use super::super::registered::{Callee, Registered};
 use super::super::{Engine, Error, OWNER_ID, RejectReason};
 use super::call::{RoleCall, Work};
@@ -214,7 +214,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 || stored
                     .calls_of(row.id)
                     .iter()
-                    .any(|c| c.kind != "ImportedFn" && holds(&c.name, None));
+                    .any(|c| c.kind != Callable::Fn && holds(&c.name, None));
             Ok(declared.then_some(held))
         })
     }
