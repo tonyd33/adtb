@@ -22,7 +22,7 @@ pub(super) fn validate(
     facts: &mut Facts,
     plan: &Plan,
 ) -> Result<(), Broken> {
-    let mut bound = vec![0u32; plan.terms.vars.len()];
+    let mut bound = vec![0u32; plan.terms.vars().len()];
     for v in &plan.params {
         bound[v.0 as usize] += 1;
     }

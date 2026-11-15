@@ -280,7 +280,7 @@ impl Prepared {
             })
             .sum();
         self.terms.len() * size_of::<Node>()
-            + size_of_val(self.terms.vars.as_slice())
+            + size_of_val(self.terms.vars())
             + literals
             + self.params.iter().map(|(_, v)| v.size()).sum::<usize>()
     }

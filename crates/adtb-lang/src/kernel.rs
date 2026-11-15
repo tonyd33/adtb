@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::schema::Generator;
+use crate::schema::{Generator, Schema};
 use crate::types::*;
 
 #[path = "kernel_build.rs"]
@@ -365,7 +365,7 @@ impl Frees {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Terms {
     nodes: Vec<Node>,
-    pub vars: Vec<VarInfo>,
+    vars: Vec<VarInfo>,
     pub(crate) transport_fields: BTreeSet<Tm>,
 }
 
@@ -444,13 +444,40 @@ impl Terms {
         self.nodes.iter()
     }
 
-    /// Replace the kind of node `t` in place, keeping its type, so that every parent of `t` reads
-    /// the new kind.
+    /// Returns `root` with each term under it that `image` maps replaced by its image, every
+    /// term above a replaced one rebuilt as `Build::rebuild_kept` rebuilds it, and every other
+    /// term shared. `image` takes a term and its children as substituted, once per term, children
+    /// before parents.
     ///
     /// Preconditions:
-    /// - `kind` at the type of `t` satisfies its kind's typing rule.
-    pub fn overwrite_kind(&mut self, t: Tm, kind: Kind) {
-        self.nodes[t.0 as usize].kind = kind;
+    /// - An image has the type of the term it replaces, or a subtype of it.
+    pub fn substitute(
+        &mut self,
+        schema: &Schema,
+        root: Tm,
+        mut image: impl FnMut(&mut Terms, Tm, &[Tm]) -> Option<Tm>,
+    ) -> Tm {
+        let mut done: HashMap<Tm, Tm> = HashMap::new();
+        let mut stack = vec![(root, false)];
+        while let Some((t, ready)) = stack.pop() {
+            if done.contains_key(&t) {
+                continue;
+            }
+            let children = self.children(t);
+            if !ready {
+                stack.push((t, true));
+                stack.extend(children.iter().rev().map(|&c| (c, false)));
+                continue;
+            }
+            let new: Vec<Tm> = children.iter().map(|c| done[c]).collect();
+            let s = match image(self, t, &new) {
+                Some(s) => s,
+                None if new == children => t,
+                None => Build::new(schema, self).rebuild_kept(t, &new),
+            };
+            done.insert(t, s);
+        }
+        done[&root]
     }
 
     pub fn var(&mut self, name: &str, ty: Ty) -> Var {
@@ -481,6 +508,11 @@ impl Terms {
 
     pub fn var_info(&self, v: Var) -> &VarInfo {
         &self.vars[v.0 as usize]
+    }
+
+    /// Returns every variable of the arena, indexed by its number.
+    pub fn vars(&self) -> &[VarInfo] {
+        &self.vars
     }
 
     /// Returns the direct subterms of `t`, in evaluation order.

@@ -666,7 +666,7 @@ fn eval_term(schema: &Schema, terms: &Terms, t: Tm) -> Result<Val, Error> {
         fault_ctors: Vec::new(),
         hosts: Arc::default(),
     };
-    code.eval_one(&mut Frame::unit(terms.vars.len()), &shared)
+    code.eval_one(&mut Frame::unit(terms.vars().len()), &shared)
 }
 
 #[test]

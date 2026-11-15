@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use adtb_lang::kernel::{Kind, Tm, Transition};
+use adtb_lang::kernel::{Build, Kind, Terms, Tm, Transition};
 use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
@@ -13,10 +13,10 @@ use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
 use super::apply::too_large;
-use super::eval::{Arena, Env, Stmt, Violations, pairs, refuse, violate, violate_key};
+use super::eval::{Stmt, Violations, pairs, refuse, violate, violate_key};
 use super::reindex::Scan;
 use super::schema::Indexed;
-use super::{Broken, Database, Error, Rows, Stop, Text, Txn};
+use super::{Broken, Database, Error, Local, Rows, Stop, Text, Txn};
 
 /// The database a restore fills.
 #[derive(Debug)]
@@ -146,30 +146,34 @@ impl<R: Runtime> Restoring<'_, R> {
             }
             stmt.check_rows(&rows, viol)?;
         }
-        let mut terms = db.normal.terms.clone();
-        for i in 0..terms.len() {
-            let t = Tm(u32::try_from(i).expect("an arena of fewer than 2^32 nodes"));
-            if let Kind::Transition(x, r, s) = terms.kind(t).clone() {
-                let kind = match x {
-                    Transition::Prior => Kind::Rel(r, s),
-                    Transition::Inserted | Transition::Deleted => Kind::EmptySet,
-                };
-                terms.overwrite_kind(t, kind);
-            }
-        }
         let schema = &*db.schema;
-        let named = super::delta::denials(schema, &db.normal)?;
-        let text = Text {
-            schema,
-            terms: &terms,
-            items: &[],
-            params: &[],
-            clock: 0,
-            caller: None,
+        let mut terms = db.normal.terms.clone();
+        let mut unchanged = |terms: &mut Terms, t: Tm, _: &[Tm]| {
+            let Kind::Transition(x, r, s) = terms.kind(t).clone() else {
+                return None;
+            };
+            let ty = terms.ty(t).clone();
+            let mut b = Build::new(schema, terms);
+            Some(match x {
+                Transition::Prior => b.rel(r, s),
+                Transition::Inserted | Transition::Deleted => b.empty_set(ty),
+            })
         };
-        let empty = Stmt::new(db, stmt.tx, text, Tm(0), db.options, Stop::default());
+        let named: Vec<(String, Tm)> = super::delta::denials(schema, &db.normal)?
+            .into_iter()
+            .map(|(name, t)| (name, terms.substitute(schema, t, &mut unchanged)))
+            .collect();
         for (name, t) in named {
-            match empty.eval(Arena::Statement, t, &Env::new())? {
+            let text = Text {
+                schema,
+                terms: &terms,
+                items: std::slice::from_ref(&t),
+                params: &[],
+                clock: 0,
+                caller: None,
+            };
+            let denial = Stmt::new(db, stmt.tx, text, t, db.options, Stop::default());
+            match denial.run(&[], &mut Local::default())?.result {
                 Val::Set(report) => violate(viol, &name, report.iter().cloned()),
                 other => return Err(Broken::DenialNotSet(other).into()),
             }

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::check::check_adhoc;
-use adtb_lang::kernel::Kind;
+use adtb_lang::kernel::{Build, Kind};
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_testkit::fixture::Fixture;
@@ -68,11 +68,39 @@ impl Step {
         let [item] = checked.items.as_slice() else {
             panic!("exactly one restricted-old statement")
         };
-        checked.terms.vars[old.0 as usize].ty = self.old_type;
+        let narrowed = checked.terms.var("old", self.old_type);
+        let schema = &fixture.schema;
+        let mut upserts = 0;
+        let item = checked
+            .terms
+            .substitute(schema, *item, |terms, t, children| {
+                match terms.kind(t).with_children(children) {
+                    Kind::Upsert {
+                        rel,
+                        rows,
+                        on,
+                        new,
+                        otherwise,
+                        single,
+                        ..
+                    } => {
+                        upserts += 1;
+                        Some(Build::new(schema, terms).upsert(
+                            rel,
+                            rows,
+                            on,
+                            (narrowed, new),
+                            otherwise,
+                            single,
+                        ))
+                    }
+                    Kind::Var(v) if v == *old => Some(Build::new(schema, terms).var(narrowed)),
+                    _ => None,
+                }
+            });
+        assert_eq!(upserts, 1, "exactly one upsert");
         let mut supply = fixture.supply.clone();
-        let actual = fixture
-            .interp()
-            .run(&checked.terms, *item, &[], &mut supply);
+        let actual = fixture.interp().run(&checked.terms, item, &[], &mut supply);
         assert_eq!(Err(self.expected), actual, "exact restricted-old abort");
     }
 }

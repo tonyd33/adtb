@@ -1,10 +1,10 @@
 //! What a statement reads besides the database file: the rows of its transaction's temp
 //! relations and the records of the files it scans.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use adtb_file::{Disk, Files, Record, Refused};
-use adtb_lang::kernel::{FileFormat, Kind, Prim, Terms, Tm, Var};
+use adtb_lang::kernel::{Build, FileFormat, Kind, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
@@ -45,10 +45,10 @@ pub fn is_temp(schema: &Schema, rel: RelId) -> bool {
     schema.temp_id(rel).is_some()
 }
 
-/// Replace each read of a temp or volatile relation and each file scan reachable from `root` by
-/// a variable of its own. Returns what each variable stands for.
-pub fn rewrite(schema: &Schema, terms: &mut Terms, root: Tm) -> BTreeMap<Var, Input> {
-    let mut out = BTreeMap::new();
+/// Returns each read of a temp or volatile relation and each file scan reachable from `root`,
+/// with what it reads.
+pub fn inputs(schema: &Schema, terms: &Terms, root: Tm) -> Vec<(Tm, Input)> {
+    let mut out = Vec::new();
     let mut seen = HashSet::new();
     let mut todo = vec![root];
     while let Some(t) = todo.pop() {
@@ -78,12 +78,29 @@ pub fn rewrite(schema: &Schema, terms: &mut Terms, root: Tm) -> BTreeMap<Var, In
         };
         todo.extend(terms.children(t));
         if let Some(input) = input {
-            let v = terms.var("input·", terms.ty(t).clone());
-            terms.overwrite_kind(t, Kind::Var(v));
-            out.insert(v, input);
+            out.push((t, input));
         }
     }
     out
+}
+
+/// Returns `root` with each of its [`inputs`] replaced by a variable of its own, and what each
+/// variable stands for.
+pub fn rewrite(schema: &Schema, terms: &mut Terms, root: Tm) -> (Tm, BTreeMap<Var, Input>) {
+    let mut found: HashMap<Tm, (Var, Input)> = inputs(schema, terms, root)
+        .into_iter()
+        .map(|(t, input)| (t, (terms.var("input·", terms.ty(t).clone()), input)))
+        .collect();
+    let mut out = BTreeMap::new();
+    let root = terms.substitute(schema, root, |terms, t, children| {
+        let (v, mut input) = found.remove(&t)?;
+        if let Input::File { path, .. } = &mut input {
+            *path = children[0];
+        }
+        out.insert(v, input);
+        Some(Build::new(schema, terms).var(v))
+    });
+    (root, out)
 }
 
 /// Returns the key of `row`, a row of temp relation `rel`: its one key field's value, or the

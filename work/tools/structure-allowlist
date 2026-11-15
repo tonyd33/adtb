@@ -61,8 +61,8 @@
 #                     nothing computes or checks. Terms are built through `kernel::Build`, which
 #                     types each node from its children. No line allows one.
 # kernel_overwrite:   calls of `Terms::overwrite_kind`, which replaces a node's kind in place,
-#                     unchecked, under every parent that shares it. The lines left are the
-#                     engine's rewrites of transition reads and input scans into variables.
+#                     unchecked, under every parent that shares it. Rewrites build new nodes
+#                     through `Terms::substitute`. No line allows one.
 # denial_zips:        `.zip(` whose argument names `checks` or `constraints` before its first `)` or
 #                     `;`, or whose receiver chain names one with no `;`, `{` or `}` between, across
 #                     lines: a constraint or check is paired with its term, name or id by its index,
@@ -156,9 +156,6 @@ disallowed_methods test 1 crates/adtb/src/btree/tests.rs
 disallowed_methods prod 9 crates/adtb/src/storage/pager.rs
 disallowed_methods test 1 crates/adtb/src/storage/open_damage_tests.rs
 disallowed_methods test 2 crates/adtb/src/storage/lost_bitmap_tests.rs
-kernel_overwrite prod 1 crates/adtb/src/write/delta/mod.rs
-kernel_overwrite prod 1 crates/adtb/src/write/input.rs
-kernel_overwrite prod 1 crates/adtb/src/write/restore.rs
 pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs
 pub_fields prod 3 crates/adtb-bench/src/native/counter.rs
 pub_fields prod 2 crates/adtb-bench/src/native/engine.rs
@@ -179,7 +176,7 @@ pub_fields prod 3 crates/adtb-lang/src/evolve/keep.rs
 pub_fields prod 26 crates/adtb-lang/src/evolve/mod.rs
 pub_fields prod 8 crates/adtb-lang/src/evolve/resolved.rs
 pub_fields prod 5 crates/adtb-lang/src/evolve/rowmap.rs
-pub_fields prod 13 crates/adtb-lang/src/kernel.rs
+pub_fields prod 12 crates/adtb-lang/src/kernel.rs
 pub_fields prod 3 crates/adtb-lang/src/lex.rs
 pub_fields prod 21 crates/adtb-lang/src/norm/mod.rs
 pub_fields prod 3 crates/adtb-lang/src/parse/mod.rs

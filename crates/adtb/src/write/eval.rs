@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use adtb_file::Record;
-use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Build, Conflict, Kind, Terms, Tm, Var};
 use adtb_lang::schema::{Generator, OnDelete, Schema, Stage};
 use adtb_lang::textual::key_names;
 use adtb_lang::types::{RelId, Ty};
@@ -180,8 +180,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let mut terms = text.terms.clone();
         let mut fresh = Occurrences::new();
         let root = fresh::rewrite(schema, &mut terms, root, &[], &mut fresh);
-        let inputs = input::rewrite(schema, &mut terms, root);
-        adtb_lang::kernel::assert_typed(schema, &terms, &[root]);
+        let (root, inputs) = input::rewrite(schema, &mut terms, root);
+        let free = text
+            .params
+            .iter()
+            .map(|(v, _)| *v)
+            .chain(inputs.keys().copied())
+            .collect();
+        adtb_lang::kernel::assert_valid(schema, &terms, &[(root, free)]);
         Stmt {
             db,
             tx,
@@ -207,17 +213,19 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Returns a statement that only reads.
     pub fn reader(db: &'a Database<R>, tx: &'a Txn) -> Self {
+        let mut terms = Terms::default();
+        let root = Build::new(&db.schema, &mut terms).unit();
         Stmt {
             db,
             tx,
             schema: &db.schema,
-            terms: Terms::default(),
+            terms,
             inputs: BTreeMap::new(),
             scans: RefCell::default(),
             unconverted: RefCell::default(),
             local: RefCell::default(),
             fresh: Occurrences::new(),
-            root: Tm(0),
+            root,
             clock: 0,
             caller: None,
             options: db.options,

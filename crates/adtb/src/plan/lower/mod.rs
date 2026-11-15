@@ -856,7 +856,7 @@ impl Planner<'_> {
 
     fn import_var(&mut self, v: Var) -> Var {
         let normal = self.normal;
-        let info = &normal.terms.vars[v.0 as usize];
+        let info = normal.terms.var_info(v);
         self.t.var(&info.name, info.ty.clone())
     }
 

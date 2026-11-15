@@ -224,7 +224,7 @@ impl Scalar {
         Ok(Scalar {
             code: code::Compiler::new(schema, terms).code(body)?,
             var,
-            vars: terms.vars.len(),
+            vars: terms.vars().len(),
             shared: code::Shared {
                 caller: None,
                 grant: None,

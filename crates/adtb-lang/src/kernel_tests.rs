@@ -55,7 +55,7 @@ fn renaming_copies_a_term_whose_binder_is_free_in_its_own_value() {
 }
 
 struct Fixture {
-    schema: crate::schema::Schema,
+    schema: Schema,
     ts: RelId,
     us: RelId,
     t: TypeId,
@@ -1177,4 +1177,73 @@ fn a_case_rebuilt_over_a_narrower_scrutinee_keeps_only_the_arms_of_its_construct
         terms.kind(rebuilt)
     );
     assert_eq!(&int(), terms.ty(rebuilt));
+}
+
+#[test]
+fn substituting_rebuilds_the_terms_above_an_image_and_shares_the_rest() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let x = terms.var("x", int());
+    let y = terms.var("y", int());
+    let mut b = super::Build::new(&fx.schema, &mut terms);
+    let read = b.var(x);
+    let left = b.singleton(read, set(int()));
+    let right = b.singleton(read, set(int()));
+    let both = b.union(left, right, set(int()));
+    let one = b.constant(Const::Int(1), int());
+    let kept = b.singleton(one, set(int()));
+    let root = b.union(both, kept, set(int()));
+    let before = terms.clone();
+    let mut images = 0;
+    let s = terms.substitute(&fx.schema, root, |terms, t, _| {
+        matches!(terms.kind(t), Kind::Var(v) if *v == x).then(|| {
+            images += 1;
+            super::Build::new(&fx.schema, terms).var(y)
+        })
+    });
+    assert_eq!(images, 1);
+    assert!(
+        terms.iter().take(before.len()).eq(before.iter()),
+        "a node of the arena changed"
+    );
+    let &Kind::Union(new_both, new_kept) = terms.kind(s) else {
+        panic!("the root stays a union: {:?}", terms.kind(s));
+    };
+    assert_eq!(new_kept, kept);
+    let &Kind::Union(l, r) = terms.kind(new_both) else {
+        panic!("the left side stays a union: {:?}", terms.kind(new_both));
+    };
+    let (&Kind::Singleton(a), &Kind::Singleton(c)) = (terms.kind(l), terms.kind(r)) else {
+        panic!("both sides stay singletons");
+    };
+    assert_eq!(a, c);
+    assert_eq!(*terms.kind(a), Kind::Var(y));
+}
+
+#[test]
+fn substituting_without_an_image_keeps_the_root() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let one = one(&mut terms);
+    let root = super::Build::new(&fx.schema, &mut terms).singleton(one, set(int()));
+    let len = terms.len();
+    assert_eq!(terms.substitute(&fx.schema, root, |_, _, _| None), root);
+    assert_eq!(terms.len(), len);
+}
+
+#[test]
+fn a_rebuilt_transport_field_stays_a_transport() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let r = terms.var("r", fx.row(None));
+    let r2 = terms.var("r2", fx.row(None));
+    let mut b = super::Build::new(&fx.schema, &mut terms);
+    let read = b.var(r);
+    let field = b.transport_field(read, "id");
+    let s = terms.substitute(&fx.schema, field, |terms, t, _| {
+        matches!(terms.kind(t), Kind::Var(v) if *v == r)
+            .then(|| super::Build::new(&fx.schema, terms).var(r2))
+    });
+    assert_ne!(s, field);
+    assert!(terms.is_transport(s));
 }

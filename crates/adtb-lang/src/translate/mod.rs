@@ -370,7 +370,7 @@ impl<'a> Pinned<'a> {
         for t in terms
             .iter()
             .map(|n| &n.ty)
-            .chain(terms.vars.iter().map(|v| &v.ty))
+            .chain(terms.vars().iter().map(|v| &v.ty))
         {
             from.reached(t, &mut defs, &mut rels);
         }

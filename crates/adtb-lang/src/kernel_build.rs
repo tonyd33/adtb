@@ -119,7 +119,7 @@ impl<'a> Build<'a> {
     }
 
     /// Returns node `t` of this arena rebuilt over `children` in place of its own, as `kept`
-    /// rebuilds it at the type of `t`.
+    /// rebuilds it at the type of `t`, a transport field when `t` is one.
     ///
     /// Preconditions:
     /// - `children` are terms of this arena, as many as `t` has.
@@ -131,7 +131,11 @@ impl<'a> Build<'a> {
         );
         let kind = self.terms.kind(t).with_children(children);
         let ty = self.terms.ty(t).clone();
-        self.kept(kind, &ty)
+        let rebuilt = self.kept(kind, &ty);
+        if self.terms.is_transport(t) {
+            self.terms.transport_fields.insert(rebuilt);
+        }
+        rebuilt
     }
 
     /// Returns node `t` of arena `from` copied into this arena over `children`, each variable it

@@ -137,8 +137,25 @@ pub fn compile(
             continue;
         }
         let mut reads = BTreeSet::new();
+        let mut found_transitions = Vec::new();
+        scan(
+            terms,
+            t,
+            &mut BTreeSet::new(),
+            &mut found_transitions,
+            &mut reads,
+        );
+        let mut vars = HashMap::new();
         let mut own = Vec::new();
-        scan(terms, t, &mut BTreeSet::new(), &mut own, &mut reads);
+        for (at, x, r, s) in found_transitions {
+            let v = terms.var(&format!("%transition{}", at.0), terms.ty(at).clone());
+            vars.insert(at, v);
+            own.push((v, x, r, s));
+        }
+        let t = terms.substitute(schema, t, |terms, at, _| {
+            let v = *vars.get(&at)?;
+            Some(Build::new(schema, terms).var(v))
+        });
         let free = own.iter().map(|(v, ..)| *v).collect();
         adtb_lang::kernel::assert_valid(schema, terms, &[(t, free)]);
         found.push((qualified, t, reads));
@@ -223,13 +240,13 @@ pub fn scope_name(schema: &Schema, r: RelId, ctors: &CtorSet) -> String {
     }
 }
 
-/// Replace each transition read under `t` in place by a variable, adding the variables to
-/// `out` and the relations every read under `t` names to `reads`.
+/// Add each transition read under `t` to `out`, and the relations every read under `t` names
+/// to `reads`.
 fn scan(
-    terms: &mut Terms,
+    terms: &Terms,
     t: Tm,
     seen: &mut BTreeSet<Tm>,
-    out: &mut Vec<(Var, Transition, RelId, Option<CtorSet>)>,
+    out: &mut Vec<(Tm, Transition, RelId, Option<CtorSet>)>,
     reads: &mut BTreeSet<RelId>,
 ) {
     if !seen.insert(t) {
@@ -237,10 +254,7 @@ fn scan(
     }
     match terms.kind(t).clone() {
         Kind::Transition(x, r, s) => {
-            let ty = terms.ty(t).clone();
-            let v = terms.var(&format!("%transition{}", t.0), ty);
-            terms.overwrite_kind(t, Kind::Var(v));
-            out.push((v, x, r, s));
+            out.push((t, x, r, s));
             reads.insert(r);
         }
         Kind::Rel(r, _) => {

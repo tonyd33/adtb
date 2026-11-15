@@ -325,7 +325,7 @@ pub fn compile(
         root,
         #[cfg(test)]
         ty: plan.ty.clone(),
-        vars: plan.terms.vars.len(),
+        vars: plan.terms.vars().len(),
         heaps: infos,
         shared: Shared {
             caller,
