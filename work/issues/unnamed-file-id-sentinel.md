@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-13
-status: open
+status: resolved
+closed: 2026-11-15
 kind: bug
 priority: 850
 summary: "Source::built gives a synthesized module header FileId(u32::MAX - 2), a third reserved file id with no named constant beside PRELUDE and ENGINE"
@@ -21,3 +22,7 @@ Found by reading.
 Fix direction: a named `FileId` constant beside `PRELUDE` and `ENGINE`, used at this site.
 
 Defect class: class-none
+
+## Resolved
+
+Landed as yyrsmuzq bd3ba9b7 (structure-lang-identity step 11 part a, 2 rounds, full check 0, 3834 tests). `FileId::EMPTY_MODULE` in span.rs names the third reserved id; structure-check `id_sentinels` counts `FileId(u32::MAX` outside the definition of a named `const` (a `let` binding counts), at 0 with a structure-check-test case.
