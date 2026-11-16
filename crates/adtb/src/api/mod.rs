@@ -849,7 +849,7 @@ fn held_rows<R: Runtime>(
     let table = catalog::engine_relation(schema, engine_rel::VERIFY_FINDINGS);
     let findings = verify::Findings::of(kept, schema, table)?;
     let mut volatile = settings::process_options(schema, &options.shown());
-    volatile.insert(table, findings.vals(schema));
+    volatile.insert(table, findings.vals());
     Ok((findings, volatile))
 }
 

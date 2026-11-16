@@ -6,11 +6,13 @@ use std::sync::Arc;
 
 use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor, engine_rel, held_id};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelId, Ty, TypeId};
+use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
-use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, engine_relation};
+use crate::catalog::codec::{Codec, Ctor, Decode, Field, Fields, Row, field};
+use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, Rot, engine_relation};
 use crate::exec::{F64, Val};
+use crate::key::Value;
 use crate::mvcc::Xid;
 use crate::runtime::Runtime;
 use crate::storage::{Damage, PageError, Pager, Pid};
@@ -47,12 +49,10 @@ fn job_kind(schema: &Schema, kind: CatCtorId) -> u32 {
 }
 
 /// What the engine holds of `verify` between and during runs.
-#[derive(Debug)]
 pub(super) struct Findings {
-    /// The rows of `sys::verify_findings`, by id, each naming a constructor of `Finding`.
-    rows: BTreeMap<i64, KeptRow>,
-    /// The type `sys::Finding`.
-    finding: TypeId,
+    /// The rows of `sys::verify_findings`, by id, each with its value.
+    rows: BTreeMap<i64, (KeptRow, Val)>,
+    codec: Arc<Codec<FindingRow>>,
     next_run: i64,
     next_id: i64,
     /// The row of `sys::jobs` of each running run, by run number.
@@ -60,60 +60,226 @@ pub(super) struct Findings {
     cursor: Option<Cursor>,
 }
 
-fn int(f: &KeptField) -> Option<i64> {
-    match f {
-        KeptField::Int(n) => Some(*n),
-        KeptField::Instant(_) | KeptField::Text(_) => None,
+impl std::fmt::Debug for Findings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Findings")
+            .field("rows", &self.rows)
+            .field("next_run", &self.next_run)
+            .field("next_id", &self.next_id)
+            .field("jobs", &self.jobs)
+            .field("cursor", &self.cursor)
+            .finish_non_exhaustive()
     }
 }
 
-/// Returns the value of `row`, `None` when it names no constructor of `finding`, the type
-/// `sys::Finding`.
-fn val(row: &KeptRow, schema: &Schema, finding: TypeId) -> Option<Val> {
-    let ctor = schema.ids().ctor_of(row.ctor?)?;
-    (ctor.def() == finding).then_some(())?;
-    Some(Val::ctor(
-        ctor.index(),
-        row.fields
-            .iter()
-            .map(|f| match f {
-                KeptField::Int(n) => Val::Int(*n),
-                KeptField::Instant(n) => Val::Instant(*n),
-                KeptField::Text(t) => Val::text(t),
-            })
-            .collect(),
-    ))
+/// A row of `sys::verify_findings`, read for what the engine keeps track of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FindingRow {
+    id: i64,
+    run: i64,
+    /// The catalog id of the constraint a `Violation` names.
+    violated: Option<u64>,
 }
 
-/// Returns the constructor of `f` in `Finding` and the fields after its header.
-fn fields(f: Found) -> (CatCtorId, Vec<KeptField>) {
+impl FindingRow {
+    pub(super) fn violated(self) -> Option<u64> {
+        self.violated
+    }
+}
+
+const WHERE: Fields = &["id", "run", "at", "where"];
+const ORDER: Fields = &["id", "run", "at", "index", "where"];
+const ORPHAN: Fields = &["id", "run", "at", "index", "ctor", "where"];
+const MISSING: Fields = &["id", "run", "at", "relation", "ctor", "index", "where"];
+const VIOLATION: Fields = &["id", "run", "at", "constraint", "witness"];
+
+/// The `id`, `run` and `at` fields of one constructor's list of fields.
+#[derive(Clone, Copy)]
+struct Head {
+    id: Field,
+    run: Field,
+    at: Field,
+}
+
+/// Returns the header fields of `fields`. Fails to compile in a constant when it lists one not.
+const fn head(fields: Fields) -> Head {
+    Head {
+        id: field(fields, "id"),
+        run: field(fields, "run"),
+        at: field(fields, "at"),
+    }
+}
+
+const WHERE_HEAD: Head = head(WHERE);
+const ORDER_HEAD: Head = head(ORDER);
+const ORPHAN_HEAD: Head = head(ORPHAN);
+const MISSING_HEAD: Head = head(MISSING);
+const VIOLATION_HEAD: Head = head(VIOLATION);
+
+/// Returns the row whose header fields are `head`.
+fn finding(row: &Row<'_>, head: Head) -> FindingRow {
+    FindingRow {
+        id: row.int(head.id),
+        run: row.int(head.run),
+        violated: None,
+    }
+}
+
+impl Decode for FindingRow {
+    const RELATION: CatRelId = engine_rel::VERIFY_FINDINGS;
+    const CTORS: &'static [Ctor<FindingRow>] = {
+        use engine_ctor::{
+            FINDING_CHECKSUM, FINDING_MISSING, FINDING_ORDER, FINDING_ORPHAN, FINDING_STALE_PAGE,
+            FINDING_STRUCTURE, FINDING_VIOLATION,
+        };
+        &[
+            Ctor::new(FINDING_CHECKSUM, WHERE, |row| Ok(finding(row, WHERE_HEAD))),
+            Ctor::new(FINDING_STALE_PAGE, WHERE, |row| {
+                Ok(finding(row, WHERE_HEAD))
+            }),
+            Ctor::new(FINDING_ORDER, ORDER, |row| Ok(finding(row, ORDER_HEAD))),
+            Ctor::new(FINDING_ORPHAN, ORPHAN, |row| Ok(finding(row, ORPHAN_HEAD))),
+            Ctor::new(FINDING_MISSING, MISSING, |row| {
+                Ok(finding(row, MISSING_HEAD))
+            }),
+            Ctor::new(FINDING_VIOLATION, VIOLATION, |row| {
+                const CONSTRAINT: Field = field(VIOLATION, "constraint");
+                let constraint = row.int(CONSTRAINT);
+                let violated = u64::try_from(constraint).map_err(|_| row.bad(CONSTRAINT))?;
+                Ok(FindingRow {
+                    violated: Some(violated),
+                    ..finding(row, VIOLATION_HEAD)
+                })
+            }),
+            Ctor::new(FINDING_STRUCTURE, WHERE, |row| Ok(finding(row, WHERE_HEAD))),
+        ]
+    };
+}
+
+/// Returns the refusal of a kept row of `group` that is not two integers.
+fn not_two_ints(group: &str) -> Rot {
+    Rot::CatalogRow {
+        row: format!("the {group} of sys::verify_findings"),
+        detail: "is not two integers of no constructor".into(),
+    }
+}
+
+/// Returns the two integers of `row`, a kept row of no constructor.
+fn two_ints(row: &KeptRow) -> Result<(i64, i64), Rot> {
+    match (row.ctor, row.fields.as_slice()) {
+        (None, [KeptField::Int(a), KeptField::Int(b)]) => Ok((*a, *b)),
+        _ => Err(not_two_ints(&row.group)),
+    }
+}
+
+/// A finding as a kept row holds it: its constructor of `Finding`, and each field after the
+/// header by its handle in the constructor's list.
+struct Kept {
+    ctor: CatCtorId,
+    head: Head,
+    rest: Vec<(Field, KeptField)>,
+}
+
+impl Kept {
+    /// Returns the fields of a kept row of this with header `id`, `run` and `at`, in the order
+    /// its constructor lists them.
+    fn fields(&self, (id, run, at): (i64, i64, i64)) -> Vec<KeptField> {
+        let listed = self.head.id.fields();
+        let header = [
+            (self.head.id, KeptField::Int(id)),
+            (self.head.run, KeptField::Int(run)),
+            (self.head.at, KeptField::Instant(at)),
+        ];
+        let mut slots = vec![None; listed.len()];
+        for (f, v) in header.into_iter().chain(self.rest.iter().cloned()) {
+            assert!(f.fields() == listed, "a finding's fields are of one list");
+            slots[f.at()] = Some(v);
+        }
+        slots
+            .into_iter()
+            .map(|v| v.expect("a finding gives each field its list holds"))
+            .collect()
+    }
+
+    /// Returns whether `row` records this finding, whatever its header.
+    fn states(&self, row: &KeptRow) -> bool {
+        row.ctor == Some(self.ctor)
+            && row.fields.len() == self.head.id.fields().len()
+            && self
+                .rest
+                .iter()
+                .all(|(f, v)| row.fields.get(f.at()) == Some(v))
+    }
+}
+
+/// Returns `f` as a kept row holds it.
+fn fields(f: Found) -> Kept {
     use KeptField::{Int, Text};
     use engine_ctor::{
         FINDING_CHECKSUM, FINDING_MISSING, FINDING_ORDER, FINDING_ORPHAN, FINDING_STALE_PAGE,
         FINDING_STRUCTURE, FINDING_VIOLATION,
     };
     let id = |n: u64| Int(i64::try_from(n).unwrap_or(i64::MAX));
+    let kept = |ctor, head, rest| Kept { ctor, head, rest };
     match f {
-        Found::Checksum { at, .. } => (FINDING_CHECKSUM, vec![Text(at)]),
-        Found::StalePage { at, .. } | Found::Settled { at, .. } => {
-            (FINDING_STALE_PAGE, vec![Text(at)])
-        }
-        Found::Order { index, at } => (FINDING_ORDER, vec![id(index), Text(at)]),
-        Found::Orphan { index, ctor, at } => (FINDING_ORPHAN, vec![id(index), id(ctor), Text(at)]),
+        Found::Checksum { at, .. } => kept(
+            FINDING_CHECKSUM,
+            WHERE_HEAD,
+            vec![(const { field(WHERE, "where") }, Text(at))],
+        ),
+        Found::StalePage { at, .. } | Found::Settled { at, .. } => kept(
+            FINDING_STALE_PAGE,
+            WHERE_HEAD,
+            vec![(const { field(WHERE, "where") }, Text(at))],
+        ),
+        Found::Order { index, at } => kept(
+            FINDING_ORDER,
+            ORDER_HEAD,
+            vec![
+                (const { field(ORDER, "index") }, id(index)),
+                (const { field(ORDER, "where") }, Text(at)),
+            ],
+        ),
+        Found::Orphan { index, ctor, at } => kept(
+            FINDING_ORPHAN,
+            ORPHAN_HEAD,
+            vec![
+                (const { field(ORPHAN, "index") }, id(index)),
+                (const { field(ORPHAN, "ctor") }, id(ctor)),
+                (const { field(ORPHAN, "where") }, Text(at)),
+            ],
+        ),
         Found::Missing {
             relation,
             ctor,
             index,
             at,
-        } => (
+        } => kept(
             FINDING_MISSING,
-            vec![id(relation), id(ctor), id(index), Text(at)],
+            MISSING_HEAD,
+            vec![
+                (const { field(MISSING, "relation") }, id(relation)),
+                (const { field(MISSING, "ctor") }, id(ctor)),
+                (const { field(MISSING, "index") }, id(index)),
+                (const { field(MISSING, "where") }, Text(at)),
+            ],
         ),
         Found::Violation {
             constraint,
             witness,
-        } => (FINDING_VIOLATION, vec![id(constraint), Text(witness)]),
-        Found::Structure { at } => (FINDING_STRUCTURE, vec![Text(at)]),
+        } => kept(
+            FINDING_VIOLATION,
+            VIOLATION_HEAD,
+            vec![
+                (const { field(VIOLATION, "constraint") }, id(constraint)),
+                (const { field(VIOLATION, "witness") }, Text(witness)),
+            ],
+        ),
+        Found::Structure { at } => kept(
+            FINDING_STRUCTURE,
+            WHERE_HEAD,
+            vec![(const { field(WHERE, "where") }, Text(at))],
+        ),
     }
 }
 
@@ -142,49 +308,68 @@ impl Findings {
         let id = held_id(schema.ids().relation_id(table)).raw();
         let mut out = Findings {
             rows: BTreeMap::new(),
-            finding: schema.relation(table).elem_def,
+            codec: Arc::new(Codec::new(schema)),
             next_run: 1,
             next_id: 1,
             jobs: BTreeMap::new(),
             cursor: None,
         };
         for row in kept.into_iter().filter(|k| k.relation == id) {
-            let bad = || corrupt(Corruption::Finding(row.clone()));
+            let bad = |rot| corrupt(Corruption::Finding(row.clone(), rot));
             if row.group == COUNTERS {
-                let (None, [run, next]) = (row.ctor, row.fields.as_slice()) else {
-                    return Err(bad());
-                };
-                out.next_run = out.next_run.max(int(run).ok_or_else(bad)?);
-                out.next_id = out.next_id.max(int(next).ok_or_else(bad)?);
+                let (run, next) = two_ints(&row).map_err(bad)?;
+                out.next_run = out.next_run.max(run);
+                out.next_id = out.next_id.max(next);
                 continue;
             }
             if row.group == CURSOR {
-                let (None, [next, started]) = (row.ctor, row.fields.as_slice()) else {
-                    return Err(bad());
-                };
-                let next = u64::try_from(int(next).ok_or_else(bad)?).map_err(|_| bad())?;
+                let (next, started) = two_ints(&row).map_err(bad)?;
+                let next = u64::try_from(next).map_err(|_| {
+                    bad(Rot::CatalogRow {
+                        row: format!("the {CURSOR} of sys::verify_findings"),
+                        detail: format!("names page {next}"),
+                    })
+                })?;
                 out.cursor = Some(Cursor {
                     next: (next != 0).then_some(Pid(next)),
-                    started: int(started).ok_or_else(bad)?,
+                    started,
                 });
                 continue;
             }
-            val(&row, schema, out.finding).ok_or_else(bad)?;
-            let key = row.fields.first().and_then(int).ok_or_else(bad)?;
-            let run = row.fields.get(1).and_then(int).ok_or_else(bad)?;
-            out.next_run = out.next_run.max(run + 1);
-            out.next_id = out.next_id.max(key + 1);
-            out.rows.insert(key, row);
+            let (read, val) = out.read(&row).map_err(bad)?;
+            out.next_run = out.next_run.max(read.run + 1);
+            out.next_id = out.next_id.max(read.id + 1);
+            out.rows.insert(read.id, (row, val));
         }
         Ok(out)
     }
 
-    pub(super) fn vals(&self, schema: &Schema) -> BTreeSet<Val> {
-        self.rows.values().map(|r| self.val(r, schema)).collect()
+    pub(super) fn vals(&self) -> BTreeSet<Val> {
+        self.rows.values().map(|(_, v)| v.clone()).collect()
     }
 
-    fn val(&self, row: &KeptRow, schema: &Schema) -> Val {
-        val(row, schema, self.finding).expect("a held finding names a constructor of `Finding`")
+    /// Returns what `row` holds and its value.
+    ///
+    /// Fail with [`Rot::CatalogRow`] when `row` names no constructor of `sys::Finding`, or its
+    /// fields are not those the constructor declares, in the order [`fields`] writes them.
+    fn read(&self, row: &KeptRow) -> Result<(FindingRow, Val), Rot> {
+        let Some(id) = row.ctor else {
+            return Err(Rot::CatalogRow {
+                row: "sys::verify_findings".into(),
+                detail: "names no constructor".into(),
+            });
+        };
+        let (at, fields) = self.codec.declared(id, row.fields.clone())?;
+        let (stored, vals): (Vec<Value>, Vec<Val>) = fields
+            .into_iter()
+            .map(|f| match f {
+                KeptField::Int(n) => (Value::I64(n), Val::Int(n)),
+                KeptField::Instant(n) => (Value::Instant(n), Val::Instant(n)),
+                KeptField::Text(t) => (Value::Text(t.clone()), Val::text(&t)),
+            })
+            .unzip();
+        let read = self.codec.decode(at, &stored)?;
+        Ok((read, Val::ctor(at, vals)))
     }
 }
 
@@ -315,6 +500,11 @@ impl<R: Runtime> Verifier<R> {
         self.findings.lock(&self.rt).rows.len()
     }
 
+    /// Returns the codec of `sys::verify_findings` the findings are read with.
+    pub(super) fn codec(&self) -> Arc<Codec<FindingRow>> {
+        self.findings.lock(&self.rt).codec.clone()
+    }
+
     /// Returns where the background scrub is, as last saved.
     pub(super) fn cursor(&self) -> Option<Cursor> {
         self.findings.lock(&self.rt).cursor
@@ -357,13 +547,10 @@ impl<R: Runtime> Verifier<R> {
     ) {
         let old: Vec<KeptRow> = {
             let held = self.findings.lock(&self.rt);
-            let of_scrub = held.rows.values().filter(|r| r.group == SCRUB);
-            of_scrub.cloned().collect()
+            let of_scrub = held.rows.values().filter(|(r, _)| r.group == SCRUB);
+            of_scrub.map(|(r, _)| r.clone()).collect()
         };
-        let states = |f: &Found, r: &KeptRow| {
-            let (ctor, rest) = fields(f.clone());
-            r.ctor == Some(ctor) && r.fields.get(3..) == Some(rest.as_slice())
-        };
+        let states = |f: &Found, r: &KeptRow| fields(f.clone()).states(r);
         let fresh: BTreeSet<Found> = found
             .iter()
             .filter(|f| !old.iter().any(|r| states(f, r)))
@@ -397,20 +584,14 @@ impl<R: Runtime> Verifier<R> {
         let id = held_id(schema.ids().relation_id(table)).raw();
         let mut held = self.findings.lock(&self.rt);
         let row = |held: &mut Findings, f: Found| {
-            let (ctor, rest) = fields(f);
+            let kept = fields(f);
             let key = held.next_id;
             held.next_id += 1;
-            let mut fields = vec![
-                KeptField::Int(key),
-                KeptField::Int(run),
-                KeptField::Instant(at),
-            ];
-            fields.extend(rest);
             KeptRow {
                 relation: id,
                 group: group.to_owned(),
-                ctor: Some(ctor),
-                fields,
+                ctor: Some(kept.ctor),
+                fields: kept.fields((key, run, at)),
             }
         };
         let mut written = found.retained;
@@ -421,7 +602,7 @@ impl<R: Runtime> Verifier<R> {
         let gone: BTreeSet<String> = held
             .rows
             .values()
-            .map(|r| r.group.clone())
+            .map(|(r, _)| r.group.clone())
             .filter(|g| removed(g, schema))
             .collect();
         let counters = KeptRow {
@@ -440,14 +621,17 @@ impl<R: Runtime> Verifier<R> {
             written.push(row(&mut held, Found::Structure { at }));
         }
         held.rows
-            .retain(|_, r| r.group != group && !gone.contains(&r.group));
-        for r in &written {
-            if let Some(key) = r.fields.first().and_then(int) {
-                held.rows.insert(key, r.clone());
-            }
+            .retain(|_, (r, _)| r.group != group && !gone.contains(&r.group));
+        let mut vals = Vec::new();
+        for r in written {
+            let (read, val) = held
+                .read(&r)
+                .unwrap_or_else(|rot| panic!("a finding row the engine writes reads back: {rot}"));
+            vals.push(val.clone());
+            held.rows.insert(read.id, (r, val));
         }
-        self.db.set_volatile(table, held.vals(schema));
-        written.iter().map(|r| held.val(r, schema)).collect()
+        self.db.set_volatile(table, held.vals());
+        vals
     }
 
     fn keep_findings(

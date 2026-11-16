@@ -665,10 +665,7 @@ impl<R: Runtime> Engine<R> {
         caller: &Val,
         found: &DynRows,
     ) -> Result<(), write::Error> {
-        let findings = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
-        let violation = schema.engine_ctors().violation().index();
-        let finding = schema.ty(schema.relation(findings).elem_def);
-        let constraint_at = finding.header().len();
+        let codec = self.verifier.codec();
         let readable = OnceCell::new();
         let readable_set = || {
             readable.get_or_init(|| {
@@ -688,18 +685,14 @@ impl<R: Runtime> Engine<R> {
             })
         };
         let unreadable = |row: &Val| {
-            let Val::Ctor(c, fields) = row else {
+            let violated = match codec.decode_val(schema, row) {
+                Ok(read) => read.violated(),
+                Err(rot) => panic!("a row of `verify` the engine writes reads back: {rot}"),
+            };
+            let Some(violated) = violated else {
                 return false;
             };
-            if *c != violation {
-                return false;
-            }
-            let at = match fields.get(constraint_at) {
-                Some(Val::Int(i)) => u64::try_from(*i)
-                    .ok()
-                    .and_then(|id| schema.ids().denial_of(CatConstraintId::from_raw(id))),
-                _ => None,
-            };
+            let at = schema.ids().denial_of(CatConstraintId::from_raw(violated));
             match readable_set() {
                 Ok(set) => !at.is_some_and(|c| set.contains(&c)),
                 Err(_) => true,

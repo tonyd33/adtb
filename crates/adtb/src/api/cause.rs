@@ -110,7 +110,7 @@ pub(super) enum Corruption {
     Write(write::Error),
     Engine(Error),
     BundleRow(BadRow),
-    Finding(KeptRow),
+    Finding(KeptRow, catalog::Rot),
     NoSchemaOwner,
 }
 
@@ -137,7 +137,7 @@ impl fmt::Display for Corruption {
             Corruption::Write(e) => f.write_str(&write::detail(e)),
             Corruption::Engine(e) => write!(f, "{e:?}"),
             Corruption::BundleRow(row) => write!(f, "{row}"),
-            Corruption::Finding(row) => write!(f, "a finding holds {row:?}"),
+            Corruption::Finding(row, rot) => write!(f, "a finding holds {row:?}: {rot}"),
             Corruption::NoSchemaOwner => {
                 f.write_str("a nonempty roles relation has no schema owner")
             }

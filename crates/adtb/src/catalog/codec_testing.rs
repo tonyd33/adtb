@@ -79,6 +79,51 @@ pub(crate) fn reversed() -> Schema {
     schema::build_engine_from(&reversed_sums(ENGINE_SRC)).expect("the reversed catalog builds")
 }
 
+/// Returns `text` with the fields of each record, header and constructor its type declarations
+/// state in reverse order.
+pub(crate) fn reversed_fields(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !lines[i].starts_with("type ") {
+            out.push(lines[i].to_owned());
+            i += 1;
+            continue;
+        }
+        let mut span = lines[i].to_owned();
+        i += 1;
+        while i < lines.len() && lines[i].starts_with(' ') {
+            span.push('\n');
+            span.push_str(lines[i]);
+            i += 1;
+        }
+        let mut done = String::new();
+        let mut rest = span.as_str();
+        while let Some(open) = rest.find('{') {
+            let close = rest.find('}').expect("a brace closes");
+            let fields: Vec<&str> = rest[open + 1..close]
+                .split(',')
+                .map(str::trim)
+                .rev()
+                .collect();
+            done.push_str(&rest[..open]);
+            done.push_str(&format!("{{ {} }}", fields.join(", ")));
+            rest = &rest[close + 1..];
+        }
+        done.push_str(rest);
+        out.push(done);
+    }
+    out.join("\n")
+}
+
+/// Returns the engine schema built from catalog.adt with every record's, header's and
+/// constructor's fields reversed.
+pub(crate) fn fields_reversed() -> Schema {
+    schema::build_engine_from(&reversed_fields(ENGINE_SRC))
+        .expect("the field-reversed catalog builds")
+}
+
 /// Returns the position of constructor `id` of `codec`'s relation in `schema`.
 pub(crate) fn position<T: Decode>(schema: &Schema, codec: &Codec<T>, id: CatCtorId) -> u32 {
     ctor_index(schema, codec.relation(), id)

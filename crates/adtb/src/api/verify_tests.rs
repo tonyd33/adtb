@@ -4,127 +4,277 @@ use adtb_lang::types::RelId;
 
 use super::{Findings, fields};
 use crate::api::OpenError;
-use crate::catalog::{KeptField, KeptRow};
+use crate::catalog::codec::testing::{fields_reversed, reversed};
+use crate::catalog::{KeptField, KeptRow, layout};
 use crate::exec::Val;
 use crate::storage::Pid;
 use crate::write::Found;
 
-fn engine() -> (Schema, RelId) {
-    let schema = build(&[]).expect("the engine's declarations build");
-    let table = crate::catalog::engine_relation(&schema, engine_rel::VERIFY_FINDINGS);
-    (schema, table)
+fn table(schema: &Schema) -> RelId {
+    crate::catalog::engine_relation(schema, engine_rel::VERIFY_FINDINGS)
 }
 
-fn row(schema: &Schema, table: RelId, ctor: Option<CatCtorId>, rest: Vec<KeptField>) -> KeptRow {
-    let mut fields = vec![KeptField::Int(7), KeptField::Int(3), KeptField::Instant(11)];
-    fields.extend(rest);
+fn kept(schema: &Schema, group: &str, ctor: Option<CatCtorId>, fields: Vec<KeptField>) -> KeptRow {
     KeptRow {
-        relation: held_id(schema.ids().relation_id(table)).raw(),
-        group: "database".into(),
+        relation: held_id(schema.ids().relation_id(table(schema))).raw(),
+        group: group.into(),
         ctor,
         fields,
     }
 }
 
-#[test]
-fn a_kept_finding_holds_the_id_of_its_constructor_and_reads_back_at_its_position() {
-    let (schema, table) = engine();
-    let at = || "page 9".to_owned();
-    let found = [
+fn row(schema: &Schema, ctor: Option<CatCtorId>, rest: Vec<KeptField>) -> KeptRow {
+    let mut fields = vec![KeptField::Int(7), KeptField::Int(3), KeptField::Instant(11)];
+    fields.extend(rest);
+    kept(schema, "database", ctor, fields)
+}
+
+/// Field values by name.
+type Named = Vec<(&'static str, Val)>;
+
+/// Returns one finding of each way the writer records one, with the constructor it records and
+/// the value of each field after the header, by name.
+fn samples() -> Vec<(Found, CatCtorId, Named)> {
+    use engine_ctor::{
+        FINDING_CHECKSUM, FINDING_MISSING, FINDING_ORDER, FINDING_ORPHAN, FINDING_STALE_PAGE,
+        FINDING_STRUCTURE, FINDING_VIOLATION,
+    };
+    let text = |s: &str| Val::text(s);
+    vec![
         (
             Found::Checksum {
-                at: at(),
+                at: "c".into(),
                 page: None,
             },
-            "Checksum",
+            FINDING_CHECKSUM,
+            vec![("where", text("c"))],
         ),
         (
             Found::StalePage {
-                at: at(),
+                at: "s".into(),
                 page: Pid(9),
             },
-            "StalePage",
+            FINDING_STALE_PAGE,
+            vec![("where", text("s"))],
         ),
         (
             Found::Settled {
-                at: at(),
+                at: "t".into(),
                 page: Pid(9),
             },
-            "StalePage",
+            FINDING_STALE_PAGE,
+            vec![("where", text("t"))],
         ),
-        (Found::Order { index: 1, at: at() }, "Order"),
+        (
+            Found::Order {
+                index: 21,
+                at: "o".into(),
+            },
+            FINDING_ORDER,
+            vec![("index", Val::Int(21)), ("where", text("o"))],
+        ),
         (
             Found::Orphan {
-                index: 1,
-                ctor: 2,
-                at: at(),
+                index: 31,
+                ctor: 32,
+                at: "p".into(),
             },
-            "Orphan",
+            FINDING_ORPHAN,
+            vec![
+                ("index", Val::Int(31)),
+                ("ctor", Val::Int(32)),
+                ("where", text("p")),
+            ],
         ),
         (
             Found::Missing {
-                relation: 1,
-                ctor: 2,
-                index: 3,
-                at: at(),
+                relation: 41,
+                ctor: 42,
+                index: 43,
+                at: "m".into(),
             },
-            "Missing",
+            FINDING_MISSING,
+            vec![
+                ("relation", Val::Int(41)),
+                ("ctor", Val::Int(42)),
+                ("index", Val::Int(43)),
+                ("where", text("m")),
+            ],
         ),
         (
             Found::Violation {
-                constraint: 1,
-                witness: at(),
+                constraint: 51,
+                witness: "w".into(),
             },
-            "Violation",
+            FINDING_VIOLATION,
+            vec![("constraint", Val::Int(51)), ("witness", text("w"))],
         ),
-        (Found::Structure { at: at() }, "Structure"),
-    ];
-    let finding = schema.ty(schema.relation(table).elem_def);
-    for (f, name) in found {
-        let (ctor, rest) = fields(f);
-        let named = finding
-            .ctor_named(name)
-            .expect("Finding declares the constructor");
-        assert_eq!(schema.ids().ctor_id(named), Some(ctor), "{name}");
-        let kept = row(&schema, table, Some(ctor), rest.clone());
-        let read = Findings::of(vec![kept], &schema, table).expect("the row reads");
-        let mut vals = vec![Val::Int(7), Val::Int(3), Val::Instant(11)];
-        vals.extend(rest.iter().map(|f| match f {
-            KeptField::Int(n) => Val::Int(*n),
-            KeptField::Instant(n) => Val::Instant(*n),
-            KeptField::Text(t) => Val::text(t),
-        }));
-        let expected = Val::ctor(named.index(), vals);
-        assert_eq!(
-            vec![expected],
-            read.vals(&schema).into_iter().collect::<Vec<_>>(),
-            "{name}"
-        );
-    }
+        (
+            Found::Structure { at: "x".into() },
+            FINDING_STRUCTURE,
+            vec![("where", text("x"))],
+        ),
+    ]
 }
 
 #[test]
-fn a_kept_finding_naming_no_constructor_of_finding_is_refused_as_damage() {
-    let (schema, table) = engine();
-    let rest = vec![KeptField::Text("page 9".into())];
-    for (ctor, text) in [
-        (
-            Some(engine_ctor::JOB_VERIFY),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(297)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }"#,
-        ),
-        (
-            Some(CatCtorId::from_raw(1_000_000)),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(1000000)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }"#,
-        ),
-        (
-            None,
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: None, fields: [Int(7), Int(3), Instant(11), Text("page 9")] }"#,
-        ),
-    ] {
-        let kept = row(&schema, table, ctor, rest.clone());
-        let Err(OpenError::Corrupt { detail }) = Findings::of(vec![kept], &schema, table) else {
-            panic!("a finding of {ctor:?} is refused");
+fn a_kept_finding_reads_back_by_name_under_reversed_constructors_and_reversed_fields() {
+    let shipped = build(&[]).expect("the engine's declarations build");
+    let ctors = reversed();
+    let fields_reversed = fields_reversed();
+    let finding = shipped.ty(shipped.relation(table(&shipped)).elem_def);
+    let n = u32::try_from(finding.ctors().len()).expect("a count fits 32 bits");
+    for (f, expected, rest) in samples() {
+        let written = fields(f.clone());
+        let ctor = written.ctor;
+        assert_eq!(expected, ctor, "{f:?}");
+        let at = |schema: &Schema| {
+            let c = schema
+                .ids()
+                .ctor_of(ctor)
+                .expect("Finding declares the constructor");
+            assert_eq!(schema.relation(table(schema)).elem_def, c.def(), "{ctor}");
+            c.index()
         };
-        assert_eq!(text, detail, "{ctor:?}");
+        assert_eq!(n - 1 - at(&shipped), at(&ctors), "{ctor}");
+        let named: Vec<(&str, Val)> = [
+            ("id", Val::Int(7)),
+            ("run", Val::Int(3)),
+            ("at", Val::Instant(11)),
+        ]
+        .into_iter()
+        .chain(rest)
+        .collect();
+        for schema in [&shipped, &ctors, &fields_reversed] {
+            let kept = kept(schema, "database", Some(ctor), written.fields((7, 3, 11)));
+            let read = Findings::of(vec![kept], schema, table(schema)).expect("the row reads");
+            let declared = layout::row(schema, table(schema), at(schema));
+            assert_eq!(named.len(), declared.len(), "{ctor}");
+            let fields = declared
+                .iter()
+                .map(|(d, _)| {
+                    named
+                        .iter()
+                        .find(|(n, _)| n == d)
+                        .unwrap_or_else(|| panic!("the sample names field `{d}`"))
+                        .1
+                        .clone()
+                })
+                .collect();
+            let expected = Val::ctor(at(schema), fields);
+            assert_eq!(
+                vec![expected],
+                read.vals().into_iter().collect::<Vec<_>>(),
+                "{ctor}"
+            );
+        }
+    }
+    let read =
+        Findings::of(Vec::new(), &fields_reversed, table(&fields_reversed)).expect("no row reads");
+    let listed: Vec<usize> = (0..5).collect();
+    let (_, declared) = read
+        .codec
+        .declared(engine_ctor::FINDING_ORDER, listed.clone())
+        .expect("`Order` has five fields");
+    assert_ne!(listed, declared);
+}
+
+#[test]
+fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
+    use KeptField::{Instant, Int, Text};
+    let schema = build(&[]).expect("the engine's declarations build");
+    let page = || Text("page 9".into());
+    let cases = [
+        (
+            row(&schema, Some(engine_ctor::FINDING_ORDER), vec![page()]),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(315)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings.Order holds 4 fields, not 5"#,
+        ),
+        (
+            kept(
+                &schema,
+                "counters",
+                Some(engine_ctor::FINDING_CHECKSUM),
+                vec![Int(1), Int(2)],
+            ),
+            r#"a finding holds KeptRow { relation: 339, group: "counters", ctor: Some(CatCtorId(313)), fields: [Int(1), Int(2)] }: a row of the counters of sys::verify_findings is not two integers of no constructor"#,
+        ),
+        (
+            kept(
+                &schema,
+                "scrub cursor",
+                Some(engine_ctor::FINDING_CHECKSUM),
+                vec![Int(1), Int(2)],
+            ),
+            r#"a finding holds KeptRow { relation: 339, group: "scrub cursor", ctor: Some(CatCtorId(313)), fields: [Int(1), Int(2)] }: a row of the scrub cursor of sys::verify_findings is not two integers of no constructor"#,
+        ),
+        (
+            row(&schema, Some(engine_ctor::JOB_VERIFY), vec![page()]),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(297)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings names no constructor 297"#,
+        ),
+        (
+            row(&schema, Some(CatCtorId::from_raw(1_000_000)), vec![page()]),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(1000000)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings names no constructor 1000000"#,
+        ),
+        (
+            row(&schema, None, vec![page()]),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: None, fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings names no constructor"#,
+        ),
+        (
+            row(
+                &schema,
+                Some(engine_ctor::FINDING_CHECKSUM),
+                vec![page(), page()],
+            ),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(313)), fields: [Int(7), Int(3), Instant(11), Text("page 9"), Text("page 9")] }: a row of sys::verify_findings.Checksum holds 5 fields, not 4"#,
+        ),
+        (
+            row(&schema, Some(engine_ctor::FINDING_CHECKSUM), vec![Int(9)]),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(313)), fields: [Int(7), Int(3), Instant(11), Int(9)] }: a row of sys::verify_findings.Checksum holds I64(9) in field `where`"#,
+        ),
+        (
+            row(
+                &schema,
+                Some(engine_ctor::FINDING_ORDER),
+                vec![page(), page()],
+            ),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(315)), fields: [Int(7), Int(3), Instant(11), Text("page 9"), Text("page 9")] }: a row of sys::verify_findings.Order holds Text("page 9") in field `index`"#,
+        ),
+        (
+            kept(
+                &schema,
+                "database",
+                Some(engine_ctor::FINDING_STRUCTURE),
+                vec![Int(7), Instant(3), Instant(11), page()],
+            ),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(473)), fields: [Int(7), Instant(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings.Structure holds Instant(3) in field `run`"#,
+        ),
+        (
+            row(
+                &schema,
+                Some(engine_ctor::FINDING_VIOLATION),
+                vec![Int(-1), page()],
+            ),
+            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(318)), fields: [Int(7), Int(3), Instant(11), Int(-1), Text("page 9")] }: a row of sys::verify_findings.Violation holds I64(-1) in field `constraint`"#,
+        ),
+        (
+            kept(&schema, "counters", None, vec![Int(1), Int(2), Int(3)]),
+            r#"a finding holds KeptRow { relation: 339, group: "counters", ctor: None, fields: [Int(1), Int(2), Int(3)] }: a row of the counters of sys::verify_findings is not two integers of no constructor"#,
+        ),
+        (
+            kept(&schema, "scrub cursor", None, vec![Int(1), page()]),
+            r#"a finding holds KeptRow { relation: 339, group: "scrub cursor", ctor: None, fields: [Int(1), Text("page 9")] }: a row of the scrub cursor of sys::verify_findings is not two integers of no constructor"#,
+        ),
+        (
+            kept(&schema, "scrub cursor", None, vec![Int(-4), Int(2)]),
+            r#"a finding holds KeptRow { relation: 339, group: "scrub cursor", ctor: None, fields: [Int(-4), Int(2)] }: a row of the scrub cursor of sys::verify_findings names page -4"#,
+        ),
+    ];
+    for (row, text) in cases {
+        let shown = format!("{row:?}");
+        let Err(OpenError::Corrupt { detail }) = Findings::of(vec![row], &schema, table(&schema))
+        else {
+            panic!("{shown} is refused");
+        };
+        assert_eq!(text, detail, "{shown}");
     }
 }

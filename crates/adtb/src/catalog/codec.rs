@@ -248,6 +248,39 @@ impl<T: Decode> Codec<T> {
         self.relation
     }
 
+    /// Returns the position of constructor `id` and `listed`, its fields in the order its
+    /// [`Ctor`] lists them, in their declared order.
+    ///
+    /// Fail with [`Rot::CatalogRow`] when the relation has no constructor `id` or `listed` holds
+    /// another count of fields than it.
+    pub fn declared<V>(&self, id: CatCtorId, listed: Vec<V>) -> Result<(u32, Vec<V>), Rot> {
+        let Some(at) = self.ctors.iter().position(|s| s.ctor.id == id) else {
+            return Err(Rot::CatalogRow {
+                row: self.name.clone(),
+                detail: format!("names no constructor {id}"),
+            });
+        };
+        let shape = &self.ctors[at];
+        if listed.len() != shape.positions.len() {
+            return Err(Rot::CatalogRow {
+                row: format!("{}.{}", self.name, shape.name),
+                detail: counted(listed.len(), shape.positions.len()),
+            });
+        }
+        let mut slots: Vec<Option<V>> = listed.iter().map(|_| None).collect();
+        for (v, &to) in listed.into_iter().zip(&shape.positions) {
+            slots[to] = Some(v);
+        }
+        let declared = slots
+            .into_iter()
+            .map(|v| v.expect("`Codec::new` checks the listed fields are the declared ones"))
+            .collect();
+        Ok((
+            u32::try_from(at).expect("a constructor position fits 32 bits"),
+            declared,
+        ))
+    }
+
     /// Returns `v` with field `f` of its constructor holding `value`.
     ///
     /// Precondition: [`Codec::decode_val`] reads `v`.
