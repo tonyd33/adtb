@@ -6,6 +6,10 @@ use super::bundle::{Registered, Row};
 use super::dump::{FeedMemberRow, FeedRow};
 use super::server::{AuditRow, CredentialRow, PeerRow};
 use super::verify::FindingRow;
+use crate::catalog::described::{
+    ComputedRow, ConstraintRow, ConstructorRow, CtorStateRow, DefaultRow, FieldRow, FunctionRow,
+    IndexCtorRow, IndexRow, NamedSetRow, RelationRow, SetMemberRow, TypeRow, ValueStateRow,
+};
 
 /// Returns each way the samples of the codec of `c` fail to read back.
 fn read_back_of(c: Coded) -> Vec<String> {
@@ -26,6 +30,20 @@ fn read_back_of(c: Coded) -> Vec<String> {
         Coded::PeerMappings => of::<PeerRow>(c),
         Coded::Audit => of::<AuditRow>(c),
         Coded::VerifyFindings => of::<FindingRow>(c),
+        Coded::Types => of::<TypeRow>(c),
+        Coded::Constructors => of::<ConstructorRow>(c),
+        Coded::CtorStates => of::<CtorStateRow>(c),
+        Coded::ValueStates => of::<ValueStateRow>(c),
+        Coded::Fields => of::<FieldRow>(c),
+        Coded::Relations => of::<RelationRow>(c),
+        Coded::NamedSets => of::<NamedSetRow>(c),
+        Coded::SetMembers => of::<SetMemberRow>(c),
+        Coded::Indexes => of::<IndexRow>(c),
+        Coded::IndexCtors => of::<IndexCtorRow>(c),
+        Coded::Constraints => of::<ConstraintRow>(c),
+        Coded::Functions => of::<FunctionRow>(c),
+        Coded::Defaults => of::<DefaultRow>(c),
+        Coded::Computed => of::<ComputedRow>(c),
     }
 }
 

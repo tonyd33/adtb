@@ -1,6 +1,5 @@
 //! Values of catalog rows, named by module, type, relation, constructor and field.
 
-use adtb_lang::ids::CatCtorId;
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
@@ -15,18 +14,6 @@ pub fn relation(schema: &Schema, name: &str) -> RelId {
     match schema.module(m).values.get(name) {
         Some(&ValueDef::Relation(r)) => r,
         _ => panic!("the catalog declares relation `{name}`"),
-    }
-}
-
-/// Returns the value of the nullary engine constructor with fixed id `id` in `schema`.
-pub fn tag(schema: &Schema, id: CatCtorId) -> Value {
-    let c = schema
-        .ids()
-        .ctor_of(id)
-        .unwrap_or_else(|| panic!("the schema declares engine constructor {id}"));
-    Value::Sum {
-        ctor: c.index(),
-        fields: Vec::new(),
     }
 }
 

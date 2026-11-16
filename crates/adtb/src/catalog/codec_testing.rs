@@ -11,7 +11,7 @@ use crate::key::{F64, Scalar, Value};
 
 use super::super::ids::{ctor_index, stored};
 use super::super::{engine_schema, layout, row_type};
-use super::{Codec, Decode, Field, coded};
+use super::{Codec, Decode, Field, Sum, coded};
 
 /// A row's constructor id, the fields its reader reads by name, and the typed row it reads as.
 pub(crate) type Sample<T> = (CatCtorId, Vec<(&'static str, Value)>, T);
@@ -463,6 +463,11 @@ pub(crate) fn row(schema: &Schema, r: RelId, c: u32, fields: &[(&str, Value)]) -
                 .clone()
         })
         .collect()
+}
+
+/// Returns the fixed ids of the constructors `s` lists.
+pub(crate) fn ids(s: Sum) -> Vec<CatCtorId> {
+    s.ctors.iter().map(|&(id, _)| id).collect()
 }
 
 /// Returns the value of constructor `id` of the type of field `field` of constructor `c` of `r`

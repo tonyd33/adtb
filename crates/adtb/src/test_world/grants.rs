@@ -4,6 +4,7 @@ use adtb_lang::ids::engine_ctor;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
+use crate::catalog::codec::testing::tag;
 use crate::catalog::{Catalog, OWNER_ROLE, Rewrite, values};
 use crate::key::Value;
 use crate::mvcc::Transactions;
@@ -143,7 +144,16 @@ pub fn deployment_row<R: Runtime>(
         c,
         vec![
             ("id", Value::I64(id)),
-            ("kind", values::tag(schema, engine_ctor::GRANT_DEPLOYMENT)),
+            (
+                "kind",
+                tag(
+                    schema,
+                    (r, c),
+                    "kind",
+                    engine_ctor::GRANT_DEPLOYMENT,
+                    Vec::new(),
+                ),
+            ),
             ("privilege", Value::Text(privilege.to_owned())),
             ("target", target),
             ("grantee", Value::Text(grantee.to_owned())),

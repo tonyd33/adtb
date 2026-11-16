@@ -181,7 +181,7 @@ engine_names prod 1 crates/adtb-lang/src/types.rs
 engine_names prod 1 crates/adtb/src/api/server/task.rs
 engine_names prod 1 crates/adtb/src/catalog/oplog.rs
 engine_names prod 1 crates/adtb/src/catalog/readers.rs
-engine_names prod 17 crates/adtb/src/catalog/rows.rs
+engine_names prod 3 crates/adtb/src/catalog/rows.rs
 engine_names prod 1 crates/adtb/src/catalog/values.rs
 pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs
 pub_fields prod 3 crates/adtb-bench/src/native/counter.rs

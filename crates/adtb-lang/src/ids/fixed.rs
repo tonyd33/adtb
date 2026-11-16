@@ -733,6 +733,25 @@ pub mod engine_ctor {
     engine_ctors! {
         "sys" "JobKind" { JOB_REINDEX "Reindex", JOB_VERIFY "Verify" }
         "catalog" "Role" { ROLE "Role" }
+        "catalog" "TypeDef" { TYPE_SUM "SumType", TYPE_NEWTYPE "Newtype" }
+        "catalog" "Constructor" { CONSTRUCTOR "Constructor" }
+        "catalog" "CtorState" { CTOR_STATE "CtorState" }
+        "catalog" "ValueState" { VALUE_STATE "ValueState" }
+        "catalog" "Field" { FIELD_HEADER "Header", FIELD_PAYLOAD "Payload" }
+        "catalog" "Relation" { RELATION "Relation" }
+        "catalog" "NamedSet" { NAMED_SET "NamedSet" }
+        "catalog" "SetMember" { SET_MEMBER "SetMember" }
+        "catalog" "Index" { INDEX "Index" }
+        "catalog" "IndexCtor" { INDEX_CTOR "IndexCtor" }
+        "catalog" "Constraint" { CONSTRAINT "Constraint" }
+        "catalog" "Function" {
+            FUNCTION_LANGUAGE "Language",
+            FUNCTION_WASM "Wasm",
+            FUNCTION_HOST "Host",
+            FUNCTION_AGGREGATE "Aggregate",
+        }
+        "catalog" "Default" { DEFAULT "Default" }
+        "catalog" "Computed" { COMPUTED "Computed" }
         "catalog" "CtorStage" {
             STAGE_DECLARED "Declared",
             STAGE_ENABLED "Enabled",

@@ -285,6 +285,20 @@ coded! {
     PeerMappings => PEER_MAPPINGS,
     Audit => AUDIT,
     VerifyFindings => VERIFY_FINDINGS,
+    Types => TYPES,
+    Constructors => CONSTRUCTORS,
+    CtorStates => CTOR_STATES,
+    ValueStates => VALUE_STATES,
+    Fields => FIELDS,
+    Relations => RELATIONS,
+    NamedSets => NAMED_SETS,
+    SetMembers => SET_MEMBERS,
+    Indexes => INDEXES,
+    IndexCtors => INDEX_CTORS,
+    Constraints => CONSTRAINTS,
+    Functions => FUNCTIONS,
+    Defaults => DEFAULTS,
+    Computed => COMPUTED,
 }
 
 /// A typed row of one catalog relation.

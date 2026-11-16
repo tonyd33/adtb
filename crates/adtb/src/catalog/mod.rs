@@ -6,6 +6,7 @@ mod change;
 pub(crate) mod codec;
 mod deploy;
 mod deployment;
+pub(crate) mod described;
 mod grants;
 mod history;
 mod hosts;

@@ -10,6 +10,7 @@ use adtb_testkit::refused_with;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::catalog::codec::testing::tag;
 use crate::catalog::{Catalog, Dormant, Error as CatalogError, layout, values};
 use crate::key::Value;
 use crate::mvcc::Transactions;
@@ -257,7 +258,7 @@ fn stored(
     let names = layout::row(schema, r, c);
     let at = |n: &str| names.iter().position(|(f, _)| f == n).expect("a field");
     let yes = values::boolean(true);
-    let log = values::tag(schema, engine_ctor::GRANT_LOG);
+    let log = tag(schema, (r, c), "kind", engine_ctor::GRANT_LOG, Vec::new());
     let mut logged = Vec::new();
     let mut deployed = Vec::new();
     for (_, row) in catalog.committed_rows(pager, txns, r).expect("grant rows") {
@@ -565,7 +566,13 @@ fn a_crash_at_every_flush_of_recording_a_legacy_grant_keeps_or_writes_its_row() 
             .iter()
             .position(|(n, _)| n == "kind")
             .expect("RoleGrant declares kind");
-        let log = values::tag(catalog.schema(), engine_ctor::GRANT_LOG);
+        let log = tag(
+            catalog.schema(),
+            (r, c),
+            "kind",
+            engine_ctor::GRANT_LOG,
+            Vec::new(),
+        );
         let rows: Vec<(u32, Vec<Value>)> = catalog
             .committed_rows(&pager, &txns, r)
             .expect("grant rows")
