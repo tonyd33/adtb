@@ -34,3 +34,7 @@ Landed as ystwnzvs 7e7cf707 (2 rounds), full check 0 (3834 tests). `evolve::List
 ## 2026-11-16, part 4a-2 landed
 
 Landed as wuztvzvl df7fafa3 (2 rounds), full check 0 (3837 tests). `Inverse::RestoreRelation` carries its `typed`, read from the relation's declaration where the drop applied (the old lookup in the source before the whole migration missed after a rename); `linked` and `undo_all` enumerate the same steps vector, so the restore position comes from the walk that applies it. Resolved: ahead-relations-keyed-by-name. Next: 4b (rebase rrrmqont 4cad9496).
+
+## 2026-11-16, part 4b landed
+
+Landed as pkrpqpxz e006c7e8 (2 rounds), full check 0 (3839 tests); rrrmqont folded in. `Schema.ahead` entries carry their `Adder`; translate's 5 `declared` sites resolve through it (`Later::At`, `Lacked` refused as `Loss::Later`, `Unlinked` an invariant held lazily, since a reverted fill's schema can list a restored relation it holds no key of). The review found a valid history (a function parameter carrying the key, the relation dropped by a later migration) reaching the first version's panic; it is a refusal. `Schema::declared` callers outside tests 16 to 11, all committed. Resolved: pinned-forward-fill-later-relation-refused. Next: part 1, `Committed`.
