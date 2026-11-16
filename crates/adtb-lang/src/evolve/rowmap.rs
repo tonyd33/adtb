@@ -89,7 +89,7 @@ impl Source {
     pub fn steps(
         &mut self,
         module: &str,
-        op: &Operator,
+        op: Listed<'_>,
         text: &str,
     ) -> Result<Vec<Step>, Vec<Diag>> {
         let steps = RefCell::new(Vec::new());
@@ -97,14 +97,14 @@ impl Source {
         self.apply_recording(module, op, text, None, Some(&steps))?;
         let mut steps = steps.into_inner();
         if !matches!(op.kind, OperatorKind::Revert { .. }) {
-            let maps = before.row_maps(module, op, text, self, How::Written)?;
+            let maps = before.row_maps(module, &op, text, self, How::Written)?;
             steps.push(Step {
                 after: self.clone(),
                 maps,
                 applied: Some(Applied {
                     module: module.to_string(),
                     text: text.to_string(),
-                    op: op.clone(),
+                    op: (*op).clone(),
                 }),
             });
         }

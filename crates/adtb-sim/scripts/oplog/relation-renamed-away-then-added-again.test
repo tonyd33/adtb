@@ -1,0 +1,22 @@
+seed 75
+
+migrate
+  module m
+  add module m
+  add type S = { id: Key stamps, n: I64 }
+  add relation stamps : S key id generate sequence
+  rename relation stamps to labels
+  add type T = { id: Key stamps, k: I64 }
+  add relation stamps : T key id generate sequence
+
+run
+  insert stamps { k: 2 }
+
+query rowsort
+  from s in stamps select s.k
+----
+2
+
+query rowsort
+  from l in labels select l.n
+----

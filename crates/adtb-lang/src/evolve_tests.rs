@@ -3635,6 +3635,37 @@ nest constructor Payment.(Card | Invoice) into Held { method: Method }",
 }
 
 #[test]
+fn a_relation_added_then_renamed_is_pending_no_more_and_selects_late_under_its_new_name() {
+    let text = "module auth
+add type Stamp = { id: Key stamps }
+add relation stamps : Stamp key id generate sequence
+rename relation stamps to labels";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let mut s = running();
+    s.expecting("auth", &m.operators);
+    for op in Listed::all(&m.operators) {
+        s.apply("auth", op, text)
+            .unwrap_or_else(|e| panic!("{op:?} refused: {e:?}"));
+    }
+    let schema = s.schema().unwrap_or_else(|e| panic!("{e:?}"));
+    let labels = schema
+        .relations
+        .iter()
+        .position(|r| r.name == "labels")
+        .map(|i| RelId(i as u32))
+        .expect("labels is declared");
+    assert_eq!(
+        (Vec::new(), true),
+        (
+            schema.ahead.clone(),
+            schema.selects_late(RelRef::Declared(labels))
+        )
+    );
+}
+
+#[test]
 fn a_relation_a_later_operator_adds_is_no_relation_before_it() {
     let text = "module auth
 add type Team = { id: Key teams }
@@ -3644,7 +3675,7 @@ add relation teams : Team key id generate sequence";
         .expect("the migration parses");
     let mut s = running();
     s.expecting("auth", &m.operators);
-    s.apply("auth", &m.operators[0], text)
+    s.apply("auth", Listed::nth(&m.operators, 0), text)
         .unwrap_or_else(|e| panic!("add type refused: {e:?}"));
     let schema = s.schema().unwrap_or_else(|e| panic!("{e:?}"));
     assert!(schema.relations.iter().all(|r| r.name != "teams"));

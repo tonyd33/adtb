@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
 use crate::check::{Program, Query, Txn, check_query_in, check_txn_in};
-use crate::evolve::Source;
+use crate::evolve::{Listed, Source};
 use crate::parse::{Options, parse_adhoc, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
 use crate::schema::{
@@ -498,7 +498,7 @@ pub fn with_functions(
             span: f.span,
         };
         source
-            .apply(module, &op, text)
+            .apply(module, Listed::alone(&op), text)
             .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
     }
     source.check().map(Some).map_err(file_diags)

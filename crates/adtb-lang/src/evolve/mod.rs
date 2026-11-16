@@ -24,6 +24,7 @@ use crate::types::*;
 mod carry;
 mod ctor;
 mod cx;
+mod expected;
 mod field;
 mod grant;
 mod grant_text;
@@ -52,6 +53,7 @@ mod tests;
 mod memo_tests;
 
 pub use crate::schema::Stage;
+pub use expected::{Adder, Expected, Listed};
 use grant::HeldGrant;
 pub use grant::{
     CallSignatures, DeployedGrant, DeploymentGrant, DeploymentRevoke, GrantFields, GrantRow,
@@ -122,7 +124,7 @@ pub struct Source {
     pub marks: Option<Marks>,
     /// The relation variables, by module and name, that the operators of the migration being
     /// applied add.
-    pub ahead: Vec<schema::Ahead>,
+    pub ahead: Vec<Expected>,
     /// How the operator being applied carries grants, once the constructors it makes have ids.
     carry: Option<carry::Carry>,
     /// The paths of field ids the operator being applied replaces, until its objects take ids.

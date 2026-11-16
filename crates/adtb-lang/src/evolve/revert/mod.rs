@@ -254,7 +254,7 @@ impl Source {
 
 /// Returns the relation variables the inverse of `logged` adds back, each typed when the
 /// migration also drops the type the source before it declares the relation over.
-fn inverse_ahead(logged: &Logged) -> Vec<schema::Ahead> {
+fn inverse_ahead(logged: &Logged) -> Vec<Expected> {
     let module_of = |q: &QName| {
         q.module
             .as_ref()
@@ -275,11 +275,12 @@ fn inverse_ahead(logged: &Logged) -> Vec<schema::Ahead> {
             OperatorKind::DropRelation(r) => {
                 let m = module_of(r);
                 let ty = logged.before.relation_type(&m, &r.name.text);
-                Some(schema::Ahead {
-                    module: m,
-                    relation: r.name.text.clone(),
-                    typed: ty.is_some_and(|t| dropped.contains(&t)),
-                })
+                Some(Expected::new(
+                    m,
+                    r.name.text.clone(),
+                    ty.is_some_and(|t| dropped.contains(&t)),
+                    Adder::Inverse,
+                ))
             }
             _ => None,
         })
@@ -431,7 +432,7 @@ impl Cx<'_> {
         let mut group: Vec<Vec<Inverse>> = Vec::new();
         let spelling = std::cell::OnceCell::new();
         let fills = Fills::new(fills);
-        for (i, op) in logged.operators.iter().enumerate() {
+        for (i, op) in Listed::all(&logged.operators).enumerate() {
             let before = state.clone();
             if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
                 return Err(ds
@@ -442,7 +443,7 @@ impl Cx<'_> {
                     .collect());
             }
             let run = Run::new(&start, &logged, &spelling, &fills);
-            group.push(self.inverse(&run.at(&before, &state, op))?);
+            group.push(self.inverse(&run.at(&before, &state, &op))?);
             if state.built().is_err() && i + 1 < logged.operators.len() {
                 continue;
             }
@@ -890,7 +891,7 @@ impl Cx<'_> {
     }
 
     pub(super) fn replay(&mut self, l: &Logged) -> R<()> {
-        for op in &l.operators {
+        for op in Listed::all(&l.operators) {
             match self.steps {
                 Some(steps) => {
                     let mut more = self.src.steps(&l.module, op, &l.text)?;

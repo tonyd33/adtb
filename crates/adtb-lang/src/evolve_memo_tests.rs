@@ -122,15 +122,18 @@ fn a_change_of_the_empty_modules_alone_is_rebuilt() {
 fn a_change_of_the_relations_ahead_alone_is_rebuilt() {
     let src = base();
     let mut changed = src.clone();
-    let ahead = schema::Ahead {
-        module: "app".to_string(),
-        relation: "later".to_string(),
-        typed: false,
+    let ahead = |typed| {
+        Expected::new(
+            "app".to_string(),
+            "later".to_string(),
+            typed,
+            Adder::Operator(0),
+        )
     };
-    changed.ahead.push(ahead);
+    changed.ahead.push(ahead(false));
     is_rebuilt(&src, &changed);
-    let mut typed = changed.clone();
-    typed.ahead[0].typed = true;
+    let mut typed = src;
+    typed.ahead.push(ahead(true));
     assert_ne!(changed.ahead, typed.ahead);
     builds_uncached(&typed);
 }
@@ -141,11 +144,12 @@ fn a_declaration_that_only_ahead_lets_resolve_refuses_without_it() {
     src.decls[1].text = "type Note = { later: Key later }".to_string();
     assert!(src.built().is_err());
     let mut ahead = src.clone();
-    ahead.ahead.push(schema::Ahead {
-        module: "other".to_string(),
-        relation: "later".to_string(),
-        typed: false,
-    });
+    ahead.ahead.push(Expected::new(
+        "other".to_string(),
+        "later".to_string(),
+        false,
+        Adder::Operator(0),
+    ));
     builds_uncached(&ahead);
     assert!(src.built().is_err());
 }

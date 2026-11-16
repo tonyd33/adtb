@@ -76,13 +76,13 @@ impl Logged {
         let mut names = Names::default();
         let mut late = Vec::new();
         let mut missing = Vec::new();
-        for op in &self.operators {
+        for op in Listed::all(&self.operators) {
             let prior = src.clone();
             let noted = RefCell::new(Names::default());
             src.apply_noting(&self.module, op, &self.text, Some(&noted))?;
             names.extend(noted.into_inner());
             if operands {
-                operands::tie_operands(&prior, &src, &self.module, op, &mut names);
+                operands::tie_operands(&prior, &src, &self.module, &op, &mut names);
             }
             let marks = src.marks.as_mut().expect("a replay records its copies");
             let read = std::mem::take(&mut marks.read);

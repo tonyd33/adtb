@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
-use adtb_lang::evolve::{Kept, Source};
+use adtb_lang::evolve::{Kept, Listed, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Schema, Stage, ValueDef};
 use adtb_lang::span::Diag;
@@ -291,12 +291,12 @@ fn changes(
     let mut before = schema.clone();
     let mut before_source = source.clone();
     let mut changes = Changes::default();
-    for (i, op) in file.operators.iter().enumerate() {
+    for (i, op) in Listed::all(&file.operators).enumerate() {
         let steps = at
             .steps(module, op, text)
             .map_err(|ds| Error::Refused(ds.into_iter().map(|d| d.message).collect()))?;
         for step in steps {
-            let Some(schema) = super::steps::built(&step, op, text)? else {
+            let Some(schema) = super::steps::built(&step, &op, text)? else {
                 continue;
             };
             changes.add(&before, &schema);

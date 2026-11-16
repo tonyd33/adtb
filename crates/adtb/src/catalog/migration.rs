@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
-use adtb_lang::evolve::{Code, Resolved, RowMap, Source};
+use adtb_lang::evolve::{Code, Listed, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
@@ -265,9 +265,9 @@ impl Catalog {
         let mut before = self.schema.clone();
         let mut why = Vec::new();
         let mut blamed = None;
-        for op in &file.operators {
+        for op in Listed::all(&file.operators) {
             let refused_by = |blamed: Option<String>, why: Vec<String>| Error::RefusedBy {
-                operator: blamed.unwrap_or_else(|| operator_text(text, op)),
+                operator: blamed.unwrap_or_else(|| operator_text(text, &op)),
                 why,
             };
             let held = why.len();
@@ -280,7 +280,7 @@ impl Catalog {
                 }
             };
             for step in steps {
-                let schema = match steps::built(&step, op, text) {
+                let schema = match steps::built(&step, &op, text) {
                     Ok(Some(schema)) => schema,
                     Ok(None) => continue,
                     Err(Error::Refused(w)) => return Err(refused_by(blamed, [why, w].concat())),
@@ -305,7 +305,7 @@ impl Catalog {
                 before = schema;
             }
             if blamed.is_none() && why.len() > held {
-                blamed = Some(operator_text(text, op));
+                blamed = Some(operator_text(text, &op));
             }
             at = after;
         }

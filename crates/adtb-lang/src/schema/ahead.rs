@@ -1,7 +1,32 @@
 use std::collections::BTreeSet;
 
-use super::{Schema, TypeDefKind};
+use super::{Ahead, Schema, TypeDefKind};
 use crate::types::{AheadId, RelId, RelRef, Ty, TypeId};
+
+/// Whether the operator that adds an expected relation variable has applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AheadState {
+    /// It has not: a key of the relation names it as one a later operator adds, unless a value
+    /// of its name is declared.
+    Pending,
+    /// It has: the relation is declared under the name the entry gives.
+    Declared,
+    /// It has when a value of the entry's name is declared.
+    UnlessDeclared,
+}
+
+impl Ahead {
+    /// Returns the relation variable `relation` of module `module`, `typed` when the migration
+    /// also adds its type.
+    pub fn new(module: String, relation: String, typed: bool, state: AheadState) -> Ahead {
+        Ahead {
+            module,
+            relation,
+            typed,
+            state,
+        }
+    }
+}
 
 impl Schema {
     /// Returns the refusal of a relation a later operator of the migration adds when a value of

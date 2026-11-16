@@ -691,7 +691,7 @@ fn a_revert_gives_each_dropped_field_the_fill_that_names_it_by_module() {
         .expect("the revert parses");
     let steps = s
         .clone()
-        .steps("auth", &m.operators[0], text)
+        .steps("auth", Listed::nth(&m.operators, 0), text)
         .unwrap_or_else(|e| panic!("the revert applies: {e:?}"));
     let filled: Vec<(String, String)> = steps
         .iter()

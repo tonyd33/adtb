@@ -489,7 +489,7 @@ split constructor T.A into C { c: Text } | D { d: Text }
     let mut at = base.clone();
     at.expecting("auth", &file.operators);
     let steps = at
-        .steps("auth", &file.operators[0], text)
+        .steps("auth", Listed::nth(&file.operators, 0), text)
         .unwrap_or_else(|e| panic!("the split applies: {e:?}"));
     let routing = steps
         .iter()

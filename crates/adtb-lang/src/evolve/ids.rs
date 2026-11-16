@@ -170,6 +170,18 @@ impl Source {
             .collect()
     }
 
+    /// Returns the module and name of the relation variable of id `id`.
+    pub(super) fn relation_named(&self, id: CatRelId) -> Option<(String, String)> {
+        self.ids
+            .iter()
+            .find_map(|(k, &v)| match (k.kind(), k.owner(), k.name()) {
+                (KeyKind::Relation, Owner::Module(m), Some(n)) if v == id.raw() => {
+                    Some((m.clone(), n.to_string()))
+                }
+                _ => None,
+            })
+    }
+
     /// Returns the id of relation variable `r` of module `m`.
     pub(super) fn relation_key_id(&self, m: &str, r: &str) -> Option<CatRelId> {
         self.ids

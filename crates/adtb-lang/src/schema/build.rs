@@ -67,19 +67,25 @@ impl Builder<'_> {
             let Some(module) = self.schema.module_named(&a.module) else {
                 continue;
             };
-            if a.typed {
-                self.schema
-                    .defs_mut()
-                    .late_sels
-                    .push((module, a.relation.clone()));
+            let values = &self.schema.module(module).values;
+            let named = values.contains_key(&a.relation);
+            let declared = match values.get(&a.relation) {
+                Some(&ValueDef::Relation(rel)) => Some(RelRef::Declared(rel)),
+                _ => None,
+            };
+            let rel = match a.state {
+                AheadState::Declared => declared,
+                AheadState::Pending if named => None,
+                AheadState::UnlessDeclared if named => declared,
+                AheadState::Pending | AheadState::UnlessDeclared => {
+                    let defs = self.schema.defs_mut();
+                    defs.ahead.push((module, a.relation.clone()));
+                    Some(RelRef::Ahead(AheadId::at(defs.ahead.len() - 1)))
+                }
+            };
+            if let (true, Some(rel)) = (a.typed, rel) {
+                self.schema.defs_mut().late_sels.push(rel);
             }
-            if self.schema.module(module).values.contains_key(&a.relation) {
-                continue;
-            }
-            self.schema
-                .defs_mut()
-                .ahead
-                .push((module, a.relation.clone()));
         }
     }
 

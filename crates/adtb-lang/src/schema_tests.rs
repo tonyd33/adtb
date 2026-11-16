@@ -1362,11 +1362,12 @@ fn a_key_of_a_relation_a_later_operator_adds_has_the_form_of_the_empty_record() 
     )
     .ok()
     .unwrap();
-    let ahead = Ahead {
-        module: "m".to_string(),
-        relation: "later".to_string(),
-        typed: false,
-    };
+    let ahead = Ahead::new(
+        "m".to_string(),
+        "later".to_string(),
+        false,
+        AheadState::Pending,
+    );
     let s = build_ahead(&[(FileId(0), file)], &[ahead]).unwrap();
     let o = s.ty(s.relation(relation(&s, "os")).elem_def);
     let u = &o.field_named(0, "u").unwrap().ty;
@@ -1398,11 +1399,12 @@ relation qs : Q (Key later) key k",
     )
     .ok()
     .unwrap();
-    let ahead = Ahead {
-        module: "m".to_string(),
-        relation: "later".to_string(),
-        typed: false,
-    };
+    let ahead = Ahead::new(
+        "m".to_string(),
+        "later".to_string(),
+        false,
+        AheadState::Pending,
+    );
     let s = build_ahead(&[(FileId(0), file)], &[ahead]).unwrap();
     let m = s.module_named("m").unwrap();
     let data = |name: &str, args: Vec<Ty>| Ty::Data {

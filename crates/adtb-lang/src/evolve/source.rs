@@ -132,7 +132,7 @@ impl Source {
                 files.push((FileId::EMPTY_MODULE, empty));
             }
         }
-        schema::build_ahead(&files, &self.ahead)
+        schema::build_ahead(&files, &self.ahead_inputs())
     }
 
     /// Prepares the source for the operators `ops` of a migration of `module`, applied one at a
@@ -147,19 +147,19 @@ impl Source {
                 _ => None,
             })
             .collect();
-        self.ahead = ops
-            .iter()
+        self.ahead = Listed::all(ops)
             .filter_map(|op| match &op.kind {
-                OperatorKind::AddRelation(r) => Some(schema::Ahead {
-                    module: module.to_string(),
-                    relation: r.name.name.text.clone(),
-                    typed: matches!(
+                OperatorKind::AddRelation(r) => Some(Expected::new(
+                    module.to_string(),
+                    r.name.name.text.clone(),
+                    matches!(
                         &r.ty.kind,
                         ast::TypeKind::Named { name, .. }
                             if name.module.as_ref().is_none_or(|m| m.text == module)
                                 && types.contains(name.name.text.as_str())
                     ),
-                }),
+                    Adder::Operator(op.at()?),
+                )),
                 _ => None,
             })
             .collect();
@@ -350,7 +350,7 @@ impl Source {
         let mut refusal = Refusal::default();
         let mut rekeyed = Vec::new();
         let mut applied = Vec::with_capacity(m.operators.len());
-        for op in &m.operators {
+        for op in Listed::all(&m.operators) {
             if let OperatorKind::Rekey { relation, .. } = &op.kind {
                 rekeyed.push((relation.clone(), op.span));
             }
@@ -419,7 +419,7 @@ impl Source {
         replay.version += 1;
         replay.expecting(&m.module.text, &m.operators);
         replay.marks = Some(Marks::default());
-        for (op, &was) in m.operators.iter().zip(applied) {
+        for (op, &was) in Listed::all(&m.operators).zip(applied) {
             let noted = RefCell::new(Names::default());
             let ended = replay.apply_noting(&m.module.text, op, text, Some(&noted));
             assert_eq!(
@@ -448,14 +448,14 @@ impl Source {
     /// Apply one operator of a migration of `module` whose text is `text`.
     ///
     /// On a refusal the source is left as it was.
-    pub fn apply(&mut self, module: &str, op: &Operator, text: &str) -> Result<(), Vec<Diag>> {
+    pub fn apply(&mut self, module: &str, op: Listed<'_>, text: &str) -> Result<(), Vec<Diag>> {
         self.apply_noting(module, op, text, None)
     }
 
     pub(super) fn apply_noting(
         &mut self,
         module: &str,
-        op: &Operator,
+        op: Listed<'_>,
         text: &str,
         noted: Option<&RefCell<Names>>,
     ) -> Result<(), Vec<Diag>> {
@@ -465,12 +465,13 @@ impl Source {
     pub(super) fn apply_recording(
         &mut self,
         module: &str,
-        op: &Operator,
+        op: Listed<'_>,
         text: &str,
         noted: Option<&RefCell<Names>>,
         steps: Option<&RefCell<Vec<Step>>>,
     ) -> Result<(), Vec<Diag>> {
         let before = self.clone();
+        self.adding(op);
         let r = Cx {
             src: self,
             module: module.to_string(),
@@ -485,6 +486,7 @@ impl Source {
             Ok(()) => {
                 self.rename_ids(&before, module, &op.kind);
                 self.settle_ids();
+                self.added(module, op);
                 self.carry_grants(&before, module, &op.kind);
             }
             Err(_) => *self = before,

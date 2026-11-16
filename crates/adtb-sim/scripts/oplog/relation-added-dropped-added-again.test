@@ -1,0 +1,17 @@
+seed 74
+
+migrate
+  module m
+  add module m
+  add type S = { id: Key stamps, n: I64 }
+  add relation stamps : S key id generate sequence
+  drop relation stamps
+  add relation stamps : S key id generate sequence
+
+run
+  insert stamps { n: 1 }
+
+query rowsort
+  from s in stamps select s.n
+----
+1

@@ -37,7 +37,7 @@ impl BuiltMemo {
     pub(super) fn get(&self, src: &Source) -> Option<Arc<Schema>> {
         let mut entries = self.entries();
         let at = entries.iter().position(|b| {
-            b.decls == src.decls && b.modules == src.modules && b.ahead == src.ahead
+            b.decls == src.decls && b.modules == src.modules && b.ahead == src.ahead_inputs()
         })?;
         let hit = entries.remove(at)?;
         let schema = hit.schema.clone();
@@ -49,7 +49,7 @@ impl BuiltMemo {
         let built = Built {
             decls: src.decls.clone(),
             modules: src.modules.clone(),
-            ahead: src.ahead.clone(),
+            ahead: src.ahead_inputs(),
             schema,
         };
         let mut entries = self.entries();

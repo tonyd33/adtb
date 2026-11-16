@@ -26,6 +26,7 @@ mod names;
 pub use names::field_path;
 
 mod ahead;
+pub use ahead::AheadState;
 mod build;
 mod engine;
 mod inputs;
@@ -385,9 +386,9 @@ pub struct SchemaDefs {
     /// The relation variables a later operator of the migration being applied adds, by module and
     /// name; `AheadId::at(i)` names entry `i`.
     pub ahead: Vec<(ModuleId, String)>,
-    /// The relation variables, by module and name, that the migration being applied adds with
-    /// their type: a reference type's selection of their constructors resolves when it ends.
-    pub late_sels: Vec<(ModuleId, String)>,
+    /// The relation variables the migration being applied adds with their type: a reference
+    /// type's selection of their constructors resolves when it ends.
+    pub late_sels: Vec<RelRef>,
     /// `None` until the builder collects the declarations.
     prelude: Option<Prelude>,
     /// `None` until the schema builds.
@@ -505,19 +506,7 @@ impl Schema {
     /// Returns whether a reference type's selection of the constructors of `id` resolves when the
     /// migration being applied ends.
     pub fn selects_late(&self, id: RelRef) -> bool {
-        let named = match id {
-            RelRef::Ahead(a) => {
-                let (m, name) = self.ahead_relation(a);
-                (*m, name.as_str())
-            }
-            RelRef::Declared(id) => {
-                let r = self.relation(id);
-                (r.module, r.name.as_str())
-            }
-        };
-        self.late_sels
-            .iter()
-            .any(|(m, n)| (*m, n.as_str()) == named)
+        self.late_sels.contains(&id)
     }
 
     /// Returns the module and name of the relation variable a later operator of the migration adds.
@@ -1300,10 +1289,11 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
 /// A relation variable a later operator of the migration being applied adds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ahead {
-    pub module: String,
-    pub relation: String,
+    module: String,
+    relation: String,
     /// Whether the migration also adds the relation variable's type.
-    pub typed: bool,
+    typed: bool,
+    state: AheadState,
 }
 
 /// Builds the schema as `build` does, where a `Key r` type may also name each relation variable
