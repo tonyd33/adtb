@@ -6,6 +6,7 @@ priority: 450
 summary: a migration that adds and then drops a relation is refused whenever another relation it adds later is still pending
 tags:
   - lang
+  - class-identity-by-spelling
 ---
 
 # Add drop refused while other add pending

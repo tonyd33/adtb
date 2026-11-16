@@ -19,3 +19,7 @@ One `catalog::roots::RootsRow` enum owns the roots heap's constructors and their
 Source: work/briefs/design-version-owner-r1-report.md step 11 and work/briefs/audit-structure-r1-data.md (catalog: catalog/mod.rs:196-236 with heap/row.rs:239-244, roots constructor position equals id only by list order). Related: structure-lang-identity (catalog ids by position and name).
 
 ## Open questions
+
+## 2026-11-16 status
+
+The quality review of 2026-11-16 found most of the exit met by structure-lang-identity step 11e (f6a76796): one `RootsRow` in catalog/roots.rs with its encoder and decoder, a round trip over every variant. Left: `naming_sequences` has no stated owner in the module. The ticket stays open for that alone.
