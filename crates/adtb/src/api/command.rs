@@ -10,7 +10,7 @@ use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{Base, CtorSet, RelId, RelRef, Ty};
+use adtb_lang::types::{Base, CtorSet, DenialIdx, RelId, RelRef, Ty};
 
 use crate::catalog::codec::{Codec, SettingRow};
 use crate::catalog::engine_relation;
@@ -674,9 +674,13 @@ impl<R: Runtime> Engine<R> {
             readable.get_or_init(|| {
                 let mut set = BTreeSet::new();
                 if let Some(h) = issuer.holds.as_ref() {
-                    for (c, _) in schema.constraint_defs() {
-                        if h.reads_constraint(self, c)? {
-                            set.insert(c);
+                    let constraints = schema
+                        .constraint_defs()
+                        .map(|(c, _)| DenialIdx::Constraint(c));
+                    let checks = schema.check_defs().map(|(c, _)| DenialIdx::Check(c));
+                    for d in constraints.chain(checks) {
+                        if h.reads_denial(self, d)? {
+                            set.insert(d);
                         }
                     }
                 }
@@ -693,7 +697,7 @@ impl<R: Runtime> Engine<R> {
             let at = match fields.get(constraint_at) {
                 Some(Val::Int(i)) => u64::try_from(*i)
                     .ok()
-                    .and_then(|id| schema.ids().constraint_of(CatConstraintId::from_raw(id))),
+                    .and_then(|id| schema.ids().denial_of(CatConstraintId::from_raw(id))),
                 _ => None,
             };
             match readable_set() {

@@ -949,9 +949,17 @@ constraint nameless = from u in users where u.name == \"\" select u
         + finds_each("index", ids.index_ids(), |id| ids.index_of(id))
         + finds_each("function", ids.function_ids(), |id| ids.function_of(id))
         + finds_each("aggregate", ids.aggregate_ids(), |id| ids.aggregate_of(id))
-        + finds_each("constraint", ids.constraint_ids(), |id| {
-            ids.constraint_of(id)
-        });
+        + finds_each(
+            "constraint",
+            ids.constraint_ids()
+                .map(|(c, id)| (DenialIdx::Constraint(c), id)),
+            |id| ids.denial_of(id),
+        )
+        + finds_each(
+            "check",
+            ids.check_ids().map(|(c, id)| (DenialIdx::Check(c), id)),
+            |id| ids.denial_of(id),
+        );
     let user = type_id(&s, "User");
     let users = rel_id(&s, "auth", "users");
     let identities = rel_id(&s, "auth", "identities");
@@ -969,8 +977,8 @@ constraint nameless = from u in users where u.name == \"\" select u
     assert_eq!(
         s.constraint_defs()
             .find(|(_, c)| c.name == "nameless")
-            .map(|(c, _)| c),
-        ids.constraint_of(CatConstraintId::from_raw(1024))
+            .map(|(c, _)| DenialIdx::Constraint(c)),
+        ids.denial_of(CatConstraintId::from_raw(1024))
     );
     assert!(seen > 1000, "{seen} ids");
 }

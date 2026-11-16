@@ -4,7 +4,7 @@ use adtb_lang::analysis::Totality;
 use adtb_lang::kernel::{Agg, Build, Kind, Prim, Terms, Tm, Transition, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{CtorSet, RelId, RelRef, Ty};
+use adtb_lang::types::{CtorSet, DenialIdx, RelId, RelRef, Ty};
 
 use crate::catalog::indexed_fields;
 use crate::plan::explain::{Describe, Node};
@@ -50,10 +50,18 @@ pub struct Delta {
 /// after it is what the constraint's query returns after it.
 #[derive(Debug)]
 pub struct Checks {
+    of: DenialIdx,
     pub name: String,
     /// The relation variables the query reads.
     pub reads: BTreeSet<RelId>,
     pub deltas: Vec<Delta>,
+}
+
+impl Checks {
+    /// Returns the constraint or check these are the incremental checks of.
+    pub fn of(&self) -> DenialIdx {
+        self.of
+    }
 }
 
 /// One incremental check as `explain` shows it.
@@ -127,7 +135,7 @@ pub fn compile(
     let mut transitions = Vec::new();
     let mut found = Vec::new();
     let mut refused = Vec::new();
-    for (qualified, t) in named {
+    for (of, qualified, t) in named {
         let outside = super::polarity::non_monotone(schema, terms, t);
         if !outside.is_empty() {
             refused.extend(outside.into_iter().map(|detail| Refusal {
@@ -158,7 +166,7 @@ pub fn compile(
         });
         let free = own.iter().map(|(v, ..)| *v).collect();
         adtb_lang::kernel::assert_valid(schema, terms, &[(t, free)]);
-        found.push((qualified, t, reads));
+        found.push((of, qualified, t, reads));
         transitions.extend(own);
     }
     let mut cx = Compiler {
@@ -175,10 +183,11 @@ pub fn compile(
         inputs: BTreeMap::new(),
     };
     let mut out = Vec::new();
-    for (name, t, reads) in found {
+    for (of, name, t, reads) in found {
         cx.inputs.clear();
         match cx.constraint(t) {
             Ok(deltas) => out.push(Checks {
+                of,
                 name,
                 reads,
                 deltas,
@@ -197,25 +206,27 @@ pub fn compile(
     }
 }
 
-/// Returns the qualified name and normal form of every constraint, then every check, of `schema`,
+/// Returns each constraint, then each check, of `schema` with its qualified name and normal form,
 /// in declaration order.
 ///
 /// Fail with [`Broken::NoDenial`] naming one that `normal` holds no normal form of.
 pub(super) fn denials(
     schema: &Schema,
     normal: &NormalProgram,
-) -> Result<Vec<(String, Tm)>, Broken> {
+) -> Result<Vec<(DenialIdx, String, Tm)>, Broken> {
     let name = |m, n: &str| format!("{}::{n}", schema.module(m).name);
-    let constraints = schema
-        .constraint_defs()
-        .map(|(c, def)| (name(def.module, &def.name), normal.constraint(c)));
-    let checks = schema
-        .check_defs()
-        .map(|(c, def)| (name(def.module, &def.name), normal.check(c)));
+    let constraints = schema.constraint_defs().map(|(c, def)| {
+        let of = DenialIdx::Constraint(c);
+        (of, name(def.module, &def.name), normal.constraint(c))
+    });
+    let checks = schema.check_defs().map(|(c, def)| {
+        let of = DenialIdx::Check(c);
+        (of, name(def.module, &def.name), normal.check(c))
+    });
     constraints
         .chain(checks)
-        .map(|(name, t)| match t {
-            Some(t) => Ok((name, t)),
+        .map(|(of, name, t)| match t {
+            Some(t) => Ok((of, name, t)),
             None => Err(Broken::NoDenial(name)),
         })
         .collect()

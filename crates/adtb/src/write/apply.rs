@@ -11,7 +11,7 @@ use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::Pid;
 
-use super::eval::{Stmt, Violations, pairs, violate, violate_key};
+use super::eval::{Stmt, Violations, Violator, pairs, violate, violate_key};
 use super::{Error, Rejection, Rows};
 
 /// Returns the write error of heap error `e`, met writing a row of constructor `ctor` of `rel`.
@@ -348,7 +348,7 @@ impl<R: Runtime> Stmt<'_, R> {
             if let Some((_, indexed)) = found
                 && let Some(name) = &indexed.name
             {
-                violate(viol, name, pairs([group]));
+                violate(viol, Violator::Unique(*ix), name, pairs([group]));
             }
         }
         Ok(())
@@ -468,7 +468,8 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 if ix.desc.id == r.key_index {
                     let name = ix.name.as_deref().expect("a key index has a name");
-                    violate_key(viol, name, w.rel, self.key_of(w.rel, &w.row)?);
+                    let key = self.key_of(w.rel, &w.row)?;
+                    violate_key(viol, name, w.rel, key);
                 } else {
                     let group = groups.entry((w.rel, *id, encoded.clone())).or_default();
                     group.insert(self.key_of(w.rel, &w.row)?, w.row.clone());

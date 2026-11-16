@@ -741,6 +741,64 @@ fn a_role_reading_what_the_constraint_reads_sees_the_witness() {
 }
 
 #[test]
+fn a_role_reading_what_a_check_reads_sees_its_witness() {
+    process::once(66, |rt| {
+        let app = r"module app
+add module app
+add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence
+add check named on users (scalar_len(name) > 0)
+";
+        let grant = "module app\ngrant read users to dba\n";
+        let db = Database::open_in(rt.clone(), NAME, &Log::new([app]), &open::options(2))
+            .expect("the database opens");
+        let authority = db.role_authority();
+        authority.create_role("dba").unwrap();
+        for capability in [Capability::Adhoc, Capability::Maintain] {
+            authority
+                .grant_capability("dba", capability, false)
+                .unwrap();
+        }
+        db.close().unwrap();
+        let db = Database::open_in(rt.clone(), NAME, &Log::new([app, grant]), &open::options(2))
+            .expect("the database opens");
+        api::results(&db, r#"insert users { id: users.key(1), name: "n1" }"#);
+        let t = db.testing();
+        let heap = t.heap("app::users", "User").unwrap();
+        let ix = index(&db, "app::users", "key id");
+        let id = entry(&db, ix, Value::I64(1)).ctor;
+        let tid = beneath(
+            &db,
+            heap,
+            vec![vec![Value::I64(99), Value::Text(String::new())]],
+        )[0];
+        t.plant(Plant::AddEntry {
+            index: ix,
+            entry: Entry {
+                key: vec![Value::I64(99)],
+                ctor: id,
+                tid,
+            },
+        })
+        .unwrap();
+        let dba = db.role_authority().session("dba").unwrap();
+        let shown = api::task_rows(&rt, &dba, "verify").expect("the witness is its to read");
+        let [row] = shown.as_slice() else {
+            panic!("one finding: {shown:?}")
+        };
+        let (head, at) = row
+            .split_once("Instant(")
+            .expect("a finding holds its instant");
+        let (_, tail) = at.split_once("), ").expect("a field follows the instant");
+        assert_eq!(
+            r#"Ctor(5, [Int(1), Int(1), Int(1024), Text("User { id: users.key(99), name: \"\" }")])"#,
+            format!("{head}{tail}"),
+            "{row}"
+        );
+    });
+}
+
+#[test]
 fn a_witness_refused_on_a_marked_database_is_denied_with_no_audit_row() {
     process::once(64, |rt| {
         let db = open_app(rt.clone());

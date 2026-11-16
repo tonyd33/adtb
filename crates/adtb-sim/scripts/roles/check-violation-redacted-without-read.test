@@ -1,0 +1,16 @@
+seed 731
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add check named on users (scalar_len(name) > 0)
+role inserter
+grant
+  grant adhoc to inserter
+migrate
+  module app
+  grant insert users to inserter
+
+as inserter failed Violated { constraint: "app::named", report: 0 rows, redacted: 1 }
+  insert users { name: "" }

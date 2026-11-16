@@ -7,7 +7,7 @@ use adtb_lang::evolve::{DeployedGrant, Granted};
 use adtb_lang::ids::{CatFunctionId, CatRelId, engine_rel};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{ConstraintIdx, FnId, RelId};
+use adtb_lang::types::{DenialIdx, FnId, RelId};
 
 use crate::catalog::codec::GrantKind;
 use crate::catalog::engine_relation;
@@ -134,21 +134,29 @@ impl Holds {
         out
     }
 
-    /// Returns whether the role may read what constraint `c` reads.
+    /// Returns whether the role may read what constraint or check `d` reads.
     ///
-    /// Fail with [`write::Broken::NoDenial`] when the engine's normal form holds no term of `c`.
-    pub(in super::super) fn reads_constraint<R: Runtime>(
+    /// Fail with [`write::Broken::NoDenial`] when the engine's normal form holds no term of `d`.
+    pub(in super::super) fn reads_denial<R: Runtime>(
         &self,
         e: &Engine<R>,
-        c: ConstraintIdx,
+        d: DenialIdx,
     ) -> Result<bool, write::Broken> {
         let normal = e.db.normal();
-        let Some(t) = normal.constraint(c) else {
-            let def = e.schema.constraint(c);
+        let (t, module, name) = match d {
+            DenialIdx::Constraint(c) => {
+                let def = e.schema.constraint(c);
+                (normal.constraint(c), def.module, &def.name)
+            }
+            DenialIdx::Check(c) => {
+                let def = e.schema.check(c);
+                (normal.check(c), def.module, &def.name)
+            }
+        };
+        let Some(t) = t else {
             return Err(write::Broken::NoDenial(format!(
-                "{}::{}",
-                e.schema.module(def.module).name,
-                def.name
+                "{}::{name}",
+                e.schema.module(module).name
             )));
         };
         Ok(permission::normal(&e.schema, normal, &normal.terms, t, &[])
@@ -166,13 +174,8 @@ impl Holds {
                 report,
                 redacted,
             } => {
-                let named = e.schema.constraint_defs().find(|(_, c)| {
-                    constraint
-                        .strip_prefix(e.schema.module(c.module).name.as_str())
-                        .and_then(|n| n.strip_prefix("::"))
-                        == Some(c.name.as_str())
-                });
-                let visible = match named.map(|(c, _)| self.reads_constraint(e, c)) {
+                let named = e.db.denial_named(&constraint);
+                let visible = match named.map(|d| self.reads_denial(e, d)) {
                     Some(Ok(visible)) => visible,
                     Some(Err(b)) => return Error::internal(Broken::Write(b)),
                     None => false,

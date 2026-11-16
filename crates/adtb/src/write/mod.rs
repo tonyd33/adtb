@@ -50,7 +50,7 @@ use adtb_lang::ids::held_id;
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
-use adtb_lang::types::RelId;
+use adtb_lang::types::{DenialIdx, RelId};
 use adtb_sys::lock::{Lock, Ranked};
 
 use crate::catalog::{IndexSpec, Structures};
@@ -815,6 +815,14 @@ impl<R: Runtime> Database<R> {
     /// Returns the normal program of the schema the database runs.
     pub fn normal(&self) -> &NormalProgram {
         &self.normal
+    }
+
+    /// Returns the constraint or check whose violation's refusal names it `name`.
+    pub fn denial_named(&self, name: &str) -> Option<DenialIdx> {
+        self.denials
+            .iter()
+            .find(|d| d.name == name)
+            .map(check::Denial::of)
     }
 
     /// Returns the files file scans read and exports write.

@@ -62,6 +62,13 @@ impl CheckIdx {
     }
 }
 
+/// A constraint or a row check of a schema: the two kinds that share the constraint id space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DenialIdx {
+    Constraint(ConstraintIdx),
+    Check(CheckIdx),
+}
+
 /// Constructor indices into a type's declaration order, sorted and distinct.
 pub type CtorSet = Vec<u32>;
 

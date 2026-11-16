@@ -13,7 +13,7 @@ use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
 use super::apply::too_large;
-use super::eval::{Stmt, Violations, pairs, refuse, violate, violate_key};
+use super::eval::{Stmt, Violations, Violator, pairs, refuse, violate, violate_key};
 use super::reindex::Scan;
 use super::schema::Indexed;
 use super::{Broken, Database, Error, Local, Rows, Stop, Text, Txn};
@@ -159,11 +159,14 @@ impl<R: Runtime> Restoring<'_, R> {
                 Transition::Inserted | Transition::Deleted => b.empty_set(ty),
             })
         };
-        let named: Vec<(String, Tm)> = super::delta::denials(schema, &db.normal)?
+        let named: Vec<(Violator, String, Tm)> = super::delta::denials(schema, &db.normal)?
             .into_iter()
-            .map(|(name, t)| (name, terms.substitute(schema, t, &mut unchanged)))
+            .map(|(of, name, t)| {
+                let t = terms.substitute(schema, t, &mut unchanged);
+                (Violator::Denial(of), name, t)
+            })
             .collect();
-        for (name, t) in named {
+        for (of, name, t) in named {
             let text = Text {
                 schema,
                 terms: &terms,
@@ -174,7 +177,7 @@ impl<R: Runtime> Restoring<'_, R> {
             };
             let denial = Stmt::new(db, stmt.tx, text, t, db.options, Stop::default());
             match denial.run(&[], &mut Local::default())?.result {
-                Val::Set(report) => violate(viol, &name, report.iter().cloned()),
+                Val::Set(report) => violate(viol, of, &name, report.iter().cloned()),
                 other => return Err(Broken::DenialNotSet(other).into()),
             }
         }
@@ -219,7 +222,7 @@ fn duplicates<R: Runtime>(
             violate_key(viol, name, rel, stmt.key_of(rel, row)?);
         }
     } else {
-        violate(viol, name, pairs(groups.values()));
+        violate(viol, Violator::Unique(id), name, pairs(groups.values()));
     }
     Ok(())
 }

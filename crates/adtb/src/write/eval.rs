@@ -9,7 +9,7 @@ use adtb_lang::kernel::{Build, Conflict, Kind, Terms, Tm, Var};
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Generator, OnDelete, Schema, Stage};
 use adtb_lang::textual::key_names;
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
 use crate::exec::{self, Val, from_stored, to_key};
@@ -53,41 +53,50 @@ struct Deleted {
     pre_rows: BTreeMap<(RelId, Val), Val>,
 }
 
-/// What a constraint is, for the reason a violation of it gives.
-#[derive(Debug)]
-pub enum Violation {
-    /// Rows of a relation share these keys.
-    Key(RelId, BTreeSet<Val>),
-    Other(BTreeSet<Val>),
+/// What a statement's write violates, besides the key of a relation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Violator {
+    Denial(DenialIdx),
+    Unique(IndexId),
+    /// A reference field of a relation, by constructor, `None` for a header field, and position.
+    Reference(RelId, Option<u32>, usize),
+    /// The domain of a newtype.
+    Domain(TypeId),
 }
 
-/// The violations a statement found, by constraint name.
-pub type Violations = BTreeMap<String, Violation>;
+/// The violations a statement found, each with the name its refusal prints.
+#[derive(Debug, Default)]
+pub struct Violations {
+    /// The keys rows of each relation share.
+    keys: BTreeMap<RelId, (String, BTreeSet<Val>)>,
+    /// The report of each other violation.
+    others: BTreeMap<Violator, (String, BTreeSet<Val>)>,
+}
 
-pub fn violate_key(v: &mut Violations, name: &str, rel: RelId, key: Val) {
-    match v
-        .entry(name.to_string())
-        .or_insert_with(|| Violation::Key(rel, BTreeSet::new()))
-    {
-        Violation::Key(_, keys) => {
-            keys.insert(key);
-        }
-        Violation::Other(_) => unreachable!("a key's name names no other constraint"),
+impl Violations {
+    pub fn new() -> Violations {
+        Violations::default()
     }
 }
 
-pub fn violate(v: &mut Violations, name: &str, rows: impl IntoIterator<Item = Val>) {
+pub fn violate_key(v: &mut Violations, name: &str, rel: RelId, key: Val) {
+    let (_, keys) = v
+        .keys
+        .entry(rel)
+        .or_insert_with(|| (name.to_string(), BTreeSet::new()));
+    keys.insert(key);
+}
+
+pub fn violate(v: &mut Violations, of: Violator, name: &str, rows: impl IntoIterator<Item = Val>) {
     let rows: BTreeSet<Val> = rows.into_iter().collect();
     if rows.is_empty() {
         return;
     }
-    match v
-        .entry(name.to_string())
-        .or_insert_with(|| Violation::Other(BTreeSet::new()))
-    {
-        Violation::Other(report) => report.extend(rows),
-        Violation::Key(..) => unreachable!("a constraint's name names no key"),
-    }
+    let (_, report) = v
+        .others
+        .entry(of)
+        .or_insert_with(|| (name.to_string(), BTreeSet::new()));
+    report.extend(rows);
 }
 
 /// Returns the pairs of distinct rows of every group with more than one, as a unique's report.
@@ -107,19 +116,24 @@ pub fn pairs<'a>(groups: impl IntoIterator<Item = &'a BTreeMap<Val, Val>>) -> BT
 
 /// Fail with the violation of least name in `viol`, if it holds any.
 pub fn refuse(viol: Violations) -> Result<(), Error> {
-    let Some((name, v)) = viol.into_iter().next() else {
-        return Ok(());
-    };
-    Err(Error::Rejected(match v {
-        Violation::Key(relation, keys) => Rejection::KeyViolation {
+    let key = viol
+        .keys
+        .into_iter()
+        .min_by(|(_, (a, _)), (_, (b, _))| a.cmp(b));
+    let other = viol.others.into_values().min_by(|(a, _), (b, _)| a.cmp(b));
+    let rejection = match (key, other) {
+        (None, None) => return Ok(()),
+        (Some((_, (k, _))), Some((o, report))) if o < k => Rejection::Violated {
+            constraint: o,
+            report,
+        },
+        (Some((relation, (_, keys))), _) => Rejection::KeyViolation {
             relation,
             key: keys.into_iter().next().expect("a key violation has a key"),
         },
-        Violation::Other(report) => Rejection::Violated {
-            constraint: name,
-            report,
-        },
-    }))
+        (None, Some((constraint, report))) => Rejection::Violated { constraint, report },
+    };
+    Err(Error::Rejected(rejection))
 }
 
 /// A record of a source that an insert with `rejects into` rejected.
@@ -1280,7 +1294,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
         for ((r, k), rows) in by_key {
             if rows.len() > 1 {
-                violate_key(&mut viol, &format!("{}.key", self.rel(r).qualified), r, k);
+                let name = format!("{}.key", self.rel(r).qualified);
+                violate_key(&mut viol, &name, r, k);
             }
         }
         self.apply(&plus, &minus, &mut viol)?;
@@ -1360,7 +1375,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         v: &Val,
         ty: &Ty,
         path: &mut Vec<usize>,
-        out: &mut Vec<(Vec<usize>, adtb_lang::types::TypeId, u32, Val)>,
+        out: &mut Vec<(Vec<usize>, TypeId, u32, Val)>,
     ) -> Result<(), Error> {
         let schema = &self.db.schema;
         let t = exec::types::repr(schema, ty);

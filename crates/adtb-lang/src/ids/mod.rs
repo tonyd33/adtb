@@ -367,10 +367,11 @@ impl CatalogIds {
         }
     }
 
-    /// Returns the constraint whose id is `id`.
-    pub fn constraint_of(&self, id: CatConstraintId) -> Option<ConstraintIdx> {
+    /// Returns the constraint or check whose id is `id`.
+    pub fn denial_of(&self, id: CatConstraintId) -> Option<DenialIdx> {
         match self.holder(Space::Constraint, id.0)? {
-            Slot::Constraint(at) => Some(ConstraintIdx::at(*at)),
+            Slot::Constraint(at) => Some(DenialIdx::Constraint(ConstraintIdx::at(*at))),
+            Slot::Check(at) => Some(DenialIdx::Check(CheckIdx::at(*at))),
             _ => None,
         }
     }

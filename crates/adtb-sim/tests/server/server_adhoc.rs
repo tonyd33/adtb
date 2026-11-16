@@ -34,6 +34,7 @@ add type Note = { id: Key notes, about: Key secrets, doc: Key docs.Draft }
 add relation notes : Note key id generate sequence
 add constraint no_blank = from d in docs.Draft where d.body == "" select d.owner
 add constraint no_negative = from s in secrets where s.salary < 0 select s.id
+add check owned on docs.Draft (owner != "")
 "#;
 
 const GRANTS: &str = "module shop
@@ -415,6 +416,22 @@ fn a_violation_redacts_what_the_role_cannot_read() {
         assert!(!audit[0].contains("\"x\""), "{audit:?}");
         let payer = send(&rt, &db, "payer", "insert secrets { salary: -1 }");
         assert!(format!("{payer:?}").contains("redacted: 1"), "{payer:?}");
+    });
+}
+
+#[test]
+fn a_check_violation_shows_its_row_to_a_role_reading_it() {
+    scenario(618, |rt, db| {
+        let got = send(
+            &rt,
+            &db,
+            "writer",
+            r#"insert docs.Draft { owner: "", body: "b" }"#,
+        );
+        assert_eq!(
+            "Err(Rejected { reason: Violated { constraint: \"shop::owned\", report: [Ctor(0, [Int(3), Text(\"\"), Text(\"b\")])], redacted: 0 } })",
+            format!("{got:?}")
+        );
     });
 }
 

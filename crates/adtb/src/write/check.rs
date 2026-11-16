@@ -4,7 +4,7 @@ use std::sync::Arc;
 use adtb_lang::kernel::{Terms, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Schema, TypeDefKind};
-use adtb_lang::types::{RelId, Ty, TypeId};
+use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
 use crate::exec::{self, Val};
@@ -12,16 +12,24 @@ use crate::plan::Catalog;
 use crate::runtime::Runtime;
 
 use super::delta::{self, Delta, Input, Part};
-use super::eval::{Arena, Env, Stmt, Violations, violate};
+use super::eval::{Arena, Env, Stmt, Violations, Violator, violate};
 use super::schema::RefField;
 use super::{Broken, Error, Rows};
 
 /// A constraint or check of the schema, as its incremental checks ready to run.
 pub struct Denial {
+    of: DenialIdx,
     pub name: String,
     /// The relation variables the query reads.
     pub reads: BTreeSet<RelId>,
     pub deltas: Vec<(Delta, Arc<exec::Program>)>,
+}
+
+impl Denial {
+    /// Returns the constraint or check this is the denial of.
+    pub fn of(&self) -> DenialIdx {
+        self.of
+    }
 }
 
 /// Returns the incremental checks of every constraint and check of `schema`, their terms added
@@ -42,12 +50,14 @@ pub fn denials(
     })?;
     let mut out = Vec::new();
     for c in checks {
+        let of = c.of();
         let mut deltas = Vec::new();
         for d in c.deltas {
             let program = Arc::new(exec::compile(schema, catalog, &d.plan, None)?);
             deltas.push((d, program));
         }
         out.push(Denial {
+            of,
             name: c.name,
             reads: c.reads,
             deltas,
@@ -96,7 +106,12 @@ impl<R: Runtime> Stmt<'_, R> {
                         && moved.get(&f.target).is_some_and(|ks| ks.contains(&k))
                         && !self.reaches(f, &k)?
                     {
-                        violate(viol, &self.field_name(r, c, f), [u.clone()]);
+                        violate(
+                            viol,
+                            reference(r, c, f),
+                            &self.field_name(r, c, f),
+                            [u.clone()],
+                        );
                     }
                 }
             }
@@ -122,7 +137,14 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 let call = self.db.call(&self.store, self.options, &self.stop)?;
                 match exec::execute(self.db.rt.clone(), program.clone(), call, &params)? {
-                    Val::Set(report) => violate(viol, &d.name, report.iter().cloned()),
+                    Val::Set(report) => {
+                        violate(
+                            viol,
+                            Violator::Denial(d.of()),
+                            &d.name,
+                            report.iter().cloned(),
+                        );
+                    }
                     other => {
                         return Err(Broken::DenialNotSet(other).into());
                     }
@@ -140,7 +162,8 @@ impl<R: Runtime> Stmt<'_, R> {
                     if let Some(k) = Self::names(f, n)?
                         && !self.reaches(f, &k)?
                     {
-                        violate(viol, &self.field_name(*r, *c, f), [n.clone()]);
+                        let name = self.field_name(*r, *c, f);
+                        violate(viol, reference(*r, *c, f), &name, [n.clone()]);
                     }
                 }
             }
@@ -169,7 +192,8 @@ impl<R: Runtime> Stmt<'_, R> {
                     if let Some((var, body)) = self.db.normal.domains.get(def) {
                         let env: Env = [(*var, v.clone())].into();
                         if !self.eval(Arena::Program, *body, &env)?.truth()? {
-                            violate(viol, &domain_name(schema, *def), [row.clone()]);
+                            let name = domain_name(schema, *def);
+                            violate(viol, Violator::Domain(*def), &name, [row.clone()]);
                         }
                     }
                     self.check_domains(row, v, &base.subst(args), viol)
@@ -198,6 +222,11 @@ impl<R: Runtime> Stmt<'_, R> {
             _ => Ok(()),
         }
     }
+}
+
+/// Returns what a violation of reference field `f` of constructor `c` of `r` violates.
+fn reference(r: RelId, c: u32, f: &RefField) -> Violator {
+    Violator::Reference(r, (!f.header).then_some(c), f.at)
 }
 
 fn domain_name(schema: &Schema, t: TypeId) -> String {
