@@ -116,7 +116,7 @@ fn check_whole_but(
     let schema = catalog.schema();
     let got = committed(pager, catalog, txns);
     let migrations = rel(catalog, "catalog", "migrations");
-    for (r, want) in declared(schema, catalog.source()) {
+    for (r, want) in declared(schema, catalog.source(), &catalog.texts) {
         if r == migrations {
             continue;
         }

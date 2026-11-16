@@ -53,7 +53,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::{Lock, Ranked};
 
-use crate::catalog::Structures;
+use crate::catalog::{IndexSpec, Structures};
 use crate::exec::{self, Budget, Scheduler, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
@@ -672,11 +672,16 @@ pub struct Setup<R: Runtime> {
 }
 
 impl<R: Runtime> Database<R> {
-    /// Returns the database of `setup`.
+    /// Returns the database of `setup`, whose catalog's schema declares the indexes `declared`, by
+    /// index id.
     ///
     /// Preconditions: `setup.bindings` holds a heap for every constructor and every index the
     /// catalog names, and the catalog's key index of each relation is unique.
-    pub fn new(rt: R, setup: Setup<R>) -> Result<Database<R>, Error> {
+    pub fn new(
+        rt: R,
+        setup: Setup<R>,
+        declared: &BTreeMap<u64, IndexSpec>,
+    ) -> Result<Database<R>, Error> {
         let mut program = setup.normal.terms.clone();
         let mut program_fresh = fresh::Occurrences::new();
         let retags = setup
@@ -695,7 +700,7 @@ impl<R: Runtime> Database<R> {
             })
             .collect();
         let denials = check::denials(&setup.schema, &setup.normal, &setup.catalog, &mut program)?;
-        let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog)?;
+        let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog, declared)?;
         let sequences = match setup.structures.counters() {
             None => Sequences::none(),
             Some(page) => Sequences::open(&setup.pager, page)?,

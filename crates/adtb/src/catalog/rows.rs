@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
+use adtb_lang::canon::canonical_term;
 use adtb_lang::evolve::{Code, Source};
 use adtb_lang::kernel::PathStep;
 use adtb_lang::lex::lex;
@@ -19,10 +20,11 @@ use super::{layout, oplog, values};
 pub type Rows = BTreeMap<RelId, Vec<(u32, Vec<Value>)>>;
 
 /// Returns the rows `catalog::` relations hold for the objects of `schema`, built from `source`,
-/// that have catalog ids, with every relation of `schema` present.
+/// that have catalog ids, with every relation of `schema` present, each index element that is not
+/// a field path as `texts` holds it.
 #[cfg(test)]
-pub fn declared(schema: &Schema, source: &Source) -> Rows {
-    let mut rows = objects(schema, source);
+pub fn declared(schema: &Schema, source: &Source, texts: &ElementTexts) -> Rows {
+    let mut rows = objects(schema, source, texts);
     let mut b = Builder {
         schema,
         source,
@@ -35,7 +37,7 @@ pub fn declared(schema: &Schema, source: &Source) -> Rows {
     rows
 }
 
-pub(super) fn objects(schema: &Schema, source: &Source) -> Rows {
+pub(super) fn objects(schema: &Schema, source: &Source, texts: &ElementTexts) -> Rows {
     let mut b = Builder {
         schema,
         source,
@@ -50,7 +52,7 @@ pub(super) fn objects(schema: &Schema, source: &Source) -> Rows {
     b.fields();
     b.relations();
     b.sets();
-    b.indexes();
+    b.indexes(texts);
     b.constraints();
     b.defaults();
     b.computed();
@@ -116,7 +118,7 @@ pub struct IndexSpec {
     /// Constructor indexes, in order.
     pub ctors: Vec<u32>,
     /// Each element as written: a field, a path through a field's value-level sum, as
-    /// `login.Google.gid`, or an expression, as `lower(email)`.
+    /// `login.Google.gid`, or an expression, as `lower ( email )`.
     pub fields: Vec<String>,
     pub elements: Vec<Element>,
     kind: &'static str,
@@ -145,9 +147,55 @@ impl IndexSpec {
     }
 }
 
+/// The canonical source text of each declared index element that is not a field path, by
+/// relation, index position and element position.
+#[derive(Clone, Debug, Default)]
+pub struct ElementTexts(BTreeMap<(RelId, usize, usize), String>);
+
+impl ElementTexts {
+    /// Returns the texts of the index elements of `schema`, the schema `source` builds.
+    pub fn of(source: &Source, schema: &Schema) -> ElementTexts {
+        let mut names = None;
+        let mut texts = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        for ((r, i), _) in schema.ids().index_ids() {
+            let rel = schema.relation(r);
+            for (j, e) in rel.indexes[i].fields.iter().enumerate() {
+                if field_path(e).is_some() {
+                    continue;
+                }
+                let names = names.get_or_insert_with(|| {
+                    source.names().unwrap_or_else(|ds| {
+                        panic!("the source of a built schema names its objects: {ds:?}")
+                    })
+                });
+                let names = names.get(rel.file.0 as usize).unwrap_or_else(|| {
+                    panic!("an index element of relation `{}` is not a field path and has no source file", rel.name)
+                });
+                let text = files
+                    .entry(rel.file)
+                    .or_insert_with(|| source.file_text(rel.file));
+                texts.insert((r, i, j), canonical_term(text, e.span, names));
+            }
+        }
+        ElementTexts(texts)
+    }
+
+    /// Returns the text of element `j` of declared index `i` of `r`.
+    fn get(&self, r: RelId, i: usize, j: usize) -> String {
+        self.0
+            .get(&(r, i, j))
+            .unwrap_or_else(|| {
+                panic!("every declared index element that is not a field path has a canonical text, and element {j} of index {i} of {r:?} has none")
+            })
+            .clone()
+    }
+}
+
 /// Returns every index of the relations of `schema` with catalog ids, by index id: the key
-/// indexes, the declared uniques and indexes, and the implied indexes.
-pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
+/// indexes, the declared uniques and indexes, and the implied indexes, each element that is not a
+/// field path as `texts` holds it.
+pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec> {
     let mut out = BTreeMap::new();
     for (r, id) in schema.ids().key_ids() {
         let id = id.raw();
@@ -162,7 +210,8 @@ pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
         let fields: Vec<String> = def
             .fields
             .iter()
-            .map(|e| field_path(e).unwrap_or_else(|| expr_text(e)))
+            .enumerate()
+            .map(|(j, e)| field_path(e).unwrap_or_else(|| texts.get(r, i, j)))
             .collect();
         let elements = declared_elements(i, def);
         let spec = IndexSpec {
@@ -205,74 +254,6 @@ pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
         out.insert(id, spec);
     }
     out
-}
-
-/// Returns index element `e`, an expression that is not a field path, as the catalog writes it.
-fn expr_text(e: &ast::Expr) -> String {
-    let name = |q: &QName| match &q.module {
-        Some(m) => format!("{}::{}", m.text, q.name.text),
-        None => q.name.text.clone(),
-    };
-    let nested = |x: &ast::Expr| match &x.kind {
-        ExprKind::Binary(..) | ExprKind::If(..) => format!("({})", expr_text(x)),
-        _ => expr_text(x),
-    };
-    match &e.kind {
-        ExprKind::Lit(l) => match l {
-            ast::Lit::Int(t) | ast::Lit::Decimal(t) | ast::Lit::Float(t) => t.clone(),
-            ast::Lit::Text(t) => format!("{t:?}"),
-            ast::Lit::Duration { amount, unit } => format!("{amount}{unit}"),
-            ast::Lit::Bool(b) => b.to_string(),
-        },
-        ExprKind::Name(q) => name(q),
-        ExprKind::Call {
-            callee,
-            args: ast::CallArgs::List(xs),
-            pins: None,
-        } => {
-            let args: Vec<String> = xs.iter().map(expr_text).collect();
-            format!("{}({})", name(callee), args.join(", "))
-        }
-        ExprKind::Unit => "()".into(),
-        ExprKind::Unary(op, x) => {
-            let op = match op {
-                ast::UnOp::Neg => "-",
-                ast::UnOp::Not => "not ",
-                ast::UnOp::Key => "key ",
-                ast::UnOp::Try => "try ",
-            };
-            format!("{op}{}", nested(x))
-        }
-        ExprKind::Binary(op, a, b) => {
-            let op = match op {
-                ast::BinOp::Union => "|",
-                ast::BinOp::Or => "or",
-                ast::BinOp::And => "and",
-                ast::BinOp::Eq => "==",
-                ast::BinOp::Ne => "!=",
-                ast::BinOp::Lt => "<",
-                ast::BinOp::Le => "<=",
-                ast::BinOp::Gt => ">",
-                ast::BinOp::Ge => ">=",
-                ast::BinOp::Add => "+",
-                ast::BinOp::Sub => "-",
-                ast::BinOp::Concat => "++",
-                ast::BinOp::Mul => "*",
-                ast::BinOp::Div => "/",
-                ast::BinOp::Rem => "%",
-            };
-            format!("{} {op} {}", nested(a), nested(b))
-        }
-        ExprKind::Field(x, f) => format!("{}.{}", nested(x), f.text),
-        ExprKind::Select(x, ast::CtorSel::One(c)) => format!("{}.{}", nested(x), c.text),
-        ExprKind::If(c, a, b) => format!(
-            "if {} then {} else {}",
-            expr_text(c),
-            expr_text(a),
-            expr_text(b)
-        ),
-        other => format!("{other:?}"),
-    }
 }
 
 /// Returns the fields an index's clause names, or `None` if one of its expressions is not a
@@ -727,8 +708,8 @@ impl Builder<'_> {
         }
     }
 
-    fn indexes(&mut self) {
-        for (id, spec) in indexes(self.schema) {
+    fn indexes(&mut self, texts: &ElementTexts) {
+        for (id, spec) in indexes(self.schema, texts) {
             let fields = vec![
                 ("id", key(id)),
                 (

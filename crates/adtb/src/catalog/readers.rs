@@ -13,7 +13,7 @@ use super::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId, CatSetId, ctor_id, ctor_index,
     rel_id, relation, type_ctor_id,
 };
-use super::{Broken, Catalog, Checked, Error, ctor_count};
+use super::{Broken, Catalog, Checked, ElementTexts, Error, ctor_count};
 
 /// A live reader of the database: a bundle with its feeds and registered change consumers, at
 /// the version it is pinned to.
@@ -254,11 +254,15 @@ impl Changes {
         }
     }
 
-    /// Record each unique the step from `a` to `b` of operator `op`, a `drop unique`, drops.
-    fn drop_uniques(&mut self, op: usize, a: &Schema, b: &Schema) {
-        let kept = uniques(b);
-        for (id, (r, clause)) in uniques(a) {
-            if kept.contains_key(&id) {
+    /// Record each unique the step from `a`, the schema of `source`, to `b` of operator `op`, a
+    /// `drop unique`, drops.
+    fn drop_uniques(&mut self, op: usize, source: &Source, a: &Schema, b: &Schema) {
+        let kept = unique_ids(b);
+        if unique_ids(a).is_subset(&kept) {
+            return;
+        }
+        for (id, (r, clause)) in uniques(a, &ElementTexts::of(source, a)) {
+            if kept.contains(&id) {
                 continue;
             }
             let rel = a.relation(r);
@@ -285,6 +289,7 @@ fn changes(
     at.version += 1;
     at.expecting(module, &file.operators);
     let mut before = schema.clone();
+    let mut before_source = source.clone();
     let mut changes = Changes::default();
     for (i, op) in file.operators.iter().enumerate() {
         let steps = at
@@ -296,9 +301,10 @@ fn changes(
             };
             changes.add(&before, &schema);
             if matches!(op.kind, OperatorKind::DropUnique(..)) {
-                changes.drop_uniques(i, &before, &schema);
+                changes.drop_uniques(i, &before_source, &before, &schema);
             }
             before = schema;
+            before_source = step.after;
         }
     }
     Ok(changes)
@@ -650,10 +656,10 @@ impl Catalog {
     /// Returns why the live readers refuse a migration whose result is `next` for each unique
     /// a reader's version holds that it drops otherwise than by a `drop unique` of `dropped`.
     fn uniques_held(&self, next: &Schema, dropped: &[DroppedUnique]) -> Vec<String> {
-        let kept = uniques(next);
+        let kept = unique_ids(next);
         let mut why = Vec::new();
-        for (id, (r, clause)) in uniques(&self.schema) {
-            if kept.contains_key(&id) || dropped.iter().any(|u| u.id == id) {
+        for (id, (r, clause)) in uniques(&self.schema, &self.texts) {
+            if kept.contains(&id) || dropped.iter().any(|u| u.id == id) {
                 continue;
             }
             for (bundle, p) in self
@@ -794,7 +800,7 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
             .map(|(_, id)| id)
             .chain(schema.ids().check_ids().map(|(_, id)| id))
             .collect(),
-        uniques: uniques(schema).into_keys().collect(),
+        uniques: unique_ids(schema),
         relations: schema.ids().relation_ids().map(|(_, id)| id).collect(),
     };
     for read in &reader.reads {
@@ -884,13 +890,24 @@ fn read_fields<'s>(schema: &'s Schema, p: &'s Pinned) -> impl Iterator<Item = &'
         .map(|f| &schema.ty(f.def()).field_def(f).ty)
 }
 
-/// Returns the catalog id of each declared unique of `schema`, with its relation and its clause.
-fn uniques(schema: &Schema) -> BTreeMap<CatIndexId, (RelId, String)> {
-    let declared: BTreeSet<u64> = schema.ids().index_ids().map(|(_, id)| id.raw()).collect();
-    super::indexes(schema)
+/// Returns the catalog id of each declared unique of `schema`, with its relation and its clause,
+/// each index element that is not a field path as `texts` holds it.
+fn uniques(schema: &Schema, texts: &ElementTexts) -> BTreeMap<CatIndexId, (RelId, String)> {
+    let declared = unique_ids(schema);
+    super::indexes(schema, texts)
         .into_values()
-        .filter(|s| s.unique && declared.contains(&s.id))
+        .filter(|s| declared.contains(&CatIndexId::from_raw(s.id)))
         .map(|s| (CatIndexId::from_raw(s.id), (s.relation, s.clause)))
+        .collect()
+}
+
+/// Returns the catalog id of each declared unique of `schema`.
+fn unique_ids(schema: &Schema) -> BTreeSet<CatIndexId> {
+    schema
+        .ids()
+        .index_ids()
+        .filter(|&((r, i), _)| schema.relation(r).indexes[i].unique)
+        .map(|(_, id)| CatIndexId::from_raw(id.raw()))
         .collect()
 }
 
@@ -929,9 +946,5 @@ pub(super) fn checked(source: Source) -> Result<Checked, Vec<Diag>> {
     let (schema, program) = source
         .check()
         .map_err(|ds| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>())?;
-    Ok(Checked {
-        source,
-        schema,
-        program: Arc::new(program),
-    })
+    Ok(Checked::new(source, schema, program))
 }

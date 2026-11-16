@@ -11,12 +11,16 @@ use super::Rot;
 use super::ids::{CatCtorId, CatRelId};
 use super::root::{Changing, Root};
 use super::{
-    Broken, Error, HEAP_ROOT, Hash, MIGRATION, Named, Rows, applied, check_order_keys, declared,
-    engine_schema, fold, indexes, layout, oplog, version_hash,
+    Broken, ElementTexts, Error, HEAP_ROOT, Hash, MIGRATION, Named, Rows, applied,
+    check_order_keys, declared, engine_schema, fold, indexes, layout, oplog, version_hash,
 };
 
+fn engine_texts(schema: &Schema) -> ElementTexts {
+    ElementTexts::of(&Source::default(), schema)
+}
+
 fn engine_rows(schema: &Schema) -> Rows {
-    declared(schema, &Source::default())
+    declared(schema, &Source::default(), &engine_texts(schema))
 }
 
 /// Returns the rows of the catalog relation whose id is `id`.
@@ -64,7 +68,7 @@ fn every_engine_object_with_an_id_has_a_row() {
     assert_eq!(schema.ids().ctor_ids().count(), count(220));
     assert_eq!(schema.ids().field_ids().count(), count(222));
     assert_eq!(schema.ids().relation_ids().count(), count(223));
-    assert_eq!(indexes(&schema).len(), count(226));
+    assert_eq!(indexes(&schema, &engine_texts(&schema)).len(), count(226));
     assert_eq!(0, count(224));
     assert_eq!(0, count(232));
 }
@@ -130,7 +134,7 @@ fn order_keys_follow_declaration_order_and_are_spread_once() {
 #[test]
 fn engine_indexes_are_the_keys_then_the_uniques() {
     let schema = engine_schema();
-    let all = indexes(&schema);
+    let all = indexes(&schema, &engine_texts(&schema));
     assert_eq!(
         (0..all.len() as u64).collect::<BTreeSet<u64>>(),
         all.keys().copied().collect()
@@ -151,7 +155,7 @@ add relation shapes : Shape key id generate sequence default label = \"none\"
         .expect("the migration parses");
     let source = Source::default().migrate(&file, text).expect("it applies");
     let schema = source.schema().expect("it builds");
-    let rows = declared(&schema, &source);
+    let rows = declared(&schema, &source, &ElementTexts::of(&source, &schema));
     let defaults = rows_of(&schema, &rows, 456);
     let texts: Vec<&Value> = defaults.iter().map(|row| &row[3]).collect();
     assert_eq!(
@@ -196,7 +200,9 @@ fn catalog_rows(source: &Source, name: &str) -> Vec<(u32, Vec<Value>)> {
     let Some(&adtb_lang::schema::ValueDef::Relation(r)) = schema.module(m).values.get(name) else {
         panic!("the catalog declares `{name}`")
     };
-    declared(&schema, source).remove(&r).unwrap_or_default()
+    declared(&schema, source, &ElementTexts::of(source, &schema))
+        .remove(&r)
+        .unwrap_or_default()
 }
 
 fn hash_of(source: &Source) -> Hash {
@@ -831,7 +837,8 @@ fn the_fields_of_one_constructor_are_written_in_name_order() {
         .index();
     let declared_fields = layout::row(&schema, fields, payload);
     let at = |name: &str| declared_fields.iter().position(|(n, _)| n == name).unwrap();
-    let names: Vec<Value> = declared(&schema, &source)[&fields]
+    let names: Vec<Value> = declared(&schema, &source, &ElementTexts::of(&source, &schema))
+        [&fields]
         .iter()
         .filter(|(c, row)| *c == payload && row[at("ctor")] == Value::I64(ctor.raw() as i64))
         .map(|(_, row)| row[at("name")].clone())

@@ -18,7 +18,7 @@ use super::Rot;
 use super::ids::{CatConstraintId, CatFieldId, CatIndexId, CatRelId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
 use super::root::Changing;
-use super::rows::IndexSpec;
+use super::rows::{ElementTexts, IndexSpec};
 use super::{
     Broken, Catalog, Error, INDEX_ROOT, Migrating, ROOTS, delete_rows, indexes, int, uint,
 };
@@ -131,15 +131,17 @@ pub(super) fn imageless_keys(schema: &Schema, pending: &[Pending]) -> Vec<String
         .collect()
 }
 
-/// Returns every index a catalog over `schema` keeps while the drops of `pending` are pending:
-/// the indexes of `schema` and the index of each old key `pending` holds.
+/// Returns every index a catalog over `schema`, whose index element texts are `texts`, keeps
+/// while the drops of `pending` are pending: the indexes of `schema` and the index of each old key
+/// `pending` holds.
 ///
 /// Fail when an old key of `pending` has no image in `schema`.
 pub(super) fn kept_indexes(
     schema: &Schema,
+    texts: &ElementTexts,
     pending: &[Pending],
 ) -> Result<BTreeMap<u64, IndexSpec>, Box<Broken>> {
-    let mut out = indexes(schema);
+    let mut out = indexes(schema, texts);
     for p in pending {
         let Kind::Key { index, .. } = &p.kind else {
             continue;
@@ -367,11 +369,10 @@ impl Catalog {
         } else {
             self.readers.enforced.clone()
         };
-        let stored = kept_indexes(
-            enforced.as_ref().map_or(&self.schema, |e| &e.schema),
-            &pending,
-        )
-        .map_err(Error::Internal)?;
+        let (held, texts) = enforced
+            .as_ref()
+            .map_or((&self.schema, &self.texts), |e| (&e.schema, &e.texts));
+        let stored = kept_indexes(held, texts, &pending).map_err(Error::Internal)?;
         let freed: Vec<u64> = self
             .indexes
             .keys()

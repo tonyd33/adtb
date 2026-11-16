@@ -103,7 +103,7 @@ migrate refused MigrationRefused { version: 2, reason: Rejected { reason: Schema
   module k
   add unique (i8, text) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 0x2b09762d01070107 of `unique (collate(text, \"und@cldr-49\"))`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 0x2b09762d01070107 of `unique (collate ( text , \"und@cldr-49\" ))`" } } }
   module k
   add unique (collate(text, "und@cldr-49")) in items
 

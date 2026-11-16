@@ -143,6 +143,7 @@ impl<R: Runtime> WritePath<R> {
                 limits: Default::default(),
                 structures: catalog.structures(),
             },
+            &catalog.declared_indexes(),
         )
         .expect("a write path over the catalog");
         Some(WritePath {

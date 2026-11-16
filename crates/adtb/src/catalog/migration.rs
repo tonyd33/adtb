@@ -9,7 +9,7 @@ use adtb_lang::kernel;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Schema, Stage};
-use adtb_lang::textual::{self, Form};
+use adtb_lang::textual::{self, Form, key_names};
 use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -29,12 +29,12 @@ use super::history::{Rebuilding, key_indexes};
 use super::ids::{stored, type_ctor_id};
 use super::keying::broken;
 use super::{
-    Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, Error, HEAP_ROOT, Hash,
-    INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys, Readers, change,
-    ctor_count, ctor_id, ctor_index, ctor_relations, delete_rows, element_types, heap_root,
-    index_ctors, index_keys, index_program, indexes, int, key_schema, layout, moved, oplog, owner,
-    pending, planned, reasons, rel_id, relation, row_key, row_type, rows, steps, update_root,
-    visible,
+    Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
+    HEAP_ROOT, Hash, INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys,
+    Readers, change, ctor_count, ctor_id, ctor_index, ctor_relations, delete_keyed, delete_rows,
+    element_types, heap_root, index_ctors, index_keys, index_program, indexes, int, key_schema,
+    layout, moved, oplog, owner, pending, planned, reasons, rel_id, relation, row_key, row_type,
+    rows, steps, update_root, visible,
 };
 
 impl Catalog {
@@ -135,17 +135,15 @@ impl Catalog {
             Ok(ops) => oplog::operator_rows(&schema, &ops),
             Err(why) => return refused(why),
         };
-        let next = Checked {
-            source: next,
-            schema,
-            program: Arc::new(program),
-        };
+        let next = Checked::new(next, schema, program);
         let readers = self.held(&file, text, &next)?;
-        let (schema, program) = readers
+        let (schema, program, texts) = readers
             .enforced()
-            .map_or((&next.schema, &next.program), |e| (&e.schema, &e.program));
-        let rewritten = change::rewritten(self.checking().0, schema);
-        self.admits(schema, program, &rewritten)?;
+            .map_or((&next.schema, &next.program, &next.texts), |e| {
+                (&e.schema, &e.program, &e.texts)
+            });
+        let rewritten = change::rewritten(self.checking().0, self.checking_texts(), schema, texts);
+        self.admits(schema, program, texts, &rewritten)?;
         let begun = txns.begin(pager)?;
         let x = begun.xid();
         update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
@@ -187,13 +185,15 @@ impl Catalog {
         Ok(dormant)
     }
 
-    /// Refuse `schema`, whose checked program is `program`, when a constraint of it has no
-    /// index-bounded incremental check over the heaps [`Catalog::heap_ids`] assigns a migration
-    /// rewriting the relations `rewritten` names, and its indexes; each reason.
+    /// Refuse `schema`, whose checked program is `program` and index element texts `texts`, when
+    /// a constraint of it has no index-bounded incremental check over the heaps
+    /// [`Catalog::heap_ids`] assigns a migration rewriting the relations `rewritten` names, and
+    /// its indexes; each reason.
     fn admits(
         &self,
         schema: &Schema,
         program: &Program,
+        texts: &ElementTexts,
         rewritten: &BTreeSet<CatRelId>,
     ) -> Result<(), Error> {
         let normal = norm::program(schema, program)
@@ -207,7 +207,7 @@ impl Catalog {
             .into_iter()
             .map(|(rc, id)| (rc, HeapId(u64::from(id))))
             .collect();
-        let specs = indexes(schema);
+        let specs = indexes(schema, texts);
         for spec in specs.values() {
             index_keys(schema, Some(&normal), spec, &self.hosts)?;
         }
@@ -323,7 +323,7 @@ impl Catalog {
                 data: &data,
                 rewritten,
                 readers: Some(&readers),
-                old: rows::objects(&self.schema, &self.source),
+                old: rows::objects(&self.schema, &self.source, &self.texts),
                 operators: &operators,
             },
         )?;
@@ -509,6 +509,7 @@ impl Catalog {
             source: b.next.source.clone(),
             schema,
             program: b.next.program.clone(),
+            texts: b.next.texts.clone(),
             root: self.root,
             large: self.large,
             roots: self.roots.clone(),
@@ -523,14 +524,14 @@ impl Catalog {
             kept: self.kept.clone(),
             held: BTreeSet::new(),
         };
-        let (held, held_program) = b
+        let (held, held_program, held_texts) = b
             .readers
             .and_then(Readers::enforced)
-            .map_or((&b.next.schema, &b.next.program), |e| {
-                (&e.schema, &e.program)
+            .map_or((&b.next.schema, &b.next.program, &b.next.texts), |e| {
+                (&e.schema, &e.program, &e.texts)
             });
         let pending = b.readers.map_or(&[][..], |r| &r.pending);
-        let specs = pending::kept_indexes(held, pending).map_err(Error::Internal)?;
+        let specs = pending::kept_indexes(held, held_texts, pending).map_err(Error::Internal)?;
         let normal = index_program(held, held_program, specs.values()).map_err(Error::Internal)?;
         let mut keyed = BTreeMap::new();
         for (id, spec) in &specs {
@@ -669,9 +670,9 @@ impl Catalog {
         Ok((out, next))
     }
 
-    /// Write the catalog rows of `next`'s version as `m.x` over this catalog's: delete each row
-    /// `b.old` holds that the version does not, insert each other row of the version, and insert
-    /// the row of its migration.
+    /// Write the catalog rows of `next`'s version as `m.x` over this catalog's: delete the stored
+    /// row with the key of each row `b.old` holds that the version does not, insert each other row
+    /// of the version, and insert the row of its migration.
     fn write_rows<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
@@ -684,7 +685,7 @@ impl Catalog {
             .iter()
             .map(|(r, rows)| (rel_id(&self.schema, *r), (*r, rows.as_slice())))
             .collect();
-        for (r, rows) in rows::objects(&next.schema, &next.source) {
+        for (r, rows) in rows::objects(&next.schema, &next.source, &next.texts) {
             let rid = rel_id(&next.schema, r);
             let (was, before) = old.get(&rid).copied().unwrap_or((r, &[]));
             for (c, row) in &rows {
@@ -699,7 +700,9 @@ impl Catalog {
                 }
             }
             for (c, rows) in gone {
-                delete_rows(m, self.heap(was, c), &rows)?;
+                let key = |row: &[Value]| stored_key(&self.schema, was, c, row);
+                let keys = rows.iter().map(|row| key(row)).collect();
+                delete_keyed(m, self.heap(was, c), keys, key)?;
             }
         }
         if next.source.log.is_empty() {
@@ -898,6 +901,20 @@ fn micros(t: SystemTime) -> i64 {
 
 /// A relation of the catalog before a migration, with the catalog rows it holds.
 type Held<'a> = (RelId, &'a [(u32, Vec<Value>)]);
+
+/// Returns the key of `row`, a row of constructor `c` of relation `r` of `schema`.
+fn stored_key(schema: &Schema, r: RelId, c: u32, row: &[Value]) -> Vec<Value> {
+    let fields = layout::row(schema, r, c);
+    key_names(schema, r)
+        .iter()
+        .map(|k| {
+            let at = fields.iter().position(|(n, _)| n == k).unwrap_or_else(|| {
+                panic!("every constructor of a relation has its key field `{k}`")
+            });
+            row[at].clone()
+        })
+        .collect()
+}
 
 /// The heap id of each constructor relation, by relation and constructor.
 type HeapIds = BTreeMap<(RelId, u32), u32>;

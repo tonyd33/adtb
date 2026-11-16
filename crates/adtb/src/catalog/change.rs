@@ -11,7 +11,7 @@ use super::ids::{
     CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
     stored, type_id,
 };
-use super::{Broken, Error, ctor_relations, layout, row_type, rows};
+use super::{Broken, ElementTexts, Error, ctor_relations, layout, row_type, rows};
 
 /// The rows of the relations a migration rewrites, by relation id and then constructor id, each
 /// row in the layout of the schema the operators applied so far produce.
@@ -85,7 +85,7 @@ fn reached_keys(schema: &Schema, ty: &Ty, seen: &mut Vec<Ty>, keys: &mut KeyIds)
     }
 }
 
-fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
+fn shapes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<CatRelId, Shape> {
     let mut out: BTreeMap<CatRelId, Shape> = BTreeMap::new();
     for (r, c) in ctor_relations(schema) {
         let rid = rel_id(schema, r);
@@ -102,7 +102,7 @@ fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
             .ctors
             .push((ctor_id(schema, r, c), fields(schema, r, c)));
     }
-    for spec in rows::indexes(schema).into_values() {
+    for spec in rows::indexes(schema, texts).into_values() {
         let rid = rel_id(schema, spec.relation);
         let ctors = spec
             .ctors
@@ -118,10 +118,16 @@ fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
     out
 }
 
-/// Returns the ids of the relations that `old` and `new` store otherwise: those only one of them
-/// has, and those whose constructors, fields, indexes or reached keys differ.
-pub fn rewritten(old: &Schema, new: &Schema) -> BTreeSet<CatRelId> {
-    let (a, b) = (shapes(old), shapes(new));
+/// Returns the ids of the relations that `old` and `new`, whose index element texts are
+/// `old_texts` and `new_texts`, store otherwise: those only one of them has, and those whose
+/// constructors, fields, indexes or reached keys differ.
+pub fn rewritten(
+    old: &Schema,
+    old_texts: &ElementTexts,
+    new: &Schema,
+    new_texts: &ElementTexts,
+) -> BTreeSet<CatRelId> {
+    let (a, b) = (shapes(old, old_texts), shapes(new, new_texts));
     a.keys()
         .chain(b.keys())
         .filter(|id| a.get(id) != b.get(id))

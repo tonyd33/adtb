@@ -923,9 +923,64 @@ impl<'a> Compiler<'a> {
             }
             other => {
                 return Err(Error::Unsupported(format!(
-                    "a scalar expression of the form {other:?}"
+                    "{} in a scalar expression",
+                    form(other)
                 )));
             }
         })
+    }
+}
+
+/// Returns what a term of kind `kind` is, as a refusal names it.
+fn form(kind: &Kind) -> &'static str {
+    match kind {
+        Kind::Var(_) => "a variable",
+        Kind::Const(_) => "a constant",
+        Kind::Prim(..) => "a primitive",
+        Kind::Record(_) => "a record",
+        Kind::Field(..) => "a field read",
+        Kind::Ctor { .. } => "a constructor",
+        Kind::Case { .. } => "a `match`",
+        Kind::If(..) => "an `if`",
+        Kind::Let(..) => "a `let`",
+        Kind::Lam(..) => "a function value",
+        Kind::App(..) => "an application of a function value",
+        Kind::Call { .. } => "a call",
+        Kind::Caller => "`caller`",
+        Kind::Key(_) => "`key`",
+        Kind::KeyOf(..) => "a key value",
+        Kind::Deref { .. } => "the row of a key",
+        Kind::Tag(_) => "a constructor tag",
+        Kind::Try(_) => "`try`",
+        Kind::Rel(..) => "a relation",
+        Kind::Transition(..) => "the rows a statement inserts or deletes",
+        Kind::Restrict(..) => "a constructor selection",
+        Kind::EmptySet => "an empty set",
+        Kind::Singleton(_) => "a set",
+        Kind::Union(..) => "a union",
+        Kind::For(..) => "a comprehension",
+        Kind::IsEmpty(_) => "a test for an empty set",
+        Kind::Exists(_) => "an `exists`",
+        Kind::Agg { .. } => "an aggregate",
+        Kind::Group { .. } => "a `group`",
+        Kind::Top { .. } => "a `top`",
+        Kind::Fix(..) => "a `fix`",
+        Kind::Fresh(..) | Kind::Placeholder { .. } => "a generated value",
+        Kind::Only(_) => "`only`",
+        Kind::At { .. } => "an `at` block",
+        Kind::Present { .. } => "an ordered result",
+        Kind::Reject(_) => "`reject`",
+        Kind::Unreachable => "an unreachable position",
+        Kind::Skip => "`skip`",
+        Kind::Insert(..)
+        | Kind::Delete(..)
+        | Kind::Replace(..)
+        | Kind::Upsert { .. }
+        | Kind::Rejects { .. }
+        | Kind::Par(_)
+        | Kind::LetBang(..)
+        | Kind::Block(..) => "a write",
+        Kind::Fail(_) => "`fail`",
+        Kind::Transact(..) => "a `transact` block",
     }
 }

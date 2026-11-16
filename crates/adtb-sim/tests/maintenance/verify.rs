@@ -1455,7 +1455,7 @@ add relation identities : Identity key id generate sequence
 #[test]
 fn a_fault_planted_in_each_kind_of_index_is_a_missing_finding() {
     for clause in [
-        "index (lower(email))",
+        "index (lower ( email ))",
         "index (score, email)",
         "unique (status.Paid.ref)",
     ] {

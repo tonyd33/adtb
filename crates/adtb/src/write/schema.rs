@@ -131,10 +131,15 @@ fn qualified(schema: &Schema, rel: RelId) -> String {
     format!("{}::{}", schema.module(r.module).name, r.name)
 }
 
-/// Returns what the engine derives from every relation variable `catalog` describes.
-pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Result<Rels, Error> {
+/// Returns what the engine derives from every relation variable `catalog` describes, whose
+/// declared indexes are `specs`, by index id.
+pub fn rels(
+    schema: &Schema,
+    normal: &NormalProgram,
+    catalog: &Catalog,
+    specs: &BTreeMap<u64, IndexSpec>,
+) -> Result<Rels, Error> {
     let mut out = Rels::new();
-    let specs = crate::catalog::indexes(schema);
     for (rel, desc) in catalog.relations() {
         let r = schema.relation(*rel);
         let cs = ctors(schema, &r.elem).expect("a relation's element type is a sum");

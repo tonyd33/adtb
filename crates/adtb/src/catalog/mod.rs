@@ -36,6 +36,8 @@ mod catalog_tests;
 #[cfg(test)]
 mod grant_rows_tests;
 #[cfg(test)]
+mod index_text_tests;
+#[cfg(test)]
 mod oplog_tests;
 #[cfg(test)]
 mod tests;
@@ -75,7 +77,7 @@ pub use readers::PendingDrop;
 pub use readers::{Read, Reader, source_at, stale};
 pub(crate) use root::Changing;
 pub use rot::{Rot, detail};
-pub use rows::{IndexSpec, Rows, Step, indexed_fields, indexes};
+pub use rows::{ElementTexts, IndexSpec, Rows, Step, indexed_fields, indexes};
 #[cfg(test)]
 pub use rows::{applied, declared};
 pub use validate::Denial;
@@ -171,6 +173,7 @@ pub struct Catalog {
     schema: Schema,
     /// The checked program of `source`.
     program: Arc<Program>,
+    texts: ElementTexts,
     root: Pid,
     large: LargeStore,
     roots: Arc<Heap>,
@@ -637,11 +640,12 @@ impl Catalog {
         let (schema, program) = Source::default()
             .check()
             .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
-        let program = Arc::new(program);
+        let next = Checked::new(Source::default(), schema, program);
         let empty = Catalog {
             source: Source::default(),
             schema: engine_schema(),
-            program: program.clone(),
+            program: next.program.clone(),
+            texts: next.texts.clone(),
             root: pid,
             large,
             roots: Arc::new(roots),
@@ -674,11 +678,7 @@ impl Catalog {
         let built = empty.build(
             &m,
             &Built {
-                next: Checked {
-                    source: Source::default(),
-                    schema,
-                    program,
-                },
+                next,
                 data: &Data::new(),
                 rewritten: &every,
                 readers: None,
@@ -790,10 +790,13 @@ impl Catalog {
             let heap = Heap::open(pager, id, at, row_type(&schema, r, c), large)?;
             heaps.insert((r, c), Arc::new(heap));
         }
-        let (held, held_program) = readers
-            .enforced()
-            .map_or((&schema, &program), |e| (&e.schema, &*e.program));
-        let specs = pending::kept_indexes(held, &readers.pending).map_err(Rot::KeptIndexes)?;
+        let texts = ElementTexts::of(&source, &schema);
+        let (held, held_program, held_texts) =
+            readers.enforced().map_or((&schema, &program, &texts), |e| {
+                (&e.schema, &*e.program, &e.texts)
+            });
+        let specs =
+            pending::kept_indexes(held, held_texts, &readers.pending).map_err(Rot::KeptIndexes)?;
         let normal = index_program(held, held_program, specs.values()).map_err(Rot::KeptIndexes)?;
         let mut stored = BTreeMap::new();
         for (id, spec) in specs {
@@ -822,6 +825,7 @@ impl Catalog {
             source,
             schema,
             program: Arc::new(program),
+            texts,
             root: pid,
             large,
             roots: Arc::new(roots),
@@ -847,6 +851,7 @@ impl Catalog {
             .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
         let large = LargeStore::open(0, Pid(0));
         Ok(Catalog {
+            texts: ElementTexts::of(&Source::default(), &schema),
             source: Source::default(),
             schema,
             program: Arc::new(program),
@@ -905,6 +910,16 @@ impl Catalog {
         self.readers
             .enforced()
             .map_or((&self.schema, &self.program), |e| (&e.schema, &e.program))
+    }
+
+    /// Returns the index element texts of the schema [`Catalog::checking`] returns.
+    fn checking_texts(&self) -> &ElementTexts {
+        self.readers.enforced().map_or(&self.texts, |e| &e.texts)
+    }
+
+    /// Returns every index of the schema [`Catalog::checking`] returns, by index id.
+    pub fn declared_indexes(&self) -> BTreeMap<u64, IndexSpec> {
+        indexes(self.checking().0, self.checking_texts())
     }
 
     /// Set the memory a migration's validation of its constraints may hold: the query memory
@@ -1210,6 +1225,19 @@ struct Checked {
     source: Source,
     schema: Schema,
     program: Arc<Program>,
+    texts: ElementTexts,
+}
+
+impl Checked {
+    fn new(source: Source, schema: Schema, program: Program) -> Checked {
+        let texts = ElementTexts::of(&source, &schema);
+        Checked {
+            source,
+            schema,
+            program: Arc::new(program),
+            texts,
+        }
+    }
 }
 
 /// The transaction `x` of one migration, and what it reads the catalog before it at.
@@ -1264,17 +1292,27 @@ fn delete_rows<R: Runtime>(
     heap: &Heap,
     rows: &[Vec<Value>],
 ) -> Result<(), Error> {
+    delete_keyed(m, heap, rows.to_vec(), <[Value]>::to_vec)
+}
+
+/// Delete, as `m.x`, one version the snapshot of `m.hold` sees from `heap` of each row whose
+/// image under `key` is one of `keys`.
+fn delete_keyed<R: Runtime>(
+    m: &Migrating<'_, R>,
+    heap: &Heap,
+    mut keys: Vec<Vec<Value>>,
+    key: impl Fn(&[Value]) -> Vec<Value>,
+) -> Result<(), Error> {
     let pager = m.pager;
-    if rows.is_empty() {
+    if keys.is_empty() {
         return Ok(());
     }
-    let mut left: Vec<&Vec<Value>> = rows.iter().collect();
     let reader = m.txns.reader(pager, m.hold, None);
     'scan: loop {
         let mut versions = Vec::new();
         heap.scan(pager, |v| versions.push(v))?;
         for v in versions {
-            let Some(at) = left.iter().position(|r| **r == v.row) else {
+            let Some(at) = keys.iter().position(|k| *k == key(&v.row)) else {
                 continue;
             };
             let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
@@ -1282,10 +1320,10 @@ fn delete_rows<R: Runtime>(
             };
             if seen.visible() {
                 heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?;
-                left.swap_remove(at);
+                keys.swap_remove(at);
             }
         }
-        assert!(left.is_empty(), "every row deleted is visible: {left:?}");
+        assert!(keys.is_empty(), "every row deleted is visible: {keys:?}");
         return Ok(());
     }
 }

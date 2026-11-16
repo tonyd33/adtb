@@ -243,11 +243,11 @@ pub(super) fn index_keys(
 ) -> Result<Arc<IndexKeys>, Error> {
     let mut keys = IndexKeys::new(schema, normal, spec.relation, &spec.ctors, &spec.elements)
         .map_err(|e| match e {
-            exec::Error::Internal(_) | exec::Error::Corrupt(_) => broken(e),
-            e => Error::Refused(vec![format!(
-                "index `{}` is not admitted: {e:?}",
+            exec::Error::Unsupported(why) => Error::Refused(vec![format!(
+                "index `{}` is not admitted: {why}",
                 spec.clause
             )]),
+            e => broken(e),
         })?;
     keys.set_hosts(hosts);
     Ok(Arc::new(keys))

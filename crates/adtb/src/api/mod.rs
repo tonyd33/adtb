@@ -934,7 +934,7 @@ impl<R: Runtime> Engine<R> {
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
         let (findings, volatile) = held_rows(&catalog, &pager, &txns, &schema, options, true)?;
         let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
-        let db = write::Database::new(rt.clone(), setup)
+        let db = write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
             .map_err(corrupt)?
             .with_volatile(volatile);
         Ok(Opened {
@@ -1145,7 +1145,7 @@ impl<R: Runtime> Engine<R> {
             None
         };
         let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
-        let db = write::Database::new(rt.clone(), setup)
+        let db = write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
             .map_err(corrupt)?
             .with_files(
                 options
