@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-14
-status: open
+status: resolved
+closed: 2026-11-15
 kind: bug
 priority: 260
 summary: "a role holding grants that runs verify is refused the witness rows of every row check's violation, whatever it may read"
@@ -18,3 +19,7 @@ crates/adtb/src/api/command.rs (`refuse_witnesses`, about :687-705) maps a `Viol
 Direction: one lookup that resolves both `Slot::Constraint` and `Slot::Check`, and the readable set over both kinds (a `reads_check`). Test: the probe above as a roles or commands script expecting dba to see the witness.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## Resolved
+
+Landed as mmwzottl 933912bb (structure-lang-identity step 11 part b, 2 rounds, full check 0, 3836 tests). `IdMap::denial_of` resolves a constraint or check id to a `DenialIdx`; `refuse_witnesses` reads `Holds::reads_denial`, which takes a check's needs from `normal.check`. A role reading what a check reads sees its witnesses in `verify` and in an ad hoc refusal; a role reading only the checked column gets it redacted (scripts roles/check-violation-redacted-past-its-column.test, roles/check-violation-redacted-without-read.test). Ad hoc `redact` still finds the denial by printed name engine-side: redact-violation-by-printed-name.

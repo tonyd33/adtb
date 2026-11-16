@@ -180,3 +180,7 @@ Step 11 counted on 90722275 (receipt-lang-identity-s11-r1): the 10b rows it mean
 ## 2026-11-15, step 11 part a landed
 
 Landed as yyrsmuzq bd3ba9b7 (2 rounds), full check 0 (3834 tests). One `catalog::engine_relation` by `engine_rel` id (33 constants, pinned by the searching constant test) replaces every by-name engine relation lookup; `engine_type::SETTING`; `values::tag` takes a `CatCtorId` (12 new `engine_ctor` constants, `IndexSpec.kind` a `CatCtorId`); `write::Broken::Undeclared` removed (the engine schema always declares the engine modules; `engine_relation` panics naming the id). New structure-check row `engine_names` counting by-name engine lookups of a module, relation, type or constructor: 40 sites in 12 files, mostly catalog row encoders (catalog-encoders-through-codecs). Its rise against main was the lead act at landing. `schema::prelude::PRINCIPAL` names the spelling the 5 name resolution sites use (ruling: those resolve program text, not identity). Resolved: unnamed-file-id-sentinel. Next: part b.
+
+## 2026-11-15, step 11 part b landed
+
+Landed as mmwzottl 933912bb (2 rounds), full check 0 (3836 tests). Constraint identity: `DenialIdx`, `IdMap::denial_of`, `Holds::reads_denial`; violations keyed by object. Ruling: ad hoc `redact` finding the denial by its printed name engine-side is accepted for this part (it inverts the table that printed the name and fails closed); carrying the identity to `redact` is redact-violation-by-printed-name. Resolved: verify-witness-of-check-always-refused, write-violations-keyed-by-name. Next: part c.

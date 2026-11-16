@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-14
-status: open
+status: resolved
+closed: 2026-11-15
 kind: bug
 priority: 420
 summary: "the write path collects constraint violations in a map keyed by the constraint's printed name, not its catalog id"
@@ -18,3 +19,7 @@ crates/adtb/src/write/eval.rs:64 `pub type Violations = BTreeMap<String, Violati
 Direction: key by `CatConstraintId` and print the name only when the refusal is built.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## Resolved
+
+Landed as mmwzottl 933912bb (structure-lang-identity step 11 part b). `Violations` holds key violations by `RelId` and the rest by `write::Violator` (`Denial(DenialIdx)`, `Unique(IndexId)`, `Reference`, `Domain(TypeId)`); `refuse` reports the least printed name across both; the `Violation` enum and its two `unreachable!` arms are gone. Two violations of different objects with the same printed name are now separate entries.
