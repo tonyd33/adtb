@@ -62,3 +62,11 @@ The count found item 1's premise false: the `if named` arms of `declare_ahead` f
 ## 2026-11-16, part 2b-i landed
 
 Landed as nmymunuq bb8401d1 (2 rounds), full check 0 (3843 tests). `Later::Unlinked` is a `Loss`, refused under the fill's operator; no panic remains in `ahead_at` or `ty_at`. Ruled: an object an inverse puts back takes a new catalog id (evolution.md §5.1 widened from constructor ids). A generated-history test (449 logs of up to 3 migrations over two relations, expectation from a slot model) asserts each translation whole by catalog id. Resolved translate-reverted-fill-ahead-key. Found: revert-of-revert-pinned-refused (filed). pinned-reverted-fill-key-internal: cause in exec, recorded. Next: 2b-ii.
+
+## 2026-11-16, part 2b-ii stopped; 2b-m ruled
+
+Per-declaration settledness needs to tell a key whose selection is left for the migration's end from a key with no selection; after `types.rs` `key` both are `Ty::Key { ctors: None }` (waiting on ahead keys alone broke 16 campaign tests on canon's resolution assertion; waiting on every key of a `late_sels` relation kept the add-drop refusal). Ruled: a part 2b-m first, a distinct variant of the key's constructor selection for a late selection, every `Ty::Key` consumer handling it explicitly, with the script refusal (old 2b-iii, script-late-selection-widened); then 2b-ii on it (change rsvsqpqv kept aside).
+
+## 2026-11-16, part 2b-m split
+
+Count: `Ty::Key` at 159 sites in 39 files, 52 non-test constructions with `ctors: None`, an estimated 150 to 200 sites in all. Split: 2b-m-1 (refactor: a three-way key selection, all, a set, late; every reader names each variant; late behaves as all; `types.rs` `key` produces late), 2b-m-2 (fix: a script writing or matching through a late-selected key is refused), then 2b-ii on rsvsqpqv.

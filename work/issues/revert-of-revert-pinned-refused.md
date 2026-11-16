@@ -20,3 +20,7 @@ Likely cause: translate `reverted()` (crates/adtb-lang/src/translate/mod.rs, nea
 Fix direction: resolve revert steps by the ids the inverse carries, or where the schema builds; a searching test that generates reverts of reverts and of older migrations (the 2b-i generator widened) over histories whose functions name relations added in the same migration.
 
 Reproduced on main 14bbbd23 by the 2b-i author (engine script, bundle `web-1.0 pins 2`): `reopen` gives `RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::put", detail: "across `revert 0003`: no `ws` in scope; no `ws` in scope" } } }`. The detail repeats its reason.
+
+## 2026-11-16 cause
+
+Found by committed-schema-type part 2b-ii: translate `reverted()` calls `Applied::resolved(before, after)` (crates/adtb-lang/src/evolve/resolved.rs:696), which needs both step sources to build. The first inverse step of `revert 0003` is `drop relation ws`; after it, type `W` and function `which` still name `Key ws`, so `after.schema()` fails once for each ("no `ws` in scope" twice). Not the names settledness cause of add-drop-refused-while-other-add-pending.
