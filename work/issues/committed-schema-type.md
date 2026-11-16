@@ -46,3 +46,7 @@ Landed as kqrtyvnw e50c05c5 (2 rounds), full check 0 (3840 tests). `Committed` (
 ## 2026-11-16, cause review: ahead links eager and total
 
 The cause review found two patches in part 4: `schema/build.rs:78-79` still decides pending-ness by whether the name is declared (`Pending if named`, `UnlessDeclared if named`), and `translate/map.rs:257` panics on `Later::Unlinked` on a premise ("a reverted fill holds no key of a relation its revert restores later", held by the `drop relation` refusal) that part 4b's final round refuted for the forward half (a function parameter carries the key past it). Ruling: a part 2b after part 2, before part 3: `declare_ahead` decides by the `Adder` link alone (the named arms go, add-drop-refused-while-other-add-pending fixed by it); `Unlinked` becomes a `Loss` refused like `Lacked`, checked when the fill map is built for a key the fill holds; a searching test over add, drop, rename and revert sequences of two relations, each translated and replayed. Resolves add-drop-refused-while-other-add-pending, translate-reverted-fill-ahead-key and pinned-reverted-fill-key-internal if it covers them; the track checks each.
+
+## 2026-11-16, part 2 review
+
+The review of part 2 found a late selection widened for script writes (script-late-selection-widened, not live: the engine runs no script). Ruled into part 2b: a script that writes or matches by constructor through a field whose late selection has not resolved is refused. Part 3 also takes `Ids::of`/`signature_ids` over `&Committed` and deletes `Schema::declared`.
