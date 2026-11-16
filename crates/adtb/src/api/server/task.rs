@@ -9,7 +9,7 @@ use std::time::Duration;
 use adtb_lang::ast::{self, AdhocItem};
 use adtb_lang::schema::{ModuleDef, Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{RelId, RelRef, Ty};
+use adtb_lang::types::{KeyCtors, RelId, RelRef, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::exec::{Admitted, Entry, Grant, Priority, Refusal, Refused, Stopped, Val};
@@ -523,10 +523,13 @@ fn declared(schema: &Schema, ty: &Ty) -> bool {
             ctors,
         } => {
             (rel.0 as usize) < schema.relations.len()
-                && selects(
-                    ctors.as_deref(),
-                    schema.ty(schema.relation(*rel).elem_def).ctors().len(),
-                )
+                && match ctors {
+                    KeyCtors::All | KeyCtors::Late => true,
+                    KeyCtors::Only(cs) => selects(
+                        Some(cs),
+                        schema.ty(schema.relation(*rel).elem_def).ctors().len(),
+                    ),
+                }
         }
         Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => declared(schema, t),
         Ty::Group(k, t) => declared(schema, k) && declared(schema, t),

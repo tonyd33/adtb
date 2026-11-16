@@ -5,7 +5,7 @@ use std::time::Duration;
 use adtb_lang::schema::Schema;
 use adtb_lang::span::{Diag, DiagKind};
 use adtb_lang::textual::{Form, PrintError, print};
-use adtb_lang::types::{Base, RelId, RelRef, Ty};
+use adtb_lang::types::{Base, KeyCtors, RelId, RelRef, Ty};
 
 use crate::exec::{self, Exceeded, Val};
 use crate::runtime::Runtime;
@@ -1010,7 +1010,13 @@ pub(super) fn qualified(schema: &Schema, rel: RelId) -> String {
 
 fn print_key(schema: &Schema, rel: RelId, key: &Val) -> Result<String, PrintError> {
     let rel = RelRef::Declared(rel);
-    let form = Form::of(schema, &Ty::Key { rel, ctors: None });
+    let form = Form::of(
+        schema,
+        &Ty::Key {
+            rel,
+            ctors: KeyCtors::All,
+        },
+    );
     print(key, &form)
 }
 

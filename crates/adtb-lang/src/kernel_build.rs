@@ -1,7 +1,7 @@
 use super::{Agg, Conflict, Const, Kind, Prim, Terms, Tm, Transition, TxnOptions, Var};
 use crate::check::ty::{elem, fields, restrict};
 use crate::schema::{Generator, Schema};
-use crate::types::{Base, CtorSet, FnId, RelId, RelRef, Ty};
+use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty};
 
 /// Build kernel terms into one arena, typing each node from its children where its kind's rule
 /// fixes the type and at a given type where the rule leaves it open. Sort record and constructor
@@ -185,7 +185,7 @@ impl<'a> Build<'a> {
                 ..
             } => Some(Ty::Key {
                 rel: RelRef::Declared(*r),
-                ctors: None,
+                ctors: KeyCtors::All,
             }),
             Kind::Fresh(Generator::Clock, _)
             | Kind::Placeholder {
@@ -315,7 +315,7 @@ impl<'a> Build<'a> {
             (
                 Ty::Key {
                     rel: RelRef::Declared(r),
-                    ctors: None,
+                    ctors: KeyCtors::All,
                 },
                 Ty::Data { def, ctors, .. },
             ) if self.schema.relation(*r).elem_def == *def
@@ -323,7 +323,7 @@ impl<'a> Build<'a> {
             {
                 Ty::Key {
                     rel: RelRef::Declared(*r),
-                    ctors: ctors.clone(),
+                    ctors: KeyCtors::of_row(ctors.clone()),
                 }
             }
             _ => ft.clone(),
@@ -405,7 +405,7 @@ impl<'a> Build<'a> {
         let ty = match self.terms.ty(e) {
             Ty::Data { ctors, .. } => Ty::Key {
                 rel: RelRef::Declared(r),
-                ctors: ctors.clone(),
+                ctors: KeyCtors::of_row(ctors.clone()),
             },
             other => {
                 let reason = format!("`key` of `{}`", self.schema.show_ty(other));
@@ -422,7 +422,10 @@ impl<'a> Build<'a> {
     /// Returns the row `key` names, admitting every constructor its type names.
     pub fn deref(&mut self, key: Tm, reference: bool) -> Tm {
         let admits = match self.terms.ty(key) {
-            Ty::Key { ctors, .. } => ctors.clone(),
+            Ty::Key { ctors, .. } => match ctors {
+                KeyCtors::All | KeyCtors::Late => None,
+                KeyCtors::Only(cs) => Some(cs.clone()),
+            },
             _ => None,
         };
         self.deref_within(key, reference, admits)
@@ -452,10 +455,14 @@ impl<'a> Build<'a> {
     fn within_key(&self, key: Tm, admits: Option<CtorSet>) -> Option<CtorSet> {
         let Ty::Key {
             rel: RelRef::Declared(r),
-            ctors: Some(named),
+            ctors,
         } = self.terms.ty(key)
         else {
             return admits;
+        };
+        let named = match ctors {
+            KeyCtors::All | KeyCtors::Late => return admits,
+            KeyCtors::Only(named) => named,
         };
         let kept = match admits {
             Some(mut s) => {

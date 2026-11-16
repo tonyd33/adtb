@@ -6,7 +6,7 @@ use crate::ast::FnBody;
 use crate::check::rel::key_value_ty;
 use crate::check::ty::{ctor_fields, ctor_names, elem, fields, restrict, subtype};
 use crate::schema::{Generator, Schema};
-use crate::types::{Base, CtorSet, RelId, RelRef, Ty, TypeId};
+use crate::types::{Base, CtorSet, KeyCtors, RelId, RelRef, Ty, TypeId};
 
 /// A node that breaks the kernel's typing invariants, with the invariant it breaks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -274,9 +274,12 @@ impl Validator<'_> {
                 }
                 args.iter().try_for_each(|a| self.well_formed(a))
             }
-            Ty::Key { rel, ctors } => match rel {
-                RelRef::Declared(r) => self.selection(ctors, self.rel_ctors(*r)),
-                RelRef::Ahead(_) => Ok(()),
+            Ty::Key { rel, ctors } => match (rel, ctors) {
+                (RelRef::Declared(r), KeyCtors::Only(cs)) => {
+                    self.selection(&Some(cs.clone()), self.rel_ctors(*r))
+                }
+                (RelRef::Declared(_), KeyCtors::All | KeyCtors::Late)
+                | (RelRef::Ahead(_), KeyCtors::All | KeyCtors::Only(_) | KeyCtors::Late) => Ok(()),
             },
             Ty::Set(x) | Ty::NonEmpty(x) | Ty::Tag(x) => self.well_formed(x),
             Ty::Group(_, _) => Err("a node has a `Group` type".to_string()),
@@ -383,7 +386,7 @@ impl Validator<'_> {
                 self.within("the key value", self.ty(*e), &value)?;
                 let key = Ty::Key {
                     rel: RelRef::Declared(*r),
-                    ctors: None,
+                    ctors: KeyCtors::All,
                 };
                 self.within("the key", &key, ty)
             }
@@ -411,7 +414,11 @@ impl Validator<'_> {
                     ctors,
                 } => {
                     let row = |s: &Option<CtorSet>| self.row(*r, s);
-                    expect(self.sub(&row(admits), &row(ctors)), || {
+                    let named = match ctors {
+                        KeyCtors::All | KeyCtors::Late => None,
+                        KeyCtors::Only(cs) => Some(cs.clone()),
+                    };
+                    expect(self.sub(&row(admits), &row(&named)), || {
                         format!(
                             "the admitted constructors are not within those of `{}`",
                             self.schema.show_ty(self.ty(*key))
@@ -761,7 +768,7 @@ impl Validator<'_> {
             (
                 Ty::Key {
                     rel: RelRef::Declared(r),
-                    ctors: None,
+                    ctors: KeyCtors::All,
                 },
                 Ty::Data { def, ctors, .. },
             ) if self.schema.relation(*r).elem_def == *def
@@ -769,7 +776,7 @@ impl Validator<'_> {
             {
                 Ty::Key {
                     rel: RelRef::Declared(*r),
-                    ctors: ctors.clone(),
+                    ctors: KeyCtors::of_row(ctors.clone()),
                 }
             }
             _ => ft.clone(),
@@ -794,7 +801,7 @@ impl Validator<'_> {
                 })?;
                 let want = Ty::Key {
                     rel: RelRef::Declared(*r),
-                    ctors: ctors.clone(),
+                    ctors: KeyCtors::of_row(ctors.clone()),
                 };
                 self.within("the key", &want, ty)
             }

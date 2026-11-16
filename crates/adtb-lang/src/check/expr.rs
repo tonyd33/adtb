@@ -572,7 +572,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn key_of(&mut self, o: Out, span: Span) -> R<Out> {
-        let ctors = Self::ctors_of(&o.ty);
+        let ctors = KeyCtors::of_row(Self::ctors_of(&o.ty));
         if let Some(rel) = o.rows
             && matches!(o.ty, Ty::Data { .. })
         {
@@ -934,7 +934,11 @@ impl Checker<'_> {
         let o = match &o.ty {
             Ty::Key { rel, ctors } => {
                 let rel = self.schema.relation_of(*rel).map_err(|e| diag(f.span, e))?;
-                self.deref(o.clone(), rel, ctors.clone())
+                let ctors = match ctors {
+                    KeyCtors::All | KeyCtors::Late => None,
+                    KeyCtors::Only(cs) => Some(cs.clone()),
+                };
+                self.deref(o.clone(), rel, ctors)
             }
             _ => o,
         };
@@ -1128,12 +1132,12 @@ impl Checker<'_> {
             .expect("filtered")
             .ty
             .subst(r.elem_args());
-        if with_field.iter().any(|&c| {
+        if !with_field.iter().all(|&c| {
             def.field_named(c, &f.text)
                 .expect("filtered")
                 .ty
                 .subst(r.elem_args())
-                != fty
+                .alike(&fty)
         }) {
             return Err(diag(
                 f.span,
@@ -1281,7 +1285,7 @@ impl Checker<'_> {
         };
         let ty = Ty::Key {
             rel: RelRef::Declared(rel),
-            ctors: None,
+            ctors: KeyCtors::All,
         };
         Ok(Out::of(self.b().key_of(rel, value.tm), ty))
     }

@@ -225,7 +225,7 @@ fn every_pin_narrows_rows_to_its_constructors_and_keeps_keys_whole() {
     let identity = named(&from, "Identity");
     let key = Ty::Key {
         rel: RelRef::Declared(identities),
-        ctors: None,
+        ctors: KeyCtors::All,
     };
     let row = Ty::Data {
         def: identity,
@@ -276,7 +276,7 @@ fn a_hiding_pin_dereferences_a_whole_key_admitting_the_pinned_constructors_only(
     let identity = to.relation(identities).elem_def;
     let whole_key = Ty::Key {
         rel: RelRef::Declared(identities),
-        ctors: None,
+        ctors: KeyCtors::All,
     };
     for (hide_new, admits) in [(true, Some(vec![0, 1])), (false, None)] {
         let q = translated_with_hiding(&log, 2, body, hide_new)

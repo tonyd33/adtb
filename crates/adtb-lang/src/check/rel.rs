@@ -52,7 +52,11 @@ impl Checker<'_> {
     /// The constructor set of a row or key type, `None` for every constructor.
     pub(super) fn ctors_of(ty: &Ty) -> Option<CtorSet> {
         match ty {
-            Ty::Data { ctors, .. } | Ty::Key { ctors, .. } => ctors.clone(),
+            Ty::Data { ctors, .. } => ctors.clone(),
+            Ty::Key { ctors, .. } => match ctors {
+                KeyCtors::All | KeyCtors::Late => None,
+                KeyCtors::Only(cs) => Some(cs.clone()),
+            },
             _ => None,
         }
     }

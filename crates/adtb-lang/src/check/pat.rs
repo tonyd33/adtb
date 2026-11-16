@@ -240,7 +240,10 @@ impl Checker<'_> {
                     .schema
                     .relation_of(*rel)
                     .map_err(|e| diag(scrutinee.span, e))?;
-                let ctors = ctors.clone();
+                let ctors = match ctors {
+                    KeyCtors::All | KeyCtors::Late => None,
+                    KeyCtors::Only(cs) => Some(cs.clone()),
+                };
                 (self.deref(s, rel, ctors), true)
             }
             Ty::Set(_) | Ty::NonEmpty(_) | Ty::Group(..) => {

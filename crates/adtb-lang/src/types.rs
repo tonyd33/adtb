@@ -249,6 +249,36 @@ impl Bound {
     }
 }
 
+/// The constructors of its relation a key type admits.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum KeyCtors {
+    All,
+    Only(CtorSet),
+    /// A selection that resolves when the migration being applied ends.
+    Late,
+}
+
+impl KeyCtors {
+    /// Returns the constructors a key of a committed schema admits, `None` for every one.
+    ///
+    /// Preconditions: `self` is a selection of a type of a committed schema.
+    pub fn committed(&self) -> Option<&CtorSet> {
+        match self {
+            KeyCtors::All => None,
+            KeyCtors::Only(cs) => Some(cs),
+            KeyCtors::Late => panic!("a committed schema holds no late selection"),
+        }
+    }
+
+    /// Returns the selection of the keys of rows of a row type selecting `ctors`.
+    pub fn of_row(ctors: Option<CtorSet>) -> KeyCtors {
+        match ctors {
+            Some(cs) => KeyCtors::Only(cs),
+            None => KeyCtors::All,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
     Base(Base),
@@ -262,7 +292,7 @@ pub enum Ty {
     Param(u32),
     Key {
         rel: RelRef,
-        ctors: Option<CtorSet>,
+        ctors: KeyCtors,
     },
     Set(Box<Ty>),
     /// A nonempty set, the rows of a group; a subtype of `Set`.
@@ -364,6 +394,54 @@ impl Ty {
                 sel: sel.clone(),
             },
             Ty::Fn(a, b) => Ty::Fn(Box::new(a.subst(args)), Box::new(b.subst(args))),
+        }
+    }
+
+    /// Returns whether `self` and `other` are equal when a late key selection counts as every
+    /// constructor.
+    pub fn alike(&self, other: &Ty) -> bool {
+        let all =
+            |a: &[Ty], b: &[Ty]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.alike(y));
+        let fields = |a: &[(String, Ty)], b: &[(String, Ty)]| {
+            a.len() == b.len() && a.iter().zip(b).all(|((m, x), (n, y))| m == n && x.alike(y))
+        };
+        match (self, other) {
+            (Ty::Key { rel: r1, ctors: c1 }, Ty::Key { rel: r2, ctors: c2 }) => {
+                r1 == r2
+                    && match (c1, c2) {
+                        (KeyCtors::Only(a), KeyCtors::Only(b)) => a == b,
+                        (KeyCtors::All | KeyCtors::Late, KeyCtors::All | KeyCtors::Late) => true,
+                        (KeyCtors::Only(_), KeyCtors::All | KeyCtors::Late)
+                        | (KeyCtors::All | KeyCtors::Late, KeyCtors::Only(_)) => false,
+                    }
+            }
+            (
+                Ty::Data {
+                    def: d1,
+                    args: a1,
+                    ctors: c1,
+                },
+                Ty::Data {
+                    def: d2,
+                    args: a2,
+                    ctors: c2,
+                },
+            ) => d1 == d2 && c1 == c2 && all(a1, a2),
+            (Ty::Set(x), Ty::Set(y))
+            | (Ty::NonEmpty(x), Ty::NonEmpty(y))
+            | (Ty::Tag(x), Ty::Tag(y)) => x.alike(y),
+            (Ty::Group(k1, t1), Ty::Group(k2, t2)) | (Ty::Fn(k1, t1), Ty::Fn(k2, t2)) => {
+                k1.alike(k2) && t1.alike(t2)
+            }
+            (Ty::Record(x), Ty::Record(y)) => fields(x, y),
+            (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 }) => {
+                s1 == s2
+                    && x.len() == y.len()
+                    && x.iter()
+                        .zip(y)
+                        .all(|((c, f), (d, g))| c == d && fields(f, g))
+            }
+            _ => self == other,
         }
     }
 

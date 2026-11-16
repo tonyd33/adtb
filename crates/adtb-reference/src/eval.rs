@@ -668,7 +668,7 @@ impl Run<'_, '_> {
                 };
                 let ctors = match self.ty(h, t) {
                     Ty::Data { ctors: Some(s), .. } => Some(s),
-                    _ => ctors,
+                    _ => ctors.committed().cloned(),
                 };
                 it.rows(it.db, rel, &ctors)
                     .into_iter()

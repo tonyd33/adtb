@@ -445,7 +445,7 @@ fn value_refusals() -> Vec<(&'static str, Build)> {
             let c = one(terms);
             let ty = Ty::Key {
                 rel: RelRef::Declared(fx.ts),
-                ctors: None,
+                ctors: KeyCtors::All,
             };
             let t = terms.add(Kind::Key(c), ty);
             (t, Vec::new(), t)
@@ -512,7 +512,7 @@ fn deref_refusals() -> Vec<(&'static str, Build)> {
 fn key(rel: RelId, ctors: Option<CtorSet>) -> Ty {
     Ty::Key {
         rel: RelRef::Declared(rel),
-        ctors,
+        ctors: KeyCtors::of_row(ctors),
     }
 }
 

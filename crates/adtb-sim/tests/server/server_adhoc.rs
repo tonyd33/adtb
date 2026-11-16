@@ -15,7 +15,7 @@ use adtb::{
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{ValueDef, build};
 use adtb_lang::span::FileId;
-use adtb_lang::types::{Base, RelId, RelRef, Ty, TypeId};
+use adtb_lang::types::{Base, KeyCtors, RelId, RelRef, Ty, TypeId};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api::query;
 use adtb_simkit::open::options;
@@ -330,7 +330,7 @@ fn a_parameter_cannot_widen_what_is_read() {
         let reader = session(&db, "reader");
         let key = Ty::Key {
             rel: RelRef::Declared(secrets_id(&db)),
-            ctors: None,
+            ctors: KeyCtors::All,
         };
         let params = [("k", key, Value::Int(1))];
         let got = reader.submit_text(
@@ -356,7 +356,7 @@ fn a_parameter_of_a_type_the_schema_does_not_hold_is_refused_with_a_row() {
     scenario(629, |_, db| {
         let bogus = Ty::Key {
             rel: RelRef::Declared(foreign(&db).0),
-            ctors: None,
+            ctors: KeyCtors::All,
         };
         let got = session(&db, "reader")
             .submit_text("k", &[("k", bogus, Value::Int(1))], TaskOptions::default())
@@ -653,7 +653,7 @@ fn a_parameter_type_naming_what_the_role_holds_no_grant_on_answers_as_an_absent_
         let secret = secret_type(&db);
         let key = Ty::Key {
             rel: RelRef::Declared(secrets_id(&db)),
-            ctors: None,
+            ctors: KeyCtors::All,
         };
         let data = Ty::Data {
             def: secret,
@@ -663,7 +663,7 @@ fn a_parameter_type_naming_what_the_role_holds_no_grant_on_answers_as_an_absent_
         let (absent_rel, absent_def) = foreign(&db);
         let absent_key = Ty::Key {
             rel: RelRef::Declared(absent_rel),
-            ctors: None,
+            ctors: KeyCtors::All,
         };
         let absent_data = Ty::Data {
             def: absent_def,
@@ -689,7 +689,7 @@ fn a_key_parameter_may_name_what_a_field_of_a_held_type_references() {
     scenario(642, |_, db| {
         let docs = Ty::Key {
             rel: RelRef::Declared(docs_id(&db)),
-            ctors: None,
+            ctors: KeyCtors::All,
         };
         let got = typed(&db, "reader", "k", docs);
         assert!(!got.contains("may not run this text"), "{got}");
@@ -746,7 +746,7 @@ fn a_role_reading_the_schema_is_told_what_it_names_wrong() {
             "k",
             Ty::Key {
                 rel: RelRef::Declared(foreign(&db).0),
-                ctors: None,
+                ctors: KeyCtors::All,
             },
         );
         assert!(bad.contains("no type of the schema"), "{bad}");
@@ -767,15 +767,15 @@ fn an_out_of_range_constructor_in_a_parameter_type_panics_nothing() {
         let bad = [
             Ty::Key {
                 rel: docs,
-                ctors: Some(vec![99]),
+                ctors: KeyCtors::Only(vec![99]),
             },
             Ty::Key {
                 rel: docs,
-                ctors: Some(Vec::new()),
+                ctors: KeyCtors::Only(Vec::new()),
             },
             Ty::Key {
                 rel: docs,
-                ctors: Some(vec![1, 0]),
+                ctors: KeyCtors::Only(vec![1, 0]),
             },
             Ty::Data {
                 def,
@@ -1466,7 +1466,7 @@ fn a_key_parameter_of_a_referenced_relation_shows_only_the_selection_a_field_sta
     scenario(674, |_, db| {
         let key = |rel, ctors| Ty::Key {
             rel: RelRef::Declared(rel),
-            ctors,
+            ctors: KeyCtors::of_row(ctors),
         };
         let absent = typed(&db, "noter", "k", Ty::Base(Base::I64));
         assert!(!absent.contains("may not run this text"), "{absent}");

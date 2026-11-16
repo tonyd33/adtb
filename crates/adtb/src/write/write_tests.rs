@@ -14,7 +14,7 @@ use adtb_harness::damage::DataFile;
 use adtb_harness::seeds::{share, sweep};
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelRef, Ty};
+use adtb_lang::types::{KeyCtors, RelRef, Ty};
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::fixture::Fixture;
@@ -152,7 +152,7 @@ fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
             WRejection::KeyViolation { relation, key } => {
                 let ty = Ty::Key {
                     rel: RelRef::Declared(*relation),
-                    ctors: None,
+                    ctors: KeyCtors::All,
                 };
                 let printed =
                     adtb_reference::textual::print(schema, &to_ref(schema, &ty, key), &ty)

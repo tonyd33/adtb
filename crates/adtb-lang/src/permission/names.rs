@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::schema::{Committed, Schema, Scope, TypeDefKind};
-use crate::types::{CtorSet, FnId, RelId, RelRef, Ty, TypeId};
+use crate::types::{CtorSet, FnId, KeyCtors, RelId, RelRef, Ty, TypeId};
 
 use super::{EffectiveGrants, Right};
 
@@ -85,7 +85,7 @@ impl Nameable {
                 ctors,
             } => {
                 let selections = self.referenced.entry(*rel).or_default();
-                selections.extend(ctors.clone());
+                selections.extend(ctors.committed().cloned());
             }
             Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => self.reach_ty(schema, t),
             Ty::Group(a, b) | Ty::Fn(a, b) => {
@@ -137,9 +137,13 @@ impl Nameable {
                 let rel = schema.declared(*rel);
                 self.relations.contains(&rel)
                     || open(schema.relation(rel).module)
-                    || self.referenced.get(&rel).is_some_and(|selections| {
-                        ctors.as_ref().is_none_or(|c| selections.contains(c))
-                    })
+                    || self
+                        .referenced
+                        .get(&rel)
+                        .is_some_and(|selections| match ctors {
+                            KeyCtors::All | KeyCtors::Late => true,
+                            KeyCtors::Only(c) => selections.contains(c),
+                        })
             }
             Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => self.may_type(schema, t),
             Ty::Group(a, b) | Ty::Fn(a, b) => self.may_type(schema, a) && self.may_type(schema, b),

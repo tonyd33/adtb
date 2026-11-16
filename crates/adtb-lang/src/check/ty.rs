@@ -52,6 +52,25 @@ fn union(
     }
 }
 
+/// Returns whether every row key `a` admits, key `b` admits.
+fn key_subset(a: &KeyCtors, b: &KeyCtors) -> bool {
+    match (a, b) {
+        (_, KeyCtors::All | KeyCtors::Late) => true,
+        (KeyCtors::All | KeyCtors::Late, KeyCtors::Only(_)) => false,
+        (KeyCtors::Only(a), KeyCtors::Only(b)) => a.iter().all(|c| b.contains(c)),
+    }
+}
+
+/// Returns the selection of the keys of rows of type `def` that `a` or `b` admits.
+fn key_union(schema: &Schema, def: TypeId, a: &KeyCtors, b: &KeyCtors) -> KeyCtors {
+    match (a, b) {
+        (KeyCtors::Only(a), KeyCtors::Only(b)) => {
+            KeyCtors::of_row(union(schema, def, &Some(a.clone()), &Some(b.clone())))
+        }
+        (KeyCtors::All | KeyCtors::Late, _) | (_, KeyCtors::All | KeyCtors::Late) => KeyCtors::All,
+    }
+}
+
 type Ctors = [(String, Vec<(String, Ty)>)];
 
 /// Returns the names of the constructors `sel` selects, every one for `None`.
@@ -118,7 +137,7 @@ pub fn subtype(schema: &Schema, a: &Ty, b: &Ty) -> bool {
                 })
         }
         (Ty::Key { rel: r1, ctors: c1 }, Ty::Key { rel: r2, ctors: c2 }) => {
-            r1 == r2 && subset(c1, c2)
+            r1 == r2 && key_subset(c1, c2)
         }
         (Ty::Set(x) | Ty::NonEmpty(x), Ty::Set(y)) | (Ty::NonEmpty(x), Ty::NonEmpty(y)) => {
             subtype(schema, x, y)
@@ -184,7 +203,7 @@ pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
             let def = schema.relation(*r1).elem_def;
             Some(Ty::Key {
                 rel: RelRef::Declared(*r1),
-                ctors: union(schema, def, c1, c2),
+                ctors: key_union(schema, def, c1, c2),
             })
         }
         (Ty::NonEmpty(x), Ty::NonEmpty(y)) => Some(Ty::NonEmpty(Box::new(join(schema, x, y)?))),
@@ -287,7 +306,7 @@ pub fn fields(schema: &Schema, ty: &Ty) -> Vec<(String, Ty)> {
                     all[c as usize]
                         .fields
                         .iter()
-                        .any(|g| g.name == f.name && g.ty.subst(args) == fty)
+                        .any(|g| g.name == f.name && g.ty.subst(args).alike(&fty))
                 });
                 if shared {
                     out.push((f.name.clone(), fty));

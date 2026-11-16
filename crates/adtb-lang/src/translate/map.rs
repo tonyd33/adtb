@@ -254,7 +254,7 @@ impl<'a> Map<'a> {
             } => match &self.ahead[a.index()] {
                 Later::At(rel) => Ty::Key {
                     rel: RelRef::Declared(*rel),
-                    ctors: None,
+                    ctors: KeyCtors::All,
                 },
                 Later::Lacked(name) => return Err(Loss::Later(name.clone())),
                 Later::Unlinked(name) => return Err(Loss::Unlinked(name.clone())),
@@ -265,9 +265,13 @@ impl<'a> Map<'a> {
             } => {
                 let rel = *rel;
                 let def = self.from.relation(rel).elem_def;
+                let ctors = match ctors {
+                    KeyCtors::All | KeyCtors::Late => KeyCtors::All,
+                    KeyCtors::Only(cs) => KeyCtors::of_row(self.set(def, &Some(cs.clone()), false)),
+                };
                 Ty::Key {
                     rel: RelRef::Declared(self.relation(rel).ok_or(Loss::Relation(rel))?),
-                    ctors: self.set(def, ctors, false),
+                    ctors,
                 }
             }
             Ty::Set(t) => Ty::Set(Box::new(self.ty_at(t, pinned)?)),

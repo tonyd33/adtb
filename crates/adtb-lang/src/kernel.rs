@@ -1048,7 +1048,7 @@ pub fn alpha_equal(xs: &Terms, x: Tm, ys: &Terms, y: Tm) -> bool {
     let mut stack = vec![(x, y)];
     while let Some((x, y)) = stack.pop() {
         let (nx, ny) = (xs.node(x), ys.node(y));
-        if nx.ty != ny.ty {
+        if !nx.ty.alike(&ny.ty) {
             return false;
         }
         let (mut vx, mut vy) = (Vec::new(), Vec::new());
@@ -1059,14 +1059,31 @@ pub fn alpha_equal(xs: &Terms, x: Tm, ys: &Terms, y: Tm) -> bool {
             });
             k.with_children(&vec![Tm(0); k.children().len()])
         };
-        if blank(&nx.kind, &mut vx) != blank(&ny.kind, &mut vy) {
+        let same = match (blank(&nx.kind, &mut vx), blank(&ny.kind, &mut vy)) {
+            (
+                Kind::Call {
+                    func: f,
+                    type_args: t,
+                    args: a,
+                },
+                Kind::Call {
+                    func: g,
+                    type_args: u,
+                    args: b,
+                },
+            ) => {
+                f == g && a == b && t.len() == u.len() && t.iter().zip(&u).all(|(x, y)| x.alike(y))
+            }
+            (kx, ky) => kx == ky,
+        };
+        if !same {
             return false;
         }
         for (a, b) in vx.into_iter().zip(vy) {
             if *there.entry(a).or_insert(b) != b || *back.entry(b).or_insert(a) != a {
                 return false;
             }
-            if xs.var_info(a).ty != ys.var_info(b).ty {
+            if !xs.var_info(a).ty.alike(&ys.var_info(b).ty) {
                 return false;
             }
         }

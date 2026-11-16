@@ -366,7 +366,7 @@ impl Checker<'_> {
             return true;
         }
         let (na, nb) = (self.terms.node(a), self.terms.node(b));
-        if na.ty != nb.ty {
+        if !na.ty.alike(&nb.ty) {
             return false;
         }
         match (&na.kind, &nb.kind) {

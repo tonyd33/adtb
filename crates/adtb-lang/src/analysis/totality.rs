@@ -106,7 +106,10 @@ impl<'s> Totality<'s> {
                 admits,
             } => {
                 let narrowed = admits.is_some()
-                    && !matches!(terms.ty(*key), Ty::Key { ctors, .. } if ctors == admits);
+                    && !matches!(terms.ty(*key), Ty::Key { ctors, .. } if match ctors {
+                        KeyCtors::All | KeyCtors::Late => admits.is_none(),
+                        KeyCtors::Only(cs) => admits.as_ref() == Some(cs),
+                    });
                 self.hiding || !reference || narrowed
             }
             Kind::Call { .. }

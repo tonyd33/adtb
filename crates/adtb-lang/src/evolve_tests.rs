@@ -3985,3 +3985,15 @@ add relation people : Person key id generate sequence";
         [run(&[insert, set]), run(&[set, insert])]
     );
 }
+
+#[test]
+fn a_function_reads_a_field_whose_selection_its_migration_adds_after_the_function() {
+    let text = "module world
+add module world
+add type Region { id: Key regions } = Wild { p: Key regions } | Town { p: Key regions.Every } | Ghost
+add relation regions : Region key id generate sequence
+add set Lived of regions = Wild | Town
+define fn f (u: I64) -> Set (Key regions) = from r in regions.Lived select r.p
+add set Every of regions = Wild | Town | Ghost";
+    assert_eq!(Ok(()), migrate(&Source::default(), text).map(drop));
+}

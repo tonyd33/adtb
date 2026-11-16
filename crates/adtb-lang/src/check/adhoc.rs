@@ -465,7 +465,7 @@ impl Checker<'_> {
             .unwrap_or_else(|| panic!("the schema declares engine relation {id}"));
         Ty::Key {
             rel: RelRef::Declared(rel),
-            ctors: None,
+            ctors: KeyCtors::All,
         }
     }
 

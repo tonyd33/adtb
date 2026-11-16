@@ -293,7 +293,11 @@ pub(super) fn holds(schema: &Schema, ty: &Ty, def: TypeId, c: u32) -> bool {
             rel: RelRef::Declared(rel),
             ctors,
         } => {
-            schema.relation(*rel).elem_def == def && ctors.as_ref().is_none_or(|cs| cs.contains(&c))
+            schema.relation(*rel).elem_def == def
+                && match ctors {
+                    KeyCtors::All | KeyCtors::Late => true,
+                    KeyCtors::Only(cs) => cs.contains(&c),
+                }
         }
         _ => false,
     }

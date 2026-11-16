@@ -294,7 +294,7 @@ impl Cx<'_> {
                     .iter()
                     .find(|g| g.name == f.name && !disc.fields.contains(&g.name))
                 {
-                    Some(g) if g.ty == f.ty => {
+                    Some(g) if g.ty.alike(&f.ty) => {
                         c.push((s.clone(), f.name.clone(), m.to_string(), f.name.clone()));
                     }
                     _ => {

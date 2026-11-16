@@ -321,8 +321,9 @@ impl Cx<'_> {
                         st.ctor_index(src).is_some_and(|j| {
                             let b = &st.ctors()[j as usize].fields;
                             a.len() == b.len()
-                                && a.iter()
-                                    .all(|f| b.iter().any(|g| g.name == f.name && g.ty == f.ty))
+                                && a.iter().all(|f| {
+                                    b.iter().any(|g| g.name == f.name && g.ty.alike(&f.ty))
+                                })
                         })
                     })
             }

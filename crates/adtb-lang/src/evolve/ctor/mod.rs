@@ -693,7 +693,13 @@ pub(super) struct Restated {
 /// Collects the relation and constructor set of every `Key` type in `t`.
 pub(super) fn key_types(t: &Ty, out: &mut Vec<(RelRef, Option<CtorSet>)>) {
     match t {
-        Ty::Key { rel, ctors } => out.push((*rel, ctors.clone())),
+        Ty::Key { rel, ctors } => out.push((
+            *rel,
+            match ctors {
+                KeyCtors::All | KeyCtors::Late => None,
+                KeyCtors::Only(cs) => Some(cs.clone()),
+            },
+        )),
         Ty::Data { args, .. } => args.iter().for_each(|a| key_types(a, out)),
         Ty::Set(x) | Ty::NonEmpty(x) | Ty::Tag(x) => key_types(x, out),
         Ty::Group(a, b) | Ty::Fn(a, b) => {

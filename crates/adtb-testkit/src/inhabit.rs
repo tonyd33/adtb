@@ -5,7 +5,7 @@ use std::fmt;
 use adtb_lang::check::Program;
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::{Textual, key_field_ty, key_names};
-use adtb_lang::types::{Base, CtorSet, RelId, RelRef, Ty};
+use adtb_lang::types::{Base, CtorSet, KeyCtors, RelId, RelRef, Ty};
 use adtb_reference::{Database, Interpreter, Value};
 use unicode_normalization::is_nfc;
 
@@ -299,7 +299,7 @@ impl<'a> Judge<'a> {
         value: &Value,
         ty: &Ty,
         rel: RelId,
-        ctors: &Option<CtorSet>,
+        ctors: &KeyCtors,
         k: &Value,
     ) -> Result<(), Mismatch> {
         let r = self.schema.relation(rel);
@@ -325,11 +325,14 @@ impl<'a> Judge<'a> {
             return Ok(());
         };
         let all = self.schema.ty(r.elem_def).ctors().len() as u32;
-        let narrow = ctors.as_ref().is_some_and(|s| s.len() < all as usize);
+        let set: CtorSet = ctors
+            .committed()
+            .cloned()
+            .unwrap_or_else(|| (0..all).collect());
+        let narrow = set.len() < all as usize;
         if !(self.stored || narrow) {
             return Ok(());
         }
-        let set: CtorSet = ctors.clone().unwrap_or_else(|| (0..all).collect());
         let it = Interpreter::new(self.schema, program, db);
         let names = set.iter().any(|c| {
             db.get(&(rel, *c))

@@ -690,6 +690,7 @@ impl Compiler<'_> {
             Kind::Deref { key, .. } => {
                 if let Ty::Key { rel, ctors } = self.ty(key) {
                     let rel = self.schema.declared(rel);
+                    let ctors = ctors.committed().cloned();
                     out.push(Occurrence {
                         rel,
                         ctors: self.ctors_or_all(rel, &ctors),
@@ -879,7 +880,7 @@ impl Compiler<'_> {
             let key = self.unfold(key, via, conds);
             let e = self.terms.var("%via", self.ty(t));
             let bool_ty = self.bool_ty();
-            let src = self.b().rel(rel, ctors);
+            let src = self.b().rel(rel, ctors.committed().cloned());
             let row = self.b().var(e);
             let own = self.b().key(row, rel);
             let eq = self.b().prim(Prim::Eq, vec![own, key], bool_ty);

@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{OnDelete, Stage as SchemaStage, TypeDefKind};
-use adtb_lang::types::{CtorSet, RelId, RelRef, Ty, TypeId};
+use adtb_lang::types::{CtorSet, KeyCtors, RelId, RelRef, Ty, TypeId};
 
 use crate::eval::{
     Abort, Arena, Change, Database, Env, Interpreter, Measure, R, Run, bool_of, internal, into_set,
@@ -470,7 +470,7 @@ impl Run<'_, '_> {
                         &key,
                         &Ty::Key {
                             rel: RelRef::Declared(r),
-                            ctors: None,
+                            ctors: KeyCtors::All,
                         },
                     )?,
                 }

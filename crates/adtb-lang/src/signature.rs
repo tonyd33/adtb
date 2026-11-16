@@ -228,7 +228,7 @@ impl IdWalk<'_> {
                 Shape::Key {
                     rel: self.relation_id(rel),
                     ctors: ctors
-                        .as_ref()
+                        .committed()
                         .map(|c| self.ctor_ids(self.schema.relation(rel).elem_def, c)),
                 }
             }

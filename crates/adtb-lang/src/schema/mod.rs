@@ -921,7 +921,10 @@ impl Schema {
                         "Key {}{}{}",
                         qualifier(r.module),
                         r.name,
-                        sel(r.elem_def, ctors)
+                        match ctors {
+                            KeyCtors::All | KeyCtors::Late => String::new(),
+                            KeyCtors::Only(cs) => sel(r.elem_def, &Some(cs.clone())),
+                        }
                     )
                 }
             },
@@ -1210,6 +1213,10 @@ impl Schema {
             Ty::Key { rel: target, ctors }
                 if !(target == RelRef::Declared(rel) && r.key.contains(&f.name)) =>
             {
+                let ctors = match ctors {
+                    KeyCtors::All | KeyCtors::Late => None,
+                    KeyCtors::Only(cs) => Some(cs),
+                };
                 Some((target, ctors, optional))
             }
             _ => None,

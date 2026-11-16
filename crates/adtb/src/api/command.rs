@@ -10,7 +10,7 @@ use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{Base, CtorSet, DenialIdx, RelId, RelRef, Ty};
+use adtb_lang::types::{Base, CtorSet, DenialIdx, KeyCtors, RelId, RelRef, Ty};
 
 use crate::catalog::codec::{Codec, SettingRow};
 use crate::catalog::engine_relation;
@@ -514,7 +514,7 @@ impl<R: Runtime> Engine<R> {
             "call".into(),
             Ty::Key {
                 rel: RelRef::Declared(engine_relation(schema, engine_rel::CALLS)),
-                ctors: None,
+                ctors: KeyCtors::All,
             },
         )]);
         let stopped = session.map(|_| Val::record(vec![Val::Int(id)]));
@@ -726,7 +726,7 @@ impl<R: Runtime> Engine<R> {
                 "ctor".into(),
                 Ty::Key {
                     rel: RelRef::Declared(ctors),
-                    ctors: None,
+                    ctors: KeyCtors::All,
                 },
             ),
             ("freed".into(), Ty::Base(Base::Text)),

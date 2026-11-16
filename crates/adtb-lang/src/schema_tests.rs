@@ -237,11 +237,14 @@ fn reference_selections_name_constructors_or_sets() {
     let auth = s.module_named("auth").unwrap();
     let t = s.ty(s.module(auth).types["R"]);
     assert!(
-        matches!(&t.field_named(0, "g").unwrap().ty, Ty::Key { ctors: Some(c), .. } if *c == vec![1])
+        matches!(&t.field_named(0, "g").unwrap().ty, Ty::Key { ctors: KeyCtors::Only(c), .. } if *c == vec![1])
     );
     assert!(matches!(
         &t.field_named(0, "e").unwrap().ty,
-        Ty::Key { ctors: None, .. }
+        Ty::Key {
+            ctors: KeyCtors::All,
+            ..
+        }
     ));
     let bad = format!(
         "{RUNNING}\ntype R = {{ id: Key rs, g: Key identities.Apple }}\nrelation rs : R key id"
@@ -546,7 +549,7 @@ fn ordered_composite_key_graphs_share_requirements() {
         &schema,
         &Ty::Key {
             rel: RelRef::Declared(relation(&schema, "k30")),
-            ctors: None,
+            ctors: KeyCtors::All,
         }
     ));
 }
@@ -564,7 +567,7 @@ fn ordered_keys_require_a_finite_ordered_representation() {
                 &schema,
                 &Ty::Key {
                     rel: RelRef::Declared(relation(&schema, name)),
-                    ctors: None,
+                    ctors: KeyCtors::All,
                 }
             ),
             "{name}"
@@ -1311,7 +1314,7 @@ fn a_key_reaches_the_types_of_its_relations_key_fields_at_their_arguments() {
     .unwrap();
     let key = Ty::Key {
         rel: RelRef::Declared(rel_id(&s, "m", "ps")),
-        ctors: None,
+        ctors: KeyCtors::All,
     };
     assert!(s.reaches(&key, type_id(&s, "Tier")));
     assert!(!s.reaches(&key, type_id(&s, "Mark")));
@@ -1416,7 +1419,7 @@ relation qs : Q (Key later) key k",
     };
     let key = |name: &str| Ty::Key {
         rel: RelRef::Declared(relation(&s, name)),
-        ctors: None,
+        ctors: KeyCtors::All,
     };
     let r = s.ty(s.module(m).types["R"]);
     let later = r.field_named(0, "b").unwrap().ty.clone();

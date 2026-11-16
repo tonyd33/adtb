@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 
 use adtb_lang::ids::engine_rel;
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelId, RelRef, Ty};
+use adtb_lang::types::{KeyCtors, RelId, RelRef, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::catalog::{self, engine_relation};
@@ -88,7 +88,7 @@ impl<R: Runtime> Engine<R> {
             "job".into(),
             Ty::Key {
                 rel: RelRef::Declared(table),
-                ctors: None,
+                ctors: KeyCtors::All,
             },
         )]);
         Ok(rows(schema, ty, vec![Val::record(vec![Val::Int(run)])]))

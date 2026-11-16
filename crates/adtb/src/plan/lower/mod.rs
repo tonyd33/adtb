@@ -6,7 +6,7 @@ use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{self, Agg, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{CtorSet, RelId, Ty};
+use adtb_lang::types::{CtorSet, KeyCtors, RelId, Ty};
 
 use super::catalog::{Catalog, IndexDesc};
 use super::terms::Facts;
@@ -336,7 +336,7 @@ fn erase(t: &Ty) -> Ty {
         },
         Ty::Key { rel, .. } => Ty::Key {
             rel: *rel,
-            ctors: None,
+            ctors: KeyCtors::All,
         },
         Ty::Sum { ctors, .. } => Ty::Sum {
             ctors: ctors

@@ -415,8 +415,8 @@ impl Resolver<'_> {
             .map_err(|e| (r.span, e))?;
         let late = schema.selects_late(rel);
         let ctors = match (&r.sel, rel) {
-            (None, _) => None,
-            (Some(_), RelRef::Ahead(_)) if late => None,
+            (None, _) => KeyCtors::All,
+            (Some(_), RelRef::Ahead(_)) if late => KeyCtors::Late,
             (Some(_), RelRef::Ahead(_)) => {
                 return Err((
                     r.span,
@@ -427,8 +427,10 @@ impl Resolver<'_> {
                 ));
             }
             (Some(sel), RelRef::Declared(rel)) => match schema.relation_sel(rel, sel) {
-                Ok(set) => schema.normalize_ctors(schema.relation(rel).elem_def, set),
-                Err(_) if late => None,
+                Ok(set) => {
+                    KeyCtors::of_row(schema.normalize_ctors(schema.relation(rel).elem_def, set))
+                }
+                Err(_) if late => KeyCtors::Late,
                 Err(e) => return Err((r.span, e)),
             },
         };
