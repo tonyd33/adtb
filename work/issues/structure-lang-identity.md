@@ -184,3 +184,7 @@ Landed as yyrsmuzq bd3ba9b7 (2 rounds), full check 0 (3834 tests). One `catalog:
 ## 2026-11-15, step 11 part b landed
 
 Landed as mmwzottl 933912bb (2 rounds), full check 0 (3836 tests). Constraint identity: `DenialIdx`, `IdMap::denial_of`, `Holds::reads_denial`; violations keyed by object. Ruling: ad hoc `redact` finding the denial by its printed name engine-side is accepted for this part (it inverts the table that printed the name and fails closed); carrying the identity to `redact` is redact-violation-by-printed-name. Resolved: verify-witness-of-check-always-refused, write-violations-keyed-by-name. Next: part c.
+
+## 2026-11-15, step 11 part c landed
+
+Landed as lvyxkqxt e1af4b3f (2 rounds), full check 0 (3839 tests). Error sums by fixed id with compile-time field handles, `Sums` once per engine, `Part::Val` removed so every part is type checked. `engine_names` fell by 4 (tables.rs). Resolved: error-sums-by-spelling. bundle.rs keeps 7 counted sites. Next: part d.
