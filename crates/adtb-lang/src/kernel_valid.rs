@@ -278,8 +278,10 @@ impl Validator<'_> {
                 (RelRef::Declared(r), KeyCtors::Only(cs)) => {
                     self.selection(&Some(cs.clone()), self.rel_ctors(*r))
                 }
-                (RelRef::Declared(_), KeyCtors::All | KeyCtors::Late)
-                | (RelRef::Ahead(_), KeyCtors::All | KeyCtors::Only(_) | KeyCtors::Late) => Ok(()),
+                (RelRef::Declared(_), KeyCtors::All | KeyCtors::Late(_))
+                | (RelRef::Ahead(_), KeyCtors::All | KeyCtors::Only(_) | KeyCtors::Late(_)) => {
+                    Ok(())
+                }
             },
             Ty::Set(x) | Ty::NonEmpty(x) | Ty::Tag(x) => self.well_formed(x),
             Ty::Group(_, _) => Err("a node has a `Group` type".to_string()),
@@ -415,7 +417,7 @@ impl Validator<'_> {
                 } => {
                     let row = |s: &Option<CtorSet>| self.row(*r, s);
                     let named = match ctors {
-                        KeyCtors::All | KeyCtors::Late => None,
+                        KeyCtors::All | KeyCtors::Late(_) => None,
                         KeyCtors::Only(cs) => Some(cs.clone()),
                     };
                     expect(self.sub(&row(admits), &row(&named)), || {

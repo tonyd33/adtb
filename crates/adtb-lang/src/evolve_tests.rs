@@ -3977,12 +3977,79 @@ add relation people : Person key id generate sequence";
     };
     assert_eq!(
         [
-            Ok(()),
+            Err(vec![
+                "a script may not write field `home` of `Person.Living`: Key regions.Settled has a selection this migration resolves at its end".to_string()
+            ]),
             Err(vec![
                 "expected Key regions.Town, found Key regions".to_string()
             ]),
         ],
         [run(&[insert, set]), run(&[set, insert])]
+    );
+}
+
+#[test]
+fn a_script_matches_or_passes_a_key_whose_selection_resolves_at_the_migration_end_only_to_read() {
+    let world = "module world
+add module world
+add type Region { id: Key regions } = Wild | Town
+add type Person { id: Key people, home: Key regions.Settled } = Living | Dead
+add relation regions : Region key id generate sequence
+add relation people : Person key id generate sequence
+define fn g (k: Key regions.Settled) -> Bool = true";
+    let set = "add set Settled of regions = Town";
+    let run = |script: &str| {
+        migrate(
+            &Source::default(),
+            &format!("{world}\nscript\n  {script}\n{set}"),
+        )
+        .map(drop)
+    };
+    assert_eq!(
+        [
+            Err(vec![
+                "a script may not match by constructor through Key regions.Settled: it has a selection this migration resolves at its end".to_string()
+            ]),
+            Err(vec![
+                "a script may not give Key regions as Key regions.Settled: it has a selection this migration resolves at its end".to_string()
+            ]),
+            Err(vec![
+                "a script may not give Key regions.Settled as Key regions.Settled: it has a selection this migration resolves at its end".to_string()
+            ]),
+            Ok(()),
+        ],
+        [
+            run("match people.key(1).home | Wild _ -> skip | Town _ -> skip"),
+            run("if g(regions.key(1)) then skip else skip"),
+            run("if g(people.key(1).home) then skip else skip"),
+            run("delete p in people where p.home == regions.key(1)"),
+        ]
+    );
+}
+
+#[test]
+fn a_fill_gives_a_key_of_a_selection_its_migration_adds_only_after_the_fill() {
+    let world = "module world
+add module world
+add type Region { id: Key regions } = Wild | Town
+add relation regions : Region key id generate sequence
+add type Visit = { id: Key visits }
+add relation visits : Visit key id generate sequence";
+    let set = "add set Settled of regions = Town";
+    let field = "add field Visit.Visit.at: Key regions.Settled fill regions.key(1)";
+    let run = |ops: &[&str]| {
+        migrate(&Source::default(), &format!("{world}\n{}", ops.join("\n"))).map(drop)
+    };
+    assert_eq!(
+        [
+            Err(vec![
+                "a fill may not give Key regions as Key regions.Settled: it has a selection this migration resolves at its end".to_string()
+            ]),
+            Err(vec![
+                "expected Key regions.Town, found Key regions".to_string()
+            ]),
+        ],
+        [run(&[field, set]), run(&[set, field])]
     );
 }
 

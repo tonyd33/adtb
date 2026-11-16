@@ -295,7 +295,7 @@ pub(super) fn holds(schema: &Schema, ty: &Ty, def: TypeId, c: u32) -> bool {
         } => {
             schema.relation(*rel).elem_def == def
                 && match ctors {
-                    KeyCtors::All | KeyCtors::Late => true,
+                    KeyCtors::All | KeyCtors::Late(_) => true,
                     KeyCtors::Only(cs) => cs.contains(&c),
                 }
         }

@@ -354,10 +354,24 @@ impl Checker<'_> {
                             format!("field `{}` is given twice", name.text),
                         ));
                     }
-                    if !shape.raw.iter().any(|(n, _, _)| *n == name.text) {
+                    let Some((_, fty, _)) = shape.raw.iter().find(|(n, _, _)| *n == name.text)
+                    else {
                         return Err(diag(
                             name.span,
                             format!("`{ctor_name}` has no field `{}`", name.text),
+                        ));
+                    };
+                    if let Some(writer) = self.late_writer
+                        && let Some(late) = fty.late_key()
+                    {
+                        return Err(diag(
+                            name.span,
+                            format!(
+                                "a {writer} may not write field `{}` of `{}.{ctor_name}`: {} has a selection this migration resolves at its end",
+                                name.text,
+                                shape.t.name,
+                                self.show(late)
+                            ),
                         ));
                     }
                     self.note_field(

@@ -9,8 +9,8 @@ use std::task::{Wake, Waker};
 
 use adtb::runtime::{ThreadId, Threads};
 use adtb::{
-    Capability, Completion, Database, Error, Log, Observation, OpenOptions, RejectReason,
-    RoleSession, Task, TaskOptions, Value,
+    CallOptions, Capability, Completion, Database, Error, Log, Observation, OpenOptions,
+    RejectReason, RoleSession, Task, TaskOptions, Value,
 };
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{ValueDef, build};
@@ -147,7 +147,7 @@ fn opened(rt: &SimRuntime, opts: &OpenOptions) -> Database<SimRuntime> {
 insert docs.Sent { owner: "bob", to: "cid" }
 insert secrets { salary: 7 }"#,
         &[],
-        &adtb::CallOptions::default(),
+        &CallOptions::default(),
     )
     .expect("the rows");
     db
@@ -808,6 +808,47 @@ fn an_out_of_range_constructor_in_a_parameter_type_panics_nothing() {
                 assert!(got.contains("no type of the schema"), "{shown}: {got}");
             }
         }
+    });
+}
+
+#[test]
+fn a_parameter_type_with_a_selection_left_for_a_migration_end_is_no_type_of_the_schema() {
+    scenario(648, |_, db| {
+        let late = Ty::Key {
+            rel: RelRef::Declared(docs_id(&db)),
+            ctors: KeyCtors::Late("Settled".to_string()),
+        };
+        assert_eq!(
+            [
+                "Err(Rejected { reason: Invalid { detail: \"parameter `k` has no type of the schema\" } })",
+                "Err(Rejected { reason: Denied { detail: \"role `reader` may not run this text\" } })",
+            ],
+            [
+                typed(&db, "owner", "k", late.clone()),
+                typed(&db, "reader", "k", late),
+            ]
+        );
+    });
+}
+
+#[test]
+fn an_in_process_text_with_a_parameter_type_left_for_a_migration_end_is_no_type_of_the_schema() {
+    scenario(649, |_, db| {
+        let late = Ty::Key {
+            rel: RelRef::Declared(docs_id(&db)),
+            ctors: KeyCtors::Late("Settled".to_string()),
+        };
+        let got = db
+            .query_text(
+                "k.owner",
+                &[("k", late, Value::Int(1))],
+                &CallOptions::default(),
+            )
+            .map(drop);
+        assert_eq!(
+            "Err(Rejected { reason: Invalid { detail: \"parameter `k` has no type of the schema\" } })",
+            format!("{got:?}")
+        );
     });
 }
 

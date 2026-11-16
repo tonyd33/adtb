@@ -414,9 +414,19 @@ impl Resolver<'_> {
             })
             .map_err(|e| (r.span, e))?;
         let late = schema.selects_late(rel);
+        let written = |sel: &ast::CtorSel| match sel {
+            ast::CtorSel::One(c) => c.text.clone(),
+            ast::CtorSel::Many(cs) => format!(
+                "({})",
+                cs.iter()
+                    .map(|c| c.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
+        };
         let ctors = match (&r.sel, rel) {
             (None, _) => KeyCtors::All,
-            (Some(_), RelRef::Ahead(_)) if late => KeyCtors::Late,
+            (Some(sel), RelRef::Ahead(_)) if late => KeyCtors::Late(written(sel)),
             (Some(_), RelRef::Ahead(_)) => {
                 return Err((
                     r.span,
@@ -430,7 +440,7 @@ impl Resolver<'_> {
                 Ok(set) => {
                     KeyCtors::of_row(schema.normalize_ctors(schema.relation(rel).elem_def, set))
                 }
-                Err(_) if late => KeyCtors::Late,
+                Err(_) if late => KeyCtors::Late(written(sel)),
                 Err(e) => return Err((r.span, e)),
             },
         };

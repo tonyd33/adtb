@@ -154,6 +154,18 @@ impl Checker<'_> {
     }
 
     pub(super) fn subsume(&self, out: Out, expected: &Ty, span: Span) -> R<Out> {
+        if let Some(writer) = self.late_writer
+            && expected.late_key().is_some()
+        {
+            return Err(diag(
+                span,
+                format!(
+                    "a {writer} may not give {} as {}: it has a selection this migration resolves at its end",
+                    self.show(&out.ty),
+                    self.show(expected)
+                ),
+            ));
+        }
         if subtype(self.schema, &out.ty, expected) {
             Ok(out)
         } else {
@@ -935,7 +947,7 @@ impl Checker<'_> {
             Ty::Key { rel, ctors } => {
                 let rel = self.schema.relation_of(*rel).map_err(|e| diag(f.span, e))?;
                 let ctors = match ctors {
-                    KeyCtors::All | KeyCtors::Late => None,
+                    KeyCtors::All | KeyCtors::Late(_) => None,
                     KeyCtors::Only(cs) => Some(cs.clone()),
                 };
                 self.deref(o.clone(), rel, ctors)

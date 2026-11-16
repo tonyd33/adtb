@@ -54,7 +54,7 @@ impl Checker<'_> {
         match ty {
             Ty::Data { ctors, .. } => ctors.clone(),
             Ty::Key { ctors, .. } => match ctors {
-                KeyCtors::All | KeyCtors::Late => None,
+                KeyCtors::All | KeyCtors::Late(_) => None,
                 KeyCtors::Only(cs) => Some(cs.clone()),
             },
             _ => None,

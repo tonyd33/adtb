@@ -9,7 +9,7 @@ use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::schema::{Schema, Scope};
 use adtb_lang::textual::Form;
-use adtb_lang::types::{FnId, Ty};
+use adtb_lang::types::{FnId, KeyCtors, RelRef, Ty};
 
 use crate::exec::Val;
 use crate::write::Outcome;
@@ -155,6 +155,11 @@ impl Prepared {
                 "only queries, writes, transact blocks, temp relations and commands run as ad hoc \
                  text in process",
             )));
+        }
+        if let Some((name, ..)) = params.iter().find(|(_, ty, _)| !declared(schema, ty)) {
+            return Err(TextError::Other(Error::invalid(format!(
+                "parameter `{name}` has no type of the schema"
+            ))));
         }
         let types: BTreeMap<String, Ty> = params
             .iter()
@@ -334,4 +339,57 @@ fn elements(v: Val) -> Result<Vec<Val>, Error> {
 
 fn messages<'a>(ms: impl Iterator<Item = &'a String>) -> String {
     ms.map(String::as_str).collect::<Vec<_>>().join("\n")
+}
+
+/// Returns whether `set` selects constructors among `count`, each once, in order.
+fn selects(set: Option<&[u32]>, count: usize) -> bool {
+    set.is_none_or(|s| {
+        !s.is_empty()
+            && s.windows(2).all(|w| w[0] < w[1])
+            && s.iter().all(|c| (*c as usize) < count)
+    })
+}
+
+/// Returns whether every declaration and constructor `ty` names is one of `schema`, and it is a
+/// value's type.
+pub(super) fn declared(schema: &Schema, ty: &Ty) -> bool {
+    match ty {
+        Ty::Base(_) | Ty::Unit => true,
+        Ty::Data { def, args, ctors } => {
+            (def.0 as usize) < schema.types.len()
+                && args.len() == schema.ty(*def).params.len()
+                && selects(ctors.as_deref(), schema.ty(*def).ctors().len())
+                && args.iter().all(|t| declared(schema, t))
+        }
+        Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors,
+        } => {
+            (rel.0 as usize) < schema.relations.len()
+                && match ctors {
+                    KeyCtors::All => true,
+                    KeyCtors::Late(_) => false,
+                    KeyCtors::Only(cs) => selects(
+                        Some(cs),
+                        schema.ty(schema.relation(*rel).elem_def).ctors().len(),
+                    ),
+                }
+        }
+        Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => declared(schema, t),
+        Ty::Group(k, t) => declared(schema, k) && declared(schema, t),
+        Ty::Record(fields) => fields.iter().all(|(_, t)| declared(schema, t)),
+        Ty::Sum { ctors, sel } => {
+            selects(sel.as_deref(), ctors.len())
+                && ctors
+                    .iter()
+                    .all(|(_, fields)| fields.iter().all(|(_, t)| declared(schema, t)))
+        }
+        Ty::Key {
+            rel: RelRef::Ahead(_),
+            ..
+        }
+        | Ty::Param(_)
+        | Ty::Fn(..)
+        | Ty::Change => false,
+    }
 }

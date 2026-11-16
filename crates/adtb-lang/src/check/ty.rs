@@ -55,8 +55,8 @@ fn union(
 /// Returns whether every row key `a` admits, key `b` admits.
 fn key_subset(a: &KeyCtors, b: &KeyCtors) -> bool {
     match (a, b) {
-        (_, KeyCtors::All | KeyCtors::Late) => true,
-        (KeyCtors::All | KeyCtors::Late, KeyCtors::Only(_)) => false,
+        (_, KeyCtors::All | KeyCtors::Late(_)) => true,
+        (KeyCtors::All | KeyCtors::Late(_), KeyCtors::Only(_)) => false,
         (KeyCtors::Only(a), KeyCtors::Only(b)) => a.iter().all(|c| b.contains(c)),
     }
 }
@@ -67,7 +67,9 @@ fn key_union(schema: &Schema, def: TypeId, a: &KeyCtors, b: &KeyCtors) -> KeyCto
         (KeyCtors::Only(a), KeyCtors::Only(b)) => {
             KeyCtors::of_row(union(schema, def, &Some(a.clone()), &Some(b.clone())))
         }
-        (KeyCtors::All | KeyCtors::Late, _) | (_, KeyCtors::All | KeyCtors::Late) => KeyCtors::All,
+        (KeyCtors::All | KeyCtors::Late(_), _) | (_, KeyCtors::All | KeyCtors::Late(_)) => {
+            KeyCtors::All
+        }
     }
 }
 

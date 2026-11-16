@@ -696,7 +696,7 @@ pub(super) fn key_types(t: &Ty, out: &mut Vec<(RelRef, Option<CtorSet>)>) {
         Ty::Key { rel, ctors } => out.push((
             *rel,
             match ctors {
-                KeyCtors::All | KeyCtors::Late => None,
+                KeyCtors::All | KeyCtors::Late(_) => None,
                 KeyCtors::Only(cs) => Some(cs.clone()),
             },
         )),
@@ -937,15 +937,14 @@ impl Cx<'_> {
         let rt = self.routing_types(def_q, sources, products, product_texts)?;
         let (schema, program, module, row, expected) =
             (&rt.schema, &rt.program, rt.module, &rt.row, &rt.result);
-        let mut refs = Vec::new();
-        check::check_row(
+        let refs = check::check_row(
             schema,
             program,
             module,
             row,
             RowBody::Match(arms, self.span),
             Some(expected),
-            Some(&mut refs),
+            "routing",
         )
         .map_err(|d| vec![d])?;
         self.note(schema, &refs);

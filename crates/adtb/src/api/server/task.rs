@@ -9,14 +9,14 @@ use std::time::Duration;
 use adtb_lang::ast::{self, AdhocItem};
 use adtb_lang::schema::{ModuleDef, Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{KeyCtors, RelId, RelRef, Ty};
+use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::exec::{Admitted, Entry, Grant, Priority, Refusal, Refused, Stopped, Val};
 use crate::runtime::Runtime;
 
-use super::super::text::Prepared;
 use super::super::text::TextError;
+use super::super::text::{Prepared, declared};
 use super::super::{
     CallOptions, CancelToken, Engine, Error, Limit, OWNER_ROLE, RejectReason, RetryReason,
 };
@@ -495,58 +495,6 @@ impl<R: Runtime> RoleSession<R> {
         let bytes = TASK_BYTES + text.len() + p.bytes();
         let work = Work::Text(Box::new(p));
         submit(&e, work, Some(call), opts, Priority::AdHoc, bytes)
-    }
-}
-
-/// Returns whether `set` selects constructors among `count`, each once, in order.
-fn selects(set: Option<&[u32]>, count: usize) -> bool {
-    set.is_none_or(|s| {
-        !s.is_empty()
-            && s.windows(2).all(|w| w[0] < w[1])
-            && s.iter().all(|c| (*c as usize) < count)
-    })
-}
-
-/// Returns whether every declaration and constructor `ty` names is one of `schema`, and it is a
-/// value's type.
-fn declared(schema: &Schema, ty: &Ty) -> bool {
-    match ty {
-        Ty::Base(_) | Ty::Unit => true,
-        Ty::Data { def, args, ctors } => {
-            (def.0 as usize) < schema.types.len()
-                && args.len() == schema.ty(*def).params.len()
-                && selects(ctors.as_deref(), schema.ty(*def).ctors().len())
-                && args.iter().all(|t| declared(schema, t))
-        }
-        Ty::Key {
-            rel: RelRef::Declared(rel),
-            ctors,
-        } => {
-            (rel.0 as usize) < schema.relations.len()
-                && match ctors {
-                    KeyCtors::All | KeyCtors::Late => true,
-                    KeyCtors::Only(cs) => selects(
-                        Some(cs),
-                        schema.ty(schema.relation(*rel).elem_def).ctors().len(),
-                    ),
-                }
-        }
-        Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => declared(schema, t),
-        Ty::Group(k, t) => declared(schema, k) && declared(schema, t),
-        Ty::Record(fields) => fields.iter().all(|(_, t)| declared(schema, t)),
-        Ty::Sum { ctors, sel } => {
-            selects(sel.as_deref(), ctors.len())
-                && ctors
-                    .iter()
-                    .all(|(_, fields)| fields.iter().all(|(_, t)| declared(schema, t)))
-        }
-        Ty::Key {
-            rel: RelRef::Ahead(_),
-            ..
-        }
-        | Ty::Param(_)
-        | Ty::Fn(..)
-        | Ty::Change => false,
     }
 }
 

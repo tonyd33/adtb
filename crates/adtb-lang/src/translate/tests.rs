@@ -249,6 +249,59 @@ fn every_pin_narrows_rows_to_its_constructors_and_keeps_keys_whole() {
     );
 }
 
+#[test]
+fn a_key_whose_selection_resolves_at_its_migration_end_is_lost() {
+    let (_, from, _) = checked(&[V1]);
+    let map = Map::new(&from, &from);
+    let identities = RelId(
+        from.relations
+            .iter()
+            .position(|r| r.name == "identities")
+            .expect("identities") as u32,
+    );
+    let late = Ty::Key {
+        rel: RelRef::Declared(identities),
+        ctors: KeyCtors::Late("Settled".to_string()),
+    };
+    assert_eq!(
+        Err(Loss::Unlinked("identities.Settled".to_string())),
+        map.ty(&Ty::Set(Box::new(late)))
+    );
+}
+
+#[test]
+fn a_key_of_a_later_relation_whose_selection_resolves_at_its_migration_end_is_lost() {
+    let file = crate::parse::parse_schema(
+        "module m\ntype O = { id: Key os, u: Key later.Gold }\nrelation os : O key id generate sequence",
+        Options::default(),
+    )
+    .ok()
+    .expect("parses");
+    let ahead = crate::schema::Ahead::new(
+        "m".to_string(),
+        "later".to_string(),
+        true,
+        crate::schema::AheadState::Pending,
+        Adder::Operator(0),
+    );
+    let from =
+        crate::schema::build_ahead(&[(crate::span::FileId(0), file)], &[ahead]).expect("builds");
+    let os = from.relation(RelId(
+        from.relations
+            .iter()
+            .position(|r| r.name == "os")
+            .expect("os") as u32,
+    ));
+    let u = from
+        .ty(os.elem_def)
+        .field_named(0, "u")
+        .expect("u")
+        .ty
+        .clone();
+    let map = Map::over(&from, &from, vec![Later::At(RelId(0))]);
+    assert_eq!(Err(Loss::Unlinked("later.Gold".to_string())), map.ty(&u));
+}
+
 const SESSIONS: &str = "module auth\nadd type Session = { id: Key sessions, who: Key identities }\n\
                         add relation sessions : Session key id generate sequence\n";
 const ADD_APPLE_ENABLED: &str =

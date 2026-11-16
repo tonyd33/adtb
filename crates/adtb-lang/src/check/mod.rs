@@ -224,6 +224,9 @@ pub struct Checker<'a> {
     program: Option<&'a Program>,
     /// The registered queries ad hoc text may explain.
     bundles: &'a Bundles,
+    /// The writer, `script`, `fill` or `routing`, that refuses a value given or matched where a key type
+    /// with a late selection is expected.
+    late_writer: Option<&'static str>,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -265,6 +268,7 @@ impl<'a> Checker<'a> {
             hidden: BTreeSet::new(),
             program: None,
             bundles: &adhoc::NO_BUNDLES,
+            late_writer: None,
         }
     }
 
@@ -780,9 +784,11 @@ pub enum RowBody<'e> {
 /// Type checks `body` over a row of type `row`, seen from `module`, at `expected` when given.
 ///
 /// A constructor of the row's type that a `match` body builds takes the row's header fields it omits.
-/// Returns its terms, its term and its type. Refuses a body that reads anything but the row: a relation,
-/// a reference, a generated key, `caller`, or a function that reads one of them. With `record`, appends
-/// the schema objects the body names, as [`schema_refs`] reports them.
+/// Returns the schema objects the body names, as [`schema_refs`] reports them.
+/// Refuse a body that reads anything but the row: a relation, a reference, a generated key,
+/// `caller`, or a function that reads one of them.
+/// Refuse, naming the body `writer`, a value it gives or matches where a key type with a late
+/// selection is expected.
 pub fn check_row(
     schema: &Schema,
     program: &Program,
@@ -790,17 +796,13 @@ pub fn check_row(
     row: &Ty,
     body: RowBody,
     expected: Option<&Ty>,
-    record: Option<&mut Vec<(Span, Ref)>>,
-) -> Result<(Terms, Tm, Ty), Diag> {
+    writer: &'static str,
+) -> Result<Vec<(Span, Ref)>, Diag> {
     let mut c = Checker::new(schema, Visible::module(module), Context::Schema);
-    if record.is_some() {
-        c.refs = Some(RefCell::new(Vec::new()));
-    }
-    let checked = row_body(&mut c, program, row, body, expected);
-    if let (Some(out), Some(refs)) = (record, c.refs.take()) {
-        out.extend(refs.into_inner());
-    }
-    checked.map(|(_, tm, ty)| (c.terms, tm, ty))
+    c.late_writer = Some(writer);
+    c.refs = Some(RefCell::new(Vec::new()));
+    row_body(&mut c, program, row, body, expected)?;
+    Ok(c.refs.take().map(RefCell::into_inner).unwrap_or_default())
 }
 
 /// Type checks `body` as [`check_row`] does, as a query whose one parameter is the row.
@@ -968,6 +970,7 @@ pub fn check_adhoc_in(
         items,
         params,
         bundles,
+        late_writer: None,
     };
     let mut adhoc = checked_items(checked, &text, declared, diags, record)?;
     adhoc.temps = temps.map(|(s, _)| s);
@@ -988,6 +991,7 @@ pub(crate) fn check_script(
         items: &[ast::AdhocItem::Write(Box::new(write.clone()))],
         params: &BTreeMap::new(),
         bundles: &Bundles::default(),
+        late_writer: Some("script"),
     };
     checked_items(schema, &text, Vec::new(), Vec::new(), record).map(drop)
 }
@@ -999,6 +1003,7 @@ struct Text<'a> {
     items: &'a [ast::AdhocItem],
     params: &'a BTreeMap<String, Ty>,
     bundles: &'a Bundles,
+    late_writer: Option<&'static str>,
 }
 
 /// Returns `text` checked against `checked`, each relation of `declared` hidden until its
@@ -1016,11 +1021,13 @@ fn checked_items(
         items,
         params,
         bundles,
+        late_writer,
     } = *text;
     let vis = Visible::all(checked).scoped(scope.cloned());
     let mut c = Checker::new(checked, vis, Context::Adhoc);
     c.program = Some(program);
     c.bundles = bundles;
+    c.late_writer = late_writer;
     if record.is_some() {
         c.refs = Some(RefCell::new(Vec::new()));
     }

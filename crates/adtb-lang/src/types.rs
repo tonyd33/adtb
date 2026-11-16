@@ -254,8 +254,8 @@ impl Bound {
 pub enum KeyCtors {
     All,
     Only(CtorSet),
-    /// A selection that resolves when the migration being applied ends.
-    Late,
+    /// A selection, as written, that resolves when the migration being applied ends.
+    Late(String),
 }
 
 impl KeyCtors {
@@ -266,7 +266,7 @@ impl KeyCtors {
         match self {
             KeyCtors::All => None,
             KeyCtors::Only(cs) => Some(cs),
-            KeyCtors::Late => panic!("a committed schema holds no late selection"),
+            KeyCtors::Late(_) => panic!("a committed schema holds no late selection"),
         }
     }
 
@@ -397,6 +397,32 @@ impl Ty {
         }
     }
 
+    /// Returns the first key type in `self` whose selection resolves when the migration being
+    /// applied ends.
+    pub fn late_key(&self) -> Option<&Ty> {
+        match self {
+            Ty::Key {
+                ctors: KeyCtors::Late(_),
+                ..
+            } => Some(self),
+            Ty::Key {
+                ctors: KeyCtors::All | KeyCtors::Only(_),
+                ..
+            }
+            | Ty::Base(_)
+            | Ty::Param(_)
+            | Ty::Unit
+            | Ty::Change => None,
+            Ty::Data { args, .. } => args.iter().find_map(Ty::late_key),
+            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => t.late_key(),
+            Ty::Group(a, b) | Ty::Fn(a, b) => a.late_key().or_else(|| b.late_key()),
+            Ty::Record(fs) => fs.iter().find_map(|(_, t)| t.late_key()),
+            Ty::Sum { ctors, .. } => ctors
+                .iter()
+                .find_map(|(_, fs)| fs.iter().find_map(|(_, t)| t.late_key())),
+        }
+    }
+
     /// Returns whether `self` and `other` are equal when a late key selection counts as every
     /// constructor.
     pub fn alike(&self, other: &Ty) -> bool {
@@ -410,9 +436,11 @@ impl Ty {
                 r1 == r2
                     && match (c1, c2) {
                         (KeyCtors::Only(a), KeyCtors::Only(b)) => a == b,
-                        (KeyCtors::All | KeyCtors::Late, KeyCtors::All | KeyCtors::Late) => true,
-                        (KeyCtors::Only(_), KeyCtors::All | KeyCtors::Late)
-                        | (KeyCtors::All | KeyCtors::Late, KeyCtors::Only(_)) => false,
+                        (KeyCtors::All | KeyCtors::Late(_), KeyCtors::All | KeyCtors::Late(_)) => {
+                            true
+                        }
+                        (KeyCtors::Only(_), KeyCtors::All | KeyCtors::Late(_))
+                        | (KeyCtors::All | KeyCtors::Late(_), KeyCtors::Only(_)) => false,
                     }
             }
             (

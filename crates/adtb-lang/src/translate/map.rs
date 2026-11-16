@@ -51,8 +51,8 @@ pub enum Loss {
     /// The relation of this name, which the earlier version takes as added later, has no
     /// counterpart at the later version.
     Later(String),
-    /// The fill's migration adds the relation of this name, which the fill's version takes as
-    /// added later, after the fill.
+    /// The fill's migration adds the relation or the selection of this name, which the fill's
+    /// version takes as added later, after the fill.
     Unlinked(String),
     /// The object of the earlier version named `name` is named otherwise at the later one.
     Renamed {
@@ -250,14 +250,22 @@ impl<'a> Map<'a> {
             },
             Ty::Key {
                 rel: RelRef::Ahead(a),
-                ..
-            } => match &self.ahead[a.index()] {
-                Later::At(rel) => Ty::Key {
+                ctors,
+            } => match (&self.ahead[a.index()], ctors) {
+                (_, KeyCtors::Late(sel)) => {
+                    let (_, name) = self.from.ahead_relation(*a);
+                    return Err(Loss::Unlinked(format!("{name}.{sel}")));
+                }
+                (Later::At(rel), KeyCtors::All | KeyCtors::Only(_)) => Ty::Key {
                     rel: RelRef::Declared(*rel),
                     ctors: KeyCtors::All,
                 },
-                Later::Lacked(name) => return Err(Loss::Later(name.clone())),
-                Later::Unlinked(name) => return Err(Loss::Unlinked(name.clone())),
+                (Later::Lacked(name), KeyCtors::All | KeyCtors::Only(_)) => {
+                    return Err(Loss::Later(name.clone()));
+                }
+                (Later::Unlinked(name), KeyCtors::All | KeyCtors::Only(_)) => {
+                    return Err(Loss::Unlinked(name.clone()));
+                }
             },
             Ty::Key {
                 rel: RelRef::Declared(rel),
@@ -266,8 +274,12 @@ impl<'a> Map<'a> {
                 let rel = *rel;
                 let def = self.from.relation(rel).elem_def;
                 let ctors = match ctors {
-                    KeyCtors::All | KeyCtors::Late => KeyCtors::All,
+                    KeyCtors::All => KeyCtors::All,
                     KeyCtors::Only(cs) => KeyCtors::of_row(self.set(def, &Some(cs.clone()), false)),
+                    KeyCtors::Late(sel) => {
+                        let name = &self.from.relation(rel).name;
+                        return Err(Loss::Unlinked(format!("{name}.{sel}")));
+                    }
                 };
                 Ty::Key {
                     rel: RelRef::Declared(self.relation(rel).ok_or(Loss::Relation(rel))?),

@@ -236,12 +236,24 @@ impl Checker<'_> {
         let matched = s.ty.clone();
         let (s, by_key) = match &s.ty {
             Ty::Key { rel, ctors } => {
+                match (ctors, self.late_writer) {
+                    (KeyCtors::Late(_), Some(writer)) => {
+                        return Err(diag(
+                            scrutinee.span,
+                            format!(
+                                "a {writer} may not match by constructor through {}: it has a selection this migration resolves at its end",
+                                self.show(&s.ty)
+                            ),
+                        ));
+                    }
+                    (KeyCtors::All | KeyCtors::Only(_) | KeyCtors::Late(_), _) => {}
+                }
                 let rel = self
                     .schema
                     .relation_of(*rel)
                     .map_err(|e| diag(scrutinee.span, e))?;
                 let ctors = match ctors {
-                    KeyCtors::All | KeyCtors::Late => None,
+                    KeyCtors::All | KeyCtors::Late(_) => None,
                     KeyCtors::Only(cs) => Some(cs.clone()),
                 };
                 (self.deref(s, rel, ctors), true)

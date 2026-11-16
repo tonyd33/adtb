@@ -910,24 +910,23 @@ impl Schema {
                 .get(*i as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("t{i}")),
-            Ty::Key { rel, ctors } => match *rel {
-                RelRef::Ahead(a) => {
-                    let (m, name) = self.ahead_relation(a);
-                    format!("Key {}{name}", qualifier(m))
-                }
-                RelRef::Declared(rel) => {
-                    let r = self.relation(rel);
-                    format!(
-                        "Key {}{}{}",
-                        qualifier(r.module),
-                        r.name,
-                        match ctors {
-                            KeyCtors::All | KeyCtors::Late => String::new(),
-                            KeyCtors::Only(cs) => sel(r.elem_def, &Some(cs.clone())),
-                        }
-                    )
-                }
-            },
+            Ty::Key { rel, ctors } => {
+                let (m, name) = match *rel {
+                    RelRef::Ahead(a) => self.ahead_relation(a),
+                    RelRef::Declared(rel) => {
+                        let r = self.relation(rel);
+                        (r.module, r.name.as_str())
+                    }
+                };
+                let selected = match (ctors, *rel) {
+                    (KeyCtors::All, _) | (KeyCtors::Only(_), RelRef::Ahead(_)) => String::new(),
+                    (KeyCtors::Only(cs), RelRef::Declared(rel)) => {
+                        sel(self.relation(rel).elem_def, &Some(cs.clone()))
+                    }
+                    (KeyCtors::Late(s), _) => format!(".{s}"),
+                };
+                format!("Key {}{name}{selected}", qualifier(m))
+            }
             Ty::Set(t) | Ty::NonEmpty(t) => format!("Set {}", atom(t)),
             Ty::Group(k, t) => format!("Group {} {}", atom(k), atom(t)),
             Ty::Tag(t) => format!("Tag {}", atom(t)),
@@ -1214,7 +1213,7 @@ impl Schema {
                 if !(target == RelRef::Declared(rel) && r.key.contains(&f.name)) =>
             {
                 let ctors = match ctors {
-                    KeyCtors::All | KeyCtors::Late => None,
+                    KeyCtors::All | KeyCtors::Late(_) => None,
                     KeyCtors::Only(cs) => Some(cs),
                 };
                 Some((target, ctors, optional))

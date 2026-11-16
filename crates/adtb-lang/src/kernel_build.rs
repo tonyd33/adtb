@@ -423,7 +423,7 @@ impl<'a> Build<'a> {
     pub fn deref(&mut self, key: Tm, reference: bool) -> Tm {
         let admits = match self.terms.ty(key) {
             Ty::Key { ctors, .. } => match ctors {
-                KeyCtors::All | KeyCtors::Late => None,
+                KeyCtors::All | KeyCtors::Late(_) => None,
                 KeyCtors::Only(cs) => Some(cs.clone()),
             },
             _ => None,
@@ -461,7 +461,7 @@ impl<'a> Build<'a> {
             return admits;
         };
         let named = match ctors {
-            KeyCtors::All | KeyCtors::Late => return admits,
+            KeyCtors::All | KeyCtors::Late(_) => return admits,
             KeyCtors::Only(named) => named,
         };
         let kept = match admits {
