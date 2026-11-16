@@ -188,3 +188,7 @@ Landed as mmwzottl 933912bb (2 rounds), full check 0 (3836 tests). Constraint id
 ## 2026-11-15, step 11 part c landed
 
 Landed as lvyxkqxt e1af4b3f (2 rounds), full check 0 (3839 tests). Error sums by fixed id with compile-time field handles, `Sums` once per engine, `Part::Val` removed so every part is type checked. `engine_names` fell by 4 (tables.rs). Resolved: error-sums-by-spelling. bundle.rs keeps 7 counted sites. Next: part d.
+
+## 2026-11-15, step 11 part d landed
+
+Landed as wsmstooz 97cc33d4 (2 rounds), full check 0 (3839 tests). Verify kept rows through a codec; `Codec::declared` maps a kept row's listed fields to declared positions; `codec_testing::fields_reversed` reverses every record's fields for reorder tests. The review found the writer and reader kept two hand lists and the samples zipped over the writer's own output; the final round made one layout of handles. Resolved: kept-finding-fields-unchecked. Next: part e.
