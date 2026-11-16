@@ -196,3 +196,7 @@ Landed as wsmstooz 97cc33d4 (2 rounds), full check 0 (3839 tests). Verify kept r
 ## 2026-11-16, step 11 part e landed
 
 Landed as qsupwyqs f6a76796 (2 rounds), full check 0 (3843 tests). One typed `RootsRow` over the 16 roots constructors. The review found no literal test of the stored format (a consistent swap of two same-shaped constructors passed every test) and that open newly refused a corrupt kept blob, blocking salvage of a clog-damaged file; both fixed. Resolved: roots-migration-row-passed-over. Filed: heap-unknown-stored-tag-panics. Next: part f.
+
+## 2026-11-16, step 11 part f landed; step 11 done
+
+Landed as nxpytluz 86200769 (2 rounds), full check 0 (3833 tests; 11 hand reversed tests replaced by one). `codec::coded!` generates `Coded`, its ids, `Coded::ALL` and one marker type per coded relation; `Decode` names its marker (`type Relation: Relation<Row = Self>`), so a second decoder of one relation fails to compile and a new relation joins the test. `read_back` reads each impl's samples (every constructor, distinct values) under the shipped, constructor-reversed and field-reversed catalogs, stores shipped rows and reads them under the reversed catalog, and asserts each constructor at its mirror and each multi-field list reversed. Step 11 done. Left before the exit: `engine_names` 37 sites in 11 files (rows.rs encoders 15, bundle.rs 7, schema/engine.rs 5, and single sites), with catalog-encoders-through-codecs as the next identity step after committed-schema-type; `prelude_positions` 12 sites, one-constructor sums only, by ruling.
