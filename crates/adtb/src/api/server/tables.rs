@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow};
-use adtb_lang::ids::{CatRelId, engine_ctor as k, engine_rel};
+use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor as k, engine_rel};
 use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
@@ -15,8 +15,6 @@ use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::write::{self, Txn};
 
-use super::super::cause::Broken;
-use super::super::error_value::NoValue;
 use super::super::{Engine, Error, FatalReason, TxnId};
 use super::store::Changes;
 use super::{Capability, denied};
@@ -426,7 +424,7 @@ impl<'s> Tables<'s> {
     ) -> Result<(), Error> {
         let principal = service(self.schema, role);
         let event = ("statement", Val::text(&statement));
-        self.audit_row(e, changes, "Grant", (role, &principal), event)
+        self.audit_row(e, changes, k::AUDIT_GRANT, (role, &principal), event)
     }
 
     /// Record that `role`, running for `caller`, was refused the call of `origin`.
@@ -438,8 +436,8 @@ impl<'s> Tables<'s> {
         caller: &Val,
         origin: &CallOrigin,
     ) -> Result<(), Error> {
-        let event = ("origin", self.origin(origin)?);
-        self.audit_row(e, changes, "Denied", (role, caller), event)
+        let event = ("origin", e.sums.origin(origin));
+        self.audit_row(e, changes, k::AUDIT_DENIED, (role, caller), event)
     }
 
     /// Record that `role`, running for `caller`, retired `bundle`.
@@ -451,7 +449,7 @@ impl<'s> Tables<'s> {
         bundle: &str,
     ) -> Result<(), Error> {
         let event = ("bundle", Val::text(bundle));
-        self.audit_row(e, changes, "Retire", (role, caller), event)
+        self.audit_row(e, changes, k::AUDIT_RETIRE, (role, caller), event)
     }
 
     /// Returns the `Call` row numbered `seq` of `call`.
@@ -462,59 +460,18 @@ impl<'s> Tables<'s> {
         call: &CallRow<'_>,
     ) -> Result<Val, Error> {
         let fields = vec![
-            ("origin", self.origin(call.origin)?),
+            ("origin", e.sums.origin(call.origin)),
             ("args", Val::Bytes(Arc::from(call.args.as_slice()))),
-            ("outcome", self.outcome(call.failed)?),
+            ("outcome", e.sums.outcome(call.failed)),
         ];
-        self.event_row(e, seq, "Call", (call.role, call.caller), fields)
-    }
-
-    fn origin(&self, origin: &CallOrigin) -> Result<Val, Error> {
-        let def = self.schema.ty(self.schema.prelude().origin());
-        let ctor = |name: &str| {
-            def.ctor_index(name)
-                .ok_or_else(|| malformed(format!("`Origin` declares `{name}`")))
-        };
-        Ok(match origin {
-            CallOrigin::Registered { bundle, query } => Val::ctor(
-                ctor("Registered")?,
-                vec![Val::text(bundle), Val::Int(i64::from(*query))],
-            ),
-            CallOrigin::Function { name } => Val::ctor(ctor("Function")?, vec![Val::text(name)]),
-            CallOrigin::AdHoc(text) => {
-                Val::ctor(ctor("AdHoc")?, vec![Val::Bytes(Arc::from(text.as_slice()))])
-            }
-        })
-    }
-
-    fn outcome(&self, failed: Option<&Error>) -> Result<Val, Error> {
-        let def = self.schema.ty(self.schema.prelude().outcome());
-        let ctor = |name: &str| {
-            def.ctor_index(name)
-                .ok_or_else(|| malformed(format!("`Outcome` declares `{name}`")))
-        };
-        Ok(match failed {
-            None => Val::ctor(ctor("Succeeded")?, Vec::new()),
-            Some(error) => Val::ctor(ctor("Failed")?, vec![self.error_value(error)]),
-        })
-    }
-
-    /// Returns `error` as a value of the prelude sum, or as `Internal` naming it when it holds a
-    /// report.
-    fn error_value(&self, error: &Error) -> Val {
-        match error.prelude_value(self.schema) {
-            Ok(value) => value,
-            Err(NoValue::Report) => Error::internal(Broken::NoValue(error.clone()))
-                .prelude_value(self.schema)
-                .unwrap_or_else(|e| unreachable!("an `Internal` error holds no report: {e:?}")),
-        }
+        self.event_row(e, seq, k::AUDIT_CALL, (call.role, call.caller), fields)
     }
 
     fn audit_row<R: Runtime>(
         &self,
         e: &Engine<R>,
         changes: &mut Changes,
-        ctor: &str,
+        ctor: CatCtorId,
         who: (&str, &Val),
         event: (&str, Val),
     ) -> Result<(), Error> {
@@ -528,7 +485,7 @@ impl<'s> Tables<'s> {
         &self,
         e: &Engine<R>,
         seq: i64,
-        ctor: &str,
+        ctor: CatCtorId,
         (role, principal): (&str, &Val),
         event: Vec<(&str, Val)>,
     ) -> Result<Val, Error> {
@@ -546,10 +503,12 @@ impl<'s> Tables<'s> {
             ("principal", Val::text(&principal)),
         ];
         fields.extend(event);
-        let def = self.schema.ty(self.schema.relation(self.audit).elem_def);
-        let ctor = def
-            .ctor_named(ctor)
-            .unwrap_or_else(|| panic!("the catalog relation declares {ctor}"));
+        let ctor = self
+            .schema
+            .ids()
+            .ctor_of(ctor)
+            .filter(|c| c.def() == self.schema.relation(self.audit).elem_def)
+            .unwrap_or_else(|| panic!("the audit relation declares constructor {ctor}"));
         Ok(self.row(self.audit, ctor, fields))
     }
 

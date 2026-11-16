@@ -179,7 +179,6 @@ engine_names prod 1 crates/adtb-lang/src/types.rs
 engine_names prod 7 crates/adtb/src/api/bundle.rs
 engine_names prod 2 crates/adtb/src/api/dump.rs
 engine_names prod 1 crates/adtb/src/api/server/adhoc.rs
-engine_names prod 4 crates/adtb/src/api/server/tables.rs
 engine_names prod 1 crates/adtb/src/api/server/task.rs
 engine_names prod 1 crates/adtb/src/catalog/oplog.rs
 engine_names prod 1 crates/adtb/src/catalog/readers.rs

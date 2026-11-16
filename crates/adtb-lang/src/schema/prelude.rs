@@ -41,6 +41,7 @@ prelude_types! {
     span "Span",
     principal PRINCIPAL,
     position "Position",
+    txn_id "TxnId",
     error "Error",
     reject_reason "RejectReason",
     limit "Limit",

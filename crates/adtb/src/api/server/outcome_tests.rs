@@ -1,7 +1,11 @@
 use std::time::Duration;
 
+use adtb_lang::ids::{CatCtorId, TYPES};
+use adtb_lang::schema::{self, PRELUDE_SRC, Schema};
 use adtb_lang::textual::parse;
 use adtb_lang::types::{Ty, TypeId};
+
+use crate::api::error_value::{NoValue, Sums};
 
 use crate::api::{
     CallOptions, Error, FatalReason, Fault, Limit, Log, Position, RejectReason, RetryReason, TxnId,
@@ -605,8 +609,185 @@ fn a_violated_calls_audit_row_holds_the_violation_returned_with_its_report() {
 }
 
 /// Returns the index of constructor `name` of the prelude type `ty`.
-fn prelude_ctor(schema: &adtb_lang::schema::Schema, ty: TypeId, name: &str) -> u32 {
+fn prelude_ctor(schema: &Schema, ty: TypeId, name: &str) -> u32 {
     let def = schema.ty(ty);
     def.ctor_index(name)
         .unwrap_or_else(|| panic!("the prelude's {} declares {name}", def.name))
+}
+
+/// The prelude sums the error, origin and outcome values are of.
+const SUMS: [&str; 8] = [
+    "Error",
+    "RetryReason",
+    "RejectReason",
+    "FatalReason",
+    "Limit",
+    "Position",
+    "Origin",
+    "Outcome",
+];
+
+/// Returns `text` with the constructors of each sum `SUMS` names, and the fields of each of
+/// them, in reverse order.
+fn reversed_sums(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let named = lines[i]
+            .strip_prefix("type ")
+            .and_then(|l| l.split_once(" = "))
+            .filter(|(name, _)| SUMS.contains(name));
+        let Some((name, first)) = named else {
+            out.push(lines[i].to_owned());
+            i += 1;
+            continue;
+        };
+        let mut body = first.to_owned();
+        i += 1;
+        while i < lines.len() && lines[i].trim_start().starts_with("| ") {
+            body.push(' ');
+            body.push_str(lines[i].trim_start());
+            i += 1;
+        }
+        let mut ctors: Vec<String> = body.split(" | ").map(reversed_fields).collect();
+        ctors.reverse();
+        out.push(format!("type {name} = {}", ctors.join(" | ")));
+    }
+    out.join("\n")
+}
+
+/// Returns constructor `ctor`, as `Name { a: A, b: B }` or `{ a: A, b: B }`, with its fields in
+/// reverse order.
+fn reversed_fields(ctor: &str) -> String {
+    let ctor = ctor.trim();
+    let Some((name, fields)) = ctor.split_once('{') else {
+        return ctor.to_owned();
+    };
+    let mut fields: Vec<&str> = fields
+        .trim_end_matches('}')
+        .split(',')
+        .map(str::trim)
+        .collect();
+    fields.reverse();
+    format!("{name}{{ {} }}", fields.join(", "))
+}
+
+fn data(def: TypeId) -> Ty {
+    Ty::Data {
+        def,
+        args: Vec::new(),
+        ctors: None,
+    }
+}
+
+/// Returns the position of constructor `id` in `schema`.
+fn position(schema: &Schema, id: CatCtorId) -> (TypeId, u32) {
+    let c = schema
+        .ids()
+        .ctor_of(id)
+        .unwrap_or_else(|| panic!("{id} is a constructor"));
+    (c.def(), c.index())
+}
+
+/// Returns the fixed id of each constructor of the sums `SUMS` names.
+fn ids() -> Vec<CatCtorId> {
+    TYPES
+        .iter()
+        .filter(|(m, t, ..)| *m == "prelude" && SUMS.contains(t))
+        .flat_map(|(.., ctors)| ctors.iter().map(|(_, id)| CatCtorId::from_raw(*id)))
+        .collect()
+}
+
+/// Returns the schema of the shipped prelude and of the prelude with the sums `SUMS` names
+/// reversed.
+fn preludes() -> [Schema; 2] {
+    let shipped = schema::build(&[]).expect("the shipped prelude builds");
+    let reversed = schema::build_prelude_from(&reversed_sums(PRELUDE_SRC))
+        .expect("the reversed prelude builds");
+    [shipped, reversed]
+}
+
+#[test]
+fn the_reversed_prelude_mirrors_each_error_origin_and_outcome_constructor_and_its_fields() {
+    let [shipped, reversed] = preludes();
+    let ids = ids();
+    assert_eq!(72, ids.len());
+    let mut fields_moved = 0;
+    for id in ids {
+        let (def, at) = position(&shipped, id);
+        let n = u32::try_from(shipped.ty(def).ctors().len()).expect("a count fits 32 bits");
+        assert_eq!(n - 1 - at, position(&reversed, id).1, "{id}");
+        let names = |schema: &Schema| -> Vec<String> {
+            let (def, at) = position(schema, id);
+            let td = schema.ty(def);
+            td.header()
+                .iter()
+                .chain(&td.ctors()[at as usize].fields)
+                .map(|f| f.name.clone())
+                .collect()
+        };
+        let mut mirrored = names(&shipped);
+        mirrored.reverse();
+        assert_eq!(mirrored, names(&reversed), "{id}");
+        fields_moved += usize::from(mirrored.len() > 1);
+    }
+    assert_eq!(18, fields_moved);
+}
+
+#[test]
+fn each_error_has_its_value_under_the_shipped_and_the_reversed_prelude() {
+    for schema in preludes() {
+        let sums = Sums::new(&schema);
+        let form = Form::of(&schema, &data(schema.prelude().error()));
+        for (error, want) in cases() {
+            let expected: Val = parse(want, &form)
+                .unwrap_or_else(|e| panic!("the expected value `{want}` reads: {e:?}"));
+            assert_eq!(Ok(expected), error.prelude_value(&sums), "{error:?}");
+        }
+        let violated = reject(RejectReason::Violated {
+            constraint: text("shop::paid"),
+            report: Vec::new(),
+            redacted: 0,
+        });
+        assert_eq!(Err(NoValue::Report), violated.prelude_value(&sums));
+    }
+}
+
+#[test]
+fn each_origin_and_outcome_has_its_value_under_the_shipped_and_the_reversed_prelude() {
+    for schema in preludes() {
+        let sums = Sums::new(&schema);
+        let read = |def, text: &str| -> Val {
+            parse(text, &Form::of(&schema, &data(def)))
+                .unwrap_or_else(|e| panic!("`{text}` reads: {e:?}"))
+        };
+        let (origin, outcome) = (schema.prelude().origin(), schema.prelude().outcome());
+        let origins = [
+            (
+                CallOrigin::Registered {
+                    bundle: text("web-1"),
+                    query: 2,
+                },
+                r#"Registered { bundle: "web-1", query: 2 }"#,
+            ),
+            (
+                CallOrigin::Function { name: text("f") },
+                r#"Function { name: "f" }"#,
+            ),
+            (
+                CallOrigin::AdHoc([0xab; 32]),
+                &*format!("AdHoc {{ text: 0x{} }}", "ab".repeat(32)),
+            ),
+        ];
+        for (call, want) in origins {
+            assert_eq!(read(origin, want), sums.origin(&call), "{call:?}");
+        }
+        assert_eq!(read(outcome, "Succeeded"), sums.outcome(None));
+        let closed = reject(RejectReason::Closed);
+        assert_eq!(
+            read(outcome, "Failed { error: Rejected { reason: Closed } }"),
+            sums.outcome(Some(&closed))
+        );
+    }
 }

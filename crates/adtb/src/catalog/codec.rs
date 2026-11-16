@@ -51,6 +51,18 @@ const fn same(a: &str, b: &str) -> bool {
     true
 }
 
+impl Field {
+    /// Returns the fields this is one of.
+    pub fn fields(self) -> Fields {
+        self.fields
+    }
+
+    /// Returns the position of this field among [`Field::fields`].
+    pub fn at(self) -> usize {
+        self.at
+    }
+}
+
 /// Returns field `name` of `fields`. Fails to compile in a constant when `fields` does not list
 /// `name`.
 pub const fn field(fields: Fields, name: &str) -> Field {

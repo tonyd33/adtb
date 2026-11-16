@@ -347,6 +347,7 @@ impl<R: Runtime> Clone for Database<R> {
 struct Engine<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
+    sums: error_value::Sums,
     program: Arc<Program>,
     /// The source of the version the database is at.
     source: Source,
@@ -987,6 +988,7 @@ impl<R: Runtime> Engine<R> {
         let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
         Ok(Engine {
             rt,
+            sums: error_value::Sums::new(&parts.schema),
             schema: parts.schema,
             program: parts.program,
             source: catalog.source().clone(),

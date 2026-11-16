@@ -1320,7 +1320,14 @@ pub fn build_ahead(
 /// in place of the ones the engine holds.
 #[cfg(feature = "testing")]
 pub fn build_engine_from(engine: &str) -> Result<Schema, Vec<FileDiag>> {
-    build_over(&built_in(engine), &[], &[])
+    build_over(&built_in(PRELUDE_SRC, engine), &[], &[])
+}
+
+/// Returns the schema `build` returns for no files, the prelude read from `prelude` in place of
+/// the one the engine holds.
+#[cfg(feature = "testing")]
+pub fn build_prelude_from(prelude: &str) -> Result<Schema, Vec<FileDiag>> {
+    build_over(&built_in(prelude, ENGINE_SRC), &[], &[])
 }
 
 fn build_over(
@@ -1411,11 +1418,12 @@ fn tag_former(id: TypeId) -> TypeDef {
 }
 
 /// The prelude and the engine's own module files, parsed once.
-static BUILT_IN: LazyLock<Vec<(FileId, ast::SchemaFile)>> = LazyLock::new(|| built_in(ENGINE_SRC));
+static BUILT_IN: LazyLock<Vec<(FileId, ast::SchemaFile)>> =
+    LazyLock::new(|| built_in(PRELUDE_SRC, ENGINE_SRC));
 
 /// Returns the prelude and the module files of the engine's declarations `engine`, parsed.
-fn built_in(engine: &str) -> Vec<(FileId, ast::SchemaFile)> {
-    let prelude = parse::parse_schema(PRELUDE_SRC, Options::default())
+fn built_in(prelude: &str, engine: &str) -> Vec<(FileId, ast::SchemaFile)> {
+    let prelude = parse::parse_schema(prelude, Options::default())
         .ok()
         .expect("the prelude parses");
     let mut all = vec![(FileId::PRELUDE, prelude)];
