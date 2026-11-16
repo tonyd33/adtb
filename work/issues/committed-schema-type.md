@@ -78,3 +78,7 @@ Landed as onutlsno afad7d9e (2 rounds), full check 0 (3844 tests). `Ty::Key.ctor
 ## 2026-11-16, part 2b-m-2 landed
 
 Landed as urmsumlx d610a136 (2 rounds), full check 0 (3850 tests). Resolved script-late-selection-widened. The review found late-set-name-unresolved-in-canon on main (a key naming a set added later in the same migration: a debug panic, an unqualified stored name in release); ruled into 2b-ii. Next: 2b-ii on rsvsqpqv (settledness per declaration, waiting on ahead and `Late` keys; late-set-name-unresolved-in-canon; add-drop-refused-while-other-add-pending).
+
+## 2026-11-16, part 2b-ii landed
+
+Landed as rsvsqpqv 19e22e89 (2 rounds), full check 0 (3852 tests). Waiting is decided per declaration from the names pass (`Ref::Unresolved`), not a list of positions (the first round's list missed bodies, a regression found by review). The 2b-m-2 fill gate now refuses only a value that can hold a key (`admits_late_key`); `fill None` into a late key is accepted, as evolution.md §4.9 shows. Resolved add-drop-refused-while-other-add-pending and late-set-name-unresolved-in-canon. Filed deferred-name-rewritten-refused and late-selection-held-as-text. Next: part 3 (the four `Schema::declared` callers, adtb-file `records`/`shape`, then delete `Schema::declared`).
