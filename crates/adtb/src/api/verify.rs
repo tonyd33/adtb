@@ -9,7 +9,9 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
-use crate::catalog::codec::{Codec, Ctor, Decode, Field, Fields, Relation, Row, field, relation};
+use crate::catalog::codec::{
+    Codec, Ctor, Decode, Field, Fields, Relation, Row, field, listed, relation,
+};
 use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, Rot, engine_relation};
 use crate::exec::{F64, Val};
 use crate::key::Value;
@@ -188,21 +190,15 @@ impl Kept {
     /// Returns the fields of a kept row of this with header `id`, `run` and `at`, in the order
     /// its constructor lists them.
     fn fields(&self, (id, run, at): (i64, i64, i64)) -> Vec<KeptField> {
-        let listed = self.head.id.fields();
         let header = [
             (self.head.id, KeptField::Int(id)),
             (self.head.run, KeptField::Int(run)),
             (self.head.at, KeptField::Instant(at)),
         ];
-        let mut slots = vec![None; listed.len()];
-        for (f, v) in header.into_iter().chain(self.rest.iter().cloned()) {
-            assert!(f.fields() == listed, "a finding's fields are of one list");
-            slots[f.at()] = Some(v);
-        }
-        slots
-            .into_iter()
-            .map(|v| v.expect("a finding gives each field its list holds"))
-            .collect()
+        listed(
+            self.head.id.fields(),
+            header.into_iter().chain(self.rest.iter().cloned()),
+        )
     }
 
     /// Returns whether `row` records this finding, whatever its header.

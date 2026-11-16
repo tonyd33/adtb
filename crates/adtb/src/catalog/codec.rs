@@ -1,5 +1,5 @@
-//! Catalog rows as typed values: one codec per catalog relation, reading a row's constructor by
-//! its fixed id and each field by its declared name.
+//! Catalog rows as typed values: one codec per catalog relation, reading and writing a row's
+//! constructor by its fixed id and each field by its declared name.
 
 use std::marker::PhantomData;
 
@@ -7,7 +7,7 @@ use adtb_lang::evolve::{DeployedGrant, GrantRow};
 use adtb_lang::ids::{engine_ctor as k, engine_rel};
 use adtb_lang::schema::Schema;
 use adtb_lang::schema::prelude::ctor;
-use adtb_lang::types::RelId;
+use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::{self, Val};
 use crate::heap::FieldType;
@@ -76,6 +76,110 @@ pub const fn field(fields: Fields, name: &str) -> Field {
     panic!("a codec reads a field its constructor lists")
 }
 
+/// The declared position and type of each field one constructor's [`Fields`] lists.
+pub struct Listed {
+    fields: Fields,
+    positions: Vec<usize>,
+    types: Vec<Ty>,
+}
+
+impl Listed {
+    /// Returns the layout of `fields` over `declared`, a constructor's fields in declared order.
+    ///
+    /// Precondition: `fields` lists each name `declared` holds once and no other; `broken` is the
+    /// panic message when it does not.
+    pub fn new(fields: Fields, declared: &[(String, Ty)], broken: impl Fn() -> String) -> Listed {
+        let mut want: Vec<&str> = fields.to_vec();
+        let mut have: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
+        want.sort_unstable();
+        have.sort_unstable();
+        assert_eq!(want, have, "{}", broken());
+        let positions: Vec<usize> = fields
+            .iter()
+            .map(|f| {
+                declared
+                    .iter()
+                    .position(|(n, _)| n == f)
+                    .expect("each listed field is declared")
+            })
+            .collect();
+        let types = positions.iter().map(|&at| declared[at].1.clone()).collect();
+        Listed {
+            fields,
+            positions,
+            types,
+        }
+    }
+
+    pub fn fields(&self) -> Fields {
+        self.fields
+    }
+
+    /// Returns the handle of each field, in the order [`Listed::fields`] lists them.
+    pub fn handles(&self) -> impl Iterator<Item = Field> + use<> {
+        let fields = self.fields;
+        (0..fields.len()).map(move |at| Field { fields, at })
+    }
+
+    fn mine(&self, f: Field) -> usize {
+        assert!(
+            f.fields == self.fields,
+            "a field handle is of the constructor it reads or writes"
+        );
+        f.at
+    }
+
+    /// Returns the declared position of field `f`.
+    pub fn position(&self, f: Field) -> usize {
+        self.positions[self.mine(f)]
+    }
+
+    /// Returns the declared type of field `f`.
+    pub fn ty(&self, f: Field) -> &Ty {
+        &self.types[self.mine(f)]
+    }
+
+    /// Returns `listed`, a value for each field in the order [`Listed::fields`] lists them, in
+    /// declared order.
+    ///
+    /// Precondition: `listed` holds one value for each listed field.
+    pub fn declared<V>(&self, listed: Vec<V>) -> Vec<V> {
+        assert_eq!(
+            listed.len(),
+            self.positions.len(),
+            "a row gives a value for each listed field"
+        );
+        let mut slots: Vec<Option<V>> = listed.iter().map(|_| None).collect();
+        for (v, &to) in listed.into_iter().zip(&self.positions) {
+            slots[to] = Some(v);
+        }
+        slots
+            .into_iter()
+            .map(|v| v.expect("`Listed::new` checks the listed fields are the declared ones"))
+            .collect()
+    }
+}
+
+/// Returns the value `given` holds for each field of `fields`, in the order `fields` lists them.
+///
+/// Precondition: `given` gives each field of `fields` once and no field of another list.
+pub fn listed<V>(fields: Fields, given: impl IntoIterator<Item = (Field, V)>) -> Vec<V> {
+    let mut slots: Vec<Option<V>> = fields.iter().map(|_| None).collect();
+    for (f, v) in given {
+        assert!(f.fields == fields, "a row is given fields of its own list");
+        assert!(
+            slots[f.at].replace(v).is_none(),
+            "a row is given field `{}` once",
+            fields[f.at]
+        );
+    }
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(at, v)| v.unwrap_or_else(|| panic!("a row is given field `{}`", fields[at])))
+        .collect()
+}
+
 /// The fixed id of a constructor of a sum with the stored types of its fields.
 pub type Payload = (CatCtorId, &'static [Scalar]);
 
@@ -84,6 +188,12 @@ pub type Payload = (CatCtorId, &'static [Scalar]);
 pub struct Sum {
     field: Field,
     ctors: &'static [Payload],
+}
+
+impl Sum {
+    pub fn field(self) -> Field {
+        self.field
+    }
 }
 
 /// Returns sum field `field`, whose type's constructors are `ctors` in any order.
@@ -200,8 +310,7 @@ pub struct Codec<T: 'static> {
 struct Shape<T: 'static> {
     ctor: &'static Ctor<T>,
     name: String,
-    /// The stored position of each field of `ctor.fields`, in its order.
-    positions: Vec<usize>,
+    listed: Listed,
     /// For each field of `ctor.fields` that `ctor.sums` lists, the fixed id of each constructor
     /// of its type by position.
     sums: Vec<Option<Vec<CatCtorId>>>,
@@ -230,29 +339,13 @@ impl<T: Decode> Codec<T> {
                 let c = u32::try_from(c).expect("a constructor position fits 32 bits");
                 let id = ctor_id(schema, r, c);
                 let declared_fields = layout::row(schema, r, c);
-                let stored: Vec<String> = declared_fields.iter().map(|(n, _)| n.clone()).collect();
                 let ctor = T::CTORS
                     .iter()
                     .find(|k| k.id == id)
                     .unwrap_or_else(|| panic!("the codec of {name} lists constructor {id}"));
-                let mut want: Vec<&str> = ctor.fields.to_vec();
-                let mut have: Vec<&str> = stored.iter().map(String::as_str).collect();
-                want.sort_unstable();
-                have.sort_unstable();
-                assert_eq!(
-                    want, have,
-                    "the codec of {name} lists the fields of constructor {id}"
-                );
-                let positions = ctor
-                    .fields
-                    .iter()
-                    .map(|f| {
-                        stored
-                            .iter()
-                            .position(|s| s == f)
-                            .expect("each listed field is declared")
-                    })
-                    .collect::<Vec<usize>>();
+                let listed = Listed::new(ctor.fields, &declared_fields, || {
+                    format!("the codec of {name} lists the fields of constructor {id}")
+                });
                 let mut sums = vec![None; ctor.fields.len()];
                 for s in ctor.sums {
                     assert!(
@@ -260,9 +353,7 @@ impl<T: Decode> Codec<T> {
                         "the codec of {name} lists a sum field of constructor {id} among its fields"
                     );
                     let field = s.field.fields[s.field.at];
-                    let FieldType::Sum(cs) =
-                        layout::field_type(schema, &declared_fields[positions[s.field.at]].1)
-                    else {
+                    let FieldType::Sum(cs) = layout::field_type(schema, listed.ty(s.field)) else {
                         panic!("field `{field}` of constructor {id} of {name} is a sum");
                     };
                     let table: Vec<CatCtorId> = cs
@@ -289,14 +380,15 @@ impl<T: Decode> Codec<T> {
                     );
                     sums[s.field.at] = Some(table);
                 }
-                let types = positions
+                let types = listed
+                    .types
                     .iter()
-                    .map(|&at| layout::field_type(schema, &declared_fields[at].1))
+                    .map(|t| layout::field_type(schema, t))
                     .collect();
                 Shape {
                     ctor,
                     name: declared[c as usize].name.clone(),
-                    positions,
+                    listed,
                     sums,
                     types,
                 }
@@ -327,24 +419,59 @@ impl<T: Decode> Codec<T> {
             });
         };
         let shape = &self.ctors[at];
-        if listed.len() != shape.positions.len() {
+        if listed.len() != shape.listed.positions.len() {
             return Err(Rot::CatalogRow {
                 row: format!("{}.{}", self.name, shape.name),
-                detail: counted(listed.len(), shape.positions.len()),
+                detail: counted(listed.len(), shape.listed.positions.len()),
             });
         }
-        let mut slots: Vec<Option<V>> = listed.iter().map(|_| None).collect();
-        for (v, &to) in listed.into_iter().zip(&shape.positions) {
-            slots[to] = Some(v);
-        }
-        let declared = slots
-            .into_iter()
-            .map(|v| v.expect("`Codec::new` checks the listed fields are the declared ones"))
-            .collect();
         Ok((
             u32::try_from(at).expect("a constructor position fits 32 bits"),
-            declared,
+            shape.listed.declared(listed),
         ))
+    }
+
+    /// Returns the position of constructor `id` and its row holding `given`, in declared order.
+    ///
+    /// Precondition: the codec lists constructor `id`, and `given` gives each field its [`Ctor`]
+    /// lists once and no other.
+    pub fn encode<V>(
+        &self,
+        id: CatCtorId,
+        given: impl IntoIterator<Item = (Field, V)>,
+    ) -> (u32, Vec<V>) {
+        let at = self
+            .ctors
+            .iter()
+            .position(|s| s.ctor.id == id)
+            .unwrap_or_else(|| panic!("the codec of {} lists constructor {id}", self.name));
+        let shape = &self.ctors[at];
+        (
+            u32::try_from(at).expect("a constructor position fits 32 bits"),
+            shape.listed.declared(listed(shape.ctor.fields, given)),
+        )
+    }
+
+    /// Returns the position of constructor `id` in the type of sum field `s`.
+    ///
+    /// Precondition: a constructor of the codec lists `s`, and `s` lists `id`.
+    pub fn tag(&self, s: Sum, id: CatCtorId) -> u32 {
+        let table = self
+            .ctors
+            .iter()
+            .filter(|shape| shape.ctor.fields == s.field.fields)
+            .find_map(|shape| shape.sums[s.field.at].as_ref())
+            .unwrap_or_else(|| {
+                panic!(
+                    "a constructor of the codec of {} lists sum field `{}`",
+                    self.name, s.field.fields[s.field.at]
+                )
+            });
+        let at = table
+            .iter()
+            .position(|&k| k == id)
+            .unwrap_or_else(|| panic!("sum field `{}` lists {id}", s.field.fields[s.field.at]));
+        u32::try_from(at).expect("a constructor position fits 32 bits")
     }
 
     /// Returns `v` with field `f` of its constructor holding `value`.
@@ -354,13 +481,8 @@ impl<T: Decode> Codec<T> {
         let Val::Ctor(c, fields) = v else {
             panic!("Codec::with takes a value decode_val reads, a constructor's");
         };
-        let shape = &self.ctors[*c as usize];
-        assert!(
-            f.fields == shape.ctor.fields,
-            "a codec writes a field of the constructor it reads"
-        );
         let mut fields = fields.to_vec();
-        fields[shape.positions[f.at]] = value;
+        fields[self.ctors[*c as usize].listed.position(f)] = value;
         Val::ctor(*c, fields)
     }
 
@@ -385,12 +507,12 @@ impl<T: Decode> Codec<T> {
             name: &shape.name,
             ctor: shape.ctor.id,
             fields: shape.ctor.fields,
-            positions: &shape.positions,
+            positions: &shape.listed.positions,
             sums: &shape.sums,
             values,
         };
-        if values.len() != shape.positions.len() {
-            return Err(row.refused(counted(values.len(), shape.positions.len())));
+        if values.len() != shape.listed.positions.len() {
+            return Err(row.refused(counted(values.len(), shape.listed.positions.len())));
         }
         for (at, t) in shape.types.iter().enumerate() {
             let f = Field {
@@ -670,9 +792,9 @@ impl RoleRow {
 }
 
 const ROLE: Fields = &["id", "name", "created"];
-const ROLE_ID: Field = field(ROLE, "id");
-const ROLE_NAME: Field = field(ROLE, "name");
-const ROLE_CREATED: Field = field(ROLE, "created");
+pub const ROLE_ID: Field = field(ROLE, "id");
+pub const ROLE_NAME: Field = field(ROLE, "name");
+pub const ROLE_CREATED: Field = field(ROLE, "created");
 
 impl Relation for relation::Roles {
     type Row = RoleRow;
@@ -766,17 +888,17 @@ const GRANT: Fields = &[
     "grant_option",
     "dormant",
 ];
-const GRANT_ID: Field = field(GRANT, "id");
-const KIND: Sum = sum(
+pub const GRANT_ID: Field = field(GRANT, "id");
+pub const GRANT_KIND: Sum = sum(
     field(GRANT, "kind"),
     &[(k::GRANT_LOG, &[]), (k::GRANT_DEPLOYMENT, &[])],
 );
-const PRIVILEGE: Field = field(GRANT, "privilege");
-const TARGET: Field = field(GRANT, "target");
-const GRANTEE: Field = field(GRANT, "grantee");
-const GRANTOR: Field = field(GRANT, "grantor");
-const GRANT_OPTION: Field = field(GRANT, "grant_option");
-const DORMANT_F: Field = field(GRANT, "dormant");
+pub const GRANT_PRIVILEGE: Field = field(GRANT, "privilege");
+pub const GRANT_TARGET: Field = field(GRANT, "target");
+pub const GRANT_GRANTEE: Field = field(GRANT, "grantee");
+pub const GRANT_GRANTOR: Field = field(GRANT, "grantor");
+pub const GRANT_OPTION: Field = field(GRANT, "grant_option");
+pub const GRANT_DORMANT: Field = field(GRANT, "dormant");
 
 impl Relation for relation::Grants {
     type Row = RoleGrant;
@@ -787,20 +909,20 @@ impl Decode for RoleGrant {
     const CTORS: &'static [Ctor<RoleGrant>] = &[Ctor::new(k::ROLE_GRANT, GRANT, |r| {
         Ok(RoleGrant {
             id: r.int(GRANT_ID),
-            kind: match r.ctor(KIND).0 {
+            kind: match r.ctor(GRANT_KIND).0 {
                 k::GRANT_LOG => GrantKind::Log,
                 k::GRANT_DEPLOYMENT => GrantKind::Deployment,
                 other => unlisted(other),
             },
-            privilege: r.text(PRIVILEGE).to_owned(),
-            target: r.optional_text(TARGET).map(str::to_owned),
-            grantee: r.text(GRANTEE).to_owned(),
-            grantor: r.text(GRANTOR).to_owned(),
+            privilege: r.text(GRANT_PRIVILEGE).to_owned(),
+            target: r.optional_text(GRANT_TARGET).map(str::to_owned),
+            grantee: r.text(GRANT_GRANTEE).to_owned(),
+            grantor: r.text(GRANT_GRANTOR).to_owned(),
             grant_option: r.flag(GRANT_OPTION),
-            dormant: r.flag(DORMANT_F),
+            dormant: r.flag(GRANT_DORMANT),
         })
     })
-    .with_sums(&[KIND])];
+    .with_sums(&[GRANT_KIND])];
 }
 
 /// A row of `catalog::migrations`.
@@ -827,9 +949,10 @@ impl MigrationRow {
 }
 
 const MIGRATION_ROW: Fields = &["version", "hash", "text", "applied"];
-const VERSION: Field = field(MIGRATION_ROW, "version");
-const HASH: Field = field(MIGRATION_ROW, "hash");
-const APPLIED: Field = field(MIGRATION_ROW, "applied");
+pub const MIGRATION_VERSION: Field = field(MIGRATION_ROW, "version");
+pub const MIGRATION_HASH: Field = field(MIGRATION_ROW, "hash");
+pub const MIGRATION_TEXT: Field = field(MIGRATION_ROW, "text");
+pub const MIGRATION_APPLIED: Field = field(MIGRATION_ROW, "applied");
 
 impl Relation for relation::Migrations {
     type Row = MigrationRow;
@@ -838,13 +961,14 @@ impl Relation for relation::Migrations {
 impl Decode for MigrationRow {
     type Relation = relation::Migrations;
     const CTORS: &'static [Ctor<MigrationRow>] = &[Ctor::new(k::MIGRATION, MIGRATION_ROW, |r| {
-        let hash = r.bytes(HASH);
+        let hash = r.bytes(MIGRATION_HASH);
         Ok(MigrationRow {
-            version: u64::try_from(r.int(VERSION)).map_err(|_| r.bad(VERSION))?,
+            version: u64::try_from(r.int(MIGRATION_VERSION))
+                .map_err(|_| r.bad(MIGRATION_VERSION))?,
             hash: hash
                 .try_into()
                 .map_err(|_| r.refused(format!("holds a hash of {} bytes, not 32", hash.len())))?,
-            applied: r.instant(APPLIED),
+            applied: r.instant(MIGRATION_APPLIED),
         })
     })];
 }
@@ -917,6 +1041,49 @@ const RETRIES_ID: Field = field(RETRIES, "id");
 const ROWS_ID: Field = field(ROWS, "id");
 const SAMPLING_ID: Field = field(SAMPLING, "id");
 const WAIT_ID: Field = field(WAIT, "id");
+
+/// The header field `id` of each list of setting fields.
+const SETTING_IDS: &[Field] = &[
+    BUDGET_ID,
+    DELAY_ID,
+    EVERY_ID,
+    GRACE_ID,
+    KEEP_ID,
+    LEASE_ID,
+    LENGTH_ID,
+    LIMIT_ID,
+    PERIOD_ID,
+    RETRIES_ID,
+    ROWS_ID,
+    SAMPLING_ID,
+    WAIT_ID,
+];
+
+impl Codec<SettingRow> {
+    /// Returns the row of the setting constructor at position `c`, in declared order: its header
+    /// field `id` holding `id` of the constructor's catalog id, and each other field the value
+    /// `own` returns for its name.
+    ///
+    /// Precondition: the relation has a constructor at `c`.
+    pub fn setting<V, E>(
+        &self,
+        c: u32,
+        id: impl FnOnce(i64) -> V,
+        mut own: impl FnMut(&'static str) -> Result<V, E>,
+    ) -> Result<Vec<V>, E> {
+        let shape = &self.ctors[c as usize];
+        let header = *SETTING_IDS
+            .iter()
+            .find(|f| f.fields == shape.ctor.fields)
+            .expect("`SETTING_IDS` holds the header of each setting's fields");
+        let raw = i64::try_from(shape.ctor.id.raw()).expect("a catalog id fits 63 bits");
+        let mut given = vec![(header, id(raw))];
+        for f in shape.listed.handles().filter(|f| f.at != header.at) {
+            given.push((f, own(f.fields[f.at])?));
+        }
+        Ok(shape.listed.declared(listed(shape.ctor.fields, given)))
+    }
+}
 
 /// Returns `setting`, once the header field `id` of `r` holds its constructor's catalog id.
 fn keyed(r: &Row<'_>, id: Field, setting: SettingRow) -> Result<SettingRow, Rot> {

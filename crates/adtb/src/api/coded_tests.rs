@@ -30,7 +30,7 @@ fn read_back_of(c: Coded) -> Vec<String> {
 }
 
 #[test]
-fn every_codec_reads_its_samples_under_the_shipped_and_both_reversed_catalogs() {
+fn every_codec_writes_and_reads_its_samples_under_the_shipped_and_both_reversed_catalogs() {
     let failed: Vec<String> = Coded::ALL.iter().copied().flat_map(read_back_of).collect();
     assert_eq!(Vec::<String>::new(), failed);
 }

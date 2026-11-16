@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow};
 use adtb_lang::ids::{CatCtorId, engine_ctor as k, engine_rel};
-use adtb_lang::schema::{CtorRef, Schema};
+use adtb_lang::schema::Schema;
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::catalog::codec::{
-    Codec, Ctor, Decode, Field, Fields, GrantKind, Relation, RoleGrant, RoleRow, field, relation,
+    Codec, Ctor, Decode, Field, Fields, GRANT_DORMANT, GRANT_GRANTEE, GRANT_GRANTOR, GRANT_ID,
+    GRANT_KIND, GRANT_OPTION, GRANT_PRIVILEGE, GRANT_TARGET, GrantKind, ROLE_CREATED, ROLE_ID,
+    ROLE_NAME, Relation, RoleGrant, RoleRow, field, relation,
 };
-use crate::catalog::{Rot, engine_relation, layout};
+use crate::catalog::{Rot, engine_relation};
 use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::write::{self, Txn};
@@ -210,24 +212,6 @@ impl<'s> Tables<'s> {
             .collect()
     }
 
-    fn row(&self, relation: RelId, ctor: CtorRef, fields: Vec<(&str, Val)>) -> Val {
-        let index = ctor.index();
-        let mut values: BTreeMap<_, _> = fields.into_iter().collect();
-        let fields = layout::row(self.schema, relation, index)
-            .iter()
-            .map(|(name, _)| {
-                values
-                    .remove(name.as_str())
-                    .unwrap_or_else(|| panic!("the catalog row provides {name}"))
-            })
-            .collect();
-        assert!(
-            values.is_empty(),
-            "a catalog row provides exactly its declared fields"
-        );
-        Val::ctor(index, fields)
-    }
-
     pub(super) fn roles<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<Vec<Role>, Error> {
         let codec = Codec::<RoleRow>::new(self.schema);
         Ok(self
@@ -285,15 +269,15 @@ impl<'s> Tables<'s> {
     }
 
     pub(super) fn role_value(&self, role: &Role) -> Val {
-        self.row(
-            self.roles,
-            self.schema.engine_ctors().role(),
-            vec![
-                ("id", Val::Int(role.id.0)),
-                ("name", Val::text(&role.name)),
-                ("created", Val::Instant(role.created)),
+        let (c, fields) = Codec::<RoleRow>::new(self.schema).encode(
+            k::ROLE,
+            [
+                (ROLE_ID, Val::Int(role.id.0)),
+                (ROLE_NAME, Val::text(&role.name)),
+                (ROLE_CREATED, Val::Instant(role.created)),
             ],
-        )
+        );
+        Val::ctor(c, fields)
     }
 
     pub(super) fn grants<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<Vec<Grant>, Error> {
@@ -327,24 +311,25 @@ impl<'s> Tables<'s> {
         grantor: &str,
         grant_option: bool,
     ) -> Val {
-        let kind = self.schema.engine_ctors().deployment().index();
-        self.row(
-            self.grants,
-            self.schema.engine_ctors().role_grant(),
-            vec![
-                ("id", Val::Int(id)),
-                ("kind", Val::ctor(kind, Vec::new())),
-                ("privilege", Val::text(privilege)),
+        let codec = Codec::<RoleGrant>::new(self.schema);
+        let kind = codec.tag(GRANT_KIND, k::GRANT_DEPLOYMENT);
+        let (c, fields) = codec.encode(
+            k::ROLE_GRANT,
+            [
+                (GRANT_ID, Val::Int(id)),
+                (GRANT_KIND.field(), Val::ctor(kind, Vec::new())),
+                (GRANT_PRIVILEGE, Val::text(privilege)),
                 (
-                    "target",
+                    GRANT_TARGET,
                     target.map_or_else(Val::none, |t| Val::some(Val::text(t))),
                 ),
-                ("grantee", Val::text(role)),
-                ("grantor", Val::text(grantor)),
-                ("grant_option", Val::bool(grant_option)),
-                ("dormant", Val::bool(false)),
+                (GRANT_GRANTEE, Val::text(role)),
+                (GRANT_GRANTOR, Val::text(grantor)),
+                (GRANT_OPTION, Val::bool(grant_option)),
+                (GRANT_DORMANT, Val::bool(false)),
             ],
-        )
+        );
+        Val::ctor(c, fields)
     }
 
     /// Returns a new id of `catalog::roles`.
@@ -423,8 +408,14 @@ impl<'s> Tables<'s> {
         statement: String,
     ) -> Result<(), Error> {
         let principal = service(self.schema, role);
-        let event = ("statement", Val::text(&statement));
-        self.audit_row(e, changes, k::AUDIT_GRANT, (role, &principal), event)
+        let event = (GRANT_STATEMENT, Val::text(&statement));
+        self.audit_row(
+            e,
+            changes,
+            (k::AUDIT_GRANT, GRANT_HEAD),
+            (role, &principal),
+            event,
+        )
     }
 
     /// Record that `role`, running for `caller`, was refused the call of `origin`.
@@ -436,8 +427,14 @@ impl<'s> Tables<'s> {
         caller: &Val,
         origin: &CallOrigin,
     ) -> Result<(), Error> {
-        let event = ("origin", e.sums.origin(origin));
-        self.audit_row(e, changes, k::AUDIT_DENIED, (role, caller), event)
+        let event = (DENIED_ORIGIN, e.sums.origin(origin));
+        self.audit_row(
+            e,
+            changes,
+            (k::AUDIT_DENIED, DENIED_HEAD),
+            (role, caller),
+            event,
+        )
     }
 
     /// Record that `role`, running for `caller`, retired `bundle`.
@@ -448,8 +445,14 @@ impl<'s> Tables<'s> {
         (role, caller): (&str, &Val),
         bundle: &str,
     ) -> Result<(), Error> {
-        let event = ("bundle", Val::text(bundle));
-        self.audit_row(e, changes, k::AUDIT_RETIRE, (role, caller), event)
+        let event = (RETIRE_BUNDLE, Val::text(bundle));
+        self.audit_row(
+            e,
+            changes,
+            (k::AUDIT_RETIRE, RETIRE_HEAD),
+            (role, caller),
+            event,
+        )
     }
 
     /// Returns the `Call` row numbered `seq` of `call`.
@@ -460,20 +463,26 @@ impl<'s> Tables<'s> {
         call: &CallRow<'_>,
     ) -> Result<Val, Error> {
         let fields = vec![
-            ("origin", e.sums.origin(call.origin)),
-            ("args", Val::Bytes(Arc::from(call.args.as_slice()))),
-            ("outcome", e.sums.outcome(call.failed)),
+            (CALL_ORIGIN, e.sums.origin(call.origin)),
+            (CALL_ARGS, Val::Bytes(Arc::from(call.args.as_slice()))),
+            (CALL_OUTCOME, e.sums.outcome(call.failed)),
         ];
-        self.event_row(e, seq, k::AUDIT_CALL, (call.role, call.caller), fields)
+        self.event_row(
+            e,
+            seq,
+            (k::AUDIT_CALL, CALL_HEAD),
+            (call.role, call.caller),
+            fields,
+        )
     }
 
     fn audit_row<R: Runtime>(
         &self,
         e: &Engine<R>,
         changes: &mut Changes,
-        ctor: CatCtorId,
+        ctor: (CatCtorId, Head),
         who: (&str, &Val),
-        event: (&str, Val),
+        event: (Field, Val),
     ) -> Result<(), Error> {
         let seq = e.audit_seq()?;
         let row = self.event_row(e, seq, ctor, who, vec![event])?;
@@ -485,9 +494,9 @@ impl<'s> Tables<'s> {
         &self,
         e: &Engine<R>,
         seq: i64,
-        ctor: CatCtorId,
+        (ctor, head): (CatCtorId, Head),
         (role, principal): (&str, &Val),
-        event: Vec<(&str, Val)>,
+        event: Vec<(Field, Val)>,
     ) -> Result<Val, Error> {
         let ty = Ty::Data {
             def: self.schema.principal,
@@ -497,19 +506,14 @@ impl<'s> Tables<'s> {
         let principal = print(principal, &Form::of(self.schema, &ty))
             .map_err(|_| malformed("a principal prints"))?;
         let mut fields = vec![
-            ("seq", Val::Int(seq)),
-            ("at", Val::Instant(e.clock())),
-            ("role", Val::text(role)),
-            ("principal", Val::text(&principal)),
+            (head.seq, Val::Int(seq)),
+            (head.at, Val::Instant(e.clock())),
+            (head.role, Val::text(role)),
+            (head.principal, Val::text(&principal)),
         ];
         fields.extend(event);
-        let ctor = self
-            .schema
-            .ids()
-            .ctor_of(ctor)
-            .filter(|c| c.def() == self.schema.relation(self.audit).elem_def)
-            .unwrap_or_else(|| panic!("the audit relation declares constructor {ctor}"));
-        Ok(self.row(self.audit, ctor, fields))
+        let (c, fields) = e.audit.encode(ctor, fields);
+        Ok(Val::ctor(c, fields))
     }
 
     pub(super) fn audit_relation(&self) -> RelId {
@@ -628,15 +632,41 @@ const COMMIT: Fields = &[
 ];
 const TRUNCATE: Fields = &["seq", "at", "role", "principal", "through", "digest"];
 
-const LOGIN_SEQ: Field = field(LOGIN, "seq");
-const GRANT_SEQ: Field = field(GRANT, "seq");
-const REGISTER_SEQ: Field = field(REGISTER, "seq");
-const RETIRE_SEQ: Field = field(RETIRE, "seq");
-const SCHEMA_OP_SEQ: Field = field(SCHEMA_OP, "seq");
-const CALL_SEQ: Field = field(CALL, "seq");
-const DENIED_SEQ: Field = field(DENIED, "seq");
-const COMMIT_SEQ: Field = field(COMMIT, "seq");
-const TRUNCATE_SEQ: Field = field(TRUNCATE, "seq");
+/// The `seq`, `at`, `role` and `principal` fields of one audit constructor's list of fields.
+#[derive(Clone, Copy)]
+struct Head {
+    seq: Field,
+    at: Field,
+    role: Field,
+    principal: Field,
+}
+
+/// Returns the header fields of `fields`. Fails to compile in a constant when it lists one not.
+const fn head(fields: Fields) -> Head {
+    Head {
+        seq: field(fields, "seq"),
+        at: field(fields, "at"),
+        role: field(fields, "role"),
+        principal: field(fields, "principal"),
+    }
+}
+
+const LOGIN_HEAD: Head = head(LOGIN);
+const GRANT_HEAD: Head = head(GRANT);
+const REGISTER_HEAD: Head = head(REGISTER);
+const RETIRE_HEAD: Head = head(RETIRE);
+const SCHEMA_OP_HEAD: Head = head(SCHEMA_OP);
+const CALL_HEAD: Head = head(CALL);
+const DENIED_HEAD: Head = head(DENIED);
+const COMMIT_HEAD: Head = head(COMMIT);
+const TRUNCATE_HEAD: Head = head(TRUNCATE);
+
+const GRANT_STATEMENT: Field = field(GRANT, "statement");
+const RETIRE_BUNDLE: Field = field(RETIRE, "bundle");
+const CALL_ORIGIN: Field = field(CALL, "origin");
+const CALL_ARGS: Field = field(CALL, "args");
+const CALL_OUTCOME: Field = field(CALL, "outcome");
+const DENIED_ORIGIN: Field = field(DENIED, "origin");
 
 impl Relation for relation::Audit {
     type Row = AuditRow;
@@ -647,47 +677,47 @@ impl Decode for AuditRow {
     const CTORS: &'static [Ctor<AuditRow>] = &[
         Ctor::new(k::AUDIT_LOGIN, LOGIN, |r| {
             Ok(AuditRow {
-                seq: r.int(LOGIN_SEQ),
+                seq: r.int(LOGIN_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_GRANT, GRANT, |r| {
             Ok(AuditRow {
-                seq: r.int(GRANT_SEQ),
+                seq: r.int(GRANT_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_REGISTER, REGISTER, |r| {
             Ok(AuditRow {
-                seq: r.int(REGISTER_SEQ),
+                seq: r.int(REGISTER_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_RETIRE, RETIRE, |r| {
             Ok(AuditRow {
-                seq: r.int(RETIRE_SEQ),
+                seq: r.int(RETIRE_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_SCHEMA_OP, SCHEMA_OP, |r| {
             Ok(AuditRow {
-                seq: r.int(SCHEMA_OP_SEQ),
+                seq: r.int(SCHEMA_OP_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_CALL, CALL, |r| {
             Ok(AuditRow {
-                seq: r.int(CALL_SEQ),
+                seq: r.int(CALL_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_DENIED, DENIED, |r| {
             Ok(AuditRow {
-                seq: r.int(DENIED_SEQ),
+                seq: r.int(DENIED_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_COMMIT, COMMIT, |r| {
             Ok(AuditRow {
-                seq: r.int(COMMIT_SEQ),
+                seq: r.int(COMMIT_HEAD.seq),
             })
         }),
         Ctor::new(k::AUDIT_TRUNCATE, TRUNCATE, |r| {
             Ok(AuditRow {
-                seq: r.int(TRUNCATE_SEQ),
+                seq: r.int(TRUNCATE_HEAD.seq),
             })
         }),
     ];

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
 use adtb_lang::check::{Command, Explained, Program};
-use adtb_lang::ids::{CatConstraintId, engine_rel, held_id};
+use adtb_lang::ids::{CatConstraintId, engine_rel};
 use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Committed, Schema};
@@ -783,16 +783,12 @@ impl<R: Runtime> Engine<R> {
             .map(|(n, _)| n.as_str())
             .zip(record.fields()?)
             .collect();
-        let ctor = &schema.ty(def).ctors()[setting as usize];
-        let id = schema.ty(def).ctor_at(setting);
-        let id = held_id(id.and_then(|c| schema.ids().ctor_id(c))).raw();
-        let mut fields = vec![Val::Int(i64::try_from(id).unwrap_or(i64::MAX))];
-        for f in &ctor.fields {
-            let v = given
-                .get(f.name.as_str())
-                .ok_or_else(|| write::Broken::SettingField(f.name.clone()))?;
-            fields.push((*v).clone());
-        }
+        let fields = codec.setting(setting, Val::Int, |name| {
+            given
+                .get(name)
+                .map(|v| (*v).clone())
+                .ok_or_else(|| write::Broken::SettingField(name.to_owned()))
+        })?;
         let row = Val::ctor(setting, fields);
         let decoded = codec
             .decode_val(schema, &row)

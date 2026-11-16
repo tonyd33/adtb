@@ -16,7 +16,7 @@ use adtb_sys::lock::{Lock, Ranked, RankedGuard};
 use crate::catalog::codec::{
     self, Codec, Ctor, Decode, Field, Fields, Relation, Sum, field, relation, sum,
 };
-use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, Rot, layout, values};
+use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, Rot, layout};
 use crate::exec::{self, Val};
 use crate::key::{Scalar, Value};
 use crate::mvcc::Transactions;
@@ -111,7 +111,7 @@ fn lease(e: &ast::Expr) -> Result<i64, Error> {
         .ok_or_else(|| Error::invalid(format!("`{amount}{unit}` is no lease")))
 }
 
-/// Each priority class with its constructor of `catalog::Priority`.
+/// Each priority class with the word that names it.
 const PRIORITIES: [(&str, exec::Priority); 3] = [
     ("AdHoc", exec::Priority::AdHoc),
     ("Background", exec::Priority::Background),
@@ -141,13 +141,13 @@ fn priority(p: &str) -> Option<exec::Priority> {
         .map(|(_, c)| *c)
 }
 
-/// Returns the constructor of `catalog::Priority` that names class `c`.
-fn priority_name(c: exec::Priority) -> &'static str {
-    PRIORITIES
-        .iter()
-        .find(|(_, x)| *x == c)
-        .map(|(name, _)| *name)
-        .expect("every priority class has a constructor")
+/// Returns the fixed id of the constructor of `catalog::Priority` that names class `c`.
+fn priority_ctor(c: exec::Priority) -> CatCtorId {
+    match c {
+        exec::Priority::AdHoc => k::PRIORITY_AD_HOC,
+        exec::Priority::Background => k::PRIORITY_BACKGROUND,
+        exec::Priority::Regular => k::PRIORITY_REGULAR,
+    }
 }
 
 /// The state of a bundle's row.
@@ -354,6 +354,8 @@ const CATALOG: Field = field(BUNDLE, "catalog");
 const HIDES_NEW: Field = field(BUNDLE, "hides_new");
 const LEASE: Field = field(BUNDLE, "lease");
 const RENEWED: Field = field(BUNDLE, "renewed");
+const MEMORY_SHARE: Field = field(BUNDLE, "memory_share");
+const WORKERS: Field = field(BUNDLE, "workers");
 const PRIORITY: Sum = sum(
     field(BUNDLE, "priority"),
     &[
@@ -464,6 +466,7 @@ const CALL_NAME: Field = field(CALL, "name");
 const ORDINAL: Field = field(CALL, "ordinal");
 const SIGNATURE: Field = field(CALL, "signature");
 const TEXT: Field = field(CALL, "text");
+const CALL_LIMIT: Field = field(CALL, "limit");
 
 impl Relation for relation::Registered {
     type Row = Registered;
@@ -497,109 +500,89 @@ fn registered(r: &codec::Row<'_>, kind: Callable) -> Result<Registered, Rot> {
     })
 }
 
-/// The relations and types the deployment rows live in.
+/// The relations the deployment rows live in, with their codecs.
 struct Tables<'s> {
     schema: &'s Schema,
+    bundle_codec: Codec<Row>,
+    call_codec: Codec<Registered>,
     bundles: RelId,
     registered: RelId,
 }
 
 impl<'s> Tables<'s> {
     fn of(schema: &'s Schema) -> Tables<'s> {
+        let bundle_codec = Codec::<Row>::new(schema);
+        let call_codec = Codec::<Registered>::new(schema);
         Tables {
             schema,
-            bundles: values::relation(schema, "bundles"),
-            registered: values::relation(schema, "registered"),
+            bundles: bundle_codec.relation(),
+            registered: call_codec.relation(),
+            bundle_codec,
+            call_codec,
         }
-    }
-
-    /// Returns the constructor of catalog type `ty` named `name`.
-    fn ctor(&self, ty: &str, name: &str) -> u32 {
-        let s = self.schema;
-        let m = s
-            .module_named("catalog")
-            .expect("the engine declares module `catalog`");
-        let def = s.module(m).types[ty];
-        s.ty(def)
-            .ctor_index(name)
-            .unwrap_or_else(|| panic!("`catalog::{ty}` has constructor `{name}`"))
     }
 
     /// Returns the value of `row`.
     fn bundle_value(&self, row: &Row) -> Val {
         let h = &row.header;
+        let codec = &self.bundle_codec;
         let state = match row.state {
-            State::Active => Val::ctor(self.ctor("BundleState", "Active"), Vec::new()),
+            State::Active => Val::ctor(codec.tag(STATE, k::BUNDLE_ACTIVE), Vec::new()),
             State::Superseded(at) => Val::ctor(
-                self.ctor("BundleState", "Superseded"),
+                codec.tag(STATE, k::BUNDLE_SUPERSEDED),
                 vec![Val::Instant(at)],
             ),
             State::Retired(at) => {
-                Val::ctor(self.ctor("BundleState", "Retired"), vec![Val::Instant(at)])
+                Val::ctor(codec.tag(STATE, k::BUNDLE_RETIRED), vec![Val::Instant(at)])
             }
         };
-        let fields = BTreeMap::from([
-            ("id", Val::Int(row.id)),
-            ("name", Val::text(&h.name)),
-            ("family", Val::text(&h.family)),
-            ("owner", Val::text(&row.owner)),
-            ("pins", Val::Int(int(h.pins))),
-            ("hash", Val::Bytes(unhex(&h.hash).into())),
-            ("edition", Val::text(&h.edition)),
-            (
-                "catalog",
-                h.catalog
-                    .map_or_else(Val::none, |c| Val::some(Val::Int(int(c)))),
-            ),
-            ("hides_new", Val::bool(h.hides_new)),
-            (
-                "lease",
-                h.lease
-                    .map_or_else(Val::none, |l| Val::some(Val::Duration(l))),
-            ),
-            ("renewed", Val::Instant(row.renewed)),
-            (
-                "priority",
-                Val::ctor(self.ctor("Priority", priority_name(h.priority)), Vec::new()),
-            ),
-            ("memory_share", Val::none()),
-            ("workers", Val::none()),
-            ("state", state),
-        ]);
-        Val::ctor(0, self.ordered(self.bundles, 0, &fields))
+        let priority = codec.tag(PRIORITY, priority_ctor(h.priority));
+        let (c, fields) = codec.encode(
+            k::BUNDLE,
+            [
+                (BUNDLE_ID, Val::Int(row.id)),
+                (BUNDLE_NAME, Val::text(&h.name)),
+                (FAMILY, Val::text(&h.family)),
+                (OWNER, Val::text(&row.owner)),
+                (PINS, Val::Int(int(h.pins))),
+                (HASH, Val::Bytes(unhex(&h.hash).into())),
+                (EDITION_F, Val::text(&h.edition)),
+                (
+                    CATALOG,
+                    h.catalog
+                        .map_or_else(Val::none, |c| Val::some(Val::Int(int(c)))),
+                ),
+                (HIDES_NEW, Val::bool(h.hides_new)),
+                (
+                    LEASE,
+                    h.lease
+                        .map_or_else(Val::none, |l| Val::some(Val::Duration(l))),
+                ),
+                (RENEWED, Val::Instant(row.renewed)),
+                (PRIORITY.field(), Val::ctor(priority, Vec::new())),
+                (MEMORY_SHARE, Val::none()),
+                (WORKERS, Val::none()),
+                (STATE.field(), state),
+            ],
+        );
+        Val::ctor(c, fields)
     }
 
     /// Returns the value of call `c`, row `id` of bundle `bundle`.
     fn call_value(&self, id: i64, bundle: i64, c: &CallRow) -> Val {
-        let kind = self
-            .schema
-            .ids()
-            .ctor_of(c.kind.ctor())
-            .expect("the engine declares each `Registered` constructor")
-            .index();
-        let fields = BTreeMap::from([
-            ("id", Val::Int(id)),
-            ("bundle", Val::Int(bundle)),
-            ("name", Val::text(&c.name)),
-            ("ordinal", Val::Int(c.ordinal)),
-            ("signature", Val::text(&c.signature)),
-            ("text", Val::text(&c.text)),
-            ("limit", Val::none()),
-        ]);
-        Val::ctor(kind, self.ordered(self.registered, kind, &fields))
-    }
-
-    /// Returns the values of `fields` in the order of a row of constructor `c` of `rel`.
-    fn ordered(&self, rel: RelId, c: u32, fields: &BTreeMap<&str, Val>) -> Vec<Val> {
-        layout::row(self.schema, rel, c)
-            .iter()
-            .map(|(n, _)| {
-                fields
-                    .get(n.as_str())
-                    .unwrap_or_else(|| panic!("the engine writes field `{n}`"))
-                    .clone()
-            })
-            .collect()
+        let (kind, fields) = self.call_codec.encode(
+            c.kind.ctor(),
+            [
+                (CALL_ID, Val::Int(id)),
+                (CALL_BUNDLE, Val::Int(bundle)),
+                (CALL_NAME, Val::text(&c.name)),
+                (ORDINAL, Val::Int(c.ordinal)),
+                (SIGNATURE, Val::text(&c.signature)),
+                (TEXT, Val::text(&c.text)),
+                (CALL_LIMIT, Val::none()),
+            ],
+        );
+        Val::ctor(kind, fields)
     }
 
     /// Returns the stored form of `v`, a row of `rel`.

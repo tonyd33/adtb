@@ -15,9 +15,12 @@ use crate::storage::Pager;
 use crate::write::{self, Sequences};
 
 use super::Rot;
-use super::codec::{Codec, GrantKind, RoleGrant, RoleRow};
+use super::codec::{
+    Codec, GRANT_DORMANT, GRANT_GRANTEE, GRANT_GRANTOR, GRANT_ID, GRANT_KIND, GRANT_OPTION,
+    GRANT_PRIVILEGE, GRANT_TARGET, GrantKind, RoleGrant, RoleRow,
+};
 use super::roots::RootsRow;
-use super::values::{self, boolean, tag};
+use super::values::{self, boolean};
 use super::{Broken, Catalog, Error, Migrating, OWNER_ROLE, delete_rows};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
@@ -48,36 +51,48 @@ impl Stored {
     }
 }
 
-/// The relation `catalog::grants` and its one constructor.
+/// The relation `catalog::grants`, its codec and the position of its one constructor.
 struct Shape {
+    codec: Codec<RoleGrant>,
     grants: RelId,
     ctor: u32,
 }
 
 impl Shape {
     fn of(schema: &Schema) -> Shape {
-        let grants = Codec::<RoleGrant>::new(schema).relation();
+        let codec = Codec::<RoleGrant>::new(schema);
+        let grants = codec.relation();
         let ctor = schema.engine_ctors().role_grant().index();
-        Shape { grants, ctor }
+        Shape {
+            codec,
+            grants,
+            ctor,
+        }
     }
 
     /// Returns the `Log` row of grant `g` with row id `id`.
     fn log_row(&self, schema: &Schema, g: &LogGrant, id: i64) -> Result<Vec<Value>, Error> {
-        let target = values::some(Value::Text(target(schema, g)?));
-        let fields = vec![
-            ("id", Value::I64(id)),
-            ("kind", tag(schema, k::GRANT_LOG)),
-            (
-                "privilege",
-                Value::Text(g.privilege.privilege_name().to_owned()),
-            ),
-            ("target", target),
-            ("grantee", Value::Text(g.role.clone())),
-            ("grantor", Value::Text(OWNER_ROLE.to_owned())),
-            ("grant_option", boolean(g.grant_option)),
-            ("dormant", boolean(g.dormant)),
-        ];
-        Ok(values::row(schema, self.grants, self.ctor, fields))
+        let kind = Value::Sum {
+            ctor: self.codec.tag(GRANT_KIND, k::GRANT_LOG),
+            fields: Vec::new(),
+        };
+        let (_, row) = self.codec.encode(
+            k::ROLE_GRANT,
+            [
+                (GRANT_ID, Value::I64(id)),
+                (GRANT_KIND.field(), kind),
+                (
+                    GRANT_PRIVILEGE,
+                    Value::Text(g.privilege.privilege_name().to_owned()),
+                ),
+                (GRANT_TARGET, values::some(Value::Text(target(schema, g)?))),
+                (GRANT_GRANTEE, Value::Text(g.role.clone())),
+                (GRANT_GRANTOR, Value::Text(OWNER_ROLE.to_owned())),
+                (GRANT_OPTION, boolean(g.grant_option)),
+                (GRANT_DORMANT, boolean(g.dormant)),
+            ],
+        );
+        Ok(row)
     }
 }
 

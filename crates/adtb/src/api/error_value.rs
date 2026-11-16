@@ -6,7 +6,7 @@ use adtb_lang::ids::{CatCtorId, engine_ctor as k};
 use adtb_lang::schema::{Prelude, Schema, TypeDefKind};
 use adtb_lang::types::{Base, Ty, TypeId};
 
-use crate::catalog::codec::{Field, Fields, field};
+use crate::catalog::codec::{Field, Fields, Listed, field, listed};
 use crate::exec::Val;
 
 use super::cause::Broken;
@@ -137,11 +137,7 @@ pub(super) struct Sums {
 struct Layout {
     def: TypeId,
     index: u32,
-    fields: Fields,
-    /// The declared position of each of `fields`, in its order.
-    positions: Vec<usize>,
-    /// The declared type of each of `fields`, in its order.
-    types: Vec<Ty>,
+    listed: Listed,
 }
 
 impl Sums {
@@ -169,38 +165,22 @@ impl Sums {
                 .ctor_of(id)
                 .unwrap_or_else(|| panic!("the prelude declares constructor {id}"));
             let def = schema.ty(c.def());
-            let declared: Vec<_> = def
+            let declared: Vec<(String, Ty)> = def
                 .header()
                 .iter()
                 .chain(&def.ctors()[c.index() as usize].fields)
+                .map(|f| (f.name.clone(), f.ty.clone()))
                 .collect();
-            let mut want: Vec<&str> = fields.to_vec();
-            let mut have: Vec<&str> = declared.iter().map(|f| f.name.as_str()).collect();
-            want.sort_unstable();
-            have.sort_unstable();
-            assert_eq!(want, have, "`SHAPES` lists the fields of constructor {id}");
-            let positions: Vec<usize> = fields
-                .iter()
-                .map(|f| {
-                    declared
-                        .iter()
-                        .position(|d| d.name == *f)
-                        .expect("each listed field is declared")
-                })
-                .collect();
-            let types = positions
-                .iter()
-                .map(|&at| declared[at].ty.clone())
-                .collect();
+            let layout = Listed::new(fields, &declared, || {
+                format!("`SHAPES` lists the fields of constructor {id}")
+            });
             *listed.entry(c.def()).or_default() += 1;
             ctors.insert(
                 id,
                 Layout {
                     def: c.def(),
                     index: c.index(),
-                    fields,
-                    positions,
-                    types,
+                    listed: layout,
                 },
             );
         }
@@ -575,24 +555,14 @@ impl Sums {
             matches!(ty, Ty::Data { def, .. } if *def == layout.def),
             "constructor {id} is of type {ty:?}"
         );
-        assert_eq!(
-            layout.fields.len(),
-            fields.len(),
-            "constructor {id} is given each of its fields"
-        );
-        let mut values = vec![None; fields.len()];
-        for (f, part) in fields {
-            assert!(
-                f.fields() == layout.fields,
-                "constructor {id} is given a field of its own"
-            );
-            values[layout.positions[f.at()]] = Some(self.part(part, &layout.types[f.at()])?);
-        }
-        let values = values
-            .into_iter()
-            .map(|v| v.unwrap_or_else(|| panic!("constructor {id} is given each field once")))
-            .collect();
-        Ok(Val::ctor(layout.index, values))
+        let parts = listed(layout.listed.fields(), fields);
+        let values = layout
+            .listed
+            .handles()
+            .zip(parts)
+            .map(|(f, part)| self.part(part, layout.listed.ty(f)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Val::ctor(layout.index, layout.listed.declared(values)))
     }
 }
 

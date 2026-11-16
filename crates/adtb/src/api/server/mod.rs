@@ -10,8 +10,9 @@ mod result;
 mod session;
 mod store;
 mod tables;
+pub(super) use tables::AuditRow;
 #[cfg(test)]
-pub(super) use tables::{AuditRow, CredentialRow, PeerRow};
+pub(super) use tables::{CredentialRow, PeerRow};
 mod task;
 
 use std::collections::BTreeSet;

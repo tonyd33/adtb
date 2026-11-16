@@ -88,7 +88,8 @@ found_counts() {
     count crash_allows '\bfn allows\b'
     for dir in crates apps; do
       count_under id_sentinels "$dir" '(?<!const [A-Z_]{1,64}: FileId = )\b(RelId|TypeId|FnId|ModuleId|FileId)\(u32::MAX|\.0 (==|!=) u32::MAX\b' -P -g '!**/target/**'
-      count_under engine_names "$dir" '\bmodule_named(_in)?\("(catalog|sys|prelude)"|\bvalues::relation\(|\bin_(relation|type)\("|\b(ctor_named|ctor_index)\("|\btypes\["|"(catalog|sys|prelude)" (=>|==|!=)|(==|!=) "(catalog|sys|prelude)"|\bself\.(push|ctor)\("|\b(audit|event)_row\([^;]*?, "[A-Z]' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
+      count_under engine_names "$dir" '\bmodule_named(_in)?\("(catalog|sys|prelude)"|\bvalues::relation\(|\bin_(relation|type)\("|\b(ctor_named|ctor_index)\("|\btypes\["|"(catalog|sys|prelude)" (=>|==|!=)|(==|!=) "(catalog|sys|prelude)"|\bself\.ctor\("|\b(audit|event)_row\([^;]*?, "[A-Z]' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
+      count_under engine_names "$dir" '\b\w+\.push\(\s*"[a-z_]+",' -P -U -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
     done
     count_under engine_names crates/adtb/src '\bmodule_named(_in)?\((?!")' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
     count kernel_door '(\.|Terms::)add_unchecked\('

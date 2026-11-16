@@ -350,6 +350,7 @@ struct Engine<R: Runtime> {
     rt: R,
     schema: Arc<CommittedSchema>,
     sums: error_value::Sums,
+    audit: catalog::codec::Codec<server::AuditRow>,
     program: Arc<Program>,
     /// The source of the version the database is at.
     source: Source,
@@ -991,6 +992,7 @@ impl<R: Runtime> Engine<R> {
         Ok(Engine {
             rt,
             sums: error_value::Sums::new(&parts.schema),
+            audit: catalog::codec::Codec::new(&parts.schema),
             schema: parts.schema,
             program: parts.program,
             source: catalog.source().clone(),

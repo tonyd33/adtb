@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ids::{CatRelId, engine_ctor as k, held_id};
+use adtb_lang::ids::{CatRelId, engine_ctor as k, engine_rel, held_id};
 use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::schema::{Committed, Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
@@ -12,7 +12,7 @@ use crate::catalog::codec::{
     self, Codec, Ctor, Decode, Field, Fields, GrantKind, Relation, RoleGrant, RoleRow, relation,
 };
 use crate::catalog::{
-    self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, Rot, arrows, values,
+    self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, Rot, arrows, engine_relation,
 };
 use crate::exec::Val;
 use crate::runtime::Runtime;
@@ -48,25 +48,35 @@ const TEXT: &str = "txt";
 const INDEX: &str = "bundles/index";
 
 /// The catalog relations holding the key of every catalog object but a constructor.
-const KEYED: [&str; 9] = [
-    "types",
-    "fields",
-    "relations",
-    "named_sets",
-    "indexes",
-    "constraints",
-    "functions",
-    "defaults",
-    "computed",
+const KEYED: [CatRelId; 9] = [
+    engine_rel::TYPES,
+    engine_rel::FIELDS,
+    engine_rel::RELATIONS,
+    engine_rel::NAMED_SETS,
+    engine_rel::INDEXES,
+    engine_rel::CONSTRAINTS,
+    engine_rel::FUNCTIONS,
+    engine_rel::DEFAULTS,
+    engine_rel::COMPUTED,
 ];
 /// The catalog relations of the `security` entry, whose `grants` are its `Deployment` rows.
-const SECURED: [&str; 4] = ["roles", "credentials", "grants", "peer_mappings"];
+const SECURED: [CatRelId; 4] = [
+    engine_rel::ROLES,
+    engine_rel::CREDENTIALS,
+    engine_rel::GRANTS,
+    engine_rel::PEER_MAPPINGS,
+];
 /// The catalog relations whose keys the engine draws from a counter of its own.
-const DRAWN: [&str; 1] = ["audit"];
+const DRAWN: [CatRelId; 1] = [engine_rel::AUDIT];
 /// The relations of [`DRAWN`] a dump holds the counter of only with its `security` entry.
-const SECURED_DRAWN: [&str; 2] = ["roles", "grants"];
+const SECURED_DRAWN: [CatRelId; 2] = [engine_rel::ROLES, engine_rel::GRANTS];
 /// The catalog relations of a bundle's entry, each holding the rows of that bundle alone.
-const BUNDLED: [&str; 4] = ["bundles", "registered", "feeds", "feed_members"];
+const BUNDLED: [CatRelId; 4] = [
+    engine_rel::BUNDLES,
+    engine_rel::REGISTERED,
+    engine_rel::FEEDS,
+    engine_rel::FEED_MEMBERS,
+];
 
 fn damaged(part: &str) -> Error {
     Error::rejected(RejectReason::DumpDamaged {
@@ -108,14 +118,14 @@ fn dumped(schema: &Schema) -> impl Iterator<Item = RelId> + '_ {
 
 /// Returns the relations a role must hold `read` on to dump besides those `print schema` reads.
 pub(super) fn read_by_dump(schema: &Schema) -> Vec<RelId> {
-    let catalog = [&[SETTINGS, AUDIT][..], &BUNDLED].concat();
+    let catalog = [&[engine_rel::SETTINGS, engine_rel::AUDIT][..], &BUNDLED].concat();
     dumped(schema)
         .chain(catalog_relations(schema, &catalog))
         .collect()
 }
 
-fn catalog_relations(schema: &Schema, names: &[&str]) -> Vec<RelId> {
-    names.iter().map(|n| values::relation(schema, n)).collect()
+fn catalog_relations(schema: &Schema, ids: &[CatRelId]) -> Vec<RelId> {
+    ids.iter().map(|&id| engine_relation(schema, id)).collect()
 }
 
 /// Returns the relations whose next key a `generators` entry holds, in ascending order, those of
@@ -160,23 +170,23 @@ type Rows = BTreeMap<RelId, BTreeSet<Val>>;
 
 fn rows_of<E>(
     schema: &Schema,
-    names: &[&str],
+    ids: &[CatRelId],
     mut rows: impl FnMut(RelId) -> Result<Vec<Val>, E>,
 ) -> Result<Rows, E> {
-    catalog_relations(schema, names)
+    catalog_relations(schema, ids)
         .into_iter()
         .map(|r| Ok((r, rows(r)?.into_iter().collect())))
         .collect()
 }
 
 /// Returns the rows an entry of [`sections_text`] holds, once it holds a document for exactly
-/// the relations `names`.
-fn read_sections(schema: &Schema, text: &str, e: &Envelope, names: &[&str]) -> Option<Rows> {
-    sections(schema, text.strip_prefix(&header_line(e))?, names)
+/// the relations `ids`.
+fn read_sections(schema: &Schema, text: &str, e: &Envelope, ids: &[CatRelId]) -> Option<Rows> {
+    sections(schema, text.strip_prefix(&header_line(e))?, ids)
 }
 
-/// Returns the rows of `rest`, once it holds a document for exactly the relations `names`.
-fn sections(schema: &Schema, rest: &str, names: &[&str]) -> Option<Rows> {
+/// Returns the rows of `rest`, once it holds a document for exactly the relations `ids`.
+fn sections(schema: &Schema, rest: &str, ids: &[CatRelId]) -> Option<Rows> {
     let mut sections: Vec<String> = Vec::new();
     for line in rest.split_inclusive('\n') {
         if line.starts_with("data ") {
@@ -189,7 +199,7 @@ fn sections(schema: &Schema, rest: &str, names: &[&str]) -> Option<Rows> {
         let doc = read_document::<Val>(schema, section).ok()?;
         out.insert(doc.relation, doc.rows).is_none().then_some(())?;
     }
-    let wanted: BTreeSet<RelId> = catalog_relations(schema, names).into_iter().collect();
+    let wanted: BTreeSet<RelId> = catalog_relations(schema, ids).into_iter().collect();
     out.keys().copied().eq(wanted).then_some(out)
 }
 
@@ -565,8 +575,8 @@ impl<R: Runtime> Engine<R> {
             security.insert(grants.relation(), given);
             sections.push((SECURITY, security));
         }
-        sections.push((SETTINGS, rows_of(schema, &[SETTINGS], rows)?));
-        sections.push((AUDIT, rows_of(schema, &[AUDIT], rows)?));
+        sections.push((SETTINGS, rows_of(schema, &[engine_rel::SETTINGS], rows)?));
+        sections.push((AUDIT, rows_of(schema, &[engine_rel::AUDIT], rows)?));
         let mut entries = vec![(LOG.to_owned(), log_text(&envelope, &self.source.log))];
         for (name, rows) in sections {
             entries.push((name.to_owned(), sections_text(&envelope, schema, &rows)));
@@ -646,8 +656,8 @@ pub(super) fn restore_dump<R: Runtime>(
     let log = read_log(entry(LOG)?, e).ok_or_else(|| damaged(LOG))?;
     let generators = read_generators(entry(GENERATORS)?, e).ok_or_else(|| damaged(GENERATORS))?;
     let schema = catalog::engine_schema();
-    let section = |name: &str, names: &[&str]| {
-        read_sections(&schema, entry(name)?, e, names).ok_or_else(|| damaged(name))
+    let section = |name: &str, ids: &[CatRelId]| {
+        read_sections(&schema, entry(name)?, e, ids).ok_or_else(|| damaged(name))
     };
     let security = entries
         .get(SECURITY)
@@ -655,12 +665,12 @@ pub(super) fn restore_dump<R: Runtime>(
     let (security, ids) = security.transpose()?.unwrap_or_default();
     let roles = ids.into_iter().chain([OWNER_ID]).collect();
     let (bundled, facts) = read_bundles(&schema, e, &roles, entry, entries.keys())?;
-    let deployed = section(SETTINGS, &[SETTINGS])?.into_iter();
+    let deployed = section(SETTINGS, &[engine_rel::SETTINGS])?.into_iter();
     let deployed = deployed
-        .chain(section(AUDIT, &[AUDIT])?)
+        .chain(section(AUDIT, &[engine_rel::AUDIT])?)
         .chain(bundled)
         .collect();
-    let mut ids = section(IDS, &[&KEYED[..], &["grants"]].concat())?;
+    let mut ids = section(IDS, &[&KEYED[..], &[engine_rel::GRANTS]].concat())?;
     let grants = Codec::<RoleGrant>::new(&schema);
     let logged = ids.remove(&grants.relation()).unwrap_or_default();
     let held = dormant_grants(&schema, &grants, &logged).ok_or_else(|| damaged(IDS))?;
@@ -923,10 +933,10 @@ fn paired(
     logged.is_empty().then_some(out)
 }
 
-/// Returns `rows`, rows of catalog relations of `from`, by the relations of `to` of those names.
+/// Returns `rows`, rows of catalog relations of `from`, by the relations of `to` of those ids.
 fn on(from: &Schema, to: &Schema, rows: Rows) -> Rows {
-    let named = |r: RelId| values::relation(to, &from.relation(r).name);
-    rows.into_iter().map(|(r, v)| (named(r), v)).collect()
+    let same = |r: RelId| engine_relation(to, held_id(from.ids().relation_id(r)));
+    rows.into_iter().map(|(r, v)| (same(r), v)).collect()
 }
 
 /// The catalog rows a restore parsed before it made its file, by relation of `schema`.

@@ -14,6 +14,9 @@ use crate::exec::{self, Broken};
 use crate::key::Value;
 use crate::plan::{Element, declared_elements};
 
+use super::codec::{
+    Codec, MIGRATION_APPLIED, MIGRATION_HASH, MIGRATION_TEXT, MIGRATION_VERSION, MigrationRow,
+};
 use super::ids::{CatCtorId, engine_relation, held_id, type_ctor_id};
 use super::{layout, oplog, values};
 
@@ -71,21 +74,21 @@ pub fn applied(schema: &Schema, source: &Source, applied: i64) -> Rows {
 }
 
 fn applied_hash(schema: &Schema, source: &Source, hash: oplog::Hash, applied: i64) -> Rows {
-    let mut b = Builder {
-        schema,
-        source,
-        rows: Rows::new(),
-    };
+    let mut rows = Rows::new();
     if let Some(m) = source.log.last() {
-        let fields = vec![
-            ("version", key(m.number)),
-            ("hash", Value::Bytes(hash.to_vec())),
-            ("text", Value::Text(m.text.clone())),
-            ("applied", Value::Instant(applied)),
-        ];
-        b.push("migrations", "Migration", fields);
+        let codec = Codec::<MigrationRow>::new(schema);
+        let row = codec.encode(
+            k::MIGRATION,
+            [
+                (MIGRATION_VERSION, key(m.number)),
+                (MIGRATION_HASH, Value::Bytes(hash.to_vec())),
+                (MIGRATION_TEXT, Value::Text(m.text.clone())),
+                (MIGRATION_APPLIED, Value::Instant(applied)),
+            ],
+        );
+        rows.insert(codec.relation(), vec![row]);
     }
-    b.rows
+    rows
 }
 
 pub(super) fn recorded(

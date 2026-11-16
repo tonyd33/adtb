@@ -62,11 +62,13 @@
 #                     up by its spelling: `module_named` or `module_named_in` of "catalog", "sys" or
 #                     "prelude", a comparison or match arm of one of those names, calls of
 #                     `values::relation`, `in_relation("`, `in_type("`, `ctor_named("`,
-#                     `ctor_index("`, `types["`, `self.push("` and `self.ctor("`, an `audit_row` or
-#                     `event_row` naming its constructor as text, and in crates/adtb/src any
-#                     `module_named` of a variable's text. An engine relation is named by its
-#                     `engine_rel` id through `catalog::engine_relation`, a type by `engine_type`, a
-#                     constructor by `engine_ctor`.
+#                     `ctor_index("`, `types["` and `self.ctor("`, a `push` of any receiver whose
+#                     first argument is a relation's name as text, on one line or several, an
+#                     `audit_row` or `event_row` naming its constructor as text, and in
+#                     crates/adtb/src any `module_named` of a variable's text. An engine relation
+#                     is named by its `engine_rel` id through `catalog::engine_relation`, a type by
+#                     `engine_type`, a constructor by `engine_ctor`. The 5 sites of
+#                     adtb-lang/src/schema/engine.rs are the mint of `EngineCtors` and stay.
 # kernel_door:        calls of `add_unchecked`, a method `Terms` no longer has, which added a kernel
 #                     node at a type nothing computed or checked. Terms are built through
 #                     `kernel::Build`, which types each node from its children. No line allows one.
@@ -176,13 +178,10 @@ disallowed_methods test 2 crates/adtb/src/storage/lost_bitmap_tests.rs
 engine_names prod 1 crates/adtb-lang/src/evolve/cx.rs
 engine_names prod 5 crates/adtb-lang/src/schema/engine.rs
 engine_names prod 1 crates/adtb-lang/src/types.rs
-engine_names prod 7 crates/adtb/src/api/bundle.rs
-engine_names prod 2 crates/adtb/src/api/dump.rs
-engine_names prod 1 crates/adtb/src/api/server/adhoc.rs
 engine_names prod 1 crates/adtb/src/api/server/task.rs
 engine_names prod 1 crates/adtb/src/catalog/oplog.rs
 engine_names prod 1 crates/adtb/src/catalog/readers.rs
-engine_names prod 15 crates/adtb/src/catalog/rows.rs
+engine_names prod 17 crates/adtb/src/catalog/rows.rs
 engine_names prod 1 crates/adtb/src/catalog/values.rs
 pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs
 pub_fields prod 3 crates/adtb-bench/src/native/counter.rs
@@ -408,7 +407,6 @@ prelude_positions prod 1 crates/adtb-lang/src/textual/read.rs
 prelude_positions prod 1 crates/adtb-reference/src/stmt.rs
 prelude_positions prod 1 crates/adtb-simkit/src/elle.rs
 prelude_positions prod 1 crates/adtb-testkit/src/draw.rs
-prelude_positions prod 1 crates/adtb/src/api/bundle.rs
 prelude_positions prod 1 crates/adtb/src/exec/prim/mod.rs
 prelude_positions prod 1 crates/adtb/src/exec/store.rs
 prelude_positions prod 1 crates/adtb/src/write/eval.rs

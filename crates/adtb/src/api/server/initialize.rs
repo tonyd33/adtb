@@ -1,5 +1,7 @@
-use crate::catalog::codec::{Codec, RoleRow};
-use crate::catalog::{Catalog, Rewrite, layout};
+use adtb_lang::ids::engine_ctor as k;
+
+use crate::catalog::codec::{Codec, ROLE_CREATED, ROLE_ID, ROLE_NAME, RoleRow};
+use crate::catalog::{Catalog, Rewrite};
 use crate::key::Value;
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
@@ -14,9 +16,7 @@ pub(in crate::api) fn initialize<R: Runtime>(
     txns: &Transactions<R>,
 ) -> Result<(), OpenError> {
     let schema = catalog.schema();
-    let roles = Codec::<RoleRow>::new(schema).relation();
-    let ctor = schema.engine_ctors().role().index();
-    let fields = layout::row(schema, roles, ctor);
+    let codec = Codec::<RoleRow>::new(schema);
     let held = catalog.committed_roles(pager, txns).map_err(corrupt)?;
     if held.values().any(|name| name == OWNER_ROLE) {
         return Ok(());
@@ -24,23 +24,22 @@ pub(in crate::api) fn initialize<R: Runtime>(
     if !held.is_empty() {
         return Err(corrupt(Corruption::NoSchemaOwner));
     }
-    let row = fields
-        .iter()
-        .map(|(name, _)| match name.as_str() {
-            "id" => Value::I64(OWNER_ID),
-            "name" => Value::Text(OWNER_ROLE.to_owned()),
-            "created" => Value::Instant(micros(pager.wall())),
-            _ => panic!("catalog Role has only id, name and created"),
-        })
-        .collect();
+    let row = codec.encode(
+        k::ROLE,
+        [
+            (ROLE_ID, Value::I64(OWNER_ID)),
+            (ROLE_NAME, Value::Text(OWNER_ROLE.to_owned())),
+            (ROLE_CREATED, Value::Instant(micros(pager.wall()))),
+        ],
+    );
     catalog
         .deploy(
             pager,
             txns,
             &[Rewrite {
-                relation: roles,
+                relation: codec.relation(),
                 deleted: Vec::new(),
-                inserted: vec![(ctor, row)],
+                inserted: vec![row],
             }],
         )
         .map_err(corrupt)

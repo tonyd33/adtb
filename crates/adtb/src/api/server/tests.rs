@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
@@ -10,8 +11,8 @@ use crate::api::bundle::Stored;
 use crate::api::{
     CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, Registration, RejectReason,
 };
-use crate::catalog::Catalog;
 use crate::catalog::codec::{Codec, RoleRow};
+use crate::catalog::{Catalog, layout};
 use crate::storage::{HEADER_LEN, Pager};
 
 use super::super::RoleAuthority;
@@ -79,7 +80,7 @@ fn replace_grant(authority: &RoleAuthority, field: &str, value: Val) {
             let Val::Ctor(ctor, values) = row else {
                 panic!("the grant fixture is a constructor");
             };
-            let declared = super::layout::row(&e.schema, t.grants, *ctor);
+            let declared = layout::row(&e.schema, t.grants, *ctor);
             let mut fields: Vec<_> = declared
                 .iter()
                 .zip(values.iter())
@@ -90,11 +91,34 @@ fn replace_grant(authority: &RoleAuthority, field: &str, value: Val) {
             changes.delete(t.grants, row.clone());
             changes.insert(
                 t.grants,
-                t.row(t.grants, e.schema.engine_ctors().role_grant(), fields),
+                fixture_row(
+                    &e.schema,
+                    t.grants,
+                    e.schema.engine_ctors().role_grant(),
+                    fields,
+                ),
             );
             Ok(())
         })
         .expect("replace trusted grant fixture");
+}
+
+/// Returns the value of constructor `ctor` of `relation` whose fields `fields` gives by name.
+fn fixture_row(schema: &Schema, relation: RelId, ctor: CtorRef, fields: Vec<(&str, Val)>) -> Val {
+    let mut values: BTreeMap<_, _> = fields.into_iter().collect();
+    let fields = layout::row(schema, relation, ctor.index())
+        .iter()
+        .map(|(name, _)| {
+            values
+                .remove(name.as_str())
+                .unwrap_or_else(|| panic!("the fixture row provides {name}"))
+        })
+        .collect();
+    assert!(
+        values.is_empty(),
+        "a fixture row provides exactly its declared fields"
+    );
+    Val::ctor(ctor.index(), fields)
 }
 
 fn ctor_of(schema: &Schema, r: RelId, name: &str) -> CtorRef {
@@ -109,7 +133,8 @@ fn seed_mappings(authority: &RoleAuthority) {
             let t = Tables::new(&e.schema, id);
             let relation = t.peers;
             for (ordinal, role) in [(1, "web"), (3, "other"), (7, "web")] {
-                let row = t.row(
+                let row = fixture_row(
+                    &e.schema,
                     relation,
                     ctor_of(&e.schema, relation, "PeerMapping"),
                     vec![
@@ -132,7 +157,8 @@ fn seed_credentials(authority: &RoleAuthority) {
             let t = Tables::new(&e.schema, id);
             for name in ["web", "other"] {
                 let role = t.role(e, tx, name)?;
-                let row = t.row(
+                let row = fixture_row(
+                    &e.schema,
                     t.credentials,
                     ctor_of(&e.schema, t.credentials, "Credential"),
                     vec![
@@ -408,11 +434,11 @@ fn legacy_roles(roles: &[(i64, &str)]) -> (Scratch, OpenOptions) {
             let Val::Ctor(c, fields) = row else {
                 panic!("the role fixture is a constructor");
             };
-            let stored = super::layout::row(catalog.schema(), t.roles, c)
+            let stored = layout::row(catalog.schema(), t.roles, c)
                 .iter()
                 .zip(fields.iter())
                 .map(|((_, ty), value)| {
-                    crate::exec::to_stored(&super::layout::field_type(catalog.schema(), ty), value)
+                    crate::exec::to_stored(&layout::field_type(catalog.schema(), ty), value)
                         .unwrap()
                 })
                 .collect();
@@ -647,7 +673,7 @@ fn dormant_owner_grant(authority: &RoleAuthority) {
                 let Val::Ctor(ctor, values) = &row else {
                     panic!("the grant fixture is a constructor");
                 };
-                let declared = super::layout::row(&e.schema, t.grants, *ctor);
+                let declared = layout::row(&e.schema, t.grants, *ctor);
                 let mut fields: Vec<_> = declared
                     .iter()
                     .zip(values.iter())
@@ -665,7 +691,12 @@ fn dormant_owner_grant(authority: &RoleAuthority) {
                     changes.delete(t.grants, row.clone());
                     changes.insert(
                         t.grants,
-                        t.row(t.grants, e.schema.engine_ctors().role_grant(), fields),
+                        fixture_row(
+                            &e.schema,
+                            t.grants,
+                            e.schema.engine_ctors().role_grant(),
+                            fields,
+                        ),
                     );
                 }
             }

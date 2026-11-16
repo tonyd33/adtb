@@ -11,7 +11,7 @@ use crate::key::{F64, Scalar, Value};
 
 use super::super::ids::{ctor_index, stored};
 use super::super::{engine_schema, layout, row_type};
-use super::{Codec, Decode, coded};
+use super::{Codec, Decode, Field, coded};
 
 /// A row's constructor id, the fields its reader reads by name, and the typed row it reads as.
 pub(crate) type Sample<T> = (CatCtorId, Vec<(&'static str, Value)>, T);
@@ -72,8 +72,10 @@ pub(crate) fn filled<T: Decode>(
         .collect()
 }
 
-/// Returns each way `T`'s samples fail to read back: under the shipped catalog, the one with its
-/// constructors reversed and the one with its fields reversed; stored by the shipped catalog and
+/// Returns each way `T`'s samples fail to read back, or to be written by field handle as the
+/// stored row of the fields of their names and read back: under the shipped catalog, the one
+/// with its constructors reversed and the one with its fields reversed; each sum constructor its
+/// constructors list written at another position than declared; stored by the shipped catalog and
 /// read by the one with its constructors reversed; or where a reversal leaves a constructor off
 /// its mirror position, or a constructor's header fields or own fields unreversed.
 pub(crate) fn read_back<T: Sampled>() -> Vec<String> {
@@ -99,13 +101,29 @@ pub(crate) fn read_back<T: Sampled>() -> Vec<String> {
         }
         for (id, given, typed) in samples {
             let row = filled(schema, &codec, id, &given);
-            let read = codec.decode(position(schema, &codec, id), &row);
+            let at = position(schema, &codec, id);
+            let read = codec.decode(at, &row);
             if read.as_ref() != Ok(&typed) {
                 out.push(format!(
                     "{name} {id} under {catalog}: {read:?}, not {typed:?}"
                 ));
             }
+            let written = codec.encode(id, by_handle(schema, &codec, id, &row));
+            if written != (at, row.clone()) {
+                out.push(format!(
+                    "{name} {id} written under {catalog}: {written:?}, not {:?}",
+                    (at, &row)
+                ));
+            }
+            let reread = codec.decode(written.0, &written.1);
+            if reread.as_ref() != Ok(&typed) {
+                out.push(format!(
+                    "{name} {id} written then read under {catalog}: {reread:?}, not {typed:?}"
+                ));
+            }
         }
+        out.extend(fields_written(schema, &codec, catalog, &name));
+        out.extend(tags_written(schema, &codec, catalog, &name));
     }
     let (old, by_ctor, by_field) = (
         Codec::<T>::new(&shipped),
@@ -164,6 +182,136 @@ pub(crate) fn read_back<T: Sampled>() -> Vec<String> {
                 "{name} {}: fields {reversed:?} under fields, not {mirrored:?}",
                 k.id
             ));
+        }
+    }
+    out
+}
+
+/// Returns each field of constructor `id` of `codec` by its handle, holding the value `row`, a
+/// stored row of it in `schema`, holds in the field of its name.
+fn by_handle<T: Decode>(
+    schema: &Schema,
+    codec: &Codec<T>,
+    id: CatCtorId,
+    row: &[Value],
+) -> Vec<(Field, Value)> {
+    let declared = layout::row(schema, codec.relation(), position(schema, codec, id));
+    let ctor = T::CTORS
+        .iter()
+        .find(|k| k.id == id)
+        .unwrap_or_else(|| panic!("the codec lists constructor {id}"));
+    (0..ctor.fields.len())
+        .map(|at| {
+            let f = Field {
+                fields: ctor.fields,
+                at,
+            };
+            let named = declared
+                .iter()
+                .position(|(n, _)| n == ctor.fields[at])
+                .unwrap_or_else(|| panic!("constructor {id} declares `{}`", ctor.fields[at]));
+            (f, row[named].clone())
+        })
+        .collect()
+}
+
+/// Returns a value stored as `t` that differs from that of each other field of its row: built
+/// from `n`, the field's position in its constructor's list, and `name`, its name.
+fn distinct(t: &FieldType, n: usize, name: &str) -> Value {
+    let k = i64::try_from(n).expect("a position fits 63 bits") + 1000;
+    match t {
+        FieldType::Scalar(Scalar::I64) => Value::I64(k),
+        FieldType::Scalar(Scalar::I32) => Value::I32(i32::try_from(k).expect("a position fits")),
+        FieldType::Scalar(Scalar::Text) => Value::Text(name.into()),
+        FieldType::Scalar(Scalar::Bytes) => Value::Bytes(name.as_bytes().to_vec()),
+        FieldType::Scalar(Scalar::Instant) => Value::Instant(k),
+        FieldType::Scalar(Scalar::Duration) => Value::Duration(k),
+        FieldType::Scalar(Scalar::F64) => Value::F64(F64::new(k as f64)),
+        FieldType::Record(ts) => Value::Record(ts.iter().map(|t| distinct(t, n, name)).collect()),
+        FieldType::Sum(cs) => {
+            let c = n % cs.len();
+            Value::Sum {
+                ctor: u32::try_from(c).expect("a position fits 32 bits"),
+                fields: cs[c].fields.iter().map(|t| distinct(t, n, name)).collect(),
+            }
+        }
+        other => panic!("no distinct value of {other:?}"),
+    }
+}
+
+/// Returns each way `codec` writes a constructor's fields, each given a value distinct from the
+/// others by its handle, otherwise than `schema` places those values by field name.
+fn fields_written<T: Decode>(
+    schema: &Schema,
+    codec: &Codec<T>,
+    catalog: &str,
+    name: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for k in T::CTORS {
+        let at = position(schema, codec, k.id);
+        let declared = layout::row(schema, codec.relation(), at);
+        let value = |field: &str| {
+            let n = k
+                .fields
+                .iter()
+                .position(|f| *f == field)
+                .unwrap_or_else(|| panic!("constructor {} lists `{field}`", k.id));
+            let (_, ty) = declared
+                .iter()
+                .find(|(d, _)| d == field)
+                .unwrap_or_else(|| panic!("constructor {} declares `{field}`", k.id));
+            distinct(&layout::field_type(schema, ty), n, field)
+        };
+        let want: Vec<Value> = declared.iter().map(|(d, _)| value(d)).collect();
+        let given = (0..k.fields.len()).map(|n| {
+            let f = Field {
+                fields: k.fields,
+                at: n,
+            };
+            (f, value(k.fields[n]))
+        });
+        let written = codec.encode(k.id, given);
+        if written != (at, want.clone()) {
+            out.push(format!(
+                "{name} {} written by handle under {catalog}: {written:?}, not {:?}",
+                k.id,
+                (at, &want)
+            ));
+        }
+    }
+    out
+}
+
+/// Returns each way `codec` writes a constructor of a sum field its constructors list at another
+/// position than `schema` declares it.
+fn tags_written<T: Decode>(
+    schema: &Schema,
+    codec: &Codec<T>,
+    catalog: &str,
+    name: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for k in T::CTORS {
+        let at = (codec.relation(), position(schema, codec, k.id));
+        for s in k.sums {
+            let field = s.field.fields[s.field.at];
+            for &(id, payload) in s.ctors {
+                let fields = payload
+                    .iter()
+                    .map(|&p| filler(&FieldType::Scalar(p)))
+                    .collect();
+                let Value::Sum { ctor: want, .. } = tag(schema, at, field, id, fields) else {
+                    unreachable!("`tag` returns a sum's value");
+                };
+                let written = codec.tag(*s, id);
+                if written != want {
+                    out.push(format!(
+                        "{name} {} field `{field}` writes {id} at {written} under {catalog}, not {want}",
+                        k.id
+                    ));
+                }
+            }
         }
     }
     out

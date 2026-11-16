@@ -259,7 +259,10 @@ pub(in super::super) fn monitored(schema: &Schema, r: &Requirement) -> bool {
         return false;
     };
     rel == engine_relation(schema, engine_rel::PLANS)
-        || schema.module_named("sys") == Some(schema.relation(rel).module)
+        || schema
+            .relation(engine_relation(schema, engine_rel::SESSIONS))
+            .module
+            == schema.relation(rel).module
 }
 
 /// Returns the ids of the fields of [`REVEALING`].
