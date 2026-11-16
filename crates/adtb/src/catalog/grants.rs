@@ -16,8 +16,9 @@ use crate::write::{self, Sequences};
 
 use super::Rot;
 use super::codec::{Codec, GrantKind, RoleGrant, RoleRow};
+use super::roots::RootsRow;
 use super::values::{self, boolean, tag};
-use super::{Broken, Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int};
+use super::{Broken, Catalog, Error, Migrating, OWNER_ROLE, delete_rows};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -380,12 +381,11 @@ impl Catalog {
                     dormant.push((i, g.role.clone()));
                 }
                 for role in marked {
-                    let fields = vec![int(into.source.version), Value::Text(role)];
-                    let mark = Value::Sum {
-                        ctor: DORMANT,
-                        fields,
+                    let mark = RootsRow::Dormant {
+                        version: into.source.version,
+                        role,
                     };
-                    m.insert(&self.roots, &[mark])?;
+                    m.insert(&self.roots, &mark.encode())?;
                 }
             }
         }

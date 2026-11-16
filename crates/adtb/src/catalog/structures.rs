@@ -18,7 +18,7 @@ use crate::verify::{Inventory, Sum};
 use super::history::key_indexes;
 use super::ids::{ctor_id, stored};
 use super::root::Root;
-use super::{Catalog, roots_row};
+use super::{Catalog, roots};
 
 /// Returns the holder of the pages of a heap or tree of relation `r`, named `object`.
 pub fn relation_holder(schema: &Schema, r: RelId, object: Quarantine) -> Holder {
@@ -126,7 +126,7 @@ impl Structures {
         let named = pager.read(root).map(|page| {
             let read = Root::read(&page);
             let large = LargeStore::open(read.large.0, read.large.1);
-            let rows = Heap::open(pager, read.roots.0, read.roots.1, roots_row(), large).ok();
+            let rows = Heap::open(pager, read.roots.0, read.roots.1, roots::row_type(), large).ok();
             (rows, read.commit_log)
         });
         Unopened { root, named }

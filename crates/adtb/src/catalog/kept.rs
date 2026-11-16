@@ -5,17 +5,13 @@ use std::collections::BTreeSet;
 
 use adtb_lang::ids::CatCtorId;
 
-use crate::heap::{self, FieldType, WriteTarget};
-use crate::key::{CtorId, Scalar, Value};
+use crate::heap::WriteTarget;
 use crate::mvcc::{Scope, Transactions, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager};
+use crate::storage::Pager;
 
-use super::Rot;
-use super::{Catalog, Error, ROOTS, insert_row, int, uint, visible};
-
-/// The constructor of a roots row holding a row of a volatile relation.
-const KEPT: u32 = 14;
+use super::roots::{self, RootsRow};
+use super::{Catalog, Error, ROOTS, insert_row, visible};
 
 /// The only encoding of a kept row's constructor and fields this engine reads.
 pub(super) const ROW_FORMAT: u64 = 2;
@@ -41,27 +37,7 @@ pub struct KeptRow {
     pub fields: Vec<KeptField>,
 }
 
-pub(super) fn ctors() -> [heap::CtorType; 1] {
-    [heap::CtorType {
-        id: CtorId(KEPT),
-        fields: [
-            Scalar::I64,
-            Scalar::Text,
-            Scalar::I64,
-            Scalar::I64,
-            Scalar::Bytes,
-        ]
-        .into_iter()
-        .map(FieldType::Scalar)
-        .collect(),
-    }]
-}
-
-pub(super) fn holds(ctor: u32) -> bool {
-    ctor == KEPT
-}
-
-fn encode(fields: &[KeptField]) -> Vec<u8> {
+pub(super) fn encode(fields: &[KeptField]) -> Vec<u8> {
     let mut out = Vec::new();
     for f in fields {
         match f {
@@ -83,7 +59,7 @@ fn encode(fields: &[KeptField]) -> Vec<u8> {
     out
 }
 
-fn decode(mut bytes: &[u8]) -> Option<Vec<KeptField>> {
+pub(super) fn decode(mut bytes: &[u8]) -> Option<Vec<KeptField>> {
     let mut out = Vec::new();
     while let Some((tag, rest)) = bytes.split_first() {
         let (head, rest) = rest.split_first_chunk::<8>()?;
@@ -108,33 +84,6 @@ fn decode(mut bytes: &[u8]) -> Option<Vec<KeptField>> {
     Some(out)
 }
 
-fn row_of(fields: &[Value]) -> Result<KeptRow, Error> {
-    let bad = || Error::from(Rot::KeptRow(fields.to_vec()));
-    let [
-        relation,
-        Value::Text(group),
-        ctor,
-        format,
-        Value::Bytes(row),
-    ] = fields
-    else {
-        return Err(bad());
-    };
-    let format = uint(format)?;
-    if format != ROW_FORMAT {
-        return Err(Rot::KeptFormat(format).into());
-    }
-    Ok(KeptRow {
-        relation: uint(relation)?,
-        group: group.clone(),
-        ctor: match uint(ctor)? {
-            0 => None,
-            id => Some(CatCtorId::from_raw(id)),
-        },
-        fields: decode(row).ok_or_else(bad)?,
-    })
-}
-
 impl Catalog {
     /// Returns the page ids of the heap kept rows lie in.
     #[cfg(any(test, feature = "testing"))]
@@ -156,10 +105,23 @@ impl Catalog {
         drop(hold);
         let mut out = Vec::new();
         for row in rows? {
-            if let [Value::Sum { ctor, fields }] = row.as_slice()
-                && holds(*ctor)
-            {
-                out.push(row_of(fields)?);
+            match RootsRow::decode(&row)? {
+                RootsRow::Kept {
+                    relation,
+                    group,
+                    ctor,
+                    format,
+                    row,
+                } => out.push(roots::kept_row(relation, &group, ctor, format, &row)?),
+                RootsRow::HeapRoot { .. }
+                | RootsRow::IndexRoot { .. }
+                | RootsRow::OrderKey { .. }
+                | RootsRow::Migration { .. }
+                | RootsRow::HistoryHeap { .. }
+                | RootsRow::HistoryIndex { .. }
+                | RootsRow::Held { .. }
+                | RootsRow::Dormant { .. }
+                | RootsRow::Deployment(_) => {}
             }
         }
         Ok(out)
@@ -178,7 +140,7 @@ impl Catalog {
         rows: &[KeptRow],
     ) -> Result<(), Error> {
         let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let judged = || -> Result<_, PageError> {
+        let judged = || -> Result<_, Error> {
             let reader = txns.reader(pager, &hold, None);
             'scan: loop {
                 let mut versions = Vec::new();
@@ -191,13 +153,24 @@ impl Catalog {
                     if !seen.visible() {
                         continue;
                     }
-                    if let [Value::Sum { ctor, fields }] = v.row.as_slice()
-                        && holds(*ctor)
-                        && let [r, Value::Text(g), ..] = fields.as_slice()
-                        && uint(r).is_ok_and(|r| r == relation)
-                        && g == group
-                    {
-                        gone.push((v.tid, v.header));
+                    match RootsRow::decode(&v.row)? {
+                        RootsRow::Kept {
+                            relation: r,
+                            group: g,
+                            ..
+                        } if u64::try_from(r) == Ok(relation) && g == group => {
+                            gone.push((v.tid, v.header));
+                        }
+                        RootsRow::Kept { .. }
+                        | RootsRow::HeapRoot { .. }
+                        | RootsRow::IndexRoot { .. }
+                        | RootsRow::OrderKey { .. }
+                        | RootsRow::Migration { .. }
+                        | RootsRow::HistoryHeap { .. }
+                        | RootsRow::HistoryIndex { .. }
+                        | RootsRow::Held { .. }
+                        | RootsRow::Dormant { .. }
+                        | RootsRow::Deployment(_) => {}
                     }
                 }
                 return Ok(gone);
@@ -211,69 +184,9 @@ impl Catalog {
                 .delete(pager, WriteTarget::checked(tid, header), x)?;
         }
         for r in rows {
-            let row = Value::Sum {
-                ctor: KEPT,
-                fields: vec![
-                    int(r.relation),
-                    Value::Text(r.group.clone()),
-                    int(r.ctor.map_or(0, CatCtorId::raw)),
-                    int(ROW_FORMAT),
-                    Value::Bytes(encode(&r.fields)),
-                ],
-            };
-            insert_row(pager, txns, &self.roots, x, &[row])?;
+            let row = roots::kept(r);
+            insert_row(pager, txns, &self.roots, x, &row.encode())?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stored(ctor: u64, format: u64) -> Vec<Value> {
-        vec![
-            int(339),
-            Value::Text("database".into()),
-            int(ctor),
-            int(format),
-            Value::Bytes(encode(&[
-                KeptField::Int(7),
-                KeptField::Instant(-3),
-                KeptField::Text("page 9".into()),
-            ])),
-        ]
-    }
-
-    #[test]
-    fn a_kept_row_of_this_format_reads_back() {
-        let row = row_of(&stored(318, ROW_FORMAT)).unwrap();
-        assert_eq!(Some(CatCtorId::from_raw(318)), row.ctor);
-        assert_eq!(
-            vec![
-                KeptField::Int(7),
-                KeptField::Instant(-3),
-                KeptField::Text("page 9".into()),
-            ],
-            row.fields
-        );
-    }
-
-    #[test]
-    fn a_kept_row_of_another_format_is_refused() {
-        let got = row_of(&stored(318, ROW_FORMAT + 1));
-        assert_eq!(Err(Rot::KeptFormat(ROW_FORMAT + 1).into()), got);
-    }
-
-    #[test]
-    fn a_kept_row_of_format_1_holding_a_constructor_position_is_refused() {
-        let got = row_of(&stored(2, 1));
-        assert_eq!(Err(Rot::KeptFormat(1).into()), got);
-    }
-
-    #[test]
-    fn a_kept_row_of_constructor_0_holds_no_constructor() {
-        let row = row_of(&stored(0, ROW_FORMAT)).unwrap();
-        assert_eq!(None, row.ctor);
     }
 }

@@ -19,6 +19,7 @@ mod oplog;
 mod pending;
 mod readers;
 mod root;
+mod roots;
 mod rot;
 mod rows;
 mod steps;
@@ -56,7 +57,7 @@ use adtb_lang::types::RelId;
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, LargeStore};
-use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Tid, Value};
+use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Tid, Value};
 use crate::mvcc::{self, Hold, Scope, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
@@ -84,10 +85,11 @@ pub use rows::{applied, declared};
 pub use validate::Denial;
 
 use change::Data;
-use history::{HISTORY_HEAP, HISTORY_INDEX, Kept, key_indexes};
+use history::{Kept, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
 use readers::{Pending, Readers};
 use root::Root;
+use roots::RootsRow;
 
 /// The name of the schema owner's role, the grantor of every log grant.
 pub use adtb_lang::evolve::OWNER_ROLE;
@@ -97,18 +99,6 @@ const LARGE: u32 = 1;
 /// The heap id of the heap that names every other heap's and index's root.
 pub(crate) const ROOTS: u32 = 2;
 const FIRST_HEAP: u32 = 3;
-
-/// The constructor of a row of the roots heap naming a heap.
-const HEAP_ROOT: u32 = 0;
-/// The constructor of a row of the roots heap naming an index.
-const INDEX_ROOT: u32 = 1;
-/// The constructor of a row of the roots heap holding a constructor's order key.
-const ORDER_KEY: u32 = 2;
-/// The constructor of a row of the roots heap holding a migration's text.
-const MIGRATION: u32 = 3;
-/// The constructor of a row of the roots heap naming a role whose log grants became dormant at
-/// a version.
-const DORMANT: u32 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -211,58 +201,8 @@ pub fn engine_schema() -> Schema {
     schema::build(&[]).expect("the engine's declarations build")
 }
 
-fn roots_row() -> Vec<FieldType> {
-    let ids = |n: usize| vec![FieldType::Scalar(Scalar::I64); n];
-    let ctor = |id: u32, fields: Vec<FieldType>| heap::CtorType {
-        id: CtorId(id),
-        fields,
-    };
-    vec![FieldType::Sum(
-        [
-            ctor(HEAP_ROOT, ids(4)),
-            ctor(INDEX_ROOT, ids(2)),
-            ctor(
-                ORDER_KEY,
-                vec![
-                    FieldType::Scalar(Scalar::I64),
-                    FieldType::Scalar(Scalar::Bytes),
-                ],
-            ),
-            ctor(
-                MIGRATION,
-                vec![
-                    FieldType::Scalar(Scalar::I64),
-                    FieldType::Scalar(Scalar::Text),
-                ],
-            ),
-            ctor(HISTORY_HEAP, ids(4)),
-            ctor(HISTORY_INDEX, ids(3)),
-        ]
-        .into_iter()
-        .chain(pending::held_ctors())
-        .chain([ctor(
-            DORMANT,
-            vec![
-                FieldType::Scalar(Scalar::I64),
-                FieldType::Scalar(Scalar::Text),
-            ],
-        )])
-        .chain(deployment::ctors())
-        .chain(kept::ctors())
-        .chain([deployment::expired_ctor()])
-        .collect(),
-    )]
-}
-
 fn int(n: u64) -> Value {
     Value::I64(i64::try_from(n).expect("an id fits 63 bits"))
-}
-
-fn uint(v: &Value) -> Result<u64, Error> {
-    match v {
-        Value::I64(n) => u64::try_from(*n).map_err(|_| Rot::NegativeId(*n).into()),
-        other => Err(Rot::NotAnId(other.clone()).into()),
-    }
 }
 
 fn row_type(schema: &Schema, r: RelId, ctor: u32) -> Vec<FieldType> {
@@ -400,49 +340,42 @@ struct Named {
 impl Named {
     /// Add what roots row `row` names.
     fn add(&mut self, row: &[Value]) -> Result<(), Error> {
-        let [Value::Sum { ctor, fields }] = row else {
-            return Err(Rot::RootsRow(row.to_vec()).into());
-        };
-        match (*ctor, fields.as_slice()) {
-            (HEAP_ROOT, [rel, c, id, at]) => {
-                let id = uint(id)?;
-                let id = u32::try_from(id).map_err(|_| Rot::HeapIdWide(id))?;
-                self.heaps.insert(
-                    (
-                        CatRelId::from_raw(uint(rel)?),
-                        CatCtorId::from_raw(uint(c)?),
-                    ),
-                    (id, Pid(uint(at)?)),
-                );
+        match RootsRow::decode(row)? {
+            RootsRow::HeapRoot {
+                rel,
+                ctor,
+                heap,
+                at,
+            } => {
+                self.heaps.insert((rel, ctor), (heap, at));
             }
-            (INDEX_ROOT, [id, at]) => {
-                self.indexes.insert(uint(id)?, Pid(uint(at)?));
+            RootsRow::IndexRoot { index, at } => {
+                self.indexes.insert(index, at);
             }
-            (ORDER_KEY, [c, Value::Bytes(key)]) => {
-                let key = OrderKey::new(key.clone()).ok_or_else(|| Rot::OrderKey(key.clone()))?;
-                self.keys.insert(uint(c)?, key);
+            RootsRow::OrderKey { ctor, key } => {
+                self.keys.insert(ctor, key);
             }
-            (MIGRATION, [version, Value::Text(text)]) => {
-                self.migrations.insert(uint(version)?, text.clone());
+            RootsRow::Migration { version, text } => {
+                self.migrations.insert(version, text);
             }
-            (DORMANT, [version, Value::Text(role)]) => {
-                self.dormant
-                    .entry(uint(version)?)
-                    .or_default()
-                    .insert(role.clone());
+            RootsRow::Dormant { version, role } => {
+                self.dormant.entry(version).or_default().insert(role);
             }
-            (HISTORY_HEAP | HISTORY_INDEX, fields) => self.history.add(*ctor, fields)?,
-            (ctor, fields) if pending::holds(ctor) => {
-                pending::add(&mut self.pending, ctor, fields)?;
-            }
-            (ctor, _) if deployment::holds(ctor) || kept::holds(ctor) => {}
-            (ctor, fields) => {
-                return Err(Rot::RootsCtor {
-                    ctor,
-                    fields: fields.to_vec(),
-                }
-                .into());
-            }
+            RootsRow::HistoryHeap {
+                rel,
+                ctor,
+                heap,
+                at,
+            } => self.history.heap((rel, ctor), (heap, at)),
+            RootsRow::HistoryIndex { rel, owner, at } => self.history.index(rel, (owner, at)),
+            RootsRow::Held {
+                dropped,
+                module,
+                name,
+                holder,
+                kind,
+            } => pending::add(&mut self.pending, dropped, module, name, holder, kind)?,
+            RootsRow::Deployment(_) | RootsRow::Kept { .. } => {}
         }
         Ok(())
     }
@@ -635,7 +568,7 @@ impl Catalog {
         pid: Pid,
     ) -> Result<Catalog, Error> {
         let large = LargeStore::create(pager, LARGE)?;
-        let roots = Heap::create(pager, ROOTS, roots_row(), large)?;
+        let roots = Heap::create(pager, ROOTS, roots::row_type(), large)?;
         let kept = Kept::create(pager, FIRST_HEAP, FIRST_HEAP + 1)?;
         let named = (roots.id().0, roots.root());
         let (schema, program) = Source::default()
@@ -775,7 +708,7 @@ impl Catalog {
             return Ok((catalog, txns));
         }
         let large = LargeStore::open(root.large.0, root.large.1);
-        let roots = Heap::open(pager, root.roots.0, root.roots.1, roots_row(), large)?;
+        let roots = Heap::open(pager, root.roots.0, root.roots.1, roots::row_type(), large)?;
         let named = named(pager, &txns, &roots)?;
         let (source, schema, program) = fold(&named.migrations, &named.dormant)?;
         check_order_keys(&schema, &named.keys)?;
@@ -858,7 +791,7 @@ impl Catalog {
             program: Arc::new(program),
             root: pager.catalog_root(),
             large,
-            roots: Arc::new(Heap::open(pager, ROOTS, Pid(0), roots_row(), large)?),
+            roots: Arc::new(Heap::open(pager, ROOTS, Pid(0), roots::row_type(), large)?),
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
             keys: OrderKeys::default(),
@@ -1277,14 +1210,14 @@ fn sum_of(heaps: &BTreeMap<(RelId, u32), Arc<Heap>>, r: RelId) -> Vec<Arc<Heap>>
         .collect()
 }
 
-/// Returns the fields of the roots row naming `heap`, constructor `cid` of relation `rid`.
-fn heap_root(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> Vec<Value> {
-    vec![
-        int(rid.raw()),
-        int(cid.raw()),
-        int(u64::from(heap.id().0)),
-        int(heap.root().0),
-    ]
+/// Returns the roots row naming `heap`, constructor `cid` of relation `rid`.
+fn heap_root(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> RootsRow {
+    RootsRow::HeapRoot {
+        rel: rid,
+        ctor: cid,
+        heap: heap.id().0,
+        at: heap.root(),
+    }
 }
 
 /// Delete, as `m.x`, one version the snapshot of `m.hold` sees of each row of `rows` from `heap`.

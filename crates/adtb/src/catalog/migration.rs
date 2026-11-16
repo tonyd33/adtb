@@ -28,13 +28,13 @@ use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::ids::{stored, type_ctor_id};
 use super::keying::broken;
+use super::roots::RootsRow;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
-    HEAP_ROOT, Hash, INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys,
-    Readers, change, ctor_count, ctor_id, ctor_index, ctor_relations, delete_keyed, delete_rows,
-    element_types, heap_root, index_ctors, index_keys, index_program, indexes, int, key_schema,
-    layout, moved, oplog, owner, pending, planned, reasons, rel_id, relation, row_key, row_type,
-    rows, steps, update_root, visible,
+    Hash, IndexKeys, IndexSpec, Migrating, OrderKeys, Readers, change, ctor_count, ctor_id,
+    ctor_index, ctor_relations, delete_keyed, delete_rows, element_types, heap_root, index_ctors,
+    index_keys, index_program, indexes, key_schema, layout, moved, oplog, owner, pending, planned,
+    reasons, rel_id, relation, row_key, row_type, rows, steps, update_root, visible,
 };
 
 impl Catalog {
@@ -564,12 +564,12 @@ impl Catalog {
                 row_type(&next.schema, r, c),
                 self.large,
             )?;
-            named.push((HEAP_ROOT, heap_root(rid, cid, &heap)));
+            named.push(heap_root(rid, cid, &heap));
             next.heaps.insert((r, c), Arc::new(heap));
         }
         for (&(rid, cid), rc) in &old {
             if b.rewritten.contains(&rid) {
-                gone.push((HEAP_ROOT, heap_root(rid, cid, &self.heaps[rc])));
+                gone.push(heap_root(rid, cid, &self.heaps[rc]));
             }
         }
         for (id, spec) in specs {
@@ -587,12 +587,18 @@ impl Catalog {
                 key_schema(held, normal.as_ref(), &next.keys, &spec)?,
                 index_ctors(held, &spec),
             )?;
-            named.push((INDEX_ROOT, vec![int(id), int(index.tree().root().0)]));
+            named.push(RootsRow::IndexRoot {
+                index: id,
+                at: index.tree().root(),
+            });
             next.indexes.insert(id, (spec, index, keys));
         }
         for (&id, (spec, index, _)) in &self.indexes {
             if b.rewritten.contains(&rel_id(&self.schema, spec.relation)) {
-                gone.push((INDEX_ROOT, vec![int(id), int(index.tree().root().0)]));
+                gone.push(RootsRow::IndexRoot {
+                    index: id,
+                    at: index.tree().root(),
+                });
             }
         }
         let rebuilding = Rebuilding {
@@ -607,21 +613,21 @@ impl Catalog {
             .rebuilt(&rebuilding, &mut next.next_heap, &mut named, &mut gone)?;
         next.kept = kept;
         for (c, key) in &fresh {
-            named.push((
-                ORDER_KEY,
-                vec![int(*c), Value::Bytes(key.as_bytes().to_vec())],
-            ));
+            named.push(RootsRow::OrderKey {
+                ctor: *c,
+                key: key.clone(),
+            });
         }
         if let Some(m) = next.source.log.last() {
-            named.push((MIGRATION, vec![int(m.number), Value::Text(m.text.clone())]));
+            named.push(RootsRow::Migration {
+                version: m.number,
+                text: m.text.clone(),
+            });
         }
-        let gone: Vec<Vec<Value>> = gone
-            .into_iter()
-            .map(|(ctor, fields)| vec![Value::Sum { ctor, fields }])
-            .collect();
+        let gone: Vec<Vec<Value>> = gone.iter().map(RootsRow::encode).collect();
         delete_rows(m, &self.roots, &gone)?;
-        for (ctor, fields) in named {
-            m.insert(&self.roots, &[Value::Sum { ctor, fields }])?;
+        for row in named {
+            m.insert(&self.roots, &row.encode())?;
         }
         for (&rid, ctors) in b.data {
             let r = relation(&next.schema, rid).expect("data holds relations of the result");

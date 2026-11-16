@@ -8,11 +8,11 @@ use crate::mvcc::Xid;
 use crate::storage::Pid;
 
 use super::Rot;
-use super::ids::{CatCtorId, CatRelId};
+use super::ids::CatRelId;
 use super::root::{Changing, Root};
 use super::{
-    Broken, ElementTexts, Error, HEAP_ROOT, Hash, MIGRATION, Named, Rows, applied,
-    check_order_keys, declared, engine_schema, fold, indexes, layout, oplog, version_hash,
+    Broken, ElementTexts, Error, Hash, Rows, applied, check_order_keys, declared, engine_schema,
+    fold, indexes, layout, oplog, version_hash,
 };
 
 fn engine_texts(schema: &Schema) -> ElementTexts {
@@ -489,60 +489,6 @@ fn a_stored_log_that_applies_folds() {
 
 fn sum(ctor: u32, fields: Vec<Value>) -> Vec<Value> {
     vec![Value::Sum { ctor, fields }]
-}
-
-#[test]
-fn a_roots_row_of_another_shape_is_corrupt() {
-    let ctor = |ctor, fields: &[Value]| Rot::RootsCtor {
-        ctor,
-        fields: fields.to_vec(),
-    };
-    let heap = |id| vec![Value::I64(1), Value::I64(0), Value::I64(id), Value::I64(7)];
-    let text = || Value::Text("1".into());
-    let rows = [
-        (vec![Value::I64(1)], Rot::RootsRow(vec![Value::I64(1)])),
-        (
-            sum(9, vec![Value::I64(1)]),
-            Rot::PendingRow {
-                ctor: 9,
-                fields: vec![Value::I64(1)],
-            },
-        ),
-        (
-            sum(HEAP_ROOT, vec![Value::I64(1)]),
-            ctor(HEAP_ROOT, &[Value::I64(1)]),
-        ),
-        (
-            sum(MIGRATION, vec![Value::I64(1), Value::I64(2)]),
-            ctor(MIGRATION, &[Value::I64(1), Value::I64(2)]),
-        ),
-        (sum(HEAP_ROOT, heap(-3)), Rot::NegativeId(-3)),
-        (sum(HEAP_ROOT, heap(1 << 40)), Rot::HeapIdWide(1 << 40)),
-        (
-            sum(MIGRATION, vec![text(), Value::Text("".into())]),
-            Rot::NotAnId(text()),
-        ),
-    ];
-    for (row, rot) in rows {
-        let got = Named::default().add(&row);
-        assert_eq!(Err(Error::Corrupt(rot)), got, "{row:?}");
-    }
-}
-
-#[test]
-fn a_roots_row_names_its_structure() {
-    let mut named = Named::default();
-    let row = sum(
-        HEAP_ROOT,
-        vec![Value::I64(1), Value::I64(0), Value::I64(3), Value::I64(7)],
-    );
-    named.add(&row).expect("the row reads");
-    assert_eq!(
-        Some(&(3, Pid(7))),
-        named
-            .heaps
-            .get(&(CatRelId::from_raw(1), CatCtorId::from_raw(0)))
-    );
 }
 
 #[test]

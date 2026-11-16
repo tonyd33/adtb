@@ -8,61 +8,22 @@ use adtb_lang::evolve::Source;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
-use crate::heap::{self, FieldType, Heap};
-use crate::key::{CtorId, Scalar, Value};
+use crate::heap::Heap;
+use crate::key::Value;
 use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::Rot;
-use super::ids::{CatConstraintId, CatFieldId, CatIndexId, CatRelId, field_id, relation};
+use super::ids::{CatFieldId, CatIndexId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
 use super::root::Changing;
+use super::roots::RootsRow;
 use super::rows::{ElementTexts, IndexSpec};
-use super::{
-    Broken, Catalog, Error, INDEX_ROOT, Migrating, ROOTS, delete_rows, indexes, int, uint,
-};
-
-/// The constructor of a roots row naming a pending-dropped constraint, by its catalog id, and a
-/// bundle holding it.
-pub(super) const HELD_CONSTRAINT: u32 = 6;
-/// The constructor of a roots row naming a pending-dropped check, by its catalog id, and a bundle
-/// holding it.
-pub(super) const HELD_CHECK: u32 = 7;
-/// The constructor of a roots row naming a pending-dropped unique, by its index, and a bundle
-/// holding it.
-pub(super) const HELD_UNIQUE: u32 = 8;
-/// The constructor of a roots row naming a pending-dropped old key, by its index, its relation
-/// and its fields, and a bundle holding it.
-pub(super) const HELD_KEY: u32 = 9;
+use super::{Broken, Catalog, Error, Migrating, ROOTS, delete_rows, indexes};
 
 /// The first index id of an old key held pending. The log allocates index ids below it.
 const HELD_KEY_INDEXES: u64 = 1 << 31;
-
-/// Returns the constructors of the roots rows that hold pending drops.
-pub(super) fn held_ctors() -> [heap::CtorType; 4] {
-    let int = || FieldType::Scalar(Scalar::I64);
-    let text = || FieldType::Scalar(Scalar::Text);
-    let held = || vec![int(), text(), text(), text()];
-    let ctor = |id: u32, fields: Vec<FieldType>| heap::CtorType {
-        id: CtorId(id),
-        fields,
-    };
-    [
-        ctor(HELD_CONSTRAINT, [held(), vec![int()]].concat()),
-        ctor(HELD_CHECK, [held(), vec![int()]].concat()),
-        ctor(HELD_UNIQUE, [held(), vec![int()]].concat()),
-        ctor(
-            HELD_KEY,
-            [held(), vec![int(), int(), FieldType::Scalar(Scalar::Bytes)]].concat(),
-        ),
-    ]
-}
-
-/// Returns whether roots rows of constructor `ctor` hold pending drops.
-pub(super) fn holds(ctor: u32) -> bool {
-    matches!(ctor, HELD_CONSTRAINT | HELD_CHECK | HELD_UNIQUE | HELD_KEY)
-}
 
 /// Returns the index id for an old key held pending beside the old keys `pending` holds.
 pub(super) fn held_key_index(pending: &[Pending]) -> CatIndexId {
@@ -158,74 +119,47 @@ pub(super) fn kept_indexes(
     Ok(out)
 }
 
-fn field_bytes(ids: &[CatFieldId]) -> Vec<u8> {
-    ids.iter().flat_map(|id| id.raw().to_le_bytes()).collect()
-}
-
-fn bytes_fields(bytes: &[u8]) -> Option<Vec<CatFieldId>> {
-    let (chunks, rest) = bytes.as_chunks::<8>();
-    rest.is_empty().then(|| {
-        chunks
-            .iter()
-            .map(|c| CatFieldId::from_raw(u64::from_le_bytes(*c)))
-            .collect()
-    })
-}
-
-/// Add the hold roots row `fields` of constructor `ctor`, one [`holds`] accepts, names to
-/// `pending`.
-pub(super) fn add(pending: &mut Vec<Pending>, ctor: u32, fields: &[Value]) -> Result<(), Error> {
-    let corrupt = || {
-        Error::from(Rot::PendingRow {
-            ctor,
-            fields: fields.to_vec(),
-        })
-    };
-    let (
-        [
-            dropped,
-            Value::Text(module),
-            Value::Text(name),
-            Value::Text(holder),
-        ],
-        index,
-    ) = fields.split_at_checked(4).ok_or_else(corrupt)?
-    else {
-        return Err(corrupt());
-    };
-    let kind = match (ctor, index) {
-        (HELD_CONSTRAINT, [id]) => Kind::Constraint(CatConstraintId::from_raw(uint(id)?)),
-        (HELD_CHECK, [id]) => Kind::Check(CatConstraintId::from_raw(uint(id)?)),
-        (HELD_UNIQUE, [id]) => Kind::Unique(CatIndexId::from_raw(uint(id)?)),
-        (HELD_KEY, [index, rel, Value::Bytes(fields)]) => Kind::Key {
-            index: CatIndexId::from_raw(uint(index)?),
-            relation: CatRelId::from_raw(uint(rel)?),
-            fields: bytes_fields(fields).ok_or_else(corrupt)?,
-        },
-        _ => return Err(corrupt()),
-    };
-    let dropped = uint(dropped)?;
+/// Add to `pending` that bundle `holder` holds the drop of `kind`, `module::name`, at version
+/// `dropped`, as a roots row names it.
+pub(super) fn add(
+    pending: &mut Vec<Pending>,
+    dropped: u64,
+    module: String,
+    name: String,
+    holder: String,
+    kind: Kind,
+) -> Result<(), Error> {
     let same = |p: &&mut Pending| p.kind == kind;
     match pending.iter_mut().find(same) {
-        Some(p) if p.module != *module || p.name != *name => return Err(corrupt()),
+        Some(p) if p.module != module || p.name != name => {
+            let (ctor, fields) = RootsRow::Held {
+                dropped,
+                module,
+                name,
+                holder,
+                kind,
+            }
+            .parts();
+            return Err(Rot::PendingRow { ctor, fields }.into());
+        }
         Some(p) if p.dropped != dropped => {
             return Err(Rot::DroppedTwice {
-                module: module.clone(),
-                name: name.clone(),
+                module,
+                name,
                 first: p.dropped,
                 second: dropped,
             }
             .into());
         }
         Some(p) => {
-            p.blocking.insert(holder.clone());
+            p.blocking.insert(holder);
         }
         None => pending.push(Pending {
-            module: module.clone(),
-            name: name.clone(),
+            module,
+            name,
             kind,
             dropped,
-            blocking: BTreeSet::from([holder.clone()]),
+            blocking: BTreeSet::from([holder]),
         }),
     }
     Ok(())
@@ -235,33 +169,15 @@ pub(super) fn add(pending: &mut Vec<Pending>, ctor: u32, fields: &[Value]) -> Re
 fn stored(pending: &[Pending]) -> Vec<Vec<Value>> {
     let mut out = Vec::new();
     for p in pending {
-        let ctor = match &p.kind {
-            Kind::Constraint(_) => HELD_CONSTRAINT,
-            Kind::Check(_) => HELD_CHECK,
-            Kind::Unique(_) => HELD_UNIQUE,
-            Kind::Key { .. } => HELD_KEY,
-        };
         for holder in &p.blocking {
-            let mut fields = vec![
-                int(p.dropped),
-                Value::Text(p.module.clone()),
-                Value::Text(p.name.clone()),
-                Value::Text(holder.clone()),
-            ];
-            match &p.kind {
-                Kind::Constraint(id) | Kind::Check(id) => fields.push(int(id.raw())),
-                Kind::Unique(id) => fields.push(int(id.raw())),
-                Kind::Key {
-                    index,
-                    relation,
-                    fields: key,
-                } => fields.extend([
-                    int(index.raw()),
-                    int(relation.raw()),
-                    Value::Bytes(field_bytes(key)),
-                ]),
-            }
-            out.push(vec![Value::Sum { ctor, fields }]);
+            let row = RootsRow::Held {
+                dropped: p.dropped,
+                module: p.module.clone(),
+                name: p.name.clone(),
+                holder: holder.clone(),
+                kind: p.kind.clone(),
+            };
+            out.push(row.encode());
         }
     }
     out
@@ -394,11 +310,11 @@ impl Catalog {
         let roots: Vec<Vec<Value>> = freed
             .iter()
             .map(|id| {
-                let fields = vec![int(*id), int(self.indexes[id].1.tree().root().0)];
-                vec![Value::Sum {
-                    ctor: INDEX_ROOT,
-                    fields,
-                }]
+                let row = RootsRow::IndexRoot {
+                    index: *id,
+                    at: self.indexes[id].1.tree().root(),
+                };
+                row.encode()
             })
             .collect();
         let wrote = rewrite(&m, &self.roots, &self.readers.pending, &pending)

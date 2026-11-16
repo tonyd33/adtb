@@ -11,29 +11,22 @@ use adtb_lang::types::RelId;
 use crate::btree::{BTree, Index};
 use crate::exec::StoredHeap;
 use crate::heap::{Heap, LargeStore};
-use crate::key::{Tid, Value};
+use crate::key::Tid;
 use crate::mvcc::{Past, Scope, Transactions, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{Pager, Pid, Quarantine};
 use crate::write::Retained;
 
-use super::Rot;
 use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
 use super::root::Root;
+use super::roots::RootsRow;
 use super::structures::{Listed, index_holder, relation_holder};
-use super::{
-    Catalog, Error, HEAP_ROOT, IndexKeys, IndexSpec, MIGRATION, ROOTS, int, row_type, uint,
-};
+use super::{Catalog, Error, IndexKeys, IndexSpec, ROOTS, row_type};
 
 /// The transaction of each migration and the roots version recording it, by the version it made,
 /// and the version whose migration named each heap by heap id.
 type Migrations = (BTreeMap<u64, (Xid, Tid)>, BTreeMap<u32, u64>);
-
-/// The constructor of a row of the roots heap naming a history heap.
-pub(super) const HISTORY_HEAP: u32 = 4;
-/// The constructor of a row of the roots heap naming a history key index.
-pub(super) const HISTORY_INDEX: u32 = 5;
 
 /// The history structures of a catalog.
 ///
@@ -54,39 +47,15 @@ pub(super) struct Names {
     indexes: BTreeMap<CatRelId, (u32, Pid)>,
 }
 
-fn heap_id(v: &Value) -> Result<u32, Error> {
-    let id = uint(v)?;
-    u32::try_from(id).map_err(|_| Rot::HeapIdWide(id).into())
-}
-
 impl Names {
-    /// Add what roots row `fields` of constructor `ctor`, one of [`HISTORY_HEAP`] and
-    /// [`HISTORY_INDEX`], names.
-    pub(super) fn add(&mut self, ctor: u32, fields: &[Value]) -> Result<(), Error> {
-        match (ctor, fields) {
-            (HISTORY_HEAP, [rel, c, id, at]) => {
-                let at = (heap_id(id)?, Pid(uint(at)?));
-                self.heaps.insert(
-                    (
-                        CatRelId::from_raw(uint(rel)?),
-                        CatCtorId::from_raw(uint(c)?),
-                    ),
-                    at,
-                );
-            }
-            (HISTORY_INDEX, [rel, owner, at]) => {
-                let at = (heap_id(owner)?, Pid(uint(at)?));
-                self.indexes.insert(CatRelId::from_raw(uint(rel)?), at);
-            }
-            (ctor, fields) => {
-                return Err(Rot::RootsCtor {
-                    ctor,
-                    fields: fields.to_vec(),
-                }
-                .into());
-            }
-        }
-        Ok(())
+    /// Name history heap `at` of constructor relation `rc`.
+    pub(super) fn heap(&mut self, rc: (CatRelId, CatCtorId), at: (u32, Pid)) {
+        self.heaps.insert(rc, at);
+    }
+
+    /// Name history key index `at` of relation `rel`.
+    pub(super) fn index(&mut self, rel: CatRelId, at: (u32, Pid)) {
+        self.indexes.insert(rel, at);
     }
 }
 
@@ -181,8 +150,8 @@ impl Kept {
         &self,
         b: &Rebuilding<'_, R>,
         next_heap: &mut u32,
-        named: &mut Vec<(u32, Vec<Value>)>,
-        gone: &mut Vec<(u32, Vec<Value>)>,
+        named: &mut Vec<RootsRow>,
+        gone: &mut Vec<RootsRow>,
     ) -> Result<Kept, Error> {
         let mut out = Kept {
             large: self.large,
@@ -201,7 +170,7 @@ impl Kept {
                 continue;
             }
             let heap = Heap::create(b.pager, fresh(), row_type(b.next, r, c), self.large)?;
-            named.push((HISTORY_HEAP, heap_row(rid, cid, &heap)));
+            named.push(heap_row(rid, cid, &heap));
             out.heaps.insert((r, c), Arc::new(heap));
         }
         for (&r, key) in &b.keys {
@@ -212,19 +181,19 @@ impl Kept {
                 continue;
             }
             let index = history_index(BTree::create(b.pager, fresh())?, key);
-            named.push((HISTORY_INDEX, index_row(rid, index.tree())));
+            named.push(index_row(rid, index.tree()));
             out.indexes.insert(r, index);
         }
         for (&(r, c), heap) in &self.heaps {
             let rid = rel_id(b.old, r);
             if b.rewritten.contains(&rid) {
-                gone.push((HISTORY_HEAP, heap_row(rid, ctor_id(b.old, r, c), heap)));
+                gone.push(heap_row(rid, ctor_id(b.old, r, c), heap));
             }
         }
         for (&r, index) in &self.indexes {
             let rid = rel_id(b.old, r);
             if b.rewritten.contains(&rid) {
-                gone.push((HISTORY_INDEX, index_row(rid, index.tree())));
+                gone.push(index_row(rid, index.tree()));
             }
         }
         Ok(out)
@@ -279,21 +248,21 @@ fn history_index(tree: BTree, key: &Index) -> Index {
     Index::open(tree, key.schema().clone(), key.ctors().clone())
 }
 
-fn heap_row(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> Vec<Value> {
-    vec![
-        int(rid.raw()),
-        int(cid.raw()),
-        int(u64::from(heap.id().0)),
-        int(heap.root().0),
-    ]
+fn heap_row(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> RootsRow {
+    RootsRow::HistoryHeap {
+        rel: rid,
+        ctor: cid,
+        heap: heap.id().0,
+        at: heap.root(),
+    }
 }
 
-fn index_row(rid: CatRelId, tree: BTree) -> Vec<Value> {
-    vec![
-        int(rid.raw()),
-        int(u64::from(tree.owner())),
-        int(tree.root().0),
-    ]
+fn index_row(rid: CatRelId, tree: BTree) -> RootsRow {
+    RootsRow::HistoryIndex {
+        rel: rid,
+        owner: tree.owner(),
+        at: tree.root(),
+    }
 }
 
 impl Catalog {
@@ -382,15 +351,19 @@ impl Catalog {
         let mut migrations = BTreeMap::new();
         let mut named = Vec::new();
         for (x, tid, row) in rows {
-            let [Value::Sum { ctor, fields }] = row.as_slice() else {
-                return Err(Rot::RootsRow(row).into());
-            };
-            match (*ctor, fields.as_slice()) {
-                (MIGRATION, [version, _]) => {
-                    migrations.insert(uint(version)?, (x, tid));
+            match RootsRow::decode(&row)? {
+                RootsRow::Migration { version, .. } => {
+                    migrations.insert(version, (x, tid));
                 }
-                (HEAP_ROOT, [_, _, heap, _]) => named.push((heap_id(heap)?, x)),
-                _ => {}
+                RootsRow::HeapRoot { heap, .. } => named.push((heap, x)),
+                RootsRow::IndexRoot { .. }
+                | RootsRow::OrderKey { .. }
+                | RootsRow::HistoryHeap { .. }
+                | RootsRow::HistoryIndex { .. }
+                | RootsRow::Held { .. }
+                | RootsRow::Dormant { .. }
+                | RootsRow::Deployment(_)
+                | RootsRow::Kept { .. } => {}
             }
         }
         let by_xid: BTreeMap<Xid, u64> = migrations.iter().map(|(v, (x, _))| (*x, *v)).collect();

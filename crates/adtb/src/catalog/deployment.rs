@@ -4,23 +4,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::heap::{self, FieldType, Heap};
-use crate::key::{CtorId, Scalar, Value};
+use crate::heap::Heap;
 use crate::mvcc::{Hold, Scope, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
-use super::Rot;
-use super::{Catalog, Error, ROOTS, int, uint, visible};
-
-/// The constructor of the roots row marking a file whose families have durable owners.
-const DEPLOYED: u32 = 11;
-/// The constructor of a roots row naming a family's owner.
-const FAMILY: u32 = 12;
-/// The constructor of a roots row recording a bundle's successful registration.
-const REGISTERED: u32 = 13;
-/// The constructor of a roots row latching a lease as expired.
-const EXPIRED: u32 = 15;
+use super::roots::RootsRow;
+use super::{Catalog, Error, ROOTS, visible};
 
 /// Who registered a bundle: an open given it, or a role through the registration command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,60 +64,6 @@ impl std::fmt::Debug for Deployment {
     }
 }
 
-pub(super) fn ctors() -> [heap::CtorType; 3] {
-    let ctor = |id: u32, fields: Vec<Scalar>| heap::CtorType {
-        id: CtorId(id),
-        fields: fields.into_iter().map(FieldType::Scalar).collect(),
-    };
-    [
-        ctor(DEPLOYED, Vec::new()),
-        ctor(FAMILY, vec![Scalar::Text, Scalar::I64]),
-        ctor(
-            REGISTERED,
-            vec![Scalar::I64, Scalar::I64, Scalar::I64, Scalar::Text],
-        ),
-    ]
-}
-
-pub(super) fn expired_ctor() -> heap::CtorType {
-    heap::CtorType {
-        id: CtorId(EXPIRED),
-        fields: vec![
-            FieldType::Scalar(Scalar::I64),
-            FieldType::Scalar(Scalar::I64),
-        ],
-    }
-}
-
-pub(super) fn holds(ctor: u32) -> bool {
-    matches!(ctor, DEPLOYED | FAMILY | REGISTERED | EXPIRED)
-}
-
-fn value(fact: &Fact) -> Value {
-    let (ctor, fields) = match fact {
-        Fact::Deployed => (DEPLOYED, Vec::new()),
-        Fact::Family(family, role) => {
-            (FAMILY, vec![Value::Text(family.clone()), Value::I64(*role)])
-        }
-        Fact::Registered(bundle, m) => (
-            REGISTERED,
-            vec![
-                Value::I64(*bundle),
-                Value::I64(m.role),
-                int(match m.origin {
-                    Origin::Open => 0,
-                    Origin::Command => 1,
-                }),
-                Value::Text(m.text.clone()),
-            ],
-        ),
-        Fact::Expired(bundle, renewed) => {
-            (EXPIRED, vec![Value::I64(*bundle), Value::I64(*renewed)])
-        }
-    };
-    Value::Sum { ctor, fields }
-}
-
 impl Deployed {
     /// Hold `facts` as well, once they commit.
     pub fn record(&mut self, facts: &[Fact]) {
@@ -148,47 +84,6 @@ impl Deployed {
     fn latch(&mut self, bundle: i64, renewed: i64) {
         let latest = self.expired.entry(bundle).or_insert(renewed);
         *latest = renewed.max(*latest);
-    }
-
-    fn add(&mut self, ctor: u32, fields: &[Value]) -> Result<(), Error> {
-        match (ctor, fields) {
-            (EXPIRED, [Value::I64(bundle), Value::I64(renewed)]) => self.latch(*bundle, *renewed),
-            (DEPLOYED, []) => self.marked = true,
-            (FAMILY, [Value::Text(family), Value::I64(role)]) => {
-                self.families.insert(family.clone(), *role);
-            }
-            (
-                REGISTERED,
-                [
-                    Value::I64(bundle),
-                    Value::I64(role),
-                    origin,
-                    Value::Text(text),
-                ],
-            ) => {
-                let origin = match uint(origin)? {
-                    0 => Origin::Open,
-                    1 => Origin::Command,
-                    n => return Err(Rot::Origin(n).into()),
-                };
-                self.registered.insert(
-                    *bundle,
-                    Mark {
-                        role: *role,
-                        origin,
-                        text: text.clone(),
-                    },
-                );
-            }
-            _ => {
-                return Err(Rot::DeploymentRow {
-                    ctor,
-                    fields: fields.to_vec(),
-                }
-                .into());
-            }
-        }
-        Ok(())
     }
 }
 
@@ -233,10 +128,17 @@ impl Deployment {
     ) -> Result<Deployed, Error> {
         let mut out = Deployed::default();
         for row in visible(pager, txns, hold, &self.roots)? {
-            if let [Value::Sum { ctor, fields }] = row.as_slice()
-                && holds(*ctor)
-            {
-                out.add(*ctor, fields)?;
+            match RootsRow::decode(&row)? {
+                RootsRow::Deployment(f) => out.record(std::slice::from_ref(&f)),
+                RootsRow::HeapRoot { .. }
+                | RootsRow::IndexRoot { .. }
+                | RootsRow::OrderKey { .. }
+                | RootsRow::Migration { .. }
+                | RootsRow::HistoryHeap { .. }
+                | RootsRow::HistoryIndex { .. }
+                | RootsRow::Held { .. }
+                | RootsRow::Dormant { .. }
+                | RootsRow::Kept { .. } => {}
             }
         }
         Ok(out)
@@ -259,7 +161,8 @@ impl Deployment {
         facts: &[Fact],
     ) -> Result<(), Error> {
         for f in facts {
-            super::insert_row(pager, txns, &self.roots, x, &[value(f)])?;
+            let row = RootsRow::Deployment(f.clone());
+            super::insert_row(pager, txns, &self.roots, x, &row.encode())?;
         }
         Ok(())
     }
