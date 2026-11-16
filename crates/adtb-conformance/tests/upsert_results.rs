@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb_conformance::{Script, parse, run_engine, run_reference};
 use adtb_lang::check::{Program, check_adhoc, check_schema};
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
-use adtb_lang::schema::{Committed, Schema, build};
+use adtb_lang::schema::{Committed, build};
 use adtb_lang::span::FileId;
 use adtb_sim::{Config, Outcome, Sim};
 
@@ -45,7 +45,7 @@ fn checked() -> (Committed, Program) {
 }
 
 /// Returns the refusal of `text`, each message.
-fn refusal(schema: &Schema, program: &Program, text: &str) -> Vec<String> {
+fn refusal(schema: &Committed, program: &Program, text: &str) -> Vec<String> {
     let items = parse_adhoc(text, Options::default())
         .ok()
         .unwrap_or_else(|d| panic!("{text}: {d:?}"));

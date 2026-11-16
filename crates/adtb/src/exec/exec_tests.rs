@@ -20,7 +20,7 @@ use crate::storage::Pid;
 use crate::testing::Knobs;
 use crate::{OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_lang::kernel::Var;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, R, Value};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
@@ -46,7 +46,7 @@ pub(crate) fn planner<R: crate::runtime::Runtime>(db: &crate::Database<R>, f: &F
 /// database per declarations.
 fn planned(f: &Fixture) -> Fixture {
     thread_local! {
-        static PLANNED: RefCell<BTreeMap<String, (Schema, crate::plan::Catalog)>> =
+        static PLANNED: RefCell<BTreeMap<String, (Committed, crate::plan::Catalog)>> =
             const { RefCell::new(BTreeMap::new()) };
     }
     let known = PLANNED.with_borrow(|p| p.get(f.decls()).cloned());

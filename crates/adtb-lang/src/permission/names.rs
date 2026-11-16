@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::schema::{Schema, Scope, TypeDefKind};
+use crate::schema::{Committed, Schema, Scope, TypeDefKind};
 use crate::types::{CtorSet, FnId, RelId, RelRef, Ty, TypeId};
 
 use super::{EffectiveGrants, Right};
@@ -126,7 +126,7 @@ impl Nameable {
     }
 
     /// Returns whether a parameter of a role may have type `ty`, which `schema` declares.
-    pub fn may_type(&self, schema: &Schema, ty: &Ty) -> bool {
+    pub fn may_type(&self, schema: &Committed, ty: &Ty) -> bool {
         let open = |module| schema.module(module).engine;
         match ty {
             Ty::Data { def, args, .. } => {

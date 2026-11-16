@@ -6,6 +6,7 @@ use adtb_lang::check::{AdhocCommand, Bundles, Command, Explained, Program, Ref, 
 use adtb_lang::kernel::{Const, Kind, Node, Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
+use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::schema::{Schema, Scope};
 use adtb_lang::textual::Form;
 use adtb_lang::types::{FnId, Ty};
@@ -54,7 +55,7 @@ impl Iterator for DynRows {
 /// Ad hoc text checked and normalised against one schema, its parameters bound.
 pub(super) struct Prepared {
     /// The schema checked against, extended with the temp relations the text declares.
-    pub schema: Arc<Schema>,
+    pub schema: Arc<CommittedSchema>,
     pub terms: Arc<Terms>,
     pub items: Vec<Tm>,
     pub commands: Vec<AdhocCommand>,
@@ -97,7 +98,7 @@ impl Prepared {
     /// Returns `text` checked against `program` of `schema`, each free name typed and bound by
     /// `params`, run for `caller`.
     pub fn new(
-        schema: &Arc<Schema>,
+        schema: &Arc<CommittedSchema>,
         program: &Program,
         bundles: &Bundles,
         text: &str,
@@ -117,7 +118,7 @@ impl Prepared {
 
     /// Returns `items` checked as [`Prepared::new`] checks the text they were parsed from.
     pub fn of_items(
-        schema: &Arc<Schema>,
+        schema: &Arc<CommittedSchema>,
         program: &Program,
         bundles: &Bundles,
         items: &[AdhocItem],
@@ -132,7 +133,7 @@ impl Prepared {
     /// Returns `items` checked as [`Prepared::of_items`] does, its names finding only what `scope`
     /// holds when given.
     pub(super) fn naming(
-        schema: &Arc<Schema>,
+        schema: &Arc<CommittedSchema>,
         scope: Option<&Scope>,
         program: &Program,
         bundles: &Bundles,
@@ -245,7 +246,7 @@ impl Prepared {
     }
 
     /// Returns the schema the text's terms name declarations of.
-    pub fn schema(&self) -> &Arc<Schema> {
+    pub fn schema(&self) -> &Arc<CommittedSchema> {
         &self.schema
     }
 

@@ -838,12 +838,10 @@ impl Cx<'_> {
     fn script(&mut self, w: &ast::Write) -> R<()> {
         let (schema, program) = self.checked()?;
         let mut refs = Vec::new();
-        check::check_adhoc_recording(
+        check::check_script(
             &schema,
             &program,
-            &[ast::AdhocItem::Write(Box::new(w.clone()))],
-            &BTreeMap::new(),
-            &check::Bundles::default(),
+            w,
             self.noted.is_some().then_some(&mut refs),
         )?;
         self.note(&schema, &refs);

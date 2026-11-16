@@ -4,7 +4,7 @@ use crate::check::{Adhoc, Program, Query, Txn};
 use crate::ids::{CatCtorId, CatFieldId, CatRelId};
 use crate::kernel::{Terms, Tm, Var};
 use crate::norm::NormalProgram;
-use crate::schema::Schema;
+use crate::schema::{Committed, Schema};
 use crate::types::*;
 
 mod aggregate;
@@ -104,14 +104,14 @@ pub enum Error {
 }
 
 /// Returns the requirements of a checked registered query.
-pub fn query(schema: &Schema, program: &Program, query: &Query) -> Result<Requirements, Error> {
+pub fn query(schema: &Committed, program: &Program, query: &Query) -> Result<Requirements, Error> {
     let normal = crate::norm::query(schema, program, query).map_err(Error::Normalization)?;
     let program = normal_program(schema, program)?;
     analyze(schema, &program, &normal.terms, normal.body, &normal.params)
 }
 
 /// Returns the requirements of a checked registered transaction.
-pub fn txn(schema: &Schema, program: &Program, txn: &Txn) -> Result<Requirements, Error> {
+pub fn txn(schema: &Committed, program: &Program, txn: &Txn) -> Result<Requirements, Error> {
     let normal = crate::norm::txn(schema, program, txn).map_err(Error::Normalization)?;
     let program = normal_program(schema, program)?;
     analyze(schema, &program, &normal.terms, normal.body, &normal.params)
@@ -120,7 +120,7 @@ pub fn txn(schema: &Schema, program: &Program, txn: &Txn) -> Result<Requirements
 /// Returns the requirements of `root`, a normal term of `terms` over `params`, with the
 /// functions of `program`, the normal program of `schema`.
 pub fn normal(
-    schema: &Schema,
+    schema: &Committed,
     program: &NormalProgram,
     terms: &Terms,
     root: Tm,
@@ -131,7 +131,7 @@ pub fn normal(
 
 /// Returns the requirements of each statement in checked ad hoc text.
 pub fn adhoc(
-    schema: &Schema,
+    schema: &Committed,
     program: &Program,
     adhoc: &Adhoc,
 ) -> Result<Vec<Requirements>, Error> {
@@ -151,7 +151,7 @@ fn normal_program(schema: &Schema, program: &Program) -> Result<NormalProgram, E
 }
 
 fn analyze(
-    schema: &Schema,
+    schema: &Committed,
     program: &NormalProgram,
     terms: &Terms,
     root: Tm,
@@ -189,7 +189,7 @@ enum Arena {
 }
 
 struct Analyzer<'a> {
-    schema: &'a Schema,
+    schema: &'a Committed,
     arenas: [&'a Terms; 2],
     aggregates: &'a [Option<crate::norm::NormalAggregate>],
     requirements: Requirements,

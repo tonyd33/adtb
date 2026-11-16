@@ -10,7 +10,7 @@ use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::types::Ty;
 use adtb_reference::Value;
 use adtb_sim::{Config, Sim};
@@ -27,7 +27,7 @@ use crate::write::{self, Setup, Txn};
 pub struct WritePath<R: Runtime> {
     /// `None` once [`WritePath::into_db`] has taken it.
     db: Option<write::Database<R>>,
-    schema: Arc<Schema>,
+    schema: Arc<Committed>,
     program: Arc<Program>,
 }
 
@@ -118,10 +118,13 @@ impl<R: Runtime> WritePath<R> {
         let (pager, _) = Pager::open(rt.clone(), &super::options(256)).ok()?;
         let (catalog, txns) = Catalog::open(rt.clone(), &pager).expect("the catalog opens");
         let schema = match staged_by {
-            Some(f) => load::staged_source(catalog.source(), &f.schema)
-                .schema()
-                .expect("the staged source builds"),
-            None => Schema::clone(catalog.schema()),
+            Some(f) => Committed::new(
+                load::staged_source(catalog.source(), &f.schema)
+                    .schema()
+                    .expect("the staged source builds"),
+            )
+            .expect("a staged source is settled"),
+            None => catalog.schema().clone(),
         };
         let program = catalog.program().clone();
         let normal = norm::program(&schema, &program).expect("the schema normalises");
@@ -159,7 +162,7 @@ impl<R: Runtime> WritePath<R> {
             .expect("a write path holds its database until it is taken")
     }
 
-    pub fn schema(&self) -> &Arc<Schema> {
+    pub fn schema(&self) -> &Arc<Committed> {
         &self.schema
     }
 

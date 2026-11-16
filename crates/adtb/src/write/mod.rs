@@ -49,7 +49,7 @@ use adtb_file::Disk;
 use adtb_lang::ids::held_id;
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::types::{DenialIdx, RelId};
 use adtb_sys::lock::{Lock, Ranked};
 
@@ -282,7 +282,7 @@ impl From<exec::Error> for Error {
 ///
 /// Fails with the guarantee of the checker that compiling a check breaks.
 pub fn refusals(
-    schema: &Schema,
+    schema: &Committed,
     normal: &NormalProgram,
     catalog: &Catalog,
 ) -> Result<Vec<(String, String)>, Broken> {
@@ -598,7 +598,7 @@ impl Stop {
 /// The session, the pager and the heaps lock themselves and take no lock of the database.
 pub struct Database<R: Runtime> {
     rt: R,
-    schema: Arc<Schema>,
+    schema: Arc<Committed>,
     normal: Arc<NormalProgram>,
     /// The normal program's arena with every `Fresh` replaced by its placeholder.
     program: Terms,
@@ -655,7 +655,7 @@ impl<R: Runtime> std::fmt::Debug for Database<R> {
 /// What a database runs its statements with.
 #[derive(Debug)]
 pub struct Setup<R: Runtime> {
-    pub schema: Arc<Schema>,
+    pub schema: Arc<Committed>,
     pub normal: Arc<NormalProgram>,
     pub catalog: Arc<Catalog>,
     pub pager: Pager<R>,

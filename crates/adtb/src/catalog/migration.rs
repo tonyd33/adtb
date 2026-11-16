@@ -8,7 +8,7 @@ use adtb_lang::evolve::{Code, Listed, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{Schema, Stage};
+use adtb_lang::schema::{Committed, Schema, Stage};
 use adtb_lang::textual::{self, Form, key_names};
 use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
@@ -191,7 +191,7 @@ impl Catalog {
     /// its indexes; each reason.
     fn admits(
         &self,
-        schema: &Schema,
+        schema: &Committed,
         program: &Program,
         texts: &ElementTexts,
         rewritten: &BTreeSet<CatRelId>,

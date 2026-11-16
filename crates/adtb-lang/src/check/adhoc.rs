@@ -5,7 +5,7 @@ use crate::ast::{
 };
 use crate::ids::{CatRelId, engine_rel, engine_type};
 use crate::kernel::alpha_equal;
-use crate::schema::{Temp, TempRow};
+use crate::schema::{Committed, Temp, TempRow};
 
 /// The registered queries of the live bundles, by bundle and query name.
 #[derive(Clone, Debug, Default)]
@@ -906,11 +906,11 @@ impl Checker<'_> {
 /// declaration declares, in order, or `None` when the text declares none. A declaration that is
 /// refused adds its diagnostic to `diags` and declares nothing.
 pub(super) fn temp_relations(
-    schema: &Schema,
+    schema: &Committed,
     vis: &Visible,
     items: &[AdhocItem],
     diags: &mut Vec<Diag>,
-) -> Option<(Schema, Vec<Option<RelId>>)> {
+) -> Option<(Committed, Vec<Option<RelId>>)> {
     let decls: Vec<&TempDecl> = items
         .iter()
         .filter_map(|i| match i {

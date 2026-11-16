@@ -123,7 +123,7 @@ pub(crate) fn adhoc_roots(items: &[Tm], commands: &[AdhocCommand]) -> Vec<Tm> {
 }
 
 /// Assert that every variable of the normal forms of ad hoc `a` has one binding site.
-fn adhoc_one_binding_site(s: &Schema, p: &Program, a: &Adhoc) {
+fn adhoc_one_binding_site(s: &Committed, p: &Program, a: &Adhoc) {
     assert_one_binding_site("checked", &a.terms, &adhoc_roots(&a.items, &a.commands));
     let n = crate::norm::adhoc(a.schema(s), p, a).unwrap_or_else(|e| panic!("normalises: {e:?}"));
     assert_one_binding_site("normalised", &n.terms, &adhoc_roots(&n.items, &n.commands));

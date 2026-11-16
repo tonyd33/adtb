@@ -8,7 +8,7 @@ use adtb_lang::kernel::Tm;
 use adtb_lang::norm::{self, NormalAdhoc, NormalProgram, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::{Schema, ValueDef, build};
+use adtb_lang::schema::{Committed, Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{RelId, Ty};
 use adtb_reference::{Database, Interpreter, R, Value};
@@ -21,7 +21,7 @@ use crate::plan::{
 #[derive(Debug)]
 pub struct Fixture {
     decls: String,
-    pub schema: Schema,
+    pub schema: Committed,
     pub program: Program,
     pub normal: NormalProgram,
     pub catalog: Catalog,
@@ -36,7 +36,6 @@ impl Fixture {
             .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"));
         let schema = build(&[(FileId(0), file)])
             .unwrap_or_else(|ds| panic!("the schema does not build: {ds:?}"));
-        let schema = Schema::clone(&schema);
         let program =
             check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
         let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");
@@ -58,7 +57,7 @@ impl Fixture {
 
     /// Returns the fixture of this one's declarations over `schema`, planned by `catalog`,
     /// holding `db`.
-    pub fn rebound(&self, schema: Schema, catalog: Catalog, db: Database) -> Fixture {
+    pub fn rebound(&self, schema: Committed, catalog: Catalog, db: Database) -> Fixture {
         let program =
             check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
         let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");

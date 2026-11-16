@@ -12,7 +12,7 @@ use adtb_lang::check::{Bundles, Checker, Context, Program, check_feed};
 use adtb_lang::evolve::{Source, SourceDecl};
 use adtb_lang::parse::{Options, parse_example, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::span::{FileDiag, Span};
 use adtb_lang::types::{ModuleId, Ty};
 
@@ -297,7 +297,7 @@ pub fn registered_queries(blocks: &[Block]) -> Vec<Registered> {
 /// bundle reads, and the queries, transactions and ad hoc items it holds.
 #[derive(Debug)]
 pub struct Prepared {
-    pub schema: Schema,
+    pub schema: Committed,
     pub program: Program,
     pub module: ModuleId,
     pub queries: Vec<QueryDecl>,
@@ -403,7 +403,7 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
         }
     }
     let (schema, program) = match src.check() {
-        Ok(s) => s,
+        Ok((s, p)) => (Committed::new(s).expect("an applied migration settles"), p),
         Err(ds) => {
             errs.extend(ds.iter().map(|d| render_in(&src, &entries, Some(b), d)));
             return Err(errs);

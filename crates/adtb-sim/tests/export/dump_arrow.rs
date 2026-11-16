@@ -90,7 +90,7 @@ fn dumped() -> (Files, Schema) {
     let mut sim = Sim::new(1, Config::default());
     let schema = process::run(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &Log::new(vec![APP.to_owned()]), &options()).unwrap();
-        let schema = db.schema().clone();
+        let schema = Schema::clone(db.schema());
         for doc in ROWS {
             let doc = read_document::<Value>(&schema, doc).unwrap();
             let rel = schema.relation(doc.relation);

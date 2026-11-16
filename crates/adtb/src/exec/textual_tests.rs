@@ -16,7 +16,7 @@ use adtb_testkit::Rng;
 use adtb_testkit::draw::draw;
 
 use crate::test_world::load;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::Committed;
 use fixture::Fixture;
 
 use super::exec_tests::{options, planner, read_only};
@@ -134,7 +134,7 @@ fn a_value_built_both_ways_prints_as_the_reference_prints_it() {
 
 /// Returns the value the engine computes for ad hoc `text` over the rows of `f`, with its type
 /// and the engine's schema.
-fn engine(f: &Fixture, text: &str) -> (Ty, Val, Schema) {
+fn engine(f: &Fixture, text: &str) -> (Ty, Val, Committed) {
     let mut out = None;
     let mut sim = Sim::new(1, Config::default());
     let result = sim.run(|rt| {

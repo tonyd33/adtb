@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use super::Schema;
+use super::{Schema, Temp};
 use crate::types::{RelId, RelRef};
 
 /// A schema no migration is being applied to: it takes no relation as added later.
@@ -17,6 +17,14 @@ impl Committed {
     /// Returns `schema`, built with no relation taken as added later.
     pub(super) fn built(schema: Schema) -> Committed {
         Committed(schema)
+    }
+
+    /// Returns the schema with each of `temps` appended to the relations of module
+    /// [`crate::check::TEMP_MODULE`], an anonymous record row declared as a record type of that
+    /// module; returns the relation of each.
+    pub(crate) fn with_temps(&self, temps: &[Temp]) -> (Committed, Vec<RelId>) {
+        let (schema, rels) = self.0.with_temps(temps);
+        (Committed(schema), rels)
     }
 
     /// Returns the declared relation `rel` names.

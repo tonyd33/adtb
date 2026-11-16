@@ -1,5 +1,6 @@
 use super::*;
 use crate::parse::{Options, parse_bundle_body};
+use crate::schema::Committed;
 use crate::signature::{self, Item};
 
 const V1: &str = r"module auth
@@ -313,6 +314,7 @@ fn a_hiding_pin_dereference_requires_reading_the_pinned_constructors_only() {
     let body = "query q () -> Set (Key users) = from s in sessions select s.who.user\n";
     let log = [V1, SESSIONS, ADD_APPLE_ENABLED];
     let (_, to, to_program) = checked(&log);
+    let to = Committed::new(to).expect("a replayed log settles");
     let q = translated_with_hiding(&log, 2, body, true).expect("it translates");
     let program = norm::program(&to, &to_program).expect("the program normalises");
     let got: BTreeSet<Requirement> =

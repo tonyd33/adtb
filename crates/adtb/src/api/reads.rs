@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use adtb_lang::check::Program;
 use adtb_lang::kernel::{Kind, Search, Terms, Tm, Var};
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed as CommittedSchema, Schema};
 use adtb_lang::types::{CtorSet, FnId, RelId, Ty, TypeId};
 
 use crate::catalog::{Read, Reader};
@@ -30,7 +30,7 @@ pub(super) struct Reads {
 
 impl Reads {
     /// Add the whole rows the normal form `root` of `terms` uses and what it writes.
-    pub(super) fn add(&mut self, schema: &Schema, terms: &Terms, root: Tm) {
+    pub(super) fn add(&mut self, schema: &CommittedSchema, terms: &Terms, root: Tm) {
         let mut seen = BTreeSet::new();
         let mut stack = vec![(root, false)];
         while let Some((t, transparent)) = stack.pop() {
@@ -53,7 +53,7 @@ impl Reads {
     /// Preconditions: `root` is not normalised.
     pub(super) fn add_source(
         &mut self,
-        schema: &Schema,
+        schema: &CommittedSchema,
         program: &Program,
         terms: &Terms,
         root: Tm,
@@ -70,7 +70,7 @@ impl Reads {
     }
 
     /// Record the reads of every term under `root`. Returns the functions they call.
-    fn occurrences(&mut self, schema: &Schema, terms: &Terms, root: Tm) -> BTreeSet<FnId> {
+    fn occurrences(&mut self, schema: &CommittedSchema, terms: &Terms, root: Tm) -> BTreeSet<FnId> {
         let mut calls = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut stack = vec![root];
@@ -84,7 +84,13 @@ impl Reads {
     }
 
     /// Record the reads `t` makes itself and add the function it calls to `calls`.
-    fn reads_of(&mut self, schema: &Schema, terms: &Terms, t: Tm, calls: &mut BTreeSet<FnId>) {
+    fn reads_of(
+        &mut self,
+        schema: &CommittedSchema,
+        terms: &Terms,
+        t: Tm,
+        calls: &mut BTreeSet<FnId>,
+    ) {
         match terms.kind(t) {
             Kind::Rel(r, set) | Kind::Transition(_, r, set) => {
                 self.reached.insert(*r);

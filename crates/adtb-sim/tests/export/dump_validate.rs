@@ -120,7 +120,7 @@ fn schema() -> &'static Schema {
         let mut sim = Sim::new(4, Config::default());
         process::run(&mut sim, |rt| {
             let db = Database::open_in(rt, FILE, &log(), &open::options(2)).unwrap();
-            let schema = db.schema().clone();
+            let schema = Schema::clone(db.schema());
             db.close().unwrap();
             schema
         })

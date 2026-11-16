@@ -9,7 +9,7 @@ use crate::kernel::{Build, Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
 use crate::schema::prelude::ctor;
 use crate::schema::{
-    DefaultValue, PRELUDE, Schema, TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
+    Committed, DefaultValue, PRELUDE, Schema, TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
 };
 use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
@@ -895,7 +895,7 @@ pub struct Adhoc {
     pub params: BTreeMap<String, Var>,
     /// The schema the terms were checked against when the text declares temp relations: the given
     /// schema with each temp relation appended to its relations in module [`TEMP_MODULE`].
-    pub temps: Option<Schema>,
+    pub temps: Option<Committed>,
 }
 
 impl Adhoc {
@@ -911,7 +911,7 @@ impl Adhoc {
     }
 
     /// Returns the schema the terms name declarations of, `given` being the one the text was checked against.
-    pub fn schema<'a>(&'a self, given: &'a Schema) -> &'a Schema {
+    pub fn schema<'a>(&'a self, given: &'a Committed) -> &'a Committed {
         self.temps.as_ref().unwrap_or(given)
     }
 }
@@ -922,7 +922,7 @@ pub const TEMP_MODULE: &str = "temp";
 /// Type checks ad hoc text, its free names typed by `params`, against `program`, the checked `schema`,
 /// knowing no bundle.
 pub fn check_adhoc(
-    schema: &Schema,
+    schema: &Committed,
     program: &Program,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
@@ -934,7 +934,7 @@ pub fn check_adhoc(
 /// `bundles`. With `record`, appends the schema objects the text names, as [`schema_refs`] reports
 /// them, those of items before a refused one included.
 pub fn check_adhoc_recording(
-    schema: &Schema,
+    schema: &Committed,
     program: &Program,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
@@ -947,7 +947,7 @@ pub fn check_adhoc_recording(
 /// Type checks ad hoc text as [`check_adhoc_recording`] does, its names finding only what `scope`
 /// holds when given.
 pub fn check_adhoc_in(
-    schema: &Schema,
+    schema: &Committed,
     scope: Option<&crate::schema::Scope>,
     program: &Program,
     items: &[ast::AdhocItem],
@@ -958,7 +958,65 @@ pub fn check_adhoc_in(
     let mut diags = Vec::new();
     let vis = Visible::all(schema).scoped(scope.cloned());
     let temps = adhoc::temp_relations(schema, &vis, items, &mut diags);
-    let checked = temps.as_ref().map_or(schema, |(s, _)| s);
+    let (checked, declared) = match &temps {
+        Some((s, d)) => (s, d.clone()),
+        None => (schema, Vec::new()),
+    };
+    let text = Text {
+        scope,
+        program,
+        items,
+        params,
+        bundles,
+    };
+    let mut adhoc = checked_items(checked, &text, declared, diags, record)?;
+    adhoc.temps = temps.map(|(s, _)| s);
+    Ok(adhoc)
+}
+
+/// Type checks the write of a migration's `script` against `schema`, the schema the operators
+/// before it produce, as [`check_adhoc_recording`] does.
+pub(crate) fn check_script(
+    schema: &Schema,
+    program: &Program,
+    write: &ast::Write,
+    record: Option<&mut Vec<(Span, Ref)>>,
+) -> Result<(), Vec<Diag>> {
+    let text = Text {
+        scope: None,
+        program,
+        items: &[ast::AdhocItem::Write(Box::new(write.clone()))],
+        params: &BTreeMap::new(),
+        bundles: &Bundles::default(),
+    };
+    checked_items(schema, &text, Vec::new(), Vec::new(), record).map(drop)
+}
+
+/// Ad hoc text and what it is checked with.
+struct Text<'a> {
+    scope: Option<&'a crate::schema::Scope>,
+    program: &'a Program,
+    items: &'a [ast::AdhocItem],
+    params: &'a BTreeMap<String, Ty>,
+    bundles: &'a Bundles,
+}
+
+/// Returns `text` checked against `checked`, each relation of `declared` hidden until its
+/// declaration, failing with `diags` and every diagnostic of its items.
+fn checked_items(
+    checked: &Schema,
+    text: &Text<'_>,
+    declared: Vec<Option<RelId>>,
+    mut diags: Vec<Diag>,
+    record: Option<&mut Vec<(Span, Ref)>>,
+) -> Result<Adhoc, Vec<Diag>> {
+    let Text {
+        scope,
+        program,
+        items,
+        params,
+        bundles,
+    } = *text;
     let vis = Visible::all(checked).scoped(scope.cloned());
     let mut c = Checker::new(checked, vis, Context::Adhoc);
     c.program = Some(program);
@@ -971,7 +1029,6 @@ pub fn check_adhoc_in(
         let v = c.terms.var(name, ty.clone());
         c.params.insert(name.clone(), (v, ty.clone()));
     }
-    let declared: Vec<Option<RelId>> = temps.as_ref().map_or(Vec::new(), |(_, d)| d.clone());
     c.hidden = declared.iter().flatten().copied().collect();
     let mut declared = declared.into_iter();
     let mut out = Vec::new();
@@ -1005,9 +1062,8 @@ pub fn check_adhoc_in(
         terms: c.terms,
         items: out,
         commands,
-        temps: temps.map(|(s, _)| s),
+        temps: None,
     };
-    let schema = adhoc.schema(schema);
     let spans: Vec<Span> = items
         .iter()
         .filter_map(|i| match i {
@@ -1017,11 +1073,11 @@ pub fn check_adhoc_in(
             _ => None,
         })
         .collect();
-    let diags = crate::analysis::adhoc_diags(schema, program, &adhoc, &spans);
+    let diags = crate::analysis::adhoc_diags(checked, program, &adhoc, &spans);
     if !diags.is_empty() {
         return Err(diags);
     }
-    crate::kernel::assert_valid(schema, &adhoc.terms, &adhoc.roots());
+    crate::kernel::assert_valid(checked, &adhoc.terms, &adhoc.roots());
     Ok(adhoc)
 }
 

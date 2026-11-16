@@ -3932,3 +3932,56 @@ add relation stamps : Stamp key id generate sequence";
         [pending, declared, committed(&s)]
     );
 }
+
+#[test]
+fn a_script_reads_and_writes_a_relation_its_migration_adds_only_after_the_add() {
+    let ty = "add type Stamp = { id: Key stamps, n: I64 }";
+    let rel = "add relation stamps : Stamp key id generate sequence";
+    let marks = "add type Mark = { id: Key marks, stamp: Key stamps }
+add relation marks : Mark key id generate sequence";
+    let insert = "script\n  insert stamps { n: 1 }";
+    let deref = "script\n  delete m in marks where m.stamp.n == 0";
+    let run =
+        |ops: &[&str]| migrate(&running(), &format!("module auth\n{}", ops.join("\n"))).map(drop);
+    let later = Err(vec![
+        "`stamps` is added by a later operator of this migration".to_string(),
+    ]);
+    assert_eq!(
+        [
+            Err(vec!["no `stamps` in scope".to_string()]),
+            Ok(()),
+            later,
+            Ok(())
+        ],
+        [
+            run(&[ty, insert, rel]),
+            run(&[ty, rel, insert]),
+            run(&[ty, marks, deref, rel]),
+            run(&[ty, marks, rel, deref]),
+        ]
+    );
+}
+
+#[test]
+fn a_script_writes_a_key_of_a_selection_its_migration_adds_only_after_the_set() {
+    let world = "module world
+add module world
+add type Region { id: Key regions } = Wild | Town
+add type Person { id: Key people, home: Key regions.Settled } = Living | Dead
+add relation regions : Region key id generate sequence
+add relation people : Person key id generate sequence";
+    let set = "add set Settled of regions = Town";
+    let insert = "script\n  insert people.Living { home: regions.key(1) }";
+    let run = |ops: &[&str]| {
+        migrate(&Source::default(), &format!("{world}\n{}", ops.join("\n"))).map(drop)
+    };
+    assert_eq!(
+        [
+            Ok(()),
+            Err(vec![
+                "expected Key regions.Town, found Key regions".to_string()
+            ]),
+        ],
+        [run(&[insert, set]), run(&[set, insert])]
+    );
+}

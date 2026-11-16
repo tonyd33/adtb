@@ -58,7 +58,7 @@ use adtb_lang::evolve::{Logged, Source};
 use adtb_lang::ids::engine_rel;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed as CommittedSchema, Schema};
 use adtb_lang::types::Ty;
 use adtb_sys::lock::{Lock, RwLock};
 
@@ -348,7 +348,7 @@ impl<R: Runtime> Clone for Database<R> {
 
 struct Engine<R: Runtime> {
     rt: R,
-    schema: Arc<Schema>,
+    schema: Arc<CommittedSchema>,
     sums: error_value::Sums,
     program: Arc<Program>,
     /// The source of the version the database is at.
@@ -526,7 +526,7 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns the schema ad hoc text is checked against.
-    pub fn schema(&self) -> &Schema {
+    pub fn schema(&self) -> &CommittedSchema {
         &self.engine.schema
     }
 
@@ -762,7 +762,7 @@ struct Opened<R: Runtime> {
 
 /// What an engine holds besides its file and write path.
 struct Parts {
-    schema: Arc<Schema>,
+    schema: Arc<CommittedSchema>,
     program: Arc<Program>,
     registered: Vec<registered::Checked>,
     bundles: Bundles,
@@ -782,7 +782,7 @@ fn query_memory(options: &OpenOptions) -> usize {
 /// Returns the setup of the write path over `catalog`.
 fn setup_of<R: Runtime>(
     catalog: &Catalog,
-    schema: Arc<Schema>,
+    schema: Arc<CommittedSchema>,
     normal: norm::NormalProgram,
     pager: &Pager<R>,
     txns: Transactions<R>,

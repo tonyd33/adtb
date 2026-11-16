@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::types::Ty;
 
 use crate::exec::Val;
@@ -69,7 +69,7 @@ pub struct AdHocTransaction<'a, R: Runtime = adtb_sys::os::OsRuntime> {
     state: State,
     /// The schema extended with the temp relations the transaction's texts declared, once one
     /// has.
-    temps: Option<Arc<Schema>>,
+    temps: Option<Arc<CommittedSchema>>,
     local: Local,
     /// The deadline and statement limit of every call of the transaction.
     deadline: Option<SystemTime>,

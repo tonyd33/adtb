@@ -845,7 +845,7 @@ impl Catalog {
 
     /// Returns the schema and program constraint checks and validation run against: the
     /// version's, with every pending-dropped object kept.
-    pub fn checking(&self) -> (&Schema, &Arc<Program>) {
+    pub fn checking(&self) -> (&Committed, &Arc<Program>) {
         self.readers
             .enforced()
             .map_or((&self.schema, &self.program), |e| (&e.schema, &e.program))

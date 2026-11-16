@@ -7,7 +7,7 @@ use adtb_lang::ids::CatFunctionId;
 use adtb_lang::kernel::{self, Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc};
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed as CommittedSchema, Schema};
 use adtb_lang::signature::{self, Item};
 use adtb_lang::types::{FnId, Ty};
 
@@ -30,7 +30,13 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
         .collect();
     let extended = signature::with_functions(over.source, over.schema, &vis, &fns, &r.text)
         .map_err(Error::invalid)?
-        .map(|(s, p)| (Arc::new(s), Arc::new(p)));
+        .map(|(s, p)| {
+            Ok::<_, Error>((
+                Arc::new(super::settled(s).map_err(Error::rejected)?),
+                Arc::new(p),
+            ))
+        })
+        .transpose()?;
     let (schema, program) = match &extended {
         Some((s, p)) => (s, p),
         None => (over.schema, over.program),
@@ -190,7 +196,12 @@ fn shape(terms: &Terms, t: Tm) -> (bool, Option<u64>) {
 }
 
 /// Returns the entry that calls the schema function `id`, imported by the name `f`.
-fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<Entry, Error> {
+fn imported(
+    schema: &CommittedSchema,
+    program: &Program,
+    f: &QName,
+    id: FnId,
+) -> Result<Entry, Error> {
     let failed = |m: String| Error::invalid(format!("fn `{}`: {m}", f.name.text));
     let def = schema.function(id);
     let names: Vec<String> = (0..def.params.len()).map(|i| format!("arg{i}")).collect();

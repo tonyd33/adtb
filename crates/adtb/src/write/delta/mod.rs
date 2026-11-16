@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use adtb_lang::analysis::Totality;
 use adtb_lang::kernel::{Agg, Build, Kind, Prim, Terms, Tm, Transition, Var};
 use adtb_lang::norm::NormalProgram;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::types::{CtorSet, DenialIdx, RelId, RelRef, Ty};
 
 use crate::catalog::indexed_fields;
@@ -126,7 +126,7 @@ pub struct Refusal {
 /// Fails with a refusal per constraint and reason when some constraint has no such check, and
 /// with the internal error when compiling one breaks a guarantee of the checker.
 pub fn compile(
-    schema: &Schema,
+    schema: &Committed,
     normal: &NormalProgram,
     terms: &mut Terms,
     catalog: &Catalog,
@@ -353,7 +353,7 @@ struct Binder {
 }
 
 struct Compiler<'a> {
-    schema: &'a Schema,
+    schema: &'a Committed,
     normal: &'a NormalProgram,
     catalog: &'a Catalog,
     terms: &'a mut Terms,

@@ -15,6 +15,7 @@ use adtb::{
     CallOptions, Called, CreateOptions, Database, Error, Log, OpenError, OpenOptions, Registration,
     RejectReason,
 };
+use adtb_lang::schema::Committed;
 use adtb_lang::textual;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
@@ -1033,13 +1034,14 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
             log.len()
         )
     };
+    let committed = Committed::new(schema.clone()).expect("a replayed log settles");
     let mut texts = Vec::new();
     for (i, q) in case.queries.iter().enumerate() {
         let body = q.text();
         let Ok(items) = parse_adhoc(&body, Options::default()).ok() else {
             continue;
         };
-        let Ok(adhoc) = check_adhoc(&schema, &program, &items, &Default::default()) else {
+        let Ok(adhoc) = check_adhoc(&committed, &program, &items, &Default::default()) else {
             continue;
         };
         let [item] = adhoc.items.as_slice() else {

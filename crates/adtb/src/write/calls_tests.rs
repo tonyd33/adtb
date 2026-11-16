@@ -18,7 +18,7 @@ use adtb_lang::check::check_adhoc;
 use adtb_lang::kernel::{Terms, Tm};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::Committed;
 use adtb_sim::{Config, Outcome, SimRuntime};
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::fixture::Fixture;
@@ -832,7 +832,7 @@ fn prepare<R: Runtime>(w: &WritePath<R>, text: &str) -> Prepared {
 
 /// A database of the items `rows`, with each of [`TEXTS`] prepared over it.
 struct Items<R: Runtime> {
-    schema: Arc<Schema>,
+    schema: Arc<Committed>,
     db: Database<R>,
     texts: BTreeMap<&'static str, Prepared>,
 }

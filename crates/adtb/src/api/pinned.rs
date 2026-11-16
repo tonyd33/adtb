@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::translate::Map;
 use adtb_lang::types::Ty;
@@ -11,13 +12,28 @@ use adtb_lang::types::Ty;
 use crate::catalog::layout::repr;
 use crate::exec::Val;
 
+/// A pinned version and the current one, with the map between them.
+pub(super) struct Versions<'a> {
+    map: Map<'a>,
+    from: &'a CommittedSchema,
+}
+
+impl<'a> Versions<'a> {
+    pub(super) fn new(from: &'a CommittedSchema, to: &'a CommittedSchema) -> Versions<'a> {
+        Versions {
+            map: Map::new(from, to),
+            from,
+        }
+    }
+}
+
 /// Returns `v`, a value of `ty` at the pinned version, as the current version holds it.
 ///
 /// Preconditions:
 /// - `ty` carries whole and exactly to the current version: every constructor and field it
 ///   reaches has a counterpart, and it reaches no field the current version adds.
-pub(super) fn forward(map: &Map<'_>, ty: &Ty, v: &Val) -> Val {
-    recode(map, ty, v, true)
+pub(super) fn forward(versions: &Versions<'_>, ty: &Ty, v: &Val) -> Val {
+    recode(versions, ty, v, true)
 }
 
 /// Returns `v`, a value of the current version's image of `ty`, as the pinned version holds it.
@@ -25,12 +41,13 @@ pub(super) fn forward(map: &Map<'_>, ty: &Ty, v: &Val) -> Val {
 /// Preconditions:
 /// - Every field of the pinned version that `ty` reaches has a counterpart.
 /// - `v` holds no constructor added since the pinned version.
-pub(super) fn back(map: &Map<'_>, ty: &Ty, v: &Val) -> Val {
-    recode(map, ty, v, false)
+pub(super) fn back(versions: &Versions<'_>, ty: &Ty, v: &Val) -> Val {
+    recode(versions, ty, v, false)
 }
 
-fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
-    let ty = repr(map.from, ty);
+fn recode(versions: &Versions<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
+    let (map, from) = (&versions.map, versions.from);
+    let ty = repr(from, ty);
     match (&ty, v) {
         (Ty::Data { def, args, .. }, Val::Ctor(c, fs)) => {
             let (pin, now) = if forward {
@@ -46,7 +63,7 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
                 .map(|a| map.ty(a))
                 .collect::<Result<Vec<_>, _>>()
                 .expect("a carried value's type has a counterpart at both versions");
-            let pinned = Map::fields(map.from, *def, args, pin);
+            let pinned = Map::fields(from, *def, args, pin);
             let current = Map::fields(map.to, to, &to_args, now);
             let image = |f: &str| map.field(*def, Some(pin), f);
             let fields: Vec<Val> = if forward {
@@ -57,7 +74,7 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
                             .iter()
                             .position(|(f, _)| image(f).as_deref() == Some(n))
                             .expect("a whole value's every current field has a pinned one");
-                        recode(map, &pinned[at].1, &fs[at], true)
+                        recode(versions, &pinned[at].1, &fs[at], true)
                     })
                     .collect()
             } else {
@@ -70,14 +87,14 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
                             .iter()
                             .position(|(c, _)| *c == n)
                             .expect("an image field is a field of the current constructor");
-                        recode(map, t, &fs[at], false)
+                        recode(versions, t, &fs[at], false)
                     })
                     .collect()
             };
             Val::ctor(if forward { now } else { pin }, fields)
         }
         (Ty::Tag(t), Val::Ctor(c, fs)) if fs.is_empty() => {
-            let Ty::Data { def, .. } = repr(map.from, t) else {
+            let Ty::Data { def, .. } = repr(from, t) else {
                 return v.clone();
             };
             let c = if forward {
@@ -88,13 +105,13 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
             Val::tag(c.expect("a carried tag's constructor has a counterpart at both versions"))
         }
         (Ty::Key { rel, .. }, _) => {
-            let rel = &map.from.declared(*rel);
-            let tys: Vec<Ty> = key_names(map.from, *rel)
+            let rel = &from.declared(*rel);
+            let tys: Vec<Ty> = key_names(from, *rel)
                 .iter()
-                .map(|f| key_field_ty(map.from, *rel, f))
+                .map(|f| key_field_ty(from, *rel, f))
                 .collect();
             let (Val::Record(fs), [_, _, ..]) = (v, tys.as_slice()) else {
-                return recode(map, &tys[0], v, forward);
+                return recode(versions, &tys[0], v, forward);
             };
             let order = map
                 .key_order(*rel)
@@ -106,9 +123,9 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
             let mut out = fs.to_vec();
             for (i, &p) in at.iter().enumerate() {
                 if forward {
-                    out[i] = recode(map, &tys[p], &fs[p], true);
+                    out[i] = recode(versions, &tys[p], &fs[p], true);
                 } else {
-                    out[p] = recode(map, &tys[p], &fs[i], false);
+                    out[p] = recode(versions, &tys[p], &fs[i], false);
                 }
             }
             Val::record(out)
@@ -116,7 +133,7 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
         (Ty::Record(ts), Val::Record(fs)) => Val::record(
             ts.iter()
                 .zip(fs.iter())
-                .map(|((_, t), f)| recode(map, t, f, forward))
+                .map(|((_, t), f)| recode(versions, t, f, forward))
                 .collect(),
         ),
         (Ty::Sum { ctors, .. }, Val::Ctor(c, fs)) => {
@@ -126,20 +143,20 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
             let fields = ts
                 .iter()
                 .zip(fs.iter())
-                .map(|((_, t), f)| recode(map, t, f, forward))
+                .map(|((_, t), f)| recode(versions, t, f, forward))
                 .collect();
             Val::ctor(*c, fields)
         }
         (Ty::Set(t) | Ty::NonEmpty(t), Val::Set(s)) => Val::set(
             s.iter()
-                .map(|e| recode(map, t, e, forward))
+                .map(|e| recode(versions, t, e, forward))
                 .collect::<BTreeSet<_>>(),
         ),
         (Ty::Set(t) | Ty::NonEmpty(t), Val::List(l)) => {
             let mut seen = BTreeSet::new();
             let elems: Vec<Val> = l
                 .iter()
-                .map(|e| recode(map, t, e, forward))
+                .map(|e| recode(versions, t, e, forward))
                 .filter(|e| seen.insert(e.clone()))
                 .collect();
             Val::List(Arc::from(elems))

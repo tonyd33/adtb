@@ -32,7 +32,7 @@ fn schema(extra: &str) -> Committed {
     crate::schema::build(&[(FileId(0), file)]).expect("schema builds")
 }
 
-fn requirements(s: &Schema, params: &[(&str, &str)], text: &str) -> Requirements {
+fn requirements(s: &Committed, params: &[(&str, &str)], text: &str) -> Requirements {
     let program = check_schema(s).expect("schema checks");
     let checker = Checker::new(s, Visible::all(s), Context::Adhoc);
     let params = params
@@ -494,7 +494,7 @@ fn renames_preserve_stable_requirement_identities() {
     ])
     .expect("source builds");
     let before = requirements(
-        &source.schema().expect("schema"),
+        &Committed::new(source.schema().expect("schema")).expect("an applied migration settles"),
         &[],
         "from x in items select x.secret",
     );
@@ -504,7 +504,7 @@ fn renames_preserve_stable_requirement_identities() {
         .expect("migration parses");
     let source = source.migrate(&migration, text).expect("renames apply");
     let after = requirements(
-        &source.schema().expect("schema"),
+        &Committed::new(source.schema().expect("schema")).expect("an applied migration settles"),
         &[],
         "from x in renamed select x.hidden",
     );
@@ -536,6 +536,7 @@ fn a_reachable_missing_catalog_identity_is_an_explicit_error() {
         &crate::schema::States::default(),
     )
     .expect("schema builds");
+    let s = Committed::new(s).expect("a built schema is committed");
     let program = check_schema(&s).expect("schema checks");
     let items = parse_adhoc("count(x for x in left)", Options::default())
         .ok()
@@ -744,7 +745,7 @@ fn a_failing_parallel_upsert_branch_binds_no_old_row() {
     assert_exact(&requirements(&s, &[], text), want);
 }
 
-fn registered(s: &Schema, text: &str) -> Requirements {
+fn registered(s: &Committed, text: &str) -> Requirements {
     let program = check_schema(s).expect("schema checks");
     let module = s.module_named("app").expect("module app");
     let items = parse_example(text, Options::default())
@@ -930,7 +931,7 @@ fn upsert_old_field_and_whole_row_uses_read_as_ranging_does() {
     }
 }
 
-fn upsert_observing_old(s: &Schema, observe: &str) -> BTreeSet<Requirement> {
+fn upsert_observing_old(s: &Committed, observe: &str) -> BTreeSet<Requirement> {
     let text = format!(
         r#"insert flow.Draft {{ id: 1, secret: "s", public: "p" }} unless conflict on key else {observe}"#
     );
@@ -1230,7 +1231,7 @@ fn key_of_charges_only_what_follows_it() {
     );
 }
 
-fn constraint(s: &Schema) -> Requirements {
+fn constraint(s: &Committed) -> Requirements {
     let program = check_schema(s).expect("schema checks");
     let normal = crate::norm::program(s, &program).expect("program normalizes");
     let (_, t) = normal.constraints().next().expect("a constraint");

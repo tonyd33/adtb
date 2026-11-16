@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Weak};
 use std::task::Waker;
 
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::types::Ty;
 
 use crate::exec::{self, Arena, Exceeded, Grant, Resumable, Step, Stopped, Val};
@@ -115,7 +115,7 @@ struct Stream<R: Runtime> {
     /// The elements handed out so far, with the reservation they hold.
     sent: BTreeSet<Val>,
     held: Arena,
-    schema: Arc<Schema>,
+    schema: Arc<CommittedSchema>,
     elem: Ty,
 }
 

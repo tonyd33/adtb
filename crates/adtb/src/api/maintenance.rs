@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adtb_lang::ids::engine_rel;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::Lock;
 
@@ -51,7 +51,7 @@ struct Control {
 pub(super) struct Background<R: Runtime> {
     rt: R,
     verifier: Arc<Verifier<R>>,
-    schema: Arc<Schema>,
+    schema: Arc<CommittedSchema>,
     findings: RelId,
     jobs: RelId,
     /// The wall instant a file with no cursor counts its first interval from, in microseconds.
@@ -93,7 +93,7 @@ impl<R: Runtime> Background<R> {
     /// Fail with `Corrupt` when a row of `catalog::migrations` is damaged.
     pub(super) fn new(
         verifier: Arc<Verifier<R>>,
-        schema: Arc<Schema>,
+        schema: Arc<CommittedSchema>,
         settings: &Settings,
     ) -> Result<Arc<Background<R>>, OpenError> {
         verifier.db.pacer().set(&verifier.rt, settings.budget.get());

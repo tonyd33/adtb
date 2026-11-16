@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema::Committed;
 use crate::signature::Ids;
 use crate::types::{Base, RelRef};
 
@@ -1421,6 +1422,7 @@ merge constructor Identity.(Google | Apple) into Social
 fn lacking(src: &Source, role: &str, text: &str) -> Vec<(String, &'static str)> {
     use crate::permission::{EffectiveGrants, Mode};
     let (schema, program) = src.check().expect("the source checks");
+    let schema = Committed::new(schema).expect("an applied migration settles");
     let items = crate::parse::parse_adhoc(text, Options::default())
         .ok()
         .expect("the text parses");

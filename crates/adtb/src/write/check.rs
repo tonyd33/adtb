@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use adtb_lang::kernel::{Terms, Var};
 use adtb_lang::norm::NormalProgram;
-use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::schema::{Committed, Schema, TypeDefKind};
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
@@ -37,7 +37,7 @@ impl Denial {
 ///
 /// Fails with [`Error::Refused`] when a constraint has no index-bounded incremental check.
 pub fn denials(
-    schema: &Schema,
+    schema: &Committed,
     normal: &NormalProgram,
     catalog: &Catalog,
     terms: &mut Terms,

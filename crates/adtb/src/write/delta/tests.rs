@@ -40,7 +40,7 @@ fn us(schema: &Schema) -> RelId {
 }
 
 fn compiler<'a>(
-    schema: &'a Schema,
+    schema: &'a Committed,
     normal: &'a NormalProgram,
     catalog: &'a Catalog,
     terms: &'a mut Terms,

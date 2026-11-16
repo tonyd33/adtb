@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use adtb_lang::norm::NormalProgram;
-use adtb_lang::schema::{Generator, OnDelete, ReferenceIndex, Schema};
+use adtb_lang::schema::{Committed, Generator, OnDelete, ReferenceIndex, Schema};
 use adtb_lang::textual::key_names;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
@@ -98,7 +98,7 @@ impl Rel {
 }
 
 /// Returns the field path an index field is written as, if it is one.
-fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefField> {
+fn refs(schema: &Committed, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefField> {
     let ids = &schema.ids();
     schema
         .reference_fields(rel)
@@ -134,7 +134,7 @@ fn qualified(schema: &Schema, rel: RelId) -> String {
 /// Returns what the engine derives from every relation variable `catalog` describes, whose
 /// declared indexes are `specs`, by index id.
 pub fn rels(
-    schema: &Schema,
+    schema: &Committed,
     normal: &NormalProgram,
     catalog: &Catalog,
     specs: &BTreeMap<u64, IndexSpec>,
