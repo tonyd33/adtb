@@ -24,3 +24,7 @@ Count (receipt-catalog-encoders-r1): `engine_names` 36 (writers 24: rows.rs 15, 
 ## 2026-11-16, part A landed
 
 Landed as rknzqrry e9f2552f (2 rounds), full check 0 (3853 tests). The 12 coded relations are written through `Codec::encode` by field handle (grants log, roles, grants, audit, initialize, bundles, settings, the migrations row); dump and adhoc look relations up by id. Encoding byte-identical to main (files, dumps, cross restore, checked by review). `engine_names` pattern widened to any `push` receiver; 39 to 28 (rows.rs 17, part B). Resolved constructor-field-layout-copied. Known limit: the distinct-value test gives sum fields position modulo constructor count, so a swap of two same-typed sum fields can pass. Next: part B.
+
+## 2026-11-16, part B landed
+
+Landed as nwwztxvy fb316b1a (2 rounds), full check 0 (3853 tests). 14 schema-description relations are full codecs in `Coded` (catalog/described.rs), 21 fixed `engine_ctor` constants (lookups into the existing table, ids unchanged), writers through `Codec::encode`/`Codec::tag`. Byte identity with main checked by the author and repeated by the review. `engine_names` rows.rs 17 to 3. Left: migration_ops and migration_clauses (sums nested deeper than `codec::Sum`), with `values::relation`/`values::row`. Next: C1 (nested-sum encode), C2 (operator arms, version hash unchanged).
