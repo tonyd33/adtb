@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-16
-status: open
+status: resolved
+closed: 2026-11-16
 kind: bug
 priority: 880
 summary: "matching a hand list of field names to a constructor's declared fields, and filling declared slots from it, is written three times: catalog codecs, error sums and verify's kept rows"
@@ -30,3 +31,7 @@ Each fills a `vec![None; n]` by handle and unwraps every slot with its own panic
 The copies can drift. One might, for example, accept a duplicate listed name that another refuses.
 
 Fix direction: one constructor layout in `catalog::codec`, built from a schema's declared fields and a `Fields` list, that the codec, the error sums and verify's kept rows share. It should give the position and type of each listed field and fill declared slots from field handles.
+
+## Resolved
+
+Landed as rknzqrry e9f2552f (catalog-encoders-through-codecs part A, 2 rounds, full check 0, 3853 tests). One layout, `codec::Listed` with `codec::listed`, serves `Codec::new`, `Codec::declared`, `Codec::with`, `Codec::encode`, `Sums::new`/`Sums::of_ctor` and verify's `Kept::fields`. The searching codec test writes every constructor of every codec under the shipped and both reversed catalogs, with a distinct value per field, against the row placed by name.
