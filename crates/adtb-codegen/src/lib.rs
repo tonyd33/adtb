@@ -60,10 +60,7 @@ pub fn generate(log: &[&str], bundles: &[BundleSource<'_>]) -> Result<String, Er
             e.migration, e.message
         ))
     })?;
-    let latest = source.schema().map_err(|ds| {
-        let ms: Vec<&str> = ds.iter().map(|d| d.diag.message.as_str()).collect();
-        Error::new(ms.join("\n"))
-    })?;
+    let latest = source.committed().map_err(|e| Error::new(e.to_string()))?;
     let mut schema = Module::new(&latest);
     schema.declare("LOG", "the log")?;
     schema.user_items()?;

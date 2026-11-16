@@ -517,14 +517,6 @@ impl Schema {
         (*module, name)
     }
 
-    /// Returns the declared relation `rel` names.
-    ///
-    /// Preconditions: the schema is not one of a migration being applied.
-    pub fn declared(&self, rel: RelRef) -> RelId {
-        self.relation_of(rel)
-            .unwrap_or_else(|e| panic!("a committed schema's key names a declared relation: {e}"))
-    }
-
     /// Returns the declared relation `rel` names, else the refusal of a read through a key of a
     /// relation a later operator of the migration adds.
     pub fn relation_of(&self, rel: RelRef) -> Result<RelId, String> {

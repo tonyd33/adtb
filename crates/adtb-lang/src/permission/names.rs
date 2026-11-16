@@ -22,7 +22,7 @@ pub struct Nameable {
 impl Nameable {
     /// Returns what `grants` and the `functions` called by grant let a role name: each relation it
     /// holds any grant on, and the types and constructors those relations reach.
-    pub fn of(schema: &Schema, grants: &EffectiveGrants, functions: BTreeSet<FnId>) -> Nameable {
+    pub fn of(schema: &Committed, grants: &EffectiveGrants, functions: BTreeSet<FnId>) -> Nameable {
         let mut out = Nameable {
             functions,
             ..Nameable::default()
@@ -52,7 +52,7 @@ impl Nameable {
         out
     }
 
-    fn reach(&mut self, schema: &Schema, def: TypeId) {
+    fn reach(&mut self, schema: &Committed, def: TypeId) {
         if !self.types.insert(def) {
             return;
         }
@@ -72,7 +72,7 @@ impl Nameable {
         }
     }
 
-    fn reach_ty(&mut self, schema: &Schema, ty: &Ty) {
+    fn reach_ty(&mut self, schema: &Committed, ty: &Ty) {
         match ty {
             Ty::Data { def, args, .. } => {
                 self.reach(schema, *def);

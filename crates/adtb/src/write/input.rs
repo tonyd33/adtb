@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use adtb_file::{Disk, Files, Record, Refused};
 use adtb_lang::kernel::{Build, FileFormat, Kind, Prim, Terms, Tm, Var};
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::exec::Val;
@@ -208,7 +208,7 @@ impl Local {
     /// or their contents, differ.
     pub fn scan(
         &mut self,
-        schema: &Schema,
+        schema: &Committed,
         files: &Disk,
         confined: bool,
         (format, path, row): (FileFormat, &str, &Ty),

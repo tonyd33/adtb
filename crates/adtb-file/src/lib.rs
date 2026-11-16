@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use adtb_lang::kernel::FileFormat;
-use adtb_lang::schema::{Schema, TypeDefKind, prelude};
+use adtb_lang::schema::{Committed, TypeDefKind, prelude};
 use adtb_lang::textual::{Textual, key_field_ty, key_names};
 use adtb_lang::types::{Base, CtorSet, RelId, Ty};
 use unicode_normalization::UnicodeNormalization;
@@ -351,7 +351,7 @@ pub enum Error {
 
 /// Returns the records of the files `path` names, in `format`, read at `row`.
 pub fn records<V: Textual>(
-    schema: &Schema,
+    schema: &Committed,
     files: &dyn Files,
     format: FileFormat,
     path: &str,
@@ -367,7 +367,7 @@ pub fn records<V: Textual>(
 /// Returns the records of `found`, each file by its name with its contents, in `format`, read at
 /// `row`, numbered from 1 across the files in their order.
 pub fn records_in<V: Textual>(
-    schema: &Schema,
+    schema: &Committed,
     format: FileFormat,
     found: Vec<(String, Vec<u8>)>,
     row: &Ty,
@@ -445,7 +445,7 @@ fn allowed(i: u32, name: &str, set: Option<&CtorSet>) -> Result<u32, String> {
     }
 }
 
-fn shape(schema: &Schema, ty: &Ty) -> Shape {
+fn shape(schema: &Committed, ty: &Ty) -> Shape {
     match ty {
         Ty::Base(Base::Text) => Shape::Text,
         Ty::Base(_) | Ty::Unit => Shape::Scalar,
@@ -520,7 +520,7 @@ fn sum_shape(
 
 /// Returns the type of the value of a key of `rel`: its one key field's, or the record of its
 /// key fields.
-fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
+fn key_value_ty(schema: &Committed, rel: RelId) -> Ty {
     let r = schema.relation(rel);
     match r.key.as_slice() {
         [f] => key_field_ty(schema, rel, f),
@@ -568,7 +568,7 @@ fn some<V: Textual>(v: V) -> V {
 }
 
 /// Returns `text` read in the textual syntax at `ty`.
-fn parse<V: Textual>(schema: &Schema, text: &str, ty: &Ty) -> Result<V, String> {
+fn parse<V: Textual>(schema: &Committed, text: &str, ty: &Ty) -> Result<V, String> {
     adtb_lang::textual::parse(text, &adtb_lang::textual::Form::of(schema, ty))
         .map_err(|e| e.to_string())
 }

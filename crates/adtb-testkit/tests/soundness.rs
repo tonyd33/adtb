@@ -15,7 +15,7 @@ use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::parse_schema;
 use adtb_lang::parse::{Options, parse_adhoc};
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, Schema, build};
 use adtb_lang::span::FileId;
 use adtb_lang::textual::Form;
 use adtb_lang::types::{ModuleId, Ty};
@@ -68,7 +68,7 @@ impl Report {
 
 /// The schema, files and state statements run against.
 struct Run<'a> {
-    schema: &'a Schema,
+    schema: &'a Committed,
     program: &'a Program,
     files: &'a dyn Files,
     db: &'a Database,

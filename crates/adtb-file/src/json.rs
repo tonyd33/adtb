@@ -1,6 +1,6 @@
 //! NDJSON files: one JSON value per line, read by the JSON mapping.
 
-use adtb_lang::schema::{Schema, prelude};
+use adtb_lang::schema::{Committed, prelude};
 use adtb_lang::textual::Textual;
 use adtb_lang::types::{Base, Ty};
 
@@ -32,7 +32,7 @@ impl Json {
 
 /// Returns each nonblank line of `text`, with its row read at `row` or why it does not convert.
 pub(super) fn records<V: Textual>(
-    schema: &Schema,
+    schema: &Committed,
     text: &str,
     row: &Ty,
 ) -> Result<Vec<Found<V>>, String> {
@@ -50,7 +50,7 @@ pub(super) fn records<V: Textual>(
         .collect())
 }
 
-fn read<V: Textual>(schema: &Schema, j: &Json, ty: &Ty) -> Result<V, String> {
+fn read<V: Textual>(schema: &Committed, j: &Json, ty: &Ty) -> Result<V, String> {
     let parse = |t: &str| parse(schema, t, ty);
     match shape(schema, ty) {
         Shape::Scalar => match (j, ty) {
@@ -102,7 +102,7 @@ fn read<V: Textual>(schema: &Schema, j: &Json, ty: &Ty) -> Result<V, String> {
 /// Reads the members of object `j` named by `fields`; a missing member of an `Option` type is
 /// `None`.
 fn members<V: Textual>(
-    schema: &Schema,
+    schema: &Committed,
     j: &Json,
     fields: &[(String, Ty)],
 ) -> Result<Vec<(String, V)>, String> {
@@ -124,7 +124,7 @@ fn members<V: Textual>(
 
 /// Reads a constructor value: its name for one with no fields, else an object of one member
 /// named by it holding its fields.
-fn ctor<V: Textual>(schema: &Schema, j: &Json, sum: &Sum) -> Result<V, String> {
+fn ctor<V: Textual>(schema: &Committed, j: &Json, sum: &Sum) -> Result<V, String> {
     let (name, payload) = match j {
         Json::String(s) => (s.as_str(), None),
         Json::Object(ms) if ms.len() == 1 => (ms[0].0.as_str(), Some(&ms[0].1)),

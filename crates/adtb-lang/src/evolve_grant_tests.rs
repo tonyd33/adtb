@@ -2074,7 +2074,7 @@ fn a_retag_revoke_takes_its_except_pairs_in_any_order() {
 }
 
 /// Signatures read by the schema at the version each target writes, and one bundle's query.
-struct FamilyAt(Vec<(u64, Schema)>, Ids);
+struct FamilyAt(Vec<(u64, Committed)>, Ids);
 
 impl CallSignatures for FamilyAt {
     fn declares(&self, _: &str, _: &str) -> Option<bool> {
@@ -2105,14 +2105,14 @@ fn sig_source(ops: &[&str]) -> Source {
     s
 }
 
-fn ids_at(schema: &Schema, target: &str) -> Ids {
+fn ids_at(schema: &Committed, target: &str) -> Ids {
     let s = crate::signature::family_signature(target).expect("a family target");
     crate::signature::signature_ids(schema, &s).expect("the signature reads")
 }
 
 #[test]
 fn a_printed_family_target_reads_back_as_the_same_ids() {
-    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    let schema = sig_source(&[SIG_SHOP]).committed().unwrap();
     let item = schema.module(schema.module_named("shop").unwrap()).types["Item"];
     let rel = schema
         .relations
@@ -2147,16 +2147,22 @@ fn a_printed_family_target_reads_back_as_the_same_ids() {
 fn a_rename_keeps_the_ids_and_a_constructor_or_field_change_does_not() {
     let source = sig_source(&[SIG_SHOP]);
     let target = "web::q at 1 () -> shop::Item";
-    let before = ids_at(&source.schema().unwrap(), target);
+    let before = ids_at(&source.committed().unwrap(), target);
     let renamed = sig_source(&[SIG_SHOP, "module shop\nrename type Item to Thing\n"]);
     assert_eq!(
         before,
-        ids_at(&renamed.schema().unwrap(), "web::q at 2 () -> shop::Thing")
+        ids_at(
+            &renamed.committed().unwrap(),
+            "web::q at 2 () -> shop::Thing"
+        )
     );
     let widened = sig_source(&[SIG_SHOP, "module shop\nadd constructor Kind.C\n"]);
     assert_ne!(
         before,
-        ids_at(&widened.schema().unwrap(), "web::q at 2 () -> shop::Item"),
+        ids_at(
+            &widened.committed().unwrap(),
+            "web::q at 2 () -> shop::Item"
+        ),
         "a nested named type's new constructor changes the signature"
     );
     let other = sig_source(&[
@@ -2165,7 +2171,7 @@ fn a_rename_keeps_the_ids_and_a_constructor_or_field_change_does_not() {
     ]);
     assert_ne!(
         before,
-        ids_at(&other.schema().unwrap(), "web::q at 2 () -> shop::Other"),
+        ids_at(&other.committed().unwrap(), "web::q at 2 () -> shop::Other"),
     );
 }
 
@@ -2173,7 +2179,7 @@ fn a_rename_keeps_the_ids_and_a_constructor_or_field_change_does_not() {
 fn a_key_is_its_relation_and_selection_whatever_the_relation_gains() {
     let source = sig_source(&[SIG_SHOP]);
     let target = "web::q at 1 (u: Key shop::items) -> Text";
-    let before = ids_at(&source.schema().unwrap(), target);
+    let before = ids_at(&source.committed().unwrap(), target);
     let changed = sig_source(&[
         SIG_SHOP,
         "module shop\nadd field Item.note: Text fill \"\"\n",
@@ -2181,7 +2187,7 @@ fn a_key_is_its_relation_and_selection_whatever_the_relation_gains() {
     assert_eq!(
         before,
         ids_at(
-            &changed.schema().unwrap(),
+            &changed.committed().unwrap(),
             "web::q at 2 (u: Key shop::items) -> Text"
         ),
     );
@@ -2189,7 +2195,7 @@ fn a_key_is_its_relation_and_selection_whatever_the_relation_gains() {
 
 #[test]
 fn a_parameter_name_is_not_part_of_the_ids() {
-    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    let schema = sig_source(&[SIG_SHOP]).committed().unwrap();
     assert_eq!(
         ids_at(&schema, "web::q at 1 (a: I64) -> Text"),
         ids_at(&schema, "web::q at 1 (b: I64) -> Text"),
@@ -2206,7 +2212,7 @@ fn a_parameter_name_is_not_part_of_the_ids() {
 
 #[test]
 fn a_signature_writes_a_schema_type_as_module_and_name() {
-    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    let schema = sig_source(&[SIG_SHOP]).committed().unwrap();
     let s = crate::signature::family_signature("web::q at 1 () -> Item").unwrap();
     assert!(crate::signature::signature_ids(&schema, &s).is_err());
     assert!(crate::signature::family_signature("web::q").is_none());
@@ -2214,7 +2220,7 @@ fn a_signature_writes_a_schema_type_as_module_and_name() {
 
 #[test]
 fn a_family_target_covers_by_ids_and_counts_an_unread_one_as_supported_only() {
-    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    let schema = sig_source(&[SIG_SHOP]).committed().unwrap();
     let int = Ids::of(&schema, &[Ty::Base(Base::I64)], &Ty::Base(Base::Text));
     let calls = FamilyAt(vec![(1, schema.clone()), (2, schema.clone())], int);
     let family = "web::q at 1 (x: I64) -> Text";
@@ -2247,7 +2253,7 @@ fn a_family_target_covers_by_ids_and_counts_an_unread_one_as_supported_only() {
 
 #[test]
 fn a_whole_bundle_row_is_a_known_shape_to_a_family_row() {
-    let schema = grants().schema().unwrap();
+    let schema = grants().committed().unwrap();
     let row = |grantor, grantee, target| GrantRow {
         grantor,
         grantee,

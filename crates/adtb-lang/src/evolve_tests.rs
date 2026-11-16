@@ -3666,6 +3666,37 @@ rename relation stamps to labels";
 }
 
 #[test]
+fn a_source_a_migration_is_being_applied_to_gives_no_committed_schema() {
+    let text = "module auth
+add type Team = { id: Key teams }
+add relation teams : Team key id generate sequence";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let mut s = running();
+    s.expecting("auth", &m.operators);
+    s.apply("auth", Listed::nth(&m.operators, 0), text)
+        .unwrap_or_else(|e| panic!("add type refused: {e:?}"));
+    assert_eq!(
+        (
+            Err(Uncommitted::Migrating),
+            Err("a migration is being applied to the source".to_string())
+        ),
+        (
+            s.committed().map(drop),
+            crate::signature::bundle(
+                &s,
+                &format!(
+                    "bundle web-1.0 pins 1 ({}) edition \"2026-10\"\nimport auth",
+                    "a".repeat(64)
+                )
+            )
+            .map(drop)
+        )
+    );
+}
+
+#[test]
 fn a_relation_a_later_operator_adds_is_no_relation_before_it() {
     let text = "module auth
 add type Team = { id: Key teams }

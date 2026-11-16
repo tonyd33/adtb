@@ -3,7 +3,7 @@
 use std::fmt;
 
 use adtb_lang::check::Program;
-use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::schema::{Committed, TypeDefKind};
 use adtb_lang::textual::{Textual, key_field_ty, key_names};
 use adtb_lang::types::{Base, CtorSet, KeyCtors, RelId, RelRef, Ty};
 use adtb_reference::{Database, Interpreter, Value};
@@ -32,7 +32,7 @@ impl fmt::Display for Mismatch {
 }
 
 /// Returns whether `value` inhabits `ty`, a type of `schema`, by its structure alone.
-pub fn inhabits(value: &Value, ty: &Ty, schema: &Schema) -> Result<(), Mismatch> {
+pub fn inhabits(value: &Value, ty: &Ty, schema: &Committed) -> Result<(), Mismatch> {
     Judge::new(schema).value(value, ty)
 }
 
@@ -46,7 +46,7 @@ struct State<'a> {
 /// Judges values of the types of one schema.
 #[derive(Clone, Copy)]
 pub struct Judge<'a> {
-    schema: &'a Schema,
+    schema: &'a Committed,
     state: Option<State<'a>>,
     stored: bool,
 }
@@ -62,7 +62,7 @@ impl fmt::Debug for Judge<'_> {
 
 impl<'a> Judge<'a> {
     /// Returns the judgement by structure alone.
-    pub fn new(schema: &'a Schema) -> Judge<'a> {
+    pub fn new(schema: &'a Committed) -> Judge<'a> {
         Judge {
             schema,
             state: None,
@@ -72,7 +72,7 @@ impl<'a> Judge<'a> {
 
     /// Returns the judgement over `db`, where a key of a constructor set narrower than its
     /// relation's names a row of that set in `db`.
-    pub fn over(schema: &'a Schema, program: &'a Program, db: &'a Database) -> Judge<'a> {
+    pub fn over(schema: &'a Committed, program: &'a Program, db: &'a Database) -> Judge<'a> {
         Judge {
             schema,
             state: Some(State { program, db }),

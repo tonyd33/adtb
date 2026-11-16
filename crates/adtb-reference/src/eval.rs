@@ -8,7 +8,7 @@ use adtb_file::{Disk, Files, Record};
 use adtb_lang::check::Program;
 use adtb_lang::kernel::{Agg, Const, FileFormat, Kind, Terms, Tm, Transition, Var};
 use adtb_lang::schema::prelude::ctor;
-use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::schema::{Committed, TypeDefKind};
 use adtb_lang::textual::PrintError;
 use adtb_lang::types::{Base, CtorSet, FnId, RelId, RelRef, Ty, TypeId};
 
@@ -224,7 +224,7 @@ impl std::fmt::Debug for Source<'_> {
 /// The reference interpreter over one database value.
 #[derive(Debug)]
 pub struct Interpreter<'a> {
-    pub(crate) schema: &'a Schema,
+    pub(crate) schema: &'a Committed,
     pub(crate) program: &'a Program,
     pub(crate) db: &'a Database,
     caller: Option<Value>,
@@ -237,7 +237,7 @@ pub struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
-    pub fn new(schema: &'a Schema, program: &'a Program, db: &'a Database) -> Interpreter<'a> {
+    pub fn new(schema: &'a Committed, program: &'a Program, db: &'a Database) -> Interpreter<'a> {
         Interpreter {
             schema,
             program,

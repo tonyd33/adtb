@@ -112,6 +112,15 @@ impl Source {
         Ok(built.relabelled(&|_| ids.clone(), &states))
     }
 
+    /// Returns the schema [`Source::schema`] builds, committed.
+    ///
+    /// Fail with `Unbuilt` when the source does not build, and with `Migrating` when a migration
+    /// is being applied to it: `expecting` was called and `settled` was not.
+    pub fn committed(&self) -> Result<Committed, Uncommitted> {
+        let schema = self.schema().map_err(Uncommitted::Unbuilt)?;
+        Committed::new(schema).ok_or(Uncommitted::Migrating)
+    }
+
     /// Builds the schema the declarations state, its ids those of declaration order.
     pub(super) fn built(&self) -> Result<Arc<Schema>, Vec<FileDiag>> {
         if let Some(schema) = self.memo.get(self) {

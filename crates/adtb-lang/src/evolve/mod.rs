@@ -17,7 +17,7 @@ use crate::ids::{
 };
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
-use crate::schema::{self, ENGINE_MODULES, Schema, TypeDefKind, ValueDef};
+use crate::schema::{self, Committed, ENGINE_MODULES, Schema, TypeDefKind, ValueDef};
 use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
 
@@ -90,6 +90,27 @@ pub struct Logged {
     pub text: String,
     pub operators: Vec<Operator>,
     pub before: Arc<Source>,
+}
+
+/// Why a source gives no committed schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Uncommitted {
+    /// The source does not build.
+    Unbuilt(Vec<FileDiag>),
+    /// A migration is being applied to the source.
+    Migrating,
+}
+
+impl std::fmt::Display for Uncommitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Uncommitted::Unbuilt(ds) => {
+                let ms: Vec<&str> = ds.iter().map(|d| d.diag.message.as_str()).collect();
+                f.write_str(&ms.join("\n"))
+            }
+            Uncommitted::Migrating => f.write_str("a migration is being applied to the source"),
+        }
+    }
 }
 
 /// A schema as the fold of its log: the declarations of every user module, the write states of

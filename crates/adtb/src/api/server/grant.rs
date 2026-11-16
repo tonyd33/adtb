@@ -197,7 +197,7 @@ impl<R: Runtime> CallSignatures for Calls<'_, R> {
         let read = || {
             let written = signature::family_signature(target)?;
             let source = catalog::source_at(&self.e.source, written.at)?;
-            let schema = source.schema().ok()?;
+            let schema = source.committed().ok()?;
             signature::signature_ids(&schema, &written).ok()
         };
         let ids = read();

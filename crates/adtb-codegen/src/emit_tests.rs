@@ -1,5 +1,5 @@
 use adtb_lang::ids::{CatalogIds, Slot};
-use adtb_lang::schema::{Schema, States, build_with};
+use adtb_lang::schema::{Committed, Schema, States, build_with};
 use adtb_lang::signature::replay;
 
 use super::Module;
@@ -23,6 +23,7 @@ fn refusal(stripped: impl Fn(&CatalogIds) -> Vec<Slot>) -> String {
         ids
     };
     let schema = build_with(&files, &[], &without, &States::default()).expect("the log builds");
+    let schema = Committed::new(schema).expect("a schema built with nothing ahead commits");
     match Module::new(&schema).user_items() {
         Ok(()) => panic!("a schema missing an id generates"),
         Err(e) => e.to_string(),

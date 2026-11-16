@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
 use crate::check::{Program, Query, Txn, check_query_in, check_txn_in};
-use crate::evolve::{Listed, Source};
+use crate::evolve::{Listed, Source, Uncommitted};
 use crate::parse::{Options, parse_adhoc, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
 use crate::schema::{
-    FieldPart, PRELUDE, Schema, TypeDefKind, TypeMode, TypeScope, ValueDef, resolve_type,
+    Committed, FieldPart, PRELUDE, Schema, TypeDefKind, TypeMode, TypeScope, ValueDef, resolve_type,
 };
 use crate::span::{Diag, FileId, Span};
 use crate::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
@@ -115,7 +115,7 @@ pub struct Ids {
 
 impl Ids {
     /// Returns the identity of `params` and `result`, types of `schema`.
-    pub fn of(schema: &Schema, params: &[Ty], result: &Ty) -> Ids {
+    pub fn of(schema: &Committed, params: &[Ty], result: &Ty) -> Ids {
         let mut w = IdWalk {
             schema,
             named: BTreeMap::new(),
@@ -131,7 +131,7 @@ impl Ids {
 }
 
 struct IdWalk<'s> {
-    schema: &'s Schema,
+    schema: &'s Committed,
     named: BTreeMap<Id, Named>,
 }
 
@@ -295,7 +295,7 @@ pub fn family_signature(target: &str) -> Option<ast::CallSignature> {
 /// Returns the identity of `signature` read against `schema`, the schema of its log version.
 ///
 /// Fail when a type does not resolve in `schema`; a schema type is written `module::name`.
-pub fn signature_ids(schema: &Schema, signature: &ast::CallSignature) -> Result<Ids, String> {
+pub fn signature_ids(schema: &Committed, signature: &ast::CallSignature) -> Result<Ids, String> {
     let scope = TypeScope::new(PRELUDE, &[], TypeMode::Signature);
     let read = |t: &ast::Type| {
         resolve_type(schema, &scope, t, &mut Vec::new(), FileId(0)).map_err(|(_, m)| m)
@@ -329,7 +329,7 @@ pub struct Call<'a> {
 pub struct Bundle {
     pub header: ast::BundleHeader,
     /// The pinned version's schema, with the bundle's functions in its first imported module.
-    pub schema: Schema,
+    pub schema: Committed,
     pub calls: Vec<Signature>,
 }
 
@@ -337,7 +337,8 @@ pub struct Bundle {
 /// the header pins.
 ///
 /// Fail with the message of the first error: a file that does not parse, a module import of no
-/// user module, a function that does not check, and each refusal of [`calls`].
+/// user module, a function that does not check, each refusal of [`calls`], and a source a
+/// migration is being applied to.
 pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
     let file = parse_bundle(text, Options::default())
         .ok()
@@ -361,7 +362,7 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
         .collect();
     Ok(Bundle {
         header: file.header,
-        schema,
+        schema: Committed::new(schema).ok_or_else(|| Uncommitted::Migrating.to_string())?,
         calls,
     })
 }

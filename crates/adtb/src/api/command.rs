@@ -8,7 +8,7 @@ use adtb_lang::check::{Command, Explained, Program};
 use adtb_lang::ids::{CatConstraintId, engine_rel, held_id};
 use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{Base, CtorSet, DenialIdx, KeyCtors, RelId, RelRef, Ty};
 
@@ -823,7 +823,7 @@ impl<R: Runtime> Engine<R> {
     /// Replace the rows `old` names of `rel` by `row`, in a transaction of its own.
     pub(super) fn swap_row(
         &self,
-        schema: &Schema,
+        schema: &Committed,
         rel: RelId,
         old: Old,
         row: Val,

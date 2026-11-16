@@ -49,7 +49,7 @@ use adtb_file::Disk;
 use adtb_lang::ids::held_id;
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
-use adtb_lang::schema::{Committed, Schema};
+use adtb_lang::schema::Committed;
 use adtb_lang::types::{DenialIdx, RelId};
 use adtb_sys::lock::{Lock, Ranked};
 
@@ -467,7 +467,7 @@ impl Txn {
 #[derive(Clone, Copy, Debug)]
 pub struct Text<'a> {
     /// The database's schema, or one that extends it with the transaction's temp relations.
-    pub schema: &'a Schema,
+    pub schema: &'a Committed,
     pub terms: &'a Terms,
     pub items: &'a [Tm],
     pub params: &'a [(Var, Val)],

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use adtb_lang::check::Program;
 use adtb_lang::kernel::{Agg, Build, Kind, Prim, Terms, Tm, Var};
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::Committed;
 use adtb_lang::types::{Base, RelId, Ty};
 use adtb_reference::{Abort, Database, Fault, Interpreter, Limit, R, Value};
 
@@ -11,7 +11,7 @@ use crate::plan::*;
 
 /// Evaluates plans over an in-memory database, one row at a time.
 pub struct Interp<'a> {
-    schema: &'a Schema,
+    schema: &'a Committed,
     program: &'a Program,
     db: &'a Database,
     terms: RefCell<Terms>,
@@ -52,7 +52,7 @@ struct Built<'q> {
 
 impl<'a> Interp<'a> {
     pub fn new(
-        schema: &'a Schema,
+        schema: &'a Committed,
         program: &'a Program,
         db: &'a Database,
         catalog: &Catalog,

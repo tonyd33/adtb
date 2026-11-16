@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
 
-use adtb_lang::schema::{FieldDef, Schema, TypeDefKind};
+use adtb_lang::schema::{Committed, FieldDef, TypeDefKind};
 use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::types::{Base, RelId, Ty, TypeId};
 
@@ -26,7 +26,7 @@ const RESERVED: &[&str] = &[
 
 /// The items of one generated module.
 pub(crate) struct Module<'s> {
-    schema: &'s Schema,
+    schema: &'s Committed,
     pub(crate) out: String,
     wanted: VecDeque<Wanted>,
     types: BTreeSet<TypeId>,
@@ -53,7 +53,7 @@ struct Field {
 }
 
 impl<'s> Module<'s> {
-    pub(crate) fn new(schema: &'s Schema) -> Module<'s> {
+    pub(crate) fn new(schema: &'s Committed) -> Module<'s> {
         Module {
             schema,
             out: String::new(),
@@ -67,7 +67,7 @@ impl<'s> Module<'s> {
 
     /// Returns a module over `schema` that re-exports the items of `prior` and emits only what
     /// `prior` lacks.
-    pub(crate) fn after(schema: &'s Schema, prior: &Module<'_>) -> Module<'s> {
+    pub(crate) fn after(schema: &'s Committed, prior: &Module<'_>) -> Module<'s> {
         Module {
             types: prior.types.clone(),
             tags: prior.tags.clone(),

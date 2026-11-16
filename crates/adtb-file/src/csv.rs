@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::Committed;
 use adtb_lang::textual::Textual;
 use adtb_lang::types::Ty;
 
@@ -24,7 +24,7 @@ impl Cell {
 /// Returns each record of `text` after its header, as the file holds it, with its row read at
 /// `row` or why it does not convert. Fails when the text is not CSV.
 pub(super) fn records<V: Textual>(
-    schema: &Schema,
+    schema: &Committed,
     text: &str,
     row: &Ty,
 ) -> Result<Vec<Found<V>>, String> {
@@ -148,7 +148,7 @@ fn join(at: &str, name: &str) -> String {
 }
 
 struct Reader<'s, 'c> {
-    schema: &'s Schema,
+    schema: &'s Committed,
     cells: BTreeMap<&'c str, Cell>,
 }
 

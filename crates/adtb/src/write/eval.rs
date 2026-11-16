@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use adtb_file::Record;
 use adtb_lang::kernel::{Build, Conflict, Kind, Terms, Tm, Var};
 use adtb_lang::schema::prelude::ctor;
-use adtb_lang::schema::{Generator, OnDelete, Schema, Stage};
+use adtb_lang::schema::{Committed, Generator, OnDelete, Schema, Stage};
 use adtb_lang::textual::key_names;
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
@@ -159,7 +159,7 @@ pub struct Stmt<'a, R: Runtime> {
     pub db: &'a Database<R>,
     pub tx: &'a Txn,
     /// The database's schema, or one extending it with the transaction's temp relations.
-    schema: &'a Schema,
+    schema: &'a Committed,
     terms: Terms,
     /// What each variable standing for a temp relation's rows or a file scan stands for.
     inputs: BTreeMap<Var, Input>,
@@ -421,7 +421,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         self.db.plan(self.schema, self.arena(Arena::Statement), t)
     }
 
-    pub fn schema(&self) -> &'a Schema {
+    pub fn schema(&self) -> &'a Committed {
         self.schema
     }
 
