@@ -9,12 +9,16 @@ impl Source {
         Ok(self.names_in(&schema))
     }
 
-    /// Returns the names of each declaration as `names` does, and whether they are settled: no
-    /// `Key r` type names a relation variable a later operator adds. `None` while the source does
+    /// Returns the names of each declaration as `names` does, and the declarations whose names
+    /// wait: those that write a name this source does not resolve. `None` while the source does
     /// not build.
-    fn names_built(&self) -> Option<(Vec<Names>, bool)> {
+    fn names_built(&self) -> Option<(Vec<Names>, BTreeSet<usize>)> {
         let schema = self.schema().ok()?;
-        Some((self.names_in(&schema), schema.ahead.is_empty()))
+        let names = self.names_in(&schema);
+        let waiting = (0..names.len())
+            .filter(|&i| !names[i].all_resolve())
+            .collect();
+        Some((names, waiting))
     }
 
     fn names_in(&self, schema: &Schema) -> Vec<Names> {
@@ -41,11 +45,12 @@ impl Logged {
     ///
     /// An operand the operator copies into a declaration (a declaration, a constructor, a field type, an
     /// arm, an index field, a default, a computed field) resolves where it was copied, in the source
-    /// after the operator; a name that source does not resolve, because it does not build or names a
-    /// relation variable a later operator adds, resolves in the first later source that builds with
-    /// none, else in the migration's result. The fields of
-    /// a dropped unique or index resolve in the clause they match before the operator. A fill or a
-    /// routing resolves as the operator checks it.
+    /// after the operator. When that source does not build, or the declaration writes a name of a
+    /// type, relation variable, constructor or named set that source does not declare, the
+    /// operand resolves in the first later source that builds and declares every such name the
+    /// declaration writes, else in the migration's result. The fields of a dropped unique or index
+    /// resolve in the clause they match before the operator. A fill or a routing resolves as the
+    /// operator checks it.
     pub fn names(&self) -> Result<Names, Vec<Diag>> {
         self.names_with(false, None)
     }
@@ -97,13 +102,15 @@ impl Logged {
                 copy_marked(&mut names, &before, &prior, &read);
             }
             match src.names_built() {
-                Some((after, true)) => {
+                Some((after, waiting)) => {
                     copy_marked(&mut names, &after, &src, &written);
-                    copy_late(&mut names, &after, &src, &mut late, &mut missing);
-                }
-                Some((after, false)) => {
-                    copy_marked(&mut names, &after, &src, &written);
-                    late.extend(written.into_iter().map(|m| m.from));
+                    late.extend(
+                        written
+                            .into_iter()
+                            .filter(|m| waiting.contains(&m.decl))
+                            .map(|m| m.from),
+                    );
+                    copy_late(&mut names, &after, &src, &waiting, &mut late, &mut missing);
                 }
                 None => late.extend(written.into_iter().map(|m| m.from)),
             }
@@ -113,7 +120,14 @@ impl Logged {
         }
         if !late.is_empty() {
             let result = src.names().map_err(unbuilt)?;
-            copy_late(&mut names, &result, &src, &mut late, &mut missing);
+            copy_late(
+                &mut names,
+                &result,
+                &src,
+                &BTreeSet::new(),
+                &mut late,
+                &mut missing,
+            );
         }
         if missing.is_empty() {
             Ok(names)
@@ -124,16 +138,18 @@ impl Logged {
 }
 
 /// Copy into `names` the names `decl_names` holds at the copies in `src` of each range of
-/// `late` that `names` does not name yet, emptying `late`, and record in `missing` each range a
-/// later operator rewrote.
+/// `late` that `names` does not name yet, keeping in `late` each range copied into a declaration
+/// of `waiting`, and record in `missing` each range a later operator rewrote.
 fn copy_late(
     names: &mut Names,
     decl_names: &[Names],
     src: &Source,
+    waiting: &BTreeSet<usize>,
     late: &mut Vec<Range<usize>>,
     missing: &mut Vec<Diag>,
 ) {
     let marks = src.marks.as_ref().expect("a replay records its copies");
+    let mut kept = Vec::new();
     for from in late.drain(..) {
         let pieces: Vec<Mark> = marks
             .written
@@ -147,11 +163,16 @@ fn copy_late(
                 "a later operator of the migration rewrites the declaration this operand was written into, so its names do not resolve",
             ));
         }
+        if pieces.iter().any(|m| waiting.contains(&m.decl)) {
+            kept.push(from);
+            continue;
+        }
         for m in &pieces {
             let at = header(&src.decls[m.decl].module).len() + m.at;
             names.copy_unnamed(&decl_names[m.decl], at..at + m.from.len(), m.from.start);
         }
     }
+    *late = kept;
 }
 
 fn unbuilt(ds: Vec<FileDiag>) -> Vec<Diag> {

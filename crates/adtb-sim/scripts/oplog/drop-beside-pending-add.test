@@ -1,0 +1,20 @@
+seed 1
+use shop
+use customers
+
+migrate
+  module shop
+  add type Stamp = { id: Key stamps, label: Text }
+  add relation stamps : Stamp key id generate sequence
+  drop relation stamps
+  drop type Stamp
+  add type Mark = { id: Key marks, label: Text }
+  add relation marks : Mark key id generate sequence
+
+run
+  insert marks { label: "x" }
+
+query rowsort
+  from m in marks select m.label
+----
+"x"

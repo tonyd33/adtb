@@ -157,6 +157,43 @@ pub fn subtype(schema: &Schema, a: &Ty, b: &Ty) -> bool {
     }
 }
 
+/// Returns whether `a <: b` admits a key of `a` as a key of `b` whose selection resolves at the
+/// migration's end, without checking its constructors.
+pub fn admits_late_key(schema: &Schema, a: &Ty, b: &Ty) -> bool {
+    if a == b {
+        return false;
+    }
+    let admits = |x: &Ty, y: &Ty| admits_late_key(schema, x, y);
+    match (a, b) {
+        (Ty::Data { def, args: a1, .. }, Ty::Data { args: a2, .. }) => a1
+            .iter()
+            .zip(a2)
+            .enumerate()
+            .any(|(i, (x, y))| occurs_in_field(schema, *def, i as u32) && admits(x, y)),
+        (
+            Ty::Key { .. },
+            Ty::Key {
+                ctors: KeyCtors::Late(_),
+                ..
+            },
+        ) => true,
+        (Ty::Set(x) | Ty::NonEmpty(x), Ty::Set(y) | Ty::NonEmpty(y)) => admits(x, y),
+        (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => admits(p2, p1) || admits(r1, r2),
+        (Ty::Record(x), Ty::Record(y)) => x
+            .iter()
+            .any(|(n, t)| y.iter().any(|(m, u)| n == m && admits(t, u))),
+        (Ty::Sum { ctors: x, .. }, Ty::Sum { ctors: y, .. }) => x.iter().any(|(c, fs)| {
+            y.iter().any(|(d, gs)| {
+                c == d
+                    && fs
+                        .iter()
+                        .any(|(n, t)| gs.iter().any(|(m, u)| n == m && admits(t, u)))
+            })
+        }),
+        _ => false,
+    }
+}
+
 /// The least upper bound of `a` and `b`, where one exists.
 pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
     if subtype(schema, a, b) {

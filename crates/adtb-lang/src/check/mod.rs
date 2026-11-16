@@ -34,6 +34,7 @@ use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
 pub use txn::{Txn, check_txn, check_txn_in};
+use ty::admits_late_key;
 pub use ty::{join, subtype};
 
 type R<T> = Result<T, Diag>;
@@ -146,6 +147,8 @@ pub enum Ref {
     },
     /// A `match`, at its span, over a value of this type.
     Match(Ty),
+    /// A name of a type, relation variable, constructor or named set the schema does not declare.
+    Unresolved,
 }
 
 /// What a body may refer to besides its locals.

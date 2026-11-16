@@ -25,6 +25,8 @@ pub struct Names {
     ids: BTreeMap<(u32, u32), BTreeSet<(Space, u64)>>,
     /// The field names written as a pun, standing for the field and a variable of its name.
     puns: BTreeSet<(u32, u32)>,
+    /// The names of a type, relation variable, constructor or named set the schema does not declare.
+    unresolved: BTreeSet<(u32, u32)>,
 }
 
 impl Names {
@@ -46,13 +48,16 @@ impl Names {
         if let Ref::Field { pun: true, .. } = r {
             self.puns.insert((span.start, span.end));
         }
+        if let Ref::Unresolved = r {
+            self.unresolved.insert((span.start, span.end));
+        }
         let module = match r {
             Ref::Type(d) | Ref::Ctor(d, _) => schema.ty(*d).module,
             Ref::Relation(r) | Ref::Set(r, _) => schema.relation(*r).module,
             Ref::Function(f) => schema.function(*f).module,
             Ref::Aggregate(a) => schema.aggregates[*a as usize].module,
             Ref::BuiltinType | Ref::Anonymous => PRELUDE,
-            Ref::Field { .. } | Ref::Match(_) => return,
+            Ref::Field { .. } | Ref::Match(_) | Ref::Unresolved => return,
         };
         self.qualify(schema, span, module);
     }
@@ -62,6 +67,11 @@ impl Names {
         self.modules
             .get(&(span.start, span.end))
             .map(|m| m.as_deref())
+    }
+
+    /// Returns whether every name of a type, relation variable, constructor or named set resolves.
+    pub fn all_resolve(&self) -> bool {
+        self.unresolved.is_empty()
     }
 
     /// Returns the catalog id of each object the names resolve to.
@@ -134,6 +144,7 @@ impl Names {
             self.ids.entry(span).or_default().extend(ids);
         }
         self.puns.extend(other.puns);
+        self.unresolved.extend(other.unresolved);
     }
 }
 
@@ -157,7 +168,7 @@ fn catalog_id(schema: &Schema, r: &Ref) -> Option<(Space, u64)> {
             let f = td.field(ctor.and_then(|c| td.ctor_at(c)), name)?;
             (Space::Field, ids.field_id(f)?.raw())
         }
-        Ref::BuiltinType | Ref::Anonymous | Ref::Match(_) => return None,
+        Ref::BuiltinType | Ref::Anonymous | Ref::Match(_) | Ref::Unresolved => return None,
     })
 }
 
@@ -288,7 +299,7 @@ pub fn type_refs(schema: &Schema, module: ModuleId, t: &ast::Type, out: &mut Vec
                     }
                 }
                 Ok(_) => out.push((name.name.span, Ref::BuiltinType)),
-                Err(_) => {}
+                Err(_) => out.push((name.name.span, Ref::Unresolved)),
             }
             for a in args {
                 if let ast::TypeArg::Type(t) = a {
@@ -344,6 +355,8 @@ fn type_sel_refs(schema: &Schema, def: TypeId, sel: &CtorSel, out: &mut Vec<(Spa
             .position(|r| r.elem_def == def && r.sets.iter().any(|s| s.name == c.text))
         {
             out.push((c.span, Ref::Set(RelId(r as u32), c.text.clone())));
+        } else {
+            out.push((c.span, Ref::Unresolved));
         }
     }
 }
@@ -356,6 +369,8 @@ fn rel_sel_refs(schema: &Schema, rel: RelId, names: &[ast::Ident], out: &mut Vec
             out.push((c.span, Ref::Ctor(r.elem_def, i)));
         } else if r.sets.iter().any(|s| s.name == c.text) {
             out.push((c.span, Ref::Set(rel, c.text.clone())));
+        } else {
+            out.push((c.span, Ref::Unresolved));
         }
     }
 }
@@ -393,6 +408,7 @@ fn relation_ref_refs(
     out: &mut Vec<(Span, Ref)>,
 ) {
     let Ok(rel) = schema.lookup_relation(module, &r.relation) else {
+        out.push((r.relation.name.span, Ref::Unresolved));
         return;
     };
     out.push((r.relation.name.span, Ref::Relation(rel)));

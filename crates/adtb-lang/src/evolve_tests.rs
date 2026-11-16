@@ -4013,9 +4013,7 @@ define fn g (k: Key regions.Settled) -> Bool = true";
             Err(vec![
                 "a script may not give Key regions as Key regions.Settled: it has a selection this migration resolves at its end".to_string()
             ]),
-            Err(vec![
-                "a script may not give Key regions.Settled as Key regions.Settled: it has a selection this migration resolves at its end".to_string()
-            ]),
+            Ok(()),
             Ok(()),
         ],
         [
@@ -4050,6 +4048,35 @@ add relation visits : Visit key id generate sequence";
             ]),
         ],
         [run(&[field, set]), run(&[set, field])]
+    );
+}
+
+#[test]
+fn a_fill_needs_the_selection_its_migration_adds_later_only_for_a_value_holding_a_key() {
+    let world = "module world
+add module world
+add type V { id: Key vs } = A | B
+add relation vs : V key id generate sequence
+add type W = { id: Key ws }
+add relation ws : W key id generate sequence";
+    let run = |fill: &str| {
+        migrate(
+            &Source::default(),
+            &format!(
+                "{world}\nadd field W.p: Option (Key vs.Late) on delete clear fill {fill}\n\
+                 add set Late of vs = B"
+            ),
+        )
+        .map(drop)
+    };
+    assert_eq!(
+        [
+            Ok(()),
+            Err(vec![
+                "a fill may not give Key vs as Key vs.Late: it has a selection this migration resolves at its end".to_string()
+            ]),
+        ],
+        [run("None"), run("Some { value: vs.key(1) }")]
     );
 }
 

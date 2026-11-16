@@ -1,0 +1,32 @@
+seed 1
+
+migrate
+  module m
+  add module m
+  add type W { id: Key ws, p: Option (Key ws.Settled) } = A | B
+  add relation ws : W key id generate sequence
+  add type Q a = { k: a }
+  add relation qs : Q (Key ws.Settled) key k
+  define fn settled (k: Key ws.Settled) -> Key ws = k
+  add computed ws.q: Option (Key ws.Settled) = None
+  add set Settled of ws = B
+
+run
+  insert ws.B { p: None }
+
+query rowsort
+  from o in catalog::migration_ops where o.migration == catalog::migrations.key(1)
+    select match o.op
+      | AddType t -> unwrap(t.decl)
+      | AddRelation r -> unwrap(r.decl)
+      | DefineFn f -> unwrap(f.decl)
+      | AddComputed c -> unwrap(c.decl)
+      | _ -> ""
+----
+""
+"fn m::settled ( k : Key m::ws . m::Settled ) -> Key m::ws = k"
+"q : Option ( Key m::ws . m::Settled ) = None"
+"relation m::qs : m::Q ( Key m::ws . m::Settled ) key k"
+"relation m::ws : m::W key id generate sequence"
+"type m::Q a = { k : a }"
+"type m::W { id : Key m::ws , p : Option ( Key m::ws . m::Settled ) } = m::A | m::B"

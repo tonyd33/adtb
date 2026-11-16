@@ -154,8 +154,18 @@ impl Checker<'_> {
     }
 
     pub(super) fn subsume(&self, out: Out, expected: &Ty, span: Span) -> R<Out> {
+        if !subtype(self.schema, &out.ty, expected) {
+            return Err(diag(
+                span,
+                format!(
+                    "expected {}, found {}",
+                    self.show(expected),
+                    self.show(&out.ty)
+                ),
+            ));
+        }
         if let Some(writer) = self.late_writer
-            && expected.late_key().is_some()
+            && admits_late_key(self.schema, &out.ty, expected)
         {
             return Err(diag(
                 span,
@@ -166,18 +176,7 @@ impl Checker<'_> {
                 ),
             ));
         }
-        if subtype(self.schema, &out.ty, expected) {
-            Ok(out)
-        } else {
-            Err(diag(
-                span,
-                format!(
-                    "expected {}, found {}",
-                    self.show(expected),
-                    self.show(&out.ty)
-                ),
-            ))
-        }
+        Ok(out)
     }
 
     pub(super) fn join(&self, a: &Ty, b: &Ty) -> Option<Ty> {

@@ -898,3 +898,188 @@ fn a_principal_declared_by_the_first_migration_resolves_to_its_type() {
         "the operator names the schema's principal"
     );
 }
+
+/// Each place a declaration writes a type, as the operators that write `$T` there and their
+/// canonical texts, which write the type as `$C`.
+const TYPE_POSITIONS: &[(&[&str], &[&str])] = &[
+    (&["add type V = { v: $T }"], &["type m::V = { v : $C }"]),
+    (
+        &["add type V { v: Option ($T) } = P { p: $T } | Q"],
+        &["type m::V { v : Option ( $C ) } = m::P { p : $C } | m::Q"],
+    ),
+    (
+        &["add type Q a = { k: a }", "add relation qs : Q ($T) key k"],
+        &[
+            "type m::Q a = { k : a }",
+            "relation m::qs : m::Q ( $C ) key k",
+        ],
+    ),
+    (
+        &["define fn f (k: $T) -> Text = \"a\""],
+        &["fn m::f ( k : $C ) -> Text = \"a\""],
+    ),
+    (
+        &["define fn f (n: I64) -> Option ($T) = None"],
+        &["fn m::f ( n : I64 ) -> Option ( $C ) = None"],
+    ),
+    (
+        &["define fn f (n: I64) -> Text = ap(fn (k: Option ($T)) -> \"a\")"],
+        &["fn m::f ( n : I64 ) -> Text = m::ap ( fn ( k : Option ( $C ) ) -> \"a\" )"],
+    ),
+    (
+        &[
+            "add constraint c = from w in ws where ap(fn (k: Option ($T)) -> \"a\") == \"b\" select w",
+        ],
+        &[
+            "constraint m::c = from w in m::ws where m::ap ( fn ( k : Option ( $C ) ) -> \"a\" ) == \"b\" select w",
+        ],
+    ),
+    (
+        &["add check c on ws (ap(fn (k: Option ($T)) -> \"a\") == \"a\")"],
+        &["check m::c on m::ws ( m::ap ( fn ( k : Option ( $C ) ) -> \"a\" ) == \"a\" )"],
+    ),
+    (
+        &["add computed ws.q: Option ($T) = None"],
+        &["q : Option ( $C ) = None"],
+    ),
+    (
+        &["add computed ws.q: Text = ap(fn (k: Option ($T)) -> \"a\")"],
+        &["q : Text = m::ap ( fn ( k : Option ( $C ) ) -> \"a\" )"],
+    ),
+    (
+        &[
+            "define aggregate g (x: Option ($T)) -> I64 = state { c: I64 } init { c: 0 } \
+           step (s, x) -> s merge (a, b) -> a finish s -> s.c",
+        ],
+        &[
+            "aggregate m::g ( x : Option ( $C ) ) -> I64 = state { c : I64 } init { c : 0 } \
+           step ( s , x ) -> s merge ( a , b ) -> a finish s -> s . c",
+        ],
+    ),
+    (
+        &[
+            "define aggregate g (x: I64) -> Option ($T) = state { c: I64 } init { c: 0 } \
+           step (s, x) -> s merge (a, b) -> a finish s -> None",
+        ],
+        &[
+            "aggregate m::g ( x : I64 ) -> Option ( $C ) = state { c : I64 } init { c : 0 } \
+           step ( s , x ) -> s merge ( a , b ) -> a finish s -> None",
+        ],
+    ),
+    (
+        &[
+            "define aggregate g (x: I64) -> I64 = state { c: Option ($T) } init { c: None } \
+           step (s, x) -> s merge (a, b) -> a finish s -> 0",
+        ],
+        &[
+            "aggregate m::g ( x : I64 ) -> I64 = state { c : Option ( $C ) } init { c : None } \
+           step ( s , x ) -> s merge ( a , b ) -> a finish s -> 0",
+        ],
+    ),
+    (
+        &[
+            "define aggregate g (x: I64) -> I64 = state { c: I64 } init { c: 0 } \
+           step (s, x) -> if ap(fn (k: Option ($T)) -> \"a\") == \"a\" then s else s \
+           merge (a, b) -> a finish s -> s.c",
+        ],
+        &[
+            "aggregate m::g ( x : I64 ) -> I64 = state { c : I64 } init { c : 0 } \
+           step ( s , x ) -> if m::ap ( fn ( k : Option ( $C ) ) -> \"a\" ) == \"a\" then s else s \
+           merge ( a , b ) -> a finish s -> s . c",
+        ],
+    ),
+    (
+        &["add default ws.n = if ap(fn (k: Option ($T)) -> \"a\") == \"a\" then 1 else 2"],
+        &["if m::ap ( fn ( k : Option ( $C ) ) -> \"a\" ) == \"a\" then 1 else 2"],
+    ),
+    (
+        &[
+            "define fn v () -> Set W = from w in ws where ap(fn (k: Option ($T)) -> \"a\") == \"a\" select w",
+            "store v key id",
+        ],
+        &[
+            "fn m::v ( ) -> Set m::W = from w in m::ws where m::ap ( fn ( k : Option ( $C ) ) -> \"a\" ) == \"a\" select w",
+            "store m::v key id",
+        ],
+    ),
+    (
+        &["add field W.p: Option ($T) on delete clear fill None"],
+        &["p : Option ( $C ) on delete clear"],
+    ),
+    (
+        &["add constructor W.C { c: Option ($T) }"],
+        &["m::C { c : Option ( $C ) }"],
+    ),
+];
+
+/// Returns the text an operator copies into the schema, empty for one that copies none.
+fn copied_text(op: &Resolved) -> &str {
+    match op {
+        Resolved::AddType { decl, .. }
+        | Resolved::AddRelation { decl, .. }
+        | Resolved::DefineFn { decl, .. }
+        | Resolved::DefineAggregate { decl, .. }
+        | Resolved::AddComputed { decl, .. }
+        | Resolved::Store { decl, .. }
+        | Resolved::AddField { decl, .. }
+        | Resolved::AddConstructor { decl, .. } => decl,
+        Resolved::AddConstraint { body, .. } | Resolved::AddCheck { body, .. } => body,
+        Resolved::AddDefault { value, .. } => value,
+        _ => "",
+    }
+}
+
+#[test]
+fn a_type_naming_what_the_migration_adds_later_is_stored_qualified_in_every_position() {
+    let kinds = [
+        ("Key zs", "Key m::zs"),
+        ("Key ws.Settled", "Key m::ws . m::Settled"),
+    ];
+    let mut ran = 0;
+    let mut differing = Vec::new();
+    for (written, canonical) in kinds {
+        for (operators, texts) in TYPE_POSITIONS {
+            let operators: Vec<String> =
+                operators.iter().map(|o| o.replace("$T", written)).collect();
+            let text = format!(
+                "module m\nadd module m\nadd type W {{ id: Key ws, n: I64 }} = A | B\n\
+                 add relation ws : W key id generate sequence\n\
+                 define fn ap [a] (g: Option a -> Text) -> Text = g(None)\n{}\n\
+                 add type Z = {{ id: Key zs }}\nadd relation zs : Z key id generate sequence\nadd set Settled of ws = B\n",
+                operators.join("\n")
+            );
+            let stored = std::panic::catch_unwind(|| {
+                let file = parse_migration(&text, Options::default())
+                    .ok()
+                    .map_err(|e| format!("{e:?}"))?;
+                let src = Source::default().migrate(&file, &text).map_err(|r| {
+                    let refused: Vec<&str> =
+                        r.operators.iter().map(|d| d.message.as_str()).collect();
+                    format!("{refused:?}")
+                })?;
+                let ops = src.resolved(1).map_err(|e| format!("{e:?}"))?;
+                Ok::<_, String>(
+                    ops[4..4 + operators.len()]
+                        .iter()
+                        .map(|o| copied_text(&o.op).to_string())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_else(|p| {
+                Err(p
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| "a panic".into()))
+            });
+            let expected: Vec<String> = texts.iter().map(|t| t.replace("$C", canonical)).collect();
+            if Ok(&expected) != stored.as_ref() {
+                differing.push(format!(
+                    "{operators:?}\n  expected {expected:?}\n  stored   {stored:?}"
+                ));
+            }
+            ran += 1;
+        }
+    }
+    assert_eq!(2 * TYPE_POSITIONS.len(), ran);
+    assert!(differing.is_empty(), "{}", differing.join("\n"));
+}
