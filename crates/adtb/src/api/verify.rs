@@ -9,7 +9,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
-use crate::catalog::codec::{Codec, Ctor, Decode, Field, Fields, Row, field};
+use crate::catalog::codec::{Codec, Ctor, Decode, Field, Fields, Relation, Row, field, relation};
 use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, Rot, engine_relation};
 use crate::exec::{F64, Val};
 use crate::key::Value;
@@ -74,7 +74,7 @@ impl std::fmt::Debug for Findings {
 
 /// A row of `sys::verify_findings`, read for what the engine keeps track of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct FindingRow {
+pub(crate) struct FindingRow {
     id: i64,
     run: i64,
     /// The catalog id of the constraint a `Violation` names.
@@ -125,8 +125,12 @@ fn finding(row: &Row<'_>, head: Head) -> FindingRow {
     }
 }
 
+impl Relation for relation::VerifyFindings {
+    type Row = FindingRow;
+}
+
 impl Decode for FindingRow {
-    const RELATION: CatRelId = engine_rel::VERIFY_FINDINGS;
+    type Relation = relation::VerifyFindings;
     const CTORS: &'static [Ctor<FindingRow>] = {
         use engine_ctor::{
             FINDING_CHECKSUM, FINDING_MISSING, FINDING_ORDER, FINDING_ORPHAN, FINDING_STALE_PAGE,

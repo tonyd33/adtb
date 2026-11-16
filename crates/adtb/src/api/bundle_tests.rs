@@ -72,7 +72,7 @@ mod codecs {
     use adtb_lang::schema::{self, ENGINE_SRC, Schema};
 
     use crate::catalog::codec::Codec;
-    use crate::catalog::codec::testing::{position, reread, reversed, row, tag};
+    use crate::catalog::codec::testing::{Sample, Sampled, position, row, tag};
     use crate::catalog::{Rot, engine_schema};
     use crate::key::Value;
 
@@ -115,8 +115,23 @@ mod codecs {
     fn bundle(schema: &Schema, case: &Case, overrides: &[(&str, Value)]) -> Vec<Value> {
         let codec = Codec::<Row>::new(schema);
         let at = (codec.relation(), position(schema, &codec, k::BUNDLE));
+        let mut fields = bundle_fields(schema, case);
+        for (name, v) in overrides {
+            fields
+                .iter_mut()
+                .find(|(n, _)| n == name)
+                .expect("an override names a field")
+                .1 = v.clone();
+        }
+        row(schema, at.0, at.1, &fields)
+    }
+
+    /// Returns the fields of the stored row of `case` in `schema` by name.
+    fn bundle_fields(schema: &Schema, case: &Case) -> Vec<(&'static str, Value)> {
+        let codec = Codec::<Row>::new(schema);
+        let at = (codec.relation(), position(schema, &codec, k::BUNDLE));
         let opt = |v: Option<Value>| v.map_or_else(none, some);
-        let mut fields = vec![
+        vec![
             ("id", Value::I64(4)),
             ("name", Value::Text("web-2".into())),
             ("family", Value::Text("web".into())),
@@ -144,15 +159,7 @@ mod codecs {
                     case.state.1.map(Value::Instant).into_iter().collect(),
                 ),
             ),
-        ];
-        for (name, v) in overrides {
-            fields
-                .iter_mut()
-                .find(|(n, _)| n == name)
-                .expect("an override names a field")
-                .1 = v.clone();
-        }
-        row(schema, at.0, at.1, &fields)
+        ]
     }
 
     fn expected(state: State, priority: exec::Priority, case: &Case) -> Row {
@@ -179,127 +186,89 @@ mod codecs {
         }
     }
 
-    #[test]
-    fn a_catalog_with_its_constructors_reversed_reads_each_stored_bundle_row_the_same() {
-        let (shipped, reversed) = (engine_schema(), reversed());
-        let (old, new) = (Codec::<Row>::new(&shipped), Codec::<Row>::new(&reversed));
-        let cases = [
-            (
-                Case {
-                    state: (k::BUNDLE_ACTIVE, None),
-                    priority: k::PRIORITY_AD_HOC,
-                    catalog: Some(9),
-                    lease: Some(5 * SECOND),
-                    hides_new: true,
-                },
-                State::Active,
-                exec::Priority::AdHoc,
-            ),
-            (
-                Case {
-                    state: (k::BUNDLE_SUPERSEDED, Some(11)),
-                    priority: k::PRIORITY_BACKGROUND,
-                    catalog: None,
-                    lease: None,
-                    hides_new: false,
-                },
-                State::Superseded(11),
-                exec::Priority::Background,
-            ),
-            (
-                Case {
-                    state: (k::BUNDLE_RETIRED, Some(12)),
-                    priority: k::PRIORITY_REGULAR,
-                    catalog: Some(0),
-                    lease: None,
-                    hides_new: true,
-                },
-                State::Retired(12),
-                exec::Priority::Regular,
-            ),
-        ];
-        let (was, now) = (
-            position(&shipped, &old, k::BUNDLE),
-            position(&reversed, &new, k::BUNDLE),
-        );
-        for (case, state, priority) in &cases {
-            let stored = bundle(&shipped, case, &[]);
-            let read = reread(
-                (&shipped, old.relation(), was),
-                (&reversed, new.relation(), now),
-                &stored,
-            );
-            let want = expected(*state, *priority, case);
-            assert_eq!(Ok(want.clone()), old.decode(was, &stored), "{state:?}");
-            assert_eq!(Ok(want), new.decode(now, &read), "{state:?}");
-            let nested = |s: &Schema, r: &[Value], name: &str| {
-                let names = crate::catalog::layout::row(s, old.relation(), 0);
-                let at = names.iter().position(|(n, _)| n == name).expect("a field");
-                match &r[at] {
-                    Value::Sum { ctor, .. } => *ctor,
-                    other => panic!("{name} holds {other:?}"),
-                }
-            };
-            for field in ["state", "priority"] {
-                let moved = nested(&shipped, &stored, field) != nested(&reversed, &read, field);
-                let middle = matches!(state, State::Superseded(_)) && field == "state"
-                    || matches!(priority, exec::Priority::Background) && field == "priority";
-                assert_eq!(!middle, moved, "{field} of {state:?} {priority:?}");
-            }
+    impl Sampled for Row {
+        fn samples(schema: &Schema) -> Vec<Sample<Row>> {
+            let cases = [
+                (
+                    Case {
+                        state: (k::BUNDLE_ACTIVE, None),
+                        priority: k::PRIORITY_AD_HOC,
+                        catalog: Some(9),
+                        lease: Some(5 * SECOND),
+                        hides_new: true,
+                    },
+                    State::Active,
+                    exec::Priority::AdHoc,
+                ),
+                (
+                    Case {
+                        state: (k::BUNDLE_SUPERSEDED, Some(11)),
+                        priority: k::PRIORITY_BACKGROUND,
+                        catalog: None,
+                        lease: None,
+                        hides_new: false,
+                    },
+                    State::Superseded(11),
+                    exec::Priority::Background,
+                ),
+                (
+                    Case {
+                        state: (k::BUNDLE_RETIRED, Some(12)),
+                        priority: k::PRIORITY_REGULAR,
+                        catalog: Some(0),
+                        lease: None,
+                        hides_new: true,
+                    },
+                    State::Retired(12),
+                    exec::Priority::Regular,
+                ),
+            ];
+            cases
+                .into_iter()
+                .map(|(case, state, priority)| {
+                    let want = expected(state, priority, &case);
+                    (k::BUNDLE, bundle_fields(schema, &case), want)
+                })
+                .collect()
         }
     }
 
-    #[test]
-    fn a_catalog_with_its_constructors_reversed_reads_each_stored_call_row_the_same() {
-        let (shipped, reversed) = (engine_schema(), reversed());
-        let (old, new) = (
-            Codec::<Registered>::new(&shipped),
-            Codec::<Registered>::new(&reversed),
-        );
-        let mut moved = Vec::new();
-        for (id, kind) in [
-            (k::REGISTERED_QUERY, Callable::Query),
-            (k::REGISTERED_TXN, Callable::Txn),
-            (k::REGISTERED_IMPORTED_FN, Callable::Fn),
-        ] {
-            let (was, now) = (position(&shipped, &old, id), position(&reversed, &new, id));
-            let stored = row(
-                &shipped,
-                old.relation(),
-                was,
-                &[
-                    ("id", Value::I64(8)),
-                    ("bundle", Value::I64(4)),
-                    ("name", Value::Text("q".into())),
-                    ("ordinal", Value::I32(2)),
-                    ("signature", Value::Text("q : I64".into())),
-                    ("text", Value::Text("query q = 1".into())),
-                    ("limit", none()),
-                ],
-            );
-            let read = reread(
-                (&shipped, old.relation(), was),
-                (&reversed, new.relation(), now),
-                &stored,
-            );
-            let want = Registered {
-                id: 8,
-                bundle: 4,
-                call: CallRow {
-                    kind,
-                    name: "q".into(),
-                    ordinal: 2,
-                    signature: "q : I64".into(),
-                    text: "query q = 1".into(),
-                },
-            };
-            assert_eq!(Ok(want.clone()), old.decode(was, &stored), "{id}");
-            assert_eq!(Ok(want), new.decode(now, &read), "{id}");
-            if was != now {
-                moved.push(kind);
-            }
+    impl Sampled for Registered {
+        fn samples(_: &Schema) -> Vec<Sample<Registered>> {
+            [
+                (k::REGISTERED_QUERY, Callable::Query, 8),
+                (k::REGISTERED_TXN, Callable::Txn, 9),
+                (k::REGISTERED_IMPORTED_FN, Callable::Fn, 10),
+            ]
+            .into_iter()
+            .map(|(id, kind, n)| {
+                let name = format!("q{n}");
+                let fields = vec![
+                    ("id", Value::I64(n)),
+                    ("bundle", Value::I64(n + 100)),
+                    ("name", Value::Text(name.clone())),
+                    (
+                        "ordinal",
+                        Value::I32(i32::try_from(n).expect("a small ordinal") + 200),
+                    ),
+                    ("signature", Value::Text(format!("{name} : I64"))),
+                    ("text", Value::Text(format!("query {name} = 1"))),
+                ];
+                let want = Registered {
+                    id: n,
+                    bundle: n + 100,
+                    call: CallRow {
+                        kind,
+                        name: name.clone(),
+                        ordinal: n + 200,
+                        signature: format!("{name} : I64"),
+                        text: format!("query {name} = 1"),
+                    },
+                };
+                (id, fields, want)
+            })
+            .collect()
         }
-        assert_eq!(vec![Callable::Query, Callable::Fn], moved);
     }
 
     fn active() -> Case {

@@ -2,7 +2,7 @@ use adtb_lang::ids::CatCtorId;
 use adtb_lang::schema::prelude::ctor;
 
 use super::*;
-use crate::catalog::codec::testing::{position, reread, reversed, row, tag};
+use crate::catalog::codec::testing::{Sample, Sampled, position, row, tag};
 use crate::catalog::{engine_schema, layout};
 use crate::exec;
 use crate::key::Value;
@@ -94,68 +94,18 @@ fn a_dumped_bundle_whose_name_holds_no_version_does_not_read() {
     assert_eq!(None, read_bundle(&schema, &text, "web").map(|(id, ..)| id));
 }
 
-#[test]
-fn a_feed_row_sample_decodes_the_same_under_the_shipped_and_the_reversed_catalog() {
-    let (shipped, reversed) = (engine_schema(), reversed());
-    let (old, new) = (
-        Codec::<FeedRow>::new(&shipped),
-        Codec::<FeedRow>::new(&reversed),
-    );
-    let (was, now) = (
-        position(&shipped, &old, k::FEED),
-        position(&reversed, &new, k::FEED),
-    );
-    let stored = row(
-        &shipped,
-        old.relation(),
-        was,
-        &[
-            ("id", Value::I64(6)),
-            ("bundle", Value::I64(4)),
-            ("name", Value::Text("f".into())),
-            ("ordinal", Value::I32(1)),
-            ("relation", Value::I64(233)),
-            ("set", Value::Text("all".into())),
-        ],
-    );
-    let read = reread(
-        (&shipped, old.relation(), was),
-        (&reversed, new.relation(), now),
-        &stored,
-    );
-    let want = FeedRow { id: 6, bundle: 4 };
-    assert_eq!(Ok(&want), old.decode(was, &stored).as_ref());
-    assert_eq!(Ok(want), new.decode(now, &read));
+impl Sampled for FeedRow {
+    fn samples(_: &Schema) -> Vec<Sample<FeedRow>> {
+        let fields = vec![("id", Value::I64(6)), ("bundle", Value::I64(4))];
+        vec![(k::FEED, fields, FeedRow { id: 6, bundle: 4 })]
+    }
 }
 
-#[test]
-fn a_feed_member_row_sample_decodes_the_same_under_the_shipped_and_the_reversed_catalog() {
-    let (shipped, reversed) = (engine_schema(), reversed());
-    let (old, new) = (
-        Codec::<FeedMemberRow>::new(&shipped),
-        Codec::<FeedMemberRow>::new(&reversed),
-    );
-    let (was, now) = (
-        position(&shipped, &old, k::FEED_MEMBER),
-        position(&reversed, &new, k::FEED_MEMBER),
-    );
-    let stored = row(
-        &shipped,
-        old.relation(),
-        was,
-        &[
-            ("feed", Value::I64(6)),
-            ("relation", Value::I64(233)),
-            ("ctor", Value::I64(173)),
-        ],
-    );
-    let read = reread(
-        (&shipped, old.relation(), was),
-        (&reversed, new.relation(), now),
-        &stored,
-    );
-    assert_eq!(Ok(FeedMemberRow { feed: 6 }), old.decode(was, &stored));
-    assert_eq!(Ok(FeedMemberRow { feed: 6 }), new.decode(now, &read));
+impl Sampled for FeedMemberRow {
+    fn samples(_: &Schema) -> Vec<Sample<FeedMemberRow>> {
+        let fields = vec![("feed", Value::I64(6))];
+        vec![(k::FEED_MEMBER, fields, FeedMemberRow { feed: 6 })]
+    }
 }
 
 /// Returns the value of a grant row of kind `kind` with id `id`: `read` on `target` given by

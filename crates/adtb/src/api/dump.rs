@@ -2,14 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ids::{CatRelId, engine_ctor as k, engine_rel, held_id};
+use adtb_lang::ids::{CatRelId, engine_ctor as k, held_id};
 use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::catalog::codec::{
-    self, Codec, Ctor, Decode, Field, Fields, GrantKind, RoleGrant, RoleRow,
+    self, Codec, Ctor, Decode, Field, Fields, GrantKind, Relation, RoleGrant, RoleRow, relation,
 };
 use crate::catalog::{
     self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, Rot, arrows, values,
@@ -337,7 +337,7 @@ impl Bundled {
 
 /// A row of `catalog::feeds`, the fields a dump reads.
 #[derive(Debug, PartialEq, Eq)]
-struct FeedRow {
+pub(crate) struct FeedRow {
     id: i64,
     bundle: i64,
 }
@@ -346,8 +346,12 @@ const FEED: Fields = &["id", "bundle", "name", "ordinal", "relation", "set"];
 const FEED_ID: Field = codec::field(FEED, "id");
 const FEED_BUNDLE: Field = codec::field(FEED, "bundle");
 
+impl Relation for relation::Feeds {
+    type Row = FeedRow;
+}
+
 impl Decode for FeedRow {
-    const RELATION: CatRelId = engine_rel::FEEDS;
+    type Relation = relation::Feeds;
     const CTORS: &'static [Ctor<FeedRow>] = &[Ctor::new(k::FEED, FEED, |r| {
         Ok(FeedRow {
             id: r.int(FEED_ID),
@@ -358,15 +362,19 @@ impl Decode for FeedRow {
 
 /// A row of `catalog::feed_members`, the field a dump reads.
 #[derive(Debug, PartialEq, Eq)]
-struct FeedMemberRow {
+pub(crate) struct FeedMemberRow {
     feed: i64,
 }
 
 const MEMBER: Fields = &["feed", "relation", "ctor"];
 const MEMBER_FEED: Field = codec::field(MEMBER, "feed");
 
+impl Relation for relation::FeedMembers {
+    type Row = FeedMemberRow;
+}
+
 impl Decode for FeedMemberRow {
-    const RELATION: CatRelId = engine_rel::FEED_MEMBERS;
+    type Relation = relation::FeedMembers;
     const CTORS: &'static [Ctor<FeedMemberRow>] = &[Ctor::new(k::FEED_MEMBER, MEMBER, |r| {
         Ok(FeedMemberRow {
             feed: r.int(MEMBER_FEED),

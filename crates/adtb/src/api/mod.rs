@@ -6,6 +6,8 @@ mod bundle;
 mod cause;
 #[cfg(test)]
 mod closed_file_tests;
+#[cfg(test)]
+mod coded_tests;
 mod command;
 mod dump;
 mod error;

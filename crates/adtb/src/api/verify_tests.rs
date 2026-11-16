@@ -2,11 +2,12 @@ use adtb_lang::ids::{CatCtorId, engine_ctor, engine_rel, held_id};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::types::RelId;
 
-use super::{Findings, fields};
+use super::{FindingRow, Findings, fields};
 use crate::api::OpenError;
-use crate::catalog::codec::testing::{fields_reversed, reversed};
+use crate::catalog::codec::testing::{Sample, Sampled, fields_reversed, reversed};
 use crate::catalog::{KeptField, KeptRow, layout};
 use crate::exec::Val;
+use crate::key::Value;
 use crate::storage::Pid;
 use crate::write::Found;
 
@@ -276,5 +277,42 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
             panic!("{shown} is refused");
         };
         assert_eq!(text, detail, "{shown}");
+    }
+}
+
+impl Sampled for FindingRow {
+    fn samples(_: &Schema) -> Vec<Sample<FindingRow>> {
+        use engine_ctor::{
+            FINDING_CHECKSUM, FINDING_MISSING, FINDING_ORDER, FINDING_ORPHAN, FINDING_STALE_PAGE,
+            FINDING_STRUCTURE, FINDING_VIOLATION,
+        };
+        let header = |id: i64| vec![("id", Value::I64(id)), ("run", Value::I64(id + 100))];
+        let plain = |ctor, id: i64| {
+            let want = FindingRow {
+                id,
+                run: id + 100,
+                violated: None,
+            };
+            (ctor, header(id), want)
+        };
+        let mut violation = header(6);
+        violation.push(("constraint", Value::I64(51)));
+        vec![
+            plain(FINDING_CHECKSUM, 1),
+            plain(FINDING_STALE_PAGE, 2),
+            plain(FINDING_ORDER, 3),
+            plain(FINDING_ORPHAN, 4),
+            plain(FINDING_MISSING, 5),
+            (
+                FINDING_VIOLATION,
+                violation,
+                FindingRow {
+                    id: 6,
+                    run: 106,
+                    violated: Some(51),
+                },
+            ),
+            plain(FINDING_STRUCTURE, 7),
+        ]
     }
 }

@@ -116,14 +116,80 @@ impl<T> Ctor<T> {
     }
 }
 
+/// A catalog relation a codec reads, by its marker type of [`relation`].
+pub(crate) trait Relation: relation::Coding {
+    /// The one type whose codec reads the relation.
+    type Row;
+}
+
+macro_rules! coded {
+    ($($variant:ident => $id:ident),* $(,)?) => {
+        /// A catalog relation a codec reads.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Coded {
+            $($variant),*
+        }
+
+        impl Coded {
+            #[cfg(test)]
+            pub const ALL: &'static [Coded] = &[$(Coded::$variant),*];
+
+            /// Returns the fixed id of the relation.
+            pub const fn id(self) -> CatRelId {
+                match self {
+                    $(Coded::$variant => engine_rel::$id),*
+                }
+            }
+        }
+
+        /// One marker type per relation a codec reads, each given its row type by one
+        /// [`Relation`] impl.
+        pub(crate) mod relation {
+            use super::Coded;
+
+            pub(crate) trait Coding {
+                const CODED: Coded;
+            }
+
+            $(
+                pub(crate) struct $variant;
+
+                impl Coding for $variant {
+                    const CODED: Coded = Coded::$variant;
+                }
+            )*
+        }
+    };
+}
+
+coded! {
+    Roles => ROLES,
+    Grants => GRANTS,
+    Migrations => MIGRATIONS,
+    Settings => SETTINGS,
+    Bundles => BUNDLES,
+    Registered => REGISTERED,
+    Feeds => FEEDS,
+    FeedMembers => FEED_MEMBERS,
+    Credentials => CREDENTIALS,
+    PeerMappings => PEER_MAPPINGS,
+    Audit => AUDIT,
+    VerifyFindings => VERIFY_FINDINGS,
+}
+
 /// A typed row of one catalog relation.
-pub trait Decode: Sized + 'static {
-    const RELATION: CatRelId;
+pub(crate) trait Decode: Sized + 'static {
+    type Relation: Relation<Row = Self>;
     /// Each constructor of the relation.
     const CTORS: &'static [Ctor<Self>];
 }
 
-/// The constructors and fields of the rows of relation `T::RELATION` in one schema.
+/// Returns the relation `T` reads.
+pub const fn coded<T: Decode>() -> Coded {
+    <T::Relation as relation::Coding>::CODED
+}
+
+/// The constructors and fields of the rows of the relation `T` reads in one schema.
 pub struct Codec<T: 'static> {
     relation: RelId,
     name: String,
@@ -146,11 +212,11 @@ struct Shape<T: 'static> {
 impl<T: Decode> Codec<T> {
     /// Returns the codec of `T` over `schema`.
     ///
-    /// Preconditions: `schema` declares `T::RELATION` with exactly the constructors and fields
-    /// `T::CTORS` lists, fields in any order, and each sum field a constructor lists with
+    /// Preconditions: `schema` declares the relation `T` reads with exactly the constructors and
+    /// fields `T::CTORS` lists, fields in any order, and each sum field a constructor lists with
     /// exactly the constructors it lists.
     pub fn new(schema: &Schema) -> Codec<T> {
-        let r = engine_relation(schema, T::RELATION);
+        let r = engine_relation(schema, coded::<T>().id());
         let rel = schema.relation(r);
         let name = format!("{}::{}", schema.module(rel.module).name, rel.name);
         let declared = schema.ty(rel.elem_def).ctors();
@@ -608,8 +674,12 @@ const ROLE_ID: Field = field(ROLE, "id");
 const ROLE_NAME: Field = field(ROLE, "name");
 const ROLE_CREATED: Field = field(ROLE, "created");
 
+impl Relation for relation::Roles {
+    type Row = RoleRow;
+}
+
 impl Decode for RoleRow {
-    const RELATION: CatRelId = engine_rel::ROLES;
+    type Relation = relation::Roles;
     const CTORS: &'static [Ctor<RoleRow>] = &[Ctor::new(k::ROLE, ROLE, |row| {
         Ok(RoleRow {
             id: row.int(ROLE_ID),
@@ -708,8 +778,12 @@ const GRANTOR: Field = field(GRANT, "grantor");
 const GRANT_OPTION: Field = field(GRANT, "grant_option");
 const DORMANT_F: Field = field(GRANT, "dormant");
 
+impl Relation for relation::Grants {
+    type Row = RoleGrant;
+}
+
 impl Decode for RoleGrant {
-    const RELATION: CatRelId = engine_rel::GRANTS;
+    type Relation = relation::Grants;
     const CTORS: &'static [Ctor<RoleGrant>] = &[Ctor::new(k::ROLE_GRANT, GRANT, |r| {
         Ok(RoleGrant {
             id: r.int(GRANT_ID),
@@ -757,8 +831,12 @@ const VERSION: Field = field(MIGRATION_ROW, "version");
 const HASH: Field = field(MIGRATION_ROW, "hash");
 const APPLIED: Field = field(MIGRATION_ROW, "applied");
 
+impl Relation for relation::Migrations {
+    type Row = MigrationRow;
+}
+
 impl Decode for MigrationRow {
-    const RELATION: CatRelId = engine_rel::MIGRATIONS;
+    type Relation = relation::Migrations;
     const CTORS: &'static [Ctor<MigrationRow>] = &[Ctor::new(k::MIGRATION, MIGRATION_ROW, |r| {
         let hash = r.bytes(HASH);
         Ok(MigrationRow {
@@ -849,8 +927,12 @@ fn keyed(r: &Row<'_>, id: Field, setting: SettingRow) -> Result<SettingRow, Rot>
     }
 }
 
+impl Relation for relation::Settings {
+    type Row = SettingRow;
+}
+
 impl Decode for SettingRow {
-    const RELATION: CatRelId = engine_rel::SETTINGS;
+    type Relation = relation::Settings;
     const CTORS: &'static [Ctor<SettingRow>] = {
         use SettingRow as S;
         &[

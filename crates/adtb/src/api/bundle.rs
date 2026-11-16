@@ -7,13 +7,15 @@ use std::sync::Arc;
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
 use adtb_lang::check::Command;
-use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor as k, engine_rel};
+use adtb_lang::ids::{CatCtorId, engine_ctor as k};
 use adtb_lang::parse::reads_as_bundle_name;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::{Lock, Ranked, RankedGuard};
 
-use crate::catalog::codec::{self, Codec, Ctor, Decode, Field, Fields, Sum, field, sum};
+use crate::catalog::codec::{
+    self, Codec, Ctor, Decode, Field, Fields, Relation, Sum, field, relation, sum,
+};
 use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, Rot, layout, values};
 use crate::exec::{self, Val};
 use crate::key::{Scalar, Value};
@@ -158,7 +160,7 @@ pub(super) enum State {
 
 /// A row of `catalog::bundles`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Row {
+pub(crate) struct Row {
     pub(super) id: i64,
     pub(super) header: Header,
     pub(super) owner: String,
@@ -369,8 +371,12 @@ const STATE: Sum = sum(
     ],
 );
 
+impl Relation for relation::Bundles {
+    type Row = Row;
+}
+
 impl Decode for Row {
-    const RELATION: CatRelId = engine_rel::BUNDLES;
+    type Relation = relation::Bundles;
     const CTORS: &'static [Ctor<Row>] =
         &[Ctor::new(k::BUNDLE, BUNDLE, bundle_row).with_sums(&[PRIORITY, STATE])];
 }
@@ -430,7 +436,7 @@ fn bundle_row(r: &codec::Row<'_>) -> Result<Row, Rot> {
 
 /// A row of `catalog::registered`: a call with its row id and its bundle's id.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Registered {
+pub(crate) struct Registered {
     id: i64,
     bundle: i64,
     call: CallRow,
@@ -459,8 +465,12 @@ const ORDINAL: Field = field(CALL, "ordinal");
 const SIGNATURE: Field = field(CALL, "signature");
 const TEXT: Field = field(CALL, "text");
 
+impl Relation for relation::Registered {
+    type Row = Registered;
+}
+
 impl Decode for Registered {
-    const RELATION: CatRelId = engine_rel::REGISTERED;
+    type Relation = relation::Registered;
     const CTORS: &'static [Ctor<Registered>] = &[
         Ctor::new(k::REGISTERED_QUERY, CALL, |r| {
             registered(r, Callable::Query)

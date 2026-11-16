@@ -1,66 +1,13 @@
-use adtb_lang::ids::engine_ctor as k;
+use adtb_lang::ids::{CatCtorId, engine_ctor as k};
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{self, ENGINE_SRC};
 
 use crate::exec::Val;
-use crate::heap::FieldType;
-use crate::key::{F64, Scalar, Value};
+use crate::key::{F64, Value};
 
-use super::super::{engine_schema, layout, row_type};
-use super::testing::{position, reread, reversed, row, tag};
+use super::super::{engine_schema, layout};
+use super::testing::{Sample, Sampled, position, reversed, row, tag};
 use super::{Codec, Decode, GrantKind, MigrationRow, RoleGrant, RoleRow, Rot, SettingRow};
-
-const SECOND: i64 = 1_000_000;
-
-/// Returns a value stored as `t`: seven, five seconds, a quarter, or `Some` of one of those.
-fn sample(t: &FieldType) -> Value {
-    match t {
-        FieldType::Scalar(Scalar::I64) => Value::I64(7),
-        FieldType::Scalar(Scalar::Duration) => Value::Duration(5 * SECOND),
-        FieldType::Scalar(Scalar::F64) => Value::F64(F64::new(0.25)),
-        FieldType::Sum(cs) => Value::Sum {
-            ctor: ctor::SOME,
-            fields: vec![sample(&cs[ctor::SOME as usize].fields[0])],
-        },
-        other => panic!("no sample of {other:?}"),
-    }
-}
-
-/// Returns the setting each constructor's row of samples holds.
-fn sampled(id: adtb_lang::ids::CatCtorId) -> SettingRow {
-    use SettingRow as S;
-    let (d, q) = (5 * SECOND, F64::new(0.25));
-    match id {
-        k::SETTING_STATEMENT_LIMIT => S::StatementLimit(Some(d)),
-        k::SETTING_TRANSACTION_LIMIT => S::TransactionLimit(Some(d)),
-        k::SETTING_IDLE_LIMIT => S::IdleLimit(Some(d)),
-        k::SETTING_STREAM_IDLE_LIMIT => S::StreamIdleLimit(d),
-        k::SETTING_REQUEST_WINDOW => S::RequestWindow(d),
-        k::SETTING_SAFE_POINT_DELAY => S::SafePointDelay(d),
-        k::SETTING_REPLICA_WAIT => S::ReplicaWait(d),
-        k::SETTING_DEFAULT_LEASE => S::DefaultLease(d),
-        k::SETTING_FEED_RETENTION => S::FeedRetention(d),
-        k::SETTING_STATS_WINDOW => S::StatsWindow(d),
-        k::SETTING_STATS_RETENTION => S::StatsRetention(d),
-        k::SETTING_WAIT_SAMPLING => S::WaitSampling { every: d, keep: d },
-        k::SETTING_CONFLICT_LOG => S::ConflictLog(7),
-        k::SETTING_VACUUM_BUDGET => S::VacuumBudget { io: q, cpu: q },
-        k::SETTING_SCRUB_INTERVAL => S::ScrubInterval(Some(d)),
-        k::SETTING_LEASE_GRACE => S::LeaseGrace(d),
-        k::SETTING_BLOCKING_NOTICE_PERIOD => S::BlockingNoticePeriod(d),
-        k::SETTING_REPLICA_VACUUM_WAIT => S::ReplicaVacuumWait(d),
-        k::SETTING_RETRY_LIMIT => S::RetryLimit(7),
-        k::SETTING_RETENTION_WINDOW => S::RetentionWindow(d),
-        other => panic!("{other} is no setting"),
-    }
-}
-
-#[test]
-fn each_codec_lists_the_constructors_and_fields_its_relation_declares() {
-    let schema = engine_schema();
-    Codec::<RoleRow>::new(&schema);
-    Codec::<SettingRow>::new(&schema);
-}
 
 #[test]
 #[should_panic(expected = "the codec of catalog::settings lists the fields of constructor 451")]
@@ -71,39 +18,6 @@ fn a_codec_listing_a_field_its_relation_does_not_declare_does_not_build() {
     );
     let schema = schema::build_engine_from(&text).expect("the edited catalog builds");
     Codec::<SettingRow>::new(&schema);
-}
-
-#[test]
-fn a_catalog_with_its_constructors_reversed_reads_each_stored_setting_row_the_same() {
-    let shipped = engine_schema();
-    let reversed = reversed();
-    let (old, new) = (
-        Codec::<SettingRow>::new(&shipped),
-        Codec::<SettingRow>::new(&reversed),
-    );
-    let mut moved = 0;
-    for id in SettingRow::CTORS.iter().map(|c| c.id) {
-        let (was, now) = (position(&shipped, &old, id), position(&reversed, &new, id));
-        let names = layout::row(&shipped, old.relation(), was);
-        let types = row_type(&shipped, old.relation(), was);
-        let row: Vec<Value> = names
-            .iter()
-            .zip(&types)
-            .map(|((n, _), t)| match n.as_str() {
-                "id" => Value::I64(i64::try_from(id.raw()).expect("an id fits 63 bits")),
-                _ => sample(t),
-            })
-            .collect();
-        let read = reread(
-            (&shipped, old.relation(), was),
-            (&reversed, new.relation(), now),
-            &row,
-        );
-        assert_eq!(Ok(sampled(id)), old.decode(was, &row), "{id}");
-        assert_eq!(Ok(sampled(id)), new.decode(now, &read), "{id}");
-        moved += usize::from(was != now);
-    }
-    assert_eq!(SettingRow::CTORS.len(), moved, "every setting moves");
 }
 
 #[test]
@@ -170,7 +84,7 @@ fn a_row_past_the_relations_constructors_is_refused_as_damage() {
 }
 
 #[test]
-fn a_role_row_reads_by_field_name_and_one_holding_another_type_is_refused() {
+fn a_role_row_holding_another_type_is_refused() {
     let schema = engine_schema();
     let codec = Codec::<RoleRow>::new(&schema);
     let names: Vec<String> = layout::row(&schema, codec.relation(), 0)
@@ -188,14 +102,6 @@ fn a_role_row_reads_by_field_name_and_one_holding_another_type_is_refused() {
             })
             .collect()
     };
-    assert_eq!(
-        Ok(RoleRow {
-            id: 3,
-            name: "ops".into(),
-            created: 9,
-        }),
-        codec.decode(0, &row(Value::Text("ops".into())))
-    );
     let damage = Rot::CatalogRow {
         row: "catalog::roles.Role".into(),
         detail: "holds I64(4) in field `name`".into(),
@@ -299,6 +205,8 @@ fn reversing_the_catalogs_sums_moves_the_constructors_of_one_line_sums() {
         k::PRIORITY_REGULAR,
         k::BUNDLE_ACTIVE,
         k::BUNDLE_RETIRED,
+        k::GRANT_LOG,
+        k::GRANT_DEPLOYMENT,
     ] {
         let at = |s: &schema::Schema| {
             s.ids()
@@ -336,7 +244,7 @@ fn truth(b: bool) -> Value {
 /// dormant as `option` is not.
 fn grant(
     schema: &schema::Schema,
-    kind: adtb_lang::ids::CatCtorId,
+    kind: CatCtorId,
     target: Option<&str>,
     option: bool,
     overrides: &[(&str, Value)],
@@ -364,56 +272,6 @@ fn grant(
             .1 = v.clone();
     }
     row(schema, at.0, at.1, &fields)
-}
-
-#[test]
-fn a_catalog_with_its_constructors_reversed_reads_each_stored_grant_row_the_same() {
-    let (shipped, reversed) = (engine_schema(), reversed());
-    let (old, new) = (
-        Codec::<RoleGrant>::new(&shipped),
-        Codec::<RoleGrant>::new(&reversed),
-    );
-    let (was, now) = (
-        position(&shipped, &old, k::ROLE_GRANT),
-        position(&reversed, &new, k::ROLE_GRANT),
-    );
-    let kind_at = |s: &schema::Schema, r: &[Value]| {
-        let names = layout::row(s, old.relation(), 0);
-        let at = names.iter().position(|(n, _)| n == "kind").expect("a kind");
-        match &r[at] {
-            Value::Sum { ctor, .. } => *ctor,
-            other => panic!("kind holds {other:?}"),
-        }
-    };
-    let cases = [
-        (k::GRANT_LOG, Some("app::t"), true, GrantKind::Log),
-        (k::GRANT_DEPLOYMENT, None, false, GrantKind::Deployment),
-    ];
-    for (id, target, option, kind) in cases {
-        let stored = grant(&shipped, id, target, option, &[]);
-        let read = reread(
-            (&shipped, old.relation(), was),
-            (&reversed, new.relation(), now),
-            &stored,
-        );
-        let want = RoleGrant {
-            id: 5,
-            kind,
-            privilege: "read".into(),
-            target: target.map(str::to_owned),
-            grantee: "web".into(),
-            grantor: "owner".into(),
-            grant_option: option,
-            dormant: !option,
-        };
-        assert_eq!(Ok(want.clone()), old.decode(was, &stored), "{kind:?}");
-        assert_eq!(Ok(want), new.decode(now, &read), "{kind:?}");
-        assert_ne!(
-            kind_at(&shipped, &stored),
-            kind_at(&reversed, &read),
-            "{kind:?} moves"
-        );
-    }
 }
 
 #[test]
@@ -470,32 +328,6 @@ fn migration(schema: &schema::Schema, version: i64, hash: Vec<u8>) -> Vec<Value>
 }
 
 #[test]
-fn a_migration_row_reads_its_fields_under_the_shipped_and_the_reversed_catalog() {
-    let (shipped, reversed) = (engine_schema(), reversed());
-    let (old, new) = (
-        Codec::<MigrationRow>::new(&shipped),
-        Codec::<MigrationRow>::new(&reversed),
-    );
-    let (was, now) = (
-        position(&shipped, &old, k::MIGRATION),
-        position(&reversed, &new, k::MIGRATION),
-    );
-    let stored = migration(&shipped, 3, vec![7; 32]);
-    let read = reread(
-        (&shipped, old.relation(), was),
-        (&reversed, new.relation(), now),
-        &stored,
-    );
-    let want = MigrationRow {
-        version: 3,
-        hash: [7; 32],
-        applied: 41,
-    };
-    assert_eq!(Ok(&want), old.decode(was, &stored).as_ref());
-    assert_eq!(Ok(want), new.decode(now, &read));
-}
-
-#[test]
 fn a_migration_row_with_a_short_hash_or_a_negative_version_is_refused_as_damage() {
     let schema = engine_schema();
     let codec = Codec::<MigrationRow>::new(&schema);
@@ -512,5 +344,223 @@ fn a_migration_row_with_a_short_hash_or_a_negative_version_is_refused_as_damage(
     ] {
         let refused = codec.decode(c, &stored).map_err(|r| r.to_string());
         assert_eq!(Err(text.to_owned()), refused);
+    }
+}
+
+const SECOND: i64 = 1_000_000;
+
+impl Sampled for RoleRow {
+    fn samples(_: &schema::Schema) -> Vec<Sample<RoleRow>> {
+        let fields = vec![
+            ("id", Value::I64(3)),
+            ("name", Value::Text("ops".into())),
+            ("created", Value::Instant(9)),
+        ];
+        let want = RoleRow {
+            id: 3,
+            name: "ops".into(),
+            created: 9,
+        };
+        vec![(k::ROLE, fields, want)]
+    }
+}
+
+impl Sampled for RoleGrant {
+    fn samples(schema: &schema::Schema) -> Vec<Sample<RoleGrant>> {
+        let codec = Codec::<RoleGrant>::new(schema);
+        let at = (codec.relation(), position(schema, &codec, k::ROLE_GRANT));
+        let sample = |id, kind, target: Option<&str>, option: bool| {
+            let fields = vec![
+                ("id", Value::I64(5)),
+                ("kind", tag(schema, at, "kind", id, Vec::new())),
+                ("privilege", Value::Text("read".into())),
+                (
+                    "target",
+                    target.map_or_else(none, |t| some(Value::Text(t.into()))),
+                ),
+                ("grantee", Value::Text("web".into())),
+                ("grantor", Value::Text("owner".into())),
+                ("grant_option", truth(option)),
+                ("dormant", truth(!option)),
+            ];
+            let want = RoleGrant {
+                id: 5,
+                kind,
+                privilege: "read".into(),
+                target: target.map(str::to_owned),
+                grantee: "web".into(),
+                grantor: "owner".into(),
+                grant_option: option,
+                dormant: !option,
+            };
+            (k::ROLE_GRANT, fields, want)
+        };
+        vec![
+            sample(k::GRANT_LOG, GrantKind::Log, Some("app::t"), true),
+            sample(k::GRANT_DEPLOYMENT, GrantKind::Deployment, None, false),
+        ]
+    }
+}
+
+impl Sampled for MigrationRow {
+    fn samples(_: &schema::Schema) -> Vec<Sample<MigrationRow>> {
+        let fields = vec![
+            ("version", Value::I64(3)),
+            ("hash", Value::Bytes(vec![7; 32])),
+            ("applied", Value::Instant(41)),
+        ];
+        let want = MigrationRow {
+            version: 3,
+            hash: [7; 32],
+            applied: 41,
+        };
+        vec![(k::MIGRATION, fields, want)]
+    }
+}
+
+impl Sampled for SettingRow {
+    fn samples(_: &schema::Schema) -> Vec<Sample<SettingRow>> {
+        use SettingRow as S;
+        let d = |n: i64| Value::Duration(n * SECOND);
+        let f = |x: f64| Value::F64(F64::new(x));
+        let one = |id: CatCtorId, field: &'static str, v: Value, want: S| {
+            let n = i64::try_from(id.raw()).expect("an id fits 63 bits");
+            (id, vec![("id", Value::I64(n)), (field, v)], want)
+        };
+        let two = |id: CatCtorId,
+                   (a, x): (&'static str, Value),
+                   (b, y): (&'static str, Value),
+                   want: S| {
+            let n = i64::try_from(id.raw()).expect("an id fits 63 bits");
+            (id, vec![("id", Value::I64(n)), (a, x), (b, y)], want)
+        };
+        vec![
+            one(
+                k::SETTING_STATEMENT_LIMIT,
+                "limit",
+                some(d(1)),
+                S::StatementLimit(Some(SECOND)),
+            ),
+            one(
+                k::SETTING_TRANSACTION_LIMIT,
+                "limit",
+                none(),
+                S::TransactionLimit(None),
+            ),
+            one(
+                k::SETTING_IDLE_LIMIT,
+                "limit",
+                some(d(3)),
+                S::IdleLimit(Some(3 * SECOND)),
+            ),
+            one(
+                k::SETTING_STREAM_IDLE_LIMIT,
+                "limit",
+                d(4),
+                S::StreamIdleLimit(4 * SECOND),
+            ),
+            one(
+                k::SETTING_REQUEST_WINDOW,
+                "keep",
+                d(5),
+                S::RequestWindow(5 * SECOND),
+            ),
+            one(
+                k::SETTING_SAFE_POINT_DELAY,
+                "delay",
+                d(6),
+                S::SafePointDelay(6 * SECOND),
+            ),
+            one(
+                k::SETTING_REPLICA_WAIT,
+                "wait",
+                d(7),
+                S::ReplicaWait(7 * SECOND),
+            ),
+            one(
+                k::SETTING_DEFAULT_LEASE,
+                "lease",
+                d(8),
+                S::DefaultLease(8 * SECOND),
+            ),
+            one(
+                k::SETTING_FEED_RETENTION,
+                "keep",
+                d(9),
+                S::FeedRetention(9 * SECOND),
+            ),
+            one(
+                k::SETTING_STATS_WINDOW,
+                "length",
+                d(10),
+                S::StatsWindow(10 * SECOND),
+            ),
+            one(
+                k::SETTING_STATS_RETENTION,
+                "keep",
+                d(11),
+                S::StatsRetention(11 * SECOND),
+            ),
+            two(
+                k::SETTING_WAIT_SAMPLING,
+                ("every", d(12)),
+                ("keep", d(13)),
+                S::WaitSampling {
+                    every: 12 * SECOND,
+                    keep: 13 * SECOND,
+                },
+            ),
+            one(
+                k::SETTING_CONFLICT_LOG,
+                "rows",
+                Value::I64(14),
+                S::ConflictLog(14),
+            ),
+            two(
+                k::SETTING_VACUUM_BUDGET,
+                ("io", f(0.25)),
+                ("cpu", f(0.5)),
+                S::VacuumBudget {
+                    io: F64::new(0.25),
+                    cpu: F64::new(0.5),
+                },
+            ),
+            one(
+                k::SETTING_SCRUB_INTERVAL,
+                "every",
+                some(d(15)),
+                S::ScrubInterval(Some(15 * SECOND)),
+            ),
+            one(
+                k::SETTING_LEASE_GRACE,
+                "grace",
+                d(16),
+                S::LeaseGrace(16 * SECOND),
+            ),
+            one(
+                k::SETTING_BLOCKING_NOTICE_PERIOD,
+                "period",
+                d(17),
+                S::BlockingNoticePeriod(17 * SECOND),
+            ),
+            one(
+                k::SETTING_REPLICA_VACUUM_WAIT,
+                "wait",
+                d(18),
+                S::ReplicaVacuumWait(18 * SECOND),
+            ),
+            one(
+                k::SETTING_RETRY_LIMIT,
+                "retries",
+                Value::I64(19),
+                S::RetryLimit(19),
+            ),
+            one(
+                k::SETTING_RETENTION_WINDOW,
+                "length",
+                d(20),
+                S::RetentionWindow(20 * SECOND),
+            ),
+        ]
     }
 }

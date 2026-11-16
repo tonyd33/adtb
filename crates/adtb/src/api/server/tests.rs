@@ -953,124 +953,52 @@ fn a_bundle_with_no_text_cannot_be_read_until_it_is_presented_or_retired() {
 }
 
 mod codecs {
-    use adtb_lang::ids::{CatCtorId, engine_ctor as k};
+    use adtb_lang::ids::engine_ctor as k;
     use adtb_lang::schema::Schema;
 
-    use crate::catalog::codec::testing::{position, reread, reversed, row};
-    use crate::catalog::codec::{Codec, Decode};
-    use crate::catalog::{Rot, engine_schema, layout};
-    use crate::heap::FieldType;
-    use crate::key::{Scalar, Value};
+    use crate::catalog::codec::testing::{Sample, Sampled};
+    use crate::key::Value;
 
     use super::super::{AuditRow, CredentialRow, PeerRow};
 
-    /// Returns a value stored as `t`, a sum's first constructor of no fields when it has one.
-    fn sample(t: &FieldType) -> Value {
-        match t {
-            FieldType::Scalar(Scalar::I64) => Value::I64(7),
-            FieldType::Scalar(Scalar::I32) => Value::I32(7),
-            FieldType::Scalar(Scalar::Text) => Value::Text("t".into()),
-            FieldType::Scalar(Scalar::Bytes) => Value::Bytes(vec![1, 2]),
-            FieldType::Scalar(Scalar::Instant) => Value::Instant(9),
-            FieldType::Record(ts) => Value::Record(ts.iter().map(sample).collect()),
-            FieldType::Sum(cs) => {
-                let c = cs.iter().position(|c| c.fields.is_empty()).unwrap_or(0);
-                Value::Sum {
-                    ctor: u32::try_from(c).expect("a position fits 32 bits"),
-                    fields: cs[c].fields.iter().map(sample).collect(),
-                }
-            }
-            other => panic!("no sample of {other:?}"),
-        }
-    }
-
-    /// Returns the stored row of constructor `id` of `codec`'s relation in `schema`, each field
-    /// `given` names holding its value and every other field a sample.
-    fn sampled<T: Decode>(
-        schema: &Schema,
-        codec: &Codec<T>,
-        id: CatCtorId,
-        given: &[(&str, Value)],
-    ) -> Vec<Value> {
-        let c = position(schema, codec, id);
-        let fields: Vec<(String, Value)> = layout::row(schema, codec.relation(), c)
+    impl Sampled for AuditRow {
+        fn samples(_: &Schema) -> Vec<Sample<AuditRow>> {
+            [
+                k::AUDIT_LOGIN,
+                k::AUDIT_GRANT,
+                k::AUDIT_REGISTER,
+                k::AUDIT_RETIRE,
+                k::AUDIT_SCHEMA_OP,
+                k::AUDIT_CALL,
+                k::AUDIT_DENIED,
+                k::AUDIT_COMMIT,
+                k::AUDIT_TRUNCATE,
+            ]
             .into_iter()
-            .map(|(name, ty)| {
-                let v = given.iter().find(|(n, _)| *n == name).map_or_else(
-                    || sample(&layout::field_type(schema, &ty)),
-                    |(_, v)| v.clone(),
-                );
-                (name, v)
-            })
-            .collect();
-        let fields: Vec<(&str, Value)> = fields
-            .iter()
-            .map(|(n, v)| (n.as_str(), v.clone()))
-            .collect();
-        row(schema, codec.relation(), c, &fields)
-    }
-
-    /// Returns the typed rows `codec` reads, under the shipped catalog and under the reversed one,
-    /// of the row of constructor `id` the shipped catalog stores, and whether its position moved.
-    fn both<T: Decode>(
-        (shipped, reversed): (&Schema, &Schema),
-        id: CatCtorId,
-        given: &[(&str, Value)],
-    ) -> (Result<T, Rot>, Result<T, Rot>, bool) {
-        let (old, new) = (Codec::<T>::new(shipped), Codec::<T>::new(reversed));
-        let (was, now) = (position(shipped, &old, id), position(reversed, &new, id));
-        let stored = sampled(shipped, &old, id, given);
-        let read = reread(
-            (shipped, old.relation(), was),
-            (reversed, new.relation(), now),
-            &stored,
-        );
-        (old.decode(was, &stored), new.decode(now, &read), was != now)
-    }
-
-    #[test]
-    fn a_catalog_with_its_constructors_reversed_reads_each_stored_audit_row_the_same() {
-        let (shipped, reversed) = (engine_schema(), reversed());
-        let ctors = [
-            k::AUDIT_LOGIN,
-            k::AUDIT_GRANT,
-            k::AUDIT_REGISTER,
-            k::AUDIT_RETIRE,
-            k::AUDIT_SCHEMA_OP,
-            k::AUDIT_CALL,
-            k::AUDIT_DENIED,
-            k::AUDIT_COMMIT,
-            k::AUDIT_TRUNCATE,
-        ];
-        assert_eq!(AuditRow::CTORS.len(), ctors.len(), "every constructor");
-        for (n, id) in (11..).zip(ctors) {
-            let seq = [("seq", Value::I64(n))];
-            let (old, new, moved) = both::<AuditRow>((&shipped, &reversed), id, &seq);
-            assert_eq!(Ok(n), old.map(|a| a.seq), "{id}");
-            assert_eq!(Ok(n), new.map(|a| a.seq), "{id}");
-            assert_eq!(
-                id != k::AUDIT_SCHEMA_OP,
-                moved,
-                "{id} moves unless it is the middle"
-            );
+            .zip(11..)
+            .map(|(id, seq)| (id, vec![("seq", Value::I64(seq))], AuditRow { seq }))
+            .collect()
         }
     }
 
-    #[test]
-    fn a_credential_row_reads_its_role_under_the_shipped_and_the_reversed_catalog() {
-        let (shipped, reversed) = (engine_schema(), reversed());
-        let role = [("role", Value::I64(6))];
-        let (old, new, _) = both::<CredentialRow>((&shipped, &reversed), k::CREDENTIAL, &role);
-        assert_eq!(Ok(6), old.map(|c| c.role));
-        assert_eq!(Ok(6), new.map(|c| c.role));
+    impl Sampled for CredentialRow {
+        fn samples(_: &Schema) -> Vec<Sample<CredentialRow>> {
+            vec![(
+                k::CREDENTIAL,
+                vec![("role", Value::I64(6))],
+                CredentialRow { role: 6 },
+            )]
+        }
     }
 
-    #[test]
-    fn a_peer_mapping_row_reads_its_role_under_the_shipped_and_the_reversed_catalog() {
-        let (shipped, reversed) = (engine_schema(), reversed());
-        let role = [("role", Value::Text("web".into()))];
-        let (old, new, _) = both::<PeerRow>((&shipped, &reversed), k::PEER_MAPPING, &role);
-        assert_eq!(Ok("web".to_owned()), old.map(|p| p.role));
-        assert_eq!(Ok("web".to_owned()), new.map(|p| p.role));
+    impl Sampled for PeerRow {
+        fn samples(_: &Schema) -> Vec<Sample<PeerRow>> {
+            let want = PeerRow { role: "web".into() };
+            vec![(
+                k::PEER_MAPPING,
+                vec![("role", Value::Text("web".into()))],
+                want,
+            )]
+        }
     }
 }

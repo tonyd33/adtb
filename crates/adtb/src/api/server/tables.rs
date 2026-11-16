@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow};
-use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor as k, engine_rel};
+use adtb_lang::ids::{CatCtorId, engine_ctor as k, engine_rel};
 use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::catalog::codec::{
-    Codec, Ctor, Decode, Field, Fields, GrantKind, RoleGrant, RoleRow, field,
+    Codec, Ctor, Decode, Field, Fields, GrantKind, Relation, RoleGrant, RoleRow, field, relation,
 };
 use crate::catalog::{Rot, engine_relation, layout};
 use crate::exec::Val;
@@ -546,7 +546,8 @@ pub(super) fn service(schema: &Schema, name: &str) -> Val {
 }
 
 /// A row of `catalog::credentials`, read for its role.
-struct CredentialRow {
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(crate) struct CredentialRow {
     role: i64,
 }
 
@@ -560,8 +561,12 @@ const CREDENTIAL: Fields = &[
 ];
 const CREDENTIAL_ROLE: Field = field(CREDENTIAL, "role");
 
+impl Relation for relation::Credentials {
+    type Row = CredentialRow;
+}
+
 impl Decode for CredentialRow {
-    const RELATION: CatRelId = engine_rel::CREDENTIALS;
+    type Relation = relation::Credentials;
     const CTORS: &'static [Ctor<CredentialRow>] = &[Ctor::new(k::CREDENTIAL, CREDENTIAL, |r| {
         Ok(CredentialRow {
             role: r.int(CREDENTIAL_ROLE),
@@ -570,15 +575,20 @@ impl Decode for CredentialRow {
 }
 
 /// A row of `catalog::peer_mappings`, read for its role.
-struct PeerRow {
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(crate) struct PeerRow {
     role: String,
 }
 
 const PEER: Fields = &["listener", "ordinal", "pattern", "role"];
 const PEER_ROLE: Field = field(PEER, "role");
 
+impl Relation for relation::PeerMappings {
+    type Row = PeerRow;
+}
+
 impl Decode for PeerRow {
-    const RELATION: CatRelId = engine_rel::PEER_MAPPINGS;
+    type Relation = relation::PeerMappings;
     const CTORS: &'static [Ctor<PeerRow>] = &[Ctor::new(k::PEER_MAPPING, PEER, |r| {
         Ok(PeerRow {
             role: r.text(PEER_ROLE).to_owned(),
@@ -587,7 +597,8 @@ impl Decode for PeerRow {
 }
 
 /// A row of `catalog::audit`, read for its sequence number.
-struct AuditRow {
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(crate) struct AuditRow {
     seq: i64,
 }
 
@@ -627,8 +638,12 @@ const DENIED_SEQ: Field = field(DENIED, "seq");
 const COMMIT_SEQ: Field = field(COMMIT, "seq");
 const TRUNCATE_SEQ: Field = field(TRUNCATE, "seq");
 
+impl Relation for relation::Audit {
+    type Row = AuditRow;
+}
+
 impl Decode for AuditRow {
-    const RELATION: CatRelId = engine_rel::AUDIT;
+    type Relation = relation::Audit;
     const CTORS: &'static [Ctor<AuditRow>] = &[
         Ctor::new(k::AUDIT_LOGIN, LOGIN, |r| {
             Ok(AuditRow {
