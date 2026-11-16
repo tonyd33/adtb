@@ -38,3 +38,7 @@ Landed as wuztvzvl df7fafa3 (2 rounds), full check 0 (3837 tests). `Inverse::Res
 ## 2026-11-16, part 4b landed
 
 Landed as pkrpqpxz e006c7e8 (2 rounds), full check 0 (3839 tests); rrrmqont folded in. `Schema.ahead` entries carry their `Adder`; translate's 5 `declared` sites resolve through it (`Later::At`, `Lacked` refused as `Loss::Later`, `Unlinked` an invariant held lazily, since a reverted fill's schema can list a restored relation it holds no key of). The review found a valid history (a function parameter carrying the key, the relation dropped by a later migration) reaching the first version's panic; it is a refusal. `Schema::declared` callers outside tests 16 to 11, all committed. Resolved: pinned-forward-fill-later-relation-refused. Next: part 1, `Committed`.
+
+## 2026-11-16, part 1 landed
+
+Landed as kqrtyvnw e50c05c5 (2 rounds), full check 0 (3840 tests). `Committed` (adtb-lang schema/committed.rs) wraps a private `Schema` with `Deref` only; `Committed::new` accepts only a schema no migration is being applied to (`ahead` and `late_sels` empty); `build` returns it. `Catalog.schema`, `Checked.schema`, `fold` and `engine_schema()` hold it; a `None` from a producer is `Broken::Unsettled` (every producer settles its source first). `Committed::declared` exists and is not called yet. Next: part 2 (callers onto `Committed::declared`, `check_adhoc`/`Adhoc::schema` over `&Committed`, the two registered `Arc<Schema>` clones), then part 3.
