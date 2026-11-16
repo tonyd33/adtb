@@ -816,3 +816,77 @@ fn the_fill_a_revert_of_a_move_down_asks_for_applies_as_written() {
         ),
     );
 }
+
+/// Returns, for each step of operator `text` applied to `s`, the relations a later step adds
+/// that the schema after it holds, each with whether a selection of its constructors resolves
+/// late.
+fn ahead_per_step(s: &Source, text: &str) -> Vec<Vec<(String, bool)>> {
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the revert parses");
+    s.clone()
+        .steps("auth", Listed::nth(&m.operators, 0), text)
+        .unwrap_or_else(|e| panic!("the revert applies: {e:?}"))
+        .iter()
+        .map(|step| {
+            let schema = step.after.schema().unwrap_or_else(|e| panic!("{e:?}"));
+            let late = |i| schema.selects_late(RelRef::Ahead(AheadId::at(i)));
+            let names = schema.ahead.iter().map(|(_, n)| n.clone());
+            names.enumerate().map(|(i, n)| (n, late(i))).collect()
+        })
+        .collect()
+}
+
+#[test]
+fn a_relation_a_revert_restores_and_then_renames_is_pending_no_more() {
+    let mut s = source(BASE);
+    for t in [
+        "add type Z = { id: I64 }\nadd relation zs : Z key id",
+        "drop field U.name\nrename relation zs to qs\ndrop relation qs",
+    ] {
+        s = applies(&s, &headed(t));
+    }
+    let steps = ahead_per_step(&s, "module auth\nrevert 0002\n  fill U.name = \"n\"");
+    assert_eq!(vec![Vec::<(String, bool)>::new(); 5], steps);
+}
+
+#[test]
+fn a_relation_a_revert_restores_after_its_type_is_typed_by_its_declaration_at_the_drop() {
+    let mut s = source(BASE);
+    for t in [
+        "add type Z = { id: I64 }\nadd relation zs : Z key id",
+        "rename relation zs to qs\ndrop relation qs\ndrop type Z",
+    ] {
+        s = applies(&s, &headed(t));
+    }
+    let steps = ahead_per_step(&s, "module auth\nrevert 0002");
+    assert_eq!(
+        vec![
+            vec![("qs".to_string(), true)],
+            vec![("qs".to_string(), true)],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ],
+        steps
+    );
+}
+
+#[test]
+fn a_relation_a_revert_unadds_and_restores_under_one_name_reverts() {
+    let added = applies(
+        &source(BASE),
+        &headed("add type Z = { id: Key zs }\nadd relation zs : Z key id generate sequence"),
+    );
+    let s = applies(
+        &added,
+        &headed("drop relation zs\nadd relation zs : Z key id generate sequence"),
+    );
+    let steps = ahead_per_step(&s, "module auth\nrevert 0002");
+    assert_eq!(
+        vec![vec![("zs".to_string(), false)], Vec::new(), Vec::new()],
+        steps
+    );
+    let reverted = applies(&s, "module auth\nrevert 0002");
+    assert_eq!(restored(&added), restored(&reverted));
+}

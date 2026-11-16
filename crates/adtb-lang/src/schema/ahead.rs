@@ -11,7 +11,7 @@ pub enum AheadState {
     Pending,
     /// It has: the relation is declared under the name the entry gives.
     Declared,
-    /// It has when a value of the entry's name is declared.
+    /// It is being applied: it has once a value of the entry's name is declared.
     UnlessDeclared,
 }
 

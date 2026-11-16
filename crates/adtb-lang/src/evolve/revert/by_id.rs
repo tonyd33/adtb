@@ -357,6 +357,19 @@ impl Inverse {
                 text: text.mapped(again),
                 of,
             },
+            Inverse::RestoreRelation {
+                module,
+                name,
+                text,
+                of,
+                typed,
+            } => Inverse::RestoreRelation {
+                module,
+                name,
+                text: text.mapped(again),
+                of,
+                typed,
+            },
             Inverse::Redeclare { decl, text, of } => Inverse::Redeclare {
                 decl: decl.mapped(again),
                 text: text.map(|t| t.mapped(again)),

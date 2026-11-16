@@ -205,18 +205,41 @@ impl Inverting<'_> {
     /// Returns the step adding back the declaration of kind `kind` and name `name` of module `m`
     /// that the operator removes.
     fn restore(&self, kind: &'static str, m: &str, name: &str) -> R<Inverse> {
-        let i = self.before.find(kind, m, name).ok_or_else(|| {
-            vec![Diag::new(
-                self.op.span,
-                "the log does not hold the declaration the operator removes",
-            )]
-        })?;
         Ok(Inverse::Restore {
             module: m.to_string(),
             kind,
             name: name.to_string(),
-            text: self.decl(i)?,
+            text: self.decl(self.removed(kind, m, name)?)?,
             of: self.of(),
+        })
+    }
+
+    /// Returns the step adding back relation variable `name` of module `m` that the operator
+    /// drops, typed when the migration also drops the type its declaration names.
+    fn restore_relation(&self, m: &str, name: &str) -> R<Inverse> {
+        let typed = self.before.relation_type(m, name).is_some_and(|t| {
+            self.logged.operators.iter().any(|op| {
+                matches!(&op.kind, OperatorKind::DropType(q)
+                    if self.module_of(q) == t.0 && q.name.text == t.1)
+            })
+        });
+        Ok(Inverse::RestoreRelation {
+            module: m.to_string(),
+            name: name.to_string(),
+            text: self.decl(self.removed("relation", m, name)?)?,
+            of: self.of(),
+            typed,
+        })
+    }
+
+    /// Returns the declaration the operator removes, of kind `kind` and name `name` of module
+    /// `m`.
+    fn removed(&self, kind: &str, m: &str, name: &str) -> R<usize> {
+        self.before.find(kind, m, name).ok_or_else(|| {
+            vec![Diag::new(
+                self.op.span,
+                "the log does not hold the declaration the operator removes",
+            )]
         })
     }
 
@@ -498,7 +521,7 @@ impl Cx<'_> {
                 let rel = before.relation_key_id(&m, &r.name.text);
                 let states =
                     at.states_back(|s| matches!(s, StateOf::Relation(x, _) if Some(x) == rel));
-                let mut out = vec![at.restore("relation", &m, &r.name.text)?];
+                let mut out = vec![at.restore_relation(&m, &r.name.text)?];
                 for (i, d) in before.decls.iter().enumerate() {
                     if d.module == m
                         && let Some(d) = before.parsed(i)

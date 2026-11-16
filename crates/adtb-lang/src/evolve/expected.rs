@@ -51,8 +51,8 @@ impl Deref for Listed<'_> {
 pub enum Adder {
     /// The operator at this position of the migration.
     Operator(usize),
-    /// An inverse step of a revert.
-    Inverse,
+    /// The inverse at this index of the step at this position of a revert.
+    Inverse(usize, usize),
 }
 
 /// A relation variable an operator of the migration being applied adds.
@@ -98,10 +98,8 @@ impl Source {
             .iter()
             .filter_map(|e| {
                 let (module, relation, state) = match (e.state, e.by) {
-                    (Added::Not, Adder::Operator(_)) => {
-                        (e.module.clone(), e.relation.clone(), AheadState::Pending)
-                    }
-                    (Added::Not | Added::Applying, _) => (
+                    (Added::Not, _) => (e.module.clone(), e.relation.clone(), AheadState::Pending),
+                    (Added::Applying, _) => (
                         e.module.clone(),
                         e.relation.clone(),
                         AheadState::UnlessDeclared,
@@ -133,6 +131,17 @@ impl Source {
             .relation_key_id(module, &r.name.name.text)
             .expect("an applied `add relation` gives its relation variable an id");
         for e in self.expected_by(op) {
+            e.state = Added::As(id);
+        }
+    }
+
+    /// Mark the relation variable `name` of `module` that `by`, a step of a revert, restored as
+    /// added, with its id.
+    pub(super) fn restored(&mut self, by: Adder, module: &str, name: &str) {
+        let id = self
+            .relation_key_id(module, name)
+            .expect("a restored relation variable has an id");
+        for e in self.ahead.iter_mut().filter(|e| e.by == by) {
             e.state = Added::As(id);
         }
     }

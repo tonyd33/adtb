@@ -117,6 +117,15 @@ pub(super) enum Inverse {
         text: Spelled,
         of: String,
     },
+    /// Add back the declaration `text` of relation variable `name` of module `module`, `typed`
+    /// when the migration also drops its type; `of` is the text of the operator inverted.
+    RestoreRelation {
+        module: String,
+        name: String,
+        text: Spelled,
+        of: String,
+        typed: bool,
+    },
     /// Set the declaration of an object to `text`, `None` removing it; `of` is the text of the
     /// operator inverted.
     Redeclare {
@@ -252,39 +261,28 @@ impl Source {
     }
 }
 
-/// Returns the relation variables the inverse of `logged` adds back, each typed when the
-/// migration also drops the type the source before it declares the relation over.
-fn inverse_ahead(logged: &Logged) -> Vec<Expected> {
-    let module_of = |q: &QName| {
-        q.module
-            .as_ref()
-            .map_or(logged.module.clone(), |m| m.text.clone())
-    };
-    let dropped: BTreeSet<(String, String)> = logged
-        .operators
-        .iter()
-        .filter_map(|op| match &op.kind {
-            OperatorKind::DropType(t) => Some((module_of(t), t.name.text.clone())),
-            _ => None,
-        })
-        .collect();
-    logged
-        .operators
-        .iter()
-        .filter_map(|op| match &op.kind {
-            OperatorKind::DropRelation(r) => {
-                let m = module_of(r);
-                let ty = logged.before.relation_type(&m, &r.name.text);
-                Some(Expected::new(
-                    m,
-                    r.name.text.clone(),
-                    ty.is_some_and(|t| dropped.contains(&t)),
-                    Adder::Inverse,
-                ))
+/// Returns the relation variables the steps of `steps` add back, each added by its position.
+fn linked(steps: &[Undoing]) -> Vec<Expected> {
+    let mut out = Vec::new();
+    for (s, (step, _)) in steps.iter().enumerate() {
+        for (j, inv) in step.iter().enumerate() {
+            if let Inverse::RestoreRelation {
+                module,
+                name,
+                typed,
+                ..
+            } = inv
+            {
+                out.push(Expected::new(
+                    module.clone(),
+                    name.clone(),
+                    *typed,
+                    Adder::Inverse(s, j),
+                ));
             }
-            _ => None,
-        })
-        .collect()
+        }
+    }
+    out
 }
 
 /// The keys of the objects of several sources, by the space of the id and the id, the first
@@ -461,7 +459,7 @@ impl Cx<'_> {
         }
         self.src.filled = fills.taken.borrow().clone();
         let ahead = self.src.ahead.clone();
-        self.src.ahead.extend(inverse_ahead(&logged));
+        self.src.ahead.extend(linked(&steps));
         let late = late(self.src.after(pos));
         let undone = self.undo_all(steps, &late);
         self.src.ahead = ahead;
@@ -472,8 +470,8 @@ impl Cx<'_> {
     fn undo_all(&mut self, steps: Vec<Undoing>, late: &Late) -> R<()> {
         let mut again = self.src.replaying.clone().unwrap_or_default();
         let held = holding(&self.src.ids);
-        for (step, gone) in steps.into_iter().rev() {
-            for inv in step {
+        for (s, (step, gone)) in steps.into_iter().enumerate().rev() {
+            for (j, inv) in step.into_iter().enumerate() {
                 let recorded = matches!(
                     inv,
                     Inverse::Restructure { .. }
@@ -483,8 +481,17 @@ impl Cx<'_> {
                         | Inverse::AddSet { .. }
                         | Inverse::Replay { .. }
                 );
+                let restored = match &inv {
+                    Inverse::RestoreRelation { module, name, .. } => {
+                        Some((module.clone(), name.clone()))
+                    }
+                    _ => None,
+                };
                 self.undo(inv.mapped(&again), late)?;
                 self.src.settle_ids();
+                if let Some((module, name)) = restored {
+                    self.src.restored(Adder::Inverse(s, j), &module, &name);
+                }
                 recreate(&mut again, &gone, &held, &self.src.ids);
                 if let (Some(steps), false) = (self.steps, recorded) {
                     steps.borrow_mut().push(Step {
@@ -826,6 +833,13 @@ impl Cx<'_> {
                 text,
                 of,
             } => self.restore_spelled(&module, kind, &name, &text, &of, late),
+            Inverse::RestoreRelation {
+                module,
+                name,
+                text,
+                of,
+                ..
+            } => self.restore_spelled(&module, "relation", &name, &text, &of, late),
             Inverse::Redeclare { decl, text, of } => {
                 let Some((i, ..)) = decl.find(self.src) else {
                     return self.err(dropped(&of, decl.word()));
