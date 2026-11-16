@@ -449,7 +449,7 @@ fn normalises(what: &str, text: &str) {
 }
 
 /// Returns the schema and the normal form of ad hoc `text`, asserting the normal form valid.
-fn valid_normal_form(text: &str) -> (Schema, crate::norm::NormalAdhoc) {
+fn valid_normal_form(text: &str) -> (Committed, crate::norm::NormalAdhoc) {
     let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{text} does not check: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
     let n = crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{text}: {e:?}"));
@@ -1171,7 +1171,7 @@ fn explain_analyze_of_a_write_is_held_to_the_rules_of_writes() {
     adhoc_accepts(&[], "explain from s in sys::sessions select s.principal");
 }
 
-fn command_of(params: &[(&str, &str)], text: &str) -> (Schema, Adhoc, Command) {
+fn command_of(params: &[(&str, &str)], text: &str) -> (Committed, Adhoc, Command) {
     let (s, a) = adhoc(params, text).unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}"));
     let [AdhocCommand { command, .. }] = a.commands.as_slice() else {
         panic!("{text}\nis not one command: {:?}", a.commands);

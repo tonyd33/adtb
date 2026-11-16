@@ -81,6 +81,7 @@ fn reference_fixture(case: &Case) -> Fixture {
     assert_eq!(case.get("entry"), "engine");
     let source = adtb_lang::signature::replay([case.get("decls")]).expect("case log applies");
     let schema = source.schema().expect("case schema");
+    let schema = adtb_lang::schema::Committed::new(schema).expect("a replayed log commits");
     let program = check_schema(&schema).expect("case checks");
     Fixture::of_schema(schema, program)
 }

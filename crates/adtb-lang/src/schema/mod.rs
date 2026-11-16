@@ -28,6 +28,8 @@ pub use names::field_path;
 mod ahead;
 pub use ahead::{Adder, AheadState};
 mod build;
+mod committed;
+pub use committed::Committed;
 mod engine;
 mod inputs;
 pub mod prelude;
@@ -1283,8 +1285,8 @@ struct Builder<'a> {
 }
 
 /// Builds the schema the given module files declare, over the prelude.
-pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag>> {
-    build_ahead(files, &[])
+pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Committed, Vec<FileDiag>> {
+    build_ahead(files, &[]).map(Committed::built)
 }
 
 /// A relation variable a later operator of the migration being applied adds.

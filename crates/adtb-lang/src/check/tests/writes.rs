@@ -32,12 +32,12 @@ fn lookup (email: Text) -> Text = lower(email)
 fn rehash (h: Bytes) -> Bytes = h
 "#;
 
-fn wschema() -> Schema {
+fn wschema() -> Committed {
     schema(WRITES).expect("the write schema builds")
 }
 
 /// Checks ad hoc `text` against the running schema and `WRITES`.
-fn run(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<String>> {
+fn run(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<String>> {
     let s = wschema();
     let mut tys = BTreeMap::new();
     {
@@ -72,7 +72,7 @@ fn run(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<Strin
     }
 }
 
-fn ok(params: &[(&str, &str)], text: &str) -> (Schema, Adhoc) {
+fn ok(params: &[(&str, &str)], text: &str) -> (Committed, Adhoc) {
     match run(params, text) {
         Ok(r) => r,
         Err(errs) => panic!("{text}\nrefused: {errs:?}"),
@@ -95,7 +95,7 @@ fn ty_of(params: &[(&str, &str)], text: &str) -> String {
     s.show_ty(a.terms.ty(a.items[0]))
 }
 
-fn txn(text: &str) -> Result<(Schema, Txn), String> {
+fn txn(text: &str) -> Result<(Committed, Txn), String> {
     let s = wschema();
     let items = parse_example(text, Options::default())
         .ok()

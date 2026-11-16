@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb_conformance::{Script, parse, run_engine, run_reference};
 use adtb_lang::check::{Program, check_adhoc, check_schema};
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, Schema, build};
 use adtb_lang::span::FileId;
 use adtb_sim::{Config, Outcome, Sim};
 
@@ -35,7 +35,7 @@ fn transaction(branch: &str, read: &str) -> String {
     )
 }
 
-fn checked() -> (Schema, Program) {
+fn checked() -> (Committed, Program) {
     let file = parse_schema(NOTES, Options::default())
         .ok()
         .expect("the schema parses");

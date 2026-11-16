@@ -135,7 +135,7 @@ impl Catalog {
             Ok(ops) => oplog::operator_rows(&schema, &ops),
             Err(why) => return refused(why),
         };
-        let next = Checked::new(next, schema, program);
+        let next = Checked::new(next, schema, program)?;
         let readers = self.held(&file, text, &next)?;
         let (schema, program, texts) = readers
             .enforced()
@@ -262,7 +262,7 @@ impl Catalog {
         let mut at = self.source.clone();
         at.version += 1;
         at.expecting(module, &file.operators);
-        let mut before = self.schema.clone();
+        let mut before = Schema::clone(&self.schema);
         let mut why = Vec::new();
         let mut blamed = None;
         for op in Listed::all(&file.operators) {

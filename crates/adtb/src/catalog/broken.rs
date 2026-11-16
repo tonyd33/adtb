@@ -21,6 +21,8 @@ use super::root::Changing;
 pub enum Broken {
     /// The engine's own declarations do not check; each diagnostic.
     Declarations(Vec<FileDiag>),
+    /// A settled source's schema takes a relation as added later.
+    Unsettled,
     /// A checked schema has no normal form.
     NotNormal(norm::Error),
     /// A term of a checked schema or of its normal form breaks the kernel's invariants.
@@ -119,6 +121,9 @@ impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Broken::Declarations(ds) => write!(f, "the engine's declarations check: {ds:?}"),
+            Broken::Unsettled => {
+                f.write_str("a settled source's schema takes no relation as added later")
+            }
             Broken::NotNormal(e) => write!(f, "a checked schema normalises: {e:?}"),
             Broken::StoredNotNormal(e) => write!(f, "the schema normalises: {e:?}"),
             Broken::IllTyped(e) => write!(

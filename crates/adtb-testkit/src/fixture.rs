@@ -8,7 +8,7 @@ use adtb_lang::check::{
 };
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::{Schema, States, ValueDef, build, build_with};
+use adtb_lang::schema::{Committed, States, ValueDef, build, build_with};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{RelId, Ty, TypeId};
 use adtb_reference::{
@@ -18,7 +18,7 @@ use adtb_reference::{
 #[derive(Debug)]
 pub struct Fixture {
     decls: Option<String>,
-    pub schema: Schema,
+    pub schema: Committed,
     pub program: Program,
     pub db: Database,
     pub supply: Supply,
@@ -51,7 +51,7 @@ impl Fixture {
     }
 
     /// Returns the fixture of `schema`, checked as `program`, holding no row.
-    pub fn of_schema(schema: Schema, program: Program) -> Fixture {
+    pub fn of_schema(schema: Committed, program: Program) -> Fixture {
         Fixture {
             decls: None,
             schema,
@@ -119,8 +119,9 @@ impl Fixture {
         let mut states = self.schema.states();
         change(&mut states);
         let ids = self.schema.ids().clone();
-        self.schema = build_with(&[(FileId(0), file)], &[], &|_| ids.clone(), &states)
+        let schema = build_with(&[(FileId(0), file)], &[], &|_| ids.clone(), &states)
             .unwrap_or_else(|ds| panic!("the fixture's schema does not build: {ds:?}"));
+        self.schema = Committed::new(schema).expect("a schema built with nothing ahead commits");
     }
 
     /// Returns the declared type `name` of the module and the index of its constructor `ctor`.

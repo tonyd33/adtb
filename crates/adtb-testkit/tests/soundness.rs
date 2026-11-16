@@ -15,7 +15,7 @@ use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::parse_schema;
 use adtb_lang::parse::{Options, parse_adhoc};
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, Schema, build};
 use adtb_lang::span::FileId;
 use adtb_lang::textual::Form;
 use adtb_lang::types::{ModuleId, Ty};
@@ -365,7 +365,8 @@ fn spec_corpus_results_inhabit_their_types() {
             }
         }
         let (queries, txns, module, adhoc) = (p.queries, p.txns, p.module, p.adhoc);
-        let mut fx = Fixture::of_schema(p.schema, p.program);
+        let schema = Committed::new(p.schema).expect("a spec block's settled schema commits");
+        let mut fx = Fixture::of_schema(schema, p.program);
         for q in &queries {
             call_query(&fx, module, q, &at, &mut rng, &mut out);
         }

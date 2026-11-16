@@ -85,7 +85,7 @@ pub(crate) fn read_back<T: Sampled>() -> Vec<String> {
     let mut want: Vec<CatCtorId> = T::CTORS.iter().map(|c| c.id).collect();
     want.sort_unstable();
     for (catalog, schema) in [
-        ("shipped", &shipped),
+        ("shipped", &*shipped),
         ("ctors", &ctors),
         ("fields", &fields),
     ] {

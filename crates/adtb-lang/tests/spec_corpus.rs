@@ -4,7 +4,7 @@ use std::path::Path;
 use adtb_lang::ast::ExampleItem;
 use adtb_lang::check::{Program, check_adhoc_recording, check_query, check_schema, check_txn};
 use adtb_lang::parse::{Options, parse_example, parse_schema};
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, build};
 use adtb_lang::span::{FileDiag, FileId};
 use adtb_testkit::profile::assert_reached;
 use adtb_testkit::running::{self, Entry, decl_key, decl_span};
@@ -349,7 +349,7 @@ impl Files {
     }
 }
 
-fn schema_of(entries: &[Entry]) -> Result<(Schema, Program), Vec<String>> {
+fn schema_of(entries: &[Entry]) -> Result<(Committed, Program), Vec<String>> {
     let fs = files(entries)?;
     let render =
         |ds: Vec<FileDiag>| -> Vec<String> { ds.iter().map(|d| fs.render(entries, d)).collect() };

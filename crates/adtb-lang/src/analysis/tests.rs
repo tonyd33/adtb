@@ -8,7 +8,7 @@ use crate::kernel::{Agg, Const, Prim, Var};
 use crate::norm::{NormalAdhoc, NormalProgram, NormalQuery};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::resolve::Visible;
-use crate::schema::build;
+use crate::schema::{Committed, build};
 use crate::types::{RelId, Ty};
 
 const BASE: &str = r"
@@ -29,7 +29,7 @@ type Session = { id: Key sessions, owner: Option (Key users) }
 relation sessions : Session key id generate sequence
 ";
 
-fn schema(extra: &str) -> Schema {
+fn schema(extra: &str) -> Committed {
     let src = format!("{BASE}\n{extra}");
     let parsed = parse_schema(&src, Options::default());
     assert!(
@@ -51,7 +51,7 @@ fn schema(extra: &str) -> Schema {
     }
 }
 
-fn program(extra: &str) -> Result<(Schema, Program), Vec<String>> {
+fn program(extra: &str) -> Result<(Committed, Program), Vec<String>> {
     let s = schema(extra);
     match check_schema(&s) {
         Ok(p) => {
@@ -78,7 +78,7 @@ fn refuses(extra: &str, needle: &str) {
     }
 }
 
-fn normal(extra: &str) -> (Schema, NormalProgram) {
+fn normal(extra: &str) -> (Committed, NormalProgram) {
     let (s, p) = program(extra).unwrap_or_else(|e| panic!("{extra}\nrefused: {e:?}"));
     let n = norm::program(&s, &p).expect("normalises");
     (s, n)
@@ -94,7 +94,11 @@ fn body(s: &Schema, n: &NormalProgram, name: &str) -> Tm {
     n.functions[i].as_ref().expect("first-order").1
 }
 
-fn adhoc(extra: &str, params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<String>> {
+fn adhoc(
+    extra: &str,
+    params: &[(&str, &str)],
+    text: &str,
+) -> Result<(Committed, Adhoc), Vec<String>> {
     let s = schema(extra);
     let mut tys = BTreeMap::new();
     {
@@ -137,7 +141,7 @@ fn adhoc_refuses(params: &[(&str, &str)], text: &str, needle: &str) {
 }
 
 /// The normal form of the single item of ad hoc `text`, with the declarations of `extra`.
-fn adhoc_normal(extra: &str, params: &[(&str, &str)], text: &str) -> (Schema, NormalAdhoc) {
+fn adhoc_normal(extra: &str, params: &[(&str, &str)], text: &str) -> (Committed, NormalAdhoc) {
     let (s, a) = adhoc(extra, params, text).unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
     let n = norm::adhoc(&s, &p, &a).expect("normalises");
@@ -878,7 +882,7 @@ fn avg_over_merged_values_behind_a_function_argument_is_refused() {
 
 // Writes and stored bodies
 
-fn txn(extra: &str, text: &str) -> Result<(Schema, NormalQuery), String> {
+fn txn(extra: &str, text: &str) -> Result<(Committed, NormalQuery), String> {
     let s = schema(extra);
     let items = parse_example(text, Options::default())
         .ok()

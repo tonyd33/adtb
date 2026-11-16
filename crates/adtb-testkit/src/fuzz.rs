@@ -11,7 +11,7 @@ use adtb_lang::parse::{
     Options, parse_adhoc, parse_bundle, parse_example, parse_expr, parse_migration, parse_schema,
     parse_type,
 };
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, build};
 use adtb_lang::span::FileId;
 
 use crate::Rng;
@@ -61,7 +61,7 @@ pub enum Reached {
 /// The front end over [`SCHEMA`], built once and shared by every case.
 #[derive(Debug)]
 pub struct Front {
-    schema: Schema,
+    schema: Committed,
     program: Program,
 }
 

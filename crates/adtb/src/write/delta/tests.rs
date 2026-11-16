@@ -5,7 +5,7 @@ use adtb_lang::check::check_schema;
 use adtb_lang::kernel::{Build, Kind, Prim, Terms, Transition, Var};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_schema};
-use adtb_lang::schema::{Schema, ValueDef, build};
+use adtb_lang::schema::{Committed, Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{Base, RelId, Ty};
 
@@ -14,7 +14,7 @@ use super::{At, Binder, Compiler, Occurrence, Origin, Part, Row, Within, compile
 use crate::plan::fixture::Fixture;
 use crate::plan::{Catalog, Facts};
 
-fn schema() -> Schema {
+fn schema() -> Committed {
     let text = "module app\ntype U = { id: Key us }\nrelation us : U key id generate sequence\n";
     let file = parse_schema(text, Options::default())
         .ok()

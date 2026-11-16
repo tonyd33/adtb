@@ -379,8 +379,9 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
             .migrate_keeping(&file, &l.text, &kept)
             .map_err(|r| refused(super::reasons(r)))?;
     }
-    let enforced = checked(at)
-        .map_err(|ds| Error::Unchecked("the schema keeping the pending drops".to_string(), ds))?;
+    let enforced = checked(at, |ds| {
+        Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
+    })?;
     keeps_ids(&enforced.schema, pending)?;
     Ok(Some(enforced))
 }
@@ -536,8 +537,9 @@ impl Catalog {
         let source = base
             .migrate_keeping(&skipping(file, &skipped), text, &kept)
             .map_err(|r| Error::Refused(super::reasons(r).iter().map(|w| no_image(w)).collect()))?;
-        let enforced = checked(source)
-            .map_err(|ds| Error::Refused(ds.iter().map(|d| no_image(&d.message)).collect()))?;
+        let enforced = checked(source, |ds| {
+            Error::Refused(ds.iter().map(|d| no_image(&d.message)).collect())
+        })?;
         if !enforced
             .schema
             .ids()
@@ -941,10 +943,13 @@ fn names_held<'p>(next: &Schema, pending: impl Iterator<Item = &'p Pending>) -> 
         .collect()
 }
 
-/// Returns `source` checked, or the checker's diagnostics.
-pub(super) fn checked(source: Source) -> Result<Checked, Vec<Diag>> {
+/// Returns `source` checked, the checker's diagnostics refused as `refused` refuses them.
+pub(super) fn checked(
+    source: Source,
+    refused: impl FnOnce(Vec<Diag>) -> Error,
+) -> Result<Checked, Error> {
     let (schema, program) = source
         .check()
-        .map_err(|ds| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>())?;
-    Ok(Checked::new(source, schema, program))
+        .map_err(|ds| refused(ds.into_iter().map(|d| d.diag).collect()))?;
+    Checked::new(source, schema, program)
 }

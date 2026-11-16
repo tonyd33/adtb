@@ -3,6 +3,7 @@ use crate::ast::{BundleItem, ExampleItem};
 use crate::check::{Checker, Context, check_adhoc, check_query, check_schema, check_txn};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::resolve::Visible;
+use crate::schema::Committed;
 use crate::span::FileId;
 
 const SCHEMA: &str = r"
@@ -23,7 +24,7 @@ fn all () -> Set Row = left
 relation rejects : RejectedRow key (load, line)
 ";
 
-fn schema(extra: &str) -> Schema {
+fn schema(extra: &str) -> Committed {
     let text = format!("{SCHEMA}\n{extra}");
     let file = parse_schema(&text, Options::default())
         .ok()

@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use adtb_lang::check::check_schema;
 use adtb_lang::parse::{Options, parse_schema};
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{Base, Ty};
 
 use super::valid;
 use crate::exec::{F32, F64, Val};
 
-fn schema(text: &str) -> Schema {
+fn schema(text: &str) -> Committed {
     let file = parse_schema(text, Options::default())
         .ok()
         .expect("the fixture parses");

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
+use crate::schema::Committed;
 
 fn int() -> Ty {
     Ty::Base(Base::I64)
@@ -55,7 +56,7 @@ fn renaming_copies_a_term_whose_binder_is_free_in_its_own_value() {
 }
 
 struct Fixture {
-    schema: Schema,
+    schema: Committed,
     ts: RelId,
     us: RelId,
     t: TypeId,

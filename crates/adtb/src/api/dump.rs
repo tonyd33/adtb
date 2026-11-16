@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ids::{CatRelId, engine_ctor as k, held_id};
 use adtb_lang::kernel::{Build, Terms};
-use adtb_lang::schema::{Generator, Schema};
+use adtb_lang::schema::{Committed, Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
 
@@ -931,7 +931,7 @@ fn on(from: &Schema, to: &Schema, rows: Rows) -> Rows {
 
 /// The catalog rows a restore parsed before it made its file, by relation of `schema`.
 struct Parsed {
-    schema: Schema,
+    schema: Committed,
     ids: Rows,
     logged: BTreeSet<Val>,
     deployed: Rows,

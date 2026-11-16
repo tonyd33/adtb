@@ -121,7 +121,7 @@ impl<R: Runtime> WritePath<R> {
             Some(f) => load::staged_source(catalog.source(), &f.schema)
                 .schema()
                 .expect("the staged source builds"),
-            None => catalog.schema().clone(),
+            None => Schema::clone(catalog.schema()),
         };
         let program = catalog.program().clone();
         let normal = norm::program(&schema, &program).expect("the schema normalises");

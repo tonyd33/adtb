@@ -705,7 +705,7 @@ fn preludes() -> [Schema; 2] {
     let shipped = schema::build(&[]).expect("the shipped prelude builds");
     let reversed = schema::build_prelude_from(&reversed_sums(PRELUDE_SRC))
         .expect("the reversed prelude builds");
-    [shipped, reversed]
+    [Schema::clone(&shipped), reversed]
 }
 
 #[test]

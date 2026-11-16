@@ -5,7 +5,7 @@ use crate::kernel::Search;
 const FS: &str = "fn fs () -> Set Follow = from f in follows where f.src != f.dst select f";
 
 /// Assert that the checked bodies of schema text `extra` bind each variable once, and return them.
-fn checked_once(extra: &str) -> (Schema, Program) {
+fn checked_once(extra: &str) -> (Committed, Program) {
     let (s, p) = program(extra).unwrap_or_else(|e| panic!("{extra}\nrefused: {e:?}"));
     assert_one_binding_site("checked", &p.terms, &program_roots(&p));
     (s, p)

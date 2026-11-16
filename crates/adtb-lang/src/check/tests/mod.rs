@@ -2,7 +2,7 @@ use super::*;
 use crate::ast::{BundleItem, ExampleItem};
 use crate::kernel::{Const, Prim};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
-use crate::schema::build;
+use crate::schema::{Committed, build};
 
 mod adhoc;
 mod binding_sites;
@@ -21,7 +21,7 @@ fn source(extra: &str) -> String {
     format!("{running}\n{extra}")
 }
 
-fn schema(extra: &str) -> Result<Schema, Vec<String>> {
+fn schema(extra: &str) -> Result<Committed, Vec<String>> {
     let src = source(extra);
     let parsed = parse_schema(&src, Options::default());
     if !parsed.diags.is_empty() {
@@ -38,11 +38,11 @@ fn schema(extra: &str) -> Result<Schema, Vec<String>> {
     build(&[(FileId(0), file)]).map_err(|ds| ds.into_iter().map(|d| d.diag.message).collect())
 }
 
-fn program(extra: &str) -> Result<(Schema, Program), Vec<String>> {
+fn program(extra: &str) -> Result<(Committed, Program), Vec<String>> {
     check_program(schema(extra)?)
 }
 
-fn check_program(s: Schema) -> Result<(Schema, Program), Vec<String>> {
+fn check_program(s: Committed) -> Result<(Committed, Program), Vec<String>> {
     match check_schema(&s) {
         Ok(p) => {
             assert_one_binding_site("checked", &p.terms, &program_roots(&p));
@@ -167,7 +167,7 @@ fn rel_id(s: &Schema, name: &str) -> RelId {
 }
 
 /// Checks ad hoc `text` against the running schema, its parameters given as `name: Type`.
-fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<String>> {
+fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<String>> {
     adhoc_in(&[], params, text)
 }
 
@@ -179,7 +179,7 @@ fn adhoc_in(
     bundles: &[RegisteredQuery],
     params: &[(&str, &str)],
     text: &str,
-) -> Result<(Schema, Adhoc), Vec<String>> {
+) -> Result<(Committed, Adhoc), Vec<String>> {
     let s = schema("").expect("the running schema builds");
     let mut tys = BTreeMap::new();
     let mut known = Bundles::default();

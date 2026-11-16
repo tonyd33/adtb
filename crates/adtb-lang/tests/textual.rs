@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use adtb_lang::check::{Checker, Context, check_schema};
 use adtb_lang::parse::{Options, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::{Schema, ValueDef, build};
+use adtb_lang::schema::{Committed, Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::textual::*;
 use adtb_lang::types::{Base, RelId, Ty};
@@ -185,7 +185,7 @@ impl Textual for Tree {
     }
 }
 
-fn schema() -> Schema {
+fn schema() -> Committed {
     let file = parse_schema(SCHEMA, Options::default())
         .ok()
         .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"));

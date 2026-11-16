@@ -1,7 +1,7 @@
 use super::*;
 use crate::ids as ids_key;
 use crate::parse::parse_migration;
-use crate::schema::{CtorRef, FieldRef};
+use crate::schema::{Committed, CtorRef, FieldRef};
 
 #[path = "evolve_grant_tests.rs"]
 mod grants;
@@ -3904,4 +3904,31 @@ relation us : U key id unique (name)",
     assert_eq!((Some(1024), Some(1025)), key(&s));
     assert_eq!((Some(1026), Some(1025)), key(&rekeyed));
     assert_eq!((Some(1027), Some(1025)), key(&reverted));
+}
+
+#[test]
+fn a_schema_commits_only_once_its_migration_settles() {
+    let text = "module auth
+add type Stamp = { id: Key stamps }
+add relation stamps : Stamp key id generate sequence";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let mut s = running();
+    s.expecting("auth", &m.operators);
+    let committed = |s: &Source| {
+        let schema = s.schema().unwrap_or_else(|e| panic!("{e:?}"));
+        Committed::new(schema).map(|c| (c.ahead.len(), c.late_sels.len()))
+    };
+    let pending = committed(&s);
+    for op in Listed::all(&m.operators) {
+        s.apply("auth", op, text)
+            .unwrap_or_else(|e| panic!("{op:?} refused: {e:?}"));
+    }
+    let declared = committed(&s);
+    s.settled();
+    assert_eq!(
+        [None, None, Some((0, 0))],
+        [pending, declared, committed(&s)]
+    );
 }

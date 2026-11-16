@@ -50,7 +50,7 @@ use adtb_lang::check::Program;
 use adtb_lang::evolve::{Refusal, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{self, Schema};
+use adtb_lang::schema::{self, Committed, Schema};
 use adtb_lang::span::Diag;
 use adtb_lang::types::RelId;
 
@@ -161,7 +161,7 @@ impl From<mvcc::Error> for Error {
 /// migrations declare, stored as heaps with their key, unique and plain indexes.
 pub struct Catalog {
     source: Source,
-    schema: Schema,
+    schema: Committed,
     /// The checked program of `source`.
     program: Arc<Program>,
     texts: ElementTexts,
@@ -197,8 +197,13 @@ impl std::fmt::Debug for Catalog {
 }
 
 /// Returns the schema of the engine's own declarations: the prelude, `catalog` and `sys`.
-pub fn engine_schema() -> Schema {
+pub fn engine_schema() -> Committed {
     schema::build(&[]).expect("the engine's declarations build")
+}
+
+/// Returns `schema`, the schema of a settled source.
+fn committed(schema: Schema) -> Result<Committed, Error> {
+    Committed::new(schema).ok_or_else(|| Error::from(Broken::Unsettled))
 }
 
 fn int(n: u64) -> Value {
@@ -460,7 +465,7 @@ fn visible<R: Runtime>(
 fn fold(
     texts: &BTreeMap<u64, String>,
     dormant: &BTreeMap<u64, BTreeSet<String>>,
-) -> Result<(Source, Schema, Program), Error> {
+) -> Result<(Source, Committed, Program), Error> {
     let mut source = Source::default();
     for (&version, text) in texts {
         let refused = |why: Vec<String>| Error::Unaccepted(version, why);
@@ -482,7 +487,7 @@ fn fold(
             ds.into_iter().map(|d| d.diag.message).collect(),
         )
     })?;
-    Ok((source, schema, program))
+    Ok((source, committed(schema)?, program))
 }
 
 /// Returns whether `keys` holds an order key for each constructor of every declared sum of
@@ -574,7 +579,7 @@ impl Catalog {
         let (schema, program) = Source::default()
             .check()
             .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
-        let next = Checked::new(Source::default(), schema, program);
+        let next = Checked::new(Source::default(), schema, program)?;
         let empty = Catalog {
             source: Source::default(),
             schema: engine_schema(),
@@ -787,7 +792,7 @@ impl Catalog {
         Ok(Catalog {
             texts: ElementTexts::of(&Source::default(), &schema),
             source: Source::default(),
-            schema,
+            schema: committed(schema)?,
             program: Arc::new(program),
             root: pager.catalog_root(),
             large,
@@ -862,7 +867,7 @@ impl Catalog {
         self.query_memory = bytes;
     }
 
-    pub fn schema(&self) -> &Schema {
+    pub fn schema(&self) -> &Committed {
         &self.schema
     }
 
@@ -1157,20 +1162,22 @@ struct Built<'a> {
 #[derive(Debug)]
 struct Checked {
     source: Source,
-    schema: Schema,
+    schema: Committed,
     program: Arc<Program>,
     texts: ElementTexts,
 }
 
 impl Checked {
-    fn new(source: Source, schema: Schema, program: Program) -> Checked {
+    /// Returns `source` with its schema and program. Fail with [`Broken::Unsettled`] when the
+    /// schema takes a relation as added later.
+    fn new(source: Source, schema: Schema, program: Program) -> Result<Checked, Error> {
         let texts = ElementTexts::of(&source, &schema);
-        Checked {
+        Ok(Checked {
             source,
-            schema,
+            schema: committed(schema)?,
             program: Arc::new(program),
             texts,
-        }
+        })
     }
 }
 

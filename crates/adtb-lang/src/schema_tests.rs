@@ -19,7 +19,7 @@ fn display_name (i: Identity) -> Text = match i
   | Google g    -> g.gid
 ";
 
-fn build_src(srcs: &[&str]) -> Result<Schema, Vec<String>> {
+fn build_src(srcs: &[&str]) -> Result<Committed, Vec<String>> {
     let files: Vec<(FileId, ast::SchemaFile)> = srcs
         .iter()
         .enumerate()

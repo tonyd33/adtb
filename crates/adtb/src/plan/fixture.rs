@@ -36,6 +36,7 @@ impl Fixture {
             .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"));
         let schema = build(&[(FileId(0), file)])
             .unwrap_or_else(|ds| panic!("the schema does not build: {ds:?}"));
+        let schema = Schema::clone(&schema);
         let program =
             check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
         let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");

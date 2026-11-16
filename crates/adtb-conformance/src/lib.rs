@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use adtb_lang::ast::SchemaFile;
 use adtb_lang::check::{Program, check_adhoc, check_schema};
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Database, Disk, Interpreter, Rejection, Supply, Value, textual};
@@ -239,7 +239,7 @@ fn next_is_body(lines: &[&str]) -> bool {
 pub(crate) const FIX_ROUNDS: usize = 200;
 
 struct Run {
-    schema: Schema,
+    schema: Committed,
     program: Program,
     db: Database,
     supply: Supply,

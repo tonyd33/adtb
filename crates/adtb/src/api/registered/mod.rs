@@ -614,7 +614,7 @@ fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
 /// Refuse an open whose bundles pin a version before the file's and would read a constructor
 /// enabled since. A bundle that does not check at its pin is left for registration to refuse.
 pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), OpenError> {
-    let schema = Arc::new(catalog.schema().clone());
+    let schema = Arc::new(Schema::clone(catalog.schema()));
     let now = Over {
         source: catalog.source(),
         schema: &schema,
@@ -738,7 +738,7 @@ pub(super) fn readers(
 ) -> Result<Vec<Live>, OpenError> {
     let mut out = Vec::new();
     let mut pins = Pins::default();
-    let schema = Arc::new(catalog.schema().clone());
+    let schema = Arc::new(Schema::clone(catalog.schema()));
     let program = catalog.program().clone();
     for r in regs {
         let Some(h) = r.header.as_ref().filter(|h| live.contains(&h.name)) else {

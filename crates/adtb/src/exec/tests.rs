@@ -5,7 +5,7 @@ use std::sync::Arc;
 use adtb_lang::check::check_schema;
 use adtb_lang::kernel::{Build, Const, Kind, Prim, Terms, Tm};
 use adtb_lang::parse::{Options, parse_schema};
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Committed, Schema, build};
 use adtb_lang::span::FileId;
 use adtb_lang::textual::Form;
 use adtb_lang::types::{Base, CtorSet, Ty};
@@ -634,7 +634,7 @@ fn an_ordered_result_prints_its_elements_in_its_order() {
     );
 }
 
-fn empty_schema() -> Schema {
+fn empty_schema() -> Committed {
     let file = parse_schema("module app\n", Options::default())
         .ok()
         .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"));
