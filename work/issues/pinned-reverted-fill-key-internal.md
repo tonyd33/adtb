@@ -20,3 +20,7 @@ The translated write evaluates the reverted fill's `print` of a key against a fo
 Direction: build the key's form from the same type the value is stored as (the key record), or refuse the translation naming the fill. Test: the history above as a bundles script expecting the call's exact outcome.
 
 Defect class: Damage or failure gives a panic, hang or flattened error.
+
+## 2026-11-16
+
+Reproduced by the committed-schema-type count on 9e4804be with a different detail: the call fails as Internal "a value of a base form is a scalar, found Placeholder { occurrence: 12, scope: [] }" (the fresh-key placeholder is now its own kernel kind and value, so the Record in the report reads as Placeholder).
