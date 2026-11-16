@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-14
-status: open
+status: resolved
+closed: 2026-11-16
 kind: feature
 priority: 30
 summary: "Schema::declared panics on a mid-migration schema, held only by a runtime check; a committed schema type carrying declared would make the precondition a type"
@@ -82,3 +83,7 @@ Landed as urmsumlx d610a136 (2 rounds), full check 0 (3850 tests). Resolved scri
 ## 2026-11-16, part 2b-ii landed
 
 Landed as rsvsqpqv 19e22e89 (2 rounds), full check 0 (3852 tests). Waiting is decided per declaration from the names pass (`Ref::Unresolved`), not a list of positions (the first round's list missed bodies, a regression found by review). The 2b-m-2 fill gate now refuses only a value that can hold a key (`admits_late_key`); `fill None` into a late key is accepted, as evolution.md §4.9 shows. Resolved add-drop-refused-while-other-add-pending and late-set-name-unresolved-in-canon. Filed deferred-name-rewritten-refused and late-selection-held-as-text. Next: part 3 (the four `Schema::declared` callers, adtb-file `records`/`shape`, then delete `Schema::declared`).
+
+## Resolved
+
+Part 3 landed as zvymvput 618b0b5c (2 rounds), full check 0 (3853 tests). `Schema::declared` is deleted; `declared` exists only on `Committed`, so a mid-migration schema cannot call it (the type enforces the rule). `Source::committed()` returns `Result<Committed, Uncommitted>` (`Unbuilt`, `Migrating`); codegen, grant families and `signature::bundle` use it with no `expect`. Parts landed: 4a-1, 4a-2, 4b, 1, 2, 2b-i, 2b-m-1, 2b-m-2, 2b-ii, 3. Left open from the program: deferred-name-rewritten-refused, late-selection-held-as-text, revert-of-revert-pinned-refused, pinned-reverted-fill-key-internal, parenthesised-named-set-refused.
