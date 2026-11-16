@@ -18,3 +18,7 @@ tags:
 Direction: validate a kept constraint or check whose term, after normalisation with the migration's functions, differs from the old one, or that reaches by id a function the migration redefined. Test: an engine script whose `redefine fn` makes an existing row violate a constraint calling it, expecting the migration refused.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## 2026-11-15
+
+The same cause leaves an expression index over a redefined function holding keys from the old body: index-keys-stale-after-redefine-fn. Fix both with one function dependency relation.
