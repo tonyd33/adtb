@@ -1,0 +1,31 @@
+seed 97
+
+migrate
+  module m
+  add module m
+  add type O = { id: Key os, n: I64, x: Text }
+  add relation os : O key id generate sequence
+
+run
+  insert os { n: 1, x: "a" }
+
+migrate
+  module m
+  drop field O.x
+
+migrate
+  module m
+  add type W = { id: Key ws }
+  define fn which (k: Option (Key ws)) -> Text = match k | Some { value: _ } -> "s" | None -> "n"
+  revert 0002
+    fill O.x = match
+      | O o -> which(if o.n > 0 then None else None)
+  add relation ws : W key id generate sequence
+
+bundle web-1.0 pins 2 edition "2026-10"
+  import m
+  txn put () -> I32 =
+    transact
+      let o = insert os { n: 5 }
+      return 1
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::put", detail: "across `revert 0002`: it reaches `ws`, which the fill's migration adds after the fill" } } }

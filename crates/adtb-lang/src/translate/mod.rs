@@ -265,6 +265,10 @@ impl<'a> Pinned<'a> {
                 None,
                 format!("it reaches `{name}`, which the current version lacks"),
             ),
+            Loss::Unlinked(name) => refused(
+                None,
+                format!("it reaches `{name}`, which the fill's migration adds after the fill"),
+            ),
             Loss::Renamed { part, name, id } => refused(
                 id.and_then(|id| self.blame_rename(*part, id)),
                 format!("it {what} `{name}`, which the current version names otherwise"),
@@ -584,33 +588,25 @@ impl<'a> Pinned<'a> {
         (0..fill.ahead.len())
             .map(|i| {
                 let a = AheadId::at(i);
-                let unread =
-                    |rule: &str| Later::Unlinked(format!("a reverted fill holds no key of {rule}"));
-                let (m, k) = match (origin, fill.ahead_adder(a)) {
-                    (Origin::Logged(m, _), Adder::Operator(k)) => (*m, k),
-                    (_, Adder::Inverse(..)) => {
-                        return unread("a relation its revert restores later");
-                    }
-                    (Origin::Reverted(_), Adder::Operator(_)) => {
-                        return unread("a relation a later operator adds");
-                    }
+                let name = fill.ahead_relation(a).1.to_string();
+                let (Origin::Logged(m, _), Adder::Operator(k)) = (origin, fill.ahead_adder(a))
+                else {
+                    return Later::Unlinked(name);
                 };
                 let added = self.ops.iter().find_map(|o| match (&o.from, &o.op) {
                     (Origin::Logged(i, j), Resolved::AddRelation { relation, .. })
-                        if (*i, *j) == (m, k) =>
+                        if (*i, *j) == (*m, k) =>
                     {
                         Some(CatRelId::from_raw(*relation))
                     }
                     _ => None,
                 });
                 let Some(added) = added else {
-                    return Later::Unlinked(format!(
-                        "operator {k} of migration {m} of the log adds a relation variable"
-                    ));
+                    return Later::Unlinked(name);
                 };
                 match self.map.to.ids().relation_of(added) {
                     Some(rel) => Later::At(rel),
-                    None => Later::Lacked(fill.ahead_relation(a).1.to_string()),
+                    None => Later::Lacked(name),
                 }
             })
             .collect()

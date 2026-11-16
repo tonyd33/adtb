@@ -969,3 +969,292 @@ add relation later : L key id generate sequence
         translated(&[V1, m2, m3], 1, INSERT_USER).map(drop)
     );
 }
+
+/// A relation of the model: the migration that added it, `None` for one of the pin, its name,
+/// and whether a revert put it back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Held {
+    added: Option<usize>,
+    name: String,
+    put_back: bool,
+}
+
+/// What the model holds after a migration: each slot's relation, and the first operator that
+/// dropped the relation of the pin in each slot.
+#[derive(Clone, Debug, Default)]
+struct Model {
+    slots: [Option<Held>; 2],
+    dropped: [Option<String>; 2],
+}
+
+const SLOTS: [(&str, &str); 2] = [("xs", "X"), ("ys", "Y")];
+
+const PIN: &str = "module auth
+add module auth
+add type X = { id: Key xs, n: I64 }
+add relation xs : X key id generate sequence
+add type Y = { id: Key ys, n: I64 }
+add relation ys : Y key id generate sequence
+";
+
+/// Returns the operators of `op` on slot `s` of `m`, and applies them to `m` as migration `at`.
+fn step(m: &mut Model, s: usize, op: u8, at: usize) -> Option<Vec<String>> {
+    let (base, ty) = SLOTS[s];
+    match (op, m.slots[s].clone()) {
+        (0, None) => {
+            m.slots[s] = Some(Held {
+                added: Some(at),
+                name: base.to_string(),
+                put_back: false,
+            });
+            Some(vec![
+                format!("add type {ty} = {{ id: Key {base}, n: I64 }}"),
+                format!("add relation {base} : {ty} key id generate sequence"),
+            ])
+        }
+        (1, Some(h)) => {
+            let drop = format!("drop relation {}", h.name);
+            if h.added.is_none() && m.dropped[s].is_none() {
+                m.dropped[s] = Some(drop.clone());
+            }
+            m.slots[s] = None;
+            Some(vec![drop, format!("drop type {ty}")])
+        }
+        (2, Some(h)) => {
+            let to = if h.name == base {
+                format!("{base}2")
+            } else {
+                base.to_string()
+            };
+            let rename = format!("rename relation {} to {to}", h.name);
+            m.slots[s] = Some(Held { name: to, ..h });
+            Some(vec![rename])
+        }
+        _ => None,
+    }
+}
+
+/// Returns each log the model generates: the pin, then up to `n` migrations, each one operator
+/// or two on the two slots, or the revert of the migration before it when that is no revert.
+/// With each log, the model after it. A relation a revert puts back is a new relation.
+fn generated(n: usize) -> Vec<(Vec<String>, Model)> {
+    let start = Model {
+        slots: SLOTS.map(|(name, _)| {
+            Some(Held {
+                added: None,
+                name: name.to_string(),
+                put_back: false,
+            })
+        }),
+        dropped: [None, None],
+    };
+    let mut out = Vec::new();
+    let mut frontier = vec![(vec![PIN.to_string()], vec![start], false)];
+    for _ in 0..n {
+        let mut next = Vec::new();
+        for (log, models, reverted) in &frontier {
+            let at = log.len();
+            let last = models.last().expect("a model per migration");
+            let mut grow = |text: String, m: Model, reverted: bool| {
+                let mut log = log.clone();
+                log.push(text);
+                let mut models = models.clone();
+                models.push(m.clone());
+                out.push((log.clone(), m));
+                next.push((log, models, reverted));
+            };
+            if at > 1 && !reverted {
+                let mut m = models[at - 2].clone();
+                m.dropped = last.dropped.clone();
+                for (slot, now) in m.slots.iter_mut().zip(&last.slots) {
+                    if let Some(h) = slot
+                        && now.as_ref().map(|n| n.added) != Some(h.added)
+                    {
+                        h.added = Some(at);
+                        h.put_back = true;
+                    }
+                }
+                grow(format!("module auth\nrevert {at:04}\n"), m, true);
+            }
+            for ops in [(Some(0), None), (Some(1), None), (Some(2), None)]
+                .into_iter()
+                .chain([0, 1, 2].map(|o| (None, Some(o))))
+                .chain((0..3).flat_map(|a| (0..3).map(move |b| (Some(a), Some(b)))))
+            {
+                let mut m = last.clone();
+                let mut text = vec!["module auth".to_string()];
+                let applied = [ops.0, ops.1].into_iter().enumerate().all(|(s, op)| {
+                    let Some(op) = op else { return true };
+                    step(&mut m, s, op, at).map(|t| text.extend(t)).is_some()
+                });
+                if applied {
+                    grow(text.join("\n") + "\n", m, false);
+                }
+            }
+        }
+        frontier = next;
+    }
+    out
+}
+
+type Outcome = Result<Option<CatRelId>, (Option<String>, String)>;
+
+/// Returns the history that renames the pin's `xs` and adds a new `xs`, with its model.
+fn renamed_then_added() -> (Vec<String>, Model) {
+    let held = |name: &str| {
+        Some(Held {
+            added: None,
+            name: name.to_string(),
+            put_back: false,
+        })
+    };
+    let rename = "module auth
+rename relation xs to xs2
+add type X3 = { id: Key xs, n: I64 }
+add relation xs : X3 key id generate sequence
+";
+    (
+        vec![PIN.to_string(), rename.to_string()],
+        Model {
+            slots: [held("xs2"), held("ys")],
+            dropped: [None, None],
+        },
+    )
+}
+
+/// Returns the translation of each transaction of `body` from `pinned` to the version `log`
+/// leaves, `to`: the catalog id of the relation its one insert targets, or its refusal.
+fn inserted(
+    pinned: &(Source, Schema, Program),
+    log: &[&str],
+    body: &str,
+    to: &Schema,
+) -> Vec<Outcome> {
+    translated_from(pinned, log, body, false)
+        .into_iter()
+        .map(|r| {
+            r.map(|q| {
+                let inserted: Vec<RelId> = q
+                    .terms
+                    .iter()
+                    .filter_map(|n| match n.kind {
+                        Kind::Insert(rel, _) => Some(rel),
+                        _ => None,
+                    })
+                    .collect();
+                let [rel] = inserted.as_slice() else {
+                    panic!("one insert, not {inserted:?}");
+                };
+                to.ids().relation_id(*rel)
+            })
+            .map_err(|u| (u.operator, u.reason))
+        })
+        .collect()
+}
+
+/// Returns the kinds of history `migrations`, after the pin, with `model` after them, is.
+fn kinds<'m>(migrations: &'m [&str], model: &'m Model) -> impl Iterator<Item = &'static str> + 'm {
+    let any = move |p: &dyn Fn(&str) -> bool| migrations.iter().any(|t| p(t));
+    [
+        ("add", any(&|t| t.contains("add relation"))),
+        ("drop", any(&|t| t.contains("drop relation"))),
+        ("rename", any(&|t| t.contains("rename relation"))),
+        (
+            "two at once",
+            any(&|t| t.contains("xs") && t.contains("ys")),
+        ),
+        ("depth 3", migrations.len() == 3),
+        ("revert", any(&|t| t.contains("revert"))),
+        ("put back", model.slots.iter().flatten().any(|h| h.put_back)),
+    ]
+    .into_iter()
+    .filter_map(|(kind, here)| here.then_some(kind))
+}
+
+#[test]
+fn a_pinned_insert_translates_across_every_generated_history_of_two_relations() {
+    let pinned = checked(&[PIN]);
+    let body = "txn put_x () -> I64 =
+  transact
+    let r = insert xs { n: 1 }
+    return 1
+txn put_y () -> I64 =
+  transact
+    let r = insert ys { n: 1 }
+    return 1";
+    let mut cases = generated(3);
+    cases.push(renamed_then_added());
+    let mut reached = BTreeSet::new();
+    let mut bad = Vec::new();
+    for (log, model) in &cases {
+        let log: Vec<&str> = log.iter().map(String::as_str).collect();
+        let source = match signature::replay(log.iter().copied()) {
+            Ok(source) => source,
+            Err(e) => {
+                bad.push(format!("{:?}\n  does not replay: {e:?}", &log[1..]));
+                continue;
+            }
+        };
+        let (to, _) = source.check().expect("a replayed version checks");
+        let id_of = |name: &str| {
+            let rel = to
+                .relations
+                .iter()
+                .position(|r| r.name == name)
+                .unwrap_or_else(|| panic!("no relation {name}"));
+            to.ids().relation_id(RelId(rel as u32))
+        };
+        let got = inserted(&pinned, &log, body, &to);
+        let want: Vec<Outcome> = (0..2)
+            .map(|s| match &model.slots[s] {
+                Some(Held {
+                    added: None, name, ..
+                }) => Ok(id_of(name)),
+                _ => Err((
+                    model.dropped[s].clone(),
+                    format!(
+                        "it reaches `{}`, which the current version lacks",
+                        SLOTS[s].0
+                    ),
+                )),
+            })
+            .collect();
+        if want != got {
+            bad.push(format!("{:?}\n  want {want:?}\n  got  {got:?}", &log[1..]));
+        }
+        reached.extend(kinds(&log[1..], model).map(String::from));
+        for (s, w) in want.iter().enumerate() {
+            reached.insert(format!(
+                "{} {}",
+                SLOTS[s].0,
+                if w.is_ok() { "Ok" } else { "Err" }
+            ));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} of {}:\n{}",
+        bad.len(),
+        cases.len(),
+        bad.join("\n")
+    );
+    assert_eq!(
+        BTreeSet::from(
+            [
+                "add",
+                "depth 3",
+                "drop",
+                "put back",
+                "rename",
+                "revert",
+                "two at once",
+                "xs Err",
+                "xs Ok",
+                "ys Err",
+                "ys Ok",
+            ]
+            .map(String::from)
+        ),
+        reached
+    );
+}

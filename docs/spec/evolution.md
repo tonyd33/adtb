@@ -1011,9 +1011,9 @@ objects by id: it is computed against the schema before the operator
 and resolved to the objects' current names when it applies. An
 operator and its inverse applied in sequence restore the prior state:
 the schema, the write states and, for an exact operator, the data,
-up to constructor ids. A constructor re-added by an inverse has a new
-id and takes the position in the declaration order it had before its
-removal.
+up to catalog ids. An object an inverse puts back has a new catalog
+id, and a constructor re-added by an inverse takes the position in the
+declaration order it had before its removal.
 
 ### 5.2 Exact and lossy operators
 

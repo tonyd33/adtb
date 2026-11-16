@@ -22,7 +22,7 @@ pub(super) enum Later {
     At(RelId),
     /// The later version lacks the relation of this name.
     Lacked(String),
-    /// A key of it breaks this invariant.
+    /// The fill's migration adds the relation of this name after the fill.
     Unlinked(String),
 }
 
@@ -51,6 +51,9 @@ pub enum Loss {
     /// The relation of this name, which the earlier version takes as added later, has no
     /// counterpart at the later version.
     Later(String),
+    /// The fill's migration adds the relation of this name, which the fill's version takes as
+    /// added later, after the fill.
+    Unlinked(String),
     /// The object of the earlier version named `name` is named otherwise at the later one.
     Renamed {
         part: Part,
@@ -254,7 +257,7 @@ impl<'a> Map<'a> {
                     ctors: None,
                 },
                 Later::Lacked(name) => return Err(Loss::Later(name.clone())),
-                Later::Unlinked(rule) => panic!("{rule}"),
+                Later::Unlinked(name) => return Err(Loss::Unlinked(name.clone())),
             },
             Ty::Key {
                 rel: RelRef::Declared(rel),
