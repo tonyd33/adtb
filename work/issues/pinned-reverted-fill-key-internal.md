@@ -24,3 +24,7 @@ Defect class: Damage or failure gives a panic, hang or flattened error.
 ## 2026-11-16
 
 Reproduced by the committed-schema-type count on 9e4804be with a different detail: the call fails as Internal "a value of a base form is a scalar, found Placeholder { occurrence: 12, scope: [] }" (the fresh-key placeholder is now its own kernel kind and value, so the Record in the report reads as Placeholder).
+
+## 2026-11-16 cause
+
+Found by committed-schema-type part 2b-i. The pinned `insert os { n: 5 }` leaves `id` to the sequence, so the translated row holds `id` as a `Placeholder` (a fresh value not yet drawn); the reverted fill `print(o.id)` runs on that row inside the insert and `print` meets the undrawn value. Repro: `bundles/reverted-fill-beside-later-relation.test` plus `call web-1.0 1 committed` gives `Internal { what: "a value of a base form is a scalar, found Placeholder { occurrence: 12, scope: [] }" }`. Not in translate: exec must draw a generated key before evaluating a fill over the row. Refusing in translate would block writes that have a value.
