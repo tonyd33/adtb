@@ -30,3 +30,7 @@ The review of part 4 (rrrmqont) found a valid history refused: a V1 insert pinne
 ## 2026-11-16, part 4a-1 landed
 
 Landed as ystwnzvs 7e7cf707 (2 rounds), full check 0 (3834 tests). `evolve::Listed` carries an operator with its position from the enumeration that yields it; `Source.ahead` is a list of `Expected` linked to their adding operator (`Adder::Operator(k)`, or `Adder::Inverse` until 4a-2); pending-ness and `late_sels` go by that link, and a pending entry whose name is currently declared makes no ahead entry (name resolution of text). The review found that a shadow ahead entry refused add, drop, add of one relation; fixed with scripts oplog/relation-added-dropped-added-again.test and oplog/relation-renamed-away-then-added-again.test. Readers comparing an ahead relation's name 5 to 3, all text resolution. Filed: add-drop-refused-while-other-add-pending. Next: 4a-2.
+
+## 2026-11-16, part 4a-2 landed
+
+Landed as wuztvzvl df7fafa3 (2 rounds), full check 0 (3837 tests). `Inverse::RestoreRelation` carries its `typed`, read from the relation's declaration where the drop applied (the old lookup in the source before the whole migration missed after a rename); `linked` and `undo_all` enumerate the same steps vector, so the restore position comes from the walk that applies it. Resolved: ahead-relations-keyed-by-name. Next: 4b (rebase rrrmqont 4cad9496).
