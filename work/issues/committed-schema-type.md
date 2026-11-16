@@ -70,3 +70,7 @@ Per-declaration settledness needs to tell a key whose selection is left for the 
 ## 2026-11-16, part 2b-m split
 
 Count: `Ty::Key` at 159 sites in 39 files, 52 non-test constructions with `ctors: None`, an estimated 150 to 200 sites in all. Split: 2b-m-1 (refactor: a three-way key selection, all, a set, late; every reader names each variant; late behaves as all; `types.rs` `key` produces late), 2b-m-2 (fix: a script writing or matching through a late-selected key is refused), then 2b-ii on rsvsqpqv.
+
+## 2026-11-16, part 2b-m-1 landed
+
+Landed as onutlsno afad7d9e (2 rounds), full check 0 (3844 tests). `Ty::Key.ctors` is `KeyCtors { All, Only, Late }`; `Ty::alike` compares treating `Late` as `All` at the field-type comparisons, `alpha_equal` and `same_term` (the review found a migration main applies refused by plain `==`; now a regression test); `KeyCtors::committed()` panics on `Late` at sites that see only committed schemas. Next: 2b-m-2 (script refusal; decide each widening site the receipt lists, `ctors_of`, task.rs `declared`, names.rs `may_type`), then 2b-ii on rsvsqpqv.
