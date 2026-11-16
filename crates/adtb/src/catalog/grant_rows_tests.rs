@@ -17,6 +17,7 @@ use crate::storage::Pager;
 use crate::verify::{self, Depth};
 use crate::{Capability, Database, Error, Log, OpenError, RejectReason};
 use adtb_lang::evolve::Granted;
+use adtb_lang::ids::engine_ctor;
 use adtb_sim::{Config, Sim, SimRuntime};
 
 use crate::test_world::load::options;
@@ -255,8 +256,8 @@ fn stored(
     let (r, c) = grants::catalog_relation(schema, "grants", "RoleGrant");
     let names = layout::row(schema, r, c);
     let at = |n: &str| names.iter().position(|(f, _)| f == n).expect("a field");
-    let yes = values::tag(schema, "prelude", "Bool", "True");
-    let log = values::tag(schema, "catalog", "GrantKind", "Log");
+    let yes = values::boolean(true);
+    let log = values::tag(schema, engine_ctor::GRANT_LOG);
     let mut logged = Vec::new();
     let mut deployed = Vec::new();
     for (_, row) in catalog.committed_rows(pager, txns, r).expect("grant rows") {
@@ -564,7 +565,7 @@ fn a_crash_at_every_flush_of_recording_a_legacy_grant_keeps_or_writes_its_row() 
             .iter()
             .position(|(n, _)| n == "kind")
             .expect("RoleGrant declares kind");
-        let log = values::tag(catalog.schema(), "catalog", "GrantKind", "Log");
+        let log = values::tag(catalog.schema(), engine_ctor::GRANT_LOG);
         let rows: Vec<(u32, Vec<Value>)> = catalog
             .committed_rows(&pager, &txns, r)
             .expect("grant rows")

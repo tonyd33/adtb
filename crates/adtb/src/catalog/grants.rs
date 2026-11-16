@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow, LogGrant, NoCalls, closes_option_cycle};
+use adtb_lang::ids::engine_ctor as k;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -64,7 +65,7 @@ impl Shape {
         let target = values::some(Value::Text(target(schema, g)?));
         let fields = vec![
             ("id", Value::I64(id)),
-            ("kind", tag(schema, "catalog", "GrantKind", "Log")),
+            ("kind", tag(schema, k::GRANT_LOG)),
             (
                 "privilege",
                 Value::Text(g.privilege.privilege_name().to_owned()),

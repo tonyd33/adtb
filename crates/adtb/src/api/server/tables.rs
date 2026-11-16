@@ -10,7 +10,7 @@ use adtb_lang::types::{RelId, Ty};
 use crate::catalog::codec::{
     Codec, Ctor, Decode, Field, Fields, GrantKind, RoleGrant, RoleRow, field,
 };
-use crate::catalog::{Rot, layout};
+use crate::catalog::{Rot, engine_relation, layout};
 use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::write::{self, Txn};
@@ -175,12 +175,7 @@ impl<'s> Tables<'s> {
     }
 
     pub(super) fn new(schema: &'s Schema, call: TxnId) -> Self {
-        let relation = |id: CatRelId| {
-            schema
-                .ids()
-                .relation_of(id)
-                .unwrap_or_else(|| panic!("the engine declares relation {id}"))
-        };
+        let relation = |id| engine_relation(schema, id);
         Tables {
             schema,
             call,

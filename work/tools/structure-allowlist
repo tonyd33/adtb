@@ -54,15 +54,25 @@
 # crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
 #                     crash loop, which runs the ledger check after every round.
 # crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.
-# id_sentinels:       `RelId`, `TypeId`, `FnId` or `ModuleId` of `u32::MAX`, and `.0 == u32::MAX` or
-#                     `.0 != u32::MAX`: an absent or not yet known object is a typed absence, never
-#                     an id. No line allows one.
-# kernel_door:        calls of `Terms::add_unchecked`, which adds a kernel node at a type
-#                     nothing computes or checks. Terms are built through `kernel::Build`, which
-#                     types each node from its children. No line allows one.
-# kernel_overwrite:   calls of `Terms::overwrite_kind`, which replaces a node's kind in place,
-#                     unchecked, under every parent that shares it. Rewrites build new nodes
-#                     through `Terms::substitute`. No line allows one.
+# id_sentinels:       `RelId`, `TypeId`, `FnId`, `ModuleId` or `FileId` of `u32::MAX`, and
+#                     `.0 == u32::MAX` or `.0 != u32::MAX`: an absent or not yet known object is a
+#                     typed absence, never an id, and a reserved id is a named constant. Not
+#                     counted: the definition of a named `FileId` constant. No line allows one.
+# engine_names:       in production sources, an engine module, relation, type or constructor looked
+#                     up by its spelling: `module_named` or `module_named_in` of "catalog", "sys" or
+#                     "prelude", a comparison or match arm of one of those names, calls of
+#                     `values::relation`, `in_relation("`, `in_type("`, `ctor_named("`,
+#                     `ctor_index("`, `types["`, `self.push("` and `self.ctor("`, an `audit_row` or
+#                     `event_row` naming its constructor as text, and in crates/adtb/src any
+#                     `module_named` of a variable's text. An engine relation is named by its
+#                     `engine_rel` id through `catalog::engine_relation`, a type by `engine_type`, a
+#                     constructor by `engine_ctor`.
+# kernel_door:        calls of `add_unchecked`, a method `Terms` no longer has, which added a kernel
+#                     node at a type nothing computed or checked. Terms are built through
+#                     `kernel::Build`, which types each node from its children. No line allows one.
+# kernel_overwrite:   calls of `overwrite_kind`, a method `Terms` no longer has, which replaced a
+#                     node's kind in place, unchecked, under every parent that shared it. Rewrites
+#                     build new nodes through `Terms::substitute`. No line allows one.
 # prelude_positions:  in production sources, a constructor position written as a literal or as
 #                     `u32::from` of a bool: `Value::Ctor`, `Val::tag`, `Val::Ctor`, `Val::ctor`,
 #                     `of_ctor` or `.ctor(` applied to one, `ctor:` or `ctor ==` one, `== u32::from(`,
@@ -163,6 +173,18 @@ disallowed_methods test 1 crates/adtb/src/btree/tests.rs
 disallowed_methods prod 9 crates/adtb/src/storage/pager.rs
 disallowed_methods test 1 crates/adtb/src/storage/open_damage_tests.rs
 disallowed_methods test 2 crates/adtb/src/storage/lost_bitmap_tests.rs
+engine_names prod 1 crates/adtb-lang/src/evolve/cx.rs
+engine_names prod 5 crates/adtb-lang/src/schema/engine.rs
+engine_names prod 1 crates/adtb-lang/src/types.rs
+engine_names prod 7 crates/adtb/src/api/bundle.rs
+engine_names prod 2 crates/adtb/src/api/dump.rs
+engine_names prod 1 crates/adtb/src/api/server/adhoc.rs
+engine_names prod 4 crates/adtb/src/api/server/tables.rs
+engine_names prod 1 crates/adtb/src/api/server/task.rs
+engine_names prod 1 crates/adtb/src/catalog/oplog.rs
+engine_names prod 1 crates/adtb/src/catalog/readers.rs
+engine_names prod 15 crates/adtb/src/catalog/rows.rs
+engine_names prod 1 crates/adtb/src/catalog/values.rs
 pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs
 pub_fields prod 3 crates/adtb-bench/src/native/counter.rs
 pub_fields prod 2 crates/adtb-bench/src/native/engine.rs

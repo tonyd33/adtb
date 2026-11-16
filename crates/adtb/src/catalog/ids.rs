@@ -50,6 +50,13 @@ pub fn relation(schema: &Schema, id: CatRelId) -> Option<RelId> {
     schema.ids().relation_of(id)
 }
 
+/// Returns the relation of `schema` the engine declares with fixed id `id`.
+///
+/// Preconditions: `id` is a constant of `engine_rel`.
+pub fn engine_relation(schema: &Schema, id: CatRelId) -> RelId {
+    relation(schema, id).unwrap_or_else(|| panic!("the schema declares engine relation {id}"))
+}
+
 /// Returns the type of `schema` whose catalog id is `id`.
 pub fn type_def(schema: &Schema, id: CatTypeId) -> Option<TypeId> {
     schema.ids().type_of(id)

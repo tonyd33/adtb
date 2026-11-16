@@ -1,6 +1,7 @@
 use super::*;
 use crate::canon::canonical_term;
 use crate::ids::Space;
+use crate::schema::prelude::PRINCIPAL;
 
 #[path = "derived.rs"]
 mod derived;
@@ -852,9 +853,7 @@ impl Resolver<'_> {
         let principal = self.schema.principal;
         let def = match self.schema.module(m).types.get(&q.name.text) {
             Some(def) => *def,
-            None if q.name.text == "Principal" && self.schema.ty(principal).module == m => {
-                principal
-            }
+            None if q.name.text == PRINCIPAL && self.schema.ty(principal).module == m => principal,
             None => return None,
         };
         self.schema.ids().type_id(def).map(CatTypeId::raw)

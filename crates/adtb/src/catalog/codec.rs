@@ -14,7 +14,7 @@ use crate::heap::FieldType;
 use crate::key::{F64, Scalar, Value};
 
 use super::Rot;
-use super::ids::{CatCtorId, CatRelId, ctor_id, relation};
+use super::ids::{CatCtorId, CatRelId, ctor_id, engine_relation};
 use super::layout;
 use super::oplog::Hash;
 
@@ -138,8 +138,7 @@ impl<T: Decode> Codec<T> {
     /// `T::CTORS` lists, fields in any order, and each sum field a constructor lists with
     /// exactly the constructors it lists.
     pub fn new(schema: &Schema) -> Codec<T> {
-        let r = relation(schema, T::RELATION)
-            .unwrap_or_else(|| panic!("the schema declares engine relation {}", T::RELATION));
+        let r = engine_relation(schema, T::RELATION);
         let rel = schema.relation(r);
         let name = format!("{}::{}", schema.module(rel.module).name, rel.name);
         let declared = schema.ty(rel.elem_def).ctors();

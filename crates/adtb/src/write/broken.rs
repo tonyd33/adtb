@@ -47,10 +47,6 @@ pub enum Broken {
     TopBinder(TermKind),
     PriorNotSet(Ty),
     Unprintable(PrintError),
-    Undeclared {
-        module: String,
-        name: String,
-    },
     NoValueOutcome,
     NoSettingOutcome,
     NoPointOutcome,
@@ -162,9 +158,6 @@ impl fmt::Display for Broken {
             }
             Broken::PriorNotSet(t) => write!(f, "a prior relation is a set, not {t:?}"),
             Broken::Unprintable(e) => write!(f, "printing a cell: {e:?}"),
-            Broken::Undeclared { module, name } => {
-                write!(f, "the engine declares `{module}::{name}`")
-            }
             Broken::NoValueOutcome | Broken::NoSettingOutcome | Broken::NoPointOutcome => {
                 f.write_str("a statement of one item has one outcome")
             }

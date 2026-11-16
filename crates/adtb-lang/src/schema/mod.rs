@@ -609,7 +609,7 @@ impl Schema {
                 .map(TypeName::Decl)
                 .ok_or_else(|| format!("module `{}` declares no type `{text}`", m.text));
         }
-        if text == "Principal" {
+        if text == prelude::PRINCIPAL {
             return Ok(TypeName::Decl(self.principal));
         }
         if let Some(t) = self.type_in(module, text, scope) {

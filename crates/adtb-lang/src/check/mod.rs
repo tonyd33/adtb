@@ -466,11 +466,10 @@ impl<'a> Checker<'a> {
             }
         };
         for m in modules {
-            for (tname, t) in self.vis.types_of(self.schema, m) {
-                if m == PRELUDE && tname == "Principal" {
-                    continue;
+            for (_, t) in self.vis.types_of(self.schema, m) {
+                if t != self.schema.prelude().principal() {
+                    push(t);
                 }
-                push(t);
             }
         }
         push(self.schema.principal);

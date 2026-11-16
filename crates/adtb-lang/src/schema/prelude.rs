@@ -1,8 +1,11 @@
 use super::{PRELUDE, SchemaDefs};
 use crate::types::TypeId;
 
+/// The name a program gives the principal type, the prelude's or its own.
+pub const PRINCIPAL: &str = "Principal";
+
 macro_rules! prelude_types {
-    ($($field:ident $name:literal),* $(,)?) => {
+    ($($field:ident $name:expr),* $(,)?) => {
         /// The prelude types the code names, minted once per build.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub struct Prelude {
@@ -36,7 +39,7 @@ prelude_types! {
     fault "Fault",
     uuid "Uuid",
     span "Span",
-    principal "Principal",
+    principal PRINCIPAL,
     position "Position",
     error "Error",
     reject_reason "RejectReason",

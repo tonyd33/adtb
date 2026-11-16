@@ -4,12 +4,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor, held_id};
+use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor, engine_rel, held_id};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty, TypeId};
 use adtb_sys::lock::Lock;
 
-use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow};
+use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, engine_relation};
 use crate::exec::{F64, Val};
 use crate::mvcc::Xid;
 use crate::runtime::Runtime;
@@ -18,7 +18,6 @@ use crate::verify::{self, Depth};
 use crate::write::{self, Found, HoldWait, VerifyScope};
 
 use super::cause::Corruption;
-use super::command::engine_relation;
 use super::text::{DynRows, rows};
 use super::{Engine, OpenError, corrupt, micros};
 
@@ -540,13 +539,12 @@ impl<R: Runtime> Engine<R> {
         index: u64,
         run: i64,
         found: BTreeSet<Found>,
-    ) -> Result<(), write::Error> {
-        let table = engine_relation(schema, "sys", "verify_findings")?;
+    ) {
+        let table = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
         let group = format!("reindex {index}");
         let at = (run, self.clock());
         self.verifier
             .replace_findings(schema, table, &group, at, found.into(), true);
-        Ok(())
     }
 
     /// Run `verify` over `rel`, or the whole database. Returns the rows it wrote.
@@ -578,12 +576,12 @@ impl<R: Runtime> Engine<R> {
         holding: bool,
         waiting: HoldWait<'_>,
     ) -> Result<DynRows, write::Error> {
-        let table = engine_relation(schema, "sys", "verify_findings")?;
+        let table = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
         let run = self.verifier.next_run();
         let started = self.clock();
         let job = Job {
             verifier: &self.verifier,
-            table: engine_relation(schema, "sys", "jobs")?,
+            table: engine_relation(schema, engine_rel::JOBS),
             run,
             kind: job_kind(schema, engine_ctor::JOB_VERIFY),
             target: match scope {

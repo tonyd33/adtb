@@ -85,6 +85,8 @@ pub struct FileId(pub u32);
 impl FileId {
     pub const PRELUDE: FileId = FileId(u32::MAX);
     pub const ENGINE: FileId = FileId(u32::MAX - 1);
+    /// The file of the header a module with no declarations is built from.
+    pub const EMPTY_MODULE: FileId = FileId(u32::MAX - 2);
 
     /// Returns whether the file holds the engine's own declarations, the prelude's included.
     pub fn is_engine(self) -> bool {

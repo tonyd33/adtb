@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
 use adtb_lang::canon::canonical_term;
 use adtb_lang::evolve::{Code, Source};
+use adtb_lang::ids::{engine_ctor as k, engine_rel};
 use adtb_lang::kernel::PathStep;
 use adtb_lang::lex::lex;
 use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, field_path};
@@ -13,7 +14,7 @@ use crate::exec::{self, Broken};
 use crate::key::Value;
 use crate::plan::{Element, declared_elements};
 
-use super::ids::{held_id, type_ctor_id};
+use super::ids::{CatCtorId, engine_relation, held_id, type_ctor_id};
 use super::{layout, oplog, values};
 
 /// Rows of relations, each with its constructor index and as a heap of that constructor holds it.
@@ -121,7 +122,7 @@ pub struct IndexSpec {
     /// `login.Google.gid`, or an expression, as `lower ( email )`.
     pub fields: Vec<String>,
     pub elements: Vec<Element>,
-    kind: &'static str,
+    kind: CatCtorId,
     /// The clause as the catalog writes it.
     pub clause: String,
 }
@@ -141,7 +142,7 @@ impl IndexSpec {
             ctors: all_ctors(schema, r),
             elements: fields.iter().cloned().map(Element::Field).collect(),
             fields,
-            kind: "PrimaryKey",
+            kind: k::INDEX_PRIMARY_KEY,
             clause,
         }
     }
@@ -223,9 +224,9 @@ pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec
             fields,
             elements,
             kind: match (def.unique, def.interval) {
-                (true, _) => "Unique",
-                (false, true) => "Interval",
-                (false, false) => "Plain",
+                (true, _) => k::INDEX_UNIQUE,
+                (false, true) => k::INDEX_INTERVAL,
+                (false, false) => k::INDEX_PLAIN,
             },
         };
         out.insert(id, spec);
@@ -248,7 +249,7 @@ pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec
             ctors,
             fields: vec![field.to_string()],
             elements: vec![Element::Field(field.to_string())],
-            kind: "Implied",
+            kind: k::INDEX_IMPLIED,
             clause,
         };
         out.insert(id, spec);
@@ -421,12 +422,12 @@ impl Builder<'_> {
     }
 
     fn stage(&self, s: Stage) -> Value {
-        let name = match s {
-            Stage::Declared => "Declared",
-            Stage::Enabled => "Enabled",
-            Stage::Deprecated => "Deprecated",
+        let id = match s {
+            Stage::Declared => k::STAGE_DECLARED,
+            Stage::Enabled => k::STAGE_ENABLED,
+            Stage::Deprecated => k::STAGE_DEPRECATED,
         };
-        values::tag(self.schema, "catalog", "CtorStage", name)
+        values::tag(self.schema, id)
     }
 
     fn module_of(&self, def: TypeId) -> Value {
@@ -510,14 +511,17 @@ impl Builder<'_> {
     }
 
     fn relations(&mut self) {
+        let catalog = (self.schema)
+            .relation(engine_relation(self.schema, engine_rel::TYPES))
+            .module;
         let mut rows = Vec::new();
         for (r, id) in self.schema.ids().relation_ids() {
             let rel = self.schema.relation(r);
             let module = &self.schema.module(rel.module).name;
-            let kind = match (rel.volatile, module.as_str()) {
-                (true, _) => "Volatile",
-                (false, "catalog") => "Catalog",
-                (false, _) => "Base",
+            let kind = match (rel.volatile, rel.module == catalog) {
+                (true, _) => k::REL_VOLATILE,
+                (false, true) => k::REL_CATALOG,
+                (false, false) => k::REL_BASE,
             };
             let sum = held_id(self.schema.ids().type_id(rel.elem_def));
             rows.push((id, module.clone(), rel.name.clone(), sum, kind));
@@ -533,7 +537,7 @@ impl Builder<'_> {
             }
             .unwrap_or_else(|| panic!("the rows of stored view `{}` have a type id", view.name));
             let module = self.schema.module(view.module).name.clone();
-            rows.push((id, module, view.name.clone(), sum, "Stored"));
+            rows.push((id, module, view.name.clone(), sum, k::REL_STORED));
         }
         for (id, module, name, sum, kind) in rows {
             let fields = vec![
@@ -541,7 +545,7 @@ impl Builder<'_> {
                 ("module", Value::Text(module)),
                 ("name", Value::Text(name)),
                 ("sum", key(sum.raw())),
-                ("kind", values::tag(self.schema, "catalog", "RelKind", kind)),
+                ("kind", values::tag(self.schema, kind)),
                 ("dropped", self.none()),
             ];
             self.push("relations", "Relation", fields);
@@ -716,10 +720,7 @@ impl Builder<'_> {
                     "relation",
                     key(held_id(self.schema.ids().relation_id(spec.relation)).raw()),
                 ),
-                (
-                    "kind",
-                    values::tag(self.schema, "catalog", "IndexKind", spec.kind),
-                ),
+                ("kind", values::tag(self.schema, spec.kind)),
                 ("clause", Value::Text(spec.clause.clone())),
                 ("dropped", self.none()),
             ];

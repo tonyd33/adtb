@@ -86,7 +86,11 @@ found_counts() {
     count_under index_marks crates '(?<!is_quarantined\(|== |contains\(&|marked\(|matches!\(m, |\(id, _\)\| |release = Some\(|Ok\()(storage::)?Quarantine::Index\b|\bQuarantine::(\*|\{[^}]*\bIndex\b)' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/storage/policy.rs' -g '!**/storage/quarantine.rs'
     count_under api_aborts crates/adtb/src/api '\.abort\(' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**'
     count crash_allows '\bfn allows\b'
-    count id_sentinels '\b(RelId|TypeId|FnId|ModuleId)\(u32::MAX|\.0 (==|!=) u32::MAX\b'
+    for dir in crates apps; do
+      count_under id_sentinels "$dir" '(?<!const [A-Z_]{1,64}: FileId = )\b(RelId|TypeId|FnId|ModuleId|FileId)\(u32::MAX|\.0 (==|!=) u32::MAX\b' -P -g '!**/target/**'
+      count_under engine_names "$dir" '\bmodule_named(_in)?\("(catalog|sys|prelude)"|\bvalues::relation\(|\bin_(relation|type)\("|\b(ctor_named|ctor_index)\("|\btypes\["|"(catalog|sys|prelude)" (=>|==|!=)|(==|!=) "(catalog|sys|prelude)"|\bself\.(push|ctor)\("|\b(audit|event)_row\([^;]*?, "[A-Z]' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
+    done
+    count_under engine_names crates/adtb/src '\bmodule_named(_in)?\((?!")' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
     count kernel_door '(\.|Terms::)add_unchecked\('
     count kernel_overwrite '(\.|Terms::)overwrite_kind\('
     for dir in crates apps; do
@@ -103,7 +107,10 @@ found_counts() {
     count_adtb_tests sim_test_offsets '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
   } | awk '
     { kind = ($2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/ || $2 ~ /\/test_world\//) ? "test" : "prod"
-      print $1, kind, $3, $2 }'
+      key = $1 " " kind " " $2
+      if (!(key in sum)) order[++n] = key
+      sum[key] += $3 }
+    END { for (i = 1; i <= n; i++) { split(order[i], f, " "); print f[1], f[2], sum[order[i]], f[3] } }'
 }
 
 if [[ $mode == counts ]]; then
@@ -142,7 +149,7 @@ found=$(found_counts)
 awk -v list="$allowlist" '
   function note(msg) { print "structure-check: " msg; bad = 1 }
   BEGIN {
-    split("crate_fields pub_fields disallowed_methods database_marks structure_listings mark_setters index_marks marked_readers api_aborts crash_loops crash_allows id_sentinels kernel_door kernel_overwrite prelude_positions denial_zips sim_test_opens sim_test_damage sim_test_offsets", names, " ")
+    split("crate_fields pub_fields disallowed_methods database_marks structure_listings mark_setters index_marks marked_readers api_aborts crash_loops crash_allows id_sentinels engine_names kernel_door kernel_overwrite prelude_positions denial_zips sim_test_opens sim_test_damage sim_test_offsets", names, " ")
     for (i in names) row[names[i]] = 1
     while ((getline line < list) > 0) {
       if (line ~ /^[[:space:]]*(#|$)/) continue

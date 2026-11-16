@@ -129,7 +129,7 @@ impl Source {
                 let empty = parse_schema(&header(m), Options::default())
                     .ok()
                     .expect("a module header parses");
-                files.push((FileId(u32::MAX - 2), empty));
+                files.push((FileId::EMPTY_MODULE, empty));
             }
         }
         schema::build_ahead(&files, &self.ahead)

@@ -4,11 +4,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::ids::engine_rel;
+use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
-use crate::catalog::Catalog;
 use crate::catalog::codec::{Codec, SettingRow};
+use crate::catalog::{Catalog, engine_relation};
 use crate::exec::{F64, Val};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
@@ -97,17 +98,6 @@ impl Settings {
     }
 }
 
-/// Returns the relation `module::name` the engine declares in `schema`.
-fn engine_relation(schema: &Schema, module: &str, name: &str) -> RelId {
-    let m = schema
-        .module_named(module)
-        .unwrap_or_else(|| panic!("the engine declares module `{module}`"));
-    match schema.module(m).values.get(name) {
-        Some(ValueDef::Relation(r)) => *r,
-        _ => panic!("the engine declares `{module}::{name}`"),
-    }
-}
-
 /// One open-time setting as `sys::process_options` shows it.
 pub(super) struct Shown {
     pub(super) name: &'static str,
@@ -118,7 +108,7 @@ pub(super) struct Shown {
 
 /// Returns the rows of `sys::process_options` of `schema` showing `shown`.
 pub(super) fn process_options(schema: &Schema, shown: &[Shown]) -> BTreeMap<RelId, BTreeSet<Val>> {
-    let rel = engine_relation(schema, "sys", "process_options");
+    let rel = engine_relation(schema, engine_rel::PROCESS_OPTIONS);
     let rows = shown
         .iter()
         .enumerate()

@@ -3,18 +3,18 @@
 
 use std::sync::{Arc, Weak};
 
+use adtb_lang::ids::engine_rel;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, RelRef, Ty};
 use adtb_sys::lock::Lock;
 
-use crate::catalog;
+use crate::catalog::{self, engine_relation};
 use crate::exec::Val;
 use crate::plan::IndexId;
 use crate::runtime::{Runtime, ThreadId};
 use crate::write::{self, Failure, Found, Rebuild};
 
 use super::Engine;
-use super::command::engine_relation;
 use super::text::{DynRows, rows};
 use super::verify::{Job, Started};
 
@@ -63,7 +63,7 @@ impl<R: Runtime> Engine<R> {
         self.join_finished();
         self.db.admit_reindex(rel)?;
         let indexes = self.db.reindexed_ids(rel, positions)?;
-        let table = engine_relation(schema, "sys", "jobs")?;
+        let table = engine_relation(schema, engine_rel::JOBS);
         let me = self.reindexing.me.lock(&self.rt).clone();
         let target = schema.relation(rel).name.clone();
         let started = self.reindex_row(schema, table, target.clone()).hand_over();
@@ -192,8 +192,6 @@ impl<R: Runtime> Engine<R> {
             .map(|at| Found::Structure { at })
             .into_iter()
             .collect();
-        if let Err(e) = self.keep_reindex_findings(schema, index.0, run, found) {
-            panic!("the engine declares `sys::verify_findings`: {e:?}");
-        }
+        self.keep_reindex_findings(schema, index.0, run, found);
     }
 }

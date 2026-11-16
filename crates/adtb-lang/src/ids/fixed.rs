@@ -49,7 +49,7 @@ pub const TYPES: &[FixedType] = &[
     ("prelude", "Span", 35, &[("Span", 36)]),
     (
         "prelude",
-        "Principal",
+        crate::schema::prelude::PRINCIPAL,
         37,
         &[("EndUser", 38), ("Service", 39), ("Anonymous", 40)],
     ),
@@ -610,6 +610,20 @@ const fn fixed_ctor(module: &str, ty: &str, ctor: &str) -> super::CatCtorId {
     panic!("`engine_ctor` names a constructor `TYPES` holds")
 }
 
+/// Returns the fixed id of type `module::ty` in [`TYPES`]. Fails to compile when [`TYPES`] has no
+/// such type.
+const fn fixed_type(module: &str, ty: &str) -> super::CatTypeId {
+    let mut t = 0;
+    while t < TYPES.len() {
+        let (m, name, id, _) = TYPES[t];
+        if same(m, module) && same(name, ty) {
+            return super::CatTypeId::from_raw(id);
+        }
+        t += 1;
+    }
+    panic!("`engine_type` names a type `TYPES` holds")
+}
+
 /// Returns the fixed id of relation `module::name` in [`RELATIONS`]. Fails to compile when
 /// [`RELATIONS`] has no such relation.
 const fn fixed_rel(module: &str, name: &str) -> super::CatRelId {
@@ -641,6 +655,21 @@ pub mod engine_rel {
 
     engine_rels! {
         "catalog" {
+            TYPES "types",
+            CONSTRUCTORS "constructors",
+            CTOR_STATES "ctor_states",
+            VALUE_STATES "value_states",
+            FIELDS "fields",
+            RELATIONS "relations",
+            NAMED_SETS "named_sets",
+            SET_MEMBERS "set_members",
+            INDEXES "indexes",
+            INDEX_CTORS "index_ctors",
+            CONSTRAINTS "constraints",
+            FUNCTIONS "functions",
+            DEFAULTS "defaults",
+            COMPUTED "computed",
+            PLANS "plans",
             SETTINGS "settings",
             ROLES "roles",
             BUNDLES "bundles",
@@ -653,6 +682,35 @@ pub mod engine_rel {
             AUDIT "audit",
             MIGRATIONS "migrations"
         }
+        "sys" {
+            FIELD_VALUES "field_values",
+            SESSIONS "sessions",
+            CALLS "calls",
+            CONFLICTS "conflicts",
+            JOBS "jobs",
+            PROCESS_OPTIONS "process_options",
+            VERIFY_FINDINGS "verify_findings"
+        }
+    }
+}
+
+macro_rules! engine_types {
+    ($($module:literal { $($name:ident $ty:literal),* $(,)? })*) => {
+        $($(pub const $name: CatTypeId = fixed_type($module, $ty);)*)*
+
+        /// Every constant of this module with its module's and type's names.
+        #[cfg(test)]
+        pub(crate) const NAMED: &[(&str, &str, CatTypeId)] = &[$($(($module, $ty, $name),)*)*];
+    };
+}
+
+/// The fixed ids of the engine-defined types the engine names.
+pub mod engine_type {
+    use super::super::CatTypeId;
+    use super::fixed_type;
+
+    engine_types! {
+        "catalog" { SETTING "Setting" }
     }
 }
 
@@ -675,6 +733,24 @@ pub mod engine_ctor {
     engine_ctors! {
         "sys" "JobKind" { JOB_REINDEX "Reindex", JOB_VERIFY "Verify" }
         "catalog" "Role" { ROLE "Role" }
+        "catalog" "CtorStage" {
+            STAGE_DECLARED "Declared",
+            STAGE_ENABLED "Enabled",
+            STAGE_DEPRECATED "Deprecated",
+        }
+        "catalog" "RelKind" {
+            REL_BASE "Base",
+            REL_STORED "Stored",
+            REL_CATALOG "Catalog",
+            REL_VOLATILE "Volatile",
+        }
+        "catalog" "IndexKind" {
+            INDEX_PRIMARY_KEY "PrimaryKey",
+            INDEX_UNIQUE "Unique",
+            INDEX_PLAIN "Plain",
+            INDEX_INTERVAL "Interval",
+            INDEX_IMPLIED "Implied",
+        }
         "catalog" "Priority" {
             PRIORITY_AD_HOC "AdHoc",
             PRIORITY_BACKGROUND "Background",

@@ -6,18 +6,18 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 use std::time::Duration;
 
+use adtb_lang::ids::engine_rel;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::Lock;
 
 use crate::catalog::codec::{Codec, MigrationRow};
-use crate::catalog::{self, Rot};
+use crate::catalog::{self, Rot, engine_relation};
 use crate::exec::{self, F64};
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::storage::{Pid, RetainedLog};
 use crate::write::{self, Due, Found, panic_text};
 
-use super::command::engine_relation;
 use super::settings::Settings;
 use super::verify::{Cursor, Job, Verifier};
 use super::{OpenError, corrupt, micros};
@@ -70,11 +70,6 @@ struct Pass<'b, R: Runtime> {
     resumed: bool,
 }
 
-fn engine_table(schema: &Schema, name: &str) -> RelId {
-    engine_relation(schema, "sys", name)
-        .unwrap_or_else(|e| panic!("the engine declares `sys::{name}`: {e:?}"))
-}
-
 /// Returns the instant the first migration of the file was applied, none when the file holds
 /// none or its rows cannot be read.
 ///
@@ -110,8 +105,8 @@ impl<R: Runtime> Background<R> {
         };
         Ok(Arc::new(Background {
             rt: verifier.rt.clone(),
-            findings: engine_table(&schema, "verify_findings"),
-            jobs: engine_table(&schema, "jobs"),
+            findings: engine_relation(&schema, engine_rel::VERIFY_FINDINGS),
+            jobs: engine_relation(&schema, engine_rel::JOBS),
             verifier,
             schema,
             born,

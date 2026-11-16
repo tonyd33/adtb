@@ -1,5 +1,6 @@
 //! Write roles and grants into a catalog from a unit test.
 
+use adtb_lang::ids::engine_ctor;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -142,10 +143,7 @@ pub fn deployment_row<R: Runtime>(
         c,
         vec![
             ("id", Value::I64(id)),
-            (
-                "kind",
-                values::tag(schema, "catalog", "GrantKind", "Deployment"),
-            ),
+            ("kind", values::tag(schema, engine_ctor::GRANT_DEPLOYMENT)),
             ("privilege", Value::Text(privilege.to_owned())),
             ("target", target),
             ("grantee", Value::Text(grantee.to_owned())),

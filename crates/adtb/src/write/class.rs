@@ -79,7 +79,6 @@ impl Broken {
             | Broken::TopBinder(_)
             | Broken::PriorNotSet(_)
             | Broken::Unprintable(_)
-            | Broken::Undeclared { .. }
             | Broken::NoValueOutcome
             | Broken::NoSettingOutcome
             | Broken::NoPointOutcome

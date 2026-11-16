@@ -4,17 +4,17 @@ use std::collections::BTreeSet;
 
 use adtb_lang::check::Command;
 use adtb_lang::evolve::{DeployedGrant, Granted};
-use adtb_lang::ids::CatFunctionId;
+use adtb_lang::ids::{CatFunctionId, CatRelId, engine_rel};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{ConstraintIdx, FnId, RelId};
 
 use crate::catalog::codec::GrantKind;
+use crate::catalog::engine_relation;
 use crate::runtime::Runtime;
 use crate::write;
 
 use super::super::cause::Broken;
-use super::super::command::engine_relation;
 use super::super::dump::read_by_dump;
 use super::super::error::qualified;
 use super::super::text::{Issuer, Prepared};
@@ -24,33 +24,32 @@ use super::tables::{CallOrigin, CallRow, Grant, Tables};
 use super::{Capability, RoleAuthority, denied};
 
 /// The catalog relations the printed schema states.
-const SCHEMA_RELATIONS: [&str; 15] = [
-    "types",
-    "constructors",
-    "ctor_states",
-    "value_states",
-    "fields",
-    "relations",
-    "named_sets",
-    "set_members",
-    "indexes",
-    "index_ctors",
-    "constraints",
-    "functions",
-    "defaults",
-    "computed",
-    "grants",
+const SCHEMA_RELATIONS: [CatRelId; 15] = [
+    engine_rel::TYPES,
+    engine_rel::CONSTRUCTORS,
+    engine_rel::CTOR_STATES,
+    engine_rel::VALUE_STATES,
+    engine_rel::FIELDS,
+    engine_rel::RELATIONS,
+    engine_rel::NAMED_SETS,
+    engine_rel::SET_MEMBERS,
+    engine_rel::INDEXES,
+    engine_rel::INDEX_CTORS,
+    engine_rel::CONSTRAINTS,
+    engine_rel::FUNCTIONS,
+    engine_rel::DEFAULTS,
+    engine_rel::COMPUTED,
+    engine_rel::GRANTS,
 ];
 
-/// The columns whose values reveal rows of constructor relations, each by module, relation and
-/// field.
-const REVEALING: [(&str, &str, &str); 6] = [
-    ("sys", "field_values", "value"),
-    ("sys", "conflicts", "keys"),
-    ("sys", "verify_findings", "witness"),
-    ("catalog", "plans", "text"),
-    ("catalog", "plans", "document"),
-    ("catalog", "audit", "changes"),
+/// The columns whose values reveal rows of constructor relations, each by relation and field.
+const REVEALING: [(CatRelId, &str); 6] = [
+    (engine_rel::FIELD_VALUES, "value"),
+    (engine_rel::CONFLICTS, "keys"),
+    (engine_rel::VERIFY_FINDINGS, "witness"),
+    (engine_rel::PLANS, "text"),
+    (engine_rel::PLANS, "document"),
+    (engine_rel::AUDIT, "changes"),
 ];
 
 /// What a role held when its text was last checked.
@@ -69,12 +68,11 @@ pub(in super::super) struct Holds {
     pub(super) names: Nameable,
 }
 
-fn schema_relations(schema: &Schema) -> Result<Vec<RelId>, Error> {
+fn schema_relations(schema: &Schema) -> Vec<RelId> {
     SCHEMA_RELATIONS
         .iter()
-        .map(|n| engine_relation(schema, "catalog", n))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|b| Error::internal(Broken::Write(b)))
+        .map(|&id| engine_relation(schema, id))
+        .collect()
 }
 
 /// The one answer to text a role may not run, whatever the text names.
@@ -91,7 +89,7 @@ impl Holds {
                 .map(|r| r.missing(&held, Mode::Ordinary).is_empty())
                 .map_err(no_identity)
         };
-        let catalog = schema_relations(&e.schema)?;
+        let catalog = schema_relations(&e.schema);
         let user = (0..e.schema.relations.len() as u32)
             .map(RelId)
             .filter(|r| !e.schema.module(e.schema.relation(*r).module).engine)
@@ -257,17 +255,15 @@ pub(in super::super) fn monitored(schema: &Schema, r: &Requirement) -> bool {
     let Some(rel) = r.relation().and_then(|id| schema.ids().relation_of(id)) else {
         return false;
     };
-    let plans = engine_relation(schema, "catalog", "plans").ok();
-    Some(rel) == plans || schema.module_named("sys") == Some(schema.relation(rel).module)
+    rel == engine_relation(schema, engine_rel::PLANS)
+        || schema.module_named("sys") == Some(schema.relation(rel).module)
 }
 
 /// Returns the ids of the fields of [`REVEALING`].
 fn revealing(schema: &Schema) -> BTreeSet<u64> {
     let mut out = BTreeSet::new();
-    for (module, relation, field) in REVEALING {
-        let Ok(rel) = engine_relation(schema, module, relation) else {
-            continue;
-        };
+    for (relation, field) in REVEALING {
+        let rel = engine_relation(schema, relation);
         let td = schema.ty(schema.relation(rel).elem_def);
         out.extend(
             schema
@@ -333,7 +329,7 @@ impl<R: Runtime> RoleAuthority<R> {
             .any(|c| matches!(c.command, Command::Dump { .. }))
         {
             let mut read = read_by_dump(p.schema());
-            read.extend(schema_relations(p.schema())?);
+            read.extend(schema_relations(p.schema()));
             let dumped = Requirements::whole(p.schema(), read);
             lacking.extend(holds.lacking(p.schema(), &dumped.map_err(no_identity)?));
         }

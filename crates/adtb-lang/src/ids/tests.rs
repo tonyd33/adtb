@@ -134,6 +134,23 @@ fn each_engine_relation_constant_is_the_engine_relation_of_its_name() {
 }
 
 #[test]
+fn each_engine_type_constant_is_the_engine_type_of_its_name() {
+    let s = build(&[]).expect("the engine's schema builds");
+    for &(module, name, id) in engine_type::NAMED {
+        let def = s
+            .ids()
+            .type_of(id)
+            .unwrap_or_else(|| panic!("{id:?} names a type"));
+        let td = s.ty(def);
+        assert_eq!(
+            (module, name),
+            (s.module(td.module).name.as_str(), td.name.as_str()),
+            "{id:?}"
+        );
+    }
+}
+
+#[test]
 fn each_engine_constructor_constant_is_the_engine_constructor_of_its_name() {
     let s = build(&[]).expect("the engine's schema builds");
     for &(module, ty, ctor, id) in engine_ctor::NAMED {

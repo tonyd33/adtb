@@ -3,6 +3,7 @@ use crate::ast::{
     AdhocItem, BundleName, CallArgs, CtorScope, CtorSel, ExplainTarget, Grant, PeerStmt, Privilege,
     RelationRef, Revoke, RoleStmt, TempDecl,
 };
+use crate::ids::{CatRelId, engine_rel, engine_type};
 use crate::kernel::alpha_equal;
 use crate::schema::{Temp, TempRow};
 
@@ -455,12 +456,13 @@ impl Checker<'_> {
         Ok((row, fields.iter().map(|f| f.text.clone()).collect()))
     }
 
-    /// Returns the type of a key of the engine's relation `module::name`.
-    fn engine_key(&self, module: &str, name: &str) -> Ty {
-        let m = self.schema.module_named(module).expect("an engine module");
-        let Some(&ValueDef::Relation(rel)) = self.schema.module(m).values.get(name) else {
-            panic!("the engine declares `{module}::{name}`");
-        };
+    /// Returns the type of a key of the engine's relation with fixed id `id`.
+    fn engine_key(&self, id: CatRelId) -> Ty {
+        let rel = self
+            .schema
+            .ids()
+            .relation_of(id)
+            .unwrap_or_else(|| panic!("the schema declares engine relation {id}"));
         Ty::Key {
             rel: RelRef::Declared(rel),
             ctors: None,
@@ -468,11 +470,11 @@ impl Checker<'_> {
     }
 
     fn set_setting(&mut self, name: &ast::Ident, value: &ast::Expr) -> R<Command> {
-        let m = self
+        let def = self
             .schema
-            .module_named("catalog")
-            .expect("the catalog module");
-        let def = self.schema.module(m).types["Setting"];
+            .ids()
+            .type_of(engine_type::SETTING)
+            .expect("the schema declares `catalog::Setting`");
         let setting = self.schema.ty(def);
         let c = setting.ctor_index(&name.text).ok_or_else(|| {
             diag(
@@ -659,8 +661,8 @@ impl Checker<'_> {
     }
 
     fn command(&mut self, c: &ast::Command, span: Span) -> R<Command> {
-        let key = |c: &mut Self, e: &ast::Expr, module: &str, name: &str| -> R<Tm> {
-            let ty = c.engine_key(module, name);
+        let key = |c: &mut Self, e: &ast::Expr, id: CatRelId| -> R<Tm> {
+            let ty = c.engine_key(id);
             c.check(e, &ty).map(|o| o.tm)
         };
         Ok(match c {
@@ -668,11 +670,11 @@ impl Checker<'_> {
                 analyze: *analyze,
                 target: self.explained(target)?,
             },
-            ast::Command::PinPlan(e) => Command::PinPlan(key(self, e, "catalog", "plans")?),
-            ast::Command::UnpinPlan(e) => Command::UnpinPlan(key(self, e, "catalog", "plans")?),
-            ast::Command::CancelCall(e) => Command::CancelCall(key(self, e, "sys", "calls")?),
+            ast::Command::PinPlan(e) => Command::PinPlan(key(self, e, engine_rel::PLANS)?),
+            ast::Command::UnpinPlan(e) => Command::UnpinPlan(key(self, e, engine_rel::PLANS)?),
+            ast::Command::CancelCall(e) => Command::CancelCall(key(self, e, engine_rel::CALLS)?),
             ast::Command::TerminateSession(e) => {
-                Command::TerminateSession(key(self, e, "sys", "sessions")?)
+                Command::TerminateSession(key(self, e, engine_rel::SESSIONS)?)
             }
             ast::Command::SetSetting(name, value) => self.set_setting(name, value)?,
             ast::Command::Vacuum(r) => Command::Vacuum(self.stored_relation_named(r, "vacuum")?),

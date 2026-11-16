@@ -220,6 +220,44 @@ counts=$("$checker" --counts "$scratch")
 grep -qxF 'kernel_overwrite prod 3 crates/lang/src/k.rs' <<<"$counts" || fail "not counted: kernel_overwrite: $counts"
 rm -r crates/lang
 
+# id_sentinels counts an id of `u32::MAX`, a `FileId`'s included, and a comparison with it, in
+# tests too, not the definition of a named constant.
+mkdir -p crates/lang/src
+printf '%s\n' 'pub const PRELUDE: FileId = FileId(u32::MAX);' 'pub const HEADER: FileId = FileId(u32::MAX - 2);' \
+  'fn f() { FileId(u32::MAX - 2); RelId(u32::MAX); m.0 == u32::MAX; FileId::HEADER; }' \
+  'fn g() { let f: FileId = FileId(u32::MAX - 3); }' >crates/lang/src/s.rs
+cp crates/lang/src/s.rs crates/lang/src/s_tests.rs
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'id_sentinels prod 4 crates/lang/src/s.rs' <<<"$counts" || fail "not counted: id_sentinels: $counts"
+grep -qxF 'id_sentinels test 4 crates/lang/src/s_tests.rs' <<<"$counts" || fail "test not counted: id_sentinels: $counts"
+rm -r crates/lang
+
+# engine_names counts lookups of an engine module, relation, type or constructor by its spelling in
+# production sources, and in adtb a lookup of a module by a variable's text; not a user module
+# named as a literal, a lookup by fixed id, or tests.
+mkdir -p crates/lang/src "$adtb/catalog"
+cat >crates/lang/src/n.rs <<'RS'
+fn f() {
+    s.module_named("catalog"); s.module_named("sys"); s
+        .module_named("prelude"); s.module_named_in("catalog", scope);
+    values::relation(schema, "bundles"); values::relation(to, &name);
+    in_relation("catalog", "roles", "Role"); in_type("catalog", "GrantKind", "Log");
+    td.ctor_named("Service"); td.ctor_index("Log"); s.module(m).types["Setting"];
+    match m { "catalog" => 1, _ => 0 }; m.text == "prelude"; "sys" != m;
+    self.push("relations", "Relation", fields); self.ctor("Priority", "AdHoc");
+    self.audit_row(e, changes, "Grant", who, event);
+    s.module_named(m); s.module_named("app"); engine_relation(schema, engine_rel::JOBS);
+    td.ctor_named(&c.text); values::tag(schema, k::GRANT_LOG);
+}
+RS
+cp crates/lang/src/n.rs crates/lang/src/n_tests.rs
+printf '%s\n' 'fn f() { s.module_named(m); s.module_named(&q.text); s.module_named("app"); }' >"$adtb/catalog/n.rs"
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'engine_names prod 17 crates/lang/src/n.rs' <<<"$counts" || fail "not counted: engine_names: $counts"
+grep -qxF 'engine_names prod 2 crates/adtb/src/catalog/n.rs' <<<"$counts" || fail "not counted: engine_names in adtb: $counts"
+! grep -q 'engine_names .*n_tests.rs' <<<"$counts" || fail "counted a test: $counts"
+rm -r crates/lang "$adtb/catalog"
+
 # prelude_positions counts each literal constructor position form in production sources, not a
 # named position or a test.
 mkdir -p crates/lang/src

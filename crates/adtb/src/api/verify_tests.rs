@@ -1,10 +1,9 @@
-use adtb_lang::ids::{CatCtorId, engine_ctor, held_id};
+use adtb_lang::ids::{CatCtorId, engine_ctor, engine_rel, held_id};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::types::RelId;
 
 use super::{Findings, fields};
 use crate::api::OpenError;
-use crate::api::command::engine_relation;
 use crate::catalog::{KeptField, KeptRow};
 use crate::exec::Val;
 use crate::storage::Pid;
@@ -12,7 +11,7 @@ use crate::write::Found;
 
 fn engine() -> (Schema, RelId) {
     let schema = build(&[]).expect("the engine's declarations build");
-    let table = engine_relation(&schema, "sys", "verify_findings").expect("sys::verify_findings");
+    let table = crate::catalog::engine_relation(&schema, engine_rel::VERIFY_FINDINGS);
     (schema, table)
 }
 

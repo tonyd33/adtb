@@ -67,6 +67,7 @@ pub use broken::Broken;
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
+pub use ids::engine_relation;
 pub use kept::{KeptField, KeptRow};
 pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};

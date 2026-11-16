@@ -461,14 +461,6 @@ fn term_broken_rows() -> Vec<Row> {
             c,
             "printing a cell: PrintError { message: \"p\" }",
         ),
-        broken_row(
-            B::Undeclared {
-                module: "m".into(),
-                name: "n".into(),
-            },
-            c,
-            "the engine declares `m::n`",
-        ),
     ]
 }
 
@@ -531,7 +523,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 74;
+const SLOTS: usize = 73;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -604,21 +596,20 @@ fn slot(e: &write::Error) -> usize {
             B::TopBinder(_) => 56,
             B::PriorNotSet(_) => 57,
             B::Unprintable(_) => 58,
-            B::Undeclared { .. } => 59,
-            B::NoValueOutcome => 60,
-            B::NoSettingOutcome => 61,
-            B::NoPointOutcome => 62,
-            B::NoTrialOutcome => 63,
-            B::RefusalUnrecorded(_) => 64,
-            B::WitnessDenialUnrecorded(_) => 65,
-            B::CallKeyNotInt => 66,
-            B::ExportNotSetTyped => 67,
-            B::ExportNotSet => 68,
-            B::SettingNotRecord => 69,
-            B::SettingField(_) => 70,
-            B::CatalogError(_) => 71,
-            B::DeploymentRefused => 72,
-            B::NoDenial(_) => 73,
+            B::NoValueOutcome => 59,
+            B::NoSettingOutcome => 60,
+            B::NoPointOutcome => 61,
+            B::NoTrialOutcome => 62,
+            B::RefusalUnrecorded(_) => 63,
+            B::WitnessDenialUnrecorded(_) => 64,
+            B::CallKeyNotInt => 65,
+            B::ExportNotSetTyped => 66,
+            B::ExportNotSet => 67,
+            B::SettingNotRecord => 68,
+            B::SettingField(_) => 69,
+            B::CatalogError(_) => 70,
+            B::DeploymentRefused => 71,
+            B::NoDenial(_) => 72,
         },
     }
 }

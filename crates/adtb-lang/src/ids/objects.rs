@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, Decl, RelationClause};
 use crate::lex::{Tok, lex};
+use crate::schema::prelude::PRINCIPAL;
 use crate::schema::{CtorRef, FieldRef, Schema, TypeDefKind, ValueDef};
 use crate::span::{FileId, Span};
 use crate::types::*;
@@ -304,7 +305,7 @@ pub fn objects(
 impl Objects<'_> {
     fn type_objects(&mut self, mid: ModuleId, m: &str, t: &ast::TypeDecl) {
         let schema = self.schema;
-        let def = if t.name.text == "Principal" {
+        let def = if t.name.text == PRINCIPAL {
             Some(schema.principal)
         } else {
             schema.module(mid).types.get(&t.name.text).copied()

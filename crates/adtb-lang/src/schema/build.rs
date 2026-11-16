@@ -87,7 +87,7 @@ impl Builder<'_> {
         let text = name.text.as_str();
         if RESERVED_TYPE_NAMES.contains(&text) {
             self.err(file, name.span, format!("`{text}` is a reserved type name"));
-        } else if text == "Principal" {
+        } else if text == prelude::PRINCIPAL {
             if principal_seen {
                 self.err(file, name.span, "the schema declares `Principal` once");
             }
@@ -627,7 +627,7 @@ impl<'a> Builder<'a> {
         if !prelude {
             self.check_type_name(file, &t.name, d.principal.is_some());
         }
-        if !prelude && t.name.text == "Principal" {
+        if !prelude && t.name.text == prelude::PRINCIPAL {
             d.principal = Some((id, file, t.name.span));
         } else if self.schema.defs_mut().modules[module.0 as usize]
             .types

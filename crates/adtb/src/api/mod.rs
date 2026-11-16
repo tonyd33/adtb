@@ -53,6 +53,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use adtb_file::Disk;
 use adtb_lang::check::{Bundles, Program};
 use adtb_lang::evolve::{Logged, Source};
+use adtb_lang::ids::engine_rel;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::Schema;
@@ -844,8 +845,7 @@ fn held_rows<R: Runtime>(
     } else {
         catalog.kept(pager, txns).map_err(corrupt)?
     };
-    let table = command::engine_relation(schema, "sys", "verify_findings")
-        .map_err(|b| corrupt(write::Error::from(b)))?;
+    let table = catalog::engine_relation(schema, engine_rel::VERIFY_FINDINGS);
     let findings = verify::Findings::of(kept, schema, table)?;
     let mut volatile = settings::process_options(schema, &options.shown());
     volatile.insert(table, findings.vals(schema));

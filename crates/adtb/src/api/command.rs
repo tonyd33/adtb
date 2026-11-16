@@ -5,14 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
 use adtb_lang::check::{Command, Explained, Program};
-use adtb_lang::ids::{CatConstraintId, held_id};
+use adtb_lang::ids::{CatConstraintId, engine_rel, held_id};
 use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::schema::Schema;
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{Base, CtorSet, RelId, RelRef, Ty};
 
 use crate::catalog::codec::{Codec, SettingRow};
+use crate::catalog::engine_relation;
 use crate::exec::Val;
 use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
@@ -315,24 +316,6 @@ pub(super) fn word(c: &Command) -> &'static str {
     }
 }
 
-/// Returns the relation `name` of engine module `module`.
-pub(super) fn engine_relation(
-    schema: &Schema,
-    module: &str,
-    name: &str,
-) -> Result<RelId, write::Broken> {
-    schema
-        .module_named(module)
-        .and_then(|m| match schema.module(m).values.get(name) {
-            Some(ValueDef::Relation(r)) => Some(*r),
-            _ => None,
-        })
-        .ok_or_else(|| write::Broken::Undeclared {
-            module: module.to_string(),
-            name: name.to_string(),
-        })
-}
-
 /// Returns the positions among `rel`'s indexes of those `reindex` rebuilds: every one when
 /// `index` is `None`, else every one declared with the same fields over the same constructor
 /// set as the one at `index`.
@@ -530,7 +513,7 @@ impl<R: Runtime> Engine<R> {
         let ty = Ty::Record(vec![(
             "call".into(),
             Ty::Key {
-                rel: RelRef::Declared(engine_relation(schema, "sys", "calls")?),
+                rel: RelRef::Declared(engine_relation(schema, engine_rel::CALLS)),
                 ctors: None,
             },
         )]);
@@ -682,7 +665,7 @@ impl<R: Runtime> Engine<R> {
         caller: &Val,
         found: &DynRows,
     ) -> Result<(), write::Error> {
-        let findings = engine_relation(schema, "sys", "verify_findings")?;
+        let findings = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
         let violation = schema.engine_ctors().violation().index();
         let finding = schema.ty(schema.relation(findings).elem_def);
         let constraint_at = finding.header().len();
@@ -740,7 +723,7 @@ impl<R: Runtime> Engine<R> {
         rel: RelId,
         waiting: HoldWait<'_>,
     ) -> Result<DynRows, write::Error> {
-        let ctors = engine_relation(schema, "catalog", "constructors")?;
+        let ctors = engine_relation(schema, engine_rel::CONSTRUCTORS);
         let ty = Ty::Record(vec![
             (
                 "ctor".into(),
