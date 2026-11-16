@@ -192,3 +192,7 @@ Landed as lvyxkqxt e1af4b3f (2 rounds), full check 0 (3839 tests). Error sums by
 ## 2026-11-15, step 11 part d landed
 
 Landed as wsmstooz 97cc33d4 (2 rounds), full check 0 (3839 tests). Verify kept rows through a codec; `Codec::declared` maps a kept row's listed fields to declared positions; `codec_testing::fields_reversed` reverses every record's fields for reorder tests. The review found the writer and reader kept two hand lists and the samples zipped over the writer's own output; the final round made one layout of handles. Resolved: kept-finding-fields-unchecked. Next: part e.
+
+## 2026-11-16, step 11 part e landed
+
+Landed as qsupwyqs f6a76796 (2 rounds), full check 0 (3843 tests). One typed `RootsRow` over the 16 roots constructors. The review found no literal test of the stored format (a consistent swap of two same-shaped constructors passed every test) and that open newly refused a corrupt kept blob, blocking salvage of a clog-damaged file; both fixed. Resolved: roots-migration-row-passed-over. Filed: heap-unknown-stored-tag-panics. Next: part f.
