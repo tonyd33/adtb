@@ -74,3 +74,7 @@ Count: `Ty::Key` at 159 sites in 39 files, 52 non-test constructions with `ctors
 ## 2026-11-16, part 2b-m-1 landed
 
 Landed as onutlsno afad7d9e (2 rounds), full check 0 (3844 tests). `Ty::Key.ctors` is `KeyCtors { All, Only, Late }`; `Ty::alike` compares treating `Late` as `All` at the field-type comparisons, `alpha_equal` and `same_term` (the review found a migration main applies refused by plain `==`; now a regression test); `KeyCtors::committed()` panics on `Late` at sites that see only committed schemas. Next: 2b-m-2 (script refusal; decide each widening site the receipt lists, `ctors_of`, task.rs `declared`, names.rs `may_type`), then 2b-ii on rsvsqpqv.
+
+## 2026-11-16, part 2b-m-2 landed
+
+Landed as urmsumlx d610a136 (2 rounds), full check 0 (3850 tests). Resolved script-late-selection-widened. The review found late-set-name-unresolved-in-canon on main (a key naming a set added later in the same migration: a debug panic, an unqualified stored name in release); ruled into 2b-ii. Next: 2b-ii on rsvsqpqv (settledness per declaration, waiting on ahead and `Late` keys; late-set-name-unresolved-in-canon; add-drop-refused-while-other-add-pending).
