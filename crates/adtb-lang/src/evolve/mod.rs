@@ -52,8 +52,8 @@ mod tests;
 #[path = "../evolve_memo_tests.rs"]
 mod memo_tests;
 
-pub use crate::schema::Stage;
-pub use expected::{Adder, Expected, Listed};
+pub use crate::schema::{Adder, Stage};
+pub use expected::{Expected, Listed};
 use grant::HeldGrant;
 pub use grant::{
     CallSignatures, DeployedGrant, DeploymentGrant, DeploymentRevoke, GrantFields, GrantRow,

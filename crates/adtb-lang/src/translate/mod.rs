@@ -11,7 +11,7 @@ use crate::evolve::{Clause, Code, Listed, Logged, Resolved, ResolvedOp, RowFn, R
 use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, NormalProgram, NormalQuery};
-use crate::schema::{CtorRef, FieldRef, Schema, Stage};
+use crate::schema::{Adder, CtorRef, FieldRef, Schema, Stage};
 use crate::span::FileDiag;
 use crate::types::*;
 
@@ -21,6 +21,7 @@ mod map;
 mod tests;
 mod walk;
 
+use map::Later;
 pub use map::{Loss, Map, Part};
 
 /// Why a callable has no translation: the operator it fails across, when one is to blame, and
@@ -48,6 +49,18 @@ struct Op {
     text: String,
     op: Resolved,
     clauses: Vec<Clause>,
+}
+
+/// The fill of an operator that adds a field.
+struct Fill {
+    /// The fill, a function of the row before the operator.
+    fun: Rc<RowFn>,
+    /// The operator's text.
+    text: String,
+    /// The source the fill was written at.
+    written: Source,
+    /// What each relation the fill's schema takes as added later is at the later version.
+    ahead: Vec<Later>,
 }
 
 #[derive(Debug)]
@@ -138,13 +151,19 @@ impl<'a> Pinned<'a> {
     }
 
     /// Returns this translation over terms of `from`, the schema of an operator's fill written
-    /// at `fill_source` or the later version itself, to the same later version.
-    fn over<'b>(&self, from: &'b Schema, fill_source: Option<&'b Source>) -> Pinned<'b>
+    /// at `fill_source` or the later version itself, to the same later version, where the
+    /// relation `from` takes as added later at `AheadId::at(i)` is `ahead[i]`.
+    fn over<'b>(
+        &self,
+        from: &'b Schema,
+        fill_source: Option<&'b Source>,
+        ahead: Vec<Later>,
+    ) -> Pinned<'b>
     where
         'a: 'b,
     {
         Pinned {
-            map: Map::new(from, self.map.to),
+            map: Map::over(from, self.map.to, ahead),
             from_source: self.from_source,
             fill_source,
             to_source: self.to_source,
@@ -242,6 +261,10 @@ impl<'a> Pinned<'a> {
                     format!("it {what} `Key {}` ordered, and its order differs", r.name),
                 )
             }
+            Loss::Later(name) => refused(
+                None,
+                format!("it reaches `{name}`, which the current version lacks"),
+            ),
             Loss::Renamed { part, name, id } => refused(
                 id.and_then(|id| self.blame_rename(*part, id)),
                 format!("it {what} `{name}`, which the current version names otherwise"),
@@ -518,9 +541,8 @@ impl<'a> Pinned<'a> {
     }
 
     /// Returns the fill of the operator that added field `name` of constructor `c` of `def`, at
-    /// the later version, as a function of the row before it, with the operator's text and the
-    /// source the fill was written at.
-    fn fill(&self, def: TypeId, c: u32, name: &str) -> R<Option<(Rc<RowFn>, String, Source)>> {
+    /// the later version.
+    fn fill(&self, def: TypeId, c: u32, name: &str) -> R<Option<Fill>> {
         let Some(id) = map::field_id(self.map.to, def, c, name) else {
             return Ok(None);
         };
@@ -548,7 +570,50 @@ impl<'a> Pinned<'a> {
                 .as_ref()
                 .map(|(f, after)| (f.clone(), (**after).clone())),
         };
-        Ok(found.map(|(f, after)| (f, o.text.clone(), after)))
+        Ok(found.map(|(f, written)| Fill {
+            ahead: self.ahead_at(&f.schema, &o.from),
+            fun: f,
+            text: o.text.clone(),
+            written,
+        }))
+    }
+
+    /// Returns what each relation `fill`, the schema of the fill of operator `origin`, takes as
+    /// added later is at the later version, by its `AheadId` index.
+    fn ahead_at(&self, fill: &Schema, origin: &Origin) -> Vec<Later> {
+        (0..fill.ahead.len())
+            .map(|i| {
+                let a = AheadId::at(i);
+                let unread =
+                    |rule: &str| Later::Unlinked(format!("a reverted fill holds no key of {rule}"));
+                let (m, k) = match (origin, fill.ahead_adder(a)) {
+                    (Origin::Logged(m, _), Adder::Operator(k)) => (*m, k),
+                    (_, Adder::Inverse(..)) => {
+                        return unread("a relation its revert restores later");
+                    }
+                    (Origin::Reverted(_), Adder::Operator(_)) => {
+                        return unread("a relation a later operator adds");
+                    }
+                };
+                let added = self.ops.iter().find_map(|o| match (&o.from, &o.op) {
+                    (Origin::Logged(i, j), Resolved::AddRelation { relation, .. })
+                        if (*i, *j) == (m, k) =>
+                    {
+                        Some(CatRelId::from_raw(*relation))
+                    }
+                    _ => None,
+                });
+                let Some(added) = added else {
+                    return Later::Unlinked(format!(
+                        "operator {k} of migration {m} of the log adds a relation variable"
+                    ));
+                };
+                match self.map.to.ids().relation_of(added) {
+                    Some(rel) => Later::At(rel),
+                    None => Later::Lacked(fill.ahead_relation(a).1.to_string()),
+                }
+            })
+            .collect()
     }
 
     /// Returns whether function `f` of the pin has the same code at the later version, and its
@@ -595,6 +660,7 @@ fn filled(maps: impl IntoIterator<Item = RowMap>) -> Option<Rc<RowFn>> {
 /// Returns the source before operator `k` of `logged`.
 fn replayed(logged: &Logged, k: usize) -> Result<Source, Vec<crate::span::Diag>> {
     let mut src = (*logged.before).clone();
+    src.expecting(&logged.module, &logged.operators);
     for op in Listed::all(&logged.operators).take(k) {
         src.apply(&logged.module, op, &logged.text)?;
     }

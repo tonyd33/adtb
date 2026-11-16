@@ -34,7 +34,7 @@ impl Walk<'_, '_> {
             panic!("the operand of a key's value is a key");
         };
         let k = self.tm(out, k, None)?;
-        let order = self.map.key_layout(self.map.from.declared(rel));
+        let order = self.map.key_layout(self.map.read_through(rel));
         let order = order.map_err(|l| self.p.lost(&l, "reads a key of"))?;
         let (Some(order), Ty::Record(fs)) = (order, &ty) else {
             return Ok(self.b(out).prim(Prim::KeyValue, vec![k], ty));

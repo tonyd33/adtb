@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use super::*;
-use crate::schema::AheadState;
+use crate::schema::{Adder, AheadState};
 
 /// An operator of a migration with its position among the migration's operators, or an
 /// operator outside every migration.
@@ -44,15 +44,6 @@ impl Deref for Listed<'_> {
     fn deref(&self) -> &Operator {
         self.op
     }
-}
-
-/// What adds a relation variable the migration being applied expects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Adder {
-    /// The operator at this position of the migration.
-    Operator(usize),
-    /// The inverse at this index of the step at this position of a revert.
-    Inverse(usize, usize),
 }
 
 /// A relation variable an operator of the migration being applied adds.
@@ -110,7 +101,7 @@ impl Source {
                     }
                     (Added::As(_), _) => return None,
                 };
-                Some(schema::Ahead::new(module, relation, e.typed, state))
+                Some(schema::Ahead::new(module, relation, e.typed, state, e.by))
             })
             .collect()
     }

@@ -831,7 +831,7 @@ fn ahead_per_step(s: &Source, text: &str) -> Vec<Vec<(String, bool)>> {
         .map(|step| {
             let schema = step.after.schema().unwrap_or_else(|e| panic!("{e:?}"));
             let late = |i| schema.selects_late(RelRef::Ahead(AheadId::at(i)));
-            let names = schema.ahead.iter().map(|(_, n)| n.clone());
+            let names = schema.ahead.iter().map(|(_, n, _)| n.clone());
             names.enumerate().map(|(i, n)| (n, late(i))).collect()
         })
         .collect()

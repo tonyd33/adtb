@@ -3,6 +3,15 @@ use std::collections::BTreeSet;
 use super::{Ahead, Schema, TypeDefKind};
 use crate::types::{AheadId, RelId, RelRef, Ty, TypeId};
 
+/// What adds a relation variable the migration being applied expects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Adder {
+    /// The operator at this position of the migration.
+    Operator(usize),
+    /// The inverse at this index of the step at this position of a revert.
+    Inverse(usize, usize),
+}
+
 /// Whether the operator that adds an expected relation variable has applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AheadState {
@@ -16,19 +25,31 @@ pub enum AheadState {
 }
 
 impl Ahead {
-    /// Returns the relation variable `relation` of module `module`, `typed` when the migration
-    /// also adds its type.
-    pub fn new(module: String, relation: String, typed: bool, state: AheadState) -> Ahead {
+    /// Returns the relation variable `relation` of module `module`, which `by` adds, `typed`
+    /// when the migration also adds its type.
+    pub fn new(
+        module: String,
+        relation: String,
+        typed: bool,
+        state: AheadState,
+        by: Adder,
+    ) -> Ahead {
         Ahead {
             module,
             relation,
             typed,
             state,
+            by,
         }
     }
 }
 
 impl Schema {
+    /// Returns what adds relation variable `id`.
+    pub fn ahead_adder(&self, id: AheadId) -> Adder {
+        self.ahead[id.index()].2
+    }
+
     /// Returns the refusal of a relation a later operator of the migration adds when a value of
     /// `ty` can hold a key of it.
     pub fn holds_no_ahead_key(&self, ty: &Ty) -> Result<(), String> {

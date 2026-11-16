@@ -26,7 +26,7 @@ mod names;
 pub use names::field_path;
 
 mod ahead;
-pub use ahead::AheadState;
+pub use ahead::{Adder, AheadState};
 mod build;
 mod engine;
 mod inputs;
@@ -384,8 +384,8 @@ pub struct SchemaDefs {
     /// The `Principal` every module resolves: the schema's own, else the prelude's.
     pub principal: TypeId,
     /// The relation variables a later operator of the migration being applied adds, by module and
-    /// name; `AheadId::at(i)` names entry `i`.
-    pub ahead: Vec<(ModuleId, String)>,
+    /// name, with what adds each; `AheadId::at(i)` names entry `i`.
+    pub ahead: Vec<(ModuleId, String, Adder)>,
     /// The relation variables the migration being applied adds with their type: a reference
     /// type's selection of their constructors resolves when it ends.
     pub late_sels: Vec<RelRef>,
@@ -510,8 +510,9 @@ impl Schema {
     }
 
     /// Returns the module and name of the relation variable a later operator of the migration adds.
-    pub fn ahead_relation(&self, id: AheadId) -> &(ModuleId, String) {
-        &self.ahead[id.index()]
+    pub fn ahead_relation(&self, id: AheadId) -> (ModuleId, &str) {
+        let (module, name, _) = &self.ahead[id.index()];
+        (*module, name)
     }
 
     /// Returns the declared relation `rel` names.
@@ -645,7 +646,7 @@ impl Schema {
         };
         self.ahead
             .iter()
-            .position(|(am, n)| *am == m && *n == name.name.text)
+            .position(|(am, n, _)| *am == m && *n == name.name.text)
             .map(AheadId::at)
     }
 
@@ -910,7 +911,7 @@ impl Schema {
             Ty::Key { rel, ctors } => match *rel {
                 RelRef::Ahead(a) => {
                     let (m, name) = self.ahead_relation(a);
-                    format!("Key {}{name}", qualifier(*m))
+                    format!("Key {}{name}", qualifier(m))
                 }
                 RelRef::Declared(rel) => {
                     let r = self.relation(rel);
@@ -1294,6 +1295,7 @@ pub struct Ahead {
     /// Whether the migration also adds the relation variable's type.
     typed: bool,
     state: AheadState,
+    by: Adder,
 }
 
 /// Builds the schema as `build` does, where a `Key r` type may also name each relation variable

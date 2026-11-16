@@ -532,7 +532,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let Ty::Key { rel, .. } = self.src.ty(*key) else {
             return Ok(admits.clone());
         };
-        let rel = self.map.from.declared(*rel);
+        let rel = self.map.read_through(*rel);
         let def = self.map.from.relation(rel).elem_def;
         Ok(self.map.set(def, admits, self.p.hide_new))
     }
@@ -1162,13 +1162,19 @@ impl<'p, 'a> Walk<'p, 'a> {
                             format!("the default of `{name}` has no term"),
                         ));
                     };
-                    let same = self.p.over(self.map.to, None);
+                    let same = self.p.over(self.map.to, None, Vec::new());
                     Walk::new(&same, &normal.terms).tm(out, t, None)
                 }
             };
         }
         let id = super::map::field_id(self.map.to, def, k, name);
-        let Some((fill, op, written)) = self.p.fill(def, k, name)? else {
+        let Some(super::Fill {
+            fun,
+            text: op,
+            written,
+            ahead,
+        }) = self.p.fill(def, k, name)?
+        else {
             return Err(refused(
                 self.p.blame_field(id, true),
                 format!("it writes no `{name}`, which has no default and no fill"),
@@ -1178,9 +1184,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             operator: u.operator.or_else(|| Some(op.clone())),
             ..u
         };
-        let at = self.p.over(&fill.schema, Some(&written));
-        let mut w = Walk::new(&at, &fill.query.terms);
-        let [row] = fill.query.params.as_slice() else {
+        let at = self.p.over(&fun.schema, Some(&written), ahead);
+        let mut w = Walk::new(&at, &fun.query.terms);
+        let [row] = fun.query.params.as_slice() else {
             return Err(refused(Some(op.clone()), "a fill is a function of one row"));
         };
         w.rows.insert(
@@ -1190,7 +1196,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 fields: given.clone(),
             }),
         );
-        w.tm(out, fill.query.body, None).map_err(blamed)
+        w.tm(out, fun.query.body, None).map_err(blamed)
     }
 
     /// Returns `x`, the value at the later version of `t`, a value or set of values of `ty`

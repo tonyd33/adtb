@@ -1367,6 +1367,7 @@ fn a_key_of_a_relation_a_later_operator_adds_has_the_form_of_the_empty_record() 
         "later".to_string(),
         false,
         AheadState::Pending,
+        Adder::Operator(0),
     );
     let s = build_ahead(&[(FileId(0), file)], &[ahead]).unwrap();
     let o = s.ty(s.relation(relation(&s, "os")).elem_def);
@@ -1404,6 +1405,7 @@ relation qs : Q (Key later) key k",
         "later".to_string(),
         false,
         AheadState::Pending,
+        Adder::Operator(0),
     );
     let s = build_ahead(&[(FileId(0), file)], &[ahead]).unwrap();
     let m = s.module_named("m").unwrap();

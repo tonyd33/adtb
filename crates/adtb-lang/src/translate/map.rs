@@ -11,6 +11,19 @@ use crate::types::*;
 pub struct Map<'a> {
     pub from: &'a Schema,
     pub to: &'a Schema,
+    /// What each relation the earlier version takes as added later is at the later version, by
+    /// its `AheadId` index.
+    ahead: Vec<Later>,
+}
+
+/// What a relation the earlier version takes as added later is at the later version.
+#[derive(Clone, Debug)]
+pub(super) enum Later {
+    At(RelId),
+    /// The later version lacks the relation of this name.
+    Lacked(String),
+    /// A key of it breaks this invariant.
+    Unlinked(String),
 }
 
 /// Why a type cannot be carried between the versions as a whole value.
@@ -35,6 +48,9 @@ pub enum Loss {
     /// The composite key of the relation of the earlier version orders its values otherwise at
     /// the later one.
     KeyOrder(RelId),
+    /// The relation of this name, which the earlier version takes as added later, has no
+    /// counterpart at the later version.
+    Later(String),
     /// The object of the earlier version named `name` is named otherwise at the later one.
     Renamed {
         part: Part,
@@ -54,7 +70,22 @@ pub enum Part {
 
 impl<'a> Map<'a> {
     pub fn new(from: &'a Schema, to: &'a Schema) -> Map<'a> {
-        Map { from, to }
+        Map::over(from, to, Vec::new())
+    }
+
+    /// Returns the map from `from` to `to` where the relation `from` takes as added later at
+    /// `AheadId::at(i)` is `ahead[i]`.
+    pub(super) fn over(from: &'a Schema, to: &'a Schema, ahead: Vec<Later>) -> Map<'a> {
+        Map { from, to, ahead }
+    }
+
+    /// Returns the relation of the earlier version a key of `rel` reads through.
+    ///
+    /// Preconditions: `rel` is declared at the earlier version.
+    pub(super) fn read_through(&self, rel: RelRef) -> RelId {
+        self.from.relation_of(rel).unwrap_or_else(|e| {
+            panic!("a checked term reads through no key of a relation added later: {e}")
+        })
     }
 
     /// Returns the type `def` is at the later version.
@@ -214,8 +245,22 @@ impl<'a> Map<'a> {
                     pinned == Narrow::All || pinned == Narrow::Rows && self.is_row(*def),
                 ),
             },
-            Ty::Key { rel, ctors } => {
-                let rel = self.from.declared(*rel);
+            Ty::Key {
+                rel: RelRef::Ahead(a),
+                ..
+            } => match &self.ahead[a.index()] {
+                Later::At(rel) => Ty::Key {
+                    rel: RelRef::Declared(*rel),
+                    ctors: None,
+                },
+                Later::Lacked(name) => return Err(Loss::Later(name.clone())),
+                Later::Unlinked(rule) => panic!("{rule}"),
+            },
+            Ty::Key {
+                rel: RelRef::Declared(rel),
+                ctors,
+            } => {
+                let rel = *rel;
                 let def = self.from.relation(rel).elem_def;
                 Ty::Key {
                     rel: RelRef::Declared(self.relation(rel).ok_or(Loss::Relation(rel))?),
@@ -371,9 +416,14 @@ impl<'a> Map<'a> {
     ) -> Result<(), Loss> {
         let mut inner = |t: &Ty| self.whole_in(t, exact, ordered, named, seen);
         match ty {
-            Ty::Key { rel, .. } if named => self.key_shown(self.from.declared(*rel), seen),
-            Ty::Key { rel, .. } => {
-                let rel = &self.from.declared(*rel);
+            Ty::Key {
+                rel: RelRef::Declared(rel),
+                ..
+            } if named => self.key_shown(*rel, seen),
+            Ty::Key {
+                rel: RelRef::Declared(rel),
+                ..
+            } => {
                 if self.key_order(*rel)?.is_some() && ordered {
                     return Err(Loss::KeyOrder(*rel));
                 }
@@ -382,7 +432,15 @@ impl<'a> Map<'a> {
                     .iter()
                     .try_for_each(|f| inner(&key_field_ty(self.from, *rel, f)))
             }
-            Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change | Ty::Fn(..) => Ok(()),
+            Ty::Key {
+                rel: RelRef::Ahead(_),
+                ..
+            }
+            | Ty::Base(_)
+            | Ty::Param(_)
+            | Ty::Unit
+            | Ty::Change
+            | Ty::Fn(..) => Ok(()),
             Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => inner(t),
             Ty::Group(k, t) => {
                 inner(k)?;

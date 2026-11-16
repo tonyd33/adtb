@@ -79,7 +79,7 @@ impl Builder<'_> {
                 AheadState::UnlessDeclared if named => declared,
                 AheadState::Pending | AheadState::UnlessDeclared => {
                     let defs = self.schema.defs_mut();
-                    defs.ahead.push((module, a.relation.clone()));
+                    defs.ahead.push((module, a.relation.clone(), a.by));
                     Some(RelRef::Ahead(AheadId::at(defs.ahead.len() - 1)))
                 }
             };

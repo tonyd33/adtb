@@ -914,3 +914,56 @@ fn a_field_moved_down_has_an_image_only_in_the_constructor_it_now_sits_in() {
         (image(Some(1), "user"), image(None, "user"))
     );
 }
+
+const AHEAD_MIG: &str = "module auth
+add field User.l: Option (Key later) fill None
+add type L = { id: Key later }
+add relation later : L key id generate sequence
+";
+
+const INSERT_USER: &str = "txn t (n: Text) -> Text =
+  transact
+    insert users { name: n, tier: Free }
+    return n";
+
+#[test]
+fn an_insert_takes_a_fill_whose_type_holds_a_key_of_a_relation_a_later_operator_adds() {
+    let q = translated(&[V1, AHEAD_MIG], 1, INSERT_USER).expect("the insert takes the fill");
+    let (_, to, _) = checked(&[V1, AHEAD_MIG]);
+    let later = to
+        .relations
+        .iter()
+        .position(|r| r.name == "later")
+        .map(|i| RelRef::Declared(RelId(i as u32)))
+        .expect("`later` is declared");
+    let keys: BTreeSet<RelRef> = q
+        .terms
+        .iter()
+        .filter_map(|n| match &n.ty {
+            Ty::Data { args, .. } => args.iter().find_map(|a| match a {
+                Ty::Key { rel, .. } => Some(*rel),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(BTreeSet::from([later]), keys);
+}
+
+#[test]
+fn a_fill_holding_a_key_of_a_relation_added_later_and_dropped_since_is_refused() {
+    let m2 = "module auth
+define fn isnone (x: Option (Key later)) -> Bool = x == None
+add field User.m: Bool fill isnone(None)
+add type L = { id: Key later }
+add relation later : L key id generate sequence
+";
+    let m3 = "module auth\ndrop fn isnone\ndrop relation later\ndrop type L\n";
+    assert_eq!(
+        Err(refused(
+            Some("add field User.m: Bool fill isnone(None)".to_string()),
+            "it reaches `later`, which the current version lacks",
+        )),
+        translated(&[V1, m2, m3], 1, INSERT_USER).map(drop)
+    );
+}
