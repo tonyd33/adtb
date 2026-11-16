@@ -50,3 +50,7 @@ The cause review found two patches in part 4: `schema/build.rs:78-79` still deci
 ## 2026-11-16, part 2 review
 
 The review of part 2 found a late selection widened for script writes (script-late-selection-widened, not live: the engine runs no script). Ruled into part 2b: a script that writes or matches by constructor through a field whose late selection has not resolved is refused. Part 3 also takes `Ids::of`/`signature_ids` over `&Committed` and deletes `Schema::declared`.
+
+## 2026-11-16, part 2 landed
+
+Landed as vzxsyxvp 7703b9a6 (2 rounds), full check 0 (3842 tests). Public `check_adhoc*` take `&Committed`, `Adhoc.temps: Option<Committed>`, `Committed::with_temps`; a private core `checked_items` over `&Schema`, and evolve's `script` through `pub(crate) check_script`, neither reaching `Schema::declared`. Permission analysis, text `Prepared`, registered, delta, write and reads hold `Committed`; `Database::schema -> &Committed`; `registered::settled` gives `Broken::Unsettled` (unreachable: every producer settles). Left for part 3: `Schema::declared` callers signature.rs `Ids::of`, codegen emit.rs, reference boundary.rs and adtb-file lib.rs (with `records`/`shape`), then deleting `Schema::declared`. Next: part 2b.
