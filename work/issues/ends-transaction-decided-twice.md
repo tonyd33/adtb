@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-10
-status: open
+status: resolved
+closed: 2026-11-16
 kind: bug
 priority: 550
 summary: "whether a failed write ends its transaction is decided twice, by the write path from the unmapped error and by the API from the mapped one"
@@ -19,3 +20,7 @@ The write path calls `self.take_back(tx, &ran, error.ends_transaction())` on the
 Fix direction: decide once: map before `take_back`, or carry the take-back decision in `Failed` and report that.
 
 Found in the quality review of `reviewed..main` at 7bf40103.
+
+## 2026-11-16, resolved
+
+Gone since ec4ff7ad: `Failure` and `Refusal` carry one `ends`, decided from the unmapped error's class, and both `take_back` and the reply read it. Found stale by the audit-candidates triage.
