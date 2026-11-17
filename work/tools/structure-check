@@ -5,11 +5,13 @@
 #                         allowlist line when a restructure removes sites, and delete it at 0.
 # structure-check --against REV [DIR]   fail when the allowlist holds a count above the one the
 #                         allowlist at revision REV holds (none counts as 0); passes when REV has no allowlist
+#                         except that a file's test count may rise by as much as the same row's prod count in
+#                         that file fell
 # structure-check --counts [DIR]   print the allowlist lines for the counts found
 #
 # The rows, their rules and the allowlist format are in the header of structure-allowlist. This
-# tool owns the patterns; no other tool counts them. Field rows come from the adtb-structure
-# binary, which parses the sources; the other rows are text matches.
+# tool owns the patterns; no other tool counts them. Field rows and the disallowed_methods row
+# come from the adtb-structure binary, which parses the sources; the other rows are text matches.
 set -euo pipefail
 
 mode=check
@@ -67,18 +69,18 @@ count_adtb_tests() {
   awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
 }
 
-# Print `ROW PATH COUNT` of the field rows, for files in src directories.
+# Print `ROW PATH COUNT` of the field rows for files in src directories, and of the
+# disallowed_methods row for every file, `disallowed_methods_test` for an expect under cfg(test).
 fields() {
   ((${#roots[@]})) || return 0
   cargo run --quiet --locked --offline --manifest-path "$tools_root/Cargo.toml" -p adtb-structure -- "${roots[@]}" |
-    awk '$2 ~ /^(crates|apps)\/[^\/]+\/src\//'
+    awk '$1 ~ /^disallowed_methods/ || $2 ~ /^(crates|apps)\/[^\/]+\/src\//'
 }
 
 # Print the lines `ROW KIND COUNT FILE`, test files apart from production ones.
 found_counts() {
   {
     fields
-    count disallowed_methods 'clippy::disallowed_methods'
     count crash_loops '\bfn \w*crash_loop\w*\b'
     count_under database_marks crates '(?<!is_quarantined\(|is_quarantined\(storage::|quarantined_name\(|&\[object, |for object in std::iter::once\(|quarantined_as\(&BTreeSet::from\(\[|1 => Some\()(storage::)?Quarantine::Database(?! =>)|\bMark::(Database|Held)\b' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/storage/policy.rs'
     count_under mark_setters crates '\.quarantine\(|\bmarks\(\)\s*\.(hold|change)\(' -P -U -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
@@ -107,7 +109,8 @@ found_counts() {
     count_under sim_test_offsets crates/adtb-sim/tests '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
     count_adtb_tests sim_test_offsets '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
   } | awk '
-    { kind = ($2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/ || $2 ~ /\/test_world\//) ? "test" : "prod"
+    { test = ($1 == "disallowed_methods_test"); if (test) $1 = "disallowed_methods"
+      kind = (test || $2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/ || $2 ~ /\/test_world\//) ? "test" : "prod"
       key = $1 " " kind " " $2
       if (!(key in sum)) order[++n] = key
       sum[key] += $3 }
@@ -135,13 +138,21 @@ if [[ $mode == against ]]; then
       }
     }
     /^[[:space:]]*(#|$)/ { next }
-    {
-      key = $1 " " $2 " " $4
-      before = (key in was) ? was[key] : 0
-      if ($3 > before)
-        note(key " allows " $3 ", the allowlist at the base allows " before ": a rise is the lead'"'"'s act on main")
-    }
-    END { exit bad }' "$allowlist" | LC_ALL=C sort
+    { row[++m] = $1; kind[m] = $2; num[m] = $3; file[m] = $4; now[$1 " " $2 " " $4] = $3 }
+    END {
+      for (i = 1; i <= m; i++) {
+        key = row[i] " " kind[i] " " file[i]
+        before = (key in was) ? was[key] : 0
+        if (kind[i] == "test") {
+          pkey = row[i] " prod " file[i]
+          moved = ((pkey in was) ? was[pkey] : 0) - ((pkey in now) ? now[pkey] : 0)
+          if (moved > 0) before += moved
+        }
+        if (num[i] > before)
+          note(key " allows " num[i] ", the allowlist at the base allows " before ": a rise is the lead'"'"'s act on main")
+      }
+      exit bad
+    }' "$allowlist" | LC_ALL=C sort
   exit 0
 fi
 

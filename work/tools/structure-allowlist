@@ -1,8 +1,11 @@
 # Allowed sites of each structure pattern, per file. A line is `ROW KIND COUNT FILE`; KIND is
-# `prod`, or `test` for tests/ directories, tests.rs and *_tests.rs. structure-check fails when a
+# `prod`, or `test` for tests/ directories, tests.rs and *_tests.rs, and, for disallowed_methods, an
+# expect under #[cfg(test)] on an item, statement or expression, or in #[cfg_attr(test, ..)]. structure-check fails when a
 # file has more sites than its line allows (none without a line), and when it has fewer: lower the
 # line to the new count and delete it at 0. Counts only fall: `check --changed` also fails when a
 # count is above the one the allowlist at the base revision holds, so a rise is the lead's act on main.
+# Under `--against`, a file's test count may rise by as much as the same row's prod count in that file
+# fell.
 # Every row scans crates/ and apps/.
 #
 # crate_fields:       struct fields (named or tuple) declared pub(crate), pub(super) or pub(in ..), in
@@ -11,7 +14,8 @@
 # pub_fields:         struct fields declared pub, of a struct of any visibility, in the same
 #                     sources: each such type states its contract. Fields that a macro generates
 #                     are not counted.
-# disallowed_methods: mentions of clippy::disallowed_methods in an expect or allow attribute. The
+# disallowed_methods: mentions of clippy::disallowed_methods in the lint list of an expect, allow,
+#                     warn, deny or forbid attribute, and in the tokens of a macro. The
 #                     lint rejects storage::page::owner, pages::Exclusive::write,
 #                     PageMemory::lock_exclusive, PageMemory::try_lock_exclusive and
 #                     Optimistic::upgrade (clippy.toml); each allowed site carries an expect, or its
@@ -168,7 +172,7 @@ disallowed_methods test 1 crates/adtb-sim/tests/storage/truncated_open.rs
 disallowed_methods prod 2 crates/adtb-sys/src/os/mod.rs
 disallowed_methods test 1 crates/adtb-sys/src/os/tests.rs
 disallowed_methods test 1 crates/adtb-sys/src/pages/loom_tests.rs
-disallowed_methods prod 1 crates/adtb-sys/src/pages/mod.rs
+disallowed_methods test 1 crates/adtb-sys/src/pages/mod.rs
 disallowed_methods test 1 crates/adtb-testkit/tests/front_fuzz.rs
 disallowed_methods prod 3 crates/adtb/src/btree/node.rs
 disallowed_methods test 1 crates/adtb/src/btree/tests.rs

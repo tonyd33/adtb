@@ -105,6 +105,79 @@ rm "$adtb/exec/new.rs"
 printf '#![expect(clippy::disallowed_methods, reason = "r")]\n#[expect(clippy::disallowed_methods, reason = "r")]\nfn t() {}\n' >"$adtb/exec/b_tests.rs"
 refuses 'structure-check: disallowed_methods test crates/adtb/src/exec/b_tests.rs has 2, allowed 1: remove the sites, do not raise the allowlist' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
 
+# An expect counts as test when an item, statement or expression on its path carries `cfg(test)` or
+# `cfg(all(.., test, ..))`, or `cfg_attr(test, ..)` wraps it; any other form is prod. Only the lint
+# list counts, not a `reason`, and a macro's tokens count where the parse cannot see.
+cat >"$adtb/exec/c.rs" <<'RS'
+#[expect(clippy::disallowed_methods, reason = "r")]
+fn p() {}
+#[cfg(all(test, not(loom)))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "r"
+)]
+mod tests {
+    #[test]
+    fn t() {}
+}
+#[cfg(test)]
+mod more {
+    #[expect(clippy::disallowed_methods, reason = "r")]
+    fn u() {}
+}
+#[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "r")]
+fn v() {}
+#[cfg(not(test))]
+#[expect(clippy::disallowed_methods, reason = "r")]
+fn w() {}
+#[cfg(any(test, loom))]
+#[expect(clippy::disallowed_methods, reason = "r")]
+fn x() {}
+#[cfg(test)]
+trait Tr {
+    #[expect(clippy::disallowed_methods, reason = "r")]
+    fn m() {}
+}
+fn blocks() {
+    #[cfg(test)]
+    {
+        #[expect(clippy::disallowed_methods, reason = "r")]
+        fn inner() {}
+    }
+    #[cfg(test)]
+    let _l = {
+        #[expect(clippy::disallowed_methods, reason = "r")]
+        fn inner() {}
+        1
+    };
+}
+#[cfg_attr(test, expect(clippy::disallowed_methods, reason = "r"))]
+fn ca() {}
+#[cfg_attr(loom, expect(clippy::disallowed_methods, reason = "r"))]
+fn cb() {}
+#[expect(dead_code, reason = "clippy::disallowed_methods")]
+fn named_in_reason() {}
+macro_rules! m {
+    () => {
+        #[expect(clippy::disallowed_methods, reason = "r")]
+        fn from_macro() {}
+    };
+}
+proptest! {
+    #[expect(clippy::disallowed_methods, reason = "r")]
+    fn in_proptest() {}
+}
+RS
+[[ $("$checker" --counts "$scratch") == "$(printf '%s\n' \
+  'crate_fields prod 5 crates/adtb/src/exec/a.rs' \
+  'disallowed_methods prod 2 crates/adtb/src/exec/b.rs' \
+  'disallowed_methods test 2 crates/adtb/src/exec/b_tests.rs' \
+  'disallowed_methods prod 6 crates/adtb/src/exec/c.rs' \
+  'disallowed_methods test 7 crates/adtb/src/exec/c.rs' \
+  'pub_fields prod 4 crates/adtb/src/exec/a.rs')" ]] || fail "--counts printed: $("$checker" --counts "$scratch")"
+rm "$adtb/exec/c.rs"
+
 # An open helper and a page offset count in adtb's unit-test files (`tests.rs`, `*_tests.rs`,
 # `tests/`) and its test world, nested files included, and in no other adtb source.
 mkdir -p "$adtb/heap" "$adtb/plan/tests/deep" "$adtb/test_world/inner"
@@ -303,6 +376,26 @@ if "$checker" --against @- "$scratch" >out.txt 2>&1; then
   fail "a new line passed against the base"
 fi
 grep -q 'disallowed_methods prod crates/adtb/src/exec/b.rs allows 1, the allowlist at the base allows 0' out.txt || fail "new line against the base: $(cat out.txt)"
+
+# Against the base, a file's test count may rise by as much as the same row's prod count in that
+# file fell; any other rise fails.
+jj describe -m second >/dev/null 2>&1
+jj new >/dev/null 2>&1
+printf '%s\n' '# header' 'disallowed_methods test 1 crates/adtb/src/exec/b.rs' >work/tools/structure-allowlist
+"$checker" --against @- "$scratch" >out.txt 2>&1 || fail "a move to test against the base refused: $(cat out.txt)"
+[[ ! -s out.txt ]] || fail "a move to test printed: $(cat out.txt)"
+printf '%s\n' '# header' 'disallowed_methods test 2 crates/adtb/src/exec/b.rs' >work/tools/structure-allowlist
+if "$checker" --against @- "$scratch" >out.txt 2>&1; then
+  fail "a test rise passed against the base"
+fi
+[[ $(cat out.txt) == 'structure-check: disallowed_methods test crates/adtb/src/exec/b.rs allows 2, the allowlist at the base allows 1: a rise is the lead'"'"'s act on main' ]] ||
+  fail "test rise against the base: $(cat out.txt)"
+printf '%s\n' '# header' 'disallowed_methods prod 1 crates/adtb/src/exec/b.rs' 'disallowed_methods test 1 crates/adtb/src/exec/b.rs' >work/tools/structure-allowlist
+if "$checker" --against @- "$scratch" >out.txt 2>&1; then
+  fail "a copied site passed against the base"
+fi
+[[ $(cat out.txt) == 'structure-check: disallowed_methods test crates/adtb/src/exec/b.rs allows 1, the allowlist at the base allows 0: a rise is the lead'"'"'s act on main' ]] ||
+  fail "copied site against the base: $(cat out.txt)"
 
 # clippy rejects a disallowed function imported by name, and the expect that allows it is counted.
 mkdir -p demo/src
