@@ -1,0 +1,84 @@
+=== relation
+constraint c = from p in phones where { a: p.owner.name, b: p.seen == 5 }.b select p
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== inserted
+constraint c = from p in inserted(phones) where { a: p.owner.name, b: p.seen == 5 }.b select p
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== deleted
+constraint c = from p in deleted(phones) where { a: p.owner.name, b: p.seen == 5 }.b select p
+--- dangling
+transact
+  delete p in phones where key p == phones.key(1)
+  delete u in users where key u == users.key(1)
+--- named
+delete p in phones where key p == phones.key(1)
+=== prior
+constraint c = from p in prior(phones) where { a: p.owner.name, b: p.seen == 5 }.b select p
+--- dangling
+transact
+  delete p in phones where key p == phones.key(1)
+  delete u in users where key u == users.key(1)
+--- named
+delete p in phones where key p == phones.key(1)
+=== function-rows
+constraint c = from p in all_phones() where { a: p.owner.name, b: p.seen == 5 }.b select p
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== function-body
+constraint c = from s in seens() where s == 5 select s
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== computed
+constraint c = from p in phones where p.probe == 5 select p
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== deref
+constraint c = from p in phones where { a: p.owner.boss.name, b: p.seen == 5 }.b select p
+--- dangling
+transact
+  insert users { id: users.key(2), name: "b", boss: users.key(99) }
+  insert phones { id: phones.key(2), owner: users.key(2), seen: 1 }
+--- named
+transact
+  insert users { id: users.key(2), name: "b", boss: users.key(1) }
+  insert phones { id: phones.key(2), owner: users.key(2), seen: 1 }
+=== check-self
+check pos on phones ({ a: self.owner.name, b: seen >= 0 }.b)
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== check-field
+check pos on phones ({ a: owner.name, b: seen >= 0 }.b)
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== check-computed
+check pos on phones (self.probe >= 0)
+--- dangling
+insert phones { id: phones.key(2), owner: users.key(99), seen: 1 }
+--- named
+insert phones { id: phones.key(2), owner: users.key(1), seen: 1 }
+=== check-deref
+check pos on phones ({ a: self.owner.boss.name, b: seen >= 0 }.b)
+--- dangling
+transact
+  insert users { id: users.key(2), name: "b", boss: users.key(99) }
+  insert phones { id: phones.key(2), owner: users.key(2), seen: 1 }
+--- named
+transact
+  insert users { id: users.key(2), name: "b", boss: users.key(1) }
+  insert phones { id: phones.key(2), owner: users.key(2), seen: 1 }

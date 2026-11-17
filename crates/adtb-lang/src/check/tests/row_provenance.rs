@@ -208,6 +208,9 @@ fn unused_deref_cases(provenance: Provenance) -> &'static [&'static str] {
         Provenance::Reference => &[
             "A reference field of a stored row names a row.",
             "A reference read from a stored row and bound by a generator names a row.",
+            "A reference field of a row a constraint reads from a relation, in the state after the statement.",
+            "A reference field of a row a constraint reads from `inserted`.",
+            "A reference field of a row check's `self`.",
         ],
         Provenance::Proposed => &[
             "A reference field of the row an upsert proposes, which no constraint checks when it conflicts.",

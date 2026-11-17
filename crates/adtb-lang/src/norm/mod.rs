@@ -149,6 +149,24 @@ impl Error {
     }
 }
 
+/// Returns whether `root` reads the state after a statement, before its checks pass, where no
+/// deref is total.
+fn reads_unchecked(root: Root) -> bool {
+    match root {
+        Root::Constraint(_) | Root::Check(_) => true,
+        Root::Function(_)
+        | Root::Domain(_)
+        | Root::Retag(_)
+        | Root::Default(..)
+        | Root::Computed(..)
+        | Root::IndexField(..)
+        | Root::Aggregate(_)
+        | Root::Item(_)
+        | Root::Command(_)
+        | Root::Query => false,
+    }
+}
+
 fn at<T>(root: Root, r: Result<T, String>) -> Result<T, Error> {
     r.map_err(|message| Error { root, message })
 }
@@ -159,42 +177,44 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
     let mut functions = Vec::with_capacity(p.functions.len());
     for (i, (f, def)) in p.functions.iter().zip(&schema.functions).enumerate() {
         functions.push(match f {
-            Some(t) => at(
+            Some(t) => n.function(
                 Root::Function(FnId(i as u32)),
-                n.function(FNS, *t, def.params.len().max(1)),
+                FNS,
+                *t,
+                def.params.len().max(1),
             )?,
             None => None,
         });
     }
     let mut constraints = BTreeMap::new();
     for (c, t) in p.constraints() {
-        constraints.insert(c, at(Root::Constraint(c), n.root(t))?);
+        constraints.insert(c, n.root(Root::Constraint(c), t)?);
     }
     let mut checks = BTreeMap::new();
     for (c, t) in p.checks() {
-        checks.insert(c, at(Root::Check(c), n.root(t))?);
+        checks.insert(c, n.root(Root::Check(c), t)?);
     }
     let mut domains = BTreeMap::new();
     for (id, (v, t)) in &p.domains {
         let x = n.free_var(MAIN, *v);
-        domains.insert(*id, (x, at(Root::Domain(*id), n.root(*t))?));
+        domains.insert(*id, (x, n.root(Root::Domain(*id), *t)?));
     }
     let mut retags = BTreeMap::new();
     for (r, t) in &p.retags {
-        retags.insert(*r, at(Root::Retag(*r), n.row_function(*t))?);
+        retags.insert(*r, n.row_function(Root::Retag(*r), *t)?);
     }
     let mut defaults = BTreeMap::new();
     for (&(r, i), t) in &p.defaults {
-        defaults.insert((r, i), at(Root::Default(r, i), n.root(*t))?);
+        defaults.insert((r, i), n.root(Root::Default(r, i), *t)?);
     }
     let mut computed = BTreeMap::new();
     for (&(r, i), (v, t)) in &p.computed {
         let x = n.free_var(MAIN, *v);
-        computed.insert((r, i), (x, at(Root::Computed(r, i), n.root(*t))?));
+        computed.insert((r, i), (x, n.root(Root::Computed(r, i), *t)?));
     }
     let mut index_fields = BTreeMap::new();
     for (&(r, i, j), f) in &p.index_fields {
-        let (x, value) = at(Root::IndexField(r, i, j), n.row_function(f.value))?;
+        let (x, value) = n.row_function(Root::IndexField(r, i, j), f.value)?;
         let path = f.path.clone();
         index_fields.insert((r, i, j), (x, IndexField { value, path }));
     }
@@ -205,10 +225,10 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
             continue;
         };
         let root = Root::Aggregate(i);
-        let init = at(root, n.root(a.init))?;
-        let step = at(root, n.function(MAIN, a.step, 2))?;
-        let merge = at(root, n.function(MAIN, a.merge, 2))?;
-        let finish = at(root, n.function(MAIN, a.finish, 1))?;
+        let init = n.root(root, a.init)?;
+        let step = n.function(root, MAIN, a.step, 2)?;
+        let merge = n.function(root, MAIN, a.merge, 2)?;
+        let finish = n.function(root, MAIN, a.finish, 1)?;
         aggregates.push(match (step, merge, finish) {
             (Some(step), Some(merge), Some(finish)) => Some(NormalAggregate {
                 init,
@@ -246,7 +266,7 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
         .collect();
     let mut items = Vec::with_capacity(a.items.len());
     for (i, t) in a.items.iter().enumerate() {
-        items.push(at(Root::Item(i), n.root(*t))?);
+        items.push(n.root(Root::Item(i), *t)?);
     }
     let mut commands = Vec::with_capacity(a.commands.len());
     for (i, c) in a.commands.iter().enumerate() {
@@ -254,7 +274,7 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
             .command
             .terms()
             .into_iter()
-            .map(|t| at(Root::Command(i), n.root(t)))
+            .map(|t| n.root(Root::Command(i), t))
             .collect::<Result<Vec<Tm>, Error>>()?;
         commands.push(AdhocCommand {
             command: c.command.with_terms(&terms),
@@ -285,7 +305,7 @@ fn registered(schema: &Schema, p: &Program, terms: &Terms, term: Tm) -> Result<N
     let mut n = Normaliser::new(schema, [terms, &p.terms], &p.functions);
     let (params, body) = n.under_lams(MAIN, term, usize::MAX);
     let params: Vec<Var> = params.into_iter().map(|v| n.free_var(MAIN, v)).collect();
-    let body = at(Root::Query, n.root(body))?;
+    let body = n.root(Root::Query, body)?;
     Ok(NormalQuery {
         terms: n.out,
         params,
@@ -410,6 +430,8 @@ struct Normaliser<'a> {
     fv: [HashMap<Tm, FreeVars>; 2],
     memo: HashMap<MemoKey, Tm>,
     budget: Budget,
+    /// Whether the root being normalised reads the state after a statement.
+    unchecked: bool,
 }
 
 impl<'a> Normaliser<'a> {
@@ -425,7 +447,19 @@ impl<'a> Normaliser<'a> {
             fv: [HashMap::new(), HashMap::new()],
             memo: HashMap::new(),
             budget: Budget::new(src[0].len() + src[1].len()),
+            unchecked: false,
         }
+    }
+
+    /// Normalise what follows as the body of `root`. Clear the memo when the mode changes: a
+    /// nullary function's memo key is the same in every root.
+    fn enter(&mut self, root: Root) {
+        let unchecked = reads_unchecked(root);
+        if unchecked != self.unchecked {
+            self.unchecked = unchecked;
+            self.memo.clear();
+        }
+        self.budget.start(&self.out);
     }
 
     fn node(&self, arena: usize, t: Tm) -> &'a Node {
@@ -476,10 +510,10 @@ impl<'a> Normaliser<'a> {
         x
     }
 
-    fn root(&mut self, t: Tm) -> Result<Tm, String> {
-        self.budget.start(&self.out);
-        let v = self.norm(t, &Cx::new(MAIN, Vec::new()))?;
-        self.first_order(v)
+    fn root(&mut self, root: Root, t: Tm) -> Result<Tm, Error> {
+        self.enter(root);
+        let v = at(root, self.norm(t, &Cx::new(MAIN, Vec::new())))?;
+        at(root, self.first_order(v))
     }
 
     /// Splits `t` into the variables of at most `n` leading `Lam`s and the body under them.
@@ -497,10 +531,11 @@ impl<'a> Normaliser<'a> {
     /// Normalises the body under the first `arity` `Lam`s of `t`, or returns `None` when a parameter or the body has a function type.
     fn function(
         &mut self,
+        root: Root,
         arena: usize,
         t: Tm,
         arity: usize,
-    ) -> Result<Option<(Vec<Var>, Tm)>, String> {
+    ) -> Result<Option<(Vec<Var>, Tm)>, Error> {
         let (vars, body) = self.under_lams(arena, t, arity);
         let first_order = vars
             .iter()
@@ -510,16 +545,16 @@ impl<'a> Normaliser<'a> {
             return Ok(None);
         }
         let params: Vec<Var> = vars.iter().map(|v| self.free_var(arena, *v)).collect();
-        self.budget.start(&self.out);
-        let v = self.norm(body, &Cx::new(arena, Vec::new()))?;
-        Ok(Some((params, self.first_order(v)?)))
+        self.enter(root);
+        let v = at(root, self.norm(body, &Cx::new(arena, Vec::new())))?;
+        Ok(Some((params, at(root, self.first_order(v))?)))
     }
 
     /// Normalises `t`, a `Lam` over one row, to its variable and body.
-    fn row_function(&mut self, t: Tm) -> Result<(Var, Tm), String> {
-        match self.function(MAIN, t, 1)? {
+    fn row_function(&mut self, root: Root, t: Tm) -> Result<(Var, Tm), Error> {
+        match self.function(root, MAIN, t, 1)? {
             Some((vars, body)) => Ok((vars[0], body)),
-            None => Err("a function of a row has a function type".into()),
+            None => at(root, Err("a function of a row has a function type".into())),
         }
     }
 
@@ -710,6 +745,18 @@ impl<'a> Normaliser<'a> {
         let ty = node.ty.subst(&cx.targs);
         match &node.kind {
             Kind::Var(v) => Ok(self.var_val(*v, cx)),
+            Kind::Deref {
+                key,
+                reference: true,
+                admits,
+            } if self.unchecked => {
+                let partial = Kind::Deref {
+                    key: *key,
+                    reference: false,
+                    admits: admits.clone(),
+                };
+                self.congruent(&partial, ty, cx)
+            }
             Kind::Const(_)
             | Kind::Caller
             | Kind::Rel(..)

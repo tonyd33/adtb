@@ -69,6 +69,7 @@ dependencies = [
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
+ "adtb-testkit",
  "clap",
 ]
 

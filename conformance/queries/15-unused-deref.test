@@ -22,6 +22,15 @@ schema
   fn same (k: Key users) -> Key users = k
   fn phone_of (k: Key users) -> Phone = Phone { id: phones.key(9), owner: k, seen: 0 }
   fn all_phones () -> Set Phone = from p in phones select p
+  type Watch = { id: Key watches, owner: Key users, seen: I64 }
+  type Badge = { id: Key badges, owner: Key users, seen: I64 }
+  type Pager = { id: Key pagers, owner: Key users, seen: I64 }
+  relation watches : Watch key id generate sequence
+  relation badges : Badge key id generate sequence
+  relation pagers : Pager key id generate sequence
+  constraint watched = from w in watches where { a: w.owner.name, b: w.seen == 5 }.b select w
+  constraint badged = from b in inserted(badges) where { a: b.owner.name, b: b.seen == 5 }.b select b
+  check pos on pagers ({ a: self.owner.name, b: seen > 0 }.b)
 run
   insert users from [User { id: users.key(1), name: "ann" }]
   insert phones from [Phone { id: phones.key(1), owner: users.key(1), seen: 1 }]
@@ -534,3 +543,18 @@ query
   from t in tags select t.seen
 ----
 3
+# A reference field of a row a constraint reads from a relation, in the state after the statement.
+error Faulted
+  insert watches { id: watches.key(1), owner: users.key(99), seen: 1 }
+run
+  insert watches { id: watches.key(1), owner: users.key(1), seen: 1 }
+# A reference field of a row a constraint reads from `inserted`.
+error Faulted
+  insert badges { id: badges.key(1), owner: users.key(99), seen: 1 }
+run
+  insert badges { id: badges.key(1), owner: users.key(1), seen: 1 }
+# A reference field of a row check's `self`.
+error Faulted
+  insert pagers { id: pagers.key(1), owner: users.key(99), seen: 1 }
+run
+  insert pagers { id: pagers.key(1), owner: users.key(1), seen: 1 }

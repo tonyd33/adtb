@@ -16,6 +16,7 @@ adtb-reference.workspace = true
 adtb-heap-cap.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-sim.workspace = true
+adtb-testkit.workspace = true
 
 [lints]
 workspace = true
