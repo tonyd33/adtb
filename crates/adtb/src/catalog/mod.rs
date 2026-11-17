@@ -37,6 +37,8 @@ pub(crate) use structures::relation_holder;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod fn_dependents_tests;
+#[cfg(test)]
 mod grant_rows_tests;
 #[cfg(test)]
 mod hash_corpus_tests;

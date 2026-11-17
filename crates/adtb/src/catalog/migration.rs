@@ -143,7 +143,8 @@ impl Catalog {
             .map_or((&next.schema, &next.program, &next.texts), |e| {
                 (&e.schema, &e.program, &e.texts)
             });
-        let rewritten = change::rewritten(self.checking().0, self.checking_texts(), schema, texts);
+        let (old, old_program) = self.checking();
+        let rewritten = change::rewritten(old, old_program, schema, program);
         self.admits(schema, program, texts, &rewritten)?;
         let begun = txns.begin(pager)?;
         let x = begun.xid();
@@ -356,7 +357,8 @@ impl Catalog {
         let dormant = dormant?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;
         built.readers = readers;
-        let why = built.violations(m, self.checking().0, rewritten)?;
+        let (old, old_program) = self.checking();
+        let why = built.violations(m, (old, old_program), rewritten)?;
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }

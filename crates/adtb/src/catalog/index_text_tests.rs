@@ -8,7 +8,7 @@ use adtb_lang::types::RelId;
 use adtb_lang::visit::each_expr;
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use crate::catalog::{Catalog, ElementTexts, Error, Migrating, change, delete_rows, layout};
+use crate::catalog::{Catalog, Error, Migrating, change, delete_rows, layout};
 use crate::key::Value;
 use crate::mvcc::{Scope, Transactions};
 use crate::storage::Pager;
@@ -502,12 +502,8 @@ fn a_migration_that_only_moves_an_index_declaration_rewrites_no_relation() {
         &before,
         "module app\nrename relation items to stock_items\n",
     );
-    let (old, _) = before.check().expect("the source checks");
-    let (new, _) = after.check().expect("the source checks");
-    let (old_texts, new_texts) = (
-        ElementTexts::of(&before, &old),
-        ElementTexts::of(&after, &new),
-    );
+    let (old, old_program) = before.check().expect("the source checks");
+    let (new, new_program) = after.check().expect("the source checks");
     let span = |schema: &Schema, name: &str| schema.relation(relation(schema, "app", name)).span;
     assert_ne!(
         span(&old, "items"),
@@ -516,6 +512,6 @@ fn a_migration_that_only_moves_an_index_declaration_rewrites_no_relation() {
     );
     assert_eq!(
         BTreeSet::new(),
-        change::rewritten(&old, &old_texts, &new, &new_texts)
+        change::rewritten(&old, &old_program, &new, &new_program)
     );
 }

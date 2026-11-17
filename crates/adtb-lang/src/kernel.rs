@@ -1043,12 +1043,29 @@ impl Kind {
 /// their variables: alike in kind, type and every subterm, each variable of one standing for
 /// exactly one of the other.
 pub fn alpha_equal(xs: &Terms, x: Tm, ys: &Terms, y: Tm) -> bool {
+    alpha_equal_under(xs, x, ys, y, &|k| Some(k.clone()), &|t| Some(t.clone()))
+}
+
+/// Returns whether term `x` of `xs` and term `y` of `ys` are the same term up to the names of
+/// their variables, as [`alpha_equal`] decides, each kind and type of `x` first taken to its image
+/// under `kind` and `ty`; `None` from either is a difference.
+pub fn alpha_equal_under(
+    xs: &Terms,
+    x: Tm,
+    ys: &Terms,
+    y: Tm,
+    kind: &dyn Fn(&Kind) -> Option<Kind>,
+    ty: &dyn Fn(&Ty) -> Option<Ty>,
+) -> bool {
     let mut there = BTreeMap::new();
     let mut back = BTreeMap::new();
     let mut stack = vec![(x, y)];
     while let Some((x, y)) = stack.pop() {
         let (nx, ny) = (xs.node(x), ys.node(y));
-        if !nx.ty.alike(&ny.ty) {
+        let (Some(kx), Some(tx)) = (kind(&nx.kind), ty(&nx.ty)) else {
+            return false;
+        };
+        if !tx.alike(&ny.ty) {
             return false;
         }
         let (mut vx, mut vy) = (Vec::new(), Vec::new());
@@ -1059,7 +1076,7 @@ pub fn alpha_equal(xs: &Terms, x: Tm, ys: &Terms, y: Tm) -> bool {
             });
             k.with_children(&vec![Tm(0); k.children().len()])
         };
-        let same = match (blank(&nx.kind, &mut vx), blank(&ny.kind, &mut vy)) {
+        let same = match (blank(&kx, &mut vx), blank(&ny.kind, &mut vy)) {
             (
                 Kind::Call {
                     func: f,
@@ -1083,7 +1100,7 @@ pub fn alpha_equal(xs: &Terms, x: Tm, ys: &Terms, y: Tm) -> bool {
             if *there.entry(a).or_insert(b) != b || *back.entry(b).or_insert(a) != a {
                 return false;
             }
-            if !xs.var_info(a).ty.alike(&ys.var_info(b).ty) {
+            if !ty(&xs.var_info(a).ty).is_some_and(|t| t.alike(&ys.var_info(b).ty)) {
                 return false;
             }
         }

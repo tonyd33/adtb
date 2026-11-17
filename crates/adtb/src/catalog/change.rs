@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use adtb_lang::check::Program;
+use adtb_lang::depends;
+use adtb_lang::norm::Root;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
@@ -11,7 +14,7 @@ use super::ids::{
     CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
     stored, type_id,
 };
-use super::{Broken, ElementTexts, Error, ctor_relations, layout, row_type, rows};
+use super::{Broken, Error, ctor_relations, layout, row_type, rows};
 
 /// The rows of the relations a migration rewrites, by relation id and then constructor id, each
 /// row in the layout of the schema the operators applied so far produce.
@@ -40,12 +43,12 @@ pub fn fields(schema: &Schema, r: RelId, c: u32) -> Vec<Field> {
 }
 
 /// How a relation is stored: each constructor's id and fields, each index's id, whether it is
-/// unique, its constructor ids and its fields, and the key field ids, in stored order, of each
-/// relation its fields reach through `Key`.
+/// unique and its constructor ids, and the key field ids, in stored order, of each relation its
+/// fields reach through `Key`.
 #[derive(Debug, PartialEq, Eq)]
 struct Shape {
     ctors: Vec<(CatCtorId, Vec<Field>)>,
-    indexes: Vec<(u64, bool, Vec<CatCtorId>, Vec<String>)>,
+    indexes: Vec<(u64, bool, Vec<CatCtorId>)>,
     keys: KeyIds,
 }
 
@@ -85,7 +88,7 @@ fn reached_keys(schema: &Schema, ty: &Ty, seen: &mut Vec<Ty>, keys: &mut KeyIds)
     }
 }
 
-fn shapes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<CatRelId, Shape> {
+fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
     let mut out: BTreeMap<CatRelId, Shape> = BTreeMap::new();
     for (r, c) in ctor_relations(schema) {
         let rid = rel_id(schema, r);
@@ -102,36 +105,37 @@ fn shapes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<CatRelId, Shape> {
             .ctors
             .push((ctor_id(schema, r, c), fields(schema, r, c)));
     }
-    for spec in rows::indexes(schema, texts).into_values() {
-        let rid = rel_id(schema, spec.relation);
-        let ctors = spec
-            .ctors
-            .iter()
-            .map(|&c| ctor_id(schema, spec.relation, c))
-            .collect();
-        if let Some(shape) = out.get_mut(&rid) {
-            shape
-                .indexes
-                .push((spec.id, spec.unique, ctors, spec.fields.clone()));
+    for (id, (r, unique, ctors)) in rows::index_heads(schema) {
+        let ctors = ctors.iter().map(|&c| ctor_id(schema, r, c)).collect();
+        if let Some(shape) = out.get_mut(&rel_id(schema, r)) {
+            shape.indexes.push((id, unique, ctors));
         }
     }
     out
 }
 
-/// Returns the ids of the relations that `old` and `new`, whose index element texts are
-/// `old_texts` and `new_texts`, store otherwise: those only one of them has, and those whose
-/// constructors, fields, indexes or reached keys differ.
+/// Returns the ids of the relations that `old` and `new`, whose checked programs are
+/// `old_program` and `new_program`, store otherwise: those only one of them has, those whose
+/// constructors, fields, indexes or reached keys differ, and those with an index element whose
+/// meaning [`depends::changed`] finds changed.
 pub fn rewritten(
     old: &Schema,
-    old_texts: &ElementTexts,
+    old_program: &Program,
     new: &Schema,
-    new_texts: &ElementTexts,
+    new_program: &Program,
 ) -> BTreeSet<CatRelId> {
-    let (a, b) = (shapes(old, old_texts), shapes(new, new_texts));
+    let (a, b) = (shapes(old), shapes(new));
+    let elements = depends::changed(old, old_program, new, new_program)
+        .into_iter()
+        .filter_map(|root| match root {
+            Root::IndexField(r, ..) => Some(rel_id(new, r)),
+            _ => None,
+        });
     a.keys()
         .chain(b.keys())
         .filter(|id| a.get(id) != b.get(id))
         .copied()
+        .chain(elements)
         .collect()
 }
 

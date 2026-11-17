@@ -118,8 +118,8 @@ pub struct NormalQuery {
     pub body: Tm,
 }
 
-/// A body whose normalisation failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A body of a program or of ad hoc text, by the object it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Root {
     Function(FnId),
     Constraint(ConstraintIdx),

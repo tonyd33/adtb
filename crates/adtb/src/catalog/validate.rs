@@ -1,11 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::kernel::{Kind, Terms, Tm};
-use adtb_lang::norm::{self, NormalProgram};
-use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelId, RelRef, Ty};
+use adtb_lang::check::Program;
+use adtb_lang::depends;
+use adtb_lang::kernel::{Build, Kind, Terms, Tm};
+use adtb_lang::norm::{self, NormalProgram, Root};
+use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
 
+use crate::exec::types::ctors;
 use crate::exec::{self, Budget, Call, Store, Val};
 use crate::plan;
 use crate::runtime::Runtime;
@@ -16,9 +19,10 @@ use super::ids::{CatConstraintId, CatRelId};
 use super::{Broken, Catalog, Error, Migrating};
 
 impl Catalog {
-    /// Returns, for each constraint and check of this catalog that `old` lacks or that reads a
-    /// relation whose catalog id is in `rewritten`, why the rows transaction `m.x` sees at
-    /// the snapshot of `m.hold` violate it.
+    /// Returns, for each constraint and check of this catalog that `old`, a schema and its
+    /// checked program, lacks, whose meaning [`depends::changed`] finds changed, or that reads a
+    /// relation whose catalog id is in `rewritten`, why the rows transaction `m.x` sees at the
+    /// snapshot of `m.hold` violate it.
     ///
     /// A constraint that reads a transition is not validated.
     ///
@@ -27,18 +31,35 @@ impl Catalog {
     pub(super) fn violations<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
-        old: &Schema,
+        old: (&Schema, &Program),
         rewritten: &BTreeSet<CatRelId>,
     ) -> Result<Vec<String>, Error> {
         let (pager, x) = (m.pager, m.x);
         let (schema, program) = self.checking();
+        let roots = depends::changed(old.0, old.1, schema, program);
+        let changed: BTreeSet<CatConstraintId> = roots
+            .iter()
+            .filter_map(|root| match *root {
+                Root::Constraint(c) => schema.ids().constraint_id(c),
+                Root::Check(c) => schema.ids().check_id(c),
+                _ => None,
+            })
+            .collect();
+        let domains: BTreeSet<TypeId> = roots
+            .iter()
+            .filter_map(|root| match *root {
+                Root::Domain(t) => Some(t),
+                _ => None,
+            })
+            .collect();
         let normal =
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let existed: BTreeSet<CatConstraintId> = old
+            .0
             .ids()
             .constraint_ids()
             .map(|(_, id)| id)
-            .chain(old.ids().check_ids().map(|(_, id)| id))
+            .chain(old.0.ids().check_ids().map(|(_, id)| id))
             .collect();
         let catalog = self.plan();
         let bindings = self.bindings();
@@ -60,7 +81,7 @@ impl Catalog {
                     .relation_id(*r)
                     .is_some_and(|id| rewritten.contains(&id))
             });
-            if existed.contains(&id) && !touched {
+            if existed.contains(&id) && !touched && !changed.contains(&id) {
                 continue;
             }
             let found = violating(schema, &catalog, &normal, t, &store, &budget, &self.hosts)?;
@@ -71,6 +92,22 @@ impl Catalog {
                 ));
             }
         }
+        let mut terms = normal.terms.clone();
+        let rels: Vec<Tm> = schema
+            .ids()
+            .relation_ids()
+            .map(|(r, _)| Build::new(schema, &mut terms).rel(r, None))
+            .collect();
+        let q = Query {
+            schema,
+            catalog: &catalog,
+            normal: &normal,
+            terms: &terms,
+            store: &store,
+            budget: &budget,
+            hosts: &self.hosts,
+        };
+        why.extend(q.domains(&rels, &domains)?);
         Ok(why)
     }
 }
@@ -236,62 +273,224 @@ fn run_denial<R: Runtime>(
     budget: &Arc<Budget>,
     hosts: &Arc<exec::Hosts>,
 ) -> Result<Result<Vec<String>, Denied>, Error> {
-    let terms = &normal.terms;
-    let p = plan::plan(schema, normal, catalog, terms, t, plan::Options::default())
-        .map_err(|e| Error::from(Broken::Plan(e)))?;
-    let mut program = match exec::compile(schema, catalog, &p, None) {
-        Ok(program) => program,
-        Err(e) => return damaged(e).map(Err),
+    let q = Query {
+        schema,
+        catalog,
+        normal,
+        terms: &normal.terms,
+        store,
+        budget,
+        hosts,
     };
-    program.shared.hosts = hosts.clone();
-    let program = Arc::new(program);
-    let grant = budget
-        .admit(budget.limit())
-        .expect("one validation runs at a time");
-    let call = Call::new(
-        store.clone(),
-        grant,
-        exec::Options::default(),
-        Arc::default(),
-        None,
-    );
-    let v = match exec::execute(store.pager().rt().clone(), program, call, &[]) {
-        Ok(v) => v,
-        Err(exec::Error::Fault(f)) => {
-            return Ok(Err(Denied::Fault(format!(
-                "its query faults with {}",
-                f.name()
-            ))));
-        }
-        Err(exec::Error::Rejected(why)) => {
-            return Ok(Err(Denied::Fault(format!("its query rejects: {why}"))));
-        }
-        Err(exec::Error::StatementLimit(
-            exec::Exceeded::Memory { limit } | exec::Exceeded::Spill { grant: limit, .. },
-        )) => {
-            return Ok(Err(Denied::Memory(format!(
-                "its validation needs more than the query memory of {limit} bytes"
-            ))));
-        }
-        Err(e) => return damaged(e).map(Err),
-    };
-    let Val::Set(rows) = &v else {
-        return Err(Error::from(Broken::NotASet(v)));
-    };
-    let elem = match terms.ty(t) {
-        Ty::Set(e) => e.as_ref().clone(),
-        other => {
-            return Err(Error::from(Broken::NotSetTyped(other.clone())));
-        }
+    let (rows, elem) = match q.run(t)? {
+        Ok(found) => found,
+        Err(d) => return Ok(Err(d)),
     };
     let mut printed = Vec::new();
-    for r in rows.iter() {
+    for r in &rows {
         match exec::print(schema, &elem, r) {
             Ok(row) => printed.push(row),
             Err(e) => return damaged(e).map(Err),
         }
     }
     Ok(Ok(printed))
+}
+
+/// What a set query runs over during a migration's validation.
+struct Query<'a, R: Runtime> {
+    schema: &'a Schema,
+    catalog: &'a plan::Catalog,
+    normal: &'a NormalProgram,
+    terms: &'a Terms,
+    store: &'a Arc<Store<R>>,
+    budget: &'a Arc<Budget>,
+    hosts: &'a Arc<exec::Hosts>,
+}
+
+impl<R: Runtime> Query<'_, R> {
+    /// Returns each row set query `t` of `self.terms` returns over the store, with the type of
+    /// a row, or why it could not run.
+    fn run(&self, t: Tm) -> Result<Result<(Vec<Val>, Ty), Denied>, Error> {
+        let (schema, catalog, normal, terms) = (self.schema, self.catalog, self.normal, self.terms);
+        let (store, budget, hosts) = (self.store, self.budget, self.hosts);
+        let p = plan::plan(schema, normal, catalog, terms, t, plan::Options::default())
+            .map_err(|e| Error::from(Broken::Plan(e)))?;
+        let mut program = match exec::compile(schema, catalog, &p, None) {
+            Ok(program) => program,
+            Err(e) => return damaged(e).map(Err),
+        };
+        program.shared.hosts = hosts.clone();
+        let program = Arc::new(program);
+        let grant = budget
+            .admit(budget.limit())
+            .expect("one validation runs at a time");
+        let call = Call::new(
+            store.clone(),
+            grant,
+            exec::Options::default(),
+            Arc::default(),
+            None,
+        );
+        let v = match exec::execute(store.pager().rt().clone(), program, call, &[]) {
+            Ok(v) => v,
+            Err(exec::Error::Fault(f)) => {
+                return Ok(Err(Denied::Fault(format!(
+                    "its query faults with {}",
+                    f.name()
+                ))));
+            }
+            Err(exec::Error::Rejected(why)) => {
+                return Ok(Err(Denied::Fault(format!("its query rejects: {why}"))));
+            }
+            Err(exec::Error::StatementLimit(
+                exec::Exceeded::Memory { limit } | exec::Exceeded::Spill { grant: limit, .. },
+            )) => {
+                return Ok(Err(Denied::Memory(format!(
+                    "its validation needs more than the query memory of {limit} bytes"
+                ))));
+            }
+            Err(e) => return damaged(e).map(Err),
+        };
+        let Val::Set(rows) = &v else {
+            return Err(Error::from(Broken::NotASet(v)));
+        };
+        let elem = match terms.ty(t) {
+            Ty::Set(e) => e.as_ref().clone(),
+            other => {
+                return Err(Error::from(Broken::NotSetTyped(other.clone())));
+            }
+        };
+        Ok(Ok((rows.iter().cloned().collect(), elem)))
+    }
+
+    /// Returns why the rows of each of `rels`, each a whole relation, that hold a value of a
+    /// newtype of `domains` violate the newtype's domain, one reason per newtype.
+    fn domains(&self, rels: &[Tm], domains: &BTreeSet<TypeId>) -> Result<Vec<String>, Error> {
+        let schema = self.schema;
+        let mut checks = BTreeMap::new();
+        for t in domains {
+            if let Some((v, body)) = self.normal.domains.get(t) {
+                let mut scalar =
+                    exec::Scalar::new(schema, &self.normal.terms, *v, *body).map_err(failed)?;
+                scalar.set_hosts(self.hosts.clone());
+                checks.insert(*t, scalar);
+            }
+        }
+        let name = |d: TypeId| {
+            let def = schema.ty(d);
+            format!("{}::{}.domain", schema.module(def.module).name, def.name)
+        };
+        let mut found: BTreeMap<TypeId, Vec<String>> = BTreeMap::new();
+        let mut why = Vec::new();
+        for &t in rels {
+            let Ty::Set(e) = self.terms.ty(t) else {
+                continue;
+            };
+            let held: Vec<TypeId> = checks
+                .keys()
+                .copied()
+                .filter(|&d| holds(schema, e, d, &mut BTreeSet::new()))
+                .collect();
+            if held.is_empty() {
+                continue;
+            }
+            let (rows, elem) = match self.run(t)? {
+                Ok(found) => found,
+                Err(Denied::Fault(w) | Denied::Memory(w)) => {
+                    why.extend(
+                        held.iter()
+                            .map(|&d| format!("constraint {} is violated by {w}", name(d))),
+                    );
+                    continue;
+                }
+                Err(Denied::Rotten(rot)) => return Err(failed(exec::Error::Corrupt(rot))),
+                Err(Denied::Orphaned(index)) => {
+                    return Err(failed(exec::Error::OrphanEntry(index)));
+                }
+            };
+            for row in &rows {
+                let mut broken = BTreeSet::new();
+                breaks(schema, &checks, row, &elem, &mut broken).map_err(failed)?;
+                for d in broken {
+                    let printed = exec::print(schema, &elem, row).map_err(failed)?;
+                    found.entry(d).or_default().push(printed);
+                }
+            }
+        }
+        why.extend(
+            found.into_iter().map(|(d, rows)| {
+                format!("constraint {} is violated by {}", name(d), rows.join(", "))
+            }),
+        );
+        Ok(why)
+    }
+}
+
+/// Returns whether a value of type `ty` can hold a value of newtype `domain`.
+fn holds(schema: &Schema, ty: &Ty, domain: TypeId, seen: &mut BTreeSet<TypeId>) -> bool {
+    match ty {
+        Ty::Data { def, args, .. } => {
+            if *def == domain {
+                return true;
+            }
+            if args.iter().any(|a| holds(schema, a, domain, seen)) {
+                return true;
+            }
+            if !seen.insert(*def) {
+                return false;
+            }
+            match &schema.ty(*def).kind {
+                TypeDefKind::Newtype { base, .. } => holds(schema, &base.subst(args), domain, seen),
+                TypeDefKind::Sum { .. } => ctors(schema, ty)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .any(|(_, t)| holds(schema, &t, domain, seen)),
+            }
+        }
+        Ty::Record(fs) => fs.iter().any(|(_, t)| holds(schema, t, domain, seen)),
+        Ty::Sum { ctors: cs, .. } => cs
+            .iter()
+            .flat_map(|(_, fs)| fs)
+            .any(|(_, t)| holds(schema, t, domain, seen)),
+        _ => false,
+    }
+}
+
+/// Add to `broken` each newtype of `domains` whose domain a value inside `v`, of type `ty`,
+/// violates.
+fn breaks(
+    schema: &Schema,
+    domains: &BTreeMap<TypeId, exec::Scalar>,
+    v: &Val,
+    ty: &Ty,
+    broken: &mut BTreeSet<TypeId>,
+) -> Result<(), exec::Error> {
+    let fields = |fs: &[(String, Ty)], vs: &[Val], broken: &mut BTreeSet<TypeId>| {
+        fs.iter()
+            .zip(vs)
+            .try_for_each(|((_, t), x)| breaks(schema, domains, x, t, broken))
+    };
+    match ty {
+        Ty::Data { def, args, .. } => match &schema.ty(*def).kind {
+            TypeDefKind::Newtype { base, .. } => {
+                if let Some(check) = domains.get(def)
+                    && !check.eval(v.clone())?.truth()?
+                {
+                    broken.insert(*def);
+                }
+                breaks(schema, domains, v, &base.subst(args), broken)
+            }
+            TypeDefKind::Sum { .. } => {
+                let cs = ctors(schema, ty).ok_or(exec::Broken::CtorNotSum)?;
+                let c = v.ctor_of()? as usize;
+                fields(&cs[c], v.fields()?, broken)
+            }
+        },
+        Ty::Record(fs) => fields(fs, v.fields()?, broken),
+        Ty::Sum { ctors: cs, .. } => fields(&cs[v.ctor_of()? as usize].1, v.fields()?, broken),
+        _ => Ok(()),
+    }
 }
 
 /// Returns the damage a denial run met as why it could not run, any other failure as the

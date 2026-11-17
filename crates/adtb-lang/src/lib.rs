@@ -10,6 +10,7 @@ pub mod calendar;
 pub mod canon;
 pub mod check;
 pub mod collation;
+pub mod depends;
 pub mod evolve;
 pub mod ids;
 pub mod kernel;

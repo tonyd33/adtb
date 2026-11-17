@@ -131,19 +131,10 @@ impl Program {
 
     /// Returns every body of the program with the variables free in it.
     pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
-        let mut out: Vec<(Tm, Vec<Var>)> = Vec::new();
-        out.extend(self.functions.iter().flatten().map(|t| (*t, vec![])));
-        out.extend(self.constraints.values().map(|t| (*t, vec![])));
-        out.extend(self.checks.values().map(|t| (*t, vec![])));
-        out.extend(self.domains.values().map(|(v, t)| (*t, vec![*v])));
-        out.extend(self.retags.values().map(|t| (*t, vec![])));
-        out.extend(self.defaults.values().map(|t| (*t, vec![])));
-        out.extend(self.computed.values().map(|(v, t)| (*t, vec![*v])));
-        out.extend(self.index_fields.values().map(|f| (f.value, vec![])));
-        for a in self.aggregates.iter().flatten() {
-            out.extend([a.init, a.step, a.merge, a.finish].map(|t| (t, vec![])));
-        }
-        out
+        crate::depends::bodies(self)
+            .into_iter()
+            .map(|(_, t, vs)| (t, vs))
+            .collect()
     }
 }
 

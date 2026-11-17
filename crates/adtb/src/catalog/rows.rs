@@ -137,9 +137,6 @@ pub struct IndexSpec {
     pub unique: bool,
     /// Constructor indexes, in order.
     pub ctors: Vec<u32>,
-    /// Each element as written: a field, a path through a field's value-level sum, as
-    /// `login.Google.gid`, or an expression, as `lower ( email )`.
-    pub fields: Vec<String>,
     pub elements: Vec<Element>,
     kind: CatCtorId,
     /// The clause as the catalog writes it.
@@ -159,8 +156,7 @@ impl IndexSpec {
             relation: r,
             unique: true,
             ctors: all_ctors(schema, r),
-            elements: fields.iter().cloned().map(Element::Field).collect(),
-            fields,
+            elements: fields.into_iter().map(Element::Field).collect(),
             kind: k::INDEX_PRIMARY_KEY,
             clause,
         }
@@ -240,7 +236,6 @@ pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec
             unique: def.unique,
             ctors: def.scope.clone().unwrap_or_else(|| all_ctors(schema, r)),
             clause: clause(schema, r, def, &fields),
-            fields,
             elements,
             kind: match (def.unique, def.interval) {
                 (true, _) => k::INDEX_UNIQUE,
@@ -266,7 +261,6 @@ pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec
             relation: r,
             unique: false,
             ctors,
-            fields: vec![field.to_string()],
             elements: vec![Element::Field(field.to_string())],
             kind: k::INDEX_IMPLIED,
             clause,
@@ -274,6 +268,25 @@ pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec
         out.insert(id, spec);
     }
     out
+}
+
+/// Returns the relation, uniqueness and constructors of every index of `schema` with a catalog
+/// id, by index id.
+pub fn index_heads(schema: &Schema) -> BTreeMap<u64, (RelId, bool, Vec<u32>)> {
+    let keys = schema
+        .ids()
+        .key_ids()
+        .map(|(r, id)| (id.raw(), (r, true, all_ctors(schema, r))));
+    let declared = schema.ids().index_ids().map(|((r, i), id)| {
+        let def = &schema.relation(r).indexes[i];
+        let ctors = def.scope.clone().unwrap_or_else(|| all_ctors(schema, r));
+        (id.raw(), (r, def.unique, ctors))
+    });
+    let implied = schema.ids().implied_ids().map(|(r, f, id)| {
+        let ctors = f.ctor().map_or_else(|| all_ctors(schema, r), |c| vec![c]);
+        (id.raw(), (r, false, ctors))
+    });
+    keys.chain(declared).chain(implied).collect()
 }
 
 /// Returns the fields an index's clause names, or `None` if one of its expressions is not a
