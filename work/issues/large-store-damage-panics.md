@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-09
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 300
 summary: "two large-value store paths panic on a damaged page instead of refusing it: insert's tail update assert and sweep's not-a-heap-page panic"
@@ -22,3 +23,7 @@ Each refuses the page through the store's damage path, as `LargeStore::refused` 
 ## Reproduction
 
 Plant a foreign or unframed page at a store position the sweep touches, through the testing surface, and run a sweep. Found by the step 7 review of structure-version-owner.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: report slot and chunk framing that does not decode as damage of its page`, part 2 of page-decode-returns-result: insert's tail check refuses through the stage and sweep refuses a page that is not a store page; both tested in crates/adtb/src/heap/row_damage_tests.rs.
