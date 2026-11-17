@@ -1,0 +1,27 @@
+=== 001 write
+--- extra
+type Customer = { id: Key customers, name: Text }
+relation customers : Customer key id generate sequence computed loud: Text = self.name ++ "!"
+fn all_customers () -> Set Customer = from c in customers select c
+--- text
+delete c in all_customers() where c.loud == "x!"
+--- expect
+accept
+=== 002 write
+--- extra
+type Customer = { id: Key customers, name: Text }
+relation customers : Customer key id generate sequence computed loud: Text = self.name ++ "!"
+fn all_customers () -> Set Customer = from c in customers select c
+--- text
+update c in all_customers() where c.loud == "x!" set Customer { c with name: "y" }
+--- expect
+accept
+=== 003 write
+--- extra
+type Customer = { id: Key customers, name: Text }
+relation customers : Customer key id generate sequence computed loud: Text = self.name ++ "!"
+fn all_customers () -> Set Customer = from c in customers select c
+--- text
+delete c in all_customers() where (match c | Customer x -> x.loud) == "x!"
+--- expect
+accept

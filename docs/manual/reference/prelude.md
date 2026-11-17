@@ -613,10 +613,7 @@ adtb> from p in pets select p.name order by collate(p.name, "en@cldr-49")
 "rex"
 "tom"
 adtb> matches("a", "(")
-`(` is not a regular expression: regex parse error:
-    (
-    ^
-error: unclosed group
+`(` is not a regular expression: a `(` with no `)`, at column 1
 ```
 
 ## Bytes

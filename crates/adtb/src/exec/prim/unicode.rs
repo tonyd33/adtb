@@ -7,7 +7,6 @@ use icu_collator::preferences::{CollationCaseFirst, CollationNumericOrdering};
 use icu_collator::{CollatorBorrowed, CollatorPreferences};
 use icu_locale_core::{LanguageIdentifier, Locale};
 use icu_segmenter::GraphemeClusterSegmenter;
-use regex::Regex;
 use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 
 pub fn nfc(t: &str) -> String {
@@ -42,20 +41,6 @@ pub fn graphemes(t: &str) -> usize {
         return 0;
     }
     GraphemeClusterSegmenter::new().segment_str(t).count() - 1
-}
-
-/// A compiled `matches` pattern.
-#[derive(Clone, Debug)]
-pub struct Pattern(Regex);
-
-impl Pattern {
-    pub fn new(re: &str) -> Result<Pattern, String> {
-        Regex::new(re).map(Pattern).map_err(|e| e.to_string())
-    }
-
-    pub fn is_match(&self, t: &str) -> bool {
-        self.0.is_match(t)
-    }
 }
 
 /// A collator built from a collation name.

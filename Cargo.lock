@@ -22,7 +22,6 @@ dependencies = [
  "icu_locale_core",
  "icu_segmenter",
  "jiff",
- "regex",
  "unicode-normalization",
  "zeroize",
 ]
@@ -114,6 +113,7 @@ dependencies = [
  "adtb-heap-cap",
  "adtb-lang",
  "adtb-testkit",
+ "regex",
  "regex-syntax",
  "unicode-normalization",
 ]
@@ -151,7 +151,6 @@ dependencies = [
  "icu_locale_core",
  "icu_segmenter",
  "jiff",
- "regex",
  "unicode-normalization",
 ]
 

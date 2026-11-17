@@ -23,10 +23,7 @@ fn f (t: Text) -> Bool = matches(t, "(a")
 --- expect
 refuse
 --- errors
-`(a` is not a regular expression: regex parse error:
-    (a
-    ^
-error: unclosed group
+`(a` is not a regular expression: a `(` with no `)`, at column 1
 --- phase
 check
 === 005 schema
@@ -35,10 +32,7 @@ fn f (t: Text) -> Bool = matches(t, "(a)\\1")
 --- expect
 refuse
 --- errors
-`(a)\1` is not a regular expression: regex parse error:
-    (a)\1
-       ^^
-error: backreferences are not supported
+`(a)\1` is not a regular expression: a backreference, at column 4
 --- phase
 check
 === 006 schema
@@ -47,9 +41,47 @@ fn f (t: Text) -> Bool = matches(t, "a(?=b)")
 --- expect
 refuse
 --- errors
-`a(?=b)` is not a regular expression: regex parse error:
-    a(?=b)
-     ^^^
-error: look-around, including look-ahead and look-behind, is not supported
+`a(?=b)` is not a regular expression: a lookaround, at column 2
 --- phase
 check
+=== 007 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "(a{1000}){1000}")
+--- expect
+refuse
+--- errors
+`(a{1000}){1000}`: its compiled form exceeds the limit of 10485760 bytes
+--- phase
+check
+=== 008 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "(?x) a")
+--- expect
+refuse
+--- errors
+`(?x) a` is not a regular expression: the flag `x` is none of `i`, `m`, `s` and `U`, at column 3
+--- phase
+check
+=== 009 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "(?R)a")
+--- expect
+refuse
+--- errors
+`(?R)a` is not a regular expression: the flag `R` is none of `i`, `m`, `s` and `U`, at column 3
+--- phase
+check
+=== 010 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "a(?-u:b)")
+--- expect
+refuse
+--- errors
+`a(?-u:b)` is not a regular expression: the flag `u` is none of `i`, `m`, `s` and `U`, at column 5
+--- phase
+check
+=== 011 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "(?is:a)(?mU)b")
+--- expect
+accept

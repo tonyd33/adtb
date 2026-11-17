@@ -10,6 +10,12 @@ disallowed-methods = [
   { path = "adtb_sys::pages::PageMemory::try_lock_exclusive", reason = "pager.rs owns the exclusive latch; use Pager::exclusive or Pager::hold" },
   { path = "adtb_sys::runtime::Ticket::new", reason = "a ticket is made only by a backend, for an op submitted to it" },
   { path = "adtb_sys::pages::Optimistic::upgrade", reason = "pager.rs owns the exclusive latch; use PageOptimistic::upgrade" },
+  { path = "regex::Regex::new", reason = "a pattern compiles only in adtb_lang::pattern::Pattern::new, so the checker, the engine and the reference agree on it" },
+  { path = "regex::RegexBuilder::new", reason = "a pattern compiles only in adtb_lang::pattern::Pattern::new, so the checker, the engine and the reference agree on it" },
+  { path = "regex::RegexSet::new", reason = "a pattern compiles only in adtb_lang::pattern::Pattern::new, so the checker, the engine and the reference agree on it" },
+  { path = "regex::bytes::Regex::new", reason = "a pattern compiles only in adtb_lang::pattern::Pattern::new, so the checker, the engine and the reference agree on it" },
+  { path = "regex::bytes::RegexBuilder::new", reason = "a pattern compiles only in adtb_lang::pattern::Pattern::new, so the checker, the engine and the reference agree on it" },
+  { path = "regex::bytes::RegexSet::new", reason = "a pattern compiles only in adtb_lang::pattern::Pattern::new, so the checker, the engine and the reference agree on it" },
 ]
 allow-unwrap-in-tests = true
 allow-print-in-tests = true

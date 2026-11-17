@@ -1,6 +1,6 @@
 # Checker runtime cases
 
-The three unit-test groups in `src/check/tests/runtime.rs` discover every
+The five unit-test groups in `src/check/tests/runtime.rs` discover every
 `.case` file here at runtime. Adding a file or changing its data requires
 no Rust change or relink. `running.schema` is the shared schema, read at
 runtime by the existing checker helpers.
@@ -18,8 +18,8 @@ Decimal 1
 ```
 
 The header gives the file-local subcase ID and mode (`schema`, `adhoc`,
-`query`). Required fields are `text` and `expect` (`accept`, `refuse`). A
-refusal requires `phase` (`schema`, `check`, `adhoc`, `query`) and `errors`,
+`query`, `body`, `write`). Required fields are `text` and `expect` (`accept`, `refuse`). A
+refusal requires `phase` (`schema`, `check`, `adhoc`, `query`, `body`, `write`) and `errors`,
 containing the exact diagnostic, including newlines. Separate diagnostics
 with a line containing `::: diagnostic`; comparison preserves multiplicity
 and ignores diagnostic order. An accepted ad hoc case may declare `type`
@@ -29,7 +29,12 @@ Ad hoc cases may declare `params`, one tab-separated name/type pair per
 line. These descriptors are resolved externally through the existing helper,
 then passed to the checker. An ad hoc case may instead declare `extra`, a
 schema addition checked before the ad hoc text. Query cases may declare
-`extra` as well. Unknown, repeated and unused fields fail.
+`extra` as well. A body case checks `text` ad hoc, as the body of a registered
+query and as the return of a registered transaction, both returning its
+required `result` type, and requires the three outcomes to be the same; it may
+declare `extra`. A write case checks the write `text` ad hoc and as the block of
+a registered transaction returning `()`, requires the two outcomes to be the
+same, and may declare `extra`. Unknown, repeated and unused fields fail.
 
 Every field ends with one delimiter newline. Additional trailing newlines
 belong to its value and are preserved. The markers `=== ` and a newline

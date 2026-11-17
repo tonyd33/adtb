@@ -96,25 +96,7 @@ fn ty_of(params: &[(&str, &str)], text: &str) -> String {
 }
 
 fn txn(text: &str) -> Result<(Committed, Txn), String> {
-    let s = wschema();
-    let items = parse_example(text, Options::default())
-        .ok()
-        .expect("parses");
-    let Some(ExampleItem::BundleItem(BundleItem::Txn(t))) = items.into_iter().next() else {
-        panic!("{text}\nis not a txn");
-    };
-    let module = s.module_named("auth").expect("module auth");
-    let program = check_schema(&s).expect("the schema checks");
-    match check_txn(&s, &program, module, &t) {
-        Ok(t) => {
-            assert_one_binding_site("checked", &t.terms, &[t.term]);
-            let n =
-                crate::norm::txn(&s, &program, &t).unwrap_or_else(|e| panic!("normalises: {e:?}"));
-            assert_one_binding_site("normalised", &n.terms, &[n.body]);
-            Ok((s, t))
-        }
-        Err(d) => Err(d.message),
-    }
+    txn_over(WRITES, text)
 }
 
 fn txn_ok(text: &str) {

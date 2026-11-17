@@ -121,14 +121,16 @@ root (devenv also puts each on PATH as `NAME`):
   module (`crate_fields`, `pub_fields`, counted by parsing with `crates/adtb-structure`),
   `.xmin`/`.xmax` outside mvcc, and the `expect` attributes of `clippy::disallowed_methods`
   (`clippy.toml` rejects `storage::page::owner`, `pages::Exclusive::write`,
-  `PageMemory::lock_exclusive`, `PageMemory::try_lock_exclusive` and `Optimistic::upgrade` by
-  identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
+  `PageMemory::lock_exclusive`, `PageMemory::try_lock_exclusive`, `Optimistic::upgrade` and the
+  `regex` constructors outside `adtb_lang::pattern` by identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
   above the allowlist at REV; `check --changed` runs it against `main`, so a rise is the lead's
   act on main. `structure-check-test` proves it on scratch files.
 - `feature-check [DIR]`: fail when a package of either workspace has a normal or build
   dependency on adtb with its `testing` feature, enables `adtb/testing` from a feature of its own,
   or adtb's default features include it, read from `cargo metadata`; a dev-dependency may enable
-  it. `check` runs it; `feature-check-test` proves it on scratch workspaces.
+  it. It also fails when a package other than adtb-lang depends on `regex`, `regex-automata`,
+  `regex-syntax`, `regex-lite` or `fancy-regex`. `check` runs it; `feature-check-test` proves it
+  on scratch workspaces.
 - `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
   `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of
   `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with

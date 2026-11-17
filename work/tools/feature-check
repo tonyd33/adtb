@@ -4,7 +4,10 @@
 #                       dependency on adtb or adtb-lang with its `testing` feature, enables
 #                       `adtb/testing` or `adtb-lang/testing` from a feature of its own (adtb's
 #                       `testing` may enable `adtb-lang/testing`), or when the default features of
-#                       either include `testing`. Dev-dependencies may enable it.
+#                       either include `testing`. Dev-dependencies may enable it. Fail as well
+#                       when a package other than adtb-lang depends on a regular expression
+#                       crate (regex, regex-automata, regex-syntax, regex-lite, fancy-regex): a
+#                       `matches` pattern compiles only through adtb-lang.
 set -euo pipefail
 
 root=$(cd "${1:-$(dirname "$0")/../..}" && pwd)
@@ -34,7 +37,10 @@ for manifest in "${manifests[@]}"; do
         | select(($package == "adtb" and $feature == "testing" and .dep == "adtb-lang") | not)
         | "\($at): feature \($feature) enables \(.dep)/testing" ),
       ( select(.name | IN($gated[])) | .features.default // [] | select(any(.[]; . == "testing"))
-        | "\($at): the default features include testing" )
+        | "\($at): the default features include testing" ),
+      ( select($package != "adtb-lang") | .dependencies[]
+        | select(.name | IN("regex", "regex-automata", "regex-syntax", "regex-lite", "fancy-regex"))
+        | "\($at): a \(.kind // "normal") dependency on \(.name), which only adtb-lang compiles patterns with" )
     | "feature-check: " + .' <<<"$metadata")
   [[ -z $out ]] || bad+=$out$'\n'
 done

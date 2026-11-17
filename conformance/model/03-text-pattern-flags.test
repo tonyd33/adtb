@@ -1,0 +1,15 @@
+# A matches pattern that sets a flag outside i, m, s and U is refused with Invalid.
+schema
+  module test
+  type Person = { id: Key people, name: Text }
+  relation people : Person key id generate sequence
+error Invalid
+  matches("a", "(?x) a")
+error Invalid
+  matches("a", "(?R)a")
+error Invalid
+  matches("a", "(?x:a)")
+query
+  matches("A", "(?i)a")
+----
+true

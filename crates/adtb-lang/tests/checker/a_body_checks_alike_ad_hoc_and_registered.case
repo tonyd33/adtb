@@ -1,0 +1,74 @@
+=== 001 body
+--- extra
+type Customer = { id: Key customers, name: Text }
+relation customers : Customer key id generate sequence computed loud: Text = self.name ++ "!"
+fn all_customers () -> Set Customer = from c in customers select c
+--- text
+from c in all_customers() select c.loud
+--- result
+Set Text
+--- expect
+accept
+=== 002 body
+--- extra
+type Named = { name: Text }
+relation named : Named key name
+fn all_named () -> Set Named = from n in named select n
+--- text
+from n in all_named() select key n
+--- result
+Set (Key named)
+--- expect
+accept
+=== 003 body
+--- extra
+type Named = { name: Text }
+relation named : Named key name
+fn made () -> Set Named = from u in users select Named { name: u.name }
+--- text
+from n in made() select key n
+--- result
+Set (Key named)
+--- expect
+refuse
+--- phase
+body
+--- errors
+`key` needs a row whose relation is known here, found a value of Named
+=== 004 body
+--- extra
+type Customer = { id: Key customers, name: Text }
+relation customers : Customer key id generate sequence computed loud: Text = self.name ++ "!"
+fn made () -> Set Customer = from u in users select Customer { id: customers.key(1), name: u.name }
+--- text
+from c in made() select c.loud
+--- result
+Set Text
+--- expect
+refuse
+--- phase
+body
+--- errors
+Customer has no field `loud`
+=== 005 body
+--- extra
+type Customer = { id: Key customers, name: Text }
+relation customers : Customer key id generate sequence computed loud: Text = self.name ++ "!"
+fn all_customers () -> Set Customer = from c in customers select c
+--- text
+from c in all_customers() select match c | Customer x -> x.loud
+--- result
+Set Text
+--- expect
+accept
+=== 006 body
+--- extra
+type Customer = { id: Key customers, name: Text }
+relation customers : Customer key id generate sequence computed loud: Text = self.name ++ "!"
+fn all_customers () -> Set Customer = from c in customers select c
+--- text
+from c in (from d in all_customers() select d) select c.loud
+--- result
+Set Text
+--- expect
+accept

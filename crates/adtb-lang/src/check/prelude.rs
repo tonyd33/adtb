@@ -581,11 +581,17 @@ impl Checker<'_> {
                 };
                 let x = self.base_arg(a, Base::Text)?;
                 let re = self.constant_text(b)?;
-                if let Err(e) = regex_syntax::Parser::new().parse(&re) {
-                    return Err(diag(
-                        b.span,
-                        format!("`{re}` is not a regular expression: {e}"),
-                    ));
+                match crate::pattern::Pattern::new(&re) {
+                    Ok(_) => {}
+                    Err(e @ crate::pattern::Refusal::TooBig) => {
+                        return Err(diag(b.span, format!("`{re}`: {e}")));
+                    }
+                    Err(e) => {
+                        return Err(diag(
+                            b.span,
+                            format!("`{re}` is not a regular expression: {e}"),
+                        ));
+                    }
                 }
                 let y = self.base_arg(b, Base::Text)?;
                 let bt = self.bool_ty();

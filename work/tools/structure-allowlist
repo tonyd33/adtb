@@ -161,6 +161,7 @@ disallowed_methods test 1 apps/campaign/tests/engine.rs
 disallowed_methods prod 1 crates/adtb-bench/src/native/crash_tests/mod.rs
 disallowed_methods prod 1 crates/adtb-bench/src/native/reporting/mod.rs
 disallowed_methods prod 1 crates/adtb-heap-cap/src/lib.rs
+disallowed_methods prod 1 crates/adtb-lang/src/pattern.rs
 disallowed_methods test 1 crates/adtb-reference/tests/wide.rs
 disallowed_methods prod 2 crates/adtb-sim/src/sim.rs
 disallowed_methods test 5 crates/adtb-sim/tests/maintenance/maintenance_faults.rs

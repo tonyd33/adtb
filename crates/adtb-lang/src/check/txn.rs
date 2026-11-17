@@ -242,7 +242,7 @@ pub fn check_txn_in(
     vis: Visible,
     t: &ast::TxnDecl,
 ) -> Result<Txn, Diag> {
-    let mut c = Checker::new(schema, vis, Context::Function);
+    let mut c = Checker::registered(schema, program, vis);
     let term = c.txn(t)?;
     let txn = Txn {
         terms: c.terms,

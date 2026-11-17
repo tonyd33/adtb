@@ -357,7 +357,9 @@ backreferences or lookaround. It matches over Unicode scalar values;
 ([model.md §3.5](model.md#35-text)). A match may occur anywhere unless
 the pattern is anchored with `^` (start of text) or `$` (end of text).
 `.` matches every scalar value but a line feed. Matching takes time
-linear in the length of `t`.
+linear in the length of `t` and in the size of the pattern's compiled
+form; a pattern whose compiled form exceeds the implementation's limit
+is an invalid `re`.
 
 A pattern sets flags anywhere in it, as RE2 does: `(?flags)` sets
 them for the rest of the enclosing group, `(?flags:re)` for `re`

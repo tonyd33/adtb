@@ -5,13 +5,13 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use adtb_lang::collation::{self, CaseFirst, MaxVariable, Strength};
+use adtb_lang::pattern::Pattern;
 use icu_casemap::CaseMapper;
 use icu_collator::options::{self, AlternateHandling, CaseLevel, CollatorOptions};
 use icu_collator::preferences::{CollationCaseFirst, CollationNumericOrdering};
 use icu_collator::{Collator, CollatorBorrowed, CollatorPreferences};
 use icu_locale_core::{LanguageIdentifier, Locale};
 use icu_segmenter::GraphemeClusterSegmenter;
-use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
 
 pub fn nfc(t: &str) -> String {
@@ -40,7 +40,7 @@ pub fn grapheme_len(t: &str) -> usize {
 /// The patterns and collators one statement has compiled, by their text.
 #[derive(Debug, Default)]
 pub(crate) struct Compiled {
-    regexes: RefCell<BTreeMap<String, Rc<Regex>>>,
+    regexes: RefCell<BTreeMap<String, Rc<Pattern>>>,
     collators: RefCell<BTreeMap<String, Rc<CollatorBorrowed<'static>>>>,
 }
 
@@ -52,7 +52,7 @@ impl Compiled {
         let found = self.regexes.borrow().get(re).cloned();
         let regex = found.unwrap_or_else(|| {
             let r = Rc::new(
-                Regex::new(re)
+                Pattern::new(re)
                     .unwrap_or_else(|e| panic!("the checker accepted the pattern `{re}`: {e}")),
             );
             self.regexes.borrow_mut().insert(re.to_string(), r.clone());

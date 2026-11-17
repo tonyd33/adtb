@@ -77,6 +77,24 @@ refuses "a feature of its own enabling adtb-lang's" \
   "feature-check: crates/user/Cargo.toml: feature probe enables adtb-lang/testing"
 
 world ''
+package regex crates/regex ''
+package adtb-lang crates/adtb-lang $'[dependencies]\nregex = { path = "../regex" }\n\n[features]\ntesting = []'
+passes "a dependency of adtb-lang on regex"
+
+world $'[dev-dependencies]\nregex = { path = "../regex" }'
+package regex crates/regex ''
+refuses "a dependency of another package on regex" \
+  "feature-check: crates/user/Cargo.toml: a dev dependency on regex, which only adtb-lang compiles patterns with"
+
+for crate in regex-automata regex-syntax regex-lite fancy-regex; do
+  world "[dependencies]
+$crate = { path = \"../$crate\" }"
+  package "$crate" "crates/$crate" ''
+  refuses "a dependency of another package on $crate" \
+    "feature-check: crates/user/Cargo.toml: a normal dependency on $crate, which only adtb-lang compiles patterns with"
+done
+
+world ''
 package adtb crates/adtb $'[features]\ndefault = ["testing"]\ntesting = []'
 refuses "the default features of adtb" \
   "feature-check: crates/adtb/Cargo.toml: the default features include testing"

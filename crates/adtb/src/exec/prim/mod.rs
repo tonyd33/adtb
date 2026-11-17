@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use adtb_lang::kernel::Prim;
+use adtb_lang::pattern::Pattern;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{self, Form};
 use adtb_lang::types::{Base, Ty};
@@ -31,7 +32,7 @@ pub(super) mod unicode;
 
 use num::Rounding;
 use time::MICROS_PER_DAY;
-use unicode::{Case, Collator, Pattern};
+use unicode::{Case, Collator};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
@@ -440,7 +441,9 @@ fn other_op(
                 return unsupported(format!("{p:?} with an operand that is not a literal"));
             };
             if p == Prim::Matches {
-                Op::Matches(Arc::new(Pattern::new(c).map_err(Error::Unsupported)?))
+                Op::Matches(Arc::new(
+                    Pattern::new(c).map_err(|e| Error::Unsupported(e.to_string()))?,
+                ))
             } else {
                 Op::Collate(Arc::new(Collator::new(c).map_err(Error::Unsupported)?))
             }

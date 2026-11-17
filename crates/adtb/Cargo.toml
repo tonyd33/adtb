@@ -18,7 +18,6 @@ icu_collator = { version = "2.4.0", default-features = false, features = ["compi
 icu_locale_core = { version = "2.4.0", default-features = false }
 icu_segmenter = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
-regex = { version = "1.13.1", default-features = false, features = ["std", "unicode"] }
 unicode-normalization = { version = "0.1.26", default-features = false }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 

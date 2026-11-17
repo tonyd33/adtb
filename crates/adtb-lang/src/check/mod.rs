@@ -22,6 +22,7 @@ mod prelude;
 mod query;
 mod record;
 pub(crate) mod rel;
+mod row_body;
 mod rows;
 mod txn;
 pub(crate) mod ty;
@@ -33,6 +34,7 @@ pub(crate) mod tests;
 use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
+pub use row_body::{RowBody, check_row, row_query};
 pub use txn::{Txn, check_txn, check_txn_in};
 use ty::admits_late_key;
 pub use ty::{join, subtype};
@@ -244,6 +246,16 @@ fn diag(span: Span, msg: impl Into<String>) -> Diag {
 
 impl<'a> Checker<'a> {
     pub fn new(schema: &'a Schema, vis: Visible, ctx: Context) -> Self {
+        Checker::with_rows(schema, vis, ctx, vec![None; schema.functions.len()])
+    }
+
+    /// Returns a checker that knows `fn_rows`, the relation whose rows each function returns.
+    fn with_rows(
+        schema: &'a Schema,
+        vis: Visible,
+        ctx: Context,
+        fn_rows: Vec<Option<RelId>>,
+    ) -> Self {
         Checker {
             fixes: 0,
             type_nodes: 0,
@@ -254,7 +266,7 @@ impl<'a> Checker<'a> {
             ctx,
             scope: Scope::default(),
             tparams: Vec::new(),
-            fn_rows: vec![None; schema.functions.len()],
+            fn_rows,
             params: BTreeMap::new(),
             reject_ok: false,
             hoist: Vec::new(),
@@ -273,6 +285,37 @@ impl<'a> Checker<'a> {
             bundles: &adhoc::NO_BUNDLES,
             late_writer: None,
         }
+    }
+
+    /// Returns a checker of a body against `program`, the program of `schema`.
+    fn of_program(
+        schema: &'a Schema,
+        program: &'a Program,
+        vis: Visible,
+        ctx: Context,
+        bundles: &'a Bundles,
+        late_writer: Option<&'static str>,
+        hidden: BTreeSet<RelId>,
+    ) -> Self {
+        let mut c = Checker::with_rows(schema, vis, ctx, program.fn_rows.clone());
+        c.program = Some(program);
+        c.bundles = bundles;
+        c.late_writer = late_writer;
+        c.hidden = hidden;
+        c
+    }
+
+    /// Returns a checker of a registered query or transaction against `program`, the program of `schema`.
+    fn registered(schema: &'a Schema, program: &'a Program, vis: Visible) -> Self {
+        Checker::of_program(
+            schema,
+            program,
+            vis,
+            Context::Function,
+            &adhoc::NO_BUNDLES,
+            None,
+            BTreeSet::new(),
+        )
     }
 
     fn module(&self) -> ModuleId {
@@ -631,9 +674,13 @@ impl Bodies<'_, '_> {
         file: FileId,
         f: &mut dyn FnMut(&mut Checker) -> R<Tm>,
     ) -> Option<Tm> {
-        let mut c = Checker::new(self.schema, Visible::module(module), ctx);
+        let mut c = Checker::with_rows(
+            self.schema,
+            Visible::module(module),
+            ctx,
+            self.fn_rows.clone(),
+        );
         c.terms = std::mem::take(&mut self.terms);
-        c.fn_rows = self.fn_rows.clone();
         if self.record.is_some() {
             c.refs = Some(RefCell::new(Vec::new()));
             c.coverage = false;
@@ -776,119 +823,6 @@ impl Bodies<'_, '_> {
     }
 }
 
-/// A body over one row, as a fill or a routing gives it.
-#[derive(Clone, Copy, Debug)]
-pub enum RowBody<'e> {
-    /// A `match` with no scrutinee, at its span: it matches the row.
-    Match(&'e [ast::Arm], Span),
-    Expr(&'e ast::Expr),
-}
-
-/// Type checks `body` over a row of type `row`, seen from `module`, at `expected` when given.
-///
-/// A constructor of the row's type that a `match` body builds takes the row's header fields it omits.
-/// Returns the schema objects the body names, as [`schema_refs`] reports them.
-/// Refuse a body that reads anything but the row: a relation, a reference, a generated key,
-/// `caller`, or a function that reads one of them.
-/// Refuse, naming the body `writer`, a value it gives or matches where a key type with a late
-/// selection is expected.
-pub fn check_row(
-    schema: &Schema,
-    program: &Program,
-    module: ModuleId,
-    row: &Ty,
-    body: RowBody,
-    expected: Option<&Ty>,
-    writer: &'static str,
-) -> Result<Vec<(Span, Ref)>, Diag> {
-    let mut c = Checker::new(schema, Visible::module(module), Context::Schema);
-    c.late_writer = Some(writer);
-    c.refs = Some(RefCell::new(Vec::new()));
-    row_body(&mut c, program, row, body, expected)?;
-    Ok(c.refs.take().map(RefCell::into_inner).unwrap_or_default())
-}
-
-/// Type checks `body` as [`check_row`] does, as a query whose one parameter is the row.
-pub fn row_query(
-    schema: &Schema,
-    program: &Program,
-    module: ModuleId,
-    row: &Ty,
-    body: RowBody,
-    expected: Option<&Ty>,
-) -> Result<Query, Diag> {
-    let mut c = Checker::new(schema, Visible::module(module), Context::Schema);
-    let (v, tm, ty) = row_body(&mut c, program, row, body, expected)?;
-    let term =
-        Build::new(schema, &mut c.terms).lam(v, tm, Ty::Fn(Box::new(row.clone()), Box::new(ty)));
-    Ok(Query {
-        terms: c.terms,
-        term,
-    })
-}
-
-fn row_body(
-    c: &mut Checker<'_>,
-    program: &Program,
-    row: &Ty,
-    body: RowBody,
-    expected: Option<&Ty>,
-) -> Result<(Var, Tm, Ty), Diag> {
-    c.scope.push();
-    let v = c.bind(ROW, row.clone(), None);
-    let (out, span) = match body {
-        RowBody::Match(arms, span) => {
-            if let Ty::Data { def, .. } = row {
-                c.carry = Some((v, *def));
-            }
-            let scrutinee = ast::Expr {
-                kind: ast::ExprKind::Name(ast::QName {
-                    module: None,
-                    name: ast::Ident {
-                        text: ROW.to_string(),
-                        span,
-                    },
-                }),
-                span,
-            };
-            (c.match_expr(&scrutinee, arms, expected, span)?, span)
-        }
-        RowBody::Expr(e) => {
-            let out = match expected {
-                Some(t) => c.check(e, t)?,
-                None => c.synth(e)?,
-            };
-            (out, e.span)
-        }
-    };
-    if !reads_only_row(&c.terms, out.tm, program, &mut BTreeSet::new()) {
-        return Err(diag(
-            span,
-            "a fill or a routing reads only its row; this reads a relation, a reference, a generated key, `caller` or a function that does",
-        ));
-    }
-    Ok((v, out.tm, out.ty))
-}
-
-/// The name a row body binds its row to, which no source text can spell.
-const ROW: &str = "row·";
-
-fn reads_only_row(terms: &Terms, t: Tm, program: &Program, seen: &mut BTreeSet<FnId>) -> bool {
-    !terms.any(t, |k| match k {
-        Kind::Rel(..)
-        | Kind::Transition(..)
-        | Kind::Deref { .. }
-        | Kind::Fresh(..)
-        | Kind::Caller => true,
-        Kind::Call { func, .. } => {
-            seen.insert(*func)
-                && matches!(program.functions.get(func.0 as usize), Some(Some(body))
-                    if !reads_only_row(&program.terms, *body, program, seen))
-        }
-        _ => false,
-    })
-}
-
 /// Checked ad hoc text: one kernel term per statement and one checked form per command.
 #[derive(Debug)]
 pub struct Adhoc {
@@ -1027,19 +961,23 @@ fn checked_items(
         late_writer,
     } = *text;
     let vis = Visible::all(checked).scoped(scope.cloned());
-    let mut c = Checker::new(checked, vis, Context::Adhoc);
-    c.program = Some(program);
-    c.bundles = bundles;
-    c.late_writer = late_writer;
+    let hidden = declared.iter().flatten().copied().collect();
+    let mut c = Checker::of_program(
+        checked,
+        program,
+        vis,
+        Context::Adhoc,
+        bundles,
+        late_writer,
+        hidden,
+    );
     if record.is_some() {
         c.refs = Some(RefCell::new(Vec::new()));
     }
-    c.fn_rows.clone_from(&program.fn_rows);
     for (name, ty) in params {
         let v = c.terms.var(name, ty.clone());
         c.params.insert(name.clone(), (v, ty.clone()));
     }
-    c.hidden = declared.iter().flatten().copied().collect();
     let mut declared = declared.into_iter();
     let mut out = Vec::new();
     let mut commands = Vec::new();
@@ -1115,7 +1053,7 @@ pub fn check_query_in(
     vis: Visible,
     q: &ast::QueryDecl,
 ) -> Result<Query, Diag> {
-    let mut c = Checker::new(schema, vis, Context::Function);
+    let mut c = Checker::registered(schema, program, vis);
     let term = c.query(q)?;
     let query = Query {
         terms: c.terms,

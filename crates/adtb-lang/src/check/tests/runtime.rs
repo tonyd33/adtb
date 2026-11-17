@@ -29,7 +29,10 @@ fn parse(name: &str, text: &str) -> Vec<Case> {
             .split_once(' ')
             .expect("a case header has id and mode");
         assert!(
-            matches!(mode, "schema" | "adhoc" | "query" | "probe"),
+            matches!(
+                mode,
+                "schema" | "adhoc" | "query" | "body" | "write" | "probe"
+            ),
             "unknown mode {mode}"
         );
         assert!(!id.is_empty() && !id.contains('/'), "invalid case id {id}");
@@ -203,6 +206,43 @@ fn schema_outcome(text: &str, fields: &mut BTreeMap<String, String>) -> Outcome 
     }
 }
 
+/// Returns the outcome of `text` checked ad hoc, asserting that a registered query and a registered
+/// transaction returning it as `result` have the same outcome.
+fn body_outcome(extra: &str, result: &str, text: &str) -> Outcome {
+    let adhoc = adhoc_over(extra, text).err();
+    let query = query(extra, &format!("query q () -> {result} = {text}"))
+        .err()
+        .map(|e| vec![e]);
+    let txn = txn_over(
+        extra,
+        &format!("txn t () -> {result} = transact return {text}"),
+    )
+    .err()
+    .map(|e| vec![e]);
+    assert_eq!(query, adhoc, "a registered query checks as ad hoc text");
+    assert_eq!(txn, adhoc, "a registered transaction checks as ad hoc text");
+    Outcome {
+        phase: "body",
+        errors: adhoc,
+        ty: None,
+    }
+}
+
+/// Returns the outcome of the write `text` checked ad hoc, asserting that a registered transaction
+/// whose block is `text` has the same outcome.
+fn write_outcome(extra: &str, text: &str) -> Outcome {
+    let adhoc = adhoc_over(extra, text).err();
+    let txn = txn_over(extra, &format!("txn t () -> () = transact {text}"))
+        .err()
+        .map(|e| vec![e]);
+    assert_eq!(txn, adhoc, "a registered transaction checks as ad hoc text");
+    Outcome {
+        phase: "write",
+        errors: adhoc,
+        ty: None,
+    }
+}
+
 fn outcome(mode: &str, text: &str, fields: &mut BTreeMap<String, String>, typed: bool) -> Outcome {
     match mode {
         "schema" => {
@@ -217,6 +257,19 @@ fn outcome(mode: &str, text: &str, fields: &mut BTreeMap<String, String>, typed:
                 errors: query(&extra, text).err().map(|error| vec![error]),
                 ty: None,
             }
+        }
+        "body" => {
+            assert!(!typed, "only ad hoc cases have a type expectation");
+            let extra = fields.remove("extra").unwrap_or_default();
+            let result = fields
+                .remove("result")
+                .expect("a body case declares its result");
+            body_outcome(&extra, &result, text)
+        }
+        "write" => {
+            assert!(!typed, "only ad hoc cases have a type expectation");
+            let extra = fields.remove("extra").unwrap_or_default();
+            write_outcome(&extra, text)
         }
         "adhoc" => {
             if let Some(extra) = fields.remove("extra") {
@@ -389,6 +442,16 @@ fn adhoc_cases() {
 #[test]
 fn query_cases() {
     run("query");
+}
+
+#[test]
+fn body_cases() {
+    run("body");
+}
+
+#[test]
+fn write_cases() {
+    run("write");
 }
 
 const PROPERTIES: &[(&str, fn())] = &[

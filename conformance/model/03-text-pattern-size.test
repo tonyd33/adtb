@@ -1,0 +1,13 @@
+# A matches pattern whose compiled program exceeds the size limit is an invalid pattern, refused with Invalid.
+schema
+  module test
+  type Person = { id: Key people, name: Text }
+  relation people : Person key id generate sequence
+error Invalid
+  matches("x", "(a{1000}){1000}")
+error Invalid
+  from p in people where matches(p.name, "(a{1000}){1000}") select p.name
+query
+  matches("x", "(a{100}){100}")
+----
+false
