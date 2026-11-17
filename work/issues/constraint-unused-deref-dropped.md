@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-16
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 150
 summary: "a constraint or row check drops an unused deref through a stored row's reference, so a dangling key reports the reference constraint's Violated where the spec requires the check's fault"
@@ -40,3 +41,7 @@ differ
 The same split with `phones` in place of `inserted(phones)`, and with a row check `check pos on phones ({ a: self.owner.name, b: seen > 0 }.b)` in place of the constraint. A control that uses the deref's value (`p.owner.name == "zz"`) faults on both. The statement is refused either way; the refusal's kind and reason are wrong.
 
 Fix direction: in `Context::Constraint` and in check clauses, give relation reads, `inserted()` and `self` a provenance that does not make a reference total, since the state a check reads is not known to satisfy its references. Add constraint and row check cases to conformance/queries/15-unused-deref.test.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: treat stored references as partial in constraints and row checks`. Cause: the normaliser dropped an unused deref classed total, and a constraint or row check reads the state after the statement, which is not known to satisfy its references. Rule: a root that reads a state not yet checked (constraint and row-check roots) makes every deref partial; the normaliser decides it from the root's kind by an exhaustive match, `reads_unchecked`. Coverage: a search over 12 row sources in crates/adtb-conformance/tests/unchecked_state.rs on the reference and the engine, and three cases in conformance/queries/15-unused-deref.test. Constraint check plans gain the reference probe (a change to the target probes its referring rows). Out-of-track gaps filed: index-expression-deref-diverges, migration-script-reads-as-snapshot.
