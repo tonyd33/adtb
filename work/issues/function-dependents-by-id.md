@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-16
-status: open
+status: resolved
+closed: 2026-11-17
 kind: feature
 priority: 118
 summary: "a function redefinition finds the indexes and constraints that use it by text, so stale index keys and unchecked constraints survive a body change"
@@ -23,3 +24,7 @@ One dependency relation from each index element, constraint, check and view to t
 Exit: both tickets above resolved by it; no rewrite decision reads element text.
 
 ## Open questions
+
+## Resolution 2026-11-17
+
+Landed 2026-11-17 as `fix: rebuild and validate the dependents of a redefined function by id`. `adtb_lang::depends` (`bodies`, `reached`, `changed`) is the one input; bodies compare under the mapping of positions to catalog ids, so a shift changes nothing; domains are validated over stored values. No rewrite or revalidation decision reads text; `IndexSpec.fields` removed. Search: crates/adtb/src/catalog/fn_dependents_tests.rs. Filed: wasm-identity-by-name, aggregate-in-scalar-expression, evolution-redefine-dependents-unstated.

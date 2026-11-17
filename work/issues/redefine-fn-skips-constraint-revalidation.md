@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-14
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 310
 summary: "a redefine fn that changes a function a constraint calls does not revalidate the constraint over existing rows"
@@ -22,3 +23,7 @@ Defect class: Catalog rows and identity by position or spelling.
 ## 2026-11-15
 
 The same cause leaves an expression index over a redefined function holding keys from the old body: index-keys-stale-after-redefine-fn. Fix both with one function dependency relation.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: rebuild and validate the dependents of a redefined function by id` (function-dependents-by-id): every constraint, row check and domain reaching a changed function is validated over existing rows.

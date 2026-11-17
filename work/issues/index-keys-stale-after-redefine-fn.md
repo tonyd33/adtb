@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-15
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 120
 summary: "a redefine fn leaves an expression index over the function holding keys from the old body, so a unique is violated"
@@ -20,3 +21,7 @@ Repro (engine script): `unique (twice(n)) in items` with `fn twice (x: I64) -> I
 Same cause as redefine-fn-skips-constraint-revalidation: a migration decides what a function change touches by the text that names the function, not by the function's identity and body. Fix direction: one dependency relation from each index element, constraint and check to the functions it reaches (by function id), and a redefine that changes a body marks every dependent index for rebuild and every dependent constraint for validation; a test that redefines a function under each kind of dependent.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: rebuild and validate the dependents of a redefined function by id` (function-dependents-by-id): a changed body rewrites every relation whose index element reaches the function, so a key collision is refused and keys match the new body.
