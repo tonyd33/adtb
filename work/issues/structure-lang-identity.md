@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
+closed: 2026-11-16
 kind: feature
 priority: 16
 summary: "about 450 sites key catalog objects by path strings, vector position or name; Schema is open through DerefMut; kernel terms have no validator"
@@ -200,3 +201,7 @@ Landed as qsupwyqs f6a76796 (2 rounds), full check 0 (3843 tests). One typed `Ro
 ## 2026-11-16, step 11 part f landed; step 11 done
 
 Landed as nxpytluz 86200769 (2 rounds), full check 0 (3833 tests; 11 hand reversed tests replaced by one). `codec::coded!` generates `Coded`, its ids, `Coded::ALL` and one marker type per coded relation; `Decode` names its marker (`type Relation: Relation<Row = Self>`), so a second decoder of one relation fails to compile and a new relation joins the test. `read_back` reads each impl's samples (every constructor, distinct values) under the shipped, constructor-reversed and field-reversed catalogs, stores shipped rows and reads them under the reversed catalog, and asserts each constructor at its mirror and each multi-field list reversed. Step 11 done. Left before the exit: `engine_names` 37 sites in 11 files (rows.rs encoders 15, bundle.rs 7, schema/engine.rs 5, and single sites), with catalog-encoders-through-codecs as the next identity step after committed-schema-type; `prelude_positions` 12 sites, one-constructor sums only, by ruling.
+
+## 2026-11-16, exit met; resolved
+
+Checked on main d9b269b9 by the lead: typed catalog ids with `CtorRef`/`FieldRef` (steps 1 to 3b), `Schema` closed behind its builder (6a, 6b), the kernel validator at every exit (8a to 8c), `Program` keyed by definition (7), and the identity rows of structure-check falling only, `structure-check` exit 0. After catalog-encoders-through-codecs and committed-schema-type, `engine_names` is 9 sites: the 5 of schema/engine.rs are the `EngineCtors` mint, ruled to stay, and 4 look up names the user wrote. `prelude_positions` is 11 files of one-constructor sums, by ruling. The instance tickets that cite this program stay open at their own priorities; the identity class's mechanism is now the structure-check rows and the codecs.
