@@ -114,7 +114,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 6,
-        at: 690,
+        at: 689,
         then: None,
     },
     Known {

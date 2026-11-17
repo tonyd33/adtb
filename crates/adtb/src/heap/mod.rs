@@ -24,6 +24,8 @@ mod heap_tests;
 #[cfg(test)]
 mod heap_threads_tests;
 #[cfg(test)]
+mod row_damage_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod unreserved_tests;

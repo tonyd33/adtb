@@ -1346,6 +1346,10 @@ struct World {
     vacuums: usize,
     vacuuming: bool,
     crashed_vacuuming: usize,
+    /// The faults injected outside a vacuum, and during one once a commit is acknowledged.
+    faults: Faults,
+    vacuum_faults: Faults,
+    acknowledged: bool,
 }
 
 fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize) {
@@ -1381,12 +1385,17 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize)
                 drop(h);
             }
             17..=19 => {
-                {
+                let faults = {
                     let mut w = world.lock().unwrap();
                     w.vacuums += 1;
                     w.vacuuming = true;
-                }
+                    if w.acknowledged {
+                        rt.set_faults(w.vacuum_faults);
+                    }
+                    w.faults
+                };
                 db.vacuum(64 + (next() % 1024) as usize);
+                rt.set_faults(faults);
                 world.lock().unwrap().vacuuming = false;
             }
             20 => {
@@ -1397,6 +1406,7 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize)
                 db.pager.flush_log();
                 for x in unacked.drain(..) {
                     ledger.acknowledge(x.0);
+                    world.lock().unwrap().acknowledged = true;
                 }
             }
         }
@@ -1450,9 +1460,10 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Reopen {
     Reopen::new(committed.iter().map(|x| x.0).collect(), problems)
 }
 
-/// Returns the number of crashes, and of those that fell during a vacuum.
+/// Returns the number of crashes, and of those that fell during a vacuum. A vacuum runs under
+/// `vacuum_faults`, the rest under `faults`.
 #[must_use]
-fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
+fn crash_rounds(seed: u64, faults: Faults, vacuum_faults: Faults, rounds: usize) -> (usize, usize) {
     let mut sim = Sim::new(seed, Config::default());
     let mut roots = None;
     finished(&mut sim, |rt| {
@@ -1467,6 +1478,9 @@ fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
         vacuums: 0,
         vacuuming: false,
         crashed_vacuuming: 0,
+        faults,
+        vacuum_faults,
+        acknowledged: false,
     }));
     let rounds = Rounds::new(rounds, 2000, 80_000);
     let out = crash_loop(
@@ -1499,14 +1513,11 @@ fn crashes_during_vacuum_recover_to_a_clean_database() {
     const SEEDS: Range<u64> = 0..32;
     let (crashes, during): (Vec<usize>, Vec<usize>) = sweep(SEEDS)
         .map(|seed| {
-            crash_rounds(
-                seed,
-                Faults {
-                    torn_p: 0.5,
-                    ..Faults::none(512)
-                },
-                4,
-            )
+            let faults = Faults {
+                torn_p: 0.5,
+                ..Faults::none(512)
+            };
+            crash_rounds(seed, faults, faults, 4)
         })
         .unzip();
     let (crashes, during) = (crashes.iter().sum::<usize>(), during.iter().sum::<usize>());
@@ -1521,15 +1532,15 @@ fn failed_writes_during_vacuum_crash_and_recover_clean() {
     const SEEDS: Range<u64> = 100..106;
     let (crashes, during): (Vec<usize>, Vec<usize>) = sweep(SEEDS)
         .map(|seed| {
-            crash_rounds(
-                seed,
-                Faults {
-                    torn_p: 0.3,
-                    fail_p: 0.003,
-                    ..Faults::none(512)
-                },
-                4,
-            )
+            let faults = Faults {
+                torn_p: 0.3,
+                ..Faults::none(512)
+            };
+            let vacuum_faults = Faults {
+                fail_p: 1.0,
+                ..faults
+            };
+            crash_rounds(seed, faults, vacuum_faults, 4)
         })
         .unzip();
     let (crashes, during) = (crashes.iter().sum::<usize>(), during.iter().sum::<usize>());

@@ -270,9 +270,9 @@ fn fixed_fields_are_placed_by_decreasing_alignment() {
     assert_eq!([2, 1], fixed[24..26]);
     assert_eq!(2, fixed[26]);
     let body = layout.assemble(&fixed, &[]);
-    let (f, v) = layout.split(&body);
+    let (f, v) = layout.split(&body).unwrap();
     assert!(v.is_empty());
-    assert_eq!(row, layout.decode(f, &[]));
+    assert_eq!(row, layout.decode(f, &[]).unwrap());
 }
 
 fn status_type() -> FieldType {
@@ -381,9 +381,9 @@ fn a_sum_with_a_variable_payload_keeps_its_tag_fixed() {
     payload.extend_from_slice(&7i32.to_le_bytes());
     assert_eq!(vec![payload], vars);
     let body = layout.assemble(&fixed, &inline(vars.clone()));
-    let (f, stored) = layout.split(&body);
+    let (f, stored) = layout.split(&body).unwrap();
     assert_eq!(inline(vars.clone()), stored);
-    assert_eq!(row, layout.decode(f, &vars));
+    assert_eq!(row, layout.decode(f, &vars).unwrap());
 }
 
 fn every_type() -> Vec<FieldType> {
@@ -500,9 +500,9 @@ fn every_field_type_round_trips() {
         let (fixed, vars) = layout.encode(&row);
         let body = layout.assemble(&fixed, &inline(vars.clone()));
         assert_eq!(layout.body_len(&inline(vars.clone())), body.len());
-        let (f, stored) = layout.split(&body);
+        let (f, stored) = layout.split(&body).unwrap();
         assert_eq!(inline(vars.clone()), stored);
-        assert_eq!(row, layout.decode(f, &vars), "row {n}");
+        assert_eq!(row, layout.decode(f, &vars).unwrap(), "row {n}");
     }
 }
 
@@ -532,8 +532,8 @@ fn out_of_line_fields_are_marked_and_keep_their_neighbours() {
     ];
     let body = layout.assemble(&fixed, &stored);
     assert_eq!(8 + 6 + 1 + 1 + 16 + 1, body.len());
-    assert_eq!(stored, layout.split(&body).1);
-    assert_eq!(row, layout.decode(&fixed, &vars));
+    assert_eq!(stored, layout.split(&body).unwrap().1);
+    assert_eq!(row, layout.decode(&fixed, &vars).unwrap());
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use super::error::{Damage, Shape};
+use super::error::{Damage, Shape, Undecoded};
 use super::{Lsn, Pid, Position};
 
 /// Bytes written at `offset` of a page.
@@ -86,12 +86,18 @@ const LOG_UNPROVEN: u8 = 3;
 const SETTLED: u8 = 4;
 const SHAPE: u8 = 5;
 
-const SHAPES: [Shape; 5] = [
+/// Each shape a damage record can hold. A shape's position is its stored code: append only.
+const SHAPES: [Shape; 10] = [
     Shape::Blank,
     Shape::Kind,
     Shape::Owner,
     Shape::Frame,
     Shape::Format,
+    Shape::Row(Undecoded::Tag),
+    Shape::Row(Undecoded::Cut),
+    Shape::Row(Undecoded::Trailing),
+    Shape::Row(Undecoded::Text),
+    Shape::Row(Undecoded::Pointer),
 ];
 
 /// Returns the kind of `damage` and its two LSNs, zero where it has none.

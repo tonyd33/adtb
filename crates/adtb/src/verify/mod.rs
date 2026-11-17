@@ -251,6 +251,16 @@ impl<R: Runtime> Walk<'_, R> {
             Ok(pages) => self.own(&name, pages),
             Err(e) => self.damaged(e),
         }
+        match heap.pages(self.pager) {
+            Ok(pages) => {
+                for pid in pages {
+                    if let Err(e) = heap.check_rows(self.pager, pid) {
+                        self.damaged(e);
+                    }
+                }
+            }
+            Err(e) => self.damaged(e),
+        }
     }
 
     /// Check every version's `next` that is not hot-updated: a version with no deleter names no
@@ -480,8 +490,8 @@ pub(crate) fn entries<R: Runtime>(
 }
 
 /// Check the whole file against `inventory`: every page and the retained log as the pager checks
-/// them, every structure's own pages, every index entry against the heap it names, and the
-/// allocation bitmap against the pages the structures refer to.
+/// them, every structure's own pages, every heap row's decoding, every index entry against the
+/// heap it names, and the allocation bitmap against the pages the structures refer to.
 ///
 /// Precondition: no write is in progress.
 #[cfg(test)]

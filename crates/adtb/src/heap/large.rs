@@ -4,12 +4,13 @@ use crate::key::Tid;
 use crate::mvcc::{StatusError, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{
-    LATCHES_PER_THREAD, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Walk, kind_fault,
+    LATCHES_PER_THREAD, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Undecoded, Walk,
+    kind_fault,
 };
 
 use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
-use super::row::Pointer;
+use super::row::{MAX_VALUE_LEN, Pointer};
 use super::slotted;
 use super::stage::Stage;
 use super::version::{Flags, tid_bits, tid_from_bits};
@@ -194,6 +195,12 @@ impl LargeStore {
         xid: Xid,
         bytes: &[u8],
     ) -> Result<Pointer, Error> {
+        if bytes.len() as u64 > MAX_VALUE_LEN {
+            return Err(Error::TooLarge {
+                len: bytes.len(),
+                limit: MAX_VALUE_LEN as usize,
+            });
+        }
         let room = slotted::max_version(pager.page_size()) - BYTES;
         let mut next = None;
         for piece in bytes.chunks(room).rev() {
@@ -299,7 +306,7 @@ impl LargeStore {
         pager: &Pager<R>,
         pointer: Pointer,
     ) -> Result<Vec<u8>, PageError> {
-        let mut out = Vec::with_capacity(pointer.len as usize);
+        let mut out = Vec::new();
         let mut at = Some(pointer.first);
         while let Some(tid) = at {
             let (pid, slot) = (Pid(tid.page()), usize::from(tid.slot()));
@@ -318,6 +325,38 @@ impl LargeStore {
             "large value has the wrong length"
         );
         Ok(out)
+    }
+
+    /// Returns the first chunk of the value `pointer` names, `None` when no chunk is there.
+    pub(super) fn head<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pointer: Pointer,
+    ) -> Result<Option<Vec<u8>>, PageError> {
+        let page = pager.read_formatted(Pid(pointer.first.page()))?;
+        let slot = usize::from(pointer.first.slot());
+        Ok(tuple_at(&page, self.id(), slot).map(<[u8]>::to_vec))
+    }
+
+    /// Refuse the page of the first chunk of the value `pointer` names as [`Shape::Row`] of
+    /// `cause` when, under its exclusive latch, that chunk is still `head`. Returns `Ok` when it
+    /// changed since: the caller reads it again.
+    ///
+    /// Precondition: the caller holds no latch on that page.
+    pub(super) fn refuse_value<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pointer: Pointer,
+        head: &[u8],
+        cause: Undecoded,
+    ) -> Result<(), PageError> {
+        let slot = usize::from(pointer.first.slot());
+        let judge = |p: &PageExclusive<'_, R>| {
+            (tuple_at(p, self.id(), slot) == Some(head)).then_some(Shape::Row(cause))
+        };
+        pager
+            .refuse_if(Pid(pointer.first.page()), judge)
+            .map_or(Ok(()), Err)
     }
 
     /// Returns the TID and header of every chunk of the value `pointer` names, first to last.

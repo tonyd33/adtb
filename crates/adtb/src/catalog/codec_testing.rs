@@ -510,7 +510,9 @@ pub(crate) fn reread(
     row: &[Value],
 ) -> Vec<Value> {
     let (fixed, vars) = Layout::new(row_type(from, r, was)).encode(row);
-    Layout::new(row_type(to, s, now)).decode(&fixed, &vars)
+    Layout::new(row_type(to, s, now))
+        .decode(&fixed, &vars)
+        .unwrap()
 }
 
 /// Returns `text` with the constructors of each sum in reverse order.

@@ -42,7 +42,14 @@ impl Heap {
                     roots.entry(member).or_default().push(tid(pid, root));
                 }
             }
-            for v in self.versions_on(pager, pid, page, format)? {
+            let versions = match self.versions_on(pager, pid, page, format)? {
+                Ok(versions) => versions,
+                Err(bad) => {
+                    self.refuse_bad(pager, pid, guard, bad)?;
+                    continue;
+                }
+            };
+            for v in versions {
                 let rooted = roots.remove(&usize::from(v.tid.slot()));
                 let root = rooted.unwrap_or_else(|| vec![v.tid]);
                 found.push((v, root));
@@ -64,7 +71,7 @@ impl Heap {
         at: Tid,
     ) -> Result<Option<Vec<Vec<Value>>>, PageError> {
         let pid = Pid(at.page());
-        loop {
+        'read: loop {
             let guard = pager.read(pid)?;
             let Some(page) = self.page(&guard) else {
                 return Ok(None);
@@ -82,7 +89,13 @@ impl Heap {
                 let Slot::Normal { at: bytes, .. } = page.get(slot) else {
                     break;
                 };
-                let (row, _) = self.decode(pager, format, &page[bytes])?;
+                let (row, _) = match self.decode(pager, format, &page[bytes])? {
+                    Ok(decoded) => decoded,
+                    Err(bad) => {
+                        self.refuse_bad(pager, pid, guard, bad)?;
+                        continue 'read;
+                    }
+                };
                 rows.push(self.upgrade(format, row));
             }
             return Ok(Some(rows));

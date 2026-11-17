@@ -39,6 +39,23 @@ pub enum Shape {
     Frame,
     /// The page's format byte names no format of its structure.
     Format,
+    /// A version on the page holds a row that does not decode in its format.
+    Row(Undecoded),
+}
+
+/// Why a stored row does not decode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Undecoded {
+    /// A sum's stored tag names none of its constructors.
+    Tag,
+    /// The row ends before a value it holds, or a field's offsets lie outside the row.
+    Cut,
+    /// A field holds bytes past its value.
+    Trailing,
+    /// Stored text is not UTF-8.
+    Text,
+    /// An out-of-line value's pointer is not 16 bytes or names no chunk.
+    Pointer,
 }
 
 impl Damage {

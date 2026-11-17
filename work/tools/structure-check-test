@@ -276,6 +276,20 @@ grep -qxF 'api_aborts prod 2 crates/adtb/src/api/a.rs' <<<"$counts" || fail "not
 ! grep -q 'api_aborts .*a_tests.rs\|api_aborts .*write/' <<<"$counts" || fail "counted a test or write: $counts"
 rm -r "$adtb/api" "$adtb/write"
 
+# decode_panics counts each counted form in production sources of the heap and in catalog/codec.rs
+# and catalog/layout.rs, not in their tests or another catalog file.
+mkdir -p "$adtb/heap/handle" "$adtb/catalog"
+printf '%s\n' 'fn f() { panic!("a"); unreachable!(); x.expect("b"); y.unwrap_or_else(|| panic!("c")); z.unwrap(); }' >"$adtb/heap/handle/mod.rs"
+for f in heap/handle_tests.rs heap/tests.rs catalog/codec.rs catalog/layout.rs catalog/rows.rs; do
+  cp "$adtb/heap/handle/mod.rs" "$adtb/$f"
+done
+counts=$("$checker" --counts "$scratch")
+for f in heap/handle/mod.rs catalog/codec.rs catalog/layout.rs; do
+  grep -qxF "decode_panics prod 4 crates/adtb/src/$f" <<<"$counts" || fail "not counted: decode_panics $f: $counts"
+done
+[[ $(grep -c '^decode_panics ' <<<"$counts") == 3 ]] || fail "counted a test or another catalog file: $counts"
+rm -r "$adtb/heap" "$adtb/catalog"
+
 # kernel_door counts calls of `add_unchecked`, by method or path, across lines and in tests, not its
 # definition.
 mkdir -p crates/lang/src

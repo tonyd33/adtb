@@ -196,9 +196,11 @@ fn stretch<R: Runtime>(
 ) -> Result<Stretch, PageError> {
     let pid = at.page();
     let in_sum = |h| sum.iter().any(|s| s.borrow().id() == h);
-    loop {
+    let (first, before) = (at, prior);
+    'read: loop {
+        (at, prior) = (first, before);
         let guard = pager.read_formatted(Pid(pid))?;
-        let mut found = Vec::new();
+        let mut found: Vec<(Link, Vec<Value>)> = Vec::new();
         let Some((holder, page)) = holder(sum, &guard) else {
             return Ok((found, None));
         };
@@ -213,7 +215,17 @@ fn stretch<R: Runtime>(
             if !seen.insert(link.tid) || !follows(prior.as_ref(), heap, in_sum, &link) {
                 return Ok((found, None));
             }
-            let (row, _) = holder.decode(pager, format, &page[range])?;
+            let (row, _) = match holder.decode(pager, format, &page[range])? {
+                Ok(decoded) => decoded,
+                Err(bad) => {
+                    seen.remove(&link.tid);
+                    for (l, _) in &found {
+                        seen.remove(&l.tid);
+                    }
+                    holder.refuse_bad(pager, Pid(pid), guard, bad)?;
+                    continue 'read;
+                }
+            };
             found.push((link, holder.upgrade(format, row)));
             match link.header.next {
                 Some(next) if next.page() == pid => at = next,

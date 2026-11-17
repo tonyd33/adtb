@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 
 use crate::key::{CtorId, F32, F64, Scalar, Tid, Value};
+use crate::storage::Undecoded;
 
 use super::version::{tid_bits, tid_from_bits};
 
@@ -27,6 +28,10 @@ pub const FIXED_SUM_PAYLOAD: usize = 64;
 /// The stored length of an out-of-line value's pointer.
 pub const POINTER_LEN: usize = 16;
 
+/// The longest value a large-value store holds: a batch column addresses its bytes by 32-bit
+/// offsets.
+pub const MAX_VALUE_LEN: u64 = i32::MAX as u64;
+
 /// Where an out-of-line value lies in its sum's large-value store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pointer {
@@ -42,17 +47,20 @@ impl Pointer {
         out
     }
 
-    fn decode(bytes: &[u8]) -> Pointer {
-        assert_eq!(
-            POINTER_LEN,
-            bytes.len(),
-            "an out-of-line pointer is 16 bytes"
-        );
-        let word = |i: usize| u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
-        Pointer {
-            len: word(0),
-            first: tid_from_bits(word(8)).expect("an out-of-line pointer names a chunk"),
+    fn decode(bytes: &[u8]) -> Result<Pointer, Undecoded> {
+        let Ok(bytes) = <[u8; POINTER_LEN]>::try_from(bytes) else {
+            return Err(Undecoded::Pointer);
+        };
+        let (len, first) = bytes.split_at(8);
+        let word = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+        let len = word(len);
+        if !(1..=MAX_VALUE_LEN).contains(&len) {
+            return Err(Undecoded::Pointer);
         }
+        Ok(Pointer {
+            len,
+            first: tid_from_bits(word(first)).ok_or(Undecoded::Pointer)?,
+        })
     }
 }
 
@@ -236,12 +244,12 @@ fn record_parts<'v>(t: &FieldType, n: usize, v: &'v Value) -> &'v [Value] {
     }
 }
 
-fn ctor_index(ctors: &[CtorType], id: u32) -> u32 {
+fn ctor_index(ctors: &[CtorType], id: u64) -> Result<u32, Undecoded> {
     let i = ctors
         .iter()
-        .position(|c| c.id.0 == id)
-        .unwrap_or_else(|| panic!("stored tag {id} names no constructor"));
-    i as u32
+        .position(|c| u64::from(c.id.0) == id)
+        .ok_or(Undecoded::Tag)?;
+    Ok(i as u32)
 }
 
 fn put_record_fixed(fields: &[FieldType], vs: &[Value], out: &mut [u8]) {
@@ -252,7 +260,7 @@ fn put_record_fixed(fields: &[FieldType], vs: &[Value], out: &mut [u8]) {
     }
 }
 
-fn get_record_fixed(fields: &[FieldType], b: &[u8]) -> Vec<Value> {
+fn get_record_fixed(fields: &[FieldType], b: &[u8]) -> Result<Vec<Value>, Undecoded> {
     let (_, offsets) = record_fixed(fields).expect("a fixed record");
     fields
         .iter()
@@ -284,25 +292,25 @@ fn put_fixed(t: &FieldType, v: &Value, out: &mut [u8]) {
     }
 }
 
-fn get_fixed(t: &FieldType, b: &[u8]) -> Value {
-    match t {
+fn get_fixed(t: &FieldType, b: &[u8]) -> Result<Value, Undecoded> {
+    Ok(match t {
         FieldType::Scalar(s) => get_scalar(*s, b),
-        FieldType::Record(fs) => Value::Record(get_record_fixed(fs, b)),
+        FieldType::Record(fs) => Value::Record(get_record_fixed(fs, b)?),
         FieldType::Sum(cs) => {
             let (_, at) = sum_fixed(cs).expect("a fixed sum");
-            let ctor = ctor_of(cs, b);
+            let ctor = ctor_of(cs, b)?;
             Value::Sum {
                 ctor,
-                fields: get_record_fixed(&cs[ctor as usize].fields, &b[at..]),
+                fields: get_record_fixed(&cs[ctor as usize].fields, &b[at..])?,
             }
         }
-    }
+    })
 }
 
-fn ctor_of(ctors: &[CtorType], b: &[u8]) -> u32 {
+fn ctor_of(ctors: &[CtorType], b: &[u8]) -> Result<u32, Undecoded> {
     match tag_width(ctors) {
-        0 => 0,
-        w => ctor_index(ctors, get_tag(w, b)),
+        0 => Ok(0),
+        w => ctor_index(ctors, u64::from(get_tag(w, b))),
     }
 }
 
@@ -319,32 +327,47 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> &'a [u8] {
-        let (head, rest) = self.bytes.split_at(n);
+    fn take(&mut self, n: usize) -> Result<&'a [u8], Undecoded> {
+        let (head, rest) = self.bytes.split_at_checked(n).ok_or(Undecoded::Cut)?;
         self.bytes = rest;
-        head
+        Ok(head)
     }
 
     fn rest(&mut self) -> &'a [u8] {
-        self.take(self.bytes.len())
+        std::mem::take(&mut self.bytes)
     }
 
-    fn uvarint(&mut self) -> u64 {
-        let mut n = 0;
+    /// Returns the next varint, `u64::MAX` for one longer than 64 bits.
+    fn uvarint(&mut self) -> Result<u64, Undecoded> {
+        let mut n: u64 = 0;
         let mut shift = 0;
         loop {
-            let b = self.take(1)[0];
-            n |= u64::from(b & 0x7f) << shift;
+            let b = self.take(1)?[0];
+            let bits = u64::from(b & 0x7f);
+            if shift >= u64::BITS || bits.leading_zeros() < shift {
+                n = u64::MAX;
+            } else if n != u64::MAX {
+                n |= bits << shift;
+            }
             if b < 0x80 {
-                return n;
+                return Ok(n);
             }
             shift += 7;
         }
     }
 
-    fn sized(&mut self) -> &'a [u8] {
-        let n = self.uvarint() as usize;
+    fn sized(&mut self) -> Result<&'a [u8], Undecoded> {
+        let n = usize::try_from(self.uvarint()?).map_err(|_| Undecoded::Cut)?;
         self.take(n)
+    }
+
+    /// Fail with [`Undecoded::Trailing`] unless every byte was read.
+    fn end(&self) -> Result<(), Undecoded> {
+        if self.bytes.is_empty() {
+            Ok(())
+        } else {
+            Err(Undecoded::Trailing)
+        }
     }
 }
 
@@ -368,26 +391,26 @@ fn put_var_scalar(s: Scalar, v: &Value, out: &mut Vec<u8>, prefixed: bool) {
     }
 }
 
-fn run<'a>(r: &mut Reader<'a>, prefixed: bool) -> &'a [u8] {
-    if prefixed { r.sized() } else { r.rest() }
+fn run<'a>(r: &mut Reader<'a>, prefixed: bool) -> Result<&'a [u8], Undecoded> {
+    if prefixed { r.sized() } else { Ok(r.rest()) }
 }
 
-fn get_var_scalar(s: Scalar, r: &mut Reader, prefixed: bool) -> Value {
-    let run = |r: &mut Reader| run(r, prefixed).to_vec();
-    let text = |b: &[u8]| String::from_utf8(b.to_vec()).expect("stored text is UTF-8");
-    match s {
-        Scalar::Text => Value::Text(text(&run(r))),
-        Scalar::Bytes => Value::Bytes(run(r)),
-        Scalar::SortKey => Value::SortKey(run(r)),
+fn get_var_scalar(s: Scalar, r: &mut Reader, prefixed: bool) -> Result<Value, Undecoded> {
+    let run = |r: &mut Reader| run(r, prefixed).map(<[u8]>::to_vec);
+    let text = |b: Vec<u8>| String::from_utf8(b).map_err(|_| Undecoded::Text);
+    Ok(match s {
+        Scalar::Text => Value::Text(text(run(r)?)?),
+        Scalar::Bytes => Value::Bytes(run(r)?),
+        Scalar::SortKey => Value::SortKey(run(r)?),
         Scalar::ZonedDateTime => {
-            let local = i64::from_le_bytes(r.take(8).try_into().unwrap());
+            let local = i64::from_le_bytes(r.take(8)?.try_into().unwrap());
             Value::ZonedDateTime {
                 local,
-                zone: text(&run(r)),
+                zone: text(run(r)?)?,
             }
         }
         _ => unreachable!("{s:?} has a fixed width"),
-    }
+    })
 }
 
 /// Append `v` in the variable-width encoding: fields in declaration order, fixed-width scalars
@@ -428,29 +451,28 @@ fn put_payload(fields: &[FieldType], vs: &[Value], out: &mut Vec<u8>) {
     }
 }
 
-fn get_packed(t: &FieldType, r: &mut Reader) -> Value {
-    match t {
+fn get_packed(t: &FieldType, r: &mut Reader) -> Result<Value, Undecoded> {
+    Ok(match t {
         FieldType::Scalar(s) => match scalar_fixed(*s) {
-            Some(f) => get_scalar(*s, r.take(f.size)),
-            None => get_var_scalar(*s, r, true),
+            Some(f) => get_scalar(*s, r.take(f.size)?),
+            None => get_var_scalar(*s, r, true)?,
         },
-        FieldType::Record(fs) => Value::Record(fs.iter().map(|t| get_packed(t, r)).collect()),
+        FieldType::Record(fs) => Value::Record(get_payload(fs, r)?),
         FieldType::Sum(cs) => {
             let ctor = if cs.len() > 1 {
-                let id = u32::try_from(r.uvarint()).expect("a constructor id fits 32 bits");
-                ctor_index(cs, id)
+                ctor_index(cs, r.uvarint()?)?
             } else {
                 0
             };
             Value::Sum {
                 ctor,
-                fields: get_payload(&cs[ctor as usize].fields, r),
+                fields: get_payload(&cs[ctor as usize].fields, r)?,
             }
         }
-    }
+    })
 }
 
-fn get_payload(fields: &[FieldType], r: &mut Reader) -> Vec<Value> {
+fn get_payload(fields: &[FieldType], r: &mut Reader) -> Result<Vec<Value>, Undecoded> {
     fields.iter().map(|t| get_packed(t, r)).collect()
 }
 
@@ -627,51 +649,113 @@ impl Layout {
     }
 
     /// Returns the fixed part of `body` and its variable-width fields as stored.
-    pub fn split<'b>(&self, body: &'b [u8]) -> (&'b [u8], Vec<Stored>) {
+    pub fn split<'b>(&self, body: &'b [u8]) -> Result<(&'b [u8], Vec<Stored>), Undecoded> {
+        if body.len() < self.least_body_len() {
+            return Err(Undecoded::Cut);
+        }
         let fixed = &body[..self.fixed_len];
         let mut start = self.vars_at();
         let mut vars = Vec::with_capacity(self.vars);
         for j in 0..self.vars {
             let at = self.table_at() + 2 * j;
             let end = usize::from(u16::from_le_bytes([body[at], body[at + 1]]));
-            let bytes = &body[start..end];
+            let bytes = body.get(start..end).ok_or(Undecoded::Cut)?;
             vars.push(if body[self.bitmap_at() + j / 8] >> (j % 8) & 1 == 1 {
-                Stored::Out(Pointer::decode(bytes))
+                Stored::Out(Pointer::decode(bytes)?)
             } else {
                 Stored::Inline(bytes.to_vec())
             });
             start = end;
         }
-        (fixed, vars)
+        Ok((fixed, vars))
     }
 
     /// Returns the row whose fixed part is `fixed` and whose variable-width fields are `vars`.
-    pub fn decode(&self, fixed: &[u8], vars: &[Vec<u8>]) -> Vec<Value> {
-        self.fields
+    ///
+    /// Precondition: `fixed` and `vars` are what [`Layout::split`] returned, each field out of
+    /// line read whole.
+    pub fn decode(&self, fixed: &[u8], vars: &[Vec<u8>]) -> Result<Vec<Value>, Failed> {
+        let vars: Vec<Option<&[u8]>> = vars.iter().map(|v| Some(v.as_slice())).collect();
+        let mut row = Vec::with_capacity(self.fields.len());
+        for (t, &place) in self.fields.iter().zip(&self.places) {
+            row.extend(self.field(t, place, fixed, &vars)?);
+        }
+        Ok(row)
+    }
+
+    /// Fail with why the fields of a row stored in the fixed part `fixed` and inline in `stored`
+    /// do not decode. Fields out of line are not read.
+    pub fn check(&self, fixed: &[u8], stored: &[Stored]) -> Result<(), Undecoded> {
+        let vars: Vec<Option<&[u8]>> = stored
             .iter()
-            .zip(&self.places)
-            .map(|(t, place)| match *place {
-                Place::Fixed { at, size } => get_fixed(t, &fixed[at..at + size]),
-                Place::Split { at, var } => {
-                    let FieldType::Sum(cs) = t else {
-                        unreachable!()
-                    };
-                    let ctor = ctor_of(cs, &fixed[at..]);
-                    let mut r = Reader { bytes: &vars[var] };
-                    let fields = get_payload(&cs[ctor as usize].fields, &mut r);
-                    assert!(r.bytes.is_empty(), "payload has trailing bytes");
-                    Value::Sum { ctor, fields }
-                }
-                Place::Var { var } => {
-                    let mut r = Reader { bytes: &vars[var] };
-                    let v = match t {
-                        FieldType::Scalar(s) => get_var_scalar(*s, &mut r, false),
-                        _ => get_packed(t, &mut r),
-                    };
-                    assert!(r.bytes.is_empty(), "field has trailing bytes");
-                    v
-                }
+            .map(|s| match s {
+                Stored::Inline(b) => Some(b.as_slice()),
+                Stored::Out(_) => None,
             })
-            .collect()
+            .collect();
+        for (t, &place) in self.fields.iter().zip(&self.places) {
+            self.field(t, place, fixed, &vars).map_err(Failed::cause)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the value of field `t` at `place`, `None` when the variable-width field it needs
+    /// is not given in `vars`.
+    fn field(
+        &self,
+        t: &FieldType,
+        place: Place,
+        fixed: &[u8],
+        vars: &[Option<&[u8]>],
+    ) -> Result<Option<Value>, Failed> {
+        match place {
+            Place::Fixed { at, size } => get_fixed(t, &fixed[at..at + size])
+                .map(Some)
+                .map_err(Failed::Fixed),
+            Place::Split { at, var } => {
+                let FieldType::Sum(cs) = t else {
+                    unreachable!()
+                };
+                let ctor = ctor_of(cs, &fixed[at..]).map_err(Failed::Fixed)?;
+                let Some(bytes) = vars[var] else {
+                    return Ok(None);
+                };
+                let mut r = Reader { bytes };
+                let fields = get_payload(&cs[ctor as usize].fields, &mut r)
+                    .and_then(|fields| r.end().map(|()| fields))
+                    .map_err(|c| Failed::Var(var, c))?;
+                Ok(Some(Value::Sum { ctor, fields }))
+            }
+            Place::Var { var } => {
+                let Some(bytes) = vars[var] else {
+                    return Ok(None);
+                };
+                let mut r = Reader { bytes };
+                let v = match t {
+                    FieldType::Scalar(s) => get_var_scalar(*s, &mut r, false),
+                    _ => get_packed(t, &mut r),
+                };
+                v.and_then(|v| r.end().map(|()| v))
+                    .map(Some)
+                    .map_err(|c| Failed::Var(var, c))
+            }
+        }
+    }
+}
+
+/// Why a row does not decode, and where.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failed {
+    /// A value in the fixed part.
+    Fixed(Undecoded),
+    /// A value of the variable-width field numbered by the first.
+    Var(usize, Undecoded),
+}
+
+impl Failed {
+    pub fn cause(self) -> Undecoded {
+        match self {
+            Failed::Fixed(c) | Failed::Var(_, c) => c,
+        }
     }
 }

@@ -11,7 +11,7 @@ use crate::storage::order::ordered_for_test;
 use crate::storage::policy::Holder;
 use crate::storage::{
     self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, Options,
-    PageKind, Pager, Pid, Quarantine, Shape,
+    PageKind, Pager, Pid, Quarantine, Shape, Undecoded,
 };
 use crate::storage::{Ordered, Orders};
 use crate::test_world as harness;
@@ -411,6 +411,36 @@ fn a_record_forced_before_a_whole_file_mark_is_kept_by_every_later_open_and_afte
 }
 
 #[test]
+fn each_shape_is_stored_as_its_fixed_number() {
+    let stored = [
+        (Shape::Blank, 0),
+        (Shape::Kind, 1),
+        (Shape::Owner, 2),
+        (Shape::Frame, 3),
+        (Shape::Format, 4),
+        (Shape::Row(Undecoded::Tag), 5),
+        (Shape::Row(Undecoded::Cut), 6),
+        (Shape::Row(Undecoded::Trailing), 7),
+        (Shape::Row(Undecoded::Text), 8),
+        (Shape::Row(Undecoded::Pointer), 9),
+    ];
+    for (shape, code) in stored {
+        let damage = Damage::Shape(shape);
+        assert_eq!(
+            (5, Lsn(code), Lsn(0)),
+            super::record::damage_words(damage),
+            "{shape:?}"
+        );
+        assert_eq!(
+            Some(damage),
+            super::record::damage_of(5, Lsn(code), Lsn(0)),
+            "{shape:?}"
+        );
+    }
+    assert_eq!(None, super::record::damage_of(5, Lsn(10), Lsn(0)));
+}
+
+#[test]
 fn a_shape_record_is_kept_by_the_log_through_a_crash_and_by_the_list_through_a_close() {
     let (files, pages) = created(false);
     let shapes = [
@@ -419,10 +449,17 @@ fn a_shape_record_is_kept_by_the_log_through_a_crash_and_by_the_list_through_a_c
         Shape::Owner,
         Shape::Frame,
         Shape::Format,
+        Shape::Row(Undecoded::Tag),
+        Shape::Row(Undecoded::Cut),
+        Shape::Row(Undecoded::Trailing),
+        Shape::Row(Undecoded::Text),
+        Shape::Row(Undecoded::Pointer),
     ];
     let refuse = |pager: &Pager<SimRuntime>| {
-        let fifth = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        let pids = pages.iter().copied().chain([fifth]);
+        let more = (pages.len()..shapes.len())
+            .map(|_| pager.allocate(1, PageKind::HeapSlotted, 7).unwrap())
+            .collect::<Vec<_>>();
+        let pids = pages.iter().copied().chain(more);
         let want: BTreeMap<Pid, Damage> = pids.zip(shapes.map(Damage::Shape)).collect();
         for (&pid, &damage) in &want {
             pager.damage(pid, damage);
@@ -441,7 +478,7 @@ fn a_shape_record_is_kept_by_the_log_through_a_crash_and_by_the_list_through_a_c
         assert_eq!(want, refuse(&pager), "both runs refuse the same pages");
         pager.close();
     });
-    assert_eq!(5, want.len(), "a page for each shape");
+    assert_eq!(shapes.len(), want.len(), "a page for each shape");
     for (what, files) in [("a crash", crash.files()), ("a close", close.files())] {
         let mut sim = Sim::with_files(SEED, Config::default(), files);
         harness::finished(&mut sim, |rt| {

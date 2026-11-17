@@ -97,7 +97,7 @@ pub use dump::{
     DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside, write_dump,
 };
 pub use dump_crypt::Passphrase;
-pub use error::{Damage, OpenError, Shape};
+pub use error::{Damage, OpenError, Shape, Undecoded};
 #[cfg(test)]
 pub use header::HISTORY_CAPACITY;
 pub use order::{Opening, Ordered, Orders};
