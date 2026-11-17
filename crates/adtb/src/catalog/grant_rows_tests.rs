@@ -1077,7 +1077,7 @@ fn log_rows(
     let schema = catalog.schema();
     let read = |name: &str, keep: usize| {
         let mut rows: Vec<String> = catalog
-            .committed_rows(pager, txns, values::relation(schema, name))
+            .committed_rows(pager, txns, grants::relation(schema, name))
             .expect("the rows read")
             .into_iter()
             .map(|(_, row)| format!("{:?}", &row[..keep.min(row.len())]))

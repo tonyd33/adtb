@@ -680,7 +680,9 @@ pub mod engine_rel {
             CREDENTIALS "credentials",
             PEER_MAPPINGS "peer_mappings",
             AUDIT "audit",
-            MIGRATIONS "migrations"
+            MIGRATIONS "migrations",
+            MIGRATION_OPS "migration_ops",
+            MIGRATION_CLAUSES "migration_clauses"
         }
         "sys" {
             FIELD_VALUES "field_values",
@@ -793,6 +795,89 @@ pub mod engine_ctor {
         "catalog" "Credential" { CREDENTIAL "Credential" }
         "catalog" "PeerMapping" { PEER_MAPPING "PeerMapping" }
         "catalog" "Migration" { MIGRATION "Migration" }
+        "catalog" "Operator" {
+            OP_ADD_MODULE "AddModule",
+            OP_DROP_MODULE "DropModule",
+            OP_INSTALL "Install",
+            OP_UNINSTALL "Uninstall",
+            OP_ADD_TYPE "AddType",
+            OP_DROP_TYPE "DropType",
+            OP_ADD_RELATION "AddRelation",
+            OP_DROP_RELATION "DropRelation",
+            OP_ADD_SET "AddSet",
+            OP_DROP_SET "DropSet",
+            OP_ADD_CONSTRUCTOR "AddConstructor",
+            OP_REMOVE_CONSTRUCTOR "RemoveConstructor",
+            OP_ENABLE "Enable",
+            OP_DISABLE "Disable",
+            OP_DEPRECATE "Deprecate",
+            OP_RENAME_CONSTRUCTOR "RenameConstructor",
+            OP_RENAME_TYPE "RenameType",
+            OP_RENAME_RELATION "RenameRelation",
+            OP_RENAME_SET "RenameSet",
+            OP_RENAME_FIELD "RenameField",
+            OP_SPLIT "Split",
+            OP_MERGE "Merge",
+            OP_NEST "Nest",
+            OP_UNNEST "Unnest",
+            OP_ADD_FIELD "AddField",
+            OP_DROP_FIELD "DropField",
+            OP_ALTER_FIELD "AlterField",
+            OP_MOVE_FIELD "MoveField",
+            OP_ADD_UNIQUE "AddUnique",
+            OP_DROP_UNIQUE "DropUnique",
+            OP_REKEY "Rekey",
+            OP_ADD_INDEX "AddIndex",
+            OP_DROP_INDEX "DropIndex",
+            OP_ADD_DEFAULT "AddDefault",
+            OP_DROP_DEFAULT "DropDefault",
+            OP_DEFINE_FN "DefineFn",
+            OP_REDEFINE_FN "RedefineFn",
+            OP_DROP_FN "DropFn",
+            OP_DEFINE_AGGREGATE "DefineAggregate",
+            OP_DROP_AGGREGATE "DropAggregate",
+            OP_ADD_CONSTRAINT "AddConstraint",
+            OP_DROP_CONSTRAINT "DropConstraint",
+            OP_ADD_CHECK "AddCheck",
+            OP_DROP_CHECK "DropCheck",
+            OP_STORE "Store",
+            OP_UNSTORE "Unstore",
+            OP_ADD_COMPUTED "AddComputed",
+            OP_REDEFINE_COMPUTED "RedefineComputed",
+            OP_DROP_COMPUTED "DropComputed",
+            OP_GRANT "Grant",
+            OP_REVOKE "Revoke",
+            OP_ADOPT_TZDB "AdoptTzdb",
+            OP_SCRIPT "Script",
+            OP_REVERT "Revert",
+        }
+        "catalog" "CtorTarget" {
+            TARGET_IN_RELATION "InRelation",
+            TARGET_OF_TYPE "OfType",
+        }
+        "catalog" "Place" {
+            PLACE_LAST "Last",
+            PLACE_BEFORE "Before",
+            PLACE_AFTER "After",
+        }
+        "catalog" "MigrationOp" { MIGRATION_OP "MigrationOp" }
+        "catalog" "ArmTarget" {
+            ARM_OF_FN "OfFn",
+            ARM_OF_CONSTRAINT "OfConstraint",
+            ARM_OF_COMPUTED "OfComputed",
+        }
+        "catalog" "ClauseBody" {
+            CLAUSE_JOINS "Joins",
+            CLAUSE_MEMBER "Member",
+            CLAUSE_ARM "Arm",
+            CLAUSE_REPLACEMENT "Replacement",
+            CLAUSE_CARRY "Carry",
+            CLAUSE_FILL "Fill",
+            CLAUSE_PRIVILEGE "Privilege",
+        }
+        "catalog" "OpClause" { OP_CLAUSE "OpClause" }
+        "prelude" "Bool" { BOOL_FALSE "False", BOOL_TRUE "True" }
+        "prelude" "Option" { OPTION_NONE "None", OPTION_SOME "Some" }
         "catalog" "AuditEvent" {
             AUDIT_LOGIN "Login",
             AUDIT_GRANT "Grant",

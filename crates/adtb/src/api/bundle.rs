@@ -14,7 +14,8 @@ use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::{Lock, Ranked, RankedGuard};
 
 use crate::catalog::codec::{
-    self, Codec, Ctor, Decode, Field, Fields, Relation, Sum, field, relation, sum,
+    self, Codec, Ctor, Decode, Field, Fields, Kind, Relation, Sum, field, nullary, payload,
+    relation, sum,
 };
 use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, Rot, layout};
 use crate::exec::{self, Val};
@@ -359,17 +360,19 @@ const WORKERS: Field = field(BUNDLE, "workers");
 const PRIORITY: Sum = sum(
     field(BUNDLE, "priority"),
     &[
-        (k::PRIORITY_AD_HOC, &[]),
-        (k::PRIORITY_BACKGROUND, &[]),
-        (k::PRIORITY_REGULAR, &[]),
+        nullary(k::PRIORITY_AD_HOC),
+        nullary(k::PRIORITY_BACKGROUND),
+        nullary(k::PRIORITY_REGULAR),
     ],
 );
+const AT: Fields = &["at"];
+const AT_KIND: &[Kind] = &[Kind::Scalar(Scalar::Instant)];
 const STATE: Sum = sum(
     field(BUNDLE, "state"),
     &[
-        (k::BUNDLE_ACTIVE, &[]),
-        (k::BUNDLE_SUPERSEDED, &[Scalar::Instant]),
-        (k::BUNDLE_RETIRED, &[Scalar::Instant]),
+        nullary(k::BUNDLE_ACTIVE),
+        payload(k::BUNDLE_SUPERSEDED, AT, AT_KIND),
+        payload(k::BUNDLE_RETIRED, AT, AT_KIND),
     ],
 );
 

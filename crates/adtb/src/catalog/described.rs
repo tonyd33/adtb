@@ -2,7 +2,9 @@
 
 use adtb_lang::ids::engine_ctor as k;
 
-use super::codec::{Ctor, Decode, Field, Fields, Relation, Row, Sum, field, relation, sum};
+use super::codec::{
+    Ctor, Decode, Field, Fields, Payload, Relation, Row, Sum, field, nullary, relation, sum,
+};
 use super::ids::CatCtorId;
 
 #[cfg(test)]
@@ -139,10 +141,10 @@ impl Decode for ConstructorRow {
     })];
 }
 
-const STAGES: &[(CatCtorId, &[crate::key::Scalar])] = &[
-    (k::STAGE_DECLARED, &[]),
-    (k::STAGE_ENABLED, &[]),
-    (k::STAGE_DEPRECATED, &[]),
+const STAGES: &[Payload] = &[
+    nullary(k::STAGE_DECLARED),
+    nullary(k::STAGE_ENABLED),
+    nullary(k::STAGE_DEPRECATED),
 ];
 
 const CTOR_STATE: Fields = &["relation", "ctor", "stage"];
@@ -308,10 +310,10 @@ pub const RELATION_SUM: Field = field(RELATION, "sum");
 pub const RELATION_KIND: Sum = sum(
     field(RELATION, "kind"),
     &[
-        (k::REL_BASE, &[]),
-        (k::REL_STORED, &[]),
-        (k::REL_CATALOG, &[]),
-        (k::REL_VOLATILE, &[]),
+        nullary(k::REL_BASE),
+        nullary(k::REL_STORED),
+        nullary(k::REL_CATALOG),
+        nullary(k::REL_VOLATILE),
     ],
 );
 pub const RELATION_DROPPED: Field = field(RELATION, "dropped");
@@ -408,11 +410,11 @@ pub const INDEX_RELATION: Field = field(INDEX, "relation");
 pub const INDEX_KIND: Sum = sum(
     field(INDEX, "kind"),
     &[
-        (k::INDEX_PRIMARY_KEY, &[]),
-        (k::INDEX_UNIQUE, &[]),
-        (k::INDEX_PLAIN, &[]),
-        (k::INDEX_INTERVAL, &[]),
-        (k::INDEX_IMPLIED, &[]),
+        nullary(k::INDEX_PRIMARY_KEY),
+        nullary(k::INDEX_UNIQUE),
+        nullary(k::INDEX_PLAIN),
+        nullary(k::INDEX_INTERVAL),
+        nullary(k::INDEX_IMPLIED),
     ],
 );
 pub const INDEX_CLAUSE: Field = field(INDEX, "clause");

@@ -180,14 +180,221 @@ pub fn listed<V>(fields: Fields, given: impl IntoIterator<Item = (Field, V)>) ->
         .collect()
 }
 
-/// The fixed id of a constructor of a sum with the stored types of its fields.
-pub type Payload = (CatCtorId, &'static [Scalar]);
+/// What a field of a sum constructor's payload holds: a scalar, or a sum by its constructors.
+#[derive(Clone, Copy, Debug)]
+pub enum Kind {
+    Scalar(Scalar),
+    Sum(&'static [Payload]),
+}
+
+/// A constructor of a sum: its fixed id, the names of its fields and what each holds.
+#[derive(Clone, Copy, Debug)]
+pub struct Payload {
+    id: CatCtorId,
+    fields: Fields,
+    kinds: &'static [Kind],
+}
+
+impl Payload {
+    pub const fn fields(self) -> Fields {
+        self.fields
+    }
+}
+
+/// Returns constructor `id` of no fields.
+pub const fn nullary(id: CatCtorId) -> Payload {
+    Payload {
+        id,
+        fields: &[],
+        kinds: &[],
+    }
+}
+
+/// Returns constructor `id` whose field `fields[n]` holds `kinds[n]`. Fails to compile in a
+/// constant when the two differ in length.
+pub const fn payload(id: CatCtorId, fields: Fields, kinds: &'static [Kind]) -> Payload {
+    assert!(
+        fields.len() == kinds.len(),
+        "a payload gives each field one kind"
+    );
+    Payload { id, fields, kinds }
+}
 
 /// A field of a constructor whose type is a sum, with each of its constructors.
 #[derive(Clone, Copy, Debug)]
 pub struct Sum {
     field: Field,
     ctors: &'static [Payload],
+}
+
+/// A value of a sum field, each constructor at every level by its fixed id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Nested {
+    Scalar(Value),
+    /// A constructor and its fields' values, in the order its [`Payload`] lists them.
+    Ctor {
+        id: CatCtorId,
+        fields: Fields,
+        values: Vec<Nested>,
+    },
+}
+
+impl Nested {
+    /// Returns the value of constructor `p` holding `given`, each field `p` lists by its handle
+    /// once.
+    pub fn of(p: Payload, given: impl IntoIterator<Item = (Field, Nested)>) -> Nested {
+        Nested::Ctor {
+            id: p.id,
+            fields: p.fields,
+            values: listed(p.fields, given),
+        }
+    }
+
+    pub fn text(t: &str) -> Nested {
+        Nested::Scalar(Value::Text(t.to_owned()))
+    }
+
+    /// Returns the value of `id` as an `I64`.
+    pub fn int(id: u64) -> Nested {
+        Nested::Scalar(Value::I64(
+            i64::try_from(id).expect("a catalog id fits 63 bits"),
+        ))
+    }
+}
+
+/// The constructors of a sum field's type by declared position.
+struct Table(Vec<Variant>);
+
+struct Variant {
+    payload: Payload,
+    listed: Listed,
+    /// For each field the payload lists, the table of its type when it holds a sum.
+    kids: Vec<Option<Table>>,
+}
+
+impl Table {
+    /// Returns the table of `ty`, whose constructors are `ctors` in any order, for field `field`
+    /// of constructor `row` of relation `name`, as `at` gives them.
+    ///
+    /// Preconditions: `ty` is a sum declaring exactly the constructors `ctors` lists, each with
+    /// exactly the fields its payload lists, holding what it lists.
+    fn new(
+        schema: &Schema,
+        ty: &Ty,
+        ctors: &'static [Payload],
+        at: &(&str, &str, CatCtorId),
+    ) -> Table {
+        let (name, field, row) = *at;
+        let FieldType::Sum(cs) = layout::field_type(schema, ty) else {
+            panic!("field `{field}` of constructor {row} of {name} is a sum");
+        };
+        let declared = layout::ctors(schema, ty);
+        let mut variants = Vec::new();
+        let mut have = Vec::new();
+        for (c, (_, fields)) in cs.iter().zip(declared) {
+            let id = CatCtorId::from_raw(u64::from(c.id.0));
+            have.push(id);
+            let Some(&p) = ctors.iter().find(|p| p.id == id) else {
+                continue;
+            };
+            let broken = || {
+                format!(
+                    "the codec of {name} lists the payload of constructor {id} of field `{field}`"
+                )
+            };
+            let listed = Listed::new(p.fields, &fields, broken);
+            let kids = p
+                .kinds
+                .iter()
+                .zip(listed.handles())
+                .map(|(k, f)| match k {
+                    Kind::Scalar(s) => {
+                        assert!(
+                            layout::field_type(schema, listed.ty(f)) == FieldType::Scalar(*s),
+                            "{}",
+                            broken()
+                        );
+                        None
+                    }
+                    Kind::Sum(sub) => Some(Table::new(schema, listed.ty(f), sub, at)),
+                })
+                .collect();
+            variants.push(Variant {
+                payload: p,
+                listed,
+                kids,
+            });
+        }
+        let mut want: Vec<CatCtorId> = ctors.iter().map(|p| p.id).collect();
+        want.sort_unstable();
+        have.sort_unstable();
+        assert_eq!(
+            want, have,
+            "the codec of {name} lists the constructors of field `{field}` of constructor {row}"
+        );
+        Table(variants)
+    }
+
+    fn position(&self, id: CatCtorId) -> Option<u32> {
+        let at = self.0.iter().position(|v| v.payload.id == id)?;
+        Some(u32::try_from(at).expect("a constructor position fits 32 bits"))
+    }
+
+    /// Returns the stored value of `v`.
+    ///
+    /// Precondition: `v` is a value of the table's type, each constructor given the fields its
+    /// payload lists.
+    fn stored(&self, v: &Nested) -> Value {
+        let Nested::Ctor { id, fields, values } = v else {
+            panic!("a sum field holds a constructor, not {v:?}");
+        };
+        let at = self
+            .position(*id)
+            .unwrap_or_else(|| panic!("the sum lists constructor {id}"));
+        let variant = &self.0[at as usize];
+        assert!(
+            *fields == variant.payload.fields,
+            "constructor {id} is given the fields its payload lists"
+        );
+        let values = values
+            .iter()
+            .zip(&variant.kids)
+            .map(|(v, kid)| match (kid, v) {
+                (None, Nested::Scalar(v)) => v.clone(),
+                (Some(t), v) => t.stored(v),
+                (None, v) => panic!("field of constructor {id} holds a scalar, not {v:?}"),
+            })
+            .collect();
+        Value::Sum {
+            ctor: at,
+            fields: variant.listed.declared(values),
+        }
+    }
+
+    /// Returns `v`, a value of the table's type `fits` accepts, by its constructors' fixed ids.
+    fn nested(&self, v: &Value) -> Nested {
+        let Value::Sum { ctor, fields } = v else {
+            panic!("decode checks a sum field holds a sum, not {v:?}");
+        };
+        let variant = &self.0[*ctor as usize];
+        let values = variant
+            .listed
+            .handles()
+            .zip(&variant.kids)
+            .map(|(f, kid)| {
+                let v = &fields[variant.listed.position(f)];
+                match kid {
+                    None => Nested::Scalar(v.clone()),
+                    Some(t) => t.nested(v),
+                }
+            })
+            .collect();
+        Nested::Ctor {
+            id: variant.payload.id,
+            fields: variant.payload.fields,
+            values,
+        }
+    }
 }
 
 impl Sum {
@@ -299,6 +506,8 @@ coded! {
     Functions => FUNCTIONS,
     Defaults => DEFAULTS,
     Computed => COMPUTED,
+    MigrationOps => MIGRATION_OPS,
+    MigrationClauses => MIGRATION_CLAUSES,
 }
 
 /// A typed row of one catalog relation.
@@ -325,9 +534,8 @@ struct Shape<T: 'static> {
     ctor: &'static Ctor<T>,
     name: String,
     listed: Listed,
-    /// For each field of `ctor.fields` that `ctor.sums` lists, the fixed id of each constructor
-    /// of its type by position.
-    sums: Vec<Option<Vec<CatCtorId>>>,
+    /// For each field of `ctor.fields` that `ctor.sums` lists, the constructors of its type.
+    sums: Vec<Option<Table>>,
     /// The stored type of each field of `ctor.fields`, in its order.
     types: Vec<FieldType>,
 }
@@ -360,39 +568,15 @@ impl<T: Decode> Codec<T> {
                 let listed = Listed::new(ctor.fields, &declared_fields, || {
                     format!("the codec of {name} lists the fields of constructor {id}")
                 });
-                let mut sums = vec![None; ctor.fields.len()];
+                let mut sums: Vec<Option<Table>> = ctor.fields.iter().map(|_| None).collect();
                 for s in ctor.sums {
                     assert!(
                         s.field.fields == ctor.fields,
                         "the codec of {name} lists a sum field of constructor {id} among its fields"
                     );
                     let field = s.field.fields[s.field.at];
-                    let FieldType::Sum(cs) = layout::field_type(schema, listed.ty(s.field)) else {
-                        panic!("field `{field}` of constructor {id} of {name} is a sum");
-                    };
-                    let table: Vec<CatCtorId> = cs
-                        .iter()
-                        .map(|c| CatCtorId::from_raw(u64::from(c.id.0)))
-                        .collect();
-                    for c in &cs {
-                        let id = CatCtorId::from_raw(u64::from(c.id.0));
-                        let listed = s.ctors.iter().find(|(k, _)| *k == id).map(|(_, p)| {
-                            p.iter().map(|s| FieldType::Scalar(*s)).collect::<Vec<_>>()
-                        });
-                        assert!(
-                            listed.is_none_or(|p| p == c.fields),
-                            "the codec of {name} lists the payload of constructor {id} of field `{field}`"
-                        );
-                    }
-                    let mut want: Vec<CatCtorId> = s.ctors.iter().map(|(k, _)| *k).collect();
-                    let mut have = table.clone();
-                    want.sort_unstable();
-                    have.sort_unstable();
-                    assert_eq!(
-                        want, have,
-                        "the codec of {name} lists the constructors of field `{field}` of constructor {id}"
-                    );
-                    sums[s.field.at] = Some(table);
+                    let at = (name.as_str(), field, id);
+                    sums[s.field.at] = Some(Table::new(schema, listed.ty(s.field), s.ctors, &at));
                 }
                 let types = listed
                     .types
@@ -470,8 +654,38 @@ impl<T: Decode> Codec<T> {
     ///
     /// Precondition: a constructor of the codec lists `s`, and `s` lists `id`.
     pub fn tag(&self, s: Sum, id: CatCtorId) -> u32 {
-        let table = self
+        self.table(s)
+            .position(id)
+            .unwrap_or_else(|| panic!("sum field `{}` lists {id}", s.field.fields[s.field.at]))
+    }
+
+    /// Returns the stored value of `v` in sum field `s`.
+    ///
+    /// Precondition: a constructor of the codec lists `s`, and `v` is a value of its type by the
+    /// constructors and fields `s` lists at every level.
+    pub fn stored(&self, s: Sum, v: &Nested) -> Value {
+        self.table(s).stored(v)
+    }
+
+    /// Returns the stored type of field `f`.
+    ///
+    /// Precondition: a constructor of the codec lists `f`.
+    pub fn field_type(&self, f: Field) -> &FieldType {
+        let shape = self
             .ctors
+            .iter()
+            .find(|shape| shape.ctor.fields == f.fields)
+            .unwrap_or_else(|| {
+                panic!(
+                    "a constructor of the codec of {} lists field `{}`",
+                    self.name, f.fields[f.at]
+                )
+            });
+        &shape.types[f.at]
+    }
+
+    fn table(&self, s: Sum) -> &Table {
+        self.ctors
             .iter()
             .filter(|shape| shape.ctor.fields == s.field.fields)
             .find_map(|shape| shape.sums[s.field.at].as_ref())
@@ -480,12 +694,7 @@ impl<T: Decode> Codec<T> {
                     "a constructor of the codec of {} lists sum field `{}`",
                     self.name, s.field.fields[s.field.at]
                 )
-            });
-        let at = table
-            .iter()
-            .position(|&k| k == id)
-            .unwrap_or_else(|| panic!("sum field `{}` lists {id}", s.field.fields[s.field.at]));
-        u32::try_from(at).expect("a constructor position fits 32 bits")
+            })
     }
 
     /// Returns `v` with field `f` of its constructor holding `value`.
@@ -624,7 +833,7 @@ pub struct Row<'a> {
     ctor: CatCtorId,
     fields: Fields,
     positions: &'a [usize],
-    sums: &'a [Option<Vec<CatCtorId>>],
+    sums: &'a [Option<Table>],
     values: &'a [Value],
 }
 
@@ -700,13 +909,24 @@ impl Row<'_> {
     /// Returns the fixed id of the constructor sum field `s` holds, with that constructor's
     /// fields, of the types `s` lists for it.
     pub fn ctor(&self, s: Sum) -> (CatCtorId, &[Value]) {
-        let table = self.sums[s.field.at]
-            .as_ref()
-            .expect("a codec reads a sum field its constructor lists");
         match self.get(s.field) {
-            Value::Sum { ctor, fields } => (table[*ctor as usize], fields.as_slice()),
+            Value::Sum { ctor, fields } => (
+                self.table(s).0[*ctor as usize].payload.id,
+                fields.as_slice(),
+            ),
             _ => self.unchecked(s.field),
         }
+    }
+
+    /// Returns the value sum field `s` holds, by the fixed ids of its constructors.
+    pub fn nested(&self, s: Sum) -> Nested {
+        self.table(s).nested(self.get(s.field))
+    }
+
+    fn table(&self, s: Sum) -> &Table {
+        self.sums[s.field.at]
+            .as_ref()
+            .expect("a codec reads a sum field its constructor lists")
     }
 
     pub fn text(&self, f: Field) -> &str {
@@ -905,7 +1125,7 @@ const GRANT: Fields = &[
 pub const GRANT_ID: Field = field(GRANT, "id");
 pub const GRANT_KIND: Sum = sum(
     field(GRANT, "kind"),
-    &[(k::GRANT_LOG, &[]), (k::GRANT_DEPLOYMENT, &[])],
+    &[nullary(k::GRANT_LOG), nullary(k::GRANT_DEPLOYMENT)],
 );
 pub const GRANT_PRIVILEGE: Field = field(GRANT, "privilege");
 pub const GRANT_TARGET: Field = field(GRANT, "target");

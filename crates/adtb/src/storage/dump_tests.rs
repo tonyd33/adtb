@@ -609,7 +609,7 @@ fn unsecured(files: &Files) -> Files {
     let id = |n| {
         schema
             .ids()
-            .relation_id(crate::catalog::values::relation(&schema, n))
+            .relation_id(grants::relation(&schema, n))
             .unwrap()
     };
     let drawn = ["roles", "grants"].map(|n| format!("generator {} ", id(n)));

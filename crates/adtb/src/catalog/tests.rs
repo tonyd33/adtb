@@ -220,12 +220,10 @@ fn the_hash_of_a_version_chains_on_the_one_before() {
     let one = migrated(&Source::default(), FIRST);
     let two = migrated(&one, "module app\nadd type Label = { name: Text }\n");
     let schema = two.schema().expect("it builds");
+    let log = oplog::Log::new(&schema);
     let step = |before: Hash, number: u64| {
         let mut input = before.to_vec();
-        input.extend(oplog::encoded(
-            &schema,
-            &oplog::operators(&schema, &two, number),
-        ));
+        input.extend(log.encoded(&oplog::operators(&log, &two, number)));
         *blake3::hash(&input).as_bytes()
     };
     let h1 = step([0; 32], 1);
@@ -238,7 +236,8 @@ fn the_hash_of_a_version_chains_on_the_one_before() {
 fn a_migration_encodes_its_operator_count_then_each_operator_and_its_clauses() {
     let src = migrated(&Source::default(), "module app\nadd module app\n");
     let schema = src.schema().expect("it builds");
-    let bytes = oplog::encoded(&schema, &oplog::operators(&schema, &src, 1));
+    let log = oplog::Log::new(&schema);
+    let bytes = log.encoded(&oplog::operators(&log, &src, 1));
     assert_eq!(
         vec![0x01, 0xfd, 0x02, 0x03, b'a', b'p', b'p', 0x00],
         bytes,
@@ -253,14 +252,15 @@ fn a_member_clause_is_encoded_after_its_operator() {
         "module app\nadd module app\nadd type S { id: Key ss } = P | Q\nadd relation ss : S key id\nadd set Ps of ss = P\n",
     );
     let schema = src.schema().expect("it builds");
-    let ops = oplog::operators(&schema, &src, 1);
+    let log = oplog::Log::new(&schema);
+    let ops = oplog::operators(&log, &src, 1);
     let set = &ops[3];
     assert_eq!(1, set.1.len(), "{set:?}");
     let p = ctor_id_named(&src, "S", "P");
     let mut tail = vec![0x01];
     tail.extend([0xba, 0x03]);
     tail.extend(p.to_le_bytes());
-    let bytes = oplog::encoded(&schema, &ops);
+    let bytes = log.encoded(&ops);
     assert!(
         bytes.ends_with(&tail),
         "the set's one Member clause (442) holds P's id {p}: {bytes:02x?}"
@@ -302,7 +302,7 @@ fn every_operator_has_a_migration_ops_row_by_ordinal_from_one() {
     let want: Vec<(Value, Value)> = (1..=7).map(|k| (Value::I64(1), Value::I32(k))).collect();
     assert_eq!(want, keys);
     let schema = src.schema().expect("it builds");
-    let ops = oplog::operators(&schema, &src, 1);
+    let ops = oplog::operators(&oplog::Log::new(&schema), &src, 1);
     let stored: Vec<&Value> = rows.iter().map(|(_, row)| &row[2]).collect();
     let resolved: Vec<&Value> = ops.iter().map(|(op, _)| op).collect();
     assert_eq!(resolved, stored);

@@ -34,6 +34,10 @@ use super::described::{
     TYPE_OVER, TYPE_SUM_HEAD, TypeRow, VALUE_STATE_CTOR, VALUE_STATE_STAGE, ValueStateRow,
 };
 use super::ids::{CatCtorId, engine_relation, held_id, type_ctor_id};
+use super::operators::{
+    MIGRATION_OP_MIGRATION, MIGRATION_OP_OP, MIGRATION_OP_ORDINAL, OP_CLAUSE_BODY,
+    OP_CLAUSE_CLAUSE, OP_CLAUSE_MIGRATION, OP_CLAUSE_ORDINAL,
+};
 use super::{layout, oplog, values};
 
 /// Rows of relations, each with its constructor index and as a heap of that constructor holds it.
@@ -114,18 +118,14 @@ pub(super) fn recorded(
     previous: oplog::Hash,
     applied: i64,
 ) -> Rows {
-    let rows = applied_hash(
-        schema,
-        source,
-        oplog::chained(schema, previous, ops),
-        applied,
-    );
+    let log = oplog::Log::new(schema);
+    let rows = applied_hash(schema, source, log.chained(previous, ops), applied);
     let mut b = Builder {
         schema,
         source,
         rows,
     };
-    b.migration(source.version, ops);
+    b.migration(&log, source.version, ops);
     b.rows
 }
 
@@ -425,17 +425,6 @@ struct Builder<'s> {
 }
 
 impl Builder<'_> {
-    /// Add a row of constructor `ctor` of `catalog::{rel}`, its fields given by name.
-    fn push(&mut self, rel: &str, ctor: &str, fields: Vec<(&str, Value)>) {
-        let r = values::relation(self.schema, rel);
-        let td = self.schema.ty(self.schema.relation(r).elem_def);
-        let c = td
-            .ctor_index(ctor)
-            .unwrap_or_else(|| panic!("`{rel}` has constructor `{ctor}`"));
-        let row = values::row(self.schema, r, c, fields);
-        self.rows.entry(r).or_default().push((c, row));
-    }
-
     /// Add the row of constructor `id` of `codec`'s relation holding `given`.
     fn put<T: Decode>(&mut self, codec: &Codec<T>, id: CatCtorId, given: Vec<(Field, Value)>) {
         let row = codec.encode(id, given);
@@ -860,34 +849,33 @@ impl Builder<'_> {
     /// Add the rows of `migration_ops` and `migration_clauses` for every migration of the log.
     #[cfg(test)]
     fn log(&mut self) {
+        let log = oplog::Log::new(self.schema);
         for l in &self.source.log {
-            self.migration(
-                l.number,
-                &oplog::operators(self.schema, self.source, l.number),
-            );
+            let ops = oplog::operators(&log, self.source, l.number);
+            self.migration(&log, l.number, &ops);
         }
     }
 
-    fn migration(&mut self, version: u64, ops: &[oplog::OperatorRow]) {
+    fn migration(&mut self, log: &oplog::Log, version: u64, ops: &[oplog::OperatorRow]) {
         let number = key(version);
-        for (k, (op, clauses)) in ops.iter().enumerate() {
-            let ordinal = Value::I32(i32::try_from(k + 1).expect("an ordinal fits 31 bits"));
+        for (at, (op, clauses)) in ops.iter().enumerate() {
+            let ordinal = Value::I32(i32::try_from(at + 1).expect("an ordinal fits 31 bits"));
             for (j, body) in clauses.iter().enumerate() {
                 let clause = Value::I32(i32::try_from(j + 1).expect("a clause fits 31 bits"));
                 let fields = vec![
-                    ("migration", number.clone()),
-                    ("ordinal", ordinal.clone()),
-                    ("clause", clause),
-                    ("body", body.clone()),
+                    (OP_CLAUSE_MIGRATION, number.clone()),
+                    (OP_CLAUSE_ORDINAL, ordinal.clone()),
+                    (OP_CLAUSE_CLAUSE, clause),
+                    (OP_CLAUSE_BODY.field(), body.clone()),
                 ];
-                self.push("migration_clauses", "OpClause", fields);
+                self.put(log.clauses(), k::OP_CLAUSE, fields);
             }
             let fields = vec![
-                ("migration", number.clone()),
-                ("ordinal", ordinal),
-                ("op", op.clone()),
+                (MIGRATION_OP_MIGRATION, number.clone()),
+                (MIGRATION_OP_ORDINAL, ordinal),
+                (MIGRATION_OP_OP.field(), op.clone()),
             ];
-            self.push("migration_ops", "MigrationOp", fields);
+            self.put(log.ops(), k::MIGRATION_OP, fields);
         }
     }
 

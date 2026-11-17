@@ -16,6 +16,7 @@ mod keying;
 pub mod layout;
 mod migration;
 mod moved;
+pub(crate) mod operators;
 mod oplog;
 mod pending;
 mod readers;
@@ -37,6 +38,8 @@ pub(crate) use structures::relation_holder;
 mod catalog_tests;
 #[cfg(test)]
 mod grant_rows_tests;
+#[cfg(test)]
+mod hash_corpus_tests;
 #[cfg(test)]
 mod index_text_tests;
 #[cfg(test)]

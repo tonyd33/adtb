@@ -132,7 +132,7 @@ impl Catalog {
             Err(ds) => return refused(ds.into_iter().map(|d| d.diag.message).collect()),
         };
         let operators = match recordable(&next) {
-            Ok(ops) => oplog::operator_rows(&schema, &ops),
+            Ok(ops) => oplog::Log::new(&schema).rows(&ops),
             Err(why) => return refused(why),
         };
         let next = Checked::new(next, schema, program)?;

@@ -1,15 +1,17 @@
 use adtb_lang::evolve::{
     ArmTarget, Clause, IndexKind, Place, Resolved, ResolvedOp, Source, Target,
 };
-use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::ids::engine_ctor as k;
+use adtb_lang::schema::Schema;
 use adtb_lang::span::Diag;
-use adtb_lang::types::Ty;
 
 use crate::heap::{FieldType, put_uvarint};
 use crate::key::Value;
 
-use super::layout;
-use super::values::{self, boolean};
+use super::codec::{Codec, Field, Nested, Payload, nullary};
+use super::operators::{
+    self as o, MIGRATION_OP_OP, MigrationOpRow, OP_CLAUSE_BODY, OpClauseRow, flag, optional,
+};
 
 /// A BLAKE3-256 hash.
 pub type Hash = [u8; 32];
@@ -30,160 +32,165 @@ pub fn version_hash(schema: &Schema, source: &Source) -> Hash {
 /// Returns the hash `version_hash` returns, or the diagnostics of the first migration of the
 /// log that does not resolve.
 pub fn try_version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Diag>> {
+    let log = Log::new(schema);
     let mut h = [0; 32];
     for l in &source.log {
-        h = chained(schema, h, &resolved_operators(schema, source, l.number)?);
+        h = log.chained(h, &log.rows(&source.resolved(l.number)?));
     }
     Ok(h)
-}
-
-pub(super) fn chained(schema: &Schema, previous: Hash, ops: &[OperatorRow]) -> Hash {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&previous);
-    hasher.update(&encoded(schema, ops));
-    *hasher.finalize().as_bytes()
 }
 
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
 ///
 /// Panics if the migration does not resolve.
 #[cfg(test)]
-pub fn operators(schema: &Schema, source: &Source, number: u64) -> Vec<OperatorRow> {
-    resolved_operators(schema, source, number)
-        .unwrap_or_else(|ds| panic!("logged migration {number} resolves: {ds:?}"))
+pub fn operators(log: &Log, source: &Source, number: u64) -> Vec<OperatorRow> {
+    let ops = source
+        .resolved(number)
+        .unwrap_or_else(|ds| panic!("logged migration {number} resolves: {ds:?}"));
+    log.rows(&ops)
 }
 
-fn resolved_operators(
-    schema: &Schema,
-    source: &Source,
-    number: u64,
-) -> Result<Vec<OperatorRow>, Vec<Diag>> {
-    let ops = source.resolved(number)?;
-    Ok(operator_rows(schema, &ops))
+/// The codecs of the rows of `migration_ops` and `migration_clauses`.
+pub struct Log {
+    ops: Codec<MigrationOpRow>,
+    clauses: Codec<OpClauseRow>,
 }
 
-pub(super) fn operator_rows(schema: &Schema, ops: &[ResolvedOp]) -> Vec<OperatorRow> {
-    let op_ty = field_ty(schema, "migration_ops", "op");
-    let clause_ty = field_ty(schema, "migration_clauses", "body");
-    ops.iter()
-        .map(|op| {
-            let clauses = op.clauses.iter().map(|c| clause(schema, &clause_ty, c));
-            (operator(schema, &op_ty, op), clauses.collect())
-        })
-        .collect()
-}
-
-/// Returns the encoding of a migration's operators: their count, then each operator, the count
-/// of its clauses and each clause, in the wire value encoding.
-pub fn encoded(schema: &Schema, ops: &[OperatorRow]) -> Vec<u8> {
-    let op_ty = layout::field_type(schema, &field_ty(schema, "migration_ops", "op"));
-    let clause_ty = layout::field_type(schema, &field_ty(schema, "migration_clauses", "body"));
-    let mut out = Vec::new();
-    put_uvarint(ops.len() as u64, &mut out);
-    for (op, clauses) in ops {
-        encode(&op_ty, op, &mut out);
-        put_uvarint(clauses.len() as u64, &mut out);
-        for c in clauses {
-            encode(&clause_ty, c, &mut out);
+impl Log {
+    pub fn new(schema: &Schema) -> Log {
+        Log {
+            ops: Codec::new(schema),
+            clauses: Codec::new(schema),
         }
     }
-    out
-}
 
-/// Returns the type of field `field` of the rows of `catalog::{relation}`.
-fn field_ty(schema: &Schema, relation: &str, field: &str) -> Ty {
-    let m = schema.module_named("catalog").expect("the catalog module");
-    let Some(&ValueDef::Relation(r)) = schema.module(m).values.get(relation) else {
-        panic!("the catalog declares relation `{relation}`")
-    };
-    layout::row(schema, r, 0)
-        .into_iter()
-        .find(|(n, _)| n == field)
-        .unwrap_or_else(|| panic!("a row of `{relation}` has field `{field}`"))
-        .1
-}
+    pub fn ops(&self) -> &Codec<MigrationOpRow> {
+        &self.ops
+    }
 
-fn id(n: u64) -> Value {
-    Value::I64(i64::try_from(n).expect("a catalog id fits 63 bits"))
-}
+    pub fn clauses(&self) -> &Codec<OpClauseRow> {
+        &self.clauses
+    }
 
-fn text(s: &str) -> Value {
-    Value::Text(s.to_string())
-}
+    /// Returns `ops` as stored values of `catalog::Operator` with their clauses.
+    pub fn rows(&self, ops: &[ResolvedOp]) -> Vec<OperatorRow> {
+        ops.iter()
+            .map(|op| {
+                let clauses = op
+                    .clauses
+                    .iter()
+                    .map(|c| self.clauses.stored(OP_CLAUSE_BODY, &clause(c)));
+                (
+                    self.ops.stored(MIGRATION_OP_OP, &operator(&op.op)),
+                    clauses.collect(),
+                )
+            })
+            .collect()
+    }
 
-/// Returns the value of constructor `ctor` of the declared sum `ty`, its fields given by name.
-fn sum(schema: &Schema, ty: &Ty, ctor: &str, fields: &[(&str, Value)]) -> Value {
-    let Ty::Data { def, .. } = ty else {
-        panic!("{ty:?} is a declared sum")
-    };
-    let k = schema
-        .ty(*def)
-        .ctor_index(ctor)
-        .unwrap_or_else(|| panic!("`{}` has constructor `{ctor}`", schema.ty(*def).name));
-    let names = layout::ctors(schema, ty).swap_remove(k as usize).1;
-    assert_eq!(
-        names.len(),
-        fields.len(),
-        "a value of `{ctor}` gives every field"
-    );
-    let fields = names
-        .iter()
-        .map(|(n, _)| {
-            fields
-                .iter()
-                .find(|(f, _)| f == n)
-                .unwrap_or_else(|| panic!("a value of `{ctor}` gives `{n}`"))
-                .1
-                .clone()
-        })
-        .collect();
-    Value::Sum { ctor: k, fields }
-}
+    /// Returns the hash of `previous` followed by the encoding of `ops`.
+    pub fn chained(&self, previous: Hash, ops: &[OperatorRow]) -> Hash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&previous);
+        hasher.update(&self.encoded(ops));
+        *hasher.finalize().as_bytes()
+    }
 
-fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
-    let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
-    let one = |ctor: &str, name: &str, object: u64| v(ctor, &[(name, id(object))]);
-    let two = |ctor: &str, name: &str, object: u64, field: &str, t: &str| {
-        v(ctor, &[(name, id(object)), (field, text(t))])
-    };
-    let targeted = |ctor: &str, t: &Target| v(ctor, &[("target", target(schema, ty, ctor, t))]);
-    match &op.op {
-        Resolved::AddModule { module } => v("AddModule", &[("module", text(module))]),
-        Resolved::DropModule { module } => v("DropModule", &[("module", text(module))]),
-        Resolved::AddType { sum, decl } => two("AddType", "sum", *sum, "decl", decl),
-        Resolved::DropType { sum } => one("DropType", "sum", *sum),
-        Resolved::RenameType { sum, name } => two("RenameType", "sum", *sum, "name", name),
-        Resolved::AddRelation { relation: r, decl } => {
-            two("AddRelation", "relation", *r, "decl", decl)
+    /// Returns the encoding of a migration's operators: their count, then each operator, the
+    /// count of its clauses and each clause, in the wire value encoding.
+    pub fn encoded(&self, ops: &[OperatorRow]) -> Vec<u8> {
+        let op_ty = self.ops.field_type(MIGRATION_OP_OP.field());
+        let clause_ty = self.clauses.field_type(OP_CLAUSE_BODY.field());
+        let mut out = Vec::new();
+        put_uvarint(ops.len() as u64, &mut out);
+        for (op, clauses) in ops {
+            encode(op_ty, op, &mut out);
+            put_uvarint(clauses.len() as u64, &mut out);
+            for c in clauses {
+                encode(clause_ty, c, &mut out);
+            }
         }
-        Resolved::DropRelation { relation: r } => one("DropRelation", "relation", *r),
-        Resolved::RenameRelation { relation: r, name } => {
-            two("RenameRelation", "relation", *r, "name", name)
+        out
+    }
+}
+
+fn id(n: u64) -> Nested {
+    Nested::int(n)
+}
+
+fn text(s: &str) -> Nested {
+    Nested::text(s)
+}
+
+fn one(p: Payload, f: Field, object: u64) -> Nested {
+    Nested::of(p, [(f, id(object))])
+}
+
+fn two(p: Payload, (f, object): (Field, u64), (g, t): (Field, &str)) -> Nested {
+    Nested::of(p, [(f, id(object)), (g, text(t))])
+}
+
+fn operator(op: &Resolved) -> Nested {
+    match op {
+        Resolved::AddModule { module } => {
+            Nested::of(o::ADD_MODULE, [(o::ADD_MODULE_MODULE, text(module))])
         }
+        Resolved::DropModule { module } => {
+            Nested::of(o::DROP_MODULE, [(o::DROP_MODULE_MODULE, text(module))])
+        }
+        Resolved::AddType { sum, decl } => two(
+            o::ADD_TYPE,
+            (o::ADD_TYPE_SUM, *sum),
+            (o::ADD_TYPE_DECL, decl),
+        ),
+        Resolved::DropType { sum } => one(o::DROP_TYPE, o::DROP_TYPE_SUM, *sum),
+        Resolved::RenameType { sum, name } => two(
+            o::RENAME_TYPE,
+            (o::RENAME_TYPE_SUM, *sum),
+            (o::RENAME_TYPE_NAME, name),
+        ),
+        Resolved::AddRelation { relation: r, decl } => two(
+            o::ADD_RELATION,
+            (o::ADD_RELATION_RELATION, *r),
+            (o::ADD_RELATION_DECL, decl),
+        ),
+        Resolved::DropRelation { relation: r } => {
+            one(o::DROP_RELATION, o::DROP_RELATION_RELATION, *r)
+        }
+        Resolved::RenameRelation { relation: r, name } => two(
+            o::RENAME_RELATION,
+            (o::RENAME_RELATION_RELATION, *r),
+            (o::RENAME_RELATION_NAME, name),
+        ),
         Resolved::AddSet {
             set,
             relation,
             name,
-        } => v(
-            "AddSet",
-            &[
-                ("set", id(*set)),
-                ("relation", id(*relation)),
-                ("name", text(name)),
+        } => Nested::of(
+            o::ADD_SET,
+            [
+                (o::ADD_SET_SET, id(*set)),
+                (o::ADD_SET_RELATION, id(*relation)),
+                (o::ADD_SET_NAME, text(name)),
             ],
         ),
-        Resolved::DropSet { set } => one("DropSet", "set", *set),
-        Resolved::RenameSet { set, name } => two("RenameSet", "set", *set, "name", name),
+        Resolved::DropSet { set } => one(o::DROP_SET, o::DROP_SET_SET, *set),
+        Resolved::RenameSet { set, name } => two(
+            o::RENAME_SET,
+            (o::RENAME_SET_SET, *set),
+            (o::RENAME_SET_NAME, name),
+        ),
         Resolved::AddUnique {
             index,
             relation,
             fields,
-        } => v(
-            "AddUnique",
-            &[
-                ("index", id(*index)),
-                ("relation", id(*relation)),
-                ("fields", text(fields)),
+        } => Nested::of(
+            o::ADD_UNIQUE,
+            [
+                (o::ADD_UNIQUE_INDEX, id(*index)),
+                (o::ADD_UNIQUE_RELATION, id(*relation)),
+                (o::ADD_UNIQUE_FIELDS, text(fields)),
             ],
         ),
         Resolved::AddIndex {
@@ -191,181 +198,269 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
             relation,
             interval,
             fields,
-        } => added_index(schema, ty, *index, *relation, *interval, fields),
-        Resolved::DropUnique { index } => one("DropUnique", "index", *index),
-        Resolved::DropIndex { index } => one("DropIndex", "index", *index),
+        } => Nested::of(
+            o::ADD_INDEX,
+            [
+                (o::ADD_INDEX_INDEX, id(*index)),
+                (o::ADD_INDEX_RELATION, id(*relation)),
+                (o::ADD_INDEX_INTERVAL, flag(*interval)),
+                (o::ADD_INDEX_FIELDS, text(fields)),
+            ],
+        ),
+        Resolved::DropUnique { index } => one(o::DROP_UNIQUE, o::DROP_UNIQUE_INDEX, *index),
+        Resolved::DropIndex { index } => one(o::DROP_INDEX, o::DROP_INDEX_INDEX, *index),
         Resolved::Rekey {
             relation,
             key,
             fields,
-        } => v(
-            "Rekey",
-            &[
-                ("relation", id(*relation)),
-                ("key", id(*key)),
-                ("fields", text(fields)),
+        } => Nested::of(
+            o::REKEY,
+            [
+                (o::REKEY_RELATION, id(*relation)),
+                (o::REKEY_KEY, id(*key)),
+                (o::REKEY_FIELDS, text(fields)),
             ],
         ),
-        Resolved::DefineFn { function: f, decl } => two("DefineFn", "function", *f, "decl", decl),
-        Resolved::RedefineFn { function: f, decl } => {
-            two("RedefineFn", "function", *f, "decl", decl)
+        Resolved::DefineFn { function: f, decl } => two(
+            o::DEFINE_FN,
+            (o::DEFINE_FN_FUNCTION, *f),
+            (o::DEFINE_FN_DECL, decl),
+        ),
+        Resolved::RedefineFn { function: f, decl } => two(
+            o::REDEFINE_FN,
+            (o::REDEFINE_FN_FUNCTION, *f),
+            (o::REDEFINE_FN_DECL, decl),
+        ),
+        Resolved::DropFn { function: f } => one(o::DROP_FN, o::DROP_FN_FUNCTION, *f),
+        Resolved::DefineAggregate { function: f, decl } => two(
+            o::DEFINE_AGGREGATE,
+            (o::DEFINE_AGGREGATE_FUNCTION, *f),
+            (o::DEFINE_AGGREGATE_DECL, decl),
+        ),
+        Resolved::DropAggregate { function: f } => {
+            one(o::DROP_AGGREGATE, o::DROP_AGGREGATE_FUNCTION, *f)
         }
-        Resolved::DropFn { function: f } => one("DropFn", "function", *f),
-        Resolved::DefineAggregate { function: f, decl } => {
-            two("DefineAggregate", "function", *f, "decl", decl)
-        }
-        Resolved::DropAggregate { function: f } => one("DropAggregate", "function", *f),
         Resolved::AddConstraint {
             constraint: c,
             body,
-        } => two("AddConstraint", "constraint", *c, "body", body),
-        Resolved::DropConstraint { constraint: c } => one("DropConstraint", "constraint", *c),
+        } => two(
+            o::ADD_CONSTRAINT,
+            (o::ADD_CONSTRAINT_CONSTRAINT, *c),
+            (o::ADD_CONSTRAINT_BODY, body),
+        ),
+        Resolved::DropConstraint { constraint: c } => {
+            one(o::DROP_CONSTRAINT, o::DROP_CONSTRAINT_CONSTRAINT, *c)
+        }
         Resolved::AddCheck {
             constraint: c,
             body,
-        } => two("AddCheck", "constraint", *c, "body", body),
-        Resolved::DropCheck { constraint: c } => one("DropCheck", "constraint", *c),
+        } => two(
+            o::ADD_CHECK,
+            (o::ADD_CHECK_CONSTRAINT, *c),
+            (o::ADD_CHECK_BODY, body),
+        ),
+        Resolved::DropCheck { constraint: c } => one(o::DROP_CHECK, o::DROP_CHECK_CONSTRAINT, *c),
+        other => reshaped(other),
+    }
+}
+
+/// Returns the operator on constructors or fields `op` is, or what [`derived`] returns.
+fn reshaped(op: &Resolved) -> Nested {
+    match op {
         Resolved::AddConstructor {
             ctor,
             sum: of,
             decl,
             place,
-        } => added_ctor(schema, ty, *ctor, *of, decl, place),
-        Resolved::RemoveConstructor { ctor } => one("RemoveConstructor", "ctor", *ctor),
-        Resolved::RenameConstructor { ctor, name } => {
-            two("RenameConstructor", "ctor", *ctor, "name", name)
+        } => Nested::of(
+            o::ADD_CONSTRUCTOR,
+            [
+                (o::ADD_CONSTRUCTOR_CTOR, id(*ctor)),
+                (o::ADD_CONSTRUCTOR_SUM, id(*of)),
+                (o::ADD_CONSTRUCTOR_DECL, text(decl)),
+                (o::ADD_CONSTRUCTOR_PLACE, placed(place)),
+            ],
+        ),
+        Resolved::RemoveConstructor { ctor } => {
+            one(o::REMOVE_CONSTRUCTOR, o::REMOVE_CONSTRUCTOR_CTOR, *ctor)
         }
-        Resolved::Enable { target: t } => targeted("Enable", t),
-        Resolved::Disable { target: t } => targeted("Disable", t),
-        Resolved::Deprecate { target: t } => targeted("Deprecate", t),
+        Resolved::RenameConstructor { ctor, name } => two(
+            o::RENAME_CONSTRUCTOR,
+            (o::RENAME_CONSTRUCTOR_CTOR, *ctor),
+            (o::RENAME_CONSTRUCTOR_NAME, name),
+        ),
+        Resolved::Enable { target: t } => Nested::of(o::ENABLE, [(o::ENABLE_TARGET, target(t))]),
+        Resolved::Disable { target: t } => Nested::of(o::DISABLE, [(o::DISABLE_TARGET, target(t))]),
+        Resolved::Deprecate { target: t } => {
+            Nested::of(o::DEPRECATE, [(o::DEPRECATE_TARGET, target(t))])
+        }
         Resolved::Split {
             ctor,
             decl,
             routing,
-        } => v(
-            "Split",
-            &[
-                ("ctor", id(*ctor)),
-                ("decl", text(decl)),
-                ("routing", text(routing)),
+        } => Nested::of(
+            o::SPLIT,
+            [
+                (o::SPLIT_CTOR, id(*ctor)),
+                (o::SPLIT_DECL, text(decl)),
+                (o::SPLIT_ROUTING, text(routing)),
             ],
         ),
         Resolved::Merge {
             ctor,
             decl,
             routing,
-        } => v(
-            "Merge",
-            &[
-                ("ctor", id(*ctor)),
-                ("decl", text(decl)),
-                ("routing", optional(routing)),
+        } => Nested::of(
+            o::MERGE,
+            [
+                (o::MERGE_CTOR, id(*ctor)),
+                (o::MERGE_DECL, text(decl)),
+                (o::MERGE_ROUTING, optional(routing.as_deref())),
             ],
         ),
-        Resolved::Nest { ctor, decl } => two("Nest", "ctor", *ctor, "decl", decl),
-        Resolved::Unnest { ctor } => one("Unnest", "ctor", *ctor),
-        Resolved::AddField { field, decl, fill } => v(
-            "AddField",
-            &[
-                ("field", id(*field)),
-                ("decl", text(decl)),
-                ("fill", text(fill)),
+        Resolved::Nest { ctor, decl } => two(o::NEST, (o::NEST_CTOR, *ctor), (o::NEST_DECL, decl)),
+        Resolved::Unnest { ctor } => one(o::UNNEST, o::UNNEST_CTOR, *ctor),
+        Resolved::AddField { field, decl, fill } => Nested::of(
+            o::ADD_FIELD,
+            [
+                (o::ADD_FIELD_FIELD, id(*field)),
+                (o::ADD_FIELD_DECL, text(decl)),
+                (o::ADD_FIELD_FILL, text(fill)),
             ],
         ),
-        Resolved::DropField { field } => one("DropField", "field", *field),
-        Resolved::AlterField { field, action } => {
-            two("AlterField", "field", *field, "action", action)
-        }
-        Resolved::RenameField { field, name } => two("RenameField", "field", *field, "name", name),
+        Resolved::DropField { field } => one(o::DROP_FIELD, o::DROP_FIELD_FIELD, *field),
+        Resolved::AlterField { field, action } => two(
+            o::ALTER_FIELD,
+            (o::ALTER_FIELD_FIELD, *field),
+            (o::ALTER_FIELD_ACTION, action),
+        ),
+        Resolved::RenameField { field, name } => two(
+            o::RENAME_FIELD,
+            (o::RENAME_FIELD_FIELD, *field),
+            (o::RENAME_FIELD_NAME, name),
+        ),
         Resolved::MoveField {
             field,
             header,
             fill,
-        } => v(
-            "MoveField",
-            &[
-                ("field", id(*field)),
-                ("header", boolean(*header)),
-                ("fill", optional(fill)),
+        } => Nested::of(
+            o::MOVE_FIELD,
+            [
+                (o::MOVE_FIELD_FIELD, id(*field)),
+                (o::MOVE_FIELD_HEADER, flag(*header)),
+                (o::MOVE_FIELD_FILL, optional(fill.as_deref())),
             ],
         ),
-        other => derived(schema, ty, other),
+        other => derived(other),
     }
 }
 
-/// Returns the value of the operator sum `ty` of a revert, or of an operator on defaults, computed
-/// fields, stored views, grants, extensions, zone rules or data.
-fn derived(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
-    let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
-    let one = |ctor: &str, name: &str, object: u64| v(ctor, &[(name, id(object))]);
+/// Returns the operator of a revert, or of an operator on defaults, computed fields, stored
+/// views, grants, extensions, zone rules or data.
+fn derived(op: &Resolved) -> Nested {
     match op {
         Resolved::AddDefault {
             default,
             relation,
             field,
             value,
-        } => v(
-            "AddDefault",
-            &[
-                ("default", id(*default)),
-                ("relation", id(*relation)),
-                ("field", id(*field)),
-                ("value", text(value)),
+        } => Nested::of(
+            o::ADD_DEFAULT,
+            [
+                (o::ADD_DEFAULT_DEFAULT, id(*default)),
+                (o::ADD_DEFAULT_RELATION, id(*relation)),
+                (o::ADD_DEFAULT_FIELD, id(*field)),
+                (o::ADD_DEFAULT_VALUE, text(value)),
             ],
         ),
-        Resolved::Revert { migration } => one("Revert", "migration", *migration),
-        Resolved::DropDefault { default } => one("DropDefault", "default", *default),
+        Resolved::Revert { migration } => one(o::REVERT, o::REVERT_MIGRATION, *migration),
+        Resolved::DropDefault { default } => {
+            one(o::DROP_DEFAULT, o::DROP_DEFAULT_DEFAULT, *default)
+        }
         Resolved::Store {
             view,
             function,
             decl,
-        } => v(
-            "Store",
-            &[
-                ("view", id(*view)),
-                ("function", id(*function)),
-                ("decl", text(decl)),
+        } => Nested::of(
+            o::STORE,
+            [
+                (o::STORE_VIEW, id(*view)),
+                (o::STORE_FUNCTION, id(*function)),
+                (o::STORE_DECL, text(decl)),
             ],
         ),
-        Resolved::Unstore { view } => one("Unstore", "view", *view),
+        Resolved::Unstore { view } => one(o::UNSTORE, o::UNSTORE_VIEW, *view),
         Resolved::AddComputed {
             computed,
             relation,
             name,
             decl,
-        } => v(
-            "AddComputed",
-            &[
-                ("computed", id(*computed)),
-                ("relation", id(*relation)),
-                ("name", text(name)),
-                ("decl", text(decl)),
+        } => Nested::of(
+            o::ADD_COMPUTED,
+            [
+                (o::ADD_COMPUTED_COMPUTED, id(*computed)),
+                (o::ADD_COMPUTED_RELATION, id(*relation)),
+                (o::ADD_COMPUTED_NAME, text(name)),
+                (o::ADD_COMPUTED_DECL, text(decl)),
             ],
         ),
-        Resolved::RedefineComputed { computed, decl } => v(
-            "RedefineComputed",
-            &[("computed", id(*computed)), ("decl", text(decl))],
+        Resolved::RedefineComputed { computed, decl } => two(
+            o::REDEFINE_COMPUTED,
+            (o::REDEFINE_COMPUTED_COMPUTED, *computed),
+            (o::REDEFINE_COMPUTED_DECL, decl),
         ),
-        Resolved::DropComputed { computed } => one("DropComputed", "computed", *computed),
-        Resolved::Grant { .. } | Resolved::Revoke { .. } => granted(schema, ty, op),
+        Resolved::DropComputed { computed } => {
+            one(o::DROP_COMPUTED, o::DROP_COMPUTED_COMPUTED, *computed)
+        }
+        Resolved::Grant {
+            privilege,
+            target,
+            grantee,
+            grant_option,
+        } => Nested::of(
+            o::GRANT,
+            [
+                (o::GRANT_PRIVILEGE, text(privilege)),
+                (o::GRANT_TARGET, optional(Some(target))),
+                (o::GRANT_GRANTEE, text(grantee)),
+                (o::GRANT_GRANT_OPTION, flag(*grant_option)),
+            ],
+        ),
+        Resolved::Revoke {
+            privilege,
+            target,
+            grantee,
+        } => Nested::of(
+            o::REVOKE,
+            [
+                (o::REVOKE_PRIVILEGE, text(privilege)),
+                (o::REVOKE_TARGET, optional(Some(target))),
+                (o::REVOKE_GRANTEE, text(grantee)),
+            ],
+        ),
         Resolved::Install {
             module,
             version,
             package,
-        } => v(
-            "Install",
-            &[
-                ("module", text(module)),
-                ("version", text(version)),
-                ("package", hashed(package)),
+        } => Nested::of(
+            o::INSTALL,
+            [
+                (o::INSTALL_MODULE, text(module)),
+                (o::INSTALL_VERSION, text(version)),
+                (o::INSTALL_PACKAGE, hashed(package)),
             ],
         ),
-        Resolved::Uninstall { module } => v("Uninstall", &[("module", text(module))]),
-        Resolved::AdoptTzdb { release, data } => v(
-            "AdoptTzdb",
-            &[("release", text(release)), ("data", hashed(data))],
+        Resolved::Uninstall { module } => {
+            Nested::of(o::UNINSTALL, [(o::UNINSTALL_MODULE, text(module))])
+        }
+        Resolved::AdoptTzdb { release, data } => Nested::of(
+            o::ADOPT_TZDB,
+            [
+                (o::ADOPT_TZDB_RELEASE, text(release)),
+                (o::ADOPT_TZDB_DATA, hashed(data)),
+            ],
         ),
-        Resolved::Script { write } => v("Script", &[("write", text(write))]),
+        Resolved::Script { write } => Nested::of(o::SCRIPT, [(o::SCRIPT_WRITE, text(write))]),
         _ => {
             panic!("{op:?} is a revert or an operator on derived data, grants, extensions or data")
         }
@@ -373,185 +468,77 @@ fn derived(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
 }
 
 /// Returns the BLAKE3-256 hash of `data` as a `Bytes` value.
-fn hashed(data: &str) -> Value {
-    Value::Bytes(blake3::hash(data.as_bytes()).as_bytes().to_vec())
+fn hashed(data: &str) -> Nested {
+    Nested::Scalar(Value::Bytes(
+        blake3::hash(data.as_bytes()).as_bytes().to_vec(),
+    ))
 }
 
-/// Returns the `Grant` or `Revoke` value of the operator sum `ty`: the first privilege of the
-/// statement and its target.
-fn granted(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
-    let (ctor, privilege, target, grantee, grant_option) = match op {
-        Resolved::Grant {
-            privilege,
-            target,
-            grantee,
-            grant_option,
-        } => ("Grant", privilege, target, grantee, Some(*grant_option)),
-        Resolved::Revoke {
-            privilege,
-            target,
-            grantee,
-        } => ("Revoke", privilege, target, grantee, None),
-        _ => panic!("{op:?} is a grant or a revoke"),
-    };
-    let target = Some(target.clone());
-    let mut fields = vec![
-        ("privilege", text(privilege)),
-        ("target", optional(&target)),
-        ("grantee", text(grantee)),
-    ];
-    if let Some(g) = grant_option {
-        fields.push(("grant_option", boolean(g)));
-    }
-    sum(schema, ty, ctor, &fields)
-}
-
-/// Returns the value of field `target` of constructor `ctor` of the operator sum `ty`.
-fn target(schema: &Schema, ty: &Ty, ctor: &str, t: &Target) -> Value {
-    let tt = field_of(schema, ty, ctor, "target");
+fn target(t: &Target) -> Nested {
     match t {
-        Target::InRelation { relation, ctor } => sum(
-            schema,
-            &tt,
-            "InRelation",
-            &[("relation", id(*relation)), ("ctor", id(*ctor))],
+        Target::InRelation { relation, ctor } => Nested::of(
+            o::IN_RELATION,
+            [
+                (o::IN_RELATION_RELATION, id(*relation)),
+                (o::IN_RELATION_CTOR, id(*ctor)),
+            ],
         ),
-        Target::OfType { ctor } => sum(schema, &tt, "OfType", &[("ctor", id(*ctor))]),
+        Target::OfType { ctor } => one(o::OF_TYPE, o::OF_TYPE_CTOR, *ctor),
     }
 }
 
-/// Returns the `AddIndex` value of the operator sum `ty`.
-fn added_index(
-    schema: &Schema,
-    ty: &Ty,
-    index: u64,
-    relation: u64,
-    interval: bool,
-    fields: &str,
-) -> Value {
-    sum(
-        schema,
-        ty,
-        "AddIndex",
-        &[
-            ("index", id(index)),
-            ("relation", id(relation)),
-            ("interval", boolean(interval)),
-            ("fields", text(fields)),
-        ],
-    )
-}
-
-/// Returns the `AddConstructor` value of the operator sum `ty` for constructor `ctor` of sum `of`.
-fn added_ctor(schema: &Schema, ty: &Ty, ctor: u64, of: u64, decl: &str, place: &Place) -> Value {
-    let pt = field_of(schema, ty, "AddConstructor", "place");
-    let place = match place {
-        Place::Last => sum(schema, &pt, "Last", &[]),
-        Place::Before { ctor } => sum(schema, &pt, "Before", &[("ctor", id(*ctor))]),
-        Place::After { ctor } => sum(schema, &pt, "After", &[("ctor", id(*ctor))]),
-    };
-    sum(
-        schema,
-        ty,
-        "AddConstructor",
-        &[
-            ("ctor", id(ctor)),
-            ("sum", id(of)),
-            ("decl", text(decl)),
-            ("place", place),
-        ],
-    )
-}
-
-/// Returns `t` as a value of `Option Term`.
-fn optional(t: &Option<String>) -> Value {
-    match t {
-        Some(t) => values::some(text(t)),
-        None => values::none(),
+fn placed(place: &Place) -> Nested {
+    match place {
+        Place::Last => Nested::of(o::LAST, []),
+        Place::Before { ctor } => one(o::BEFORE, o::BEFORE_CTOR, *ctor),
+        Place::After { ctor } => one(o::AFTER, o::AFTER_CTOR, *ctor),
     }
 }
 
-/// Returns the type of field `name` of constructor `ctor` of the declared sum `ty`.
-fn field_of(schema: &Schema, ty: &Ty, ctor: &str, name: &str) -> Ty {
-    let Ty::Data { def, .. } = ty else {
-        panic!("{ty:?} is a declared sum")
-    };
-    let k = schema
-        .ty(*def)
-        .ctor_index(ctor)
-        .expect("an operator constructor");
-    layout::ctors(schema, ty)
-        .swap_remove(k as usize)
-        .1
-        .into_iter()
-        .find(|(n, _)| n == name)
-        .unwrap_or_else(|| panic!("`{ctor}` has field `{name}`"))
-        .1
-}
-
-fn clause(schema: &Schema, ty: &Ty, c: &Clause) -> Value {
+fn clause(c: &Clause) -> Nested {
     match c {
-        Clause::Member { ctor } => sum(schema, ty, "Member", &[("ctor", id(*ctor))]),
-        Clause::Joins { set } => sum(schema, ty, "Joins", &[("set", id(*set))]),
+        Clause::Member { ctor } => one(o::MEMBER, o::MEMBER_CTOR, *ctor),
+        Clause::Joins { set } => one(o::JOINS, o::JOINS_SET, *set),
         Clause::Arm { target, arm } => {
-            let at = field_of(schema, ty, "Arm", "target");
             let target = match target {
-                ArmTarget::OfFn { function } => {
-                    sum(schema, &at, "OfFn", &[("function", id(*function))])
+                ArmTarget::OfFn { function } => one(o::OF_FN, o::OF_FN_FUNCTION, *function),
+                ArmTarget::OfConstraint { constraint } => {
+                    one(o::OF_CONSTRAINT, o::OF_CONSTRAINT_CONSTRAINT, *constraint)
                 }
-                ArmTarget::OfConstraint { constraint } => sum(
-                    schema,
-                    &at,
-                    "OfConstraint",
-                    &[("constraint", id(*constraint))],
-                ),
                 ArmTarget::OfComputed { computed } => {
-                    sum(schema, &at, "OfComputed", &[("computed", id(*computed))])
+                    one(o::OF_COMPUTED, o::OF_COMPUTED_COMPUTED, *computed)
                 }
             };
-            sum(schema, ty, "Arm", &[("target", target), ("arm", text(arm))])
+            Nested::of(o::ARM, [(o::ARM_TARGET, target), (o::ARM_ARM, text(arm))])
         }
         Clause::Replacement {
             index,
             kind,
             fields,
         } => {
-            let kt = field_of(schema, ty, "Replacement", "kind");
             let kind = match kind {
-                IndexKind::Unique => "Unique",
-                IndexKind::Plain => "Plain",
-                IndexKind::Interval => "Interval",
+                IndexKind::Unique => k::INDEX_UNIQUE,
+                IndexKind::Plain => k::INDEX_PLAIN,
+                IndexKind::Interval => k::INDEX_INTERVAL,
             };
-            sum(
-                schema,
-                ty,
-                "Replacement",
-                &[
-                    ("index", id(*index)),
-                    ("kind", sum(schema, &kt, kind, &[])),
-                    ("fields", text(fields)),
+            Nested::of(
+                o::REPLACEMENT,
+                [
+                    (o::REPLACEMENT_INDEX, id(*index)),
+                    (o::REPLACEMENT_KIND, Nested::of(nullary(kind), [])),
+                    (o::REPLACEMENT_FIELDS, text(fields)),
                 ],
             )
         }
-        Clause::Carry { field } => sum(schema, ty, "Carry", &[("field", id(*field))]),
-        Clause::Fill { field, fill } => sum(
-            schema,
-            ty,
-            "Fill",
-            &[("field", id(*field)), ("fill", text(fill))],
+        Clause::Carry { field } => one(o::CARRY, o::CARRY_FIELD, *field),
+        Clause::Fill { field, fill } => two(o::FILL, (o::FILL_FIELD, *field), (o::FILL_FILL, fill)),
+        Clause::Privilege { privilege, target } => Nested::of(
+            o::PRIVILEGE,
+            [
+                (o::PRIVILEGE_PRIVILEGE, text(privilege)),
+                (o::PRIVILEGE_TARGET, optional(Some(target))),
+            ],
         ),
-        Clause::Privilege { privilege, target } => {
-            let target = Some(target.clone());
-            sum(
-                schema,
-                ty,
-                "Privilege",
-                &[
-                    ("privilege", text(privilege)),
-                    ("target", optional(&target)),
-                ],
-            )
-        }
     }
 }
 

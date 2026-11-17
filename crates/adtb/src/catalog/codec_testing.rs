@@ -4,14 +4,14 @@ use std::fmt::Debug;
 
 use adtb_lang::ids::CatCtorId;
 use adtb_lang::schema::{self, ENGINE_SRC, Schema};
-use adtb_lang::types::RelId;
+use adtb_lang::types::{RelId, Ty};
 
 use crate::heap::{FieldType, Layout};
 use crate::key::{F64, Scalar, Value};
 
 use super::super::ids::{ctor_index, stored};
 use super::super::{engine_schema, layout, row_type};
-use super::{Codec, Decode, Field, Sum, coded};
+use super::{Codec, Decode, Field, Kind, Nested, Payload, Sum, coded};
 
 /// A row's constructor id, the fields its reader reads by name, and the typed row it reads as.
 pub(crate) type Sample<T> = (CatCtorId, Vec<(&'static str, Value)>, T);
@@ -124,6 +124,7 @@ pub(crate) fn read_back<T: Sampled>() -> Vec<String> {
         }
         out.extend(fields_written(schema, &codec, catalog, &name));
         out.extend(tags_written(schema, &codec, catalog, &name));
+        out.extend(nested_written(schema, &codec, catalog, &name));
     }
     let (old, by_ctor, by_field) = (
         Codec::<T>::new(&shipped),
@@ -176,6 +177,19 @@ pub(crate) fn read_back<T: Sampled>() -> Vec<String> {
             .chain(own.iter().rev())
             .cloned()
             .collect();
+        for sum in k.sums {
+            let field = sum.field.fields[sum.field.at];
+            let tys = (
+                field_ty(&shipped, old.relation(), was, field),
+                field_ty(&ctors, by_ctor.relation(), now, field),
+            );
+            out.extend(unmirrored(
+                (&shipped, &ctors),
+                (&tys.0, &tys.1),
+                sum.ctors,
+                &name,
+            ));
+        }
         let reversed = names(&fields, &by_field, k.id);
         if mirrored.len() > 1 && reversed != mirrored {
             out.push(format!(
@@ -296,12 +310,9 @@ fn tags_written<T: Decode>(
         let at = (codec.relation(), position(schema, codec, k.id));
         for s in k.sums {
             let field = s.field.fields[s.field.at];
-            for &(id, payload) in s.ctors {
-                let fields = payload
-                    .iter()
-                    .map(|&p| filler(&FieldType::Scalar(p)))
-                    .collect();
-                let Value::Sum { ctor: want, .. } = tag(schema, at, field, id, fields) else {
+            for p in s.ctors {
+                let id = p.id;
+                let Value::Sum { ctor: want, .. } = tag(schema, at, field, id, Vec::new()) else {
                     unreachable!("`tag` returns a sum's value");
                 };
                 let written = codec.tag(*s, id);
@@ -315,6 +326,180 @@ fn tags_written<T: Decode>(
         }
     }
     out
+}
+
+/// Returns each way `codec` writes or reads a value of a sum field otherwise than `schema` places
+/// it by constructor id and field name: for each constructor the field lists, a value of it for
+/// each choice `n` up to the widest sum below it, each sum below taking its constructor `n`
+/// modulo its count and each scalar a value distinct from every other in the value.
+fn nested_written<T: Decode>(
+    schema: &Schema,
+    codec: &Codec<T>,
+    catalog: &str,
+    name: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for k in T::CTORS {
+        let at = position(schema, codec, k.id);
+        for s in k.sums {
+            let field = s.field.fields[s.field.at];
+            let ty = field_ty(schema, codec.relation(), at, field);
+            for p in s.ctors {
+                for n in 0..widest(p.kinds) {
+                    let mut count = 0;
+                    let v = chosen(*p, n, &mut count);
+                    let want = by_name(schema, &ty, &v);
+                    let written = codec.stored(*s, &v);
+                    if written != want {
+                        out.push(format!(
+                            "{name} {} field `{field}` writes {v:?} under {catalog} as {written:?}, not {want:?}",
+                            k.id
+                        ));
+                    }
+                    let read = codec.table(*s).nested(&want);
+                    if read != v {
+                        out.push(format!(
+                            "{name} {} field `{field}` reads {want:?} under {catalog} as {read:?}, not {v:?}",
+                            k.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Returns each constructor of `ctors`, or of a sum at any depth below them, that the second
+/// schema does not hold at the mirror of its position in the first when the engine's text declares
+/// its sum, `tys` the sum's type in each.
+fn unmirrored(
+    (from, to): (&Schema, &Schema),
+    tys: (&Ty, &Ty),
+    ctors: &[Payload],
+    name: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let at = |s: &Schema, ty: &Ty, id: CatCtorId| {
+        let FieldType::Sum(cs) = layout::field_type(s, ty) else {
+            panic!("{ty:?} is a sum");
+        };
+        cs.iter()
+            .position(|k| k.id == stored(id))
+            .unwrap_or_else(|| panic!("{id} is a constructor of {ty:?}"))
+    };
+    let Ty::Data { def, .. } = tys.0 else {
+        panic!("{:?} is a declared sum", tys.0);
+    };
+    let reversed = from.ty(*def).module != schema::PRELUDE;
+    for p in ctors {
+        let (was, now) = (at(from, tys.0, p.id), at(to, tys.1, p.id));
+        if reversed && now != ctors.len() - 1 - was {
+            out.push(format!(
+                "{name}: sum constructor {} at {now} under ctors, not {}",
+                p.id,
+                ctors.len() - 1 - was
+            ));
+        }
+        let fields = |s: &Schema, ty: &Ty, at: usize| layout::ctors(s, ty).swap_remove(at).1;
+        let (old, new) = (fields(from, tys.0, was), fields(to, tys.1, now));
+        for (f, k) in p.fields().iter().zip(p.kinds) {
+            let Kind::Sum(sub) = k else { continue };
+            let ty = |fs: &[(String, Ty)]| {
+                fs.iter()
+                    .find(|(n, _)| n == f)
+                    .unwrap_or_else(|| panic!("{} declares `{f}`", p.id))
+                    .1
+                    .clone()
+            };
+            out.extend(unmirrored((from, to), (&ty(&old), &ty(&new)), sub, name));
+        }
+    }
+    out
+}
+
+/// Returns the most constructors of any sum `kinds` holds at any depth, at least 1.
+fn widest(kinds: &[Kind]) -> usize {
+    kinds
+        .iter()
+        .map(|k| match k {
+            Kind::Scalar(_) => 1,
+            Kind::Sum(ps) => ps
+                .iter()
+                .map(|p| widest(p.kinds))
+                .max()
+                .unwrap_or(1)
+                .max(ps.len()),
+        })
+        .max()
+        .unwrap_or(1)
+}
+
+/// Returns a value of `p`, each sum below it taking its constructor `n` modulo its count and each
+/// scalar the next of `count`.
+fn chosen(p: Payload, n: usize, count: &mut i64) -> Nested {
+    let values = p.fields().iter().zip(p.kinds).map(|(name, k)| match k {
+        Kind::Scalar(s) => {
+            *count += 1;
+            Nested::Scalar(distinct(
+                &FieldType::Scalar(*s),
+                usize::try_from(*count).expect("a count fits"),
+                &format!("{name}{count}"),
+            ))
+        }
+        Kind::Sum(ps) => chosen(ps[n % ps.len()], n, count),
+    });
+    let given: Vec<(Field, Nested)> = (0..p.fields().len())
+        .map(|at| Field {
+            fields: p.fields(),
+            at,
+        })
+        .zip(values)
+        .collect();
+    Nested::of(p, given)
+}
+
+/// Returns the type of field `field` of constructor `c` of `r` in `schema`.
+pub(crate) fn field_ty(schema: &Schema, r: RelId, c: u32, field: &str) -> Ty {
+    layout::row(schema, r, c)
+        .into_iter()
+        .find(|(n, _)| n == field)
+        .unwrap_or_else(|| panic!("the row has field `{field}`"))
+        .1
+}
+
+/// Returns `v`, a value of `ty`, stored as `schema` declares it: each constructor at the position
+/// of its id, each field at the position of its name.
+pub(crate) fn by_name(schema: &Schema, ty: &Ty, v: &Nested) -> Value {
+    let Nested::Ctor { id, fields, values } = v else {
+        let Nested::Scalar(v) = v else {
+            unreachable!("a value is a scalar or a constructor")
+        };
+        return v.clone();
+    };
+    let FieldType::Sum(cs) = layout::field_type(schema, ty) else {
+        panic!("{ty:?} is a sum");
+    };
+    let at = cs
+        .iter()
+        .position(|k| k.id == stored(*id))
+        .unwrap_or_else(|| panic!("{id} is a constructor of {ty:?}"));
+    let declared = layout::ctors(schema, ty).swap_remove(at).1;
+    assert_eq!(declared.len(), fields.len(), "{id} is given each field");
+    let fields = declared
+        .iter()
+        .map(|(n, t)| {
+            let given = fields
+                .iter()
+                .position(|f| f == n)
+                .unwrap_or_else(|| panic!("{id} is given field `{n}`"));
+            by_name(schema, t, &values[given])
+        })
+        .collect();
+    Value::Sum {
+        ctor: u32::try_from(at).expect("a position fits 32 bits"),
+        fields,
+    }
 }
 
 /// Returns `row`, a stored row of constructor `was` of `from`'s relation `r`, read back by the
@@ -334,6 +519,11 @@ pub(crate) fn reversed_sums(text: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
+        if let Some((line, next)) = aligned_reversed(&lines[i..]) {
+            out.push(line);
+            i += next;
+            continue;
+        }
         if !lines[i].starts_with("  = ") {
             out.push(one_line_reversed(lines[i]).unwrap_or_else(|| lines[i].to_owned()));
             i += 1;
@@ -362,6 +552,31 @@ pub(crate) fn reversed_sums(text: &str) -> String {
         }
     }
     out.join("\n")
+}
+
+/// Returns the declaration `lines` starts with, its constructors reversed on one line, and the
+/// count of lines it spans, when it states its constructors aligned under the first, as
+/// `type T = A { x: X }` with `       | B` on the next line does.
+fn aligned_reversed(lines: &[&str]) -> Option<(String, usize)> {
+    let (head, first) = lines[0].strip_prefix("type ")?.split_once(" = ")?;
+    let mut ctors = vec![first.trim().to_owned()];
+    let mut n = 1;
+    while let Some(line) = lines.get(n).filter(|l| l.starts_with(' ')) {
+        match line.trim_start().strip_prefix("| ") {
+            Some(c) => ctors.push(c.trim().to_owned()),
+            None => {
+                let last = ctors.last_mut().expect("a constructor comes first");
+                last.push(' ');
+                last.push_str(line.trim());
+            }
+        }
+        n += 1;
+    }
+    if ctors.len() < 2 || n < 2 {
+        return None;
+    }
+    ctors.reverse();
+    Some((format!("type {head} = {}", ctors.join(" | ")), n))
 }
 
 /// Returns `line` with its constructors reversed when it declares a whole sum, as
@@ -467,7 +682,7 @@ pub(crate) fn row(schema: &Schema, r: RelId, c: u32, fields: &[(&str, Value)]) -
 
 /// Returns the fixed ids of the constructors `s` lists.
 pub(crate) fn ids(s: Sum) -> Vec<CatCtorId> {
-    s.ctors.iter().map(|&(id, _)| id).collect()
+    s.ctors.iter().map(|p| p.id).collect()
 }
 
 /// Returns the value of constructor `id` of the type of field `field` of constructor `c` of `r`

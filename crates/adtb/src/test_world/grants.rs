@@ -1,19 +1,28 @@
 //! Write roles and grants into a catalog from a unit test.
 
 use adtb_lang::ids::engine_ctor;
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
 
-use crate::catalog::codec::testing::tag;
+use crate::catalog::codec::testing::{self, tag};
 use crate::catalog::{Catalog, OWNER_ROLE, Rewrite, values};
 use crate::key::Value;
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+/// Returns relation `catalog::name` of `schema`.
+pub fn relation(schema: &Schema, name: &str) -> RelId {
+    let m = schema.module_named("catalog").expect("the catalog module");
+    match schema.module(m).values.get(name) {
+        Some(&ValueDef::Relation(r)) => r,
+        _ => panic!("the catalog declares relation `{name}`"),
+    }
+}
+
 /// Returns relation `catalog::name` of `schema` and its one constructor `ctor`.
 pub fn catalog_relation(schema: &Schema, name: &str, ctor: &str) -> (RelId, u32) {
-    let r = values::relation(schema, name);
+    let r = relation(schema, name);
     let c = schema
         .ty(schema.relation(r).elem_def)
         .ctor_index(ctor)
@@ -30,7 +39,7 @@ pub fn deploy_fields<R: Runtime>(
     fields: Vec<(&str, Value)>,
 ) {
     let (r, c) = catalog_relation(catalog.schema(), name, ctor);
-    let row = values::row(catalog.schema(), r, c, fields);
+    let row = testing::row(catalog.schema(), r, c, &fields);
     deploy(catalog, pager, txns, name, ctor, row);
 }
 
@@ -66,11 +75,11 @@ pub fn create_role<R: Runtime>(
 ) {
     let schema = catalog.schema();
     let (r, c) = catalog_relation(schema, "roles", "Role");
-    let role = values::row(
+    let role = testing::row(
         schema,
         r,
         c,
-        vec![
+        &[
             ("id", Value::I64(id)),
             ("name", Value::Text(name.to_owned())),
             ("created", Value::Instant(0)),
@@ -138,11 +147,11 @@ pub fn deployment_row<R: Runtime>(
         Some(t) => values::some(Value::Text(t.to_owned())),
         None => values::none(),
     };
-    let grant = values::row(
+    let grant = testing::row(
         schema,
         r,
         c,
-        vec![
+        &[
             ("id", Value::I64(id)),
             (
                 "kind",

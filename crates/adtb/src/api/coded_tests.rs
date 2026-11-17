@@ -10,6 +10,7 @@ use crate::catalog::described::{
     ComputedRow, ConstraintRow, ConstructorRow, CtorStateRow, DefaultRow, FieldRow, FunctionRow,
     IndexCtorRow, IndexRow, NamedSetRow, RelationRow, SetMemberRow, TypeRow, ValueStateRow,
 };
+use crate::catalog::operators::{MigrationOpRow, OpClauseRow};
 
 /// Returns each way the samples of the codec of `c` fail to read back.
 fn read_back_of(c: Coded) -> Vec<String> {
@@ -44,6 +45,8 @@ fn read_back_of(c: Coded) -> Vec<String> {
         Coded::Functions => of::<FunctionRow>(c),
         Coded::Defaults => of::<DefaultRow>(c),
         Coded::Computed => of::<ComputedRow>(c),
+        Coded::MigrationOps => of::<MigrationOpRow>(c),
+        Coded::MigrationClauses => of::<OpClauseRow>(c),
     }
 }
 
