@@ -88,8 +88,8 @@ found_counts() {
     count_under index_marks crates '(?<!is_quarantined\(|== |contains\(&|marked\(|matches!\(m, |\(id, _\)\| |release = Some\(|Ok\()(storage::)?Quarantine::Index\b|\bQuarantine::(\*|\{[^}]*\bIndex\b)' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/storage/policy.rs' -g '!**/storage/quarantine.rs'
     count_under api_aborts crates/adtb/src/api '\.abort\(' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**'
     count crash_allows '\bfn allows\b'
-    count_under decode_panics crates/adtb/src/heap 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|\.unwrap\(\)' -g '!tests.rs' -g '!*_tests.rs'
-    count_under decode_panics crates/adtb/src/catalog 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|\.unwrap\(\)' -g '!*' -g 'codec.rs' -g 'layout.rs'
+    count_under decode_panics crates/adtb/src/heap 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|assert_ne!|\.unwrap\(\)' -g '!tests.rs' -g '!*_tests.rs'
+    count_under decode_panics crates/adtb/src/catalog 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|assert_ne!|\.unwrap\(\)' -g '!*' -g 'codec.rs' -g 'layout.rs'
     for dir in crates apps; do
       count_under id_sentinels "$dir" '(?<!const [A-Z_]{1,64}: FileId = )\b(RelId|TypeId|FnId|ModuleId|FileId)\(u32::MAX|\.0 (==|!=) u32::MAX\b' -P -g '!**/target/**'
       count_under engine_names "$dir" '\bmodule_named(_in)?\("(catalog|sys|prelude)"|\bvalues::relation\(|\bin_(relation|type)\("|\b(ctor_named|ctor_index)\("|\btypes\["|"(catalog|sys|prelude)" (=>|==|!=)|(==|!=) "(catalog|sys|prelude)"|\bself\.ctor\("|\b(audit|event)_row\([^;]*?, "[A-Z]' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'

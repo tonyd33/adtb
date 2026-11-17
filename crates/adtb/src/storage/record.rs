@@ -87,7 +87,7 @@ const SETTLED: u8 = 4;
 const SHAPE: u8 = 5;
 
 /// Each shape a damage record can hold. A shape's position is its stored code: append only.
-const SHAPES: [Shape; 10] = [
+const SHAPES: [Shape; 11] = [
     Shape::Blank,
     Shape::Kind,
     Shape::Owner,
@@ -98,6 +98,7 @@ const SHAPES: [Shape; 10] = [
     Shape::Row(Undecoded::Trailing),
     Shape::Row(Undecoded::Text),
     Shape::Row(Undecoded::Pointer),
+    Shape::Stray,
 ];
 
 /// Returns the kind of `damage` and its two LSNs, zero where it has none.

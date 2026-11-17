@@ -423,6 +423,7 @@ fn each_shape_is_stored_as_its_fixed_number() {
         (Shape::Row(Undecoded::Trailing), 7),
         (Shape::Row(Undecoded::Text), 8),
         (Shape::Row(Undecoded::Pointer), 9),
+        (Shape::Stray, 10),
     ];
     for (shape, code) in stored {
         let damage = Damage::Shape(shape);
@@ -437,7 +438,7 @@ fn each_shape_is_stored_as_its_fixed_number() {
             "{shape:?}"
         );
     }
-    assert_eq!(None, super::record::damage_of(5, Lsn(10), Lsn(0)));
+    assert_eq!(None, super::record::damage_of(5, Lsn(11), Lsn(0)));
 }
 
 #[test]
@@ -454,6 +455,7 @@ fn a_shape_record_is_kept_by_the_log_through_a_crash_and_by_the_list_through_a_c
         Shape::Row(Undecoded::Trailing),
         Shape::Row(Undecoded::Text),
         Shape::Row(Undecoded::Pointer),
+        Shape::Stray,
     ];
     let refuse = |pager: &Pager<SimRuntime>| {
         let more = (pages.len()..shapes.len())

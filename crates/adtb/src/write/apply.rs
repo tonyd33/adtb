@@ -419,7 +419,10 @@ impl<R: Runtime> Stmt<'_, R> {
                     if e.ctor == ctor_id && e.tid == w.tid {
                         continue;
                     }
-                    let c = stored.ctors[&e.ctor];
+                    let Some(&c) = stored.ctors.get(&e.ctor) else {
+                        drop(latch);
+                        return Err(stored.index.refuse_stray(pager, &e).into());
+                    };
                     let heap = r.ctors[c as usize].heap;
                     let run = self.db.bindings.heaps()[&heap].heap.hot_run(pager, e.tid)?;
                     let at = (&*self.db.bindings.heaps()[&heap].heap, e.tid);

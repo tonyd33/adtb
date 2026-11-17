@@ -189,6 +189,16 @@ impl Index {
         self.decode_all(pager, self.tree.range(lo, hi))
     }
 
+    /// Refuse the leaf holding `entry` as a stray. Returns the refusal, the error reaching
+    /// the leaf, or [`Error::Malformed`] naming the leaf when it does not hold `entry`.
+    ///
+    /// Preconditions: the caller holds no latch on a page of the tree, and the index does not hold
+    /// `entry`'s constructor.
+    pub fn refuse_stray<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Error {
+        self.tree
+            .refuse_holding(pager, &self.schema.encode_entry(entry))
+    }
+
     /// Returns every entry of `key`, in order of constructor and TID.
     pub fn probe<R: Runtime>(&self, pager: &Pager<R>, key: &[Value]) -> Result<Vec<Entry>, Error> {
         self.scan_prefix(pager, &self.schema.encode(key))

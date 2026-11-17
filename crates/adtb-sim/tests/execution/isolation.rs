@@ -13,9 +13,16 @@ use adtb_sim::{Action, Config, Ledger, Match, Plan, Sim, SimRuntime};
 use adtb_simkit::elle::{self, Elems, Kind};
 use adtb_simkit::open::FILE;
 use adtb_sys::runtime::Faults;
+use adtb_testkit::profile::every_case;
 
 /// The seeds one run checks. Milestone 6 exits when every one of them passes.
 const SEEDS: Range<u64> = 0..8;
+/// The seeds past `sweep(SEEDS)` the crash search may run until its reads of lost commits reach
+/// their floor.
+const SEED_CAP: u64 = 16;
+fn reads_lost_floor() -> usize {
+    if every_case() { 3 } else { 1 }
+}
 const CLIENTS: usize = 4;
 const TXNS_PER_CLIENT: usize = 6;
 /// Processes per seed that may crash before the last, which runs to the end.
@@ -262,27 +269,41 @@ fn history(seed: u64) -> Searched {
 #[test]
 fn no_seed_of_random_clients_with_crashes_shows_an_anomaly() {
     let (mut crashed, mut committed, mut in_doubt, mut reads) = (0, 0, 0, 0);
-    for seed in sweep(SEEDS) {
+    let floor = reads_lost_floor();
+    let swept = sweep(SEEDS).end;
+    let mut seed = SEEDS.start;
+    while seed < swept || reads < floor {
+        assert!(
+            seed < swept + SEED_CAP,
+            "seeds {}..{seed} read a lost commit {reads} times, under {floor}",
+            SEEDS.start
+        );
         let s = history(seed);
         assert_eq!(Ok(vec![]), iso::check(&s.txns), "seed {seed}");
-        crashed += s.crashed;
-        committed += s
-            .txns
-            .iter()
-            .filter(|t| t.outcome == Ended::Committed)
-            .count();
-        in_doubt += s
-            .txns
-            .iter()
-            .filter(|t| t.outcome == Ended::InDoubt)
-            .count();
+        if seed < swept {
+            crashed += s.crashed;
+            committed += s
+                .txns
+                .iter()
+                .filter(|t| t.outcome == Ended::Committed)
+                .count();
+            in_doubt += s
+                .txns
+                .iter()
+                .filter(|t| t.outcome == Ended::InDoubt)
+                .count();
+        }
         reads += s.reads_lost;
+        seed += 1;
     }
-    eprintln!("{crashed} crashes, {committed} commits, {in_doubt} in doubt, {reads} reads");
+    eprintln!(
+        "seeds {}..{swept}: {crashed} crashes, {committed} commits, {in_doubt} in doubt; \
+         seeds {}..{seed}: {reads} reads",
+        SEEDS.start, SEEDS.start
+    );
     assert_reached("a crashed process", crashed, share(SEEDS, 12));
     assert_reached("a commit", committed, share(SEEDS, 300));
     assert_reached("a crash interrupting a commit", in_doubt, share(SEEDS, 20));
-    assert_reached("a read of a commit the crash lost", reads, share(SEEDS, 3));
 }
 
 #[test]

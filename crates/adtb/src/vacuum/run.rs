@@ -57,8 +57,8 @@ impl From<btree::Error> for Error {
 
 /// The heaps of some constructors of one sum, and the indexes over them.
 ///
-/// Invariants: the heaps share one large-value store. An index entry of a constructor outside
-/// `heaps` is kept.
+/// Invariants: the heaps share one large-value store. An index entry of a constructor of its
+/// index outside `heaps` is kept.
 #[derive(Debug)]
 pub struct Sum<'a> {
     /// Each constructor's heap.
@@ -207,7 +207,8 @@ impl Progress {
 /// phase, and `Done` once the closing prune of its pages ends. `pace` is called before each heap
 /// page scanned, moved to history or pruned, and after each index leaf, store chunk and store
 /// page, holding no latch. Once it returns false the vacuum fails with `Stopped` and frees
-/// nothing more.
+/// nothing more. An index entry of a constructor outside its index's set fails the vacuum with
+/// the refusal of the leaf holding it, once that index's pass ends.
 ///
 /// Precondition: no other vacuum of the sum, or of a sum sharing its large-value store, runs.
 ///
@@ -459,12 +460,21 @@ fn clean<R: Runtime>(
     }
     let heap_of: BTreeMap<CtorId, u32> = sum.heaps.iter().map(|(c, h)| (*c, h.id().0)).collect();
     for index in &sum.indexes {
+        let mut stray = None;
         let keep = |e: &crate::key::Entry| {
+            if !index.ctors().contains(&e.ctor) {
+                stray.get_or_insert_with(|| e.clone());
+                return true;
+            }
             !heap_of
                 .get(&e.ctor)
                 .is_some_and(|&heap| dead.contains(heap, e.tid))
         };
-        report.entries += finished(index.retain(pager, keep, pass.pace)?)?;
+        let walk = index.retain(pager, keep, pass.pace)?;
+        if let Some(e) = stray {
+            return Err(index.refuse_stray(pager, &e).into());
+        }
+        report.entries += finished(walk)?;
     }
     for &(_, heap) in &sum.heaps {
         let id = heap.id().0;

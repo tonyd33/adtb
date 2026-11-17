@@ -15,8 +15,8 @@
 #                     sources: each such type states its contract. Fields that a macro generates
 #                     are not counted.
 # decode_panics:      `panic!`, `unreachable!`, `.expect(`, `unwrap_or_else(|| panic!`, `assert!`,
-#                     `assert_eq!` and `.unwrap()` in production sources of crates/adtb/src/heap and
-#                     in catalog/codec.rs and catalog/layout.rs:
+#                     `assert_eq!`, `assert_ne!` and `.unwrap()` in production sources of
+#                     crates/adtb/src/heap and in catalog/codec.rs and catalog/layout.rs:
 #                     a decode of bytes read from a page returns `Result` with its damage cause. The
 #                     lines left guard values the engine built in memory or checked first, a
 #                     caller's latch discipline (named.rs), or a surface built only for tests and
@@ -170,12 +170,12 @@ decode_panics prod 1 crates/adtb/src/heap/blame.rs
 decode_panics prod 2 crates/adtb/src/heap/chain.rs
 decode_panics prod 10 crates/adtb/src/heap/dir.rs
 decode_panics prod 1 crates/adtb/src/heap/fixed.rs
-decode_panics prod 12 crates/adtb/src/heap/handle/mod.rs
+decode_panics prod 14 crates/adtb/src/heap/handle/mod.rs
 decode_panics prod 1 crates/adtb/src/heap/handle/observe.rs
 decode_panics prod 12 crates/adtb/src/heap/large.rs
 decode_panics prod 2 crates/adtb/src/heap/named.rs
 decode_panics prod 4 crates/adtb/src/heap/page.rs
-decode_panics prod 2 crates/adtb/src/heap/prune.rs
+decode_panics prod 3 crates/adtb/src/heap/prune.rs
 decode_panics prod 2 crates/adtb/src/heap/rooted.rs
 decode_panics prod 17 crates/adtb/src/heap/row.rs
 decode_panics prod 3 crates/adtb/src/heap/slotted.rs

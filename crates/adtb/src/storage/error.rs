@@ -41,6 +41,8 @@ pub enum Shape {
     Format,
     /// A version on the page holds a row that does not decode in its format.
     Row(Undecoded),
+    /// An index entry on the page names a constructor outside its index's set.
+    Stray,
 }
 
 /// Why a stored row does not decode.

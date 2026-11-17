@@ -746,12 +746,9 @@ impl<R: Runtime> Store<R> {
         {
             return self.past_from_heaps(index, rows, key, routes, bounds);
         }
-        let ctors = &ix.ctors;
         for e in past.probe(&self.pager, key).map_err(index_error)? {
-            let Some(c) = ctors.get(&e.ctor) else {
-                continue;
-            };
-            let Some(&(_, heap)) = routes.iter().find(|(r, _)| r == c) else {
+            let c = self.mapped(past, &ix.ctors, &e)?;
+            let Some(&(_, heap)) = routes.iter().find(|(r, _)| *r == c) else {
                 continue;
             };
             let Some(stored) = self.past_heap(heap)? else {
@@ -1017,20 +1014,32 @@ impl<R: Runtime> Store<R> {
                 hi.as_ref().map(Vec::as_slice),
             )
             .map_err(index_error)?;
-        Ok(entries
-            .into_iter()
-            .filter_map(|e| {
-                let c = *ix
-                    .ctors
-                    .get(&e.ctor)
-                    .unwrap_or_else(|| panic!("index {id:?} maps constructor {:?}", e.ctor));
-                routes.contains_key(&c).then_some(Named {
+        let mut named = Vec::new();
+        for e in entries {
+            let c = self.mapped(&ix.index, &ix.ctors, &e)?;
+            if routes.contains_key(&c) {
+                named.push(Named {
                     ctor: c,
                     tid: e.tid,
                     entry: Some((id, e)),
-                })
-            })
-            .collect())
+                });
+            }
+        }
+        Ok(named)
+    }
+
+    /// Returns the constructor position `ctors` maps the constructor of `e`, an entry of `index`,
+    /// to. Refuse the leaf of `index` holding `e` when `ctors` maps none.
+    fn mapped(
+        &self,
+        index: &Index,
+        ctors: &BTreeMap<CtorId, u32>,
+        e: &Entry,
+    ) -> Result<u32, Error> {
+        match ctors.get(&e.ctor) {
+            Some(&c) => Ok(c),
+            None => Err(index_error(index.refuse_stray(&self.pager, e))),
+        }
     }
 
     /// Returns the entries [`Store::entries`] returns, computed from the visible rows of the

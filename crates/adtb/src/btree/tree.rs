@@ -3,7 +3,7 @@ use std::ops::Bound;
 
 use crate::key::DecodeError;
 use crate::runtime::Runtime;
-use crate::storage::{PageError, PageExclusive, PageOptimistic, Pager, Pid, Walk};
+use crate::storage::{PageError, PageExclusive, PageOptimistic, Pager, Pid, Shape, Walk};
 
 use super::leaf;
 use super::node::{self, Bounds, FORMAT, Item, Malformed, Node, kind_of};
@@ -97,6 +97,21 @@ pub(super) struct Split {
 /// The optimistic reads of one page tried before a read takes its shared
 /// latch.
 const OPTIMISTIC_TRIES: usize = 4;
+
+#[cfg(test)]
+std::thread_local! {
+    /// What the calling thread's next [`BTree::refuse_holding`] runs between its first descent
+    /// and its refusal.
+    static BEFORE_STRAY_REFUSAL: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook` once on the calling thread, at its next [`BTree::refuse_holding`], after its first
+/// descent and before it latches the leaf reached.
+#[cfg(test)]
+pub(super) fn before_next_stray_refusal(hook: impl FnOnce() + 'static) {
+    BEFORE_STRAY_REFUSAL.with(|b| *b.borrow_mut() = Some(Box::new(hook)));
+}
 
 pub(super) fn node_of(page: &[u8], owner: u32) -> Result<Node<'_>, Malformed> {
     Node::new(page)
@@ -446,6 +461,54 @@ impl BTree {
     #[cfg(any(test, feature = "testing"))]
     pub fn contains<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         self.at_leaf(pager, entry, |n| leaf::contains(n, entry))
+    }
+
+    /// Returns the leaf whose range holds `entry`, `None` when it does not hold `entry`.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn leaf_holding<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        entry: &[u8],
+    ) -> Result<Option<Pid>, Error> {
+        let (descent, held) = self.descend_to(pager, self.root, entry, 0, Side::At, |n| {
+            leaf::contains(n, entry)
+        })?;
+        Ok(held.then_some(descent.pid))
+    }
+
+    /// Refuse the leaf whose range holds `entry` as [`Shape::Stray`], judged under its exclusive
+    /// latch to hold `entry`, descending again while a split has moved `entry` off the leaf
+    /// reached. Returns the refusal, the error reaching the leaf, or [`Error::Malformed`] naming a
+    /// leaf whose range holds `entry` and which does not hold it.
+    ///
+    /// Preconditions: the caller holds no latch on a page of the tree, and no write removes
+    /// `entry` from the tree.
+    pub(super) fn refuse_holding<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Error {
+        let owner = self.owner;
+        loop {
+            let pid = match self.descend(pager, self.root, entry, 0) {
+                Ok(descent) => descent.pid,
+                Err(e) => return e,
+            };
+            #[cfg(test)]
+            if let Some(hook) = BEFORE_STRAY_REFUSAL.with(|b| b.borrow_mut().take()) {
+                hook();
+            }
+            let moved = std::cell::Cell::new(false);
+            let judge = |p: &PageExclusive<'_, R>| {
+                let n = node_of(p, owner).ok()?;
+                if n.deleted() || !n.is_leaf() || n.beyond(entry).ok()? {
+                    moved.set(true);
+                    return None;
+                }
+                leaf::contains(&n, entry).ok()?.then_some(Shape::Stray)
+            };
+            match pager.refuse_if(pid, judge) {
+                Some(e) => return Error::Page(e),
+                None if moved.get() => {}
+                None => return Error::Malformed(pid),
+            }
+        }
     }
 
     /// Insert `entry`, first finishing each split whose page the descent

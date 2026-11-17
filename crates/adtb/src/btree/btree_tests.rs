@@ -1097,3 +1097,63 @@ fn a_bulk_build_stops_between_pages_and_names_what_it_wrote() {
         assert_eq!(2, made.len(), "every page written is named");
     });
 }
+
+/// Returns key `k` padded to 150 bytes, so that a few hundred fill several leaves.
+fn padded(k: &str) -> Vec<u8> {
+    let mut e = k.as_bytes().to_vec();
+    e.resize(150, b'.');
+    e
+}
+
+/// Returns a tree of several leaves holding `stray`.
+fn tree_holding(pager: &Pager<SimRuntime>, stray: &[u8]) -> BTree {
+    let tree = BTree::create(pager, OWNER).unwrap();
+    for i in 0..300 {
+        assert!(tree.insert(pager, &padded(&format!("k{i:04}"))).unwrap());
+    }
+    assert!(tree.insert(pager, stray).unwrap());
+    tree
+}
+
+#[test]
+fn a_stray_refusal_follows_a_split_that_moves_its_entry_right() {
+    let mut sim = Sim::new(141, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Arc::new(Pager::create(rt, &options(FRAMES)).unwrap());
+        let stray = padded("k0150x");
+        let tree = tree_holding(&pager, &stray);
+        let first = tree.descend(&pager, tree.root(), &stray, 0).unwrap().pid;
+        let moved = Arc::new(Mutex::new(None));
+        let (by, at, to) = (pager.clone(), stray.clone(), moved.clone());
+        super::tree::before_next_stray_refusal(move || {
+            for j in 0..200 {
+                tree.insert(&by, &padded(&format!("k0150a{j:04}"))).unwrap();
+                let now = tree.descend(&by, tree.root(), &at, 0).unwrap().pid;
+                if now != first {
+                    *to.lock().unwrap() = Some(now);
+                    return;
+                }
+            }
+            panic!("200 inserts below the stray split no leaf past it");
+        });
+        let got = tree.refuse_holding(&pager, &stray);
+        let now = moved.lock().unwrap().expect("the hook split the leaf");
+        let damage = crate::storage::Damage::Shape(crate::storage::Shape::Stray);
+        assert_eq!(
+            Error::Page(crate::storage::PageError { pid: now, damage }),
+            got
+        );
+        assert_eq!(BTreeMap::from([(now, damage)]), pager.damaged());
+    });
+}
+
+#[test]
+fn a_stray_refusal_of_an_entry_its_leaf_lacks_is_malformed_and_refuses_nothing() {
+    with_pager(142, |_, pager| {
+        let tree = tree_holding(pager, &padded("k0150x"));
+        let absent = padded("k0150y");
+        let leaf = tree.descend(pager, tree.root(), &absent, 0).unwrap().pid;
+        assert_eq!(Error::Malformed(leaf), tree.refuse_holding(pager, &absent));
+        assert_eq!(BTreeMap::new(), pager.damaged());
+    });
+}

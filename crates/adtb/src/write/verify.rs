@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::Arc;
 
@@ -430,7 +430,42 @@ impl<R: Runtime> Database<R> {
                 out,
             )?;
         }
+        if let Some(past) = self.retained.as_ref().and_then(|r| r.indexes.get(&id)) {
+            self.check_past_ctors(index, &stored.ctors, past, out);
+        }
         Ok(())
+    }
+
+    /// Add an orphan finding of index `index` for each entry of `past`, its history key index,
+    /// whose constructor `ctors` does not map.
+    fn check_past_ctors(
+        &self,
+        index: u64,
+        ctors: &BTreeMap<CtorId, u32>,
+        past: &Index,
+        out: &mut Vec<Found>,
+    ) {
+        match past.range(&self.pager, Bound::Unbounded, Bound::Unbounded) {
+            Ok(entries) => out.extend(
+                entries
+                    .into_iter()
+                    .filter(|e| !ctors.contains_key(&e.ctor))
+                    .map(|e| Found::Orphan {
+                        index,
+                        ctor: u64::from(e.ctor.0),
+                        at: format!(
+                            "page {} slot {}: a constructor outside the history key index",
+                            e.tid.page(),
+                            e.tid.slot()
+                        ),
+                    }),
+            ),
+            Err(btree::Error::Page(e)) => out.push(Found::of_page(e)),
+            Err(e) => out.push(Found::Order {
+                index,
+                at: format!("history root page {}: {e:?}", past.tree().root().0),
+            }),
+        }
     }
 
     #[expect(

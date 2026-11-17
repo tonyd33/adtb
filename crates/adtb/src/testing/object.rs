@@ -251,6 +251,16 @@ impl<'a, R: Runtime> Testing<'a, R> {
             .probe(self.db.tested_pager(), key)?)
     }
 
+    /// Returns the leaf of index `object` holding `entry`, encoded under its schema whatever its
+    /// constructor; `None` when no leaf holds it.
+    pub fn leaf_of(self, object: Object, entry: &Entry) -> Result<Option<Pid>, Failed> {
+        let index = self.index_object(object)?;
+        let encoded = index.schema().encode_entry(entry);
+        Ok(index
+            .tree()
+            .leaf_holding(self.db.tested_pager(), &encoded)?)
+    }
+
     /// Returns every entry of index `object`, in its order.
     pub fn all_entries(self, object: Object) -> Result<Vec<Entry>, Failed> {
         let index = self.index_object(object)?;

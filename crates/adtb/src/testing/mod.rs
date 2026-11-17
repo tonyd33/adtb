@@ -31,7 +31,7 @@ pub use crate::plan::{
 use crate::storage::Position;
 pub use crate::storage::policy::Holder;
 pub use crate::storage::{
-    Damage, LogFinding, Lsn, PageError, PageKind, Pid, Position as LogPosition, Quarantine,
+    Damage, LogFinding, Lsn, PageError, PageKind, Pid, Position as LogPosition, Quarantine, Shape,
     manifest_hash,
 };
 pub use crate::vacuum::Charged;
