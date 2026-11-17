@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-15
-status: open
+status: resolved
+closed: 2026-11-16
 kind: bug
 priority: 120
 summary: "catalog rows are written by constructor and field name beside the codecs that read them"
@@ -28,3 +29,7 @@ Landed as rknzqrry e9f2552f (2 rounds), full check 0 (3853 tests). The 12 coded 
 ## 2026-11-16, part B landed
 
 Landed as nwwztxvy fb316b1a (2 rounds), full check 0 (3853 tests). 14 schema-description relations are full codecs in `Coded` (catalog/described.rs), 21 fixed `engine_ctor` constants (lookups into the existing table, ids unchanged), writers through `Codec::encode`/`Codec::tag`. Byte identity with main checked by the author and repeated by the review. `engine_names` rows.rs 17 to 3. Left: migration_ops and migration_clauses (sums nested deeper than `codec::Sum`), with `values::relation`/`values::row`. Next: C1 (nested-sum encode), C2 (operator arms, version hash unchanged).
+
+## 2026-11-16, part C landed, resolved
+
+Landed as mtnykxoz 80030471 (2 rounds), full check 0 (3854 tests). The codec encodes nested sums by fixed constructor id at every level (`Kind`, `Payload`, `Nested`, `Table` in catalog/codec.rs; payloads in catalog/operators.rs); migration_ops and migration_clauses are codecs in `Coded`; `Builder::push`, `values::row` and `values::relation` removed. The version hash is unchanged: catalog/hash_corpus_tests.rs pins 37 hashes taken from a main build over a corpus reaching every constructor of the operator types, derived from the declared types. Writers by name: 0. `engine_names` 28 to 9: the 5 sites of schema/engine.rs are the `EngineCtors` mint and stay; task.rs, readers.rs, evolve/cx.rs and types.rs look up names the user wrote. The sys:: rows written by position are sys-rows-written-by-position.
