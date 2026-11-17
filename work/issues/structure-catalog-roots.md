@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-08
-status: open
+status: resolved
+closed: 2026-11-16
 kind: feature
 priority: 17
 summary: "the catalog's roots heap is 16 hand-numbered constructors decoded at 5 sites, and naming_sequences is stored state no rule owns"
@@ -23,3 +24,7 @@ Source: work/briefs/design-version-owner-r1-report.md step 11 and work/briefs/au
 ## 2026-11-16 status
 
 The quality review of 2026-11-16 found most of the exit met by structure-lang-identity step 11e (f6a76796): one `RootsRow` in catalog/roots.rs with its encoder and decoder, a round trip over every variant. Left: `naming_sequences` has no stated owner in the module. The ticket stays open for that alone.
+
+## 2026-11-16, resolved
+
+Landed as uytwqlrl cadb3d57 (2 rounds), full check 0 (3858 tests). The root page's `changing` marker, which records the catalog change in progress (a schema change, a reindex, the naming of the counters page), is private to catalog/root.rs: a change begins through `begin` or `begin_or_join` and ends only through the `Begun` token it got, or through the open's `end_found`. Assignments of `changing` outside root.rs: 11 to 0, by the type. Fixed on the way: `counters` cleared a naming marker an open had kept after a crash, so the crashed run's page was never freed (class-not-atomic; regression test in catalog_tests.rs). Follow-up: concurrent-rebuilds-share-marker.
