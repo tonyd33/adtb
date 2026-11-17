@@ -7,6 +7,9 @@ all-features = true
 
 [advisories]
 yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable; it comes only through arrow-array, and goes when arrow drops it" },
+]
 
 [licenses]
 allow = [
