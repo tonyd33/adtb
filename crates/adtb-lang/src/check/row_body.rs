@@ -74,7 +74,7 @@ fn row_body(
     expected: Option<&Ty>,
 ) -> Result<(Var, Tm, Ty), Diag> {
     c.scope.push();
-    let v = c.bind(ROW, row.clone(), None);
+    let v = c.bind(ROW, row.clone(), None, Provenance::Built);
     let (out, span) = match body {
         RowBody::Match(arms, span) => {
             if let Ty::Data { def, .. } = row {

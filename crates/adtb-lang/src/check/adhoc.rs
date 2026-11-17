@@ -811,6 +811,7 @@ impl Checker<'_> {
                 tm,
                 ty: to.clone(),
                 rows: None,
+                provenance: Provenance::Built,
             },
             origin,
         )

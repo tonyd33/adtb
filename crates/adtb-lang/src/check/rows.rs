@@ -4,23 +4,32 @@ use crate::ast::{BinOp, Clause, Comprehension, Expr, ExprKind, Pattern, PatternK
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RowOrigin {
     Empty,
-    Relation(RelId),
-    Unknown,
+    Relation(RelId, Provenance),
+    Unknown(Provenance),
 }
 
 impl RowOrigin {
+    pub(super) const BUILT: Self = Self::Unknown(Provenance::Built);
+
     pub(super) fn join(self, other: Self) -> Self {
         match (self, other) {
             (Self::Empty, x) | (x, Self::Empty) => x,
-            (Self::Relation(a), Self::Relation(b)) if a == b => self,
-            _ => Self::Unknown,
+            (Self::Relation(a, p), Self::Relation(b, q)) if a == b => Self::Relation(a, p.join(q)),
+            (x, y) => Self::Unknown(x.provenance().join(y.provenance())),
         }
     }
 
     pub(super) fn relation(self) -> Option<RelId> {
         match self {
-            Self::Relation(r) => Some(r),
-            Self::Empty | Self::Unknown => None,
+            Self::Relation(r, _) => Some(r),
+            Self::Empty | Self::Unknown(_) => None,
+        }
+    }
+
+    pub(super) fn provenance(self) -> Provenance {
+        match self {
+            Self::Relation(_, p) | Self::Unknown(p) => p,
+            Self::Empty => Provenance::Built,
         }
     }
 }
@@ -28,9 +37,9 @@ impl RowOrigin {
 impl Checker<'_> {
     pub(super) fn row_origin(&self, out: &Out) -> RowOrigin {
         match out.rows {
-            Some(r) => RowOrigin::Relation(r),
+            Some(r) => RowOrigin::Relation(r, out.provenance),
             None if self.empty_row_term(out.tm) => RowOrigin::Empty,
-            None => RowOrigin::Unknown,
+            None => RowOrigin::Unknown(out.provenance),
         }
     }
 
@@ -40,6 +49,7 @@ impl Checker<'_> {
 
     pub(super) fn with_row_origin(&mut self, mut out: Out, origin: RowOrigin) -> Out {
         out.rows = origin.relation();
+        out.provenance = origin.provenance();
         if origin == RowOrigin::Empty {
             self.empty_row_terms.insert(out.tm);
         }
@@ -47,7 +57,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn bind_origin(&mut self, name: &str, ty: Ty, origin: RowOrigin) -> Var {
-        let v = self.bind(name, ty, origin.relation());
+        let v = self.bind(name, ty, origin.relation(), origin.provenance());
         if origin == RowOrigin::Empty {
             self.empty_row_vars.insert(v);
         }
@@ -88,6 +98,14 @@ impl Checker<'_> {
                 self.synth(e).map(|o| self.row_origin(&o))
             }
             ExprKind::Set(es) if es.is_empty() => Ok(RowOrigin::Empty),
+            ExprKind::Set(es) => {
+                let mut provenance = None;
+                for e in es {
+                    let p = self.result_origin(e, env)?.provenance();
+                    provenance = Some(provenance.map_or(p, |q: Provenance| q.join(p)));
+                }
+                Ok(RowOrigin::Unknown(provenance.unwrap_or(Provenance::Built)))
+            }
             ExprKind::Binary(BinOp::Union, a, b) | ExprKind::If(_, a, b) => {
                 let a = self.result_origin(a, env)?;
                 let b = self.result_origin(b, env)?;
@@ -123,13 +141,14 @@ impl Checker<'_> {
                     && (env.contains_key(&callee.name.text)
                         || self.scope.lookup(&callee.name.text).is_some())
                 {
-                    return Ok(RowOrigin::Unknown);
+                    return Ok(RowOrigin::BUILT);
                 }
                 Ok(match self.lookup_value(callee) {
-                    Ok(ValueDef::Function(f)) => {
-                        self.fn_rows[f.0 as usize].map_or(RowOrigin::Unknown, RowOrigin::Relation)
-                    }
-                    _ => RowOrigin::Unknown,
+                    Ok(ValueDef::Function(f)) => self.fn_rows[f.0 as usize]
+                        .map_or(RowOrigin::BUILT, |r| {
+                            RowOrigin::Relation(r, Provenance::Snapshot)
+                        }),
+                    _ => RowOrigin::BUILT,
                 })
             }
             ExprKind::Call { .. }
@@ -137,7 +156,7 @@ impl Checker<'_> {
             | ExprKind::Backlink(..)
             | ExprKind::At { .. } => {
                 if depends(e, env) {
-                    Ok(RowOrigin::Unknown)
+                    Ok(RowOrigin::BUILT)
                 } else {
                     self.synth(e).map(|o| self.row_origin(&o))
                 }
@@ -146,7 +165,6 @@ impl Checker<'_> {
             | ExprKind::TypeCall { .. }
             | ExprKind::Ctor { .. }
             | ExprKind::Record(_)
-            | ExprKind::Set(_)
             | ExprKind::Unit
             | ExprKind::Unary(..)
             | ExprKind::Binary(..)
@@ -156,7 +174,7 @@ impl Checker<'_> {
             | ExprKind::Exists(..)
             | ExprKind::Reject(_)
             | ExprKind::Write(_)
-            | ExprKind::Elided => Ok(RowOrigin::Unknown),
+            | ExprKind::Elided => Ok(RowOrigin::BUILT),
         }
     }
 
@@ -166,7 +184,7 @@ impl Checker<'_> {
         outer: &BTreeMap<String, RowOrigin>,
     ) -> R<RowOrigin> {
         if c.group.is_some() {
-            return Ok(RowOrigin::Unknown);
+            return Ok(RowOrigin::BUILT);
         }
         let mut env = outer.clone();
         let mut binders = BTreeSet::new();
@@ -188,7 +206,7 @@ impl Checker<'_> {
             ExprKind::Name(q) if q.module.is_none() && binders.contains(&q.name.text) => {
                 Ok(env[&q.name.text])
             }
-            _ => Ok(RowOrigin::Unknown),
+            _ => Ok(RowOrigin::BUILT),
         }
     }
 }
@@ -218,9 +236,9 @@ fn pattern_origins(p: &Pattern, origin: RowOrigin, env: &mut BTreeMap<String, Ro
             Some(Payload::Record(fields)) => {
                 for field in fields {
                     if let Some(p) = &field.pattern {
-                        pattern_origins(p, RowOrigin::Unknown, env);
+                        pattern_origins(p, RowOrigin::BUILT, env);
                     } else {
-                        env.insert(field.field.text.clone(), RowOrigin::Unknown);
+                        env.insert(field.field.text.clone(), RowOrigin::BUILT);
                     }
                 }
             }

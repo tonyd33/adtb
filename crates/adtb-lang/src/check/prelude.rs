@@ -755,8 +755,13 @@ impl Checker<'_> {
                     "deleted" => Transition::Deleted,
                     _ => Transition::Prior,
                 };
+                let provenance = match t {
+                    Transition::Inserted => Provenance::Snapshot,
+                    Transition::Deleted | Transition::Prior => Provenance::Built,
+                };
                 let mut o = Out::of(self.b().transition(t, rel, ctors), base.ty);
                 o.rows = Some(rel);
+                o.provenance = provenance;
                 Ok(o)
             }
             _ => return Ok(None),

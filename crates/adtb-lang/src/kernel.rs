@@ -170,7 +170,7 @@ pub enum Kind {
     KeyOf(RelId, Tm),
     /// The row a key names, of a constructor of `admits` (`None` for every constructor of the
     /// key's relation); a key naming no row of `admits` faults `NoSuchRow`. `reference` when the
-    /// key is a reference field's value, so a row of the key's constructor set exists.
+    /// key is a reference field of a row of the snapshot.
     Deref {
         key: Tm,
         reference: bool,

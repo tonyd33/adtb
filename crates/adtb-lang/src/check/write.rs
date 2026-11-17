@@ -686,7 +686,6 @@ impl Checker<'_> {
         };
         let p = self.proposed(target, false, source, inner.span)?;
         let var = self.terms.var("ξ", p.row_ty.clone());
-        self.proposed.insert(var);
         self.hoist.last_mut().expect("a frame").push(Nested {
             var,
             rel: p.rel,
@@ -698,6 +697,7 @@ impl Checker<'_> {
                 tm,
                 ty: p.row_ty,
                 rows: Some(p.rel),
+                provenance: Provenance::Proposed,
             },
             w.span,
         )
@@ -835,10 +835,8 @@ impl Checker<'_> {
         let old_ty = row_ty(&r.elem, scope);
         let rows = self.rows_of(&p);
         self.scope.push();
-        let old = self.bind("old", old_ty.clone(), Some(p.rel));
-        self.snapshot.insert(old);
-        let new = self.bind("new", p.row_ty.clone(), Some(p.rel));
-        self.proposed.insert(new);
+        let old = self.bind("old", old_ty.clone(), Some(p.rel), Provenance::Snapshot);
+        let new = self.bind("new", p.row_ty.clone(), Some(p.rel), Provenance::Proposed);
         let saved = std::mem::replace(&mut self.once, false);
         let r = self.write_effect(&u.otherwise);
         self.once = saved;
@@ -914,28 +912,16 @@ impl Checker<'_> {
         }
     }
 
-    /// Returns whether `t` reads a variable bound to rows a write proposes.
-    pub(super) fn mentions_proposed(&self, t: Tm) -> bool {
-        match self.terms.kind(t) {
-            Kind::Var(v) if self.proposed.contains(v) => true,
-            _ => self
-                .terms
-                .children(t)
-                .into_iter()
-                .any(|c| self.mentions_proposed(c)),
-        }
-    }
-
     /// Returns whether `o` is a row of a relation read from the statement's snapshot.
     pub(super) fn snapshot_value(&self, o: &Out) -> bool {
-        o.rows.is_some() && matches!(o.ty, Ty::Data { .. }) && !self.mentions_proposed(o.tm)
+        o.rows.is_some() && matches!(o.ty, Ty::Data { .. }) && o.provenance == Provenance::Snapshot
     }
 
     /// The rows of `R` an `update ... in` or `delete ... in` ranges over.
     fn ranged(&mut self, source: &Expr, what: &str) -> R<(RelId, Out, Ty)> {
         once(source, self.once)?;
         let o = self.synth(source)?;
-        if self.mentions_proposed(o.tm) {
+        if o.provenance == Provenance::Proposed {
             return Err(diag(
                 source.span,
                 format!(
@@ -970,7 +956,9 @@ impl Checker<'_> {
                 local @ Local {
                     rows: Some(rel), ..
                 },
-            ) if self.snapshot.contains(&local.var) && matches!(local.ty, Ty::Data { .. }) => {
+            ) if local.provenance == Provenance::Snapshot
+                && matches!(local.ty, Ty::Data { .. }) =>
+            {
                 Ok((rel, local))
             }
             _ => Err(diag(
@@ -995,8 +983,7 @@ impl Checker<'_> {
             Some(src) => {
                 let (rel, o, elem) = self.ranged(src, "update")?;
                 self.scope.push();
-                let x = self.bind(&binder.text, elem.clone(), Some(rel));
-                self.snapshot.insert(x);
+                let x = self.bind(&binder.text, elem.clone(), Some(rel), Provenance::Snapshot);
                 let rows = match filter {
                     Some(p) => {
                         let r = self.row_filter(x, o.tm, &elem, p);
@@ -1021,8 +1008,12 @@ impl Checker<'_> {
                     rows = self.b().if_(p.tm, rows, none, set_ty);
                 }
                 self.scope.push();
-                let x = self.bind(&binder.text, local.ty.clone(), Some(rel));
-                self.snapshot.insert(x);
+                let x = self.bind(
+                    &binder.text,
+                    local.ty.clone(),
+                    Some(rel),
+                    Provenance::Snapshot,
+                );
                 (rel, rows, local.ty, x)
             }
         };
@@ -1070,8 +1061,8 @@ impl Checker<'_> {
                 let rows = match filter {
                     Some(p) => {
                         self.scope.push();
-                        let x = self.bind(&binder.text, elem.clone(), Some(rel));
-                        self.snapshot.insert(x);
+                        let x =
+                            self.bind(&binder.text, elem.clone(), Some(rel), Provenance::Snapshot);
                         let r = self.row_filter(x, o.tm, &elem, p);
                         self.scope.pop();
                         r?
@@ -1103,14 +1094,8 @@ impl Checker<'_> {
             .map(|a| (a.patterns.as_slice(), a.guard.is_some()))
             .collect();
         let mut m = self.match_patterns(s, &heads, span)?;
-        let over_snapshot = self.snapshot_value(&m.scrutinee);
         let mut eff: Option<Effect> = None;
         for (arm, ir) in arms.iter().zip(m.arms.iter_mut()) {
-            for (_, local) in ir.locals.iter().chain(&ir.guard_locals) {
-                if over_snapshot && local.rows.is_some() {
-                    self.snapshot.insert(local.var);
-                }
-            }
             let saved = std::mem::replace(&mut self.once, false);
             let guard = self.arm_guard(ir, arm.guard.as_ref(), |c, g| {
                 let bt = c.bool_ty();
@@ -1136,6 +1121,7 @@ impl Checker<'_> {
                 tm,
                 ty: Ty::Change,
                 rows: None,
+                provenance: Provenance::Built,
             });
         }
         let out = self.match_compile(m, Ty::Change);
@@ -1239,7 +1225,7 @@ impl Checker<'_> {
             unreachable!("a relation holds a declared sum")
         };
         self.scope.push();
-        let x = self.bind("self", elem.clone(), Some(rel));
+        let x = self.bind("self", elem.clone(), Some(rel), Provenance::Snapshot);
         let old = self.var_tm(x);
         let site = Site {
             rel,

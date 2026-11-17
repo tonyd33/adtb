@@ -84,7 +84,7 @@ impl Checker<'_> {
                         "the parameter type of `fn x -> ...` is not known here; write `fn (x: T) -> ...`",
                     ));
                 };
-                let v = self.bind(&x.text, (**a).clone(), None);
+                let v = self.bind(&x.text, (**a).clone(), None, Provenance::Built);
                 let b = self.check(body, r)?;
                 let ty = Ty::Fn(a.clone(), r.clone());
                 let tm = self.b().lam(v, b.tm, ty);
@@ -110,7 +110,7 @@ impl Checker<'_> {
                     } else {
                         want = None;
                     }
-                    vars.push(self.bind(&p.name.text, t, None));
+                    vars.push(self.bind(&p.name.text, t, None, Provenance::Built));
                 }
                 let b = match &want {
                     Some(r) => self.check(body, r)?,
@@ -118,7 +118,7 @@ impl Checker<'_> {
                 };
                 let tm = self.lams(vars, b.tm, b.ty);
                 let ty = self.terms.ty(tm).clone();
-                Ok(Out { tm, ty, rows: None })
+                Ok(Out::of(tm, ty))
             }
         }
     }
@@ -282,6 +282,7 @@ impl Checker<'_> {
             tm: f,
             ty,
             rows: None,
+            provenance: Provenance::Built,
         })
     }
 
@@ -347,6 +348,9 @@ impl Checker<'_> {
         let result = def.result.subst(&type_args);
         let mut o = Out::of(self.b().call(f, type_args, tms), result);
         o.rows = self.fn_rows[f.0 as usize];
+        if o.rows.is_some() {
+            o.provenance = Provenance::Snapshot;
+        }
         Ok(o)
     }
 }

@@ -1,6 +1,6 @@
 === 001 probe
 --- text
-fn f (r: Reset) -> Text = match r.identity | EmailPass e -> e.email
+fn f () -> Set Text = from r in resets select match r.identity | EmailPass e -> e.email
 --- body
 f
 --- text_2

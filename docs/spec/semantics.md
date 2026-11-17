@@ -385,7 +385,8 @@ pattern compilation of §10.2 produce such a `case`.
   type (`sum` over an integer type);
 - `top` whose count is not a nonnegative literal;
 - a `fix` that is not bounded (§5.10), which may not terminate;
-- a `deref` of a key that is not a reference field's value;
+- a `deref` of a key that is not a reference field of a row of the
+  snapshot;
 - any `deref`, and every path through a reference, in a bundle
   declaring `hide new constructors` (§9.6);
 - an `at` block ([derived.md §6.2](derived.md#62-naming-a-past-state)),

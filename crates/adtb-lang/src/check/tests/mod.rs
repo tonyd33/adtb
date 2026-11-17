@@ -403,6 +403,18 @@ fn body_of(s: &Schema, p: &Program, name: &str) -> Tm {
     t
 }
 
+/// Returns the `reference` flag of each `Deref` under `t`.
+fn deref_flags(terms: &Terms, t: Tm) -> Vec<bool> {
+    let mut flags = Vec::new();
+    terms.any(t, |k| {
+        if let Kind::Deref { reference, .. } = k {
+            flags.push(*reference);
+        }
+        false
+    });
+    flags
+}
+
 // Signatures and inference
 
 // Subtyping
@@ -416,19 +428,16 @@ fn navigation_desugars_to_deref() {
     runtime::probes("navigation_desugars_to_deref", |fixture| {
         let (s, p) = program(fixture.text("text")).unwrap();
         let body = body_of(&s, &p, fixture.text("body"));
+        assert_eq!(
+            deref_flags(&p.terms, body),
+            [fixture.number::<bool>("reference_deref")]
+        );
+        let (s, p) = program(fixture.text("text_2")).unwrap();
+        let body = body_of(&s, &p, fixture.text("body"));
         let Kind::Field(inner, name) = p.terms.kind(body) else {
             panic!("a field, found {:?}", p.terms.kind(body));
         };
         assert_eq!(name, fixture.text("expected_field"));
-        assert!(matches!(
-            p.terms.kind(*inner),
-            Kind::Deref { reference, .. } if *reference == fixture.number::<bool>("reference_deref")
-        ));
-        let (s, p) = program(fixture.text("text_2")).unwrap();
-        let body = body_of(&s, &p, fixture.text("body"));
-        let Kind::Field(inner, _) = p.terms.kind(body) else {
-            panic!("a field");
-        };
         assert!(matches!(
             p.terms.kind(*inner),
             Kind::Deref { reference, .. } if *reference == fixture.number::<bool>("key_deref")
@@ -643,13 +652,10 @@ fn a_scalar_match_is_a_chain_without_case() {
 fn a_match_on_a_key_derefs_it() {
     runtime::probes("a_match_on_a_key_derefs_it", |fixture| {
         let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Let(_, scrutinee, _) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
-            panic!("a let");
-        };
-        assert!(matches!(
-            p.terms.kind(*scrutinee),
-            Kind::Deref { reference, .. } if *reference == fixture.number::<bool>("reference_deref")
-        ));
+        assert_eq!(
+            deref_flags(&p.terms, body_of(&s, &p, fixture.text("body"))),
+            [fixture.number::<bool>("reference_deref")]
+        );
         let (s, p) = program(fixture.text("text_2")).unwrap();
         let Kind::Let(_, scrutinee, _) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
             panic!("a let");

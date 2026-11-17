@@ -1,6 +1,6 @@
 === 001 probe
 --- text
-fn f (i: Identity) -> Text = i.user.name
+fn f () -> Set Text = from i in identities select i.user.name
 --- body
 f
 --- expected_field

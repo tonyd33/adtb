@@ -48,11 +48,41 @@ pub struct Out {
     pub ty: Ty,
     /// For a row, the relation it is a row of; for a set, the relation its elements are rows of.
     pub rows: Option<RelId>,
+    provenance: Provenance,
+}
+
+/// Where a value came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Provenance {
+    /// Rows read from the statement's snapshot.
+    Snapshot,
+    /// Rows a write proposes, or a value built from them.
+    Proposed,
+    /// A reference field's value read from a row of the snapshot, which names a row.
+    Reference,
+    /// Any other value.
+    Built,
+}
+
+impl Provenance {
+    /// Returns the provenance of a value that is either `self` or `other`.
+    fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (a, b) if a == b => a,
+            (Self::Proposed, _) | (_, Self::Proposed) => Self::Proposed,
+            _ => Self::Built,
+        }
+    }
 }
 
 impl Out {
     fn of(tm: Tm, ty: Ty) -> Out {
-        Out { tm, ty, rows: None }
+        Out {
+            tm,
+            ty,
+            rows: None,
+            provenance: Provenance::Built,
+        }
     }
 }
 
@@ -171,6 +201,7 @@ struct Local {
     var: Var,
     ty: Ty,
     rows: Option<RelId>,
+    provenance: Provenance,
     group: Option<Rc<GroupInfo>>,
 }
 
@@ -181,6 +212,7 @@ struct GroupInfo {
     value: Var,
     value_ty: Ty,
     value_rows: Option<RelId>,
+    value_provenance: Provenance,
     rows_ty: Ty,
 }
 
@@ -208,12 +240,8 @@ pub struct Checker<'a> {
     hoist: Vec<Vec<write::Nested>>,
     /// Whether a nested `key (insert ...)` here is evaluated once per statement.
     once: bool,
-    /// Variables bound to rows of the snapshot, which `update x` and `delete x` may name.
-    snapshot: BTreeSet<Var>,
     empty_row_terms: BTreeSet<Tm>,
     empty_row_vars: BTreeSet<Var>,
-    /// Variables bound to rows a write proposes, which are never rows of the snapshot.
-    proposed: BTreeSet<Var>,
     read_only: bool,
     /// The names this checker resolves, when recording.
     refs: Option<RefCell<Vec<(Span, Ref)>>>,
@@ -271,10 +299,8 @@ impl<'a> Checker<'a> {
             reject_ok: false,
             hoist: Vec::new(),
             once: true,
-            snapshot: BTreeSet::new(),
             empty_row_terms: BTreeSet::new(),
             empty_row_vars: BTreeSet::new(),
-            proposed: BTreeSet::new(),
             read_only: false,
             refs: None,
             coverage: true,
@@ -346,7 +372,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Binds `name` in the innermost scope and returns its variable.
-    fn bind(&mut self, name: &str, ty: Ty, rows: Option<RelId>) -> Var {
+    fn bind(&mut self, name: &str, ty: Ty, rows: Option<RelId>, provenance: Provenance) -> Var {
         let var = self.terms.var(name, ty.clone());
         self.scope.bind(
             name,
@@ -354,6 +380,7 @@ impl<'a> Checker<'a> {
                 var,
                 ty,
                 rows,
+                provenance,
                 group: None,
             },
         );
@@ -763,7 +790,7 @@ impl Bodies<'_, '_> {
                 let mut var = None;
                 if let Some(tm) = self.run(t.module, Context::Schema, t.file, &mut |c| {
                     c.scope.push();
-                    let v = c.bind("self", base.clone(), None);
+                    let v = c.bind("self", base.clone(), None, Provenance::Built);
                     var = Some(v);
                     let ty = c.bool_ty();
                     let out = c.check(d, &ty)?;
@@ -791,7 +818,7 @@ impl Bodies<'_, '_> {
             let mut var = None;
             if let Some(tm) = self.run(r.module, Context::Schema, r.file, &mut |c| {
                 c.scope.push();
-                var = Some(c.bind("self", r.elem.clone(), Some(rel)));
+                var = Some(c.bind("self", r.elem.clone(), Some(rel), Provenance::Snapshot));
                 Ok(c.check(&comp.expr, &comp.ty)?.tm)
             }) {
                 self.program
@@ -1123,7 +1150,7 @@ impl Checker<'_> {
                     "a parameter of a registered query never has a function type",
                 ));
             }
-            vars.push(self.bind(&p.name.text, pty, None));
+            vars.push(self.bind(&p.name.text, pty, None, Provenance::Built));
         }
         let body = self.top_query(&q.body, Some(&result));
         self.scope.pop();
@@ -1155,7 +1182,7 @@ impl Checker<'_> {
         self.scope.push();
         let mut vars = Vec::new();
         for (name, ty) in &def.params {
-            vars.push(self.bind(name, ty.clone(), None));
+            vars.push(self.bind(name, ty.clone(), None, Provenance::Built));
         }
         let out = self.check(body, &def.result)?;
         self.scope.pop();
@@ -1194,7 +1221,7 @@ impl Checker<'_> {
         self.scope.push();
         let vars: Vec<Var> = binds
             .iter()
-            .map(|(x, t)| self.bind(&x.text, (*t).clone(), None))
+            .map(|(x, t)| self.bind(&x.text, (*t).clone(), None, Provenance::Built))
             .collect();
         let out = self.check(body, ty);
         self.scope.pop();
@@ -1228,11 +1255,11 @@ impl Checker<'_> {
         f: &mut dyn FnMut(&mut Self) -> R<Out>,
     ) -> R<(Var, Out)> {
         self.scope.push();
-        let x = self.bind("self", elem.clone(), Some(rel));
+        let x = self.bind("self", elem.clone(), Some(rel), Provenance::Snapshot);
         let mut lets = Vec::new();
         let fields = self.fields_of(elem);
         for (name, fty) in &fields {
-            let v = self.bind(name, fty.clone(), None);
+            let v = self.bind(name, fty.clone(), None, Provenance::Built);
             if let Ty::Data { def, ctors, .. } = elem {
                 self.row_fields
                     .insert(v, (*def, ctors.clone(), name.clone()));
@@ -1250,6 +1277,7 @@ impl Checker<'_> {
                 tm: xt,
                 ty: elem.clone(),
                 rows: Some(rel),
+                provenance: Provenance::Snapshot,
             };
             let name = ast::Ident {
                 text: c.name.clone(),
@@ -1262,7 +1290,7 @@ impl Checker<'_> {
                     return Err(e);
                 }
             };
-            let v = self.bind(&c.name, o.ty.clone(), None);
+            let v = self.bind(&c.name, o.ty.clone(), None, Provenance::Built);
             lets.push((v, o.tm));
         }
         let r = f(self);
@@ -1326,6 +1354,7 @@ impl Checker<'_> {
             tm: xt,
             ty: elem,
             rows: None,
+            provenance: Provenance::Built,
         };
         let out = self.along(row, &[Seg::Field(root)], &mut path)?;
         let out = self.along(out, &segs, &mut path)?;
@@ -1385,6 +1414,7 @@ impl Checker<'_> {
                         tm: yt,
                         ty: row,
                         rows: None,
+                        provenance: Provenance::Built,
                     },
                     rest,
                     path,

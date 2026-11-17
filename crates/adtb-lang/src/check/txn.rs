@@ -64,6 +64,7 @@ impl Checker<'_> {
             tm,
             ty: body.ty,
             rows: body.rows,
+            provenance: body.provenance,
         })
     }
 
@@ -112,8 +113,7 @@ impl Checker<'_> {
                     let nested = self.hoist.pop().expect("pushed");
                     let (kind, ty, rel) = parts?;
                     self.scope.push();
-                    let v = self.bind(&name.text, ty.clone(), Some(rel));
-                    self.proposed.insert(v);
+                    let v = self.bind(&name.text, ty.clone(), Some(rel), Provenance::Proposed);
                     pending.push(Pending::LetWrite {
                         v,
                         kind,
@@ -131,12 +131,6 @@ impl Checker<'_> {
                     }
                     self.scope.push();
                     let v = self.bind_origin(&name.text, o.ty.clone(), self.row_origin(&o));
-                    if self.mentions_proposed(o.tm) {
-                        self.proposed.insert(v);
-                    }
-                    if self.snapshot_value(&o) {
-                        self.snapshot.insert(v);
-                    }
                     pending.push(Pending::LetExpr {
                         v,
                         value: o.tm,
@@ -178,6 +172,7 @@ impl Checker<'_> {
             tm,
             ty,
             rows: o.rows,
+            provenance: o.provenance,
         })
     }
 
@@ -275,7 +270,7 @@ impl Checker<'_> {
                     "a parameter of a registered transaction never has a function type",
                 ));
             }
-            vars.push(self.bind(&p.name.text, pty, None));
+            vars.push(self.bind(&p.name.text, pty, None, Provenance::Built));
         }
         let body = self.transact(&t.body, Some(&result));
         self.scope.pop();

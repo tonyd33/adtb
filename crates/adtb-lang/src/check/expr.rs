@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind, Lit, UnOp};
-use crate::kernel::{Const, Kind, Prim};
+use crate::kernel::{Const, Prim};
 
 pub(super) fn is_literal(e: &Expr) -> bool {
     match &e.kind {
@@ -355,6 +355,7 @@ impl Checker<'_> {
                     tm,
                     ty: self.bool_ty(),
                     rows: None,
+                    provenance: Provenance::Built,
                 })
             }
         }
@@ -423,6 +424,7 @@ impl Checker<'_> {
                     tm,
                     ty: local.ty,
                     rows: local.rows,
+                    provenance: local.provenance,
                 });
             }
             if text == "caller" {
@@ -447,7 +449,7 @@ impl Checker<'_> {
                 if self.adhoc() && q.module.is_none() {
                     if let Some((v, ty)) = self.params.get(&q.name.text).cloned() {
                         let tm = self.b().var(v);
-                        return Ok(Out { tm, ty, rows: None });
+                        return Ok(Out::of(tm, ty));
                     }
                     if self.ambiguous(&q.name.text) {
                         return Err(diag(q.span(), e));
@@ -488,7 +490,7 @@ impl Checker<'_> {
         let result = def.result.clone();
         let tm = self.lams(vars, call, result);
         let ty = self.terms.ty(tm).clone();
-        Ok(Out { tm, ty, rows: None })
+        Ok(Out::of(tm, ty))
     }
 
     /// `tm`, over the variables of `binders`, for one record of their values, each bound afresh.
@@ -527,6 +529,7 @@ impl Checker<'_> {
             tm,
             ty: set_ty,
             rows: g.value_rows,
+            provenance: g.value_provenance,
         }
     }
 
@@ -961,7 +964,23 @@ impl Checker<'_> {
             if let Ty::Data { def, ctors, .. } = &o.ty {
                 self.note_field(f.span, *def, ctors.as_deref(), &f.text, false);
             }
-            return Ok(Out::of(self.b().field(o.tm, f.text.clone()), fty));
+            let provenance = match o.provenance {
+                Provenance::Snapshot
+                    if matches!(fty, Ty::Key { .. }) && self.snapshot_value(&o) =>
+                {
+                    Provenance::Reference
+                }
+                Provenance::Proposed => Provenance::Proposed,
+                Provenance::Snapshot | Provenance::Reference | Provenance::Built => {
+                    Provenance::Built
+                }
+            };
+            return Ok(Out {
+                tm: self.b().field(o.tm, f.text.clone()),
+                ty: fty,
+                rows: None,
+                provenance,
+            });
         }
         if let Some(rel) = o.rows
             && let Some(c) = self
@@ -976,7 +995,7 @@ impl Checker<'_> {
                 Visible::module(self.schema.relation(rel).module).scoped(self.vis.scope().cloned());
             let saved = std::mem::replace(&mut self.vis, home);
             self.scope.push();
-            let v = self.bind("self", o.ty.clone(), Some(rel));
+            let v = self.bind("self", o.ty.clone(), Some(rel), o.provenance);
             let body = self.check(&c.expr, &c.ty);
             self.scope.pop();
             self.vis = saved;
@@ -1003,10 +1022,6 @@ impl Checker<'_> {
     }
 
     pub(super) fn deref(&mut self, key: Out, rel: RelId, ctors: Option<CtorSet>) -> Out {
-        let reference = matches!(
-            self.terms.kind(key.tm),
-            Kind::Field(base, _) if matches!(self.terms.ty(*base), Ty::Data { .. })
-        );
         let r = self.schema.relation(rel);
         let ty = match &r.elem {
             Ty::Data { def, args, .. } => Ty::Data {
@@ -1016,11 +1031,14 @@ impl Checker<'_> {
             },
             t => t.clone(),
         };
-        let tm = self.b().deref(key.tm, reference);
+        let tm = self
+            .b()
+            .deref(key.tm, key.provenance == Provenance::Reference);
         Out {
             tm,
             ty,
             rows: Some(rel),
+            provenance: Provenance::Snapshot,
         }
     }
 
@@ -1327,6 +1345,11 @@ impl Checker<'_> {
             }
         };
         let set_ty = Ty::Set(Box::new(elem.clone()));
+        let provenance = outs
+            .iter()
+            .map(|o| o.provenance)
+            .reduce(Provenance::join)
+            .unwrap_or(Provenance::Built);
         let ones: Vec<Tm> = outs
             .into_iter()
             .map(|o| {
@@ -1339,6 +1362,7 @@ impl Checker<'_> {
             tm,
             ty: set_ty,
             rows: None,
+            provenance,
         })
     }
 

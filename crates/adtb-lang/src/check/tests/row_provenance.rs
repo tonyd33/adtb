@@ -198,3 +198,83 @@ fn upsert_snapshot_and_proposed_binders_keep_their_write_rules() {
         "is not a row of the snapshot",
     );
 }
+
+/// Returns the headings of the unused-deref conformance cases whose key or row has `provenance`.
+fn unused_deref_cases(provenance: Provenance) -> &'static [&'static str] {
+    match provenance {
+        Provenance::Snapshot => &[
+            "A row read through a reference, from a function or by a match over a stored row is a stored row.",
+        ],
+        Provenance::Reference => &[
+            "A reference field of a stored row names a row.",
+            "A reference read from a stored row and bound by a generator names a row.",
+        ],
+        Provenance::Proposed => &[
+            "A reference field of the row an upsert proposes, which no constraint checks when it conflicts.",
+            "A generator binder over rows a write proposes, whose reference names a row the same block inserts.",
+            "A match binder over a row a write proposes.",
+            "A computed field of a row a write proposes.",
+            "A group binder over rows a write proposes.",
+            "A generator binder over a set literal of a row a write proposes.",
+            "A generator binder over a union with rows a write proposes.",
+            "A generator binder over a fixpoint of rows a write proposes.",
+            "An aggregate binder over rows a write proposes.",
+            "A generator binder over a let bound to rows a write proposes.",
+            "A match binder over the one row a write proposes.",
+            "A computed field of the one row a write proposes.",
+            "A match binder of the row an upsert proposes.",
+        ],
+        Provenance::Built => &[
+            "A key built by r.key.",
+            "A reference field of a constructor literal.",
+            "A reference field of a one-constructor literal.",
+            "A field of an anonymous record.",
+            "A reference field of a stored row's copy made with `with`.",
+            "A field of an anonymous record's copy made with `with`.",
+            "A comprehension binder over a set of keys.",
+            "A function's key parameter.",
+            "A reference field of a function's row parameter.",
+            "A function's key result.",
+            "A reference field of a function's built row.",
+            "The result of an `if`.",
+            "The result of a `match`.",
+            "A reference field of a binder a match on a constructor literal binds.",
+            "A key an optional value holds.",
+            "The key of a stored row.",
+            "A group's key.",
+        ],
+    }
+}
+
+#[test]
+fn every_provenance_has_unused_deref_cases_and_every_case_a_provenance() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../conformance/queries/15-unused-deref.test");
+    let text = std::fs::read_to_string(&path).expect("the unused-deref conformance file");
+    let headings: Vec<&str> = text
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.strip_prefix("# "))
+        .collect();
+    let mut listed = Vec::new();
+    for provenance in [
+        Provenance::Snapshot,
+        Provenance::Reference,
+        Provenance::Proposed,
+        Provenance::Built,
+    ] {
+        let cases = unused_deref_cases(provenance);
+        assert!(!cases.is_empty(), "{provenance:?} has no case");
+        for case in cases {
+            assert!(headings.contains(case), "{provenance:?}: no case `{case}`");
+        }
+        listed.extend_from_slice(cases);
+    }
+    for heading in &headings {
+        assert!(
+            listed.contains(heading),
+            "case `{heading}` has no provenance"
+        );
+    }
+    assert_eq!(headings.len(), listed.len());
+}

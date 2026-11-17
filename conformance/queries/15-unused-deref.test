@@ -1,0 +1,536 @@
+# A deref whose row is unused still faults NoSuchRow when its key names no row, unless the key is a reference field of a row of the snapshot.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Phone = { id: Key phones, owner: Key users, seen: I64 }
+  type Line = { id: Key lines, phone: Key phones }
+  type Payment { id: Key payments, customer: Key users } = Card { last4: Text } | Invoice { due: Text }
+  type Session = { id: Key sessions, owner: Option (Key users) }
+  type Label = { id: Key tags, owner: Key users, label: Text, seen: I64 }
+  type Res = { id: Key results, v: I64 }
+  relation users : User key id generate sequence
+  relation phones : Phone key id generate sequence
+    computed probe: I64 = { a: self.owner.name, b: 1 }.b
+  relation lines : Line key id generate sequence
+  relation payments : Payment key id generate sequence
+  relation sessions : Session key id generate sequence
+  relation tags : Label key id generate sequence
+    unique (label)
+  relation results : Res key id generate sequence
+  fn through_parameter (k: Key users) -> I64 = { a: k.name, b: 1 }.b
+  fn through_row_parameter (p: Phone) -> I64 = { a: p.owner.name, b: 1 }.b
+  fn same (k: Key users) -> Key users = k
+  fn phone_of (k: Key users) -> Phone = Phone { id: phones.key(9), owner: k, seen: 0 }
+  fn all_phones () -> Set Phone = from p in phones select p
+run
+  insert users from [User { id: users.key(1), name: "ann" }]
+  insert phones from [Phone { id: phones.key(1), owner: users.key(1), seen: 1 }]
+  insert lines from [Line { id: lines.key(1), phone: phones.key(1) }]
+  insert payments.Card { id: payments.key(1), customer: users.key(1), last4: "x" }
+  insert sessions from [Session { id: sessions.key(1), owner: Some { value: users.key(1) } }]
+  insert tags from [Label { id: tags.key(1), owner: users.key(1), label: "t", seen: 0 }]
+# A key built by r.key.
+query
+  try { a: users.key(99).name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: users.key(1).name, b: 1 }.b
+----
+Ok { value: 1 }
+# A reference field of a constructor literal.
+error Faulted
+  { a: (Payment.Card { id: payments.key(5), customer: users.key(99), last4: "x" }).customer.name, b: 1 }.b
+query
+  try { a: (Payment.Card { id: payments.key(5), customer: users.key(99), last4: "x" }).customer.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: (Payment.Card { id: payments.key(5), customer: users.key(1), last4: "x" }).customer.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A reference field of a one-constructor literal.
+query
+  try { a: (Phone { id: phones.key(5), owner: users.key(99), seen: 0 }).owner.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: (Phone { id: phones.key(5), owner: users.key(1), seen: 0 }).owner.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A field of an anonymous record.
+query
+  try { a: { k: users.key(99) }.k.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: { k: users.key(1) }.k.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A reference field of a stored row's copy made with `with`.
+query
+  from p in phones select try { a: (Phone { p with owner: users.key(99) }).owner.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  from p in phones select try { a: (Phone { p with seen: 2 }).owner.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A field of an anonymous record's copy made with `with`.
+query
+  try { a: { { k: users.key(1) } with k: users.key(99) }.k.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: { { k: users.key(99) } with k: users.key(1) }.k.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A comprehension binder over a set of keys.
+query
+  from k in [users.key(99)] select try { a: k.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  from k in [users.key(1)] select try { a: k.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A function's key parameter.
+query
+  try through_parameter(users.key(99))
+----
+Err { error: NoSuchRow }
+query
+  try through_parameter(users.key(1))
+----
+Ok { value: 1 }
+# A reference field of a function's row parameter.
+query
+  try through_row_parameter(Phone { id: phones.key(5), owner: users.key(99), seen: 0 })
+----
+Err { error: NoSuchRow }
+query
+  from p in phones select try through_row_parameter(p)
+----
+Ok { value: 1 }
+# A function's key result.
+query
+  try { a: same(users.key(99)).name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: same(users.key(1)).name, b: 1 }.b
+----
+Ok { value: 1 }
+# A reference field of a function's built row.
+query
+  try { a: phone_of(users.key(99)).owner.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: phone_of(users.key(1)).owner.name, b: 1 }.b
+----
+Ok { value: 1 }
+# The result of an `if`.
+query
+  try { a: (if 1 == 1 then users.key(99) else users.key(1)).name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: (if 1 == 1 then users.key(1) else users.key(99)).name, b: 1 }.b
+----
+Ok { value: 1 }
+# The result of a `match`.
+query
+  try { a: (match 1 | 1 -> users.key(99) | _ -> users.key(1)).name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try { a: (match 1 | 1 -> users.key(1) | _ -> users.key(99)).name, b: 1 }.b
+----
+Ok { value: 1 }
+# A reference field of a binder a match on a constructor literal binds.
+query
+  try match Payment.Card { id: payments.key(5), customer: users.key(99), last4: "x" }
+    | Card c -> { a: c.customer.name, b: 1 }.b
+----
+Err { error: NoSuchRow }
+query
+  try match Payment.Card { id: payments.key(5), customer: users.key(1), last4: "x" }
+    | Card c -> { a: c.customer.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A key an optional value holds.
+query
+  try match (if 1 == 1 then Some { value: users.key(99) } else None)
+    | Some { value: k } -> { a: k.name, b: 1 }.b
+    | None -> 2
+----
+Err { error: NoSuchRow }
+query
+  from s in sessions select try match s.owner
+    | Some { value: k } -> { a: k.name, b: 1 }.b
+    | None -> 2
+----
+Ok { value: 1 }
+# The key of a stored row.
+query
+  from u in users select try { a: (key u).name, b: 1 }.b
+----
+Ok { value: 1 }
+# A group's key.
+query
+  from p in phones group p by p.owner into g select try { a: g.key.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A reference field of a stored row names a row.
+query
+  from p in phones select try { a: p.owner.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A reference read from a stored row and bound by a generator names a row.
+query
+  from k in (from p in phones select p.owner) select try { a: k.name, b: 1 }.b
+----
+Ok { value: 1 }
+# A row read through a reference, from a function or by a match over a stored row is a stored row.
+query
+  from l in lines select try { a: l.phone.owner.name, b: 1 }.b
+----
+Ok { value: 1 }
+query
+  from p in all_phones() select try { a: p.owner.name, b: 1 }.b
+----
+Ok { value: 1 }
+query
+  from p in payments select try match p
+    | Card c -> { a: c.customer.name, b: 1 }.b
+    | Invoice i -> 2
+----
+Ok { value: 1 }
+query
+  from p in phones select try p.probe
+----
+Ok { value: 1 }
+# A reference field of the row an upsert proposes, which no constraint checks when it conflicts.
+run
+  insert tags { id: tags.key(5), owner: users.key(99), label: "t", seen: 0 }
+  unless conflict on (label)
+  else update old set Label { old with seen: match try { a: new.owner.name, b: 2 }.b
+    | Ok { value: v } -> v
+    | Err { error: NoSuchRow } -> -1
+    | Err { error: e } -> -2 }
+query
+  from t in tags select t.seen
+----
+-1
+run
+  insert tags { id: tags.key(5), owner: users.key(1), label: "t", seen: 0 }
+  unless conflict on (label)
+  else update old set Label { old with seen: match try { a: new.owner.name, b: 2 }.b
+    | Ok { value: v } -> v
+    | Err { error: NoSuchRow } -> -1
+    | Err { error: e } -> -2 }
+query
+  from t in tags select t.seen
+----
+2
+# A generator binder over rows a write proposes, whose reference names a row the same block inserts.
+run
+  transact
+    insert users { id: users.key(10), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(10), owner: users.key(10), seen: 0 }]
+    insert results from (from p in ps select Res { id: results.key(10), v: match try ({ a: p.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(10) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(11), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(11), owner: users.key(1), seen: 0 }]
+    insert results from (from p in ps select Res { id: results.key(11), v: match try ({ a: p.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(11) select r.v
+----
+1
+# A match binder over a row a write proposes.
+run
+  transact
+    insert users { id: users.key(20), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(20), owner: users.key(20), seen: 0 }]
+    insert results from (from p in ps select Res { id: results.key(20), v: match try (match p | Phone q -> { a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(20) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(21), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(21), owner: users.key(1), seen: 0 }]
+    insert results from (from p in ps select Res { id: results.key(21), v: match try (match p | Phone q -> { a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(21) select r.v
+----
+1
+# A computed field of a row a write proposes.
+run
+  transact
+    insert users { id: users.key(30), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(30), owner: users.key(30), seen: 0 }]
+    insert results from (from p in ps select Res { id: results.key(30), v: match try (p.probe)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(30) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(31), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(31), owner: users.key(1), seen: 0 }]
+    insert results from (from p in ps select Res { id: results.key(31), v: match try (p.probe)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(31) select r.v
+----
+1
+# A group binder over rows a write proposes.
+run
+  transact
+    insert users { id: users.key(40), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(40), owner: users.key(40), seen: 0 }]
+    insert results from (from p in ps group p by p.seen into g from q in g select Res { id: results.key(40), v: match try ({ a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(40) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(41), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(41), owner: users.key(1), seen: 0 }]
+    insert results from (from p in ps group p by p.seen into g from q in g select Res { id: results.key(41), v: match try ({ a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(41) select r.v
+----
+1
+# A generator binder over a set literal of a row a write proposes.
+run
+  transact
+    insert users { id: users.key(50), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(50), owner: users.key(50), seen: 0 }]
+    insert results from (from p in ps from q in [p] select Res { id: results.key(50), v: match try ({ a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(50) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(51), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(51), owner: users.key(1), seen: 0 }]
+    insert results from (from p in ps from q in [p] select Res { id: results.key(51), v: match try ({ a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(51) select r.v
+----
+1
+# A generator binder over a union with rows a write proposes.
+run
+  transact
+    insert users { id: users.key(60), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(60), owner: users.key(60), seen: 0 }]
+    insert results from (from p in (ps union (from x in phones where x.seen == 99 select x)) select Res { id: results.key(60), v: match try ({ a: p.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(60) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(61), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(61), owner: users.key(1), seen: 0 }]
+    insert results from (from p in (ps union (from x in phones where x.seen == 99 select x)) select Res { id: results.key(61), v: match try ({ a: p.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(61) select r.v
+----
+1
+# A generator binder over a fixpoint of rows a write proposes.
+run
+  transact
+    insert users { id: users.key(70), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(70), owner: users.key(70), seen: 0 }]
+    insert results from (from p in (fix rows = ps union rows in rows) select Res { id: results.key(70), v: match try ({ a: p.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(70) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(71), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(71), owner: users.key(1), seen: 0 }]
+    insert results from (from p in (fix rows = ps union rows in rows) select Res { id: results.key(71), v: match try ({ a: p.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(71) select r.v
+----
+1
+# An aggregate binder over rows a write proposes.
+run
+  transact
+    insert users { id: users.key(80), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(80), owner: users.key(80), seen: 0 }]
+    insert results { id: results.key(80), v: match try (sum({ a: p.owner.name, b: 1 }.b for p in ps))
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 }
+query
+  from r in results where r.id == results.key(80) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(81), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(81), owner: users.key(1), seen: 0 }]
+    insert results { id: results.key(81), v: match try (sum({ a: p.owner.name, b: 1 }.b for p in ps))
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 }
+query
+  from r in results where r.id == results.key(81) select r.v
+----
+1
+# A generator binder over a let bound to rows a write proposes.
+run
+  transact
+    insert users { id: users.key(90), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(90), owner: users.key(90), seen: 0 }]
+    let qs = ps
+    insert results from (from q in qs select Res { id: results.key(90), v: match try ({ a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(90) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(91), name: "new" }
+    let ps = insert phones from [Phone { id: phones.key(91), owner: users.key(1), seen: 0 }]
+    let qs = ps
+    insert results from (from q in qs select Res { id: results.key(91), v: match try ({ a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 })
+query
+  from r in results where r.id == results.key(91) select r.v
+----
+1
+# A match binder over the one row a write proposes.
+run
+  transact
+    insert users { id: users.key(100), name: "new" }
+    let p = insert phones { id: phones.key(100), owner: users.key(100), seen: 0 }
+    insert results { id: results.key(100), v: match try (match p | Phone q -> { a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 }
+query
+  from r in results where r.id == results.key(100) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(101), name: "new" }
+    let p = insert phones { id: phones.key(101), owner: users.key(1), seen: 0 }
+    insert results { id: results.key(101), v: match try (match p | Phone q -> { a: q.owner.name, b: 1 }.b)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 }
+query
+  from r in results where r.id == results.key(101) select r.v
+----
+1
+# A computed field of the one row a write proposes.
+run
+  transact
+    insert users { id: users.key(110), name: "new" }
+    let p = insert phones { id: phones.key(110), owner: users.key(110), seen: 0 }
+    insert results { id: results.key(110), v: match try (p.probe)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 }
+query
+  from r in results where r.id == results.key(110) select r.v
+----
+-1
+run
+  transact
+    insert users { id: users.key(111), name: "new" }
+    let p = insert phones { id: phones.key(111), owner: users.key(1), seen: 0 }
+    insert results { id: results.key(111), v: match try (p.probe)
+      | Ok { value: v } -> v
+      | Err { error: NoSuchRow } -> -1
+      | Err { error: e } -> -2 }
+query
+  from r in results where r.id == results.key(111) select r.v
+----
+1
+# A match binder of the row an upsert proposes.
+run
+  insert tags { id: tags.key(6), owner: users.key(99), label: "t", seen: 0 }
+  unless conflict on (label)
+  else update old set Label { old with seen: match try (match new | Label n -> { a: n.owner.name, b: 3 }.b)
+    | Ok { value: v } -> v
+    | Err { error: NoSuchRow } -> -1
+    | Err { error: e } -> -2 }
+query
+  from t in tags select t.seen
+----
+-1
+run
+  insert tags { id: tags.key(6), owner: users.key(1), label: "t", seen: 0 }
+  unless conflict on (label)
+  else update old set Label { old with seen: match try (match new | Label n -> { a: n.owner.name, b: 3 }.b)
+    | Ok { value: v } -> v
+    | Err { error: NoSuchRow } -> -1
+    | Err { error: e } -> -2 }
+query
+  from t in tags select t.seen
+----
+3

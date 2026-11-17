@@ -189,10 +189,12 @@ impl Checker<'_> {
                     var: zeta,
                     ty: zeta_ty,
                     rows: None,
+                    provenance: Provenance::Built,
                     group: Some(Rc::new(GroupInfo {
                         value: value_fn,
                         value_ty: value.ty,
                         value_rows: value.rows,
+                        value_provenance: value.provenance,
                         rows_ty,
                     })),
                 },
@@ -228,7 +230,7 @@ impl Checker<'_> {
         } else if key_preserving {
             self.row_origin(&body.select)
         } else {
-            RowOrigin::Unknown
+            RowOrigin::Unknown(self.row_origin(&body.select).provenance())
         };
         let tm = self.assemble(body.frames, one, &set_ty);
         self.scope.pop();
@@ -237,6 +239,7 @@ impl Checker<'_> {
                 tm,
                 ty: set_ty,
                 rows: None,
+                provenance: Provenance::Built,
             },
             rows,
         )
@@ -787,7 +790,7 @@ impl Checker<'_> {
         let (var, source, nonempty, record_binders) = if single {
             let g = &gens[0];
             let (src, elem) = self.generator_source(&g.source)?;
-            let v = self.bind(&g.binder.text, elem.clone(), src.rows);
+            let v = self.bind(&g.binder.text, elem.clone(), src.rows, src.provenance);
             let source = match filter {
                 None => src.tm,
                 Some(p) => {
@@ -825,12 +828,17 @@ impl Checker<'_> {
                     let xt = self.var_tm(xi);
                     let gv = self.group_value(&info, xt);
                     let one = self.b().singleton(gv, set_of(info.value_ty.clone()));
-                    let y = self.bind(&g.binder.text, info.value_ty.clone(), info.value_rows);
+                    let y = self.bind(
+                        &g.binder.text,
+                        info.value_ty.clone(),
+                        info.value_rows,
+                        info.value_provenance,
+                    );
                     frames.push(Frame::For(y, one));
                     binders.push(y);
                 } else {
                     let (src, elem) = self.generator_source(&g.source)?;
-                    let v = self.bind(&g.binder.text, elem, src.rows);
+                    let v = self.bind(&g.binder.text, elem, src.rows, src.provenance);
                     frames.push(Frame::For(v, src.tm));
                     binders.push(v);
                 }

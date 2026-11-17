@@ -20,6 +20,7 @@ impl Checker<'_> {
             tm,
             ty: Ty::Set(Box::new(elem)),
             rows: Some(rel),
+            provenance: Provenance::Snapshot,
         }
     }
 

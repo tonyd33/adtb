@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::ast::{Arm, Expr, ExprKind, Lit, Pattern, PatternKind, Payload, UnOp};
+use crate::ast::{Arm, CtorSel, Expr, ExprKind, Lit, Pattern, PatternKind, Payload, UnOp};
 use crate::kernel::{Kind, Prim};
 
 /// A pattern elaborated against the type of the value it matches.
@@ -175,7 +175,7 @@ pub(super) struct Matched {
 struct Bound {
     name: String,
     ty: Ty,
-    rows: Option<RelId>,
+    origin: RowOrigin,
     span: Span,
 }
 
@@ -280,7 +280,8 @@ impl Checker<'_> {
         let is_sum = self.signature(&sty).is_some();
         let mut irs = Vec::new();
         for (patterns, guarded) in arms {
-            let mut ir = self.arm_patterns(patterns, &sty, s.rows, is_sum, by_key)?;
+            let origin = self.row_origin(&s);
+            let mut ir = self.arm_patterns(patterns, &sty, origin, is_sum, by_key)?;
             if *guarded {
                 for (name, local) in &ir.locals {
                     let var = self.terms.var(name, local.ty.clone());
@@ -391,7 +392,7 @@ impl Checker<'_> {
         &mut self,
         patterns: &[Pattern],
         sty: &Ty,
-        rows: Option<RelId>,
+        origin: RowOrigin,
         is_sum: bool,
         by_key: bool,
     ) -> R<ArmIr> {
@@ -399,7 +400,7 @@ impl Checker<'_> {
         let mut bound: Vec<Vec<Bound>> = Vec::new();
         for p in patterns {
             let mut bs = Vec::new();
-            alts.push(self.pattern(p, sty, rows, &mut bs)?);
+            alts.push(self.pattern(p, sty, origin, &mut bs)?);
             bound.push(bs);
             let named = matches!(p.kind, PatternKind::Ctor { .. });
             if by_key && !named {
@@ -435,7 +436,7 @@ impl Checker<'_> {
         let mut locals = Vec::new();
         for b in &bound[0] {
             let mut ty = b.ty.clone();
-            let mut rows = b.rows;
+            let mut origin = b.origin;
             for other in bound
                 .iter()
                 .skip(1)
@@ -452,9 +453,7 @@ impl Checker<'_> {
                         ),
                     )
                 })?;
-                if rows != other.rows {
-                    rows = None;
-                }
+                origin = origin.join(other.origin);
             }
             let var = self.terms.var(&b.name, ty.clone());
             binds.insert(b.name.clone(), var);
@@ -463,7 +462,8 @@ impl Checker<'_> {
                 Local {
                     var,
                     ty,
-                    rows,
+                    rows: origin.relation(),
+                    provenance: origin.provenance(),
                     group: None,
                 },
             ));
@@ -484,34 +484,27 @@ impl Checker<'_> {
         })
     }
 
-    /// Elaborates `p` against a value of `ty`; `rows` is the relation of that value when `p` is at the top.
-    fn pattern(
-        &mut self,
-        p: &Pattern,
-        ty: &Ty,
-        rows: Option<RelId>,
-        out: &mut Vec<Bound>,
-    ) -> R<Pat> {
-        let bind =
-            |name: &ast::Ident, ty: Ty, rows: Option<RelId>, out: &mut Vec<Bound>| -> R<()> {
-                if out.iter().any(|b| b.name == name.text) {
-                    return Err(diag(
-                        name.span,
-                        format!("`{}` is bound twice in one pattern", name.text),
-                    ));
-                }
-                out.push(Bound {
-                    name: name.text.clone(),
-                    ty,
-                    rows,
-                    span: name.span,
-                });
-                Ok(())
-            };
+    /// Elaborate `p` against a value of `ty`; `origin` is where that value came from when `p` is at the top.
+    fn pattern(&mut self, p: &Pattern, ty: &Ty, origin: RowOrigin, out: &mut Vec<Bound>) -> R<Pat> {
+        let bind = |name: &ast::Ident, ty: Ty, origin: RowOrigin, out: &mut Vec<Bound>| -> R<()> {
+            if out.iter().any(|b| b.name == name.text) {
+                return Err(diag(
+                    name.span,
+                    format!("`{}` is bound twice in one pattern", name.text),
+                ));
+            }
+            out.push(Bound {
+                name: name.text.clone(),
+                ty,
+                origin,
+                span: name.span,
+            });
+            Ok(())
+        };
         match &p.kind {
             PatternKind::Wildcard => Ok(Pat::wild(p.span)),
             PatternKind::Bind(x) => {
-                bind(x, ty.clone(), rows, out)?;
+                bind(x, ty.clone(), origin, out)?;
                 Ok(Pat::Wild {
                     binder: Some(x.text.clone()),
                     span: p.span,
@@ -571,7 +564,7 @@ impl Checker<'_> {
                     }
                     match self.schema.ty(d).ctor_index(&name.text) {
                         Some(i) => self.note(name.span, Ref::Ctor(d, i)),
-                        None => self.note_sel(d, rows, &ast::CtorSel::One(name.clone())),
+                        None => self.note_sel(d, origin.relation(), &CtorSel::One(name.clone())),
                     }
                 } else {
                     self.note(name.span, Ref::Anonymous);
@@ -598,7 +591,7 @@ impl Checker<'_> {
                     }
                     Some(Payload::Wildcard) => {}
                     Some(Payload::Bind(x)) => {
-                        bind(x, row, rows, out)?;
+                        bind(x, row, origin, out)?;
                         binder = Some(x.text.clone());
                     }
                     Some(Payload::Record(fs)) => {
@@ -622,13 +615,13 @@ impl Checker<'_> {
                             }
                             let sub = match &f.pattern {
                                 None => {
-                                    bind(&f.field, fty.clone(), None, out)?;
+                                    bind(&f.field, fty.clone(), RowOrigin::BUILT, out)?;
                                     Pat::Wild {
                                         binder: Some(f.field.text.clone()),
                                         span: f.field.span,
                                     }
                                 }
-                                Some(fp) => self.pattern(fp, fty, None, out)?,
+                                Some(fp) => self.pattern(fp, fty, RowOrigin::BUILT, out)?,
                             };
                             fields.push((f.field.text.clone(), sub));
                         }
@@ -690,7 +683,7 @@ impl Checker<'_> {
                     Some(i) => vec![i],
                     None => self
                         .schema
-                        .type_sel(*def, &ast::CtorSel::One(name.clone()))
+                        .type_sel(*def, &CtorSel::One(name.clone()))
                         .map_err(|_| not_ctor())?,
                 }
             }
