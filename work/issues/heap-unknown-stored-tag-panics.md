@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-15
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 200
 summary: a heap row whose stored constructor tag names no constructor of its row type panics the engine instead of reporting damage
@@ -20,3 +21,7 @@ Expected: a stored tag that names no constructor is damage (a `Rot` of the heap 
 Repro direction: write a roots row, change its tag byte on the page to an unused id, and read the heap.
 
 Defect class: Damage or failure gives a panic, hang or flattened error.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: report a heap row that does not decode as damage of its page`, part 1 of page-decode-returns-result. A stored tag naming no constructor decodes to `Undecoded::Tag`; the heap refuses the page as `Shape::Row(Tag)`, verify reports it, and a statement fails with `Fatal::Storage` naming the page. Covered by the search in crates/adtb/src/heap/row_damage_tests.rs.
