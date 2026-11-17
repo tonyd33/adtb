@@ -14,10 +14,13 @@
 # pub_fields:         struct fields declared pub, of a struct of any visibility, in the same
 #                     sources: each such type states its contract. Fields that a macro generates
 #                     are not counted.
-# decode_panics:      `panic!`, `unreachable!`, `.expect(` and `unwrap_or_else(|| panic!` in production
-#                     sources of crates/adtb/src/heap and in catalog/codec.rs and catalog/layout.rs:
+# decode_panics:      `panic!`, `unreachable!`, `.expect(`, `unwrap_or_else(|| panic!`, `assert!`,
+#                     `assert_eq!` and `.unwrap()` in production sources of crates/adtb/src/heap and
+#                     in catalog/codec.rs and catalog/layout.rs:
 #                     a decode of bytes read from a page returns `Result` with its damage cause. The
-#                     lines left guard values the engine built in memory or checked first.
+#                     lines left guard values the engine built in memory or checked first, a
+#                     caller's latch discipline (named.rs), or a surface built only for tests and
+#                     the testing feature (handle/observe.rs).
 # disallowed_methods: mentions of clippy::disallowed_methods in the lint list of an expect, allow,
 #                     warn, deny or forbid attribute, and in the tokens of a macro. The
 #                     lint rejects storage::page::owner, pages::Exclusive::write,
@@ -161,20 +164,24 @@ crate_fields prod 5 crates/adtb/src/write/past.rs
 crate_fields prod 4 crates/adtb/src/write/reindex.rs
 crate_fields prod 2 crates/adtb/src/write/vacuums.rs
 database_marks prod 2 crates/adtb/src/write/quarantine.rs
-decode_panics prod 26 crates/adtb/src/catalog/codec.rs
+decode_panics prod 38 crates/adtb/src/catalog/codec.rs
 decode_panics prod 7 crates/adtb/src/catalog/layout.rs
 decode_panics prod 1 crates/adtb/src/heap/blame.rs
-decode_panics prod 1 crates/adtb/src/heap/chain.rs
-decode_panics prod 6 crates/adtb/src/heap/dir.rs
-decode_panics prod 9 crates/adtb/src/heap/handle/mod.rs
-decode_panics prod 10 crates/adtb/src/heap/large.rs
-decode_panics prod 2 crates/adtb/src/heap/page.rs
-decode_panics prod 1 crates/adtb/src/heap/prune.rs
+decode_panics prod 2 crates/adtb/src/heap/chain.rs
+decode_panics prod 10 crates/adtb/src/heap/dir.rs
+decode_panics prod 1 crates/adtb/src/heap/fixed.rs
+decode_panics prod 12 crates/adtb/src/heap/handle/mod.rs
+decode_panics prod 1 crates/adtb/src/heap/handle/observe.rs
+decode_panics prod 12 crates/adtb/src/heap/large.rs
+decode_panics prod 2 crates/adtb/src/heap/named.rs
+decode_panics prod 4 crates/adtb/src/heap/page.rs
+decode_panics prod 2 crates/adtb/src/heap/prune.rs
 decode_panics prod 2 crates/adtb/src/heap/rooted.rs
-decode_panics prod 11 crates/adtb/src/heap/row.rs
-decode_panics prod 2 crates/adtb/src/heap/slotted.rs
-decode_panics prod 1 crates/adtb/src/heap/stage.rs
+decode_panics prod 17 crates/adtb/src/heap/row.rs
+decode_panics prod 3 crates/adtb/src/heap/slotted.rs
+decode_panics prod 3 crates/adtb/src/heap/stage.rs
 decode_panics prod 3 crates/adtb/src/heap/version.rs
+decode_panics prod 1 crates/adtb/src/heap/vm.rs
 decode_panics prod 6 crates/adtb/src/heap/write.rs
 disallowed_methods test 1 apps/campaign/tests/engine.rs
 disallowed_methods prod 1 crates/adtb-bench/src/native/crash_tests/mod.rs

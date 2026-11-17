@@ -21,6 +21,8 @@ impl Header {
     }
 
     /// Returns the header at the start of `version`.
+    ///
+    /// Precondition: `version` is at least [`HEADER_LEN`] bytes long.
     pub fn read(version: &[u8]) -> Header {
         let (writers, next) = version[..HEADER_LEN].split_at(Writers::LEN);
         Header {

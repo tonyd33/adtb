@@ -13,7 +13,7 @@ use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, S
 use super::row::{MAX_VALUE_LEN, Pointer};
 use super::slotted;
 use super::stage::Stage;
-use super::version::{Flags, tid_bits, tid_from_bits};
+use super::version::{Flags, HEADER_LEN, tid_bits, tid_from_bits};
 use super::write::{HeapWrite, Rank};
 use super::{Error, Heap, Refused, Slots};
 
@@ -32,6 +32,33 @@ const FORMAT: u16 = 1;
 
 const HEAD: u32 = 0;
 const TAIL: u32 = 1;
+
+const _: () = assert!(
+    BYTES <= HEADER_LEN,
+    "every slot of a framed page holds a chunk header"
+);
+
+#[cfg(test)]
+type TailHook = Box<dyn FnOnce(Tid, &mut [u8])>;
+
+#[cfg(test)]
+std::thread_local! {
+    /// What the calling thread's next chunk insert that makes a chunk a tail runs on the staged
+    /// copy of that chunk's page, given the chunk's TID.
+    static BEFORE_TAIL: std::cell::RefCell<Option<TailHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook` once on the calling thread, at its next chunk insert that makes a chunk a tail, on
+/// the staged copy of that chunk's page before the chunk is changed.
+#[cfg(test)]
+pub(super) fn before_next_tail(hook: impl FnOnce(Tid, &mut [u8]) + 'static) {
+    BEFORE_TAIL.with(|b| *b.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// Why a value's chunks do not decode, when the blame lies with the pointer naming it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Misnamed;
 
 /// The header of one chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,9 +121,13 @@ fn chunk_at(page: &impl Owned, owner: u32, slot: usize) -> Option<Chunk> {
 /// Returns the chunk tuple in slot `slot` of `page`, if it is a page of store `owner` with a
 /// chunk there.
 fn tuple_at(page: &impl Owned, owner: u32, slot: usize) -> Option<&[u8]> {
-    let page = store_page(page, owner)?;
+    tuple_in(store_page(page, owner)?, slot)
+}
+
+/// Returns the chunk tuple in slot `slot` of `page`, a page of the store.
+fn tuple_in(page: HeapPage<'_>, slot: usize) -> Option<&[u8]> {
     match page.get(slot) {
-        Slot::Normal { at, .. } if at.len() >= BYTES => Some(&page.bytes()[at]),
+        Slot::Normal { at, .. } => Some(&page.bytes()[at]),
         _ => None,
     }
 }
@@ -261,12 +292,14 @@ impl LargeStore {
                 continue;
             };
             if let Some(t) = tail {
-                let page = stage.page(pager, Rank::Store(Pid(t.page())))?;
-                let written = update_chunk(page, self.id(), t, |c| {
+                #[cfg(test)]
+                if let Some(hook) = BEFORE_TAIL.with(|b| b.borrow_mut().take()) {
+                    hook(t, stage.page(pager, Rank::Store(Pid(t.page())))?);
+                }
+                self.update(stage, pager, t, |c| {
                     c.head = false;
                     true
-                });
-                assert!(written, "the chunk this write wrote at {t:?} is there");
+                })?;
             }
             let above = self.space.reflect(stage, pager, pid, FORMAT, Fit::Chunk)?;
             write.commit_store(pager.reserve(), above)?;
@@ -300,63 +333,103 @@ impl LargeStore {
             .collect())
     }
 
-    /// Returns the value `pointer` names.
-    pub fn read<R: Runtime>(
+    /// Returns the value `pointer` names, or [`Misnamed`] when its chunks end, with no next chunk,
+    /// at another length than `pointer.len`, or the chunk it names is not a head. Refuse the page
+    /// of a chunk holding no bytes as [`Undecoded::Cut`], of a chunk reaching `pointer.len` while
+    /// naming a next chunk as [`Undecoded::Trailing`], and of a chunk naming no tail on a page of
+    /// the store as [`Undecoded::Pointer`].
+    pub(super) fn read<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pointer: Pointer,
-    ) -> Result<Vec<u8>, PageError> {
-        let mut out = Vec::new();
-        let mut at = Some(pointer.first);
-        while let Some(tid) = at {
-            let (pid, slot) = (Pid(tid.page()), usize::from(tid.slot()));
-            let page = pager.read_formatted(pid)?;
-            let Some(tuple) = tuple_at(&page, self.id(), slot) else {
-                drop(page);
-                self.refuse_chunk(pager, pid, slot)?;
-                continue;
-            };
-            at = chunk(tuple).next;
-            out.extend_from_slice(&tuple[BYTES..]);
+    ) -> Result<Result<Vec<u8>, Misnamed>, PageError> {
+        let len = pointer.len as usize;
+        'read: loop {
+            let mut out = Vec::new();
+            let mut namer: Option<(Tid, Vec<u8>)> = None;
+            let mut at = pointer.first;
+            loop {
+                let (pid, slot) = (Pid(at.page()), usize::from(at.slot()));
+                let page = pager.read_formatted(pid)?;
+                let Some(store) = store_page(&page, self.id()) else {
+                    drop(page);
+                    self.refuse_chunk(pager, pid, slot)?;
+                    continue 'read;
+                };
+                let found = tuple_in(store, slot).filter(|t| chunk(t).head == namer.is_none());
+                let Some(tuple) = found else {
+                    drop(page);
+                    let Some((t, named)) = namer else {
+                        return Ok(Err(Misnamed));
+                    };
+                    self.refuse_tuple(pager, t, &named, Undecoded::Pointer)?;
+                    continue 'read;
+                };
+                let (bytes, next) = (&tuple[BYTES..], chunk(tuple).next);
+                let end = out.len() + bytes.len();
+                let cut = match next {
+                    _ if bytes.is_empty() => Some(Undecoded::Cut),
+                    Some(_) if end >= len => Some(Undecoded::Trailing),
+                    None if end != len => return Ok(Err(Misnamed)),
+                    _ => None,
+                };
+                if let Some(cause) = cut {
+                    let seen = tuple.to_vec();
+                    drop(page);
+                    self.refuse_tuple(pager, at, &seen, cause)?;
+                    continue 'read;
+                }
+                out.extend_from_slice(bytes);
+                let Some(next) = next else {
+                    return Ok(Ok(out));
+                };
+                namer = Some((at, tuple.to_vec()));
+                at = next;
+            }
         }
-        assert_eq!(
-            pointer.len,
-            out.len() as u64,
-            "large value has the wrong length"
-        );
-        Ok(out)
     }
 
-    /// Returns the first chunk of the value `pointer` names, `None` when no chunk is there.
-    pub(super) fn head<R: Runtime>(
+    /// Returns the chunk of the value `pointer` names that holds its byte `at`, its last chunk
+    /// when `at` is past its end, and the chunk's tuple. Returns `None` when a chunk is gone.
+    ///
+    /// Precondition: [`LargeStore::read`] read the value whole, and it has not changed since.
+    pub(super) fn holding<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pointer: Pointer,
-    ) -> Result<Option<Vec<u8>>, PageError> {
-        let page = pager.read_formatted(Pid(pointer.first.page()))?;
-        let slot = usize::from(pointer.first.slot());
-        Ok(tuple_at(&page, self.id(), slot).map(<[u8]>::to_vec))
+        at: usize,
+    ) -> Result<Option<(Tid, Vec<u8>)>, PageError> {
+        let (mut tid, mut end) = (pointer.first, 0);
+        loop {
+            let page = pager.read_formatted(Pid(tid.page()))?;
+            let Some(tuple) = tuple_at(&page, self.id(), usize::from(tid.slot())) else {
+                return Ok(None);
+            };
+            end += tuple.len() - BYTES;
+            match chunk(tuple).next {
+                Some(next) if end <= at => tid = next,
+                _ => return Ok(Some((tid, tuple.to_vec()))),
+            }
+        }
     }
 
-    /// Refuse the page of the first chunk of the value `pointer` names as [`Shape::Row`] of
-    /// `cause` when, under its exclusive latch, that chunk is still `head`. Returns `Ok` when it
-    /// changed since: the caller reads it again.
+    /// Refuse the page of the chunk at `at` as [`Shape::Row`] of `cause` when, under its exclusive
+    /// latch, that chunk still holds `tuple`. Returns `Ok` when it changed since: the caller reads
+    /// it again.
     ///
     /// Precondition: the caller holds no latch on that page.
-    pub(super) fn refuse_value<R: Runtime>(
+    pub(super) fn refuse_tuple<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        pointer: Pointer,
-        head: &[u8],
+        at: Tid,
+        tuple: &[u8],
         cause: Undecoded,
     ) -> Result<(), PageError> {
-        let slot = usize::from(pointer.first.slot());
+        let slot = usize::from(at.slot());
         let judge = |p: &PageExclusive<'_, R>| {
-            (tuple_at(p, self.id(), slot) == Some(head)).then_some(Shape::Row(cause))
+            (tuple_at(p, self.id(), slot) == Some(tuple)).then_some(Shape::Row(cause))
         };
-        pager
-            .refuse_if(Pid(pointer.first.page()), judge)
-            .map_or(Ok(()), Err)
+        pager.refuse_if(Pid(at.page()), judge).map_or(Ok(()), Err)
     }
 
     /// Returns the TID and header of every chunk of the value `pointer` names, first to last.
@@ -468,12 +541,13 @@ impl LargeStore {
         let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {
             let page = PageCopy::of(&pager.read_formatted(pid)?);
-            let kinded = Kinded::of(&page)
-                .unwrap_or_else(|| panic!("touched store page {pid:?} is not a heap page"));
-            let slots = kinded.framed().map_or(0, HeapPage::slot_count);
+            let Some(store) = store_page(&page, self.id()) else {
+                self.space.refuse_misnamed(pager, pid)?;
+                continue;
+            };
             let mut pending = false;
-            for slot in 0..slots {
-                let Some(c) = chunk_at(&page, self.id(), slot) else {
+            for slot in 0..store.slot_count() {
+                let Some(c) = tuple_in(store, slot).map(chunk) else {
                     continue;
                 };
                 if !c.head || c.count > 0 {
@@ -625,7 +699,7 @@ impl LargeStore {
             return Ok(());
         };
         let waiting = (0..page.slot_count())
-            .filter_map(|s| chunk_at(copy, self.id(), s))
+            .filter_map(|s| tuple_in(page, s).map(chunk))
             .any(|c| c.head && c.count == 0);
         if !waiting {
             let above = self.space.touch(stage, pager, pid, position, false)?;
@@ -676,11 +750,11 @@ impl LargeStore {
         let mut chunks = BTreeMap::new();
         for pid in self.space.pages(pager)? {
             let guard = pager.read_formatted(pid)?;
-            let Some(page) = HeapPage::any(&guard).filter(|p| p.check().is_empty()) else {
+            let Some(page) = store_page(&guard, self.id()).filter(|p| p.check().is_empty()) else {
                 continue;
             };
             for slot in 0..page.slot_count() {
-                if let Some(c) = chunk_at(&guard, self.id(), slot) {
+                if let Some(c) = tuple_in(page, slot).map(chunk) {
                     chunks.insert(tid(pid, slot), c);
                 }
             }

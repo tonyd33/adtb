@@ -1,5 +1,5 @@
 use super::page::{CONTENTS, Slot, align8, u16_at, u32_at};
-use super::version::Flags;
+use super::version::{Flags, HEADER_LEN};
 
 const UPPER: usize = 28;
 const COUNT: usize = 32;
@@ -45,14 +45,22 @@ struct Pointer {
     flags: u16,
 }
 
+impl Pointer {
+    fn of(b: [u8; POINTER]) -> Pointer {
+        Pointer {
+            offset: usize::from(u16::from_le_bytes([b[0], b[1]])),
+            len: usize::from(u16::from_le_bytes([b[2], b[3]])),
+            state: b[4],
+            flags: u16::from_le_bytes([b[6], b[7]]),
+        }
+    }
+}
+
 fn pointer(page: &[u8], slot: usize) -> Pointer {
     let at = POINTERS + POINTER * slot;
-    Pointer {
-        offset: usize::from(u16_at(page, at)),
-        len: usize::from(u16_at(page, at + 2)),
-        state: page[at + 4],
-        flags: u16_at(page, at + 6),
-    }
+    let mut b = [0; POINTER];
+    b.copy_from_slice(&page[at..at + POINTER]);
+    Pointer::of(b)
 }
 
 fn set_pointer(page: &mut [u8], slot: usize, p: &Pointer) {
@@ -77,7 +85,7 @@ pub fn get(page: &[u8], slot: usize) -> Slot {
         },
         DEAD => Slot::Dead,
         REDIRECT => Slot::Redirect(p.offset as u16),
-        s => panic!("line pointer {slot} has state {s}"),
+        s => unreachable!("line pointer {slot} of a framed page has state {s}"),
     }
 }
 
@@ -231,48 +239,74 @@ pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {
     put(page, slot, Content::Version(version, flags)).then_some(slot)
 }
 
-/// Returns whether the line pointers and tuple area of a slotted page fit the page.
+/// Returns whether the line pointers and tuples of a slotted page fit the page: every line
+/// pointer is sound, every tuple at least a version header long, and the tuples together no
+/// longer than the room after the line pointers.
 pub fn framed(page: &[u8]) -> bool {
-    let lower = POINTERS + POINTER * count(page);
-    (lower..=page.len()).contains(&upper(page))
+    let n = count(page);
+    let (lower, top) = (POINTERS + POINTER * n, upper(page));
+    if !(lower..=page.len()).contains(&top) {
+        return false;
+    }
+    let mut tuples = 0;
+    for b in page[POINTERS..lower].as_chunks::<POINTER>().0 {
+        let p = Pointer::of(*b);
+        if fault(page, &p, n, top).is_some() {
+            return false;
+        }
+        if p.state == NORMAL {
+            tuples += align8(p.len);
+        }
+    }
+    tuples <= page.len() - lower
+}
+
+/// What is wrong with one line pointer.
+enum Fault {
+    State(u8),
+    Bytes,
+    Redirect,
+}
+
+/// Returns what is wrong with line pointer `p` of `page`, a page of `n` line pointers whose
+/// tuples start at `top`.
+fn fault(page: &[u8], p: &Pointer, n: usize, top: usize) -> Option<Fault> {
+    match p.state {
+        NORMAL => (p.offset < top
+            || !p.offset.is_multiple_of(8)
+            || p.len < HEADER_LEN
+            || p.offset + p.len > page.len())
+        .then_some(Fault::Bytes),
+        REDIRECT => (p.offset >= n).then_some(Fault::Redirect),
+        UNUSED | DEAD => None,
+        state => Some(Fault::State(state)),
+    }
 }
 
 /// Returns what is wrong with the line pointers and tuples of a slotted page.
 pub fn check(page: &[u8]) -> Vec<String> {
     let n = count(page);
     let top = upper(page);
-    if !framed(page) {
+    if !(POINTERS + POINTER * n..=page.len()).contains(&top) {
         return vec![format!("has {n} line pointers and tuples from {top}")];
     }
     let mut problems = Vec::new();
     let mut tuples = Vec::new();
     for s in 0..n {
         let p = pointer(page, s);
-        match p.state {
-            NORMAL => {
-                if p.offset < top
-                    || !p.offset.is_multiple_of(8)
-                    || p.len == 0
-                    || p.offset + p.len > page.len()
-                {
-                    problems.push(format!(
-                        "slot {s} holds bytes {}..{}",
-                        p.offset,
-                        p.offset + p.len
-                    ));
-                } else {
-                    tuples.push((
-                        p.offset,
-                        p.offset + align8(p.len).min(page.len() - p.offset),
-                        s,
-                    ));
-                }
+        match fault(page, &p, n, top) {
+            Some(Fault::Bytes) => problems.push(format!(
+                "slot {s} holds bytes {}..{}",
+                p.offset,
+                p.offset + p.len
+            )),
+            Some(Fault::Redirect) => problems.push(format!("slot {s} redirects past the slots")),
+            Some(Fault::State(state)) => problems.push(format!("slot {s} has state {state}")),
+            None if p.state == NORMAL => {
+                let end = p.offset + align8(p.len).min(page.len() - p.offset);
+                tuples.push((p.offset, end, s));
             }
-            REDIRECT if p.offset >= n => {
-                problems.push(format!("slot {s} redirects past the slots"));
-            }
-            UNUSED | DEAD | REDIRECT => {}
-            state => problems.push(format!("slot {s} has state {state}")),
+            None => {}
         }
     }
     tuples.sort_unstable();

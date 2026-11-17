@@ -1,21 +1,37 @@
 use super::*;
 use crate::heap::row::Failed;
 
+#[cfg(test)]
+std::thread_local! {
+    /// What the calling thread's next [`Heap::refuse_bad`] runs once it has released its latches.
+    static BEFORE_REFUSAL: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `hook` once on the calling thread, at its next [`Heap::refuse_bad`], after that releases
+/// the caller's latches and before it judges the page.
+#[cfg(test)]
+pub(in crate::heap) fn before_next_row_refusal(hook: impl FnOnce() + 'static) {
+    BEFORE_REFUSAL.with(|b| *b.borrow_mut() = Some(Box::new(hook)));
+}
+
 /// Why a stored row does not decode.
 pub(in crate::heap) enum Bad {
     /// Bytes on the version's heap page.
     Page,
-    /// The out-of-line value `pointer` names, whose first chunk is `head`.
+    /// The pointer in `version`, a version on the heap page, to a value its chunks do not hold.
+    Pointer { version: Vec<u8> },
+    /// The chunk of an out-of-line value at `at`, holding `tuple`, where its decode stopped.
     Value {
-        pointer: Pointer,
-        head: Vec<u8>,
+        at: Tid,
+        tuple: Vec<u8>,
         cause: Undecoded,
     },
 }
 
 impl Heap {
     /// Release `held`, then refuse what `bad` blames: page `pid` as [`Heap::refuse_row`] does, or
-    /// the page of the value's first chunk. Returns `Ok` when that page changed since, for the
+    /// the page of the value's chunk. Returns `Ok` when that page changed since, for the
     /// caller to read it again.
     ///
     /// Precondition: `held` is every latch the caller holds.
@@ -27,14 +43,37 @@ impl Heap {
         bad: Bad,
     ) -> Result<(), PageError> {
         drop(held);
+        #[cfg(test)]
+        if let Some(hook) = BEFORE_REFUSAL.with(|b| b.borrow_mut().take()) {
+            hook();
+        }
         match bad {
             Bad::Page => self.refuse_row(pager, pid, ()),
-            Bad::Value {
-                pointer,
-                head,
-                cause,
-            } => self.large.refuse_value(pager, pointer, &head, cause),
+            Bad::Pointer { version } => self.refuse_pointer(pager, pid, &version),
+            Bad::Value { at, tuple, cause } => self.large.refuse_tuple(pager, at, &tuple, cause),
         }
+    }
+
+    /// Returns whether `page` is a page of a heap kind this heap owns whose slot table does not
+    /// fit it.
+    pub(super) fn unframed(&self, page: &impl Owned) -> bool {
+        Kinded::of(page).is_some_and(|k| k.owner() == self.id && k.framed().is_none())
+    }
+
+    /// Release `held`, then refuse page `pid` as out of frame when, under its exclusive latch,
+    /// [`Heap::unframed`] holds of it. Returns `Ok` when it no longer does: the caller reads it
+    /// again.
+    ///
+    /// Precondition: `held` is every latch the caller holds on `pid`.
+    pub(super) fn refuse_unframed<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        held: impl Sized,
+    ) -> Result<(), PageError> {
+        drop(held);
+        let judge = |p: &PageExclusive<'_, R>| self.unframed(p).then_some(Shape::Frame);
+        pager.refuse_if(pid, judge).map_or(Ok(()), Err)
     }
 
     /// Release `held`, then refuse page `pid` as [`Shape::Row`] when, under its exclusive latch,
@@ -58,6 +97,26 @@ impl Heap {
                 };
                 self.on_page(format, &page[at]).err().map(Shape::Row)
             })
+        };
+        pager.refuse_if(pid, judge).map_or(Ok(()), Err)
+    }
+
+    /// Refuse page `pid` as [`Shape::Row`] of [`Undecoded::Pointer`] when, under its exclusive
+    /// latch, it is a page of the heap with a version holding the bytes `version`. Returns `Ok`
+    /// when none does: the caller reads it again.
+    ///
+    /// Precondition: the caller holds no latch on `pid`.
+    fn refuse_pointer<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        version: &[u8],
+    ) -> Result<(), PageError> {
+        let judge = |p: &PageExclusive<'_, R>| {
+            let page = self.page(p)?;
+            (0..page.slot_count())
+                .any(|slot| matches!(page.get(slot), Slot::Normal { at, .. } if page[at.clone()] == *version))
+                .then_some(Shape::Row(Undecoded::Pointer))
         };
         pager.refuse_if(pid, judge).map_or(Ok(()), Err)
     }
@@ -91,7 +150,11 @@ impl Heap {
                 Stored::Inline(b) => vars.push(b.clone()),
                 Stored::Out(p) => {
                     pointers.push(*p);
-                    vars.push(self.large.read(pager, *p)?);
+                    let Ok(value) = self.large.read(pager, *p)? else {
+                        let version = version.to_vec();
+                        return Ok(Err(Bad::Pointer { version }));
+                    };
+                    vars.push(value);
                 }
             }
         }
@@ -100,12 +163,12 @@ impl Heap {
             Err(failed) => failed,
         };
         Ok(Err(match failed {
-            Failed::Var(var, cause) => match stored[var] {
-                Stored::Out(pointer) => Bad::Value {
-                    pointer,
-                    head: self.large.head(pager, pointer)?.unwrap_or_default(),
-                    cause,
-                },
+            Failed::Var { var, at, cause } => match stored[var] {
+                Stored::Out(pointer) => {
+                    let found = self.large.holding(pager, pointer, at)?;
+                    let (at, tuple) = found.unwrap_or((pointer.first, Vec::new()));
+                    Bad::Value { at, tuple, cause }
+                }
                 Stored::Inline(_) => Bad::Page,
             },
             Failed::Fixed(_) => Bad::Page,

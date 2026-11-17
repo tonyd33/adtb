@@ -3,7 +3,7 @@ use crate::mvcc::{Fate, Writers, Xid, writers};
 use crate::storage::{self, PageKind, Pid};
 
 use super::dir::{category, need_category};
-use super::page::{Arrangement, HeapPage, HeapPageMut, PageCopy, Slot};
+use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, PageCopy, Slot};
 use super::row::{CtorType, FieldType, Layout, Pointer, Stored};
 use super::version::{Flags, Header, tid_bits, tid_from_bits};
 use super::vm;
@@ -886,7 +886,12 @@ fn a_page_check_finds_overlapping_tuples_and_bad_states() {
     p[48..50].copy_from_slice(&first.to_le_bytes());
     assert_eq!(vec!["slots 0 and 1 overlap".to_owned()], view(&p).check());
     p[44] = 9;
-    assert!(view(&p).check().contains(&"slot 0 has state 9".to_owned()));
+    assert!(
+        HeapPage::any(&p).is_none(),
+        "a page with a bad state is out of frame"
+    );
+    let kinded = Kinded::of(&p).expect("a page of a heap kind");
+    assert!(kinded.check().contains(&"slot 0 has state 9".to_owned()));
     let mut f = heap_page(Arrangement::Fixed { width: 40 }, 0);
     edit(&mut f)
         .insert(&version(1, &[0; 16]), Flags::NONE)

@@ -21,6 +21,8 @@ use super::{chain, prune};
 mod decode;
 
 use decode::Bad;
+#[cfg(test)]
+pub(in crate::heap) use decode::before_next_row_refusal;
 
 #[cfg(any(test, feature = "testing"))]
 mod observe;
@@ -421,6 +423,10 @@ impl Heap {
         loop {
             let guard = pager.read(pid)?;
             let Some(page) = self.page(&guard) else {
+                if self.unframed(&guard) {
+                    self.refuse_unframed(pager, pid, guard)?;
+                    continue;
+                }
                 return Ok(None);
             };
             let Some(format) = self.format_of(page) else {
@@ -452,6 +458,10 @@ impl Heap {
         loop {
             let guard = pager.read_formatted(pid)?;
             let Some(page) = self.page(&guard) else {
+                if self.unframed(&guard) {
+                    self.refuse_unframed(pager, pid, guard)?;
+                    continue;
+                }
                 return Ok(None);
             };
             let Some(format) = self.format_of(page) else {
@@ -548,7 +558,7 @@ impl Heap {
     ) -> Result<(Vec<u8>, Vec<Pointer>), Error> {
         let f = self.current();
         let (fixed_part, vars) = f.layout.encode(row);
-        let mut known: Vec<Option<Vec<u8>>> = vec![None; reuse.len()];
+        let mut known: Vec<Option<Option<Vec<u8>>>> = vec![None; reuse.len()];
         let mut stored = Vec::with_capacity(vars.len());
         for bytes in vars {
             let mut s = None;
@@ -557,9 +567,9 @@ impl Heap {
                     continue;
                 }
                 if known[k].is_none() {
-                    known[k] = Some(self.large.read(pager, *p)?);
+                    known[k] = Some(self.large.read(pager, *p)?.ok());
                 }
-                if known[k].as_deref() == Some(&bytes[..]) {
+                if known[k].as_ref().and_then(Option::as_deref) == Some(&bytes[..]) {
                     s = Some(Stored::Out(*p));
                     break;
                 }

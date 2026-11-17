@@ -48,18 +48,17 @@ impl Pointer {
     }
 
     fn decode(bytes: &[u8]) -> Result<Pointer, Undecoded> {
-        let Ok(bytes) = <[u8; POINTER_LEN]>::try_from(bytes) else {
+        if bytes.len() != POINTER_LEN {
             return Err(Undecoded::Pointer);
-        };
-        let (len, first) = bytes.split_at(8);
-        let word = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
-        let len = word(len);
+        }
+        let word = |at| bytes_at(bytes, at).map(u64::from_le_bytes);
+        let len = word(0)?;
         if !(1..=MAX_VALUE_LEN).contains(&len) {
             return Err(Undecoded::Pointer);
         }
         Ok(Pointer {
             len,
-            first: tid_from_bits(word(first)).ok_or(Undecoded::Pointer)?,
+            first: tid_from_bits(word(8)?).ok_or(Undecoded::Pointer)?,
         })
     }
 }
@@ -204,30 +203,37 @@ fn put_scalar(s: Scalar, v: &Value, out: &mut [u8]) {
     }
 }
 
-fn get_scalar(s: Scalar, b: &[u8]) -> Value {
-    let i32_at = |at: usize| i32::from_le_bytes(b[at..at + 4].try_into().unwrap());
-    let i64_at = || i64::from_le_bytes(b[..8].try_into().unwrap());
-    match s {
-        Scalar::I8 => Value::I8(b[0] as i8),
-        Scalar::I16 => Value::I16(i16::from_le_bytes([b[0], b[1]])),
-        Scalar::I32 => Value::I32(i32_at(0)),
-        Scalar::Date => Value::Date(i32_at(0)),
-        Scalar::I64 => Value::I64(i64_at()),
-        Scalar::Instant => Value::Instant(i64_at()),
-        Scalar::Time => Value::Time(i64_at()),
-        Scalar::DateTime => Value::DateTime(i64_at()),
-        Scalar::Duration => Value::Duration(i64_at()),
-        Scalar::F32 => Value::F32(F32::new(f32::from_bits(i32_at(0) as u32))),
-        Scalar::F64 => Value::F64(F64::new(f64::from_bits(i64_at() as u64))),
-        Scalar::Decimal(_) => Value::Decimal(i128::from_le_bytes(b[..16].try_into().unwrap())),
+/// Returns the `N` bytes of `b` from `at`.
+fn bytes_at<const N: usize>(b: &[u8], at: usize) -> Result<[u8; N], Undecoded> {
+    b.get(at..at + N)
+        .and_then(|b| b.try_into().ok())
+        .ok_or(Undecoded::Cut)
+}
+
+fn get_scalar(s: Scalar, b: &[u8]) -> Result<Value, Undecoded> {
+    let i32_at = |at| bytes_at(b, at).map(i32::from_le_bytes);
+    let i64_at = || bytes_at(b, 0).map(i64::from_le_bytes);
+    Ok(match s {
+        Scalar::I8 => Value::I8(i8::from_le_bytes(bytes_at(b, 0)?)),
+        Scalar::I16 => Value::I16(i16::from_le_bytes(bytes_at(b, 0)?)),
+        Scalar::I32 => Value::I32(i32_at(0)?),
+        Scalar::Date => Value::Date(i32_at(0)?),
+        Scalar::I64 => Value::I64(i64_at()?),
+        Scalar::Instant => Value::Instant(i64_at()?),
+        Scalar::Time => Value::Time(i64_at()?),
+        Scalar::DateTime => Value::DateTime(i64_at()?),
+        Scalar::Duration => Value::Duration(i64_at()?),
+        Scalar::F32 => Value::F32(F32::new(f32::from_le_bytes(bytes_at(b, 0)?))),
+        Scalar::F64 => Value::F64(F64::new(f64::from_le_bytes(bytes_at(b, 0)?))),
+        Scalar::Decimal(_) => Value::Decimal(i128::from_le_bytes(bytes_at(b, 0)?)),
         Scalar::Period => Value::Period {
-            months: i32_at(0),
-            days: i32_at(4),
+            months: i32_at(0)?,
+            days: i32_at(4)?,
         },
         Scalar::Text | Scalar::Bytes | Scalar::SortKey | Scalar::ZonedDateTime => {
             unreachable!("{s:?} has no fixed width")
         }
-    }
+    })
 }
 
 fn sum_parts<'v>(t: &FieldType, ctors: &[CtorType], v: &'v Value) -> (usize, &'v [Value]) {
@@ -265,7 +271,10 @@ fn get_record_fixed(fields: &[FieldType], b: &[u8]) -> Result<Vec<Value>, Undeco
     fields
         .iter()
         .zip(offsets)
-        .map(|(t, at)| get_fixed(t, &b[at..at + fixed_of(t).unwrap().size]))
+        .map(|(t, at)| {
+            let size = fixed_of(t).unwrap().size;
+            get_fixed(t, b.get(at..at + size).ok_or(Undecoded::Cut)?)
+        })
         .collect()
 }
 
@@ -273,10 +282,10 @@ fn put_tag(width: usize, id: u32, out: &mut [u8]) {
     out[..width].copy_from_slice(&id.to_le_bytes()[..width]);
 }
 
-fn get_tag(width: usize, b: &[u8]) -> u32 {
+fn get_tag(width: usize, b: &[u8]) -> Result<u32, Undecoded> {
     let mut word = [0; 4];
-    word[..width].copy_from_slice(&b[..width]);
-    u32::from_le_bytes(word)
+    word[..width].copy_from_slice(b.get(..width).ok_or(Undecoded::Cut)?);
+    Ok(u32::from_le_bytes(word))
 }
 
 fn put_fixed(t: &FieldType, v: &Value, out: &mut [u8]) {
@@ -294,14 +303,17 @@ fn put_fixed(t: &FieldType, v: &Value, out: &mut [u8]) {
 
 fn get_fixed(t: &FieldType, b: &[u8]) -> Result<Value, Undecoded> {
     Ok(match t {
-        FieldType::Scalar(s) => get_scalar(*s, b),
+        FieldType::Scalar(s) => get_scalar(*s, b)?,
         FieldType::Record(fs) => Value::Record(get_record_fixed(fs, b)?),
         FieldType::Sum(cs) => {
             let (_, at) = sum_fixed(cs).expect("a fixed sum");
             let ctor = ctor_of(cs, b)?;
             Value::Sum {
                 ctor,
-                fields: get_record_fixed(&cs[ctor as usize].fields, &b[at..])?,
+                fields: get_record_fixed(
+                    &cs[ctor as usize].fields,
+                    b.get(at..).ok_or(Undecoded::Cut)?,
+                )?,
             }
         }
     })
@@ -310,7 +322,7 @@ fn get_fixed(t: &FieldType, b: &[u8]) -> Result<Value, Undecoded> {
 fn ctor_of(ctors: &[CtorType], b: &[u8]) -> Result<u32, Undecoded> {
     match tag_width(ctors) {
         0 => Ok(0),
-        w => ctor_index(ctors, u64::from(get_tag(w, b))),
+        w => ctor_index(ctors, u64::from(get_tag(w, b)?)),
     }
 }
 
@@ -322,19 +334,33 @@ pub(crate) fn put_uvarint(mut n: u64, out: &mut Vec<u8>) {
     out.push(n as u8);
 }
 
+/// A reader of a field's bytes. Where a read fails, `at` is the offset of the byte it stopped at.
 struct Reader<'a> {
     bytes: &'a [u8],
+    at: usize,
 }
 
 impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Reader<'a> {
+        Reader { bytes, at: 0 }
+    }
+
     fn take(&mut self, n: usize) -> Result<&'a [u8], Undecoded> {
         let (head, rest) = self.bytes.split_at_checked(n).ok_or(Undecoded::Cut)?;
         self.bytes = rest;
+        self.at += n;
         Ok(head)
     }
 
     fn rest(&mut self) -> &'a [u8] {
+        self.at += self.bytes.len();
         std::mem::take(&mut self.bytes)
+    }
+
+    /// Returns `cause`, a failure of the value read from offset `from`.
+    fn failed(&mut self, from: usize, cause: Undecoded) -> Undecoded {
+        self.at = from;
+        cause
     }
 
     /// Returns the next varint, `u64::MAX` for one longer than 64 bits.
@@ -397,18 +423,20 @@ fn run<'a>(r: &mut Reader<'a>, prefixed: bool) -> Result<&'a [u8], Undecoded> {
 
 fn get_var_scalar(s: Scalar, r: &mut Reader, prefixed: bool) -> Result<Value, Undecoded> {
     let run = |r: &mut Reader| run(r, prefixed).map(<[u8]>::to_vec);
-    let text = |b: Vec<u8>| String::from_utf8(b).map_err(|_| Undecoded::Text);
+    let text = |r: &mut Reader| {
+        let b = run(r)?;
+        let from = r.at - b.len();
+        String::from_utf8(b)
+            .map_err(|e| r.failed(from + e.utf8_error().valid_up_to(), Undecoded::Text))
+    };
     Ok(match s {
-        Scalar::Text => Value::Text(text(run(r)?)?),
+        Scalar::Text => Value::Text(text(r)?),
         Scalar::Bytes => Value::Bytes(run(r)?),
         Scalar::SortKey => Value::SortKey(run(r)?),
-        Scalar::ZonedDateTime => {
-            let local = i64::from_le_bytes(r.take(8)?.try_into().unwrap());
-            Value::ZonedDateTime {
-                local,
-                zone: text(run(r)?)?,
-            }
-        }
+        Scalar::ZonedDateTime => Value::ZonedDateTime {
+            local: i64::from_le_bytes(bytes_at(r.take(8)?, 0)?),
+            zone: text(r)?,
+        },
         _ => unreachable!("{s:?} has a fixed width"),
     })
 }
@@ -454,13 +482,15 @@ fn put_payload(fields: &[FieldType], vs: &[Value], out: &mut Vec<u8>) {
 fn get_packed(t: &FieldType, r: &mut Reader) -> Result<Value, Undecoded> {
     Ok(match t {
         FieldType::Scalar(s) => match scalar_fixed(*s) {
-            Some(f) => get_scalar(*s, r.take(f.size)?),
+            Some(f) => get_scalar(*s, r.take(f.size)?)?,
             None => get_var_scalar(*s, r, true)?,
         },
         FieldType::Record(fs) => Value::Record(get_payload(fs, r)?),
         FieldType::Sum(cs) => {
             let ctor = if cs.len() > 1 {
-                ctor_index(cs, r.uvarint()?)?
+                let from = r.at;
+                let id = r.uvarint()?;
+                ctor_index(cs, id).map_err(|c| r.failed(from, c))?
             } else {
                 0
             };
@@ -709,35 +739,50 @@ impl Layout {
         vars: &[Option<&[u8]>],
     ) -> Result<Option<Value>, Failed> {
         match place {
-            Place::Fixed { at, size } => get_fixed(t, &fixed[at..at + size])
+            Place::Fixed { at, size } => fixed
+                .get(at..at + size)
+                .ok_or(Undecoded::Cut)
+                .and_then(|b| get_fixed(t, b))
                 .map(Some)
                 .map_err(Failed::Fixed),
             Place::Split { at, var } => {
                 let FieldType::Sum(cs) = t else {
                     unreachable!()
                 };
-                let ctor = ctor_of(cs, &fixed[at..]).map_err(Failed::Fixed)?;
+                let ctor = fixed
+                    .get(at..)
+                    .ok_or(Undecoded::Cut)
+                    .and_then(|b| ctor_of(cs, b))
+                    .map_err(Failed::Fixed)?;
                 let Some(bytes) = vars[var] else {
                     return Ok(None);
                 };
-                let mut r = Reader { bytes };
+                let mut r = Reader::new(bytes);
                 let fields = get_payload(&cs[ctor as usize].fields, &mut r)
                     .and_then(|fields| r.end().map(|()| fields))
-                    .map_err(|c| Failed::Var(var, c))?;
+                    .map_err(|cause| Failed::Var {
+                        var,
+                        at: r.at,
+                        cause,
+                    })?;
                 Ok(Some(Value::Sum { ctor, fields }))
             }
             Place::Var { var } => {
                 let Some(bytes) = vars[var] else {
                     return Ok(None);
                 };
-                let mut r = Reader { bytes };
+                let mut r = Reader::new(bytes);
                 let v = match t {
                     FieldType::Scalar(s) => get_var_scalar(*s, &mut r, false),
                     _ => get_packed(t, &mut r),
                 };
                 v.and_then(|v| r.end().map(|()| v))
                     .map(Some)
-                    .map_err(|c| Failed::Var(var, c))
+                    .map_err(|cause| Failed::Var {
+                        var,
+                        at: r.at,
+                        cause,
+                    })
             }
         }
     }
@@ -748,14 +793,18 @@ impl Layout {
 pub enum Failed {
     /// A value in the fixed part.
     Fixed(Undecoded),
-    /// A value of the variable-width field numbered by the first.
-    Var(usize, Undecoded),
+    /// A value of variable-width field `var`, reading stopped at its byte `at`.
+    Var {
+        var: usize,
+        at: usize,
+        cause: Undecoded,
+    },
 }
 
 impl Failed {
     pub fn cause(self) -> Undecoded {
         match self {
-            Failed::Fixed(c) | Failed::Var(_, c) => c,
+            Failed::Fixed(cause) | Failed::Var { cause, .. } => cause,
         }
     }
 }

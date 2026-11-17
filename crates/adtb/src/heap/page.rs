@@ -207,7 +207,8 @@ impl<'g> Kinded<'g> {
     }
 }
 
-/// A heap page of either arrangement whose slot table fits the page.
+/// A heap page of either arrangement whose slot table fits the page: each version or chunk it
+/// names lies in the page and is at least a version header long.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HeapPage<'g> {
     bytes: &'g [u8],
