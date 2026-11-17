@@ -712,20 +712,79 @@ fn stored_link(kind: &str) -> (&'static str, &'static str, &'static str) {
     }
 }
 
-/// The branches a default run calls under `hide new constructors`.
-const ALWAYS_HIDDEN: [&str; 6] = [
-    "delete",
-    "new",
-    "target-only",
-    "filter-on-new",
-    "with-copy",
-    "kept-returned",
-];
+/// Returns the call result and the rows of `notes` a conflict branch case ends with.
+fn expected_branch(
+    hides: bool,
+    link: &str,
+    after: &str,
+    value: &str,
+) -> (Result<Vec<String>, RejectReason>, Vec<String>) {
+    if hides {
+        return (
+            Err(RejectReason::KeyViolation {
+                relation: "auth::notes".into(),
+                key: "notes.key(1)".into(),
+            }),
+            vec![link.to_owned()],
+        );
+    }
+    (
+        value.strip_prefix('!').map_or_else(
+            || Ok(value.split(';').map(str::to_owned).collect()),
+            |message| {
+                Err(RejectReason::UserError {
+                    message: message.to_owned(),
+                })
+            },
+        ),
+        after
+            .split(';')
+            .filter(|r| !r.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// Returns the name and added constructor of a conflict branch case, and whether a default run
+/// includes it in the live phase.
+fn branch_case(line: &str) -> (&str, &str, bool) {
+    let [name, _, _, _, link, bound, _, _, _, _] = line.split('\t').collect::<Vec<_>>()[..] else {
+        panic!(
+            "a branch is name, use, text, rows, link, binding, source, type, rest, value: {line}"
+        );
+    };
+    (name, link, bound == "-" || name.ends_with("-returned"))
+}
+
+/// Returns the outcome a case has under a header, as far as a default run tells them apart. Every
+/// case differs under the plain header. Under the hiding header every case ends in the same key
+/// violation over the stored row, which only the added constructor changes.
+fn outcome_class<'a>(hides: bool, name: &'a str, link: &'a str) -> (bool, &'a str) {
+    (hides, if hides { link } else { name })
+}
+
+/// Returns the outcomes the live phase and the registration phase each reach in a default run.
+fn outcome_classes(cases: &str) -> BTreeSet<(bool, bool, &str)> {
+    let mut classes = BTreeSet::new();
+    for line in cases.lines() {
+        let (name, link, live) = branch_case(line);
+        for hides in [false, true] {
+            let (hides, class) = outcome_class(hides, name, link);
+            classes.insert((false, hides, class));
+            if live {
+                classes.insert((true, hides, class));
+            }
+        }
+    }
+    classes
+}
 
 /// Assert each conflict branch and use of its result, with and without `hide new constructors`,
 /// while live and at registration: a branch naming `old`, or a use of a result that can hold the
 /// stored row, in a bundle that does not hide refuses `enable notes.Link` and is stale past it; any
-/// other opens and runs over a stored `Link` to its result and written rows.
+/// other opens and runs over a stored `Link` to its result and written rows. A default run takes
+/// every case under the plain header and one case per added constructor under the hiding header,
+/// where every case ends the same; the deep profile takes every case under both.
 #[test]
 fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_hidden() {
     let refused = "`enable notes.Link` is refused: bundle web-1.0, pinned at version 3, reads notes whole; a bundle stops blocking only when it is released";
@@ -739,6 +798,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
     let pin = [V1, ADD_NOTES, ADD_REJECTED];
     let mut reached = BTreeSet::new();
     let every = adtb_testkit::profile::every_case();
+    let (mut live_hidden, mut registered_hidden) = (BTreeSet::new(), BTreeSet::new());
     let mut seed = 600;
     for line in cases.lines() {
         let [
@@ -758,6 +818,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
                 "a branch is name, use, text, rows, link, binding, source, type, rest, value: {line}"
             );
         };
+        let link_kind = link;
         let (add, stored, link) = stored_link(link);
         let before = [V1, ADD_NOTES, ADD_REJECTED, add];
         let log = [V1, ADD_NOTES, ADD_REJECTED, add, ENABLE_LINK];
@@ -779,9 +840,8 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
             other => panic!("{name}: use is uses or free, not {other}"),
         };
         for (clauses, hides) in [("", false), (" hide new constructors", true)] {
-            if hides && !every && !ALWAYS_HIDDEN.contains(&name) {
-                continue;
-            }
+            let live = branch_case(line).2 && (!hides || live_hidden.insert(link_kind)) || every;
+            let at_registration = !hides || registered_hidden.insert(link_kind) || every;
             let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
             let runs = |db: &Database<SimRuntime>| {
                 write(db, stored).expect("the link is written");
@@ -796,31 +856,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
                         Called::Committed(c) => printed(c.value),
                     })
                     .map_err(|e| reason(&e).clone());
-                let expected = if hides {
-                    (
-                        Err(RejectReason::KeyViolation {
-                            relation: "auth::notes".into(),
-                            key: "notes.key(1)".into(),
-                        }),
-                        vec![link.to_owned()],
-                    )
-                } else {
-                    (
-                        value.strip_prefix('!').map_or_else(
-                            || Ok(value.split(';').map(str::to_owned).collect()),
-                            |message| {
-                                Err(RejectReason::UserError {
-                                    message: message.to_owned(),
-                                })
-                            },
-                        ),
-                        after
-                            .split(';')
-                            .filter(|r| !r.is_empty())
-                            .map(str::to_owned)
-                            .collect(),
-                    )
-                };
+                let expected = expected_branch(hides, link, after, value);
                 assert_eq!(
                     expected,
                     (got, query(db, "from n in notes select n")),
@@ -828,7 +864,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
                 );
             };
             seed += 1;
-            if every || bound == "-" || name.ends_with("-returned") {
+            if live {
                 let mut sim = Sim::new(seed, Config::default());
                 run(&mut sim, |rt| {
                     opened(&rt, &before, registered());
@@ -851,6 +887,9 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
                 });
             }
             seed += 1;
+            if !at_registration {
+                continue;
+            }
             once(seed, |rt| {
                 let got = open::open(&rt, open::FILE, &self::log(&log), &with(registered()));
                 if blocks && !hides {
@@ -870,10 +909,29 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
         cases.lines().filter(|l| l.contains("\tfree\t")).count(),
     );
     assert_eq!((36, 3), (using, free), "the branches of the fixture");
+    if every {
+        assert_eq!(
+            156,
+            reached.len(),
+            "every case reached its outcome under each header"
+        );
+        return;
+    }
+    let links = cases
+        .lines()
+        .map(|l| (branch_case(l).0, branch_case(l).1))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let outcomes = reached
+        .iter()
+        .map(|&(name, hides, phase)| {
+            let (hides, class) = outcome_class(hides, name, links[name]);
+            (matches!(phase, "refused" | "ran"), hides, class)
+        })
+        .collect::<BTreeSet<_>>();
     assert_eq!(
-        if every { 156 } else { 66 },
-        reached.len(),
-        "each selected branch reached its two outcomes under each header"
+        outcome_classes(&cases),
+        outcomes,
+        "a default run reached every outcome of each phase"
     );
 }
 
