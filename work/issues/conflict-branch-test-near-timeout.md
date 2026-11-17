@@ -18,3 +18,7 @@ Every full check run while another track builds or tests can fail on it, and a t
 Fix direction: find what the test spends 27 s on (it is the slowest of its binary) and cut the work to what its property needs, or give it the slots it uses in .config/nextest.toml; the test keeps asserting the same outcome.
 
 Defect class: Unbounded work over size, depth or sharing.
+
+## 2026-11-16, default profile thinned; still open
+
+Landed as sruskmvk 6197a97f: under the plain header every row runs; the hidden header keeps one row per added constructor per phase (same outcome for every hidden row); the coverage assertion records classes where outcomes are observed; a `names_row` mutant fails the default run. Default 22 to 25 s alone (was 27 to 32), deep 156 outcomes. It still timed out in main's check at load 31, so the ticket stays open: the remaining cost is about 87 database opens at 70 to 250 ms each.
