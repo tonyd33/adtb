@@ -4,12 +4,9 @@ use adtb_lang::evolve::Source;
 use adtb_lang::schema::Schema;
 
 use crate::key::Value;
-use crate::mvcc::Xid;
-use crate::storage::Pid;
 
 use super::Rot;
 use super::ids::CatRelId;
-use super::root::{Changing, Root};
 use super::{
     Broken, ElementTexts, Error, Hash, Rows, applied, check_order_keys, declared, engine_schema,
     fold, indexes, layout, oplog, version_hash,
@@ -27,33 +24,6 @@ fn engine_rows(schema: &Schema) -> Rows {
 fn rows_of(schema: &Schema, rows: &Rows, id: u64) -> Vec<Vec<Value>> {
     let r = schema.ids().relation_of(CatRelId::from_raw(id)).unwrap();
     rows[&r].iter().map(|(_, row)| row.clone()).collect()
-}
-
-#[test]
-fn the_root_page_round_trips() {
-    for (changing, stored) in [
-        (Changing::None, 0),
-        (Changing::Schema(Xid(1025)), 1025),
-        (Changing::NamingSequences, u64::MAX),
-        (Changing::Reindexing, u64::MAX - 1),
-    ] {
-        let root = Root {
-            commit_log: Pid(7),
-            large: (1, Pid(3)),
-            roots: (2, Pid(9)),
-            next_heap: 70,
-            changing,
-            sequences: Pid(77),
-            history_large: (71, Pid(78)),
-            record: (72, Pid(79)),
-        };
-        let mut page = vec![0; 4096];
-        root.write(&mut page);
-        assert_eq!(root, Root::read(&page));
-        assert!(page[..24].iter().all(|&b| b == 0));
-        let at = 24 + 8 + 4 + 4 + 8 + 8 + 8;
-        assert_eq!(stored.to_le_bytes(), page[at..at + 8], "{changing:?}");
-    }
 }
 
 #[test]

@@ -81,7 +81,10 @@ pub use oplog::{Hash, try_version_hash, version_hash};
 #[cfg(test)]
 pub use readers::PendingDrop;
 pub use readers::{Read, Reader, source_at, stale};
+pub(crate) use root::Begun;
 pub(crate) use root::Changing;
+#[cfg(any(test, feature = "testing"))]
+pub(crate) use root::Unbegun;
 pub use rot::{Rot, detail};
 pub use rows::{ElementTexts, IndexSpec, Rows, Step, indexed_fields, indexes};
 #[cfg(test)]
@@ -553,16 +556,7 @@ impl Catalog {
         );
         let txns = Transactions::create(rt, pager)?;
         let pid = pager.allocate(root::FORMAT, PageKind::Catalog, 0)?;
-        let root = Root {
-            commit_log: txns.commit_log().root(),
-            large: (0, Pid(0)),
-            roots: (0, Pid(0)),
-            next_heap: FIRST_HEAP,
-            changing: Changing::None,
-            sequences: Pid(0),
-            history_large: (0, Pid(0)),
-            record: (0, Pid(0)),
-        };
+        let root = Root::created(txns.commit_log().root(), FIRST_HEAP);
         pager.update(&[pid], |p| root.write(p[0]))?;
         pager.set_catalog_root(pid);
         let catalog = Catalog::fill(pager, &txns, pid)?;
@@ -659,11 +653,11 @@ impl Catalog {
         if pager.refused_whole() {
             return Ok((catalog, txns));
         }
-        let changing = Root::read(&pager.read(catalog.root)?).changing;
+        let changing = Root::read(&pager.read(catalog.root)?).changing();
         if changing != Changing::None {
             match catalog.free_leaked(pager, &txns) {
                 Ok(()) => {
-                    update_root(pager, catalog.root, |r| r.changing = Changing::None)?;
+                    root::end_found(pager, catalog.root)?;
                 }
                 Err(Error::Page(e)) if e.damage != storage::Damage::Unreadable => {}
                 Err(e) => return Err(e),
@@ -935,72 +929,65 @@ impl Catalog {
     }
 
     /// Mark the catalog as rebuilding indexes, so an open after a crash frees the pages no
-    /// structure names. Returns whether it was already marked as changing. A change that did not
-    /// commit, left by an open that could not free its pages, marks it as well.
+    /// structure names. Returns the change begun, or `None`, marking nothing, when the root page
+    /// already records a change in progress, which an open after a crash frees as well.
     ///
     /// Precondition: the database is open, so no schema change is running.
-    pub fn begin_reindexing<R: Runtime>(&self, pager: &Pager<R>) -> Result<bool, Error> {
-        let mut was = Changing::None;
-        update_root(pager, self.root, |r| {
-            was = r.changing;
-            if matches!(was, Changing::None | Changing::Reindexing) {
-                r.changing = Changing::Reindexing;
-            }
-        })?;
-        Ok(was != Changing::None)
+    pub fn begin_reindexing<R: Runtime>(&self, pager: &Pager<R>) -> Result<Option<Begun>, Error> {
+        Ok(root::begin_or_join(pager, self.root, Changing::Reindexing)?)
     }
 
     /// End the change [`Catalog::begin_reindexing`] began.
     ///
-    /// Fail, changing nothing, if another change is under way.
-    pub fn end_reindexing<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), Error> {
-        let mut was = Changing::None;
-        update_root(pager, self.root, |r| {
-            was = r.changing;
-            if was == Changing::Reindexing {
-                r.changing = Changing::None;
-            }
-        })?;
-        match was {
-            Changing::None | Changing::Reindexing => Ok(()),
-            other => Err(Error::from(Broken::ReindexDuring(other))),
-        }
+    /// Fail with [`Broken::ChangeMoved`], writing nothing, when the root page records another
+    /// change in progress.
+    pub fn end_reindexing<R: Runtime>(&self, pager: &Pager<R>, begun: Begun) -> Result<(), Error> {
+        root::end(pager, begun, |_| {})?;
+        Ok(())
     }
 
     /// Mark the catalog whose root page is `root` as changing, before the write path allocates
     /// its page of generated counters, so an open after a crash frees that page until
     /// [`Catalog::name_sequences`] names it.
-    pub fn naming_sequences<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<(), PageError> {
-        update_root(pager, root, |r| r.changing = Changing::NamingSequences)?;
-        Ok(())
+    ///
+    /// Fail with [`Unbegun::Kept`], marking nothing, when the root page records a change in
+    /// progress.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn naming_sequences<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<Begun, Unbegun> {
+        root::begin(pager, root, Changing::NamingSequences)
     }
 
     /// Name `pid` as the write path's page of generated counters in the catalog whose root page
-    /// is `root`, and end the change [`Catalog::naming_sequences`] began. Returns once the naming
-    /// is durable.
+    /// is `root`, ending `naming` in the same write. With no `naming`, the change in progress
+    /// stays for the next open to free. Returns once the naming is durable.
+    ///
+    /// Fail with [`Broken::ChangeMoved`], naming nothing, when the root page records another
+    /// change in progress than `naming`.
     pub fn name_sequences<R: Runtime>(
         pager: &Pager<R>,
         root: Pid,
         pid: Pid,
-    ) -> Result<(), PageError> {
-        let lsn = update_root(pager, root, |r| {
-            r.sequences = pid;
-            r.changing = Changing::None;
-        })?;
+        naming: Option<Begun>,
+    ) -> Result<(), Error> {
+        let lsn = match naming {
+            Some(begun) => root::end(pager, begun, |r| r.sequences = pid)?,
+            None => update_root(pager, root, |r| r.sequences = pid)?,
+        };
         pager.wait_durable(lsn);
         Ok(())
     }
 
     /// Returns the page of the database's id counters. When the root page names none, allocate
     /// one, advance the counter of each relation whose single key field is generated by
-    /// `sequence` past every key the relation holds, and name the page, durably.
+    /// `sequence` past every key the relation holds, and name the page, durably. A change in
+    /// progress the root page already records stays there for the next open to free.
     ///
     /// Precondition: no `write::Database` holds the page of id counters.
     pub fn counters<R: Runtime>(&mut self, pager: &Pager<R>) -> Result<Pid, Error> {
         if let Some(pid) = self.sequences() {
             return Ok(pid);
         }
-        Catalog::naming_sequences(pager, self.root)?;
+        let naming = root::begin_or_join(pager, self.root, Changing::NamingSequences)?;
         let ids = &self.schema.ids();
         let pid = crate::write::counter_page(pager, &self.schema, |r| {
             ids.key_id(r).map(|k| &self.indexes[&k.raw()].1)
@@ -1009,7 +996,7 @@ impl Catalog {
             crate::write::Error::Exec(exec::Error::Page(e)) => Error::Page(e),
             other => Error::from(Broken::KeyCounter(other)),
         })?;
-        Catalog::name_sequences(pager, self.root, pid)?;
+        Catalog::name_sequences(pager, self.root, pid, naming)?;
         self.sequences = pid;
         Ok(pid)
     }

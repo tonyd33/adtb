@@ -1031,16 +1031,16 @@ enum Refused {
 
 const REFUSALS: [Refused; 3] = [Refused::No, Refused::Marked, Refused::StatusPage];
 
-/// Returns a file holding a created catalog whose root `change` changed, and a status page of
-/// its commit log.
-fn with_root(seed: u64, change: fn(&mut super::root::Root)) -> (BTreeMap<String, Vec<u8>>, Pid) {
+/// Returns a file holding a created catalog whose root page `change` changed, and a status page
+/// of its commit log.
+fn with_root(seed: u64, change: fn(&Pager<SimRuntime>, Pid)) -> (BTreeMap<String, Vec<u8>>, Pid) {
     let mut sim = Sim::new(seed, Config::default());
     let mut status = None;
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
         status = txns.commit_log().status_pages().values().next().copied();
-        super::update_root(&pager, catalog.root(), change).expect("the root changes");
+        change(&pager, catalog.root());
         pager.flush_log();
     });
     (sim.files(), status.expect("a status page"))
@@ -1079,7 +1079,7 @@ fn refused_catalog(
         let opened = Catalog::open(rt, &pager).map(drop);
         let root = pager.catalog_root();
         let changing = (root != Pid(0))
-            .then(|| super::root::Root::read(&pager.read(root).expect("the root page")).changing);
+            .then(|| super::root::Root::read(&pager.read(root).expect("the root page")).changing());
         out = Some((
             opened,
             changing,
@@ -1094,7 +1094,10 @@ fn refused_catalog(
 #[test]
 fn an_open_refused_whole_by_a_mark_or_its_commit_log_leaves_a_change_in_progress() {
     use super::root::Changing;
-    let (files, status) = with_root(31, |r| r.changing = Changing::Reindexing);
+    let (files, status) = with_root(31, |pager, root| {
+        let rebuild = super::root::begin(pager, root, Changing::Reindexing);
+        drop(rebuild.expect("the rebuild begins"));
+    });
     let got = REFUSALS.map(|refused| {
         let (opened, changing, marks, _, _) = refused_catalog(31, files.clone(), status, refused);
         (opened, changing, marks)
@@ -1110,7 +1113,9 @@ fn an_open_refused_whole_by_a_mark_or_its_commit_log_leaves_a_change_in_progress
 
 #[test]
 fn an_open_refused_whole_of_a_catalog_whose_create_did_not_commit_fails_and_frees_nothing() {
-    let (files, status) = with_root(32, |r| r.roots.1 = Pid(0));
+    let (files, status) = with_root(32, |pager, root| {
+        super::update_root(pager, root, |r| r.roots.1 = Pid(0)).expect("the root changes");
+    });
     let got = REFUSALS.map(|refused| {
         let (opened, _, marks, before, after) = refused_catalog(32, files.clone(), status, refused);
         match opened {
@@ -1141,6 +1146,108 @@ fn a_marked_header_naming_no_catalog_fails_and_frees_nothing() {
         refused_catalog(33, sim.files(), Pid(0), Refused::Marked);
     let refused = Err(Error::Corrupt(super::rot::Rot::MarkedNoCatalog));
     assert_eq!((refused, None, before), (opened, changing, after));
+}
+
+/// Returns the files of a created catalog that crashed naming its page of counters, past the
+/// allocation of the page, with that page and the root of the key index of
+/// `catalog::constructors`, which open does not read.
+fn crashed_naming(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
+    let mut sim = Sim::new(seed, Config::default());
+    let mut made = None;
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (catalog, _txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let naming = Catalog::naming_sequences(&pager, catalog.root()).expect("the naming begins");
+        drop(naming);
+        let orphan = crate::write::full_counter_page(&pager, 0).expect("a page of counters");
+        let constructors = rel(&catalog, "catalog", "constructors");
+        let key = catalog.plan().relations()[&constructors].key_index;
+        made = Some((orphan, catalog.index_of(key.0).tree().root()));
+        pager.flush_log();
+    });
+    let (orphan, index) = made.expect("the run finished");
+    (recovered(seed, sim.files()), orphan, index)
+}
+
+#[test]
+fn naming_the_counters_over_a_crashed_naming_the_open_kept_leaves_its_page_to_the_next_open() {
+    use super::root::Changing;
+    let seed = 34;
+    let (files, orphan, index) = crashed_naming(seed);
+    let data = DataFile::new(harness::NAME, PAGE);
+    let mut damaged = files.clone();
+    data.flip(&mut damaged, index, PAGE / 2 - HEADER_LEN);
+    let mut sim = Sim::with_files(seed, Config::default(), damaged);
+    let mut kept = None;
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
+        let (mut catalog, _txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        let before = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        let named = catalog.counters(&pager).expect("the counters are named");
+        let after = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        kept = Some((
+            before.changing(),
+            after.changing(),
+            after.sequences == named,
+            named,
+        ));
+        pager.close();
+    });
+    let mut mended = sim.files();
+    data.replace(&mut mended, index, data.page(&files, index));
+    let named = kept
+        .map(|(_, _, _, named)| named)
+        .expect("the first open ran");
+    let mut sim = Sim::with_files(seed, Config::default(), mended);
+    let mut freed = None;
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
+        let (catalog, _txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        let root = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        let allocated = pager.allocated().expect("the bitmaps");
+        freed = Some((
+            root.changing(),
+            allocated.contains(&orphan),
+            root.sequences == named,
+            allocated.contains(&named),
+        ));
+    });
+    assert_eq!(
+        (
+            Some((
+                Changing::NamingSequences,
+                Changing::NamingSequences,
+                true,
+                named
+            )),
+            Some((Changing::None, false, true, true))
+        ),
+        (kept, freed)
+    );
+}
+
+#[test]
+fn a_migration_over_a_kept_change_applies_and_frees_what_it_left() {
+    use super::root::Changing;
+    let mut sim = Sim::new(35, Config::default());
+    let mut got = None;
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let naming = Catalog::naming_sequences(&pager, catalog.root()).expect("the naming begins");
+        drop(naming);
+        let orphan = crate::write::full_counter_page(&pager, 0).expect("a page of counters");
+        let migrated = catalog.migrate(&pager, &txns, RUNNING).map(drop);
+        let root = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        let allocated = pager.allocated().expect("the bitmaps");
+        got = Some((
+            migrated,
+            root.changing(),
+            catalog.source().version,
+            allocated.contains(&orphan),
+        ));
+    });
+    assert_eq!(Some((Ok(()), Changing::None, 1, false)), got);
 }
 
 #[test]

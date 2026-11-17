@@ -261,7 +261,7 @@ pub_fields prod 7 crates/adtb/src/catalog/deployment.rs
 pub_fields prod 4 crates/adtb/src/catalog/grants.rs
 pub_fields prod 4 crates/adtb/src/catalog/kept.rs
 pub_fields prod 8 crates/adtb/src/catalog/readers.rs
-pub_fields prod 8 crates/adtb/src/catalog/root.rs
+pub_fields prod 7 crates/adtb/src/catalog/root.rs
 pub_fields prod 7 crates/adtb/src/catalog/rows.rs
 pub_fields prod 7 crates/adtb/src/exec/code.rs
 pub_fields prod 7 crates/adtb/src/exec/host.rs

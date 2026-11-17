@@ -1,4 +1,4 @@
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, Unbegun};
 use crate::key::{Entry, Tid, Value};
 use crate::runtime::Runtime;
 use crate::storage::{Damage, PageError, PageKind, Pid, Quarantine};
@@ -142,7 +142,13 @@ impl<R: Runtime> Testing<'_, R> {
                 pager.update(&[page], |p| crate::storage::flip_owner(p[0]))?;
             }
             Plant::Replace { page, from } => pager.replace_contents(page, from, None)?,
-            Plant::NamingSequences => Catalog::naming_sequences(pager, pager.catalog_root())?,
+            Plant::NamingSequences => {
+                match Catalog::naming_sequences(pager, pager.catalog_root()) {
+                    Ok(begun) => drop(begun),
+                    Err(Unbegun::Page(e)) => return Err(e.into()),
+                    Err(Unbegun::Kept(_)) => return Err(Failed::Unchanged),
+                }
+            }
             Plant::Orphan { kind, owner } => {
                 return Ok(Planted::Page(pager.allocate(1, kind, owner)?));
             }

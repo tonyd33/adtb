@@ -355,21 +355,18 @@ fn a_rebuild_does_not_overwrite_another_change_of_the_catalog() {
     };
     let pager = Pager::create(rt.clone(), &options.storage("changing.adt")).unwrap();
     let (catalog, txns) = Catalog::open(rt, &pager).unwrap();
-    assert!(!catalog.begin_reindexing(&pager).unwrap());
-    assert!(catalog.begin_reindexing(&pager).unwrap());
-    catalog.end_reindexing(&pager).unwrap();
-    assert!(!catalog.begin_reindexing(&pager).unwrap());
-    catalog.end_reindexing(&pager).unwrap();
-    Catalog::naming_sequences(&pager, catalog.root()).unwrap();
-    assert!(catalog.begin_reindexing(&pager).unwrap());
+    let rebuild = catalog.begin_reindexing(&pager).unwrap().unwrap();
+    assert_eq!(None, catalog.begin_reindexing(&pager).unwrap().map(drop));
+    catalog.end_reindexing(&pager, rebuild).unwrap();
+    let rebuild = catalog.begin_reindexing(&pager).unwrap().unwrap();
+    catalog.end_reindexing(&pager, rebuild).unwrap();
+    let naming = Catalog::naming_sequences(&pager, catalog.root()).unwrap();
     assert_eq!(
-        Err(crate::catalog::Error::from(
-            crate::catalog::Broken::ReindexDuring(crate::catalog::Changing::NamingSequences)
-        )),
-        catalog.end_reindexing(&pager),
+        None,
+        catalog.begin_reindexing(&pager).unwrap().map(drop),
         "the change stays for the next open to free"
     );
-    assert!(catalog.begin_reindexing(&pager).unwrap());
+    drop(naming);
     drop(catalog);
     drop(txns);
     pager.close();
@@ -391,8 +388,8 @@ fn opening_an_empty_legacy_roles_table_preserves_a_full_counter_page() {
     assert!(catalog.committed(&pager, &txns, &roles).unwrap().is_empty());
     let roles = roles.relation();
     let sequences = crate::write::full_counter_page(&pager, roles.0).unwrap();
-    Catalog::naming_sequences(&pager, catalog.root()).unwrap();
-    Catalog::name_sequences(&pager, catalog.root(), sequences).unwrap();
+    let naming = Catalog::naming_sequences(&pager, catalog.root()).unwrap();
+    Catalog::name_sequences(&pager, catalog.root(), sequences, Some(naming)).unwrap();
     let before = pager.read(sequences).unwrap()[HEADER_LEN..].to_vec();
     drop(catalog);
     drop(txns);

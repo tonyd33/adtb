@@ -13,7 +13,7 @@ use crate::{plan, write};
 use super::Error;
 use super::change::Failed;
 use super::ids::{CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId};
-use super::root::Changing;
+use super::root::{Changing, Unended};
 
 /// A guarantee of the checker, the planner, the executor or the catalog itself that does not
 /// hold in the catalog.
@@ -41,8 +41,8 @@ pub enum Broken {
     NotSetTyped(Ty),
     /// Compiling the incremental checks of a schema breaks a guarantee of the checker.
     Admission(write::Broken),
-    /// A rebuild of indexes ended during this other change of the catalog.
-    ReindexDuring(Changing),
+    /// A change of the catalog ended while its root page records this other change in progress.
+    ChangeMoved(Changing),
     KeyCounter(write::Error),
     GrantId(write::Error),
     /// A grant row id is drawn with no page of id counters named.
@@ -111,6 +111,15 @@ impl From<Broken> for Error {
     }
 }
 
+impl From<Unended> for Error {
+    fn from(e: Unended) -> Error {
+        match e {
+            Unended::Page(e) => Error::Page(e),
+            Unended::Moved(c) => Error::from(Broken::ChangeMoved(c)),
+        }
+    }
+}
+
 impl From<Broken> for Failed {
     fn from(i: Broken) -> Failed {
         Failed::Internal(Box::new(i))
@@ -139,10 +148,9 @@ impl fmt::Display for Broken {
             Broken::NotASet(v) => write!(f, "a constraint returns a set, found {v:?}"),
             Broken::NotSetTyped(t) => write!(f, "a constraint is typed as a set, found {t:?}"),
             Broken::Admission(b) => write!(f, "{b}"),
-            Broken::ReindexDuring(c) => write!(
-                f,
-                "a rebuild of indexes ended during the catalog's change {c:?}"
-            ),
+            Broken::ChangeMoved(c) => {
+                write!(f, "a change of the catalog ended during its change {c:?}")
+            }
             Broken::KeyCounter(e) => write!(f, "advancing a key counter: {}", write::detail(e)),
             Broken::GrantId(e) => write!(f, "drawing a grant id: {}", write::detail(e)),
             Broken::NoSequences => f.write_str("a grant row id needs a named page of id counters"),

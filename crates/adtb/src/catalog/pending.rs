@@ -17,7 +17,7 @@ use crate::storage::Pager;
 use super::Rot;
 use super::ids::{CatFieldId, CatIndexId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
-use super::root::Changing;
+use super::root::{self, Changing};
 use super::roots::RootsRow;
 use super::rows::{ElementTexts, IndexSpec};
 use super::{Broken, Catalog, Error, Migrating, ROOTS, delete_rows, indexes};
@@ -297,9 +297,17 @@ impl Catalog {
             .collect();
         let begun = txns.begin(pager)?;
         let x = begun.xid();
-        if !freed.is_empty() {
-            super::update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
-        }
+        let marked = if freed.is_empty() {
+            None
+        } else {
+            match root::begin_or_join(pager, self.root, Changing::Schema(x)) {
+                Ok(marked) => marked,
+                Err(e) => {
+                    txns.abort(pager, begun)?;
+                    return Err(e.into());
+                }
+            }
+        };
         let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let m = Migrating {
             pager,
@@ -322,8 +330,8 @@ impl Catalog {
         drop(hold);
         if let Err(e) = wrote {
             txns.abort(pager, begun)?;
-            if !freed.is_empty() {
-                super::update_root(pager, self.root, |r| r.changing = Changing::None)?;
+            if let Some(marked) = marked {
+                root::end(pager, marked, |_| {})?;
             }
             return Err(e);
         }
@@ -336,7 +344,7 @@ impl Catalog {
                 self.indexes.remove(id);
             }
             self.free_leaked(pager, txns)?;
-            let lsn = super::update_root(pager, self.root, |r| r.changing = Changing::None)?;
+            let lsn = root::end_freed(pager, self.root, marked)?;
             pager.wait_durable(lsn);
         }
         Ok(())

@@ -1,5 +1,6 @@
 use crate::mvcc::Xid;
-use crate::storage::{HEADER_LEN, Pid};
+use crate::runtime::Runtime;
+use crate::storage::{HEADER_LEN, Lsn, PageError, Pager, Pid};
 
 /// The format of the catalog's root page.
 pub const FORMAT: u16 = 1;
@@ -55,7 +56,7 @@ pub struct Root {
     pub roots: (u32, Pid),
     /// No heap has this id or a higher one.
     pub next_heap: u32,
-    pub changing: Changing,
+    changing: Changing,
     /// The write path's page of generated counters, `Pid(0)` until it has one.
     pub sequences: Pid,
     /// The large-value store of every history heap, by heap id and root.
@@ -86,6 +87,24 @@ fn u64_at(page: &[u8], at: usize) -> u64 {
 }
 
 impl Root {
+    /// Returns the root page of a catalog whose create has not committed.
+    pub fn created(commit_log: Pid, next_heap: u32) -> Root {
+        Root {
+            commit_log,
+            large: (0, Pid(0)),
+            roots: (0, Pid(0)),
+            next_heap,
+            changing: Changing::None,
+            sequences: Pid(0),
+            history_large: (0, Pid(0)),
+            record: (0, Pid(0)),
+        }
+    }
+
+    pub fn changing(&self) -> Changing {
+        self.changing
+    }
+
     pub fn write(&self, page: &mut [u8]) {
         page[COMMIT_LOG..LARGE_ID].copy_from_slice(&self.commit_log.0.to_le_bytes());
         page[LARGE_ID..ROOTS_ID].copy_from_slice(&self.large.0.to_le_bytes());
@@ -119,3 +138,120 @@ impl Root {
         }
     }
 }
+
+/// A change of a catalog begun on its root page.
+#[must_use = "a change dropped unended stays on the root page for the next open to free"]
+#[derive(Debug)]
+pub struct Begun {
+    root: Pid,
+    kind: Changing,
+}
+
+/// Why a change of a catalog did not begin.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unbegun {
+    Page(PageError),
+    /// The root page records this other change in progress.
+    Kept(Changing),
+}
+
+/// Why a change of a catalog did not end.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unended {
+    Page(PageError),
+    /// The root page records this other change in progress.
+    Moved(Changing),
+}
+
+/// Record `kind` in progress on the catalog root page `root`.
+///
+/// Fail with [`Unbegun::Kept`] and the change found, writing nothing, when the page records a
+/// change in progress.
+pub fn begin<R: Runtime>(pager: &Pager<R>, root: Pid, kind: Changing) -> Result<Begun, Unbegun> {
+    assert_ne!(Changing::None, kind, "a change begun is in progress");
+    let mut found = Changing::None;
+    pager
+        .update(&[root], |p| {
+            found = Changing::decoded(u64_at(p[0], CHANGING));
+            if found == Changing::None {
+                p[0][CHANGING..SEQUENCES].copy_from_slice(&kind.encoded().to_le_bytes());
+            }
+        })
+        .map_err(Unbegun::Page)?;
+    match found {
+        Changing::None => Ok(Begun { root, kind }),
+        kept => Err(Unbegun::Kept(kept)),
+    }
+}
+
+/// Record `kind` in progress as [`begin`] does. Returns `None`, writing nothing, when the page
+/// holds a change in progress already: the caller runs under that change.
+pub fn begin_or_join<R: Runtime>(
+    pager: &Pager<R>,
+    root: Pid,
+    kind: Changing,
+) -> Result<Option<Begun>, PageError> {
+    match begin(pager, root, kind) {
+        Ok(begun) => Ok(Some(begun)),
+        Err(Unbegun::Kept(_)) => Ok(None),
+        Err(Unbegun::Page(e)) => Err(e),
+    }
+}
+
+/// End `marked`, or with none the change in progress on the catalog root page `root` that
+/// [`begin_or_join`] joined. Returns the LSN of the write.
+///
+/// Fail as [`end`] does.
+///
+/// Precondition: every page no structure of the catalog names is freed.
+pub fn end_freed<R: Runtime>(
+    pager: &Pager<R>,
+    root: Pid,
+    marked: Option<Begun>,
+) -> Result<Lsn, Unended> {
+    match marked {
+        Some(begun) => end(pager, begun, |_| {}),
+        None => end_found(pager, root).map_err(Unended::Page),
+    }
+}
+
+/// End the change `begun`, applying `also` to the root page in the same write. Returns the LSN
+/// of the write.
+///
+/// Fail with [`Unended::Moved`] and the change found, writing nothing, when the page records
+/// another change in progress than `begun`.
+pub fn end<R: Runtime>(
+    pager: &Pager<R>,
+    begun: Begun,
+    also: impl FnOnce(&mut Root),
+) -> Result<Lsn, Unended> {
+    let mut found = begun.kind;
+    let lsn = pager
+        .update(&[begun.root], |p| {
+            let mut root = Root::read(p[0]);
+            found = root.changing;
+            if found == begun.kind {
+                root.changing = Changing::None;
+                also(&mut root);
+                root.write(p[0]);
+            }
+        })
+        .map_err(Unended::Page)?;
+    if found == begun.kind {
+        Ok(lsn)
+    } else {
+        Err(Unended::Moved(found))
+    }
+}
+
+/// End the change a crashed run left on the catalog root page `root`, once an open has freed
+/// every page it allocated. Returns the LSN of the write.
+pub fn end_found<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<Lsn, PageError> {
+    pager.update(&[root], |p| {
+        p[0][CHANGING..SEQUENCES].copy_from_slice(&Changing::None.encoded().to_le_bytes());
+    })
+}
+
+#[cfg(test)]
+#[path = "root_tests.rs"]
+mod tests;

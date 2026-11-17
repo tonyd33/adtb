@@ -28,6 +28,7 @@ use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::ids::{stored, type_ctor_id};
 use super::keying::broken;
+use super::root;
 use super::roots::RootsRow;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
@@ -146,7 +147,13 @@ impl Catalog {
         self.admits(schema, program, texts, &rewritten)?;
         let begun = txns.begin(pager)?;
         let x = begun.xid();
-        update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
+        let marked = match root::begin_or_join(pager, self.root, Changing::Schema(x)) {
+            Ok(marked) => marked,
+            Err(e) => {
+                txns.abort(pager, begun)?;
+                return Err(e.into());
+            }
+        };
         let hold = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
@@ -165,24 +172,22 @@ impl Catalog {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
             Ok((c, written))
         });
-        match built {
+        let outcome = match built {
             Ok((c, written)) => {
                 txns.commit(pager, begun)?;
                 *self = c;
                 dormant.extend(written);
+                Ok(dormant)
             }
             Err(e) => {
                 txns.abort(pager, begun)?;
-                self.free_leaked(pager, txns)?;
-                let lsn = update_root(pager, self.root, |r| r.changing = Changing::None)?;
-                pager.wait_durable(lsn);
-                return Err(e);
+                Err(e)
             }
-        }
+        };
         self.free_leaked(pager, txns)?;
-        let lsn = update_root(pager, self.root, |r| r.changing = Changing::None)?;
+        let lsn = root::end_freed(pager, self.root, marked)?;
         pager.wait_durable(lsn);
-        Ok(dormant)
+        outcome
     }
 
     /// Refuse `schema`, whose checked program is `program` and index element texts `texts`, when

@@ -136,7 +136,7 @@ impl<R: Runtime> Engine<R> {
                 hook(name);
             }
         };
-        let was_marked = match self.catalog.begin_reindexing(&self.pager) {
+        let marked = match self.catalog.begin_reindexing(&self.pager) {
             Ok(marked) => marked,
             Err(e) => {
                 let at = format!("reindex of {}: {}", work.target, catalog::detail(&e));
@@ -146,7 +146,7 @@ impl<R: Runtime> Engine<R> {
                 return;
             }
         };
-        let mut reclaimed = !was_marked;
+        let mut reclaimed = marked.is_some();
         for &index in &work.indexes {
             let rebuild = Rebuild {
                 rel: work.rel,
@@ -172,7 +172,9 @@ impl<R: Runtime> Engine<R> {
                 }
             }
         }
-        if reclaimed && let Err(e) = self.catalog.end_reindexing(&self.pager) {
+        if let Some(marked) = marked.filter(|_| reclaimed)
+            && let Err(e) = self.catalog.end_reindexing(&self.pager, marked)
+        {
             self.keep_outcome(
                 schema,
                 work.indexes[0],
