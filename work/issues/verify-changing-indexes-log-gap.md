@@ -21,3 +21,7 @@ A `Gap` finding on a sound file is a false report of damage. A likely cause is v
 Direction: find what verify reads of the log while writers run and whether its bounds are taken once; reproduce under load (many iterations under `--profile deep` or a stress loop) before fixing.
 
 Defect class: Multi-step change not atomic under failure, crash or race (assumed until the cause is found).
+
+## 2026-11-17
+
+Class count 2026-11-17: cause unknown; `read_log` lists segments once and reads blocks lazily, filtering by the live end only when live. Likely a read without a stable log bound. Reproduce under load first; placed under mapping-check-and-mark until then.

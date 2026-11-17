@@ -19,3 +19,7 @@ In api/statements.rs the `Ok` arm of `Engine::resumable` maps a failure of `p.re
 Direction: take the call's statements back before reporting a results failure (so the transaction can stay open with nothing of the call in it, as the spec says), or check the results' shape before any effect is recorded; a test with a checker-guarantee results failure asserting the reply and that the transaction stays open with none of the call's writes.
 
 Defect class: Not atomic: an operation that must be all-or-nothing can stop partway.
+
+## 2026-11-17
+
+Class count 2026-11-17: the call is atomic today; the defect is spec conformance (Internal should leave the transaction open). Site fix: convert each item's result inside its statement, so `take_back` applies.
