@@ -899,7 +899,13 @@ fn nested_parenthesised_writes_parse_in_linear_attempts() {
         "(if ".repeat(n),
         " then 1 else 2) == 1".repeat(n)
     );
-    assert!(parse_adhoc(&text, Options::default()).ok().is_ok());
+    let items = parse_adhoc(&text, Options::default())
+        .ok()
+        .unwrap_or_else(|ds| panic!("{ds:?}"));
+    let [ast::AdhocItem::Expr(e)] = items.as_slice() else {
+        panic!("not one expression: {items:?}");
+    };
+    assert_eq!(Span::new(0, text.len()), e.span);
 }
 
 const LOGINS: &str = r"

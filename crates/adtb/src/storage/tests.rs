@@ -13,7 +13,7 @@ use super::error::{Damage, OpenError};
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
 use super::pager::{Options, PageError, Pager};
-use super::record::{Edit, MapRoot, Record};
+use super::record::{Edit, Malformed, MapRoot, Record};
 use super::{Lsn, Pid, Position};
 
 const BLOCK: usize = 128;
@@ -480,7 +480,7 @@ fn records_round_trip() {
         at += n;
     }
     assert_eq!(bytes.len(), at);
-    assert!(Record::decode(&bytes[..3]).is_err());
+    assert_eq!(Err(Malformed), Record::decode(&bytes[..3]));
 }
 
 #[test]

@@ -890,11 +890,8 @@ fn an_audit_mark_stops_writes_and_lets_reads_refusals_and_verify_answer() {
         let owner = db.role_authority().session("owner").expect("session");
         for (text, answers) in UNDER_AN_AUDIT_MARK {
             let got = task(rt, &owner, text);
-            if text.contains("catalog::audit") && seed == 182 {
-                assert!(got.is_ok(), "seed {seed} {text}: {got:?}");
-            } else if answers {
-                assert!(!quarantined(&got), "seed {seed} {text}: {got:?}");
-                assert!(got.is_ok(), "seed {seed} {text}: {got:?}");
+            if answers || (text.contains("catalog::audit") && seed == 182) {
+                assert_eq!(Ok(()), got, "seed {seed} {text}");
             } else {
                 assert!(quarantined(&got), "seed {seed} {text}: {got:?}");
             }
@@ -946,7 +943,15 @@ fn a_grant_and_a_role_under_an_audit_mark_fail_and_leave_nothing() {
         let authority = db.role_authority();
         let got = authority.create_role("late");
         assert!(format!("{got:?}").contains("Quarantined"), "seed {seed}");
-        assert!(authority.session("late").is_err(), "seed {seed}");
+        adtb_testkit::refused_as(
+            authority.session("late"),
+            &Error::Rejected {
+                reason: RejectReason::Denied {
+                    detail: "the authenticated role no longer exists".to_owned(),
+                },
+            },
+            "denied: the authenticated role no longer exists",
+        );
     });
 }
 

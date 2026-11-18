@@ -135,6 +135,19 @@ fn migrate(src: &Source, text: &str) -> Result<Source, Vec<String>> {
     })
 }
 
+/// Returns the type of field `field` of record type `ty` of `schema`, as it is written.
+fn field_ty(schema: &Schema, ty: &str, field: &str) -> String {
+    let def = schema
+        .types
+        .iter()
+        .find(|t| t.name == ty)
+        .unwrap_or_else(|| panic!("{ty} is declared"));
+    let f = def
+        .field_named(0, field)
+        .unwrap_or_else(|| panic!("{ty} has field {field}"));
+    schema.show_ty(&f.ty)
+}
+
 fn applies(src: &Source, text: &str) -> Source {
     let next = migrate(src, text)
         .unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}\n{}", printed_or(src)));
@@ -3479,7 +3492,9 @@ add relation teams : Team key id generate sequence
 add type Member = { id: Key members, team: Key teams }
 add relation members : Member key id generate sequence",
     );
-    assert!(s.check().is_ok());
+    let (schema, _) = s.check().unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!("Key members", field_ty(&schema, "Team", "lead"));
+    assert_eq!("Key teams", field_ty(&schema, "Member", "team"));
 }
 
 #[test]
@@ -3564,7 +3579,19 @@ define fn same (t: Key teams) -> Key teams = t
 add type Team = { id: Key teams }
 add relation teams : Team key id generate sequence",
     );
-    assert!(s.check().is_ok());
+    let (schema, _) = s.check().unwrap_or_else(|e| panic!("{e:?}"));
+    let same = schema
+        .functions
+        .iter()
+        .find(|f| f.name == "same")
+        .expect("same is declared");
+    let params: Vec<_> = same
+        .params
+        .iter()
+        .map(|(n, t)| (n.as_str(), schema.show_ty(t)))
+        .collect();
+    assert_eq!(vec![("t", "Key teams".to_string())], params);
+    assert_eq!("Key teams", schema.show_ty(&same.result));
 }
 
 #[test]
@@ -3729,7 +3756,19 @@ add type Member = { id: Key members, team: Key teams }
 add relation teams : Team key id generate sequence index (lead)
 add relation members : Member key id generate sequence index (team)",
     );
-    assert!(s.check().is_ok());
+    let (schema, _) = s.check().unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!("Key members", field_ty(&schema, "Team", "lead"));
+    assert_eq!("Key teams", field_ty(&schema, "Member", "team"));
+    let indexed = |rel: &str| -> Vec<String> {
+        let r = schema
+            .relations
+            .iter()
+            .find(|r| r.name == rel)
+            .unwrap_or_else(|| panic!("{rel} is declared"));
+        r.indexes.iter().map(|i| i.text(0).to_string()).collect()
+    };
+    assert_eq!(vec!["lead"], indexed("teams"));
+    assert_eq!(vec!["team"], indexed("members"));
 }
 
 #[test]

@@ -541,12 +541,31 @@ fn churn(rt: &SimRuntime, db: &Database<SimRuntime>, what: &str) {
     assert_eq!(BTreeSet::new(), db.testing().probe().marks(), "{what}");
 }
 
-fn no_refusal_after_reopening(seed: u64, files: Files, what: &str) {
+/// Returns each set of keys of `users` a statement of [`churn`] can leave committed.
+fn churned_states() -> Vec<BTreeSet<String>> {
+    let rounds = (0..3i64).map(|round| round * 100);
+    rounds
+        .flat_map(|low| {
+            (0..=40).map(move |n| (low..low + n).map(|i| format!("users.key({i})")).collect())
+        })
+        .collect()
+}
+
+/// Assert a reopen of `files` reads without a refusal or a mark, the rows of `users` those of
+/// [`churn`] run whole when `whole`, or of a prefix of it.
+fn no_refusal_after_reopening(seed: u64, files: Files, what: &str, whole: bool) {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     finished(&mut sim, |rt| {
         let db = open_small(rt);
-        let got = select_answer(&db, SELECT);
-        assert!(got.is_ok(), "{what}: {got:?}");
+        let got: BTreeSet<String> = select_answer(&db, SELECT)
+            .unwrap_or_else(|e| panic!("{what}: {e:?}"))
+            .into_iter()
+            .collect();
+        if whole {
+            assert_eq!(BTreeSet::new(), got, "{what}");
+        } else {
+            assert!(churned_states().contains(&got), "{what}: {got:?}");
+        }
         assert_eq!(BTreeSet::new(), db.testing().probe().marks(), "{what}");
         db.close().unwrap();
     });
@@ -564,7 +583,7 @@ fn no_healthy_page_reads_zero_through_writers_vacuum_frees_and_crashes() {
             took = Some((began, rt.now()));
             db.close().unwrap();
         });
-        no_refusal_after_reopening(seed, sim.files(), &format!("seed {seed}"));
+        no_refusal_after_reopening(seed, sim.files(), &format!("seed {seed}"), true);
         let (began, ended) = took.unwrap();
         let (began, ended) = (began.as_nanos(), ended.as_nanos());
         for step in 1..8u64 {
@@ -578,7 +597,7 @@ fn no_healthy_page_reads_zero_through_writers_vacuum_frees_and_crashes() {
                 db.close().unwrap();
             });
             assert_eq!(Outcome::Crashed, outcome, "{what}");
-            no_refusal_after_reopening(seed, sim.files(), &what);
+            no_refusal_after_reopening(seed, sim.files(), &what, false);
         }
     }
 }

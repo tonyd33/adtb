@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::types::RelId;
 use adtb_sys::os::{Backend, OsRuntime};
+use adtb_testkit::refused_as;
 use adtb_testkit::scratch::Scratch;
 
 use crate::api::bundle::Stored;
@@ -330,11 +331,8 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
         let dropped = ready.is_ok().then(|| authority.drop_role("web"));
         let released = resume_tx.send(());
         let joined = writer.join();
-        assert!(
-            ready.is_ok(),
-            "writer reached its canonical transaction: {ready:?}"
-        );
-        assert!(released.is_ok(), "writer gate released: {released:?}");
+        assert_eq!(Ok(()), ready, "writer reached its canonical transaction");
+        assert_eq!(Ok(()), released, "writer gate released");
         assert_eq!(Some(Ok(())), dropped);
         denied(joined.unwrap());
     });
@@ -815,9 +813,9 @@ fn a_role_dropped_in_the_admit_window_refuses_with_its_audit_row() {
     assert_eq!(1, rows(&db, denied_rows).len());
 }
 
-/// Returns the refusal of the owner's family grant once `forge` has changed the deployment state
-/// of bundle `web-1.0`, which no running engine serves.
-fn family_grant_over_forged_mark(forge: impl Fn(&mut Stored, i64)) -> Error {
+/// Returns the owner's family grant once `forge` has changed the deployment state of bundle
+/// `web-1.0`, which no running engine serves.
+fn family_grant_over_forged_mark(forge: impl Fn(&mut Stored, i64)) -> Result<(), Error> {
     let text = "module shop\nadd module shop\nadd type Customer = { id: Key customers, name: Text }\nadd relation customers : Customer key id generate sequence\n";
     let log = Log::new([text]);
     let (_scratch, db) = opened(&log);
@@ -840,9 +838,12 @@ fn family_grant_over_forged_mark(forge: impl Fn(&mut Stored, i64)) -> Error {
         let id = stored.bundles["web-1.0"].id;
         forge(stored, id);
     });
-    authority
-        .grant(&owner, "grant call web::q to bob")
-        .expect_err("the signature cannot be read")
+    authority.grant(&owner, "grant call web::q to bob")
+}
+
+#[track_caller]
+fn refused_invalid(got: Result<(), Error>, detail: &str) {
+    refused_as(got, &Error::invalid(detail), detail);
 }
 
 #[test]
@@ -850,17 +851,17 @@ fn a_live_bundle_whose_signature_cannot_be_read_refuses_a_family_grant() {
     let unmarked = family_grant_over_forged_mark(|stored, id| {
         stored.deployed.registered.remove(&id);
     });
-    assert!(
-        unmarked.to_string().contains("web-1.0")
-            && unmarked.to_string().contains("until it is presented"),
-        "{unmarked}"
+    refused_invalid(
+        unmarked,
+        "the signature of `web::q` in live bundle web-1.0 cannot be read until it is presented at an open or retired",
     );
     let garbled = family_grant_over_forged_mark(|stored, id| {
         stored.deployed.registered.get_mut(&id).unwrap().text = "garbled".into();
     });
-    assert!(
-        garbled.to_string().contains("web-1.0") && garbled.to_string().contains("cannot be read"),
-        "{garbled}"
+    let why = Registration::bundle("garbled").unwrap_err();
+    refused_invalid(
+        garbled,
+        &format!("the signature of `web::q` in live bundle web-1.0 cannot be read: {why}"),
     );
 }
 
@@ -916,13 +917,9 @@ fn only_a_revoke_of_what_a_bundle_counts_looks_at_a_lacking_owner() {
     forge(&db, |s, _| {
         s.bundles.get_mut("cat-1.0").unwrap().renewed = renewed;
     });
-    let refused = authority
-        .revoke(&owner, "revoke read_files from ann")
-        .unwrap_err()
-        .to_string();
-    assert!(
-        refused.contains("cat-1.0") && refused.contains("ann lacks read with grant option"),
-        "{refused}"
+    refused_invalid(
+        authority.revoke(&owner, "revoke read_files from ann"),
+        "`revoke read_files from ann` leaves live bundles lacking what they use:\nbundle cat-1.0: ctors reads constructors.Constructor; ann lacks read with grant option\nbundle cat-1.0: ctors reads constructors.Constructor (id); ann lacks read with grant option\nbundle cat-1.0: ctors reads constructors.Constructor (name); ann lacks read with grant option",
     );
     authority.revoke(&owner, "revoke monitor from ann").unwrap();
 }
@@ -937,13 +934,12 @@ fn a_bundle_of_the_grantee_that_cannot_be_read_refuses_a_counted_revoke() {
     forge(&db, |s, id| {
         s.deployed.registered.get_mut(&id).unwrap().text = "garbled".into();
     });
-    let refused = authority
-        .revoke(&owner, "revoke read_files from ann")
-        .unwrap_err()
-        .to_string();
-    assert!(
-        refused.contains("bundle cat-1.0 cannot be read:"),
-        "{refused}"
+    let why = Registration::bundle("garbled").unwrap_err();
+    refused_invalid(
+        authority.revoke(&owner, "revoke read_files from ann"),
+        &format!(
+            "`revoke read_files from ann` leaves live bundles lacking what they use:\nbundle cat-1.0 cannot be read: {why}"
+        ),
     );
     authority.revoke(&owner, "revoke monitor from ann").unwrap();
 }
@@ -972,11 +968,9 @@ fn a_bundle_with_no_text_cannot_be_read_until_it_is_presented_or_retired() {
             ("owner", crate::api::OWNER_ID),
         )
     });
-    let refused = got.unwrap_err().to_string();
-    assert!(
-        refused
-            .contains("bundle cat-1.0 cannot be read until it is presented at an open or retired"),
-        "{refused}"
+    refused_invalid(
+        got,
+        "`revoke` leaves live bundles lacking what they use:\nbundle cat-1.0 cannot be read until it is presented at an open or retired",
     );
 }
 

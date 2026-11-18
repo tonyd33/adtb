@@ -29,10 +29,12 @@ fn assert_key_error(error: &Error, ctor: &str, clause: &str, size: i64, limit: i
         },
         error
     );
-    let value = error.value().to_string();
-    assert!(value.contains("KeyTooLarge"), "{value}");
-    assert!(value.contains(&format!("index: {clause:?}")), "{value}");
-    assert!(error.to_string().contains("key payload"));
+    assert_eq!(
+        format!(
+            "index `app::items.{clause}` for `{ctor}` needs a key payload of {size} bytes, over the limit of {limit}"
+        ),
+        error.to_string()
+    );
 }
 
 #[test]

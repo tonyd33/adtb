@@ -6,7 +6,7 @@ use crate::test_world::api;
 use crate::test_world::grants;
 use crate::test_world::load as open;
 use adtb_harness::process::{finished, once, run};
-use adtb_testkit::refused_with;
+use adtb_testkit::refused_as;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1160,9 +1160,15 @@ fn a_deployment_revoke_leaves_a_log_row_of_the_same_text() {
         let owner = authority.session("owner").expect("session");
         let before = by_id(&db);
         id_of(&before, &["kind: Log", "shop::shown"]);
-        refused_with(
+        let detail = "`revoke call shop::shown from web` matches no grant `owner` may revoke";
+        refused_as(
             authority.revoke(&owner, "revoke call shop::shown from web"),
-            "`revoke call shop::shown from web` matches no grant `owner` may revoke",
+            &Error::Rejected {
+                reason: RejectReason::Invalid {
+                    detail: detail.into(),
+                },
+            },
+            detail,
         );
         assert_eq!(before, by_id(&db));
     });

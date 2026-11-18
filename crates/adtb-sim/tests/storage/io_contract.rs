@@ -698,9 +698,12 @@ fn a_refused_ring_fails_the_test_unless_its_absence_is_declared() {
         Err(payload) => {
             assert!(!absent, "a declared absence does not panic");
             let message = payload.downcast_ref::<String>().expect("a formatted panic");
-            assert!(
-                message.ends_with("; set ADTB_URING=absent on a host without io_uring"),
-                "{message}"
+            let Err(refused) = OsRuntime::try_new(".", Backend::Uring { entries: u32::MAX }) else {
+                panic!("the host refuses the ring again");
+            };
+            assert_eq!(
+                format!("{refused}; set ADTB_URING=absent on a host without io_uring"),
+                *message
             );
         }
     }

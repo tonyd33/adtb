@@ -447,7 +447,7 @@ fn a_writer_of_a_path_unique_value_another_is_writing_proceeds_if_it_aborts() {
             a.rollback().expect("a rolls back");
             rt.join(waiter);
             let got = ended.lock().unwrap().take().expect("b ends");
-            assert!(got.is_ok(), "seed {seed}: {got:?}");
+            assert_eq!(Ok(()), got, "seed {seed}");
             assert_eq!(vec![r#""b@x""#], by_ref(&db, "r9"), "seed {seed}");
         });
     }

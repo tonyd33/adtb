@@ -557,7 +557,9 @@ impl<R: Runtime> Transactions<R> {
         }
         st.last_time = st.last_time.max(latest);
         st.window = window;
-        assert!(self.history.set(past).is_ok(), "history is kept already");
+        if self.history.set(past).is_err() {
+            panic!("history is kept already");
+        }
         Ok(())
     }
 

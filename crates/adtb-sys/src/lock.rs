@@ -330,7 +330,8 @@ mod tests {
             let _writer = lock.0.write().expect("no one poisoned it");
             panic!("poison the lock");
         }));
-        assert!(panicked.is_err());
+        let payload = panicked.expect_err("the writer panics");
+        assert_eq!(Some(&"poison the lock"), payload.downcast_ref::<&str>());
         assert_eq!(7, *lock.try_read().expect("poison leaves it readable"));
     }
 }

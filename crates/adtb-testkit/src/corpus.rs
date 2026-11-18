@@ -427,7 +427,10 @@ mod tests {
                 render(&mutate(&mut rng, ts.clone(), &pool))
             }));
             assert!(
-                moved.as_ref().is_ok_and(|t| t.parse::<i64>().is_ok()),
+                matches!(
+                    moved.as_deref(),
+                    Ok("9223372036854775807" | "9223372036854775806")
+                ),
                 "seed {seed}: {moved:?}"
             );
         }

@@ -94,6 +94,7 @@ fn usage(e: &clap::Error) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
+    use clap::error::ErrorKind;
 
     use super::*;
 
@@ -129,7 +130,13 @@ mod tests {
 
     #[test]
     fn the_log_is_required_and_bundles_and_out_are_not() {
-        assert!(Args::try_parse_from(["adtb-codegen", "--out", "f"]).is_err());
+        let refused = Args::try_parse_from(["adtb-codegen", "--out", "f"]).expect_err("no --log");
+        assert_eq!(ErrorKind::MissingRequiredArgument, refused.kind());
+        assert_eq!(
+            "error: the following required arguments were not provided:\n  --log <DIR>\n\nUsage: \
+             adtb-codegen --log <DIR> --out <FILE>\n\nFor more information, try '--help'.\n",
+            refused.to_string()
+        );
         let a = Args::try_parse_from(["adtb-codegen", "--log", "log"]).expect("--log alone");
         assert!(a.bundles.is_empty());
         assert_eq!(None, a.out);
@@ -137,6 +144,13 @@ mod tests {
 
     #[test]
     fn a_bundle_needs_a_module() {
-        assert!(Args::try_parse_from(["adtb-codegen", "--log", "l", "--bundle", "f"]).is_err());
+        let refused = Args::try_parse_from(["adtb-codegen", "--log", "l", "--bundle", "f"])
+            .expect_err("a bundle without a module");
+        assert_eq!(ErrorKind::ValueValidation, refused.kind());
+        assert_eq!(
+            "error: invalid value 'f' for '--bundle <MODULE=FILE>': expected MODULE=FILE\n\nFor \
+             more information, try '--help'.\n",
+            refused.to_string()
+        );
     }
 }

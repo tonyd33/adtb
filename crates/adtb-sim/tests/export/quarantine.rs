@@ -1869,8 +1869,16 @@ fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
         let mut t = db.begin(&TxnOptions::default()).unwrap();
         let repeat =
             r#"insert identities.Google { id: identities.key(11), user: users.key(1), gid: "r" }"#;
-        t.query_text(repeat, &[], &TxnCallOptions::default())
-            .unwrap_err();
+        adtb_testkit::refused_as(
+            t.query_text(repeat, &[], &TxnCallOptions::default()),
+            &Error::Rejected {
+                reason: RejectReason::KeyViolation {
+                    relation: "app::identities".to_owned(),
+                    key: "identities.key(11)".to_owned(),
+                },
+            },
+            "`app::identities` already holds a row with key `identities.key(11)`",
+        );
         db.testing()
             .plant(Plant::Mark(user_index_mark(&db)))
             .unwrap();

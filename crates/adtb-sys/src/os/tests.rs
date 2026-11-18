@@ -137,9 +137,9 @@ fn the_pool_is_the_fallback_where_io_uring_is_denied() {
     on_host_thread(|| {
         deny_io_uring_setup();
         let backend = Backend::Uring { entries: 8 };
-        let rt = OsRuntime::try_new(std::env::temp_dir(), backend)
-            .or_else(|_| OsRuntime::try_new(std::env::temp_dir(), Backend::Pool { threads: 1 }));
-        assert!(rt.is_ok(), "the pool is never refused");
+        OsRuntime::try_new(std::env::temp_dir(), backend)
+            .or_else(|_| OsRuntime::try_new(std::env::temp_dir(), Backend::Pool { threads: 1 }))
+            .expect("the pool is never refused");
     });
 }
 

@@ -514,6 +514,7 @@ fn a_write_skew_between_interactive_transactions_does_not_commit_both() {
             let count = "count(n for n in notes)";
             let mut a = db.begin(&TxnOptions::default()).expect("begin a");
             let mut b = db.begin(&TxnOptions::default()).expect("begin b");
+            let ids = [a.id(), b.id()];
             assert_eq!(vec!["0"], in_txn(&mut a, count), "seed {seed}");
             assert_eq!(vec!["0"], in_txn(&mut b, count), "seed {seed}");
             let wa = a.query_text(
@@ -528,12 +529,30 @@ fn a_write_skew_between_interactive_transactions_does_not_commit_both() {
             );
             let ca = wa.and_then(|_| a.commit(None));
             let cb = wb.and_then(|_| b.commit(None));
-            assert!(
-                ca.is_err() || cb.is_err(),
+            let failed: Vec<&Error> = [&ca, &cb]
+                .into_iter()
+                .filter_map(|r| r.as_ref().err())
+                .collect();
+            assert_ne!(
+                0,
+                failed.len(),
                 "seed {seed}: both commit after reading no notes"
             );
-            for e in [&ca, &cb].into_iter().filter_map(|r| r.as_ref().err()) {
-                assert!(is_serialization(e), "seed {seed}: {e:?}");
+            for (got, txn) in [ca, cb].into_iter().zip(ids) {
+                if got.is_ok() {
+                    continue;
+                }
+                let serialization = Error::Retry {
+                    reason: RetryReason::Serialization {
+                        txn,
+                        on: String::new(),
+                    },
+                };
+                let reason = format!(
+                    "transaction {} conflicts with a concurrent transaction; retry",
+                    txn.0
+                );
+                adtb_testkit::refused_as(got, &serialization, &reason);
             }
         });
     }

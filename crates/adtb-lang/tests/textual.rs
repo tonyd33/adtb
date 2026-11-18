@@ -13,6 +13,7 @@ use adtb_lang::textual::*;
 use adtb_lang::types::{Base, RelId, Ty};
 use adtb_testkit::Rng;
 use adtb_testkit::draw::{ZONES, draw};
+use adtb_testkit::refused_as;
 
 const SCHEMA: &str = r"
 module app
@@ -183,6 +184,25 @@ impl Textual for Tree {
     fn zone_exists(name: &str) -> bool {
         ZONES.contains(&name)
     }
+}
+
+/// Assert that `got` is the refusal to read at byte `offset` for `message`.
+#[track_caller]
+fn parse_refused<T: std::fmt::Debug>(got: Result<T, ParseError>, offset: usize, message: &str) {
+    let expected = ParseError {
+        offset,
+        message: message.to_string(),
+    };
+    refused_as(got, &expected, &format!("at byte {offset}: {message}"));
+}
+
+/// Assert that `got` is the refusal to print for `message`.
+#[track_caller]
+fn print_refused<T: std::fmt::Debug>(got: Result<T, PrintError>, message: &str) {
+    let expected = PrintError {
+        message: message.to_string(),
+    };
+    refused_as(got, &expected, message);
 }
 
 fn schema() -> Committed {
@@ -392,21 +412,51 @@ fn reading_accepts_any_field_order_and_merges_set_elements() {
 fn reading_refuses_text_outside_the_form() {
     let s = schema();
     let password = r#"Password { id: logins.key(uuid("00000000-0000-0000-0000-000000000000")), user: users.key(1), hash: 0x }"#;
-    for (name, t) in [
-        ("I8", "128"),
-        ("Decimal 2", "1.234"),
-        ("Login.Social", password),
-        ("Span I64", "span(7, 3)"),
-        ("ZonedDateTime", "2026-10-25T09:30:00[Mars/Olympus]"),
-        ("Date", "2026-02-30"),
-        ("Uuid", r#"uuid("0000")"#),
-        ("Key users", "members.key(1)"),
-        ("User", "User { id: users.key(1) }"),
-        ("Set I64", "[1, 2"),
-        ("I64", "1 2"),
+    for (name, t, offset, message) in [
+        ("I8", "128", 3, "an integer out of range of its type"),
+        ("Decimal 2", "1.234", 5, "more than 2 fractional digits"),
+        (
+            "Login.Social",
+            password,
+            0,
+            "`Password` is not a constructor of this type",
+        ),
+        (
+            "Span I64",
+            "span(7, 3)",
+            0,
+            "a span whose start is after its end",
+        ),
+        (
+            "ZonedDateTime",
+            "2026-10-25T09:30:00[Mars/Olympus]",
+            20,
+            "no zone `Mars/Olympus` in the zone rules",
+        ),
+        ("Date", "2026-02-30", 10, "no such date"),
+        (
+            "Uuid",
+            r#"uuid("0000")"#,
+            5,
+            "not a UUID in the 8-4-4-4-12 form",
+        ),
+        (
+            "Key users",
+            "members.key(1)",
+            0,
+            "expected a key of `users`",
+        ),
+        (
+            "User",
+            "User { id: users.key(1) }",
+            25,
+            "field `name` is missing",
+        ),
+        ("Set I64", "[1, 2", 5, "expected `,`"),
+        ("I64", "1 2", 2, "expected the end of the text"),
     ] {
         let got: Result<Tree, ParseError> = parse(t, &form(&s, name));
-        assert!(got.is_err(), "`{t}` reads at {name} as {got:?}");
+        parse_refused(got, offset, message);
     }
 }
 
@@ -524,32 +574,97 @@ fn a_value_not_of_its_form_does_not_print() {
     let int = || Tree::Atom(Atom::Int(1));
     let text = || Tree::Atom(Atom::Text("a".into()));
     let cases = [
-        ("Text", int()),
-        ("F64", int()),
-        ("Decimal 2", int()),
-        ("Bytes", text()),
-        ("Uuid", int()),
-        ("Email", int()),
-        ("Cents", text()),
-        ("Digest", int()),
-        ("Bool", int()),
-        ("Bool", Tree::Ctor(2, Vec::new())),
-        ("Tag Stage", Tree::Ctor(3, Vec::new())),
-        ("Option I64", Tree::Ctor(1, Vec::new())),
-        ("User", Tree::Record(vec![int()])),
-        ("{ a: I64, b: Text }", int()),
-        ("Span I64", Tree::Ctor(0, vec![int()])),
-        ("Key users", int()),
-        ("Key members", Tree::Key(Box::new(int()))),
-        ("Set I64", int()),
-        ("Set I64", Tree::Set([text()].into_iter().collect())),
-        ("{ f: I64 -> I64 }", Tree::Record(Vec::new())),
+        ("Text", int(), "a value of `Text` is text, found Int(1)"),
+        ("F64", int(), "Int(1) is not a value of F64"),
+        ("Decimal 2", int(), "Int(1) is not a value of Decimal(2)"),
+        (
+            "Bytes",
+            text(),
+            r#"a value of a bytes form is bytes, found Text("a")"#,
+        ),
+        (
+            "Uuid",
+            int(),
+            "a value of a bytes form is bytes, found Int(1)",
+        ),
+        ("Cents", text(), r#"Text("a") is not a value of I64"#),
+        (
+            "Digest",
+            int(),
+            "a value of a bytes form is bytes, found Int(1)",
+        ),
+        (
+            "Bool",
+            int(),
+            "a value of a sum is one of its 2 constructors, found Atom(Int(1))",
+        ),
+        (
+            "Bool",
+            Tree::Ctor(2, Vec::new()),
+            "a value of a sum is one of its 2 constructors, found Ctor(2, [])",
+        ),
+        (
+            "Tag Stage",
+            Tree::Ctor(3, Vec::new()),
+            "a value of a sum is one of its 3 constructors, found Ctor(3, [])",
+        ),
+        (
+            "Option I64",
+            Tree::Ctor(1, Vec::new()),
+            "a value of a form with 1 fields has 1 fields, found Ctor(1, [])",
+        ),
+        (
+            "User",
+            Tree::Record(vec![int()]),
+            "a value of a sum is one of its 1 constructors, found Record([Atom(Int(1))])",
+        ),
+        (
+            "{ a: I64, b: Text }",
+            int(),
+            "a value of a form with 2 fields has 2 fields, found Atom(Int(1))",
+        ),
+        (
+            "Span I64",
+            Tree::Ctor(0, vec![int()]),
+            "a value of a form with 2 fields has 2 fields, found Ctor(0, [Atom(Int(1))])",
+        ),
+        (
+            "Key users",
+            int(),
+            "a value of a key form is a key, found Atom(Int(1))",
+        ),
+        (
+            "Key members",
+            Tree::Key(Box::new(int())),
+            "a value of a form with 2 fields has 2 fields, found Atom(Int(1))",
+        ),
+        (
+            "Set I64",
+            int(),
+            "a value of a set form is a set, found Atom(Int(1))",
+        ),
+        (
+            "Set I64",
+            Tree::Set([text()].into_iter().collect()),
+            r#"Text("a") is not a value of I64"#,
+        ),
+        (
+            "{ f: I64 -> I64 }",
+            Tree::Record(Vec::new()),
+            "a value of a form with 1 fields has 1 fields, found Record([])",
+        ),
     ];
-    for (name, v) in cases {
+    for (name, v, message) in cases {
         let f = form(&s, name);
-        assert!(print(&v, &f).is_err(), "{v:?} prints at {name}");
-        assert!(to_text(&v, &f).is_err(), "{v:?} is text at {name}");
+        print_refused(print(&v, &f), message);
+        print_refused(to_text(&v, &f), message);
     }
+    let email = form(&s, "Email");
+    print_refused(
+        print(&int(), &email),
+        "a value of `Text` is text, found Int(1)",
+    );
+    print_refused(to_text(&int(), &email), "Int(1) is not a value of Text");
 }
 
 #[test]
@@ -587,21 +702,29 @@ fn uuid_reading_preserves_the_grouped_form_and_refuses_near_misses() {
         Ok("uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0f\")".into()),
         print(&value, &f)
     );
-    for text in [
-        "Uuid(0x0)",
-        "Uuid(0xgg)",
-        "Uuid(0x00",
-        "Uuid(0x00))",
-        "Uuid(0x00) trailing",
-        "Uuid(\"x\")",
-        "Uuidx(0x00)",
-        "Uuid (0x00)",
-        "uuid(0x00)",
-        "uuid(\"78\")",
-        "uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0g\")",
-        "uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0f\") trailing",
-        "00010203-0405-0607-0809-0a0b0c0d0e0f",
+    for (text, offset, message) in [
+        ("Uuid(0x0)", 8, "an odd number of hex digits"),
+        ("Uuid(0xgg)", 7, "expected `)`"),
+        ("Uuid(0x00", 9, "expected `)`"),
+        ("Uuid(0x00))", 10, "expected the end of the text"),
+        ("Uuid(0x00) trailing", 11, "expected the end of the text"),
+        ("Uuid(\"x\")", 5, "expected `0x`"),
+        ("Uuidx(0x00)", 0, "expected `Uuid(`"),
+        ("Uuid (0x00)", 4, "expected `(`"),
+        ("uuid(0x00)", 5, "expected a text literal"),
+        ("uuid(\"78\")", 5, "not a UUID in the 8-4-4-4-12 form"),
+        (
+            "uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0g\")",
+            5,
+            "not a UUID in the 8-4-4-4-12 form",
+        ),
+        (
+            "uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0f\") trailing",
+            45,
+            "expected the end of the text",
+        ),
+        ("00010203-0405-0607-0809-0a0b0c0d0e0f", 0, "expected `uuid`"),
     ] {
-        assert!(parse::<Tree>(text, &f).is_err(), "{text}");
+        parse_refused(parse::<Tree>(text, &f), offset, message);
     }
 }

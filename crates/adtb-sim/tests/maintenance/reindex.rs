@@ -3,7 +3,7 @@
 
 use crate::catalog_root::changing_words;
 use adtb_harness::{common, process};
-use adtb_testkit::refused_with;
+use adtb_testkit::refused_as;
 use adtb_testkit::scratch::Scratch;
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -14,7 +14,7 @@ use std::time::Duration;
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::testing::{Damage, Pid, Plant, Quarantine, page::HEADER_LEN, panic_text};
-use adtb::{Database, Log, OpenOptions};
+use adtb::{Database, Error, FatalReason, Log, OpenOptions};
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::{crash, seeds};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
@@ -840,8 +840,13 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     std::fs::write(&path, &files["file"]).unwrap();
     let db = Database::open(&path, &log, &real_options()).unwrap();
     let probe = "from g in identities.Google where g.user == users.key(5) select g.gid";
-    refused_with(
+    refused_as(
         db.query_text(probe, &[], &adtb::CallOptions::default()),
+        &Error::Fatal {
+            reason: FatalReason::Quarantined {
+                what: "app::identities index (user) in (Google | Apple)".to_owned(),
+            },
+        },
         "fatal: app::identities index (user) in (Google | Apple) is quarantined",
     );
     assert_eq!(1, db.testing().probe().marks().len());

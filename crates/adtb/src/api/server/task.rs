@@ -646,10 +646,9 @@ pub(super) fn submit<R: Runtime>(
     let call = Call::new(e, shared.clone(), work, role_call, opts);
     match sched.admit(entry, Box::new(call)) {
         Ok(admitted) => {
-            assert!(
-                stopper.admitted.set(admitted.clone()).is_ok(),
-                "a call is admitted once"
-            );
+            if stopper.admitted.set(admitted.clone()).is_err() {
+                panic!("a call is admitted once");
+            }
             if caller.as_ref().is_some_and(|(t, _)| t.is_cancelled()) {
                 stopper.wake_by_ref();
             }
@@ -784,8 +783,14 @@ mod tests {
             kept: Vec::new(),
         });
         db.clone().close().unwrap();
-        let open = db.query_text("count(i for i in items)", &[], &CallOptions::default());
-        assert!(open.is_ok(), "{open:?}");
+        let open = db
+            .query_text("count(i for i in items)", &[], &CallOptions::default())
+            .unwrap();
+        let counts: Vec<_> = open
+            .into_iter()
+            .map(crate::test_world::api::printed)
+            .collect();
+        assert_eq!(vec![vec!["0"]], counts);
         *e.close.lock(&e.rt) = None;
         db.close().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();

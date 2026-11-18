@@ -251,7 +251,20 @@ fn types() {
         unreachable!()
     };
     assert!(matches!(rhs.kind, TypeKind::Fn(..)));
-    assert!(parse_type("Decimal 2", STRICT).ok().is_ok());
+    let t = parse_type("Decimal 2", STRICT).ok().unwrap();
+    let TypeKind::Named {
+        name,
+        sel: None,
+        args,
+    } = &t.kind
+    else {
+        panic!("not a named type: {t:?}");
+    };
+    assert_eq!(
+        (None, "Decimal"),
+        (name.module.as_ref(), name.name.text.as_str())
+    );
+    assert_eq!(vec![TypeArg::Int(2, Span::new(8, 9))], *args);
     assert!(matches!(
         parse_type("Found { email: Text }", STRICT)
             .ok()
@@ -259,10 +272,12 @@ fn types() {
             .kind,
         TypeKind::Sum(_)
     ));
-    assert!(
-        parse_type("Result Text { email: Text }", STRICT)
-            .ok()
-            .is_err()
+    assert_eq!(
+        Err(vec![Diag::new(
+            Span::new(12, 13),
+            "a record type argument is written in parentheses, found `{`"
+        )]),
+        parse_type("Result Text { email: Text }", STRICT).ok()
     );
 }
 
@@ -353,7 +368,13 @@ fn display_name (i: Identity) -> Text = match i
 
 #[test]
 fn schema_file_needs_a_module_header() {
-    assert!(parse_schema("type A = B", STRICT).ok().is_err());
+    assert_eq!(
+        Err(vec![Diag::new(
+            Span::new(0, 4),
+            "expected `module`, found `type`"
+        )]),
+        parse_schema("type A = B", STRICT).ok()
+    );
 }
 
 #[test]
@@ -419,7 +440,13 @@ enable Provider.Okta
 
 #[test]
 fn revert_needs_a_migration_number() {
-    assert!(parse_migration("module m\nrevert 16", STRICT).ok().is_err());
+    assert_eq!(
+        Err(vec![Diag::new(
+            Span::new(16, 18),
+            "a migration number has at least four digits"
+        )]),
+        parse_migration("module m\nrevert 16", STRICT).ok()
+    );
 }
 
 const HASH: &str = "c41e00000000000000000000000000000000000000000000000000000000abcd";
@@ -476,11 +503,12 @@ fn version_hash_is_64_hex_digits() {
         "a version hash is exactly 64 hex digits",
         refusal(&with_hash(&"g".repeat(64)))
     );
-    assert!(
-        parse_bundle(&with_hash(&"a".repeat(64)), STRICT)
-            .ok()
-            .is_ok()
-    );
+    let pins = parse_bundle(&with_hash(&"a".repeat(64)), STRICT)
+        .ok()
+        .unwrap()
+        .header
+        .pins;
+    assert_eq!((12, Some("a".repeat(64))), (pins.number, pins.hash));
     let src = with_hash("c41e...");
     assert_eq!("a version hash is exactly 64 hex digits", refusal(&src));
     assert_eq!(example(&src).len(), 1);

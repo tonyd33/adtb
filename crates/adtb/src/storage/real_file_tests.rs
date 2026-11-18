@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use adtb_testkit::scratch::Scratch;
 
 use crate::catalog::Catalog;
-use crate::runtime::FatalIo;
+use crate::runtime::{FatalIo, IoError};
 use crate::storage::{OpenError, Options, PageKind, Pager, Pid};
 use crate::testing::Knobs;
 use crate::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
@@ -313,7 +313,13 @@ fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowled
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
             increment(&pager, &pids, seed, 400, &mut acked, &mut doubt);
         }));
-        assert!(run.is_err(), "seed {seed}: some write or force fails");
+        let Err(payload) = run else {
+            panic!("seed {seed}: no write or force fails")
+        };
+        let failure = payload
+            .downcast_ref::<FatalIo>()
+            .unwrap_or_else(|| panic!("seed {seed}: not a fatal I/O failure"));
+        assert_eq!(IoError::Failed, failure.cause(), "seed {seed}: {failure}");
         rt.crash();
         drop(pager);
         check_counters(dir, backend, &pids, &acked, doubt, seed);

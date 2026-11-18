@@ -32,16 +32,20 @@ fn root_principal_checks_in_unrelated_schema_functions_and_bundle_scopes() {
             check_query_in(&schema, &program, scope.clone(), &query)
                 .unwrap_or_else(|e| panic!("{scope:?}: {text}: {e:?}"));
         }
-        let mut items = parse_example(
-            "query incomplete () -> I8 = match caller | EndUser e -> e.level | Service _ -> 0",
-            Options::default(),
-        )
-        .ok()
-        .unwrap();
+        let incomplete =
+            "query incomplete () -> I8 = match caller | EndUser e -> e.level | Service _ -> 0";
+        let mut items = parse_example(incomplete, Options::default()).ok().unwrap();
         let ExampleItem::BundleItem(BundleItem::Query(query)) = items.remove(0) else {
             panic!("the example holds a query");
         };
-        let error = check_query_in(&schema, &program, scope.clone(), &query).unwrap_err();
-        assert!(error.message.contains("Anonymous"), "{scope:?}: {error:?}");
+        let at = incomplete.find("match").unwrap();
+        assert_eq!(
+            Err(Diag::new(
+                Span::new(at, incomplete.len()),
+                "match does not cover `Anonymous`"
+            )),
+            check_query_in(&schema, &program, scope.clone(), &query).map(|_| ()),
+            "{scope:?}"
+        );
     }
 }

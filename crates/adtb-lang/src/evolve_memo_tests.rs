@@ -142,7 +142,13 @@ fn a_change_of_the_relations_ahead_alone_is_rebuilt() {
 fn a_declaration_that_only_ahead_lets_resolve_refuses_without_it() {
     let mut src = base();
     src.decls[1].text = "type Note = { later: Key later }".to_string();
-    assert!(src.built().is_err());
+    let text = src.file_text(FileId(1));
+    let at = text.rfind("later").unwrap();
+    let unresolved = vec![FileDiag {
+        file: FileId(1),
+        diag: Diag::new(Span::new(at, text.len() - 2), "no `later` in scope"),
+    }];
+    assert_eq!(Err(unresolved.clone()), src.built().map(|_| ()));
     let mut ahead = src.clone();
     ahead.ahead.push(Expected::new(
         "other".to_string(),
@@ -151,7 +157,7 @@ fn a_declaration_that_only_ahead_lets_resolve_refuses_without_it() {
         Adder::Operator(0),
     ));
     builds_uncached(&ahead);
-    assert!(src.built().is_err());
+    assert_eq!(Err(unresolved), src.built().map(|_| ()));
 }
 
 #[test]
@@ -160,8 +166,16 @@ fn a_failed_build_does_not_disturb_the_memo() {
     let held = builds_uncached(&src);
     let mut broken = src.clone();
     broken.decls[1].text = "type".to_string();
-    assert!(broken.built().is_err());
-    assert!(broken.built().is_err());
+    let end = broken.file_text(FileId(1)).len();
+    let unparsed = Err(vec![FileDiag {
+        file: FileId(1),
+        diag: Diag::new(
+            Span::new(end, end),
+            "expected a type name, found the end of the text",
+        ),
+    }]);
+    assert_eq!(unparsed, broken.built().map(|_| ()));
+    assert_eq!(unparsed, broken.built().map(|_| ()));
     assert_eq!(held, builds_uncached(&src));
 }
 

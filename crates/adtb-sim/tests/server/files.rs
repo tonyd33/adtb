@@ -233,9 +233,14 @@ fn a_file_that_changes_within_a_transaction_aborts_it_with_file_changed() {
             ),
             "{e:?}"
         );
-        assert!(
-            t.commit(None).is_err(),
-            "the aborted transaction does not commit"
+        adtb_testkit::refused_as(
+            t.commit(None),
+            &Error::Retry {
+                reason: RetryReason::FileChanged {
+                    path: "s.csv".to_owned(),
+                },
+            },
+            "file s.csv changed while it was read; retry",
         );
         assert_eq!(
             strings(&[r#""bo""#]),

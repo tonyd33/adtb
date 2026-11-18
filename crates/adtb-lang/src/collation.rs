@@ -173,6 +173,7 @@ pub fn parse(name: &str) -> Result<Collation, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adtb_testkit::refused_as;
 
     #[test]
     fn a_name_is_a_tag_and_the_supported_version() {
@@ -186,17 +187,30 @@ mod tests {
         assert_eq!(Some(true), c.numeric);
         assert_eq!(Some(true), c.shifted);
         assert_eq!(Some(CaseFirst::Upper), c.case_first);
-        assert!(parse("und@cldr-49").is_ok());
-        assert!(parse("es-419@cldr-49").is_ok());
+        let plain = |locale: &str| Collation {
+            locale: locale.to_string(),
+            strength: None,
+            shifted: None,
+            case_level: None,
+            case_first: None,
+            numeric: None,
+            max_variable: None,
+        };
+        assert_eq!(Ok(plain("und")), parse("und@cldr-49"));
+        assert_eq!(Ok(plain("es-419")), parse("es-419@cldr-49"));
     }
 
     #[test]
     fn unversioned_and_unknown_names_are_refused() {
-        assert!(parse("de").unwrap_err().contains("names no version"));
-        assert!(
-            parse("de@icu-74")
-                .unwrap_err()
-                .contains("supports `cldr-49`")
+        let refused =
+            |name: &str, reason: &str| refused_as(parse(name), &reason.to_string(), reason);
+        refused(
+            "de",
+            "collation `de` names no version; write it as `name@version`",
+        );
+        refused(
+            "de@icu-74",
+            "collation `de@icu-74` names version `icu-74`; this database supports `cldr-49`",
         );
         for bad in [
             "@cldr-49",
@@ -210,7 +224,10 @@ mod tests {
             "de-x-private@cldr-49",
             "de-hant@cldr-49",
         ] {
-            assert!(parse(bad).is_err(), "{bad}");
+            refused(
+                bad,
+                &format!("collation `{bad}` is not a collation this database supports"),
+            );
         }
     }
 }

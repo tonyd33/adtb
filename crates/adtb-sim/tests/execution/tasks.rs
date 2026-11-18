@@ -1440,15 +1440,20 @@ fn stopping_a_task_leaves_its_callers_token() {
             assert!(!matches!(done, Completion::Failed(_)), "{name}: {done:?}");
             assert_eq!(vec![Value::Int(1)], rows, "{name}");
             assert!(!token.is_cancelled(), "{name}");
-            let later = f.db.query_text(
-                "count(i for i in items)",
-                &[],
-                &CallOptions {
-                    cancel: Some(token),
-                    ..CallOptions::default()
-                },
-            );
-            assert!(later.is_ok(), "{name}: {later:?}");
+            let later: Vec<Vec<Value>> =
+                f.db.query_text(
+                    "count(i for i in items)",
+                    &[],
+                    &CallOptions {
+                        cancel: Some(token),
+                        ..CallOptions::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"))
+                .into_iter()
+                .map(|rows| rows.map(|r| r.expect("a row")).collect())
+                .collect();
+            assert_eq!(vec![vec![Value::Int(1)]], later, "{name}");
         });
     }
 }

@@ -6,9 +6,9 @@ use adtb::key::{CtorId, Entry, Tid, Value};
 use adtb::runtime::Threads;
 use adtb::testing::{
     Damage, Failed, Flags, HeapError, Knobs, Object, PageError, PageKind, Pid, Plant, Quarantine,
-    page::HEADER_LEN, page::lsn,
+    page::HEADER_LEN, page::lsn, panic_text,
 };
-use adtb::{CallOptions, Capability, Database, Log};
+use adtb::{CallOptions, Capability, Database, Fault, Log, RejectReason};
 use adtb_harness::process;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
@@ -1244,9 +1244,15 @@ add relation users : User key id generate sequence
         panicking.store(true, Ordering::Relaxed);
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.verify(None)));
         panicking.store(false, Ordering::Relaxed);
-        assert!(
-            !matches!(ran, Ok(Ok(_))),
-            "the host function failed the run"
+        let ran = ran.unwrap_or_else(|p| panic!("the run panicked: {:?}", panic_text(&*p)));
+        adtb_testkit::refused_as(
+            ran,
+            &adtb::Error::Rejected {
+                reason: RejectReason::Faulted {
+                    fault: Fault::FunctionFailed,
+                },
+            },
+            "fault `FunctionFailed`",
         );
         assert_eq!(
             Vec::<String>::new(),

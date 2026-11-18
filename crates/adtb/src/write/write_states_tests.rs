@@ -288,10 +288,7 @@ fn an_enable_applies_beside_readers_that_cannot_reach_the_constructor() {
     for (seed, r) in (41..).zip(cases) {
         let bundle = r.bundle.clone();
         let got = enables(seed, ADD_APPLE, ENABLE_APPLE, vec![r]);
-        assert!(
-            got.is_ok(),
-            "seed {seed}: `{bundle}` blocks the enable: {got:?}"
-        );
+        assert_eq!(Ok(()), got, "seed {seed}: `{bundle}` blocks the enable");
     }
 }
 
@@ -331,10 +328,7 @@ fn a_value_enable_applies_beside_readers_of_no_field_reaching_the_type() {
     for (seed, r) in (70..).zip(cases) {
         let bundle = r.bundle.clone();
         let got = enables(seed, ADD_OKTA_TYPE, ENABLE_OKTA, vec![r]);
-        assert!(
-            got.is_ok(),
-            "seed {seed}: `{bundle}` blocks the enable: {got:?}"
-        );
+        assert_eq!(Ok(()), got, "seed {seed}: `{bundle}` blocks the enable");
     }
 }
 

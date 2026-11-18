@@ -62,7 +62,9 @@ fn agrees_query(f: &Fixture, decl: &str, args: Vec<Value>) {
         let p = plan_with(f, &q.terms, q.body, rw);
         assert_eq!(want, run(f, &p, &bound), "`{decl}` with {name}");
     }
-    assert!(want.is_ok(), "`{decl}` aborts: {want:?}");
+    if let Err(a) = want {
+        panic!("`{decl}` aborts: {a:?}")
+    }
 }
 
 fn adhoc_plan(f: &Fixture, text: &str, params: &[(&str, &str)], rw: Rewrites) -> Plan {

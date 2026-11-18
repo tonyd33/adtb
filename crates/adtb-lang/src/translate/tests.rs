@@ -516,7 +516,10 @@ fn a_read_of_a_dropped_field_is_refused_naming_the_drop() {
         "query q () -> Set Text = from i in identities.Google select i.gid",
     );
     assert_eq!("drop field Identity.Google.gid", op);
-    assert!(reason.contains("gid"), "{reason}");
+    assert_eq!(
+        "it reads field `gid` of `Identity`, which the current version lacks",
+        reason
+    );
     translated(
         &[V1, DROP_GID],
         1,
@@ -533,7 +536,10 @@ fn a_count_of_values_that_gained_a_field_is_refused_and_a_count_of_rows_translat
         "query q () -> I64 = count(t for t in (from u in users select u.tier))",
     );
     assert_eq!("add field Tier.Paid.seats: I32 fill 1", op);
-    assert!(reason.contains("counts"), "{reason}");
+    assert_eq!(
+        "it counts the values of `Tier` whole, and its field `seats` differs",
+        reason
+    );
     translated(
         &[V1, ADD_SEATS],
         1,
@@ -550,19 +556,28 @@ fn a_comparison_of_values_that_gained_a_field_is_refused() {
         "query q () -> Set Text = from u in users where u.tier == Paid select u.name",
     );
     assert_eq!("add field Tier.Paid.seats: I32 fill 1", op);
-    assert!(reason.contains("seats"), "{reason}");
+    assert_eq!(
+        "it compares `Tier` whole, and its field `seats` differs",
+        reason
+    );
 }
 
 #[test]
 fn a_parameter_or_comparison_reaching_a_removed_constructor_is_refused() {
     let log = [V1, ADD_GOLD, DEPRECATE_FREE, REMOVE_FREE];
-    for body in [
-        "query q (t: Tier) -> Set Text = from u in users select u.name",
-        "query q () -> Set Text = from u in users where u.tier == Gold select u.name",
+    for (body, want) in [
+        (
+            "query q (t: Tier) -> Set Text = from u in users select u.name",
+            "it takes a parameter of `Tier.Free`, which the current version lacks",
+        ),
+        (
+            "query q () -> Set Text = from u in users where u.tier == Gold select u.name",
+            "it compares `Tier.Free`, which the current version lacks",
+        ),
     ] {
         let (op, reason) = refused_across(&log, 2, body);
         assert_eq!("remove constructor Tier.Free", op, "{body}");
-        assert!(reason.contains("Tier.Free"), "{reason}");
+        assert_eq!(want, reason, "{body}");
     }
 }
 
@@ -590,7 +605,10 @@ fn a_write_into_a_deprecated_constructor_is_refused_naming_the_deprecation() {
     return g";
     let (op, reason) = refused_across(&[V1, DEPRECATE_GOOGLE], 1, body);
     assert_eq!("deprecate identities.Google", op);
-    assert!(reason.contains("Identity.Google"), "{reason}");
+    assert_eq!(
+        "it writes `Identity.Google`, which is deprecated now",
+        reason
+    );
 }
 
 #[test]
@@ -606,7 +624,10 @@ fn a_write_of_a_constructor_that_gained_a_field_translates_and_a_nested_one_is_r
     return n";
     let (op, reason) = refused_across(&[V1, ADD_SEATS], 1, nested);
     assert_eq!("add field Tier.Paid.seats: I32 fill 1", op);
-    assert!(reason.contains("outside a write"), "{reason}");
+    assert_eq!(
+        "it builds `Tier.Paid` without field `seats`, outside a write",
+        reason
+    );
 }
 
 #[test]

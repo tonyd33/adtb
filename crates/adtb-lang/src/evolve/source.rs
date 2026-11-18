@@ -431,11 +431,15 @@ impl Source {
         for (op, &was) in Listed::all(&m.operators).zip(applied) {
             let noted = RefCell::new(Names::default());
             let ended = replay.apply_noting(&m.module.text, op, text, Some(&noted));
-            assert_eq!(
-                was,
-                ended.is_ok(),
-                "a replay of a migration applies each operator the migration applied, and no other"
-            );
+            match (was, ended) {
+                (true, Ok(())) | (false, Err(_)) => {}
+                (true, Err(e)) => panic!(
+                    "a replay of a migration applies each operator the migration applied, but refused one: {e:?}"
+                ),
+                (false, Ok(())) => panic!(
+                    "a replay of a migration applies only the operators the migration applied"
+                ),
+            }
         }
         let marks = replay.marks.take().expect("the replay records its copies");
         diags

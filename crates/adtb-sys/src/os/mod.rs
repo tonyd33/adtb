@@ -286,10 +286,9 @@ impl Threads for OsRuntime {
         let mut live = live();
         let handle = host_thread(name.to_owned(), move || {
             CURRENT.with(|c| {
-                assert!(
-                    c.set(Current(id)).is_ok(),
-                    "a new host thread has no id yet"
-                );
+                if c.set(Current(id)).is_err() {
+                    panic!("a new host thread has no id yet");
+                }
             });
             body();
         });

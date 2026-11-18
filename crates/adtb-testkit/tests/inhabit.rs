@@ -2,6 +2,7 @@ use adtb_lang::types::{Base, Ty};
 use adtb_reference::Value;
 use adtb_testkit::fixture::{Fixture, int, key, set, text};
 use adtb_testkit::inhabit::{Judge, Mismatch, inhabits};
+use adtb_testkit::refused_as;
 
 const SCHEMA: &str = "
 type Pos = new I64 where self > 0
@@ -34,6 +35,15 @@ fn holds(f: &Fixture, v: &Value, ty: &str) {
 fn fails(f: &Fixture, v: &Value, ty: &str) -> Mismatch {
     let t = f.ty(ty);
     inhabits(v, &t, &f.schema).expect_err(&format!("{v:?} does not inhabit `{ty}`"))
+}
+
+fn mismatch(path: &str, value: &Value, ty: &str, why: &str) -> Mismatch {
+    Mismatch {
+        path: path.to_string(),
+        value: format!("{value:?}"),
+        ty: ty.to_string(),
+        why: why.to_string(),
+    }
 }
 
 fn ctor(c: u32, fs: Vec<(&str, Value)>) -> Value {
@@ -214,13 +224,37 @@ fn an_anonymous_sum_holds_its_selected_constructors() {
     };
     let a = ctor(0, vec![("x", int(1))]);
     assert_eq!(inhabits(&a, &ty, &f.schema), Ok(()));
-    assert!(inhabits(&ctor(2, vec![]), &ty, &f.schema).is_err());
-    assert!(inhabits(&ctor(0, vec![("x", text("1"))]), &ty, &f.schema).is_err());
+    let past = ctor(2, vec![]);
+    refused_as(
+        inhabits(&past, &ty, &f.schema),
+        &mismatch(
+            "",
+            &past,
+            "A { x: I64 } | B",
+            "its constructor is not one of the sum's",
+        ),
+        "Ctor(2, []) is not a `A { x: I64 } | B`: its constructor is not one of the sum's",
+    );
+    refused_as(
+        inhabits(&ctor(0, vec![("x", text("1"))]), &ty, &f.schema),
+        &mismatch("#A.x", &text("1"), "I64", "its shape is of another type"),
+        "at `#A.x`: Text(\"1\") is not a `I64`: its shape is of another type",
+    );
     let only_b = Ty::Sum {
         ctors,
         sel: Some(vec![1]),
     };
-    assert!(inhabits(&a, &only_b, &f.schema).is_err());
+    refused_as(
+        inhabits(&a, &only_b, &f.schema),
+        &mismatch(
+            "",
+            &a,
+            "(A { x: I64 } | B).B",
+            "its constructor is outside the type's constructor set",
+        ),
+        "Ctor(0, [(\"x\", Int(1))]) is not a `(A { x: I64 } | B).B`: its constructor is outside \
+         the type's constructor set",
+    );
     assert_eq!(inhabits(&ctor(1, vec![]), &only_b, &f.schema), Ok(()));
 }
 
@@ -271,7 +305,11 @@ fn a_set_holds_values_of_its_element_type() {
     assert_eq!(m.path, "[1]", "{m}");
     fails(&f, &Value::List(vec![int(1)]), "Set I8");
     let nonempty = Ty::NonEmpty(Box::new(Ty::Base(Base::I64)));
-    assert!(inhabits(&set([]), &nonempty, &f.schema).is_err());
+    refused_as(
+        inhabits(&set([]), &nonempty, &f.schema),
+        &mismatch("", &set([]), "Set I64", "it is empty"),
+        "Set({}) is not a `Set I64`: it is empty",
+    );
     assert_eq!(inhabits(&set([int(1)]), &nonempty, &f.schema), Ok(()));
 }
 
@@ -286,15 +324,47 @@ fn a_group_is_its_key_and_its_nonempty_rows() {
         Value::Record(vec![("key".into(), text("k")), ("rows".into(), set(rows))])
     };
     assert_eq!(inhabits(&group(vec![int(1)]), &ty, &f.schema), Ok(()));
-    assert!(inhabits(&group(vec![]), &ty, &f.schema).is_err());
-    assert!(inhabits(&group(vec![text("1")]), &ty, &f.schema).is_err());
+    refused_as(
+        inhabits(&group(vec![]), &ty, &f.schema),
+        &mismatch(
+            "",
+            &group(vec![]),
+            "Group Text I64",
+            "a group's rows are empty",
+        ),
+        "Record([(\"key\", Text(\"k\")), (\"rows\", Set({}))]) is not a `Group Text I64`: a \
+         group's rows are empty",
+    );
+    refused_as(
+        inhabits(&group(vec![text("1")]), &ty, &f.schema),
+        &mismatch(
+            ".rows[0]",
+            &text("1"),
+            "I64",
+            "its shape is of another type",
+        ),
+        "at `.rows[0]`: Text(\"1\") is not a `I64`: its shape is of another type",
+    );
 }
 
 #[test]
 fn parameters_and_change_sets_have_no_values() {
     let f = fixture();
-    assert!(inhabits(&int(1), &Ty::Param(0), &f.schema).is_err());
-    assert!(inhabits(&Value::unit(), &Ty::Change, &f.schema).is_err());
+    refused_as(
+        inhabits(&int(1), &Ty::Param(0), &f.schema),
+        &mismatch(
+            "",
+            &int(1),
+            "t0",
+            "a type parameter has no values of its own",
+        ),
+        "Int(1) is not a `t0`: a type parameter has no values of its own",
+    );
+    refused_as(
+        inhabits(&Value::unit(), &Ty::Change, &f.schema),
+        &mismatch("", &Value::unit(), "a write", "a change set is not a value"),
+        "Record([]) is not a `a write`: a change set is not a value",
+    );
 }
 
 #[test]
@@ -306,13 +376,23 @@ fn a_result_ordered_by_order_by_is_a_list_of_distinct_elements() {
         judge.result(&Value::List(vec![int(2), int(1)]), &ty),
         Ok(())
     );
-    assert!(
-        judge
-            .result(&Value::List(vec![int(1), int(1)]), &ty)
-            .is_err()
+    let repeated = Value::List(vec![int(1), int(1)]);
+    refused_as(
+        judge.result(&repeated, &ty),
+        &mismatch("", &repeated, "Set I64", "an element repeats"),
+        "List([Int(1), Int(1)]) is not a `Set I64`: an element repeats",
     );
-    assert!(judge.result(&Value::List(vec![text("1")]), &ty).is_err());
-    assert!(judge.value(&Value::List(vec![int(1)]), &ty).is_err());
+    refused_as(
+        judge.result(&Value::List(vec![text("1")]), &ty),
+        &mismatch("[0]", &text("1"), "I64", "its shape is of another type"),
+        "at `[0]`: Text(\"1\") is not a `I64`: its shape is of another type",
+    );
+    let listed = Value::List(vec![int(1)]);
+    refused_as(
+        judge.value(&listed, &ty),
+        &mismatch("", &listed, "Set I64", "its shape is of another type"),
+        "List([Int(1)]) is not a `Set I64`: its shape is of another type",
+    );
 }
 
 #[test]
@@ -327,7 +407,17 @@ fn a_key_of_a_constructor_set_names_a_row_of_that_set() {
         .value(&large_key, &small)
         .expect_err("a key of a `Large` is no `Key tags.Small`");
     assert!(m.why.contains("names no row"), "{m}");
-    assert!(judge.value(&key(99), &small).is_err());
+    refused_as(
+        judge.value(&key(99), &small),
+        &mismatch(
+            "",
+            &key(99),
+            "Key tags.Small",
+            "it names no row of its constructor set in the database",
+        ),
+        "Key(Int(99)) is not a `Key tags.Small`: it names no row of its constructor set in the \
+         database",
+    );
     assert_eq!(judge.value(&key(99), &f.ty("Key tags")), Ok(()));
     assert_eq!(inhabits(&large_key, &small, &f.schema), Ok(()));
 }

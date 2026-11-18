@@ -808,8 +808,8 @@ fn generated_schemas_round_trip_through_arrow_rs() {
             file.fields().iter().for_each(|f| shapes(&f.ty, &mut seen));
             let n = g.rng.below(6);
             let rows = g.rows(&file, n);
-            let run = std::panic::catch_unwind(|| round_trip(&file, &rows));
-            assert!(run.is_ok(), "seed {seed} case {case}: {file:?}");
+            std::panic::catch_unwind(|| round_trip(&file, &rows))
+                .unwrap_or_else(|_| panic!("seed {seed} case {case}: {file:?}"));
         }
     }
     assert_eq!(seen, every_shape());

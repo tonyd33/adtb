@@ -237,6 +237,10 @@ fn checks_of_an_unknown_name_fail_naming_it() {
 fn a_text_is_required_without_checks() {
     let schema = fixture("app.adt").display().to_string();
     let (code, _, err) = probe_all(&["--schema", &schema], "");
-    assert!(err.contains("<TEXT>"), "{err}");
+    assert_eq!(
+        err,
+        "error: the following required arguments were not provided:\n  <TEXT>\n\nUsage: \
+         adtb-conformance probe --schema <FILE> <TEXT>\n\nFor more information, try '--help'.\n"
+    );
     assert_eq!(code, 2);
 }

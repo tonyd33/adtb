@@ -10,12 +10,24 @@ use adtb::{
 use adtb_harness::damage::{DataFile, Files};
 use adtb_lang::textual::print;
 use adtb_sys::os::{Backend, OsRuntime};
+use adtb_testkit::refused_as;
 
 const SHOP: &str = r"module shop
 add module shop
 add type Customer = { id: Key customers, name: Text }
 add relation customers : Customer key id generate sequence
 ";
+
+/// Assert `got` is refused as invalid with exactly `detail`.
+#[track_caller]
+fn invalid<T: std::fmt::Debug>(got: Result<T, adtb::Error>, detail: &str) {
+    let expected = adtb::Error::Rejected {
+        reason: adtb::RejectReason::Invalid {
+            detail: detail.to_owned(),
+        },
+    };
+    refused_as(got, &expected, detail);
+}
 
 fn scratch(name: &str) -> Scratch {
     Scratch::new("api_real_file", name)
@@ -730,11 +742,9 @@ fn backup_and_restore_write_through_no_symbolic_link() {
         let target = dir.join(format!("link-{name}"));
         std::fs::create_dir(&target).unwrap();
         symlink(to, target.join(name)).unwrap();
-        let got = back_up(&target);
-        assert!(
-            got.as_ref()
-                .is_err_and(|e| e.to_string().contains("holds files")),
-            "{name}: {got:?}"
+        invalid(
+            back_up(&target),
+            &format!("the backup target `{}` holds files", target.display()),
         );
     }
     let target = dir.join("bk");
@@ -752,20 +762,16 @@ fn backup_and_restore_write_through_no_symbolic_link() {
         |path: &Path| adtb::restore(&archive, path, adtb::RestorePoint::Latest, opening.clone());
     let dangling = dir.join("dangling.adt");
     symlink(dir.join("absent.adt"), &dangling).unwrap();
-    let got = restore_to(&dangling);
-    assert!(
-        got.as_ref()
-            .is_err_and(|e| e.to_string().contains("exists")),
-        "{got:?}"
+    invalid(
+        restore_to(&dangling),
+        &format!("the restore path `{}` exists", dangling.display()),
     );
     assert!(!dir.join("absent.adt").exists());
     let linked = dir.join("linked.adt");
     symlink(&victim, &linked).unwrap();
-    let got = restore_to(&linked);
-    assert!(
-        got.as_ref()
-            .is_err_and(|e| e.to_string().contains("exists")),
-        "{got:?}"
+    invalid(
+        restore_to(&linked),
+        &format!("the restore path `{}` exists", linked.display()),
     );
     assert_eq!(b"keep".as_slice(), std::fs::read(&victim).unwrap());
     restore_to(&dir.join("copy.adt")).unwrap();
@@ -789,11 +795,9 @@ fn a_file_or_dangling_link_at_a_target_is_occupied() {
     let dangling = dir.join("dangling");
     symlink(dir.join("absent"), &dangling).unwrap();
     for target in [&file, &dangling] {
-        let got = back_up(target);
-        assert!(
-            got.as_ref()
-                .is_err_and(|e| e.to_string().contains("holds files")),
-            "{target:?}: {got:?}"
+        invalid(
+            back_up(target),
+            &format!("the backup target `{}` holds files", target.display()),
         );
     }
     assert_eq!(b"keep".as_slice(), std::fs::read(&file).unwrap());
@@ -816,11 +820,10 @@ fn a_file_or_dangling_link_at_a_target_is_occupied() {
     std::fs::write(dir.join("one.adt-log"), b"keep").unwrap();
     symlink(dir.join("absent"), dir.join("two.adt-log")).unwrap();
     for name in ["one.adt", "two.adt"] {
-        let got = restore_to(&dir.join(name));
-        assert!(
-            got.as_ref()
-                .is_err_and(|e| e.to_string().contains("exists")),
-            "{name}: {got:?}"
+        let path = dir.join(name);
+        invalid(
+            restore_to(&path),
+            &format!("the restore path `{}` exists", path.display()),
         );
         assert!(!dir.join(name).exists(), "{name}");
     }

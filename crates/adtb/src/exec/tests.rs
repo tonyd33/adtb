@@ -19,7 +19,7 @@ use super::spill::{put, record};
 use super::types::At;
 use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal};
-use super::{Broken, Budget, Error, Exceeded, Fault, arm, to_key, to_stored};
+use super::{Broken, Budget, Error, Exceeded, Fault, Rot, arm, to_key, to_stored};
 use crate::heap::FieldType;
 use crate::key::{KeyType, Scalar};
 
@@ -283,7 +283,10 @@ fn a_spilled_value_reads_back_equal() {
         put(v, &mut bytes);
     }
     assert_eq!(Ok(vals), record(&bytes));
-    assert!(record(&bytes[..bytes.len() - 1]).is_err());
+    assert_eq!(
+        Err(Rot::SpillUndecoded.into()),
+        record(&bytes[..bytes.len() - 1])
+    );
 }
 
 #[test]

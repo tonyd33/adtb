@@ -1327,8 +1327,12 @@ fn a_rerun_within_the_limit_finishes() {
             rerun: Some(rerun),
             ..bounds
         };
-        assert!(items.run(&tx, INSERT_THEN_BUMP, rerun).is_ok());
+        let ran = items
+            .run(&tx, INSERT_THEN_BUMP, rerun)
+            .unwrap_or_else(|f| panic!("the rerun fails: {f:?}"));
+        assert_eq!(2, ran.len());
         items.db.commit(tx).unwrap();
+        assert_eq!(ints(&[1, 6]), items.values());
     });
 }
 

@@ -543,6 +543,14 @@ fn a_whole_open_removes_only_its_own_leftover_marker() {
     linked_leftover_markers_stay(&id);
 }
 
+/// Returns whether `path` is a symbolic link. Panics when nothing is at `path`.
+fn is_link(path: &Path) -> bool {
+    path.symlink_metadata()
+        .unwrap_or_else(|e| panic!("{path:?}: {e}"))
+        .file_type()
+        .is_symlink()
+}
+
 /// On the host a whole open leaves a marker naming its id that is a symbolic link, or in a
 /// reserved directory that is one, and still opens.
 fn linked_leftover_markers_stay(id: &[u8; 16]) {
@@ -569,8 +577,8 @@ fn linked_leftover_markers_stay(id: &[u8; 16]) {
                 std::fs::read(target.join("id")).unwrap(),
                 "{what}"
             );
-            assert!(reserved.symlink_metadata().is_ok(), "{what}");
-            assert!(dir.join(marker(FILE)).symlink_metadata().is_ok(), "{what}");
+            assert_eq!(linked_dir, is_link(&reserved), "{what}");
+            assert_eq!(!linked_dir, is_link(&dir.join(marker(FILE))), "{what}");
             ran += 1;
         }
     }

@@ -163,19 +163,30 @@ fn adhoc_free_names_are_parameters() {
         params.into_iter().collect::<Vec<_>>(),
         vec!["u".to_string()]
     );
-    assert!(adhoc("from i in identities select frob(i)").is_err());
+    assert_eq!(
+        Err(vec!["no `frob` in scope".to_string()]),
+        adhoc("from i in identities select frob(i)")
+    );
 }
 
 #[test]
 fn writes_bind_rows() {
     adhoc("update g in identities.Google where g.user == u set Google { g with gid: g2 }").unwrap();
-    assert!(adhoc("update g set Google { g with gid: g2 }").is_err());
+    assert_eq!(
+        Err(vec![
+            "`g` names no row bound here; write `in` and its source".to_string()
+        ]),
+        adhoc("update g set Google { g with gid: g2 }")
+    );
     adhoc(
         "insert identities.Google { user: u, gid: g } unless conflict on (gid) in Google else update old set Google { old with user: new.user }",
     )
     .unwrap();
     adhoc("transact\n  let u = insert users { name: n }\n  return key u").unwrap();
-    assert!(adhoc("insert nowhere { name: n }").is_err());
+    assert_eq!(
+        Err(vec!["no `nowhere` in scope".to_string()]),
+        adhoc("insert nowhere { name: n }")
+    );
 }
 
 #[test]

@@ -993,7 +993,8 @@ mod tests {
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             r.copied(0, 64, |_| panic!("the closure gave up"));
         }));
-        assert!(panicked.is_err());
+        let payload = panicked.expect_err("the closure panics");
+        assert_eq!(Some(&"the closure gave up"), payload.downcast_ref::<&str>());
         r.copied(0, 64, |copy| assert_eq!([1; 64], copy));
     }
 

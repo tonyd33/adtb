@@ -487,7 +487,7 @@ fn cancelled(retained: bool, at: Option<u64>, close: bool) -> (u64, usize, Resul
 fn a_cancel_or_close_in_the_last_steps_of_a_vacuum_refuses_it() {
     for retained in [false, true] {
         let (steps, queues, got) = cancelled(retained, None, false);
-        assert!(got.is_ok(), "{got:?}");
+        assert_eq!(Ok(()), got);
         assert!(
             queues <= 1,
             "retained {retained}: {queues} queues for one vacuum"

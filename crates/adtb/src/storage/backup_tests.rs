@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::runtime::{Done, IoError, Op, OpKind, Runtime, Threads};
 use crate::storage::{
-    self, BackupError, BackupRun, Damage, Envelope, HEADER_LEN, Lsn, Manifest, Options, PageKind,
-    Pager, Pid, Quarantine,
+    self, BackupError, BackupRun, Damage, Envelope, HEADER_LEN, Lsn, Manifest, Options, PageError,
+    PageKind, Pager, Pid, Quarantine,
 };
 use crate::test_world::api;
 use crate::test_world::load as open;
@@ -660,7 +660,16 @@ fn old_position_past_end_refused() {
                 },
             )
         };
-        assert!(read_after(inside).is_ok(), "the position is on the history");
+        let on_history: Vec<_> = read_after(inside)
+            .unwrap()
+            .into_iter()
+            .map(api::sorted)
+            .collect();
+        assert_eq!(
+            vec![vec!["users.key(0)", "users.key(1)", "users.key(2)"]],
+            on_history,
+            "the position is on the history"
+        );
         match read_after(lost) {
             Err(Error::Rejected {
                 reason: RejectReason::PositionNotOnHistory { position },
@@ -807,8 +816,16 @@ fn a_role_backs_up_inside_the_export_roots() {
                 if detail.contains("export_roots")),
             "{outside:?}"
         );
-        let beyond = api::task(&rt, &ops, "backup to \"out/../role-bk\"");
-        assert!(beyond.is_err(), "{beyond:?}");
+        let detail = "path `out/../role-bk` is outside export_roots";
+        adtb_testkit::refused_as(
+            api::task(&rt, &ops, "backup to \"out/../role-bk\""),
+            &Error::Rejected {
+                reason: RejectReason::Denied {
+                    detail: detail.into(),
+                },
+            },
+            &format!("denied: {detail}"),
+        );
         let root = api::task(&rt, &ops, "backup to \"out\"");
         assert!(
             matches!(&root, Err(Error::Rejected { reason: RejectReason::Denied { detail } })
@@ -1878,7 +1895,14 @@ fn a_restore_under_a_rotted_bitmap_opens_and_lists_it() {
         assert!(manifest.damaged.contains(&bitmap), "{:?}", manifest.damaged);
         let copy = pager_options(COPY, false, 1 << 20);
         let (pager, _) = Pager::open(rt, &copy).unwrap();
-        assert!(pager.read(bitmap).is_err(), "the bitmap stays rotted");
+        assert_eq!(
+            Some(PageError {
+                pid: bitmap,
+                damage: Damage::Checksum
+            }),
+            pager.read(bitmap).err(),
+            "the bitmap stays rotted"
+        );
         assert_eq!(
             storage::kind(&pager.read(used).unwrap()),
             PageKind::HeapSlotted as u16
@@ -2208,7 +2232,7 @@ fn assert_backup_outcome(published: bool, retried: &Result<(), Error>, files: Fi
     if published {
         is_invalid_naming(retried, "holds files");
     } else {
-        assert!(retried.is_ok(), "{label}: the retry: {retried:?}");
+        assert_eq!(&Ok(()), retried, "{label}: the retry");
         expected.insert(LATER_ROW);
     }
     assert_eq!(expected, restored_rows(files).unwrap(), "{label}");
@@ -2245,10 +2269,12 @@ fn a_backup_with_any_op_failed() {
         |failed| {
             let label = format!("op {} {}", failed.at, failed.struck);
             let out = failed.out;
-            assert!(
-                out.got.is_err() || out.published,
-                "{label}: answered success with nothing published"
-            );
+            if out.got == Ok(()) {
+                assert!(
+                    out.published,
+                    "{label}: answered success with nothing published"
+                );
+            }
             if !stops_a_cleanup(&failed.struck) && out.got.is_err() {
                 assert!(out.asides.is_empty(), "{label}: {:?}", out.asides);
             }
@@ -2375,8 +2401,7 @@ fn assert_restore_state(base: &Files, files: &Files, crashed: bool, seed: u64, l
         if has_file || has_log {
             is_invalid_naming(&restore(&rt), "exists");
         } else {
-            let got = restore(&rt);
-            assert!(got.is_ok(), "{label}: the retry: {got:?}");
+            assert_eq!(Ok(()), restore(&rt), "{label}: the retry");
         }
         if has_log && !has_file {
             return;
@@ -2417,10 +2442,12 @@ fn a_restore_with_any_op_failed() {
         let label = format!("op {} {}", failed.at, failed.struck);
         let (got, files_open) = failed.out;
         assert_eq!(0, files_open, "{label}");
-        assert!(
-            got.is_err() || failed.files.contains_key(COPY),
-            "{label}: answered success with nothing published"
-        );
+        if got == Ok(()) {
+            assert!(
+                failed.files.contains_key(COPY),
+                "{label}: answered success with nothing published"
+            );
+        }
         if !stops_a_cleanup(&failed.struck) && got.is_err() {
             let left: Vec<_> = failed.files.keys().filter(|p| is_aside(p)).collect();
             assert!(left.is_empty(), "{label}: {left:?}");
@@ -2532,10 +2559,10 @@ fn an_open_at_each_op_of_a_restore() {
             let joined = joined.expect("the second run started");
             rt.join(joined);
             let opened = opened.lock().unwrap().take().expect("the thread ended");
-            assert!(
-                restored.is_ok() || opened.is_ok(),
-                "op {at:?}: {restored:?} {opened:?}"
-            );
+            match (&restored, &opened) {
+                (Ok(()), _) | (_, Ok(())) => {}
+                _ => panic!("op {at:?}: neither wins: {restored:?} {opened:?}"),
+            }
             let tally = if restored.is_ok() {
                 &restore_won
             } else {
@@ -2663,10 +2690,20 @@ fn a_backup_refuses_a_block_of_another_file_in_the_log() {
         let file = common::open(&rt, &mut io, name, false).unwrap().0;
         common::write(&rt, &mut io, file, last as u64, &foreign).unwrap();
         let text = format!("backup to {TARGET:?}");
-        let got = db.query_text(&text, &[], &CallOptions::default());
-        assert!(got.is_err(), "{got:?}");
-        assert!(
-            storage::read_manifest(&rt, TARGET).is_err(),
+        let at = super::log::parse_segment(name).expect("a segment name") + last as u64;
+        let detail = format!("`log block at {at}`: Failed");
+        adtb_testkit::refused_as(
+            db.query_text(&text, &[], &CallOptions::default()),
+            &Error::Fatal {
+                reason: FatalReason::Storage {
+                    detail: detail.clone(),
+                },
+            },
+            &format!("fatal: storage failure: {detail}"),
+        );
+        assert_eq!(
+            Some(BackupError::Absent(TARGET.into())),
+            storage::read_manifest(&rt, TARGET).err(),
             "nothing was published"
         );
         drop(db);
@@ -2698,10 +2735,10 @@ fn two_restores_to_one_path() {
             let joined = joined.expect("the second run started");
             rt.join(joined);
             let second = second.lock().unwrap().take().expect("the thread ended");
-            assert!(
-                first.is_ok() != second.is_ok(),
-                "op {at:?}: {first:?} {second:?}"
-            );
+            match (&first, &second) {
+                (Ok(()), Err(_)) | (Err(_), Ok(())) => {}
+                _ => panic!("op {at:?}: not exactly one wins: {first:?} {second:?}"),
+            }
             is_invalid_naming(&first.and(second), "exists");
         }
     };
@@ -2777,11 +2814,9 @@ fn a_failed_read_of_the_test_database_records_no_verdict() {
     };
     search::each_failure(&base, 96, FAILURES, workload, |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
-        assert!(
-            matches!(failed.out, Err(_) | Ok(Proof::Proven)),
-            "{label}: a false verdict: {:?}",
-            failed.out
-        );
+        if let Ok(proof) = &failed.out {
+            assert_eq!(&Proof::Proven, proof, "{label}: a false verdict");
+        }
     });
 }
 
@@ -2969,8 +3004,19 @@ fn a_restore_that_fails_its_check_never_shows_a_file() {
             &rt,
             Match::kind(OpKind::Open).prefixed("copy.adt-log"),
         ));
-        let got = restore_in(rt, &archive(), COPY, RestorePoint::Latest, &no_create());
-        assert!(got.is_err(), "{got:?}");
+        let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
+        let start = manifest.start.lsn.0;
+        let first = start - start % u64::from(manifest.header.log_block);
+        let detail = format!("`log block at {first}`: Failed");
+        adtb_testkit::refused_as(
+            restore_in(rt, &archive(), COPY, RestorePoint::Latest, &no_create()),
+            &Error::Fatal {
+                reason: FatalReason::Storage {
+                    detail: detail.clone(),
+                },
+            },
+            &format!("fatal: storage failure: {detail}"),
+        );
         assert_eq!(
             0,
             shown.get(),

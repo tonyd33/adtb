@@ -817,8 +817,17 @@ fn no_crash_while_crossing_a_group_refuses_a_healthy_file() {
                 finished(&mut sim, |rt| {
                     let pager = pager_of(rt);
                     assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals(), "{what}");
-                    assert!(pager.allocated().is_ok(), "{what}");
-                    assert!(pager.allocate(1, PageKind::Catalog, 1).is_ok(), "{what}");
+                    let before = pager
+                        .allocated()
+                        .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                    let pid = pager
+                        .allocate(1, PageKind::Catalog, 1)
+                        .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                    assert!(!before.contains(&pid), "{what}: {pid:?} was allocated");
+                    let mut after = before;
+                    after.push(pid);
+                    after.sort_unstable();
+                    assert_eq!(Ok(after), pager.allocated(), "{what}");
                     assert_eq!(BTreeSet::new(), Probe::of(&pager).marks(), "{what}");
                     pager.close();
                 });

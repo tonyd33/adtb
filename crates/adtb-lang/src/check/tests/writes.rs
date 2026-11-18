@@ -1545,7 +1545,8 @@ fn a_feed_resolves_over_the_modules_its_bundle_sees() {
     .expect("module billing parses");
     let s = build(&[(FileId(0), auth), (FileId(1), billing)])
         .unwrap_or_else(|ds| panic!("the schema builds: {ds:?}"));
-    let items = parse_example("feed payout_changes of payouts", Options::default())
+    let text = "feed payout_changes of payouts";
+    let items = parse_example(text, Options::default())
         .ok()
         .expect("parses");
     let Some(ExampleItem::BundleItem(BundleItem::Feed(f))) = items.into_iter().next() else {
@@ -1555,7 +1556,13 @@ fn a_feed_resolves_over_the_modules_its_bundle_sees() {
     let vis = Visible::of(vec![module("auth"), module("billing")]);
     let (rel, _) = check_feed_in(&s, vis, &f).unwrap_or_else(|d| panic!("refused: {d:?}"));
     assert_eq!("payouts", s.relation(rel).name);
-    assert!(check_feed(&s, module("auth"), &f).is_err());
+    assert_eq!(
+        Err(Diag::new(
+            Span::new(text.find("payouts").unwrap(), text.len()),
+            "no `payouts` in scope"
+        )),
+        check_feed(&s, module("auth"), &f).map(|_| ())
+    );
 }
 
 #[test]

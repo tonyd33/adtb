@@ -72,7 +72,8 @@ mod tests {
             path = Some(scratch.path().to_owned());
             panic!("the owner fails");
         }));
-        assert!(outcome.is_err());
+        let payload = outcome.expect_err("the owner panics");
+        assert_eq!(Some(&"the owner fails"), payload.downcast_ref::<&str>());
         let path = path.unwrap();
         assert!(path.is_dir());
         std::fs::remove_dir_all(path).unwrap();

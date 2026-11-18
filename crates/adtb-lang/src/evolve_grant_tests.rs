@@ -2214,7 +2214,12 @@ fn a_parameter_name_is_not_part_of_the_ids() {
 fn a_signature_writes_a_schema_type_as_module_and_name() {
     let schema = sig_source(&[SIG_SHOP]).committed().unwrap();
     let s = crate::signature::family_signature("web::q at 1 () -> Item").unwrap();
-    assert!(crate::signature::signature_ids(&schema, &s).is_err());
+    let reason = "no type `Item`";
+    adtb_testkit::refused_as(
+        crate::signature::signature_ids(&schema, &s).map(|_| ()),
+        &reason.to_string(),
+        reason,
+    );
     assert!(crate::signature::family_signature("web::q").is_none());
 }
 

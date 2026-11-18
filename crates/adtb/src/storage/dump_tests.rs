@@ -584,7 +584,11 @@ fn log_grant_ids_that_do_not_pair_with_the_replayed_grants_are_refused_naming_id
         ("twice", grants(twice)),
         ("none", grants(|_| String::new())),
     ] {
-        assert_eq!("ids", api::damaged_dump_part(refused_with(bad)), "{label}");
+        assert_eq!(
+            "ids",
+            api::damaged_dump_part(restore_writing_nothing(bad)),
+            "{label}"
+        );
     }
 }
 
@@ -817,8 +821,8 @@ fn a_dump_in_a_transaction_that_wrote_is_refused_and_a_read_only_one_dumps_its_s
             .query_text("insert users { name: \"rolled\" }", &[], &call)
             .unwrap();
         let got = wrote.query_text(&format!("dump to \"{DUMP}\""), &[], &call);
-        is_invalid_naming(
-            &got.map(drop),
+        refused_invalid(
+            got.map(drop),
             "`dump` does not run in a transaction that has written",
         );
         wrote.rollback().unwrap();
@@ -881,11 +885,14 @@ fn changes() -> Match {
     ])
 }
 
-fn is_invalid_naming(got: &Result<(), Error>, word: &str) {
-    assert!(
-        matches!(got, Err(e) if api::is_invalid(e) && e.to_string().contains(word)),
-        "not invalid naming `{word}`: {got:?}"
-    );
+#[track_caller]
+fn refused_invalid(got: Result<(), Error>, detail: &str) {
+    let invalid = Error::Rejected {
+        reason: RejectReason::Invalid {
+            detail: detail.into(),
+        },
+    };
+    adtb_testkit::refused_as(got, &invalid, detail);
 }
 
 #[test]
@@ -895,7 +902,10 @@ fn a_restore_to_an_existing_path_and_a_dump_to_a_full_directory_are_refused() {
     let mut sim = Sim::with_files(5, Config::default(), files.clone());
     process::run(&mut sim, |rt| {
         rt.arm(changes().prefixed(COPY));
-        is_invalid_naming(&restore_dump(&rt), "exists");
+        refused_invalid(
+            restore_dump(&rt),
+            &format!("the restore path `{COPY}` exists"),
+        );
         assert_eq!(
             0,
             rt.disarm(),
@@ -904,7 +914,10 @@ fn a_restore_to_an_existing_path_and_a_dump_to_a_full_directory_are_refused() {
         let db =
             Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &open::options(2)).unwrap();
         rt.arm(changes().prefixed(DUMP));
-        is_invalid_naming(&dump(&db), "holds files");
+        refused_invalid(
+            dump(&db),
+            &format!("the backup target `{DUMP}` holds files"),
+        );
         assert_eq!(
             0,
             rt.disarm(),
@@ -1111,7 +1124,7 @@ fn resealed(files: &Files, edit: impl Fn(&str) -> String) -> Files {
 }
 
 /// Returns what a restore of the dump in `files` answers, asserting it changed no file.
-fn refused_with(files: Files) -> Result<(), Error> {
+fn restore_writing_nothing(files: Files) -> Result<(), Error> {
     let mut sim = Sim::with_files(15, Config::default(), files.clone());
     let got = process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create())
@@ -1239,17 +1252,33 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
         ),
     ];
     for (part, bad) in cases.into_iter().chain(more) {
-        assert_eq!(part, api::damaged_dump_part(refused_with(bad)), "{part}");
+        assert_eq!(
+            part,
+            api::damaged_dump_part(restore_writing_nothing(bad)),
+            "{part}"
+        );
     }
     let newer = reissued(&files, |e| e.catalog_version += 1, |_, t| t.to_owned());
-    let version = format!("catalog version {}", e.catalog_version + 1);
-    is_invalid_naming(&refused_with(newer), &version);
+    refused_invalid(
+        restore_writing_nothing(newer),
+        &format!(
+            "this engine does not read a dump of edition {} and catalog version {}",
+            e.edition,
+            e.catalog_version + 1
+        ),
+    );
     let other = reissued(
         &files,
         |e| e.edition = "1999".to_owned(),
         |_, t| t.to_owned(),
     );
-    is_invalid_naming(&refused_with(other), "edition 1999");
+    refused_invalid(
+        restore_writing_nothing(other),
+        &format!(
+            "this engine does not read a dump of edition 1999 and catalog version {}",
+            e.catalog_version
+        ),
+    );
 }
 
 #[test]
@@ -1285,7 +1314,11 @@ fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_not
     ];
     let named = ["security", "security", "security", "settings", "audit"];
     for (part, bad) in named.into_iter().zip(cases) {
-        assert_eq!(part, api::damaged_dump_part(refused_with(bad)), "{part}");
+        assert_eq!(
+            part,
+            api::damaged_dump_part(restore_writing_nothing(bad)),
+            "{part}"
+        );
     }
     let (index, app, tool) = ("bundles/index", "bundles/app-1.0", "bundles/tool-1.0");
     assert!(text(index).contains("family 2 tool\n"), "{}", text(index));
@@ -1375,7 +1408,11 @@ fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_not
         (tool, without(&files, "security")),
     ];
     for (part, bad) in bundles {
-        assert_eq!(part, api::damaged_dump_part(refused_with(bad)), "{part}");
+        assert_eq!(
+            part,
+            api::damaged_dump_part(restore_writing_nothing(bad)),
+            "{part}"
+        );
     }
 }
 
@@ -1721,7 +1758,7 @@ fn a_restore_to_a_free_path_with_an_occupied_log_directory_is_refused_naming_it(
     let got = process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create())
     });
-    is_invalid_naming(&got, &format!("`{COPY}-log` exists"));
+    refused_invalid(got, &format!("the restore path `{COPY}-log` exists"));
     assert_eq!(files, sim.files());
 }
 
@@ -1758,7 +1795,10 @@ fn ids_are_compared_as_rows_not_as_text() {
     process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
     });
-    assert_eq!("ids", api::damaged_dump_part(refused_with(one_off)));
+    assert_eq!(
+        "ids",
+        api::damaged_dump_part(restore_writing_nothing(one_off))
+    );
 }
 
 const FAILURES: u64 = 4;
@@ -1900,7 +1940,10 @@ fn a_dump_with_any_op_failed_writes_all_or_nothing() {
     search::each_failure(&base, 13, FAILURES, armed_dump, |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
         let whole = failed.files.contains_key(&format!("{DUMP}/manifest"));
-        assert_eq!(failed.out.is_ok(), whole, "{label}: {:?}", failed.out);
+        match &failed.out {
+            Ok(()) => assert!(whole, "{label}: answered success with no manifest"),
+            Err(e) => assert!(!whole, "{label}: a manifest after the failure {e:?}"),
+        }
         assert_dumped_or_absent(&failed.files, 13, &label);
     });
 }

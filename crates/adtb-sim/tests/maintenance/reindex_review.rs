@@ -5,7 +5,7 @@
 
 use crate::catalog_root::changing_words;
 use adtb_harness::process;
-use adtb_testkit::refused_with;
+use adtb_testkit::refused_as;
 use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -845,6 +845,15 @@ fn a_closed_job_leaves_a_clean_file() {
     db.close().unwrap();
 }
 
+/// Returns the refusal of a read of `what` while it is quarantined.
+fn quarantined(what: &str) -> adtb::Error {
+    adtb::Error::Fatal {
+        reason: adtb::FatalReason::Quarantined {
+            what: what.to_owned(),
+        },
+    }
+}
+
 #[test]
 fn dropping_every_handle_after_a_reindex_starts_releases_the_file() {
     let (_dir, p) = path("drop");
@@ -859,12 +868,9 @@ fn dropping_every_handle_after_a_reindex_starts_releases_the_file() {
     wait_for_build(&db);
     go.store(true, Ordering::Release);
     drop(db);
-    let again = Database::open(&p, &Log::new([APP]), &open::options(4));
-    assert!(
-        again.is_ok(),
-        "the file is still held after every handle dropped"
-    );
-    again.unwrap().close().unwrap();
+    let again = Database::open(&p, &Log::new([APP]), &open::options(4))
+        .unwrap_or_else(|e| panic!("the file is still held after every handle dropped: {e:?}"));
+    again.close().unwrap();
 }
 
 const SEQ: &str = r"module app
@@ -1049,8 +1055,9 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
                 damage: Damage::Checksum,
             })
             .unwrap();
-        refused_with(
+        refused_as(
             db.query_text(&read, &[], &CallOptions::default()),
+            &quarantined("app::ts key id"),
             "fatal: app::ts key id is quarantined",
         );
         assert_eq!(1, marks(&db).len(), "{:?}", marks(&db));
@@ -1146,8 +1153,9 @@ fn a_history_tree_that_cannot_be_rebuilt_keeps_the_mark() {
                 damage: Damage::Checksum,
             })
             .unwrap();
-        refused_with(
+        refused_as(
             db.query_text(&read, &[], &CallOptions::default()),
+            &quarantined("app::ts key id"),
             "fatal: app::ts key id is quarantined",
         );
         let before = marks(&db);

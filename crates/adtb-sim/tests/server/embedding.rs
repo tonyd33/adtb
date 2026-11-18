@@ -576,9 +576,15 @@ fn the_open_time_settings_show_read_only_in_sys_process_options() {
             &[],
             &CallOptions::default(),
         );
-        assert!(
-            refused.is_err(),
-            "no write changes an open-time setting: {refused:?}"
+        let detail = "programs cannot write system relation `sys::process_options`";
+        adtb_testkit::refused_as(
+            refused,
+            &Error::Rejected {
+                reason: RejectReason::Denied {
+                    detail: detail.to_owned(),
+                },
+            },
+            &format!("denied: {detail}"),
         );
     });
 }

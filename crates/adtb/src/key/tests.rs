@@ -556,19 +556,20 @@ fn ovarint_bytes_and_order() {
 
 #[test]
 fn ovarint_refuses_other_forms() {
-    let bad: [&[u8]; 9] = [
-        &[0xF0, 0xEF],
-        &[0xF0, 0x05],
-        &[0xF1, 0x00, 0xFF],
-        &[0xF2, 0x00, 0xFF, 0xFF],
-        &[0xF3, 0x00, 0xFF, 0xFF, 0xFF],
-        &[0xF4, 0x01, 0x00, 0x00, 0x00, 0x00],
-        &[0xFF],
-        &[0xF1, 0x01],
-        &[],
+    use DecodeError::{BadVarint, UnexpectedEnd};
+    let bad: [(&[u8], DecodeError); 9] = [
+        (&[0xF0, 0xEF], BadVarint),
+        (&[0xF0, 0x05], BadVarint),
+        (&[0xF1, 0x00, 0xFF], BadVarint),
+        (&[0xF2, 0x00, 0xFF, 0xFF], BadVarint),
+        (&[0xF3, 0x00, 0xFF, 0xFF, 0xFF], BadVarint),
+        (&[0xF4, 0x01, 0x00, 0x00, 0x00, 0x00], BadVarint),
+        (&[0xFF], BadVarint),
+        (&[0xF1, 0x01], UnexpectedEnd),
+        (&[], UnexpectedEnd),
     ];
-    for bytes in bad {
-        assert!(ovarint_decode(bytes).is_err(), "{bytes:x?}");
+    for (bytes, refusal) in bad {
+        assert_eq!(Err(refusal), ovarint_decode(bytes), "{bytes:x?}");
     }
 }
 

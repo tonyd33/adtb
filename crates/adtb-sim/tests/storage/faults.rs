@@ -400,9 +400,13 @@ fn unforced_directory_takes_its_files_at_a_crash() {
         let survived = run(&mut sim, |rt, io| {
             complete(rt, io, Op::List { dir: "log".into() }).result
         });
+        let expected = if files.contains_key("log/0") {
+            Ok(Done::Listed(vec!["log/0".to_owned()]))
+        } else {
+            Err(IoError::NotFound)
+        };
         assert_eq!(
-            files.contains_key("log/0"),
-            survived.is_ok(),
+            expected, survived,
             "seed {seed}: the file outlives its directory or the reverse"
         );
     }

@@ -4,9 +4,12 @@ mod names;
 use std::collections::BTreeSet;
 
 use adtb::Value as Val;
-use adtb::{CallOptions, Database, Error, RejectReason, TxnCallOptions, TxnOptions};
+use adtb::{
+    CallOptions, Database, Error, RejectReason, RetryReason, TxnCallOptions, TxnId, TxnOptions,
+};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::load;
+use adtb_testkit::refused_as;
 
 /// Run `body` over a new database of the declarations `src` in a simulation of `seed`, and
 /// return what it returns.
@@ -64,18 +67,22 @@ constraint assigned_member =
 ";
 
 /// Run `a` and `b` in two transactions in the order `order` gives, a sequence over `'a'` and
-/// `'b'` for a statement and `'A'` and `'B'` for a commit. Returns how each ended.
+/// `'b'` for a statement and `'A'` and `'B'` for a commit. Returns each transaction's id and
+/// how each ended.
 fn interleave(
     db: &Database<SimRuntime>,
     a: &str,
     b: &str,
     order: &str,
-) -> (Result<(), Error>, Result<(), Error>) {
+) -> ([TxnId; 2], Result<(), Error>, Result<(), Error>) {
     let mut ends: [Result<(), Error>; 2] = [Ok(()), Ok(())];
     let mut open = [
         Some(db.begin(&TxnOptions::default()).expect("a transaction")),
         Some(db.begin(&TxnOptions::default()).expect("a transaction")),
     ];
+    let ids = open
+        .each_ref()
+        .map(|t| t.as_ref().expect("an open transaction").id());
     for step in order.chars() {
         let i = usize::from(step.eq_ignore_ascii_case(&'b'));
         if ends[i].is_err() {
@@ -96,44 +103,70 @@ fn interleave(
         }
     }
     let [ra, rb] = ends;
-    (ra, rb)
+    (ids, ra, rb)
 }
 
-/// Returns whether `e` is a serialization failure or a violation of a constraint.
-fn serial_or_violated(e: &Error) -> bool {
-    e.is_serialization()
-        || matches!(
-            e,
-            Error::Rejected {
-                reason: RejectReason::Violated { .. }
-            }
-        )
+/// Assert that `got`, how transaction `txn` ended, is a success, its serialization failure, or
+/// the violation of constraint `app::name` by the one row `report`.
+fn serial_or_violated(got: &Result<(), Error>, txn: TxnId, name: &str, report: &Val, ctx: &str) {
+    let Err(e) = got else { return };
+    let serialization = Error::Retry {
+        reason: RetryReason::Serialization {
+            txn,
+            on: String::new(),
+        },
+    };
+    if *e == serialization {
+        let reason = format!(
+            "transaction {} conflicts with a concurrent transaction; retry",
+            txn.0
+        );
+        refused_as(got.clone(), &serialization, &reason);
+        return;
+    }
+    let violated = Error::Rejected {
+        reason: RejectReason::Violated {
+            constraint: format!("app::{name}"),
+            report: vec![report.clone()],
+            redacted: 0,
+        },
+    };
+    assert_eq!(
+        &violated, e,
+        "{ctx}: a failure other than serialization or the constraint"
+    );
+    refused_as(
+        got.clone(),
+        &violated,
+        &format!("constraint `app::{name}` is violated by 1 row"),
+    );
 }
 
 /// Assert that after `setup`, two transactions running `a` and `b`, each of which keeps the
 /// constraint whose query is `denial` alone, never both commit in any order of their
-/// statements and commits, that a failure is a serialization failure, and that the constraint
-/// holds afterwards.
-fn serial(name: &str, src: &str, setup: &str, a: &str, b: &str, denial: &str) {
+/// statements and commits, that a failure is the failing transaction's serialization failure
+/// or the constraint's violation by the one row `report`, and that the constraint holds
+/// afterwards.
+fn serial(name: &str, src: &str, setup: &str, a: &str, b: &str, denial: &str, report: &Val) {
     for order in ["abAB", "abBA", "aAbB", "baAB", "baBA", "bBaA"] {
         for seed in 0..2 {
-            let (ra, rb, left) = with_engine(seed, src, |db| {
+            let ([ta, tb], ra, rb, left) = with_engine(seed, src, |db| {
                 run(db, setup, &format!("{name}, seed {seed}: the setup"));
-                let (ra, rb) = interleave(db, a, b, order);
-                (ra, rb, read(db, denial))
+                let (ids, ra, rb) = interleave(db, a, b, order);
+                (ids, ra, rb, read(db, denial))
             });
             let ctx = format!("{name}, order {order}, seed {seed}: {ra:?} {rb:?}");
+            let failed: Vec<&Error> = [&ra, &rb]
+                .into_iter()
+                .filter_map(|r| r.as_ref().err())
+                .collect();
             if order.starts_with("aA") || order.starts_with("bB") {
-                assert!(ra.is_ok() != rb.is_ok(), "{ctx}: not exactly one commits");
+                assert_eq!(1, failed.len(), "{ctx}: not exactly one commits");
             } else {
-                assert!(ra.is_err() || rb.is_err(), "{ctx}: both commit");
+                assert_ne!(0, failed.len(), "{ctx}: both commit");
             }
-            for e in [&ra, &rb].into_iter().filter_map(|r| r.as_ref().err()) {
-                assert!(
-                    serial_or_violated(e),
-                    "{ctx}: a failure other than serialization or the constraint"
-                );
-            }
+            serial_or_violated(&ra, ta, name, report, &ctx);
+            serial_or_violated(&rb, tb, name, report, &ctx);
             assert_eq!(BTreeSet::new(), left, "{ctx}: the constraint is violated");
         }
     }
@@ -151,6 +184,7 @@ fn concurrent_deletes_of_two_identities_cannot_jointly_violate_at_least_one() {
         "delete i in identities where key i == identities.key(1)",
         "delete i in identities where key i == identities.key(2)",
         "from u in users where not exists i in identities where i.user == key u select u",
+        &Val::Ctor(0, [Val::Int(1), Val::Text("ann".into())].into()),
     );
 }
 
@@ -173,6 +207,7 @@ constraint identity_limit =
         r#"insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g2" }"#,
         r#"insert identities.Google { id: identities.key(3), user: users.key(1), gid: "g3" }"#,
         "from u in users where count(i for i in identities where i.user == key u) > 2 select u",
+        &Val::Ctor(0, [Val::Int(1), Val::Text("ann".into())].into()),
     );
 }
 
@@ -185,6 +220,16 @@ fn a_concurrent_delete_and_insert_cannot_jointly_violate_an_inclusion() {
         r#"delete m in memberships where m.user == "u""#,
         r#"insert assignments { id: assignments.key(1), user: "u", org: "o1", task: "t" }"#,
         "from a in assignments where not exists m in memberships where m.user == a.user and m.org == a.org select a",
+        &Val::Ctor(
+            0,
+            [
+                Val::Int(1),
+                Val::Text("u".into()),
+                Val::Text("o1".into()),
+                Val::Text("t".into()),
+            ]
+            .into(),
+        ),
     );
 }
 
@@ -215,11 +260,11 @@ fn deleting_a_referenced_row_reads_its_referrers_through_the_implied_index() {
         for seed in 0..2 {
             let (ra, rb, notes) = with_engine(seed, OWNED, |db| {
                 run(db, setup, &format!("seed {seed}: the setup"));
-                let (ra, rb) = interleave(db, a, b, order);
+                let (_, ra, rb) = interleave(db, a, b, order);
                 (ra, rb, read(db, "from n in notes select n.id"))
             });
             let ctx = format!("order {order}, seed {seed}: {ra:?} {rb:?}");
-            assert!(ra.is_ok() && rb.is_ok(), "{ctx}: a probe conflicts");
+            assert_eq!([Ok(()), Ok(())], [ra, rb], "{ctx}: a probe conflicts");
             assert_eq!(BTreeSet::from([Val::Int(10)]), notes, "{ctx}: the cascade");
         }
     }

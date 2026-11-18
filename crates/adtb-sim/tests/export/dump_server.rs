@@ -7,15 +7,15 @@ use adtb::Dormant;
 use adtb::Passphrase;
 use adtb::testing::{Plant, Quarantine};
 use adtb::{
-    ArchiveTarget, CallOptions, Capability, Database, Log, OpenOptions, RestorePoint,
-    restore_report_in,
+    ArchiveTarget, CallOptions, Capability, Database, Error, FatalReason, Log, OpenOptions,
+    RejectReason, RestorePoint, restore_report_in,
 };
 use adtb_harness::process;
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_testkit::refused_with;
+use adtb_testkit::refused_as;
 
 const APP: &str = r"module app
 add module app
@@ -82,6 +82,17 @@ fn opened(
     db
 }
 
+/// Assert `got` is denied with exactly `detail`.
+#[track_caller]
+fn denied<T: std::fmt::Debug>(got: Result<T, Error>, detail: &str) {
+    let expected = Error::Rejected {
+        reason: RejectReason::Denied {
+            detail: detail.to_owned(),
+        },
+    };
+    refused_as(got, &expected, &format!("denied: {detail}"));
+}
+
 fn ops(db: &Database<SimRuntime>) -> adtb::RoleSession<SimRuntime> {
     db.role_authority().session("ops").unwrap()
 }
@@ -114,24 +125,24 @@ fn nothing_written(sim: &Sim) {
 fn each_missing_authority_refuses_a_dump_and_writes_nothing() {
     let mut sim = Sim::new(541, Config::default());
     process::run(&mut sim, |rt| {
-        for (lacking, reason) in [
-            (Capability::Maintain, "denied: role `ops` lacks `maintain`"),
-            (
-                Capability::WriteFiles,
-                "denied: role `ops` lacks `write_files`",
-            ),
+        for (lacking, detail) in [
+            (Capability::Maintain, "role `ops` lacks `maintain`"),
+            (Capability::WriteFiles, "role `ops` lacks `write_files`"),
         ] {
             let held: Vec<_> = OPS.into_iter().filter(|c| *c != lacking).collect();
             let db = opened(&rt, lacking.name(), &held, true, true);
-            refused_with(api::task(&rt, &ops(&db), DUMP), reason);
+            denied(api::task(&rt, &ops(&db), DUMP), detail);
             db.close().unwrap();
         }
         let db = opened(&rt, "unread", &OPS, false, true);
-        let reason = "denied: role `ops` reads users.User and lacks read";
-        refused_with(api::task(&rt, &ops(&db), DUMP), reason);
+        let detail = "role `ops` reads users.User and lacks read";
+        denied(api::task(&rt, &ops(&db), DUMP), detail);
         db.close().unwrap();
         let db = opened(&rt, "unschema", &OPS, true, false);
-        refused_with(api::task(&rt, &ops(&db), DUMP), HIDDEN);
+        denied(
+            api::task(&rt, &ops(&db), DUMP),
+            "role `ops` may not run this text",
+        );
         db.close().unwrap();
         let db = opened(&rt, "data", &OPS, true, true);
         let authority = db.role_authority();
@@ -274,17 +285,21 @@ fn a_dump_path_outside_the_export_roots_or_existing_is_refused() {
     process::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
         for path in ["d", "out/../d", "out", "/d"] {
-            let reason = format!("denied: path `{path}` is outside export_roots");
-            refused_with(
+            denied(
                 api::task(&rt, &ops(&db), &format!("dump to \"{path}\"")),
-                &reason,
+                &format!("path `{path}` is outside export_roots"),
             );
         }
         api::task(&rt, &ops(&db), DUMP).unwrap();
         let in_process = db.query_text(DUMP, &[], &CallOptions::default()).map(drop);
         let reason = "the backup target `data/out/d` holds files";
-        refused_with(in_process, reason);
-        refused_with(api::task(&rt, &ops(&db), DUMP), reason);
+        let occupied = Error::Rejected {
+            reason: RejectReason::Invalid {
+                detail: reason.to_owned(),
+            },
+        };
+        refused_as(in_process, &occupied, reason);
+        refused_as(api::task(&rt, &ops(&db), DUMP), &occupied, reason);
         db.close().unwrap();
     });
 }
@@ -301,8 +316,10 @@ fn a_dump_through_a_symlink_out_of_the_export_roots_is_refused() {
     process::run(&mut sim, |rt| {
         let root = base.to_str().unwrap();
         let db = opened(&rt, root, &OPS, true, true);
-        let reason = "denied: path `out/link/d` is outside export_roots";
-        refused_with(api::task(&rt, &ops(&db), "dump to \"out/link/d\""), reason);
+        denied(
+            api::task(&rt, &ops(&db), "dump to \"out/link/d\""),
+            "path `out/link/d` is outside export_roots",
+        );
         db.close().unwrap();
     });
     nothing_written(&sim);
@@ -332,7 +349,16 @@ fn a_text_that_does_not_parse_audits_only_the_names_of_its_parameters() {
         let db = opened(&rt, "data", &OPS, true, true);
         let key = [("k", Ty::Base(Base::Text), adtb::Value::text(PHRASE))];
         let broken = "dump to \"out/d\" encrypt k )";
-        api::task_bound(&rt, &ops(&db), broken, &key).unwrap_err();
+        let detail = "expected an expression, found `)`";
+        refused_as(
+            api::task_bound(&rt, &ops(&db), broken, &key),
+            &Error::Rejected {
+                reason: RejectReason::Invalid {
+                    detail: detail.to_owned(),
+                },
+            },
+            detail,
+        );
         let names = printed_hash(b"k\0");
         assert_ne!(names, args_hash(&[("k", &format!("{PHRASE:?}"))]));
         assert_eq!(vec![names], rows(&db, ARGS));
@@ -395,9 +421,17 @@ fn a_file_quarantined_whole_dumps_through_a_server_and_refuses_every_other_text(
         db.testing()
             .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
-        let reason = "fatal: the database is quarantined";
+        let quarantined = Error::Fatal {
+            reason: FatalReason::Quarantined {
+                what: "the database".to_owned(),
+            },
+        };
         for text in ["app::users", "print schema", "dump to \"out/e\"\nverify"] {
-            refused_with(api::task(&rt, &ops(&db), text), reason);
+            refused_as(
+                api::task(&rt, &ops(&db), text),
+                &quarantined,
+                "fatal: the database is quarantined",
+            );
         }
         api::task(&rt, &ops(&db), DUMP).unwrap();
         db.close().unwrap();

@@ -1,4 +1,5 @@
-use adtb_conformance::{Got, Kind, parse, run_reference};
+use adtb_conformance::{Difference, Got, Kind, parse, run_reference};
+use adtb_lang::span::{Diag, FileDiag, FileId, Span};
 
 const SCHEMA: &str = "schema
   module test
@@ -210,11 +211,17 @@ fn a_schema_after_another_directive_differs() {
 #[test]
 fn a_refused_schema_differs() {
     let script = parse("schema\n  module test\n  type T = { id: Key nowhere }\n").unwrap();
-    let found = run_reference(&script);
-    assert_eq!(1, found.len());
-    assert!(
-        found[0].message.starts_with("the schema is refused"),
-        "{found:?}"
+    let unknown = vec![FileDiag {
+        file: FileId(0),
+        diag: Diag::new(Span::new(31, 38), "no `nowhere` in scope"),
+    }];
+    assert_eq!(
+        vec![Difference {
+            line: 1,
+            message: format!("the schema is refused: {unknown:?}"),
+            got: None,
+        }],
+        run_reference(&script)
     );
 }
 

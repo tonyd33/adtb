@@ -57,7 +57,7 @@ fn a_uniqueness_check_restarts_at_each_key() {
         true,
         &|| false,
     );
-    assert!(got.is_ok());
+    assert_eq!(Ok(vec![b"a1".to_vec(), b"b1".to_vec()]), got);
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn out_of_bounds_offsets_are_refused() {
     assert_eq!(Node::new(&bad_len).unwrap().key(0), Err(Malformed));
     let mut bad_count = p.clone();
     bad_count[32..34].copy_from_slice(&3000_u16.to_le_bytes());
-    assert!(Node::new(&bad_count).is_err());
+    assert_eq!(Some(Malformed), Node::new(&bad_count).err());
 }
 
 #[test]
@@ -444,8 +444,15 @@ fn index_key_limits_include_encoding_constructor_width_and_tid() {
                 index.check_key(page_size, &entry.key, ctor),
                 Err(super::Error::TooLong { len: max + 1, max })
             );
-            entry.key = vec![Value::Bytes(vec![0; (max - overhead) / 2 + 1])];
-            assert!(index.check_key(page_size, &entry.key, ctor).is_err());
+            let zeros = (max - overhead) / 2 + 1;
+            entry.key = vec![Value::Bytes(vec![0; zeros])];
+            assert_eq!(
+                index.check_key(page_size, &entry.key, ctor),
+                Err(super::Error::TooLong {
+                    len: overhead + 2 * zeros,
+                    max
+                })
+            );
         }
     }
 }

@@ -1,7 +1,8 @@
 //! Ad hoc text of a role: charged against its own grants, and revealing nothing it cannot read.
 
 use adtb_harness::process::run;
-use adtb_testkit::refused_with;
+use adtb_testkit::refused_as;
+use std::collections::BTreeSet;
 use std::ffi::{c_int, c_ulong};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -960,6 +961,27 @@ fn deepening(kind: &str, n: usize) -> String {
     text
 }
 
+/// Returns `v` inside `n` singleton sets.
+fn in_sets(v: Value, n: usize) -> Value {
+    (0..n).fold(v, |v, _| Value::Set(Arc::new(BTreeSet::from([v]))))
+}
+
+/// Returns the rows of the text [`deepening`] gives for `kind` and `n`, with `p` 1.
+fn deep_rows(kind: &str, n: usize) -> Vec<String> {
+    let n = i64::try_from(n).expect("a small depth");
+    let row = match kind {
+        "lambda" => Value::Int(2),
+        "lambda_set" => Value::Int(2 + n),
+        "prim" | "match" | "from" => Value::Int(1 + n),
+        "if" => Value::Int(1),
+        "record" => (0..n).fold(Value::Int(1), |v, _| Value::record(vec![v])),
+        "set" => in_sets(Value::Int(1), usize::try_from(n - 1).expect("a nesting")),
+        "arms" => Value::Int(i64::from(n > 1)),
+        other => panic!("{other}"),
+    };
+    vec![format!("{row:?}")]
+}
+
 fn deep_answer(
     rt: &SimRuntime,
     db: &Database<SimRuntime>,
@@ -1063,7 +1085,7 @@ fn runs_to_its_limit(name: &str, seed: u64, kind: &str, limit: usize, refusal: &
             let db = opened(&rt, &options(2));
             for who in ["reader", "owner"] {
                 let at = deep_answer(&rt, &db, who, kind, limit);
-                assert!(at.is_ok(), "{kind} {who} at {limit}: {at:?}");
+                assert_eq!(Ok(deep_rows(kind, limit)), at, "{kind} {who} at {limit}");
                 let expected = if hidden && who == "reader" {
                     fixed_denial(who)
                 } else {
@@ -1209,8 +1231,8 @@ fn wide_doubling(levels: usize, copies: usize) -> String {
 #[test]
 fn the_written_out_size_runs_up_to_its_limit_and_no_further() {
     scenario(710, |rt, db| {
-        let at = send(&rt, &db, "owner", &wide_doubling(10, 64)).map(drop);
-        assert!(at.is_ok(), "{at:?}");
+        let at = send(&rt, &db, "owner", &wide_doubling(10, 64));
+        assert_eq!(Ok(vec![format!("{:?}", in_sets(Value::Int(1), 10))]), at);
         let past = send(&rt, &db, "owner", &wide_doubling(10, 65)).map(drop);
         assert_eq!(answer_of(PLANS), format!("{past:?}"));
     });
@@ -1229,8 +1251,8 @@ fn nested_fix(depth: usize) -> String {
 fn a_nesting_of_fixpoints_runs_to_its_limit_and_no_further() {
     scenario(711, |rt, db| {
         for who in ["reader", "owner"] {
-            let at = send(&rt, &db, who, &nested_fix(8)).map(drop);
-            assert!(at.is_ok(), "{who}: {at:?}");
+            let at = send(&rt, &db, who, &nested_fix(8));
+            assert_eq!(Ok(vec!["Int(1)".to_owned()]), at, "{who}");
         }
         let past = send(&rt, &db, "owner", &nested_fix(9)).map(drop);
         let refusal = "this text nests too many `fix` expressions";
@@ -1380,8 +1402,16 @@ fn a_dropped_role_runs_nothing() {
         let held = session(&db, "other");
         authority.drop_role("other").expect("drop");
         let got = held.submit_text("1", &[], TaskOptions::default()).map(drop);
-        refused_with(got, "denied: the authenticated role no longer exists");
-        assert!(send(&rt, &db, "reader", "1").is_ok());
+        refused_as(
+            got,
+            &Error::Rejected {
+                reason: RejectReason::Denied {
+                    detail: "the authenticated role no longer exists".to_owned(),
+                },
+            },
+            "denied: the authenticated role no longer exists",
+        );
+        assert_eq!(Ok(vec!["Int(1)".to_owned()]), send(&rt, &db, "reader", "1"));
     });
 }
 
@@ -1530,15 +1560,6 @@ fn a_key_parameter_of_a_referenced_relation_shows_only_the_selection_a_field_sta
             assert_eq!(fixed, typed(&db, "noter", "k", shown.clone()), "{shown:?}");
         }
     });
-}
-
-fn invalid(got: &Result<Vec<String>, Error>) -> bool {
-    matches!(
-        got,
-        Err(Error::Rejected {
-            reason: RejectReason::Invalid { .. }
-        })
-    )
 }
 
 #[test]
@@ -1696,32 +1717,74 @@ fn a_chain_of_conditions_past_the_height_limit_is_refused_by_the_normaliser() {
     });
 }
 
+/// A nesting of one kind and the one row a nesting of it 20 deep of `1` returns, or the detail of
+/// its refusal as invalid.
+type Nesting = (fn(&str) -> String, Result<Value, String>);
+
 #[test]
 fn a_directly_nested_text_stops_for_every_kind() {
-    let kinds: Vec<fn(&str) -> String> = vec![
-        |i| format!("covers(span(1, 2), {i})"),
-        |i| format!("overlaps(span(1, 2), {i})"),
-        |i| format!("overlaps({i}, span(1, 2))"),
-        |i| format!("({i}) + 1"),
-        |i| format!("1 + ({i})"),
-        |i| format!("({i}) == 1"),
-        |i| format!("1 == ({i})"),
-        |i| format!("if {i} then 1 else 2"),
-        |i| format!("if true then {i} else 2"),
-        |i| format!("if true then 1 else {i}"),
-        |i| format!("match maybe(1) | None -> 0 | Some s -> {i}"),
-        |i| format!("{{ v: {i} }}"),
-        |i| format!("[{i}]"),
-        |i| format!("[1, {i}]"),
-        |i| format!("from y in {i} select y"),
-        |i| format!("from y in [1] where {i} select y"),
-        |i| format!("from y in [1] select {i}"),
-        |i| format!("maybe({i})"),
-        |i| format!("({i}) union [1]"),
-        |i| format!("[1] union ({i})"),
-        |i| format!("Some {{ value: {i} }}"),
-        |i| format!("sum(y for y in {i})"),
-        |i| format!("({i}).v"),
+    let nest = |wrap: fn(Value) -> Value, n: usize| (0..n).fold(Value::Int(1), |v, _| wrap(v));
+    let compared = |l: &str, r: &str| Err(format!("{l} and {r} cannot be compared"));
+    let expected = |s: &str| Err(format!("expected {s}"));
+    let generator = || Err("a generator ranges over a set, found I64".to_owned());
+    let union = || Err("`union` combines two sets".to_owned());
+    let kinds: Vec<Nesting> = vec![
+        (
+            |i| format!("covers(span(1, 2), {i})"),
+            expected("I64, found Bool"),
+        ),
+        (
+            |i| format!("overlaps(span(1, 2), {i})"),
+            expected("Span I64, found I64"),
+        ),
+        (
+            |i| format!("overlaps({i}, span(1, 2))"),
+            Err("`overlaps` does not take I64".to_owned()),
+        ),
+        (|i| format!("({i}) + 1"), Ok(Value::Int(21))),
+        (|i| format!("1 + ({i})"), Ok(Value::Int(21))),
+        (|i| format!("({i}) == 1"), compared("Bool", "I64")),
+        (|i| format!("1 == ({i})"), compared("I64", "Bool")),
+        (
+            |i| format!("if {i} then 1 else 2"),
+            expected("Bool, found I64"),
+        ),
+        (|i| format!("if true then {i} else 2"), Ok(Value::Int(1))),
+        (|i| format!("if true then 1 else {i}"), Ok(Value::Int(1))),
+        (
+            |i| format!("match maybe(1) | None -> 0 | Some s -> {i}"),
+            Ok(Value::Int(1)),
+        ),
+        (
+            |i| format!("{{ v: {i} }}"),
+            Ok(nest(|v| Value::record(vec![v]), 20)),
+        ),
+        (|i| format!("[{i}]"), Ok(in_sets(Value::Int(1), 19))),
+        (
+            |i| format!("[1, {i}]"),
+            Err("the elements of a set have no common type".to_owned()),
+        ),
+        (|i| format!("from y in {i} select y"), generator()),
+        (
+            |i| format!("from y in [1] where {i} select y"),
+            expected("Bool, found I64"),
+        ),
+        (
+            |i| format!("from y in [1] select {i}"),
+            Ok(in_sets(Value::Int(1), 19)),
+        ),
+        (|i| format!("maybe({i})"), expected("I64, found Option I64")),
+        (|i| format!("({i}) union [1]"), union()),
+        (|i| format!("[1] union ({i})"), union()),
+        (
+            |i| format!("Some {{ value: {i} }}"),
+            Ok(nest(|v| Value::ctor(1, vec![v]), 20)),
+        ),
+        (|i| format!("sum(y for y in {i})"), generator()),
+        (
+            |i| format!("({i}).v"),
+            Err("I64 has no field `v`".to_owned()),
+        ),
     ];
     let nested = |kind: fn(&str) -> String, depth: usize, bottom: &str| {
         (0..depth).fold(bottom.to_string(), |t, _| kind(&t))
@@ -1729,13 +1792,18 @@ fn a_directly_nested_text_stops_for_every_kind() {
     let absent =
         answer_of("`nosuch` is a parameter of this text, but the call supplies no value for it");
     scenario(802, |rt, db| {
-        for kind in kinds {
+        for (kind, at_20) in kinds {
             let got = send(&rt, &db, "owner", &nested(kind, 20, "nosuch")).map(drop);
             assert_eq!(absent, format!("{got:?}"));
             let got = send(&rt, &db, "reader", &nested(kind, 20, "nosuch")).map(drop);
             assert_eq!(fixed_denial("reader"), format!("{got:?}"));
             let got = send(&rt, &db, "owner", &nested(kind, 20, "1"));
-            assert!(got.is_ok() || invalid(&got), "{got:?}");
+            let want = at_20
+                .map(|v| vec![format!("{v:?}")])
+                .map_err(|detail| Error::Rejected {
+                    reason: RejectReason::Invalid { detail },
+                });
+            assert_eq!(want, got, "{}", nested(kind, 2, "1"));
             let got = format!(
                 "{:?}",
                 send(&rt, &db, "owner", &nested(kind, 30, "nosuch")).map(drop)

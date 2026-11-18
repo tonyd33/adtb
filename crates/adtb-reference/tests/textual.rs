@@ -421,17 +421,45 @@ fn a_document_without_a_header_is_at_the_readers_version() {
 #[test]
 fn a_malformed_document_is_refused() {
     let f = fixture();
-    for doc in [
-        "",
-        "data nowhere\n",
-        "text 2026-10 pins 42 (c7f2)\ndata users\n",
-        "text 2026 pins 42 ({HASH})\ndata users\n",
-        "text 2026-10 42 ({HASH})\ndata users\n",
-        "data users\nUser { id: users.key(1) }\n",
-        "data users\nMember { user: users.key(1), team: \"x\" }\n",
+    for (doc, offset, message) in [
+        ("", 0, "expected a name"),
+        ("data nowhere\n", 4, "no relation `nowhere`"),
+        (
+            "text 2026-10 pins 42 (c7f2)\ndata users\n",
+            22,
+            "expected a hash of 64 hex digits",
+        ),
+        (
+            "text 2026 pins 42 ({HASH})\ndata users\n",
+            9,
+            "expected an edition, `YYYY-MM`",
+        ),
+        (
+            "text 2026-10 42 ({HASH})\ndata users\n",
+            13,
+            "expected a name",
+        ),
+        (
+            "data users\nUser { id: users.key(1) }\n",
+            36,
+            "field `name` is missing",
+        ),
+        (
+            "data users\nMember { user: users.key(1), team: \"x\" }\n",
+            11,
+            "`Member` is not a constructor of this type",
+        ),
     ] {
         let doc = doc.replace("{HASH}", HASH);
-        assert!(textual::read_document(&f.schema, &doc).is_err(), "{doc}");
+        let expected = textual::ParseError {
+            offset,
+            message: message.to_string(),
+        };
+        adtb_testkit::refused_as(
+            textual::read_document(&f.schema, &doc),
+            &expected,
+            &format!("at byte {offset}: {message}"),
+        );
     }
 }
 
