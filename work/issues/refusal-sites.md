@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-18
-status: open
+status: resolved
+closed: 2026-11-18
 kind: feature
 priority: 26
 tags: [test]
@@ -12,3 +13,7 @@ summary: assert the 144 weak refusal sites with refused_as so the TQL refusal ru
 ## Request
 
 Maintainer ruling, 2026-11-18 (work/briefs/tql-session-2026-11-18.md): refusal-check becomes the TQL rule work/briefs/tql/refusal.tql, zero-match. It finds 144 sites today: asserts of is_err, is_ok, matches!(.., Err(_)) or Ok(_), contains/starts_with/ends_with on error text, bare unwrap_err()/expect_err(..) statements, calls of refused_with. Each becomes an exact assertion of the refusal value and whole reason with adtb_testkit::refused_as.
+
+## 2026-11-18: resolved
+
+Landed in `test: assert every refusal exactly`. The TQL refusal rule finds 0 sites (144 before). Four production invariant asserts were rewritten in form only. Race sites assert the exact failure count and each failure's exact value. Follow-ups: refusal-helpers (weak helpers the rule does not reach), fault-sweep-causes (storage refusals carry their cause only as text).
