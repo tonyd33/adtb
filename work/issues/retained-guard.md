@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-17
-status: open
+status: resolved
+closed: 2026-11-17
 kind: feature
 priority: 125
 summary: "a write raises large-value counts before its page update can still fail, and nothing releases them on failure"
@@ -26,3 +27,7 @@ Mechanism for class-not-atomic group B, from the class count of 2026-11-17. crat
 `retain_apart` returns a `#[must_use]` `Retained` guard, consumed by the page commit and released on drop otherwise, keeping the order mvcc.md requires. Enforcer: the type, plus a fault sweep over large-value writes judged by verify's chunk counts.
 
 Exit: large-retain-before-map-refusal resolved.
+
+## Resolution 2026-11-17
+
+Landed 2026-11-17 as `fix: release large-value counts a heap write raised when it fails before its update`. `LargeStore::retain` is private and reached only through the `#[must_use]` `Retained` guard, which `HeapWrite::commit` creates and `write_pages` consumes after the page update; drop releases with no latch held (stated precondition). A release that fails on drop leaves an overcounted head verify reports. Resolved large-retain-before-map-refusal. Found on the way: rewrite-leaks-large-values.

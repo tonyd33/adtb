@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-09
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 150
 summary: "HeapWrite::commit raises large-value counts in updates of their own before clear_written, so a visibility-map refusal there fails the write with the counts left raised and the values never freed"
@@ -22,3 +23,7 @@ A write that fails commits nothing that a later sweep cannot undo: either `clear
 ## Reproduction
 
 Plant a damaged inner visibility-map page under a heap with an all-visible page holding a version with an out-of-line value, update that version, and read the value's count after the refusal. Found by the step 7 delta review of structure-version-owner; reasoned, not run.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: release large-value counts a heap write raised when it fails before its update` (retained-guard): `Retained::retain_apart` holds every raised head until the page update consumes the guard; on drop it releases them. Covered by the sweep in crates/adtb/src/catalog/commit_point_tests.rs (Retain, ClearBit, Reflect, Write sites).
