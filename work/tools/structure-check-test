@@ -7,7 +7,7 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 adtb=crates/adtb/src
-mkdir -p work/tools "$adtb/storage" "$adtb/exec" crates/other/tests apps/app/src
+mkdir -p work/tools "$adtb/storage" "$adtb/exec" crates/other/tests crates/aa/src
 
 fail() {
   printf 'structure-check-test: %s\n' "$1" >&2
@@ -64,12 +64,12 @@ fn f() {
 }
 RS
 printf 'pub struct P {\n    pub z: u32,\n}\n' >crates/other/tests/main.rs
-printf 'pub struct Q {\n    pub(crate) z: u32,\n}\n' >apps/app/src/lib.rs
+printf 'pub struct Q {\n    pub(crate) z: u32,\n}\n' >crates/aa/src/lib.rs
 printf '#[expect(clippy::disallowed_methods, reason = "r")]\nfn a() {}\n#[expect(\n    clippy::disallowed_methods,\n    reason = "r"\n)]\nfn b() {}\n' >"$adtb/exec/b.rs"
 printf '#![expect(clippy::disallowed_methods, reason = "r")]\n' >"$adtb/exec/b_tests.rs"
 
 exact=(
-  'crate_fields prod 1 apps/app/src/lib.rs'
+  'crate_fields prod 1 crates/aa/src/lib.rs'
   'crate_fields prod 6 crates/adtb/src/exec/a.rs'
   'disallowed_methods prod 2 crates/adtb/src/exec/b.rs'
   'disallowed_methods test 1 crates/adtb/src/exec/b_tests.rs'
@@ -93,9 +93,9 @@ passes "${exact[@]}"
 # A fall without an allowlist edit fails as stale; the lowered line passes; at 0 the line must go.
 sed -i '/#\[doc = "x"\]/d' "$adtb/exec/a.rs"
 refuses 'structure-check: crate_fields prod crates/adtb/src/exec/a.rs has 5, allowed 6: stale, lower the allowlist line to 5' "${exact[@]}"
-passes 'crate_fields prod 1 apps/app/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
-printf 'fn q() {}\n' >apps/app/src/lib.rs
-refuses 'structure-check: crate_fields prod apps/app/src/lib.rs has 0, allowed 1: stale, delete the allowlist line' 'crate_fields prod 1 apps/app/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+passes 'crate_fields prod 1 crates/aa/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+printf 'fn q() {}\n' >crates/aa/src/lib.rs
+refuses 'structure-check: crate_fields prod crates/aa/src/lib.rs has 0, allowed 1: stale, delete the allowlist line' 'crate_fields prod 1 crates/aa/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
 passes 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
 
 # A site in a file with no line fails; a test file is counted against the test kind alone.

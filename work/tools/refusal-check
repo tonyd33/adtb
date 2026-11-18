@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# refusal-check [DIR]   fail when the Rust files under crates/ and apps/ of the repository at DIR
+# refusal-check [DIR]   fail when the Rust files under crates/ of the repository at DIR
 #                       (default this one) hold a weak refusal assertion at other sites than
 #                       work/tools/refusal-allowlist counts
 #
@@ -17,9 +17,7 @@ weak="\.(?:is_err|is_ok)\(\)|$text|matches!\((?:[^()]|(?&p))*?(?:Err|Ok)\(_\)"
 bare='(?:^|[;{}])\s*[^=;{}]*\.(?:unwrap_err\(\)|expect_err(?&p))\s*;'
 pattern="assert(?:_eq|_ne)?!\((?=$args(?:$weak))|$bare|\brefused_with\("
 dirs=()
-for dir in crates apps; do
-  [[ ! -d $dir ]] || dirs+=("$dir")
-done
+[[ ! -d crates ]] || dirs+=(crates)
 found=
 if ((${#dirs[@]})); then
   found=$(rg -P -U --count-matches --type rust "$pattern" "${dirs[@]}" || [[ $? == 1 ]])

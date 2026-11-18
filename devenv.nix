@@ -40,156 +40,14 @@ in
     pkgs.cargo-deny
     pkgs.cargo-nextest
     quandary
+    tix
   ];
-
-  scripts.check.exec = ''
-    # check [--changed [REVSET]]   every check, or with --changed only the optional parts the files
-    # REVSET changes (default main..@) can reach, printing each part it skips and why, all in one
-    # scope with a memory limit.
-    set -e
-    case "$PWD/" in
-      "$DEVENV_ROOT"/*) ;;
-      *)
-        echo "check: DEVENV_ROOT $DEVENV_ROOT does not hold $PWD, so the suite would test another tree" >&2
-        exit 1
-        ;;
-    esac
-    cgroup=$(</proc/self/cgroup)
-    if [[ ''${cgroup#0::} != */adtb-run-*.scope && -z ''${ADTB_UNLIMITED:-} ]]; then
-      exec "$DEVENV_ROOT/work/tools/limited" "$0" "$@"
-    fi
-    plan=
-    if [[ ''${1:-} == --changed ]]; then
-      revset=''${2:-main..@}
-      plan=$("$DEVENV_ROOT/work/tools/check-reach" "$revset")
-      grep '^skip' <<<"$plan" || true
-    fi
-    part() { [[ -z $plan ]] || grep -qx "run $1" <<<"$plan"; }
-    ulimit -Sc 0
-    export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
-    cargo clippy --workspace --all-targets -- -D warnings
-    cargo fmt --all --check
-    suite
-    if part loom; then loom; fi
-    if part miri; then miri; fi
-    app="$DEVENV_ROOT/apps/campaign/Cargo.toml"
-    if part campaign; then
-      diff <(sed -n '/^\[workspace.lints.rust\]/,$p' "$DEVENV_ROOT/Cargo.toml") \
-        <(sed -n '/^\[workspace.lints.rust\]/,$p' "$app")
-      cargo clippy --manifest-path "$app" --all-targets -- -D warnings
-      cargo fmt --manifest-path "$app" --all --check
-      cargo nextest run --manifest-path "$app"
-    fi
-    if part deny; then
-      cargo deny check
-      cargo deny --manifest-path "$app" check
-    fi
-    if part damage-search; then
-      cargo nextest run -p adtb-sim --test storage --profile damage
-    fi
-    size-check
-    structure-check
-    if [[ -n $plan ]]; then
-      if [[ -z ''${2:-} ]]; then base=main; else base=$(jj --ignore-working-copy --color=never log --no-graph -r "roots($revset)-" -T 'commit_id ++ "\n"' | head -1); fi
-      if [[ -n $base ]]; then structure-check --against "$base"; fi
-    fi
-    refusal-check
-    feature-check
-    if part docs; then docs-check; fi
-    if part tree-sitter; then tree-sitter-check; fi
-    for t in "$DEVENV_ROOT"/work/tools/*-test; do
-      if part "$(basename "$t")"; then "$t"; fi
-    done
-    if [[ -n $plan ]]; then
-      house-check "$DEVENV_ROOT" -r "$revset"
-    fi
-  '';
-
-  scripts.docs-build.exec = ''
-    "$DEVENV_ROOT/work/tools/docs-site" build
-  '';
-
-  scripts.docs-check.exec = ''
-    "$DEVENV_ROOT/work/tools/docs-site" check
-  '';
-
-  scripts.tix.exec = ''
-    ${lib.getExe tix} -C "$DEVENV_ROOT/work/issues" "$@"
-  '';
 
   scripts.miri.exec = ''
     PATH="${nightly}/bin:$PATH" "$DEVENV_ROOT/work/tools/miri" "$@"
   '';
 
-  scripts.loom.exec = ''
-    "$DEVENV_ROOT/work/tools/loom" "$@"
-  '';
-
-  scripts.size-check.exec = ''
-    "$DEVENV_ROOT/work/tools/size-check.sh"
-  '';
-
-  scripts.structure-check.exec = ''
-    "$DEVENV_ROOT/work/tools/structure-check" "$@"
-  '';
-
-  scripts.feature-check.exec = ''
-    "$DEVENV_ROOT/work/tools/feature-check" "$@"
-  '';
-
-  scripts.refusal-check.exec = ''
-    "$DEVENV_ROOT/work/tools/refusal-check" "$@"
-  '';
-
-  scripts.suite.exec = ''
-    "$DEVENV_ROOT/work/tools/suite" "$@"
-  '';
-
-  scripts.conf.exec = ''
-    "$DEVENV_ROOT/work/tools/conf" "$@"
-  '';
-
-  scripts.codemap.exec = ''
-    "$DEVENV_ROOT/work/tools/codemap" "$@"
-  '';
-
-  scripts.tree-sitter-check.exec = ''
-    "$DEVENV_ROOT/work/tools/tree-sitter-check" "$@"
-  '';
-
-  scripts.house-check.exec = ''
-    "$DEVENV_ROOT/work/tools/house-check" "$@"
-  '';
-
-  scripts.workspace-gc.exec = ''
-    "$DEVENV_ROOT/work/tools/workspace-gc" "$@"
-  '';
-
-  scripts.slot.exec = ''
-    "$DEVENV_ROOT/work/tools/slot" "$@"
-  '';
-
-  scripts.slot-test.exec = ''
-    "$DEVENV_ROOT/work/tools/slot-test" "$@"
-  '';
-
-  scripts.adtb-probe.exec = ''
-    "$DEVENV_ROOT/work/tools/adtb-probe" "$@"
-  '';
-
-  scripts.quality-metrics.exec = ''
-    "$DEVENV_ROOT/work/tools/quality-metrics.sh" "$@"
-  '';
-
-  scripts.code-commits.exec = ''
-    "$DEVENV_ROOT/work/tools/code-commits" "$@"
-  '';
-
-  scripts.land.exec = ''
-    "$DEVENV_ROOT/work/tools/land" "$@"
-  '';
-
-  enterTest = "check";
+  enterTest = "$DEVENV_ROOT/work/tools/check";
 
   # https://devenv.sh/languages/
   languages.rust = {
@@ -205,7 +63,7 @@ in
     {
       ports.http.allocate = 8081;
       exec = ''
-        "$DEVENV_ROOT/work/tools/docs-site" serve \
+        mdbook serve "$DEVENV_ROOT" \
           --port ${toString docsPort} \
           --hostname 0.0.0.0
       '';

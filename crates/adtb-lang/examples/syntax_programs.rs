@@ -102,16 +102,6 @@ fn main() {
         out.add(&format!("spec/{i:04}"), &b.text);
     }
     let mut paths = Vec::new();
-    files(&root.join("apps/campaign"), &mut paths);
-    for (i, p) in paths
-        .iter()
-        .filter(|p| p.extension().is_some_and(|x| x == "adt" || x == "adb"))
-        .enumerate()
-    {
-        let text = fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-        out.add(&format!("campaign/{i:04}"), &text);
-    }
-    let mut paths = Vec::new();
     files(&root.join("tools/tree-sitter-adtb/test/corpus"), &mut paths);
     let mut n = 0;
     for p in &paths {

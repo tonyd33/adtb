@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
-# Print review metrics for the changes in a jj revset (default `reviewed..@`).
+# quality-metrics.sh [REVSET]   print review metrics for the changes in a jj revset (default
+#                               `reviewed..@`)
+# quality-metrics.sh --code-commits [REVSET]   list the commits of REVSET (default
+#                               `reviewed..main`) that change a path outside docs/, work/ and
+#                               Markdown files, one per line
 set -euo pipefail
 
-rev=${1:-reviewed..@}
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
+
+if [[ ${1:-} == --code-commits ]]; then
+  exec jj --ignore-working-copy --color=never log --no-graph \
+    -r "(${2:-reviewed..main}) & files(~(glob:\"docs/**\" | glob:\"work/**\" | glob:\"**/*.md\"))" \
+    -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+fi
+
+rev=${1:-reviewed..@}
 
 mapfile -t heads < <(jj log --no-graph -r "heads($rev)" -T 'commit_id ++ "\n"')
 if ((${#heads[@]} != 1)); then

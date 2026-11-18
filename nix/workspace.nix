@@ -79,8 +79,6 @@ assert lib.assertMsg (
         ../conformance
         ../docs/spec
         ../docs/manual
-        ../apps/campaign/schema
-        ../apps/campaign/bundles
       ];
       useNextest = true;
       checkType = "test";

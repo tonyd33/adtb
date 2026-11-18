@@ -28,12 +28,3 @@ slot_dir() {
 free_slot() {
   slot_dir "$2" "$3" && [[ $1 == "slot-${2##*-slot-}" ]]
 }
-
-# Succeed when debug and tmp under build directory $1 together are above ADTB_SLOT_CAP_GB (default 20).
-over_slot_cap() {
-  local parts=() part
-  for part in "$1/debug" "$1/tmp"; do
-    [[ ! -d $part ]] || parts+=("$part")
-  done
-  ((${#parts[@]})) && (($(du -cs -BG "${parts[@]}" | tail -1 | cut -f1 | tr -d G) > ${ADTB_SLOT_CAP_GB:-20}))
-}

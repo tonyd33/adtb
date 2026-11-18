@@ -6,10 +6,10 @@
 # count is above the one the allowlist at the base revision holds, so a rise is the lead's act on main.
 # Under `--against`, a file's test count may rise by as much as the same row's prod count in that file
 # fell.
-# Every row scans crates/ and apps/.
+# Every row scans crates/.
 #
 # crate_fields:       struct fields (named or tuple) declared pub(crate), pub(super) or pub(in ..), in
-#                     crates/*/src and apps/*/src: internal state visible past its module. Fields
+#                     crates/*/src: internal state visible past its module. Fields
 #                     that a macro generates are not counted.
 # pub_fields:         struct fields declared pub, of a struct of any visibility, in the same
 #                     sources: each such type states its contract. Fields that a macro generates
@@ -183,9 +183,6 @@ decode_panics prod 3 crates/adtb/src/heap/stage.rs
 decode_panics prod 3 crates/adtb/src/heap/version.rs
 decode_panics prod 1 crates/adtb/src/heap/vm.rs
 decode_panics prod 6 crates/adtb/src/heap/write.rs
-disallowed_methods test 1 apps/campaign/tests/engine.rs
-disallowed_methods prod 1 crates/adtb-bench/src/native/crash_tests/mod.rs
-disallowed_methods prod 1 crates/adtb-bench/src/native/reporting/mod.rs
 disallowed_methods prod 1 crates/adtb-lang/src/pattern.rs
 disallowed_methods test 1 crates/adtb-reference/tests/wide.rs
 disallowed_methods prod 2 crates/adtb-sim/src/sim.rs
@@ -208,11 +205,6 @@ engine_names prod 5 crates/adtb-lang/src/schema/engine.rs
 engine_names prod 1 crates/adtb-lang/src/types.rs
 engine_names prod 1 crates/adtb/src/api/server/task.rs
 engine_names prod 1 crates/adtb/src/catalog/readers.rs
-pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs
-pub_fields prod 3 crates/adtb-bench/src/native/counter.rs
-pub_fields prod 2 crates/adtb-bench/src/native/engine.rs
-pub_fields prod 5 crates/adtb-bench/src/native/model.rs
-pub_fields prod 39 crates/adtb-bench/src/native/reporting/mod.rs
 pub_fields prod 3 crates/adtb-codegen/src/lib.rs
 pub_fields prod 11 crates/adtb-conformance/src/lib.rs
 pub_fields prod 4 crates/adtb-file/src/lib.rs

@@ -27,15 +27,10 @@ never the full list. Do not load the design-space skill or read the
 quandary README. Wrap any edit under `work/research/` in `quandary lock
 REASON` and `quandary unlock`.
 
-Orientation: run `work/tools/codemap CRATE` from your workspace root
-for the crate's modules and sizes, `work/tools/codemap CRATE MODULE`
-(a module may be a file: `codemap adtb heap/page.rs`) for a module's
-files and pub items with line numbers, and `work/tools/codemap --tests
-[CRATE]` for test binaries and their test counts. That replaces
-`ls`, `wc -l` and searches for public declarations. If an LSP is
-available, verify which checkout it indexes before using its outline,
-references or workspace symbols. Use `rg` in your workspace for callers
-when symbol tools are unavailable or index another checkout.
+Orientation: if an LSP is available, verify which checkout it indexes
+before using its outline, references or workspace symbols. Use `rg` in
+your workspace for callers and declarations when symbol tools are
+unavailable or index another checkout.
 
 Reading code: locate symbols with `rg -n`, then read at most about
 150 lines per range. Never `cat` several files in one call. Keep command
@@ -102,11 +97,11 @@ mutable cache outputs as frozen executable or proof inputs. Preserve the closed
 candidate's immutable revision, separate executable and required evidence before
 changing source or reusing its cache. Never set
 `CARGO_TARGET_DIR` under /tmp or the scratchpad: /tmp has a small
-quota, and filling it breaks every agent's shell. Run
-`work/tools/workspace-gc --guard` before the full check. Below its free-space
-floor, report the resource gate to the lead, who coordinates native idle-build
-cleanup under the lead workflow. Do not run `cargo clean`; preserve verification
-artifacts outside debug/tmp and builds another actor still uses.
+quota, and filling it breaks every agent's shell. When the disk is nearly full
+before the full check, report the resource gate to the lead, who clears idle
+builds with `cargo clean` under the lead workflow. Do not run `cargo clean`;
+preserve verification artifacts outside debug/tmp and builds another actor
+still uses.
 
 Shell: zsh. Quote globs in arguments (`grep -rn PAT crates
 --include='*.rs'`) or use `rg PAT crates`; an unquoted
@@ -117,9 +112,7 @@ there, so use `jj diff` and `jj log`. Engine integration tests are in
 `crates/adtb-sim/tests`, one test binary per area directory (`storage`, `execution`,
 `server`, `maintenance`, `export`, `scripted`); `crates/adtb` has unit tests only, and its
 component tests over the simulator sit beside their layer as `MODULE/NAME_tests.rs`. tix:
-`direnv exec MAIN tix -C $PWD/work/issues CMD` from your workspace root,
-where MAIN is the main checkout (a later `-C` resolves against the
-first).
+`tix -C work/issues CMD` from the main checkout's root.
 
 Editing: read the range you will change, about 150 lines, with an
 available file reader or bounded shell read. Apply a focused patch with
@@ -150,17 +143,17 @@ otherwise report targeted results and the remaining owner.
 From your workspace root in the dev shell:
 
 ```sh
-DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check --changed
+CARGO_TARGET_DIR="$PWD/target" work/tools/check main..@
 ```
 
-`--changed [REVSET]` (default `main..@`) skips Miri, Loom, the campaign,
-tree-sitter, docs, deny and each tool test when no file of REVSET is in its
-reach, prints each part it skips, and runs `house-check` over REVSET last. The
-full `check`, without the flag, is the lead's.
+The REVSET (here `main..@`) adds `structure-check --against` the parent of its
+root and `house-check -r REVSET` at the end; without it `check` runs every
+other part.
 
-The explicit roots keep generated dev-shell wrappers on your workspace.
-`check` owns root clippy, formatting and the suite; campaign lint parity,
-clippy, formatting and tests; dependency policy and source-size limits.
+The target directory keeps the build in your workspace.
+`check` owns root clippy, formatting and the suite; the Loom models, Miri,
+dependency policy, source-size limits, the documentation build and link check,
+tree-sitter and every tool test.
 Report each failed or unfinished check. The lead compares the landed tree
 with the tested revision and reuses the receipt when inputs are unchanged;
 landing alone does not require another full check.
@@ -177,7 +170,7 @@ inspecting that log, and return that status. For example, in a subshell:
 ```sh
 (
   mkdir -p target || exit 1
-  if DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check --changed >target/check.log 2>&1; then
+  if CARGO_TARGET_DIR="$PWD/target" work/tools/check main..@ >target/check.log 2>&1; then
     check_status=0
   else
     check_status=$?
@@ -264,7 +257,7 @@ personal data and machine details out of commits and tickets. Use relative paths
 Use targeted suites during each round; reserve the full check for the final
 reviewed tree and its assigned owner. A `--workspace` run or `work/tools/suite`
 while iterating is the largest avoidable cost measured across agents. Start from
-the files your brief names and `work/tools/codemap`; broad reading is the next
+the files your brief names; broad reading is the next
 largest. A performance track reports a before and after benchmark of the workload its brief names.
 Repeat checks only for changed inputs, failures or unresolved concerns. Run `work/tools/suite`
 in the background: a full run outlasts a harness's foreground timeout. A bug fix comes with a regression test: write it before the fix and watch it fail, as part of
@@ -272,9 +265,9 @@ the work, not as a separate step. Do not rebuild to break code on purpose: each 
 adtb-sim costs two minutes. Run `house-check` and `size-check` before `check`; when a
 `check` fails only in `house-check`, rerun `house-check`, not `check`. The size in a brief is an estimate; say in the report when the change grew well past it.
 
-The final run of a round is one `check --changed` plus the runs it does not hold: a `--profile deep`
-search, `work/tools/conf`, a reopen script, a benchmark. `check --changed` already runs fmt, clippy,
-the suite, size-check, house-check and every part `check-reach` finds in reach, so do not also run
+The final run of a round is one `check REVSET` plus the runs it does not hold: a `--profile deep`
+search, `work/tools/conf`, a reopen script. `check` already runs fmt, clippy,
+the suite, size-check, house-check over REVSET and every other part, so do not also run
 `work/tools/suite`, `-p adtb-sim`, `-p adtb-lang`, the damage profile or a workspace clippy beside
 it: each is a subset run twice. Run fmt, house-check and clippy first, alone, so they fail in
 seconds. A round after a review with no blocker reruns fmt, clippy, house-check and the tests of the

@@ -34,7 +34,7 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
 
 ## Plan
 
-- Choose work from `tix list --ready`. A design question goes to the
+- Choose work from `tix -C work/issues list --ready`. A design question goes to the
   design space, not to a track.
 - Give each agent one track, in its own workspace beside the main
   checkout: write its brief first, then `work/tools/slot NAME BRIEF` prints its
@@ -42,20 +42,15 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
   It reuses the directory of a landed track, so its target/ stays valid,
   and adds a new one when none is usable. It refuses a slot with
   uncommitted work, commits not on main, untracked files or a running
-  process, and says why. Name the printed directory in the dispatch prompt. Run
-  `work/tools/slot-test` after changing `slot`, `land` or `workspace-gc`.
+  process, and says why. Name the printed directory in the dispatch prompt.
 - Have the worker establish access through its first useful workspace and
   jj commands under the active harness. Workspace creation or lead access is
   not worker evidence. Obtain required approval or provision access before
   implementation; report permission wait as blocked. Reassess capability
   claims when carrying them into a new track, harness or resumed session;
   do not preemptively prohibit execution because an older attempt stalled.
-- Before each full `check`, run `work/tools/workspace-gc --guard`; it
-  fails under 30 GB free and lists the build directories. Nothing else
-  checks free disk.
-- `check` holds the machine lock from start to end, so a second `check` or
-  a `suite`'s test run waits and prints who holds it. Builds outside `check`
-  and `suite` take no lock.
+- Check free disk before each full `check` with `df`. When it is low, run
+  `cargo clean` in an idle slot or in the main checkout once nothing uses it.
 - Briefs set no `CARGO_BUILD_JOBS` or `NEXTEST_TEST_THREADS`: cargo and nextest use every core.
 - When a track must test a known unbounded bug (memory, stack, time), confirm first that the tools already contain it: the test runs in a binary with the heap cap (`every_test_binary_has_the_heap_cap` passes in that workspace) and what grows is heap, since page memory and C allocations are not counted. A written instruction to an agent is not containment. After any crash, read `journalctl --user` for the failed unit as well as the kernel log before resuming. After any drop in disk, read `coredumpctl list` first.
 - Read a check's own exit status before landing or pushing, in a command of its own,
@@ -67,12 +62,10 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
   during implementation and review; assign final verification on the reviewed
   tree. Database, language or shared-runtime production changes and unbounded
   impact get one full check. Name one owner so author and lead do not duplicate it.
-- Authors run `check --changed` for their round: fmt, clippy, the suite, size-check and
-  house-check always, and Miri, Loom, the campaign, tree-sitter, docs, deny and each
-  `work/tools/*-test` only when `work/tools/check-reach` finds a path of `main..@` in that
-  part's reach; it prints each part it skips and why. After `land`, run
-  `work/tools/check-reach TESTED..main`, TESTED the checked revision: run the full `check` on
-  main when it prints `run` for a part the author's run skipped, else reuse the receipt.
+- Authors run `work/tools/check main..@` for their round: every part, then
+  `structure-check --against` and `house-check` over the range. After `land`, reuse the
+  receipt when `jj diff --from TESTED --to main --summary` is empty, TESTED the checked
+  revision; else rerun `check` on main.
 - A track that adds or changes a seeded search in `adtb-sim` runs those tests under
   `--profile deep` before landing, filtered to them; `check` runs the default seeds only, so
   a deep failure otherwise lands unseen.
@@ -189,7 +182,7 @@ that the worker is unblocked.
 - Run at most 2 tracks that build at once, until the maintainer says otherwise: tracks spend most of their time waiting on builds. A read-only track, one that runs no build, is exempt. Run at most 5 agents at once in all.
 - In a fix round, ask for no failing-evidence builds; the reviewer's reproduction is the evidence. Judge a test's worth by what it checks, not by a mutation. Let the author run its post-review `check` while the delta reviewer reads.
 - When a track lands, dispatch the next brief before reporting to the user. Do not wait for main's `check` to dispatch: start it and the next track together. Commit nothing to main while it runs. If it fails, fix main and have the running track rebase onto the fix.
-- A brief's Report asks for one `check --changed` plus only the runs it does not hold (a deep search, conf, a reopen script), never the suite, a package's tests or the damage profile beside it. A note-only round after a review with no blocker asks for fmt, clippy, house-check and the touched files' tests.
+- A brief's Report asks for one `work/tools/check REVSET` plus only the runs it does not hold (a deep search, conf, a reopen script), never the suite, a package's tests or the damage profile beside it. A note-only round after a review with no blocker asks for fmt, clippy, house-check and the touched files' tests.
 - A review of a large surface always finds something, so "until a review is clean" does not end. A blocker is a defect this track's diff introduces or makes reachable, that loses acknowledged data or gives a wrong answer through normal use, or structure the diff adds without an owner: state or an invariant that no one module owns behind private fields, an internal made visible past its module, a fix that adds a rule every caller must remember instead of an operation that keeps it, or a contract the diff relies on that no design or module doc states. Anything else, including a defect the base already has, goes on a ticket, and severe ones go first in the queue. Holding a track back does not protect anyone from a bug already on main. A track gets at most one delta review after its redesign, limited to that round's diff; a further blocker is fixed and checked with no new review. Past that, land or abandon it, and say which.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
@@ -236,8 +229,7 @@ Passing tests do not justify unnecessary machinery.
 5. Once landing verification passes, for a workspace outside the slots, delete its
    `target/debug` and `target/tmp`, each by its literal absolute path in
    its own command. Keep the other files and directories under `target/`. A
-   slot keeps them: `slot` empties a reused slot's `target/debug` and
-   `target/tmp` when together above `ADTB_SLOT_CAP_GB`, default 20.
+   slot keeps them; `cargo clean` in an idle slot clears them.
 6. Read what is about to be published before every push, tickets and
    `work/` included: the repository is public, and a push cannot be taken
    back. Run `jj diff -r 'main@origin..main'` and take out credentials,
@@ -249,11 +241,8 @@ Passing tests do not justify unnecessary machinery.
    `origin` is git@github.com:tonyd33/adtb.git; `tangled` is the old
    remote and is no longer pushed.
 
-Any other deletion needs the user's approval. When `workspace-gc --guard`
-fails, first run `work/tools/workspace-gc --clear-build main`: it empties the main
-checkout's `target/debug` and `target/tmp` once idle for `ADTB_GC_IDLE_HOURS`, refusing while
-cargo or any process uses it, and costs one rebuild. `ADTB_SLOT_CAP_GB=0
-work/tools/workspace-gc --clean` also takes idle free slots. Otherwise list the
+Any other deletion needs the user's approval. When disk is low, first run `cargo clean`
+in the main checkout once nothing uses it: it costs one rebuild. Otherwise list the
 candidates without deleting: the
 `target/debug`, `target/release` and `target/tmp` of each forgotten
 workspace, with sizes. Ask, then delete each one by its literal absolute
@@ -263,7 +252,7 @@ verification evidence.
 
 ## Quality cadence
 
-- `slot` refuses a track while `work/tools/code-commits | wc -l` (commits
+- `slot` refuses a track while `work/tools/quality-metrics.sh --code-commits | wc -l` (commits
   past the `reviewed` bookmark that change a path outside docs/, work/ or
   Markdown files) is over 15. Dispatch a fresh agent on the
   [quality-review workflow](../quality-review/SKILL.md) before then. After

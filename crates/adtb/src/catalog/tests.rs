@@ -699,18 +699,16 @@ fn key_sorts(
 fn only_key_names_sorts_the_fields_of_a_key() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let (mut found, mut seen, mut scanned) = (Vec::new(), 0, 0);
-    for group in ["crates", "apps"] {
-        let mut dirs: Vec<_> = std::fs::read_dir(root.join(group))
-            .expect("the crates are readable")
-            .map(|e| e.expect("a directory entry").path())
-            .collect();
-        dirs.sort();
-        for dir in dirs {
-            let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
-            if manifest.contains("adtb-lang") {
-                scanned += 1;
-                key_sorts(&root, &dir, &mut found, &mut seen);
-            }
+    let mut dirs: Vec<_> = std::fs::read_dir(root.join("crates"))
+        .expect("the crates are readable")
+        .map(|e| e.expect("a directory entry").path())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+        if manifest.contains("adtb-lang") {
+            scanned += 1;
+            key_sorts(&root, &dir, &mut found, &mut seen);
         }
     }
     assert!(

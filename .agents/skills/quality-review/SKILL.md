@@ -23,24 +23,22 @@ or ask the caller for an explicit range.
 Start with:
 
 ```
-code-commits 'reviewed..@'
-quality-metrics 'reviewed..@'
+work/tools/quality-metrics.sh --code-commits 'reviewed..@'
+work/tools/quality-metrics.sh 'reviewed..@'
 jj diff -r 'reviewed..@' --stat
 ```
 
-`code-commits` (`work/tools/code-commits RANGE` outside the dev shell)
+`quality-metrics.sh --code-commits RANGE`
 lists the commits that change a path outside docs/, work/ and Markdown
 files. Review those. Skip the others, which only file tickets or edit
 prose; the design-contract spot-check below still reads docs/design/.
 
-`quality-metrics` (or `work/tools/quality-metrics.sh RANGE` outside the
-dev shell) prints the changed files, new or changed functions over 100
+`quality-metrics.sh RANGE` prints the changed files, new or changed functions over 100
 lines, new `#[expect]`s, panic/unwrap/expect counts per crate and new
 `pub` items. Use it to choose where to look first.
 
 List the modules the range touches: the directory of a module with
-children, else the file. `work/tools/codemap CRATE MODULE` gives each
-one's files and pub items. Review every such module whole, not only the
+children, else the file. Review every such module whole, not only the
 changed hunks.
 
 When the range is too long to review every module within your budget,
@@ -51,7 +49,7 @@ spent, and list the rest in the report as not reviewed.
 Then list the open quality tickets, so you do not file what one covers:
 
 ```
-nix run github:tonyd33/tix -- -C work/issues list --tag quality
+tix -C work/issues list --tag quality
 ```
 
 ## Per module
@@ -119,15 +117,15 @@ One ticket per real finding, skipping any an open `quality` ticket
 already covers:
 
 ```
-nix run github:tonyd33/tix -- -C work/issues new STEM --kind bug --summary "..."
-nix run github:tonyd33/tix -- -C work/issues set STEM tags=quality,engine
+tix -C work/issues new STEM --kind bug --summary "..."
+tix -C work/issues set STEM tags=quality,engine
 ```
 
 Name the stem for the gap. Follow the format in `work/issues/README.md`:
 a bug is titled with its symptom, a feature `# Feature: <what>`, and
 `## Report` states the problem concretely with `path:line` at the
 range's head, a repro where one applies, and the fix direction. Set the
-priority by the README's scheme. Run `tix check` after the last ticket.
+priority by the README's scheme. Run `tix -C work/issues check` after the last ticket.
 
 ## Report
 

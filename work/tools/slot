@@ -9,15 +9,14 @@
 # tickets. A bug ticket needs a tag `class-none` or class tags of the
 # table. When a class has three or more instances (its tickets not wontfix and not its mechanism
 # tickets) and one of its mechanism tickets is open or in progress, only a mechanism ticket or a
-# brief with a `Site fix because: REASON` line passes. Then it refuses while `code-commits
-# reviewed..main` lists more than 15 commits: run the quality review and move `reviewed`.
+# brief with a `Site fix because: REASON` line passes. Then it refuses while
+# `quality-metrics.sh --code-commits reviewed..main` lists more than 15 commits: run the quality
+# review and move `reviewed`.
 #
 # `land` frees a slot; its directory stays, so target/ stays valid for the next track. Refuses a
 # slot whose working copy has changes or a description, with commits not on main, holding files jj
 # does not track outside build output, or in use by a process. With N, refuses when slot-N is
-# unusable; without, skips such a slot and says why. Empties debug and tmp of the build directories
-# of a reused slot when, in one of them, together they are above ADTB_SLOT_CAP_GB (default 20). One
-# call runs at a time.
+# unusable; without, skips such a slot and says why. One call runs at a time.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -42,7 +41,7 @@ leftovers() {
   (
     cd "$1"
     LC_ALL=C comm -23 \
-      <(find . \( -path ./.jj -o -path ./.git -o -path ./target -o -path ./apps/campaign/target -o -name '.devenv*' \
+      <(find . \( -path ./.jj -o -path ./.git -o -path ./target -o -name '.devenv*' \
         -o -name .direnv -o -name .pre-commit-config.yaml -o -name .nvim.lua -o -name 'result*' \) \
         -prune -o \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort) \
       <(jj file list -T 'path ++ "\n"' | LC_ALL=C sort)
@@ -140,8 +139,8 @@ cadence() {
   local pending count
   jj -R "$main" --ignore-working-copy log -r reviewed --no-graph -T '' >/dev/null 2>&1 ||
     die "no reviewed bookmark: set it with 'jj bookmark set reviewed -r main' after a quality review"
-  pending=$("$main/work/tools/code-commits" 'reviewed..main' 2>&1) ||
-    die "code-commits reviewed..main failed: $pending"
+  pending=$("$main/work/tools/quality-metrics.sh" --code-commits 'reviewed..main' 2>&1) ||
+    die "quality-metrics.sh --code-commits reviewed..main failed: $pending"
   count=$(grep -c . <<<"$pending" || true)
   if ((count > 15)); then
     die "$count code commits are past the reviewed bookmark, over 15: run the quality review (.agents/skills/quality-review/SKILL.md), then 'jj bookmark set reviewed -r main'"
@@ -157,11 +156,7 @@ if list | cut -f1 | grep -qxF "$name"; then
 fi
 
 reuse() {
-  local slot=$1 path=$2
-  if over_slot_cap "$path/target" || over_slot_cap "$path/apps/campaign/target"; then
-    echo "a build directory of $path is above the cap"
-    ADTB_GC_IDLE_HOURS=0 "$root/work/tools/workspace-gc" --clear-build "$slot"
-  fi
+  local path=$1
   jj -R "$path" new main
   jj -R "$path" workspace rename "$name"
   echo "$path"
@@ -172,7 +167,7 @@ while IFS=$'\t' read -r slot path; do
   [[ -z $only || $slot == "slot-$only" ]] || continue
   why=$(unusable "$slot" "$path")
   if [[ -z $why ]]; then
-    reuse "$slot" "$path"
+    reuse "$path"
     exit 0
   fi
   printf 'slot: %s refused: %s\n' "$slot" "$why" >&2

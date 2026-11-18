@@ -52,4 +52,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
 
       - name: Check
-        run: check
+        run: work/tools/check

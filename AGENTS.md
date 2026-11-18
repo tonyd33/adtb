@@ -50,13 +50,10 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `cargo clippy --workspace --all-targets -- -D warnings`: lint Rust.
 - `cargo fmt --all --check`: check Rust formatting.
 - `work/tools/suite [ARGS]`: run tests under a memory limit.
-- `check` (in the dev shell): run the full checks, including the campaign
-  application, the Loom models, Miri, dependency policy, source-size
-  limits and every `work/tools/*-test`. `check --changed [REVSET]` (default
-  `main..@`) runs the optional parts only when `work/tools/check-reach`
-  finds a changed file in their reach, and `house-check` over REVSET.
-- `apps/campaign/` is its own cargo workspace, excluded from the root
-  one. Build and test it from that directory.
+- `work/tools/check [REVSET]`: run every check, including the Loom models,
+  Miri, dependency policy, source-size limits, the documentation build with
+  its link check and every `work/tools/*-test`. With REVSET it also runs
+  `structure-check --against` and `house-check -r REVSET`.
 
 Use targeted checks while working and run the checks appropriate to the
 change before reporting completion.
@@ -66,27 +63,23 @@ change before reporting completion.
 Tracked work lives in `work/issues/` and is managed with `tix`; the
 format and priority scheme are in `work/issues/README.md`. Design
 decisions are not tickets: they go through the design space. Check
-`tix list --ready` before starting work, and run `tix check` after
-editing a ticket. A ticket file `tix new` creates can be ignored by a
+`tix -C work/issues list --ready` before starting work, and run
+`tix -C work/issues check` after editing a ticket. A ticket file `tix new` creates can be ignored by a
 global gitignore and so stay untracked: run
 `jj file track --include-ignored work/issues/STEM.md` and confirm it with
-`jj file list work/issues/STEM.md`. The devenv shell puts `tix` on PATH with `-C work/issues` set. Outside
-it, run it from the repository root as:
-
-```
-nix run github:tonyd33/tix -- -C work/issues check
-```
+`jj file list work/issues/STEM.md`. Run `tix` from the repository root as `tix -C work/issues ...`; the
+devenv shell puts it on PATH.
 
 ## Tools
 
 Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
-root (devenv also puts each on PATH as `NAME`):
+root (devenv puts only `miri` on PATH):
 
 - `suite [ARGS]`: the full nextest run, output in `target/suite.txt`; prints failures, the
   summary and the run's peak memory. `suite` and `check` run under `limited`: a systemd user scope
   of at most 14G per run, inside `adtb.slice`, which every run shares, throttled past 60% of the
   machine's memory and capped at 75%, no swap. Past a limit the kernel kills a process, which
-  nextest reports as SIGKILL, and the run goes on. Runs share the machine with no lock. A typed
+  nextest reports as SIGKILL, and the run goes on. A typed
   `cargo nextest run` or `cargo test`, the other tools and CI, which has no systemd user manager,
   run without this limit. A test is reported slow at 20 s and killed as hung at 300 s; no test
   may depend on the machine being idle. Never set `RUST_MIN_STACK` where cargo or rustc can see it: it reached rustc and crashed it. Set it only on a spawned test child.
@@ -101,12 +94,10 @@ root (devenv also puts each on PATH as `NAME`):
   check a text and run it on the reference and the engine side by side;
   `--checks app::c` prints the plan of each incremental check of
   constraint `c`, the text then optional.
-- `codemap [CRATE [MODULE]]`, `codemap --tests [CRATE]`: modules, pub
-  items with line numbers, test binaries with their test counts.
 - `tree-sitter-check`: regenerate the grammar in `tools/tree-sitter-adtb/` and fail on a
   difference from the checked in `src/`, run its corpus, and compare it with `adtb-lang` over the
-  spec, conformance and application texts and the front end fuzzer's programs.
-- `house-check`: the added lines of `jj diff` that break a comment rule.
+  spec and conformance texts and the front end fuzzer's programs.
+- `house-check [DIR [-r REVSET]]`: the added lines of `jj diff` that break a comment rule.
 - `loom [ARGS]`: clippy over adtb-sys under `--cfg adtb_loom`, then the
   Loom models of the page state word, its unit tests built with that
   cfg into `target/loom`; ARGS go to nextest.
@@ -114,14 +105,12 @@ root (devenv also puts each on PATH as `NAME`):
   binary. The dev shell's `miri` puts a nightly toolchain first on
   PATH; the stable one stays the default. `check` runs both, about
   35 s together from cold and 11 s warm.
-- `quality-metrics.sh [REVSET]` (`quality-metrics` in the dev shell):
-  review metrics for the changes in REVSET, by default `reviewed..@`.
-- `code-commits [REVSET]`: the commits of REVSET, by default
-  `reviewed..main`, that change a path outside docs/, work/ and Markdown
-  files; the quality cadence counts these.
-- `size-check.sh` (`size-check` in the dev shell): fail when a non-test
-  source passes the line limit or the allowlist in `size-allowlist` is
-  stale.
+- `quality-metrics.sh [REVSET]`: review metrics for the changes in
+  REVSET, by default `reviewed..@`. `quality-metrics.sh --code-commits
+  [REVSET]` lists the commits of REVSET, by default `reviewed..main`, that
+  change a path outside docs/, work/ and Markdown files; the quality
+  cadence counts these.
+- `size-check.sh`: fail when a non-test source passes the line limit.
 - `structure-check [DIR]`: fail when a file has more sites than `structure-allowlist` allows of
   a counted pattern, or fewer: the counts only fall. The rows: struct fields visible past their
   module (`crate_fields`, `pub_fields`, counted by parsing with `crates/adtb-structure`),
@@ -129,14 +118,8 @@ root (devenv also puts each on PATH as `NAME`):
   (`clippy.toml` rejects `storage::page::owner`, `pages::Exclusive::write`,
   `PageMemory::lock_exclusive`, `PageMemory::try_lock_exclusive`, `Optimistic::upgrade` and the
   `regex` constructors outside `adtb_lang::pattern` by identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
-  above the allowlist at REV; `check --changed` runs it against `main`, so a rise is the lead's
-  act on main. `structure-check-test` proves it on scratch files.
-- `feature-check [DIR]`: fail when a package of either workspace has a normal or build
-  dependency on adtb with its `testing` feature, enables `adtb/testing` from a feature of its own,
-  or adtb's default features include it, read from `cargo metadata`; a dev-dependency may enable
-  it. It also fails when a package other than adtb-lang depends on `regex`, `regex-automata`,
-  `regex-syntax`, `regex-lite` or `fancy-regex`. `check` runs it; `feature-check-test` proves it
-  on scratch workspaces.
+  above the allowlist at REV; `check REVSET` runs it against the parent of REVSET's root, so a rise is
+  the lead's act on main. `structure-check-test` proves it on scratch files.
 - `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
   `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of
   `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with
@@ -145,23 +128,18 @@ root (devenv also puts each on PATH as `NAME`):
   working copy onto it; refuses while the main working copy has changes, or WS holds a file jj
   does not track that its .gitignore files do not ignore.
   A slot becomes free; any other workspace is forgotten.
-- `docs-site [build|serve|check]`: build or serve the site with mdBook; `check`
-  builds it and runs lychee offline over its links and fragments. A new page
-  under `docs/manual`, `docs/spec` or `docs/design` goes in `docs/SUMMARY.md`;
-  the suite fails otherwise.
-- `workspace-gc [--clean | --guard | --clear-build WS]`: every workspace's
-  `target/` size; clean the idle ones; `--guard` fails under 30 GB free;
-  `--clear-build` empties an idle `debug` and `tmp` of WS's `target/` and
-  `apps/campaign/target/`, `main` for the main checkout, and refuses while anything uses them.
+- `mdbook build`, `mdbook serve` and `lychee --offline --include-fragments` build, serve and
+  link-check the documentation site. A new page under `docs/manual`, `docs/spec` or `docs/design`
+  goes in `docs/SUMMARY.md`; the suite fails otherwise.
 - `slot NAME BRIEF [N]`: give a track a workspace in a reused directory, so its
   `target/` stays valid; `land` frees it. It refuses BRIEF when its one `Ticket: STEM` line names a
   bug ticket with no class tag, or a site fix in a class of three or more instances while a
   mechanism ticket of the class is open or in progress and the brief has no
   `Site fix because: REASON` line. It also refuses a BRIEF with no `## Contract` section holding text (a brief
   that changes no code says `Contract: none, no code` on its own line), and any BRIEF while
-  `code-commits reviewed..main` prints more than 15 lines: run the quality review, then
-  `jj bookmark set reviewed -r main`. `slot-test` proves `slot`, `land` and
-  `--clear-build` on scratch repositories, from a copy of the tools there; `--shell` runs the cases without cargo builds.
+  `quality-metrics.sh --code-commits reviewed..main` prints more than 15 lines: run the quality
+  review, then `jj bookmark set reviewed -r main`. Clear an idle slot's build with `cargo clean`
+  in it.
 
 ## Invariants and fixes
 

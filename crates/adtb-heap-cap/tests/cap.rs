@@ -367,7 +367,6 @@ fn every_raised_test_holds_its_slots() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut sources = Vec::new();
     rust_sources(&root.join("crates"), &mut sources);
-    rust_sources(&root.join("apps"), &mut sources);
     let raised: Vec<_> = sources
         .iter()
         .flat_map(|path| {

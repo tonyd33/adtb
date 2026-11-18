@@ -92,14 +92,10 @@ fn owned() {}
 )]
 fn owned_twice() {}
 RS
-mkdir -p work/tools
-printf '%s\n' 'crates/a/src/big.rs' >work/tools/size-allowlist
-jj file track --include-ignored work/tools/size-allowlist >/dev/null 2>&1
 printf '%s\n' '#[expect(dead_code)]' >notes.txt
 expect 1 'fixture.rs:3: lint suppression: fix the code or justify it in the report: #![expect(dead_code, reason = "goes when the item is used")]
-fixture.rs:4: lint suppression: fix the code or justify it in the report: #[expect(
-work/tools/size-allowlist:1: size allowlist entry: crates/a/src/big.rs'
-rm -r work notes.txt
+fixture.rs:4: lint suppression: fix the code or justify it in the report: #[expect('
+rm notes.txt
 
 cat >fixture.rs <<'RS'
 /// Writes the unchanged item.

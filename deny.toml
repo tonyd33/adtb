@@ -18,10 +18,10 @@ allow = [
     "Unicode-3.0",
     # BLAKE3 and its constant-time comparison are offered under Apache-2.0 among others.
     "Apache-2.0",
+    # The licence of subtle, the constant-time comparisons of the RustCrypto crates.
+    "BSD-3-Clause",
     # The licence of arrayref, a BLAKE3 dependency.
     "BSD-2-Clause",
-    # The campaign router matchit combines MIT and BSD-3-Clause.
-    "BSD-3-Clause",
 ]
 confidence-threshold = 0.9
 
@@ -30,19 +30,18 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 allow-workspace = true
-# Remove when maud_macros and proc-macro2-diagnostics use syn 3.
-skip = [{ name = "syn", version = "=2.0.119" }]
+# A matches pattern compiles only through adtb-lang: regex and its parts are reached only
+# through the wrappers listed, and regex-lite and fancy-regex not at all.
+deny = [
+    { crate = "regex@*", wrappers = ["adtb-lang"] },
+    { crate = "regex-syntax@*", wrappers = ["adtb-lang", "regex", "regex-automata"] },
+    { crate = "regex-automata@*", wrappers = ["regex", "matchers", "tracing-subscriber"] },
+    { crate = "matchers@*", wrappers = ["tracing-subscriber"] },
+    { crate = "tracing-subscriber@*", wrappers = ["loom"] },
+    { crate = "regex-lite" },
+    { crate = "fancy-regex" },
+]
 allow = [
-    # Prepared native SQLite calls in the opt-in comparison driver.
-    "rusqlite",
-    # Bundled SQLite and its checked-in bindings for the comparison driver.
-    "libsqlite3-sys",
-    # Fallible row iteration required by rusqlite.
-    "fallible-iterator",
-    "fallible-streaming-iterator",
-    # Build-script library discovery required by libsqlite3-sys.
-    "pkg-config",
-    "vcpkg",
     # NFC normalization of text values.
     "unicode-normalization",
     # Inline buffers unicode-normalization requires.
@@ -90,10 +89,10 @@ allow = [
     "syn",
     "synstructure",
     "unicode-ident",
-    # RE2-syntax regular expressions for matches, in linear time.
+    # Regular expressions for matches, in linear time.
     "regex",
-    "regex-automata",
     "regex-syntax",
+    "regex-automata",
     # Zone rules for zoned, in_zone and to_instant, with the bundled time zone database.
     "jiff",
     "jiff-core",
@@ -170,68 +169,25 @@ allow = [
     "anstyle",
     # Case conversion clap_derive names flags with.
     "heck",
-    # Local engine and test dependencies of the separately built campaign workspace.
-    "adtb",
-    "adtb-codegen",
-    "adtb-file",
-    "adtb-heap-cap",
-    "adtb-lang",
-    "adtb-reference",
-    "adtb-sim",
-    "adtb-sys",
-    "adtb-testkit",
-    # Local campaign HTTP routing, forms, escaped HTML, async runtime and their dependencies.
-    "atomic-waker",
-    "axum",
-    "axum-core",
-    "bytes",
-    "errno",
-    "form_urlencoded",
-    "futures-core",
-    "futures-task",
-    "futures-util",
-    "http",
-    "http-body",
-    "http-body-util",
-    "httparse",
-    "httpdate",
-    "hyper",
-    "hyper-util",
-    "itoa",
-    "log",
-    "matchit",
-    "maud",
-    "maud_macros",
-    "memchr",
-    "mime",
-    "mio",
-    "percent-encoding",
-    "pin-project-lite",
-    "proc-macro2-diagnostics",
-    "ryu",
-    "serde",
-    "serde_core",
-    # Serialize native benchmark artifacts without ad hoc escaping, and read plan documents in
-    # engine scripts.
+    # Read plan documents in engine scripts, and what it uses.
     "serde_json",
-    # Format JSON numbers for the native benchmark serializer.
+    "serde_core",
     "zmij",
-    "serde_derive",
-    "serde_path_to_error",
-    "serde_urlencoded",
-    "signal-hook-registry",
-    "slab",
-    "socket2",
-    "sync_wrapper",
-    "tokio",
-    "tokio-macros",
-    "tower",
-    "tower-layer",
-    "tower-service",
+    "itoa",
+    "memchr",
+    # Buffers arrow-buffer shares, and the platform and logging support other crates here use.
+    "bytes",
+    "log",
     "version_check",
     "wasi",
     "windows-link",
     "windows-sys",
+    # Futures utilities the wasm bindings of the local zone lookup pull in.
+    "futures-core",
+    "futures-task",
+    "futures-util",
+    "pin-project-lite",
+    "slab",
     # arrow-rs, a test-only outside implementation that reads and writes the engine's Arrow IPC
     # streams.
     "arrow-array",

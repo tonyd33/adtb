@@ -36,8 +36,8 @@ jj config set --user user.email "you@example.com"
 The dev shell supplies Rust, jj, quandary, tix, cargo-nextest, cargo-deny,
 and the shell utilities used by `work/tools/`. You do not need local
 checkouts of quandary, tix or editorenv. Nix dependencies are pinned in
-`devenv.lock`; Cargo dependencies are pinned in the workspace's and campaign
-application's `Cargo.lock` files. Keep these lockfiles when moving machines.
+`devenv.lock`; Cargo dependencies are pinned in the workspace's `Cargo.lock`. Keep
+these lockfiles when moving machines.
 The Rust toolchain is recorded in `rust-toolchain.toml`.
 
 Direnv is optional. If installed and hooked into your shell, `direnv allow`
@@ -52,10 +52,10 @@ Run commands from the repository root:
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 work/tools/suite --profile quick
-check
+work/tools/check
 ```
 
-`check` runs the full workspace and campaign application checks, dependency
+`work/tools/check` runs the full workspace checks, dependency
 policy and source-size limits, in a systemd user scope whose memory the kernel
 limits. `work/tools/suite` runs the tests in a scope of its own and saves
 output to `target/suite.txt`.
@@ -94,13 +94,13 @@ flake until Git tracks it: `git add --intent-to-add FILE`.
 
 ## Read the documentation locally
 
-In the development shell, run `docs-build` to build the manual, specification
+In the development shell, run `mdbook build` to build the manual, specification
 and design documentation into `target/docs-site/html/`. Run
 `devenv processes up docs` to serve it with live reload at
 <http://127.0.0.1:8081/> (or the port devenv assigns if it is occupied).
 The manual's first page is `/manual/getting-started.html`.
 
-For a standalone server, run `work/tools/docs-site serve --port 8081`.
+For a standalone server, run `mdbook serve --port 8081`.
 The site binds only to loopback. Search, themes and highlighting work without
 an internet connection. No Node installation is required.
 
@@ -109,9 +109,9 @@ page: add a new page under `docs/manual/`, `docs/spec/` or `docs/design/` there.
 suite fails on a page left out and on a listed path that does not exist. `mdbook
 serve` rebuilds on an edit and watches the highlighting asset. `mdbook build` and
 `mdbook serve --hostname 127.0.0.1` also work directly from the repository root.
-`docs-check` builds the site and runs lychee offline over the HTML, checking every
-internal link and fragment. The suite compares the highlighter keywords with the
-lexer table. The default `check` includes both. Hosting is a separate task.
+After `mdbook build`, `lychee --offline --include-fragments --root-dir target/docs-site/html
+target/docs-site/html` checks every internal link and fragment. The suite compares the highlighter keywords with the
+lexer table. `work/tools/check` runs both. Hosting is a separate task.
 
 ## Optional editor integration
 

@@ -12,12 +12,12 @@ use crate::key::Value;
 
 use super::{layout, oplog, version_hash};
 
-const CAMPAIGN: [&str; 5] = [
-    include_str!("../../../../apps/campaign/schema/migrations/0001.adt"),
-    include_str!("../../../../apps/campaign/schema/migrations/0002.adt"),
-    include_str!("../../../../apps/campaign/schema/migrations/0003.adt"),
-    include_str!("../../../../apps/campaign/schema/migrations/0004.adt"),
-    include_str!("../../../../apps/campaign/schema/migrations/0005.adt"),
+const SAMPLE_LOG: [&str; 5] = [
+    include_str!("hash_corpus/0001.adt"),
+    include_str!("hash_corpus/0002.adt"),
+    include_str!("hash_corpus/0003.adt"),
+    include_str!("hash_corpus/0004.adt"),
+    include_str!("hash_corpus/0005.adt"),
 ];
 
 const BASE: &str = "module law
@@ -169,7 +169,7 @@ revoke read us from support",
     "module law\nrevert 0036\n  fill T.m = \"m\"",
 ];
 
-/// The hex of the version hash after each migration of `CAMPAIGN`, then of `BASE` and
+/// The hex of the version hash after each migration of `SAMPLE_LOG`, then of `BASE` and
 /// `OPERATORS`.
 const HASHES: &[&str] = &[
     "fc0a74642b9f6711651848cdee8609dee7e5d09de4dca2f3c0f4b9e671a13b29",
@@ -283,7 +283,7 @@ fn every_version_of_a_log_holding_each_operator_keeps_its_stored_hash() {
         "type Cell = { lat: F64, lon: F64 }\nfn scale (x: F64) -> F64 = x * 2.0".into(),
     );
     src.packages.insert("tz-2026b.tzif".into(), "zones".into());
-    for text in CAMPAIGN.iter().chain([&BASE]).chain(OPERATORS) {
+    for text in SAMPLE_LOG.iter().chain([&BASE]).chain(OPERATORS) {
         src = migrated(&src, text);
     }
     let schema = src.schema().expect("it builds");

@@ -1,4 +1,4 @@
-//! Generate the typed calls of the fixture shop and of the campaign app.
+//! Generate the typed calls of the fixture shop.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,10 +33,5 @@ fn main() {
         "fixtures/shop/log",
         &[("queries", "fixtures/shop/shop-1.0.adb")],
         &out.join("shop.rs"),
-    );
-    emit(
-        "../../apps/campaign/schema/migrations",
-        &[("queries", "../../apps/campaign/bundles/campaign-1.0.adb")],
-        &out.join("campaign.rs"),
     );
 }

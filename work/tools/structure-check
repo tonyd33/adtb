@@ -32,9 +32,7 @@ cd "${1:-$tools_root}"
 allowlist=work/tools/structure-allowlist
 
 roots=()
-for dir in crates apps; do
-  [[ ! -d $dir ]] || roots+=("$dir")
-done
+[[ ! -d crates ]] || roots+=(crates)
 
 # Print `ROW PATH COUNT` for each file under the roots with matches of pattern $2, outside the globs $3...
 count() {
@@ -74,7 +72,7 @@ count_adtb_tests() {
 fields() {
   ((${#roots[@]})) || return 0
   cargo run --quiet --locked --offline --manifest-path "$tools_root/Cargo.toml" -p adtb-structure -- "${roots[@]}" |
-    awk '$1 ~ /^disallowed_methods/ || $2 ~ /^(crates|apps)\/[^\/]+\/src\//'
+    awk '$1 ~ /^disallowed_methods/ || $2 ~ /^crates\/[^\/]+\/src\//'
 }
 
 # Print the lines `ROW KIND COUNT FILE`, test files apart from production ones.
@@ -90,7 +88,7 @@ found_counts() {
     count crash_allows '\bfn allows\b'
     count_under decode_panics crates/adtb/src/heap 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|assert_ne!|\.unwrap\(\)' -g '!tests.rs' -g '!*_tests.rs'
     count_under decode_panics crates/adtb/src/catalog 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|assert_ne!|\.unwrap\(\)' -g '!*' -g 'codec.rs' -g 'layout.rs'
-    for dir in crates apps; do
+    for dir in crates; do
       count_under id_sentinels "$dir" '(?<!const [A-Z_]{1,64}: FileId = )\b(RelId|TypeId|FnId|ModuleId|FileId)\(u32::MAX|\.0 (==|!=) u32::MAX\b' -P -g '!**/target/**'
       count_under engine_names "$dir" '\bmodule_named(_in)?\("(catalog|sys|prelude)"|\bvalues::relation\(|\bin_(relation|type)\("|\b(ctor_named|ctor_index)\("|\btypes\["|"(catalog|sys|prelude)" (=>|==|!=)|(==|!=) "(catalog|sys|prelude)"|\bself\.ctor\("|\b(audit|event)_row\([^;]*?, "[A-Z]' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
       count_under engine_names "$dir" '\b\w+\.push\(\s*"[a-z_]+",' -P -U -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
@@ -98,10 +96,10 @@ found_counts() {
     count_under engine_names crates/adtb/src '\bmodule_named(_in)?\((?!")' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
     count kernel_door '(\.|Terms::)add_unchecked\('
     count kernel_overwrite '(\.|Terms::)overwrite_kind\('
-    for dir in crates apps; do
+    for dir in crates; do
       count_under prelude_positions "$dir" '(Value::Ctor|Val::tag|Val::Ctor|Val::ctor|of_ctor|\.ctor)\((u32::from|[0-9])|\bctor: ([0-9]\b|u32::from)|\bctor == ([0-9]\b|u32::from)|== u32::from\(|c @ \(0 \| 1\)|\*c <= 1|\btag\(\) (==|!=) Some\([0-9]|\b[0-9] => Rounding::' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
     done
-    for dir in crates apps; do
+    for dir in crates; do
       count_under denial_zips "$dir" '\.zip\([^);]*\b(checks|constraints)\b|\b(checks|constraints)\b[^;{}]*?\.zip\(' -P -U -g '!**/target/**'
     done
     count_under structure_listings crates/adtb/src '\bfn (holders|opens_from|inventory)\b|(?<!fn |self\.)\bholders_(of|meeting)\(|\.walk\(Holder::|\bInventory \{' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/catalog/structures.rs'

@@ -5,7 +5,7 @@
 Record one receipt per check in the track's receipt file:
 
 - State: workspace, tested commit id and base.
-- Command: the exact command and its directory, the root workspace or `apps/campaign`.
+- Command: the exact command and its directory, the repository root.
 - Outcome: exit status, failing tests or unfinished stages, and the log path.
 - Remaining: checks still owed and who owns them.
 

@@ -1,7 +1,3 @@
-2 apps/campaign/src/main.rs
-2 apps/campaign/src/web/dates.rs
-2 apps/campaign/tests/engine.rs
-3 apps/campaign/tests/live/atomic.rs
 2 crates/adtb-codegen/src/main.rs
 1 crates/adtb-conformance/tests/runner.rs
 2 crates/adtb-lang/src/analysis/tests.rs

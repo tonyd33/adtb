@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+check [REVSET]   run every check of the jj workspace holding the current directory, in a scope of `limited`, unless
+                 this already runs in one
+
+Runs, in order: clippy, rustfmt, the suite, the Loom models, Miri, cargo-deny, the damage search,
+size-check, structure-check, refusal-check, the documentation build and its link check,
+tree-sitter-check and every work/tools/*-test. With REVSET, also runs
+`structure-check --against` the parent of its root and `house-check -r REVSET`. Needs `jj` and `miri` on PATH.
+HELP
+}
+
+case ${1:-} in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
+
+root=$(jj root) || {
+  echo "check: jj root failed: run check inside a jj workspace" >&2
+  exit 1
+}
+
+tools=$root/work/tools
+cgroup=$(</proc/self/cgroup)
+if [[ ${cgroup#0::} != */adtb-run-*.scope && -z ${ADTB_UNLIMITED:-} ]]; then
+  exec "$tools/limited" "$0" "$@"
+fi
+
+step() {
+  echo "check: $*" >&2
+  "$@" || {
+    echo "check: failed: $*" >&2
+    exit 1
+  }
+}
+
+ulimit -Sc 0
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
+site=$root/target/docs-site/html
+
+step cargo clippy --workspace --all-targets -- -D warnings
+step cargo fmt --all --check
+step "$tools/suite"
+step "$tools/loom"
+step miri
+step cargo deny check
+step cargo nextest run -p adtb-sim --test storage --profile damage
+step "$tools/size-check.sh"
+step "$tools/structure-check"
+step "$tools/refusal-check"
+step mdbook build "$root"
+step lychee --offline --include-fragments --no-progress --root-dir "$site" "$site"
+step "$tools/tree-sitter-check"
+for test in "$tools"/*-test; do
+  step "$test"
+done
+if [[ -n ${1:-} ]]; then
+  base=$(jj --ignore-working-copy --color=never log --no-graph -r "roots($1)-" -T 'commit_id ++ "\n"' | head -1) || {
+    echo "check: failed: computing the base of $1 with jj log" >&2
+    exit 1
+  }
+  if [[ -n $base ]]; then
+    step "$tools/structure-check" --against "$base"
+  else
+    echo "check: skipped structure-check --against: $1 has no parent commit" >&2
+  fi
+  step "$tools/house-check" "$root" -r "$1"
+fi

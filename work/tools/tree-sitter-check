@@ -59,7 +59,7 @@ sed -sn '/^{$/,$p' "$work"/chunks/c.??.json | jq -r '
 awk -F'\t' -v allow="$grammar/differential-allowlist" '
   BEGIN {
     while ((getline line <allow) > 0) { split(line, a, "\t"); classes[a[1]] }
-    floor["spec"] = 300; floor["campaign"] = 11; floor["corpus"] = 40
+    floor["spec"] = 300; floor["corpus"] = 40
     floor["conformance"] = 2500; floor["fuzz"] = 4000
     accepted_floor["fuzz"] = 1000
   }
