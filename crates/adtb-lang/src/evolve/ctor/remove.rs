@@ -8,7 +8,7 @@ impl Cx<'_> {
         self.remove_ctor(path, false)
     }
 
-    /// Removes a constructor; as the inverse of `add constructor` it skips the lifecycle check and removes
+    /// Remove a constructor; as the inverse of `add constructor` it skips the lifecycle check and removes
     /// the constructor's arms from every match.
     pub(in crate::evolve) fn remove_ctor(&mut self, path: &ast::CtorPath, inverse: bool) -> R<()> {
         let schema = self.schema()?;

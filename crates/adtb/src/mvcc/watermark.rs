@@ -40,7 +40,8 @@ impl Holds {
         id
     }
 
-    /// Panics if `id` is not held.
+    /// Panics:
+    /// - `id` is not held.
     pub(super) fn release(&mut self, id: SnapshotId) {
         self.snapshots
             .remove(&id)

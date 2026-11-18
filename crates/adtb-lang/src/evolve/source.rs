@@ -98,7 +98,7 @@ impl Source {
         format!("{}{}", header(&d.module), d.text)
     }
 
-    /// Builds the schema, with the catalog ids and write states the source holds.
+    /// Build the schema, with the catalog ids and write states the source holds.
     pub fn schema(&self) -> Result<Schema, Vec<FileDiag>> {
         let built = self.built()?;
         let ids = self.assigned_ids(&built);
@@ -121,7 +121,7 @@ impl Source {
         Committed::new(schema).ok_or(Uncommitted::Migrating)
     }
 
-    /// Builds the schema the declarations state, its ids those of declaration order.
+    /// Build the schema the declarations state, its ids those of declaration order.
     pub(super) fn built(&self) -> Result<Arc<Schema>, Vec<FileDiag>> {
         if let Some(schema) = self.memo.get(self) {
             return Ok(schema);
@@ -144,7 +144,7 @@ impl Source {
         schema::build_ahead(&files, &self.ahead_inputs())
     }
 
-    /// Prepares the source for the operators `ops` of a migration of `module`, applied one at a
+    /// Prepare the source for the operators `ops` of a migration of `module`, applied one at a
     /// time: a `Key r` type may name a relation variable that a later one of them adds.
     ///
     /// Call `settled` after the last of them.
@@ -174,12 +174,12 @@ impl Source {
             .collect();
     }
 
-    /// Ends the migration `expecting` prepared the source for.
+    /// End the migration `expecting` prepared the source for.
     pub fn settled(&mut self) {
         self.ahead.clear();
     }
 
-    /// Builds and type checks the schema.
+    /// Build and type check the schema.
     pub fn check(&self) -> Result<(Schema, Program), Vec<FileDiag>> {
         let schema = self.schema()?;
         let program = check::check_schema(&schema)?;
@@ -210,7 +210,7 @@ impl Source {
         span.start as usize - h..span.end as usize - h
     }
 
-    /// Replaces each range of declaration `i`'s text by its text.
+    /// Replace each range of declaration `i`'s text by its text.
     ///
     /// Precondition: the ranges do not overlap, except that equal edits count once.
     pub(super) fn edit<W: Into<Written>>(&mut self, i: usize, edits: Vec<(Range<usize>, W)>) {
@@ -278,13 +278,13 @@ impl Source {
         i
     }
 
-    /// Replaces the whole text of declaration `i`.
+    /// Replace the whole text of declaration `i`.
     pub(super) fn rewrite(&mut self, i: usize, text: impl Into<Written>) {
         let end = self.decls[i].text.len();
         self.edit(i, vec![(0..end, text)]);
     }
 
-    /// Removes every declaration `drop` holds.
+    /// Remove every declaration `drop` holds.
     pub(super) fn remove_decls(&mut self, drop: impl Fn(usize, &SourceDecl) -> bool) {
         let mut kept = Vec::new();
         let mut decls = Vec::new();
@@ -314,7 +314,7 @@ impl Source {
         self.remove_decls(|j, _| j == i);
     }
 
-    /// Records that the operator matched the text at `from` of the migration against the text at `at`
+    /// Record that the operator matched the text at `from` of the migration against the text at `at`
     /// of declaration `i`, as it is before the operator edits it.
     pub(super) fn read_mark(&mut self, from: Range<usize>, i: usize, at: usize) {
         if let Some(marks) = &mut self.marks {
@@ -322,7 +322,7 @@ impl Source {
         }
     }
 
-    /// Applies a migration, numbered one past the current version, and rechecks the result.
+    /// Apply a migration, numbered one past the current version, and recheck the result.
     pub fn migrate(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
         self.migrate_keeping(m, text, &[])
     }

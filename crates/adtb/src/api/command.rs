@@ -38,7 +38,7 @@ struct Added {
     json: String,
 }
 
-/// Refuses a command the engine does not run in process.
+/// Refuse a command the engine does not run in process.
 pub(super) fn runs(c: &Command) -> Result<(), Error> {
     match c {
         Command::Explain {
@@ -359,7 +359,7 @@ pub(super) fn reindexed(
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Runs command `c` of `p` in `tx`, over `local`, what `tx` holds outside the file. Returns
+    /// Run command `c` of `p` in `tx`, over `local`, what `tx` holds outside the file. Returns
     /// its rows.
     pub(super) fn command(
         &self,
@@ -582,7 +582,7 @@ impl<R: Runtime> Engine<R> {
         }
     }
 
-    /// Runs the statement of `text` and undoes it. Returns `node` with what the run did, and
+    /// Run the statement of `text` and undo it. Returns `node` with what the run did, and
     /// the change set and constraint outcome, each a name, a line of text and a JSON value.
     fn analyzed(
         &self,
@@ -713,7 +713,7 @@ impl<R: Runtime> Engine<R> {
         )))
     }
 
-    /// Vacuums `rel`. Returns one row per constructor relation.
+    /// Vacuum `rel`. Returns one row per constructor relation.
     fn vacuumed(
         &self,
         schema: &Schema,
@@ -749,7 +749,7 @@ impl<R: Runtime> Engine<R> {
         Ok(rows(schema, ty, out))
     }
 
-    /// Replaces the row of constructor `setting` of `catalog::settings` by one holding the
+    /// Replace the row of constructor `setting` of `catalog::settings` by one holding the
     /// fields of `value`, a term of `p`, in a transaction of its own. Returns the new row.
     ///
     /// A lease setting first latches every bundle expired under the old values.

@@ -4,7 +4,7 @@ use crate::ast::{CallArgs, Expr};
 use crate::kernel::{Agg, FileFormat, Prim};
 
 impl Checker<'_> {
-    /// Checks arguments against parameter types over `n` type parameters of a callee, solving those parameters from the synthesized arguments, then from `result` against `expected`.
+    /// Check arguments against parameter types over `n` type parameters of a callee, solving those parameters from the synthesized arguments, then from `result` against `expected`.
     pub(super) fn solve_args(
         &mut self,
         params: &[Ty],
@@ -380,7 +380,7 @@ pub(super) fn mentions(t: &Ty, i: u32) -> bool {
     }
 }
 
-/// Collects lower bounds for the callee's type parameters in `pattern` from `actual`.
+/// Collect lower bounds for the callee's type parameters in `pattern` from `actual`.
 fn unify(c: &Checker, pattern: &Ty, actual: &Ty, sol: &mut [Option<Ty>]) {
     match (pattern, actual) {
         (Ty::Param(i), t) => {

@@ -10,7 +10,7 @@ pub enum Mode {
     /// it began.
     Snapshot,
     ReadCommitted,
-    /// Appends are visible to every transaction at once, and undone on abort.
+    /// An append is visible to every transaction at once, and undone on abort.
     Uncommitted,
 }
 

@@ -340,7 +340,7 @@ pub(super) fn wrote_for_test(pid: Pid) -> Wrote {
 ///   LSN, its damage record, the LSN map root) are made in one hold of the log, so a
 ///   checkpoint, which takes its snapshot in the same hold, sees all of them or none.
 ///
-/// Clones are handles on one pager.
+/// Every clone is a handle on one pager.
 pub struct Pager<R: Runtime>(std::sync::Arc<Shared<R>>);
 
 impl<R: Runtime> Pager<R> {
@@ -531,7 +531,8 @@ impl<'a, R: Runtime> PageExclusive<'a, R> {
 
     /// Apply `edits` to the page and log them.
     ///
-    /// Panics if an edit writes the page's LSN or checksum or past its end.
+    /// Panics:
+    /// - An edit writes the page's LSN or checksum or past its end.
     pub fn change(&mut self, edits: Vec<Edit>) -> Lsn {
         let pager = self.held().pager;
         pager.apply(&mut [self], vec![edits], None)
@@ -1279,7 +1280,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Count `pid` as resident, first evicting pages by the clock while the pool is full.
     ///
-    /// Panics when every frame stays latched for longer than the pool's stall bound.
+    /// Panics:
+    /// - Every frame stays latched for longer than the pool's stall bound.
     #[expect(
         clippy::disallowed_methods,
         reason = "permanent: eviction's try-lock clippy.toml admits"

@@ -76,7 +76,7 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    /// Judges outcome `o` of term `name`, of type `ty`, run against `prior`.
+    /// Judge outcome `o` of term `name`, of type `ty`, run against `prior`.
     fn judge(&self, name: &str, ty: &Ty, prior: &Database, o: &Outcome, out: &mut Report) {
         out.judged += 1;
         let after = Judge::over(self.schema, self.program, &o.db);
@@ -103,7 +103,7 @@ impl Run<'_> {
         }
     }
 
-    /// Runs `items` of `terms` in order, each named by `names`, and judges each that succeeds.
+    /// Run `items` of `terms` in order, each named by `names`, and judge each that succeeds.
     /// Returns the state after the last when every item succeeds.
     fn items(
         &self,
@@ -139,7 +139,7 @@ impl Run<'_> {
     }
 }
 
-/// Records an abort that a well-typed term never reaches.
+/// Record an abort that a well-typed term never reaches.
 fn internal(name: &str, a: &Abort, out: &mut Report) {
     if let Abort::Internal(what) = a {
         out.judged += 1;
@@ -157,8 +157,8 @@ struct Given {
     bundles: Bundles,
 }
 
-/// Runs the ad hoc `items` of `source` in `fx`, in order and in their normal forms, over `given`,
-/// a file scan reading `files`, and judges every outcome. When `keep`, the state after the last
+/// Run the ad hoc `items` of `source` in `fx`, in order and in their normal forms, over `given`,
+/// a file scan reading `files`, and judge every outcome. When `keep`, the state after the last
 /// item becomes the fixture's database. Returns whether the items check.
 fn statements(
     fx: &mut Fixture,
@@ -235,7 +235,7 @@ fn statements(
     true
 }
 
-/// Runs ad hoc text `text` in `fx` as [`statements`] does, without parameters. Returns whether
+/// Run ad hoc text `text` in `fx` as [`statements`] does, without parameters. Returns whether
 /// the text parses and checks.
 fn text(fx: &mut Fixture, text: &str, keep: bool, out: &mut Report) -> bool {
     match parse_adhoc(text, Options::default()).ok() {
@@ -274,8 +274,8 @@ fn draw_args(schema: &Schema, ty: &Ty, params: usize, rng: &mut Rng) -> Option<(
     Some((args, ty))
 }
 
-/// Calls registered query `q` of the bundle that reads `module` on arguments drawn from `rng`
-/// and judges its result.
+/// Call registered query `q` of the bundle that reads `module` on arguments drawn from `rng`
+/// and judge its result.
 fn call_query(
     fx: &Fixture,
     module: ModuleId,
@@ -307,8 +307,8 @@ fn call_query(
     }
 }
 
-/// Calls registered transaction `t` of the bundle that reads `module` on arguments drawn from
-/// `rng` and judges its outcome.
+/// Call registered transaction `t` of the bundle that reads `module` on arguments drawn from
+/// `rng` and judge its outcome.
 fn call_txn(
     fx: &Fixture,
     module: ModuleId,
@@ -340,7 +340,7 @@ fn call_txn(
     }
 }
 
-/// Runs every ad hoc item, registered query and registered transaction of the spec's examples
+/// Run every ad hoc item, registered query and registered transaction of the spec's examples
 /// on a database that starts empty, the items in order, each parameter drawn from `rng`.
 #[test]
 fn spec_corpus_results_inhabit_their_types() {
@@ -398,7 +398,7 @@ const CASES: u64 = 24;
 /// The queries of each generated case.
 const QUERIES: usize = 12;
 
-/// Runs each generated case's load and every query it draws, with its partitions by constructor
+/// Run each generated case's load and every query it draws, with its partitions by constructor
 /// and by predicate and its counts.
 #[test]
 fn generated_case_results_inhabit_their_types() {
@@ -451,7 +451,7 @@ insert tags.Large { item: items.key(2), label: "l" }"#;
 /// Seeds per run of the fuzzed statements; about one in four draws unmutated ad hoc text.
 const FUZZ_SEEDS: u64 = 2000;
 
-/// Runs every unmutated ad hoc statement the front-end fuzzer draws, over a database of a few rows.
+/// Run every unmutated ad hoc statement the front-end fuzzer draws, over a database of a few rows.
 #[test]
 fn fuzzed_statement_results_inhabit_their_types() {
     let src = fuzz::SCHEMA
@@ -505,7 +505,7 @@ fn conformance_schema(body: &str) -> Option<Fixture> {
     Some(Fixture::of_schema(schema, program))
 }
 
-/// Runs the statements of every script of the conformance suite in order, each script on a
+/// Run the statements of every script of the conformance suite in order, each script on a
 /// database that starts empty, keeping the state of each `run`.
 #[test]
 fn conformance_results_inhabit_their_types() {

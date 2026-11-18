@@ -23,7 +23,7 @@ impl std::error::Error for ParseError {}
 
 type P<T> = Result<T, ParseError>;
 
-/// Reads `text`, the textual syntax of one value, at form `form`.
+/// Read `text`, the textual syntax of one value, at form `form`.
 pub fn parse<V: Textual>(text: &str, form: &Form) -> P<V> {
     let mut r = Reader::new(text);
     let v = r.value(form)?;
@@ -128,7 +128,7 @@ impl<'s> Reader<'s> {
         }
     }
 
-    /// Consumes `s` exactly, with no whitespace before it.
+    /// Consume `s` exactly, with no whitespace before it.
     fn glued(&mut self, s: &str) -> bool {
         if self.rest().starts_with(s) {
             self.pos += s.len();
@@ -163,7 +163,7 @@ impl<'s> Reader<'s> {
         Ok(&self.src[start..self.pos])
     }
 
-    /// Reads a name, qualified by a module or not, and returns its last part.
+    /// Read a name, qualified by a module or not. Returns its last part.
     pub(super) fn name(&mut self) -> P<&'s str> {
         let first = self.ident()?;
         if self.glued("::") {
@@ -537,7 +537,7 @@ impl<'s> Reader<'s> {
         self.field_list(forms, "}")
     }
 
-    /// Reads `f: v, ...` up to and including `close`, with every field of `forms` once, in any
+    /// Read `f: v, ...` up to and including `close`, with every field of `forms` once, in any
     /// order, and returns the values in the order of `forms`.
     fn field_list<'f, V: Textual>(
         &mut self,
@@ -586,7 +586,7 @@ impl<'s> Reader<'s> {
         self.name()
     }
 
-    /// Reads a constructor name and returns its index, which `allowed` must hold.
+    /// Read a constructor name. Returns its index, which `allowed` must hold.
     fn ctor_index<'n>(
         &mut self,
         names: impl Iterator<Item = &'n str>,

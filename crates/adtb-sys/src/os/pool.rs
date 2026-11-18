@@ -25,7 +25,8 @@ struct State {
 impl Pool {
     /// Returns a pool of `threads` threads, started.
     ///
-    /// Panics if `threads` is zero.
+    /// Panics:
+    /// - `threads` is zero.
     pub(crate) fn start(files: Arc<Files>, threads: usize) -> Arc<Pool> {
         assert!(threads > 0, "an I/O pool has at least one thread");
         let pool = Arc::new(Pool {

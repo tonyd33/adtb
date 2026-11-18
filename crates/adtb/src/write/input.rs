@@ -145,10 +145,11 @@ impl Local {
         self.temps.get(&rel).and_then(|rows| rows.get(key))
     }
 
-    /// Applies the effects of `effects` on temp relations as one change set.
+    /// Apply the effects of `effects` on temp relations as one change set.
     ///
-    /// Fails with `KeyViolation`, changing nothing, when an inserted row's key is held by a row
-    /// the change set keeps, or two rows of the result share a key.
+    /// Errors:
+    /// - `KeyViolation`, changing nothing, when an inserted row's key is held by a row
+    ///   the change set keeps, or two rows of the result share a key.
     pub fn apply(&mut self, schema: &Schema, effects: &[&Eff]) -> Result<(), Error> {
         let mut plus: BTreeSet<(RelId, Val)> = BTreeSet::new();
         let mut minus: BTreeSet<(RelId, Val)> = BTreeSet::new();
@@ -201,11 +202,12 @@ impl Local {
     }
 
     /// Returns the records of the files `path` names, read through `files` in `format` at
-    /// `row`, pinning them to the transaction. A `confined` read of a file outside the file
-    /// roots fails with `Denied`.
+    /// `row`, pinning them to the transaction.
     ///
-    /// Fails with `FileChanged` when the transaction read `path` before and the files it names,
-    /// or their contents, differ.
+    /// Errors:
+    /// - `Denied` for a `confined` read of a file outside the file roots.
+    /// - `FileChanged` when the transaction read `path` before and the files it names,
+    ///   or their contents, differ.
     pub fn scan(
         &mut self,
         schema: &Committed,

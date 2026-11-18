@@ -255,10 +255,13 @@ impl<R: Runtime> Pager<R> {
     /// same batch: each is marked in the allocation bitmap and formatted, header set and contents
     /// zero, before `f` sees it.
     ///
-    /// Returns the LSN of the last record. Fails, allocating and changing nothing, if a page is
-    /// damaged.
+    /// Returns the LSN of the last record.
     ///
-    /// Panics if a page of `new` is missing from `pids`.
+    /// Errors:
+    /// - A page is damaged, allocating and changing nothing.
+    ///
+    /// Panics:
+    /// - A page of `new` is missing from `pids`.
     pub fn update_with<F>(
         &self,
         new: Reservation<'_, R>,
@@ -303,7 +306,8 @@ impl<R: Runtime> Pager<R> {
     /// Change the pages under `guards` through `f` as [`Pager::update_all`] does, allocating every
     /// page of `new` in the same batch as [`Pager::update_with`] does.
     ///
-    /// Panics if a page of `new` has no guard among `guards`.
+    /// Panics:
+    /// - A page of `new` has no guard among `guards`.
     pub fn update_all_with<'p, F>(
         &'p self,
         new: Reservation<'_, R>,
@@ -489,7 +493,8 @@ impl<R: Runtime> std::fmt::Debug for Reservation<'_, R> {
 impl<'a, R: Runtime> Reservation<'a, R> {
     /// Hold a free page, to be formatted with `format`, `kind` and `owner` when allocated.
     ///
-    /// Fails if an allocation bitmap page is damaged.
+    /// Errors:
+    /// - An allocation bitmap page is damaged.
     pub fn page(&mut self, format: u16, kind: PageKind, owner: u32) -> Result<Pid, PageError> {
         let pid = self.pager.hold_free_page()?;
         self.pages.push(Reserved {
@@ -506,7 +511,8 @@ impl<'a, R: Runtime> Reservation<'a, R> {
     ///
     /// Preconditions: `pid` is allocated, and nothing refers to it once the update is applied.
     ///
-    /// Panics if `pid` is a file header or allocation bitmap page.
+    /// Panics:
+    /// - `pid` is a file header or allocation bitmap page.
     pub fn free(&mut self, pid: Pid) {
         let g = pid.0 / self.pager.bitmap_span();
         assert!(
@@ -559,7 +565,8 @@ impl<'a, R: Runtime> Reservation<'a, R> {
     /// Returns the contents of page `pid` as allocation will format it, from offset
     /// [`FIRST_EDITABLE`].
     ///
-    /// Panics if `pid` is not reserved here.
+    /// Panics:
+    /// - `pid` is not reserved here.
     pub fn image(&self, pid: Pid) -> Vec<u8> {
         let r = self.reserved(pid);
         let mut out = vec![0; self.pager.page_size()];

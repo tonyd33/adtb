@@ -43,7 +43,7 @@ struct State<'a> {
     db: &'a Database,
 }
 
-/// Judges values of the types of one schema.
+/// The judge of values of the types of one schema.
 #[derive(Clone, Copy)]
 pub struct Judge<'a> {
     schema: &'a Committed,
@@ -110,7 +110,8 @@ impl<'a> Judge<'a> {
     /// of the row type of `ctor`, every key in it naming a row of its constructor set in the
     /// database, and every value of a newtype in it within the newtype's domain.
     ///
-    /// Panics when the judgement reads no database.
+    /// Panics:
+    /// - The judgement reads no database.
     pub fn row(&self, rel: RelId, ctor: u32, row: &Value) -> Result<(), Mismatch> {
         assert!(
             self.state.is_some(),
@@ -224,7 +225,7 @@ impl<'a> Judge<'a> {
         Ok(())
     }
 
-    /// Judges a value of a declared sum or record, restricted to `ctors` when given.
+    /// Judge a value of a declared sum or record, restricted to `ctors` when given.
     fn data(
         &self,
         path: &mut String,
@@ -350,7 +351,7 @@ impl<'a> Judge<'a> {
         }
     }
 
-    /// Judges the domain of the newtype `ty` on `value`, when the judgement is of a stored row.
+    /// Judge the domain of the newtype `ty` on `value`, when the judgement is of a stored row.
     fn domain(&self, path: &str, value: &Value, ty: &Ty) -> Result<(), Mismatch> {
         let (Some(State { program, db }), true, Ty::Data { def, .. }) =
             (self.state, self.stored, ty)

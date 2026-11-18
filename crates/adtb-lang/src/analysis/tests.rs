@@ -192,7 +192,7 @@ pub(crate) fn reachable(terms: &Terms, root: Tm) -> Vec<Tm> {
     out
 }
 
-/// Asserts the postconditions of a normal form: no λ but a `Replace`'s row function, no application, no call of a schema function, and a `let` only over a bound expression that is partial or draws a fresh value.
+/// Assert the postconditions of a normal form: no λ but a `Replace`'s row function, no application, no call of a schema function, and a `let` only over a bound expression that is partial or draws a fresh value.
 fn assert_normal(s: &Schema, terms: &Terms, root: Tm) {
     let mut tot = Totality::new(s, false);
     let all = reachable(terms, root);

@@ -163,7 +163,7 @@ fn items(b: &Block) -> Vec<ExampleItem> {
         .unwrap_or_else(|_| panic!("{}:{} does not parse", b.file, b.line))
 }
 
-/// Adds the declarations of `b` to `schema` and applies its operators.
+/// Add the declarations of `b` to `schema` and apply its operators.
 fn declare(schema: &mut Vec<Entry>, b: &Block) {
     let mut module = "auth".to_string();
     for item in items(b) {
@@ -275,7 +275,7 @@ fn append(e: &mut Entry, text: &str) {
     e.text.push_str(text);
 }
 
-/// Applies a migration operator to the declarations it changes.
+/// Apply a migration operator to the declarations it changes.
 fn apply(schema: &mut Vec<Entry>, module: &str, b: &Block, op: &Operator) {
     match &op.kind {
         OperatorKind::AddConstructor {

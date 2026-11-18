@@ -1,4 +1,4 @@
-//! Writes of deployment state: relations of the catalog whose rows no migration writes.
+//! The writes of deployment state: relations of the catalog whose rows no migration writes.
 
 use std::collections::BTreeMap;
 

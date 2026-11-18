@@ -12,7 +12,7 @@ struct Operands<'a> {
     out: &'a mut Names,
 }
 
-/// Records in `out` the catalog id of each object operator `op` of module `module` names by an
+/// Record in `out` the catalog id of each object operator `op` of module `module` names by an
 /// operand, `before` and `after` being the sources around it.
 pub(super) fn tie_operands(
     before: &Source,

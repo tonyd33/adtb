@@ -116,7 +116,7 @@ pub struct CatalogIds {
     aggregates: BTreeMap<usize, CatFunctionId>,
     /// Constraints, by position among `Schema::constraints`.
     constraints: BTreeMap<usize, CatConstraintId>,
-    /// Checks, by position among `Schema::checks`.
+    /// Schema checks, by position among `Schema::checks`.
     checks: BTreeMap<usize, CatConstraintId>,
     /// The relation variable of each stored view.
     views: BTreeMap<FnId, CatRelId>,

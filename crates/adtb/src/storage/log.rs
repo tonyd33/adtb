@@ -484,7 +484,7 @@ impl Segments {
 /// The bytes of a log read from its segment files, one chunk at a time.
 pub(crate) const CHUNK: usize = 64 * 1024;
 
-/// Reads a log's blocks from its segment files, holding one chunk of one segment at a time.
+/// The reader of a log's blocks from its segment files, holding one chunk of one segment at a time.
 pub(crate) struct FileSource<R: Runtime> {
     drv: Driver<R>,
     files: BTreeMap<u64, FileId>,

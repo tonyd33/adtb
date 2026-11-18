@@ -75,11 +75,11 @@ fn build(rt: SimRuntime, pool_frames: usize) -> (Db, Vec<(i64, Tid)>) {
     (Db { pager, heap }, kept)
 }
 
-/// Counts of what happened while [`update_all`] ran.
+/// The counts of what happened while [`update_all`] ran.
 struct Updates {
-    /// Updates during which the directory root was latched exclusively or evicted.
+    /// The updates during which the directory root was latched exclusively or evicted.
     latched: usize,
-    /// Updates begun while another writer's update was in flight.
+    /// The updates begun while another writer's update was in flight.
     overlapped: usize,
 }
 

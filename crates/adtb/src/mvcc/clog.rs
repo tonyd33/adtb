@@ -124,7 +124,9 @@ pub(crate) fn status_at(page: &[u8], index: usize) -> Status {
 
 /// Record `status` for the id at `index`.
 ///
-/// Panics if the id has resolved already, or if `status` is in progress.
+/// Panics:
+/// - The id has resolved already.
+/// - `status` is in progress.
 pub(crate) fn set_status(page: &mut [u8], index: usize, status: Status) {
     assert_ne!(
         Status::InProgress,
@@ -456,8 +458,9 @@ impl CommitLog {
     ///
     /// Returns the LSN of the xid allocation record, which is durable.
     ///
-    /// Panics if `upto` does not extend the reservation by at most one status page of ids, or if
-    /// `resolved` lies outside `[resolved, reserved]` of the current reservation.
+    /// Panics:
+    /// - `upto` does not extend the reservation by at most one status page of ids.
+    /// - `resolved` lies outside `[resolved, reserved]` of the current reservation.
     pub fn reserve<R: Runtime>(
         &mut self,
         pager: &Pager<R>,
@@ -558,10 +561,13 @@ impl CommitLog {
 
     /// Record that `x` committed and log its commit record, in one batch.
     ///
-    /// Returns the LSN of the commit record. Fails, recording nothing, if the status page is
-    /// damaged.
+    /// Returns the LSN of the commit record.
     ///
-    /// Panics if `x` is not reserved or has resolved.
+    /// Errors:
+    /// - The status page is damaged, recording nothing.
+    ///
+    /// Panics:
+    /// - `x` is not reserved or has resolved.
     #[cfg(any(test, feature = "testing"))]
     pub fn commit<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
@@ -604,7 +610,8 @@ impl CommitLog {
     /// Preconditions: every id below `bound` has resolved; no version names an aborted id below
     /// it, and none has an aborted deleter below it in `xmax`.
     ///
-    /// Panics if `bound` is past the reservation.
+    /// Panics:
+    /// - `bound` is past the reservation.
     #[cfg(any(test, feature = "testing"))]
     pub fn truncate<R: Runtime>(&mut self, pager: &Pager<R>, bound: Xid) -> Result<(), PageError> {
         assert!(

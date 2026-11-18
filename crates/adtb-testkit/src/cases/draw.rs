@@ -2,7 +2,7 @@ use super::expr::{Binding, Comp, E, Step};
 use super::world::{Field, T, World, value};
 use crate::Rng;
 
-/// Draws expressions over the relations of one world, naming variables freshly.
+/// A generator of expressions over the relations of one world, naming variables freshly.
 pub(super) struct Gen<'w> {
     pub(super) w: &'w World,
     pub(super) scope: Vec<(String, T)>,

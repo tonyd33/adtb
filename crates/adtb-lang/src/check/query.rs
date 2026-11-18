@@ -89,7 +89,7 @@ impl Checker<'_> {
         Ok(())
     }
 
-    /// Wraps `inner`, a set, in the comprehension's generators and filters.
+    /// Wrap `inner`, a set, in the comprehension's generators and filters.
     fn assemble(&mut self, frames: Vec<Frame>, mut inner: Tm, set_ty: &Ty) -> Tm {
         for f in frames.into_iter().rev() {
             inner = match f {
@@ -136,7 +136,7 @@ impl Checker<'_> {
         (labels, tm, ty)
     }
 
-    /// Elaborates a comprehension's clauses and `select`, leaving the scope of the `select` open.
+    /// Elaborate a comprehension's clauses and `select`, leaving the scope of the `select` open.
     pub(super) fn comprehension_body(
         &mut self,
         c: &ast::Comprehension,
@@ -148,7 +148,7 @@ impl Checker<'_> {
         })
     }
 
-    /// Elaborates a comprehension's clauses, then its `select` by `select`, leaving the scope of the `select` open.
+    /// Elaborate a comprehension's clauses, then its `select` by `select`, leaving the scope of the `select` open.
     pub(super) fn comprehension_body_with(
         &mut self,
         c: &ast::Comprehension,
@@ -212,7 +212,7 @@ impl Checker<'_> {
         })
     }
 
-    /// Closes a comprehension body as a set of its selected values.
+    /// Close a comprehension body as a set of its selected values.
     pub(super) fn finish(&mut self, body: Body, elem: Option<&Ty>) -> Out {
         let ty = elem.cloned().unwrap_or_else(|| body.select.ty.clone());
         let set_ty = Ty::Set(Box::new(ty));
@@ -286,7 +286,7 @@ impl Checker<'_> {
         Ok(self.out(tm))
     }
 
-    /// Rewrites ordering keys written in the scope of a comprehension's `select` as functions of the selected value `x`.
+    /// Rewrite ordering keys written in the scope of a comprehension's `select` as functions of the selected value `x`.
     fn keys_over(&mut self, body: &Body, keys: &[ast::OrderKey]) -> R<(Var, Vec<(Tm, bool)>)> {
         let mut out = Vec::new();
         for k in keys {
@@ -329,7 +329,7 @@ impl Checker<'_> {
         Ok((x, keys_out))
     }
 
-    /// Replaces each subterm of `t` equal to the selected value, or to a field of it, by `x` or its field.
+    /// Replace each subterm of `t` equal to the selected value, or to a field of it, by `x` or its field.
     fn over_selected(&mut self, t: Tm, select: Tm, x: Var) -> Tm {
         if self.same_term(t, select) {
             return self.var_tm(x);
@@ -928,7 +928,7 @@ impl Checker<'_> {
     }
 }
 
-/// Flattens `a union b union ...` into its operands.
+/// Flatten `a union b union ...` into its operands.
 fn union_operands<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
     match &e.kind {
         ExprKind::Binary(BinOp::Union, a, b) => {

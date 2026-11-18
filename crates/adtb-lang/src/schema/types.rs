@@ -278,7 +278,7 @@ impl Builder<'_> {
     }
 }
 
-/// Resolves a written type in `scope`, recording `Span` arguments whose order is checked later.
+/// Resolve a written type in `scope`, recording `Span` arguments whose order is checked later.
 pub fn resolve_type(
     schema: &Schema,
     scope: &TypeScope,

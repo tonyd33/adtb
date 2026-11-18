@@ -210,7 +210,7 @@ pub struct InMemory {
 }
 
 impl InMemory {
-    /// Adds the file `name` holding `contents`, replacing one of that name.
+    /// Add the file `name` holding `contents`, replacing one of that name.
     pub fn put(&mut self, name: &str, contents: impl Into<Vec<u8>>) {
         self.files.insert(name.to_string(), contents.into());
     }

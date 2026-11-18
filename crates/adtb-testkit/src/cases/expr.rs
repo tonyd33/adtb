@@ -119,7 +119,7 @@ impl E {
         }
     }
 
-    /// Calls `f` on this expression and every expression inside it, comprehensions included.
+    /// Call `f` on this expression and every expression inside it, comprehensions included.
     pub(super) fn visit(&self, f: &mut impl FnMut(&E)) {
         f(self);
         for c in self.children() {

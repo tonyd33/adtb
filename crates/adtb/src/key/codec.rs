@@ -48,7 +48,8 @@ impl KeySchema {
 
     /// Append the encoding of `values` to `out`.
     ///
-    /// Panics when `values` does not have the schema's component types.
+    /// Panics:
+    /// - `values` does not have the schema's component types.
     pub fn encode_into(&self, values: &[Value], out: &mut Vec<u8>) {
         assert_eq!(
             self.components.len(),

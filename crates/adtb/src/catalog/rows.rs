@@ -312,7 +312,8 @@ pub enum Step {
 /// Returns the steps of field path `path` through a row of constructor `c` of `r`, and the type
 /// of the value it reaches.
 ///
-/// Fails with `exec::Error::Internal` if `path` names no field or constructor at a step.
+/// Errors:
+/// - `exec::Error::Internal` if `path` names no field or constructor at a step.
 pub fn path_steps(
     schema: &Schema,
     r: RelId,
@@ -377,8 +378,9 @@ pub fn path_steps(
 /// Returns the value `steps` reach in `row`, or `None` when a value on the way holds another
 /// constructor than a step names.
 ///
-/// Fails with `exec::Error::Corrupt` when a value on the way does not have the shape the steps
-/// give it.
+/// Errors:
+/// - `exec::Error::Corrupt` when a value on the way does not have the shape the steps
+///   give it.
 pub fn at_path<'v>(row: &'v [Value], steps: &[Step]) -> Result<Option<&'v Value>, exec::Error> {
     let corrupt = || exec::Error::from(exec::Rot::StoredPath(steps.to_vec()));
     let Some((first, rest)) = steps.split_first() else {

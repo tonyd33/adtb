@@ -49,7 +49,8 @@ pub struct Batch {
 impl Batch {
     /// Returns a batch of `rows`, each a value per field of `schema`.
     ///
-    /// Panics if a row is not of the schema's types or holds a list.
+    /// Panics:
+    /// - A row is not of the schema's types or holds a list.
     pub fn from_rows<'a>(schema: Schema, rows: impl IntoIterator<Item = &'a [Value]>) -> Batch {
         let mut b = BatchBuilder::new(schema);
         rows.into_iter().for_each(|r| b.push_row(r));
@@ -78,7 +79,8 @@ impl Batch {
 
     /// Returns field `field` of row `row`.
     ///
-    /// Panics if the field's type has a list.
+    /// Panics:
+    /// - The field's type has a list.
     pub fn value(&self, field: usize, row: usize) -> Value {
         self.columns[field].get(&self.schema.fields[field], row)
     }
@@ -90,7 +92,8 @@ impl Batch {
 
     /// Returns row `row`.
     ///
-    /// Panics if a field's type has a list.
+    /// Panics:
+    /// - A field's type has a list.
     pub fn row(&self, row: usize) -> Vec<Value> {
         (0..self.columns.len())
             .map(|f| self.value(f, row))
@@ -138,14 +141,16 @@ impl BatchBuilder {
 
     /// Append `row`, a value per field of the schema, as a heap returns it.
     ///
-    /// Panics if `row` is not of the schema's types or holds a list.
+    /// Panics:
+    /// - `row` is not of the schema's types or holds a list.
     pub fn push_row(&mut self, row: &[Value]) {
         self.push(row);
     }
 
     /// Append `row`, a datum per field of the schema.
     ///
-    /// Panics if `row` is not of the schema's types.
+    /// Panics:
+    /// - `row` is not of the schema's types.
     pub fn push_datums(&mut self, row: &[Datum]) {
         self.push(row);
     }

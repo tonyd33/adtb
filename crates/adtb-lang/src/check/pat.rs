@@ -208,7 +208,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Elaborates a `match`: checks its patterns, coverage and arms, and compiles it to a `case` tree.
+    /// Elaborate a `match`: check its patterns, coverage and arms, and compile it to a `case` tree.
     pub(super) fn match_expr(
         &mut self,
         scrutinee: &Expr,
@@ -225,7 +225,7 @@ impl Checker<'_> {
         Ok(self.match_compile(m, ty))
     }
 
-    /// Checks a match's scrutinee, the patterns of each arm given with whether it has a guard, and coverage.
+    /// Check a match's scrutinee, the patterns of each arm given with whether it has a guard, and coverage.
     pub(super) fn match_patterns(
         &mut self,
         scrutinee: &Expr,
@@ -347,7 +347,7 @@ impl Checker<'_> {
         })
     }
 
-    /// Compiles a match whose arm bodies are checked, at type `ty`, to a `case` tree.
+    /// Compile a match whose arm bodies are checked, at type `ty`, to a `case` tree.
     pub(super) fn match_compile(&mut self, m: Matched, ty: Ty) -> Out {
         let Matched {
             scrutinee: s,
@@ -387,7 +387,7 @@ impl Checker<'_> {
         self.with_row_origin(o, rows)
     }
 
-    /// Elaborates an arm's alternatives and joins the types of the names they bind.
+    /// Elaborate an arm's alternatives and join the types of the names they bind.
     fn arm_patterns(
         &mut self,
         patterns: &[Pattern],
@@ -637,7 +637,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Resolves a constructor or named set written in a pattern against the type of the value it matches.
+    /// Resolve a constructor or named set written in a pattern against the type of the value it matches.
     fn pattern_ctor(
         &self,
         ty: &Ty,
@@ -717,7 +717,7 @@ impl Checker<'_> {
         Ok(set)
     }
 
-    /// Refuses `_` or a binder at a sum position where another arm names a constructor.
+    /// Refuse `_` or a binder at a sum position where another arm names a constructor.
     fn wild_rule(&self, rows: Vec<Vec<Pat>>, tys: Vec<Ty>) -> R<()> {
         let mut stack = vec![(rows, tys)];
         while let Some((rows, tys)) = stack.pop() {
@@ -1012,7 +1012,7 @@ impl Checker<'_> {
         })
     }
 
-    /// Elaborates an arm with no expected type: synthesized, or checked against `joined` when it takes its type from the other arms.
+    /// Elaborate an arm with no expected type: synthesized, or checked against `joined` when it takes its type from the other arms.
     pub(super) fn arm_against(&mut self, e: &Expr, joined: Option<&Ty>) -> R<Out> {
         match joined {
             Some(t) if self.deferred(e) => match (&e.kind, t) {
@@ -1033,7 +1033,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Checks each arm's guard and body, against `expected` when given, else at their join; returns the match's type.
+    /// Check each arm's guard and body, against `expected` when given, else at their join. Returns the match's type.
     fn arm_bodies(&mut self, arms: &[Arm], irs: &mut [ArmIr], expected: Option<&Ty>) -> R<Ty> {
         let mut joined: Option<Ty> = expected.cloned();
         let first_pass: Vec<bool> = arms
@@ -1354,7 +1354,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Matches `y` against `p`, continuing with `k`, under the binders of `p`, on a match and with `f` otherwise.
+    /// Match `y` against `p`, continuing with `k`, under the binders of `p`, on a match and with `f` otherwise.
     fn compile(&mut self, y: Tm, y_ty: &Ty, p: &Pat, cx: &Cx, cont: Cont) -> Tm {
         let Cont { k, f } = cont;
         let settled = matches!(self.terms.kind(f), Kind::Unreachable);
@@ -1403,7 +1403,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Matches the binder and field patterns of `p` against `y`, a value known to have constructor `c`.
+    /// Match the binder and field patterns of `p` against `y`, a value known to have constructor `c`.
     fn compile_fields(&mut self, y: Tm, y_ty: &Ty, c: u32, p: &Pat, cx: &Cx, cont: Cont) -> Tm {
         let Pat::Ctor { binder, fields, .. } = p else {
             unreachable!("compile_fields takes a constructor pattern")

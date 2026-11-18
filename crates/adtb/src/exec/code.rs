@@ -117,7 +117,7 @@ pub enum Ins {
         args: Vec<Opd>,
         dst: u32,
     },
-    /// Rejects the statement's input with the text of `msg` at the first selected row.
+    /// Reject the statement's input with the text of `msg` at the first selected row.
     Reject {
         msg: Opd,
     },
@@ -575,7 +575,7 @@ impl Code {
     }
 }
 
-/// Compiles the scalar expressions of one arena.
+/// The compiler of the scalar expressions of one arena.
 pub struct Compiler<'a> {
     schema: &'a Schema,
     terms: &'a Terms,

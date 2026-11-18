@@ -25,7 +25,7 @@ pub fn write_depends_on_volatile(schema: &Schema, terms: &Terms, t: Tm) -> bool 
     terms.search(t, |t| visit(schema, terms, t, &mut tainted))
 }
 
-/// Visits `t` before the terms under it, tainting the variables a volatile read reaches.
+/// Visit `t` before the terms under it, tainting the variables a volatile read reaches.
 fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> Search {
     let dirty = |x: Tm, tainted: &BTreeSet<Var>| {
         reads_volatile(schema, terms, x) || mentions(terms, x, tainted)

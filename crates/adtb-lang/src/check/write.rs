@@ -119,7 +119,7 @@ pub(super) enum LetKind {
 
 const ONCE: &str = "`key (insert ...)` is allowed only where it is evaluated once per statement: not under a comprehension, a lambda, a match arm, an `if` branch or the right operand of `and` or `or`, nor in an `update ... in`, a `delete ... in` or an upsert's else branch";
 
-/// Refuses a nested `key (insert ...)` anywhere in `e`.
+/// Refuse a nested `key (insert ...)` anywhere in `e`.
 fn forbid_nested(e: &Expr) -> R<()> {
     let mut found = None;
     crate::visit::each_expr(e, &mut |x| {
@@ -136,7 +136,7 @@ fn forbid_nested(e: &Expr) -> R<()> {
     }
 }
 
-/// Refuses a nested `key (insert ...)` in `e` that would not be evaluated exactly once when `e` is, or at all unless `ok`.
+/// Refuse a nested `key (insert ...)` in `e` that would not be evaluated exactly once when `e` is, or at all unless `ok`.
 fn once(e: &Expr, ok: bool) -> R<()> {
     if !ok {
         return forbid_nested(e);
@@ -315,7 +315,7 @@ impl Checker<'_> {
         self.b().singleton(x, Ty::Set(Box::new(elem.clone())))
     }
 
-    /// Checks `e` with nested inserts in it allowed when `ok` and nothing forbids them here.
+    /// Check `e` with nested inserts in it allowed when `ok` and nothing forbids them here.
     pub(super) fn write_expr(&mut self, e: &Expr, expected: Option<&Ty>, ok: bool) -> R<Out> {
         once(e, ok && self.once)?;
         match expected {
@@ -324,7 +324,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Wraps `w` so the rows of `nested` are inserted beside it.
+    /// Wrap `w` so the rows of `nested` are inserted beside it.
     fn par_nested(&mut self, nested: Vec<Nested>, mut w: Tm) -> Tm {
         for n in nested.into_iter().rev() {
             let row_ty = self.terms.var_info(n.var).ty.clone();
@@ -337,7 +337,7 @@ impl Checker<'_> {
         w
     }
 
-    /// Wraps `k`, of type `ty`, so the rows of `nested` are inserted before it.
+    /// Wrap `k`, of type `ty`, so the rows of `nested` are inserted before it.
     pub(super) fn block_nested(&mut self, nested: Vec<Nested>, mut k: Tm, ty: &Ty) -> Tm {
         for n in nested.into_iter().rev() {
             let row_ty = self.terms.var_info(n.var).ty.clone();
@@ -350,7 +350,7 @@ impl Checker<'_> {
         k
     }
 
-    /// Checks a write and elaborates it to a term of type `Change`.
+    /// Check a write and elaborate it to a term of type `Change`.
     pub(super) fn write(&mut self, w: &Write) -> R<Tm> {
         Ok(self.write_effect(w)?.0)
     }
@@ -454,7 +454,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Resolves an insert's target to its relation and row type.
+    /// Resolve an insert's target to its relation and row type.
     fn target(&mut self, target: &ast::RelationRef) -> R<(RelId, Ty, usize)> {
         let rel = match self.lookup_value(&target.relation) {
             Ok(ValueDef::Relation(r)) => r,
@@ -485,7 +485,7 @@ impl Checker<'_> {
         Ok((rel, row_ty, n))
     }
 
-    /// Checks an insert's rows, filling what the relation supplies.
+    /// Check an insert's rows, filling what the relation supplies.
     fn proposed(
         &mut self,
         target: &ast::RelationRef,
@@ -543,7 +543,7 @@ impl Checker<'_> {
         })
     }
 
-    /// Checks `e` as the new value of a row at `site`, where a constructor may omit the fields the row or the relation supplies.
+    /// Check `e` as the new value of a row at `site`, where a constructor may omit the fields the row or the relation supplies.
     pub(super) fn new_value(&mut self, e: &Expr, expected: &Ty, site: &Site) -> R<Out> {
         match &e.kind {
             ExprKind::Ctor { path, ctor, record } => {
@@ -594,7 +594,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Refuses a key field given in the new value of an existing row.
+    /// Refuse a key field given in the new value of an existing row.
     pub(super) fn site_given(&self, site: &Site, fs: &[(ast::Ident, Expr)]) -> R<()> {
         if site.old.is_none() {
             return Ok(());
@@ -644,7 +644,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Checks a relation's default expression where it was declared.
+    /// Check a relation's default expression where it was declared.
     fn default_expr(&mut self, rel: RelId, e: &Expr, fty: &Ty) -> R<Tm> {
         let module = self.schema.relation(rel).module;
         let home = Visible::module(module).scoped(self.vis.scope().cloned());
@@ -703,7 +703,7 @@ impl Checker<'_> {
         )
     }
 
-    /// Wraps an insert or upsert of rows from a single-generator comprehension so its failing records go to `j`.
+    /// Wrap an insert or upsert of rows from a single-generator comprehension so its failing records go to `j`.
     fn rejects(
         &mut self,
         j: &ast::QName,
@@ -766,7 +766,7 @@ impl Checker<'_> {
         Ok(self.b().rejects(into, insert))
     }
 
-    /// Checks an upsert; returns its write, its binding's type or why `let` cannot bind it, its effect and its relation.
+    /// Check an upsert. Returns its write, its binding's type or why `let` cannot bind it, its effect and its relation.
     fn upsert(
         &mut self,
         target: &ast::RelationRef,
@@ -971,7 +971,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Checks an update; returns its relation, old rows, new-value function and new values' type.
+    /// Check an update. Returns its relation, old rows, new-value function and new values' type.
     fn update(
         &mut self,
         binder: &ast::Ident,
@@ -1048,7 +1048,7 @@ impl Checker<'_> {
         Ok(self.for_afresh(x, rows, body, set_ty))
     }
 
-    /// Checks a delete; returns its relation and the rows it names.
+    /// Check a delete. Returns its relation and the rows it names.
     fn delete(
         &mut self,
         binder: &ast::Ident,
@@ -1128,8 +1128,8 @@ impl Checker<'_> {
         Ok((out.tm, eff.expect("a match has an arm")))
     }
 
-    /// Checks `let name = w` in a block, then the items after it.
-    /// Checks a write bound by `let`: how it binds, the bound type and relation.
+    /// Check `let name = w` in a block, then the items after it.
+    /// Check a write bound by `let`: how it binds, the bound type and relation.
     pub(super) fn let_parts(&mut self, w: &Write) -> R<(LetKind, Ty, RelId)> {
         match &w.kind {
             WriteKind::Insert {
@@ -1247,7 +1247,7 @@ impl Checker<'_> {
     }
 }
 
-/// Checks the `on delete` actions of every declared type and elaborates each relation's `retag` action.
+/// Check the `on delete` actions of every declared type and elaborate each relation's `retag` action.
 pub(super) fn delete_actions(
     schema: &Schema,
     terms: &mut Terms,

@@ -83,7 +83,7 @@ impl Front {
         Front { schema, program }
     }
 
-    /// Runs `case` through parse, check and normalise as far as it is accepted.
+    /// Run `case` through parse, check and normalise as far as it is accepted.
     pub fn run(&self, case: &Case) -> Reached {
         match case.kind {
             Kind::Adhoc => self.adhoc(&case.text),
@@ -237,7 +237,7 @@ impl World {
     }
 }
 
-/// Draws expressions of one world, naming binders freshly.
+/// A generator of expressions of one world, naming binders freshly.
 struct Gen<'w> {
     world: &'w World,
     env: Vec<(String, G)>,
@@ -865,7 +865,7 @@ const VOCABULARY: &[&str] = &[
     "\u{0}",
 ];
 
-/// Splits `text` into tokens and the whitespace between them, keeping every character.
+/// Split `text` into tokens and the whitespace between them, keeping every character.
 fn chunks(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();

@@ -43,9 +43,10 @@ enum Part {
 impl IndexKeys {
     /// Returns the keying of an index of `rel` over `ctors` whose key is `elements`.
     ///
-    /// Fails if the executor cannot compile an expression element, or with
-    /// `exec::Error::Internal` if an element is derived and `normal`, the normal program of
-    /// `schema`, is `None` or a path names no field or constructor.
+    /// Errors:
+    /// - The executor cannot compile an expression element.
+    /// - `exec::Error::Internal` if an element is derived and `normal`, the normal program of
+    ///   `schema`, is `None` or a path names no field or constructor.
     pub fn new(
         schema: &Schema,
         normal: Option<&NormalProgram>,
@@ -109,8 +110,9 @@ impl IndexKeys {
     /// or `None` when the index holds no entry for it: it is not over `c`, or a value on a path
     /// holds another constructor than the path names.
     ///
-    /// Fails if an expression element faults on the row, or with `exec::Error::Corrupt` if the
-    /// row does not have the shape a path gives it.
+    /// Errors:
+    /// - An expression element faults on the row.
+    /// - `exec::Error::Corrupt` if the row does not have the shape a path gives it.
     pub fn key(
         &self,
         c: u32,
@@ -152,8 +154,9 @@ impl IndexKeys {
 /// Returns the type of each of `elements`, the key of an index of `rel` over a set holding
 /// constructor `c`.
 ///
-/// Fails with `exec::Error::Internal` if an element is derived and `normal`, the normal program
-/// of `schema`, is `None`, or a path names no field or constructor.
+/// Errors:
+/// - `exec::Error::Internal` if an element is derived and `normal`, the normal program
+///   of `schema`, is `None`, or a path names no field or constructor.
 pub fn element_types(
     schema: &Schema,
     normal: Option<&NormalProgram>,

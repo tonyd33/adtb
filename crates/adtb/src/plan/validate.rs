@@ -462,7 +462,7 @@ fn all_of(n: usize) -> Vec<u32> {
     (0..n as u32).collect()
 }
 
-/// Counts, over the plans this process validated, of the plans each check ran on.
+/// The counts, over the plans this process validated, of the plans each check ran on.
 #[cfg(any(test, feature = "testing"))]
 pub mod counts {
     use std::sync::atomic::{AtomicU64, Ordering};

@@ -293,14 +293,14 @@ struct Run {
     files: Disk,
 }
 
-/// Runs `script` against a fresh database of the reference interpreter and returns every
+/// Run `script` against a fresh database of the reference interpreter. Returns every
 /// directive whose outcome differs from the script. A file scan reads a relative path against
 /// the working directory.
 pub fn run_reference(script: &Script) -> Vec<Difference> {
     run_reference_in(script, Path::new(""))
 }
 
-/// Runs `script` as [`run_reference`] does, a file scan reading a relative path against `dir`.
+/// Run `script` as [`run_reference`] does, a file scan reading a relative path against `dir`.
 pub fn run_reference_in(script: &Script, dir: &Path) -> Vec<Difference> {
     let mut out = Vec::new();
     let mut state: Option<Run> = None;
@@ -336,7 +336,7 @@ pub fn run_reference_in(script: &Script, dir: &Path) -> Vec<Difference> {
     out
 }
 
-/// Builds the schema whose module files `body` holds, each starting with its `module` line, its
+/// Build the schema whose module files `body` holds, each starting with its `module` line, its
 /// file scans reading under `dir`.
 fn schema(body: &str, dir: &Path) -> Result<Run, String> {
     let mut files: Vec<(FileId, SchemaFile)> = Vec::new();
@@ -357,7 +357,7 @@ fn schema(body: &str, dir: &Path) -> Result<Run, String> {
     })
 }
 
-/// Splits `body` before each `module` line.
+/// Split `body` before each `module` line.
 fn modules(body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in body.lines() {
@@ -466,8 +466,8 @@ impl Run {
         }
     }
 
-    /// Runs the statements of ad hoc text `body` in order, stopping at the first refused, and
-    /// keeps the state of each that succeeds when `keep`. Returns how each ended and how many
+    /// Run the statements of ad hoc text `body` in order, stopping at the first refused, and
+    /// keep the state of each that succeeds when `keep`. Returns how each ended and how many
     /// the text holds.
     fn statements(&mut self, body: &str, keep: bool) -> Result<(Vec<Ended>, usize), Difference> {
         let items = match parse_adhoc(body, Options::default()).ok() {

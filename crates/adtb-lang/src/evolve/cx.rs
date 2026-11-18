@@ -29,7 +29,7 @@ impl Cx<'_> {
         }
     }
 
-    /// Records the names a fill or routing of this operator resolves, when replaying for them.
+    /// Record the names a fill or routing of this operator resolves, when replaying for them.
     pub(super) fn note(&self, schema: &Schema, refs: &[(Span, Ref)]) {
         if let Some(noted) = self.noted {
             let mut noted = noted.borrow_mut();
@@ -389,7 +389,7 @@ impl Cx<'_> {
         }
     }
 
-    /// Adds the declaration written at `span` of the migration, after its verb.
+    /// Add the declaration written at `span` of the migration, after its verb.
     fn add_decl(&mut self, kind: &str, name: &str, span: Span) -> R<()> {
         self.known_module()?;
         if self.src.find(kind, &self.module, name).is_some() {
@@ -404,7 +404,7 @@ impl Cx<'_> {
         self.checks_where_written(i)
     }
 
-    /// Refuses the operator when declaration `i` fails to check against the source it is in.
+    /// Refuse the operator when declaration `i` fails to check against the source it is in.
     ///
     /// The failures of other declarations are left to the recheck at the end of the migration.
     fn checks_where_written(&self, i: usize) -> R<()> {
@@ -777,7 +777,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// Calls `f` with each constructor or named set name that a declaration selects from relation `r`:
+    /// Call `f` with each constructor or named set name that a declaration selects from relation `r`:
     /// in `Key r.S` types, the scopes of `r`'s own clauses, and checks on `r`. Spans are local to the declaration's text.
     fn each_selection(
         &self,

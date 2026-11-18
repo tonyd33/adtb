@@ -1,4 +1,4 @@
-//! Reads of the catalog root page the reindex tests share.
+//! The reads of the catalog root page the reindex tests share.
 
 use adtb::Database;
 use adtb::testing::Object;

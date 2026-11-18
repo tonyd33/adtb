@@ -166,7 +166,7 @@ impl Planner<'_> {
         })
     }
 
-    /// Records the uses of group variable `g` in `t`; returns false when one is neither its key, its rows nor an aggregate over its rows.
+    /// Record the uses of group variable `g` in `t`. Returns false when one is neither its key, its rows nor an aggregate over its rows.
     fn uses(&mut self, t: Tm, g: Var, found: &mut Found, seen: &mut BTreeSet<Tm>) -> bool {
         if !seen.insert(t) {
             return true;

@@ -272,10 +272,11 @@ struct Lower<'a> {
     indexes: BTreeMap<IndexId, (RelId, Vec<Element>)>,
 }
 
-/// Compiles `plan`, planned against `schema` and `catalog`, for the executor. `caller` is the
+/// Compile `plan`, planned against `schema` and `catalog`, for the executor. `caller` is the
 /// value `Caller` denotes, if the statement has one.
 ///
-/// Fails with `Unsupported` when the plan uses a form or primitive the executor does not run.
+/// Errors:
+/// - `Unsupported` when the plan uses a form or primitive the executor does not run.
 pub fn compile(
     schema: &Schema,
     catalog: &Catalog,

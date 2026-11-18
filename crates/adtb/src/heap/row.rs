@@ -608,7 +608,8 @@ impl Layout {
 
     /// Returns the fixed part of `row` and its variable-width fields, all inline.
     ///
-    /// Panics if `row` is not a row of the layout's field types.
+    /// Panics:
+    /// - `row` is not a row of the layout's field types.
     pub fn encode(&self, row: &[Value]) -> (Vec<u8>, Vec<Vec<u8>>) {
         assert_eq!(
             self.fields.len(),

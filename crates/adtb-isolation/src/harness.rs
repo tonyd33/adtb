@@ -45,7 +45,8 @@ impl Step {
 /// Steps of a transaction the database aborted are skipped. A transaction still open after the
 /// last step is aborted.
 ///
-/// Panics if a step names a transaction that has not begun, or begins one twice.
+/// Panics:
+/// - A step names a transaction that has not begun, or begins one twice.
 pub fn run<D: Database>(db: &mut D, steps: &[Step]) -> Vec<Txn> {
     let mut history: Vec<Txn> = Vec::new();
     let mut open: Vec<Option<D::Txn>> = Vec::new();

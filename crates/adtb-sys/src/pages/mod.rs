@@ -191,7 +191,8 @@ impl fmt::Debug for PageMemory {
 impl PageMemory {
     /// Reserve memory for `pages` pages of `page_size` bytes, every page evicted.
     ///
-    /// Panics if `page_size` is not a power of two from 4096, or the range cannot be reserved.
+    /// Panics:
+    /// - `page_size` is not a power of two from 4096, or the range cannot be reserved.
     pub fn reserve(page_size: usize, pages: u64) -> PageMemory {
         assert!(
             page_size.is_power_of_two() && page_size >= ALIGN,
@@ -300,7 +301,8 @@ impl PageMemory {
     ///
     /// An evicted page is latched too; [`Exclusive::resident`] then says it must be filled.
     ///
-    /// Panics, in debug builds, if the calling thread holds a latch on `pid` already.
+    /// Panics:
+    /// - In debug builds, the calling thread holds a latch on `pid` already.
     pub fn lock_exclusive(&self, pid: u64, threads: &impl Threads) -> Exclusive<'_> {
         held::refuse(self.id(), pid, false);
         switch_point();
@@ -328,7 +330,8 @@ impl PageMemory {
     /// Take a shared latch on `pid`, waiting through `threads` while it is exclusive or its
     /// count is full. Returns `None` if the page is evicted.
     ///
-    /// Panics, in debug builds, if the calling thread holds a latch on `pid` already.
+    /// Panics:
+    /// - In debug builds, the calling thread holds a latch on `pid` already.
     pub fn lock_shared(&self, pid: u64, threads: &impl Threads) -> Option<Shared<'_>> {
         held::refuse(self.id(), pid, false);
         switch_point();
@@ -352,7 +355,8 @@ impl PageMemory {
 
     /// Start an optimistic read of `pid`. Returns `None` while it is exclusive or evicted.
     ///
-    /// Panics, in debug builds, if the calling thread holds the exclusive latch on `pid`.
+    /// Panics:
+    /// - In debug builds, the calling thread holds the exclusive latch on `pid`.
     pub fn optimistic(&self, pid: u64) -> Option<Optimistic<'_>> {
         held::refuse(self.id(), pid, true);
         switch_point();
@@ -417,7 +421,8 @@ impl Exclusive<'_> {
 
     /// Write `bytes` at `offset` of the page through atomic stores, making it resident.
     ///
-    /// Panics if the bytes run past the end of the page.
+    /// Panics:
+    /// - The bytes run past the end of the page.
     pub fn write(&mut self, offset: usize, bytes: &[u8]) {
         let end = offset + bytes.len();
         assert!(end <= self.mem.page_size, "write past the end of the page");
@@ -462,7 +467,8 @@ impl Exclusive<'_> {
 impl<'a> Exclusive<'a> {
     /// Exchange the exclusive latch for a shared one, with no other writer in between.
     ///
-    /// Panics if the page is not resident.
+    /// Panics:
+    /// - The page is not resident.
     pub fn share(mut self) -> Shared<'a> {
         assert!(self.resident, "a shared latch needs a resident page");
         self.mem.store_state(self.pid, word(1, self.version + 1));
@@ -564,7 +570,8 @@ impl<'a> Optimistic<'a> {
 
     /// Copy the page's bytes from `offset` into `out` through atomic loads.
     ///
-    /// Panics if the range runs past the end of the page.
+    /// Panics:
+    /// - The range runs past the end of the page.
     pub fn read(&self, offset: usize, out: &mut [u8]) {
         assert!(
             offset + out.len() <= self.mem.page_size,

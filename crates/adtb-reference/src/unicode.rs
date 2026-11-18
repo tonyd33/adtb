@@ -79,7 +79,7 @@ impl Compiled {
     }
 }
 
-/// Builds the collator of collation `name`.
+/// Build the collator of collation `name`.
 fn collator(name: &str) -> CollatorBorrowed<'static> {
     let c = collation::parse(name)
         .unwrap_or_else(|e| panic!("the checker accepted the collation name: {e}"));

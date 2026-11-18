@@ -95,7 +95,8 @@ impl Index {
 
     /// Insert `entry`. Returns false if it is already in the index.
     ///
-    /// Panics if its constructor is not in the index's set.
+    /// Panics:
+    /// - Its constructor is not in the index's set.
     pub fn insert<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Result<bool, Error> {
         self.insert_with(pager, entry, |_| false)
     }
@@ -109,7 +110,8 @@ impl Index {
     /// and takes no latch on a page of the index. An entry that does not
     /// decode is kept.
     ///
-    /// Panics if its constructor is not in the index's set.
+    /// Panics:
+    /// - Its constructor is not in the index's set.
     pub fn insert_with<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -126,7 +128,8 @@ impl Index {
 
     /// Delete `entry`. Returns false if it was not in the index.
     ///
-    /// Panics if its constructor is not in the index's set.
+    /// Panics:
+    /// - Its constructor is not in the index's set.
     #[cfg(any(test, feature = "testing"))]
     pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Result<bool, Error> {
         self.tree.delete(pager, &self.encode(entry))
@@ -290,7 +293,8 @@ pub fn tag_prefix(sum: &SumType, ctor: u32, dir: Dir) -> Vec<u8> {
 impl SumKey {
     /// Returns the type of the key component for a field of type `sum`.
     ///
-    /// Panics if a `Field` names a constructor or field `sum` lacks.
+    /// Panics:
+    /// - A `Field` names a constructor or field `sum` lacks.
     #[cfg(test)]
     pub fn key_type(&self, sum: &SumType) -> KeyType {
         match *self {
@@ -303,7 +307,8 @@ impl SumKey {
     /// Returns the key component of the sum value `v`, or `None` when the
     /// index holds no entry for it.
     ///
-    /// Panics if `v` is not a sum value.
+    /// Panics:
+    /// - `v` is not a sum value.
     #[cfg(test)]
     pub fn component(&self, v: &Value) -> Option<Value> {
         let Value::Sum { ctor, fields } = v else {

@@ -248,7 +248,7 @@ fn call(
     }
 }
 
-/// Runs every case under the simulator and returns each case's outcome, and how many tasks the
+/// Run every case under the simulator. Returns each case's outcome, and how many tasks the
 /// workers ran.
 fn run_all(
     seed: u64,
@@ -275,7 +275,7 @@ fn run_all(
     })
 }
 
-/// Checks that every case's outcome under the simulator is the reference interpreter's. Returns
+/// Check that every case's outcome under the simulator is the reference interpreter's. Returns
 /// how many tasks the workers ran.
 fn check(seed: u64, f: &Fixture, cases: &[Case], workers: usize, opts: XOptions) -> usize {
     let (got, ran) = run_all(seed, f, cases, workers, opts);
@@ -524,7 +524,7 @@ fn scans_of_ranges_of_a_heap_s_pages_read_what_a_scan_of_the_heap_reads() {
     assert_eq!(whole, ranges);
 }
 
-/// Reads that count the versions whose visibility they decide.
+/// The reads that count the versions whose visibility they decide.
 struct Counted {
     inner: Arc<dyn Reads>,
     seen: AtomicUsize,
@@ -970,7 +970,7 @@ fn a_query_past_its_grant_is_rejected_for_its_statement_limit() {
     assert_eq!(Ok(300), got.1);
 }
 
-/// Reads that see every version with a deleter that `now` does not see, as a read of the past
+/// The reads that see every version with a deleter that `now` does not see, as a read of the past
 /// at a state before every such deletion does.
 struct Deleted {
     now: Arc<dyn Reads>,
@@ -1109,7 +1109,7 @@ fn a_read_of_the_past_holds_the_deleted_rows_it_passed_within_its_grant() {
     }
 }
 
-/// Reads that note the most of `grant` in use whenever they decide a version.
+/// The reads that note the most of `grant` in use whenever they decide a version.
 struct Watched {
     inner: Arc<dyn Reads>,
     grant: Arc<exec::Grant>,

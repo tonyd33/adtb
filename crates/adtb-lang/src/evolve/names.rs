@@ -179,7 +179,7 @@ fn unbuilt(ds: Vec<FileDiag>) -> Vec<Diag> {
     ds.into_iter().map(|d| d.diag).collect()
 }
 
-/// Copies into `names` the names `decl_names` holds at each mark of a declaration of `src`.
+/// Copy into `names` the names `decl_names` holds at each mark of a declaration of `src`.
 fn copy_marked(names: &mut Names, decl_names: &[Names], src: &Source, marks: &[Mark]) {
     for m in marks {
         let at = header(&src.decls[m.decl].module).len() + m.at;

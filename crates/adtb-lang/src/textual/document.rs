@@ -66,7 +66,7 @@ impl Reader<'_> {
     }
 }
 
-/// Reads a document: an optional header line `text EDITION pins VERSION (HASH)`, then
+/// Read a document: an optional header line `text EDITION pins VERSION (HASH)`, then
 /// `data RELATION`, then the rows of the relation in the textual syntax, in any order.
 pub fn read_document<V: Textual>(schema: &Schema, text: &str) -> Result<Document<V>, ParseError> {
     let mut r = Reader::new(text);

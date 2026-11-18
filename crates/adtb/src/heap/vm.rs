@@ -273,7 +273,8 @@ impl Vm {
     ///
     /// Precondition: to set a bit, [`Vm::extend`] has added the path to `pid`.
     ///
-    /// Panics if a bit to set has no leaf.
+    /// Panics:
+    /// - A bit to set has no leaf.
     pub fn put<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,

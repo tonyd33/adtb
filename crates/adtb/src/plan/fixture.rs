@@ -134,7 +134,7 @@ impl Fixture {
         Interpreter::new(&self.schema, &self.program, &self.db).eval(&n.terms, t, &bound)
     }
 
-    /// Adds to relation `rel` the rows the set expression `rows` denotes over `params`.
+    /// Add to relation `rel` the rows the set expression `rows` denotes over `params`.
     pub fn rows(&mut self, rel: &str, rows: &str, params: &[(&str, &str, Value)]) {
         let r = self.rel(rel);
         let Ok(Value::Set(s)) = self.reference(rows, params) else {

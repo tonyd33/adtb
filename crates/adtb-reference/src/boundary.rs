@@ -175,7 +175,7 @@ impl Interpreter<'_> {
         delta
     }
 
-    /// Adds to `out` every value of a declared sum inside `v`, of type `ty`, below the top, with
+    /// Add to `out` every value of a declared sum inside `v`, of type `ty`, below the top, with
     /// its field path, its sum and its constructor.
     fn sum_values(&self, v: &Value, ty: &Ty, path: &mut Vec<String>, out: &mut Vec<SumValue>) {
         let fields: Vec<(&String, &Value, Ty)> = match (v, ty) {
@@ -222,7 +222,7 @@ impl Interpreter<'_> {
         }
     }
 
-    /// Calls `f` on every value of newtype `n` inside `v`, of type `ty`, at any depth.
+    /// Call `f` on every value of newtype `n` inside `v`, of type `ty`, at any depth.
     fn newtype_values(
         &self,
         v: &Value,
@@ -271,7 +271,7 @@ impl Interpreter<'_> {
         }
     }
 
-    /// Refuses the first new row of `plus` whose stored form the row limit measures as too large.
+    /// Refuse the first new row of `plus` whose stored form the row limit measures as too large.
     fn check_size(&self, plus: &Database) -> R<()> {
         let Some(Measure(measure)) = self.row_limit else {
             return Ok(());
@@ -296,7 +296,7 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Refuses an inserted or retagged row in a constructor not open for writes, and a stored
+    /// Refuse an inserted or retagged row in a constructor not open for writes, and a stored
     /// value of a value-level constructor not open for writes that the pre-state row of its key
     /// does not hold at the same path.
     fn check_open(&self, plus: &Database) -> R<()> {
@@ -352,8 +352,8 @@ impl Interpreter<'_> {
 }
 
 impl Run<'_, '_> {
-    /// Derives the delete actions of the written effects, forms the statement's change set, and
-    /// tests it at the statement boundary.
+    /// Derive the delete actions of the written effects, form the statement's change set, and
+    /// test it at the statement boundary.
     pub(crate) fn boundary(&self, written: Effects, result: Value) -> R<Outcome> {
         let it = self.it;
         let d = it.db;

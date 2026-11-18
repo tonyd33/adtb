@@ -14,7 +14,8 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Panics if `in_progress` breaks the invariants.
+    /// Panics:
+    /// - `in_progress` breaks the invariants.
     pub fn new(xmin: Xid, xmax: Xid, in_progress: Vec<Xid>) -> Snapshot {
         assert!(xmin <= xmax, "snapshot xmin {xmin:?} is past xmax {xmax:?}");
         assert!(

@@ -171,7 +171,7 @@ fn at<T>(root: Root, r: Result<T, String>) -> Result<T, Error> {
     r.map_err(|message| Error { root, message })
 }
 
-/// Normalises every body of a checked schema.
+/// Normalise every body of a checked schema.
 pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
     let mut n = Normaliser::new(schema, [&p.terms, &p.terms], &p.functions);
     let mut functions = Vec::with_capacity(p.functions.len());
@@ -256,7 +256,7 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
     Ok(program)
 }
 
-/// Normalises checked ad hoc text, inlining the functions of `p`.
+/// Normalise checked ad hoc text, inlining the functions of `p`.
 pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Error> {
     let mut n = Normaliser::new(schema, [&a.terms, &p.terms], &p.functions);
     let params = a
@@ -291,12 +291,12 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
     Ok(adhoc)
 }
 
-/// Normalises a checked registered query, inlining the functions of `p`.
+/// Normalise a checked registered query, inlining the functions of `p`.
 pub fn query(schema: &Schema, p: &Program, q: &Query) -> Result<NormalQuery, Error> {
     registered(schema, p, &q.terms, q.term)
 }
 
-/// Normalises a checked registered transaction, inlining the functions of `p`.
+/// Normalise a checked registered transaction, inlining the functions of `p`.
 pub fn txn(schema: &Schema, p: &Program, t: &Txn) -> Result<NormalQuery, Error> {
     registered(schema, p, &t.terms, t.term)
 }
@@ -516,7 +516,7 @@ impl<'a> Normaliser<'a> {
         at(root, self.first_order(v))
     }
 
-    /// Splits `t` into the variables of at most `n` leading `Lam`s and the body under them.
+    /// Split `t` into the variables of at most `n` leading `Lam`s and the body under them.
     fn under_lams(&self, arena: usize, mut t: Tm, n: usize) -> (Vec<Var>, Tm) {
         let mut vars = Vec::new();
         while vars.len() < n
@@ -528,7 +528,7 @@ impl<'a> Normaliser<'a> {
         (vars, t)
     }
 
-    /// Normalises the body under the first `arity` `Lam`s of `t`, or returns `None` when a parameter or the body has a function type.
+    /// Normalise the body under the first `arity` `Lam`s of `t`, or return `None` when a parameter or the body has a function type.
     fn function(
         &mut self,
         root: Root,
@@ -550,7 +550,7 @@ impl<'a> Normaliser<'a> {
         Ok(Some((params, at(root, self.first_order(v))?)))
     }
 
-    /// Normalises `t`, a `Lam` over one row, to its variable and body.
+    /// Normalise `t`, a `Lam` over one row, to its variable and body.
     fn row_function(&mut self, root: Root, t: Tm) -> Result<(Var, Tm), Error> {
         match self.function(root, MAIN, t, 1)? {
             Some((vars, body)) => Ok((vars[0], body)),
@@ -728,7 +728,7 @@ impl<'a> Normaliser<'a> {
         ts.iter().map(|t| self.tm(*t, cx)).collect()
     }
 
-    /// Normalises `body` with `var` bound to a fresh output variable, returning both.
+    /// Normalise `body` with `var` bound to a fresh output variable, returning both.
     fn under(&mut self, var: Var, body: Tm, cx: &Cx) -> Result<(Var, Tm), String> {
         let x = self.fresh(var, cx);
         let xt = self.var_tm(x);
@@ -975,7 +975,7 @@ impl<'a> Normaliser<'a> {
         }
     }
 
-    /// Normalises each child of `kind` in order, binding nothing.
+    /// Normalise each child of `kind` in order, binding nothing.
     fn congruent(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
         let cs = self.tms(&kind.children(), cx)?;
         Ok(self.kept(kind.with_children(&cs), &ty))
@@ -1315,7 +1315,7 @@ impl<'a> Normaliser<'a> {
         }
     }
 
-    /// Continues with the function `f` by `k`, pushing `k` into the branches that choose it.
+    /// Continue with the function `f` by `k`, pushing `k` into the branches that choose it.
     fn then(&mut self, f: Val, k: Then) -> Result<Val, String> {
         match f {
             Val::Tm(_) => {
@@ -1384,7 +1384,7 @@ impl<'a> Normaliser<'a> {
         }
     }
 
-    /// Normalises `for var in s do body` for an already normalised source `s`.
+    /// Normalise `for var in s do body` for an already normalised source `s`.
     fn for_over(&mut self, var: Var, s: Tm, body: Tm, cx: &Cx, ty: &Ty) -> Result<Tm, String> {
         match self.out.kind(s).clone() {
             Kind::EmptySet => Ok(self.b().empty_set(ty.clone())),

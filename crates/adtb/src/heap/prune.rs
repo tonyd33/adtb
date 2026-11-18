@@ -22,7 +22,8 @@ pub(super) struct Plan {
 /// whether its deleter is to be cleared first. A version whose deleter is cleared is judged again
 /// as it is left.
 ///
-/// Panics if `judge` clears a version with no deleter.
+/// Panics:
+/// - `judge` clears a version with no deleter.
 pub(super) fn judge<E>(
     page: HeapPage<'_>,
     mut judge: impl FnMut(&Writers) -> Result<Fate, E>,
@@ -60,7 +61,8 @@ pub(super) fn judge<E>(
 /// and frees the others; a chain with no live version leaves its start dead. On a fixed-slot page
 /// a chain is freed only whole, once its entries are gone.
 ///
-/// Panics if a slot `cleaned` accepts still leads to a live version.
+/// Panics:
+/// - A slot `cleaned` accepts still leads to a live version.
 pub(super) fn plan(
     page: HeapPage<'_>,
     pid: u64,

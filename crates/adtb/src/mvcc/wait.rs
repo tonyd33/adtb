@@ -24,7 +24,7 @@ pub enum Watch {
     Pending,
 }
 
-/// Waits of one transaction for another to end, as wakers woken when it ends.
+/// The waits of one transaction for another to end, as wakers woken when it ends.
 ///
 /// Preconditions on the caller:
 ///

@@ -174,7 +174,7 @@ fn is_ident_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
 }
 
-/// Splits source text into tokens, ending with one `Eof` token.
+/// Split source text into tokens, ending with one `Eof` token.
 pub fn lex(src: &str) -> (Vec<Token>, Vec<Diag>) {
     let bytes = src.as_bytes();
     let mut toks = Vec::new();

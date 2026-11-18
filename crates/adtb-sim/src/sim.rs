@@ -298,9 +298,10 @@ impl Sim {
     /// returned or the process crashes. A daemon's timer left pending at the end does not move the
     /// clock.
     ///
-    /// Panics with the payload of any thread that panics, or when a live thread that is no daemon is
-    /// blocked and only a daemon's timer can still fire, and when its threads return with an op
-    /// held, whether or not a crash is scheduled.
+    /// Panics:
+    /// - A thread panics, with its payload.
+    /// - A live thread that is no daemon is blocked and only a daemon's timer can still fire.
+    /// - Its threads return with an op held, whether or not a crash is scheduled.
     pub fn run<F: FnOnce(SimRuntime)>(&mut self, body: F) -> Outcome {
         let process = {
             let mut st = lock(&self.shared.state);

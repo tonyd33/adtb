@@ -237,7 +237,7 @@ pub fn aggregate_refs(schema: &Schema, a: usize) -> BTreeSet<FnId> {
     out
 }
 
-/// Checks the names in every expression the schema declares.
+/// Check the names in every expression the schema declares.
 pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
     let mut out = Vec::new();
     let mut run = |file: FileId, vis: Visible, ctx: Context, binds: &[String], e: &Expr| {
@@ -344,7 +344,7 @@ pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
     out
 }
 
-/// Checks the names of ad hoc text, returning its free names, which are its parameters.
+/// Check the names of ad hoc text, returning its free names, which are its parameters.
 pub fn check_adhoc(schema: &Schema, items: &[AdhocItem]) -> Result<BTreeSet<String>, Vec<Diag>> {
     let mut r = Resolver::new(schema, Visible::all(schema), Context::Adhoc);
     for item in items {
@@ -555,7 +555,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Resolves a comprehension, then `then` in the scope of its `select`.
+    /// Resolve a comprehension, then `then` in the scope of its `select`.
     fn comprehension(&mut self, c: &Comprehension, then: impl FnOnce(&mut Self)) {
         self.scope.push();
         self.clauses(&c.clauses);
@@ -637,7 +637,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Binds an arm's patterns, which must all bind the same names.
+    /// Bind an arm's patterns, which must all bind the same names.
     fn arm_patterns(&mut self, patterns: &[Pattern]) {
         let mut first: Option<BTreeSet<String>> = None;
         for p in patterns {

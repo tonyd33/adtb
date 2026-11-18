@@ -18,14 +18,14 @@ use crate::{
 
 const FILE: &str = "conformance.adt";
 
-/// Runs `script` against a fresh database file of the engine under `rt` and returns every
+/// Run `script` against a fresh database file of the engine under `rt`. Returns every
 /// directive whose outcome differs from the script. A file scan reads a relative path against
 /// the working directory.
 pub fn run_engine<R: Runtime>(rt: R, script: &Script) -> Vec<Difference> {
     run_engine_in(rt, script, Path::new(""))
 }
 
-/// Runs `script` as [`run_engine`] does, a file scan reading a relative path against `dir`.
+/// Run `script` as [`run_engine`] does, a file scan reading a relative path against `dir`.
 pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Difference> {
     let mut directives = script.directives.as_slice();
     let mut log = Log::default();
@@ -245,7 +245,7 @@ pub enum Ended {
     Refused(Error),
 }
 
-/// Runs the statements of `body` in `t`: every statement but the last as one call, then the
+/// Run the statements of `body` in `t`: every statement but the last as one call, then the
 /// last.
 ///
 /// Text refused as `Invalid` before its last statement counts as text refused as a whole.

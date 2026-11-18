@@ -1,4 +1,4 @@
-//! Reads of the past in process over the simulator: the retention window setting, `at commit`
+//! The reads of the past in process over the simulator: the retention window setting, `at commit`
 //! and `at instant` blocks, their refusals, vacuum moving versions to history, and a crash and
 //! reopen with history kept.
 

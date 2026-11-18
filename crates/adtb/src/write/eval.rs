@@ -267,7 +267,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
     }
 
-    /// Runs the statement, each variable of `params` bound, over `local`, what its transaction
+    /// Run the statement, each variable of `params` bound, over `local`, what its transaction
     /// holds outside the file.
     ///
     /// On an `Err`, `local` may hold scans of the statement and changes to temp relations of
@@ -316,7 +316,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(out)
     }
 
-    /// Binds in `env` the variable of each read of a temp relation to its rows, and of each file
+    /// Bind in `env` the variable of each read of a temp relation to its rows, and of each file
     /// scan to its rows when every record converts.
     fn bind_inputs(&self, env: &mut Env) -> Result<(), Error> {
         let bound: BTreeSet<Var> = env.keys().copied().collect();
@@ -478,7 +478,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
     }
 
-    /// Evaluates block term `t`, adding the effects of its writes to `out`. Returns its result.
+    /// Evaluate block term `t`, adding the effects of its writes to `out`. Returns its result.
     fn block(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<Val, Error> {
         let (mut t, mut env) = (t, env.clone());
         loop {
@@ -502,7 +502,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
     }
 
-    /// Evaluates write `t`, adding its effects to `out`.
+    /// Evaluate write `t`, adding its effects to `out`.
     fn write(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<(), Error> {
         match self.terms.kind(t).clone() {
             Kind::Skip => Ok(()),
@@ -558,7 +558,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
     }
 
-    /// Evaluates a `Replace` or `Upsert`, adding its effects to `out`. Returns the value a `let`
+    /// Evaluate a `Replace` or `Upsert`, adding its effects to `out`. Returns the value a `let`
     /// binds to it.
     fn bind_write(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<Val, Error> {
         match self.terms.kind(t).clone() {
@@ -1137,8 +1137,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(out.into_values().collect())
     }
 
-    /// Derives the delete actions of the written effects, forms the statement's change set,
-    /// applies it, and checks it at the statement boundary.
+    /// Derive the delete actions of the written effects, form the statement's change set,
+    /// apply it, and check it at the statement boundary.
     fn boundary(&self, written: Effects, result: Val) -> Result<Outcome, Error> {
         let deleted = self.deleted(&written)?;
         let (plus, minus) = self.change_set(written, &deleted)?;
@@ -1324,7 +1324,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Val::ctor(c, fs)
     }
 
-    /// Refuses an inserted or retagged row in a constructor not open for writes, and a stored
+    /// Refuse an inserted or retagged row in a constructor not open for writes, and a stored
     /// value of a value-level constructor not open for writes that the pre-state row of its key
     /// does not hold at the same path.
     fn check_open(&self, plus: &Rows) -> Result<(), Error> {
@@ -1368,7 +1368,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(())
     }
 
-    /// Adds to `out` every value of a declared sum inside `v`, of type `ty`, below the top,
+    /// Add to `out` every value of a declared sum inside `v`, of type `ty`, below the top,
     /// with its path of field positions, its sum and its constructor.
     fn sum_values(
         &self,

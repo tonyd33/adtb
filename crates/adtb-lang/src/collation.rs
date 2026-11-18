@@ -54,7 +54,7 @@ fn bool_value(v: &str) -> Option<bool> {
     }
 }
 
-/// Reads collation name `name`, `tag@version`, where `tag` is a language, an optional script and
+/// Read collation name `name`, `tag@version`, where `tag` is a language, an optional script and
 /// region, and an optional `-u-` extension of the keywords `ks`, `ka`, `kc`, `kf`, `kn` and `kv`,
 /// each once.
 pub fn parse(name: &str) -> Result<Collation, String> {

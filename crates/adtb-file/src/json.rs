@@ -99,7 +99,7 @@ fn read<V: Textual>(schema: &Committed, j: &Json, ty: &Ty) -> Result<V, String> 
     }
 }
 
-/// Reads the members of object `j` named by `fields`; a missing member of an `Option` type is
+/// Read the members of object `j` named by `fields`; a missing member of an `Option` type is
 /// `None`.
 fn members<V: Textual>(
     schema: &Committed,
@@ -122,7 +122,7 @@ fn members<V: Textual>(
         .collect()
 }
 
-/// Reads a constructor value: its name for one with no fields, else an object of one member
+/// Read a constructor value: its name for one with no fields, else an object of one member
 /// named by it holding its fields.
 fn ctor<V: Textual>(schema: &Committed, j: &Json, sum: &Sum) -> Result<V, String> {
     let (name, payload) = match j {

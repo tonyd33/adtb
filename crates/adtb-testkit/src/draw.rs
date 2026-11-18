@@ -136,7 +136,8 @@ fn draw_fields<'f, V: Textual>(
 /// Returns a value of form `form` drawn from `rng`, built as a `V`; the same draws build equal
 /// values of any two value types. Its zones are among `ZONES`.
 ///
-/// Panics at an opaque form.
+/// Panics:
+/// - `form` is opaque.
 pub fn draw<V: Textual>(rng: &mut Rng, form: &Form) -> V {
     draw_at(rng, form, 0)
 }

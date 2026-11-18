@@ -123,8 +123,9 @@ pub struct Refusal {
 /// to `terms`, a copy of `normal`'s arena, each planned over `catalog` with every relation read
 /// through index probes.
 ///
-/// Fails with a refusal per constraint and reason when some constraint has no such check, and
-/// with the internal error when compiling one breaks a guarantee of the checker.
+/// Errors:
+/// - A refusal per constraint and reason when some constraint has no such check.
+/// - The internal error when compiling one breaks a guarantee of the checker.
 pub fn compile(
     schema: &Committed,
     normal: &NormalProgram,

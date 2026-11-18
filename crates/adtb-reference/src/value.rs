@@ -144,7 +144,7 @@ impl Value {
     }
 }
 
-/// Compares two decimals by their numbers, whatever their scales.
+/// Compare two decimals by their numbers, whatever their scales.
 pub fn cmp_decimal(a: i128, s: u8, b: i128, t: u8) -> Ordering {
     if s == t {
         return a.cmp(&b);

@@ -345,7 +345,7 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Runs `f` as production `what`, rewinding the position and dropping its diagnostics when
+    /// Run `f` as production `what`, rewinding the position and dropping its diagnostics when
     /// it fails, and skipping it where it failed before at the same position and depth.
     fn attempt<T>(&mut self, what: Attempt, f: impl FnOnce(&mut Self) -> PResult<T>) -> Option<T> {
         let key = (self.pos, self.depth, what);
@@ -366,7 +366,7 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Runs `f` and restores the nesting depth it started at.
+    /// Run `f` and restore the nesting depth it started at.
     fn scoped<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
         let base = self.depth;
         let r = f(self);
@@ -374,7 +374,7 @@ impl<'s> Parser<'s> {
         r
     }
 
-    /// Runs `f` one level deeper.
+    /// Run `f` one level deeper.
     fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
         self.scoped(|p| {
             p.deeper()?;
@@ -382,13 +382,13 @@ impl<'s> Parser<'s> {
         })
     }
 
-    /// Adds a level of nesting until the end of the enclosing [`Parser::scoped`].
+    /// Add a level of nesting until the end of the enclosing [`Parser::scoped`].
     fn deeper(&mut self) -> PResult<()> {
         self.depth += 1;
         self.reach(self.depth)
     }
 
-    /// Notes that a leaf lies at `depth`, refusing the text when that is too deep.
+    /// Note that a leaf lies at `depth`, refusing the text when that is too deep.
     fn reach(&mut self, depth: u32) -> PResult<()> {
         self.peak = self.peak.max(depth);
         if depth > MAX_DEPTH {
@@ -399,7 +399,7 @@ impl<'s> Parser<'s> {
         Ok(())
     }
 
-    /// Parses a left-nested chain: `first`, then `link` while `more` holds, each link taking
+    /// Parse a left-nested chain: `first`, then `link` while `more` holds, each link taking
     /// the chain so far.
     ///
     /// Postconditions:
@@ -557,7 +557,7 @@ impl<'s> Parser<'s> {
             .map_err(|_| self.error_at(t.span, "integer out of range"))
     }
 
-    /// Skips the tokens covering source bytes up to `end`, which must end on a token boundary.
+    /// Skip the tokens covering source bytes up to `end`, which must end on a token boundary.
     fn skip_to_byte(&mut self, end: usize) -> PResult<()> {
         while self.tok().tok != Tok::Eof && (self.tok().span.start as usize) < end {
             if self.tok().span.end as usize > end {
@@ -568,7 +568,7 @@ impl<'s> Parser<'s> {
         Ok(())
     }
 
-    /// Scans a run of bundle-name characters at the current token: `web-2.4`, `web`.
+    /// Scan a run of bundle-name characters at the current token: `web-2.4`, `web`.
     fn scan_bundle_run(&self) -> Option<(usize, usize)> {
         let t = self.tok();
         if t.tok != Tok::Lower {
@@ -718,7 +718,7 @@ impl<'s> Parser<'s> {
         (kw_start || word_start) && self.first_on_line(t)
     }
 
-    /// Parses items until the end of the text, skipping to the next line that starts an item after an error.
+    /// Parse items until the end of the text, skipping to the next line that starts an item after an error.
     fn items<T>(&mut self, mut item: impl FnMut(&mut Self) -> PResult<T>) -> PResult<Vec<T>> {
         let mut out = Vec::new();
         let mut failed = false;

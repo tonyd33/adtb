@@ -136,7 +136,8 @@ impl OsRuntime {
     ///   directory op the device finished before the crash may survive it.
     /// - Returns the unforced writes it dropped and tore.
     ///
-    /// Panics unless the runtime was made by [`OsRuntime::with_faults`].
+    /// Panics:
+    /// - The runtime was not made by [`OsRuntime::with_faults`].
     pub fn crash(&self) -> Loss {
         self.backend.files.crash()
     }

@@ -106,7 +106,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Resolves a constructor expression against the expected type, else by its name in scope, then builds it.
+    /// Resolve a constructor expression against the expected type, else by its name in scope, then build it.
     pub(super) fn ctor(
         &mut self,
         path: &ast::QName,
@@ -271,7 +271,7 @@ impl Checker<'_> {
         Ok(self.out(tm))
     }
 
-    /// Builds constructor `c` of `target` from `record`, giving every field.
+    /// Build constructor `c` of `target` from `record`, giving every field.
     pub(super) fn build_ctor(
         &mut self,
         target: Target,

@@ -145,7 +145,7 @@ fn refuses(extra: &str, needle: &str) {
     }
 }
 
-/// Runs `f` on a thread with the 2 MiB stack a spawned thread gets by default.
+/// Run `f` on a thread with the 2 MiB stack a spawned thread gets by default.
 fn on_small_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|s| {
         std::thread::Builder::new()
@@ -166,7 +166,7 @@ fn rel_id(s: &Schema, name: &str) -> RelId {
     )
 }
 
-/// Checks ad hoc `text` against the running schema, its parameters given as `name: Type`.
+/// Check ad hoc `text` against the running schema, its parameters given as `name: Type`.
 fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<String>> {
     adhoc_in(&[], params, text)
 }
@@ -174,7 +174,7 @@ fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<
 /// A registered query of a live bundle: family, version, query name and parameter types.
 type RegisteredQuery<'a> = (&'a str, &'a str, &'a str, &'a [&'a str]);
 
-/// Checks ad hoc `text` as [`adhoc`] does, knowing the registered queries `bundles`.
+/// Check ad hoc `text` as [`adhoc`] does, knowing the registered queries `bundles`.
 fn adhoc_in(
     bundles: &[RegisteredQuery],
     params: &[(&str, &str)],
@@ -239,7 +239,7 @@ fn adhoc_refuses(params: &[(&str, &str)], text: &str, needle: &str) {
     }
 }
 
-/// Checks ad hoc `text` against the running schema extended by `extra`.
+/// Check ad hoc `text` against the running schema extended by `extra`.
 fn adhoc_over(extra: &str, text: &str) -> Result<Adhoc, Vec<String>> {
     let s = schema(extra).expect("the schema builds");
     let program = check_schema(&s).expect("the schema checks");
@@ -250,7 +250,7 @@ fn adhoc_over(extra: &str, text: &str) -> Result<Adhoc, Vec<String>> {
     Ok(a)
 }
 
-/// Checks a registered query `text` against the running schema extended by `extra`.
+/// Check a registered query `text` against the running schema extended by `extra`.
 fn query(extra: &str, text: &str) -> Result<(), String> {
     let s = schema(extra).expect("the schema builds");
     let items = parse_example(text, Options::default())

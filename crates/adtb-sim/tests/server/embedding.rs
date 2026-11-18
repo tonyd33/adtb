@@ -1,4 +1,4 @@
-//! Calls in process over the simulator: cancellation tokens and deadlines, closing a database
+//! The calls in process over the simulator: cancellation tokens and deadlines, closing a database
 //! with registrations and clones still held, and results as Arrow record batches.
 
 use adtb_harness::process::{once, run};

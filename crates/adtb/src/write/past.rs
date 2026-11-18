@@ -1,4 +1,4 @@
-//! Reads of the past: the history a database keeps for its retention window, the stores that
+//! The reads of the past: the history a database keeps for its retention window, the stores that
 //! read at a safe snapshot marker, and the vacuum that moves versions into history.
 
 use std::collections::{BTreeMap, BTreeSet};

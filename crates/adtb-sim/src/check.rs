@@ -25,7 +25,8 @@ impl Ledger {
 
     /// Record that commit `id` was submitted.
     ///
-    /// Panics if `id` was submitted before.
+    /// Panics:
+    /// - `id` was submitted before.
     pub fn submit(&self, id: u64) {
         let previous = self.fates.lock().unwrap().insert(id, Fate::InDoubt);
         assert!(previous.is_none(), "commit {id} submitted twice");

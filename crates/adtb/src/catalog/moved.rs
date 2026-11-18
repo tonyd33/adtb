@@ -23,7 +23,9 @@ use super::{Broken, Error, layout, oplog};
 /// Returns what `maps`, the row maps of one step from schema `a` to schema `b`, give the rows of
 /// `data`, which are in `a`'s layout.
 ///
-/// Fails with `Error::Refused` naming each map the data refuses, or with `Error::Internal`.
+/// Errors:
+/// - `Error::Refused` naming each map the data refuses.
+/// - `Error::Internal`.
 pub fn moved(
     a: &Schema,
     b: &Schema,
@@ -455,7 +457,7 @@ impl Mapping<'_> {
         self.held_fills(def, ctors, field, fill, &f)
     }
 
-    /// Adds to `out.values` the fill `f`, compiled from `fill`, of field `field` that
+    /// Add to `out.values` the fill `f`, compiled from `fill`, of field `field` that
     /// constructors `ctors` of type `def` gain, for the values of `def` other rows hold.
     fn held_fills(
         &mut self,

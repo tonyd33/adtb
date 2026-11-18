@@ -29,7 +29,7 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// Builds the schema `src` declares, a module file without its `module` line.
+    /// Build the schema `src` declares, a module file without its `module` line.
     pub fn new(src: &str) -> Fixture {
         let text = format!("module app\n{src}");
         let file = parse_schema(&text, Options::default())
@@ -147,12 +147,12 @@ impl Fixture {
             .with_files(&self.files)
     }
 
-    /// Adds to relation `rel` the rows the set expression `rows` denotes.
+    /// Add to relation `rel` the rows the set expression `rows` denotes.
     pub fn rows(&mut self, rel: &str, rows: &str) {
         self.rows_with(rel, rows, &[]);
     }
 
-    /// Adds to relation `rel` the rows the set expression `rows` denotes over `params`.
+    /// Add to relation `rel` the rows the set expression `rows` denotes over `params`.
     pub fn rows_with(&mut self, rel: &str, rows: &str, params: &[(&str, &str, Value)]) {
         let r = self.rel(rel);
         let Ok(Value::Set(s)) = self.eval_with(rows, params) else {
@@ -174,7 +174,7 @@ impl Fixture {
             .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
     }
 
-    /// Evaluates the one statement of ad hoc text `text`, each parameter given as name, type and
+    /// Evaluate the one statement of ad hoc text `text`, each parameter given as name, type and
     /// value.
     pub fn eval_with(&self, text: &str, params: &[(&str, &str, Value)]) -> Result<Value, Abort> {
         let items: Vec<AdhocItem> = parse_adhoc(text, Options::default())
@@ -205,7 +205,7 @@ impl Fixture {
             && check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new()).is_ok()
     }
 
-    /// Runs the one statement of ad hoc text `text` over `params`; when it succeeds, its state
+    /// Run the one statement of ad hoc text `text` over `params`; when it succeeds, its state
     /// becomes the fixture's database.
     pub fn run_with(
         &mut self,
@@ -251,7 +251,7 @@ impl Fixture {
         out
     }
 
-    /// Runs ad hoc text `text` as one transaction: its items in order, with the temp relations
+    /// Run ad hoc text `text` as one transaction: its items in order, with the temp relations
     /// it declares. Returns each item's result. When every item succeeds, the state after the
     /// last, less the rows of its temp relations, becomes the fixture's database; otherwise the
     /// error is the ordinal, from 1, of the item that aborted, every item of the text counted,
@@ -321,14 +321,14 @@ impl Fixture {
         self.run_with(text, &[])
     }
 
-    /// Runs `text`, which must succeed, and returns its result.
+    /// Run `text`, which must succeed. Returns its result.
     pub fn ok(&mut self, text: &str) -> Value {
         self.run(text)
             .unwrap_or_else(|a| panic!("`{text}` aborts: {a:?}"))
             .result
     }
 
-    /// Runs `text`, which must be rejected, and returns the reason; the database is unchanged.
+    /// Run `text`, which must be rejected. Returns the reason; the database is unchanged.
     pub fn rejected(&mut self, text: &str) -> Rejection {
         let before = self.db.clone();
         match self.run(text) {
@@ -340,7 +340,7 @@ impl Fixture {
         }
     }
 
-    /// Calls the registered transaction `decl` with `args`; when it succeeds, its state becomes
+    /// Call the registered transaction `decl` with `args`; when it succeeds, its state becomes
     /// the fixture's database.
     pub fn call_txn(&mut self, decl: &str, args: Vec<Value>) -> Result<Outcome, Abort> {
         let items = parse_example(decl, Options::default())
@@ -404,7 +404,7 @@ impl Fixture {
             .unwrap_or_else(|a| panic!("`{text}` aborts: {a:?}"))
     }
 
-    /// Calls the registered query `decl` with `args`.
+    /// Call the registered query `decl` with `args`.
     pub fn call_query(&self, decl: &str, args: Vec<Value>) -> Result<Value, Abort> {
         let items = parse_example(decl, Options::default())
             .ok()

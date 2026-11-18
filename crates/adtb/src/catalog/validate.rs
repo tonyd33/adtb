@@ -212,7 +212,7 @@ fn held(schema: &Schema, normal: &NormalProgram) -> Result<Vec<Held>, Error> {
         .collect()
 }
 
-/// Adds the relations `t` reads to `reads`; returns whether it reads a transition.
+/// Add the relations `t` reads to `reads`. Returns whether it reads a transition.
 fn transitions(terms: &Terms, t: Tm, reads: &mut BTreeSet<RelId>) -> bool {
     let mut stack = vec![t];
     let mut seen = BTreeSet::new();

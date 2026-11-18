@@ -223,8 +223,9 @@ pub fn to_text<V: Textual>(v: &V, form: &Form) -> R<String> {
 
 /// Returns the textual syntax of `v`, a value of form `form`.
 ///
-/// Fails when `v` is not of `form`'s shape, or `form` is `Opaque` or holds it on the path `v`
-/// takes.
+/// Errors:
+/// - `v` is not of `form`'s shape, or `form` is `Opaque` or holds it on the path
+///   `v` takes.
 pub fn print<V: Textual>(v: &V, form: &Form) -> R<String> {
     let mut out = String::new();
     write_val(&mut out, v, form)?;

@@ -613,7 +613,7 @@ impl Schema {
         TypeName::built_in(text).ok_or_else(|| no_type(text))
     }
 
-    /// Resolves a lowercase schema name seen from `module`.
+    /// Resolve a lowercase schema name seen from `module`.
     pub fn lookup_value(&self, module: ModuleId, name: &ast::QName) -> Result<ValueDef, String> {
         self.lookup_value_in(module, name, None)
     }
@@ -670,7 +670,7 @@ impl Schema {
         }
     }
 
-    /// Resolves the constructor selection after a relation: constructors of its element type or one named set.
+    /// Resolve the constructor selection after a relation: constructors of its element type or one named set.
     pub fn relation_sel(&self, rel: RelId, sel: &ast::CtorSel) -> Result<CtorSet, String> {
         let r = self.relation(rel);
         let def = self.ty(r.elem_def);
@@ -710,7 +710,7 @@ impl Schema {
         }
     }
 
-    /// Resolves a constructor selection at the type level, where a named set is any relation's set of that name.
+    /// Resolve a constructor selection at the type level, where a named set is any relation's set of that name.
     pub fn type_sel(&self, def: TypeId, sel: &ast::CtorSel) -> Result<CtorSet, String> {
         let t = self.ty(def);
         match sel {
@@ -1290,7 +1290,7 @@ struct Builder<'a> {
     ahead: &'a [Ahead],
 }
 
-/// Builds the schema the given module files declare, over the prelude.
+/// Build the schema the given module files declare, over the prelude.
 pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Committed, Vec<FileDiag>> {
     build_ahead(files, &[]).map(Committed::built)
 }
@@ -1306,7 +1306,7 @@ pub struct Ahead {
     by: Adder,
 }
 
-/// Builds the schema as `build` does, where a `Key r` type may also name each relation variable
+/// Build the schema as `build` does, where a `Key r` type may also name each relation variable
 /// `ahead` lists that the files do not declare, and select the constructors of one whose type the
 /// migration adds before they resolve.
 pub fn build_ahead(

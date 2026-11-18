@@ -52,7 +52,7 @@ impl Parser<'_> {
         })
     }
 
-    /// Parses an operand and every infix operator of level `min` or tighter that follows it.
+    /// Parse an operand and every infix operator of level `min` or tighter that follows it.
     fn operators(&mut self, min: Level) -> PResult<Expr> {
         if min <= Level::And {
             return self.associative(min);
@@ -78,7 +78,7 @@ impl Parser<'_> {
         )
     }
 
-    /// Parses a chain of the operator of `level`, which is `union`, `or` or `and`, as a
+    /// Parse a chain of the operator of `level`, which is `union`, `or` or `and`, as a
     /// balanced tree of its operands in order.
     ///
     /// Postconditions:
@@ -659,7 +659,7 @@ impl Parser<'_> {
         })
     }
 
-    /// Parses generators, each one level deeper until the end of the enclosing
+    /// Parse generators, each one level deeper until the end of the enclosing
     /// [`Parser::scoped`].
     pub(crate) fn generators(&mut self) -> PResult<Vec<Generator>> {
         let mut gens = Vec::new();

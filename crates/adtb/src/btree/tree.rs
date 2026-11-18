@@ -395,7 +395,7 @@ impl BTree {
     /// `key`, starting at page `pid`, and the first page passed by a right
     /// link without a downlink.
     ///
-    /// Latches are taken one at a time, moving right along the level; a page
+    /// The latches are taken one at a time, moving right along the level; a page
     /// found unlinked, or no longer at or left of `key`, sends the search
     /// back to the root.
     fn claim<'p, R: Runtime>(
@@ -711,7 +711,7 @@ impl BTree {
     /// for that key, the range goes to the right sibling, whose low key and
     /// separator in the parent become the leaf's; the left sibling, under
     /// this parent or the one before, then only takes the leaf's right link.
-    /// Latches the parent, then the left sibling, then the leaf and its right
+    /// It latches the parent, then the left sibling, then the leaf and its right
     /// sibling. Does nothing if the leaf is no longer empty, is the rightmost
     /// of its level, lacks its downlink, or is its parent's only child, or if
     /// neither sibling can take its range.

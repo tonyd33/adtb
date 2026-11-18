@@ -1537,7 +1537,7 @@ fn a_deadlock_between_blocked_writes_fails_the_second_waiter_sim() {
     });
 }
 
-/// Waits, suspended, for a deferrable read-only transaction's snapshot to be safe.
+/// A wait, suspended, for a deferrable read-only transaction's snapshot to be safe.
 struct Defer {
     items: Arc<Items<SimRuntime>>,
     tx: Option<Txn>,

@@ -253,7 +253,8 @@ pub fn dedup(items: &[Item], key_len: &dyn Fn(&[u8]) -> Option<usize>, cap: usiz
 /// Add `x` to the leaf `page`, which does not hold it, joining a posting when
 /// it can. Returns false, changing nothing, if there is no room.
 ///
-/// Panics if the page is not a leaf.
+/// Panics:
+/// - The page is not a leaf.
 pub fn insert(page: &mut [u8], x: &[u8]) -> bool {
     let n = Node::new(page).expect("an inserted leaf is a node");
     let place = find(&n, x).expect("an inserted leaf is a node");
@@ -303,7 +304,8 @@ pub fn insert(page: &mut [u8], x: &[u8]) -> bool {
 
 /// Remove the entry at `place`, which the leaf `page` holds.
 ///
-/// Panics if the page is not a leaf or holds no entry there.
+/// Panics:
+/// - The page is not a leaf or holds no entry there.
 #[cfg(any(test, feature = "testing"))]
 pub fn remove(page: &mut [u8], place: Place) {
     let n = Node::new(page).expect("a leaf removed from is a node");

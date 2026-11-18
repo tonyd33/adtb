@@ -25,7 +25,7 @@ fn reads_lost_floor() -> usize {
 }
 const CLIENTS: usize = 4;
 const TXNS_PER_CLIENT: usize = 6;
-/// Processes per seed that may crash before the last, which runs to the end.
+/// The processes per seed that may crash before the last, which runs to the end.
 const CRASHES: usize = 3;
 const KEYS: i64 = 4;
 

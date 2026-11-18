@@ -431,7 +431,8 @@ fn framed(page: &[u8]) -> bool {
 
 /// Returns the arrangement of a heap page.
 ///
-/// Panics if `page` is not a heap page.
+/// Panics:
+/// - `page` is not a heap page.
 fn arrangement(page: &[u8]) -> Arrangement {
     match PageKind::from_u16(storage::kind(page)) {
         Some(PageKind::HeapFixed) => Arrangement::Fixed {

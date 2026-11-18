@@ -9,7 +9,7 @@ use adtb_reference::{Abort, Database, Fault, Interpreter, Limit, R, Value};
 
 use crate::plan::*;
 
-/// Evaluates plans over an in-memory database, one row at a time.
+/// The evaluator of plans over an in-memory database, one row at a time.
 pub struct Interp<'a> {
     schema: &'a Committed,
     program: &'a Program,

@@ -571,7 +571,8 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
 /// Preconditions: `report` is complete and was made by [`verify`] against `inventory` with no
 /// write since.
 ///
-/// Panics if `report` is not complete.
+/// Panics:
+/// - `report` is not complete.
 #[cfg(test)]
 pub fn repair<R: Runtime>(
     pager: &Pager<R>,

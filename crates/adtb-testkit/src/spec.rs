@@ -238,7 +238,7 @@ fn source_of(entries: &[Entry]) -> Result<Source, Vec<String>> {
     })
 }
 
-/// Renders a diagnostic in a file of `src`: at the spec line of its entry when the declaration is the entry's
+/// Render a diagnostic in a file of `src`: at the spec line of its entry when the declaration is the entry's
 /// text unchanged, else at block `b` naming the declaration.
 fn render_in(src: &Source, entries: &[Entry], b: Option<&Block>, d: &FileDiag) -> String {
     if d.file.0 as usize >= src.decls.len() {
@@ -305,7 +305,7 @@ pub struct Prepared {
     pub adhoc: Vec<AdhocItem>,
 }
 
-/// Builds the schema of block `b` over the running schema `part`, applying the migrations it shows.
+/// Build the schema of block `b` over the running schema `part`, applying the migrations it shows.
 pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared, Vec<String>> {
     let items = parse_example(&b.text, Options { elisions: true })
         .ok()

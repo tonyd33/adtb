@@ -35,7 +35,8 @@ impl Denial {
 /// Returns the incremental checks of every constraint and check of `schema`, their terms added
 /// to `terms`, a copy of `normal`'s arena.
 ///
-/// Fails with [`Error::Refused`] when a constraint has no index-bounded incremental check.
+/// Errors:
+/// - [`Error::Refused`] when a constraint has no index-bounded incremental check.
 pub fn denials(
     schema: &Committed,
     normal: &NormalProgram,

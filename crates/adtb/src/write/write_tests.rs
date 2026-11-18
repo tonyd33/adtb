@@ -354,7 +354,7 @@ fn rename_rows(rows: &Rows, map: &BTreeMap<Val, Val>) -> Rows {
         .collect()
 }
 
-/// Adds to `out` the first field of every constructor value inside `v`: the keys of the rows
+/// Add to `out` the first field of every constructor value inside `v`: the keys of the rows
 /// it holds.
 fn firsts(v: &Val, out: &mut BTreeSet<Val>) {
     match v {

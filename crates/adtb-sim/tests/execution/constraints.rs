@@ -63,7 +63,7 @@ constraint assigned_member =
   select a
 ";
 
-/// Runs `a` and `b` in two transactions in the order `order` gives, a sequence over `'a'` and
+/// Run `a` and `b` in two transactions in the order `order` gives, a sequence over `'a'` and
 /// `'b'` for a statement and `'A'` and `'B'` for a commit. Returns how each ended.
 fn interleave(
     db: &Database<SimRuntime>,
@@ -110,7 +110,7 @@ fn serial_or_violated(e: &Error) -> bool {
         )
 }
 
-/// Asserts that after `setup`, two transactions running `a` and `b`, each of which keeps the
+/// Assert that after `setup`, two transactions running `a` and `b`, each of which keeps the
 /// constraint whose query is `denial` alone, never both commit in any order of their
 /// statements and commits, that a failure is a serialization failure, and that the constraint
 /// holds afterwards.

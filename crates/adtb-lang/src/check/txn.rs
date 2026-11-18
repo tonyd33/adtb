@@ -20,7 +20,7 @@ enum Pending {
 }
 
 impl Checker<'_> {
-    /// Checks a `transact` block whose result, when given, is `result`.
+    /// Check a `transact` block whose result, when given, is `result`.
     pub(super) fn transact(&mut self, b: &TransactBlock, result: Option<&Ty>) -> R<Out> {
         let mut opts = TxnOptions::default();
         let mut durability = false;
@@ -75,7 +75,7 @@ impl Checker<'_> {
         Ok(())
     }
 
-    /// Checks the items of a block, then its `return`.
+    /// Check the items of a block, then its `return`.
     fn items(&mut self, b: &TransactBlock, result: Option<&Ty>) -> R<Out> {
         let mut pending = Vec::with_capacity(b.items.len());
         let r = self
@@ -93,7 +93,7 @@ impl Checker<'_> {
         Ok(k)
     }
 
-    /// Checks each item of `b` up to the items after it, pushing what remains of it to `pending`.
+    /// Check each item of `b` up to the items after it, pushing what remains of it to `pending`.
     ///
     /// Postconditions:
     /// - A scope is pushed for each `let` in `pending`, error or not.
@@ -142,7 +142,7 @@ impl Checker<'_> {
         Ok(())
     }
 
-    /// Checks the `return` of `b`, or its absence.
+    /// Check the `return` of `b`, or its absence.
     fn block_return(&mut self, b: &TransactBlock, result: Option<&Ty>) -> R<Out> {
         let Some(e) = &b.ret else {
             if let Some(t) = result

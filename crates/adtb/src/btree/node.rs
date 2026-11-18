@@ -419,8 +419,9 @@ pub struct Bounds<'a> {
 
 /// Write a node of `items` at `level` over `page`, keeping its owner and flags.
 ///
-/// Panics if the items and fence keys do not fit, or if an item's child does
-/// not match the level.
+/// Panics:
+/// - The items and fence keys do not fit.
+/// - An item's child does not match the level.
 #[expect(
     clippy::disallowed_methods,
     reason = "rewrites the header with the page's own owner; a header edit that keeps the owner would remove it"
@@ -474,14 +475,16 @@ fn set_flag(page: &mut [u8], flag: u16, on: bool) {
 
 /// Mark `page` as lacking its downlink in its parent, or clear the mark.
 ///
-/// Panics if the page is not a node.
+/// Panics:
+/// - The page is not a node.
 pub fn set_incomplete(page: &mut [u8], incomplete: bool) {
     set_flag(page, INCOMPLETE_SPLIT, incomplete);
 }
 
 /// Mark `page` as unlinked from its tree.
 ///
-/// Panics if the page is not a node.
+/// Panics:
+/// - The page is not a node.
 pub fn set_deleted(page: &mut [u8]) {
     set_flag(page, DELETED, true);
 }
@@ -514,7 +517,8 @@ pub fn fences(node: &Node) -> Result<Fences, Malformed> {
 
 /// Returns whether `items` fit in `page` beside its fence keys.
 ///
-/// Panics if the page is not a node.
+/// Panics:
+/// - The page is not a node.
 pub fn fits(page: &[u8], items: &[Item]) -> bool {
     let node = Node::new(page).expect("a page fitted is a node");
     let f = fences(&node).expect("a page fitted is a node");
@@ -528,7 +532,8 @@ pub fn fits(page: &[u8], items: &[Item]) -> bool {
 
 /// Rewrite `page` to hold `items` with its own fence keys and right sibling.
 ///
-/// Panics if the page is not a node or the items do not fit.
+/// Panics:
+/// - The page is not a node or the items do not fit.
 pub fn rebuild(page: &mut [u8], items: &[Item]) {
     let node = Node::new(page).expect("a rebuilt page is a node");
     let level = node.level();
@@ -539,7 +544,8 @@ pub fn rebuild(page: &mut [u8], items: &[Item]) {
 /// Insert `item` at slot `i`, compacting the cell area first if its free
 /// gap is too small.
 ///
-/// Panics if the item does not fit or the page is not a node.
+/// Panics:
+/// - The item does not fit or the page is not a node.
 pub fn insert(page: &mut [u8], i: usize, item: &Item) {
     let node = Node::new(page).expect("an inserted page is a node");
     let level = node.level();
@@ -566,8 +572,9 @@ pub fn insert(page: &mut [u8], i: usize, item: &Item) {
 /// Replace the cell of slot `i` by `item`, compacting the cell area first if
 /// its free gap is too small. The old cell stays as garbage.
 ///
-/// Panics if the item does not fit, there is no slot `i`, or the page is not
-/// a node.
+/// Panics:
+/// - The item does not fit, there is no slot `i`, or the page is not
+///   a node.
 pub fn replace(page: &mut [u8], i: usize, item: &Item) {
     let node = Node::new(page).expect("a replaced page is a node");
     assert!(i < node.count(), "slot {i} is past {}", node.count());
@@ -583,7 +590,8 @@ pub fn replace(page: &mut [u8], i: usize, item: &Item) {
 
 /// Remove slot `i`. Its cell stays as garbage until the page is compacted.
 ///
-/// Panics if there is no slot `i`.
+/// Panics:
+/// - There is no slot `i`.
 pub fn remove(page: &mut [u8], i: usize) {
     let count = Node::new(page)
         .expect("a page removed from is a node")

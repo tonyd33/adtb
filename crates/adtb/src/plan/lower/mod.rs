@@ -55,8 +55,9 @@ pub fn plan(
 /// Returns the plan of `root`, as [`plan`] does, reading every constructor relation only through
 /// an index probe keyed by values bound before it.
 ///
-/// Fails with [`Error::Unbounded`] when some read has no such probe, and with
-/// [`Error::Outside`] when `root` holds a `fix`.
+/// Errors:
+/// - [`Error::Unbounded`] when some read has no such probe.
+/// - [`Error::Outside`] when `root` holds a `fix`.
 pub fn plan_bounded(
     schema: &Schema,
     normal: &NormalProgram,
@@ -457,7 +458,7 @@ impl Planner<'_> {
         }
     }
 
-    /// Splits a set term into the conditions guarding it, in evaluation order, and the term they guard.
+    /// Split a set term into the conditions guarding it, in evaluation order, and the term they guard.
     fn peel(&mut self, mut t: Tm) -> (Vec<Tm>, Tm) {
         let mut conds = Vec::new();
         while let &Kind::If(c, a, b) = self.t.kind(t)
@@ -503,7 +504,7 @@ impl Planner<'_> {
         out
     }
 
-    /// Splits a set term as `peel` does, adding the total conditions of a comprehension over a constructor relation directly under it that do not depend on its row.
+    /// Split a set term as `peel` does, adding the total conditions of a comprehension over a constructor relation directly under it that do not depend on its row.
     fn pulled(&mut self, body: Tm) -> (Vec<Tm>, Tm) {
         let (mut conds, rest) = self.peel(body);
         let Kind::For(y, src, inner) = self.kind(rest) else {
@@ -803,7 +804,7 @@ impl Planner<'_> {
             )
     }
 
-    /// Refuses a term whose root form a plan does not compute.
+    /// Refuse a term whose root form a plan does not compute.
     fn refuse(&self, t: Tm) -> Result<(), Error> {
         match self.t.kind(t) {
             Kind::Transition(..) => Err(Error::NotAQuery("a read of a statement's transition")),

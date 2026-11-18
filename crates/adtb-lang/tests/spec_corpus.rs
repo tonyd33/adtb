@@ -331,7 +331,7 @@ fn files(entries: &[Entry]) -> Result<Files, Vec<String>> {
 }
 
 impl Files {
-    /// Renders a diagnostic in a schema file at the spec line its entry came from.
+    /// Render a diagnostic in a schema file at the spec line its entry came from.
     fn render(&self, entries: &[Entry], d: &FileDiag) -> String {
         if d.file == FileId::PRELUDE {
             return format!("prelude: {}", d.diag.message);

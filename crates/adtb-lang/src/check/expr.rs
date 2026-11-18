@@ -103,7 +103,7 @@ impl Checker<'_> {
         Ok(out)
     }
 
-    /// Checks `e` against `expected`.
+    /// Check `e` against `expected`.
     pub fn check(&mut self, e: &Expr, expected: &Ty) -> R<Out> {
         let out = match &e.kind {
             ExprKind::Lit(Lit::Int(_) | Lit::Decimal(_) | Lit::Float(_)) => {
@@ -187,7 +187,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Synthesizes the type of `e`.
+    /// Synthesize the type of `e`.
     pub fn synth(&mut self, e: &Expr) -> R<Out> {
         let out = self.synthesized(e)?;
         self.sized(out, e.span)
@@ -609,7 +609,7 @@ impl Checker<'_> {
         ))
     }
 
-    /// Checks two operands that must meet at one type, a literal or constructor taking the other's type with every constructor of its sum.
+    /// Check two operands that must meet at one type, a literal or constructor taking the other's type with every constructor of its sum.
     pub(super) fn operands(&mut self, a: &Expr, b: &Expr, expected: Option<&Ty>) -> R<(Out, Out)> {
         match (wants_expected(a), wants_expected(b)) {
             (true, false) => {
@@ -634,7 +634,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Checks `e` against the whole sum of `other`; in ad hoc text, synthesizes it beside an anonymous sum, which the two operands join.
+    /// Check `e` against the whole sum of `other`; in ad hoc text, synthesize it beside an anonymous sum, which the two operands join.
     fn against(&mut self, e: &Expr, other: &Ty) -> R<Out> {
         match other {
             Ty::Sum { .. } if self.adhoc() => self.synth(e),

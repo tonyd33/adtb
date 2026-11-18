@@ -236,7 +236,7 @@ pub struct Scalar {
 }
 
 impl Scalar {
-    /// Compiles `body`, a scalar normal form in `terms` for `schema` whose one free variable is
+    /// Compile `body`, a scalar normal form in `terms` for `schema` whose one free variable is
     /// `var`.
     pub fn new(schema: &Schema, terms: &Terms, var: Var, body: Tm) -> Result<Scalar, Error> {
         Ok(Scalar {

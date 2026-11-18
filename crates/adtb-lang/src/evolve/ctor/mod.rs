@@ -318,7 +318,7 @@ impl Cx<'_> {
 }
 
 impl Cx<'_> {
-    /// Applies insertions keyed by declaration and position.
+    /// Apply insertions keyed by declaration and position.
     pub(super) fn insert_all(&mut self, inserts: BTreeMap<(usize, usize), Written>) {
         let mut by_decl: Edits = BTreeMap::new();
         for ((k, at), s) in inserts {
@@ -690,7 +690,7 @@ pub(super) struct Restated {
     stages: Vec<(Option<CatRelId>, Stage)>,
 }
 
-/// Collects the relation and constructor set of every `Key` type in `t`.
+/// Collect the relation and constructor set of every `Key` type in `t`.
 pub(super) fn key_types(t: &Ty, out: &mut Vec<(RelRef, Option<CtorSet>)>) {
     match t {
         Ty::Key { rel, ctors } => out.push((
@@ -925,8 +925,8 @@ impl Cx<'_> {
         Ok(out)
     }
 
-    /// Checks a routing `match` over rows of `sources` against products `products`, which a schema with
-    /// both declares; returns what it carries whole into each product.
+    /// Check a routing `match` over rows of `sources` against products `products`, which a schema with
+    /// both declares. Returns what it carries whole into each product.
     pub(super) fn routing(
         &self,
         def_q: &QName,
@@ -1251,7 +1251,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// Retypes the references to `sources` the products' own declarations still name.
+    /// Retype the references to `sources` the products' own declarations still name.
     fn retype_products(
         &mut self,
         schema: &Schema,
@@ -1275,7 +1275,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// Merges the edit maps, dropping from `base` every edit inside a range `over` replaces.
+    /// Merge the edit maps, dropping from `base` every edit inside a range `over` replaces.
     pub(super) fn merged(mut base: Edits, over: Edits) -> Edits {
         for (k, es) in over {
             let b = base.entry(k).or_default();

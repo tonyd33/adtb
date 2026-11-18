@@ -123,7 +123,7 @@ fn running() -> Source {
     source(RUNNING)
 }
 
-/// Applies the migration text to `src`.
+/// Apply the migration text to `src`.
 fn migrate(src: &Source, text: &str) -> Result<Source, Vec<String>> {
     let m = parse_migration(text, Options::default())
         .ok()
@@ -142,7 +142,7 @@ fn applies(src: &Source, text: &str) -> Source {
     next
 }
 
-/// Asserts that each declaration `src` prints parses as one declaration, and that the printed
+/// Assert that each declaration `src` prints parses as one declaration, and that the printed
 /// declarations build and check as a schema of their own.
 fn reprints(src: &Source, text: &str) {
     for d in &src.decls {

@@ -75,7 +75,7 @@ pub fn scripts(dir: &Path) -> Vec<Script> {
 }
 
 impl Script {
-    /// Reads a script, or returns `None` when its schema is not one module or generates values
+    /// Read a script, or return `None` when its schema is not one module or generates values
     /// other than sequences, it holds no query a case can ask, or the reference refuses its
     /// schema or a write.
     fn read(name: String, text: &str) -> Option<Script> {

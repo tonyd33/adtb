@@ -18,17 +18,18 @@ pub(crate) fn to_text(schema: &Schema, v: &Value, ty: &Ty) -> Result<String, Pri
 
 /// Returns the textual syntax of `v`, a value of `ty`.
 ///
-/// Fails when `v` is not a value of `ty`.
+/// Errors:
+/// - `v` is not a value of `ty`.
 pub fn print(schema: &Schema, v: &Value, ty: &Ty) -> Result<String, PrintError> {
     syntax::print(v, &Form::of(schema, ty))
 }
 
-/// Reads `text`, the textual syntax of one value, at type `ty`.
+/// Read `text`, the textual syntax of one value, at type `ty`.
 pub fn parse(schema: &Schema, text: &str, ty: &Ty) -> Result<Value, ParseError> {
     syntax::parse(text, &Form::of(schema, ty))
 }
 
-/// Reads a document: an optional header line `text EDITION pins VERSION (HASH)`, then
+/// Read a document: an optional header line `text EDITION pins VERSION (HASH)`, then
 /// `data RELATION`, then the rows of the relation in the textual syntax, in any order.
 pub fn read_document(schema: &Schema, text: &str) -> Result<Document, ParseError> {
     syntax::read_document(schema, text)

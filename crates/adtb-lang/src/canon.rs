@@ -30,7 +30,7 @@ pub struct Names {
 }
 
 impl Names {
-    /// Records that the identifier at `span` names an object of `module`.
+    /// Record that the identifier at `span` names an object of `module`.
     pub fn qualify(&mut self, schema: &Schema, span: Span, module: ModuleId) {
         let name = (module != PRELUDE).then(|| schema.module(module).name.clone());
         self.modules.insert((span.start, span.end), name);
@@ -100,7 +100,7 @@ impl Names {
             .map(|(&(s, e), ids)| (s as usize..e as usize, ids, self.puns.contains(&(s, e))))
     }
 
-    /// Copies the names of `from` inside `range`, moved so that `range.start` lands at `to`.
+    /// Copy the names of `from` inside `range`, moved so that `range.start` lands at `to`.
     pub fn copy(&mut self, from: &Names, range: Range<usize>, to: usize) {
         let (lo, hi) = (range.start as u32, range.end as u32);
         let at = |x: u32| (x - lo) + to as u32;
@@ -287,7 +287,7 @@ fn text_literal(value: &str) -> String {
     out
 }
 
-/// Appends the schema objects type expression `t` names, seen from `module`.
+/// Append the schema objects type expression `t` names, seen from `module`.
 pub fn type_refs(schema: &Schema, module: ModuleId, t: &ast::Type, out: &mut Vec<(Span, Ref)>) {
     match &t.kind {
         ast::TypeKind::Named { name, sel, args } => {
@@ -344,7 +344,7 @@ fn scope_idents(s: &CtorScope) -> &[ast::Ident] {
     }
 }
 
-/// Appends the constructors and named sets a type-level selection over `def` names.
+/// Append the constructors and named sets a type-level selection over `def` names.
 fn type_sel_refs(schema: &Schema, def: TypeId, sel: &CtorSel, out: &mut Vec<(Span, Ref)>) {
     for c in sel_idents(sel) {
         if let Some(i) = schema.ty(def).ctor_index(&c.text) {
@@ -361,7 +361,7 @@ fn type_sel_refs(schema: &Schema, def: TypeId, sel: &CtorSel, out: &mut Vec<(Spa
     }
 }
 
-/// Appends the constructors and named sets of relation `rel` the identifiers name.
+/// Append the constructors and named sets of relation `rel` the identifiers name.
 fn rel_sel_refs(schema: &Schema, rel: RelId, names: &[ast::Ident], out: &mut Vec<(Span, Ref)>) {
     let r = schema.relation(rel);
     for c in names {
@@ -417,7 +417,7 @@ fn relation_ref_refs(
     }
 }
 
-/// Records the schema objects a declaration of `module` declares and names outside its bodies.
+/// Record the schema objects a declaration of `module` declares and names outside its bodies.
 ///
 /// The names inside bodies (function bodies, constraints, checks, domains, defaults, computed and index
 /// fields, retag records and aggregate parts) are the checker's, as [`crate::check::schema_refs`] reports them.

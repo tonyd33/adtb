@@ -186,7 +186,7 @@ fn linearizable(events: &[Event]) -> bool {
 enum Keys {
     /// One key at a time, most of them among the first `hot`.
     Hot(u32),
-    /// Runs of this many consecutive keys, inserted or deleted together, so
+    /// The runs of this many consecutive keys, inserted or deleted together, so
     /// that leaves fill and empty.
     Runs(u32),
 }

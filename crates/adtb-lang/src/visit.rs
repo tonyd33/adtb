@@ -2,7 +2,7 @@
 
 use crate::ast::*;
 
-/// Calls `f` on `e` and on every expression nested in it, writes and arms included.
+/// Call `f` on `e` and on every expression nested in it, writes and arms included.
 pub fn each_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Expr)) {
     f(e);
     match &e.kind {
@@ -72,7 +72,7 @@ pub fn each_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Expr)) {
     }
 }
 
-/// Calls `f` on every expression of a write.
+/// Call `f` on every expression of a write.
 pub fn each_write_expr<'a>(w: &'a Write, f: &mut dyn FnMut(&'a Expr)) {
     match &w.kind {
         WriteKind::Insert { source, upsert, .. } => {
@@ -126,7 +126,7 @@ pub fn each_write_expr<'a>(w: &'a Write, f: &mut dyn FnMut(&'a Expr)) {
     }
 }
 
-/// Calls `f` on every expression of a transact block.
+/// Call `f` on every expression of a transact block.
 pub fn each_block_expr<'a>(b: &'a TransactBlock, f: &mut dyn FnMut(&'a Expr)) {
     for item in &b.items {
         match item {

@@ -22,7 +22,7 @@ pub enum Table {
         rows: HashMap<Vec<Val>, Vec<Val>>,
         _arena: Arena,
     },
-    /// Records of a key and an element, partitioned by the key's hash; one partition when the
+    /// The records of a key and an element, partitioned by the key's hash; one partition when the
     /// build has no key.
     Parts(Vec<Stream>),
 }

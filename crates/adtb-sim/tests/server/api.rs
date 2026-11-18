@@ -36,7 +36,7 @@ add constraint paid =
   select c
 ";
 
-/// Inserts a customer named `n` with a card, as one statement.
+/// Insert a customer named `n` with a card, as one statement.
 const SIGN_UP: &str = r#"transact
   let c = insert customers { name: n }
   insert payments.Card { customer: key c, last4: "4242" }

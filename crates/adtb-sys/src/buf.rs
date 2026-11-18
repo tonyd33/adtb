@@ -26,7 +26,8 @@ impl AlignedBuf {
 
     /// Returns a buffer of `len` zero bytes.
     ///
-    /// Panics if `len` is zero or the allocation fails.
+    /// Panics:
+    /// - `len` is zero or the allocation fails.
     pub fn zeroed(len: usize) -> Self {
         assert!(len > 0, "an I/O buffer is never empty");
         let layout = Self::layout(len);

@@ -1427,7 +1427,7 @@ struct Tally {
     cases: usize,
     refused: usize,
     exact: usize,
-    /// Runs of every read of `rows` after a commit through damage, all exact.
+    /// The runs of every read of `rows` after a commit through damage, all exact.
     read_back: usize,
     /// Those runs where a read refused.
     read_refused: usize,

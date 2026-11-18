@@ -362,7 +362,7 @@ impl<'a> Checker<'a> {
         self.schema.show_ty_with(ty, &names)
     }
 
-    /// Binds `name` in the innermost scope and returns its variable.
+    /// Bind `name` in the innermost scope. Returns its variable.
     fn bind(&mut self, name: &str, ty: Ty, rows: Option<RelId>, provenance: Provenance) -> Var {
         let var = self.terms.var(name, ty.clone());
         self.scope.bind(
@@ -464,7 +464,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Notes each constructor or named set a selection names, of type `def` and, for a relation's selection, of `rel`.
+    /// Note each constructor or named set a selection names, of type `def` and, for a relation's selection, of `rel`.
     fn note_sel(&self, def: TypeId, rel: Option<RelId>, sel: &ast::CtorSel) {
         if self.refs.is_none() {
             return;
@@ -482,7 +482,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Notes field `name` of the rows of `def` in `ctors`, every constructor when `None`.
+    /// Note field `name` of the rows of `def` in `ctors`, every constructor when `None`.
     fn note_field(&self, span: Span, def: TypeId, ctors: Option<&[u32]>, name: &str, pun: bool) {
         if self.refs.is_none() {
             return;
@@ -515,7 +515,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Resolves a relation's constructor selection, noting what it names.
+    /// Resolve a relation's constructor selection, noting what it names.
     fn relation_sel(&self, rel: RelId, sel: &ast::CtorSel) -> Result<CtorSet, String> {
         self.note_sel(self.schema.relation(rel).elem_def, Some(rel), sel);
         self.schema.relation_sel(rel, sel)
@@ -1150,7 +1150,7 @@ impl Checker<'_> {
         Ok(self.lams(vars, body.tm, result))
     }
 
-    /// Wraps `body`, of type `result`, in one `Lam` per variable of `vars`, or one over unit when there are none.
+    /// Wrap `body`, of type `result`, in one `Lam` per variable of `vars`, or one over unit when there are none.
     fn lams(&mut self, mut vars: Vec<Var>, body: Tm, result: Ty) -> Tm {
         if vars.is_empty() {
             vars.push(self.terms.var("ξ", Ty::Unit));
@@ -1208,7 +1208,7 @@ impl Checker<'_> {
         })
     }
 
-    /// Checks `body` against `ty` with `binds` in scope; returns it as a `Lam` over them.
+    /// Check `body` against `ty` with `binds` in scope. Returns it as a `Lam` over them.
     fn lam_over(&mut self, binds: &[(&ast::Ident, &Ty)], body: &ast::Expr, ty: &Ty) -> R<Tm> {
         self.scope.push();
         let vars: Vec<Var> = binds
@@ -1220,7 +1220,7 @@ impl Checker<'_> {
         Ok(self.lams(vars, out?.tm, ty.clone()))
     }
 
-    /// Checks a top-level query of ad hoc text, where `order by` is allowed.
+    /// Check a top-level query of ad hoc text, where `order by` is allowed.
     pub fn statement(&mut self, e: &ast::Expr) -> R<Out> {
         self.top_query(e, None)
     }
@@ -1239,7 +1239,7 @@ impl Checker<'_> {
         Ok(out.tm)
     }
 
-    /// Checks `f` with `self` and each field of a row of `elem` bound by name, wrapping its term in those bindings.
+    /// Check `f` with `self` and each field of a row of `elem` bound by name, wrapping its term in those bindings.
     fn in_row(
         &mut self,
         elem: &Ty,
@@ -1381,7 +1381,7 @@ impl Checker<'_> {
         ))
     }
 
-    /// Follows `segs` from `o`, recording each step in `path`; a constructor step is a `case` whose other arms are unreachable.
+    /// Follow `segs` from `o`, recording each step in `path`; a constructor step is a `case` whose other arms are unreachable.
     fn along(&mut self, o: Out, segs: &[Seg], path: &mut Vec<PathStep>) -> R<Out> {
         let Some((seg, rest)) = segs.split_first() else {
             return Ok(o);

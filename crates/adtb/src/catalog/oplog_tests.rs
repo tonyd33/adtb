@@ -47,8 +47,8 @@ const CUSTOMERS: &str = r#"transact
   insert payments.Card { customer: key c, last4: "4242" }
   insert customers { name: "bob" }"#;
 
-/// Opens a database at `SHOP` with two customers and one card, then reopens it with `later`
-/// appended to the log, and runs `body` over the result of that open.
+/// Open a database at `SHOP` with two customers and one card, then reopen it with `later`
+/// appended to the log, and run `body` over the result of that open.
 fn after(seed: u64, later: &[&str], body: impl FnOnce(Result<Database<SimRuntime>, OpenError>)) {
     let mut sim = Sim::new(seed, Config::default());
     run(&mut sim, |rt| {
@@ -71,7 +71,7 @@ const TAGS: &str = "module shop\nadd type Label = { id: Key labels, name: Text }
 
 const FRAMES: usize = 64;
 
-/// Applies `SHOP`, then inserts two customers and, recording, applies `second` through the
+/// Apply `SHOP`, then insert two customers and, recording, apply `second` through the
 /// catalog. Returns the simulation and the number of events recorded when `second` started.
 /// Returns a recorded simulation of `SHOP`, a role for each of `roles` and then `second`, and
 /// the recorded write the second migration starts at.

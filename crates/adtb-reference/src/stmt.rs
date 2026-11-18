@@ -210,7 +210,7 @@ struct Rejected {
 }
 
 impl<'a> Interpreter<'a> {
-    /// Runs term `t` of `terms` as one statement over the database, each variable of `params`
+    /// Run term `t` of `terms` as one statement over the database, each variable of `params`
     /// bound to its value, drawing generated values from `supply`.
     ///
     /// `t` is a `Transact`, a write, or a query, whose outcome changes nothing.
@@ -227,7 +227,7 @@ impl<'a> Interpreter<'a> {
         self.statement(terms, t, env, supply)
     }
 
-    /// Runs the registered transaction `t` of `terms`, a `Lam` chain over its parameters, on
+    /// Run the registered transaction `t` of `terms`, a `Lam` chain over its parameters, on
     /// `args` in order.
     pub fn run_call(
         &self,
@@ -296,7 +296,7 @@ impl Run<'_, '_> {
         self.boundary(effects, result)
     }
 
-    /// Evaluates block term `t`, adding the effects of its writes to `out`. Returns its result.
+    /// Evaluate block term `t`, adding the effects of its writes to `out`. Returns its result.
     fn block(&self, h: &Here, t: Tm, env: &Env, out: &mut Effects) -> R<Value> {
         let (mut t, mut env) = (t, env.clone());
         loop {
@@ -385,7 +385,7 @@ impl Run<'_, '_> {
         }
     }
 
-    /// Evaluates a `Replace`, `Upsert` or `Rejects`, adding its effects to `out`. Returns the
+    /// Evaluate a `Replace`, `Upsert` or `Rejects`, adding its effects to `out`. Returns the
     /// value a `let` binds to it.
     fn bind_write(&self, h: &Here, t: Tm, env: &Env, out: &mut Effects) -> R<Value> {
         let terms = self.terms(h.arena);
@@ -534,7 +534,7 @@ impl Run<'_, '_> {
         Ok(out)
     }
 
-    /// Evaluates the upsert `t` over its proposed `rows`, adding its effects to `out`. Returns
+    /// Evaluate the upsert `t` over its proposed `rows`, adding its effects to `out`. Returns
     /// its binding.
     /// Returns the rows the body of `source`, a binder over a file's records, computes for each
     /// record. A record that does not convert, or whose computation reaches `reject`, goes to

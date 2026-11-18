@@ -173,7 +173,7 @@ impl Reader<'_, '_> {
         parse(self.schema, &c.text, ty).map_err(|e| format!("column `{at}`: {e}"))
     }
 
-    /// Reads the value of type `ty` the columns at `at` hold, `""` naming the row itself.
+    /// Read the value of type `ty` the columns at `at` hold, `""` naming the row itself.
     fn read<V: Textual>(&self, at: &str, ty: &Ty) -> Result<V, String> {
         match shape(self.schema, ty) {
             Shape::Scalar | Shape::Bool => self.scalar(at, ty),
@@ -219,7 +219,7 @@ impl Reader<'_, '_> {
             .collect()
     }
 
-    /// Reads a sum from its tag columns: `tag`, its header fields, and `C.g` for each field `g`
+    /// Read a sum from its tag columns: `tag`, its header fields, and `C.g` for each field `g`
     /// of each constructor `C`, null unless the tag is `C`.
     fn tagged<V: Textual>(&self, at: &str, sum: &Sum) -> Result<V, String> {
         let tag_at = join(at, "tag");

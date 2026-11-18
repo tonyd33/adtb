@@ -324,7 +324,7 @@ fn sel_text(names: &[String]) -> String {
     }
 }
 
-/// Calls `f` on every type expression of a declaration.
+/// Call `f` on every type expression of a declaration.
 fn each_type<'a>(d: &'a Decl, f: &mut dyn FnMut(&'a ast::Type)) {
     fn walk<'a>(t: &'a ast::Type, f: &mut dyn FnMut(&'a ast::Type)) {
         f(t);

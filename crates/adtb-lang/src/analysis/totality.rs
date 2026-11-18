@@ -6,7 +6,7 @@ use crate::types::*;
 
 use super::fix;
 
-/// Classifies kernel terms as total or partial, remembering each term's class.
+/// The classifier of kernel terms as total or partial, remembering each term's class.
 #[derive(Debug)]
 pub struct Totality<'s> {
     schema: &'s Schema,

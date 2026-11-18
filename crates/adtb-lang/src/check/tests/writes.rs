@@ -36,7 +36,7 @@ fn wschema() -> Committed {
     schema(WRITES).expect("the write schema builds")
 }
 
-/// Checks ad hoc `text` against the running schema and `WRITES`.
+/// Check ad hoc `text` against the running schema and `WRITES`.
 fn run(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<String>> {
     let s = wschema();
     let mut tys = BTreeMap::new();

@@ -106,7 +106,7 @@ fn earlier(a: Option<Out>, b: Out) -> Option<Out> {
 struct Sxact {
     xid: Option<Xid>,
     read_only: bool,
-    /// Commits made before the snapshot was taken.
+    /// The commits made before the snapshot was taken.
     snapshot: u64,
     /// The commit's position in the order of commits, counting from 1.
     commit: Option<u64>,
@@ -169,7 +169,8 @@ impl Serializer {
 
     /// Register a transaction whose snapshot is being taken now.
     ///
-    /// Panics if a running transaction already has the xid.
+    /// Panics:
+    /// - A running transaction already has the xid.
     pub fn begin(&mut self, access: Access) -> SerialId {
         self.issued += 1;
         let id = SerialId(self.issued);
@@ -247,7 +248,8 @@ impl Serializer {
         }
     }
 
-    /// Fails if `id` has been chosen to abort.
+    /// Errors:
+    /// - `id` has been chosen to abort.
     pub fn check(&self, id: SerialId) -> Result<(), SerializationFailure> {
         match &self.get(id).doomed {
             Some(f) => Err(f.clone()),
@@ -529,7 +531,8 @@ impl Serializer {
     /// does not count as committed: an inserter of a version it misses, or the deleter of one it
     /// sees.
     ///
-    /// Fails if the rw-antidependency completes a dangerous structure that only `id` can break.
+    /// Errors:
+    /// - The rw-antidependency completes a dangerous structure that only `id` can break.
     pub fn read_from(&mut self, id: SerialId, writer: Xid) -> Result<(), SerializationFailure> {
         if !self.records(id)? {
             return Ok(());
@@ -808,7 +811,8 @@ impl Serializer {
     /// Check that `id` may commit, choosing to abort any transaction its commit would leave
     /// as the pivot of a dangerous structure.
     ///
-    /// Fails if `id` has been chosen to abort.
+    /// Errors:
+    /// - `id` has been chosen to abort.
     pub fn precommit(&mut self, id: SerialId) -> Result<(), SerializationFailure> {
         self.check(id)?;
         let mut doom = Vec::new();

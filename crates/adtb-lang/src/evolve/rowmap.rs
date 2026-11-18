@@ -79,8 +79,8 @@ pub struct Applied {
 }
 
 impl Source {
-    /// Applies one operator of a migration of `module` whose text is `text`, as
-    /// [`Source::apply`] does, and returns the steps it takes.
+    /// Apply one operator of a migration of `module` whose text is `text`, as
+    /// [`Source::apply`] does. Returns the steps it takes.
     ///
     /// Postconditions:
     /// - Each step's `maps` are stated against the `after` of the step before it, the first's

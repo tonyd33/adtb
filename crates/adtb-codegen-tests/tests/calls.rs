@@ -1,4 +1,4 @@
-//! Calls through the code generated from the fixture shop, over the simulator: every typed result
+//! The calls through the code generated from the fixture shop, over the simulator: every typed result
 //! agrees with the ad hoc text of the same query, and the generated ids and ordinals agree with
 //! those the database assigns.
 

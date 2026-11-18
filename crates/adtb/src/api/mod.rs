@@ -1243,7 +1243,7 @@ impl<R: Runtime> Engine<R> {
         self.db.abort(tx).map_err(|e| self.write_error(id, e))
     }
 
-    /// Refuses a commit position past every commit of the database's history.
+    /// Refuse a commit position past every commit of the database's history.
     fn reads_after(&self, after: Option<Position>) -> Result<(), Error> {
         let end = Position::from(self.pager.position(self.pager.durable()));
         match after {

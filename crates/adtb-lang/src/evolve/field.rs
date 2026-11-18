@@ -52,7 +52,7 @@ impl Cx<'_> {
         }
     }
 
-    /// Refuses a field `name` the part, or anything it would clash with, already has.
+    /// Refuse a field `name` the part, or anything it would clash with, already has.
     pub(super) fn field_is_free(&self, t: &ast::TypeDecl, part: &Part, name: &ast::Ident) -> R<()> {
         let clash = decl_fields(t).into_iter().any(|(c, f)| {
             f.name.text == name.text
@@ -506,7 +506,7 @@ impl Cx<'_> {
         }
     }
 
-    /// Appends a clause to the declaration of relation `q`.
+    /// Append a clause to the declaration of relation `q`.
     pub(super) fn append_clause(&mut self, q: &QName, clause: Written) -> R<()> {
         let (i, _) = self.relation_decl(q)?;
         let end = self.src.decls[i].text.trim_end().len();

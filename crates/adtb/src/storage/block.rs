@@ -35,7 +35,8 @@ pub fn data_lsn(start: Lsn, k: usize, block: usize) -> Lsn {
 
 /// Returns the blocks of a batch holding `data`, the first at `start`, padded after the last record.
 ///
-/// Panics if `data` is empty.
+/// Panics:
+/// - `data` is empty.
 pub fn frame(
     start: Lsn,
     seq: u64,

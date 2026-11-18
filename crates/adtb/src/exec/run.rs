@@ -467,7 +467,7 @@ impl<R: Runtime> Ctx<R> {
         }
     }
 
-    /// Collects into `out` the pipelines `s` selects, each with its environment.
+    /// Collect into `out` the pipelines `s` selects, each with its environment.
     pub(super) fn spine(
         self: &Arc<Self>,
         s: &Spine,

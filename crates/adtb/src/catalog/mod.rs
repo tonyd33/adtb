@@ -230,8 +230,9 @@ fn row_type(schema: &Schema, r: RelId, ctor: u32) -> Vec<FieldType> {
         .collect()
 }
 
-/// Fails with [`Error::Internal`] if an element is derived and `normal` is `None`, or a path
-/// names no field or constructor.
+/// Errors:
+/// - [`Error::Internal`] if an element is derived and `normal` is `None`, or a path
+///   names no field or constructor.
 fn key_schema(
     schema: &Schema,
     normal: Option<&NormalProgram>,
@@ -652,10 +653,12 @@ impl Catalog {
     /// every page freed first. A schema change left on the root has every page no structure
     /// reaches freed, and every large-value head lowered to the versions that point at it.
     ///
-    /// Fails with [`Error::Corrupt`] if a stored page or row does not read as the catalog writes
-    /// it, and with [`Error::Unaccepted`] if a stored migration does not parse or apply under
-    /// this engine. A schema change that did not commit and whose pages damage hides stays on the
-    /// root for the next open to free.
+    /// Errors:
+    /// - [`Error::Corrupt`] if a stored page or row does not read as the catalog writes it.
+    /// - [`Error::Unaccepted`] if a stored migration does not parse or apply under this engine.
+    ///
+    /// A schema change that did not commit and whose pages damage hides stays on the root for the
+    /// next open to free.
     pub fn open<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let (mut catalog, txns) = Catalog::load(rt, pager)?;
         if pager.refused_whole() {
@@ -826,8 +829,9 @@ impl Catalog {
     /// page of a heap of `gone` off the large values it points at. A page whose versions it
     /// could not count off is freed with its heads left overcounted.
     ///
-    /// Fails with the damage found, freeing nothing, if a damaged page keeps it from finding
-    /// every structure's pages.
+    /// Errors:
+    /// - The damage found, freeing nothing, if a damaged page keeps it from finding
+    ///   every structure's pages.
     ///
     /// Precondition: no structure reaches a heap of `gone`, no transaction reads one, and no
     /// call counted its versions off before.

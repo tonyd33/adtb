@@ -23,7 +23,8 @@ pub type OperatorRow = (Value, Vec<Value>);
 /// Returns the hash of the version `source` is at: `h(0)` is 32 zero bytes, and `h(n)` the hash
 /// of `h(n - 1)` followed by the encoding of migration `n`'s resolved operators.
 ///
-/// Panics if a migration of the log does not resolve.
+/// Panics:
+/// - A migration of the log does not resolve.
 pub fn version_hash(schema: &Schema, source: &Source) -> Hash {
     try_version_hash(schema, source)
         .unwrap_or_else(|ds| panic!("every logged migration resolves: {ds:?}"))
@@ -42,7 +43,8 @@ pub fn try_version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Di
 
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
 ///
-/// Panics if the migration does not resolve.
+/// Panics:
+/// - The migration does not resolve.
 #[cfg(test)]
 pub fn operators(log: &Log, source: &Source, number: u64) -> Vec<OperatorRow> {
     let ops = source

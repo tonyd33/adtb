@@ -201,7 +201,8 @@ impl Val {
 
     /// Returns whether this is `True`.
     ///
-    /// Fails unless it is a `Bool`.
+    /// Errors:
+    /// - It is not a `Bool`.
     pub fn truth(&self) -> Result<bool, Error> {
         match self {
             Val::Ctor(c @ (ctor::FALSE | ctor::TRUE), fs) if fs.is_empty() => Ok(*c == ctor::TRUE),
@@ -211,7 +212,8 @@ impl Val {
 
     /// Returns the constructor of a constructor value.
     ///
-    /// Fails unless it is one.
+    /// Errors:
+    /// - It is not a constructor value.
     pub fn ctor_of(&self) -> Result<u32, Error> {
         match self {
             Val::Ctor(c, _) => Ok(*c),
@@ -221,7 +223,8 @@ impl Val {
 
     /// Returns the fields of a constructor value or a record.
     ///
-    /// Fails unless it is one.
+    /// Errors:
+    /// - It is neither a constructor value nor a record.
     pub fn fields(&self) -> Result<&[Val], Error> {
         match self {
             Val::Ctor(_, fs) | Val::Record(fs) => Ok(fs),
@@ -229,7 +232,8 @@ impl Val {
         }
     }
 
-    /// Fails unless it is a set.
+    /// Errors:
+    /// - It is not a set.
     pub fn as_set(&self) -> Result<&BTreeSet<Val>, Error> {
         match self {
             Val::Set(s) => Ok(s),
@@ -237,7 +241,8 @@ impl Val {
         }
     }
 
-    /// Fails unless it is an integer.
+    /// Errors:
+    /// - It is not an integer.
     pub fn int(&self) -> Result<i64, Error> {
         match self {
             Val::Int(i) => Ok(*i),

@@ -30,7 +30,7 @@ mod observe;
 /// A stored row and the pointers of its out-of-line values.
 type Decoded = (Vec<Value>, Vec<Pointer>);
 
-/// Converts a row of the previous format into a row of this one.
+/// A conversion of a row of the previous format into a row of this one.
 pub type Upgrade = Box<dyn Fn(Vec<Value>) -> Vec<Value> + Send + Sync>;
 
 struct Format {
@@ -242,7 +242,7 @@ fn arrangement_of(layout: &Layout, page_size: usize) -> Result<Arrangement, Erro
     Ok(Arrangement::Fixed { width })
 }
 
-/// Refuses with `TooLarge` a heap of fields `row` whose smallest version does not fit a page
+/// Refuse with `TooLarge` a heap of fields `row` whose smallest version does not fit a page
 /// of `page_size` bytes.
 pub fn fits(page_size: usize, row: Vec<FieldType>) -> Result<(), Error> {
     arrangement_of(&Layout::new(row), page_size).map(|_| ())
@@ -961,7 +961,8 @@ impl Heap {
     /// pointed at is counted one version fewer afterwards. A page no longer of this heap is left
     /// alone.
     ///
-    /// Panics if a slot in `cleaned` still leads to a version `judge` keeps.
+    /// Panics:
+    /// - A slot in `cleaned` still leads to a version `judge` keeps.
     pub fn prune<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -1025,7 +1026,8 @@ impl Heap {
     /// Insert `row` as a version written by `xid`, pruning by `judge` a page found without room
     /// before looking further. Returns its TID.
     ///
-    /// Panics if `row` is not a row of the newest format.
+    /// Panics:
+    /// - `row` is not a row of the newest format.
     pub fn insert_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -1327,7 +1329,8 @@ impl Heap {
     /// flag and `next` naming the new one. Out-of-line values `row` shares with the old version
     /// keep their pointers.
     ///
-    /// Panics if `to` is this heap or belongs to another sum.
+    /// Panics:
+    /// - `to` is this heap or belongs to another sum.
     pub fn retag_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,

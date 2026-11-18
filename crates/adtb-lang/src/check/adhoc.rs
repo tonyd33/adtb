@@ -19,7 +19,7 @@ pub(super) static NO_BUNDLES: Bundles = Bundles {
 };
 
 impl Bundles {
-    /// Records that bundle `family-version` registers query `name` over parameters of types `params`.
+    /// Record that bundle `family-version` registers query `name` over parameters of types `params`.
     pub fn insert(&mut self, family: &str, version: &str, name: &str, params: Vec<Ty>) {
         self.queries
             .entry((family.to_string(), version.to_string()))
@@ -204,7 +204,7 @@ pub(super) enum Checked {
 }
 
 impl Checker<'_> {
-    /// Checks one ad hoc item; returns its term when it is a query, a write or a `transact` block,
+    /// Check one ad hoc item. Returns its term when it is a query, a write or a `transact` block,
     /// and its checked form when it is a command.
     pub(super) fn adhoc_item(&mut self, item: &AdhocItem) -> R<Checked> {
         match item {
@@ -269,7 +269,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Resolves a relation and its constructor selection; returns the span of the reference.
+    /// Resolve a relation and its constructor selection. Returns the span of the reference.
     fn relation_ref(&self, r: &RelationRef) -> R<Span> {
         let rel = self.relation_named(&r.relation)?;
         if let Some(sel) = &r.sel {
@@ -615,7 +615,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Checks `fields` at `scope`; returns the position of the first index of `rel` that `candidate`
+    /// Check `fields` at `scope`. Returns the position of the first index of `rel` that `candidate`
     /// admits and whose fields check to the same terms as `fields`.
     fn declared_position(
         &mut self,

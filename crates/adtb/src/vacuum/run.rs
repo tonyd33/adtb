@@ -214,7 +214,8 @@ impl Progress {
 ///
 /// Versions the retention window keeps stay where they are.
 ///
-/// Panics if the heaps do not share one large-value store.
+/// Panics:
+/// - The heaps do not share one large-value store.
 pub fn vacuum<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,

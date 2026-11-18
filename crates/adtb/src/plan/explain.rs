@@ -226,7 +226,7 @@ pub fn ctor_name(schema: &Schema, ty: &Ty, c: u32) -> String {
     name.unwrap_or_else(|| format!("#{c}"))
 }
 
-/// Builds the operators of plans over one schema and catalog.
+/// The builder of the operators of plans over one schema and catalog.
 #[derive(Debug)]
 pub struct Describe<'a> {
     schema: &'a Schema,

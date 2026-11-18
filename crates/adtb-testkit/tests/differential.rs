@@ -283,7 +283,7 @@ fn close(db: Database<SimRuntime>) {
     }
 }
 
-/// Runs `body` as one process of `sim` and returns its result.
+/// Run `body` as one process of `sim`. Returns its result.
 fn process<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> T {
     let mut out = None;
     let outcome = sim.run(|rt| out = Some(body(rt)));
@@ -293,7 +293,7 @@ fn process<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> T {
     }
 }
 
-/// Runs `f` on a fresh simulated engine database holding the case, loaded.
+/// Run `f` on a fresh simulated engine database holding the case, loaded.
 fn on_engine<T>(seed: u64, case: &Case, f: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
     process(&mut Sim::new(seed, Config::default()), |rt| {
         let db = open(rt, std::slice::from_ref(&case.migration));
@@ -457,14 +457,14 @@ fn shrink(
     (c, failure)
 }
 
-/// Runs `law` over every query of every seed's drawn case and fails with each disagreement, or
+/// Run `law` over every query of every seed's drawn case and fail with each disagreement, or
 /// panic, by seed, the first shrunk.
 fn sweep(name: &str, law: Law) {
     sweep_cases(name, law, |seed| (String::new(), case(seed, QUERIES)));
 }
 
-/// Runs `law` over every query of the case `make` returns for each seed, with a label, and
-/// fails with each disagreement, or panic, by seed and label, the first shrunk.
+/// Run `law` over every query of the case `make` returns for each seed, with a label, and
+/// fail with each disagreement, or panic, by seed and label, the first shrunk.
 fn sweep_cases(name: &str, law: Law, make: impl Fn(u64) -> (String, Case)) {
     let mut found = Vec::new();
     let seeds = seeds();
@@ -802,7 +802,7 @@ fn rewrites_keep_results() {
     });
 }
 
-/// Walks per default run, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says otherwise.
+/// The walks per default run, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says otherwise.
 const WALKS: u64 = 4;
 
 /// The migrations of each walk of a default sweep.
@@ -1423,7 +1423,7 @@ fn laws(seed: u64, w: &Walk) -> Option<String> {
     })
 }
 
-/// Walks per default run of a law sweep, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says
+/// The walks per default run of a law sweep, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says
 /// otherwise. An open applying a revert takes about two seconds.
 const LAW_WALKS: u64 = 2;
 

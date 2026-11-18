@@ -280,7 +280,8 @@ impl From<exec::Error> for Error {
 /// over the indexes `catalog` describes, by qualified name, with why; empty when the schema
 /// admits every one.
 ///
-/// Fails with the guarantee of the checker that compiling a check breaks.
+/// Errors:
+/// - The guarantee of the checker that compiling a check breaks.
 pub fn refusals(
     schema: &Committed,
     normal: &NormalProgram,

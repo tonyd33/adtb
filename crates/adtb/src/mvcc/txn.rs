@@ -113,7 +113,7 @@ fn recorded_damage<R: Runtime>(pager: &Pager<R>, clog: &CommitLog) -> Option<Pag
 /// first page found damaged. The commit log stays readable through [`Transactions::commit_log`]
 /// for verification and repair.
 ///
-/// Clones are handles on one set of transactions.
+/// Every clone is a handle on one set of transactions.
 #[derive(Debug)]
 pub struct Transactions<R: Runtime>(Arc<Shared<R>>);
 
@@ -271,7 +271,8 @@ impl<R: Runtime> Transactions<R> {
     /// spent. Returns the guard of its id, which is running until the guard is given to
     /// [`Transactions::commit`] or [`Transactions::abort`], or dropped.
     ///
-    /// Fails with [`Error::Exhausted`] once every 64-bit id is spent; snapshots and reads go on.
+    /// Errors:
+    /// - [`Error::Exhausted`] once every 64-bit id is spent; snapshots and reads go on.
     pub fn begin(&self, pager: &Pager<R>) -> Result<Begun, Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
@@ -393,7 +394,8 @@ impl<R: Runtime> Transactions<R> {
     /// Take a snapshot of the transactions now committed and hold back the heaps of `scope` for
     /// it until the returned [`Hold`] and every reader built from it drop.
     ///
-    /// Fails if the database is quarantined.
+    /// Errors:
+    /// - The database is quarantined.
     pub fn take(&self, scope: Scope) -> Result<Hold, Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);

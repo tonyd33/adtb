@@ -61,7 +61,8 @@ impl Files {
 
     /// Run `op` to completion on the calling thread, with the faults injected if there are any.
     ///
-    /// Panics on a `Timer`, which no file operation completes.
+    /// Panics:
+    /// - `op` is a `Timer`, which no file operation completes.
     pub(crate) fn run(&self, op: Op) -> Outcome {
         match &self.faults {
             Some(f) => f
@@ -91,7 +92,8 @@ impl Files {
         }
     }
 
-    /// Panics if the files inject no faults.
+    /// Panics:
+    /// - The files inject no faults.
     fn injector(&self) -> MutexGuard<'_, Injector> {
         self.faults
             .as_ref()

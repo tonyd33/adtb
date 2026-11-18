@@ -252,26 +252,26 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Sets the value `caller` denotes.
+    /// Set the value `caller` denotes.
     pub fn with_caller(mut self, caller: Value) -> Self {
         self.caller = Some(caller);
         self
     }
 
-    /// Sets the transition that `inserted`, `deleted` and `prior` read; without one they read the
+    /// Set the transition that `inserted`, `deleted` and `prior` read; without one they read the
     /// empty change.
     pub fn with_change(mut self, change: &'a Change) -> Self {
         self.change = Some(change);
         self
     }
 
-    /// Sets the constructors not open for writes, each with its stage.
+    /// Set the constructors not open for writes, each with its stage.
     pub fn with_closed(mut self, closed: BTreeMap<(TypeId, u32), Stage>) -> Self {
         self.closed = closed;
         self
     }
 
-    /// Sets the files a file scan reads; without them it reads the file system, a relative path
+    /// Set the files a file scan reads; without them it reads the file system, a relative path
     /// against the working directory.
     pub fn with_files(mut self, files: &'a dyn Files) -> Self {
         self.files = Some(Source(files));
@@ -300,19 +300,19 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    /// Sets the measure of stored rows; without one no row is too large.
+    /// Set the measure of stored rows; without one no row is too large.
     pub fn with_row_limit(mut self, limit: &'a RowLimit<'a>) -> Self {
         self.row_limit = Some(Measure(limit));
         self
     }
 
-    /// Sets how many steps a `fix` may take before the statement is rejected for its limit.
+    /// Set how many steps a `fix` may take before the statement is rejected for its limit.
     pub fn with_fix_limit(mut self, steps: usize) -> Self {
         self.fix_limit = steps;
         self
     }
 
-    /// Evaluates term `t` of `terms` with each variable of `params` bound to its value.
+    /// Evaluate term `t` of `terms` with each variable of `params` bound to its value.
     pub fn eval(&self, terms: &Terms, t: Tm, params: &[(Var, Value)]) -> R<Value> {
         let run = Run {
             it: self,
@@ -325,7 +325,7 @@ impl<'a> Interpreter<'a> {
         run.eval(&run.here(Arena::Query), t, &env)
     }
 
-    /// Evaluates term `t`, a function of the arguments, and applies it to `args` in order, or to
+    /// Evaluate term `t`, a function of the arguments, and apply it to `args` in order, or to
     /// `()` when there are none.
     pub fn apply(&self, terms: &Terms, t: Tm, args: Vec<Value>) -> R<Value> {
         let run = Run {
@@ -446,7 +446,7 @@ pub(crate) fn case_arm(arms: &[(u32, Var, Tm)], v: &Value) -> R<(Var, Tm)> {
     }
 }
 
-/// Compares two lists of ordering values, each key ascending unless its flag says descending.
+/// Compare two lists of ordering values, each key ascending unless its flag says descending.
 fn cmp_keys(a: &[Value], b: &[Value], desc: &[bool]) -> Ordering {
     for ((x, y), d) in a.iter().zip(b).zip(desc) {
         let o = x.cmp(y);
@@ -504,8 +504,8 @@ impl Run<'_, '_> {
         args.into_iter().try_fold(f, |g, a| self.apply(g, a))
     }
 
-    /// Folds the inputs `ms` of user-defined aggregate `i` from its `init` with its `step`, then
-    /// finishes the state; `None` over no input when `ty`, the result type, is an `Option` of the
+    /// Fold the inputs `ms` of user-defined aggregate `i` from its `init` with its `step`, then
+    /// finish the state; `None` over no input when `ty`, the result type, is an `Option` of the
     /// declared result.
     fn user_aggregate(&self, i: u32, ms: Vec<Value>, ty: &Ty) -> R<Value> {
         let def = &self.it.schema.aggregates[i as usize];

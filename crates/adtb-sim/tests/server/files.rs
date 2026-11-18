@@ -52,7 +52,7 @@ fn dir(name: &str, files: &[(&str, &str)]) -> Scratch {
     at
 }
 
-/// Runs `body` over a fresh database whose file scans read under `root`, holding users 1 `ann`
+/// Run `body` over a fresh database whose file scans read under `root`, holding users 1 `ann`
 /// and 2 `bo`.
 fn with_db<T>(root: &Path, body: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
     once(0, |rt| {

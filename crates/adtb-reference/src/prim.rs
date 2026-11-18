@@ -71,7 +71,7 @@ fn option_arg(ty: &Ty) -> R<&Ty> {
     }
 }
 
-/// Applies `+`, `-`, `*`, `/` or `%` at result type `ty`.
+/// Apply `+`, `-`, `*`, `/` or `%` at result type `ty`.
 fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
     use Value::*;
     match (a, b) {
@@ -190,7 +190,7 @@ fn to_float64(v: &Value) -> R<f64> {
     })
 }
 
-/// Converts `v` to numeric type `to`; `args` are the conversion's further arguments.
+/// Convert `v` to numeric type `to`; `args` are the conversion's further arguments.
 fn convert(v: &Value, args: &[Value], to: &Ty) -> R<Value> {
     let range = |b: Option<i128>| b.ok_or(Abort::Fault(Fault::OutOfRange));
     match to {
@@ -246,7 +246,7 @@ fn span_of(v: &Value) -> R<(&Value, &Value)> {
     }
 }
 
-/// Applies primitive `p` to its argument values `vs`, of types `tys`, at the node's type `ty`.
+/// Apply primitive `p` to its argument values `vs`, of types `tys`, at the node's type `ty`.
 #[expect(
     clippy::too_many_lines,
     reason = "goes if each family of primitives becomes its own function"

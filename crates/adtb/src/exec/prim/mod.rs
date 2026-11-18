@@ -208,7 +208,7 @@ fn unsupported<T>(what: impl std::fmt::Display) -> Result<T, Error> {
     Err(Error::Unsupported(what.to_string()))
 }
 
-/// Chooses the operation `p` performs on operands of types `args` with result type `ty`; `consts`
+/// Choose the operation `p` performs on operands of types `args` with result type `ty`; `consts`
 /// holds the value of each operand that is a literal.
 pub fn choose(
     schema: &Schema,

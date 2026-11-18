@@ -25,7 +25,7 @@ fn corpus() -> Vec<String> {
     spec_corpus(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec"))
 }
 
-/// Runs `c` on a thread of its own named after `seed`, so a stack overflow names it too.
+/// Run `c` on a thread of its own named after `seed`, so a stack overflow names it too.
 fn run(front: &Front, seed: u64, c: &Case) -> Result<Reached, String> {
     thread::scope(|s| {
         let handle = thread::Builder::new()

@@ -135,7 +135,7 @@ impl Big {
         }
     }
 
-    /// Subtracts `b`, `b <= self`.
+    /// Subtract `b`, `b <= self`.
     fn sub(&mut self, b: &Big) {
         let mut borrow = 0u64;
         for i in 0..self.0.len() {

@@ -122,7 +122,8 @@ impl OrderKey {
     /// Returns a key above `lo` and below `hi`, a missing bound being no
     /// bound.
     ///
-    /// Panics unless `lo` is below `hi`.
+    /// Panics:
+    /// - `lo` is not below `hi`.
     pub fn between(lo: Option<&OrderKey>, hi: Option<&OrderKey>) -> OrderKey {
         let lo = lo.map_or(&[][..], OrderKey::as_bytes);
         let mut hi = hi.map(OrderKey::as_bytes);

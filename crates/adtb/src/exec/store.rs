@@ -69,7 +69,7 @@ pub trait Reads: Send + Sync {
     fn covers(&self, heap: HeapNo) -> bool;
 }
 
-/// Reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
+/// The reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
 /// is given.
 struct AtSnapshot<R: Runtime> {
     rt: R,
@@ -287,7 +287,7 @@ impl Bindings {
     }
 }
 
-/// Reads of the past a statement makes.
+/// The reads of the past a statement makes.
 pub trait PastReads<R: Runtime>: Send + Sync {
     /// Returns the store that reads the state `at` names, a `Position` or, when `instant`, an
     /// `Instant`, for a block reading `heaps` and typed at version `pins`, or at the version of

@@ -262,7 +262,7 @@ impl Bounds<'_> {
         }
     }
 
-    /// Visits `t`, whose value or elements can become elements of a relation of the stratum, recording any construction over a tainted value.
+    /// Visit `t`, whose value or elements can become elements of a relation of the stratum, recording any construction over a tainted value.
     fn flow(&mut self, t: Tm) {
         if !self.flowed.insert(t) {
             return;

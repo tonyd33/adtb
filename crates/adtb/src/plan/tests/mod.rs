@@ -24,7 +24,7 @@ fn run(f: &Fixture, p: &Plan, bound: &[(Var, Value)]) -> R<Value> {
     Interp::new(&f.schema, &f.program, &f.db, &f.catalog, p).run(p, bound)
 }
 
-/// Plans ad hoc `text` under every variant and checks each plan's outcome against the reference interpreter's.
+/// Plan ad hoc `text` under every variant and check each plan's outcome against the reference interpreter's.
 fn outcome(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> R<Value> {
     let types: Vec<(&str, &str)> = params.iter().map(|(n, t, _)| (*n, *t)).collect();
     let (n, t) = f.normal(text, &types);
@@ -40,19 +40,19 @@ fn outcome(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> R<Value> 
     want
 }
 
-/// Checks that ad hoc `text` has a value, and that every variant's plan computes it.
+/// Check that ad hoc `text` has a value, and that every variant's plan computes it.
 fn agrees(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) {
     if let Err(a) = outcome(f, text, params) {
         panic!("`{text}` aborts: {a:?}")
     }
 }
 
-/// Checks that ad hoc `text` aborts, and that every variant's plan aborts the same way.
+/// Check that ad hoc `text` aborts, and that every variant's plan aborts the same way.
 fn aborts(f: &Fixture, text: &str) -> Abort {
     outcome(f, text, &[]).expect_err("an abort")
 }
 
-/// Plans registered query `decl` under every variant and checks that each plan computes the reference interpreter's value on `args`.
+/// Plan registered query `decl` under every variant and check that each plan computes the reference interpreter's value on `args`.
 fn agrees_query(f: &Fixture, decl: &str, args: Vec<Value>) {
     let q = f.query(decl);
     let bound: Vec<(Var, Value)> = q.params.iter().copied().zip(args).collect();

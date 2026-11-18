@@ -1,4 +1,4 @@
-//! Writes, delete actions, upserts, blocks and the statement boundary, driven through the front
+//! The writes, delete actions, upserts, blocks and the statement boundary, driven through the front
 //! end. The examples of the writes part of the spec whose outcome it states are here.
 
 #[path = "writes/mod.rs"]

@@ -147,7 +147,7 @@ impl<R: Runtime> Drop for Spill<R> {
     }
 }
 
-/// Records of values written to a spill file, read back in the order written.
+/// The records of values written to a spill file, read back in the order written.
 #[derive(Debug, Default)]
 pub struct Stream {
     extents: Vec<Extent>,
