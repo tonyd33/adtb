@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-15
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 150
 summary: an index element of a set or unit type is admitted by the checker and panics the engine at migrate
@@ -20,3 +21,7 @@ Expected: an index element whose type has no key form is refused when the schema
 Repro: a schema with `index ([n]) in items` over a relation with an `n: I64` field, migrated through the engine.
 
 Defect class: Damage or failure gives a panic, hang or flattened error.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: refuse an index element with no key form at check and a set-valued one at migrate`. Rule, in derived.md §5.2: an element of an index, unique or interval index contains no set or function type at any depth, except that an index element may be a top-level set whose element type contains none (interop.md §11.2); `()` is the empty record. One predicate, `Ty::key_form`, used by the checker and stated as `key_type`'s precondition. The engine refuses a set-valued element at migrate as unimplemented (multi-entry-index). The refusal names the element, its relation and its type. Sweep: 90 rows on the reference and the engine. Follow-ups: multi-entry-index, interval-index-element-type-unstated, refused-element-cascades-scope-error.
