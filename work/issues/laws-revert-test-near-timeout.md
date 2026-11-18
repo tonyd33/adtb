@@ -22,3 +22,7 @@ Defect class: Unbounded work over size, depth or sharing.
 ## 2026-11-17, measured; thinning parked
 
 Measured alone through `suite` (receipt-laws-test-r1, local): default 26 to 30 s; per case about 70 ms, spread over the structural operators (remove constructor, merge, split, nest, unnest). Time: apply 29%, `Source::resolved` 25% (about one apply, as for a client), the test's `outside` helper replaying the migration a second time 22%, `differences` 20%. No step dominates. A thinning that skips a hand-kept list of shape-blind operators after the first shape took it to 22 s; not landed, since it saves 15% at the cost of a list that can drift (parked/laws-test-thin, local, not pushed). The levers that remain: share one replay between `resolved` and `outside` (needs evolve/), and memoise shared setup migrations. The lead runs main's full check with at most one track building, which keeps this test under its limit meanwhile.
+
+## 2026-11-17: timed out again
+
+Timed out at 60 s twice under load beside translate::tests::a_pinned_insert_translates_across_every_generated_history_of_two_relations, both passing alone (21.7 s and 25.4 s). Measured alone on main: 54.5 s and 44.1 s. The machine-lock removal makes the 60 s kill a hang guard.

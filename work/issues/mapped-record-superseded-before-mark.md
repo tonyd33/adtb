@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-08
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 140
 tags:
@@ -18,3 +19,7 @@ summary: a damage record freed or restarted by another thread after the mapper c
 Scenario: the end-of-call mapper (crates/adtb/src/write/quarantine.rs:110) maps a heap page's `Checksum` record to `Heap(h)`; after the `current` check, a vacuum on another thread frees the page (its record dropped by the `Freed` meet); the mapper marks `Heap(h)`. Every later read of the heap is refused until a release, though the damage list is empty.
 
 Predates the epoch check of storage owners step 7, which closed the same window for a record superseded by the mapper's own walk.
+
+## 2026-11-17: resolved
+
+Fixed by mapping-check-and-mark: judge and mark under one hold.

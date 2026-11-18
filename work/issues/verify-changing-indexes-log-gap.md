@@ -25,3 +25,7 @@ Defect class: Multi-step change not atomic under failure, crash or race (assumed
 ## 2026-11-17
 
 Class count 2026-11-17: cause unknown; `read_log` lists segments once and reads blocks lazily, filtering by the live end only when live. Likely a read without a stable log bound. Reproduce under load first; placed under mapping-check-and-mark until then.
+
+## 2026-11-17: not reproduced
+
+The mapping-check-and-mark track ran it 40 of 40 serially beside a storage-test load and 25 of 25 valid runs in a 3-way parallel batch without a gap. Cause unknown.

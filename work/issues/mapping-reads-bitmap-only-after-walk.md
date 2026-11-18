@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-10
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 420
 summary: "the damage mapper reads the allocation bitmap only after the walks, so a page free before them and allocated during them maps as unreached and marks the database once running"
@@ -23,3 +24,7 @@ Repro direction: a sim test that records damage on a free page, then interleaves
 Fix direction: read `bitmapped(pid)` before `walk` as well and hold the page `Free` when either read says free, as the doc states; or, if one read is the rule, change storage.md §8 and the method doc through the design space.
 
 Found in the quality review of `reviewed..main` at 7bf40103.
+
+## 2026-11-17: resolved
+
+Fixed by mapping-check-and-mark: the bitmap and the retired list are read before and after the walk.

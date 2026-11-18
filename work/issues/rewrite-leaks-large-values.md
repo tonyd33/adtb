@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-17
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 120
 summary: "a migration that rewrites a relation inserts its rows again with fresh large values and frees the old heaps without counting their versions off the old heads, so those values are never freed"
@@ -22,3 +23,7 @@ Probably the same: an aborted migration (`free_leaked` drops a new heap whose ve
 Expected: freeing a heap releases the count of every large value its versions name, in the same step that frees its pages, or the rewrite reuses the old heads. A test: a migration that rewrites a relation with large values, then verify finds no overcounted head and the old values' store pages are freed by the next sweep; the same for an aborted migration and a drop.
 
 Defect class: none fits exactly; a whole-heap free that skips the per-version release.
+
+## 2026-11-17: resolved
+
+Landed in `fix: count the versions of a heap a migration frees or abandons off their large values`. `free_leaked` counts each freed heap page's versions off their large-value heads before freeing it, on commit (heaps the new catalog no longer holds) and abort (heaps the migration made). An open that finds a change marker lowers every overcounted head to the versions that name it, which mends a crash, a failed free, a failed release and a page that does not decode. An abort persists `next_heap`, so heap ids are never reused. The abort arm returns the migration's own refusal. Not covered by a test: a heap page that fails to decode during the release. The heap-id test was written with its fix and never run against the code before it.
