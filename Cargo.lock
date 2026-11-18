@@ -52,12 +52,15 @@ name = "adtb-conformance"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-conformance",
  "adtb-heap-cap",
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
+ "adtb-simkit",
  "adtb-testkit",
  "clap",
+ "serde_json",
 ]
 
 [[package]]
@@ -114,18 +117,6 @@ dependencies = [
  "adtb-codegen",
  "adtb-lang",
  "adtb-testkit",
-]
-
-[[package]]
-name = "adtb-probe"
-version = "0.1.0"
-dependencies = [
- "adtb",
- "adtb-conformance",
- "adtb-heap-cap",
- "adtb-lang",
- "adtb-sim",
- "clap",
 ]
 
 [[package]]

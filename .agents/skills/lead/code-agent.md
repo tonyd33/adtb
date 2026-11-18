@@ -123,12 +123,13 @@ While iterating, run only the affected test binary (`cargo nextest run
 -p CRATE --test NAME FILTER`, or `-p CRATE --lib MODULE::` for unit
 tests) and `cargo clippy -p CRATE --all-targets -- -D warnings`. Do not
 run `cargo build`: it compiles tests in the dev profile, which nextest
-does not use. To check conformance files: `work/tools/conf
-conformance/PART/FILE.test` (files or directories; reference and
-engine; prints `FILE:LINE: SIDE: difference`). To try a query without
-writing a test: `work/tools/adtb-probe --schema FILE [--data FILE]
-[--explain] 'TEXT'` prints the checker's refusal with line and column,
-or both sides' results and whether they agree. Clippy
+does not use. To check conformance files or engine scripts: `cargo
+conformance --file-name PATH` (a file or a directory of either corpus; prints each
+failing case with its differences, rows as a diff; `--update` writes the
+rows got). To try a query without writing a test: `cargo conformance
+probe --schema FILE [--data FILE] [--explain] 'TEXT'` prints the
+checker's refusal with line and column, or both sides' results and whether
+they agree. Clippy
 denies, among others, `type_complexity` (name a `type` alias),
 `too_many_lines` (150), `cognitive_complexity` (25),
 `too_many_arguments`, `needless_raw_string_hashes`,
@@ -266,7 +267,7 @@ adtb-sim costs two minutes. Run `house-check` before `cargo xtask check`; when a
 `cargo xtask check` fails only in `house-check`, rerun `house-check`, not `cargo xtask check`. The size in a brief is an estimate; say in the report when the change grew well past it.
 
 The final run of a round is one `cargo xtask check REVSET` plus the runs it does not hold: a
-`--profile deep` search, `work/tools/conf`, a reopen script. `cargo xtask check` already runs fmt,
+`--profile deep` search, the conformance runner, a reopen script. `cargo xtask check` already runs fmt,
 clippy, the tests, the size limit, house-check over REVSET and every other part, so do not also run
 `cargo xtask test`, `-p adtb-sim`, `-p adtb-lang`, the damage profile or a workspace clippy beside
 it: each is a subset run twice. Run fmt, house-check and clippy first, alone, so they fail in
@@ -283,7 +284,7 @@ Never use `pkill -f` or a broad process pattern. Kill only a PID you started.
 
 ## Memory
 
-A test binary aborts past 1.5 GiB of live heap, charged by malloc chunk, by a counting allocator (`crates/adtb-heap-cap`) that dev-dependencies link in; a test binary run directly is capped too, as are the binaries tests spawn and `work/tools/adtb-probe`. A test that needs more calls `adtb_heap_cap::raise_cap(BYTES)` and declares `threads-required` in `.config/nextest.toml`, the cap over the default rounded up. `ADTB_TEST_HEAP_CAP` overrides everything, in bytes. The cap is per process: run tests through nextest, since plain `cargo test` shares a process across a binary's tests and can abort falsely; use `RUST_TEST_THREADS=1` for a direct run. Page memory and C allocations are not counted. `cargo build --workspace` and `cargo run -p` have no cap; any build with `--all-targets` or `--all-features` does, and a `target/debug/adtb` it leaves aborts at the cap and obeys the variable until rebuilt. Run a text that can grow without bound (a doubling text, a huge file) only as a test or through `adtb-probe`. `ulimit -v` and `ulimit -d` do not work: page reservation fails under them. A larger stack in a probe does not make a runaway finish.
+A test binary aborts past 1.5 GiB of live heap, charged by malloc chunk, by a counting allocator (`crates/adtb-heap-cap`) that dev-dependencies link in; a test binary run directly is capped too, as are the binaries tests spawn and `cargo conformance`. A test that needs more calls `adtb_heap_cap::raise_cap(BYTES)` and declares `threads-required` in `.config/nextest.toml`, the cap over the default rounded up. `ADTB_TEST_HEAP_CAP` overrides everything, in bytes. The cap is per process: run tests through nextest, since plain `cargo test` shares a process across a binary's tests and can abort falsely; use `RUST_TEST_THREADS=1` for a direct run. Page memory and C allocations are not counted. `cargo build --workspace` and `cargo run -p` have no cap; any build with `--all-targets` or `--all-features` does, and a `target/debug/adtb` it leaves aborts at the cap and obeys the variable until rebuilt. Run a text that can grow without bound (a doubling text, a huge file) only as a test or through `cargo conformance probe`. `ulimit -v` and `ulimit -d` do not work: page reservation fails under them. A larger stack in a probe does not make a runaway finish.
 
 ## Waiting
 

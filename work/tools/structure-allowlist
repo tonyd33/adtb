@@ -388,7 +388,6 @@ sim_test_opens test 2 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
 sim_test_opens test 1 crates/adtb-sim/tests/maintenance/reindex.rs
 sim_test_opens test 1 crates/adtb-sim/tests/maintenance/reindex_review.rs
 sim_test_opens test 4 crates/adtb-sim/tests/maintenance/verify.rs
-sim_test_opens test 1 crates/adtb-sim/tests/scripted/scripts/session.rs
 sim_test_opens test 1 crates/adtb-sim/tests/server/api.rs
 sim_test_opens test 1 crates/adtb-sim/tests/server/api_real_file.rs
 sim_test_opens test 3 crates/adtb-sim/tests/server/bundles.rs

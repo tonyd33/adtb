@@ -10,8 +10,6 @@ use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::testing::Knobs;
 use adtb::version_hash;
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, Value};
-use adtb_conformance::engine::{self, Ended};
-use adtb_conformance::{Difference, Directive, Got, Kind, panic_message};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::textual::{Form, print};
@@ -19,11 +17,15 @@ use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::open::options;
 
+use crate::engine::{self, Ended};
+use crate::{Difference, Directive, Found, Got, Kind, panic_message};
+
 use super::clock;
-use super::read::{self, Head, Step};
+use super::read;
 use super::role::{self, Handles, OWNER, called};
 use super::shown;
 use super::txn::{self, Txns};
+use super::{Head, Step};
 
 const FILE: &str = "app.adt";
 
@@ -64,9 +66,12 @@ pub(super) fn open_value(e: &OpenError) -> Result<String, String> {
 
 pub(super) struct Differs {
     at: String,
+    line: Option<usize>,
+    /// Whether the step compares its rows as a multiset.
+    rowsort: bool,
     message: String,
-    expected: Option<String>,
-    actual: Option<String>,
+    values: Option<Box<(String, String)>>,
+    rows: Option<Box<(Vec<String>, Vec<String>)>>,
 }
 
 impl Differs {
@@ -77,24 +82,43 @@ impl Differs {
         }
         Differs {
             at,
+            line: step.via.is_none().then_some(step.line),
+            rowsort: matches!(
+                step.head,
+                Head::Query { rowsort: true }
+                    | Head::Command { rowsort: true }
+                    | Head::Call { rowsort: true, .. }
+            ),
             message: message.into(),
-            expected: None,
-            actual: None,
+            values: None,
+            rows: None,
         }
     }
 
     pub(super) fn values(mut self, expected: String, actual: String) -> Differs {
-        self.expected = Some(expected);
-        self.actual = Some(actual);
+        self.values = Some(Box::new((expected, actual)));
         self
     }
 
-    fn shown(&self) -> String {
-        let mut s = format!("{}: {}", self.at, self.message);
-        if let (Some(e), Some(a)) = (&self.expected, &self.actual) {
-            write!(s, "\n  expected: {e}\n  actual:   {a}").expect("a string takes text");
+    fn rows(mut self, expected: &[String], actual: &[String]) -> Differs {
+        let values = (listed(Ok(expected.to_vec())), listed(Ok(actual.to_vec())));
+        self.values = Some(Box::new(values));
+        let (mut expected, mut actual) = (expected.to_vec(), actual.to_vec());
+        if self.rowsort {
+            expected.sort();
+            actual.sort();
         }
-        s
+        self.rows = Some(Box::new((expected, actual)));
+        self
+    }
+
+    fn found(&self) -> Found {
+        Found {
+            line: self.line,
+            head: format!("{}: {}", self.at, self.message),
+            values: self.values.as_deref().cloned(),
+            rows: self.rows.as_deref().cloned(),
+        }
     }
 }
 
@@ -197,7 +221,11 @@ pub(super) fn compare(
     if got == want {
         return Ok(());
     }
-    Err(Differs::at(step, "the outcome differs").values(listed(want), listed(got)))
+    let differs = Differs::at(step, "the outcome differs");
+    Err(match (&want, &got) {
+        (Ok(expected), Ok(actual)) => differs.rows(expected, actual),
+        _ => differs.values(listed(want), listed(got)),
+    })
 }
 
 pub(super) fn listed(r: Result<Vec<String>, String>) -> String {
@@ -217,10 +245,7 @@ pub(super) enum Answer {
 /// Returns the difference of a step whose rows `d` states differ.
 fn rows_differ(step: &Step, d: Difference) -> Differs {
     match d.got {
-        Some(Got::Rows(rows)) => Differs::at(step, "the rows differ").values(
-            format!("[{}]", step.rows.join(", ")),
-            format!("[{}]", rows.join(", ")),
-        ),
+        Some(Got::Rows(rows)) => Differs::at(step, "the rows differ").rows(&step.rows, &rows),
         _ => Differs::at(step, d.message),
     }
 }
@@ -556,15 +581,15 @@ impl Script {
     }
 }
 
-/// Run the script at `path`. Returns each directive that differs from it, shown, each instant
-/// it prints as its token.
+/// Run the script at `path` under the corpus `root`. Returns each directive that differs from
+/// it, each instant it prints as its token.
 ///
 /// A script that states a token runs twice: the first run learns the instants it prints from
 /// what differs, each token standing for an instant no run prints.
-pub(super) fn run_file(path: &Path) -> Vec<String> {
-    let steps = match read::script(path) {
+pub fn run_file(root: &Path, path: &Path) -> Vec<Found> {
+    let steps = match read::script(root, path) {
         Ok(s) => s,
-        Err(e) => return vec![e],
+        Err(e) => return vec![Found::at(None, e)],
     };
     let tokened = steps.iter().any(|s| {
         let mut head = s.head.clone();
@@ -572,11 +597,21 @@ pub(super) fn run_file(path: &Path) -> Vec<String> {
         s.rows.iter().chain(&value).any(|t| clock::tokened(t))
     });
     if !tokened {
-        return run_steps(path, steps, clock::Clock::Untokened);
+        return run_steps(root, path, steps, clock::Clock::Untokened);
     }
-    let instants = clock::ranked(&run_steps(path, steps.clone(), clock::Clock::Learning));
-    let out = run_steps(path, steps, clock::Clock::Ranked(instants.clone()));
-    out.iter().map(|d| clock::shown(d, &instants)).collect()
+    let learnt = run_steps(root, path, steps.clone(), clock::Clock::Learning);
+    let instants = clock::ranked(&learnt.iter().map(Found::shown).collect::<Vec<_>>());
+    let out = run_steps(root, path, steps, clock::Clock::Ranked(instants.clone()));
+    let tokens = |t: &String| clock::shown(t, &instants);
+    let all = |ts: &Vec<String>| ts.iter().map(tokens).collect::<Vec<_>>();
+    out.into_iter()
+        .map(|f| Found {
+            line: f.line,
+            head: tokens(&f.head),
+            values: f.values.map(|(e, a)| (tokens(&e), tokens(&a))),
+            rows: f.rows.map(|(e, a)| (all(&e), all(&a))),
+        })
+        .collect()
 }
 
 /// Returns the value `head` compares an outcome with, besides the rows, if it states one.
@@ -592,8 +627,8 @@ fn compared(head: &mut Head) -> Option<&mut String> {
 }
 
 /// Run `steps`, the script at `path`, its tokens standing for what `clock` says. Returns each
-/// directive that differs, shown.
-fn run_steps(path: &Path, steps: Vec<Step>, clock: clock::Clock) -> Vec<String> {
+/// directive that differs.
+fn run_steps(root: &Path, path: &Path, steps: Vec<Step>, clock: clock::Clock) -> Vec<Found> {
     let (seed, start) = match steps.first().map(|s| &s.head) {
         Some(Head::Seed(n)) => (*n, 1),
         _ => (0, 0),
@@ -616,22 +651,41 @@ fn run_steps(path: &Path, steps: Vec<Step>, clock: clock::Clock) -> Vec<String> 
         let mut sim = Sim::new(seed, Config::default());
         while script.next < script.steps.len() {
             if sim.run(|rt| script.session(&rt)) != Outcome::Finished {
-                return Some(format!("{}: the simulated process crashes", shown(path)));
+                return Some(format!(
+                    "{}: the simulated process crashes",
+                    shown(root, path)
+                ));
             }
         }
         None
     }));
-    let mut out: Vec<String> = script.out.iter().map(Differs::shown).collect();
-    let unopened = |s| Differs::at(s, "no open registers the bundle").shown();
+    let mut out: Vec<Found> = script.out.iter().map(Differs::found).collect();
+    let unopened = |s| Differs::at(s, "no open registers the bundle").found();
     out.extend(script.bundles.iter().map(unopened));
     match ran {
         Ok(None) => {}
-        Ok(Some(crash)) => out.push(crash),
-        Err(p) => out.push(format!(
-            "{}: the engine panics: {}",
-            shown(path),
-            panic_message(&*p)
+        Ok(Some(crash)) => out.push(Found::at(None, crash)),
+        Err(p) => out.push(Found::at(
+            None,
+            format!(
+                "{}: the engine panics: {}",
+                shown(root, path),
+                panic_message(&*p)
+            ),
         )),
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_open_refusal_without_a_textual_value_is_a_difference() {
+        assert_eq!(
+            Err("the open is refused with `Locked`, which has no textual value".to_owned()),
+            open_value(&OpenError::Locked { pid: Some(7) })
+        );
+    }
 }

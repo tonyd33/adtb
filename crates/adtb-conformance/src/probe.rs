@@ -11,10 +11,6 @@ use std::process::ExitCode;
 use adtb::DeltaPart;
 use adtb::runtime::Runtime;
 use adtb::{CreateOptions, Database, Log, OpenOptions, Value};
-use adtb_conformance::{
-    Difference, Directive, Got, Kind, Script, migrations, panic_message, run_engine_in,
-    run_reference_in,
-};
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::check::{check_adhoc, check_schema};
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
@@ -23,7 +19,10 @@ use adtb_lang::span::{Diag, FileDiag, FileId};
 use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim};
-use clap::Parser;
+
+use crate::{
+    Difference, Directive, Got, Kind, Script, migrations, on_engine, on_reference, panic_message,
+};
 
 const SCHEMA: usize = 1;
 const DATA: usize = 2;
@@ -31,18 +30,8 @@ const BEFORE: usize = 3;
 const TEXT: usize = 4;
 const EXPLAIN: usize = 5;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "adtb-probe",
-    about = "Check the schema FILE and the ad hoc TEXT, printing each refusal with its line and \
-             column. Then run TEXT on a fresh database of the reference interpreter and of the \
-             engine over the simulator, print each outcome and whether they agree. TEXT `-` reads \
-             the text from stdin.",
-    after_help = "Exits 0 when the sides agree, 1 when they differ or a side fails to load, 2 \
-                  when the schema or the text is refused or NAME names nothing.",
-    args_override_self = true
-)]
-struct Args {
+#[derive(Debug, clap::Args)]
+pub struct Args {
     #[arg(
         long,
         value_name = "FILE",
@@ -90,7 +79,7 @@ fn text(v: &str) -> Result<String, String> {
 
 impl Args {
     /// Read a text `-` from stdin, and run on both sides when neither is named.
-    fn resolve(mut self) -> Result<Args, String> {
+    pub fn resolve(mut self) -> Result<Args, String> {
         if self.text.as_deref() == Some("-") {
             self.text = Some(stdin()?);
         }
@@ -227,31 +216,6 @@ fn script(schema: &str, data: Option<&str>, text: &str, items: &[AdhocItem]) -> 
         None => directives.push(directive(TEXT, Kind::Run, text)),
     }
     Script { directives }
-}
-
-fn failed(message: String) -> Vec<Difference> {
-    vec![Difference {
-        line: 0,
-        message,
-        got: None,
-    }]
-}
-
-fn on_reference(script: &Script, dir: &Path) -> Vec<Difference> {
-    panic::catch_unwind(AssertUnwindSafe(|| run_reference_in(script, dir)))
-        .unwrap_or_else(|p| failed(format!("the reference panics: {}", panic_message(&*p))))
-}
-
-fn on_engine(script: &Script, dir: &Path) -> Vec<Difference> {
-    let mut found = Vec::new();
-    let ran = panic::catch_unwind(AssertUnwindSafe(|| {
-        Sim::new(0, Config::default()).run(|rt| found = run_engine_in(rt, script, dir))
-    }));
-    match ran {
-        Ok(Outcome::Finished) => found,
-        Ok(Outcome::Crashed) => failed("the simulated process crashes".into()),
-        Err(p) => failed(format!("the engine panics: {}", panic_message(&*p))),
-    }
 }
 
 /// How a side's text ended, as two sides compare it: rows as a multiset, a refusal by its reason.
@@ -393,7 +357,9 @@ fn on_engine_checks(schema: &str, dir: &Path, name: &str) -> Result<String, Stri
     }
 }
 
-fn probe(args: &Args) -> Result<(String, ExitCode), String> {
+/// Check and run the text `args` names. Returns the report with its exit code, or why the probe
+/// does not run.
+pub fn probe(args: &Args) -> Result<(String, ExitCode), String> {
     let schema = read(&args.schema)?;
     let data = args.data.as_deref().map(read).transpose()?;
     let label = args.schema.display().to_string();
@@ -453,44 +419,12 @@ fn run(
     (out, code)
 }
 
-#[expect(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    reason = "goes if the probe stops being a binary that reports on its streams"
-)]
-fn main() -> ExitCode {
-    let args = match Args::parse().resolve() {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("adtb-probe: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    match probe(&args) {
-        Ok((out, code)) => {
-            print!("{out}");
-            code
-        }
-        Err(e) => {
-            eprintln!("adtb-probe: {e}");
-            ExitCode::from(2)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
-
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Args, clap::Error> {
-        Args::try_parse_from(std::iter::once("adtb-probe").chain(args.iter().copied()))
-    }
-
-    #[test]
-    fn the_command_is_well_formed() {
-        Args::command().debug_assert();
+        crate::runner::cli::probe_args(args)
     }
 
     #[test]

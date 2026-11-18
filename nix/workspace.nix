@@ -28,7 +28,6 @@ let
   binaries = {
     adtb-shell = "adtb";
     adtb-codegen = "adtb-codegen";
-    adtb-probe = "adtb-probe";
     adtb-conformance = "adtb-conformance";
   };
 

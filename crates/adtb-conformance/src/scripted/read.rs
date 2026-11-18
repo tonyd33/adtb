@@ -4,100 +4,15 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use adtb_conformance::blocks;
+use crate::blocks;
 
-use super::{root, shown};
-
-#[derive(Clone, Debug)]
-pub(super) enum Head {
-    Seed(u64),
-    Use(String),
-    QueryMemory(Option<u64>),
-    Migrate {
-        at: Option<usize>,
-        refused: Option<String>,
-    },
-    Reopen {
-        refused: Option<String>,
-    },
-    Role(String),
-    DropRole {
-        name: String,
-        error: Option<String>,
-    },
-    Log,
-    Bundle {
-        header: String,
-        fixture: Option<String>,
-        refused: Option<String>,
-    },
-    Call {
-        name: String,
-        ordinal: Option<u32>,
-        committed: bool,
-        rowsort: bool,
-        error: Option<String>,
-    },
-    Advance(Duration),
-    Grant {
-        revoke: bool,
-        error: Option<String>,
-    },
-    Register {
-        header: String,
-        fixture: Option<String>,
-        error: Option<String>,
-    },
-    Host(Vec<String>),
-    Loose(String),
-    Begin {
-        name: String,
-        read_only: bool,
-        deferrable: bool,
-        error: Option<String>,
-    },
-    Commit {
-        name: String,
-        position: Option<String>,
-        error: Option<String>,
-    },
-    Rollback(String),
-    Run,
-    Query {
-        rowsort: bool,
-    },
-    Command {
-        rowsort: bool,
-    },
-    Plan,
-    Error(String),
-    Adhoc(String),
-    Failed(String),
-}
+use super::{Head, Step, shown};
 
 const HEADS: [&str; 29] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
     "run", "query", "error", "as", "grant", "revoke", "register", "host", "loose", "begin",
     "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc", "plan",
 ];
-
-/// One directive, with the file and line it was read from.
-#[derive(Clone, Debug)]
-pub(super) struct Step {
-    pub(super) at: String,
-    pub(super) line: usize,
-    /// The fixture file and line the step comes from, when a `use` brought it in.
-    pub(super) via: Option<(String, usize)>,
-    /// The role an `as` prefix names, the step then running through a session of it.
-    pub(super) role: Option<String>,
-    /// The transaction an `in` prefix names, the step then one call of it.
-    pub(super) txn: Option<String>,
-    /// The principal an `assert` prefix states, in textual syntax.
-    pub(super) assert: Option<String>,
-    pub(super) head: Head,
-    pub(super) body: String,
-    pub(super) rows: Vec<String>,
-}
 
 fn head(line: &str) -> Option<Head> {
     let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -316,7 +231,7 @@ fn value_end(text: &str) -> usize {
 }
 
 /// Returns whether the directive `line` begins is followed by expected rows.
-fn takes_rows(line: &str) -> bool {
+pub(super) fn takes_rows(line: &str) -> bool {
     let line = prefixed(line).1;
     let call = line.strip_prefix("call ").and_then(call);
     ["query", "command", "plan"].contains(&line.split(' ').next().unwrap_or_default())
@@ -330,31 +245,31 @@ fn takes_rows(line: &str) -> bool {
         )
 }
 
-fn starts(line: &str) -> bool {
+pub(super) fn starts(line: &str) -> bool {
     HEADS.contains(&line.split_whitespace().next().unwrap_or_default())
 }
 
-/// Returns the steps of the script at `path`.
+/// Returns the steps of the script at `path`, its fixtures under `root`.
 ///
 /// Returns an error for a script holding no directive but `seed` and `use`.
-pub(super) fn script(path: &Path) -> Result<Vec<Step>, String> {
-    let steps = read(path, &mut Vec::new())?;
+pub(super) fn script(root: &Path, path: &Path) -> Result<Vec<Step>, String> {
+    let steps = read(root, path, &mut Vec::new())?;
     if steps
         .iter()
         .all(|s| s.via.is_some() || matches!(s.head, Head::Seed(_)))
     {
         return Err(format!(
             "{}: the script holds no directive but `seed` and `use`",
-            shown(path)
+            shown(root, path)
         ));
     }
     Ok(steps)
 }
 
-/// Returns the steps of the file at `path`, each `use` replaced by its fixture's steps, `uses`
-/// naming the fixtures being read.
-fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
-    let at = shown(path);
+/// Returns the steps of the file at `path`, each `use` replaced by its fixture's steps under
+/// `root`, `uses` naming the fixtures being read.
+fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
+    let at = shown(root, path);
     let text = fs::read_to_string(path).map_err(|e| format!("{at}: {e}"))?;
     let found =
         blocks(&text, starts, takes_rows).map_err(|d| format!("{at}:{}: {}", d.line, d.message))?;
@@ -433,9 +348,9 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
             ..
         } = &head
         {
-            let fixture = root().join("fixtures").join(format!("{name}.bundle"));
+            let fixture = root.join("fixtures").join(format!("{name}.bundle"));
             body = fs::read_to_string(&fixture)
-                .map_err(|e| format!("{at}:{}: {}: {e}", b.line, shown(&fixture)))?;
+                .map_err(|e| format!("{at}:{}: {}: {e}", b.line, shown(root, &fixture)))?;
         }
         if let Head::Use(name) = &head {
             if uses.contains(name) {
@@ -446,8 +361,8 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
                 ));
             }
             uses.push(name.clone());
-            let fixture = root().join("fixtures").join(format!("{name}.fixture"));
-            let steps = read(&fixture, uses).map_err(|e| format!("{at}:{}: {e}", b.line))?;
+            let fixture = root.join("fixtures").join(format!("{name}.fixture"));
+            let steps = read(root, &fixture, uses).map_err(|e| format!("{at}:{}: {e}", b.line))?;
             uses.pop();
             out.extend(steps.into_iter().map(|s| Step {
                 via: s.via.or(Some((s.at, s.line))),

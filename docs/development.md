@@ -88,12 +88,14 @@ takes nixpkgs from `devenv.lock` and checks that its Rust matches
 ```sh
 nix build .#                      # every binary, in result/bin
 nix run .# -- --help              # the adtb shell
-nix run .#adtb-probe -- --help
+nix run .#adtb-conformance -- --help
 nix flake check                   # the packages and the test suite
 ```
 
 The packages are `adtb-shell` (the `adtb` binary), `adtb-codegen`,
-`adtb-probe`, `adtb-conformance` and `default`, which holds all four. Nix
+`adtb-conformance` and `default`, which holds all three. The packaged
+`adtb-conformance` runs only the conformance files: the engine scripts need the
+`scripts` feature, which `cargo conformance` enables. Nix
 reads the Git index, so a file new in the working copy is invisible to the
 flake until Git tracks it: `git add --intent-to-add FILE`.
 

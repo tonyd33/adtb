@@ -16,9 +16,9 @@ use adtb_lang::textual::Form;
 use adtb_sim::SimRuntime;
 
 use super::plan;
-use super::read::{Head, Step};
 use super::session::{Answer, Differs, arguments, call_rows, compare, refused, rejected};
 use super::txn::{Txns, asserted, named, pending};
+use super::{Head, Step};
 
 /// The schema owner's role, which a `grant`, `revoke` or `register` step with no `as` prefix
 /// acts as.

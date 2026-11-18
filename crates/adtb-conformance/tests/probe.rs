@@ -1,4 +1,4 @@
-//! The `adtb-probe` binary over the schemas in `fixtures/`.
+//! The `probe` command over the schemas in `probe/fixtures/`.
 
 extern crate adtb_lang as _;
 
@@ -8,13 +8,14 @@ use std::process::Stdio;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .join("tests/probe/fixtures")
         .join(name)
 }
 
 /// Run the probe with `args` and `stdin`, returning its exit code, stdout and stderr.
 fn probe_all(args: &[&str], stdin: &str) -> (i32, String, String) {
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_adtb-probe"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_adtb-conformance"))
+        .arg("probe")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -227,7 +228,7 @@ fn checks_of_an_unknown_name_fail_naming_it() {
     assert_eq!(out, "");
     assert_eq!(
         err,
-        "adtb-probe: the schema has no constraint or check `adults`\n"
+        "adtb-conformance probe: the schema has no constraint or check `adults`\n"
     );
     assert_eq!(code, 2);
 }

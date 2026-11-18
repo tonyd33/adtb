@@ -85,16 +85,17 @@ root, beside the `xtask` crate's two commands:
   run without this limit. A test is reported slow at 20 s and killed as hung at 300 s; no test
   may depend on the machine being idle. Never set `RUST_MIN_STACK` where cargo or rustc can see it: it reached rustc and crashed it. Set it only on a spawned test child.
 - A test binary caps its own heap: `crates/adtb-heap-cap`, a counting global allocator that the `test-heap-cap` feature links through dev-dependencies, aborts the process past 1.5 GiB of live heap, charging each allocation its malloc chunk. A test that needs more calls `adtb_heap_cap::raise_cap(BYTES)` first and declares `threads-required` in `.config/nextest.toml`, the cap over the default rounded up; `every_raised_test_holds_its_slots` fails otherwise. `ADTB_TEST_HEAP_CAP` overrides everything, in bytes. It holds for a test binary run directly and for the binaries tests spawn. The cap is per process and assumes nextest: plain `cargo test` shares a process across a binary's tests and can abort falsely, so set `RUST_TEST_THREADS=1` for a direct run. `cargo build --workspace` has no cap, but any build with `--all-targets` or `--all-features` does: a `target/debug/adtb` it leaves aborts at the cap and obeys the variable until rebuilt. Miri has none. Page memory, C allocations and freed memory malloc retains are not counted. A new test binary that links neither `adtb-lang` nor `adtb-sys` needs `extern crate adtb_lang as _;`; `every_test_binary_has_the_heap_cap` fails otherwise.
-- `conf PATH...`: run conformance files or directories on the
-  reference and the engine; prints each difference as `FILE:LINE`.
-- `script PATH...`: run engine scripts (`crates/adtb-sim/scripts/AREA/*.test`, files or
-  directories) on the simulator, engine only; prints each differing directive as `FILE:LINE`
-  with the expected and actual value. The directives are in the doc comment of
-  `crates/adtb-sim/tests/scripted/scripts/mod.rs`.
-- `adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] TEXT`:
-  check a text and run it on the reference and the engine side by side;
-  `--checks app::c` prints the plan of each incremental check of
-  constraint `c`, the text then optional.
+- `cargo conformance [ARGS]`, from the workspace root: the snapshot runner (an alias in
+  `.cargo/config.toml` for the `adtb-conformance` binary in the test profile, heap capped, with the `scripts` feature). With no ARGS it runs every conformance file under
+  `conformance/` on the reference and the engine and every engine script under
+  `crates/adtb-sim/scripts/` on the engine, and prints each failing case with its differences,
+  rows as a diff. `--file-name PATH` (a file or a directory, repeatable), `--include PATTERN`,
+  `--reference` or `--engine`, `--jobs N`, `--fail-fast`; `--update` writes the rows each
+  differing directive got in place of its expected rows, the reference's for a conformance file. The script directives are in the doc
+  comment of `crates/adtb-conformance/src/scripted/mod.rs`.
+- `cargo conformance probe --schema FILE [--data FILE] [--explain] [--checks NAME] TEXT`: check a text and
+  run it on the reference and the engine side by side; `--checks app::c` prints the plan of each
+  incremental check of constraint `c`, the text then optional.
 - `tree-sitter-check`, from the workspace root: regenerate the grammar in `tools/tree-sitter-adtb/`
   and fail on a difference from the checked in `src/`, run `tree-sitter test` over its corpus and
   highlight tests, and run `cargo nextest run -p adtb-tree-sitter`, which compares it with

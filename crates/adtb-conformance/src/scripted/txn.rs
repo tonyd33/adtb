@@ -9,9 +9,9 @@ use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Ty;
 use adtb_sim::SimRuntime;
 
-use super::read::{Head, Step};
 use super::role::{Sent, collected};
 use super::session::{Differs, compare, refused};
+use super::{Head, Step};
 
 /// The transactions a script holds open, by name.
 pub(super) type Txns<'a> = BTreeMap<String, AdHocTransaction<'a, SimRuntime>>;

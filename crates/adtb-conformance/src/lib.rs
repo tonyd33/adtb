@@ -11,13 +11,15 @@
 #![forbid(unsafe_code)]
 
 pub mod engine;
+pub mod probe;
+pub mod runner;
+#[cfg(feature = "scripts")]
+pub mod scripted;
 
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs;
-use std::panic;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use adtb_lang::ast::SchemaFile;
 use adtb_lang::check::{Program, check_adhoc, check_schema};
@@ -81,6 +83,41 @@ impl fmt::Display for Difference {
     }
 }
 
+/// A directive of a case file whose outcome differs, or a case that does not run, as the runner
+/// reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    /// The line of the directive in the case file, `None` for the file as a whole or for a step
+    /// a fixture brings in.
+    line: Option<usize>,
+    /// Where it differs and how, `FILE:LINE: MESSAGE`.
+    head: String,
+    /// What the directive expects and what it got, when it states one value.
+    values: Option<(String, String)>,
+    /// The rows the directive expects and the rows it got, when it compares rows.
+    rows: Option<(Vec<String>, Vec<String>)>,
+}
+
+impl Found {
+    /// Returns a difference that states no value.
+    fn at(line: Option<usize>, head: String) -> Found {
+        Found {
+            line,
+            head,
+            values: None,
+            rows: None,
+        }
+    }
+
+    /// Returns the difference as one text: its head, then what it expects and what it got.
+    pub fn shown(&self) -> String {
+        match &self.values {
+            Some((e, a)) => format!("{}\n  expected: {e}\n  actual:   {a}", self.head),
+            None => self.head.clone(),
+        }
+    }
+}
+
 fn differ(line: usize, message: impl Into<String>) -> Difference {
     Difference {
         line,
@@ -114,6 +151,8 @@ pub struct Block {
     pub body: String,
     /// The rows after `----`, read only for a head `takes_rows` accepts.
     pub rows: Vec<String>,
+    /// The 1-based line of the `----` before the rows, for a head `takes_rows` accepts.
+    dashes: Option<usize>,
 }
 
 /// Returns the blocks of a script: each directive line, its indented body and, for a head
@@ -146,12 +185,14 @@ pub fn blocks(
             i += 1;
         }
         let mut rows = Vec::new();
+        let mut dashes = None;
         if takes_rows(line) {
             if lines.get(i) != Some(&"----") {
                 let word = line.split(' ').next().unwrap_or_default();
                 return Err(differ(n, format!("`{word}` takes its rows after `----`")));
             }
             i += 1;
+            dashes = Some(i);
             while i < lines.len()
                 && !lines[i].trim().is_empty()
                 && !lines[i].starts_with('#')
@@ -166,16 +207,22 @@ pub fn blocks(
             head: line.to_owned(),
             body,
             rows,
+            dashes,
         });
     }
     Ok(out)
 }
 
+/// Returns the blocks of the conformance script `text`.
+pub(crate) fn conformance_blocks(text: &str) -> Result<Vec<Block>, Difference> {
+    let takes_rows = |line: &str| matches!(kind(line), Some(Kind::Query { .. }));
+    blocks(text, starts_directive, takes_rows)
+}
+
 /// Returns the script `text` holds.
 pub fn parse(text: &str) -> Result<Script, Difference> {
-    let takes_rows = |line: &str| matches!(kind(line), Some(Kind::Query { .. }));
     let mut directives = Vec::new();
-    for b in blocks(text, starts_directive, takes_rows)? {
+    for b in conformance_blocks(text)? {
         let kind = match kind(&b.head) {
             Some(Kind::Query { rowsort, list, .. }) => Kind::Query {
                 rowsort,
@@ -576,59 +623,6 @@ fn refusal(a: Abort) -> (String, String) {
     }
 }
 
-/// Returns the scripts under `dir`, `.test` files at any depth, sorted by path.
-pub fn scripts(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&d) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "test") {
-                out.push(p);
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// Runs every script under `dir` against the reference interpreter and returns each difference,
-/// prefixed by its script's path and line.
-pub fn run_dir(dir: &Path) -> Vec<String> {
-    scripts(dir).iter().flat_map(|p| run_file(p)).collect()
-}
-
-/// Runs the script at `path` against the reference interpreter and returns each difference,
-/// prefixed by the path and line.
-pub fn run_file(path: &Path) -> Vec<String> {
-    let shown = path.display();
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) => return vec![format!("{shown}: {e}")],
-    };
-    let found = match parse(&text) {
-        Ok(s) => panic::catch_unwind(|| {
-            run_reference_in(&s, path.parent().unwrap_or_else(|| Path::new("")))
-        })
-        .unwrap_or_else(|p| {
-            vec![differ(
-                0,
-                format!("the interpreter panics: {}", panic_message(&*p)),
-            )]
-        }),
-        Err(d) => vec![d],
-    };
-    found
-        .into_iter()
-        .map(|d| format!("{shown}:{}: {}", d.line, d.message))
-        .collect()
-}
-
 /// Returns the script error of an expected row that repeats an earlier one.
 fn repeated<V: Ord>(line: usize, want: &[V]) -> Option<Difference> {
     let mut seen = BTreeMap::new();
@@ -653,4 +647,36 @@ pub fn panic_message(payload: &(dyn Any + Send)) -> String {
         .cloned()
         .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
         .unwrap_or_default()
+}
+
+fn failed(message: String) -> Vec<Difference> {
+    vec![Difference {
+        line: 0,
+        message,
+        got: None,
+    }]
+}
+
+/// Run `script` as [`run_reference_in`] does. Returns a panic of the interpreter as a
+/// difference.
+pub fn on_reference(script: &Script, dir: &Path) -> Vec<Difference> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_reference_in(script, dir)
+    }))
+    .unwrap_or_else(|p| failed(format!("the reference panics: {}", panic_message(&*p))))
+}
+
+/// Run `script` as [`run_engine_in`] does, on the simulator with seed 0. Returns a panic of the
+/// engine or a crash of the simulated process as a difference.
+pub fn on_engine(script: &Script, dir: &Path) -> Vec<Difference> {
+    let mut found = Vec::new();
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        adtb_sim::Sim::new(0, adtb_sim::Config::default())
+            .run(|rt| found = run_engine_in(rt, script, dir))
+    }));
+    match ran {
+        Ok(adtb_sim::Outcome::Finished) => found,
+        Ok(adtb_sim::Outcome::Crashed) => failed("the simulated process crashes".into()),
+        Err(p) => failed(format!("the engine panics: {}", panic_message(&*p))),
+    }
 }

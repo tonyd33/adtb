@@ -1,24 +1,29 @@
+//! The conformance suite on the reference interpreter.
+
 use std::path::{Path, PathBuf};
 
+use adtb_conformance::runner::{self, Corpus, Format, Options, Sides};
+
+fn suite() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance")
+}
+
 fn part(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../conformance")
-        .join(name)
+    suite().join(name)
+}
+
+/// Run every file under `dir` of the corpus at `root` on the reference, failing with each
+/// difference.
+fn passes_under(root: &Path, dir: &Path) {
+    let corpus = Corpus::new(Format::Conformance, root.to_path_buf());
+    let options = Options::new(Sides::Reference, 1);
+    let files = runner::select(&corpus, dir).cases().len();
+    let passed = runner::passes(&corpus, dir, &options).unwrap_or_else(|out| panic!("{out}"));
+    assert_eq!(files, passed, "{}", dir.display());
 }
 
 fn passes(dir: &Path) {
-    assert!(
-        !adtb_conformance::scripts(dir).is_empty(),
-        "no scripts in {}",
-        dir.display()
-    );
-    let found = adtb_conformance::run_dir(dir);
-    assert!(
-        found.is_empty(),
-        "{} directives differ:\n{}",
-        found.len(),
-        found.join("\n")
-    );
+    passes_under(&suite(), dir);
 }
 
 #[test]
@@ -59,7 +64,9 @@ fn reference_queries() {
         ("a_checked_operator_returns_none_where_it_would_fault", 1),
         ("a_user_defined_aggregate_folds_its_inputs", 3),
     ];
-    let paths = adtb_conformance::scripts(&dir);
+    let corpus = Corpus::new(Format::Conformance, dir.clone());
+    let selection = runner::select(&corpus, &dir);
+    let paths = selection.cases().iter().map(|c| c.path().to_path_buf());
     let mut reached = std::collections::BTreeMap::<String, usize>::new();
     for path in paths {
         let text =
@@ -90,7 +97,7 @@ fn reference_queries() {
             reached.get(name)
         );
     }
-    passes(&dir);
+    passes_under(&dir, &dir);
 }
 
 #[test]

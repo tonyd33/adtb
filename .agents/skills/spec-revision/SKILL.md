@@ -25,7 +25,7 @@ examples that do not parse or type-check.
 
 ```
 cargo nextest run -p adtb-lang --test spec_corpus
-work/tools/conf conformance
+cargo conformance --file-name conformance
 ```
 
 ## Review

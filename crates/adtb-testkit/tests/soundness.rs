@@ -7,6 +7,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use adtb_conformance as conformance;
+use adtb_conformance::runner::{self, Corpus, Format};
 use adtb_lang::ast::{AdhocItem, QueryDecl, TxnDecl};
 use adtb_lang::check::{
     Bundles, Program, check_adhoc_recording, check_query, check_schema, check_txn,
@@ -510,8 +511,16 @@ fn conformance_schema(body: &str) -> Option<Fixture> {
 fn conformance_results_inhabit_their_types() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance");
     let mut out = Report::default();
-    for path in conformance::scripts(&dir) {
-        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let corpus = Corpus::new(Format::Conformance, dir.clone());
+    let selection = runner::select(&corpus, &dir);
+    assert!(
+        selection.problems().is_empty(),
+        "{:?}",
+        selection.problems()
+    );
+    for case in selection.cases() {
+        let path = case.path();
+        let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let Ok(script) = conformance::parse(&text) else {
             continue;
         };

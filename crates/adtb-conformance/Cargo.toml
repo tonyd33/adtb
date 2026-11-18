@@ -6,16 +6,25 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Cap the heap of the binary, as tests cap theirs.
+test-heap-cap = ["adtb-lang/test-heap-cap"]
+# Run the engine scripts, which open the engine with its testing knobs.
+scripts = ["adtb/testing", "dep:adtb-simkit"]
+
 [dependencies]
 clap.workspace = true
 adtb.workspace = true
 adtb-lang.workspace = true
 adtb-reference.workspace = true
+adtb-sim.workspace = true
+adtb-simkit = { workspace = true, optional = true }
+serde_json = "=1.0.154"
 
 [dev-dependencies]
+adtb-conformance = { path = ".", features = ["scripts"] }
 adtb-heap-cap.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
-adtb-sim.workspace = true
 adtb-testkit.workspace = true
 
 [lints]
