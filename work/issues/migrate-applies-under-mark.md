@@ -39,3 +39,5 @@ Scope, from the step 10 review: any failure in open after a migration commits, n
 ## 2026-11-17
 
 The page-decode review (part 1, heap row decode) found the same defect reached from any migration, not only at open: `Catalog::free_leaked` runs verify, which now decodes every heap row, so a refused heap page makes its walk incomplete. crates/adtb/src/catalog/migration.rs commits the migration, then returns `free_leaked`'s error, so the client sees a failure for an applied schema change, and every later migration fails the same way while the page stays refused, against catalog.md §11.2 ("Every other call continues").
+
+The commit-point review (2026-11-17) found the open's later steps after a committed migration still fail the open: `bound`, `register`, `bundle::register`, `server::initialize` and `held_rows` in crates/adtb/src/api/mod.rs. embedding.md §2.1 permits it ("migrations that committed before a failure stay applied"); commit-point covers only the migration's own post-commit steps, so this scope stays open here.
