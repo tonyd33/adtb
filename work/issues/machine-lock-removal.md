@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-17
-status: open
+status: resolved
+closed: 2026-11-18
 kind: feature
 priority: 20
 tags: [tooling, test]
@@ -16,3 +17,7 @@ summary: "remove the machine lock: a kernel memory limit per test run, timeouts 
 ## Proposal
 
 Maintainer, 2026-11-17: remove the lock altogether. Replace it with a kernel memory limit per run (a cgroup scope), timeouts that only catch hangs, and tests that wait on events instead of time. Then delete what exists only for the lock.
+
+## 2026-11-18: resolved
+
+Landed in `refactor!: replace the machine lock with a memory limit per run and wait on events in tests`. Each `suite` or `check` run runs through `work/tools/limited` in a systemd user scope of 14G under `adtb.slice`, which is throttled past 60% of memory and capped at 75%, without swap; a process past a limit is killed and the run goes on. The nextest kill is a 300 s hang guard. Test scratch paths are per process. The wall-time tests wait on events, except dir_tests' latch sleeps (latches spin with no event; the sleeps only weaken the test) and the drop test, renamed to what it checks. Three suites started together passed in about 557 s each against about 180 s alone, throttled and none killed. Main's first lockless `check` passed; its scope's peak reached the 14G limit, counting page cache, with nothing killed. Unlimited: a typed `cargo nextest run` or `cargo test`, the other tools, CI. CPU is not bounded.
