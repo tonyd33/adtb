@@ -207,7 +207,7 @@ impl Holders {
             Ok(pages) => pages.contains(&self.pid),
             Err(Stopped::Damage(_)) => {
                 let marks = policy::checksum_mark(holder, self.phase);
-                let unmarked = marks == Mark::Nothing;
+                let unmarked = marks.is_nothing();
                 self.incomplete |= unmarked;
                 !unmarked
             }
@@ -336,7 +336,7 @@ mod marks {
         /// Take `read`, the marks the page `page` holds, or `Err` with the marks its damage sets
         /// when it does not decode, which stops every write of the marks. A page read with no
         /// check of its LSN, `checked` false, stops them too.
-        pub(in crate::storage) fn load<R: Runtime>(
+        pub(super) fn load<R: Runtime>(
             &self,
             rt: &R,
             page: Pid,
@@ -414,11 +414,7 @@ mod marks {
         }
 
         /// Change the set through `f`, in memory only.
-        pub(in crate::storage) fn change<R: Runtime>(
-            &self,
-            rt: &R,
-            f: impl FnOnce(&mut BTreeSet<Quarantine>),
-        ) {
+        pub(super) fn change<R: Runtime>(&self, rt: &R, f: impl FnOnce(&mut BTreeSet<Quarantine>)) {
             f(&mut self.lock(rt).state.set);
         }
 
@@ -427,7 +423,7 @@ mod marks {
         ///
         /// Preconditions: the caller latches the marks page, which [`Marks::writable_page`]
         /// returned.
-        pub(in crate::storage) fn change_on_page<R: Runtime>(
+        pub(super) fn change_on_page<R: Runtime>(
             &self,
             rt: &R,
             f: impl FnOnce(&mut BTreeSet<Quarantine>),
@@ -438,7 +434,7 @@ mod marks {
         }
 
         /// Hold `object` marked for this open only.
-        pub(in crate::storage) fn hold<R: Runtime>(&self, rt: &R, object: Quarantine) {
+        pub(super) fn hold<R: Runtime>(&self, rt: &R, object: Quarantine) {
             self.lock(rt).state.held.insert(object);
         }
     }
@@ -499,6 +495,12 @@ impl<R: Runtime> Pager<R> {
         self.whole_cause().is_some() || self.is_quarantined(Quarantine::Database)
     }
 
+    /// Returns whether the database is marked, set or held, with no regard to damage of the
+    /// commit log.
+    pub(crate) fn database_marked(&self) -> bool {
+        self.is_quarantined(Quarantine::Database)
+    }
+
     /// Returns the damage of the commit log that refuses the database whole, the first kept
     /// this open attempt, taking no lock while there is none.
     pub(crate) fn whole_cause(&self) -> Option<PageError> {
@@ -538,13 +540,14 @@ impl<R: Runtime> Pager<R> {
         object: Quarantine,
         ordered: &Ordered<'_>,
     ) -> Result<(), MarkFailure> {
-        let ((), marked) = self.quarantine_judged(ordered, |_| ((), BTreeSet::from([object])));
+        let mark = BTreeSet::from([Mark::planted(object)]);
+        let ((), _, marked) = self.quarantine_judged(ordered, |_| ((), mark));
         marked
     }
 
-    /// Mark quarantined, as [`Pager::quarantine`] marks each, the objects `judge` returns from
-    /// the evidence. Returns what `judge` returns, and why the marks hold only in memory when they
-    /// do.
+    /// Mark quarantined, as [`Pager::quarantine`] marks each, the objects the marks `judge`
+    /// returns from the evidence mark durably. Returns what `judge` returns, the objects marked,
+    /// and why their marks hold only in memory when they do.
     ///
     /// Precondition: the calling thread holds no page latch.
     ///
@@ -553,8 +556,11 @@ impl<R: Runtime> Pager<R> {
     pub(in crate::storage) fn quarantine_judged<T>(
         &self,
         _: &Ordered<'_>,
-        judge: impl FnOnce(&Evidence) -> (T, BTreeSet<Quarantine>),
-    ) -> (T, Result<(), MarkFailure>) {
+        judge: impl FnOnce(&Evidence) -> (T, BTreeSet<Mark>),
+    ) -> (T, BTreeSet<Quarantine>, Result<(), MarkFailure>) {
+        let durable = |marks: BTreeSet<Mark>| -> BTreeSet<Quarantine> {
+            marks.into_iter().filter_map(Mark::durable).collect()
+        };
         let latched = self
             .marks_page()
             .and_then(|page| self.exclusive(page).map_err(MarkFailure::Page));
@@ -562,16 +568,19 @@ impl<R: Runtime> Pager<R> {
             Ok(guard) => guard,
             Err(failure) => {
                 let evidence = self.evidence();
-                let (out, objects) = judge(&evidence);
-                self.marks().change(self.rt(), |set| set.extend(objects));
-                return (out, Err(failure));
+                let (out, marks) = judge(&evidence);
+                let objects = durable(marks);
+                self.marks()
+                    .change(self.rt(), |set| set.extend(objects.iter().copied()));
+                return (out, objects, Err(failure));
             }
         };
         let mut append = self.append();
-        let (out, objects) = judge(append.evidence());
+        let (out, marks) = judge(append.evidence());
+        let objects = durable(marks);
         let set = self
             .marks()
-            .change_on_page(self.rt(), |set| set.extend(objects));
+            .change_on_page(self.rt(), |set| set.extend(objects.iter().copied()));
         let mut page = guard.to_vec();
         encode(&mut page, &set);
         let edits = diff(&guard, &page);
@@ -582,7 +591,7 @@ impl<R: Runtime> Pager<R> {
         let lsn = super::page::lsn(&guard);
         drop(guard);
         self.wait_durable(lsn);
-        (out, Ok(()))
+        (out, objects, Ok(()))
     }
 
     /// Mark `object` quarantined as [`Pager::quarantine`] does, with no fault mapped, in the
@@ -596,9 +605,11 @@ impl<R: Runtime> Pager<R> {
         order.ordered(|o| self.quarantine(object, &o))
     }
 
-    /// Mark `object` quarantined for this open only, never written.
-    pub(super) fn hold_quarantine(&self, _opening: &super::Opening, object: Quarantine) {
-        self.marks().hold(self.rt(), object);
+    /// Hold the database marked for this open only, never written, when `mark` holds it so.
+    pub(super) fn hold_quarantine(&self, _opening: &super::Opening, mark: Mark) {
+        if mark.open_only() {
+            self.marks().hold(self.rt(), Quarantine::Database);
+        }
     }
 
     /// Remove the mark on `object`, once it is repaired. Durable on return.

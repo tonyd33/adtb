@@ -1,0 +1,21 @@
+database a = text a ~ r"(^|::|&)Database$";
+
+marked = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(^|\.|::)is_quarantined$";
+  a <- pure c | #arguments | named_children;
+  guard $ database a;
+  return c;
+};
+
+contained = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"quarantined\(\)\s*\.contains$";
+  a <- pure c | #arguments | named_children;
+  guard $ database a;
+  return c;
+};
+
+main = marked `alt` contained | arr range;

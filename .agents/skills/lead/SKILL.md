@@ -63,7 +63,7 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
   tree. Database, language or shared-runtime production changes and unbounded
   impact get one full check. Name one owner so author and lead do not duplicate it.
 - Authors run `cargo xtask check main..@` for their round: every part, then
-  `lint --against` and `structure-check --against` the range's base. After `land`, reuse the
+  `lint --against` the range's base. After `land`, reuse the
   receipt when `jj diff --from TESTED --to main --summary` is empty, TESTED the checked
   revision; else rerun `cargo xtask check` on main.
 - A track that adds or changes a seeded search in `adtb-sim` runs those tests under

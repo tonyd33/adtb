@@ -10,7 +10,7 @@ Causes that keep producing bugs across tracks, from the review of 2026-10-31. Co
 | Authority and admission checked per entry path | `class-admission-per-path` | about 18 | One admitted value required by every execution entry | admitted-gate |
 | Unbounded work over size, depth or sharing | `class-unbounded-work` | about 16 | One budget, sized stacks, sharing-aware lowering | one-spend-budget |
 | Wildcards and copied rules | `class-copied-rules` | about 17 | Scoped lint, shared helper | remaining-kind-wildcards |
-| Catalog rows and identity by position or spelling | `class-identity-by-spelling` | about 30 | Typed catalog ids, `CtorRef`/`FieldRef`, fixed-id constants, row codecs keyed by fixed constructor id, structure-check rows whose counts only fall | structure-lang-identity |
+| Catalog rows and identity by position or spelling | `class-identity-by-spelling` | about 30 | Typed catalog ids, `CtorRef`/`FieldRef`, fixed-id constants, row codecs keyed by fixed constructor id, lint ratchet rows whose counts only fall | structure-lang-identity |
 | Tests asserting less than they claim | `class-weak-tests` | about 20 before the audit, about 80 candidates after | Must-use tallies and floors, a reason helper, gates that run | test-audit-findings |
 
 Language and kernel fixes mostly removed their cause, and perf and refactor tracks mostly land without blockers. The classes above concentrate in failure paths, authority and grant carry.

@@ -736,7 +736,7 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Openin
 /// Returns the damage an open that failed may still answer `verify` over: a page that failed
 /// verification on a database quarantined whole. Returns `None` while any page is unreadable.
 fn open_damage<R: Runtime>(pager: &Pager<R>) -> Option<storage::PageError> {
-    if !pager.is_quarantined(storage::Quarantine::Database) {
+    if !pager.database_marked() {
         return None;
     }
     let damaged = pager.damaged();

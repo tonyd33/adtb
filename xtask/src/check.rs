@@ -9,7 +9,7 @@ use crate::{lint, size, test};
 const NIGHTLY: &str = "ADTB_NIGHTLY_BIN";
 
 /// Run every check of `workspace` in order, stopping at the first that fails. With `revset`, also
-/// check the lint and structure allowlists against its base.
+/// check the lint allowlist against that of its base.
 pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     let base = match revset {
         Some(revset) => {
@@ -62,25 +62,12 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     })?;
     stage(size::STEP, |_| size::run(&workspace.root))?;
     stage("docs", |name| docs(workspace, name))?;
-    for name in ["structure-check", "refusal-check"] {
-        stage(name, |name| {
-            step::run(name, workspace.tool(name).arg(&workspace.root))
-        })?;
-    }
-    for name in ["tree-sitter-check", "structure-check-test"] {
-        stage(name, |name| step::run(name, &mut workspace.tool(name)))?;
-    }
-    if let Some(base) = &base {
-        stage("structure-check --against", |name| {
-            step::run(
-                name,
-                workspace
-                    .tool("structure-check")
-                    .args(["--against", base])
-                    .arg(&workspace.root),
-            )
-        })?;
-    }
+    stage("refusal-check", |name| {
+        step::run(name, workspace.tool(name).arg(&workspace.root))
+    })?;
+    stage("tree-sitter-check", |name| {
+        step::run(name, &mut workspace.tool(name))
+    })?;
     Ok(())
 }
 

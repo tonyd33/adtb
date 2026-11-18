@@ -276,7 +276,7 @@ impl<R: Runtime> Database<R> {
             }
             Class::Transactions
                 if matches!(e, Error::Transactions(t) if t != crate::mvcc::Error::Closed)
-                    && self.pager.is_quarantined(Quarantine::Database) =>
+                    && self.pager.database_marked() =>
             {
                 quarantined_as(
                     &BTreeSet::from([Quarantine::Database]),
@@ -329,7 +329,7 @@ impl<R: Runtime> Database<R> {
 
     /// Fail if the database is quarantined.
     pub fn admit_database(&self) -> Result<(), Error> {
-        if self.pager.is_quarantined(Quarantine::Database) {
+        if self.pager.database_marked() {
             return Err(Error::admitted(Quarantine::Database));
         }
         Ok(())

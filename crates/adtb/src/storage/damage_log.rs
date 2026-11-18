@@ -227,9 +227,8 @@ impl<R: Runtime> Pager<R> {
             }
             false => BTreeMap::new(),
         };
-        let held = marks.iter().filter(|m| m.open_only());
-        for object in held.filter_map(|m| m.held()) {
-            self.hold_quarantine(opening, object);
+        for mark in marks {
+            self.hold_quarantine(opening, mark);
         }
         out
     }
@@ -251,15 +250,7 @@ impl<R: Runtime> Pager<R> {
         order: &impl Orders,
         judge: impl FnOnce(&Evidence) -> (T, BTreeSet<Mark>),
     ) -> (T, BTreeSet<Quarantine>, Result<(), MarkFailure>) {
-        let mut objects = BTreeSet::new();
-        let (out, marked) = order.ordered(|ordered| {
-            self.quarantine_judged(&ordered, |evidence| {
-                let (out, marks) = judge(evidence);
-                objects = marks.iter().filter_map(|m| m.durable()).collect();
-                (out, objects.clone())
-            })
-        });
-        (out, objects, marked)
+        order.ordered(|ordered| self.quarantine_judged(&ordered, judge))
     }
 
     /// Find the holders of each of `pages` with `holders` and map the page to what they mark

@@ -211,8 +211,7 @@ op.kind() -> OpKind   // the op's variant without its arguments: Open, CreateNew
 A `Ticket` is made only by a backend, for an op submitted to it, with
 `Ticket::new(n)`; `Ticket::NONE` is the ticket a simulated process that
 has stopped answers. `clippy.toml` refuses `Ticket::new` at every other
-site, and each backend calls it under an `expect` that
-`work/tools/structure-check` counts.
+site, and each backend calls it under an `expect`.
 
 Paths are relative to the database directory, separated by `/`; the
 empty path is the database directory itself, which always exists. A

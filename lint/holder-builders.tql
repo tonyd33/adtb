@@ -1,0 +1,6 @@
+main = do {
+  s <- descendants_of_kind :struct_expression;
+  f <- pure s | #body | named_children;
+  guard $ text f ~ r"^engine_module\b";
+  return s;
+} | arr range;

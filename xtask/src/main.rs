@@ -55,12 +55,11 @@ enum Task {
     ///
     /// Run, in order: clippy, rustfmt, the TQL rules, the tests, the Loom models, Miri,
     /// cargo-deny, the damage profile, the source-size limit, the documentation build and its link
-    /// check, structure-check, refusal-check, tree-sitter-check and structure-check-test. Stops at
+    /// check, refusal-check and tree-sitter-check. Stops at
     /// the first failure and names its step and command. Miri needs `ADTB_NIGHTLY_BIN`, which
     /// the dev shell sets.
     Check {
-        /// Also check the lint and structure allowlists against those of the parent of the
-        /// revset's root.
+        /// Also check the lint allowlist against that of the parent of the revset's root.
         #[arg(value_name = "REVSET")]
         revset: Option<String>,
     },

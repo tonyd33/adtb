@@ -50,3 +50,21 @@ include = [
   "crates/adtb/src/**/test_world/**/*.rs",
 ]
 rows = { sim_test_opens = "ratchet" }
+
+[[rule]]
+query = "holder-builders.tql"
+include = ["crates/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/catalog/structures.rs"]
+rows = { holder_builders = "zero" }
+
+[[rule]]
+query = "marked-readers.tql"
+include = ["crates/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/storage/**"]
+rows = { marked_readers = "zero" }
+
+[[rule]]
+query = "api-aborts.tql"
+include = ["crates/adtb/src/api/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
+rows = { api_aborts = "zero" }

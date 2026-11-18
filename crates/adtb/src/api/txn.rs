@@ -253,6 +253,10 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             return Ok(());
         };
         match std::mem::replace(&mut self.state, State::Closed) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "permanent: a rollback ends the transaction with no failure"
+            )]
             State::Open(tx) => self.engine.abort(self.id, *tx),
             State::Ended(_) | State::Closed => Ok(()),
         }
@@ -303,6 +307,10 @@ fn expected_abort_failure(e: &Error) -> bool {
 }
 
 impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: a dropped transaction ends with no failure"
+    )]
     fn drop(&mut self) {
         if let State::Open(tx) = std::mem::replace(&mut self.state, State::Closed)
             && let Ok(_open) = self.engine.enter()

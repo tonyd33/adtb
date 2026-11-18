@@ -147,7 +147,7 @@ From your workspace root in the dev shell:
 CARGO_TARGET_DIR="$PWD/target" cargo xtask check main..@
 ```
 
-The REVSET (here `main..@`) adds `lint --against` and `structure-check --against` the
+The REVSET (here `main..@`) adds `lint --against` the
 parent of its root at the end; without it `cargo xtask check` runs every other part.
 
 The target directory keeps the build in your workspace.

@@ -119,15 +119,6 @@ root, beside the `xtask` crate's two commands:
   change a path outside docs/, work/ and Markdown files; the quality
   cadence counts these.
 - `cargo xtask check` fails when a non-test source under `crates/` passes 1500 lines.
-- `structure-check [DIR]`: fail when a file has more sites than `structure-allowlist` allows of
-  a counted pattern, or fewer: the counts only fall. The rows not yet in `lint/`: the quarantine
-  marks, api aborts, crash loop helpers, and the `expect` attributes of
-  `clippy::disallowed_methods`, counted by parsing with `crates/adtb-structure`
-  (`clippy.toml` rejects `storage::page::owner`, `pages::Exclusive::write`,
-  `PageMemory::lock_exclusive`, `PageMemory::try_lock_exclusive`, `Optimistic::upgrade` and the
-  `regex` constructors outside `adtb_lang::pattern` by identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
-  above the allowlist at REV; `cargo xtask check REVSET` runs it against the parent of REVSET's root, so a rise is
-  the lead's act on main. `structure-check-test` proves it on scratch files.
 - `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
   `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of
   `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with

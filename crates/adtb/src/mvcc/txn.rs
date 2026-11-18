@@ -8,7 +8,7 @@ use adtb_sys::lock::{Lock, RwLock};
 use crate::btree;
 use crate::faults::{self, Step};
 use crate::runtime::Runtime;
-use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position, Quarantine};
+use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position};
 
 use super::past::{Commit, Marker, Past};
 use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, StatusError, Xid};
@@ -172,7 +172,7 @@ impl<R: Runtime> Transactions<R> {
     /// be read.
     pub fn open(rt: R, pager: &Pager<R>, root: Pid) -> Result<Transactions<R>, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
-        let damage = if pager.is_quarantined(Quarantine::Database) {
+        let damage = if pager.database_marked() {
             clog.unresolved(pager).err()
         } else {
             clog.settle_unresolved(pager).err()

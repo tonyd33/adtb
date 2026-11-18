@@ -6,6 +6,7 @@ use adtb_testkit::scratch::Scratch;
 use super::{Marks, Quarantine, Unwritable};
 use crate::storage::Pid;
 use crate::storage::pager::{Options, Pager};
+use crate::storage::policy::{self, Fault, Holder, Phase};
 
 const PAGE: Pid = Pid(5);
 
@@ -75,7 +76,8 @@ fn a_mark_set_while_the_open_holds_the_database_survives_a_crash() {
     };
     let pager = Pager::create(rt(), &options).expect("create pager");
     let opening = crate::storage::Opening::begin(&pager);
-    pager.hold_quarantine(&opening, Quarantine::Database);
+    let held = policy::mark(Fault::Unarmed, Holder::LsnMap, Phase::Opening);
+    pager.hold_quarantine(&opening, held);
     pager
         .plant_mark(Quarantine::Heap(1), &opening)
         .expect("mark the heap");

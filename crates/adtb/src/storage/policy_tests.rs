@@ -1,4 +1,4 @@
-use super::{Fault, Holder, Mark, Phase, mark};
+use super::{Fault, Holder, Kind, Mark, Phase, mark};
 use crate::storage::{Damage, Lsn, Quarantine, Shape};
 
 const HEAP: Quarantine = Quarantine::Heap(3);
@@ -19,11 +19,11 @@ const I1: Holder = relation(INDEX, true);
 const OPEN: Phase = Phase::Opening;
 const RUN: Phase = Phase::Running;
 
-const NO: Mark = Mark::Nothing;
-const DB: Mark = Mark::Database;
-const HELD: Mark = Mark::Held;
-const OH: Mark = Mark::Object(HEAP);
-const OI: Mark = Mark::Object(INDEX);
+const NO: Mark = Mark::NOTHING;
+const DB: Mark = Mark::DATABASE;
+const HELD: Mark = Mark::HELD;
+const OH: Mark = Mark(Kind::Object(HEAP));
+const OI: Mark = Mark(Kind::Object(INDEX));
 
 /// A kind of fault the storage design states one mark for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

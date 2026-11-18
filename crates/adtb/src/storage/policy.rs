@@ -52,9 +52,12 @@ pub enum Fault {
     Finding,
 }
 
-/// What a fault marks.
+/// What a fault marks, as [`mark`] decides it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Mark {
+pub struct Mark(Kind);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
     Nothing,
     /// One heap or index.
     Object(Quarantine),
@@ -65,26 +68,32 @@ pub enum Mark {
 }
 
 impl Mark {
+    const NOTHING: Mark = Mark(Kind::Nothing);
+    const DATABASE: Mark = Mark(Kind::Database);
+    const HELD: Mark = Mark(Kind::Held);
+
+    /// Returns a durable mark of `object` that no fault decided.
+    #[cfg(any(test, feature = "testing"))]
+    pub(in crate::storage) fn planted(object: Quarantine) -> Mark {
+        Mark(Kind::Object(object))
+    }
+
+    pub fn is_nothing(self) -> bool {
+        self == Mark::NOTHING
+    }
+
     /// Returns the object to mark durably.
     pub fn durable(self) -> Option<Quarantine> {
-        match self {
-            Mark::Object(object) => Some(object),
-            Mark::Database => Some(Quarantine::Database),
-            Mark::Nothing | Mark::Held => None,
+        match self.0 {
+            Kind::Object(object) => Some(object),
+            Kind::Database => Some(Quarantine::Database),
+            Kind::Nothing | Kind::Held => None,
         }
     }
 
     /// Returns whether this mark holds the database for an open only.
     pub fn open_only(self) -> bool {
-        self == Mark::Held
-    }
-
-    /// Returns the object an open holds marked for itself.
-    pub fn held(self) -> Option<Quarantine> {
-        match self {
-            Mark::Database | Mark::Held => Some(Quarantine::Database),
-            Mark::Nothing | Mark::Object(_) => None,
-        }
+        self == Mark::HELD
     }
 }
 
@@ -99,22 +108,22 @@ pub enum Phase {
 /// Returns what `fault` on a page of `holder` marks during `phase`.
 pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
     let damage = match fault {
-        Fault::Full => return Mark::Database,
-        Fault::Unarmed => return Mark::Held,
+        Fault::Full => return Mark::DATABASE,
+        Fault::Unarmed => return Mark::HELD,
         Fault::Finding => return found(holder),
-        Fault::Page(Damage::Settled { .. }) => return Mark::Nothing,
+        Fault::Page(Damage::Settled { .. }) => return Mark::NOTHING,
         Fault::Page(damage) => damage,
     };
     match holder {
-        Holder::DamageList if damage == Damage::Unreadable && phase == Phase::Opening => Mark::Held,
-        _ if damage == Damage::Unreadable => Mark::Nothing,
+        Holder::DamageList if damage == Damage::Unreadable && phase == Phase::Opening => Mark::HELD,
+        _ if damage == Damage::Unreadable => Mark::NOTHING,
         Holder::Relation {
             object,
             engine_module: false,
-        } => Mark::Object(object),
+        } => Mark(Kind::Object(object)),
         Holder::CommitLog if matches!(damage, Damage::LogUnproven { .. }) => match phase {
-            Phase::Opening => Mark::Held,
-            Phase::Running => Mark::Database,
+            Phase::Opening => Mark::HELD,
+            Phase::Running => Mark::DATABASE,
         },
         Holder::Relation {
             engine_module: true,
@@ -128,16 +137,16 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
         | Holder::Bitmap
         | Holder::MarksPage
         | Holder::DamageList
-        | Holder::LsnMap => Mark::Database,
+        | Holder::LsnMap => Mark::DATABASE,
         Holder::CatalogRows => match phase {
-            Phase::Opening => Mark::Database,
-            Phase::Running => Mark::Nothing,
+            Phase::Opening => Mark::DATABASE,
+            Phase::Running => Mark::NOTHING,
         },
         Holder::Unreached => match phase {
-            Phase::Opening => Mark::Nothing,
-            Phase::Running => Mark::Database,
+            Phase::Opening => Mark::NOTHING,
+            Phase::Running => Mark::DATABASE,
         },
-        Holder::Log | Holder::Retired | Holder::Free => Mark::Nothing,
+        Holder::Log | Holder::Retired | Holder::Free => Mark::NOTHING,
     }
 }
 
@@ -147,8 +156,8 @@ fn found(holder: Holder) -> Mark {
         Holder::Relation {
             object: object @ Quarantine::Index(_),
             ..
-        } => Mark::Object(object),
-        _ => Mark::Nothing,
+        } => Mark(Kind::Object(object)),
+        _ => Mark::NOTHING,
     }
 }
 
@@ -167,10 +176,10 @@ pub fn marks(
     let marks: BTreeSet<Mark> = holders
         .into_iter()
         .map(|h| mark(fault, h, phase))
-        .filter(|m| *m != Mark::Nothing)
+        .filter(|m| *m != Mark::NOTHING)
         .collect();
-    if marks.contains(&Mark::Database) {
-        BTreeSet::from([Mark::Database])
+    if marks.contains(&Mark::DATABASE) {
+        BTreeSet::from([Mark::DATABASE])
     } else {
         marks
     }

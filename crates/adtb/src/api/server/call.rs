@@ -562,6 +562,10 @@ impl<R: Runtime> Call<R> {
                     return Err(either(self.abandon(e, id, tx, || f.error)));
                 }
                 Err(Halted::Blocked { on, rerun }) => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "permanent: a read blocked on a wait ends with no failure and reruns"
+                    )]
                     e.abort(id, tx)?;
                     (on, rerun)
                 }

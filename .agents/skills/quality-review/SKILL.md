@@ -68,7 +68,7 @@ For each module, write down and check:
   enforcer is a finding.
 - Escape hatches: each `pub` field, `pub(crate)` accessor, raw guard,
   `unsafe` block or `#[expect]` that lets a caller bypass the module's
-  operations, and whether `cargo xtask lint` or `structure-check` counts it.
+  operations, and whether `cargo xtask lint` counts it.
 
 A module with ownerless state or an unstated contract is a finding even
 when the diff did not add it. Report the modules as a table of these
@@ -109,7 +109,7 @@ design file of a subsystem the diff changes, read the section for the
 changed call, and check the code honours its preconditions,
 postconditions and invariants.
 
-Skip what clippy, rustfmt, the size limit of `cargo xtask check`, `cargo xtask lint` or `structure-check` already enforce.
+Skip what clippy, rustfmt, the size limit of `cargo xtask check`, or `cargo xtask lint` already enforce.
 
 ## Filing
 

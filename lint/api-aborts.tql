@@ -1,0 +1,9 @@
+main = do {
+  d <- descendants_of_kind :function_item;
+  n <- pure d | #name;
+  guard $ not (text n == "abort");
+  c <- pure d | descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ (text f ~ r"(^|\.)db\s*\.abort$") `or` (text f ~ r"(^|::)Database::abort$");
+  return c;
+} | arr range;
