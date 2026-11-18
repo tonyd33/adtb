@@ -6,9 +6,9 @@ use adtb::testing::{
 };
 use adtb_harness::process;
 use adtb_harness::process::finished;
+use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -682,16 +682,8 @@ fn a_saved_cursor_of_an_idle_database_writes_nothing_on_close() {
     });
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("scrub")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).expect("the directory");
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("scrub", name)
 }
 
 fn host_options() -> OpenOptions {
@@ -733,12 +725,13 @@ fn a_real_file_rots_and_the_worker_finds_it() {
         &db,
         "set setting ScrubInterval = { every: Some { value: 1ms } }",
     );
-    let rows = (0..2000)
-        .find_map(|_| {
-            std::thread::sleep(Duration::from_millis(5));
-            Some(text(&db, FINDINGS)).filter(|rows| !rows.is_empty())
-        })
-        .expect("a finding within ten seconds");
+    let rows = loop {
+        let rows = text(&db, FINDINGS);
+        if !rows.is_empty() {
+            break rows;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     assert!(rows[0].starts_with("Checksum"), "{rows:?}");
 }
 
@@ -1228,7 +1221,9 @@ fn a_real_file_survives_a_tiny_budget_and_a_panic_in_the_worker() {
         &db,
         "set setting ScrubInterval = { every: Some { value: 0s } }",
     );
-    std::thread::sleep(Duration::from_millis(50));
+    while text(&db, JOBS).is_empty() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(Vec::<String>::new(), text(&db, FINDINGS));
     db.testing()
         .plant(Plant::Panic {
@@ -1236,10 +1231,7 @@ fn a_real_file_survives_a_tiny_budget_and_a_panic_in_the_worker() {
             message: "boom".into(),
         })
         .unwrap();
-    for _ in 0..1000 {
-        if db.testing().held_findings() > 0 {
-            break;
-        }
+    while db.testing().held_findings() == 0 {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(text(&db, FINDINGS)[0].contains("boom"));

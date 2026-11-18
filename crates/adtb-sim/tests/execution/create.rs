@@ -1,8 +1,9 @@
 //! Creating a database: a crash anywhere in it leaves no database or a whole one, a retried
 //! create works with nothing removed by hand, and a create removes nothing it did not make.
 
+use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use adtb::runtime::{OpKind, Runtime};
@@ -107,16 +108,8 @@ fn reserved(names: impl IntoIterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("create")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("create", name)
 }
 
 fn write_image(dir: &Path, image: &Files) {
@@ -202,7 +195,7 @@ fn a_create_crashed_anywhere_is_retried() {
         let path = dir.join(FILE);
         let names = opened_or_retried(|o| adtb::open(&path, &log(), o));
         assert_eq!(vec![r#""ann""#], names, "{stage:?} on the host");
-        let left = std::fs::read_dir(&dir)
+        let left = std::fs::read_dir(&*dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap());
         assert_eq!(

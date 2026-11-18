@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# slot-test [--shell]   prove slot, land, workspace-gc --clear-build and the machine lock on scratch
+# slot-test [--shell]   prove slot, land and workspace-gc --clear-build on scratch
 #                       repositories: every case, or with `--shell` only those needing no cargo; fail
 #                       on the first broken expectation.
 set -euo pipefail
@@ -11,10 +11,10 @@ cp "$(dirname "$(realpath "$0")")"/{land,slot,workspace-gc,code-commits,common.b
 
 export HOME=$scratch/home XDG_CONFIG_HOME=$scratch/home/.config XDG_CACHE_HOME=$scratch/home/.cache \
   XDG_DATA_HOME=$scratch/home/.local/share XDG_STATE_HOME=$scratch/home/.local/state \
-  CARGO_HOME=$scratch/home/.cargo TMPDIR=$scratch/tmp ADTB_MACHINE_LOCK=$scratch/suite.lock
+  CARGO_HOME=$scratch/home/.cargo TMPDIR=$scratch/tmp
 mkdir -p "$XDG_CONFIG_HOME/jj" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$CARGO_HOME" "$TMPDIR"
 printf '[user]\nname = "slot-test"\nemail = "slot-test@example.invalid"\n' >"$XDG_CONFIG_HOME/jj/config.toml"
-unset CARGO_TARGET_DIR ADTB_MACHINE_LOCK_HELD
+unset CARGO_TARGET_DIR
 cd "$scratch"
 
 fail() {
@@ -32,46 +32,7 @@ eventually() {
   return 1
 }
 
-lock_free() { flock -n "$ADTB_MACHINE_LOCK" true; }
-filled() { [[ -s $1 ]]; }
 sleeping() { [[ $(cat "/proc/$1/comm" 2>/dev/null) == sleep ]]; }
-
-# Print the pid of a shell started in the background that takes the machine lock, prints `held`
-# to $1 and then runs the commands $2.
-lock_taker() {
-  bash -c 'source "$1/common.bash"; machine_lock taker; echo held >"$2"; eval "$3"' _ "$main/work/tools" "$1" "$2" >/dev/null 2>&1 &
-  echo $!
-}
-
-machine_lock_cases() {
-  local ready=$scratch/ready pid daemon a b
-  a=$(env -u ADTB_MACHINE_LOCK HOME=/nonexistent/a XDG_CACHE_HOME=/nonexistent/a bash -c 'source "$1/common.bash"; machine_lock_path' _ "$main/work/tools")
-  b=$(env -u ADTB_MACHINE_LOCK HOME=/nonexistent/b XDG_CACHE_HOME=/nonexistent/b bash -c 'source "$1/common.bash"; machine_lock_path' _ "$main/work/tools")
-  [[ $a == "$b" ]] || fail "HOME and XDG_CACHE_HOME choose the lock file: $a, $b"
-
-  : >"$ready"
-  pid=$(lock_taker "$ready" 'exec sleep 300')
-  eventually filled "$ready" || fail "the lock taker never held the lock"
-  flock -n "$ADTB_MACHINE_LOCK" true && fail "a shell holding the machine lock does not exclude"
-  kill -9 "$pid"
-  eventually lock_free || fail "a killed shell keeps the machine lock"
-
-  : >"$ready"
-  bash -c 'source "$1/common.bash"; machine_lock taker; sleep 300 >/dev/null 2>&1 & echo $! >"$2"' _ "$main/work/tools" "$ready" >/dev/null 2>&1
-  eventually filled "$ready" || fail "the daemon's shell never held the lock"
-  daemon=$(cat "$ready")
-  if ! eventually lock_free; then
-    kill "$daemon"
-    fail "a daemon that outlives its shell keeps the machine lock"
-  fi
-  kill "$daemon"
-
-  : >"$ready"
-  pid=$(lock_taker "$ready" 'machine_unlock; exec sleep 300')
-  eventually filled "$ready" || fail "the lock taker never held the lock"
-  eventually lock_free || fail "machine_unlock keeps the machine lock"
-  kill "$pid"
-}
 
 # Run $@ and require it to fail with output containing $1, which is shifted off.
 refused() {
@@ -386,11 +347,6 @@ SHIM
   [[ -f $main/target/debug/deps/x ]] || fail "an empty argument cleared main"
   refused 'under' "$gc" --clear-build main
 
-  printf '%s pid 1 since now\n' "$main" >"$ADTB_MACHINE_LOCK"
-  hold_flock "$ADTB_MACHINE_LOCK"
-  refused 'holds the machine lock' env ADTB_GC_IDLE_HOURS=0 "$gc" --clear-build main
-  stop_sleeper
-  sleep 0.2
   ADTB_GC_IDLE_HOURS=0 "$gc" --clear-build main >/dev/null
   for build in "$main/target" "$main/apps/campaign/target"; do
     [[ $(ls -A "$build/debug") == .cargo-lock && -z $(ls -A "$build/tmp") && -f $build/evidence ]] ||
@@ -454,12 +410,6 @@ retention_cases() {
         out=$(ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean)
         [[ -f $ws/target/debug/deps/x ]] || fail "--clean cleared an active forgotten workspace"
         stop_sleeper
-        printf '%s pid 1 since now\n' "$ws" >"$ADTB_MACHINE_LOCK"
-        hold_flock "$ADTB_MACHINE_LOCK"
-        refused 'holds the machine lock' env ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean
-        [[ -f $ws/target/debug/deps/x ]] || fail "--clean ignored a forgotten workspace's machine lock"
-        stop_sleeper
-        sleep 0.2
       fi
       if [[ $mode == --clean ]]; then
         out=$(ADTB_GC_IDLE_HOURS=2 ADTB_SLOT_CAP_GB=0 "$gc" --clean)
@@ -545,7 +495,6 @@ gate_cases
 new_repo cadence-repo
 cadence_cases
 new_repo shell-repo
-machine_lock_cases
 shell_cases
 new_repo ignore-config
 ignore_cases config

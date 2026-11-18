@@ -1679,13 +1679,19 @@ fn a_synchronous_call_still_blocks_on_a_transaction_real() {
     let mut txn = db.begin(&TxnOptions::default()).unwrap();
     txn.query_text(UPDATE, &[], &TxnCallOptions::default())
         .unwrap();
+    let xid = txn
+        .tested_txn()
+        .and_then(Txn::xid)
+        .expect("the update gives the transaction an xid");
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
         let caller = scope.spawn(|| {
             calls.call(2, &[], &CallOptions::default()).unwrap();
             done.store(true, Ordering::Release);
         });
-        std::thread::sleep(Duration::from_millis(50));
+        while !db.testing().waited_on().contains(&xid) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             !done.load(Ordering::Acquire),
             "the call waits for the transaction"

@@ -8,8 +8,8 @@
 #                         empty debug, except its cargo lock, and tmp of target/ and
 #                         apps/campaign/target/ of WORKSPACE, or of the main checkout for `main`;
 #                         refuses when one is not exactly that
-#                         directory, changed within ADTB_GC_IDLE_HOURS, or cargo, a process or a
-#                         run holding the machine lock from that workspace is using it
+#                         directory, changed within ADTB_GC_IDLE_HOURS, or cargo or a process
+#                         is using it
 #
 # A build directory is marked clean when its workspace is forgotten or its working copy is
 # empty, no process uses the workspace and its cache was idle for ADTB_GC_IDLE_HOURS (default 2).
@@ -147,12 +147,7 @@ empty_build() {
 }
 
 clearable_workspace() {
-  local wsroot=$1 lock
-  [[ -d $wsroot/.jj ]] || refuse "$wsroot holds no .jj"
-  lock=$(machine_lock_path)
-  if [[ -e $lock ]] && ! flock -n "$lock" true && [[ $(cat "$lock") == "$wsroot pid "* ]]; then
-    refuse "a run in $wsroot holds the machine lock"
-  fi
+  [[ -d $1/.jj ]] || refuse "$1 holds no .jj"
 }
 
 # Empty the build directories of the workspace named $1.

@@ -16,7 +16,7 @@ impl Child {
         root: &Path,
         deadline: Instant,
     ) -> Result<Self> {
-        let mut command = adtb_heap_cap::test_child(std::env::current_exe()?, 1);
+        let mut command = std::process::Command::new(std::env::current_exe()?);
         command
             .args(["--exact", ENTRY, "--nocapture"])
             .env(ROLE, role)
@@ -40,9 +40,8 @@ impl Child {
         };
         writeln!(
             owned.log,
-            "pid={} parent_group={:?} parent_cap={}",
+            "pid={} parent_cap={}",
             owned.process.as_ref().ok_or("missing owned child")?.id(),
-            std::env::var("NEXTEST_TEST_GROUP"),
             adtb_heap_cap::current_cap()
         )?;
         Ok(owned)

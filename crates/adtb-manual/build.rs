@@ -76,13 +76,13 @@ fn tests(page: &str, examples: &[Example]) -> String {
              {code}\n\
              #[test]\n\
              fn runs() {{\n\
-             let dir = std::path::Path::new(env!(\"CARGO_TARGET_TMPDIR\"))\n\
-             .join(\"rust-examples\").join({page:?}).join(\"line-{line}\");\n\
+             let dir = ::adtb_testkit::scratch::Scratch::new(\"rust-examples\", {label:?});\n\
              ::adtb_manual::run({page:?}, {line}, &dir, {shown:?}, main);\n\
              }}\n\
              }}",
             code = e.code,
             shown = e.shown,
+            label = format!("{}-line-{line}", page.replace('/', "-")),
         )
         .expect("a String takes writes");
     }

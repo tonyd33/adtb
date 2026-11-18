@@ -3,8 +3,9 @@
 
 use adtb_harness::process::once;
 use adtb_simkit::api;
+use adtb_testkit::scratch::Scratch;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use adtb::{
     CallOptions, Database, Error, Log, OpenOptions, RejectReason, RetryReason, TxnCallOptions,
@@ -38,15 +39,10 @@ add type Order = { user: Key users, n: I64 }
 add relation out_rejects : RejectedRow key (load, line)
 ";
 
-/// Returns a fresh directory named `name` under the test binary's scratch directory, holding
+/// Returns a new scratch directory labelled `name`, holding
 /// each file of `files` by its relative name.
-fn dir(name: &str, files: &[(&str, &str)]) -> PathBuf {
-    let at = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("files")
-        .join(name);
-    if at.exists() {
-        std::fs::remove_dir_all(&at).expect("the old directory is removed");
-    }
+fn dir(name: &str, files: &[(&str, &str)]) -> Scratch {
+    let at = Scratch::new("files", name);
     for (file, text) in files {
         let path = at.join(file);
         std::fs::create_dir_all(path.parent().expect("a file has a directory"))

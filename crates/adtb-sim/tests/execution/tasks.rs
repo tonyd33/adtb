@@ -2,6 +2,7 @@
 //! production that stops at the handoff, snapshots held until drained, and the outcome of
 //! cancel, idle expiry and drop against commit.
 
+use adtb_testkit::scratch::Scratch;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
@@ -331,16 +332,11 @@ fn sim_seeds_in(seeds: Range<u64>, body: impl Fn(&SimRuntime)) {
     }
 }
 
-/// Returns a runtime over a new directory of its own, `name`.
-fn real(name: &str) -> OsRuntime {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("tasks")
-        .join(name);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    OsRuntime::new(dir, Backend::Pool { threads: 2 })
+/// Returns a new directory of its own, `name`, and a runtime over it.
+fn real(name: &str) -> (Scratch, OsRuntime) {
+    let dir = Scratch::new("tasks", name);
+    let rt = OsRuntime::new(dir.to_path_buf(), Backend::Pool { threads: 2 });
+    (dir, rt)
 }
 
 fn ints(vs: &[Value]) -> BTreeSet<i64> {
@@ -516,7 +512,8 @@ fn a_slow_reader_stops_production_sim() {
 
 #[test]
 fn a_slow_reader_stops_production_real() {
-    a_slow_reader_stops_production(&real("slow-reader"));
+    let (_dir, rt) = real("slow-reader");
+    a_slow_reader_stops_production(&rt);
 }
 
 #[test]
@@ -568,7 +565,8 @@ fn a_pending_observe_wakes_sim() {
 
 #[test]
 fn a_pending_observe_wakes_real() {
-    a_pending_observe_wakes(&real("pending-observe"));
+    let (_dir, rt) = real("pending-observe");
+    a_pending_observe_wakes(&rt);
 }
 
 /// Capacity supplied while production waits for it wakes production.
@@ -597,7 +595,8 @@ fn a_supply_wakes_a_waiting_producer_sim() {
 
 #[test]
 fn a_supply_wakes_a_waiting_producer_real() {
-    a_supply_wakes_a_waiting_producer(&real("supply"));
+    let (_dir, rt) = real("supply");
+    a_supply_wakes_a_waiting_producer(&rt);
 }
 
 /// The read's snapshot stays held after its last batch is formed, until the drain is
@@ -699,7 +698,8 @@ fn a_retried_write_publishes_only_the_committed_attempt_sim() {
 
 #[test]
 fn a_retried_write_publishes_only_the_committed_attempt_real() {
-    a_retried_write_publishes_only_the_committed_attempt(&real("retried-write"));
+    let (_dir, rt) = real("retried-write");
+    a_retried_write_publishes_only_the_committed_attempt(&rt);
 }
 
 #[test]
@@ -777,7 +777,8 @@ fn cancel_racing_commit_settles_once_sim() {
 
 #[test]
 fn cancel_racing_commit_settles_once_real() {
-    cancel_racing_commit_settles_once(&real("cancel-commit"));
+    let (_dir, rt) = real("cancel-commit");
+    cancel_racing_commit_settles_once(&rt);
 }
 
 #[test]
@@ -1281,11 +1282,8 @@ fn a_caller_token_stops_a_waiting_task() {
 /// A close concurrent with another returns only once the file and its lock are released.
 #[test]
 fn a_concurrent_close_returns_once_the_file_is_released() {
-    let rt = real("concurrent-close");
-    let path = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("tasks")
-        .join("concurrent-close")
-        .join("shop.adt");
+    let (dir, rt) = real("concurrent-close");
+    let path = dir.join("shop.adt");
     let (seen, gate) = (Arc::new(Seen::default()), Arc::new(Gate::default()));
     let opts = options(&rt, &seen, &gate, 1);
     let log = Log::new([SCHEMA]);
@@ -1609,7 +1607,8 @@ fn a_mark_before_commit_refuses_both_commits_sim() {
 
 #[test]
 fn a_mark_before_commit_refuses_both_commits_on_a_real_file() {
-    a_mark_before_commit_refuses_both_commits(&real("mark-before-commit"));
+    let (_dir, rt) = real("mark-before-commit");
+    a_mark_before_commit_refuses_both_commits(&rt);
 }
 
 /// Check that `verify` as a task runs under commit log damage and any other text fails.
@@ -1663,7 +1662,8 @@ fn a_verify_task_runs_on_a_damaged_commit_log_sim() {
 
 #[test]
 fn a_verify_task_runs_on_a_damaged_commit_log_of_a_real_file() {
-    a_verify_task_runs_on_a_damaged_commit_log(&real("verify-task-damaged"));
+    let (_dir, rt) = real("verify-task-damaged");
+    a_verify_task_runs_on_a_damaged_commit_log(&rt);
 }
 
 #[test]

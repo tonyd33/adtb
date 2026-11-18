@@ -49,7 +49,7 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `cargo build --workspace`: build the workspace.
 - `cargo clippy --workspace --all-targets -- -D warnings`: lint Rust.
 - `cargo fmt --all --check`: check Rust formatting.
-- `work/tools/suite [ARGS]`: run tests through the shared nextest lock.
+- `work/tools/suite [ARGS]`: run tests under a memory limit.
 - `check` (in the dev shell): run the full checks, including the campaign
   application, the Loom models, Miri, dependency policy, source-size
   limits and every `work/tools/*-test`. `check --changed [REVSET]` (default
@@ -82,9 +82,15 @@ nix run github:tonyd33/tix -- -C work/issues check
 Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
 root (devenv also puts each on PATH as `NAME`):
 
-- `suite [ARGS]`: the full nextest run, under the machine lock that
-  `check` also holds; output in `target/suite.txt`, prints failures and the summary. A child outliving the shell that took the lock runs unlocked: that keeps a daemon from holding it. Never set `RUST_MIN_STACK` where cargo or rustc can see it: it reached rustc and crashed it. Set it only on a spawned test child.
-- A test binary caps its own heap: `crates/adtb-heap-cap`, a counting global allocator that the `test-heap-cap` feature links through dev-dependencies, aborts the process past 1.5 GiB of live heap, charging each allocation its malloc chunk, so every nextest slot at the default fits together. A test that needs more calls `adtb_heap_cap::raise_cap(BYTES)` first and declares `threads-required` in `.config/nextest.toml`, the cap over the default rounded up; `every_raised_test_holds_its_slots` fails otherwise. A test that spawns a capped binary builds the command with `adtb_heap_cap::test_child(PROGRAM, AT_ONCE)`, which caps the child so the test's processes together fit its slots, and belongs to a `slots-N` test group with `threads-required = N` in `.config/nextest.toml`; under nextest the helper panics in another group, and `disallowed_methods` in `clippy.toml` makes clippy refuse `Command::new` at any other site, in both workspaces. `ADTB_TEST_HEAP_CAP` overrides everything, in bytes. It holds for a test binary run directly and for the binaries tests spawn. The cap is per process and assumes nextest: plain `cargo test` shares a process across a binary's tests and can abort falsely, so set `RUST_TEST_THREADS=1` for a direct run. `cargo build --workspace` has no cap, but any build with `--all-targets` or `--all-features` does: a `target/debug/adtb` it leaves aborts at the cap and obeys the variable until rebuilt. Miri has none. Page memory, C allocations and freed memory malloc retains are not counted. A new test binary that links neither `adtb-lang` nor `adtb-sys` needs `extern crate adtb_lang as _;`; `every_test_binary_has_the_heap_cap` fails otherwise.
+- `suite [ARGS]`: the full nextest run, output in `target/suite.txt`; prints failures, the
+  summary and the run's peak memory. `suite` and `check` run under `limited`: a systemd user scope
+  of at most 14G per run, inside `adtb.slice`, which every run shares, throttled past 60% of the
+  machine's memory and capped at 75%, no swap. Past a limit the kernel kills a process, which
+  nextest reports as SIGKILL, and the run goes on. Runs share the machine with no lock. A typed
+  `cargo nextest run` or `cargo test`, the other tools and CI, which has no systemd user manager,
+  run without this limit. A test is reported slow at 20 s and killed as hung at 300 s; no test
+  may depend on the machine being idle. Never set `RUST_MIN_STACK` where cargo or rustc can see it: it reached rustc and crashed it. Set it only on a spawned test child.
+- A test binary caps its own heap: `crates/adtb-heap-cap`, a counting global allocator that the `test-heap-cap` feature links through dev-dependencies, aborts the process past 1.5 GiB of live heap, charging each allocation its malloc chunk. A test that needs more calls `adtb_heap_cap::raise_cap(BYTES)` first and declares `threads-required` in `.config/nextest.toml`, the cap over the default rounded up; `every_raised_test_holds_its_slots` fails otherwise. `ADTB_TEST_HEAP_CAP` overrides everything, in bytes. It holds for a test binary run directly and for the binaries tests spawn. The cap is per process and assumes nextest: plain `cargo test` shares a process across a binary's tests and can abort falsely, so set `RUST_TEST_THREADS=1` for a direct run. `cargo build --workspace` has no cap, but any build with `--all-targets` or `--all-features` does: a `target/debug/adtb` it leaves aborts at the cap and obeys the variable until rebuilt. Miri has none. Page memory, C allocations and freed memory malloc retains are not counted. A new test binary that links neither `adtb-lang` nor `adtb-sys` needs `extern crate adtb_lang as _;`; `every_test_binary_has_the_heap_cap` fails otherwise.
 - `conf PATH...`: run conformance files or directories on the
   reference and the engine; prints each difference as `FILE:LINE`.
 - `script PATH...`: run engine scripts (`crates/adtb-sim/scripts/AREA/*.test`, files or
@@ -154,8 +160,8 @@ root (devenv also puts each on PATH as `NAME`):
   `Site fix because: REASON` line. It also refuses a BRIEF with no `## Contract` section holding text (a brief
   that changes no code says `Contract: none, no code` on its own line), and any BRIEF while
   `code-commits reviewed..main` prints more than 15 lines: run the quality review, then
-  `jj bookmark set reviewed -r main`. `slot-test` proves `slot`, `land`,
-  `--clear-build` and the machine lock on scratch repositories, from a copy of the tools there; `--shell` runs the cases without cargo builds.
+  `jj bookmark set reviewed -r main`. `slot-test` proves `slot`, `land` and
+  `--clear-build` on scratch repositories, from a copy of the tools there; `--shell` runs the cases without cargo builds.
 
 ## Invariants and fixes
 

@@ -14,7 +14,6 @@ use std::thread;
 use std::time::Duration;
 
 use adtb_conformance::{panic_message, parse, run_engine_in, scripts};
-use adtb_heap_cap::test_child;
 use adtb_sim::{Config, Outcome, Sim};
 
 const SEED: u64 = 0;
@@ -84,17 +83,15 @@ fn child() {
 
 /// Returns each difference of the script at `path`, run in a child process.
 fn in_child(path: &Path) -> Vec<String> {
-    let mut child = test_child(
-        std::env::current_exe().expect("the test binary has a path"),
-        MOST_WORKERS,
-    )
-    .args(["--exact", "child", "--nocapture", "--test-threads", "1"])
-    .env(CHILD, path)
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()
-    .expect("the child starts");
+    let mut child =
+        std::process::Command::new(std::env::current_exe().expect("the test binary has a path"))
+            .args(["--exact", "child", "--nocapture", "--test-threads", "1"])
+            .env(CHILD, path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the child starts");
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let drain = |r: &mut dyn Read| {

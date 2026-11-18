@@ -1,7 +1,7 @@
 //! The runtime contract every backend meets, run against the simulator and the host.
 
+use adtb_testkit::scratch::Scratch;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -538,33 +538,28 @@ fn on_sim(body: fn(&SimRuntime)) {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("io_contract")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("io_contract", name)
 }
 
 fn on_pool(name: &str, body: fn(&OsRuntime)) {
-    let rt = OsRuntime::new(scratch(name), Backend::Pool { threads: 4 });
+    let dir = scratch(name);
+    let rt = OsRuntime::new(dir.to_path_buf(), Backend::Pool { threads: 4 });
     body(&rt);
 }
 
 fn on_uring(name: &str, body: fn(&OsRuntime)) {
     if let Some(backend) = adtb_harness::backends::uring(4) {
-        body(&OsRuntime::new(scratch(name), backend));
+        let dir = scratch(name);
+        body(&OsRuntime::new(dir.to_path_buf(), backend));
     }
 }
 
 fn on_faulty(name: &str, backend: Option<Backend>, body: fn(&OsRuntime)) {
     if let Some(backend) = backend {
+        let dir = scratch(name);
         body(&OsRuntime::with_faults(
-            scratch(name),
+            dir.to_path_buf(),
             backend,
             Faults::none(4096),
         ));
@@ -716,7 +711,7 @@ const SUBMITTED: u8 = 64;
 /// Submit writes without waiting for them, then drop the runtime.
 fn writes_submitted_before_a_drop_have_landed_when_it_returns(name: &str, backend: Backend) {
     let dir = scratch(name);
-    let rt = OsRuntime::new(&dir, backend);
+    let rt = OsRuntime::new(dir.to_path_buf(), backend);
     let mut io = rt.io();
     let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     for i in 0..SUBMITTED {

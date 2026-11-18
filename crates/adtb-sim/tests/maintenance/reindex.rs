@@ -4,9 +4,9 @@
 use crate::catalog_root::changing_words;
 use adtb_harness::{common, process};
 use adtb_testkit::refused_with;
+use adtb_testkit::scratch::Scratch;
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -798,16 +798,8 @@ fn a_close_stops_a_running_job_before_its_swap_and_the_old_index_stays() {
     });
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("reindex")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("reindex", name)
 }
 
 fn real_options() -> OpenOptions {
@@ -816,7 +808,8 @@ fn real_options() -> OpenOptions {
 
 #[test]
 fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
-    let path = scratch("damaged").join("app.adt");
+    let dir = scratch("damaged");
+    let path = dir.join("app.adt");
     let path = path.to_str().unwrap().to_owned();
     let log = Log::new([APP]);
     let db = Database::open(&path, &log, &real_options()).unwrap();

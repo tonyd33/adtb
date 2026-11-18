@@ -126,6 +126,7 @@ dependencies = [
  "adtb",
  "adtb-codegen",
  "adtb-lang",
+ "adtb-testkit",
 ]
 
 [[package]]
@@ -171,6 +172,7 @@ dependencies = [
  "adtb",
  "adtb-heap-cap",
  "adtb-lang",
+ "adtb-testkit",
  "clap",
 ]
 

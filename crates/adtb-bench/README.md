@@ -216,8 +216,7 @@ required. The parent performs no database calls.
 Each case gives child work and socket/exit coordination one absolute ten-second
 deadline; partial socket transfers recompute the remaining time. Error cleanup
 kills the owned PID and polls for reap for at most two additional seconds.
-Children run sequentially through the heap-cap helper under the parent's exact
-slots-2 nextest assignment, with one slot each. Child output goes to owned
+Children run sequentially. Child output goes to owned
 files, so no pipe-drain thread can outlive the parent. Journals, child logs and
 database files remain under `target/sqlite-crash-controls/cases`.
 

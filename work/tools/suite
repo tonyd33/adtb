@@ -1,51 +1,40 @@
 #!/usr/bin/env bash
-# suite [--fail-fast] [ARGS]   build tests selected by ARGS, then run under the machine lock.
-# Collect all failures by default; a leading --fail-fast stops scheduling after a failure.
-# ARGS select Cargo packages and nextest tests; use --workspace with --exclude.
-# Other execution-only nextest flags are not supported by the prebuild.
-#
-# The full output goes to target/suite.txt, or ADTB_SUITE_OUT when set, and ends with `suite:
-# exit N`. Prints only the failing and timed out tests, the summary and that path, and exits with
-# nextest's status.
 set -uo pipefail
 
-root=$(cd "$(dirname "$0")/../.." && pwd)
-target=${CARGO_TARGET_DIR:-$root/target}
-out=${ADTB_SUITE_OUT:-$target/suite.txt}
+usage() {
+  cat <<'HELP'
+suite [ARGS]   run `cargo nextest run --no-fail-fast ARGS` over the workspace in a scope of
+               `limited`, unless this already runs in one
 
-# shellcheck source=work/tools/common.bash
-source "$root/work/tools/common.bash"
+The full output goes to target/suite.txt, or ADTB_SUITE_OUT when set, and ends with
+`suite: exit N`. Prints only the build errors, the failing, killed and timed out tests, the
+summary, the scope's peak memory and that path, and exits with nextest's status.
+HELP
+}
 
-mkdir -p "$target"
-no_core_dumps
-cd "$root" || exit 1
-: >"$out"
-trap 'echo "suite: exit $status" >>"$out"' EXIT
-status=1
+case ${1:-} in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
 
-fail_fast=--no-fail-fast
-if [[ ${1:-} == --fail-fast ]]; then
-  fail_fast=--fail-fast
-  shift
-fi
+tools=$(dirname "$(realpath "$0")")
+cgroup=$(</proc/self/cgroup)
+cgroup=${cgroup#0::}
+[[ $cgroup == */adtb-run-*.scope || -n ${ADTB_UNLIMITED:-} ]] || exec "$tools/limited" "$0" "$@"
 
-started=$SECONDS
-cargo nextest run --no-run "$@" >>"$out" 2>&1
+root=$(realpath "$tools/../..")
+out=${ADTB_SUITE_OUT:-${CARGO_TARGET_DIR:-$root/target}/suite.txt}
+mkdir -p "$(dirname "$out")"
+ulimit -Sc 0
+cargo nextest run --manifest-path "$root/Cargo.toml" --no-fail-fast "$@" >"$out" 2>&1
 status=$?
-if ((status != 0)); then
-  grep -E '^error' -A8 "$out" | head -40
-  echo "the build fails; output in $out"
-  exit "$status"
+echo "suite: exit $status" >>"$out"
+grep -E '^error|^\s+(FAIL|SIGABRT|SIGSEGV|SIGKILL|TIMEOUT)|Summary' "$out" | sort -u
+peak=/sys/fs/cgroup$cgroup/memory.peak
+if [[ $cgroup == */adtb-run-*.scope && -r $peak ]]; then
+  echo "peak $(($(<"$peak") >> 20)) MiB in ${cgroup##*/}"
 fi
-echo "built in $((SECONDS - started))s"
-
-machine_lock "$root"
-
-started=$SECONDS
-cargo nextest run "$fail_fast" "$@" >>"$out" 2>&1
-status=$?
-machine_unlock
-
-grep -E '^\s+(FAIL|SIGABRT|SIGSEGV|SIGKILL|TIMEOUT)|Summary' "$out" | sort -u
-echo "ran in $((SECONDS - started))s; output in $out"
+echo "output in $out"
 exit "$status"

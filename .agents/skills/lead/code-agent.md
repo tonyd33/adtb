@@ -188,8 +188,9 @@ inspecting that log, and return that status. For example, in a subshell:
 ```
 
 `work/tools/suite` builds the
-tests, then waits for the machine lock, which one test run or `check` holds
-at a time.
+tests and runs them in a scope whose memory the kernel limits, as `check` runs
+in one; a test the limit kills shows as SIGKILL. Other runs on the machine
+only slow it.
 It prints failures, timeouts, the summary and the output path
 (`target/suite.txt`, ending in `suite: exit N`). Use the harness's
 asynchronous execution when available, collect the final exit status and
@@ -266,8 +267,7 @@ while iterating is the largest avoidable cost measured across agents. Start from
 the files your brief names and `work/tools/codemap`; broad reading is the next
 largest. A performance track reports a before and after benchmark of the workload its brief names.
 Repeat checks only for changed inputs, failures or unresolved concerns. Run `work/tools/suite`
-in the background: it can wait out a whole `check`, and a foreground call with a harness timeout
-dies waiting. A bug fix comes with a regression test: write it before the fix and watch it fail, as part of
+in the background: a full run outlasts a harness's foreground timeout. A bug fix comes with a regression test: write it before the fix and watch it fail, as part of
 the work, not as a separate step. Do not rebuild to break code on purpose: each rebuild of
 adtb-sim costs two minutes. Run `house-check` and `size-check` before `check`; when a
 `check` fails only in `house-check`, rerun `house-check`, not `check`. The size in a brief is an estimate; say in the report when the change grew well past it.

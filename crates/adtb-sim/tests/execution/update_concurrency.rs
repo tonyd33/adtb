@@ -1,6 +1,7 @@
 use std::sync::Barrier;
 
 use adtb_testkit::profile::{count, sweep};
+use adtb_testkit::scratch::Scratch;
 
 use adtb::{CallOptions, Called, CreateOptions, Log, OpenOptions, Registration, Value};
 
@@ -9,11 +10,7 @@ const APP: &str = "import counters\nquery value () -> Set I64 = from c in counte
 
 #[test]
 fn two_committed_updates_advance_twice() {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("update-concurrency");
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("update-concurrency", "two-updates");
     let path = dir.join("counter.adt");
     let log = Log::new([LOG]);
     let opts = OpenOptions {

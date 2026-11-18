@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-02
-status: open
+status: wontfix
 kind: feature
 priority: 380
 summary: agents poll suite and check logs because neither can be started detached and waited on for a bounded time
+closed: 2026-11-17
 tags:
   - devex
 ---
@@ -19,3 +20,7 @@ tags:
 `suite --start [ARGS]` and `check --start` take a run id, detach the run under the machine lock, and print the id and log path at once. `suite --wait ID [SECONDS]` blocks until the run ends or SECONDS pass, default under every harness's foreground limit: on the end it prints failures, the summary and `suite: exit N` and exits N; on the limit it prints `still running` and exits with a distinct status, so a caller repeats the one call. No loop in the caller, no log reading. A detached run outliving its starter keeps the rule that a child outliving the shell that took the lock runs unlocked: decide whether `--start` owns the lock itself instead.
 
 Done when `slot-test` or `suite-test` proves start, wait to the end, wait to the limit and a second waiter on one run, and code-agent.md's per-harness lines name the one call.
+
+## 2026-11-17: wontfix
+
+Moot: the machine lock is gone (machine-lock-removal), so a run no longer queues behind another; the wait that remains is the run itself, which the per-harness lines in code-agent.md cover.

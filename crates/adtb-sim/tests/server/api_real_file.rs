@@ -1,5 +1,6 @@
 //! The in-process API over a real file under the host's runtime, with no simulator.
 
+use adtb_testkit::scratch::Scratch;
 use std::path::{Path, PathBuf};
 
 use adtb::testing::page::HEADER_LEN;
@@ -16,16 +17,8 @@ add type Customer = { id: Key customers, name: Text }
 add relation customers : Customer key id generate sequence
 ";
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("api_real_file")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("api_real_file", name)
 }
 
 /// Returns the files under `dir` this process holds open.
@@ -62,7 +55,8 @@ fn names(db: &Database) -> Vec<String> {
 
 #[test]
 fn a_database_written_through_the_api_reopens_with_its_rows() {
-    let path = scratch("reopen").join("shop.adt");
+    let dir = scratch("reopen");
+    let path = dir.join("shop.adt");
     let log = Log::new([SHOP]);
     {
         let db = adtb::open(&path, &log, &options()).expect("create");
@@ -100,7 +94,8 @@ fn answers(db: &Database, text: &str) -> Vec<String> {
 
 #[test]
 fn a_stored_view_of_a_scalar_or_nested_element_type_reopens_on_a_real_file() {
-    let path = scratch("scalar-view").join("shop.adt");
+    let dir = scratch("scalar-view");
+    let path = dir.join("shop.adt");
     const VIEWS: &str = r#"module shop
 define fn names () -> Set Text = from c in customers select c.name
 store names
@@ -139,7 +134,8 @@ add relation pets : Pet key id generate sequence
 define fn cats () -> Set Text = from c in pets.Cat select c.name
 store cats
 ";
-    let path = scratch("cats").join("pets.adt");
+    let dir = scratch("cats");
+    let path = dir.join("pets.adt");
     {
         let db = adtb::open(&path, &Log::new([PETS]), &options()).expect("create");
         db.query_text(
@@ -158,7 +154,8 @@ store cats
 
 #[test]
 fn a_file_open_in_this_process_is_not_opened_again() {
-    let path = scratch("twice").join("shop.adt");
+    let dir = scratch("twice");
+    let path = dir.join("shop.adt");
     let log = Log::new([SHOP]);
     let db = adtb::open(&path, &log, &options()).expect("create");
     let again = adtb::open(&path, &log, &options());
@@ -178,7 +175,8 @@ fn a_file_open_in_this_process_is_not_opened_again() {
 
 #[test]
 fn a_created_file_is_locked_against_another_process() {
-    let path = scratch("created-locked").join("shop.adt");
+    let dir = scratch("created-locked");
+    let path = dir.join("shop.adt");
     let db = adtb::open(&path, &Log::new([SHOP]), &options()).expect("create");
     let other = std::fs::File::open(&path).expect("the created file");
     assert!(
@@ -190,7 +188,8 @@ fn a_created_file_is_locked_against_another_process() {
 
 #[test]
 fn a_missing_file_is_not_found_without_create() {
-    let path = scratch("missing").join("shop.adt");
+    let dir = scratch("missing");
+    let path = dir.join("shop.adt");
     let got = adtb::open(&path, &Log::new([SHOP]), &OpenOptions::default());
     assert!(matches!(got, Err(OpenError::NotFound)), "{got:?}");
     assert!(!path.exists(), "open without create made the file");
@@ -223,7 +222,7 @@ fn a_closed_database_holds_no_file_open() {
 #[test]
 fn a_failed_open_holds_no_file_open() {
     let dir = scratch("refused");
-    let rt = OsRuntime::new(&dir, Backend::Pool { threads: 2 });
+    let rt = OsRuntime::new(dir.to_path_buf(), Backend::Pool { threads: 2 });
     let refused = Log::new([SHOP, "module shop\nremove relation missing"]);
     let got = Database::open_in(rt.clone(), "shop.adt", &refused, &options());
     assert!(
@@ -244,7 +243,7 @@ fn a_refused_create_leaves_no_file_behind() {
         matches!(got, Err(OpenError::MigrationRefused { version: 2, .. })),
         "{got:?}"
     );
-    let left: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let left: Vec<PathBuf> = std::fs::read_dir(&*dir)
         .expect("the directory")
         .map(|e| e.expect("an entry").path())
         .collect();
@@ -450,7 +449,7 @@ fn stopped(
     stop: impl FnOnce() + Send,
 ) -> Result<Vec<adtb::DynRows>, adtb::Error> {
     let dir = scratch(name);
-    let rt = OsRuntime::new(&dir, Backend::Pool { threads: 2 });
+    let rt = OsRuntime::new(dir.to_path_buf(), Backend::Pool { threads: 2 });
     let db =
         Database::open_in(rt.clone(), "shop.adt", &Log::new([SHOP]), &options()).expect("create");
     let opts = CallOptions {
@@ -564,8 +563,9 @@ fn runs(db: &Database, text: &str) {
 }
 
 /// Returns a seeded file under a new directory with the page `pick` picks flipped.
-fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::testing::Pid) -> PathBuf {
-    let path = scratch(name).join("app.adt");
+fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::testing::Pid) -> (Scratch, PathBuf) {
+    let dir = scratch(name);
+    let path = dir.join("app.adt");
     let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
     runs(
         &db,
@@ -579,12 +579,12 @@ fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::testing::Pid) -> Pa
     let mut files = Files::from([("file".to_owned(), std::fs::read(&path).unwrap())]);
     DataFile::new("file", 8192).flip(&mut files, page, 300 - HEADER_LEN);
     std::fs::write(&path, &files["file"]).unwrap();
-    path
+    (dir, path)
 }
 
 #[test]
 fn a_damaged_constructor_page_of_a_real_file_quarantines_its_constructor() {
-    let path = damaged("quarantine_heap", |db| {
+    let (_dir, path) = damaged("quarantine_heap", |db| {
         let t = db.testing();
         t.pages(t.heap("app::identities", "Apple").unwrap())
             .unwrap()[0]
@@ -603,7 +603,7 @@ fn a_damaged_constructor_page_of_a_real_file_quarantines_its_constructor() {
 
 #[test]
 fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
-    let path = damaged("quarantine_index", |db| {
+    let (_dir, path) = damaged("quarantine_index", |db| {
         let t = db.testing();
         let index = t
             .index("app::identities", "index (user) in (Google | Apple)")
@@ -623,7 +623,8 @@ fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
 
 #[test]
 fn open_returns_on_a_real_file_cut_before_the_first_roles_page() {
-    let path = scratch("cut").join("shop.adt");
+    let dir = scratch("cut");
+    let path = dir.join("shop.adt");
     let log = Log::new([SHOP]);
     let at = {
         let db = adtb::open(&path, &log, &options()).expect("create");

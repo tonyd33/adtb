@@ -6,7 +6,7 @@ use support::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gm_player_flow_and_restart() {
-    let path = scratch("flow");
+    let (_dir, path) = scratch("flow");
     let server = Server::open(&path).unwrap();
     let router = server.router();
     let (gm, token) = login(&server, &router).await;
@@ -158,7 +158,7 @@ async fn gm_player_flow_and_restart() {
 async fn server_upgrades_a_file_with_the_original_1_3_bundle() {
     use adtb::{BundleDef, CallOptions, CreateOptions, Log, OpenOptions};
     use campaign::{MIGRATIONS, v1_3};
-    let path = scratch("original-bundle");
+    let (_dir, path) = scratch("original-bundle");
     let db = adtb::open(
         &path,
         &Log::new(MIGRATIONS[..4].iter().copied()),
@@ -249,7 +249,8 @@ async fn assert_revoked_seat(path: &std::path::Path, cookie: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authorization_invalid_input_and_concurrent_requests() {
-    let server = Server::open(scratch("authorization")).unwrap();
+    let (_dir, path) = scratch("authorization");
+    let server = Server::open(path).unwrap();
     let router = server.router();
     assert_eq!(
         request(&router, "GET", "/gm", "", "").await.status,

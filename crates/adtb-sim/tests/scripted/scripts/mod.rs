@@ -86,6 +86,7 @@ mod role;
 mod session;
 mod txn;
 
+use adtb_testkit::scratch::Scratch;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -366,7 +367,8 @@ fn each_probe_differs_as_it_states() {
 
 #[test]
 fn an_area_that_does_not_read_or_holds_no_script_fails() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scripts-unreadable-area");
+    let scratch = Scratch::new("scripts", "unreadable-area");
+    let dir = scratch.to_path_buf();
     let locked = dir.join("locked");
     fs::create_dir_all(&locked).expect("the directory is created");
     let mode = |m| {

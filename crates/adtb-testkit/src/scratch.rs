@@ -35,6 +35,14 @@ impl Scratch {
     }
 }
 
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         if !std::thread::panicking() {

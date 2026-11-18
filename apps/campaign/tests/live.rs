@@ -127,7 +127,7 @@ fn tracker(db: &adtb::Database, encounter: &str) -> v1_6::TrackerRow {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_flow_concurrent_turns_reopen_and_player_secrets() {
-    let path = scratch("live-flow");
+    let (_dir, path) = scratch("live-flow");
     let server = Server::open(&path).unwrap();
     let app = App::new(&server).await;
     let player = app.player().await;
@@ -266,7 +266,7 @@ async fn live_flow_concurrent_turns_reopen_and_player_secrets() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_planning_starts_and_cross_path_refusals() {
-    let path = scratch("live-boundaries");
+    let (_dir, path) = scratch("live-boundaries");
     let server = Server::open(&path).unwrap();
     let app = App::new(&server).await;
     let (a, b) = tokio::join!(app.session("One"), app.session("Two"));
@@ -395,7 +395,7 @@ fn tracker_missing(bundle: &adtb::typed::Bundle<v1_6::Bundle>, e: &str) -> bool 
 
 #[test]
 fn prior_prep_bundle_file_upgrades_without_changing_schema() {
-    let path = scratch("live-upgrade");
+    let (_dir, path) = scratch("live-upgrade");
     let db = adtb::open(
         &path,
         &Log::new(MIGRATIONS),
@@ -437,7 +437,7 @@ fn prior_prep_bundle_file_upgrades_without_changing_schema() {
 
 #[tokio::test]
 async fn revoked_seats_cannot_read_live_or_recap_pages() {
-    let path = scratch("live-revocation");
+    let (_dir, path) = scratch("live-revocation");
     let server = Server::open(&path).unwrap();
     let app = App::new(&server).await;
     let player = app.player().await;

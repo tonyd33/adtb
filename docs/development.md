@@ -56,9 +56,9 @@ check
 ```
 
 `check` runs the full workspace and campaign application checks, dependency
-policy and source-size limits, one at a time across this machine.
-`work/tools/suite` shares that lock for its test run and saves output to
-`target/suite.txt`.
+policy and source-size limits, in a systemd user scope whose memory the kernel
+limits. `work/tools/suite` runs the tests in a scope of its own and saves
+output to `target/suite.txt`.
 
 A test that needs io_uring fails on a host that refuses it; set `ADTB_URING=absent` there to skip those tests with a note on stderr.
 

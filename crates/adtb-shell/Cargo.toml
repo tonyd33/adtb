@@ -19,6 +19,7 @@ adtb-lang.workspace = true
 adtb = { workspace = true, features = ["testing"] }
 adtb-heap-cap.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+adtb-testkit.workspace = true
 
 [lints]
 workspace = true

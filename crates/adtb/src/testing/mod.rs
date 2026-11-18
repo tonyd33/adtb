@@ -231,6 +231,11 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.tested_db().waits_running()
     }
 
+    /// Returns the transactions some waiter waits on to end.
+    pub fn waited_on(self) -> BTreeSet<Xid> {
+        self.db.tested_db().waited_on()
+    }
+
     /// Returns how many transactions have ended by being dropped since the count was last
     /// taken, and starts the count again. A close asserts the count is zero.
     pub fn take_ends_by_drop(self) -> usize {

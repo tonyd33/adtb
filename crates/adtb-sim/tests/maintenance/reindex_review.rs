@@ -6,12 +6,12 @@
 use crate::catalog_root::changing_words;
 use adtb_harness::process;
 use adtb_testkit::refused_with;
+use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::testing::{Damage, Knobs, PageKind, Plant, Quarantine, page::HEADER_LEN, panic_text};
@@ -37,13 +37,11 @@ add relation shifts : Shift key id generate sequence
   index (duty)
 ";
 
-fn path(name: &str) -> String {
-    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("reindex_review")
-        .join(name);
-    let _gone = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d.join("app.adt").to_str().unwrap().to_owned()
+/// Returns a new scratch directory and the path of a database file in it.
+fn path(name: &str) -> (Scratch, String) {
+    let dir = Scratch::new("reindex_review", name);
+    let file = dir.join("app.adt").to_str().unwrap().to_owned();
+    (dir, file)
 }
 
 fn run(db: &Database, t: &str) -> Result<Vec<String>, adtb::Error> {
@@ -347,13 +345,9 @@ fn writer(
 #[test]
 fn refused_duplicate_checks_the_named_unique_report() {
     let bad = Arc::new(Mutex::new(Vec::new()));
+    let (_dir, file) = path("duplicate-report");
     let mut me = Writer {
-        db: Database::open(
-            path("duplicate-report"),
-            &Log::new([APP]),
-            &open::options(4),
-        )
-        .unwrap(),
+        db: Database::open(file, &Log::new([APP]), &open::options(4)).unwrap(),
         model: BTreeMap::new(),
         next: 0,
         owner_base: 0,
@@ -371,7 +365,7 @@ fn refused_duplicate_checks_the_named_unique_report() {
 }
 
 fn stress(name: &str, reindexes: usize, verify_beside: bool) {
-    let p = path(name);
+    let (_dir, p) = path(name);
     let db = Database::open(&p, &Log::new([APP]), &open::options(4)).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let bad = Arc::new(Mutex::new(Vec::new()));
@@ -471,7 +465,7 @@ fn stress(name: &str, reindexes: usize, verify_beside: bool) {
 }
 
 fn write_skew(name: &str, rounds: usize, reindex: bool) -> usize {
-    let p = path(name);
+    let (_dir, p) = path(name);
     let db = Database::open(&p, &Log::new([APP]), &open::options(4)).unwrap();
     run(&db, "insert shifts { id: shifts.key(1), duty: 1 }").unwrap();
     run(&db, "insert shifts { id: shifts.key(2), duty: 1 }").unwrap();
@@ -566,7 +560,7 @@ fn write_skew(name: &str, rounds: usize, reindex: bool) -> usize {
 }
 
 fn phantom(name: &str, rounds: i64, reindex: bool) -> usize {
-    let p = path(name);
+    let (_dir, p) = path(name);
     let db = Database::open(&p, &Log::new([APP]), &open::options(4)).unwrap();
     for i in 1..40 {
         run(
@@ -687,7 +681,8 @@ fn past_gate_rounds(db: &Database, rounds: u32) {
 
 #[test]
 fn a_statement_past_the_gate_loses_no_entry() {
-    let db = Database::open(path("past_gate"), &Log::new([APP]), &open::options(4)).unwrap();
+    let (_dir, file) = path("past_gate");
+    let db = Database::open(file, &Log::new([APP]), &open::options(4)).unwrap();
     let note = "n".repeat(1000);
     let mut x = db.begin(&TxnOptions::default()).unwrap();
     for k in 1..=200 {
@@ -707,46 +702,23 @@ fn a_statement_past_the_gate_loses_no_entry() {
     db.close().unwrap();
 }
 
-/// Hold the rebuild in its build phase until the first flag is set, at most 10 s, then set the
-/// second if it was not.
-fn hold_build(db: &Database) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
-    let (go, timed_out) = (
-        Arc::new(AtomicBool::new(false)),
-        Arc::new(AtomicBool::new(false)),
-    );
-    let (g, t) = (go.clone(), timed_out.clone());
+/// Hold every rebuild in its build phase until the returned flag is set.
+fn hold_build(db: &Database) -> Arc<AtomicBool> {
+    let go = Arc::new(AtomicBool::new(false));
+    let g = go.clone();
     db.testing().on_reindex_phase(move |phase| {
         if phase == "build" {
-            let start = Instant::now();
             while !g.load(Ordering::Acquire) {
-                if start.elapsed() > Duration::from_secs(10) {
-                    t.store(true, Ordering::Release);
-                    return;
-                }
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
     });
-    (go, timed_out)
+    go
 }
 
-const GATED_INSERT: &str = r#"insert things.A { id: things.key(2), owner: 2, note: "n", a: "y" }"#;
-
-fn offline_with_one_row(name: &str) -> (Database, Arc<AtomicBool>, Arc<AtomicBool>) {
-    let options = OpenOptions {
-        testing: Knobs::without_background_vacuum(),
-        ..open::options(4)
-    };
-    let db = Database::open(path(name), &Log::new([APP]), &options).unwrap();
-    run(
-        &db,
-        r#"insert things.A { id: things.key(1), owner: 1, note: "n", a: "x" }"#,
-    )
-    .unwrap();
-    let (go, timed_out) = hold_build(&db);
-    run(&db, "reindex things index (owner) in (A | B) offline").unwrap();
+fn wait_for_build(db: &Database) {
     while run(
-        &db,
+        db,
         r#"from j in sys::jobs where j.phase == "build" select j.id"#,
     )
     .unwrap()
@@ -754,45 +726,69 @@ fn offline_with_one_row(name: &str) -> (Database, Arc<AtomicBool>, Arc<AtomicBoo
     {
         std::thread::sleep(Duration::from_millis(1));
     }
-    (db, go, timed_out)
+}
+
+const GATED_INSERT: &str = r#"insert things.A { id: things.key(2), owner: 2, note: "n", a: "y" }"#;
+
+fn offline_with_one_row(name: &str) -> (Scratch, Database, Arc<AtomicBool>) {
+    let options = OpenOptions {
+        testing: Knobs::without_background_vacuum(),
+        ..open::options(4)
+    };
+    let (dir, file) = path(name);
+    let db = Database::open(file, &Log::new([APP]), &options).unwrap();
+    run(
+        &db,
+        r#"insert things.A { id: things.key(1), owner: 1, note: "n", a: "x" }"#,
+    )
+    .unwrap();
+    let go = hold_build(&db);
+    run(&db, "reindex things index (owner) in (A | B) offline").unwrap();
+    wait_for_build(&db);
+    (dir, db, go)
 }
 
 /// Wait until a call on `db` has paused for the rebuild, the first pause counted past `before`.
-fn wait_for_a_pause(db: &Database, before: u64, what: &str) {
-    let start = Instant::now();
+fn wait_for_a_pause(db: &Database, before: u64) {
     while db.testing().rebuild_waits() == before {
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "{what} never paused for the rebuild"
-        );
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Run `text` on `db` with a deadline, doubled each time it passes before the call pauses for the
+/// rebuild, until one passes during a pause. Every run must stop at its deadline.
+fn stops_at_a_deadline_after_a_pause(db: &Database, text: &str, what: &str) {
+    let mut window = Duration::from_millis(50);
+    loop {
+        let before = db.testing().rebuild_waits();
+        let r = db.query_text(
+            text,
+            &[],
+            &CallOptions {
+                deadline: Some(SystemTime::now() + window),
+                ..CallOptions::default()
+            },
+        );
+        assert_rejected("DeadlineExceeded", r.map(|_rows| ()), what);
+        if db.testing().rebuild_waits() > before {
+            return;
+        }
+        window *= 2;
     }
 }
 
 #[test]
 fn a_gated_write_stops_at_its_deadline() {
-    let (db, go, timed_out) = offline_with_one_row("gate_deadline");
-    let r = db.query_text(
-        GATED_INSERT,
-        &[],
-        &CallOptions {
-            deadline: Some(SystemTime::now() + Duration::from_millis(200)),
-            ..CallOptions::default()
-        },
-    );
-    let waited_out = timed_out.load(Ordering::Acquire);
-    let paused = db.testing().rebuild_waits();
+    let (_dir, db, go) = offline_with_one_row("gate_deadline");
+    stops_at_a_deadline_after_a_pause(&db, GATED_INSERT, "the gated write");
     go.store(true, Ordering::Release);
-    assert_rejected("DeadlineExceeded", r.map(|_rows| ()), "the gated write");
-    assert!(paused > 0, "the write never reached the gate");
-    assert!(!waited_out, "the write waited out the rebuild");
     idle(&db);
     db.close().unwrap();
 }
 
 #[test]
 fn a_gated_write_stops_when_cancelled() {
-    let (db, go, timed_out) = offline_with_one_row("gate_cancel");
+    let (_dir, db, go) = offline_with_one_row("gate_cancel");
     let token = CancelToken::new();
     let (w, t) = (db.clone(), token.clone());
     let writer = std::thread::spawn(move || {
@@ -802,20 +798,18 @@ fn a_gated_write_stops_when_cancelled() {
         };
         w.query_text(GATED_INSERT, &[], &opts).map(|_rows| ())
     });
-    wait_for_a_pause(&db, 0, "the gated write");
+    wait_for_a_pause(&db, 0);
     token.cancel();
     let r = writer.join().unwrap();
-    let waited_out = timed_out.load(Ordering::Acquire);
     go.store(true, Ordering::Release);
     assert_rejected("Cancelled", r, "the gated write");
-    assert!(!waited_out, "the write waited out the rebuild");
     idle(&db);
     db.close().unwrap();
 }
 
 #[test]
 fn close_with_a_gated_writer_does_not_wait_out_the_rebuild() {
-    let (db, go, timed_out) = offline_with_one_row("gate_close");
+    let (_dir, db, go) = offline_with_one_row("gate_close");
     let w = db.clone();
     let release = go;
     let writer = std::thread::spawn(move || {
@@ -825,25 +819,21 @@ fn close_with_a_gated_writer_does_not_wait_out_the_rebuild() {
         release.store(true, Ordering::Release);
         r
     });
-    wait_for_a_pause(&db, 0, "the gated write");
+    wait_for_a_pause(&db, 0);
     db.close().unwrap();
     assert_rejected("Cancelled", writer.join().unwrap(), "the gated write");
-    assert!(
-        !timed_out.load(Ordering::Acquire),
-        "close waited for the rebuild"
-    );
 }
 
 #[test]
 fn a_closed_job_leaves_a_clean_file() {
-    let p = path("gate_close_reopen");
+    let (_dir, p) = path("gate_close_reopen");
     let db = Database::open(&p, &Log::new([APP]), &open::options(4)).unwrap();
     run(
         &db,
         r#"insert things.A { id: things.key(1), owner: 1, note: "n", a: "x" }"#,
     )
     .unwrap();
-    let (go, _) = hold_build(&db);
+    let go = hold_build(&db);
     run(&db, "reindex things index (owner) in (A | B) offline").unwrap();
     go.store(true, Ordering::Release);
     db.close().unwrap();
@@ -856,24 +846,20 @@ fn a_closed_job_leaves_a_clean_file() {
 }
 
 #[test]
-fn drop_without_close_then_reopen() {
-    let p = path("drop");
+fn dropping_every_handle_after_a_reindex_starts_releases_the_file() {
+    let (_dir, p) = path("drop");
     let db = Database::open(&p, &Log::new([APP]), &open::options(4)).unwrap();
     run(
         &db,
         r#"insert things.A { id: things.key(1), owner: 1, note: "n", a: "x" }"#,
     )
     .unwrap();
-    let (go, _) = hold_build(&db);
+    let go = hold_build(&db);
     run(&db, "reindex things").unwrap();
-    std::thread::sleep(Duration::from_millis(20));
-    let release = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(100));
-        go.store(true, Ordering::Release);
-    });
+    wait_for_build(&db);
+    go.store(true, Ordering::Release);
     drop(db);
     let again = Database::open(&p, &Log::new([APP]), &open::options(4));
-    release.join().unwrap();
     assert!(
         again.is_ok(),
         "the file is still held after every handle dropped"
@@ -1613,19 +1599,9 @@ const VERIFY: &str = "verify things";
 const RETENTION: &str = "set setting RetentionWindow = { length: 2h }";
 
 fn stops_at_its_deadline(caller: &'static str) {
-    let (db, go, timed_out) = offline_with_one_row(&format!("held_deadline {caller}"));
-    let r = db.query_text(
-        caller,
-        &[],
-        &CallOptions {
-            deadline: Some(SystemTime::now() + Duration::from_millis(50)),
-            ..CallOptions::default()
-        },
-    );
-    let waited_out = timed_out.load(Ordering::Acquire);
+    let (_dir, db, go) = offline_with_one_row(&format!("held_deadline {caller}"));
+    stops_at_a_deadline_after_a_pause(&db, caller, caller);
     go.store(true, Ordering::Release);
-    assert_rejected("DeadlineExceeded", r.map(|_rows| ()), caller);
-    assert!(!waited_out, "{caller} waited out the rebuild");
     idle(&db);
     db.close().unwrap();
 }
@@ -1646,7 +1622,7 @@ fn a_call_waiting_on_the_vacuum_lock_stops_at_its_deadline_retention() {
 }
 
 fn stops_when_cancelled(caller: &'static str) {
-    let (db, go, timed_out) = offline_with_one_row(&format!("held_cancel {caller}"));
+    let (_dir, db, go) = offline_with_one_row(&format!("held_cancel {caller}"));
     let token = CancelToken::new();
     let (w, t) = (db.clone(), token.clone());
     let waiter = std::thread::spawn(move || {
@@ -1656,13 +1632,11 @@ fn stops_when_cancelled(caller: &'static str) {
         };
         w.query_text(caller, &[], &opts).map(|_rows| ())
     });
-    wait_for_a_pause(&db, 0, caller);
+    wait_for_a_pause(&db, 0);
     token.cancel();
     let r = waiter.join().unwrap();
-    let waited_out = timed_out.load(Ordering::Acquire);
     go.store(true, Ordering::Release);
     assert_rejected("Cancelled", r.map(|_rows| ()), caller);
-    assert!(!waited_out, "{caller} waited out the rebuild");
     idle(&db);
     db.close().unwrap();
 }
@@ -1683,23 +1657,19 @@ fn a_call_waiting_on_the_vacuum_lock_stops_when_cancelled_retention() {
 }
 
 fn close_refuses(caller: &'static str) {
-    let (db, go, timed_out) = offline_with_one_row(&format!("held_close {caller}"));
+    let (_dir, db, go) = offline_with_one_row(&format!("held_close {caller}"));
     let w = db.clone();
     let waiter = std::thread::spawn(move || {
         w.query_text(caller, &[], &CallOptions::default())
             .map(|_rows| ())
     });
-    wait_for_a_pause(&db, 0, caller);
+    wait_for_a_pause(&db, 0);
     let release = go;
     let closer = std::thread::spawn(move || db.close().unwrap());
     let r = waiter.join().unwrap();
     release.store(true, Ordering::Release);
     closer.join().unwrap();
     assert_rejected("Cancelled", r, caller);
-    assert!(
-        !timed_out.load(Ordering::Acquire),
-        "{caller} waited out the rebuild"
-    );
 }
 
 #[test]

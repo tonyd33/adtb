@@ -1,10 +1,11 @@
 //! The faults the real runtime injects beneath its files.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use adtb::runtime::{AlignedBuf, Done, IoError, Op, Runtime};
 use adtb_sys::os::{Backend, Faults, OsIo, OsRuntime};
+use adtb_testkit::scratch::Scratch;
 
 use super::{BLOCK, block, complete, done, list, open_file, read, scratch, write};
 
@@ -15,7 +16,7 @@ const SEEDS: u64 = 24;
 struct On(&'static str, Backend);
 
 impl On {
-    fn scratch(self, name: &str) -> PathBuf {
+    fn scratch(self, name: &str) -> Scratch {
         scratch(&format!("{}-{name}", self.0))
     }
 
@@ -67,7 +68,8 @@ cases!(
 /// leave the file as it was; an overwrite within the file lands.
 fn a_full_device_refuses_growth_and_keeps_overwrites(on: On) {
     let quiet = Faults::none(4096);
-    let rt = &on.faulty(&on.scratch("faults-full"), quiet);
+    let dir = on.scratch("faults-full");
+    let rt = &on.faulty(&dir, quiet);
     let mut io = rt.io();
     let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &block(1));
@@ -131,7 +133,8 @@ fn failing_write(rt: &OsRuntime, io: &mut OsIo, data: &[u8]) {
 }
 
 fn failed_writes_allocations_and_forces_complete_with_failed(on: On) {
-    let rt = on.faulty(&on.scratch("faults-fail"), Faults::none(4096));
+    let dir = on.scratch("faults-fail");
+    let rt = on.faulty(&dir, Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     rt.set_faults(Faults {
@@ -153,7 +156,8 @@ fn failed_writes_allocations_and_forces_complete_with_failed(on: On) {
 }
 
 fn a_lost_write_completes_and_never_lands(on: On) {
-    let rt = on.faulty(&on.scratch("faults-lost"), Faults::none(4096));
+    let dir = on.scratch("faults-lost");
+    let rt = on.faulty(&dir, Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
@@ -168,7 +172,8 @@ fn a_lost_write_completes_and_never_lands(on: On) {
 }
 
 fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
-    let rt = on.faulty(&on.scratch("faults-misdirect"), Faults::none(4096));
+    let dir = on.scratch("faults-misdirect");
+    let rt = on.faulty(&dir, Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     for i in 0..4u8 {
@@ -197,7 +202,8 @@ fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
 }
 
 fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
-    let rt = on.faulty(&on.scratch("faults-latent"), Faults::none(4096));
+    let dir = on.scratch("faults-latent");
+    let rt = on.faulty(&dir, Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
@@ -229,7 +235,8 @@ fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
 }
 
 fn a_rotted_bit_is_seen_by_every_later_read(on: On) {
-    let rt = on.faulty(&on.scratch("faults-rot"), Faults::none(4096));
+    let dir = on.scratch("faults-rot");
+    let rt = on.faulty(&dir, Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(0x55));
@@ -249,7 +256,7 @@ fn a_rotted_bit_is_seen_by_every_later_read(on: On) {
 }
 
 /// Returns a forced file `f` holding `block(1)` at its start, under a fresh directory.
-fn forced_file(on: On, name: &str, seed: u64, faults: Faults) -> (OsRuntime, PathBuf) {
+fn forced_file(on: On, name: &str, seed: u64, faults: Faults) -> (OsRuntime, Scratch) {
     let dir = on.scratch(&format!("{name}-{seed}"));
     let rt = on.faulty(&dir, Faults { seed, ..faults });
     let mut io = rt.io();

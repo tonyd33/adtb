@@ -2,11 +2,9 @@
 
 extern crate adtb_lang as _;
 
-use adtb_heap_cap::test_child;
-
 #[test]
 fn a_usage_error_exits_with_one() {
-    let out = test_child(env!("CARGO_BIN_EXE_adtb-codegen"), 1)
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_adtb-codegen"))
         .arg("--nope")
         .output()
         .expect("the generator starts");

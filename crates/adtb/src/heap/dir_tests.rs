@@ -438,12 +438,11 @@ fn a_map_pointer_out_of_shape_stops_a_holder_walk_and_another_heaps_damage_marks
     pager.close();
 }
 
-/// Returns what `f` returns on another thread, failing past 3 s.
-fn within<T: Send + 'static>(rt: &OsRuntime, f: impl FnOnce() -> T + Send + 'static) -> T {
+/// Returns what `f` returns on a thread of `rt`.
+fn on_thread<T: Send + 'static>(rt: &OsRuntime, f: impl FnOnce() -> T + Send + 'static) -> T {
     let (sent, got) = mpsc::channel();
-    rt.spawn("bounded", move || sent.send(f()).unwrap());
-    got.recv_timeout(Duration::from_secs(3))
-        .expect("an answer within 3 s")
+    rt.spawn("walk", move || sent.send(f()).unwrap());
+    got.recv().expect("the walk returns")
 }
 
 #[test]
@@ -464,24 +463,24 @@ fn a_map_root_naming_itself_in_child_slot_0_stops_each_walk_within_a_bound() {
         heaps.push((Arc::new(heap), map[1]));
     }
     let (p, h) = (pager.clone(), heaps[0].0.clone());
-    let held = within(&rt, move || h.held_pages(&p));
+    let held = on_thread(&rt, move || h.held_pages(&p));
     assert!(matches!(held, Err(Stopped::Shape)), "{held:?}");
     let (p, h) = (pager.clone(), heaps[0].0.clone());
     assert_eq!(
         refused(heaps[0].1, Shape::Frame),
-        within(&rt, move || h.owned_pages(&p))
+        on_thread(&rt, move || h.owned_pages(&p))
     );
     let (p, h) = (pager.clone(), heaps[1].0.clone());
     assert_eq!(
         refused(heaps[1].1, Shape::Frame),
-        within(&rt, move || h.verify(&p))
+        on_thread(&rt, move || h.verify(&p))
     );
     let (p, h) = (pager.clone(), heaps[2].0.clone());
-    let visible = within(&rt, move || h.all_visible(&p, Pid(5)));
+    let visible = on_thread(&rt, move || h.all_visible(&p, Pid(5)));
     assert_eq!(refused(heaps[2].1, Shape::Frame), visible);
     let (p, (id, root)) = (pager, (heaps[3].0.id().0, heaps[3].1));
     let named_by = heaps[3].0.root();
-    let extended = within(&rt, move || Vm::open(root, id, named_by).extend(&p, Pid(5)));
+    let extended = on_thread(&rt, move || Vm::open(root, id, named_by).extend(&p, Pid(5)));
     assert_eq!(refused(root, Shape::Frame), extended);
 }
 
@@ -561,11 +560,7 @@ fn a_search_meeting_an_entry_that_names_a_map_page_holds_no_latch_a_map_writer_w
     });
     leaf_held.recv().unwrap();
     drop(held);
-    let got = answer.recv_timeout(Duration::from_secs(3));
-    assert_eq!(
-        Ok(refused(leaf, Shape::Kind)),
-        got.map_err(|e| format!("{e:?}"))
-    );
+    assert_eq!(refused(leaf, Shape::Kind), answer.recv().unwrap());
 }
 
 #[test]
@@ -582,7 +577,7 @@ fn a_map_pointer_naming_the_page_prune_holds_refuses_the_directory_root_within_a
     set_map(&pager, root, page);
     let p = pager;
     let keep = |_: &_| Ok(Fate::Keep);
-    let pruned = within(&rt, move || {
+    let pruned = on_thread(&rt, move || {
         heap.prune(&p, page, keep, &[], false).map(drop)
     });
     assert_eq!(refused(root, Shape::Kind).map_err(Refused::Page), pruned);
@@ -647,8 +642,7 @@ fn a_refusal_rechecks_an_entry_whose_leaf_changed_under_its_check() {
         } else {
             refused(leaf, Shape::Kind)
         };
-        let got = answer.recv_timeout(Duration::from_secs(3));
-        assert_eq!(Ok(want), got.map_err(|e| format!("{e:?}")), "{restored}");
+        assert_eq!(want, answer.recv().unwrap(), "{restored}");
     }
 }
 
@@ -723,7 +717,7 @@ fn a_root_entry_past_the_last_position_refuses_the_root_within_a_bound() {
     let p = pager.clone();
     assert_eq!(
         refused(s.root(), Shape::Frame),
-        within(&rt, move || s.pages(&p))
+        on_thread(&rt, move || s.pages(&p))
     );
 }
 

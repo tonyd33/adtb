@@ -1,7 +1,7 @@
 use adtb::testing::{Damage, Failed, Object, PageError, Pid, Plant, Quarantine, page::HEADER_LEN};
 use adtb_harness::process;
+use adtb_testkit::scratch::Scratch;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1587,16 +1587,8 @@ fn writers_and_vacuum_under_verify_set_no_false_mark() {
 }
 
 /// Returns a new scratch directory for a test on real threads.
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("quarantine")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("quarantine", name)
 }
 
 const LISTS: &str = r"module app
@@ -1635,20 +1627,21 @@ fn churn_lists(db: &Database, writer: i64, stop: &AtomicBool) {
     }
 }
 
-fn real_lists(name: &str) -> (OsRuntime, Database) {
-    let rt = OsRuntime::new(scratch(name), Backend::Pool { threads: 4 });
+fn real_lists(name: &str) -> (Scratch, OsRuntime, Database) {
+    let dir = scratch(name);
+    let rt = OsRuntime::new(dir.to_path_buf(), Backend::Pool { threads: 4 });
     let options = OpenOptions {
         create: Some(adtb::CreateOptions::default()),
         workers: Some(2),
         ..OpenOptions::default()
     };
     let db = Database::open_in(rt.clone(), "f.adt", &Log::new([LISTS]), &options).unwrap();
-    (rt, db)
+    (dir, rt, db)
 }
 
 #[test]
 fn verify_of_indexes_that_are_changing_finds_and_marks_nothing() {
-    let (rt, db) = real_lists("verify");
+    let (_dir, rt, db) = real_lists("verify");
     let stop = Arc::new(AtomicBool::new(false));
     let writers: Vec<_> = (0..3)
         .map(|writer| {

@@ -212,11 +212,6 @@ fn run_case(peer: Peer, index: usize, case: &Case, keys: &[Id], root: &Path) -> 
 }
 
 fn run(peer: Peer) -> Result<()> {
-    assert_eq!(
-        std::env::var("NEXTEST_TEST_GROUP")?,
-        "slots-2",
-        "the parent reserves its own slot and its child's slot"
-    );
     let (keys, cases) = corpus()?;
     let scratch =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/sqlite-crash-controls/cases");

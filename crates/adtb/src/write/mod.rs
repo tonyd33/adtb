@@ -1334,6 +1334,12 @@ impl<R: Runtime> Database<R> {
         self.session.waits.running()
     }
 
+    /// Returns the transactions some waiter waits on to end.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn waited_on(&self) -> BTreeSet<Xid> {
+        self.session.waits.watched()
+    }
+
     /// Returns how many transactions have ended by being dropped, none of their operations
     /// having failed, since the count was last taken, and starts the count again.
     #[cfg(any(test, feature = "testing"))]

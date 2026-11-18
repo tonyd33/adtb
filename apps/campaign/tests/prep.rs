@@ -159,7 +159,7 @@ fn scalar<T: adtb::typed::HostValue>(db: &adtb::Database, query: &str) -> T {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prep_kinds_references_reopen_and_campaign_boundaries() {
-    let path = scratch("prep-kinds");
+    let (_dir, path) = scratch("prep-kinds");
     let server = Server::open(&path).unwrap();
     let app = Prep::new(&server).await;
     let region = app.add("region", "Realm", "").await;
@@ -295,7 +295,7 @@ async fn prep_kinds_references_reopen_and_campaign_boundaries() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn links_visibility_atomic_replacement_and_concurrent_edits() {
-    let path = scratch("prep-links");
+    let (_dir, path) = scratch("prep-links");
     let server = Server::open(&path).unwrap();
     let app = Prep::new(&server).await;
     let source = app.add("npc", "Warden", "").await;
@@ -524,7 +524,7 @@ fn assert_persisted_link_edits(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upgrades_immutable_1_4_file_and_preserves_links() {
-    let path = scratch("prep-upgrade");
+    let (_dir, path) = scratch("prep-upgrade");
     let db = adtb::open(
         &path,
         &Log::new(MIGRATIONS[..4].iter().copied()),
@@ -593,7 +593,7 @@ async fn upgrades_immutable_1_4_file_and_preserves_links() {
 }
 
 fn migration_refuses_invalid_old_reference(kind: &str, constraint: &str) {
-    let path = scratch(&format!("prep-invalid-{kind}"));
+    let (_dir, path) = scratch(&format!("prep-invalid-{kind}"));
     let db = adtb::open(
         &path,
         &Log::new(MIGRATIONS[..4].iter().copied()),

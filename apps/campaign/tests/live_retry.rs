@@ -7,7 +7,7 @@ use std::sync::Barrier;
 
 #[test]
 fn two_committed_next_turn_calls_must_advance_twice() {
-    let path = support::scratch("live-retry-repro");
+    let (_dir, path) = support::scratch("live-retry-repro");
     let db = adtb::open(
         &path,
         &Log::new(MIGRATIONS),

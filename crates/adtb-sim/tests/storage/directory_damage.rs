@@ -6,8 +6,6 @@
 use adtb::testing::{PageKind, Pid, Plant, Quarantine, page, page::FIRST_EDITABLE};
 use adtb_harness::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
 
 use adtb::{CallOptions, Database, Error, FatalReason, Log};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -27,7 +25,6 @@ add relation others : Other key id generate sequence
 ";
 const OTHERS: &str = "from o in others select o.name";
 const KIND: usize = 14;
-const BOUND: Duration = Duration::from_secs(5);
 
 type Files = BTreeMap<String, Vec<u8>>;
 
@@ -58,33 +55,15 @@ fn fixture() -> Files {
     sim.files()
 }
 
-/// Run `body` on an open of `files` and returns the files it leaves, failing when it has not
-/// returned within `BOUND` of real time.
-fn bounded(
-    files: &Files,
-    what: String,
-    body: impl FnOnce(&Database<SimRuntime>) + Send + 'static,
-) -> Files {
-    let files = files.clone();
-    let (done, answer) = mpsc::channel();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "gone once the simulator stops a run that spins, so no case needs its own thread"
-    )]
-    std::thread::spawn(move || {
-        let mut sim = Sim::with_files(1, Config::default(), files);
-        finished(&mut sim, |rt| {
-            let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
-            body(&db);
-            db.close().unwrap();
-        });
-        done.send(sim.files()).unwrap();
+/// Run `body` on an open of `files` and returns the files it leaves.
+fn run_on(files: &Files, body: impl FnOnce(&Database<SimRuntime>)) -> Files {
+    let mut sim = Sim::with_files(1, Config::default(), files.clone());
+    finished(&mut sim, |rt| {
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
+        body(&db);
+        db.close().unwrap();
     });
-    match answer.recv_timeout(BOUND) {
-        Ok(files) => files,
-        Err(RecvTimeoutError::Timeout) => panic!("{what}: no answer within {BOUND:?}"),
-        Err(RecvTimeoutError::Disconnected) => panic!("{what}: the run panicked"),
-    }
+    sim.files()
 }
 
 fn quarantined(got: Result<Vec<String>, Error>, what: &str) -> String {
@@ -227,7 +206,7 @@ impl Op {
 #[test]
 fn a_large_insert_after_its_directory_page_is_freed_refuses_in_bounded_time() {
     let what = "freed large directory".to_owned();
-    bounded(&fixture(), what.clone(), move |db| {
+    run_on(&fixture(), move |db| {
         let root = Target::LargeStore.pages(db).0;
         db.testing().plant(Plant::Free(root)).unwrap();
         let got = text(db, &Op::LargeInsert.text());
@@ -248,7 +227,7 @@ fn every_call_over_a_foreign_page_in_a_directory_answers_in_bounded_time() {
                 let what = format!("{target:?} replaced by {replacement:?}, {op:?}");
                 let expected = op.rows(target);
                 let (w, refusal) = (what.clone(), expected.is_none());
-                let after = bounded(&base, what.clone(), move |db| {
+                let after = run_on(&base, move |db| {
                     replacement.apply(db, target);
                     let got = text(db, &op.text());
                     match &expected {
@@ -270,7 +249,7 @@ fn every_call_over_a_foreign_page_in_a_directory_answers_in_bounded_time() {
                 if !std::mem::take(&mut reopen) {
                     continue;
                 }
-                bounded(&after, format!("{what}, reopened"), move |db| {
+                run_on(&after, move |db| {
                     let got = text(db, &Op::Scan.text());
                     assert_eq!(target.holder(), quarantined(got, &what));
                     target.assert_others(db, &what);
@@ -313,7 +292,7 @@ fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
     ];
     for foreign in foreigns {
         let what = format!("an entry naming {foreign}");
-        bounded(&fixture(), what.clone(), move |db| {
+        run_on(&fixture(), move |db| {
             let t = db.testing();
             let users = t.heap("app::users", "User").unwrap();
             let root = t.root(users).unwrap();
@@ -342,7 +321,7 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
         for (form, read) in [("scan", Op::Scan.text()), ("vacuum", "vacuum users".into())] {
             let what = format!("an entry naming {foreign}, {form}");
             let (w, read) = (what.clone(), read.clone());
-            bounded(&fixture(), what, move |db| {
+            run_on(&fixture(), move |db| {
                 let w = &w;
                 let t = db.testing();
                 let users = t.heap("app::users", "User").unwrap();
@@ -373,7 +352,7 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
 #[test]
 fn an_index_entry_outliving_its_page_refuses_the_index() {
     let what = "an index entry outliving its page".to_owned();
-    bounded(&fixture(), what.clone(), move |db| {
+    run_on(&fixture(), move |db| {
         let t = db.testing();
         let users = t.heap("app::users", "User").unwrap();
         Replacement::Others.apply(db, Target::UsersPage);

@@ -44,7 +44,8 @@ in
 
   scripts.check.exec = ''
     # check [--changed [REVSET]]   every check, or with --changed only the optional parts the files
-    # REVSET changes (default main..@) can reach, printing each part it skips and why.
+    # REVSET changes (default main..@) can reach, printing each part it skips and why, all in one
+    # scope with a memory limit.
     set -e
     case "$PWD/" in
       "$DEVENV_ROOT"/*) ;;
@@ -53,7 +54,10 @@ in
         exit 1
         ;;
     esac
-    source "$DEVENV_ROOT/work/tools/common.bash"
+    cgroup=$(</proc/self/cgroup)
+    if [[ ''${cgroup#0::} != */adtb-run-*.scope && -z ''${ADTB_UNLIMITED:-} ]]; then
+      exec "$DEVENV_ROOT/work/tools/limited" "$0" "$@"
+    fi
     plan=
     if [[ ''${1:-} == --changed ]]; then
       revset=''${2:-main..@}
@@ -61,8 +65,7 @@ in
       grep '^skip' <<<"$plan" || true
     fi
     part() { [[ -z $plan ]] || grep -qx "run $1" <<<"$plan"; }
-    no_core_dumps
-    machine_lock "$DEVENV_ROOT"
+    ulimit -Sc 0
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check

@@ -1,6 +1,7 @@
 //! The schema opened in the engine, and the bundles' queries and transactions called through the
 //! code generated from them.
 
+use adtb_testkit::scratch::Scratch;
 use std::fmt::Debug;
 use std::path::PathBuf;
 
@@ -18,16 +19,11 @@ use adtb_lang::types::Ty;
 use campaign::v1_3::{Campaigns, Entities, Quests, Sessions};
 use campaign::{MIGRATIONS, v1_0, v1_3, v1_4};
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("campaign")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join("campaign.adt")
+/// Returns a new scratch directory and the path of a database file in it.
+fn scratch(name: &str) -> (Scratch, PathBuf) {
+    let dir = Scratch::new("campaign", name);
+    let file = dir.join("campaign.adt");
+    (dir, file)
 }
 
 /// Open or create the database at `path` at the first `n` migrations, registering `bundles`.
@@ -55,7 +51,7 @@ fn migrate(path: PathBuf, n: usize) {
     reason = "measuring host elapsed time would need an external benchmark harness"
 )]
 fn migration_open_timings() {
-    let path = scratch("open-timings");
+    let (_dir, path) = scratch("open-timings");
     let start = std::time::Instant::now();
     let db = open_db(path.clone(), MIGRATIONS.len(), Vec::new());
     eprintln!("campaign current fresh apply: {:?}", start.elapsed());
@@ -69,6 +65,7 @@ fn migration_open_timings() {
 struct App<B> {
     db: Database,
     bundle: adtb::typed::Bundle<B>,
+    _dir: Option<Scratch>,
 }
 
 type Current = App<v1_3::Bundle>;
@@ -83,7 +80,11 @@ impl<B: BundleDef> App<B> {
         let bundle = db
             .bundle(def)
             .unwrap_or_else(|e| panic!("{}: {e:?}", B::NAME));
-        App { db, bundle }
+        App {
+            db,
+            bundle,
+            _dir: None,
+        }
     }
 
     fn try_call<C: Callable<Bundle = B>>(
@@ -107,7 +108,11 @@ impl<B: BundleDef> App<B> {
 impl Current {
     /// Open a new database under `name` at release 1.3.
     fn open(name: &str) -> Current {
-        App::at(scratch(name), 4, &v1_3::BUNDLE)
+        let (dir, path) = scratch(name);
+        App {
+            _dir: Some(dir),
+            ..App::at(path, 4, &v1_3::BUNDLE)
+        }
     }
 }
 
@@ -316,7 +321,7 @@ fn the_bundle_pins_version_4_by_its_hash() {
 
 #[test]
 fn release_1_1_opens_over_release_1_0() {
-    let path = scratch("upgrade");
+    let (_dir, path) = scratch("upgrade");
     let old = App::at(path.clone(), 1, &v1_0::BUNDLE);
     let w = world_1_0(&old);
     old.db.close().expect("close");
@@ -396,7 +401,8 @@ fn prep_builds_a_world_the_gm_can_look_up() {
 
 #[test]
 fn text_edit_preserves_existing_shared_and_hidden_links() {
-    let app = App::at(scratch("text-links"), 4, &v1_4::BUNDLE);
+    let (_dir, path) = scratch("text-links");
+    let app = App::at(path, 4, &v1_4::BUNDLE);
     let campaign = app
         .call(
             v1_4::new_campaign,
@@ -722,7 +728,7 @@ fn keys_in(app: &Current, scope: &str) -> Vec<String> {
 
 #[test]
 fn release_1_3_shelves_a_quest_over_release_1_1() {
-    let path = scratch("shelve");
+    let (_dir, path) = scratch("shelve");
     let old = App::at(path.clone(), 1, &v1_0::BUNDLE);
     let w = world_1_0(&old);
     old.db.close().expect("close");
@@ -777,7 +783,7 @@ fn release_1_3_shelves_a_quest_over_release_1_1() {
 
 #[test]
 fn release_1_3_calls_through_its_bundle_over_a_release_1_0_file() {
-    let path = scratch("reopen");
+    let (_dir, path) = scratch("reopen");
     let old = App::at(path.clone(), 1, &v1_0::BUNDLE);
     let w = world_1_0(&old);
     old.call(
@@ -937,7 +943,7 @@ fn names(db: &Database, scope: &str) -> Vec<String> {
 
 #[test]
 fn release_1_2_routes_locations_by_scale_over_release_1_1() {
-    let path = scratch("split");
+    let (_dir, path) = scratch("split");
     let Located { w, gate, .. } = located_over_release_1_1(path.clone());
     let db = open_db(path, 3, Vec::new());
     assert_eq!(vec![text("Vael")], names(&db, "entities.Region"));
@@ -971,7 +977,7 @@ fn release_1_2_routes_locations_by_scale_over_release_1_1() {
 
 #[test]
 fn release_1_3_routes_locations_by_scale_over_release_1_1() {
-    let path = scratch("split-1-3");
+    let (_dir, path) = scratch("split-1-3");
     let Located { w, gate, .. } = located_over_release_1_1(path.clone());
     migrate(path.clone(), 3);
     let app = App::at(path, 4, &v1_3::BUNDLE);
@@ -993,7 +999,7 @@ fn release_1_3_routes_locations_by_scale_over_release_1_1() {
 
 #[test]
 fn a_split_location_and_its_parent_stay_in_one_campaign() {
-    let path = scratch("split-parent");
+    let (_dir, path) = scratch("split-parent");
     let Located { w, other, .. } = located_over_release_1_1(path.clone());
     let db = open_db(path, 3, Vec::new());
     let stray = adhoc(

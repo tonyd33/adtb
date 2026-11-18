@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::thread;
-use std::time::{Duration, Instant};
 
 use adtb_testkit::fuzz::{Case, Front, Kind, Reached, case, long_case, spec_corpus};
 use adtb_testkit::profile;
@@ -15,9 +14,6 @@ const FIRST_SEED: u64 = 0x5eed_0000;
 /// The stack each case runs on, the default of a spawned thread.
 const STACK: usize = 2 << 20;
 
-/// A case slower than this is reported as a hang.
-const SLOW: Duration = Duration::from_secs(10);
-
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| {
         v.parse()
@@ -30,28 +26,19 @@ fn corpus() -> Vec<String> {
 }
 
 /// Runs `c` on a thread of its own named after `seed`, so a stack overflow names it too.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "goes when each seed is its own test"
-)]
 fn run(front: &Front, seed: u64, c: &Case) -> Result<Reached, String> {
     thread::scope(|s| {
-        let started = Instant::now();
         let handle = thread::Builder::new()
             .name(format!("fuzz seed {seed}"))
             .stack_size(STACK)
             .spawn_scoped(s, || front.run(c))
             .expect("a fuzz thread starts");
-        let reached = handle.join().map_err(|p| {
+        handle.join().map_err(|p| {
             p.downcast_ref::<String>()
                 .cloned()
                 .or_else(|| p.downcast_ref::<&str>().map(ToString::to_string))
                 .unwrap_or_else(|| "a panic".to_string())
-        })?;
-        if started.elapsed() > SLOW {
-            return Err(format!("took {:?}", started.elapsed()));
-        }
-        Ok(reached)
+        })
     })
 }
 

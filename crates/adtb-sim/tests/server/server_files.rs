@@ -2,6 +2,7 @@
 
 use adtb_harness::process::once;
 use adtb_simkit::api;
+use adtb_testkit::scratch::Scratch;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,13 +37,8 @@ txn load (p: Text) -> I64 =
 
 const OUTSIDE: &str = "is outside file_roots";
 
-fn tree(name: &str) -> PathBuf {
-    let at = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("server-files")
-        .join(name);
-    if at.exists() {
-        std::fs::remove_dir_all(&at).expect("the old directory is removed");
-    }
+fn tree(name: &str) -> Scratch {
+    let at = Scratch::new("server-files", name);
     for dir in ["root/sub", "out"] {
         std::fs::create_dir_all(at.join(dir)).expect("the directory is made");
     }

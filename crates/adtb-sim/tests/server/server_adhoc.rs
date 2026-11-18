@@ -1024,7 +1024,7 @@ fn on_stack(stack: &str, name: &str, body: impl FnOnce()) {
         .split_once("::")
         .expect("this module lies below the test binary's root");
     let exact = format!("{module}::{name}");
-    let out = adtb_heap_cap::test_child(std::env::current_exe().expect("this test binary"), 1)
+    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
         .args(["--exact", &exact, "--nocapture"])
         .env(CHILD, std::process::id().to_string())
         .env("RUST_MIN_STACK", stack)

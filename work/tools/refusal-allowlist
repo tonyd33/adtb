@@ -4,7 +4,6 @@
 3 apps/campaign/tests/live/atomic.rs
 2 crates/adtb-codegen/src/main.rs
 1 crates/adtb-conformance/tests/runner.rs
-1 crates/adtb-heap-cap/tests/cap.rs
 2 crates/adtb-lang/src/analysis/tests.rs
 1 crates/adtb-lang/src/check/tests/adhoc.rs
 1 crates/adtb-lang/src/check/tests/principal.rs

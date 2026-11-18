@@ -2,14 +2,10 @@
 
 extern crate adtb_lang as _;
 
+use adtb_testkit::scratch::Scratch;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
-
-use adtb_heap_cap::test_child;
-
-/// How many shells a test here runs at the same time.
-const MOST_AT_ONCE: usize = 2;
 
 const SCHEMA: &str = r"module test
 add module test
@@ -32,23 +28,18 @@ const SIGN_INS: &str = r#"from i in identities select match i
   | Google g    -> "google " ++ g.gid
   | Apple a     -> "apple " ++ a.sub"#;
 
-/// Returns a fresh directory holding `schema.adt`, and the path of a database file in it.
-fn scratch(name: &str) -> (PathBuf, PathBuf) {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("shell")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
+/// Returns a new directory holding `schema.adt`, the path of that schema and the path of a
+/// database file in it.
+fn scratch(name: &str) -> (Scratch, PathBuf, PathBuf) {
+    let dir = Scratch::new("shell", name);
     let schema = dir.join("schema.adt");
     std::fs::write(&schema, SCHEMA).unwrap();
-    (schema, dir.join("db.adt"))
+    let db = dir.join("db.adt");
+    (dir, schema, db)
 }
 
 fn adtb(args: &[&str], stdin: &str) -> Output {
-    let mut child = test_child(env!("CARGO_BIN_EXE_adtb"), MOST_AT_ONCE)
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_adtb"))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -118,7 +109,7 @@ fn seed(db: &Path) {
 
 #[test]
 fn recent_commits_are_listed_and_readable_after_reopen() {
-    let (schema, db) = scratch("recent");
+    let (_dir, schema, db) = scratch("recent");
     create(&schema, &db);
     let out = adtb(
         &[db.to_str().unwrap()],
@@ -135,7 +126,7 @@ fn recent_commits_are_listed_and_readable_after_reopen() {
 
 #[test]
 fn a_created_database_answers_a_match_over_constructors() {
-    let (schema, db) = scratch("match");
+    let (_dir, schema, db) = scratch("match");
     create(&schema, &db);
     seed(&db);
     let out = run(&db, SIGN_INS);
@@ -154,7 +145,7 @@ fn a_created_database_answers_a_match_over_constructors() {
 
 #[test]
 fn query_rows_print_one_per_line_in_the_textual_syntax() {
-    let (schema, db) = scratch("rows");
+    let (_dir, schema, db) = scratch("rows");
     create(&schema, &db);
     seed(&db);
     let out = run(
@@ -170,7 +161,7 @@ fn query_rows_print_one_per_line_in_the_textual_syntax() {
 
 #[test]
 fn a_failing_text_prints_its_error_and_exits_with_one() {
-    let (schema, db) = scratch("fails");
+    let (_dir, schema, db) = scratch("fails");
     create(&schema, &db);
     seed(&db);
     let out = refused_run(
@@ -188,7 +179,7 @@ fn a_failing_text_prints_its_error_and_exits_with_one() {
 
 #[test]
 fn a_text_that_does_not_check_is_rejected_as_invalid() {
-    let (schema, db) = scratch("invalid");
+    let (_dir, schema, db) = scratch("invalid");
     create(&schema, &db);
     let out = refused_run(&db, "from u in nowhere select u");
     assert_eq!(Some(1), out.status.code(), "{out:?}");
@@ -200,7 +191,7 @@ fn a_text_that_does_not_check_is_rejected_as_invalid() {
 
 #[test]
 fn a_script_on_stdin_runs_each_text_in_turn() {
-    let (schema, db) = scratch("script");
+    let (_dir, schema, db) = scratch("script");
     create(&schema, &db);
     let script = r#"-- two users, then a query split over lines
 insert users { name: "ann" }
@@ -218,7 +209,7 @@ from u in users
 
 #[test]
 fn an_indented_line_continues_a_text_in_a_script() {
-    let (schema, db) = scratch("indented");
+    let (_dir, schema, db) = scratch("indented");
     create(&schema, &db);
     seed(&db);
     let script = format!("{SIGN_INS}\nfrom u in users select u.name\n  order by u.name\n");
@@ -240,7 +231,7 @@ fn an_indented_line_continues_a_text_in_a_script() {
 
 #[test]
 fn a_transact_block_ends_at_an_unindented_line_in_a_script() {
-    let (schema, db) = scratch("transact-ends");
+    let (_dir, schema, db) = scratch("transact-ends");
     create(&schema, &db);
     let script = r#"transact
   insert users { name: "ann" }
@@ -254,7 +245,7 @@ from u in users select u.name order by u.name
 
 #[test]
 fn a_script_with_a_failing_text_runs_on_and_exits_with_one() {
-    let (schema, db) = scratch("script-fails");
+    let (_dir, schema, db) = scratch("script-fails");
     create(&schema, &db);
     let script = r#"insert users { name: 1 }
 insert users { name: "bo" }
@@ -268,7 +259,7 @@ from u in users select u.name
 
 #[test]
 fn a_blank_line_runs_an_unfinished_text_so_its_error_shows() {
-    let (schema, db) = scratch("blank");
+    let (_dir, schema, db) = scratch("blank");
     create(&schema, &db);
     let script = "from u in users\n\nfrom u in users select u.name\n";
     let out = adtb(&[db.to_str().unwrap()], script);
@@ -281,7 +272,7 @@ fn a_blank_line_runs_an_unfinished_text_so_its_error_shows() {
 
 #[test]
 fn a_transact_block_runs_on_until_a_blank_line() {
-    let (schema, db) = scratch("transact");
+    let (_dir, schema, db) = scratch("transact");
     create(&schema, &db);
     let script = r#"transact
   insert users { name: "ann" }
@@ -298,7 +289,7 @@ from u in users select u.name
 
 #[test]
 fn a_transact_block_refused_by_a_later_line_writes_nothing() {
-    let (schema, db) = scratch("transact-refused");
+    let (_dir, schema, db) = scratch("transact-refused");
     create(&schema, &db);
     let script = r#"transact
   insert users { name: "ann" }
@@ -314,7 +305,7 @@ from u in users select u.name
 
 #[test]
 fn an_interactive_transaction_spans_texts() {
-    let (schema, db) = scratch("interactive");
+    let (_dir, schema, db) = scratch("interactive");
     create(&schema, &db);
     let script = r#"\begin
 insert users { name: "ann" }
@@ -336,7 +327,7 @@ from u in users select u.name order by u.name
 
 #[test]
 fn a_failed_text_inside_a_transaction_leaves_it_open() {
-    let (schema, db) = scratch("txn-fails");
+    let (_dir, schema, db) = scratch("txn-fails");
     create(&schema, &db);
     let script = r#"\begin
 insert users { name: "ann" }
@@ -351,7 +342,7 @@ from u in users select u.name
 
 #[test]
 fn commit_without_a_transaction_fails() {
-    let (schema, db) = scratch("no-txn");
+    let (_dir, schema, db) = scratch("no-txn");
     create(&schema, &db);
     let out = adtb(&[db.to_str().unwrap()], "\\commit\n");
     assert_eq!(Some(1), out.status.code(), "{out:?}");
@@ -360,7 +351,7 @@ fn commit_without_a_transaction_fails() {
 
 #[test]
 fn a_transaction_open_at_the_end_of_input_is_rolled_back() {
-    let (schema, db) = scratch("dangling");
+    let (_dir, schema, db) = scratch("dangling");
     create(&schema, &db);
     let out = adtb(
         &[db.to_str().unwrap()],
@@ -374,7 +365,7 @@ fn a_transaction_open_at_the_end_of_input_is_rolled_back() {
 
 #[test]
 fn quit_stops_reading() {
-    let (schema, db) = scratch("quit");
+    let (_dir, schema, db) = scratch("quit");
     create(&schema, &db);
     let out = adtb(
         &[db.to_str().unwrap()],
@@ -387,7 +378,7 @@ fn quit_stops_reading() {
 
 #[test]
 fn committed_rows_survive_reopening_the_file() {
-    let (schema, db) = scratch("reopen");
+    let (_dir, schema, db) = scratch("reopen");
     create(&schema, &db);
     let out = adtb(
         &[db.to_str().unwrap()],
@@ -403,7 +394,7 @@ fn committed_rows_survive_reopening_the_file() {
 
 #[test]
 fn opening_a_missing_file_without_create_fails() {
-    let (_, db) = scratch("missing");
+    let (_dir, _, db) = scratch("missing");
     let out = refused_run(&db, "from u in users select u.name");
     assert_eq!(Some(1), out.status.code(), "{out:?}");
     assert!(
@@ -426,9 +417,8 @@ type Pet { name: Text } = Cat { lives: I64 } | Dog { good: Bool }
 
 /// Returns a fresh directory holding `name.adt` with `text` for each of `files`, and the path
 /// of a database file in it.
-fn scratch_with(dir: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
-    let (_, db) = scratch(dir);
-    let dir = db.parent().expect("a directory").to_path_buf();
+fn scratch_with(name: &str, files: &[(&str, &str)]) -> (Scratch, PathBuf) {
+    let (dir, _, db) = scratch(name);
     for (name, text) in files {
         std::fs::write(dir.join(format!("{name}.adt")), text).unwrap();
     }
@@ -572,7 +562,7 @@ fn help_prints_the_flags() {
 
 #[test]
 fn backslash_help_lists_the_commands() {
-    let (schema, db) = scratch("help");
+    let (_dir, schema, db) = scratch("help");
     create(&schema, &db);
     let out = adtb(&[db.to_str().unwrap()], "\\help\n");
     assert!(out.status.success(), "{out:?}");
@@ -587,7 +577,7 @@ fn backslash_help_lists_the_commands() {
 
 #[test]
 fn verify_of_a_sound_file_prints_nothing_and_succeeds() {
-    let (schema, db) = scratch("verify");
+    let (_dir, schema, db) = scratch("verify");
     create(&schema, &db);
     seed(&db);
     let out = adtb(&["verify", db.to_str().unwrap()], "");
@@ -597,7 +587,7 @@ fn verify_of_a_sound_file_prints_nothing_and_succeeds() {
 
 #[test]
 fn verify_exits_1_on_a_finding_and_2_when_the_file_refuses_open() {
-    let (schema, db) = scratch("verify-damage");
+    let (_dir, schema, db) = scratch("verify-damage");
     create(&schema, &db);
     seed(&db);
     let sound = std::fs::read(&db).unwrap();
@@ -642,9 +632,9 @@ fn verify_exits_1_on_a_finding_and_2_when_the_file_refuses_open() {
 
 #[test]
 fn verify_exits_2_while_another_process_holds_the_file() {
-    let (schema, db) = scratch("verify-held");
+    let (_dir, schema, db) = scratch("verify-held");
     create(&schema, &db);
-    let mut holder = test_child(env!("CARGO_BIN_EXE_adtb"), MOST_AT_ONCE)
+    let mut holder = std::process::Command::new(env!("CARGO_BIN_EXE_adtb"))
         .arg(db.to_str().unwrap())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -670,7 +660,7 @@ fn verify_exits_2_while_another_process_holds_the_file() {
 
 #[test]
 fn verify_of_a_missing_file_exits_2_and_says_why() {
-    let (_, db) = scratch("verify-missing");
+    let (_dir, _, db) = scratch("verify-missing");
     let out = adtb(&["verify", db.to_str().unwrap()], "");
     assert_eq!(Some(2), out.status.code(), "{out:?}");
     assert_eq!(
@@ -681,7 +671,7 @@ fn verify_of_a_missing_file_exits_2_and_says_why() {
 
 #[test]
 fn backup_restore_and_verify_of_a_backup_exit_as_documented() {
-    let (schema, file) = scratch("backup_tool");
+    let (_dir, schema, file) = scratch("backup_tool");
     create(&schema, &file);
     seed(&file);
     let dir = file.parent().unwrap();
@@ -734,7 +724,7 @@ fn backup_restore_and_verify_of_a_backup_exit_as_documented() {
 
 #[test]
 fn dump_and_restore_of_a_dump_exit_as_documented_and_keep_the_rows() {
-    let (schema, file) = scratch("dump_tool");
+    let (_dir, schema, file) = scratch("dump_tool");
     create(&schema, &file);
     seed(&file);
     let dir = file.parent().unwrap();
@@ -753,7 +743,7 @@ fn dump_and_restore_of_a_dump_exit_as_documented_and_keep_the_rows() {
 
 #[test]
 fn restore_reads_a_relative_source_from_the_working_directory() {
-    let (schema, file) = scratch("restore_relative");
+    let (_dir, schema, file) = scratch("restore_relative");
     let dir = file.parent().unwrap().to_owned();
     create(&schema, &file);
     seed(&file);
@@ -772,7 +762,7 @@ fn restore_reads_a_relative_source_from_the_working_directory() {
     let empty = dir.join("empty.adt");
     create(&schema, &empty);
     back_up(&empty, &dir.join("out/bk"));
-    let restored = test_child(env!("CARGO_BIN_EXE_adtb"), MOST_AT_ONCE)
+    let restored = std::process::Command::new(env!("CARGO_BIN_EXE_adtb"))
         .args(["restore", "bk", "out/new.adt"])
         .current_dir(&dir)
         .output()
@@ -784,7 +774,7 @@ fn restore_reads_a_relative_source_from_the_working_directory() {
 
 #[test]
 fn restore_prints_the_listed_damage_and_exits_zero() {
-    let (schema, file) = scratch("restore_damage");
+    let (_dir, schema, file) = scratch("restore_damage");
     let dir = file.parent().unwrap().to_owned();
     create(&schema, &file);
     seed(&file);
@@ -821,7 +811,7 @@ fn restore_prints_the_listed_damage_and_exits_zero() {
 
 #[test]
 fn restore_to_the_backups_end_position_succeeds() {
-    let (schema, file) = scratch("restore_end");
+    let (_dir, schema, file) = scratch("restore_end");
     let dir = file.parent().unwrap().to_owned();
     create(&schema, &file);
     seed(&file);

@@ -11,11 +11,10 @@
 
 extern crate adtb_lang as _;
 
+use adtb_testkit::scratch::Scratch;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-
-use adtb_heap_cap::test_child;
 
 const PROMPT: &str = "adtb> ";
 const CONTINUE: &str = "  ... ";
@@ -146,7 +145,7 @@ struct Printed {
 }
 
 /// Run `session` in `dir`.
-fn printed(dir: &Path, session: &Session, at_once: usize) -> Printed {
+fn printed(dir: &Path, session: &Session) -> Printed {
     let mut words = words(&session.command).expect("a whole command");
     let input = match words.as_slice() {
         [.., lt, file] if lt == "<" => {
@@ -165,7 +164,7 @@ fn printed(dir: &Path, session: &Session, at_once: usize) -> Printed {
     );
     let (mut printed, out) = std::io::pipe().expect("a pipe for the shell's output");
     let err = out.try_clone().expect("a second end for stderr");
-    let mut child = test_child(env!("CARGO_BIN_EXE_adtb"), at_once)
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_adtb"))
         .args(&words[1..])
         .current_dir(dir)
         .stdin(Stdio::piped())
@@ -193,19 +192,11 @@ fn printed(dir: &Path, session: &Session, at_once: usize) -> Printed {
 }
 
 /// Run every session of `page`, a path under `docs/manual`, and return what each that prints
-/// other than the page shows printed. Returns `None` when the page shows no session. At most
-/// `at_once` sessions run at the same time across pages.
-fn check(manual: &Path, page: &Path, at_once: usize) -> Option<Vec<String>> {
+/// other than the page shows printed. Returns `None` when the page shows no session.
+fn check(manual: &Path, page: &Path) -> Option<Vec<String>> {
     let text =
         std::fs::read_to_string(manual.join(page)).unwrap_or_else(|e| panic!("{page:?}: {e}"));
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("manual")
-        .join(page);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("manual", &page.to_string_lossy().replace('/', "-"));
     let mut wrong = Vec::new();
     let mut ran = 0;
     for block in blocks(&text) {
@@ -228,7 +219,7 @@ fn check(manual: &Path, page: &Path, at_once: usize) -> Option<Vec<String>> {
                 }
                 for (i, session) in sessions.iter().enumerate() {
                     ran += 1;
-                    let got = printed(&dir, session, at_once);
+                    let got = printed(&dir, session);
                     let status = got.status.code();
                     let expected = exits.get(i).copied().unwrap_or(0);
                     if got.lines != session.shown || status != Some(expected) {
@@ -274,7 +265,7 @@ fn every_page_prints_what_it_shows() {
     let checked: Vec<(PathBuf, Option<Vec<String>>)> = std::thread::scope(|s| {
         let runs: Vec<_> = pages
             .iter()
-            .map(|page| (page, s.spawn(|| check(&manual, page, pages.len()))))
+            .map(|page| (page, s.spawn(|| check(&manual, page))))
             .collect();
         runs.into_iter()
             .map(|(page, run)| {

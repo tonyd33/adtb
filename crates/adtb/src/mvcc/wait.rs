@@ -66,6 +66,12 @@ impl<R: Runtime> Waits<R> {
         self.state.lock(&self.rt).running.clone()
     }
 
+    /// Returns the transactions some waker is registered on.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn watched(&self) -> BTreeSet<Xid> {
+        self.state.lock(&self.rt).watchers.keys().copied().collect()
+    }
+
     /// Wake every waker registered on `x`, outside the state lock.
     pub fn ended(&self, x: Xid) {
         let watchers = {
