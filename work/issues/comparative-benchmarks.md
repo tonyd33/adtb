@@ -546,8 +546,8 @@ raw call/attempt/workflow samples, versioned JSON and a readable report with
 counts, retry-inclusive latency percentiles, named throughput units, native
 resources, process I/O fallback, storage inventories, phases and build/context
 evidence. Incomplete, failed or inconsistent evidence suppresses comparative rates.
-See the [reporting contract](../../crates/adtb-bench/reporting.md) and
-[runnable recipe](../../crates/adtb-bench/README.md).
+See the reporting contract (crates/adtb-bench/reporting.md, deleted 2026-11-18) and
+runnable recipe (crates/adtb-bench/README.md, deleted 2026-11-18).
 
 Four actual contained diagnostics passed: adtb and SQLite, each on counter-smoke
 and lifecycle with N=4 and four writers. Raw independent recomputation confirmed
@@ -678,7 +678,7 @@ all failure evidence; its final numerical freeze remains pending actual results.
 
 ## 2026-11-01: feasible matrix and comparison protocol frozen
 
-The [executable protocol](../../crates/adtb-bench/protocol.md) is frozen in
+The executable protocol (crates/adtb-bench/protocol.md, deleted 2026-11-18 with the crate) is frozen in
 `c798567c73e8`, with code pinned to `2f0369f68750`. Common dataset sizes are
 N=1000 and 5000, concurrency one and four writers, both adtb and SQLite, and
 both keyed counter and lifecycle workloads. Counter work stays 20,000 writes;
