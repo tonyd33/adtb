@@ -74,6 +74,16 @@ writing a helper: the byte readers in `storage/header.rs` and
 `crates/adtb-harness` (engine-free) and `crates/adtb-simkit`. Every loop over seeds puts the seed in
 its assertion message. Never discard a `Result` with `let _ =`.
 
+Premises and protections: a brief separates rulings from premises. A
+premise (a count, a site list, a claim about what code or the spec does)
+is a claim to verify: check it against the code and the spec before
+building on it, and report any you dispute before writing code. Before
+changing behaviour, find every statement about it in `docs/spec/` and
+`docs/design/` (`rg` for its terms) and name them in the receipt. A change
+that removes, moves or reorders a check, an assert, a lock, a release or a
+step lists each in the receipt with the type or searching test that now
+enforces what it protected; a doc comment alone enforces nothing.
+
 Tests: cover the agreed behavior, including regressions that currently fail.
 Preserve evidence of unexpected failures. Apply AGENTS.md's Test value rules
 before changing implementation: correct code that violates its contract, and

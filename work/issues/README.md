@@ -69,6 +69,8 @@ any of them:
 - `quality`: refactors, review findings and lint debt;
 - `milestone`: one ticket per milestone of `docs/plan.md`, depending on
   the tickets that belong to it;
+- `latent`: on a bug, its report has no reproduction on main; it is not worked
+  until a reproduction or its class's mechanism takes it;
 - `class-SLUG`: on a bug, the defect class of the Tag column of
   `.agents/skills/lead/defect-classes.md`, or `class-none`; the lead assigns it when triaging
   the ticket into a track, not at filing.

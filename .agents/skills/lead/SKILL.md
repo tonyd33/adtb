@@ -102,6 +102,9 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
   heading and line range, the tickets, the acceptance tests, the crates
   it may add, a short map of the crates it touches, and the landing order
   when tracks overlap.
+- Separate rulings from premises. A premise taken from a count, a review or
+  memory is written as a claim the author verifies before building on it;
+  only a ruling is binding.
 - Mark the track's ticket `in-progress` with `branch` set to the
   workspace name.
 
@@ -275,7 +278,7 @@ verification evidence.
 Follow-up tickets must not outgrow the work that clears them. Report the open count, split by bug and feature, when a milestone status is asked for.
 
 - With two tracks, one works the queue, ahead of milestone work: a batch of tickets sharing a cause for one agent, lowest priority number first, with the mechanism of [its class](defect-classes.md) before its instances. With one track, alternate.
-- A review finding in the code of the track goes in that track's next round. File a ticket only for what lies outside the track, and only when it names an observable defect or a concrete measured cost. Note style findings and ideas in the receipt, and do not file them.
+- A review finding in the code of the track goes in that track's next round. File a ticket only for what lies outside the track, and only when it names an observable defect or a concrete measured cost. A defect with no reproduction on main is filed with the `latent` tag, or appended to its class's mechanism ticket. Note style findings and ideas in the receipt, and do not file them.
 - A batch that closes tickets also closes what it finds obsolete or duplicate, by reading the code, with a dated line saying why.
 
 ## Context
