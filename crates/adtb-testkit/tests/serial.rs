@@ -1,8 +1,8 @@
 mod common;
 mod memory;
 
-use adtb_isolation::{Outcome, Step, Txn, check, run};
 use adtb_testkit::Rng;
+use adtb_testkit::isolation::{Outcome, Step, Txn, check, run};
 use adtb_testkit::profile::assert_reached;
 use memory::{Memory, Mode};
 

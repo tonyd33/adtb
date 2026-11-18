@@ -1,6 +1,6 @@
 //! A writer finding a page without room prunes it before taking another page.
 
-use adtb_harness::process;
+use adtb_testkit::process;
 
 use crate::OpenOptions;
 use crate::test_world::api;

@@ -15,8 +15,8 @@ use adtb_sys::runtime::Faults;
 
 use crate::test_world as harness;
 use crate::test_world::rows;
-use adtb_harness::crash;
-use adtb_harness::seeds;
+use adtb_testkit::crash;
+use adtb_testkit::seeds;
 
 use crate::test_world::fixture::{Layout, Parts, Storage};
 use crash::{Reopen, Rounds, crash_loop};
@@ -914,7 +914,7 @@ fn every_heap_write_clears_the_all_visible_flag() {
         for target in [0, ROWS / 2, ROWS - 1] {
             let seed = 60 + i as u64 * 3 + target as u64;
             let mut sim = Sim::new(seed, Config::default());
-            let (wrote, hot, before, after) = adtb_harness::process::run(&mut sim, |rt| {
+            let (wrote, hot, before, after) = adtb_testkit::process::run(&mut sim, |rt| {
                 let (mut db, _) = Db::create(&rt, 4);
                 let begun = db.txns.begin(&db.pager).unwrap();
                 let x = begun.xid();

@@ -1,7 +1,7 @@
 //! Commands of ad hoc text run in process: explain, explain analyze, vacuum and set setting.
 
-use adtb_harness::process::once;
 use adtb_simkit::api;
+use adtb_testkit::process::once;
 
 use adtb::{Database, Log};
 use adtb_sim::SimRuntime;

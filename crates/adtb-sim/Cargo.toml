@@ -13,13 +13,11 @@ adtb-sys.workspace = true
 adtb-heap-cap.workspace = true
 blake3 = { version = "1.8.3", default-features = false }
 adtb-conformance = { workspace = true, features = ["scripts"] }
-adtb-harness.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb = { workspace = true, features = ["latch-checks", "testing"] }
-adtb-isolation.workspace = true
 adtb-reference.workspace = true
 adtb-simkit.workspace = true
-adtb-testkit.workspace = true
+adtb-testkit = { workspace = true, features = ["sim"] }
 adtb-sys = { workspace = true, features = ["latch-checks"] }
 serde_json = "=1.0.154"
 arrow-ipc = "=60.1.0"

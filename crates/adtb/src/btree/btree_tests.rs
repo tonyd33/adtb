@@ -18,12 +18,12 @@ use adtb_sys::runtime::Faults;
 
 use crate::test_world as harness;
 use crate::test_world::recovery;
-use adtb_harness::crash;
-use adtb_harness::draw;
-use adtb_harness::seeds;
+use adtb_testkit::crash;
+use adtb_testkit::entropy;
+use adtb_testkit::seeds;
 
 use crash::{Reopen, Rounds, crash_loop};
-use draw::below;
+use entropy::below;
 use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
 use seeds::{assert_reached, share, sweep};

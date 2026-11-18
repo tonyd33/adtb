@@ -3,10 +3,10 @@
 
 use std::collections::BTreeSet;
 
-use adtb_harness::process::run;
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::process::run;
 use adtb_testkit::{profile, refused_as};
 
 use crate::catalog::change;

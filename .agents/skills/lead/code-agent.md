@@ -66,7 +66,7 @@ invariant it guards. Use newtype ids (`Xid`, constructor
 indexes) rather than bare `u64`/`u32`. Reuse what exists before
 writing a helper: the byte readers in `storage/header.rs` and
 `storage/record.rs`, and the simulator test-support libraries
-`crates/adtb-harness` (engine-free) and `crates/adtb-simkit`. Every loop over seeds puts the seed in
+`crates/adtb-testkit` (engine-free) and `crates/adtb-simkit`. Every loop over seeds puts the seed in
 its assertion message. Never discard a `Result` with `let _ =`.
 
 Premises and protections: a brief separates rulings from premises. A

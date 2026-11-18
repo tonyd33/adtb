@@ -11,12 +11,12 @@ use crate::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RestorePoint,
     restore_in,
 };
-use adtb_harness::common;
-use adtb_harness::damage::DataFile;
-use adtb_harness::process;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::common;
+use adtb_testkit::damage::DataFile;
+use adtb_testkit::process;
 
-use adtb_harness::damage::Files;
+use adtb_testkit::damage::Files;
 
 const SEED: u64 = 61;
 const FILE: &str = "past_end.adt";

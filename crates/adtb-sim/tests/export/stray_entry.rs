@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb::key::{CtorId, Entry, Value};
 use adtb::testing::{Damage, Object, Pid, Plant, Quarantine, Shape};
 use adtb::{CallOptions, Database, Error, FatalReason, Log};
-use adtb_harness::process;
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::{api, open};
+use adtb_testkit::process;
 
 const APP: &str = r"module app
 add module app

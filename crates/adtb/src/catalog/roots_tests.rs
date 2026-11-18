@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use adtb_harness::process::finished;
 use adtb_lang::ids::CatCtorId;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::process::finished;
 
 use crate::key::{OrderKey, Value};
 use crate::mvcc::{Scope, Transactions};

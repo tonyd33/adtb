@@ -2,8 +2,8 @@
 //! agrees with the ad hoc text of the same query, and the generated ids and ordinals agree with
 //! those the database assigns.
 
-use adtb_harness::process::once;
 use adtb_simkit::api;
+use adtb_testkit::process::once;
 
 use std::sync::Arc;
 

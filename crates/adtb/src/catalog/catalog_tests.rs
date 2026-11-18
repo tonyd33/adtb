@@ -6,13 +6,13 @@ use crate::mvcc::{Hold, Scope, Transactions};
 use crate::plan::{Element, IndexId};
 use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid, Quarantine};
 use crate::verify::{self, Finding, Problem, Report};
-use adtb_harness::process::finished;
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
+use adtb_testkit::process::finished;
 
 use crate::test_world as harness;
-use adtb_harness::damage::DataFile;
+use adtb_testkit::damage::DataFile;
 
 use harness::{PAGE, options};
 

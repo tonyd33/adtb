@@ -1,15 +1,35 @@
-//! The fixtures, generators and sweep sizes the test crates share.
+//! The engine-free helpers the tests share: fixtures, generators, sweep sizes, byte damage and the
+//! isolation checker. The `sim` feature adds the crash loops, failure searches, the loading of
+//! rows through a session and runs of a simulation, which need `adtb-sim` and `adtb-sys`.
+#![forbid(unsafe_code)]
 
+#[cfg(feature = "sim")]
+pub mod backends;
 pub mod cases;
+#[cfg(feature = "sim")]
+pub mod common;
 pub mod corpus;
+#[cfg(feature = "sim")]
+pub mod crash;
+pub mod damage;
 pub mod draw;
+#[cfg(feature = "sim")]
+pub mod entropy;
 pub mod fixture;
 pub mod fuzz;
 pub mod inhabit;
+pub mod isolation;
+#[cfg(feature = "sim")]
+pub mod load;
+#[cfg(feature = "sim")]
+pub mod process;
 pub mod profile;
 pub mod running;
 pub mod scratch;
+#[cfg(feature = "sim")]
+pub mod search;
 pub mod sections;
+pub mod seeds;
 pub mod spec;
 pub mod writes;
 

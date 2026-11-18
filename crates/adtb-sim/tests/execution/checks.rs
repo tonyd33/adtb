@@ -1,5 +1,5 @@
-use adtb_harness::common;
-use adtb_harness::seeds;
+use adtb_testkit::common;
+use adtb_testkit::seeds;
 
 use std::ops::Range;
 use std::time::Duration;

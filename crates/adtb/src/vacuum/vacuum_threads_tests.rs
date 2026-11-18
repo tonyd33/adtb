@@ -15,8 +15,8 @@ use adtb_sys::runtime::Faults;
 
 use crate::test_world as harness;
 use crate::test_world::rows;
-use adtb_harness::crash;
-use adtb_harness::seeds;
+use adtb_testkit::crash;
+use adtb_testkit::seeds;
 
 use crate::test_world::fixture::{Layout, Parts, Storage};
 use crash::{Reopen, Rounds, crash_loop};

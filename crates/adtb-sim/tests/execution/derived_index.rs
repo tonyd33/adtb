@@ -2,9 +2,9 @@
 //! in-process API: building them by migration, keeping them through crashes, and checking them
 //! between concurrent writers.
 
-use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::{once, run};
 
 use std::sync::{Arc, Mutex};
 

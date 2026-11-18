@@ -1,6 +1,6 @@
-use adtb_harness::damage::{DataFile, Files};
-use adtb_harness::process::finished;
 use adtb_sim::{Config, Sim};
+use adtb_testkit::damage::{DataFile, Files};
+use adtb_testkit::process::finished;
 
 use super::{HEADER_LEN, Options, PageKind, Pager, Pid};
 

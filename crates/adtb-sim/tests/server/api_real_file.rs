@@ -7,9 +7,9 @@ use adtb::testing::page::HEADER_LEN;
 use adtb::{
     CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions,
 };
-use adtb_harness::damage::{DataFile, Files};
 use adtb_lang::textual::print;
 use adtb_sys::os::{Backend, OsRuntime};
+use adtb_testkit::damage::{DataFile, Files};
 use adtb_testkit::refused_as;
 
 const SHOP: &str = r"module shop

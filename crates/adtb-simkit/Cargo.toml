@@ -8,13 +8,11 @@ publish = false
 
 [dependencies]
 adtb.workspace = true
-adtb-harness.workspace = true
-adtb-isolation.workspace = true
 adtb-lang.workspace = true
 adtb-reference.workspace = true
 adtb-sim.workspace = true
 adtb-sys.workspace = true
-adtb-testkit.workspace = true
+adtb-testkit = { workspace = true, features = ["sim"] }
 
 [dev-dependencies]
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }

@@ -10,7 +10,7 @@ use adtb::runtime::{Entropy, Threads};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::pages::PageMemory;
 
-use adtb_harness::seeds;
+use adtb_testkit::seeds;
 
 use seeds::{share, sweep};
 

@@ -6,12 +6,12 @@ use std::collections::BTreeMap;
 
 use adtb::runtime::Runtime;
 use adtb::{AdHocTransaction, Database, Log, OpenOptions, TxnCallOptions, TxnOptions};
-use adtb_harness::load::{self, Files, Made, Running, Session, convert};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::Value;
 use adtb_sim::SimRuntime;
 use adtb_testkit::corpus::migration;
+use adtb_testkit::load::{self, Files, Made, Running, Session, convert};
 
 use crate::open::{self, FILE};
 
@@ -41,7 +41,7 @@ pub fn rows_with_noise<'a, R: Runtime>(
 }
 
 /// Load `rows`, the rows of a reference database over `schema`, into `db` by relation name, as
-/// [`adtb_harness::load::load`] does.
+/// [`adtb_testkit::load::load`] does.
 pub fn committed_noise<R: Runtime>(
     db: &Database<R>,
     schema: &Schema,
@@ -51,7 +51,7 @@ pub fn committed_noise<R: Runtime>(
 }
 
 /// Begin a transaction over `db`, loaded with `rows` as [`committed_noise`] loads them, as
-/// [`adtb_harness::load::running`] does. It rolls back when dropped.
+/// [`adtb_testkit::load::running`] does. It rolls back when dropped.
 pub fn running_noise<'a, R: Runtime>(
     db: &'a Database<R>,
     schema: &Schema,

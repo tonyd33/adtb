@@ -11,10 +11,10 @@ use crate::runtime::{FatalIo, IoError};
 use crate::storage::{OpenError, Options, PageKind, Pager, Pid};
 use crate::testing::Knobs;
 use crate::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
-use adtb_harness::seeds::{assert_reached, sweep};
 use adtb_lang::schema::ValueDef;
 use adtb_lang::textual::print;
 use adtb_sys::os::{Backend, Faults, Loss, OsRuntime};
+use adtb_testkit::seeds::{assert_reached, sweep};
 
 const SCHEMA: &str = r"module shop
 add module shop
@@ -247,7 +247,7 @@ macro_rules! on_both_backends {
             $(
                 #[test]
                 fn $name() {
-                    if let Some(backend) = adtb_harness::backends::uring(64) {
+                    if let Some(backend) = adtb_testkit::backends::uring(64) {
                         super::$name(backend);
                     }
                 }

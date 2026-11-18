@@ -1,7 +1,7 @@
 //! A restore writes the dumped rows unchecked, builds every index and checks every constraint
 //! once: a dump that violates one is refused with the violation and leaves nothing at the target.
 
-use adtb_harness::process;
+use adtb_testkit::process;
 use std::sync::OnceLock;
 
 use adtb::runtime::OpKind;
@@ -10,12 +10,12 @@ use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RejectReason,
     RestorePoint, Value, restore_in,
 };
-use adtb_harness::search::{self, Files};
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{print_document, read_document};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::open;
+use adtb_testkit::search::{self, Files};
 
 const FILE: &str = "app.adt";
 const DUMP: &str = "d";

@@ -32,13 +32,13 @@ use crate::catalog::layout::field_type;
 use crate::test_world::finished;
 use crate::test_world::load;
 use crate::test_world::support::{row_ty, stored, to_ref, to_val};
-use adtb_harness::seeds::sweep;
+use adtb_testkit::seeds::sweep;
 
 /// Returns the fixture of `db`: its schema, the planner's catalog of its relations, and the
 /// declarations and rows of `f`, each relation's rows under the database's relation of its name.
 pub(crate) fn planner<R: crate::runtime::Runtime>(db: &crate::Database<R>, f: &Fixture) -> Fixture {
     let schema = db.schema().clone();
-    let rows = adtb_harness::load::rows_of(&schema, &f.schema, &f.db);
+    let rows = adtb_testkit::load::rows_of(&schema, &f.schema, &f.db);
     f.rebound(schema, db.testing().plan_catalog(), rows)
 }
 
@@ -61,7 +61,7 @@ fn planned(f: &Fixture) -> Fixture {
         PLANNED.with_borrow_mut(|p| p.insert(f.decls().to_owned(), got.clone()));
         got
     });
-    let rows = adtb_harness::load::rows_of(&schema, &f.schema, &f.db);
+    let rows = adtb_testkit::load::rows_of(&schema, &f.schema, &f.db);
     f.rebound(schema, catalog, rows)
 }
 

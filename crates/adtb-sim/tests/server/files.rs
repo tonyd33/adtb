@@ -1,8 +1,8 @@
 //! File scans of CSV and NDJSON files, loads from them, and temp relations, through the
 //! in-process API of the engine.
 
-use adtb_harness::process::once;
 use adtb_simkit::api;
+use adtb_testkit::process::once;
 use adtb_testkit::scratch::Scratch;
 
 use std::path::Path;

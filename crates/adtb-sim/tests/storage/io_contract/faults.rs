@@ -39,7 +39,7 @@ macro_rules! cases {
             $(
                 #[test]
                 fn $name() {
-                    if let Some(backend) = adtb_harness::backends::uring(4) {
+                    if let Some(backend) = adtb_testkit::backends::uring(4) {
                         super::$name(super::On("uring", backend));
                     }
                 }

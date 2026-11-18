@@ -14,9 +14,6 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::ffi::CStr;
-use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 pub const DEFAULT_CAP: usize = 3 << 29;
@@ -24,8 +21,6 @@ pub const DEFAULT_CAP: usize = 3 << 29;
 pub const MAX_RAISED_CAP: usize = 4 * DEFAULT_CAP;
 
 const UNREAD: usize = 0;
-
-const CAP_VARIABLE: &str = "ADTB_TEST_HEAP_CAP";
 
 const CHUNK_HEADER: usize = 8;
 const CHUNK_ALIGN: usize = 16;
@@ -46,12 +41,6 @@ pub fn raise_cap(bytes: usize) {
     if env_cap().is_none() {
         HEAP.raise(bytes);
     }
-}
-
-/// Returns this process's cap.
-#[must_use]
-pub fn current_cap() -> usize {
-    HEAP.cap()
 }
 
 /// Returns the nextest slots a test with a cap of `bytes` holds.
@@ -102,7 +91,7 @@ impl HeapCap {
         match self.cap.load(Relaxed) {
             UNREAD => {
                 zero_core_limit();
-                let cap = cap_from_environment();
+                let cap = env_cap().unwrap_or(DEFAULT_CAP);
                 self.cap.store(cap, Relaxed);
                 cap
             }
@@ -177,10 +166,6 @@ unsafe impl GlobalAlloc for HeapCap {
         }
         moved
     }
-}
-
-fn cap_from_environment() -> usize {
-    env_cap().unwrap_or(DEFAULT_CAP)
 }
 
 fn env_cap() -> Option<usize> {
@@ -300,71 +285,9 @@ fn forgo_core_dump() {
     }
 }
 
-/// Returns the paths of the test binaries of the workspace of `manifest` that do not abort at a
-/// one byte cap, building them first.
-///
-/// # Panics
-///
-/// When `cargo nextest list` fails or lists no binary.
-#[must_use]
-pub fn uncapped_test_binaries(manifest: &Path) -> Vec<String> {
-    let listed = list_command(manifest).output().expect("cargo nextest runs");
-    let stdout = String::from_utf8_lossy(&listed.stdout);
-    assert!(
-        listed.status.success(),
-        "cargo nextest list fails: {}",
-        String::from_utf8_lossy(&listed.stderr)
-    );
-    let binaries: Vec<&str> = stdout
-        .split("\"binary-path\":\"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
-        .collect();
-    assert!(
-        !binaries.is_empty(),
-        "cargo nextest lists no binary: {stdout}"
-    );
-    binaries
-        .into_iter()
-        .filter(|binary| !aborts_at_one_byte(binary))
-        .map(str::to_owned)
-        .collect()
-}
-
-fn list_command(manifest: &Path) -> Command {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut list = Command::new(cargo);
-    list.args([
-        "nextest",
-        "list",
-        "--workspace",
-        "--list-type",
-        "binaries-only",
-        "--message-format",
-        "json",
-        "--cargo-quiet",
-        "--manifest-path",
-    ])
-    .arg(manifest)
-    .env_remove("NEXTEST_PROFILE");
-    list
-}
-
-fn aborts_at_one_byte(binary: &str) -> bool {
-    Command::new(binary)
-        .arg("--list")
-        .env(CAP_VARIABLE, "1")
-        .output()
-        .expect("the test binary starts")
-        .status
-        .signal()
-        == Some(libc::SIGABRT)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
 
     const LAYOUT: Layout = Layout::new::<[u8; 64]>();
 
@@ -459,13 +382,6 @@ mod tests {
         assert_eq!(slots_for(DEFAULT_CAP), 1);
         assert_eq!(slots_for(DEFAULT_CAP + 1), 2);
         assert_eq!(slots_for(MAX_RAISED_CAP), 4);
-    }
-
-    #[test]
-    fn the_nested_list_drops_the_callers_profile() {
-        let list = list_command(Path::new("Cargo.toml"));
-        let profile = list.get_envs().find(|(name, _)| *name == "NEXTEST_PROFILE");
-        assert_eq!(profile, Some((OsStr::new("NEXTEST_PROFILE"), None)));
     }
 
     #[test]

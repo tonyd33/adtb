@@ -9,8 +9,8 @@ pub mod rows;
 pub mod support;
 pub mod write_path;
 
-pub use adtb_harness::process::finished;
 use adtb_sim::SimRuntime;
+pub use adtb_testkit::process::finished;
 
 use crate::storage::{OpenError, Options, Pager};
 

@@ -10,9 +10,9 @@ use crate::storage::{
     self, Damage, Finding, HEADER_LEN, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
 use crate::test_world as harness;
-use adtb_harness::common;
-use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_testkit::common;
+use adtb_testkit::damage::{DataFile, Files};
 use adtb_testkit::profile::{assert_reached, every_case};
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);

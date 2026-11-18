@@ -1,5 +1,5 @@
 use adtb::testing::{Damage, Failed, Object, PageError, Pid, Plant, Quarantine, page::HEADER_LEN};
-use adtb_harness::process;
+use adtb_testkit::process;
 use adtb_testkit::scratch::Scratch;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -15,10 +15,10 @@ use adtb::{
 };
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use adtb_harness::damage::DataFile;
 use adtb_simkit::api;
 use adtb_simkit::open;
 use adtb_sys::os::{Backend, OsRuntime};
+use adtb_testkit::damage::DataFile;
 
 const APP: &str = r"module app
 add module app
@@ -379,7 +379,7 @@ fn an_io_failure_sets_no_mark_and_stays_a_storage_failure() {
 
 #[test]
 fn concurrent_readers_of_one_damaged_page_set_one_mark() {
-    for seed_no in adtb_harness::seeds::sweep(20..22) {
+    for seed_no in adtb_testkit::seeds::sweep(20..22) {
         let mut sim = Sim::new(seed_no, Config::default());
         process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
@@ -935,7 +935,7 @@ fn runs(db: &Database<SimRuntime>, text: &str) {
 
 #[test]
 fn two_finders_of_different_objects_keep_both_marks() {
-    for s in adtb_harness::seeds::sweep(0..6) {
+    for s in adtb_testkit::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
         process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
@@ -963,7 +963,7 @@ fn two_finders_of_different_objects_keep_both_marks() {
 
 #[test]
 fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
-    for s in adtb_harness::seeds::sweep(0..6) {
+    for s in adtb_testkit::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
         process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
@@ -1523,7 +1523,7 @@ add relation identities : Identity key id generate sequence
 
 #[test]
 fn writers_and_vacuum_under_verify_set_no_false_mark() {
-    for s in adtb_harness::seeds::sweep(0..1) {
+    for s in adtb_testkit::seeds::sweep(0..1) {
         let mut sim = Sim::new(
             s,
             Config {
@@ -1909,7 +1909,7 @@ fn transact_fails_once_when_a_mark_lands_before_its_commit() {
 
 #[test]
 fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after() {
-    let seeds = adtb_harness::seeds::sweep(0..2);
+    let seeds = adtb_testkit::seeds::sweep(0..2);
     let mut refusing = 0;
     for seed_no in seeds.clone() {
         let config = Config {
@@ -1941,7 +1941,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
                                 continue;
                             }
                             between.fetch_add(1, Ordering::AcqRel);
-                            let wait = adtb_harness::draw::below(&clock, 4) as u64;
+                            let wait = adtb_testkit::entropy::below(&clock, 4) as u64;
                             let until = clock.now() + Duration::from_millis(wait);
                             while clock.now() < until {
                                 clock.yield_now();
@@ -2003,7 +2003,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
                 api::query(&db, "from n in notes select n").len(),
                 "seed {seed_no}: the notes are the kept commits"
             );
-            adtb_harness::seeds::assert_reached(
+            adtb_testkit::seeds::assert_reached(
                 &format!("seed {seed_no}: commits before the mark"),
                 kept.len(),
                 8,
@@ -2013,7 +2013,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
             }
         });
     }
-    adtb_harness::seeds::assert_reached(
+    adtb_testkit::seeds::assert_reached(
         "seeds refusing a commit after the mark",
         refusing,
         seeds.count().div_ceil(2),
@@ -2225,12 +2225,12 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
         let past = db.testing().root(Object::CommitTimes).unwrap();
         db.testing().flush();
         let mut io = rt.io();
-        let (file, _) = adtb_harness::common::open(&rt, &mut io, FILE, false).unwrap();
+        let (file, _) = adtb_testkit::common::open(&rt, &mut io, FILE, false).unwrap();
         let at = DATA.range(past).start as u64;
-        let mut page = adtb_harness::common::read(&rt, &mut io, file, at, API_PAGE).unwrap();
+        let mut page = adtb_testkit::common::read(&rt, &mut io, file, at, API_PAGE).unwrap();
         page[300] ^= 0x10;
-        adtb_harness::common::write(&rt, &mut io, file, at, &page).unwrap();
-        adtb_harness::common::sync(&rt, &mut io, file).unwrap();
+        adtb_testkit::common::write(&rt, &mut io, file, at, &page).unwrap();
+        adtb_testkit::common::sync(&rt, &mut io, file).unwrap();
         for p in 0..4096 {
             db.testing()
                 .probe()
@@ -2284,7 +2284,7 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
             let (other, rt2, then) = (db.clone(), rt.clone(), walked_then.clone());
             let detecting = rt.spawn("detecting", move || {
                 let nap = Duration::from_micros(step * step * 40);
-                adtb_harness::common::sleep(&rt2, &mut rt2.io(), nap);
+                adtb_testkit::common::sleep(&rt2, &mut rt2.io(), nap);
                 *then.lock().unwrap() = Some(other.testing().probe().walks());
                 other
                     .testing()
@@ -2311,7 +2311,7 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
         });
     }
     println!("{during} of 9 runs recorded the damage during the commit's walk");
-    adtb_harness::seeds::assert_reached("a record appended during the commit's walk", during, 1);
+    adtb_testkit::seeds::assert_reached("a record appended during the commit's walk", during, 1);
 }
 
 #[test]
@@ -2383,7 +2383,7 @@ fn a_mark_a_crash_loses_before_it_is_written_is_set_again_by_the_next_open() {
         db.close().unwrap();
         (pid, mark)
     });
-    adtb_harness::common::run_then_crash(&mut sim, |rt, _| {
+    adtb_testkit::common::run_then_crash(&mut sim, |rt, _| {
         let db = open_app(rt.clone());
         db.testing()
             .plant(Plant::Refuse {

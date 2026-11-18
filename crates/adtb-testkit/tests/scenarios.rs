@@ -3,7 +3,7 @@ extern crate adtb_lang as _;
 mod common;
 mod memory;
 
-use adtb_isolation::{
+use adtb_testkit::isolation::{
     ABORTED_READ, CIRCULAR_FLOW, INTERMEDIATE_READ, LOST_UPDATE, Outcome, READ_SKEW, SCENARIOS,
     Scenario, Step, TxnId, WRITE_SKEW, check, run,
 };

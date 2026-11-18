@@ -13,10 +13,10 @@ use crate::storage::{
     self, Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
 use crate::test_world as harness;
-use adtb_harness::common;
-use adtb_harness::damage::{DataFile, Files};
-use adtb_harness::search::each_crash_image;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_testkit::common;
+use adtb_testkit::damage::{DataFile, Files};
+use adtb_testkit::search::each_crash_image;
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 

@@ -2,7 +2,7 @@
 //! that proves one.
 
 use crate::testing::Plant;
-use adtb_harness::process;
+use adtb_testkit::process;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,12 +19,12 @@ use crate::{
     HostFns, Log, OpenOptions, Position, Proof, RejectReason, RestorePoint, TxnCallOptions,
     TxnOptions, proof_in, prove_in, restore_in,
 };
-use adtb_harness::common;
-use adtb_harness::damage::DataFile;
-use adtb_harness::search::{self, Files};
 use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Struck};
 use adtb_sys::runtime::Faults;
+use adtb_testkit::common;
+use adtb_testkit::damage::DataFile;
 use adtb_testkit::profile::{assert_reached, every_case, sweep};
+use adtb_testkit::search::{self, Files};
 
 const FILE: &str = "backup.adt";
 const TARGET: &str = "bk";

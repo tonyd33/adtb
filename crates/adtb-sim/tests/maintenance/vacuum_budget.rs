@@ -7,11 +7,11 @@ use std::time::Duration;
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::testing::{Charged, Knobs};
 use adtb::{CallOptions, CancelToken, Database, Error, Log, OpenOptions, RejectReason};
-use adtb_harness::common;
-use adtb_harness::process;
 use adtb_sim::SimRuntime;
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::common;
+use adtb_testkit::process;
 
 const SCHEMA: &str = r"module app
 add module app

@@ -4,7 +4,7 @@
 use crate::test_world as harness;
 use crate::test_world::api;
 use crate::test_world::load as open;
-use adtb_harness::process::{finished, run};
+use adtb_testkit::process::{finished, run};
 
 use std::collections::BTreeSet;
 

@@ -1,10 +1,10 @@
 //! The calls in process over the simulator: cancellation tokens and deadlines, closing a database
 //! with registrations and clones still held, and results as Arrow record batches.
 
-use adtb_harness::process::{once, run};
-use adtb_harness::seeds;
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::{once, run};
+use adtb_testkit::seeds;
 
 use std::time::Duration;
 

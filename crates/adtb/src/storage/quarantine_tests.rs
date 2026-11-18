@@ -1,6 +1,6 @@
 use crate::testing::{CommitLogPages, Object, Plant, Probe};
-use adtb_harness::process;
-use adtb_harness::process::finished;
+use adtb_testkit::process;
+use adtb_testkit::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,8 +24,8 @@ use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use crate::test_world as harness;
 use crate::test_world::api;
 use crate::test_world::load as open;
-use adtb_harness::damage::DataFile;
 use adtb_sys::os::{Backend, OsRuntime};
+use adtb_testkit::damage::DataFile;
 use adtb_testkit::scratch::Scratch;
 
 use harness::{NAME, PAGE};
@@ -961,7 +961,7 @@ fn written_whole(files: Files, pid: Pid, crash: bool) -> Files {
         p
     };
     if crash {
-        adtb_harness::common::run_then_crash(&mut sim, |rt, _| drop(body(rt.clone())));
+        adtb_testkit::common::run_then_crash(&mut sim, |rt, _| drop(body(rt.clone())));
     } else {
         finished(&mut sim, |rt| body(rt).close());
     }
@@ -1156,14 +1156,14 @@ fn damaged_tags_leaf(
         .unwrap();
     t.flush();
     let mut io = rt.io();
-    let (file, _) = adtb_harness::common::open(rt, &mut io, FILE, false).unwrap();
+    let (file, _) = adtb_testkit::common::open(rt, &mut io, FILE, false).unwrap();
     let at = DATA.range(leaf).start as u64;
-    let before = adtb_harness::common::read(rt, &mut io, file, at, API_PAGE).unwrap();
+    let before = adtb_testkit::common::read(rt, &mut io, file, at, API_PAGE).unwrap();
     api::results(db, "insert tags { id: tags.key(2), owner: users.key(7) }");
     t.flush();
     let damaged = damage(leaf, before);
-    adtb_harness::common::write(rt, &mut io, file, at, &damaged).unwrap();
-    adtb_harness::common::sync(rt, &mut io, file).unwrap();
+    adtb_testkit::common::write(rt, &mut io, file, at, &damaged).unwrap();
+    adtb_testkit::common::sync(rt, &mut io, file).unwrap();
     for p in 0..4096 {
         t.probe()
             .page(Pid(1 << 16 | p))

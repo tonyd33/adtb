@@ -12,11 +12,11 @@ use adtb::runtime::{Clock, Entropy, Runtime, Threads};
 use adtb::{
     CallOptions, Database, Error, Log, OpenOptions, RejectReason, TxnCallOptions, TxnOptions,
 };
-use adtb_harness::process;
-use adtb_harness::{common, crash, seeds};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process;
+use adtb_testkit::{common, crash, seeds};
 
 const SCHEMA: &str = r"module app
 add module app

@@ -25,7 +25,7 @@ use adtb_testkit::fixture::Fixture;
 use adtb_testkit::scratch::Scratch;
 
 use crate::test_world::write_path::{self, WritePath};
-use adtb_harness::seeds::sweep;
+use adtb_testkit::seeds::sweep;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {

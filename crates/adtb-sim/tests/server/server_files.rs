@@ -1,7 +1,7 @@
 //! File scans through a role session: `file_roots` confines them, the in-process API is not.
 
-use adtb_harness::process::once;
 use adtb_simkit::api;
+use adtb_testkit::process::once;
 use adtb_testkit::scratch::Scratch;
 
 use std::path::{Path, PathBuf};

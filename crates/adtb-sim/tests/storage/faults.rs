@@ -1,4 +1,4 @@
-use adtb_harness::common;
+use adtb_testkit::common;
 
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
@@ -576,7 +576,7 @@ fn ordinary_panics_are_not_accepted_as_fatal_io_crashes() {
     ] {
         let mut sim = Sim::new(31, Config::default());
         let caught = catch_unwind(AssertUnwindSafe(|| {
-            adtb_harness::crash::run_process(&mut sim, |_| match case {
+            adtb_testkit::crash::run_process(&mut sim, |_| match case {
                 OrdinaryPanic::Owned => panic_any(MESSAGE.to_owned()),
                 OrdinaryPanic::Borrowed => panic_any(MESSAGE),
                 OrdinaryPanic::Other => panic_any(17_u32),

@@ -1,5 +1,5 @@
-use adtb_harness::process::finished;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::process::finished;
 
 use crate::mvcc::Xid;
 use crate::storage::{PageKind, Pager, Pid};

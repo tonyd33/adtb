@@ -2,9 +2,9 @@
 //! pinned version, immutability, supersession at open, leases, retirement and supersession by
 //! command, and their persistence across reopen and crash.
 
-use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::{once, run};
 
 use std::collections::BTreeSet;
 use std::time::Duration;

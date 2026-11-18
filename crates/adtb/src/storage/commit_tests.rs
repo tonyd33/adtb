@@ -1,6 +1,6 @@
 use crate::testing::Probe;
-use adtb_harness::process;
-use adtb_harness::process::finished;
+use adtb_testkit::process;
+use adtb_testkit::process::finished;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,8 +13,8 @@ use adtb_sys::runtime::Faults;
 use crate::test_world as harness;
 use crate::test_world::api;
 use crate::test_world::load as open;
-use adtb_harness::{crash, search};
 use adtb_testkit::profile::assert_reached;
+use adtb_testkit::{crash, search};
 
 use crash::{Reopened, Rounds, crash_loop, silence_fatal_panics};
 

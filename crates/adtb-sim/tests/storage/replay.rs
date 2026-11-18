@@ -1,4 +1,4 @@
-use adtb_harness::common;
+use adtb_testkit::common;
 
 use std::collections::BTreeMap;
 use std::time::Duration;

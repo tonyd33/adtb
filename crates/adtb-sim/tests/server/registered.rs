@@ -1,9 +1,9 @@
 //! Registered queries and transactions in process: registration at open, calls by ordinal, the
 //! principal a call runs for, and the recheck of a registration when the schema changes.
 
-use adtb_harness::process::once;
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::once;
 
 use adtb::{
     CallOptions, Called, Database, Error, InTxn, Log, OpenOptions, Registration, RejectReason,

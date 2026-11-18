@@ -4,8 +4,8 @@
 use adtb::testing::{
     Knobs, Object, PageKind, Pid, Plant, Quarantine, Site, page::FIRST_EDITABLE, page::HEADER_LEN,
 };
-use adtb_harness::process;
-use adtb_harness::process::finished;
+use adtb_testkit::process;
+use adtb_testkit::process::finished;
 use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::{CreateOptions, Database, Error, FatalReason, Log, OpenOptions};
-use adtb_harness::common;
-use adtb_harness::damage::DataFile;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::common;
+use adtb_testkit::damage::DataFile;
 
 const FILE: &str = "scrub.adt";
 const PAGE: usize = 8192;

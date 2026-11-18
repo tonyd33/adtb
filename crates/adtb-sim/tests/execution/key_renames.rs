@@ -4,11 +4,11 @@
 use std::ops::Range;
 
 use adtb::Log;
-use adtb_harness::process;
-use adtb_harness::{draw, seeds};
 use adtb_sim::{Config, Sim};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process;
+use adtb_testkit::{entropy, seeds};
 
 const SEEDS: Range<u64> = 0..3;
 
@@ -121,9 +121,9 @@ fn a_rename_of_a_composite_key_field_keeps_every_stored_row_and_reference() {
     same_types += 1;
     for seed in seeds::sweep(SEEDS) {
         let types: Vec<&str> = process::once(seed, |rt| {
-            let len = 2 + draw::below(&rt, 3);
+            let len = 2 + entropy::below(&rt, 3);
             (0..len)
-                .map(|_| TYPES[draw::below(&rt, TYPES.len())])
+                .map(|_| TYPES[entropy::below(&rt, TYPES.len())])
                 .collect()
         });
         renamed(seed, &types, 0, GAPS[0]);

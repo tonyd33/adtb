@@ -9,9 +9,9 @@ use crate::test_world::api;
 use crate::test_world::load as open;
 use crate::testing::{Object, Plant};
 use crate::{ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, RestorePoint};
-use adtb_harness::damage::DataFile;
-use adtb_harness::process;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::damage::DataFile;
+use adtb_testkit::process;
 
 const FILE: &str = "app.adt";
 const COPY: &str = "copy.adt";

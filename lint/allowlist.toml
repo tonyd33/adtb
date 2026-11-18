@@ -81,10 +81,6 @@
 "crates/adtb-codegen/src/lib.rs" = 3
 "crates/adtb-conformance/src/lib.rs" = 11
 "crates/adtb-file/src/lib.rs" = 4
-"crates/adtb-harness/src/common.rs" = 2
-"crates/adtb-harness/src/search.rs" = 5
-"crates/adtb-isolation/src/harness.rs" = 2
-"crates/adtb-isolation/src/history.rs" = 8
 "crates/adtb-lang/src/ast.rs" = 164
 "crates/adtb-lang/src/check/adhoc.rs" = 3
 "crates/adtb-lang/src/check/mod.rs" = 25
@@ -125,11 +121,15 @@
 "crates/adtb-sys/src/runtime/mod.rs" = 5
 "crates/adtb-testkit/src/cases/mod.rs" = 12
 "crates/adtb-testkit/src/cases/walk.rs" = 8
+"crates/adtb-testkit/src/common.rs" = 2
 "crates/adtb-testkit/src/corpus.rs" = 1
 "crates/adtb-testkit/src/fixture.rs" = 6
 "crates/adtb-testkit/src/fuzz.rs" = 3
 "crates/adtb-testkit/src/inhabit.rs" = 4
+"crates/adtb-testkit/src/isolation/harness.rs" = 2
+"crates/adtb-testkit/src/isolation/history.rs" = 8
 "crates/adtb-testkit/src/running.rs" = 5
+"crates/adtb-testkit/src/search.rs" = 5
 "crates/adtb-testkit/src/sections.rs" = 4
 "crates/adtb-testkit/src/spec.rs" = 10
 "crates/adtb/src/api/arrow.rs" = 3

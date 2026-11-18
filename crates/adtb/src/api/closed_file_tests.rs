@@ -2,7 +2,7 @@
 //! retrying closure.
 
 use crate::test_world::load as open;
-use adtb_harness::process::run;
+use adtb_testkit::process::run;
 
 use crate::{CallOptions, Database, Log, Value};
 use adtb_lang::types::{Base, Ty};

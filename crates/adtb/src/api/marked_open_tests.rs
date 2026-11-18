@@ -2,9 +2,9 @@
 //! the quarantine, a diverged log with `Diverged`, a missing or changed host function as at any
 //! open, and the file's own log opens.
 
-use adtb_harness::damage::DataFile;
-use adtb_harness::process::{self, finished};
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::damage::DataFile;
+use adtb_testkit::process::{self, finished};
 
 use crate::batch::Batch;
 use crate::storage::{Pid, Quarantine};

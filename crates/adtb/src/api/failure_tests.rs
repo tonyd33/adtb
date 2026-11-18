@@ -4,8 +4,8 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use adtb_harness::process::run;
 use adtb_sim::{Config, Sim};
+use adtb_testkit::process::run;
 
 use crate::runtime::{Runtime as _, Threads as _};
 use crate::storage::{Damage, PageError, Quarantine};
@@ -150,7 +150,7 @@ fn damage_met_writing_a_lapsed_lease_fails_as_storage_and_marks_nothing() {
         db.role_authority()
             .register(&owner, &leased("s-1.0"))
             .expect("registered");
-        adtb_harness::common::sleep(&rt, &mut rt.io(), Duration::from_secs(7200));
+        adtb_testkit::common::sleep(&rt, &mut rt.io(), Duration::from_secs(7200));
         let rows = crate::testing::Object::CatalogRows;
         let pages = db.testing().pages(rows).expect("the rows heap's pages");
         for &page in &pages {
@@ -313,7 +313,7 @@ fn undo_meets_damage(seed: u64, last: &str) -> Undone {
                 holder
                     .query_text(BUMP, &[], &TxnCallOptions::default())
                     .expect("the holder's bump");
-                adtb_harness::common::sleep(&rt, &mut rt.io(), Duration::from_secs(2));
+                adtb_testkit::common::sleep(&rt, &mut rt.io(), Duration::from_secs(2));
                 let users = db.testing().heap("app::users", "User").expect("the heap");
                 let held: Vec<_> = db
                     .testing()
@@ -337,7 +337,7 @@ fn undo_meets_damage(seed: u64, last: &str) -> Undone {
                 holder.rollback().expect("the holder rolls back");
             })
         };
-        adtb_harness::common::sleep(&rt, &mut rt.io(), Duration::from_secs(1));
+        adtb_testkit::common::sleep(&rt, &mut rt.io(), Duration::from_secs(1));
         let mut txn = db.begin(&TxnOptions::default()).expect("a transaction");
         let call = format!("insert users {{ name: \"x\" }}\n{BUMP}\n{last}");
         let reply = txn.query_text(&call, &[], &opts).map(drop);

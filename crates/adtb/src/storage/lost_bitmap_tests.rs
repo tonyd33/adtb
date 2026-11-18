@@ -2,7 +2,7 @@
 //! and marks, and leaves named pages as they were. A healthy file, cut by no fault, never refuses.
 
 use crate::testing::{Failed, Knobs, Object, Plant, Probe};
-use adtb_harness::process::finished;
+use adtb_testkit::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Value;
@@ -14,8 +14,8 @@ use crate::storage::{
 use crate::test_world::api;
 use crate::test_world::load as open;
 use crate::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
-use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::damage::{DataFile, Files};
 use adtb_testkit::profile::sweep;
 
 const FILE: &str = "lost_bitmap.adt";

@@ -9,15 +9,15 @@ use crate::test_world::support::{to_ref, to_val};
 use crate::test_world::write_path::{self, WritePath};
 use crate::test_world::{PAGE, finished};
 use crate::write::{self, Database, Rejection as WRejection, Rows};
-use adtb_harness::common;
-use adtb_harness::damage::DataFile;
-use adtb_harness::seeds::{share, sweep};
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{KeyCtors, RelRef, Ty};
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_testkit::common;
+use adtb_testkit::damage::DataFile;
 use adtb_testkit::fixture::Fixture;
+use adtb_testkit::seeds::{share, sweep};
 use adtb_testkit::uuid;
 use adtb_testkit::writes::fixture;
 
@@ -237,7 +237,7 @@ fn rekeyed(rows: &Rows, to: &Schema, from: &Schema) -> Rows {
         .filter(|((r, _), _)| !from.module(from.relation(*r).module).engine)
         .map(|((r, c), vs)| {
             (
-                (adtb_harness::load::relation_of(to, from, *r), *c),
+                (adtb_testkit::load::relation_of(to, from, *r), *c),
                 vs.clone(),
             )
         })

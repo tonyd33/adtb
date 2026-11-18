@@ -477,7 +477,7 @@ Postconditions of the simulator:
 - A thread a daemon spawns is no daemon.
 
 After the crash and recovery of every round, the harness's crash loop
-(`adtb_harness::crash::crash_loop`, [testing.md §5](testing.md#5-harness))
+(`adtb_testkit::crash::crash_loop`, [testing.md §5](testing.md#5-harness))
 checks with `adtb_sim::check` that every acknowledged commit is
 present, that no unacknowledged state is reported as committed, and
 that `verify` finds no structural, cross or logical violation
@@ -495,12 +495,12 @@ Rulings: buffer/test/dst, buffer/test/dst-threads/sim-scheduler
 
 ## 6. Isolation histories
 
-The test harness and the checker crate `adtb-isolation` meet at a
+The test harness and the checker module `adtb_testkit::isolation` meet at a
 history of list-append transactions
 ([§7.4](#74-isolation-checking) describes the workload).
 
 The test harness hands the checker a history: a sequence of
-`adtb_isolation::Txn` values, whose order carries no meaning.
+`adtb_testkit::isolation::Txn` values, whose order carries no meaning.
 
 | Field | Meaning |
 | --- | --- |
@@ -564,7 +564,7 @@ Elems::open(rt, &OpenOptions) -> Result<Elems, OpenError>   // options: elle::op
 Elems::{begin(Kind) -> Result<Txn, Error>, append(&mut Txn, k, e) -> Result<(), Error>,
         read(&mut Txn, k) -> Result<Vec<i64>, Error>, lists(keys) -> Vec<Vec<i64>>,
         verify() -> Vec<String>, database()}
-Kind::{ReadWrite, ReadOnly, Deferrable}; Client(&Elems): adtb_isolation::Database
+Kind::{ReadWrite, ReadOnly, Deferrable}; Client(&Elems): adtb_testkit::isolation::Database
 elle::aborted(Error) -> Aborted
 elle::created() -> BTreeMap<String, Vec<u8>>
 elle::simulate_with(seed, &OpenOptions, body: FnOnce(&SimRuntime, &Arc<Elems>) -> T) -> T
@@ -632,7 +632,7 @@ recovery runs on it; the checks of §5 must hold for every image.
 
 Histories of concurrent transactions are checked for Adya's phenomena.
 The promise is serializability, so any G0, G1 or G2 cycle in a history
-is a bug. The checker is the crate `adtb-isolation`. It follows Elle's
+is a bug. The checker is the module `adtb_testkit::isolation`. It follows Elle's
 list-append workload: each key holds a list, transactions append
 elements unique per key and read whole lists, so every read shows
 which appends are visible and in which order they were installed. The

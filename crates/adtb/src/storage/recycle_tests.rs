@@ -13,8 +13,8 @@ use crate::storage::{
 };
 use crate::test_world as harness;
 use crate::verify::{self, Inventory, Problem};
-use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_testkit::damage::{DataFile, Files};
 use adtb_testkit::profile::every_case;
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);

@@ -12,8 +12,8 @@ use crate::key::{CtorId, Scalar, Tid, Value};
 use crate::mvcc::{Fate, Transactions, Xid};
 use crate::storage::{Damage, PageError, Pager, Pid, Shape, Undecoded, Walk};
 use crate::verify::{self, Finding, Inventory, Problem, Report, Sum};
-use adtb_harness::process::finished;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::process::finished;
 
 use crate::test_world::{PAGE, options};
 

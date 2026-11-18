@@ -15,13 +15,13 @@ use adtb::{
     OpenOptions, Registration, RejectReason, RetryReason, RoleSession, Task, TaskOptions,
     TxnCallOptions, TxnOptions, Value,
 };
-use adtb_harness::process::{once, run};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api::{query, results, task};
 use adtb_simkit::open::options;
+use adtb_testkit::process::{once, run};
 
 const SCHEMA: &str = "module example\nadd module example\nadd type Item = { id: Key items, value: I64 }\nadd relation items : Item key id\n";
 

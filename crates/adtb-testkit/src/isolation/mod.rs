@@ -1,8 +1,4 @@
 //! The isolation checker over list-append histories and the scripted anomaly scenarios.
-#![forbid(unsafe_code)]
-
-#[cfg(test)]
-extern crate adtb_lang as _;
 
 mod check;
 mod graph;

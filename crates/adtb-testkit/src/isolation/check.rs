@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::graph::{Graph, Kind};
-use crate::history::{Anomaly, Dep, Edge, Expected, Malformed, Op, Outcome, Txn, TxnId};
+use super::graph::{Graph, Kind};
+use super::history::{Anomaly, Dep, Edge, Expected, Malformed, Op, Outcome, Txn, TxnId};
 
 /// Returns every anomaly `history` shows, or why it cannot be analysed.
 ///

@@ -1,4 +1,4 @@
-use adtb_isolation::{Anomaly, Txn};
+use adtb_testkit::isolation::{Anomaly, Txn};
 
 pub fn kind(a: &Anomaly) -> &'static str {
     match a {
@@ -16,7 +16,7 @@ pub fn kind(a: &Anomaly) -> &'static str {
 }
 
 pub fn kinds(history: &[Txn]) -> Vec<&'static str> {
-    adtb_isolation::check(history)
+    adtb_testkit::isolation::check(history)
         .expect("well formed")
         .iter()
         .map(kind)

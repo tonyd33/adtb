@@ -2,9 +2,9 @@
 //! family it comes to own, the recheck of its bundles at each migration, and their persistence
 //! across reopen and crash.
 
-use adtb_harness::process::run;
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::run;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

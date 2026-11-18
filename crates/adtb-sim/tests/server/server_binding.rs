@@ -1,8 +1,8 @@
 //! A role's binding of a bundle and its registered calls: call grants, ownership, the checks at
 //! submit and on leaving the queue, definer rights, audit rows and lease renewal.
 
-use adtb_harness::process::once;
 use adtb_simkit::api;
+use adtb_testkit::process::once;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

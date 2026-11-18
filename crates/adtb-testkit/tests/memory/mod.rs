@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use adtb_isolation::{Aborted, Database};
+use adtb_testkit::isolation::{Aborted, Database};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {

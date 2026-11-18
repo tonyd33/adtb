@@ -57,15 +57,14 @@ different dependencies, consumers or stability promises:
 | `adtb-file` | The readers of CSV and NDJSON files at a declared row type, over any value type of the textual syntax, and the files a path names ([oracle.md §1](oracle.md#1-evaluation-contract)) | `adtb-lang`, Unicode normalisation |
 | `adtb-reference` | The reference interpreter ([oracle.md](oracle.md)) | `adtb-lang`, `adtb-file`, Unicode, collation, regular expression and zone tables |
 | `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads, the CRC-32C instruction ([sys.md](sys.md)); the runtime interfaces: I/O, clock, threads, entropy ([runtime.md](runtime.md)) | `libc` and allowlisted system crates |
-| `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-file`, `adtb-sys`; `testing` only the `scripts` feature of `adtb-conformance` and the tests of `adtb-sim`, `adtb-testkit` and `adtb-shell` enable, and it exists in its own unit tests; its unit tests run over `adtb-sim` and `adtb-harness` |
+| `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-file`, `adtb-sys`; `testing` only the `scripts` feature of `adtb-conformance` and the tests of `adtb-sim`, `adtb-testkit` and `adtb-shell` enable, and it exists in its own unit tests; its unit tests run over `adtb-sim` and `adtb-testkit` |
 | `adtb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection ([runtime.md §5](runtime.md#5-simulated-storage)), and the tests that run the engine over them; only tests and the `adtb-conformance` runner depend on it | `adtb-sys`; its tests `adtb` |
-| `adtb-harness` | The helpers the simulator's tests share that name no engine type: crash loop, failure searches, byte damage ([testing.md §5](testing.md#5-harness)); only tests depend on it, `adtb`'s unit tests among them | `adtb-sim`, `adtb-sys`, `adtb-testkit`, `adtb-lang`, `adtb-reference` |
-| `adtb-simkit` | The helpers the simulator's test binaries share that name the engine; only tests and the `adtb-conformance` runner depend on it | `adtb`, `adtb-harness`, `adtb-sim`, `adtb-lang`, `adtb-reference`, `adtb-testkit`, `adtb-isolation` |
+| `adtb-testkit` | The helpers the tests share that name no engine type: fixtures, generators and sweep sizes, crash loop, failure searches, byte damage ([testing.md §5](testing.md#5-harness)), and the isolation checker over list-append histories with its scripted anomaly scenarios ([runtime.md §6](runtime.md#6-isolation-histories)); only tests depend on it, `adtb`'s unit tests among them, and it never depends on `adtb` | `adtb-sim`, `adtb-sys`, `adtb-lang`, `adtb-reference` |
+| `adtb-simkit` | The helpers the simulator's test binaries share that name the engine; only tests and the `adtb-conformance` runner depend on it | `adtb`, `adtb-sim`, `adtb-lang`, `adtb-reference`, `adtb-testkit` |
 | `adtb-conformance` | The snapshot runner: the conformance files of the script format of [../spec/conformance.md](../spec/conformance.md) on the reference and the engine, the engine scripts of `crates/adtb-sim/scripts/` on the engine under its `scripts` feature, and the probe of one text; the suite itself is `conformance/` at the root, one directory per spec part | `adtb-lang`, `adtb-reference`, `adtb`, `adtb-sim`; under `scripts` `adtb` with `testing` and `adtb-simkit` |
-| `adtb-isolation` | The isolation checker over list-append histories and the scripted anomaly scenarios ([runtime.md §6](runtime.md#6-isolation-histories)) | standard library |
 | `adtb-server` | The wire protocol of [../spec/wire.md](../spec/wire.md) around `adtb` ([server.md](server.md)) | `adtb` |
 | `adtb-codegen` | Rust code generation from a migration log and bundle files ([kernel.md §8](kernel.md#8-code-generators)) | `adtb-lang` |
-| `adtb-codegen-tests` | The code generated from fixture schemas and bundles, compiled and called over the simulator | `adtb`, `adtb-codegen` at build time |
+| `adtb-codegen-tests` | The code generated from fixture schemas and bundles, compiled and called over the simulator, and the Rust examples of the user manual, each run as a test; one build script writes both | `adtb`, `adtb-codegen` at build time |
 
 Layers inside `adtb` (catalog, planner, transactions, storage) are
 modules, not crates. Their boundaries are still contracts and have
@@ -88,10 +87,10 @@ design files of their own.
 | Log stream and replicas | primary | replicas, embedded replicas, backups | [replication.md](replication.md) | `adtb`: `Database`; `adtb::storage`: `Pager` |
 | Calls over the wire | `adtb-server` | `adtb` | [server.md](server.md) | `adtb_server::wire`: `Reassembler`; `adtb`: `Database` |
 | Typed bundles | `adtb` | generated code | [server.md §4.5](server.md#45-typed-bundles) | `adtb::typed`: `BundleDef`, `Callable` |
-| Histories and anomalies | test harnesses | `adtb-isolation` | [runtime.md §6](runtime.md#6-isolation-histories) | `adtb_isolation`: `check`, `run`, `Scenario` |
+| Histories and anomalies | test harnesses | `adtb-testkit` | [runtime.md §6](runtime.md#6-isolation-histories) | `adtb_testkit::isolation`: `check`, `run`, `Scenario` |
 | The test oracle | `adtb-reference` | test harness, `adtb-conformance` | [oracle.md](oracle.md) | `adtb_reference`: `Interpreter`, `Value` |
 | Engine observations for tests | `adtb` under the `testing` feature | the tests of `adtb-sim`, `adtb-testkit` and `adtb-shell` | [testing.md](testing.md) | `adtb::testing`: `Testing`, `Probe` |
-| Crash loop, failure searches and byte damage | `adtb-harness` | the tests of `adtb-sim` and `adtb` | [testing.md §5](testing.md#5-harness) | `adtb_harness`: `crash::crash_loop`, `search`, `damage::DataFile` |
+| Crash loop, failure searches and byte damage | `adtb-testkit` | the tests of `adtb-sim` and `adtb` | [testing.md §5](testing.md#5-harness) | `adtb_testkit`: `crash::crash_loop`, `search`, `damage::DataFile` |
 | Opens and rows | `adtb-simkit` | the tests of `adtb-sim` | [testing.md §5](testing.md#5-harness) | `adtb_simkit`: `open`, `load` |
 
 Rulings: project/arch/crates/by-boundary

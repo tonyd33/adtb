@@ -108,7 +108,7 @@ struct Waiting<'a> {
 /// how an abort record fails on the page `then` may refuse.
 fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
     let mut sim = adtb_sim::Sim::new(6, adtb_sim::Config::default());
-    adtb_harness::process::run(&mut sim, |rt| {
+    adtb_testkit::process::run(&mut sim, |rt| {
         let db = load::opened(
             &rt,
             crate::test_world::NAME,

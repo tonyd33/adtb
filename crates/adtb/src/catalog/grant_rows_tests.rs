@@ -5,7 +5,7 @@ use crate::test_world as harness;
 use crate::test_world::api;
 use crate::test_world::grants;
 use crate::test_world::load as open;
-use adtb_harness::process::{finished, once, run};
+use adtb_testkit::process::{finished, once, run};
 use adtb_testkit::refused_as;
 
 use std::collections::{BTreeMap, BTreeSet};

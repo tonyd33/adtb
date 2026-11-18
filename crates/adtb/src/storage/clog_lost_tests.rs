@@ -3,7 +3,7 @@
 //! nothing when the log it needs is not whole.
 
 use crate::testing::{Knobs, Object, Plant, Probe, TxnProbe};
-use adtb_harness::process;
+use adtb_testkit::process;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::{Entry, Tid, Value};
@@ -14,9 +14,9 @@ use crate::test_world as harness;
 use crate::test_world::api;
 use crate::test_world::load as open;
 use crate::{Database, Error, FatalReason, Log};
-use adtb_harness::common;
-use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::common;
+use adtb_testkit::damage::{DataFile, Files};
 use adtb_testkit::profile::assert_reached;
 
 const APP: &str = r"module app

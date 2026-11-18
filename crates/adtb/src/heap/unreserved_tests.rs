@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 
-use adtb_harness::process;
 use adtb_sim::SimRuntime;
+use adtb_testkit::process;
 
 use super::{Error as HeapError, FieldType, Heap, LargeStore, Refused};
 use crate::key::{Scalar, Value};

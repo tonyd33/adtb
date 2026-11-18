@@ -7,7 +7,6 @@ name = "adtb"
 version = "0.1.0"
 dependencies = [
  "adtb-file",
- "adtb-harness",
  "adtb-heap-cap",
  "adtb-lang",
  "adtb-reference",
@@ -41,10 +40,10 @@ version = "0.1.0"
 dependencies = [
  "adtb",
  "adtb-codegen",
- "adtb-harness",
  "adtb-lang",
  "adtb-sim",
  "adtb-simkit",
+ "adtb-testkit",
 ]
 
 [[package]]
@@ -72,29 +71,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "adtb-harness"
-version = "0.1.0"
-dependencies = [
- "adtb-lang",
- "adtb-reference",
- "adtb-sim",
- "adtb-sys",
- "adtb-testkit",
-]
-
-[[package]]
 name = "adtb-heap-cap"
 version = "0.1.0"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "adtb-isolation"
-version = "0.1.0"
-dependencies = [
- "adtb-lang",
- "adtb-testkit",
 ]
 
 [[package]]
@@ -107,16 +87,6 @@ dependencies = [
  "regex",
  "regex-syntax",
  "unicode-normalization",
-]
-
-[[package]]
-name = "adtb-manual"
-version = "0.1.0"
-dependencies = [
- "adtb",
- "adtb-codegen",
- "adtb-lang",
- "adtb-testkit",
 ]
 
 [[package]]
@@ -159,9 +129,7 @@ version = "0.1.0"
 dependencies = [
  "adtb",
  "adtb-conformance",
- "adtb-harness",
  "adtb-heap-cap",
- "adtb-isolation",
  "adtb-lang",
  "adtb-reference",
  "adtb-simkit",
@@ -181,8 +149,6 @@ name = "adtb-simkit"
 version = "0.1.0"
 dependencies = [
  "adtb",
- "adtb-harness",
- "adtb-isolation",
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
@@ -210,6 +176,8 @@ dependencies = [
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
+ "adtb-sys",
+ "adtb-testkit",
  "unicode-normalization",
 ]
 

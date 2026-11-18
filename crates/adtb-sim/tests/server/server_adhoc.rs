@@ -1,6 +1,6 @@
 //! Ad hoc text of a role: charged against its own grants, and revealing nothing it cannot read.
 
-use adtb_harness::process::run;
+use adtb_testkit::process::run;
 use adtb_testkit::refused_as;
 use std::collections::BTreeSet;
 use std::ffi::{c_int, c_ulong};

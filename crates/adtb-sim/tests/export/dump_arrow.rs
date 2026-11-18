@@ -1,7 +1,7 @@
 //! The data entries of a dump as Arrow IPC streams: what arrow-rs reads from them, and a restore
 //! reading them and not the text form.
 
-use adtb_harness::process;
+use adtb_testkit::process;
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
@@ -13,13 +13,13 @@ use adtb::testing::dump::{self, file_schema};
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, Log, OpenOptions, RestorePoint, Value, restore_in,
 };
-use adtb_harness::search::Files;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::read_document;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::search::Files;
 use arrow_schema::{DataType, UnionMode};
 
 use crate::arrow_ipc;

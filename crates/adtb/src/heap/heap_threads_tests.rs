@@ -492,7 +492,7 @@ fn emptying_a_page_beside_a_settle_of_its_neighbours_entry_finishes() {
                 ..Config::default()
             },
         );
-        let rounds = adtb_harness::process::run(&mut sim, |rt| {
+        let rounds = adtb_testkit::process::run(&mut sim, |rt| {
             let pager = Pager::create(rt.clone(), &options(64)).expect("create");
             let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
             let heap = Heap::create_with_fanout(&pager, HEAP_ID, row_type(), large, 2).unwrap();

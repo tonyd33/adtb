@@ -10,11 +10,11 @@ use adtb::{
     ArchiveTarget, CallOptions, Capability, Database, Error, FatalReason, Log, OpenOptions,
     RejectReason, RestorePoint, restore_report_in,
 };
-use adtb_harness::process;
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process;
 use adtb_testkit::refused_as;
 
 const APP: &str = r"module app

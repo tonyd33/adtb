@@ -12,8 +12,8 @@ use crate::storage::{
 use adtb_sim::{Config, Sim, SimRuntime};
 
 use crate::test_world as harness;
-use adtb_harness::damage::{DataFile, Files};
-use adtb_harness::seeds;
+use adtb_testkit::damage::{DataFile, Files};
+use adtb_testkit::seeds;
 
 use harness::{NAME, PAGE, finished};
 use seeds::{assert_reached, share, sweep};

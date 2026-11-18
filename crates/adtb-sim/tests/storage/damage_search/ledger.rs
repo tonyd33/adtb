@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::runtime::OpKind;
 use adtb::testing::{PageKind, Pid, Quarantine, page};
-use adtb_harness::search::Files;
 use adtb_sim::{Planned, Submitted};
+use adtb_testkit::search::Files;
 
 use super::world::{self, FILE, PAGE};
 

@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use adtb_harness::load::{self, Files, Made, Running, Session, convert};
 use adtb_lang::check::{Checker, Context, Program, check_adhoc};
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm;
@@ -16,6 +15,7 @@ use adtb_reference::Value;
 use adtb_sim::{Config, Sim};
 use adtb_testkit::corpus::migration;
 use adtb_testkit::fixture::Fixture;
+use adtb_testkit::load::{self, Files, Made, Running, Session, convert};
 
 use crate::catalog::Catalog;
 use crate::exec::{self, Budget, Scheduler};

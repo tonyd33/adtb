@@ -18,9 +18,9 @@ that needs a pager, a structure or the write path below them is a unit
 test of `adtb`, beside the layer it tests.
 
 The harness the simulator's tests share is two crates (§5):
-`adtb-harness`, which names no engine type, holds the crash loop,
-failure searches, byte damage, the loading of rows through a session
-and runs of a simulation; `adtb-simkit` holds the opens, the loading
+`adtb-testkit`, which names no engine type, holds the crash loop,
+failure searches, byte damage, the loading of rows through a session,
+runs of a simulation and the isolation checker; `adtb-simkit` holds the opens, the loading
 of rows through the public API, the query helpers and the isolation
 workload over the engine. The component world, a pager and structures a test builds
 without a catalog, is `adtb`'s own test module `test_world`, for its
@@ -279,11 +279,11 @@ through the store `store` answers.
 
 ## 5. Harness
 
-`adtb-harness` holds what the simulator's tests share above `adtb_sim`
+`adtb-testkit` holds what the simulator's tests share above `adtb_sim`
 that names no engine type: the crash loop, the failure searches, byte
 damage over the file layout, the loading of rows through any session
 that runs ad hoc statements, and runs of a simulation. It depends on
-`adtb-sim`, `adtb-sys`, `adtb-testkit`, `adtb-lang` and
+`adtb-sim`, `adtb-sys`, `adtb-lang` and
 `adtb-reference` only, so `adtb`'s unit tests use it as `adtb-sim`'s
 tests do. `adtb-simkit` holds what names the
 engine, through the public API and `adtb::testing` only: the opens,
@@ -325,7 +325,7 @@ depend on `adtb-simkit`, which links a second `adtb`.
   where it opens the engine. A helper under another name is not
   counted. The counts only fall.
 
-`adtb_harness`:
+`adtb_testkit`:
 
 ```text
 crash::crash_loop(&mut sim, seed, faults, Rounds::new(count, base, span),
@@ -379,7 +379,7 @@ support::{stored, to_val, to_ref, row_ty}
 write_path::{write_files(&fixture), sim(seed, config, &fixture)}
 write_path::WritePath::{of(rt, &fixture, pool), loaded(rt, &fixture, pool), reopen(rt, pool),
                         db, schema, program, into_db, ty, prepare}
-finished                                     // adtb_harness::process::finished
+finished                                     // adtb_testkit::process::finished
 ```
 
 Postconditions of `crash_loop`:

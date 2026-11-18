@@ -17,16 +17,16 @@ use adtb::{
     CallOptions, Database, DynRows, Error, FatalReason, Log, OpenError, OpenOptions,
     TxnCallOptions, TxnOptions,
 };
-use adtb_harness::common;
-use adtb_harness::crash::silence_fatal_panics;
-use adtb_harness::damage::DataFile;
-use adtb_harness::process;
-use adtb_harness::search::{self, Files};
 use adtb_lang::textual::print;
 use adtb_sim::{Action, Config, Match, OpLog, Outcome, Plan, Planned, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::common;
+use adtb_testkit::crash::silence_fatal_panics;
+use adtb_testkit::damage::DataFile;
+use adtb_testkit::process;
 use adtb_testkit::profile::{self, assert_reached};
+use adtb_testkit::search::{self, Files};
 
 const FILE: &str = "maintenance.adt";
 const SEED: u64 = 97;

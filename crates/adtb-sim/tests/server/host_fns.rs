@@ -2,9 +2,9 @@
 //! against their declarations, called once per batch of rows from queries, writes and
 //! constraints.
 
-use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::{once, run};
 
 use std::panic::panic_any;
 use std::sync::Arc;

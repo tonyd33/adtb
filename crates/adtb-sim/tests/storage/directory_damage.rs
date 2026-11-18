@@ -4,7 +4,7 @@
 //! and the file reopens.
 
 use adtb::testing::{PageKind, Pid, Plant, Quarantine, page, page::FIRST_EDITABLE};
-use adtb_harness::process::finished;
+use adtb_testkit::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::{CallOptions, Database, Error, FatalReason, Log};

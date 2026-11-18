@@ -2,9 +2,9 @@
 //! checked against the row types of their constructor relations, and inserted as one change set
 //! at commit, all or nothing, a crash included.
 
-use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::{once, run};
 
 use std::sync::Arc;
 

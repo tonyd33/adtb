@@ -13,9 +13,9 @@ use crate::storage::page;
 use crate::storage::policy::{Holder, Phase};
 use crate::storage::{Damage, Lsn, Options, PageKind, Pager, Pid, Quarantine};
 use crate::test_world as harness;
-use adtb_harness::damage::Files;
-use adtb_harness::seeds::{assert_reached, share, sweep};
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::damage::Files;
+use adtb_testkit::seeds::{assert_reached, share, sweep};
 
 use harness::finished;
 

@@ -1,9 +1,9 @@
 //! The in-process API over the simulator: open, ad hoc text, interactive transactions and the
 //! retrying closure.
 
-use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process::{once, run};
 
 use std::sync::{Arc, Mutex};
 

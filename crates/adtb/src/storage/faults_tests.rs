@@ -67,7 +67,7 @@ fn genuine_storage_io_failures_are_accepted_as_process_crashes() {
         (StorageFailure::LogCreate, IoError::Failed),
     ] {
         let mut sim = Sim::new(33, Config::default());
-        let outcome = adtb_harness::crash::run_process(&mut sim, |rt| {
+        let outcome = adtb_testkit::crash::run_process(&mut sim, |rt| {
             fail_storage_operation(rt, case, cause);
         });
         assert_eq!(Outcome::Crashed, outcome, "{case:?}");

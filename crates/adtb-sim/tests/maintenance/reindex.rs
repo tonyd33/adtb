@@ -2,9 +2,9 @@
 //! quarantined index.
 
 use crate::catalog_root::changing_words;
-use adtb_harness::{common, process};
 use adtb_testkit::refused_as;
 use adtb_testkit::scratch::Scratch;
+use adtb_testkit::{common, process};
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,11 +15,11 @@ use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::testing::{Damage, Pid, Plant, Quarantine, page::HEADER_LEN, panic_text};
 use adtb::{Database, Error, FatalReason, Log, OpenOptions};
-use adtb_harness::damage::{DataFile, Files};
-use adtb_harness::{crash, seeds};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::damage::{DataFile, Files};
+use adtb_testkit::{crash, seeds};
 
 const APP: &str = r"module app
 add module app

@@ -17,9 +17,9 @@ use adtb_sim::{
 use adtb_sys::runtime::Faults;
 use std::cell::Cell;
 
-use adtb_harness::crash;
-use adtb_harness::damage::DataFile;
-use adtb_harness::seeds;
+use adtb_testkit::crash;
+use adtb_testkit::damage::DataFile;
+use adtb_testkit::seeds;
 
 use adtb_testkit::profile::every_case;
 use crash::{Reopen, Reopened, Rounds, crash_loop, run_process, silence_fatal_panics};

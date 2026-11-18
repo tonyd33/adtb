@@ -1,7 +1,7 @@
 //! The continuous log archive: complete segments copied in order under the file's id and epoch.
 
 use crate::testing::{Knobs, Probe};
-use adtb_harness::process;
+use adtb_testkit::process;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -13,9 +13,9 @@ use crate::storage::{
 use crate::test_world::api;
 use crate::test_world::load as open;
 use crate::{CallOptions, CreateOptions, Database, Log, OpenOptions};
-use adtb_harness::common;
-use adtb_harness::search::{self, Files};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_testkit::common;
+use adtb_testkit::search::{self, Files};
 
 const FILE: &str = "archived.adt";
 const COPY: &str = "copy.adt";

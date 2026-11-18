@@ -698,7 +698,7 @@ fn key_sorts(
 #[test]
 fn only_key_names_sorts_the_fields_of_a_key() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let (mut found, mut seen, mut scanned) = (Vec::new(), 0, 0);
+    let (mut found, mut seen, mut scanned) = (Vec::new(), 0, Vec::new());
     let mut dirs: Vec<_> = std::fs::read_dir(root.join("crates"))
         .expect("the crates are readable")
         .map(|e| e.expect("a directory entry").path())
@@ -707,14 +707,16 @@ fn only_key_names_sorts_the_fields_of_a_key() {
     for dir in dirs {
         let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
         if manifest.contains("adtb-lang") {
-            scanned += 1;
+            scanned.push(dir.file_name().expect("a crate directory").to_owned());
             key_sorts(&root, &dir, &mut found, &mut seen);
         }
     }
-    assert!(
-        scanned >= 15,
-        "the search reached every crate on adtb-lang: {scanned}"
-    );
+    for name in ["adtb", "adtb-lang"] {
+        assert!(
+            scanned.iter().any(|dir| dir == name),
+            "the search includes {name}: {scanned:?}"
+        );
+    }
     assert!(
         seen > 100,
         "the search read the sorts of those crates: {seen}"

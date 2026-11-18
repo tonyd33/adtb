@@ -10,9 +10,9 @@ use crate::runtime::Threads;
 use crate::storage::{PageKind, Pager, Pid};
 use crate::verify::{self, Inventory, Problem, Report, Sum};
 use crate::{CallOptions, Database, Log};
-use adtb_harness::process;
-use adtb_harness::process::finished;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::process;
+use adtb_testkit::process::finished;
 
 use crate::test_world as harness;
 use crate::test_world::api;
@@ -415,7 +415,7 @@ fn verified(db: &Database<SimRuntime>, relation: Option<&str>) -> Vec<String> {
 
 #[test]
 fn a_run_finds_nothing_under_writers_of_hot_chains_some_rolled_back() {
-    for seed in adtb_harness::seeds::sweep(0..1) {
+    for seed in adtb_testkit::seeds::sweep(0..1) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
@@ -490,7 +490,7 @@ fn open_stressed(rt: SimRuntime) -> Database<SimRuntime> {
 
 #[test]
 fn a_live_tree_check_finds_nothing_while_writers_split_and_unlink_pages() {
-    for seed in adtb_harness::seeds::sweep(200..203) {
+    for seed in adtb_testkit::seeds::sweep(200..203) {
         stressed(seed, |rt| {
             let db = Db::create(rt.clone());
             let tree = db.tree;
@@ -535,7 +535,7 @@ fn run_text(db: &Database<SimRuntime>, text: &str) {
 
 #[test]
 fn a_tree_check_out_of_retries_goes_on_past_the_changing_pair() {
-    for seed in adtb_harness::seeds::sweep(210..213) {
+    for seed in adtb_testkit::seeds::sweep(210..213) {
         stressed(seed, |rt| {
             let db = Db::create(rt.clone());
             let tree = db.tree;

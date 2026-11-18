@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::history::{Dep, Edge};
+use super::history::{Dep, Edge};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {

@@ -1,5 +1,4 @@
 use adtb::{CallOptions, Database, Error, Log, OpenOptions, RejectReason, Value};
-use adtb_harness::process;
 use adtb_lang::check::check_schema;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::{Form, parse};
@@ -7,6 +6,7 @@ use adtb_reference::{Abort, Rejection, Value as RefValue};
 use adtb_simkit::api;
 use adtb_simkit::open;
 use adtb_testkit::fixture::Fixture;
+use adtb_testkit::process;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

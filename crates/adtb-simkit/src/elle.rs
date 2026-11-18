@@ -8,10 +8,10 @@ use adtb::{
     AdHocTransaction, Database, Error, InTxn, OpenError, OpenOptions, Registered, Registration,
     RejectReason, RetryReason, TxnCallOptions, TxnId, TxnOptions, Value,
 };
-use adtb_harness::process;
-use adtb_isolation::Aborted;
 use adtb_lang::textual::Form;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::isolation::Aborted;
+use adtb_testkit::process;
 
 use crate::api;
 use crate::open::{self, FILE};
@@ -192,7 +192,7 @@ pub fn aborted(e: Error) -> Aborted {
 #[derive(Clone, Copy, Debug)]
 pub struct Client<'d>(&'d Elems);
 
-impl<'d> adtb_isolation::Database for Client<'d> {
+impl<'d> adtb_testkit::isolation::Database for Client<'d> {
     type Txn = Txn<'d>;
 
     fn begin(&mut self) -> Txn<'d> {
@@ -377,7 +377,7 @@ pub fn simulate<T>(seed: u64, body: impl FnOnce(&SimRuntime, &Arc<Elems>) -> T) 
 
 #[cfg(test)]
 mod tests {
-    use adtb_isolation::{Aborted, Database as _};
+    use adtb_testkit::isolation::{Aborted, Database as _};
 
     use super::*;
 

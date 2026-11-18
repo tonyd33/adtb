@@ -1,6 +1,6 @@
 //! Run scripted anomaly scenarios against a database and record their histories.
 
-use crate::history::{Op, Outcome, Txn};
+use super::history::{Op, Outcome, Txn};
 
 /// The database refused the operation and aborted the transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

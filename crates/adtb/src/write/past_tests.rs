@@ -4,8 +4,8 @@
 
 use crate::test_world::api;
 use crate::test_world::load as open;
-use adtb_harness::process;
-use adtb_harness::process::run;
+use adtb_testkit::process;
+use adtb_testkit::process::run;
 
 use std::time::SystemTime;
 

@@ -2,7 +2,9 @@ extern crate adtb_lang as _;
 
 mod common;
 
-use adtb_isolation::{Anomaly, Dep, Edge, Expected, Malformed, Op, Outcome, Txn, TxnId, check};
+use adtb_testkit::isolation::{
+    Anomaly, Dep, Edge, Expected, Malformed, Op, Outcome, Txn, TxnId, check,
+};
 use common::kinds;
 
 fn append(key: i64, elem: i64) -> Op {

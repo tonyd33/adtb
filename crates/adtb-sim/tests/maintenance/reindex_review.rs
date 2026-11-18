@@ -4,7 +4,7 @@
 )]
 
 use crate::catalog_root::changing_words;
-use adtb_harness::process;
+use adtb_testkit::process;
 use adtb_testkit::refused_as;
 use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,13 +18,13 @@ use adtb::testing::{Damage, Knobs, PageKind, Plant, Quarantine, page::HEADER_LEN
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
-use adtb_harness::damage::DataFile;
-use adtb_harness::seeds::assert_reached;
-use adtb_harness::{common, crash};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
 use adtb_sys::runtime::Faults;
+use adtb_testkit::damage::DataFile;
+use adtb_testkit::seeds::assert_reached;
+use adtb_testkit::{common, crash};
 
 const APP: &str = r"module app
 add module app

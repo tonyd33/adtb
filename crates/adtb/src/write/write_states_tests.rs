@@ -3,7 +3,7 @@
 
 use crate::test_world::api;
 use crate::test_world::load as open;
-use adtb_harness::process::run;
+use adtb_testkit::process::run;
 
 use crate::RejectReason;
 use crate::catalog::{Catalog, Error as CatalogError, PendingDrop, Read, Reader};

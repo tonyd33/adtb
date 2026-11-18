@@ -171,13 +171,80 @@ fn a_test_binary_started_with_core_dumps_on_zeroes_its_core_limit() {
     assert_entry_ran(&child);
 }
 
+/// Returns the paths of the test binaries of the workspace of `manifest` that do not abort at a
+/// one byte cap, building them first.
+///
+/// # Panics
+///
+/// When `cargo nextest list` fails or lists no binary.
+fn uncapped_test_binaries(manifest: &Path) -> Vec<String> {
+    let listed = list_command(manifest).output().expect("cargo nextest runs");
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        listed.status.success(),
+        "cargo nextest list fails: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let binaries: Vec<&str> = stdout
+        .split("\"binary-path\":\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert!(
+        !binaries.is_empty(),
+        "cargo nextest lists no binary: {stdout}"
+    );
+    binaries
+        .into_iter()
+        .filter(|binary| !aborts_at_one_byte(binary))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn list_command(manifest: &Path) -> Command {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut list = Command::new(cargo);
+    list.args([
+        "nextest",
+        "list",
+        "--workspace",
+        "--list-type",
+        "binaries-only",
+        "--message-format",
+        "json",
+        "--cargo-quiet",
+        "--manifest-path",
+    ])
+    .arg(manifest)
+    .env_remove("NEXTEST_PROFILE");
+    list
+}
+
+fn aborts_at_one_byte(binary: &str) -> bool {
+    Command::new(binary)
+        .arg("--list")
+        .env(CAP, "1")
+        .output()
+        .expect("the test binary starts")
+        .status
+        .signal()
+        == Some(libc::SIGABRT)
+}
+
+#[test]
+fn the_nested_list_drops_the_callers_profile() {
+    let list = list_command(Path::new("Cargo.toml"));
+    let profile = list.get_envs().find(|(name, _)| *name == "NEXTEST_PROFILE");
+    assert_eq!(
+        profile,
+        Some((std::ffi::OsStr::new("NEXTEST_PROFILE"), None))
+    );
+}
+
 #[test]
 fn every_test_binary_has_the_heap_cap() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
-    assert_eq!(
-        adtb_heap_cap::uncapped_test_binaries(&manifest),
-        Vec::<String>::new()
-    );
+    assert_eq!(uncapped_test_binaries(&manifest), Vec::<String>::new());
 }
 
 /// Returns whether a line of the `[dev-dependencies]` table, comments aside, enables the feature.

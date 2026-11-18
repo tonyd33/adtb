@@ -3,9 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::profile::{assert_reached, count, every_case};
 use adtb_sim::{Action, Config, Outcome, Plan, Sim, SimRuntime, Struck};
 use adtb_sys::runtime::{IoError, OpKind};
-use adtb_testkit::profile::{assert_reached, count, every_case};
 
 use crate::{crash, process};
 

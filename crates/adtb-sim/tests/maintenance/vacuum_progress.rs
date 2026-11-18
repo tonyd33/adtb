@@ -9,11 +9,11 @@ use std::time::Duration;
 use adtb::runtime::{Runtime, Threads};
 use adtb::testing::Knobs;
 use adtb::{Database, Log, OpenOptions, Value};
-use adtb_harness::process;
-use adtb_harness::{common, seeds};
 use adtb_sim::SimRuntime;
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_testkit::process;
+use adtb_testkit::{common, seeds};
 
 const WATCH: &str = "from v in sys::vacuums \
     select { i: v.id, r: v.relation, c: v.ctor, p: v.phase, d: v.done, n: v.dead_versions }";
