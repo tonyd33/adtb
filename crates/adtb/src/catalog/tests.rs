@@ -432,6 +432,8 @@ fn a_stored_migration_that_does_not_parse_is_not_accepted() {
 
 #[test]
 fn a_stored_migration_that_does_not_apply_is_not_accepted() {
+    let first = BTreeMap::from([(1, FIRST.to_string())]);
+    fold(&first, &BTreeMap::new()).expect("the first migration folds");
     let texts = BTreeMap::from([(1, FIRST.to_string()), (2, FIRST.to_string())]);
     let Err(Error::Unaccepted(version, why)) = fold(&texts, &BTreeMap::new()) else {
         panic!("the log folds")
@@ -455,6 +457,22 @@ fn a_stored_log_that_applies_folds() {
     let texts = BTreeMap::from([(1, FIRST.to_string())]);
     let (source, _, _) = fold(&texts, &BTreeMap::new()).expect("the log folds");
     assert_eq!(1, source.version);
+}
+
+#[test]
+fn a_log_folds_with_its_own_dormant_roles_after_its_texts_folded_with_others() {
+    let texts = BTreeMap::from([
+        (1, FIRST.to_string()),
+        (2, "module app\ngrant read shapes to web\n".to_string()),
+    ]);
+    let dormancy = |dormant: &BTreeMap<u64, BTreeSet<String>>| -> Vec<bool> {
+        let (source, _, _) = fold(&texts, dormant).expect("the log folds");
+        source.grants.iter().map(|g| g.dormant).collect()
+    };
+    let web = BTreeMap::from([(2, BTreeSet::from(["web".to_string()]))]);
+    assert_eq!(vec![false], dormancy(&BTreeMap::new()));
+    assert_eq!(vec![true], dormancy(&web));
+    assert_eq!(vec![false], dormancy(&BTreeMap::new()));
 }
 
 fn sum(ctor: u32, fields: Vec<Value>) -> Vec<Value> {

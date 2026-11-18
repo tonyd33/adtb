@@ -14,6 +14,7 @@ mod ids;
 mod kept;
 mod keying;
 pub mod layout;
+mod memo;
 mod migration;
 mod moved;
 pub(crate) mod operators;
@@ -46,6 +47,8 @@ mod grant_rows_tests;
 mod hash_corpus_tests;
 #[cfg(test)]
 mod index_text_tests;
+#[cfg(test)]
+mod memo_tests;
 #[cfg(test)]
 mod oplog_tests;
 #[cfg(test)]
@@ -83,6 +86,7 @@ pub use kept::{KeptField, KeptRow};
 pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
+use memo::Memo;
 pub use oplog::{Hash, try_version_hash, version_hash};
 #[cfg(test)]
 pub use readers::PendingDrop;
@@ -473,13 +477,37 @@ fn visible<R: Runtime>(
     }
 }
 
+/// The texts of a stored log's migrations and the roles each makes dormant, by version.
+type Log = (BTreeMap<u64, String>, BTreeMap<u64, BTreeSet<String>>);
+
+/// The source a log folds to, its schema and its checked program.
+type Folded = (Source, Committed, Arc<Program>);
+
+/// The most logs [`FOLDED`] holds: the distinct logs a process reopens while it works. A server
+/// on one database reopens 1 or 2; a test sweep reopens one for each schema it sweeps.
+const FOLDED_LOGS: usize = 8;
+
+/// The logs this process folded most recently, and what each folded to. A fold depends on nothing
+/// but its log.
+static FOLDED: Memo<Log, Folded> = Memo::new(FOLDED_LOGS);
+
 /// Returns the source the migrations `texts` fold to, in version order from the empty schema,
 /// and its schema and checked program. Each grant of a role `dormant` names at a version is
 /// dormant once the migration of that version applies.
 fn fold(
     texts: &BTreeMap<u64, String>,
     dormant: &BTreeMap<u64, BTreeSet<String>>,
-) -> Result<(Source, Committed, Program), Error> {
+) -> Result<Folded, Error> {
+    let folded = FOLDED.get_or_try_insert((texts.clone(), dormant.clone()), || {
+        fold_from_empty(texts, dormant)
+    })?;
+    Ok((*folded).clone())
+}
+
+fn fold_from_empty(
+    texts: &BTreeMap<u64, String>,
+    dormant: &BTreeMap<u64, BTreeSet<String>>,
+) -> Result<Folded, Error> {
     let mut source = Source::default();
     for (&version, text) in texts {
         let refused = |why: Vec<String>| Error::Unaccepted(version, why);
@@ -501,7 +529,7 @@ fn fold(
             ds.into_iter().map(|d| d.diag.message).collect(),
         )
     })?;
-    Ok((source, committed(schema)?, program))
+    Ok((source, committed(schema)?, Arc::new(program)))
 }
 
 /// Returns whether `keys` holds an order key for each constructor of every declared sum of
@@ -740,8 +768,9 @@ impl Catalog {
             heaps.insert((r, c), Arc::new(heap));
         }
         let texts = ElementTexts::of(&source, &schema);
-        let (held, held_program, held_texts) =
-            readers.enforced().map_or((&schema, &program, &texts), |e| {
+        let (held, held_program, held_texts) = readers
+            .enforced()
+            .map_or((&schema, &*program, &texts), |e| {
                 (&e.schema, &*e.program, &e.texts)
             });
         let specs =
@@ -773,7 +802,7 @@ impl Catalog {
         let catalog = Catalog {
             source,
             schema,
-            program: Arc::new(program),
+            program,
             texts,
             root: pid,
             large,
