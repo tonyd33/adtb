@@ -6,10 +6,12 @@ mod consumers;
 mod generate;
 mod judge;
 mod ledger;
+mod pool;
 mod stated;
 mod world;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use adtb_testkit::profile::{self, assert_reached, every_case};
 use case::{FAULTS, FOLDS, Fault, Fold, Injection, Point};
@@ -43,15 +45,24 @@ fn tier() -> Tier {
 }
 
 /// Returns the kinds a fault can hit: an earlier incarnation only of a kind the engine's code
-/// frees, and a tear of no damage list or marks page. Each holds what a sequence records inside
-/// the device's first atomic unit, so a tear of it lands whole or is a lost write.
+/// frees, and a tear of no page whose writes change only the device's first atomic unit, which a
+/// tear lands whole or not at all.
 fn kinds(fault: Fault) -> Vec<Kind> {
     KINDS
         .into_iter()
         .filter(|k| fault != Fault::LostEarlier || judge::freed(*k))
-        .filter(|k| fault != Fault::Torn || !matches!(k, Kind::DamageList | Kind::Marks))
+        .filter(|k| fault != Fault::Torn || !UNTORN.contains(k))
         .collect()
 }
+
+/// The kinds whose every write changes only the first atomic unit of its page.
+const UNTORN: [Kind; 5] = [
+    Kind::Directory,
+    Kind::VisibilityMap,
+    Kind::DamageList,
+    Kind::Bitmap,
+    Kind::Marks,
+];
 
 /// A failure main shows: the cell, the user relation the page belongs to, the shape of its
 /// violation, its ticket and the case that shows it, with the second fault of a pair.
@@ -172,10 +183,10 @@ const KNOWN: &[Known] = &[
         at: 648,
         then: Some((
             Point {
-                at: 649,
+                at: 652,
                 injection: Injection::Torn,
             },
-            Kind::Index,
+            Kind::Engine,
         )),
     },
     Known {
@@ -189,10 +200,10 @@ const KNOWN: &[Known] = &[
         at: 648,
         then: Some((
             Point {
-                at: 649,
+                at: 652,
                 injection: Injection::Torn,
             },
-            Kind::Index,
+            Kind::Engine,
         )),
     },
     before_gap(
@@ -529,7 +540,28 @@ struct Found {
 /// any cell never reached or any violation no known failure names. Returns what the shard found.
 fn shard(fault: Fault) -> String {
     let tier = tier();
-    let found = search(fault, &tier, false);
+    let found = search(fault, kinds(fault), &tier, false, None);
+    if fault == Fault::Torn {
+        let lacking = |of: fn(&(usize, usize)) -> usize| {
+            KINDS
+                .into_iter()
+                .filter(|k| found.tearable.get(k).map_or(0, of) == 0)
+                .collect::<Vec<Kind>>()
+        };
+        assert_eq!(
+            Vec::<Kind>::new(),
+            lacking(|n| n.0),
+            "Torn: kinds no sequence wrote; write-outs and those a tear splits {:?}",
+            found.tearable
+        );
+        assert_eq!(
+            UNTORN.to_vec(),
+            lacking(|n| n.1),
+            "Torn: kinds no write-out of which a tear splits; write-outs and those a tear splits \
+             {:?}",
+            found.tearable
+        );
+    }
     if fault == Fault::UnreadableLasting {
         assert_reached(
             "a lasting unreadable page failing reads after a restart",
@@ -537,17 +569,37 @@ fn shard(fault: Fault) -> String {
             1,
         );
     }
-    report(fault, &found, tier.per_kind)
+    let text = report(fault, &found, tier.per_kind);
+    if fault == Fault::Torn {
+        return format!(
+            "{text}Torn: write-outs and those a tear splits {:?}\n",
+            found.tearable
+        );
+    }
+    text
 }
 
 /// Rerun every single-fault known failure of `fault`.
 fn reruns(fault: Fault) {
-    for k in KNOWN
+    let known: Vec<&Known> = KNOWN
         .iter()
         .filter(|k| k.fault == fault && k.then.is_none())
-    {
-        rerun(k);
-    }
+        .collect();
+    pool::map(&known, |k| named(k), |k| rerun(k));
+}
+
+/// Returns the case of `k` by its seed and write-outs.
+fn named(k: &Known) -> String {
+    let then = k
+        .then
+        .map(|(t, _)| format!(" then {} {:?}", t.at, t.injection));
+    format!(
+        "{:?} seed {} at {}{}",
+        k.fault,
+        k.seed,
+        k.at,
+        then.unwrap_or_default()
+    )
 }
 
 /// Fail unless the write-out of `k`'s case still has its kind, owner and fault and the case
@@ -576,9 +628,10 @@ fn rerun(k: &Known) {
     let outcome = match k.then {
         Some((then, kind)) => {
             assert_eq!(
-                Some(kind),
-                plan.kind(then.at),
-                "{fault:?} {:?}: seed {} second fault at {} hits another kind; pin {} again",
+                (Some(kind), true),
+                (plan.kind(then.at), plan.takes(then.at, then.injection)),
+                "{fault:?} {:?}: seed {} second fault at {} hits another kind or cannot take; pin {} \
+                 again",
                 k.kind,
                 k.seed,
                 then.at,
@@ -621,6 +674,8 @@ struct Searched {
     overlapped: usize,
     /// The cases whose planned read failures struck again after a restart.
     failed_after_restart: usize,
+    /// For a tear, the write-outs of each kind in the sequences searched, and those a tear splits.
+    tearable: BTreeMap<Kind, (usize, usize)>,
 }
 
 impl Searched {
@@ -661,6 +716,138 @@ impl Searched {
     }
 }
 
+/// A sequence of a search: its plan, the write-outs of each kind to fault, the outcomes of those
+/// run ahead of the tally, and how many of each kind's were run.
+struct Sequence {
+    plan: Arc<case::Plan>,
+    lists: Vec<(Kind, Vec<usize>)>,
+    got: Vec<VecDeque<pool::Ran<Option<case::Outcome>>>>,
+    asked: Vec<usize>,
+}
+
+/// Whether the search has run enough cases of a kind.
+type Done<'a> = &'a dyn Fn(Kind, &Searched) -> bool;
+
+/// The sequences of a search planned ahead of its tally, the first the one it tallies.
+struct Window<'a> {
+    seeds: pool::Seeds<'a>,
+    planned: VecDeque<Sequence>,
+    /// The panic of the plan of the seed after the last planned, which plans no further seed.
+    failed: Option<pool::Panicked>,
+    fault: Fault,
+    kinds: Vec<Kind>,
+    per_kind: usize,
+}
+
+impl Window<'_> {
+    /// Returns the first sequence planned. Raises the panic of its plan when planning it panicked.
+    fn first(&mut self) -> &mut Sequence {
+        if self.planned.is_empty()
+            && let Some(panicked) = self.failed.take()
+        {
+            panicked.raise()
+        }
+        self.planned.front_mut().expect("the seed is planned")
+    }
+
+    /// Run `extra` cases of the first sequence, and, ahead of the tally of `s` at kind `k` of the
+    /// first sequence, cases of each kind not `done` up to the cases it lacks, then plan more
+    /// seeds while few are planned. Returns the outcomes of `extra`.
+    ///
+    /// Precondition: when `extra` is empty and a sequence is planned, the first has its kind `k`
+    /// still to run.
+    fn step(&mut self, s: &Searched, k: usize, done: Done<'_>, extra: &[usize]) -> pool::Outcomes {
+        let injection = self.fault.injection();
+        let lacking = |j: usize| {
+            let had = s.cases.get(&self.kinds[j]).copied().unwrap_or(0);
+            let ahead: usize = self.planned.iter().map(|q| q.got[j].len()).sum();
+            (self.per_kind.saturating_sub(had).max(1) * 4).saturating_sub(ahead)
+        };
+        let mut budget: Vec<usize> = (0..self.kinds.len()).map(lacking).collect();
+        let mut taken: Vec<(usize, usize, usize)> = Vec::new();
+        let mut count = extra.len();
+        for (n, q) in self.planned.iter().enumerate() {
+            for (j, (kind, ats)) in q.lists.iter().enumerate().skip(if n == 0 { k } else { 0 }) {
+                if count >= 4 * pool::WIDTH || done(*kind, s) {
+                    continue;
+                }
+                let first = n == 0 && j == k && q.got[j].is_empty();
+                let most = budget[j].max(usize::from(first));
+                let end = (q.asked[j] + most).min(ats.len());
+                let more = end - q.asked[j];
+                budget[j] = budget[j].saturating_sub(more);
+                count += more;
+                taken.push((n, j, more));
+            }
+        }
+        let mut cases: Vec<(&case::Plan, pool::Case)> = Vec::new();
+        if let Some(q) = self.planned.front() {
+            cases.extend(
+                extra
+                    .iter()
+                    .map(|&at| (&*q.plan, (Point { at, injection }, None))),
+            );
+        }
+        for &(n, j, more) in &taken {
+            let q = &self.planned[n];
+            let ats = &q.lists[j].1[q.asked[j]..q.asked[j] + more];
+            cases.extend(
+                ats.iter()
+                    .map(|&at| (&*q.plan, (Point { at, injection }, None))),
+            );
+        }
+        let held = if self.failed.is_some() {
+            usize::MAX
+        } else {
+            self.planned.len()
+        };
+        let (plans, outcomes) = self.seeds.run(held, &cases);
+        let mut outcomes = outcomes.into_iter();
+        let extra: Vec<_> = outcomes.by_ref().take(extra.len()).collect();
+        for (n, j, more) in taken {
+            let q = &mut self.planned[n];
+            q.got[j].extend(outcomes.by_ref().take(more));
+            q.asked[j] += more;
+        }
+        for plan in plans {
+            match plan {
+                _ if self.failed.is_some() => {}
+                Ok(plan) => {
+                    let sequence = self.sequence(plan);
+                    self.planned.push_back(sequence);
+                }
+                Err(panicked) => self.failed = Some(panicked),
+            }
+        }
+        extra
+    }
+
+    /// Returns the sequence of `plan`: for each kind, its write-outs a fault hits, spread.
+    fn sequence(&self, plan: Arc<case::Plan>) -> Sequence {
+        let injection = self.fault.injection();
+        let lists: Vec<(Kind, Vec<usize>)> = self
+            .kinds
+            .iter()
+            .map(|&kind| {
+                let candidates: Vec<usize> = (0..plan.clean.trace.writes.len())
+                    .filter(|&at| {
+                        plan.kind(at) == Some(kind)
+                            && plan.fault(at, injection) == self.fault
+                            && plan.takes(at, injection)
+                    })
+                    .collect();
+                (kind, spread(&candidates, self.per_kind * 3 + 2))
+            })
+            .collect();
+        Sequence {
+            got: lists.iter().map(|_| VecDeque::new()).collect(),
+            asked: vec![0; lists.len()],
+            lists,
+            plan,
+        }
+    }
+}
+
 /// Returns, for each holder of the rows `s` has still to ask and has picked fewer than `most`
 /// write-outs for, the first write-out of `plan` a fault of `fault` hits on a page of that
 /// holder, with the holder and the page's kind.
@@ -679,7 +866,8 @@ fn steer(fault: Fault, plan: &case::Plan, s: &Searched, most: usize) -> Vec<(Hel
         let Some((held, _)) = ids.holding(w.kind, w.owner, w.pid) else {
             continue;
         };
-        if due.contains(&held) && plan.fault(at, fault.injection()) == fault {
+        let injection = fault.injection();
+        if due.contains(&held) && plan.fault(at, injection) == fault && plan.takes(at, injection) {
             out.entry(held).or_insert((kind, at));
         }
     }
@@ -688,8 +876,13 @@ fn steer(fault: Fault, plan: &case::Plan, s: &Searched, most: usize) -> Vec<(Hel
 
 /// Returns the cases of `fault` the tier asks, with a vacuum beside each write when
 /// `concurrent`.
-fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
-    let kinds = kinds(fault);
+fn search(
+    fault: Fault,
+    kinds: Vec<Kind>,
+    tier: &Tier,
+    concurrent: bool,
+    kept: Option<&mut pool::Kept>,
+) -> Searched {
     let mut s = Searched {
         kinds: kinds.clone(),
         cases: BTreeMap::new(),
@@ -702,6 +895,7 @@ fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
         found: Vec::new(),
         overlapped: 0,
         failed_after_restart: 0,
+        tearable: BTreeMap::new(),
     };
     let done = |kind: Kind, s: &Searched| {
         let counted = s.cases.get(&kind).copied().unwrap_or(0);
@@ -715,38 +909,72 @@ fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
             && (!concurrent || s.overlapped >= tier.per_kind)
     };
     let steered = generate::STEERED..generate::STEERED + tier.sequences;
-    for seed in (1..=tier.sequences).chain(steered) {
+    let seeds: Vec<u64> = (1..=tier.sequences).chain(steered).collect();
+    let mut w = Window {
+        seeds: pool::Seeds::new(&seeds, concurrent, kept),
+        planned: VecDeque::new(),
+        failed: None,
+        fault,
+        kinds: kinds.clone(),
+        per_kind: tier.per_kind,
+    };
+    for &seed in &seeds {
         let late = seed > tier.sequences;
         if kinds.iter().all(|k| done(*k, &s)) && (late || rows_due(fault, &s).is_empty()) {
             break;
         }
-        let plan = case::plan(seed, generate::sequence(seed), concurrent);
-        for &kind in &kinds {
-            let injection = fault.injection();
-            let candidates: Vec<usize> = (0..plan.clean.trace.writes.len())
-                .filter(|&at| plan.kind(at) == Some(kind) && plan.fault(at, injection) == fault)
-                .collect();
-            let tries = tier.per_kind * 3 + 2;
-            for at in spread(&candidates, tries) {
-                if done(kind, &s) {
-                    break;
-                }
-                if let Some(outcome) = case::run(&plan, Point { at, injection }) {
-                    *s.cases.entry(kind).or_default() += 1;
-                    s.tally(kind, &plan, seed, at, outcome);
+        if w.planned.is_empty() {
+            w.step(&s, 0, &done, &[]);
+        }
+        if fault == Fault::Torn {
+            let plan = &w.first().plan;
+            for at in 0..plan.clean.trace.writes.len() {
+                if let Some(kind) = plan.kind(at) {
+                    let n = s.tearable.entry(kind).or_default();
+                    n.0 += 1;
+                    n.1 += usize::from(plan.tear(at).is_some());
                 }
             }
+        }
+        let (mut k, mut i) = (0, 0);
+        loop {
+            let q = w.first();
+            while let Some((kind, ats)) = q.lists.get(k) {
+                if i == ats.len() || done(*kind, &s) {
+                    (k, i) = (k + 1, 0);
+                    continue;
+                }
+                let Some(outcome) = q.got[k].pop_front() else {
+                    break;
+                };
+                let outcome = outcome.unwrap_or_else(|p| p.raise());
+                if let Some(outcome) = outcome {
+                    *s.cases.entry(*kind).or_default() += 1;
+                    s.tally(*kind, &q.plan, q.plan.seed, ats[i], outcome);
+                }
+                i += 1;
+            }
+            if k == q.lists.len() {
+                break;
+            }
+            w.step(&s, k, &done, &[]);
         }
         if !concurrent && !late {
-            for (held, kind, at) in steer(fault, &plan, &s, tier.per_kind) {
+            let q = w.first();
+            let steered = steer(fault, &q.plan, &s, tier.per_kind);
+            let ats: Vec<usize> = steered.iter().map(|(_, _, at)| *at).collect();
+            let k = kinds.len();
+            let outcomes = w.step(&s, k, &done, &ats);
+            let q = w.first();
+            for ((held, kind, at), outcome) in steered.into_iter().zip(outcomes) {
                 *s.steer_tries.entry(held).or_default() += 1;
-                let injection = fault.injection();
-                if let Some(outcome) = case::run(&plan, Point { at, injection }) {
+                if let Some(outcome) = outcome.unwrap_or_else(|p| p.raise()) {
                     *s.steered.entry(kind).or_default() += 1;
-                    s.tally(kind, &plan, seed, at, outcome);
+                    s.tally(kind, &q.plan, q.plan.seed, at, outcome);
                 }
             }
         }
+        w.planned.pop_front();
     }
     s
 }
@@ -938,8 +1166,9 @@ fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_damage() {
     };
     let mut unknown = Vec::new();
     let mut overlapped = BTreeMap::new();
+    let mut kept = pool::Kept::new();
     for fault in FAULTS {
-        let s = search(fault, &tier, true);
+        let s = search(fault, kinds(fault), &tier, true, Some(&mut kept));
         overlapped.insert(fault, s.overlapped);
         eprintln!(
             "concurrent {fault:?}: cases {:?}, {} with a vacuum during a write",
@@ -1001,7 +1230,7 @@ fn second_points(plan: &case::Plan, first: usize, second: Second) -> Vec<Point> 
             let recycled = plan.fault(at, Injection::Lost) == Fault::Recycled;
             (recycled == (second == Second::Recycled)).then_some(Injection::Lost)
         }
-        Second::Torn => Some(Injection::Torn),
+        Second::Torn => plan.takes(at, Injection::Torn).then_some(Injection::Torn),
         Second::UnreadableOnce => Some(Injection::Unreadable { lasting: false }),
         Second::UnreadableLasting => Some(Injection::Unreadable { lasting: true }),
         Second::ListUnreadable => (plan.kind(at) == Some(Kind::DamageList))
@@ -1040,6 +1269,34 @@ fn second_points(plan: &case::Plan, first: usize, second: Second) -> Vec<Point> 
     pages.chain(logged).collect()
 }
 
+/// Returns the pairs of `plan` the tier asks of each of `seconds`, in order: a lost write at up to
+/// `per` times three write-outs that have a second point, each with up to `per` times two of its
+/// second points.
+fn pair_cases(plan: &case::Plan, seconds: &[Second], per: usize) -> Vec<(Second, Point, Point)> {
+    let writes = plan.clean.trace.writes.len();
+    let mut out = Vec::new();
+    for &second in seconds {
+        let lost: Vec<usize> = (0..writes)
+            .filter(|at| plan.kind(*at).is_some())
+            .filter(|first| !second_points(plan, *first, second).is_empty())
+            .collect();
+        for first in spread(&lost, per * 3) {
+            let points = second_points(plan, first, second);
+            let ats: Vec<usize> = (0..points.len()).collect();
+            let one = Point {
+                at: first,
+                injection: Injection::Lost,
+            };
+            out.extend(
+                spread(&ats, per * 2)
+                    .into_iter()
+                    .map(|i| (second, one, points[i])),
+            );
+        }
+    }
+    out
+}
+
 /// Returns the least number of cases of each second fault that reached it: one under the
 /// per-change tier, two under `deep`.
 fn pairs_floor() -> usize {
@@ -1069,7 +1326,10 @@ fn pairs(seconds: &[Second]) -> String {
     let short =
         |ran: &BTreeMap<Second, Ran>, second: Second| reached(second, &ran[&second]) < floor;
     let mut past: BTreeMap<Second, Vec<u64>> = BTreeMap::new();
-    for seed in 1..=sequences * 4 {
+    let seeds: Vec<u64> = (1..=sequences * 4).collect();
+    let mut ahead = pool::Seeds::new(&seeds, false, None);
+    let mut planned: VecDeque<pool::Ran<Arc<case::Plan>>> = VecDeque::new();
+    for &seed in &seeds {
         let wanted: Vec<Second> = seconds
             .iter()
             .copied()
@@ -1078,64 +1338,65 @@ fn pairs(seconds: &[Second]) -> String {
         if wanted.is_empty() {
             break;
         }
-        let plan = case::plan(seed, generate::sequence(seed), false);
-        let writes = plan.clean.trace.writes.len();
-        let counted = |at: &usize| plan.kind(*at).is_some();
-        for second in wanted {
-            let before = reached(second, &ran[&second]);
-            let lost: Vec<usize> = (0..writes)
-                .filter(counted)
-                .filter(|first| !second_points(&plan, *first, second).is_empty())
+        if planned.is_empty() {
+            planned.extend(ahead.run(0, &[]).0);
+        }
+        let plan = planned
+            .pop_front()
+            .expect("the seed is planned")
+            .unwrap_or_else(|p| p.raise());
+        let before: BTreeMap<Second, usize> =
+            wanted.iter().map(|s| (*s, reached(*s, &ran[s]))).collect();
+        let pairs = pair_cases(&plan, &wanted, per);
+        let cases: Vec<(&case::Plan, pool::Case)> = pairs
+            .iter()
+            .map(|(_, one, two)| (&*plan, (*one, Some(*two))))
+            .collect();
+        let (more, outcomes) = ahead.run(planned.len(), &cases);
+        planned.extend(more);
+        for ((second, one, two), paired) in pairs.into_iter().zip(outcomes) {
+            let Some(paired) = paired.unwrap_or_else(|p| p.raise()) else {
+                continue;
+            };
+            let counts = ran.entry(second).or_default();
+            counts.judged += 1;
+            counts.consumed += usize::from(paired.consumed);
+            counts.opened += usize::from(paired.opened);
+            counts.fired += usize::from(paired.read_failed);
+            let (records, marks) = paired.verdicts.evidence;
+            recorded += usize::from(records > 0);
+            marked += usize::from(marks > 0);
+            let cells: Vec<_> = [one, two]
+                .into_iter()
+                .filter(|p| p.injection.on_page())
+                .map(|p| {
+                    (
+                        plan.fault(p.at, p.injection),
+                        plan.kind(p.at).expect("a counted write-out has a kind"),
+                        plan.owner(p.at),
+                    )
+                })
                 .collect();
-            for first in spread(&lost, per * 3) {
-                let points = second_points(&plan, first, second);
-                let ats: Vec<usize> = (0..points.len()).collect();
-                for two in spread(&ats, per * 2).into_iter().map(|i| points[i]) {
-                    let one = Point {
-                        at: first,
-                        injection: Injection::Lost,
-                    };
-                    let Some(paired) = case::run_pair(&plan, one, two) else {
-                        continue;
-                    };
-                    let counts = ran.entry(second).or_default();
-                    counts.judged += 1;
-                    counts.consumed += usize::from(paired.consumed);
-                    counts.opened += usize::from(paired.opened);
-                    counts.fired += usize::from(paired.read_failed);
-                    let (records, marks) = paired.verdicts.evidence;
-                    recorded += usize::from(records > 0);
-                    marked += usize::from(marks > 0);
-                    let cells: Vec<_> = [one, two]
-                        .into_iter()
-                        .filter(|p| p.injection.on_page())
-                        .map(|p| {
-                            (
-                                plan.fault(p.at, p.injection),
-                                plan.kind(p.at).expect("a counted write-out has a kind"),
-                                plan.owner(p.at),
-                            )
-                        })
-                        .collect();
-                    for v in paired.verdicts.violations {
-                        let pinned = KNOWN.iter().any(|k| {
-                            k.seed == seed
-                                && k.at == first
-                                && k.then.is_some_and(|(t, _)| t == two)
-                                && k.consumer == v.consumer
-                                && k.what == v.what
-                        });
-                        let gated = pinned
-                            || cells
-                                .iter()
-                                .any(|(f, k, o)| known(*f, *k, *o, v.consumer, &v.what).is_some());
-                        if !gated {
-                            found.push((seed, first, two, v));
-                        }
-                    }
+            let first = one.at;
+            for v in paired.verdicts.violations {
+                let pinned = KNOWN.iter().any(|k| {
+                    k.seed == seed
+                        && k.at == first
+                        && k.then.is_some_and(|(t, _)| t == two)
+                        && k.consumer == v.consumer
+                        && k.what == v.what
+                });
+                let gated = pinned
+                    || cells
+                        .iter()
+                        .any(|(f, k, o)| known(*f, *k, *o, v.consumer, &v.what).is_some());
+                if !gated {
+                    found.push((seed, first, two, v));
                 }
             }
-            if seed > sequences && reached(second, &ran[&second]) > before {
+        }
+        for second in wanted {
+            if seed > sequences && reached(second, &ran[&second]) > before[&second] {
                 past.entry(second).or_default().push(seed);
             }
         }
@@ -1150,12 +1411,14 @@ fn pairs(seconds: &[Second]) -> String {
             v.consumer, v.what, v.detail
         );
     }
-    for k in KNOWN.iter().filter(|k| {
-        k.then
-            .is_some_and(|(t, _)| seconds.iter().any(|s| holds(*s, t)))
-    }) {
-        rerun(k);
-    }
+    let paired: Vec<&Known> = KNOWN
+        .iter()
+        .filter(|k| {
+            k.then
+                .is_some_and(|(t, _)| seconds.iter().any(|s| holds(*s, t)))
+        })
+        .collect();
+    pool::map(&paired, |k| named(k), |k| rerun(k));
     assert_reached("pairs whose file held a damage record", recorded, 1);
     assert_reached("pairs whose file held a durable mark", marked, 1);
     let under: Vec<_> = ran
@@ -1251,9 +1514,9 @@ fn unpinned(k: &Known) -> Option<String> {
         return Some(format!("writes another cell: {cell:?}"));
     }
     if let Some((t, kind)) = k.then
-        && (t.at >= writes || plan.kind(t.at) != Some(kind))
+        && (t.at >= writes || plan.kind(t.at) != Some(kind) || !plan.takes(t.at, t.injection))
     {
-        return Some("second fault hits another kind".into());
+        return Some("second fault hits another kind or cannot take".into());
     }
     (!shows(k, &plan, k.at, then)).then(|| "no longer shows".into())
 }
@@ -1301,6 +1564,7 @@ fn nearest(k: &Known) -> Option<(u64, usize, Option<usize>)> {
             let mut seconds: Vec<usize> = (0..writes)
                 .filter(|&x| plan.kind(x) == Some(kind))
                 .filter(|&x| t.injection.on_page() || x == t.at)
+                .filter(|&x| plan.takes(x, t.injection))
                 .collect();
             seconds.sort_by_key(|x| x.abs_diff(t.at));
             for &second in seconds.iter().take(6) {

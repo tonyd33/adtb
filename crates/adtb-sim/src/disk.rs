@@ -48,6 +48,8 @@ struct Unsynced {
     seq: u64,
     offset: u64,
     data: Payload,
+    /// What a crash leaves of the write, when planned.
+    landing: Option<Landing>,
 }
 
 #[derive(Debug, Default)]
@@ -583,8 +585,22 @@ impl Disk {
             seq: self.seq,
             offset,
             data,
+            landing: None,
         });
         self.seq += 1;
+    }
+
+    /// Make the last write of `ino` at `offset` not yet forced land at a crash only the atomic
+    /// units whose flag in `mask` is set. A misdirected write is not found and stays whole.
+    pub(crate) fn tear(&mut self, ino: Ino, offset: u64, mask: Vec<bool>) {
+        if let Some(w) = self.inodes[ino]
+            .unsynced
+            .iter_mut()
+            .rev()
+            .find(|w| w.offset == offset)
+        {
+            w.landing = Some(Landing::Torn(mask));
+        }
     }
 
     pub(crate) fn allocate(&mut self, ino: Ino, len: u64, cx: Ctx<'_>) -> Result<(), IoError> {
@@ -661,20 +677,22 @@ impl Disk {
     /// Reduce the disk to what a crash at this instant leaves on the device.
     pub(crate) fn crash(&mut self, in_flight: Vec<InFlight>, cx: Ctx<'_>) {
         let Ctx { rng, faults, trace } = cx;
-        let mut landings: Vec<(Ino, u64, Payload, bool)> = Vec::new();
+        let mut landings: Vec<(Ino, u64, Payload, bool, Option<Landing>)> = Vec::new();
         for (ino, inode) in self.inodes.iter_mut().enumerate() {
             for w in inode.unsynced.drain(..) {
-                landings.push((ino, w.offset, w.data, true));
+                landings.push((ino, w.offset, w.data, true, w.landing));
             }
         }
         landings.extend(
             in_flight
                 .into_iter()
-                .map(|w| (w.ino, w.offset, Payload::Bytes(w.data), false)),
+                .map(|w| (w.ino, w.offset, Payload::Bytes(w.data), false, None)),
         );
-        for (ino, offset, data, acked) in landings {
+        for (ino, offset, data, acked, planned) in landings {
             let durable = &mut self.inodes[ino].durable;
-            match decide_unforced(rng, faults, data.len() as u64, acked) {
+            let landing =
+                planned.unwrap_or_else(|| decide_unforced(rng, faults, data.len() as u64, acked));
+            match landing {
                 Landing::Whole if acked && !faults.lose_unsynced => data.land(durable, offset),
                 Landing::Whole => {
                     data.land(durable, offset);

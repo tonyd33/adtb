@@ -53,6 +53,16 @@ default-filter = "not test(/crash/) and not (binary(=differential) and (test(=ev
 default-filter = "binary(=storage) and test(/^damage_search::/)"
 slow-timeout = { period = "120s", terminate-after = 5 }
 
+# The slowest damage search test starts first.
+[[profile.damage.overrides]]
+filter = "binary(=storage) and test(=damage_search::a_lost_write_of_an_earlier_incarnation_judges_nothing_of_the_next)"
+priority = 10
+
+# A damage search test runs four plans or cases at once.
+[[profile.damage.overrides]]
+filter = "binary(=storage) and test(/^damage_search::/)"
+threads-required = 4
+
 # Every sweep at `profile::DEEP` times its default count of seeds or cases.
 [profile.deep]
 default-filter = "all()"
@@ -62,3 +72,4 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 [[profile.deep.overrides]]
 filter = "binary(=storage) and test(/^damage_search::/)"
 slow-timeout = { period = "300s", terminate-after = 12 }
+threads-required = 4

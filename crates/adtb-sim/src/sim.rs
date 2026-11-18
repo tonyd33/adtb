@@ -112,10 +112,11 @@ fn ticket(n: u64) -> Ticket {
 }
 
 /// The outcome a plan gives an op in place of running it on the disk.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 enum Injected {
     Fail(IoError),
     Lose,
+    Tear(Vec<bool>),
 }
 
 struct State {
@@ -600,6 +601,19 @@ impl State {
         }
         let (buf, result) = match injected {
             None => self.perform(op, upto),
+            Some(Injected::Tear(mask)) => {
+                trace!(self.trace, "  planned tear of units {mask:?}");
+                let Op::Write { file, offset, buf } = op else {
+                    unreachable!("only a write is planned torn")
+                };
+                let ino = self.ino(file);
+                let (disk, cx) = self.ctx();
+                let result = disk.write(ino, offset, &buf, cx).map(|()| Done::Written);
+                if result.is_ok() {
+                    self.disk.tear(ino, offset, mask);
+                }
+                (Some(buf), result)
+            }
             Some(injected) => {
                 trace!(self.trace, "  planned {injected:?}");
                 let buf = match op {
@@ -609,6 +623,7 @@ impl State {
                 let result = match injected {
                     Injected::Fail(error) => Err(error),
                     Injected::Lose => Ok(Done::Written),
+                    Injected::Tear(_) => unreachable!("a tear runs on the disk"),
                 };
                 (buf, result)
             }
@@ -1039,6 +1054,15 @@ impl Io for SimIo {
                 (Some(Injected::Lose), false)
             }
             Some(Action::Hold) => (None, true),
+            Some(Action::Tear(mask, body)) => {
+                body();
+                assert!(
+                    op.kind() == OpKind::Write,
+                    "only a write can be torn, not a {:?}",
+                    op.kind()
+                );
+                (Some(Injected::Tear(mask)), false)
+            }
         };
         let Some(mut st) = self.rt.enter() else {
             return Ticket::NONE;

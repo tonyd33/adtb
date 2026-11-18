@@ -389,6 +389,7 @@ Match::any() | Match::kind(k) | Match::kinds(ks) | Match::any_of(ms)
   .creating()                    // an open that creates
   .except(m)
 Action::Fail(IoError) | Action::Lose | Action::Run(closure) | Action::Hold
+  | Action::Tear(mask, closure)
 rt.arm(ops: Match); rt.disarm() -> u64
 sim.numbered(), rt.numbered() -> Numbered { kinds, struck, armed_at }
 sim.counted(ops), rt.counted(ops: Match) -> Count  // count.get()
@@ -423,6 +424,11 @@ Postconditions of a plan:
 - `Run` runs its closure on the submitting thread before the op is
   queued; the op then runs as any other. A `Run` is planned with
   `first` or `at`; a `rule` of one panics.
+- `Tear(mask, closure)` runs its closure as `Run` does, then runs the
+  write as any other; a crash before a force of the write lands only the
+  atomic units whose flag in `mask` is set, the rest as the device held
+  it. It is planned as `Run` is,
+  and only for writes, as `Lose` is.
 - A `Fail` that may match a `Close` panics when planned, and a numbered
   `Fail` that comes to a `Close` panics there: a failed close would
   leave its file open.

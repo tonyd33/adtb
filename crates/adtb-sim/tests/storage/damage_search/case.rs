@@ -19,7 +19,8 @@ use super::world::{self, CREATING, Kind, Op, Ran, Rel, Rows, WriteOut};
 pub enum Injection {
     /// The write-out reports success and never reaches the device.
     Lost,
-    /// The write-out lands torn, and the process crashes at the next force of the data file.
+    /// The write-out lands torn, some units its page changed landing and some not, and the
+    /// process crashes at the next force of the data file.
     Torn,
     /// Every read of the page from the write-out on fails, once or for the rest of the case.
     Unreadable { lasting: bool },
@@ -143,6 +144,38 @@ impl Plan {
         world::class(w.kind, w.owner, &self.observed.ids)
     }
 
+    /// Returns the units of [`world::UNIT`] bytes of its write that a tear of write-out `at`
+    /// lands: of the units its page changed, a subset drawn from the seed and `at` with at least
+    /// one landing and one not; every other unit of the write. Returns `None` when the page
+    /// changed in fewer than two units, which a tear lands whole or not at all.
+    pub fn tear(&self, at: usize) -> Option<Vec<bool>> {
+        let writes = &self.clean.trace.writes;
+        let w = writes[at];
+        let changed = w.changed;
+        if changed.count_ones() < 2 {
+            return None;
+        }
+        let same = |x: &&WriteOut| x.op == w.op;
+        let index = writes[..at].iter().rev().take_while(same).count();
+        let pages = index + writes[at..].iter().take_while(same).count();
+        let golden = 0x9e37_79b9_7f4a_7c15_u64;
+        let draw = (self.seed.wrapping_mul(golden) ^ at as u64).wrapping_mul(golden) >> 32;
+        let subsets = (1_u64 << changed.count_ones()) - 2;
+        let mut pick = 1 + draw % subsets;
+        let units = world::PAGE / world::UNIT;
+        let mut mask = vec![true; pages * units];
+        for u in (0..units).filter(|u| changed & (1 << u) != 0) {
+            mask[index * units + u] = pick & 1 == 1;
+            pick >>= 1;
+        }
+        Some(mask)
+    }
+
+    /// Returns whether `injection` at write-out `at` can take: a tear only of a page it splits.
+    pub fn takes(&self, at: usize, injection: Injection) -> bool {
+        injection != Injection::Torn || self.tear(at).is_some()
+    }
+
     /// Returns the user relation the page write-out `at` writes belongs to.
     pub fn owner(&self, at: usize) -> Option<Rel> {
         let w = self.clean.trace.writes[at];
@@ -241,7 +274,7 @@ fn arm(rt: &SimRuntime, plan: &Plan, points: &[Point]) {
             | Injection::LogUnreadable { write }
             | Injection::Crash { write, .. } => after(rt, plan, point.injection, write),
             Injection::Lost | Injection::Torn | Injection::Unreadable { .. } => {
-                injected(rt, point.injection, w.pid)
+                injected(rt, point.injection, w.pid, plan.tear(point.at))
             }
         };
         planned = planned.at(w.op, action);
@@ -299,20 +332,23 @@ fn planning(rt: &SimRuntime, then: SimPlan) -> Action {
 }
 
 /// Returns the action that injects `injection` at its write, planning there the ops that fail
-/// after it for the page `pid`.
-fn injected(rt: &SimRuntime, injection: Injection, pid: Pid) -> Action {
+/// after it for the page `pid`. A tear lands the units of the write `tear` sets.
+fn injected(rt: &SimRuntime, injection: Injection, pid: Pid, tear: Option<Vec<bool>>) -> Action {
     let rt = rt.clone();
     match injection {
         Injection::Lost => Action::Lose,
-        Injection::Torn => Action::Run(Box::new(move || {
-            rt.set_faults(Faults {
-                torn_p: 1.0,
-                ..Faults::none(512)
-            });
-            let forces = world::on_data(Match::kind(OpKind::Sync));
-            let failed = Action::Fail(IoError::Failed);
-            rt.extend(SimPlan::new().rule(forces, failed).lasting());
-        })),
+        Injection::Torn => Action::Tear(
+            tear.expect("a torn write-out's page changed in more than one unit"),
+            Box::new(move || {
+                rt.set_faults(Faults {
+                    torn_p: 1.0,
+                    ..Faults::none(512)
+                });
+                let forces = world::on_data(Match::kind(OpKind::Sync));
+                let failed = Action::Fail(IoError::Failed);
+                rt.extend(SimPlan::new().rule(forces, failed).lasting());
+            }),
+        ),
         Injection::LogLost { .. } | Injection::LogUnreadable { .. } | Injection::Crash { .. } => {
             unreachable!("a fault of the log is planned at its write to the log")
         }

@@ -229,6 +229,9 @@ pub enum Action {
     Run(Box<dyn FnOnce() + Send>),
     /// Never complete the op.
     Hold,
+    /// Run the closure on the submitting thread, then complete the write as written; a crash
+    /// before a force of it lands only the atomic units whose flag in the mask is set.
+    Tear(Vec<bool>, Box<dyn FnOnce() + Send>),
 }
 
 impl Action {
@@ -238,6 +241,7 @@ impl Action {
             Action::Lose => Planned::Lose,
             Action::Run(_) => Planned::Run,
             Action::Hold => Planned::Hold,
+            Action::Tear(..) => Planned::Tear,
         }
     }
 
@@ -246,7 +250,7 @@ impl Action {
             Action::Fail(error) => Action::Fail(*error),
             Action::Lose => Action::Lose,
             Action::Hold => Action::Hold,
-            Action::Run(_) => unreachable!("a run acts once"),
+            Action::Run(_) | Action::Tear(..) => unreachable!("a run or a tear acts once"),
         }
     }
 }
@@ -264,6 +268,7 @@ pub enum Planned {
     Lose,
     Run,
     Hold,
+    Tear,
 }
 
 #[derive(Debug)]
@@ -289,13 +294,13 @@ impl Plan {
     /// Returns this plan acting with `action` on each op `ops` takes that no earlier rule takes.
     ///
     /// Preconditions:
-    /// - `action` is no `Run`, since a run acts once.
+    /// - `action` is no `Run` or `Tear`, since each acts once.
     /// - `action` is no `Fail` when `ops` may take a `Close`.
     #[must_use]
     pub fn rule(self, ops: Match, action: Action) -> Plan {
         assert!(
-            !matches!(action, Action::Run(_)),
-            "a run acts once: plan it with first or at"
+            !matches!(action, Action::Run(_) | Action::Tear(..)),
+            "a run or a tear acts once: plan it with first or at"
         );
         self.add(ops, action, false)
     }
@@ -316,8 +321,8 @@ impl Plan {
             "a failed close leaves its file open: except Close from {ops:?}"
         );
         assert!(
-            !matches!(action, Action::Lose) || ops.only_writes(),
-            "only a write can be lost: limit {ops:?} to writes"
+            !matches!(action, Action::Lose | Action::Tear(..)) || ops.only_writes(),
+            "only a write can be lost or torn: limit {ops:?} to writes"
         );
         self.rules.push(Rule {
             ops,

@@ -24,6 +24,9 @@ pub const FILE: &str = "search.adt";
 pub const PAGE: usize = 8192;
 pub const DATA: DataFile = DataFile::new(FILE, PAGE);
 pub const SEGMENT: u64 = 64 * 1024;
+/// The bytes the simulated device writes atomically.
+pub const UNIT: usize = 512;
+const _: () = assert!(PAGE / UNIT == u16::BITS as usize);
 
 const APP: &str = r"module app
 add module app
@@ -236,6 +239,9 @@ pub struct WriteOut {
     pub kind: u16,
     pub owner: u32,
     pub lsn: u64,
+    /// The units of [`UNIT`] bytes in which the page differs from what the last earlier
+    /// write-out of it wrote, zeros before the first: bit `u` for unit `u`.
+    pub changed: u16,
     /// The index in the sequence of the operation running when it was submitted: the sequence's
     /// length for the close that ends it, [`CREATING`] for the create.
     pub during: usize,
@@ -280,6 +286,8 @@ pub fn write_outs() -> Match {
 )]
 fn trace(writes: &OpLog, during: &[(usize, usize)]) -> Trace {
     let mut trace = Trace::default();
+    let mut last: BTreeMap<Pid, &[u8]> = BTreeMap::new();
+    let zeros = [0; PAGE];
     let writes = writes.entries();
     for (number, write) in writes.iter().enumerate() {
         let during = during
@@ -289,12 +297,21 @@ fn trace(writes: &OpLog, during: &[(usize, usize)]) -> Trace {
             .map_or(CREATING, |(_, i)| *i);
         let offset = write.offset().unwrap();
         for (i, page) in write.bytes().unwrap().chunks(PAGE).enumerate() {
+            let pid = Pid(offset / PAGE as u64 + i as u64);
+            let before = last.insert(pid, page).unwrap_or(&zeros);
+            let changed = page
+                .chunks(UNIT)
+                .zip(before.chunks(UNIT))
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .fold(0, |mask, (u, _)| mask | (1 << u));
             trace.writes.push(WriteOut {
                 op: number as u64,
-                pid: Pid(offset / PAGE as u64 + i as u64),
+                pid,
                 kind: page::kind(page),
                 owner: page::owner(page),
                 lsn: page::lsn(page).0,
+                changed,
                 during,
             });
         }
