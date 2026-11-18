@@ -754,7 +754,6 @@ impl LargeStore {
 
     /// Set the count of the head at `head` to `count`, marking its page touched when the count
     /// is 0. Refuses the page when no head is at `head`.
-    #[cfg(any(test, feature = "testing"))]
     pub fn recount<R: Runtime>(
         &self,
         pager: &Pager<R>,

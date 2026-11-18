@@ -314,6 +314,8 @@ impl Catalog {
             txns,
             x,
             hold: &hold,
+            made: Default::default(),
+            top: Default::default(),
         };
         let roots: Vec<Vec<Value>> = freed
             .iter()
@@ -343,7 +345,7 @@ impl Catalog {
             for id in &freed {
                 self.indexes.remove(id);
             }
-            self.end_committed(pager, txns, marked, &committed);
+            self.end_committed(pager, txns, marked, &committed, &[]);
         }
         Ok(())
     }

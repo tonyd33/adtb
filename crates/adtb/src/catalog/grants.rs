@@ -306,6 +306,8 @@ impl Catalog {
             txns,
             x,
             hold: &hold,
+            made: Default::default(),
+            top: Default::default(),
         };
         let mut grants = self.source.grants.clone();
         let done = self.write_grants(&m, self, &mut grants, &BTreeSet::new(), Grantees::Dormant);

@@ -80,6 +80,8 @@ impl Catalog {
             txns,
             x,
             hold: &hold,
+            made: Default::default(),
+            top: Default::default(),
         };
         let done = writes
             .iter()

@@ -175,6 +175,45 @@ impl Heap {
         }))
     }
 
+    /// Count each version on page `pid` off the head of every large value it points at, each in
+    /// an update of its own. Returns whether it counted off every version: `false` when a heap
+    /// page of this heap fails its check, names no format of it or holds a row that does not
+    /// decode, changing no count, or when a release fails.
+    ///
+    /// Precondition: no structure reaches the heap and no transaction reads it, and no version
+    /// on the page was counted off before.
+    pub fn release_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> bool {
+        let held = match pager.read(pid) {
+            Ok(guard) => match self.page(&guard) {
+                None => return true,
+                Some(page) => page
+                    .check()
+                    .is_empty()
+                    .then(|| self.format_of(page))
+                    .flatten()
+                    .and_then(|format| self.held_on(page, format).ok()),
+            },
+            Err(_) => None,
+        };
+        held.is_some_and(|held| release_each(pager, &self.large, &held).is_ok())
+    }
+
+    /// Returns the pointer of every out-of-line value a version on `page`, in row format
+    /// `format`, holds, or why the row of one does not decode.
+    pub(super) fn held_on(
+        &self,
+        page: HeapPage<'_>,
+        format: FormatNo,
+    ) -> Result<Vec<Pointer>, Undecoded> {
+        let mut held = Vec::new();
+        for slot in 0..page.slot_count() {
+            if let Slot::Normal { at, .. } = page.get(slot) {
+                held.extend(self.pointers(format, &page[at])?);
+            }
+        }
+        Ok(held)
+    }
+
     pub(super) fn pointers(
         &self,
         format: FormatNo,

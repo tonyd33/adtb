@@ -308,7 +308,7 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
 /// Count one version fewer pointing at each of `pointers` in `store`, each in an update of its
 /// own. Returns the first failure once every release ran.
 #[track_caller]
-fn release_each<R: Runtime>(
+pub(super) fn release_each<R: Runtime>(
     pager: &Pager<R>,
     store: &LargeStore,
     pointers: &[Pointer],

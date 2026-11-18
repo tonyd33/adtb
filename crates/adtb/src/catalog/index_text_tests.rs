@@ -407,6 +407,8 @@ fn restate(
         txns,
         x: begun.xid(),
         hold: &hold,
+        made: Default::default(),
+        top: Default::default(),
     };
     delete_rows(&m, catalog.heap(indexes, c), std::slice::from_ref(&row)).expect("deleted");
     let mut older = row;

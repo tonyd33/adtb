@@ -51,6 +51,7 @@ mod oplog_tests;
 #[cfg(test)]
 mod tests;
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -616,6 +617,8 @@ impl Catalog {
             txns,
             x,
             hold: &hold,
+            made: Default::default(),
+            top: Default::default(),
         };
         let built = empty.build(
             &m,
@@ -646,8 +649,8 @@ impl Catalog {
     ///
     /// A file whose create did not commit has every page but its commit log's and its root
     /// page freed, and its catalog created again; a file whose header names no catalog has
-    /// every page freed first. A schema change that did not commit has every page it allocated
-    /// freed.
+    /// every page freed first. A schema change left on the root has every page no structure
+    /// reaches freed, and every large-value head lowered to the versions that point at it.
     ///
     /// Fails with [`Error::Corrupt`] if a stored page or row does not read as the catalog writes
     /// it, and with [`Error::Unaccepted`] if a stored migration does not parse or apply under
@@ -660,7 +663,8 @@ impl Catalog {
         }
         let changing = Root::read(&pager.read(catalog.root)?).changing();
         if changing != Changing::None {
-            match catalog.free_leaked(pager, &txns) {
+            let freed = catalog.free_leaked(pager, &txns, &[]);
+            match freed.and_then(|f| catalog.lower_overcounted(pager, &f.report)) {
                 Ok(()) => {
                     root::end_found(pager, catalog.root)?;
                 }
@@ -818,15 +822,21 @@ impl Catalog {
         self.heaps.is_empty()
     }
 
-    /// Free every page the catalog's structures do not reach.
+    /// Free every page the catalog's structures do not reach, first counting each version on a
+    /// page of a heap of `gone` off the large values it points at. A page whose versions it
+    /// could not count off is freed with its heads left overcounted.
     ///
     /// Fails with the damage found, freeing nothing, if a damaged page keeps it from finding
     /// every structure's pages.
+    ///
+    /// Precondition: no structure reaches a heap of `gone`, no transaction reads one, and no
+    /// call counted its versions off before.
     fn free_leaked<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-    ) -> Result<(), Error> {
+        gone: &[Arc<Heap>],
+    ) -> Result<Freed, Error> {
         let report = {
             let clog = txns.commit_log();
             let structures = self.structures();
@@ -835,20 +845,72 @@ impl Catalog {
         if !report.complete {
             return Err(unfinished(&report));
         }
+        let gone: BTreeMap<u32, &Heap> = gone.iter().map(|h| (h.id().0, h.as_ref())).collect();
+        let mut counted = true;
         for p in report.leaked() {
-            match pager.read(p) {
-                Err(e) if e.damage != storage::Damage::Unreadable => pager.scrap(p)?,
-                _ => {
-                    pager.free(p)?;
+            let owner = match pager.read(p) {
+                Err(e) if e.damage != storage::Damage::Unreadable => {
+                    pager.scrap(p)?;
+                    continue;
                 }
+                Err(_) => None,
+                Ok(page) => Some(page.owner()),
+            };
+            if let Some(heap) = owner.and_then(|o| gone.get(&o)) {
+                counted &= heap.release_page(pager, p);
             }
+            pager.free(p)?;
+        }
+        Ok(Freed { report, counted })
+    }
+
+    /// Lower each head `report` finds counting more versions than point at it to the number
+    /// that do.
+    ///
+    /// Precondition: `report` is complete, found over this catalog's structures, and no write
+    /// ran since.
+    fn lower_overcounted<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        report: &Report,
+    ) -> Result<(), Error> {
+        let stores = [self.large, self.kept.large()];
+        for f in &report.findings {
+            let Problem::Overcounted { slot, versions, .. } = f.problem else {
+                continue;
+            };
+            let owner = pager.read(f.pid)?.owner();
+            let store = stores
+                .iter()
+                .find(|s| s.id() == owner)
+                .expect("an overcounted head lies in a store the catalog names");
+            let head = Tid::new(f.pid.0, slot).expect("a page id fits 48 bits");
+            store
+                .recount(pager, head, versions)
+                .map_err(heap::Error::from)?;
         }
         Ok(())
     }
 
-    /// Free every page a schema change left unreached once it is `committed`, then end `marked`,
-    /// or with none the change the root records, and wait until the end is durable. Leave the
-    /// change on the root for the next open when the free fails.
+    /// Returns every heap of this catalog, current and history.
+    fn every_heap(&self) -> impl Iterator<Item = &Arc<Heap>> {
+        self.heaps.values().chain(self.kept.heaps())
+    }
+
+    /// Returns each heap of this catalog, current or history, that `next` does not hold.
+    fn heaps_gone_in(&self, next: &Catalog) -> Vec<Arc<Heap>> {
+        let held: BTreeSet<u32> = next.every_heap().map(|h| h.id().0).collect();
+        self.every_heap()
+            .filter(|h| !held.contains(&h.id().0))
+            .cloned()
+            .collect()
+    }
+
+    /// Free every page a schema change left unreached once it is `committed`, counting the
+    /// versions of the heaps it took out of the catalog, `gone`, off their large values; then end
+    /// `marked`, or with none the change the root records, and wait until the end is durable.
+    /// Leave the change on the root for the next open when the free fails or leaves a version
+    /// not counted off.
     #[track_caller]
     fn end_committed<R: Runtime>(
         &self,
@@ -856,11 +918,12 @@ impl Catalog {
         txns: &Transactions<R>,
         marked: Option<Begun>,
         committed: &DurableCommit,
+        gone: &[Arc<Heap>],
     ) {
-        if committed
-            .then(faults::Step::FreeLeaked, || self.free_leaked(pager, txns))
-            .is_none()
-        {
+        let freed = committed.then(faults::Step::FreeLeaked, || {
+            self.free_leaked(pager, txns, gone)
+        });
+        if !freed.is_some_and(|f| f.counted) {
             return;
         }
         let ended = committed.then(faults::Step::EndChange, || {
@@ -1226,12 +1289,49 @@ struct Migrating<'a, R: Runtime> {
     txns: &'a Transactions<R>,
     x: Xid,
     hold: &'a Hold,
+    /// Every heap the transaction created.
+    made: RefCell<Vec<Arc<Heap>>>,
+    /// One past the highest heap id the transaction's structures took.
+    top: Cell<u32>,
+}
+
+/// What [`Catalog::free_leaked`] did.
+struct Freed {
+    /// The report the leaked pages were found by.
+    report: Report,
+    /// Whether every version on a page of a heap it was given was counted off.
+    counted: bool,
 }
 
 impl<R: Runtime> Migrating<'_, R> {
     /// Insert `row` into `heap` as `self.x`, as [`insert_row`] does.
     fn insert(&self, heap: &Heap, row: &[Value]) -> Result<Tid, Error> {
         insert_row(self.pager, self.txns, heap, self.x, row)
+    }
+
+    /// Create an empty heap with id `id` whose rows have fields `row`, out-of-line values in
+    /// `large`, and add it to `made`.
+    fn create_heap(
+        &self,
+        id: u32,
+        row: Vec<FieldType>,
+        large: LargeStore,
+    ) -> Result<Arc<Heap>, Error> {
+        let heap = Arc::new(Heap::create(self.pager, id, row, large)?);
+        self.made.borrow_mut().push(heap.clone());
+        self.took(id);
+        Ok(heap)
+    }
+
+    /// Create an empty tree owned by heap id `id`.
+    fn create_tree(&self, id: u32) -> Result<BTree, Error> {
+        let tree = BTree::create(self.pager, id)?;
+        self.took(id);
+        Ok(tree)
+    }
+
+    fn took(&self, id: u32) {
+        self.top.set(self.top.get().max(id + 1));
     }
 }
 

@@ -22,7 +22,7 @@ use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, rela
 use super::root::Root;
 use super::roots::RootsRow;
 use super::structures::{Listed, index_holder, relation_holder};
-use super::{Catalog, Error, IndexKeys, IndexSpec, ROOTS, row_type};
+use super::{Catalog, Error, IndexKeys, IndexSpec, Migrating, ROOTS, row_type};
 
 /// The transaction of each migration and the roots version recording it, by the version it made,
 /// and the version whose migration named each heap by heap id.
@@ -61,7 +61,7 @@ impl Names {
 
 /// The catalog that a migration's build makes, as far as the history structures follow it.
 pub(super) struct Rebuilding<'a, R: Runtime> {
-    pub(super) pager: &'a Pager<R>,
+    pub(super) m: &'a Migrating<'a, R>,
     pub(super) old: &'a Schema,
     pub(super) next: &'a Schema,
     pub(super) rewritten: &'a BTreeSet<CatRelId>,
@@ -169,9 +169,10 @@ impl Kept {
                 out.heaps.insert((r, c), self.heap_of(b.old, rid, cid));
                 continue;
             }
-            let heap = Heap::create(b.pager, fresh(), row_type(b.next, r, c), self.large)?;
+            let heap =
+                b.m.create_heap(fresh(), row_type(b.next, r, c), self.large)?;
             named.push(heap_row(rid, cid, &heap));
-            out.heaps.insert((r, c), Arc::new(heap));
+            out.heaps.insert((r, c), heap);
         }
         for (&r, key) in &b.keys {
             let rid = rel_id(b.next, r);
@@ -180,7 +181,7 @@ impl Kept {
                 out.indexes.insert(r, self.indexes[&was].clone());
                 continue;
             }
-            let index = history_index(BTree::create(b.pager, fresh())?, key);
+            let index = history_index(b.m.create_tree(fresh())?, key);
             named.push(index_row(rid, index.tree()));
             out.indexes.insert(r, index);
         }
@@ -197,6 +198,16 @@ impl Kept {
             }
         }
         Ok(out)
+    }
+
+    /// Returns the large-value store of every history heap.
+    pub(super) fn large(&self) -> LargeStore {
+        self.large
+    }
+
+    /// Returns every history heap.
+    pub(super) fn heaps(&self) -> impl Iterator<Item = &Arc<Heap>> {
+        self.heaps.values()
     }
 
     fn heap_of(&self, old: &Schema, rid: CatRelId, cid: CatCtorId) -> Arc<Heap> {

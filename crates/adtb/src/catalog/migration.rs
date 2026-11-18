@@ -15,7 +15,7 @@ use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::Index;
 use crate::exec::{self, conv, from_stored};
-use crate::heap::{self, FieldType, Heap};
+use crate::heap::{self, FieldType};
 use crate::key::{CtorId, Value};
 use crate::mvcc::{Scope, Transactions};
 use crate::plan::HeapId;
@@ -161,6 +161,8 @@ impl Catalog {
             txns,
             x,
             hold: &hold,
+            made: Default::default(),
+            top: Default::default(),
         };
         let prepared = Prepared {
             next,
@@ -168,6 +170,8 @@ impl Catalog {
             grantees,
         };
         let built = self.mapped(&m, &file, text, prepared, &rewritten, readers);
+        let made = m.made.take();
+        let top = m.top.get();
         drop(hold);
         let built = built.and_then(|(c, written)| {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
@@ -176,17 +180,24 @@ impl Catalog {
         match built {
             Ok((c, written)) => {
                 let committed = txns.commit(pager, begun)?;
+                let gone = self.heaps_gone_in(&c);
                 *self = c;
                 dormant.extend(written);
-                self.end_committed(pager, txns, marked, &committed);
+                self.end_committed(pager, txns, marked, &committed, &gone);
                 pager.wait_durable(committed.lsn());
                 Ok(dormant)
             }
             Err(e) => {
                 txns.abort(pager, begun)?;
-                self.free_leaked(pager, txns)?;
-                let lsn = root::end_freed(pager, self.root, marked)?;
-                pager.wait_durable(lsn);
+                if top > self.next_heap {
+                    update_root(pager, self.root, |r| r.next_heap = top)?;
+                    self.next_heap = top;
+                }
+                let freed = self.free_leaked(pager, txns, &made)?;
+                if freed.counted {
+                    let lsn = root::end_freed(pager, self.root, marked)?;
+                    pager.wait_durable(lsn);
+                }
                 Err(e)
             }
         }
@@ -566,14 +577,10 @@ impl Catalog {
                 next.heaps.insert((r, c), self.heaps[kept].clone());
                 continue;
             }
-            let heap = Heap::create(
-                pager,
-                heap_ids[&(r, c)],
-                row_type(&next.schema, r, c),
-                self.large,
-            )?;
+            let heap =
+                m.create_heap(heap_ids[&(r, c)], row_type(&next.schema, r, c), self.large)?;
             named.push(heap_root(rid, cid, &heap));
-            next.heaps.insert((r, c), Arc::new(heap));
+            next.heaps.insert((r, c), heap);
         }
         for (&(rid, cid), rc) in &old {
             if b.rewritten.contains(&rid) {
@@ -610,7 +617,7 @@ impl Catalog {
             }
         }
         let rebuilding = Rebuilding {
-            pager,
+            m,
             old: &self.schema,
             next: &next.schema,
             rewritten: b.rewritten,

@@ -145,7 +145,8 @@ struct Ran {
     overcounted: usize,
 }
 
-/// Open the file at [`NOTES`] with [`ROWS`] rows, then at [`RANKED`], failing `fail`.
+/// Open the file at [`NOTES`] with [`ROWS`] rows, then at [`RANKED`], failing `fail`. Fail
+/// unless a sweep after the next open leaves the store as large as before the migration.
 fn migrated(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("migration {fail:?}");
     let mut sim = Sim::new(SEED, Config::default());
@@ -154,6 +155,7 @@ fn migrated(fail: Option<(Site, usize)>) -> Ran {
         write(&db, &inserts(""));
         db.close().expect("the database closes");
     });
+    let held = run(&mut sim, |rt| swept(&rt));
     let runs = run(&mut sim, |rt| {
         arm(fail);
         let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
@@ -166,6 +168,7 @@ fn migrated(fail: Option<(Site, usize)>) -> Ran {
         reads(&rt, ROWS, &what);
         overcounted(&rt, &what)
     });
+    assert_eq!(held, run(&mut sim, |rt| swept(&rt)), "{what}");
     Ran {
         runs,
         ok: true,
@@ -343,24 +346,21 @@ type Case = (
     &'static str,
     fn(Option<(Site, usize)>) -> Ran,
     &'static [Step],
-    usize,
 );
 
 const AFTER_COMMIT: &[Step] = &[Step::FreeLeaked, Step::EndChange];
+const AFTER_REWRITE: &[Step] = &[Step::FreeLeaked, Step::Release, Step::EndChange];
 const BEFORE_COMMIT: &[Step] = &[Step::Release, Step::Settle];
 const BEFORE_UPDATE: &[Step] = &[Step::ClearBit, Step::Reflect, Step::Write];
 const BEFORE_UPDATE_WIDE: &[Step] = &[Step::Retain, Step::Reflect, Step::Write];
 
-/// The heads the migration leaves counting a version of the heap it rewrote, one per row.
-const REWRITE_LEAKS: usize = ROWS;
-
 const CASES: &[Case] = &[
-    ("migration", migrated, AFTER_COMMIT, REWRITE_LEAKS),
-    ("pending drop", settled, AFTER_COMMIT, 0),
-    ("insert", inserted, BEFORE_COMMIT, 0),
-    ("vacuum", vacuumed, BEFORE_COMMIT, 0),
-    ("update", updated, BEFORE_UPDATE, 0),
-    ("wide insert", widened, BEFORE_UPDATE_WIDE, 0),
+    ("migration", migrated, AFTER_REWRITE),
+    ("pending drop", settled, AFTER_COMMIT),
+    ("insert", inserted, BEFORE_COMMIT),
+    ("vacuum", vacuumed, BEFORE_COMMIT),
+    ("update", updated, BEFORE_UPDATE),
+    ("wide insert", widened, BEFORE_UPDATE_WIDE),
 ];
 
 /// Returns the first and the last run of each site of `steps` among `runs`.
@@ -377,11 +377,11 @@ fn ends(runs: &[Run], steps: &[Step]) -> BTreeSet<(Site, usize)> {
 #[test]
 fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_call() {
     let mut struck: BTreeSet<Site> = BTreeSet::new();
-    for (case, run_case, steps, leaked) in CASES {
+    for (case, run_case, steps) in CASES {
         let clean = run_case(None);
         assert!(clean.ok, "{case} fails with nothing failed");
-        assert_eq!(*leaked, clean.overcounted, "{case} with nothing failed");
-        let after = steps == &AFTER_COMMIT;
+        assert_eq!(0, clean.overcounted, "{case} with nothing failed");
+        let after = steps.contains(&Step::FreeLeaked);
         for (site, n) in ends(&clean.runs, steps) {
             let got = run_case(Some((site, n)));
             assert!(
@@ -390,7 +390,7 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
                 got.runs
             );
             assert_eq!(after, got.ok, "{case}: run {n} of {site:?}");
-            let skipped = usize::from(site.step() == Step::Release);
+            let skipped = usize::from(!after && site.step() == Step::Release);
             assert_eq!(
                 clean.overcounted + skipped,
                 got.overcounted,
@@ -406,6 +406,7 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
     let counted = BTreeMap::from([
         (("migration.rs", Step::FreeLeaked), 1),
         (("migration.rs", Step::EndChange), 1),
+        (("decode.rs", Step::Release), 1),
         (("pending.rs", Step::FreeLeaked), 1),
         (("pending.rs", Step::EndChange), 1),
         (("write.rs", Step::Release), 1),
@@ -416,4 +417,183 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
         (("write.rs", Step::Write), 1),
     ]);
     assert_eq!(counted, sites);
+}
+
+const DOCS: &str = r"module app
+add module app
+add type Doc { id: Key docs } = Draft { body: Text } | Plain { body: Text }
+add relation docs : Doc key id generate sequence
+";
+
+const DEPRECATED: &str = "module app\ndeprecate docs.Draft\n";
+const REMOVED: &str = "module app\nremove constructor Doc.Draft\n";
+const DROPPED: &str = "module app\ndrop relation notes\ndrop type Note\n";
+const VIOLATED: &str = r"module app
+add field Note.rank: I64 fill 7
+add constraint unranked = from n in notes where n.rank == 7 select n.title
+";
+
+const UNRANKED: &[&str] =
+    &["constraint app::unranked is violated by \"t0\", \"t1\", \"t2\", \"t3\""];
+
+/// Sweep the store of the closed file. Returns the pages it holds after.
+fn swept(rt: &SimRuntime) -> usize {
+    let (pager, catalog, txns) = catalog_at(rt);
+    catalog
+        .large
+        .sweep(&pager, |x| txns.resolved(&pager, x), &mut || true)
+        .expect("the sweep runs");
+    let pages = catalog.large.pages(&pager).expect("the store reads").len();
+    pager.close();
+    pages
+}
+
+/// A change that frees a heap: its name, the migrations before it, the writes that fill them,
+/// its migrations, the refusal the last ends in, and whether the store keeps a value of each row.
+struct Freeing {
+    name: &'static str,
+    before: &'static [&'static str],
+    writes: fn() -> Vec<String>,
+    changes: &'static [&'static str],
+    refused: Option<&'static [&'static str]>,
+    kept: bool,
+}
+
+fn notes() -> Vec<String> {
+    vec![inserts("")]
+}
+
+fn deleted() -> Vec<String> {
+    vec![inserts(""), "delete n in notes".into()]
+}
+
+fn retagged() -> Vec<String> {
+    let rows: String = (0..ROWS)
+        .map(|i| format!("  insert docs.Draft {{ body: \"{}\" }}\n", body(i)))
+        .collect();
+    vec![
+        format!("transact\n{rows}"),
+        "update d in docs.Draft set Plain { body: d.body }".into(),
+    ]
+}
+
+const FREEINGS: &[Freeing] = &[
+    Freeing {
+        name: "rewrite",
+        before: &[NOTES],
+        writes: notes,
+        changes: &[RANKED],
+        refused: None,
+        kept: true,
+    },
+    Freeing {
+        name: "aborted rewrite",
+        before: &[NOTES],
+        writes: notes,
+        changes: &[VIOLATED],
+        refused: Some(UNRANKED),
+        kept: true,
+    },
+    Freeing {
+        name: "dropped relation",
+        before: &[NOTES],
+        writes: deleted,
+        changes: &[DROPPED],
+        refused: None,
+        kept: false,
+    },
+    Freeing {
+        name: "removed constructor",
+        before: &[DOCS],
+        writes: retagged,
+        changes: &[DEPRECATED, REMOVED],
+        refused: None,
+        kept: true,
+    },
+];
+
+#[test]
+fn a_change_freeing_a_heap_counts_its_versions_off_every_value_they_point_at() {
+    let mut found = Vec::new();
+    let mut expected = Vec::new();
+    for f in FREEINGS {
+        let what = f.name;
+        let mut sim = Sim::new(SEED, Config::default());
+        run(&mut sim, |rt| {
+            let db = opened(&rt, FILE, &log(f.before), &options(1));
+            for text in (f.writes)() {
+                write(&db, &text);
+            }
+            db.close().expect("the database closes");
+        });
+        let held = run(&mut sim, |rt| swept(&rt));
+        assert!(held > 0, "{what}: the rows hold large values");
+        run(&mut sim, |rt| {
+            let (pager, mut catalog, txns) = catalog_at(&rt);
+            let (last, earlier) = f.changes.split_last().expect("a change migrates");
+            for text in earlier {
+                catalog
+                    .migrate(&pager, &txns, text)
+                    .expect("the migration applies");
+            }
+            let got = catalog.migrate(&pager, &txns, last);
+            match (f.refused, got) {
+                (None, Ok(())) => {}
+                (Some(why), Err(super::Error::Refused(got))) => assert_eq!(why, got, "{what}"),
+                (_, got) => panic!("{what}: {got:?}"),
+            }
+            pager.close();
+        });
+        let over = run(&mut sim, |rt| overcounted(&rt, what));
+        let left = run(&mut sim, |rt| swept(&rt));
+        found.push((what, over, left));
+        expected.push((what, 0, if f.kept { held } else { 0 }));
+    }
+    assert_eq!(expected, found);
+}
+
+#[test]
+fn a_migration_after_an_aborted_one_takes_heap_ids_the_aborted_one_never_took() {
+    let mut sim = Sim::new(SEED, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, FILE, &log(&[NOTES]), &options(1));
+        write(&db, &inserts(""));
+        db.close().expect("the database closes");
+    });
+    let (before, after) = run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        let before = catalog.next_heap;
+        let got = catalog.migrate(&pager, &txns, VIOLATED);
+        let Err(super::Error::Refused(why)) = got else {
+            panic!("the violated constraint refuses: {got:?}");
+        };
+        assert_eq!(UNRANKED, why);
+        pager.close();
+        let (pager, catalog, _) = catalog_at(&rt);
+        let after = catalog.next_heap;
+        pager.close();
+        (before, after)
+    });
+    assert!(
+        before < after,
+        "the aborted migration took ids {before}..{after}"
+    );
+    run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        let old: BTreeSet<u32> = catalog.every_heap().map(|h| h.id().0).collect();
+        catalog
+            .migrate(&pager, &txns, RANKED)
+            .expect("the migration applies");
+        let fresh: Vec<u32> = catalog
+            .every_heap()
+            .map(|h| h.id().0)
+            .filter(|id| !old.contains(id))
+            .collect();
+        assert!(!fresh.is_empty(), "the migration rewrites notes");
+        assert!(
+            fresh.iter().all(|&id| id >= after),
+            "{fresh:?} from {after}"
+        );
+        pager.close();
+    });
 }

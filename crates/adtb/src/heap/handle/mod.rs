@@ -14,7 +14,7 @@ use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
-use super::write::{HeapWrite, Rank, Took};
+use super::write::{HeapWrite, Rank, Took, release_each};
 use super::{Error, Refused, WriteTarget, fixed, slotted};
 use super::{chain, prune};
 
@@ -872,17 +872,11 @@ impl Heap {
                     self.refuse_format(pager, pid, guard)?;
                     continue;
                 };
-                let held: Result<Vec<Vec<Pointer>>, Undecoded> = (0..page.slot_count())
-                    .filter_map(|slot| match page.get(slot) {
-                        Slot::Normal { at, .. } => Some(self.pointers(format, &page[at])),
-                        _ => None,
-                    })
-                    .collect();
-                let Ok(held) = held else {
+                let Ok(held) = self.held_on(page, format) else {
                     self.refuse_row(pager, pid, guard)?;
                     continue;
                 };
-                out.extend(held.into_iter().flatten());
+                out.extend(held);
                 break;
             }
         }
