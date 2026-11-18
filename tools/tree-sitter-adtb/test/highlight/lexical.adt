@@ -1,0 +1,34 @@
+module shelter
+-- <- keyword
+--^^^^ keyword
+--     ^ !keyword
+-- from 42 "Text" is a comment
+-- <- comment
+--^^^^^^^^^^^^^^^^^^^^^^^^^^^^ comment
+query residents (minimum: Int) -> Set Text =
+-- <- !comment
+--                      ^ !type
+--                        ^^^ type
+--                           ^ !type
+  from r in people where r.age >= minimum
+--^^^^ keyword
+  select { name: r.name, message: "from Text 42 -- \\" }
+transact
+let pause = 30min
+--        ^ !number
+--          ^^^^^ number
+let n = 12.50
+--    ^ !number
+--      ^^^^^ number
+let exponent = 1.5e-3
+--           ^ !number
+--             ^^^^^^ number
+let constructor = Some { value: 42 }
+--              ^ !type
+--                ^^^^ type
+--                     ^ !type
+let from_here = falsehood
+--              ^^^^^^^^^ !constant.builtin
+let greeting = "Hello \"quoted\" -- from 42"
+--           ^ !string
+--             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ string

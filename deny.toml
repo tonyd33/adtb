@@ -22,6 +22,9 @@ allow = [
     "BSD-3-Clause",
     # The licence of arrayref, a BLAKE3 dependency.
     "BSD-2-Clause",
+    # The licence of foldhash, the hasher of the ordered maps tree-sitter's build reads its
+    # language data into.
+    "Zlib",
 ]
 confidence-threshold = 0.9
 
@@ -31,9 +34,10 @@ wildcards = "deny"
 allow-wildcard-paths = true
 allow-workspace = true
 # A matches pattern compiles only through adtb-lang: regex and its parts are reached only
-# through the wrappers listed, and regex-lite and fancy-regex not at all.
+# through the wrappers listed, and regex-lite and fancy-regex not at all. tree-sitter compiles the
+# patterns of its queries' predicates, which no adtb text reaches.
 deny = [
-    { crate = "regex@*", wrappers = ["adtb-lang"] },
+    { crate = "regex@*", wrappers = ["adtb-lang", "tree-sitter"] },
     { crate = "regex-syntax@*", wrappers = ["adtb-lang", "regex", "regex-automata"] },
     { crate = "regex-automata@*", wrappers = ["regex", "matchers", "tracing-subscriber"] },
     { crate = "matchers@*", wrappers = ["tracing-subscriber"] },
@@ -169,6 +173,15 @@ allow = [
     "anstyle",
     # Case conversion clap_derive names flags with.
     "heck",
+    # The tree-sitter runtime, which adtb-tree-sitter's tests parse with the editor grammar, and
+    # its language handle and iterator crates.
+    "tree-sitter",
+    "tree-sitter-language",
+    "streaming-iterator",
+    # The ordered maps tree-sitter's build script reads its language data into.
+    "indexmap",
+    "equivalent",
+    "foldhash",
     # Read plan documents in engine scripts, and what it uses.
     "serde_json",
     "serde_core",

@@ -95,9 +95,10 @@ root, beside the `xtask` crate's two commands:
   check a text and run it on the reference and the engine side by side;
   `--checks app::c` prints the plan of each incremental check of
   constraint `c`, the text then optional.
-- `tree-sitter-check`: regenerate the grammar in `tools/tree-sitter-adtb/` and fail on a
-  difference from the checked in `src/`, run its corpus, and compare it with `adtb-lang` over the
-  spec and conformance texts and the front end fuzzer's programs.
+- `tree-sitter-check`, from the workspace root: regenerate the grammar in `tools/tree-sitter-adtb/`
+  and fail on a difference from the checked in `src/`, run `tree-sitter test` over its corpus and
+  highlight tests, and run `cargo nextest run -p adtb-tree-sitter`, which compares it with
+  `adtb-lang` over the spec and conformance texts and the front end fuzzer's programs.
 - `house-check [DIR [-r REVSET]]`: the added lines of `jj diff` that break a comment rule.
 - `cargo xtask check` runs clippy over adtb-sys under `--cfg adtb_loom`, then the Loom models
   of the page state word, its unit tests built with that cfg into `target/loom`, then adtb-sys's
