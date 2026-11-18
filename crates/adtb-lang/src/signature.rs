@@ -25,20 +25,22 @@ pub struct ReplayError {
 pub fn replay<'a>(log: impl IntoIterator<Item = &'a str>) -> Result<Source, ReplayError> {
     let mut source = Source::default();
     for (i, text) in log.into_iter().enumerate() {
-        let failed = |message: String| ReplayError {
-            migration: i as u64 + 1,
-            message,
-        };
-        let file = parse_migration(text, Options::default())
-            .ok()
-            .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
-        source = source.migrate(&file, text).map_err(|r| {
-            let ops = r.operators.iter().map(|d| d.message.as_str());
-            let recheck = r.recheck.iter().map(|d| d.diag.message.as_str());
-            failed(joined(ops.chain(recheck)))
-        })?;
+        source = replay_one(&source, i as u64 + 1, text)?;
     }
     Ok(source)
+}
+
+/// Returns `source` after migration `text`, the `migration`th of its log, as [`replay`] applies it.
+pub fn replay_one(source: &Source, migration: u64, text: &str) -> Result<Source, ReplayError> {
+    let failed = |message: String| ReplayError { migration, message };
+    let file = parse_migration(text, Options::default())
+        .ok()
+        .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
+    source.migrate(&file, text).map_err(|r| {
+        let ops = r.operators.iter().map(|d| d.message.as_str());
+        let recheck = r.recheck.iter().map(|d| d.diag.message.as_str());
+        failed(joined(ops.chain(recheck)))
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

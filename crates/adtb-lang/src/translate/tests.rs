@@ -72,8 +72,12 @@ fn translated_from(
     body: &str,
     hide_new: bool,
 ) -> Vec<R<NormalQuery>> {
-    let (from_source, from, from_program) = pinned;
-    let (to_source, to, to_program) = checked(log);
+    translated_to(pinned, &normalised(pinned, body), &checked(log), hide_new)
+}
+
+/// Returns each query or transaction of `body`, checked and normalised at `pinned`.
+fn normalised(pinned: &(Source, Schema, Program), body: &str) -> Vec<NormalQuery> {
+    let (_, from, from_program) = pinned;
     let text = format!("import auth\n{body}");
     let (imports, items) = parse_bundle_body(&text, Options::default())
         .ok()
@@ -81,18 +85,32 @@ fn translated_from(
     let vis = signature::visible(from, &imports).expect("auth is visible");
     let calls = signature::calls(from, from_program, &vis, &imports, &items)
         .unwrap_or_else(|d| panic!("`{body}` checks at its pin: {}", d.message));
-    let p = Pinned::new(from, from_source, &to, &to_source, &to_program, hide_new);
     calls
         .iter()
         .map(|c| {
-            let q = match &c.item {
+            match &c.item {
                 Item::Query(_, q) => norm::query(from, from_program, q),
                 Item::Txn(_, t) => norm::txn(from, from_program, t),
                 Item::Fn(..) => panic!("the body holds a query or transaction"),
             }
-            .expect("the callable normalises");
-            p.as_ref().map_err(Clone::clone)?.query(&q)
+            .expect("the callable normalises")
         })
+        .collect()
+}
+
+/// Returns the translation of each of `queries`, normalised at `pinned`, to the version `to`.
+fn translated_to(
+    pinned: &(Source, Schema, Program),
+    queries: &[NormalQuery],
+    to: &(Source, Schema, Program),
+    hide_new: bool,
+) -> Vec<R<NormalQuery>> {
+    let (from_source, from, _) = pinned;
+    let (to_source, to, to_program) = to;
+    let p = Pinned::new(from, from_source, to, to_source, to_program, hide_new);
+    queries
+        .iter()
+        .map(|q| p.as_ref().map_err(Clone::clone)?.query(q))
         .collect()
 }
 
@@ -1196,15 +1214,14 @@ add relation xs : X3 key id generate sequence
     )
 }
 
-/// Returns the translation of each transaction of `body` from `pinned` to the version `log`
-/// leaves, `to`: the catalog id of the relation its one insert targets, or its refusal.
+/// Returns the translation of each of `transactions`, normalised at `pinned`, to the version
+/// `to`: the catalog id of the relation its one insert targets, or its refusal.
 fn inserted(
     pinned: &(Source, Schema, Program),
-    log: &[&str],
-    body: &str,
-    to: &Schema,
+    transactions: &[NormalQuery],
+    to: &(Source, Schema, Program),
 ) -> Vec<Outcome> {
-    translated_from(pinned, log, body, false)
+    translated_to(pinned, transactions, to, false)
         .into_iter()
         .map(|r| {
             r.map(|q| {
@@ -1219,7 +1236,7 @@ fn inserted(
                 let [rel] = inserted.as_slice() else {
                     panic!("one insert, not {inserted:?}");
                 };
-                to.ids().relation_id(*rel)
+                to.1.ids().relation_id(*rel)
             })
             .map_err(|u| (u.operator, u.reason))
         })
@@ -1245,6 +1262,25 @@ fn kinds<'m>(migrations: &'m [&str], model: &'m Model) -> impl Iterator<Item = &
     .filter_map(|(kind, here)| here.then_some(kind))
 }
 
+/// Returns the source each log of `cases` leaves, or why it does not replay. A log that is an
+/// earlier case's log and one migration more replays that migration over the earlier source.
+fn replayed(cases: &[(Vec<String>, Model)]) -> Vec<Result<Source, signature::ReplayError>> {
+    let mut done: BTreeMap<&[String], Result<Source, signature::ReplayError>> = BTreeMap::new();
+    let mut out = Vec::new();
+    for (log, _) in cases {
+        let got = match log.split_last() {
+            Some((last, before)) if done.contains_key(before) => done[before]
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|s| signature::replay_one(s, log.len() as u64, last)),
+            _ => signature::replay(log.iter().map(String::as_str)),
+        };
+        done.insert(log, got.clone());
+        out.push(got);
+    }
+    out
+}
+
 #[test]
 fn a_pinned_insert_translates_across_every_generated_history_of_two_relations() {
     let pinned = checked(&[PIN]);
@@ -1256,20 +1292,24 @@ txn put_y () -> I64 =
   transact
     let r = insert ys { n: 1 }
     return 1";
+    let transactions = normalised(&pinned, body);
     let mut cases = generated(3);
     cases.push(renamed_then_added());
+    let sources = replayed(&cases);
     let mut reached = BTreeSet::new();
     let mut bad = Vec::new();
-    for (log, model) in &cases {
+    for ((log, model), source) in cases.iter().zip(sources) {
         let log: Vec<&str> = log.iter().map(String::as_str).collect();
-        let source = match signature::replay(log.iter().copied()) {
+        let source = match source {
             Ok(source) => source,
             Err(e) => {
                 bad.push(format!("{:?}\n  does not replay: {e:?}", &log[1..]));
                 continue;
             }
         };
-        let (to, _) = source.check().expect("a replayed version checks");
+        let (to, program) = source.check().expect("a replayed version checks");
+        let target = (source, to, program);
+        let to = &target.1;
         let id_of = |name: &str| {
             let rel = to
                 .relations
@@ -1278,7 +1318,7 @@ txn put_y () -> I64 =
                 .unwrap_or_else(|| panic!("no relation {name}"));
             to.ids().relation_id(RelId(rel as u32))
         };
-        let got = inserted(&pinned, &log, body, &to);
+        let got = inserted(&pinned, &transactions, &target);
         let want: Vec<Outcome> = (0..2)
             .map(|s| match &model.slots[s] {
                 Some(Held {

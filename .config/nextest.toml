@@ -37,7 +37,7 @@ threads-required = 2
 
 # An area test of the engine scripts runs three scripts at once.
 [[profile.default.overrides]]
-filter = "package(=adtb-sim) and binary(=scripted) and (test(=scripts::oplog) | test(=scripts::bundles) | test(=scripts::roles) | test(=scripts::authority) | test(=scripts::registered) | test(=scripts::registration) | test(=scripts::commands) | test(=scripts::api) | test(=scripts::past) | test(=scripts::longkey))"
+filter = "package(=adtb-sim) and binary(=scripted) and (test(=scripts::oplog_0) | test(=scripts::oplog_1) | test(=scripts::oplog_2) | test(=scripts::bundles_0) | test(=scripts::bundles_1) | test(=scripts::bundles_2) | test(=scripts::bundles_3) | test(=scripts::bundles_4) | test(=scripts::roles_0) | test(=scripts::roles_1) | test(=scripts::authority) | test(=scripts::registered) | test(=scripts::registration_0) | test(=scripts::registration_1) | test(=scripts::commands) | test(=scripts::api) | test(=scripts::past) | test(=scripts::longkey))"
 threads-required = 3
 
 [[profile.default.overrides]]

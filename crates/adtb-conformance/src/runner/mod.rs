@@ -146,6 +146,18 @@ impl Selection {
     pub fn problems(&self) -> &[Found] {
         &self.problems
     }
+
+    /// Returns the selection of every `parts`th case, in path order, from case `part`, with every
+    /// problem.
+    ///
+    /// Preconditions:
+    /// - `parts > 0`.
+    pub fn part(self, part: usize, parts: usize) -> Selection {
+        Selection {
+            cases: self.cases.into_iter().skip(part).step_by(parts).collect(),
+            problems: self.problems,
+        }
+    }
 }
 
 /// Returns the cases of `corpus` at `under`: the file `under` names, or each `.test` file below
@@ -482,13 +494,18 @@ fn conformance(
 /// Run every case of `corpus` at `under` without colour or update. Returns how many passed, or
 /// what the run printed when one failed or the selection held no case.
 pub fn passes(corpus: &Corpus, under: &Path, options: &Options) -> Result<usize, String> {
+    passes_selected(select(corpus, under), options)
+}
+
+/// Run every case of `selection` as [`passes`] does.
+pub fn passes_selected(selection: Selection, options: &Options) -> Result<usize, String> {
     let options = Options {
         update: false,
         color: false,
         ..options.clone()
     };
     let mut out = Vec::new();
-    let report = run(select(corpus, under), &options, &mut out).expect("a vector takes bytes");
+    let report = run(selection, &options, &mut out).expect("a vector takes bytes");
     if report.ok() {
         Ok(report.passed())
     } else {

@@ -42,19 +42,80 @@ fn run(dir: &Path) {
     assert_eq!(scripts, passed, "{}", dir.display());
 }
 
-#[test]
-fn oplog() {
-    run(&root().join("oplog"));
+/// Returns how many tests the scripts of `area` are spread over.
+fn parts(area: &str) -> usize {
+    match area {
+        "bundles" => 5,
+        "oplog" => 3,
+        "registration" | "roles" => 2,
+        _ => 1,
+    }
+}
+
+/// Run every `parts(area)`th script under `area`, in path order, from script `part`, and fail
+/// naming each difference.
+fn run_part(area: &str, part: usize) {
+    let dir = root().join(area);
+    let selection = runner::select(&corpus(), &dir).part(part, parts(area));
+    let scripts = selection.cases().len();
+    assert!(
+        scripts > 0,
+        "part {part} of {} holds no script",
+        dir.display()
+    );
+    let options = Options::new(Sides::Engine, WORKERS);
+    let passed = runner::passes_selected(selection, &options).unwrap_or_else(|out| panic!("{out}"));
+    assert_eq!(scripts, passed, "part {part} of {}", dir.display());
 }
 
 #[test]
-fn bundles() {
-    run(&root().join("bundles"));
+fn oplog_0() {
+    run_part("oplog", 0);
 }
 
 #[test]
-fn roles() {
-    run(&root().join("roles"));
+fn oplog_1() {
+    run_part("oplog", 1);
+}
+
+#[test]
+fn oplog_2() {
+    run_part("oplog", 2);
+}
+
+#[test]
+fn bundles_0() {
+    run_part("bundles", 0);
+}
+
+#[test]
+fn bundles_1() {
+    run_part("bundles", 1);
+}
+
+#[test]
+fn bundles_2() {
+    run_part("bundles", 2);
+}
+
+#[test]
+fn bundles_3() {
+    run_part("bundles", 3);
+}
+
+#[test]
+fn bundles_4() {
+    run_part("bundles", 4);
+}
+
+#[test]
+fn roles_0() {
+    run_part("roles", 0);
+}
+
+#[test]
+fn roles_1() {
+    run_part("roles", 1);
 }
 
 #[test]
@@ -68,8 +129,13 @@ fn registered() {
 }
 
 #[test]
-fn registration() {
-    run(&root().join("registration"));
+fn registration_0() {
+    run_part("registration", 0);
+}
+
+#[test]
+fn registration_1() {
+    run_part("registration", 1);
 }
 
 #[test]
@@ -114,16 +180,27 @@ fn every_area_has_its_test_holding_its_slots() {
             continue;
         }
         areas += 1;
-        let test = format!("fn {name}() {{\n    run(&root().join(\"{name}\"));");
-        assert!(source.contains(&test), "scripts/{name} has no test");
-        let filter = format!("test(=scripts::{name})");
-        let slots = format!("threads-required = {WORKERS}\n");
-        assert!(
-            blocks
-                .iter()
-                .any(|b| b.contains(&filter) && b.contains(&slots)),
-            "no override in .config/nextest.toml gives `{filter}` {WORKERS} slots"
-        );
+        let tests: Vec<(String, String)> = match parts(name) {
+            1 => vec![(name.to_owned(), format!("run(&root().join(\"{name}\"));"))],
+            n => (0..n)
+                .map(|k| (format!("{name}_{k}"), format!("run_part(\"{name}\", {k});")))
+                .collect(),
+        };
+        for (test, body) in tests {
+            let text = format!("fn {test}() {{\n    {body}");
+            assert!(
+                source.contains(&text),
+                "scripts/{name} has no test `{test}`"
+            );
+            let filter = format!("test(=scripts::{test})");
+            let slots = format!("threads-required = {WORKERS}\n");
+            assert!(
+                blocks
+                    .iter()
+                    .any(|b| b.contains(&filter) && b.contains(&slots)),
+                "no override in .config/nextest.toml gives `{filter}` {WORKERS} slots"
+            );
+        }
     }
     assert!(areas > 0, "no area under {}", root().display());
 }

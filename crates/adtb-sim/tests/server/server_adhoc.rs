@@ -2028,12 +2028,22 @@ fn a_list_of_more_terms_than_the_base_spend_is_planned() {
 
 #[test]
 fn a_list_just_under_the_permission_step_limit_is_checked() {
-    let list = |n: usize| format!("[{}]", vec!["1 + 1"; n].join(", "));
+    scenario(814, |rt, db| {
+        let at = send(&rt, &db, "reader", &sums(STEPS_THAT_CHECK)).map(drop);
+        assert_eq!(STATEMENT_LIMIT, format!("{at:?}"));
+    });
+}
+
+#[test]
+fn a_list_one_step_past_the_permission_step_limit_is_refused() {
     let refusal = "the text asks more of the permission check than it allows";
     scenario(814, |rt, db| {
-        let at = send(&rt, &db, "reader", &list(STEPS_THAT_CHECK)).map(drop);
-        assert_eq!(STATEMENT_LIMIT, format!("{at:?}"));
-        let past = send(&rt, &db, "reader", &list(STEPS_THAT_CHECK + 1)).map(drop);
+        let past = send(&rt, &db, "reader", &sums(STEPS_THAT_CHECK + 1)).map(drop);
         assert_eq!(answer_of(refusal), format!("{past:?}"));
     });
+}
+
+/// Returns the text of a list of `n` sums `1 + 1`.
+fn sums(n: usize) -> String {
+    format!("[{}]", vec!["1 + 1"; n].join(", "))
 }
