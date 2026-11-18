@@ -1,6 +1,7 @@
 //! Hold the file, pages and log: the pager, allocation, recovery, backup, dump and quarantine.
 
 mod alloc;
+mod appending;
 mod archive;
 mod backup;
 mod block;
@@ -59,6 +60,8 @@ mod in_session_tests;
 mod incarnation_tests;
 #[cfg(test)]
 mod lost_bitmap_tests;
+#[cfg(test)]
+mod mapping_race_tests;
 #[cfg(test)]
 mod open_damage_tests;
 #[cfg(test)]

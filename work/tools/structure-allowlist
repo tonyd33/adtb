@@ -347,7 +347,6 @@ pub_fields test 6 crates/adtb/src/test_world/grants.rs
 crash_allows test 1 crates/adtb/src/storage/pager_tests.rs
 crash_allows prod 2 crates/adtb-harness/src/crash.rs
 index_marks prod 1 crates/adtb/src/catalog/structures.rs
-mark_setters prod 1 crates/adtb/src/storage/damage_log.rs
 mark_setters prod 4 crates/adtb/src/storage/quarantine.rs
 marked_readers prod 2 crates/adtb/src/api/mod.rs
 marked_readers prod 1 crates/adtb/src/api/registered/mod.rs

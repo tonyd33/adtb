@@ -436,15 +436,19 @@ fn a_record_superseded_after_its_mapping_begins_maps_nothing_and_its_successor_m
 }
 
 #[test]
-fn only_a_change_of_damage_or_incarnation_supersedes_a_record() {
+fn only_a_change_of_damage_incarnation_or_retirement_supersedes_a_record() {
     let mut log = log();
     let mut e = recording(&mut log);
     refuse(&mut e, &mut log, P, Damage::Checksum);
     let begun = e.begin_mapping(true);
     refuse(&mut e, &mut log, P, Damage::Checksum);
-    e.retire([P]);
     assert_eq!(vec![P], current(&e, &begun), "the same damage again");
+    e.retire([P]);
+    assert_eq!(Vec::<Pid>::new(), current(&e, &begun), "retired");
+    let begun = e.begin_mapping(true);
     e.unretire(&[P]);
+    assert_eq!(Vec::<Pid>::new(), current(&e, &begun), "unretired");
+    let begun = e.begin_mapping(true);
     e.unrefuse(&refusal_for_test(P));
     refuse(&mut e, &mut log, P, STALE);
     e.unrefuse(&refusal_for_test(P));

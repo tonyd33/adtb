@@ -1017,12 +1017,17 @@ Opening a file under that mark, postconditions:
   that verifies.
 
 Quarantine is a mark the storage layer sets on one heap, one index or
-the whole database, and keeps until the object is repaired:
+the whole database, and keeps until the object is repaired. The mapper is
+the only writer that sets a mark; every call below holds no page latch:
 
 ```text
-pager.quarantine(Quarantine::Heap(id) | Index(id) | Database) -> Result<(), PageError>
-                                                  // caller holds no page latch
-pager.release(object) -> Result<(), PageError>    // once repaired
+pager.map_damage(holders, order) -> BTreeMap<Quarantine, MarkFailure>
+                                                  // marks of the unmapped records
+pager.map_committing(holders, ordered) -> BTreeMap<Quarantine, MarkFailure>
+                                                  // the same, for a commit
+pager.map_fault(fault, holder, order)
+    -> Result<BTreeMap<Quarantine, Result<(), MarkFailure>>, Unheld>
+                                                  // marks of a fault in hand
 pager.replace_contents(page, from, Option<object>) -> Result<(), PageError>
                                                   // page takes from's contents, from is freed
                                                   // and any object's mark goes, in one batch
@@ -1040,11 +1045,11 @@ finding; a full list is a finding of the whole file. A settled status
 page is reported and marks nothing. A mark or release is a logged change of that page,
 durable when the call returns, so the marks survive a crash and a
 restart and are read back at open. A heap or index stays quarantined
-across restarts until `release`. A marks page that fails verification
-at open quarantines the database, and `quarantine` and `release` then
-fail with its damage.
+across restarts until a repair removes its mark. A marks page that fails
+verification at open quarantines the database, and every mark then fails
+with its damage.
 
-`quarantine` of an object already marked writes nothing, and every caller
+Marking an object already marked writes nothing, and every mapper
 returns with the mark durable, also while the open holds a mark for that
 open only. A mark held so is never written. A marks page the open read
 with no check of its LSN (§10.3) is never written either: every mark of
@@ -1060,10 +1065,11 @@ open fails the open and marks nothing.
 The marks of damaged pages are derived from the damage records (§6). One
 mapper takes each record not yet mapped this open, maps its page to the
 object holding it and marks that object; a record counts as mapped only once
-its marks are set. A record whose damage or incarnation changes before its
-walks end, such as a status page those walks settle, is no longer damage: it
-sets no mark and is not mapped, and the record that replaced it maps on its
-own. Which records are mapped is memory state, empty at every
+its marks are set. A record whose damage, incarnation or retirement changes
+before its marks are set, such as a status page its walks settle, a page
+another thread frees or overwrites, or a page of a tree a swap retires, is
+superseded: it sets no mark and is not mapped, and the record that replaced it,
+or the record itself under its new holder, maps on its own. Which records are mapped is memory state, empty at every
 open, so every open maps every record again and a mark a crash lost comes
 back. The mapper runs at three points and nowhere else:
 
@@ -1125,7 +1131,10 @@ open. A page maps as follows:
   incomplete;
 - a page the allocation bitmap calls free, read before and after the walk,
   marks nothing. A page whose bitmap page is refused counts as allocated;
-- a page of a tree a swap replaced, retired until its free, marks nothing;
+- a page of a tree a swap replaced, retired until its free, marks nothing.
+  A retire or unretire changes what holds the page: a record whose page is
+  retired or unretired before its marks are set is no longer current and
+  maps again;
 - `Damage::Unreadable`, an I/O failure, marks nothing and stays a storage
   failure.
 

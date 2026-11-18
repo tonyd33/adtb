@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::runtime::Runtime;
 
-use super::evidence::{Against, Judged, file_copy};
+use super::alloc::diff;
+use super::evidence::{Against, Evidence, Judged, file_copy};
 use super::order::Ordered;
 use super::page::Verdict;
 use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
@@ -531,19 +532,57 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Fail if the page holding the marks is damaged, or was loaded at this open with no check of
     /// its LSN. The mark then holds in memory until the pager closes.
+    #[cfg(any(test, feature = "testing"))]
     pub(in crate::storage) fn quarantine(
         &self,
         object: Quarantine,
-        _: &Ordered<'_>,
+        ordered: &Ordered<'_>,
     ) -> Result<(), MarkFailure> {
-        self.change_marks(|set| {
-            set.insert(object);
-        })
-        .inspect_err(|_| {
-            self.marks().change(self.rt(), |set| {
-                set.insert(object);
-            });
-        })
+        let ((), marked) = self.quarantine_judged(ordered, |_| ((), BTreeSet::from([object])));
+        marked
+    }
+
+    /// Mark quarantined, as [`Pager::quarantine`] marks each, the objects `judge` returns from
+    /// the evidence. Returns what `judge` returns, and why the marks hold only in memory when they
+    /// do.
+    ///
+    /// Precondition: the calling thread holds no page latch.
+    ///
+    /// Postcondition: no page's damage or incarnation changes from the start of `judge` until its
+    /// marks are set in memory and their change of the marks page is logged.
+    pub(in crate::storage) fn quarantine_judged<T>(
+        &self,
+        _: &Ordered<'_>,
+        judge: impl FnOnce(&Evidence) -> (T, BTreeSet<Quarantine>),
+    ) -> (T, Result<(), MarkFailure>) {
+        let latched = self
+            .marks_page()
+            .and_then(|page| self.exclusive(page).map_err(MarkFailure::Page));
+        let mut guard = match latched {
+            Ok(guard) => guard,
+            Err(failure) => {
+                let evidence = self.evidence();
+                let (out, objects) = judge(&evidence);
+                self.marks().change(self.rt(), |set| set.extend(objects));
+                return (out, Err(failure));
+            }
+        };
+        let mut append = self.append();
+        let (out, objects) = judge(append.evidence());
+        let set = self
+            .marks()
+            .change_on_page(self.rt(), |set| set.extend(objects));
+        let mut page = guard.to_vec();
+        encode(&mut page, &set);
+        let edits = diff(&guard, &page);
+        if !edits.is_empty() {
+            append.change_page(&mut guard, edits, false);
+        }
+        drop(append);
+        let lsn = super::page::lsn(&guard);
+        drop(guard);
+        self.wait_durable(lsn);
+        (out, Ok(()))
     }
 
     /// Mark `object` quarantined as [`Pager::quarantine`] does, with no fault mapped, in the
@@ -712,25 +751,30 @@ impl<R: Runtime> Pager<R> {
         self.marks().page(self.rt())
     }
 
+    #[cfg(any(test, feature = "testing"))]
     fn change_marks(&self, f: impl FnOnce(&mut BTreeSet<Quarantine>)) -> Result<(), MarkFailure> {
-        let page = match self.marks().writable_page(self.rt()) {
-            Ok(page) => page,
-            Err(Unwritable::Unreadable(page)) => {
-                return Err(MarkFailure::Page(self.read(page).err().unwrap_or(
-                    PageError {
-                        pid: page,
-                        damage: Damage::Checksum,
-                    },
-                )));
-            }
-            Err(Unwritable::Unverified(page)) => return Err(MarkFailure::Unverified { page }),
-        };
+        let page = self.marks_page()?;
         self.change_marks_on(page, f).map_err(MarkFailure::Page)
+    }
+
+    /// Returns the page holding the marks, or why a mark holds only in memory.
+    fn marks_page(&self) -> Result<Pid, MarkFailure> {
+        match self.marks().writable_page(self.rt()) {
+            Ok(page) => Ok(page),
+            Err(Unwritable::Unreadable(page)) => Err(MarkFailure::Page(
+                self.read(page).err().unwrap_or(PageError {
+                    pid: page,
+                    damage: Damage::Checksum,
+                }),
+            )),
+            Err(Unwritable::Unverified(page)) => Err(MarkFailure::Unverified { page }),
+        }
     }
 
     /// Change the marks through `f` and write them to their page `page`, durable on return.
     ///
     /// Fail, changing nothing, if the page is refused.
+    #[cfg(any(test, feature = "testing"))]
     fn change_marks_on(
         &self,
         page: Pid,
@@ -753,6 +797,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// - A page the allocation bitmap calls free, before or after the walk, is held as free
     ///   unless a walk found it. A page whose bitmap page is refused counts as allocated.
+    /// - A page held as retired, before or after the walk, is held as retired.
     /// - A walk stopped by damage holds the page, or leaves the mapping incomplete when its
     ///   holder's damage marks nothing. One stopped by an I/O failure, or on a shape it could not
     ///   follow in all its tries, leaves the mapping incomplete.
@@ -789,8 +834,9 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns what holds the damaged page `pid` during `phase` from the walks `walk` reports
-    /// alone, `None` when the mapping is incomplete and found no holder. No allocation bitmap, damage list or page LSN map page is held
-    /// as such: a page no walk holds is free or unreached by the allocation bitmap.
+    /// alone and the pages held as retired, `None` when the mapping is incomplete and found no
+    /// holder. No allocation bitmap, damage list or page LSN map page is held as such: a page no
+    /// walk holds is free or unreached by the allocation bitmap.
     pub fn holders_walked(
         &self,
         pid: Pid,
@@ -798,6 +844,8 @@ impl<R: Runtime> Pager<R> {
         walk: impl FnOnce(&mut Holders),
     ) -> Option<BTreeSet<Holder>> {
         self.evidence().walked_one();
+        let before = self.bitmapped(pid);
+        let retired_before = self.retired().contains(&pid);
         let mut h = Holders {
             pid,
             phase,
@@ -805,13 +853,16 @@ impl<R: Runtime> Pager<R> {
             incomplete: false,
         };
         walk(&mut h);
+        if retired_before || self.retired().contains(&pid) {
+            h.held.insert(Holder::Retired);
+        }
         if !h.held.is_empty() {
             return Some(h.held);
         }
         if h.incomplete {
             return None;
         }
-        if self.bitmapped(pid) == Bitmapped::Free {
+        if before == Bitmapped::Free || self.bitmapped(pid) == Bitmapped::Free {
             return Some(BTreeSet::from([Holder::Free]));
         }
         Some(BTreeSet::from([Holder::Unreached]))

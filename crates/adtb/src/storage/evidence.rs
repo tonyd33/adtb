@@ -158,8 +158,8 @@ impl Pending {
 /// A damage record and what it quarantines, `None` when its mapping is incomplete.
 pub(super) type Mapping = (Pending, Option<BTreeSet<Quarantine>>);
 
-/// A count of the changes of any page's damage or incarnation. A record whose page changed past
-/// the epoch its mapping began at is superseded.
+/// A count of the changes of any page's damage, incarnation or retirement. A record whose page
+/// changed past the epoch its mapping began at is superseded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Epoch(u64);
 
@@ -367,7 +367,7 @@ impl Evidence {
 
     /// Apply `f` to the evidence of `pid`, drop its mapping once it has no damage and the entry
     /// once it says nothing, and set the unmapped count and flag. An entry made here takes the next
-    /// generation. A change of the damage or the incarnation takes the next epoch.
+    /// generation. A change of the damage, the incarnation or the retirement takes the next epoch.
     fn update<T>(&mut self, pid: Pid, f: impl FnOnce(&mut PageEvidence) -> T) -> T {
         let generation = &mut self.generation;
         let p = self.pages.entry(pid).or_insert_with(|| {
@@ -375,9 +375,9 @@ impl Evidence {
             PageEvidence::new(Incarnation::Live(*generation))
         });
         let before = p.unmapped(true).is_some();
-        let was = (p.damage(), p.incarnation);
+        let was = (p.damage(), p.incarnation, p.retired);
         let out = f(p);
-        if (p.damage(), p.incarnation) != was {
+        if (p.damage(), p.incarnation, p.retired) != was {
             self.epoch.0 += 1;
             p.changed = self.epoch;
         }
@@ -707,8 +707,8 @@ impl Evidence {
         }
     }
 
-    /// Returns whether the record `pending` names is still current: its damage and incarnation
-    /// unchanged since `begun`, the epoch its mapping began at.
+    /// Returns whether the record `pending` names is still current: its damage, incarnation and
+    /// retirement unchanged since `begun`, the epoch its mapping began at.
     fn is_current(&self, begun: Epoch, pending: &Pending) -> bool {
         let p = self.pages.get(&pending.pid);
         p.is_some_and(|p| p.changed <= begun && p.incarnation == pending.of)

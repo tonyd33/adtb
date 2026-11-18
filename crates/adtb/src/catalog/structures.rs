@@ -152,7 +152,6 @@ impl Structures {
         pid: Pid,
         phase: Phase,
     ) -> Option<BTreeSet<Holder>> {
-        let retired = pager.retired();
         let large = self.large();
         pager.holders_meeting(pid, phase, |h| {
             let clog = commit_log_pages(&txns.commit_log());
@@ -178,7 +177,6 @@ impl Structures {
             for (holder, tree) in &self.trees {
                 h.walk(*holder, || tree.walk(pager));
             }
-            h.walk(Holder::Retired, || Ok(retired.clone()));
         })
     }
 

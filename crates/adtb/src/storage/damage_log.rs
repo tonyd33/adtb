@@ -8,7 +8,7 @@ use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem};
 use super::error::{Damage, Shape};
-use super::evidence::{Begun, Mapping, Met, meet_recorded};
+use super::evidence::{Begun, Evidence, Mapping, Met, meet_recorded};
 use super::order::{Opening, Ordered, Orders};
 use super::page::{self, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
@@ -152,8 +152,8 @@ impl<R: Runtime> Pager<R> {
     ///
     /// - A record is mapped only once the marks of its objects are set, so a caller that finds it
     ///   unmapped may find those marks unset.
-    /// - A record whose damage or incarnation changes before its walk ends sets no mark and is not
-    ///   mapped; the record that replaced it is unmapped, for the next mapping.
+    /// - A record whose damage, incarnation or retirement changes before its marks are set sets no
+    ///   mark and is not mapped; the record that replaced it is unmapped, for the next mapping.
     pub fn map_damage(
         &self,
         holders: impl FnMut(Pid) -> Option<BTreeSet<Holder>>,
@@ -204,7 +204,11 @@ impl<R: Runtime> Pager<R> {
         if marks.iter().any(|m| m.open_only()) {
             return Err(Unheld);
         }
-        Ok(self.set_marks(&marks, order))
+        if !marks.iter().any(|m| m.durable().is_some()) {
+            return Ok(BTreeMap::new());
+        }
+        let ((), objects, marked) = self.set_judged(order, |_| ((), marks));
+        Ok(objects.into_iter().map(|o| (o, marked)).collect())
     }
 
     /// Set what `fault` on a page of `holder` marks during `opening`, holding a mark for this open
@@ -216,7 +220,13 @@ impl<R: Runtime> Pager<R> {
         opening: &Opening,
     ) -> BTreeMap<Quarantine, Result<(), MarkFailure>> {
         let marks = policy::marks(fault, [holder], Phase::Opening);
-        let out = self.set_marks(&marks, opening);
+        let out = match marks.iter().any(|m| m.durable().is_some()) {
+            true => {
+                let ((), objects, marked) = self.set_judged(opening, |_| ((), marks.clone()));
+                objects.into_iter().map(|o| (o, marked)).collect()
+            }
+            false => BTreeMap::new(),
+        };
         let held = marks.iter().filter(|m| m.open_only());
         for object in held.filter_map(|m| m.held()) {
             self.hold_quarantine(opening, object);
@@ -232,30 +242,31 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    /// Set the durable marks of `marks` in the order of [`Quarantine`], which puts the database
-    /// first, under one hold of the order `order` gives. Returns each object marked, with whether its mark failed.
-    fn set_marks(
+    /// Set the durable marks of the marks `judge` returns from the evidence, in one change of the
+    /// marks page under one hold of the order `order` gives, as [`Pager::quarantine_judged`] does.
+    /// Returns what `judge` returns, the objects marked, and why their marks hold only in memory
+    /// when they do.
+    fn set_judged<T>(
         &self,
-        marks: &BTreeSet<Mark>,
         order: &impl Orders,
-    ) -> BTreeMap<Quarantine, Result<(), MarkFailure>> {
-        let objects: BTreeSet<Quarantine> = marks.iter().filter_map(|m| m.durable()).collect();
-        if objects.is_empty() {
-            return BTreeMap::new();
-        }
-        order.ordered(|ordered| {
-            objects
-                .into_iter()
-                .map(|o| (o, self.quarantine(o, &ordered)))
-                .collect()
-        })
+        judge: impl FnOnce(&Evidence) -> (T, BTreeSet<Mark>),
+    ) -> (T, BTreeSet<Quarantine>, Result<(), MarkFailure>) {
+        let mut objects = BTreeSet::new();
+        let (out, marked) = order.ordered(|ordered| {
+            self.quarantine_judged(&ordered, |evidence| {
+                let (out, marks) = judge(evidence);
+                objects = marks.iter().filter_map(|m| m.durable()).collect();
+                (out, objects.clone())
+            })
+        });
+        (out, objects, marked)
     }
 
     /// Find the holders of each of `pages` with `holders` and map the page to what they mark
     /// during `phase`; when `full`, map every page as a full list does. Leave unmapped a record
     /// whose page marks the database for an open only, or one of whose marks failed, and a full
-    /// list whose mark failed. Set the marks of each record still current since `begun`, in the
-    /// order `order` gives. Returns each object whose mark failed, with why.
+    /// list whose mark failed. Set the marks of each record still current since `begun` when they
+    /// are set, in the order `order` gives. Returns each object whose mark failed, with why.
     fn map_records(
         &self,
         (pages, full, begun): Begun,
@@ -281,20 +292,29 @@ impl<R: Runtime> Pager<R> {
             }
             mapped.push((p, objects));
         }
-        let mapped = self.evidence().current(begun, mapped);
-        let mut set: BTreeSet<Mark> = mapped
-            .iter()
-            .filter_map(|m| marks.remove(&m.0.pid()))
-            .flatten()
-            .collect();
-        if full {
-            set.extend(overflow.iter().copied());
-        }
-        let failed: BTreeMap<Quarantine, MarkFailure> = self
-            .set_marks(&set, order)
-            .into_iter()
-            .filter_map(|(o, marked)| marked.err().map(|e| (o, e)))
-            .collect();
+        let full_marks = full.then_some(&overflow).into_iter().flatten();
+        let durable = marks.values().flatten().chain(full_marks);
+        let any_durable = durable.into_iter().any(|m| m.durable().is_some());
+        let judge = |evidence: &Evidence| {
+            let mapped = evidence.current(begun, mapped);
+            let mut set: BTreeSet<Mark> = mapped
+                .iter()
+                .filter_map(|m| marks.remove(&m.0.pid()))
+                .flatten()
+                .collect();
+            if full {
+                set.extend(overflow.iter().copied());
+            }
+            (mapped, set)
+        };
+        let (mapped, objects, marked) = match any_durable {
+            true => self.set_judged(order, judge),
+            false => (judge(&self.evidence()).0, BTreeSet::new(), Ok(())),
+        };
+        let failed: BTreeMap<Quarantine, MarkFailure> = match marked {
+            Ok(()) => BTreeMap::new(),
+            Err(e) => objects.into_iter().map(|o| (o, e)).collect(),
+        };
         let (unwritten, mapped) = mapped.into_iter().partition(|(_, objects)| {
             objects
                 .as_ref()

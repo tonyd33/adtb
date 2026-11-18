@@ -67,7 +67,7 @@ pub struct PageError {
 
 /// What the pool knows of its pages beyond their memory and state words.
 #[derive(Debug)]
-struct Meta {
+pub(super) struct Meta {
     table: DirtyTable,
     evidence: Evidence,
     /// Resident pages and pages being read in, in clock order.
@@ -133,36 +133,9 @@ impl DerefMut for LogGuard<'_> {
     }
 }
 
-mod witness {
-    use super::{Append, Appended, Holding, Meta, Pager, Runtime};
-
-    /// The witness of an [`Append`]: the log and meta locks held together.
-    pub(in crate::storage) struct Appending(());
-
-    impl<'a, R: Runtime> Append<'a, R> {
-        pub(super) fn new(
-            pager: &'a Pager<R>,
-            log: Holding<'a, Appended>,
-            meta: Holding<'a, Meta>,
-        ) -> Self {
-            Append {
-                pager,
-                log,
-                meta,
-                witness: Appending(()),
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(in crate::storage) fn appending_for_test() -> Appending {
-        Appending(())
-    }
-}
-
-pub(super) use witness::Appending;
+pub(super) use super::appending::Appending;
 #[cfg(test)]
-pub(super) use witness::appending_for_test;
+pub(super) use super::appending::appending_for_test;
 
 /// The log and meta locks, held together: a record and its in-memory consequences are made in
 /// one hold.
@@ -178,9 +151,18 @@ pub(super) struct Append<'a, R: Runtime> {
 pub(super) type Checkpointed = (Lsn, Lsn, u64, Option<Recorded>, Option<Pinned>);
 
 impl<R: Runtime> Append<'_, R> {
+    pub(super) fn evidence(&self) -> &Evidence {
+        &self.meta.evidence
+    }
+
     /// Apply `edits` to the page under `g` and log its record: a full image starting a chain when
     /// `start`, else the record [`DirtyTable::record_kind`] chooses. Returns the record's LSN.
-    fn change_page(&mut self, g: &mut PageExclusive<'_, R>, edits: Vec<Edit>, start: bool) -> Lsn {
+    pub(super) fn change_page(
+        &mut self,
+        g: &mut PageExclusive<'_, R>,
+        edits: Vec<Edit>,
+        start: bool,
+    ) -> Lsn {
         let pid = g.pid();
         let Appended { log, map } = &mut *self.log;
         let m = &mut *self.meta;
@@ -1081,7 +1063,14 @@ impl<R: Runtime> Pager<R> {
     pub(super) fn append(&self) -> Append<'_, R> {
         let me = self.rt.current();
         let log = self.take_log(me);
-        Append::new(self, log, self.take_meta(me))
+        let meta = self.take_meta(me);
+        let witness = Appending::of(&log, &meta);
+        Append {
+            pager: self,
+            log,
+            meta,
+            witness,
+        }
     }
 
     /// Returns the page LSN map's root, `None` while the file has no map.
