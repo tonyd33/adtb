@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-18
-status: open
+status: resolved
+closed: 2026-11-18
 kind: feature
 priority: 24
 tags: [tooling]
@@ -20,3 +21,7 @@ Ruled with the maintainer in session, 2026-11-18 (work/briefs/tql-session-2026-1
 ## 2026-11-18: gate rows landed
 
 `refactor: gate quarantine marks and api aborts by type, clippy and TQL, and delete structure-check`: opaque Mark, pub(super) Marks setters, clippy disallows Engine::abort; lint/holder-builders.tql, marked-readers.tql, api-aborts.tql zero rows (known misses in work/briefs/receipt-gate-rows-r1.md); structure-check, its allowlist and test and crates/adtb-structure deleted. Open: refusal rule into lint and tree-sitter-check into xtask (brief-public-checks-r1.md).
+
+## 2026-11-18: public checks landed
+
+`refactor: move the refusal rule into TQL lint and the grammar check into xtask`: lint/refusal.tql is a zero row over crates/ with a fixture test; tree-sitter generate, compare and test is an xtask check stage. refusal-check, its allowlist and tree-sitter-check deleted. The public checks now call nothing under work/tools; remaining mentions are lead-tool instructions. Every rule of the old house-check, structure-check and refusal-check now runs in `cargo xtask lint` or the type system.
