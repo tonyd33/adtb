@@ -13,11 +13,11 @@ Use Linux with [Nix](https://nixos.org/download/) and
 devenv shell
 jj git init --colocate
 cargo build --workspace
-work/tools/suite
+cargo xtask test
 ```
 
 If you cloned with `jj git clone`, skip `jj git init --colocate`.
-Run `check` in the dev shell for the full checks.
+Run `cargo xtask check` in the dev shell for the full checks.
 
 See [development setup](docs/development.md) for prerequisites, optional
 direnv and editor integration, disk-space settings, and moving work

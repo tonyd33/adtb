@@ -137,21 +137,21 @@ denies, among others, `type_complexity` (name a `type` alias),
 children is `foo/mod.rs`, never `foo.rs` beside `foo/`).
 
 During implementation, run targeted checks.
-For a code track, the brief names one owner for the authoritative `check`
+For a code track, the brief names one owner for the authoritative `cargo xtask check`
 on the final reviewed tree. Run it before reporting only if you own it;
 otherwise report targeted results and the remaining owner.
 From your workspace root in the dev shell:
 
 ```sh
-CARGO_TARGET_DIR="$PWD/target" work/tools/check main..@
+CARGO_TARGET_DIR="$PWD/target" cargo xtask check main..@
 ```
 
 The REVSET (here `main..@`) adds `structure-check --against` the parent of its
-root and `house-check -r REVSET` at the end; without it `check` runs every
+root and `house-check -r REVSET` at the end; without it `cargo xtask check` runs every
 other part.
 
 The target directory keeps the build in your workspace.
-`check` owns root clippy, formatting and the suite; the Loom models, Miri,
+`cargo xtask check` owns root clippy, formatting and the tests; the Loom models, Miri,
 dependency policy, source-size limits, the documentation build and link check,
 tree-sitter and every tool test.
 Report each failed or unfinished check. The lead compares the landed tree
@@ -170,7 +170,7 @@ inspecting that log, and return that status. For example, in a subshell:
 ```sh
 (
   mkdir -p target || exit 1
-  if CARGO_TARGET_DIR="$PWD/target" work/tools/check main..@ >target/check.log 2>&1; then
+  if CARGO_TARGET_DIR="$PWD/target" cargo xtask check main..@ >target/check.log 2>&1; then
     check_status=0
   else
     check_status=$?
@@ -180,19 +180,19 @@ inspecting that log, and return that status. For example, in a subshell:
 )
 ```
 
-`work/tools/suite` builds the
-tests and runs them in a scope whose memory the kernel limits, as `check` runs
+`cargo xtask test` builds the
+tests and runs them in a scope whose memory the kernel limits, as `cargo xtask check` runs
 in one; a test the limit kills shows as SIGKILL. Other runs on the machine
 only slow it.
 It prints failures, timeouts, the summary and the output path
-(`target/suite.txt`, ending in `suite: exit N`). Use the harness's
+(`target/test.txt`, ending in `xtask test: exit status: N`). Use the harness's
 asynchronous execution when available, collect the final exit status and
 inspect the output. If it returns a session handle, wait on that handle;
 if it provides completion notifications, use them. Avoid busy polling.
 
 Before repeating a command, preserve its canonical output artifacts at unique
 stage paths as well as stdout/stderr. Some tools keep failure details in files
-that the next invocation overwrites. For suite, preserve target/suite.txt before
+that the next invocation overwrites. For `cargo xtask test`, preserve target/test.txt before
 running the next case.
 
 For a timeout, report the test, suite conditions and any isolated outcome.
@@ -255,20 +255,20 @@ personal data and machine details out of commits and tickets. Use relative paths
 ## Saving time
 
 Use targeted suites during each round; reserve the full check for the final
-reviewed tree and its assigned owner. A `--workspace` run or `work/tools/suite`
+reviewed tree and its assigned owner. A `--workspace` run or `cargo xtask test`
 while iterating is the largest avoidable cost measured across agents. Start from
 the files your brief names; broad reading is the next
 largest. A performance track reports a before and after benchmark of the workload its brief names.
-Repeat checks only for changed inputs, failures or unresolved concerns. Run `work/tools/suite`
+Repeat checks only for changed inputs, failures or unresolved concerns. Run `cargo xtask test`
 in the background: a full run outlasts a harness's foreground timeout. A bug fix comes with a regression test: write it before the fix and watch it fail, as part of
 the work, not as a separate step. Do not rebuild to break code on purpose: each rebuild of
-adtb-sim costs two minutes. Run `house-check` and `size-check` before `check`; when a
-`check` fails only in `house-check`, rerun `house-check`, not `check`. The size in a brief is an estimate; say in the report when the change grew well past it.
+adtb-sim costs two minutes. Run `house-check` before `cargo xtask check`; when a
+`cargo xtask check` fails only in `house-check`, rerun `house-check`, not `cargo xtask check`. The size in a brief is an estimate; say in the report when the change grew well past it.
 
-The final run of a round is one `check REVSET` plus the runs it does not hold: a `--profile deep`
-search, `work/tools/conf`, a reopen script. `check` already runs fmt, clippy,
-the suite, size-check, house-check over REVSET and every other part, so do not also run
-`work/tools/suite`, `-p adtb-sim`, `-p adtb-lang`, the damage profile or a workspace clippy beside
+The final run of a round is one `cargo xtask check REVSET` plus the runs it does not hold: a
+`--profile deep` search, `work/tools/conf`, a reopen script. `cargo xtask check` already runs fmt,
+clippy, the tests, the size limit, house-check over REVSET and every other part, so do not also run
+`cargo xtask test`, `-p adtb-sim`, `-p adtb-lang`, the damage profile or a workspace clippy beside
 it: each is a subset run twice. Run fmt, house-check and clippy first, alone, so they fail in
 seconds. A round after a review with no blocker reruns fmt, clippy, house-check and the tests of the
 files it touched, not the final run; the lead's check on main covers the rest.
@@ -293,5 +293,5 @@ Before reporting, stop every process you started and confirm none is left in you
 
 Per harness:
 
-- Claude Code: run `work/tools/suite`, `check` and any command longer than a minute with `run_in_background`, and wait for its completion notification. Do not tail, grep or sleep on its log meanwhile. Foreground wait loops were the largest waste measured in Claude Code subagents.
+- Claude Code: run `cargo xtask test`, `cargo xtask check` and any command longer than a minute with `run_in_background`, and wait for its completion notification. Do not tail, grep or sleep on its log meanwhile. Foreground wait loops were the largest waste measured in Claude Code subagents.
 - Codex: a long `exec` returns a session. Wait on it with long `write_stdin` waits, not repeated short ones; short polls were 11% of Codex subagent time. Stay within commands the sandbox allows without escalation, since each escalation starts a guardian review. Read the files your brief names before searching: search and reading were 13% of Codex subagent time.

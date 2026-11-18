@@ -19,7 +19,7 @@ devenv shell
 jj git init --colocate
 jj status
 cargo build --workspace
-work/tools/suite
+cargo xtask test
 ```
 
 Alternatively, install jj on the host and use `jj git clone REPOSITORY_URL
@@ -51,14 +51,19 @@ Run commands from the repository root:
 ```sh
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
-work/tools/suite --profile quick
-work/tools/check
+cargo xtask test --profile quick
+cargo xtask check
 ```
 
-`work/tools/check` runs the full workspace checks, dependency
+`cargo xtask check` runs the full workspace checks, dependency
 policy and source-size limits, in a systemd user scope whose memory the kernel
-limits. `work/tools/suite` runs the tests in a scope of its own and saves
-output to `target/suite.txt`.
+limits. `cargo xtask test` runs the tests in a scope of its own and saves
+output to `target/test.txt`. To run only the Loom models or Miri:
+
+```sh
+RUSTFLAGS='--cfg adtb_loom' CARGO_TARGET_DIR=target/loom cargo nextest run -p adtb-sys --lib pages::loom_tests::
+PATH=$ADTB_NIGHTLY_BIN:$PATH cargo miri test -p adtb-sys --lib
+```
 
 A test that needs io_uring fails on a host that refuses it; set `ADTB_URING=absent` there to skip those tests with a note on stderr.
 
@@ -111,7 +116,7 @@ serve` rebuilds on an edit and watches the highlighting asset. `mdbook build` an
 `mdbook serve --hostname 127.0.0.1` also work directly from the repository root.
 After `mdbook build`, `lychee --offline --include-fragments --root-dir target/docs-site/html
 target/docs-site/html` checks every internal link and fragment. The suite compares the highlighter keywords with the
-lexer table. `work/tools/check` runs both. Hosting is a separate task.
+lexer table. `cargo xtask check` runs both. Hosting is a separate task.
 
 ## Optional editor integration
 

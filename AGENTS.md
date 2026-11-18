@@ -49,11 +49,12 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `cargo build --workspace`: build the workspace.
 - `cargo clippy --workspace --all-targets -- -D warnings`: lint Rust.
 - `cargo fmt --all --check`: check Rust formatting.
-- `work/tools/suite [ARGS]`: run tests under a memory limit.
-- `work/tools/check [REVSET]`: run every check, including the Loom models,
+- `cargo xtask test [ARGS]`: run the tests under a memory limit; ARGS go to
+  `cargo nextest run`.
+- `cargo xtask check [REVSET]`: run every check, including the Loom models,
   Miri, dependency policy, source-size limits, the documentation build with
-  its link check and every `work/tools/*-test`. With REVSET it also runs
-  `structure-check --against` and `house-check -r REVSET`.
+  its link check and `work/tools`' checks and their tests. With REVSET it
+  also runs `structure-check --against` and `house-check -r REVSET`.
 
 Use targeted checks while working and run the checks appropriate to the
 change before reporting completion.
@@ -73,13 +74,13 @@ devenv shell puts it on PATH.
 ## Tools
 
 Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
-root (devenv puts only `miri` on PATH):
+root, beside the `xtask` crate's two commands:
 
-- `suite [ARGS]`: the full nextest run, output in `target/suite.txt`; prints failures, the
-  summary and the run's peak memory. `suite` and `check` run under `limited`: a systemd user scope
-  of at most 14G per run, inside `adtb.slice`, which every run shares, throttled past 60% of the
-  machine's memory and capped at 75%, no swap. Past a limit the kernel kills a process, which
-  nextest reports as SIGKILL, and the run goes on. A typed
+- `cargo xtask test [ARGS]`: the full nextest run, output in `target/test.txt`; prints failures,
+  the summary and the run's peak memory. `cargo xtask test` and `cargo xtask check` each run in a
+  systemd user scope of at most 14G, inside `adtb.slice`, which every run shares, throttled past
+  60% of the machine's memory and capped at 75%, no swap. Past a limit the kernel kills a process,
+  which nextest reports as SIGKILL, and the run goes on. A typed
   `cargo nextest run` or `cargo test`, the other tools and CI, which has no systemd user manager,
   run without this limit. A test is reported slow at 20 s and killed as hung at 300 s; no test
   may depend on the machine being idle. Never set `RUST_MIN_STACK` where cargo or rustc can see it: it reached rustc and crashed it. Set it only on a spawned test child.
@@ -98,19 +99,17 @@ root (devenv puts only `miri` on PATH):
   difference from the checked in `src/`, run its corpus, and compare it with `adtb-lang` over the
   spec and conformance texts and the front end fuzzer's programs.
 - `house-check [DIR [-r REVSET]]`: the added lines of `jj diff` that break a comment rule.
-- `loom [ARGS]`: clippy over adtb-sys under `--cfg adtb_loom`, then the
-  Loom models of the page state word, its unit tests built with that
-  cfg into `target/loom`; ARGS go to nextest.
-- `miri [ARGS]`: adtb-sys's unit tests under Miri, ARGS to the test
-  binary. The dev shell's `miri` puts a nightly toolchain first on
-  PATH; the stable one stays the default. `check` runs both, about
-  35 s together from cold and 11 s warm.
+- `cargo xtask check` runs clippy over adtb-sys under `--cfg adtb_loom`, then the Loom models
+  of the page state word, its unit tests built with that cfg into `target/loom`, then adtb-sys's
+  unit tests under Miri with the nightly toolchain in `ADTB_NIGHTLY_BIN`, which the dev shell
+  sets; the stable one stays the default. The two take about 35 s together from cold and 11 s
+  warm.
 - `quality-metrics.sh [REVSET]`: review metrics for the changes in
   REVSET, by default `reviewed..@`. `quality-metrics.sh --code-commits
   [REVSET]` lists the commits of REVSET, by default `reviewed..main`, that
   change a path outside docs/, work/ and Markdown files; the quality
   cadence counts these.
-- `size-check.sh`: fail when a non-test source passes the line limit.
+- `cargo xtask check` fails when a non-test source under `crates/` passes 1500 lines.
 - `structure-check [DIR]`: fail when a file has more sites than `structure-allowlist` allows of
   a counted pattern, or fewer: the counts only fall. The rows: struct fields visible past their
   module (`crate_fields`, `pub_fields`, counted by parsing with `crates/adtb-structure`),
@@ -118,7 +117,7 @@ root (devenv puts only `miri` on PATH):
   (`clippy.toml` rejects `storage::page::owner`, `pages::Exclusive::write`,
   `PageMemory::lock_exclusive`, `PageMemory::try_lock_exclusive`, `Optimistic::upgrade` and the
   `regex` constructors outside `adtb_lang::pattern` by identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
-  above the allowlist at REV; `check REVSET` runs it against the parent of REVSET's root, so a rise is
+  above the allowlist at REV; `cargo xtask check REVSET` runs it against the parent of REVSET's root, so a rise is
   the lead's act on main. `structure-check-test` proves it on scratch files.
 - `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
   `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of

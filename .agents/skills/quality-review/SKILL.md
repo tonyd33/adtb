@@ -109,7 +109,7 @@ design file of a subsystem the diff changes, read the section for the
 changed call, and check the code honours its preconditions,
 postconditions and invariants.
 
-Skip what clippy, rustfmt, `size-check` or `structure-check` already enforce.
+Skip what clippy, rustfmt, the size limit of `cargo xtask check` or `structure-check` already enforce.
 
 ## Filing
 

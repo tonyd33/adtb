@@ -43,11 +43,9 @@ in
     tix
   ];
 
-  scripts.miri.exec = ''
-    PATH="${nightly}/bin:$PATH" "$DEVENV_ROOT/work/tools/miri" "$@"
-  '';
+  env.ADTB_NIGHTLY_BIN = "${nightly}/bin";
 
-  enterTest = "$DEVENV_ROOT/work/tools/check";
+  enterTest = "cargo xtask check";
 
   # https://devenv.sh/languages/
   languages.rust = {

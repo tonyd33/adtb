@@ -673,7 +673,7 @@ The simulated scheduler interleaves threads at yield points but runs on
 the host's memory ordering, so weak-memory reorderings are tested
 separately. Loom explores the interleavings of small models of the page
 state word under the C11 model: `adtb-sys`'s unit tests built with
-`--cfg adtb_loom`, which `loom` in the dev shell lints and runs. Each
+`--cfg adtb_loom`, which `cargo xtask check` lints and runs. Each
 model is two threads on one page: latches against latches, optimistic
 reads and upgrades against writers, and the replacement clock against
 both. Plain reads of page bytes under a latch are checked through a

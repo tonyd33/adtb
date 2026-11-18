@@ -14,6 +14,7 @@ let
           ../Cargo.toml
           ../Cargo.lock
           ../crates
+          ../xtask
         ]
         ++ files
       );

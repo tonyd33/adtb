@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+clap.workspace = true
+libc = "0.2.186"
+serde_json = "=1.0.154"
+
+[dev-dependencies]
+adtb-heap-cap.workspace = true
+
+[lints]
+workspace = true
