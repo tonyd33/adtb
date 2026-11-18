@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::faults::{self, Step};
 use crate::key::Tid;
 use crate::mvcc::{StatusError, Xid};
 use crate::runtime::Runtime;
@@ -23,9 +24,69 @@ const COUNT: usize = 16;
 const ROLE: usize = 20;
 const BYTES: usize = 24;
 
-/// The store pages one update of [`LargeStore::retain_apart`] latches, beside the two heap pages
+/// The store pages one update of [`Retained::retain_apart`] latches, beside the two heap pages
 /// an update or a retag holds.
 const COUNTED_PAGES: usize = LATCHES_PER_THREAD - 2;
+
+/// The counts [`Retained::retain_apart`] raised ahead of the update that writes the versions
+/// they count. Dropped before [`Retained::written`], it counts each one off again, each in an
+/// update of its own; a release that fails there leaves its head counting one more version
+/// than point at it.
+///
+/// Precondition: the thread holds no heap or store latch when it is dropped.
+#[must_use = "a count raised for a version never written leaves its value unfreed"]
+pub(super) struct Retained<'p, R: Runtime> {
+    pager: &'p Pager<R>,
+    store: LargeStore,
+    counted: Vec<Pointer>,
+}
+
+impl<R: Runtime> Retained<'_, R> {
+    /// Count one more version pointing at each of `pointers`, in updates of their own, each
+    /// latching at most [`COUNTED_PAGES`] store pages in page id order while latches up to
+    /// `floor` are held. On failure the counts already raised stay held here.
+    ///
+    /// Precondition: the versions pointing at `pointers` are written by a later update.
+    pub fn retain_apart(
+        &mut self,
+        floor: Option<Rank>,
+        pointers: &[Pointer],
+    ) -> Result<(), PageError> {
+        let mut heads = pointers.to_vec();
+        heads.sort_by_key(|p| (p.first.page(), p.first.slot()));
+        let by_page: Vec<&[Pointer]> = heads
+            .chunk_by(|a, b| a.first.page() == b.first.page())
+            .collect();
+        for pages in by_page.chunks(COUNTED_PAGES) {
+            let mut write = HeapWrite::above(self.pager, floor);
+            for &p in pages.iter().copied().flatten() {
+                self.store.retain(write.stage(), self.pager, p)?;
+            }
+            if let Some(e) = faults::injected(Step::Retain) {
+                return Err(e);
+            }
+            write.commit_store(self.pager.reserve(), Above::default())?;
+            self.counted.extend(pages.iter().copied().flatten());
+        }
+        Ok(())
+    }
+
+    /// Keep the counts: the versions they count are written.
+    pub fn written(mut self) {
+        self.counted.clear();
+    }
+}
+
+impl<R: Runtime> Drop for Retained<'_, R> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        for &p in &self.counted {
+            self.store.release(self.pager, p).ok();
+        }
+    }
+}
 
 /// The row format of every store page.
 const FORMAT: u16 = 1;
@@ -456,7 +517,7 @@ impl LargeStore {
     }
 
     /// Count one more version pointing at `pointer`, in `stage`, latching its head's page.
-    pub(super) fn retain<'p, R: Runtime>(
+    fn retain<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
@@ -664,30 +725,13 @@ impl LargeStore {
         Ok(write.commit_store(pager.reserve(), above)?)
     }
 
-    /// Count one more version pointing at each of `pointers`, in updates of their own, each
-    /// latching at most [`COUNTED_PAGES`] store pages in page id order while latches up to
-    /// `floor` are held.
-    ///
-    /// Precondition: the versions pointing at `pointers` are written by a later update.
-    pub(super) fn retain_apart<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        floor: Option<Rank>,
-        pointers: &[Pointer],
-    ) -> Result<(), PageError> {
-        let mut heads = pointers.to_vec();
-        heads.sort_by_key(|p| (p.first.page(), p.first.slot()));
-        let by_page: Vec<&[Pointer]> = heads
-            .chunk_by(|a, b| a.first.page() == b.first.page())
-            .collect();
-        for pages in by_page.chunks(COUNTED_PAGES) {
-            let mut write = HeapWrite::above(pager, floor);
-            for &p in pages.iter().copied().flatten() {
-                self.retain(write.stage(), pager, p)?;
-            }
-            write.commit_store(pager.reserve(), Above::default())?;
+    /// Returns a [`Retained`] that has counted nothing yet.
+    pub(super) fn retained<R: Runtime>(self, pager: &Pager<R>) -> Retained<'_, R> {
+        Retained {
+            pager,
+            store: self,
+            counted: Vec::new(),
         }
-        Ok(())
     }
 
     /// Unmark touched page `pid` at `position` if it holds no head of count 0.

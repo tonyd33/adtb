@@ -3,9 +3,17 @@
 #[cfg(not(test))]
 use crate::storage::PageError;
 
-/// A step that may fail after the main update of its change.
+/// A step that may fail before or after the main update of its change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Step {
+    /// Count one more version pointing at large values, before the update that writes it.
+    Retain,
+    /// Clear the map bit of a heap page a change wrote.
+    ClearBit,
+    /// Set the directory entry of the heap page that took a version.
+    Reflect,
+    /// Write a change's staged heap pages in one update.
+    Write,
     /// Free every page a schema change left unreached.
     FreeLeaked,
     /// End the change in progress the catalog root records.

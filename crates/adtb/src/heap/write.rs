@@ -7,7 +7,7 @@ use crate::storage::{PageError, Pager, Pid, Reservation};
 use super::Refused;
 use super::dir::{Above, Fit};
 use super::handle::Heap;
-use super::large::LargeStore;
+use super::large::{LargeStore, Retained};
 use super::page::{HeapPage, HeapPageMut, PageCopy};
 use super::row::Pointer;
 use super::stage::Stage;
@@ -135,12 +135,13 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
     /// copy; write every staged page in one update; count one version fewer pointing at each of
     /// `release` in that store; settle the entries above; point the heap's next insert at a page
     /// found for the version. The counts and the map bits change in updates of their own. A
-    /// release or settle that fails stops none of the others; the first failure is returned.
+    /// failure before the update counts each of `retain` it counted off again. A release or
+    /// settle that fails stops none of the others; the first failure is returned.
     ///
     /// Panic if `retain` or `release` is not empty and `took` is `None`, or if a staged heap page
     /// the change wrote was not latched through [`HeapWrite::latch`].
     pub fn commit(
-        mut self,
+        self,
         took: Option<Took<'h>>,
         retain: &[Pointer],
         release: &[Pointer],
@@ -149,20 +150,11 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         let store = took.map(|took| match took {
             Took::HeapOnly(heap, _) | Took::Found(heap, _) => heap.large(),
         });
-        if !retain.is_empty() {
-            let store = store.expect("a write that counts values takes a version");
-            store.retain_apart(pager, self.stage.top(), retain)?;
+        let mut retained = store.map(|store| store.retained(pager));
+        let above = self.write_pages(took, retained.as_mut(), retain)?;
+        if let Some(retained) = retained {
+            retained.written();
         }
-        self.clear_written()?;
-        let above = match took {
-            Some(Took::HeapOnly(heap, pid) | Took::Found(heap, pid)) => {
-                let newest = heap.newest();
-                heap.space
-                    .reflect(&mut self.stage, pager, pid, newest, Fit::Took)?
-            }
-            None => Above::default(),
-        };
-        self.stage.commit(pager)?;
         let released = match store {
             Some(store) => release_each(pager, &store, release),
             None if release.is_empty() => Ok(()),
@@ -173,6 +165,38 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
             heap.hint_at(pid);
         }
         settled
+    }
+
+    /// Count the versions pointing at each of `retain` in `retained`, clear the map bits of the
+    /// change, set the level-0 directory entry of the page `took` names, and write every staged
+    /// page in one update. Returns the entries above to settle.
+    ///
+    /// Postcondition: the latches of the write are released when this returns, so `retained`
+    /// may count off what it holds.
+    fn write_pages(
+        mut self,
+        took: Option<Took<'h>>,
+        retained: Option<&mut Retained<'p, R>>,
+        retain: &[Pointer],
+    ) -> Result<Above, Refused> {
+        let pager = self.pager;
+        if !retain.is_empty() {
+            let retained = retained.expect("a write that counts values takes a version");
+            retained.retain_apart(self.stage.top(), retain)?;
+        }
+        self.clear_written()?;
+        let above = match took {
+            Some(Took::HeapOnly(heap, pid) | Took::Found(heap, pid)) => {
+                fault(Step::Reflect)?;
+                let newest = heap.newest();
+                heap.space
+                    .reflect(&mut self.stage, pager, pid, newest, Fit::Took)?
+            }
+            None => Above::default(),
+        };
+        fault(Step::Write)?;
+        self.stage.commit(pager)?;
+        Ok(above)
     }
 
     /// Clear the all-visible flag of each staged heap page whose staged copy changed and has it,
@@ -204,6 +228,7 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         let vm = heap.vm(&mut self.stage, self.pager)?;
         let mut bit = Stage::above(self.stage.top());
         vm.put(&mut bit, self.pager, pid, false)?;
+        fault(Step::ClearBit)?;
         Ok(bit.commit(self.pager)?)
     }
 
@@ -300,9 +325,12 @@ fn release_each<R: Runtime>(
 }
 
 #[track_caller]
+fn fault(step: Step) -> Result<(), Refused> {
+    faults::injected(step).map_or(Ok(()), |e| Err(Refused::Page(e)))
+}
+
+#[track_caller]
 fn settle<R: Runtime>(pager: &Pager<R>, above: Above) -> Result<(), Refused> {
-    if let Some(e) = faults::injected(Step::Settle) {
-        return Err(Refused::Page(e));
-    }
+    fault(Step::Settle)?;
     Ok(above.settle(pager)?)
 }

@@ -1,6 +1,7 @@
 //! A step that fails after its change's main update. After a transaction's durable commit the
 //! caller is told it succeeded and the next open finishes the step; before it, the call fails,
-//! nothing of it is seen, and every release still ran.
+//! nothing of it is seen, every release still ran, and every count of a large value equals the
+//! versions pointing at it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,6 +33,15 @@ const UNIQUE: &str = "module app\nadd unique (title) in notes\n";
 const DROP_UNIQUE: &str = "module app\ndrop unique (title) in notes\n";
 
 const ROWS: usize = 4;
+
+const WIDE: &str = r"module app
+add module app
+add type Wide = { id: Key wides, a: Text, b: Text, c: Text, d: Text }
+add relation wides : Wide key id generate sequence
+";
+
+/// The length of each field of a row of `wides`: one value to a store page.
+const WIDE_LEN: usize = 5000;
 
 fn body(i: usize) -> String {
     format!("note-{i}-{}", "x".repeat(3000))
@@ -231,6 +241,79 @@ fn inserted(fail: Option<(Site, usize)>) -> Ran {
     }
 }
 
+/// Insert [`ROWS`] rows into a file at [`RANKED`], vacuum, then update each keeping its body,
+/// failing `fail`.
+fn updated(fail: Option<(Site, usize)>) -> Ran {
+    let what = format!("update {fail:?}");
+    let mut sim = Sim::new(SEED, Config::default());
+    let (runs, ok) = run(&mut sim, |rt| {
+        let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
+        write(&db, &inserts(", rank: 7"));
+        write(&db, "vacuum notes");
+        arm(fail);
+        let ok = call(&db, "update n in notes set { n with rank: 8 }").is_ok();
+        let runs = armed::reached();
+        db.close().expect("the database closes");
+        (runs, ok)
+    });
+    let overcounted = run(&mut sim, |rt| {
+        reads(&rt, if ok { 0 } else { ROWS }, &what);
+        overcounted(&rt, &what)
+    });
+    Ran {
+        runs,
+        ok,
+        overcounted,
+    }
+}
+
+/// Insert [`ROWS`] rows of four large values each into `wides`, failing `fail`.
+fn widened(fail: Option<(Site, usize)>) -> Ran {
+    let what = format!("wide insert {fail:?}");
+    let field = |c: char| format!("\"{}\"", c.to_string().repeat(WIDE_LEN));
+    let row = format!(
+        "  insert wides {{ a: {}, b: {}, c: {}, d: {} }}\n",
+        field('a'),
+        field('b'),
+        field('c'),
+        field('d')
+    );
+    let mut sim = Sim::new(SEED, Config::default());
+    let (runs, ok) = run(&mut sim, |rt| {
+        let db = opened(&rt, FILE, &log(&[WIDE]), &options(1));
+        arm(fail);
+        let ok = call(&db, &format!("transact\n{}", row.repeat(ROWS))).is_ok();
+        let runs = armed::reached();
+        if fail.is_none() {
+            let retains = runs.iter().filter(|r| r.0.step() == Step::Retain);
+            assert_eq!(
+                2 * ROWS,
+                retains.count(),
+                "each row's counts take two updates"
+            );
+        }
+        db.close().expect("the database closes");
+        (runs, ok)
+    });
+    let overcounted = run(&mut sim, |rt| {
+        let db = opened(&rt, FILE, &log(&[WIDE]), &options(1));
+        let rows = query(&db, "from w in wides select w.id");
+        assert_eq!(if ok { ROWS } else { 0 }, rows.len(), "{what}");
+        assert_eq!(
+            Vec::<String>::new(),
+            printed(db.verify_holding().expect("verify runs")),
+            "{what}"
+        );
+        db.close().expect("the database closes");
+        overcounted(&rt, &what)
+    });
+    Ran {
+        runs,
+        ok,
+        overcounted,
+    }
+}
+
 /// Delete every row of a file at [`RANKED`], then vacuum, failing `fail`.
 fn vacuumed(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("vacuum {fail:?}");
@@ -260,16 +343,24 @@ type Case = (
     &'static str,
     fn(Option<(Site, usize)>) -> Ran,
     &'static [Step],
+    usize,
 );
 
 const AFTER_COMMIT: &[Step] = &[Step::FreeLeaked, Step::EndChange];
 const BEFORE_COMMIT: &[Step] = &[Step::Release, Step::Settle];
+const BEFORE_UPDATE: &[Step] = &[Step::ClearBit, Step::Reflect, Step::Write];
+const BEFORE_UPDATE_WIDE: &[Step] = &[Step::Retain, Step::Reflect, Step::Write];
+
+/// The heads the migration leaves counting a version of the heap it rewrote, one per row.
+const REWRITE_LEAKS: usize = ROWS;
 
 const CASES: &[Case] = &[
-    ("migration", migrated, AFTER_COMMIT),
-    ("pending drop", settled, AFTER_COMMIT),
-    ("insert", inserted, BEFORE_COMMIT),
-    ("vacuum", vacuumed, BEFORE_COMMIT),
+    ("migration", migrated, AFTER_COMMIT, REWRITE_LEAKS),
+    ("pending drop", settled, AFTER_COMMIT, 0),
+    ("insert", inserted, BEFORE_COMMIT, 0),
+    ("vacuum", vacuumed, BEFORE_COMMIT, 0),
+    ("update", updated, BEFORE_UPDATE, 0),
+    ("wide insert", widened, BEFORE_UPDATE_WIDE, 0),
 ];
 
 /// Returns the first and the last run of each site of `steps` among `runs`.
@@ -286,9 +377,10 @@ fn ends(runs: &[Run], steps: &[Step]) -> BTreeSet<(Site, usize)> {
 #[test]
 fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_call() {
     let mut struck: BTreeSet<Site> = BTreeSet::new();
-    for (case, run_case, steps) in CASES {
+    for (case, run_case, steps, leaked) in CASES {
         let clean = run_case(None);
         assert!(clean.ok, "{case} fails with nothing failed");
+        assert_eq!(*leaked, clean.overcounted, "{case} with nothing failed");
         let after = steps == &AFTER_COMMIT;
         for (site, n) in ends(&clean.runs, steps) {
             let got = run_case(Some((site, n)));
@@ -318,6 +410,10 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
         (("pending.rs", Step::EndChange), 1),
         (("write.rs", Step::Release), 1),
         (("write.rs", Step::Settle), 2),
+        (("large.rs", Step::Retain), 1),
+        (("write.rs", Step::ClearBit), 1),
+        (("write.rs", Step::Reflect), 1),
+        (("write.rs", Step::Write), 1),
     ]);
     assert_eq!(counted, sites);
 }
