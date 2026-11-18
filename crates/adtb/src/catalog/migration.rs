@@ -173,22 +173,23 @@ impl Catalog {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
             Ok((c, written))
         });
-        let outcome = match built {
+        match built {
             Ok((c, written)) => {
-                txns.commit(pager, begun)?;
+                let committed = txns.commit(pager, begun)?;
                 *self = c;
                 dormant.extend(written);
+                self.end_committed(pager, txns, marked, &committed);
+                pager.wait_durable(committed.lsn());
                 Ok(dormant)
             }
             Err(e) => {
                 txns.abort(pager, begun)?;
+                self.free_leaked(pager, txns)?;
+                let lsn = root::end_freed(pager, self.root, marked)?;
+                pager.wait_durable(lsn);
                 Err(e)
             }
-        };
-        self.free_leaked(pager, txns)?;
-        let lsn = root::end_freed(pager, self.root, marked)?;
-        pager.wait_durable(lsn);
-        outcome
+        }
     }
 
     /// Refuse `schema`, whose checked program is `program` and index element texts `texts`, when

@@ -312,7 +312,7 @@ impl Catalog {
         drop(hold);
         match done {
             Ok(dormant) => {
-                let lsn = txns.commit(pager, begun)?;
+                let lsn = txns.commit(pager, begun)?.lsn();
                 pager.wait_durable(lsn);
                 self.source.grants = grants;
                 Ok(dormant)

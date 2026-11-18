@@ -226,7 +226,7 @@ impl Db {
                 None => self.state.remove(&k),
             };
         }
-        let lsn = self.txns.commit(&self.pager, begun).expect("commit");
+        let lsn = self.txns.commit(&self.pager, begun).expect("commit").lsn();
         self.pager.wait_durable(lsn)
     }
 
@@ -725,7 +725,7 @@ fn a_read_of_the_past_without_history_is_unavailable() {
         let pager = Pager::create(rt.clone(), &opts()).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
         let begun = txns.begin(&pager).expect("begin");
-        let lsn = txns.commit(&pager, begun).expect("commit");
+        let lsn = txns.commit(&pager, begun).expect("commit").lsn();
         let at = pager.wait_durable(lsn);
         assert_eq!(
             Some(PastError::Unavailable { oldest: None }),
@@ -1073,7 +1073,7 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         let past_index = Index::create(&pager, PAST_INDEX, key_schema(), ctors()).expect("index");
         let blob: Vec<u8> = (0..9000u32).map(|i| (i * 7) as u8).collect();
         let row = vec![Value::I64(1), Value::Bytes(blob)];
-        let commit = |begun| pager.wait_durable(txns.commit(&pager, begun).expect("commit"));
+        let commit = |begun| pager.wait_durable(txns.commit(&pager, begun).expect("commit").lsn());
         let begun = txns.begin(&pager).expect("begin");
         let x = begun.xid();
         let tid = heap.insert(&pager, x, &row).expect("insert");
@@ -1530,7 +1530,7 @@ fn fetch_beside_vacuum(
         assert!(db.index.insert(&db.pager, &entry).expect("index"));
         live = Some(tid);
         db.pager
-            .wait_durable(db.txns.commit(&db.pager, begun).expect("commit"));
+            .wait_durable(db.txns.commit(&db.pager, begun).expect("commit").lsn());
         at = at.or_else(|| Some(db.mark()));
     }
     let at = at.expect("a mark after the first row");
@@ -1665,14 +1665,14 @@ fn insert_then_delete(db: &Db, keys: std::ops::Range<i64>) {
         })
         .collect();
     db.pager
-        .wait_durable(db.txns.commit(&db.pager, begun).expect("commit"));
+        .wait_durable(db.txns.commit(&db.pager, begun).expect("commit").lsn());
     let begun = db.txns.begin(&db.pager).expect("begin");
     let x = begun.xid();
     for tid in tids {
         db.heap().delete(&db.pager, tid, x).expect("delete");
     }
     db.pager
-        .wait_durable(db.txns.commit(&db.pager, begun).expect("commit"));
+        .wait_durable(db.txns.commit(&db.pager, begun).expect("commit").lsn());
 }
 
 #[test]

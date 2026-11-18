@@ -335,17 +335,15 @@ impl Catalog {
             }
             return Err(e);
         }
-        let lsn = txns.commit(pager, begun)?;
-        pager.wait_durable(lsn);
+        let committed = txns.commit(pager, begun)?;
+        pager.wait_durable(committed.lsn());
         self.readers.pending = pending;
         self.readers.enforced = enforced;
         if !freed.is_empty() {
             for id in &freed {
                 self.indexes.remove(id);
             }
-            self.free_leaked(pager, txns)?;
-            let lsn = root::end_freed(pager, self.root, marked)?;
-            pager.wait_durable(lsn);
+            self.end_committed(pager, txns, marked, &committed);
         }
         Ok(())
     }

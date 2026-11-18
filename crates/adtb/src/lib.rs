@@ -6,6 +6,7 @@ pub mod batch;
 mod btree;
 mod catalog;
 mod exec;
+mod faults;
 mod heap;
 mod history;
 #[cfg(test)]

@@ -37,6 +37,8 @@ pub(crate) use structures::relation_holder;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod commit_point_tests;
+#[cfg(test)]
 mod fn_dependents_tests;
 #[cfg(test)]
 mod grant_rows_tests;
@@ -62,9 +64,10 @@ use adtb_lang::types::RelId;
 
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
+use crate::faults;
 use crate::heap::{self, FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Tid, Value};
-use crate::mvcc::{self, Hold, Scope, Transactions, Xid};
+use crate::mvcc::{self, DurableCommit, Hold, Scope, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
@@ -841,6 +844,31 @@ impl Catalog {
             }
         }
         Ok(())
+    }
+
+    /// Free every page a schema change left unreached once it is `committed`, then end `marked`,
+    /// or with none the change the root records, and wait until the end is durable. Leave the
+    /// change on the root for the next open when the free fails.
+    #[track_caller]
+    fn end_committed<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        marked: Option<Begun>,
+        committed: &DurableCommit,
+    ) {
+        if committed
+            .then(faults::Step::FreeLeaked, || self.free_leaked(pager, txns))
+            .is_none()
+        {
+            return;
+        }
+        let ended = committed.then(faults::Step::EndChange, || {
+            root::end_freed(pager, self.root, marked)
+        });
+        if let Some(lsn) = ended {
+            pager.wait_durable(lsn);
+        }
     }
 
     /// Returns the schema and program constraint checks and validation run against: the

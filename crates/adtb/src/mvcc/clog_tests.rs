@@ -1056,7 +1056,7 @@ fn a_failed_commit_takes_its_id_out_of_running_and_returns_the_commit_failure() 
         let begun = txns.begin(pager).expect("begin");
         let (status, _) = status_slot(txns, &begun);
         let damage = pager.plant_damage(status, Damage::Checksum);
-        let committed = txns.commit(pager, begun);
+        let committed = txns.commit(pager, begun).map(|c| c.lsn());
         let got = (committed, txns.running(), txns.unrecorded_aborts());
         let refused = crate::mvcc::Error::Corrupt(damage);
         assert_eq!((Err(refused), BTreeSet::new(), 1), got);

@@ -1278,7 +1278,7 @@ impl<R: Runtime> Database<R> {
                 Ok(()) => match tx
                     .begun
                     .take()
-                    .map(|b| self.session.txns.commit(&self.pager, b))
+                    .map(|b| self.session.txns.commit(&self.pager, b).map(|c| c.lsn()))
                     .transpose()
                 {
                     Err(e) => Err(e.into()),

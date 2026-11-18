@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 use adtb_sys::lock::{Lock, RwLock};
 
 use crate::btree;
+use crate::faults::{self, Step};
 use crate::runtime::Runtime;
 use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position, Quarantine};
 
@@ -297,14 +298,15 @@ impl<R: Runtime> Transactions<R> {
         })
     }
 
-    /// Commit the transaction of `begun` and record its time when history is kept.
+    /// Commit the transaction of `begun` and record its time when history is kept. Returns its
+    /// commit, at the LSN of its commit record.
     ///
     /// Fail if the database is quarantined or the record of the window is damaged. The
     /// transaction is then aborted as a dropped guard aborts it, and the commit's failure
     /// returned.
     ///
     /// Panic if `begun` did not begin in these transactions.
-    pub fn commit(&self, pager: &Pager<R>, begun: Begun) -> Result<Lsn, Error> {
+    pub fn commit(&self, pager: &Pager<R>, begun: Begun) -> Result<DurableCommit, Error> {
         let x = self.end(begun);
         let admitted = self.admit();
         let mut st = self.state.lock(&self.rt);
@@ -312,7 +314,7 @@ impl<R: Runtime> Transactions<R> {
         if committed.is_err() {
             self.abandon_locked(&mut st, pager, x);
         }
-        committed
+        committed.map(|lsn| DurableCommit { lsn })
     }
 
     fn commit_running(&self, st: &mut State, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
@@ -923,5 +925,31 @@ impl Drop for Pinning {
         if let Some(txns) = self.txns.upgrade() {
             txns.unpin(&self.marker);
         }
+    }
+}
+
+/// A transaction's commit, logged: a crash from here on keeps it, and its caller is told it
+/// succeeded.
+#[derive(Debug)]
+pub struct DurableCommit {
+    lsn: Lsn,
+}
+
+impl DurableCommit {
+    /// Returns the LSN of the commit record.
+    pub fn lsn(&self) -> Lsn {
+        self.lsn
+    }
+
+    /// Run `step` after the commit and drop its error. Returns its value, `None` when it failed.
+    ///
+    /// Precondition: the catalog root records the change in progress until a step that ran ends
+    /// it, so the next open finishes what a failed step left.
+    #[track_caller]
+    pub fn then<T, E>(&self, step: Step, run: impl FnOnce() -> Result<T, E>) -> Option<T> {
+        if faults::struck(step) {
+            return None;
+        }
+        run().ok()
     }
 }

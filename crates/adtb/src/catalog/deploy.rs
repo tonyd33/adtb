@@ -99,7 +99,7 @@ impl Catalog {
         drop(hold);
         match done {
             Ok(()) => {
-                let lsn = txns.commit(pager, begun)?;
+                let lsn = txns.commit(pager, begun)?.lsn();
                 pager.wait_durable(lsn);
                 Ok(())
             }

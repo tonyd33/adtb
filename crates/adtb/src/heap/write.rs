@@ -1,11 +1,13 @@
 use std::cmp::{Ordering, Reverse};
 
+use crate::faults::{self, Step};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Pid, Reservation};
 
 use super::Refused;
 use super::dir::{Above, Fit};
 use super::handle::Heap;
+use super::large::LargeStore;
 use super::page::{HeapPage, HeapPageMut, PageCopy};
 use super::row::Pointer;
 use super::stage::Stage;
@@ -130,9 +132,10 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
     /// Write the change: count one more version pointing at each of `retain` in the store of the
     /// heap `took` names; clear the all-visible flag and the map bit of every staged heap page the
     /// change wrote; set the level-0 directory entry of the page `took` names from its staged
-    /// copy; write every staged page in one update; settle the entries above; point the heap's
-    /// next insert at a page found for the version; count one version fewer pointing at each of
-    /// `release` in that store. The counts and the map bits change in updates of their own.
+    /// copy; write every staged page in one update; count one version fewer pointing at each of
+    /// `release` in that store; settle the entries above; point the heap's next insert at a page
+    /// found for the version. The counts and the map bits change in updates of their own. A
+    /// release or settle that fails stops none of the others; the first failure is returned.
     ///
     /// Panic if `retain` or `release` is not empty and `took` is `None`, or if a staged heap page
     /// the change wrote was not latched through [`HeapWrite::latch`].
@@ -160,17 +163,16 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
             None => Above::default(),
         };
         self.stage.commit(pager)?;
-        above.settle(pager)?;
+        let released = match store {
+            Some(store) => release_each(pager, &store, release),
+            None if release.is_empty() => Ok(()),
+            None => panic!("a write that counts values takes a version"),
+        };
+        let settled = released.and(settle(pager, above));
         if let Some(Took::Found(heap, pid)) = took {
             heap.hint_at(pid);
         }
-        if !release.is_empty() {
-            let store = store.expect("a write that counts values takes a version");
-            for &p in release {
-                store.release(pager, p)?;
-            }
-        }
-        Ok(())
+        settled
     }
 
     /// Clear the all-visible flag of each staged heap page whose staged copy changed and has it,
@@ -219,9 +221,10 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
 
     /// Write `pruned` as page `pid` of `heap`, latched, with its all-visible flag and map bit set
     /// when `all_visible` holds and cleared otherwise, then count one version fewer pointing at
-    /// each of `released`. A page left empty leaves the directory and is freed in the same update;
-    /// any other gets its directory entry from its staged copy as [`Fit::Pruned`] says. Returns
-    /// whether the page was freed.
+    /// each of `released` and settle the directory, the first failure returned once every one
+    /// ran. A page left empty leaves the directory and is freed in the same update; any other
+    /// gets its directory entry from its staged copy as [`Fit::Pruned`] says. Returns whether
+    /// the page was freed.
     ///
     /// Precondition: the map has the path to `pid` when `all_visible` holds.
     pub fn commit_pruned(
@@ -261,13 +264,11 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
             vm.put(&mut self.stage, pager, pid, true)?;
         }
         self.stage.commit_with(pager, gone)?;
-        above.settle(pager)?;
         if removed {
             heap.forget_hint(pid);
         }
-        for &p in released {
-            heap.large().release(pager, p)?;
-        }
+        release_each(pager, &heap.large(), released)?;
+        settle(pager, above)?;
         Ok(removed)
     }
 
@@ -277,4 +278,31 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         self.stage.commit_with(self.pager, new)?;
         above.settle(self.pager)
     }
+}
+
+/// Count one version fewer pointing at each of `pointers` in `store`, each in an update of its
+/// own. Returns the first failure once every release ran.
+#[track_caller]
+fn release_each<R: Runtime>(
+    pager: &Pager<R>,
+    store: &LargeStore,
+    pointers: &[Pointer],
+) -> Result<(), Refused> {
+    let mut first = Ok(());
+    for &p in pointers {
+        let released = match faults::injected(Step::Release) {
+            Some(e) => Err(Refused::Page(e)),
+            None => store.release(pager, p),
+        };
+        first = first.and(released);
+    }
+    first
+}
+
+#[track_caller]
+fn settle<R: Runtime>(pager: &Pager<R>, above: Above) -> Result<(), Refused> {
+    if let Some(e) = faults::injected(Step::Settle) {
+        return Err(Refused::Page(e));
+    }
+    Ok(above.settle(pager)?)
 }

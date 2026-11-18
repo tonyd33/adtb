@@ -69,7 +69,7 @@ struct Known {
 }
 
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
-const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
+const UNDER_RELATION_MARK: &str = "migrate-under-relation-mark";
 const STALE_BEFORE_GAP: &str = "verify-misses-stale-page-before-log-gap";
 
 /// Returns the known failure of a lost write of a `kind` page in `seed` at `at`, then the log write
@@ -106,6 +106,39 @@ const SCRUB_MISSES: &str = "a scrub misses the stale page";
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
 const KNOWN: &[Known] = &[
+    Known {
+        fault: Fault::LostEarlier,
+        kind: Kind::Directory,
+        owner: Some(world::Rel::Tags),
+        consumer: Consumer::Verify,
+        what: "verify reports nothing of a mark",
+        ticket: UNDER_RELATION_MARK,
+        seed: 3,
+        at: 651,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostEarlier,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Tags),
+        consumer: Consumer::Verify,
+        what: "verify reports nothing of a mark",
+        ticket: UNDER_RELATION_MARK,
+        seed: 3,
+        at: 640,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostEarlier,
+        kind: Kind::VisibilityMap,
+        owner: Some(world::Rel::Tags),
+        consumer: Consumer::Verify,
+        what: "verify reports nothing of a mark",
+        ticket: UNDER_RELATION_MARK,
+        seed: 3,
+        at: 647,
+        then: None,
+    },
     Known {
         fault: Fault::LostEarlier,
         kind: Kind::Heap,
@@ -161,72 +194,6 @@ const KNOWN: &[Known] = &[
             },
             Kind::Index,
         )),
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Bitmap,
-        owner: None,
-        consumer: Consumer::Catalog,
-        what: "applies a migration under a whole-database mark",
-        ticket: APPLIED_UNDER_MARK,
-        seed: 3,
-        at: 659,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Engine,
-        owner: None,
-        consumer: Consumer::Catalog,
-        what: "applies a migration under a whole-database mark",
-        ticket: APPLIED_UNDER_MARK,
-        seed: 3,
-        at: 606,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Large,
-        owner: None,
-        consumer: Consumer::Catalog,
-        what: "applies a migration under a whole-database mark",
-        ticket: APPLIED_UNDER_MARK,
-        seed: 3,
-        at: 622,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Bitmap,
-        owner: None,
-        consumer: Consumer::Catalog,
-        what: "applies a migration under a whole-database mark",
-        ticket: APPLIED_UNDER_MARK,
-        seed: 51,
-        at: 651,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Large,
-        owner: None,
-        consumer: Consumer::Catalog,
-        what: "applies a migration under a whole-database mark",
-        ticket: APPLIED_UNDER_MARK,
-        seed: 26,
-        at: 626,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostEarlier,
-        kind: Kind::Large,
-        owner: None,
-        consumer: Consumer::Catalog,
-        what: "applies a migration under a whole-database mark",
-        ticket: APPLIED_UNDER_MARK,
-        seed: 58,
-        at: 623,
-        then: None,
     },
     before_gap(
         Kind::Marks,
