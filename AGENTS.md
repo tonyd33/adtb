@@ -53,7 +53,7 @@ For a fresh clone, host prerequisites and optional editor setup, read
   `cargo nextest run`.
 - `cargo xtask check [REVSET]`: run every check, including the Loom models,
   Miri, dependency policy, source-size limits, the documentation build with
-  its link check, `cargo xtask lint` and `work/tools`' checks and their tests. With REVSET it
+  its link check, `cargo xtask lint` and the editor grammar's generated sources and tests. With REVSET it
   also checks the lint and structure allowlists against those of the parent of REVSET's root.
 - `cargo xtask lint [--against REV] [--counts]`: run the TQL rules under `lint/` with `tql`,
   which the dev shell puts on PATH. `lint/rules.toml` declares each query's file set and rows; a
@@ -61,8 +61,10 @@ For a fresh clone, host prerequisites and optional editor setup, read
   differs from its entry in `lint/allowlist.toml` (none counts as 0): the counts only fall.
   `--counts` prints the allowlist for the tree; `--against REV` fails on an entry above the
   allowlist at REV, so a rise is the lead's act on main. The rows: the comment rules of
-  `house.tql`, struct fields visible past their module, decode panics, engine names and sim test
-  open helpers.
+  `house.tql`, struct fields visible past their module, decode panics, engine names, sim test
+  open helpers and weak refusal assertions (`is_err()`, `is_ok()`, `matches!(.., Err(_))`, a
+  substring of error text, a bare `unwrap_err()`, a call of `refused_with`): assert a refusal with
+  `adtb_testkit::refused_as`, its value and whole reason.
 
 Use targeted checks while working and run the checks appropriate to the
 change before reporting completion.
@@ -104,10 +106,11 @@ root, beside the `xtask` crate's two commands:
 - `cargo conformance probe --schema FILE [--data FILE] [--explain] [--checks NAME] TEXT`: check a text and
   run it on the reference and the engine side by side; `--checks app::c` prints the plan of each
   incremental check of constraint `c`, the text then optional.
-- `tree-sitter-check`, from the workspace root: regenerate the grammar in `tools/tree-sitter-adtb/`
-  and fail on a difference from the checked in `src/`, run `tree-sitter test` over its corpus and
-  highlight tests, and run `cargo nextest run -p adtb-tree-sitter`, which compares it with
-  `adtb-lang` over the spec and conformance texts and the front end fuzzer's programs.
+- `cargo xtask check` regenerates the grammar in `tools/tree-sitter-adtb/` into
+  `target/tree-sitter/generated`, fails on a difference from the checked in `src/` (`scanner.c`
+  aside), and runs `tree-sitter test` over its corpus and highlight tests. The tests of
+  `adtb-tree-sitter`, in the suite, compare it with `adtb-lang` over the spec and conformance
+  texts and the front end fuzzer's programs.
 - `cargo xtask check` runs clippy over adtb-sys under `--cfg adtb_loom`, then the Loom models
   of the page state word, its unit tests built with that cfg into `target/loom`, then adtb-sys's
   unit tests under Miri with the nightly toolchain in `ADTB_NIGHTLY_BIN`, which the dev shell
@@ -119,10 +122,6 @@ root, beside the `xtask` crate's two commands:
   change a path outside docs/, work/ and Markdown files; the quality
   cadence counts these.
 - `cargo xtask check` fails when a non-test source under `crates/` passes 1500 lines.
-- `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
-  `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of
-  `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with
-  `adtb_testkit::refused_as`, its value and whole reason.
 - `land WS [SUBJECT]`: land workspace WS on `main` and move the main
   working copy onto it; refuses while the main working copy has changes, or WS holds a file jj
   does not track that its .gitignore files do not ignore.

@@ -5,6 +5,7 @@
 extern crate adtb_heap_cap as _;
 
 mod check;
+mod grammar;
 mod lint;
 mod scope;
 mod size;
@@ -55,8 +56,8 @@ enum Task {
     ///
     /// Run, in order: clippy, rustfmt, the TQL rules, the tests, the Loom models, Miri,
     /// cargo-deny, the damage profile, the source-size limit, the documentation build and its link
-    /// check, refusal-check and tree-sitter-check. Stops at
-    /// the first failure and names its step and command. Miri needs `ADTB_NIGHTLY_BIN`, which
+    /// check, and the editor grammar's generated sources and its corpus and highlight tests. Stops
+    /// at the first failure and names its step and command. Miri needs `ADTB_NIGHTLY_BIN`, which
     /// the dev shell sets.
     Check {
         /// Also check the lint allowlist against that of the parent of the revset's root.

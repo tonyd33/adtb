@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::step::{self, say};
 use crate::workspace::Workspace;
-use crate::{lint, size, test};
+use crate::{grammar, lint, size, test};
 
 /// The variable naming the directory of a nightly toolchain with Miri.
 const NIGHTLY: &str = "ADTB_NIGHTLY_BIN";
@@ -62,12 +62,7 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     })?;
     stage(size::STEP, |_| size::run(&workspace.root))?;
     stage("docs", |name| docs(workspace, name))?;
-    stage("refusal-check", |name| {
-        step::run(name, workspace.tool(name).arg(&workspace.root))
-    })?;
-    stage("tree-sitter-check", |name| {
-        step::run(name, &mut workspace.tool(name))
-    })?;
+    stage(grammar::STEP, |_| grammar::run(workspace))?;
     Ok(())
 }
 

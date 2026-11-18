@@ -214,6 +214,25 @@ fn an_em_dash_in_a_comment_or_string_is_a_finding() {
 }
 
 #[test]
+fn every_weak_refusal_form_is_a_finding_and_a_bound_or_exact_one_is_not() {
+    let refusal = rule("refusal.tql", &[("weak_refusals", Kind::Zero)]);
+    let files = fixture_paths(&["refusal.rs.txt"]);
+    let output = query(repository(), "refusal.tql", &files, 1).expect("tql exits 0");
+    let mut tally = Tally::default();
+    apply(&refusal, &BTreeSet::new(), &output, &mut tally).expect("the fixture parses");
+    let file = "xtask/src/lint/fixtures/refusal.rs.txt";
+    let mut lines: Vec<u64> = (2..=18).collect();
+    lines.extend([22, 26, 28]);
+    let mut expected: Vec<String> = lines
+        .iter()
+        .map(|line| format!("{file}:{line}: weak_refusals"))
+        .collect();
+    expected.sort();
+    tally.findings.sort();
+    assert_eq!(tally.findings, expected);
+}
+
+#[test]
 fn the_files_of_a_rule_match_an_include_and_no_exclude() {
     let root = std::env::temp_dir().join(format!("xtask-lint-files-{}", std::process::id()));
     for file in [

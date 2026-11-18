@@ -33,8 +33,8 @@ jj config set --user user.name "Your Name"
 jj config set --user user.email "you@example.com"
 ```
 
-The dev shell supplies Rust, jj, quandary, tix, cargo-nextest, cargo-deny,
-and the shell utilities used by `work/tools/`. You do not need local
+The dev shell supplies Rust, jj, quandary, tix, tql, tree-sitter, mdbook,
+lychee, cargo-nextest, cargo-deny and the shell utilities. You do not need local
 checkouts of quandary, tix or editorenv. Nix dependencies are pinned in
 `devenv.lock`; Cargo dependencies are pinned in the workspace's `Cargo.lock`. Keep
 these lockfiles when moving machines.

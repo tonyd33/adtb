@@ -68,3 +68,8 @@ query = "api-aborts.tql"
 include = ["crates/adtb/src/api/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
 rows = { api_aborts = "zero" }
+
+[[rule]]
+query = "refusal.tql"
+include = ["crates/**/*.rs"]
+rows = { weak_refusals = "zero" }

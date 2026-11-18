@@ -50,8 +50,4 @@ impl Workspace {
         command.env("CARGO_TARGET_DIR", &self.target);
         command
     }
-
-    pub fn tool(&self, name: &str) -> Command {
-        self.command(self.root.join("work/tools").join(name))
-    }
 }

@@ -1,0 +1,26 @@
+weak_text = r"\.(is_err|is_ok)\(\)|(err|reason|refus|message|stderr|to_string\(\))\w*(\(\))?\s*\.(contains|starts_with|ends_with)\(|matches!\([\s\S]*?(Err|Ok)\(_\)";
+
+weak_asserts = do {
+  m <- descendants_of_kind :macro_invocation;
+  n <- pure m | #macro;
+  guard $ text n ~ r"(^|::)(debug_|prop_)?assert(_eq|_ne)?$";
+  guard $ text m ~ weak_text;
+  return m;
+};
+
+bare_unwraps = do {
+  s <- descendants_of_kind :expression_statement;
+  c <- pure s | children_of_kind :call_expression;
+  f <- pure c | #function | #field;
+  guard $ text f ~ r"^(unwrap_err|expect_err)$";
+  return s;
+};
+
+refused_with = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(^|::|\.)refused_with$";
+  return c;
+};
+
+main = weak_asserts `alt` bare_unwraps `alt` refused_with | arr range;
