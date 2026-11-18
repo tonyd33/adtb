@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-09
-status: open
+status: resolved
+closed: 2026-11-17
 kind: bug
 priority: 310
 summary: "HeapWrite::commit and commit_pruned settle the directory after the page update is durable and before releasing large-value counts, so a settle that fails on damage leaves those counts raised and the values never freed"
@@ -26,3 +27,7 @@ This is distinct from large-retain-before-map-refusal, which covers retains comm
 Reproduction, reasoned and not run: plant damage on an inner directory page of a heap whose page holds a version with an out-of-line value that a full-page prune frees, run the prune (through vacuum or an insert pruning on access), and read the value's count after the refusal.
 
 Fix direction: release before settling (the counts change in updates of their own already), or make a failed settle leave the releases to a retry that cannot be skipped, so no error path after the page update leaves counts raised.
+
+## Resolution 2026-11-17
+
+Fixed by `fix: report success for a durable change whose post-commit step fails` (commit-point): heap/write.rs `commit` and `commit_pruned` run every release, then the settle, and return the first error, so no release is skipped and a statement meeting damage fails with its transaction aborted. Covered by the sweep in crates/adtb/src/catalog/commit_point_tests.rs.
