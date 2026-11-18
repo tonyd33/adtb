@@ -147,9 +147,8 @@ From your workspace root in the dev shell:
 CARGO_TARGET_DIR="$PWD/target" cargo xtask check main..@
 ```
 
-The REVSET (here `main..@`) adds `structure-check --against` the parent of its
-root and `house-check -r REVSET` at the end; without it `cargo xtask check` runs every
-other part.
+The REVSET (here `main..@`) adds `lint --against` and `structure-check --against` the
+parent of its root at the end; without it `cargo xtask check` runs every other part.
 
 The target directory keeps the build in your workspace.
 `cargo xtask check` owns root clippy, formatting and the tests; the Loom models, Miri,
@@ -199,9 +198,9 @@ running the next case.
 For a timeout, report the test, suite conditions and any isolated outcome.
 An isolated pass leaves the cause unresolved unless other evidence proves
 it; it does not make the full suite pass. Do not repeat the full suite
-without a specific diagnostic reason. `house-check` prints added lines
-that break a comment rule and lists added plain `//` comments; retain only
-comments stating a non-obvious invariant. Report its result.
+without a specific diagnostic reason. `cargo xtask lint` prints each site
+that breaks a comment rule or raises a ratchet count; retain only comments
+stating a non-obvious invariant. Report its result.
 
 Keep detailed verification in one canonical receipt, linking its raw logs and
 matrix. Summarize it in the report and link it from the handoff; do not copy the
@@ -263,15 +262,15 @@ largest. A performance track reports a before and after benchmark of the workloa
 Repeat checks only for changed inputs, failures or unresolved concerns. Run `cargo xtask test`
 in the background: a full run outlasts a harness's foreground timeout. A bug fix comes with a regression test: write it before the fix and watch it fail, as part of
 the work, not as a separate step. Do not rebuild to break code on purpose: each rebuild of
-adtb-sim costs two minutes. Run `house-check` before `cargo xtask check`; when a
-`cargo xtask check` fails only in `house-check`, rerun `house-check`, not `cargo xtask check`. The size in a brief is an estimate; say in the report when the change grew well past it.
+adtb-sim costs two minutes. Run `cargo xtask lint` before `cargo xtask check`; when a
+`cargo xtask check` fails only in `lint`, rerun `cargo xtask lint`, not `cargo xtask check`. The size in a brief is an estimate; say in the report when the change grew well past it.
 
 The final run of a round is one `cargo xtask check REVSET` plus the runs it does not hold: a
 `--profile deep` search, the conformance runner, a reopen script. `cargo xtask check` already runs fmt,
-clippy, the tests, the size limit, house-check over REVSET and every other part, so do not also run
+clippy, the tests, the size limit, lint and every other part, so do not also run
 `cargo xtask test`, `-p adtb-sim`, `-p adtb-lang`, the damage profile or a workspace clippy beside
-it: each is a subset run twice. Run fmt, house-check and clippy first, alone, so they fail in
-seconds. A round after a review with no blocker reruns fmt, clippy, house-check and the tests of the
+it: each is a subset run twice. Run fmt, lint and clippy first, alone, so they fail in
+seconds. A round after a review with no blocker reruns fmt, clippy, lint and the tests of the
 files it touched, not the final run; the lead's check on main covers the rest.
 
 ## Scripts

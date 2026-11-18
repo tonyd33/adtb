@@ -1,10 +1,11 @@
-//! `cargo xtask test [NEXTEST ARGS]` and `cargo xtask check [REVSET]`: the workspace's test run
-//! under a memory limit and its full set of checks.
+//! `cargo xtask test [NEXTEST ARGS]`, `cargo xtask lint` and `cargo xtask check [REVSET]`: the
+//! workspace's test run under a memory limit, its TQL rules and its full set of checks.
 
 #[cfg(test)]
 extern crate adtb_heap_cap as _;
 
 mod check;
+mod lint;
 mod scope;
 mod size;
 mod step;
@@ -52,16 +53,29 @@ enum Task {
     },
     /// Run every check of the workspace in one memory-limited scope, as `test` does.
     ///
-    /// Runs, in order: clippy, rustfmt, the tests, the Loom models, Miri, cargo-deny, the damage
-    /// profile, the source-size limit, the documentation build and its link check,
-    /// structure-check, refusal-check, tree-sitter-check, house-check-test and
-    /// structure-check-test. Stops at the first failure and names its step and command. Miri
-    /// needs `ADTB_NIGHTLY_BIN`, which the dev shell sets.
+    /// Run, in order: clippy, rustfmt, the TQL rules, the tests, the Loom models, Miri,
+    /// cargo-deny, the damage profile, the source-size limit, the documentation build and its link
+    /// check, structure-check, refusal-check, tree-sitter-check and structure-check-test. Stops at
+    /// the first failure and names its step and command. Miri needs `ADTB_NIGHTLY_BIN`, which
+    /// the dev shell sets.
     Check {
-        /// Also run `structure-check --against` the parent of the revset's root and
-        /// `house-check -r REVSET`.
+        /// Also check the lint and structure allowlists against those of the parent of the
+        /// revset's root.
         #[arg(value_name = "REVSET")]
         revset: Option<String>,
+    },
+    /// Run the TQL rules `lint/rules.toml` declares, with `tql` from PATH.
+    ///
+    /// Print `FILE:LINE: ROW` for each site of a zero row, and each file whose count of a
+    /// ratchet row differs from its entry in `lint/allowlist.toml`, a missing entry counting as
+    /// 0. Fails when it prints.
+    Lint {
+        /// Also fail when an entry of the allowlist is above the one of the allowlist at REV.
+        #[arg(long, value_name = "REV")]
+        against: Option<String>,
+        /// Print the allowlist for the tree instead of checking it.
+        #[arg(long, conflicts_with = "against")]
+        counts: bool,
     },
 }
 
@@ -76,6 +90,11 @@ fn main() -> ExitCode {
         }
         Task::Check { revset } => scope::enter("check")
             .and_then(|()| check::run(&workspace::Workspace::find()?, revset.as_deref())),
+        Task::Lint { against, counts } => lint::run(
+            &workspace::Workspace::find()?.root,
+            against.as_deref(),
+            counts,
+        ),
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -24,6 +24,11 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
+  tql:
+    url: github:tonyd33/tql/v0.4.0
+    inputs:
+      editorenv:
+        follows: editorenv
 
 imports:
 - editorenv/integrations/devenv

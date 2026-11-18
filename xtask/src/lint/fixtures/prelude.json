@@ -1,0 +1,4 @@
+{"results":[
+ {"file":"crates/a/src/lib.rs","values":[{"end_byte":40,"end_point":{"column":9,"row":12},"start_byte":30,"start_point":{"column":4,"row":11}},{"end_byte":90,"end_point":{"column":9,"row":20},"start_byte":80,"start_point":{"column":4,"row":20}}],"syntax_errors":[],"stats":{}},
+ {"file":"crates/a/src/b.rs","values":[],"syntax_errors":[],"stats":{}}
+],"stats":{}}

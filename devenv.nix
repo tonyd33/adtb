@@ -9,6 +9,7 @@
 let
   quandary = inputs.quandary.packages.${pkgs.stdenv.system}.default;
   tix = inputs.tix.packages.${pkgs.stdenv.system}.default;
+  tql = inputs.tql.packages.${pkgs.stdenv.system}.default;
   nightly = (inputs.rust-overlay.lib.mkRustBin { } pkgs).selectLatestNightlyWith (
     toolchain:
     toolchain.minimal.override {
@@ -41,6 +42,7 @@ in
     pkgs.cargo-nextest
     quandary
     tix
+    tql
   ];
 
   env.ADTB_NIGHTLY_BIN = "${nightly}/bin";

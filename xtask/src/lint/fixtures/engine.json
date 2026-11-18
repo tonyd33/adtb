@@ -1,0 +1,4 @@
+{"results":[
+ {"file":"crates/a/src/lib.rs","values":[5],"syntax_errors":[],"stats":{}},
+ {"file":"crates/a/src/b.rs","values":[0],"syntax_errors":[],"stats":{}}
+],"stats":{}}

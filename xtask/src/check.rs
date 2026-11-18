@@ -3,14 +3,26 @@ use std::path::PathBuf;
 
 use crate::step::{self, say};
 use crate::workspace::Workspace;
-use crate::{size, test};
+use crate::{lint, size, test};
 
 /// The variable naming the directory of a nightly toolchain with Miri.
 const NIGHTLY: &str = "ADTB_NIGHTLY_BIN";
 
 /// Run every check of `workspace` in order, stopping at the first that fails. With `revset`, also
-/// check the structure counts against its base and the comments of its added lines.
+/// check the lint and structure allowlists against its base.
 pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
+    let base = match revset {
+        Some(revset) => {
+            let base = base(workspace, revset)?;
+            if base.is_none() {
+                say(format_args!(
+                    "xtask check: no allowlist base: {revset} has no parent commit"
+                ))?;
+            }
+            base
+        }
+        None => None,
+    };
     stage("clippy", |name| {
         step::run(
             name,
@@ -25,6 +37,9 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     })?;
     stage("fmt", |name| {
         step::run(name, workspace.cargo(&["fmt"]).args(["--all", "--check"]))
+    })?;
+    stage(lint::STEP, |_| {
+        lint::run(&workspace.root, base.as_deref(), false)
     })?;
     stage(test::STEP, |_| test::run(workspace, &[]))?;
     stage("loom", |name| loom(workspace, name))?;
@@ -52,24 +67,17 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
             step::run(name, workspace.tool(name).arg(&workspace.root))
         })?;
     }
-    for name in [
-        "tree-sitter-check",
-        "house-check-test",
-        "structure-check-test",
-    ] {
+    for name in ["tree-sitter-check", "structure-check-test"] {
         stage(name, |name| step::run(name, &mut workspace.tool(name)))?;
     }
-    if let Some(revset) = revset {
+    if let Some(base) = &base {
         stage("structure-check --against", |name| {
-            against(workspace, name, revset)
-        })?;
-        stage("house-check", |name| {
             step::run(
                 name,
                 workspace
-                    .tool(name)
-                    .arg(&workspace.root)
-                    .args(["-r", revset]),
+                    .tool("structure-check")
+                    .args(["--against", base])
+                    .arg(&workspace.root),
             )
         })?;
     }
@@ -156,8 +164,9 @@ fn docs(workspace: &Workspace, name: &str) -> Result<(), String> {
     )
 }
 
-/// Check the structure counts against the parent of `revset`'s root.
-fn against(workspace: &Workspace, name: &str, revset: &str) -> Result<(), String> {
+/// Returns the parent of `revset`'s root.
+fn base(workspace: &Workspace, revset: &str) -> Result<Option<String>, String> {
+    let name = "allowlist base";
     let mut parents = workspace.command("jj");
     parents
         .arg("-R")
@@ -174,16 +183,5 @@ fn against(workspace: &Workspace, name: &str, revset: &str) -> Result<(), String
     let parents = step::output(name, &mut parents)?;
     let parents =
         String::from_utf8(parents).map_err(|e| format!("{name}: jj printed no UTF-8: {e}"))?;
-    match parents.lines().next() {
-        Some(base) => step::run(
-            name,
-            workspace
-                .tool("structure-check")
-                .args(["--against", base])
-                .arg(&workspace.root),
-        ),
-        None => say(format_args!(
-            "xtask check: skipped {name}: {revset} has no parent commit"
-        )),
-    }
+    Ok(parents.lines().next().map(str::to_owned))
 }

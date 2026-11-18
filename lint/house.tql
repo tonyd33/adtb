@@ -1,0 +1,42 @@
+comments = descendants_of_kind :line_comment;
+
+em_dash = do {
+  n <- comments `alt` descendants_of_kind :block_comment `alt` descendants_of_kind :string_content;
+  guard $ text n ~ r"—";
+  return ("em-dash", range n);
+};
+
+bold = do {
+  c <- comments;
+  guard $ text c ~ r"\*\*";
+  return ("bold", range c);
+};
+
+section_sign = do {
+  c <- comments;
+  guard $ text c ~ r"§";
+  return ("section-sign", range c);
+};
+
+rule_id = do {
+  c <- comments;
+  guard $ text c ~ r"(^|[^A-Za-z0-9_])(?!UTF-|CRC-)[A-Z][A-Z]+-[A-Z0-9][A-Z0-9-]*";
+  return ("rule-id", range c);
+};
+
+doc_verb = do {
+  c <- comments;
+  d <- pure c | #doc;
+  guard $ text d ~ r"^\s*(Adds|Appends|Applies|Asserts|Binds|Builds|Calls|Checks|Chooses|Classifies|Clones|Closes|Collects|Commits|Compares|Compiles|Consumes|Continues|Converts|Copies|Counts|Creates|Decides|Decodes|Deletes|Derives|Draws|Elaborates|Emits|Encodes|Ends|Evaluates|Fails|Finds|Flattens|Folds|Follows|Generates|Gives|Inserts|Judges|Keeps|Latches|Loads|Maps|Matches|Merges|Moves|Nests|Normalises|Normalizes|Notes|Opens|Panics|Parses|Plans|Prepares|Prints|Processes|Puts|Reads|Records|Refuses|Rejects|Removes|Renames|Renders|Replaces|Resolves|Retypes|Rewrites|Runs|Scans|Sets|Skips|Splits|Stores|Subtracts|Sweeps|Synthesises|Synthesizes|Takes|Undoes|Unnests|Updates|Vacuums|Validates|Visits|Waits|Walks|Wraps|Writes)\b(?!:)";
+  return ("doc-verb", range c);
+};
+
+expect_reason = do {
+  a <- descendants_of_kind :attribute;
+  n <- pure a | children_of_kind :identifier;
+  guard $ text n == "expect";
+  guard $ not (text a ~ r"reason\s*=");
+  return ("expect-reason", range a);
+};
+
+main = em_dash `alt` bold `alt` section_sign `alt` rule_id `alt` doc_verb `alt` expect_reason;

@@ -53,8 +53,16 @@ For a fresh clone, host prerequisites and optional editor setup, read
   `cargo nextest run`.
 - `cargo xtask check [REVSET]`: run every check, including the Loom models,
   Miri, dependency policy, source-size limits, the documentation build with
-  its link check and `work/tools`' checks and their tests. With REVSET it
-  also runs `structure-check --against` and `house-check -r REVSET`.
+  its link check, `cargo xtask lint` and `work/tools`' checks and their tests. With REVSET it
+  also checks the lint and structure allowlists against those of the parent of REVSET's root.
+- `cargo xtask lint [--against REV] [--counts]`: run the TQL rules under `lint/` with `tql`,
+  which the dev shell puts on PATH. `lint/rules.toml` declares each query's file set and rows; a
+  zero row prints each site as `FILE:LINE: ROW`, and a ratchet row fails when a file's count
+  differs from its entry in `lint/allowlist.toml` (none counts as 0): the counts only fall.
+  `--counts` prints the allowlist for the tree; `--against REV` fails on an entry above the
+  allowlist at REV, so a rise is the lead's act on main. The rows: the comment rules of
+  `house.tql`, struct fields visible past their module, decode panics, engine names and sim test
+  open helpers.
 
 Use targeted checks while working and run the checks appropriate to the
 change before reporting completion.
@@ -100,7 +108,6 @@ root, beside the `xtask` crate's two commands:
   and fail on a difference from the checked in `src/`, run `tree-sitter test` over its corpus and
   highlight tests, and run `cargo nextest run -p adtb-tree-sitter`, which compares it with
   `adtb-lang` over the spec and conformance texts and the front end fuzzer's programs.
-- `house-check [DIR [-r REVSET]]`: the added lines of `jj diff` that break a comment rule.
 - `cargo xtask check` runs clippy over adtb-sys under `--cfg adtb_loom`, then the Loom models
   of the page state word, its unit tests built with that cfg into `target/loom`, then adtb-sys's
   unit tests under Miri with the nightly toolchain in `ADTB_NIGHTLY_BIN`, which the dev shell
@@ -113,9 +120,9 @@ root, beside the `xtask` crate's two commands:
   cadence counts these.
 - `cargo xtask check` fails when a non-test source under `crates/` passes 1500 lines.
 - `structure-check [DIR]`: fail when a file has more sites than `structure-allowlist` allows of
-  a counted pattern, or fewer: the counts only fall. The rows: struct fields visible past their
-  module (`crate_fields`, `pub_fields`, counted by parsing with `crates/adtb-structure`),
-  `.xmin`/`.xmax` outside mvcc, and the `expect` attributes of `clippy::disallowed_methods`
+  a counted pattern, or fewer: the counts only fall. The rows not yet in `lint/`: the quarantine
+  marks, api aborts, crash loop helpers, and the `expect` attributes of
+  `clippy::disallowed_methods`, counted by parsing with `crates/adtb-structure`
   (`clippy.toml` rejects `storage::page::owner`, `pages::Exclusive::write`,
   `PageMemory::lock_exclusive`, `PageMemory::try_lock_exclusive`, `Optimistic::upgrade` and the
   `regex` constructors outside `adtb_lang::pattern` by identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
@@ -197,7 +204,7 @@ or `work/HANDOFF.md`, which are local.
 - Preserve existing `TODO`, `FIXME`, `IMPROVE` and `NOTE` comments through
   refactors. Do not invent speculative notes on the maintainer's behalf.
 - An `#[expect]` reason states what would have to change to remove it.
-- Before finishing, read the diff and run `work/tools/house-check`.
+- Before finishing, read the diff and run `cargo xtask lint`.
 
 For a periodic quality review, read
 [the quality-review workflow](.agents/skills/quality-review/SKILL.md).

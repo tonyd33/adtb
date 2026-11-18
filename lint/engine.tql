@@ -1,0 +1,84 @@
+-- engine_names: an engine module, relation, type or constructor looked up by its spelling. An engine
+-- relation is named by its `engine_rel` id through `catalog::engine_relation`, a type by
+-- `engine_type`, a constructor by `engine_ctor`. The 5 sites of adtb-lang/src/schema/engine.rs are
+-- the mint of `EngineCtors` and stay.
+
+import Data.List (take);
+
+engine_module = r"^(catalog|sys|prelude)$";
+
+method_calls = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  m <- pure f | alt #field (keep (\n -> is_kind :identifier n));
+  a <- pure c | #arguments;
+  return (c, text m, a);
+};
+
+literal_args a = run (children_of_kind :string_literal | children_of_kind :string_content) a;
+
+named_lookups = do {
+  (c, m, a) <- method_calls;
+  guard $ (m ~ r"^(in_relation|in_type|ctor_named|ctor_index)$") `or` ((m == "ctor") `and` (text c ~ r"^self\."));
+  guard $ length (literal_args a) > 0;
+  return c;
+};
+
+engine_modules = do {
+  (c, m, a) <- method_calls;
+  guard $ m ~ r"^module_named(_in)?$";
+  guard $ length (run (children_of_kind :string_literal | children_of_kind :string_content | keep (\s -> text s ~ engine_module)) a) > 0;
+  return c;
+};
+
+relation_pushes = do {
+  (c, m, a) <- method_calls;
+  guard $ m == "push";
+  guard $ length (run named_children a) > 1;
+  first <- pure a | Filter (\x -> take 1 (run named_children x));
+  guard $ text first ~ r"^\x22[a-z_]+\x22$";
+  return c;
+};
+
+engine_literal n = text n ~ r"^\x22(catalog|sys|prelude)\x22$";
+
+compared_names = do {
+  b <- descendants_of_kind :binary_expression;
+  o <- pure b | children;
+  guard $ (text o == "==") `or` (text o == "!=");
+  side <- pure b | alt #left #right;
+  guard $ engine_literal side;
+  return b;
+};
+
+matched_names = do {
+  p <- descendants_of_kind :match_pattern;
+  guard $ engine_literal p;
+  return p;
+};
+
+relation_values = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f == "values::relation";
+  return c;
+};
+
+type_indexes = do {
+  i <- descendants_of_kind :index_expression;
+  guard $ text i ~ r"(^|\.)types\[\x22";
+  return i;
+};
+
+audited_ctors = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(^|::|\.)(audit|event)_row$";
+  a <- pure c | #arguments | children_of_kind :string_literal;
+  guard $ text a ~ r"^\x22[A-Z]";
+  return c;
+};
+
+hits = (named_lookups `alt` engine_modules `alt` relation_pushes `alt` compared_names `alt` matched_names `alt` relation_values `alt` type_indexes `alt` audited_ctors);
+
+main = collect hits | arr length;

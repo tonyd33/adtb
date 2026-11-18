@@ -1,0 +1,4 @@
+{"results":[
+ {"file":"crates/a/src/lib.rs","values":[[["pub_fields",4],["crate_fields",0],["decode_panics",17]]],"syntax_errors":[],"stats":{}},
+ {"file":"crates/a/src/b.rs","values":[[["pub_fields",0],["crate_fields",2],["decode_panics",3]]],"syntax_errors":[],"stats":{}}
+],"stats":{}}

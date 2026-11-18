@@ -1,0 +1,43 @@
+-- pub_fields: struct fields declared `pub`, of a struct of any visibility. Each such type states its
+-- contract. Fields a macro generates are not counted.
+-- crate_fields: struct fields declared pub(crate), pub(super) or pub(in ..): internal state visible
+-- past its module.
+-- decode_panics: panicking macros, `.expect(` and `.unwrap(`. A decode of bytes read from a page
+-- returns `Result` with its damage cause. The sites left guard values the engine built in memory or
+-- checked first, a caller's latch discipline (heap/named.rs), or a surface built only for tests
+-- and the testing feature (heap/handle/observe.rs).
+
+field_visibility = do {
+  s <- descendants_of_kind :struct_item;
+  body <- pure s | #body;
+  vis <- pure body | alt (children_of_kind :field_declaration | children_of_kind :visibility_modifier) (children_of_kind :visibility_modifier);
+  return $ text vis;
+};
+
+pub_fields = collect (field_visibility | keep (\v -> v == "pub")) | arr length;
+
+crate_fields = collect (field_visibility | keep (\v -> v ~ r"^pub\((crate|super|in )")) | arr length;
+
+panicking_macros = do {
+  m <- descendants_of_kind :macro_invocation;
+  n <- pure m | #macro;
+  guard $ text n ~ r"^(debug_)?(panic|unreachable|assert|assert_eq|assert_ne)$";
+  return m;
+};
+
+panicking_calls = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  m <- pure f | #field;
+  guard $ text m ~ r"^(expect|unwrap)$";
+  return c;
+};
+
+decode_panics = collect (panicking_macros `alt` panicking_calls) | arr length;
+
+main = do {
+  p <- pub_fields;
+  c <- crate_fields;
+  d <- decode_panics;
+  return (("pub_fields", p), ("crate_fields", c), ("decode_panics", d));
+};

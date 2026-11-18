@@ -1,0 +1,7 @@
+// a — b
+/* c — d */
+/// e — f
+fn f() -> &'static str {
+    let r = r"g — h";
+    "i — j"
+}

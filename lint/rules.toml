@@ -1,0 +1,52 @@
+# Each rule runs `tql` with lint/QUERY over the files matching an include glob and no exclude glob
+# (`*` within a path component, `**` across components, relative to the root) and feeds its rows:
+# a zero row prints each site, a ratchet row's per-file counts must equal lint/allowlist.toml.
+
+[[rule]]
+query = "house.tql"
+include = ["crates/**/*.rs", "xtask/**/*.rs"]
+rows = { em-dash = "zero", bold = "zero", section-sign = "zero", rule-id = "zero", doc-verb = "zero", expect-reason = "zero" }
+
+[[rule]]
+query = "structure.tql"
+include = ["crates/*/src/**/*.rs"]
+rows = { pub_fields = "ratchet", crate_fields = "ratchet" }
+
+[[rule]]
+query = "structure.tql"
+include = [
+  "crates/adtb/src/heap/**/*.rs",
+  "crates/adtb/src/catalog/codec.rs",
+  "crates/adtb/src/catalog/layout.rs",
+]
+exclude = ["**/tests.rs", "**/*_tests.rs"]
+rows = { decode_panics = "ratchet" }
+
+[[rule]]
+query = "engine.tql"
+include = ["crates/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
+rows = { engine_names = "ratchet" }
+
+[[rule]]
+query = "engine-var.tql"
+include = ["crates/adtb/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
+rows = { engine_names = "ratchet" }
+
+[[rule]]
+query = "prelude.tql"
+include = ["crates/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
+rows = { prelude_positions = "zero" }
+
+[[rule]]
+query = "simtest.tql"
+include = [
+  "crates/adtb-sim/tests/**/*.rs",
+  "crates/adtb/src/**/tests.rs",
+  "crates/adtb/src/**/*_tests.rs",
+  "crates/adtb/src/**/tests/**/*.rs",
+  "crates/adtb/src/**/test_world/**/*.rs",
+]
+rows = { sim_test_opens = "ratchet" }

@@ -7,7 +7,7 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 cd "$scratch"
 adtb=crates/adtb/src
-mkdir -p work/tools "$adtb/storage" "$adtb/exec" crates/other/tests crates/aa/src
+mkdir -p work/tools "$adtb/storage" "$adtb/exec" crates/aa/src
 
 fail() {
   printf 'structure-check-test: %s\n' "$1" >&2
@@ -32,48 +32,18 @@ refuses() {
   [[ $(cat out.txt) == "$want" ]] || fail "expected '$want', got: $(cat out.txt)"
 }
 
-# Named, tuple, split, attributed and raw-identifier fields count; a macro's fields, pub(self)
-# fields and fields outside src directories do not.
-cat >"$adtb/exec/a.rs" <<'RS'
-pub struct A {
-    pub a: u32,
-    pub(crate) b: u32,
-    pub(super) c: u32,
-    pub(in crate::x) e: u32,
-    pub(self) f: u32,
-    d: u32,
-    #[doc = "x"] pub(crate) g: u32,
-    pub(crate)
-    h:
-        Vec<u8>,
-    pub r#type: u8,
-}
-pub struct T(pub(crate) Inner, pub u8, u8);
-union U {
-    pub z: u32,
-}
-macro_rules! fields {
-    ($f:ident) => {
-        struct M {
-            pub(crate) $f: u32,
-        }
-    };
-}
-fn f() {
-    let _ = x.meta();
-}
-RS
-printf 'pub struct P {\n    pub z: u32,\n}\n' >crates/other/tests/main.rs
-printf 'pub struct Q {\n    pub(crate) z: u32,\n}\n' >crates/aa/src/lib.rs
+# The ratchet: each row's sites are counted per file and must equal the file's allowlist line.
+mkdir -p "$adtb/api"
+printf '%s\n' 'fn f() { e.abort(id, tx)?; self.db.abort(tx).ok(); }' >"$adtb/api/base.rs"
+printf 'fn allows() {}\n' >crates/aa/src/lib.rs
 printf '#[expect(clippy::disallowed_methods, reason = "r")]\nfn a() {}\n#[expect(\n    clippy::disallowed_methods,\n    reason = "r"\n)]\nfn b() {}\n' >"$adtb/exec/b.rs"
 printf '#![expect(clippy::disallowed_methods, reason = "r")]\n' >"$adtb/exec/b_tests.rs"
 
 exact=(
-  'crate_fields prod 1 crates/aa/src/lib.rs'
-  'crate_fields prod 6 crates/adtb/src/exec/a.rs'
+  'api_aborts prod 2 crates/adtb/src/api/base.rs'
+  'crash_allows prod 1 crates/aa/src/lib.rs'
   'disallowed_methods prod 2 crates/adtb/src/exec/b.rs'
   'disallowed_methods test 1 crates/adtb/src/exec/b_tests.rs'
-  'pub_fields prod 4 crates/adtb/src/exec/a.rs'
 )
 passes "${exact[@]}"
 
@@ -81,29 +51,26 @@ passes "${exact[@]}"
 [[ $("$checker" --counts "$scratch") == "$(printf '%s\n' "${exact[@]}")" ]] ||
   fail "--counts printed: $("$checker" --counts "$scratch")"
 
-# A rise in a listed file fails, in each field row.
-printf 'pub struct B {\n    pub e: u32,\n}\n' >>"$adtb/exec/a.rs"
-refuses 'structure-check: pub_fields prod crates/adtb/src/exec/a.rs has 5, allowed 4: remove the sites, do not raise the allowlist' "${exact[@]}"
-printf 'pub struct B2(pub(super) u8);\n' >>"$adtb/exec/a.rs"
-sed -i 's/pub e: u32/e: u32/' "$adtb/exec/a.rs"
-refuses 'structure-check: crate_fields prod crates/adtb/src/exec/a.rs has 7, allowed 6: remove the sites, do not raise the allowlist' "${exact[@]}"
-sed -i '/^pub struct B2/d; /^pub struct B {/,/^}/d' "$adtb/exec/a.rs"
+# A rise in a listed file fails.
+printf '%s\n' 'fn g() { e.abort(id, tx)?; }' >>"$adtb/api/base.rs"
+refuses 'structure-check: api_aborts prod crates/adtb/src/api/base.rs has 3, allowed 2: remove the sites, do not raise the allowlist' "${exact[@]}"
+sed -i '/^fn g/d' "$adtb/api/base.rs"
 passes "${exact[@]}"
 
 # A fall without an allowlist edit fails as stale; the lowered line passes; at 0 the line must go.
-sed -i '/#\[doc = "x"\]/d' "$adtb/exec/a.rs"
-refuses 'structure-check: crate_fields prod crates/adtb/src/exec/a.rs has 5, allowed 6: stale, lower the allowlist line to 5' "${exact[@]}"
-passes 'crate_fields prod 1 crates/aa/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+printf '%s\n' 'fn f() { e.abort(id, tx)?; }' >"$adtb/api/base.rs"
+refuses 'structure-check: api_aborts prod crates/adtb/src/api/base.rs has 1, allowed 2: stale, lower the allowlist line to 1' "${exact[@]}"
+passes 'api_aborts prod 1 crates/adtb/src/api/base.rs' "${exact[@]:1}"
 printf 'fn q() {}\n' >crates/aa/src/lib.rs
-refuses 'structure-check: crate_fields prod crates/aa/src/lib.rs has 0, allowed 1: stale, delete the allowlist line' 'crate_fields prod 1 crates/aa/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
-passes 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+refuses 'structure-check: crash_allows prod crates/aa/src/lib.rs has 0, allowed 1: stale, delete the allowlist line' 'api_aborts prod 1 crates/adtb/src/api/base.rs' "${exact[@]:1}"
+passes 'api_aborts prod 1 crates/adtb/src/api/base.rs' "${exact[@]:2}"
 
 # A site in a file with no line fails; a test file is counted against the test kind alone.
-printf 'pub struct C {\n    pub(crate) z: u32,\n}\n' >"$adtb/exec/new.rs"
-refuses 'structure-check: crate_fields prod crates/adtb/src/exec/new.rs has 1, allowed 0: remove the sites, do not raise the allowlist' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
-rm "$adtb/exec/new.rs"
+printf '%s\n' 'fn f() { e.abort(id, tx)?; }' >"$adtb/api/new.rs"
+refuses 'structure-check: api_aborts prod crates/adtb/src/api/new.rs has 1, allowed 0: remove the sites, do not raise the allowlist' 'api_aborts prod 1 crates/adtb/src/api/base.rs' "${exact[@]:2}"
+rm "$adtb/api/new.rs"
 printf '#![expect(clippy::disallowed_methods, reason = "r")]\n#[expect(clippy::disallowed_methods, reason = "r")]\nfn t() {}\n' >"$adtb/exec/b_tests.rs"
-refuses 'structure-check: disallowed_methods test crates/adtb/src/exec/b_tests.rs has 2, allowed 1: remove the sites, do not raise the allowlist' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+refuses 'structure-check: disallowed_methods test crates/adtb/src/exec/b_tests.rs has 2, allowed 1: remove the sites, do not raise the allowlist' 'api_aborts prod 1 crates/adtb/src/api/base.rs' "${exact[@]:2}"
 
 # An expect counts as test when an item, statement or expression on its path carries `cfg(test)` or
 # `cfg(all(.., test, ..))`, or `cfg_attr(test, ..)` wraps it; any other form is prod. Only the lint
@@ -170,49 +137,12 @@ proptest! {
 }
 RS
 [[ $("$checker" --counts "$scratch") == "$(printf '%s\n' \
-  'crate_fields prod 5 crates/adtb/src/exec/a.rs' \
+  'api_aborts prod 1 crates/adtb/src/api/base.rs' \
   'disallowed_methods prod 2 crates/adtb/src/exec/b.rs' \
   'disallowed_methods test 2 crates/adtb/src/exec/b_tests.rs' \
   'disallowed_methods prod 6 crates/adtb/src/exec/c.rs' \
-  'disallowed_methods test 7 crates/adtb/src/exec/c.rs' \
-  'pub_fields prod 4 crates/adtb/src/exec/a.rs')" ]] || fail "--counts printed: $("$checker" --counts "$scratch")"
+  'disallowed_methods test 7 crates/adtb/src/exec/c.rs')" ]] || fail "--counts printed: $("$checker" --counts "$scratch")"
 rm "$adtb/exec/c.rs"
-
-# An open helper and a page offset count in adtb's unit-test files (`tests.rs`, `*_tests.rs`,
-# `tests/`) and its test world, nested files included, and in no other adtb source.
-mkdir -p "$adtb/heap" "$adtb/plan/tests/deep" "$adtb/test_world/inner"
-helper='fn open_world(rt: u8) {}\nfn at(page: usize) -> usize {\n    page * PAGE\n}\n'
-tested=(heap/x_tests.rs heap/tests.rs plan/tests/deep/case.rs test_world/mod.rs test_world/inner/kit.rs)
-for f in "${tested[@]}" heap/y.rs; do
-  printf '%b' "$helper" >"$adtb/$f"
-done
-counts=$("$checker" --counts "$scratch")
-for f in "${tested[@]}"; do
-  for row in sim_test_opens sim_test_offsets; do
-    grep -qxF "$row test 1 crates/adtb/src/$f" <<<"$counts" || fail "not counted: $row in $f: $counts"
-  done
-done
-! grep -q 'sim_test_\w* .* crates/adtb/src/heap/y.rs' <<<"$counts" || fail "counted adtb source outside its tests: $counts"
-rm -r "$adtb/heap" "$adtb/plan" "$adtb/test_world"
-
-# A structure listing counts in adtb's production sources outside catalog/structures.rs; the
-# pager's own definitions and calls do not.
-mkdir -p "$adtb/catalog" "$adtb/write"
-printf 'fn holders() {}
-fn f() {
-    pager.holders_meeting(p, |h| h.walk(Holder::Free, w));
-    let i = Inventory { sums };
-}
-' >"$adtb/write/q.rs"
-cp "$adtb/write/q.rs" "$adtb/catalog/structures.rs"
-printf 'pub fn holders_of() {
-    self.holders_meeting(p)
-}
-' >"$adtb/storage/quarantine.rs"
-counts=$("$checker" --counts "$scratch")
-grep -qxF 'structure_listings prod 4 crates/adtb/src/write/q.rs' <<<"$counts" || fail "not counted: structure_listings: $counts"
-! grep -q 'structure_listings .* crates/adtb/src/\(catalog\|storage\)/' <<<"$counts" || fail "counted structures.rs or the pager: $counts"
-rm -r "$adtb/catalog" "$adtb/write" "$adtb/storage/quarantine.rs"
 
 # A mark set or held, and an index named as a mark or imported bare, count in production
 # sources outside the policy table and the codec; a read of the marks and a test do not.
@@ -276,93 +206,6 @@ grep -qxF 'api_aborts prod 2 crates/adtb/src/api/a.rs' <<<"$counts" || fail "not
 ! grep -q 'api_aborts .*a_tests.rs\|api_aborts .*write/' <<<"$counts" || fail "counted a test or write: $counts"
 rm -r "$adtb/api" "$adtb/write"
 
-# decode_panics counts each counted form in production sources of the heap and in catalog/codec.rs
-# and catalog/layout.rs, not in their tests or another catalog file.
-mkdir -p "$adtb/heap/handle" "$adtb/catalog"
-printf '%s\n' 'fn f() { panic!("a"); unreachable!(); x.expect("b"); y.unwrap_or_else(|| panic!("c")); z.unwrap(); assert!(p); assert_eq!(1, q); z.unwrap_or(0); }' >"$adtb/heap/handle/mod.rs"
-for f in heap/handle_tests.rs heap/tests.rs catalog/codec.rs catalog/layout.rs catalog/rows.rs; do
-  cp "$adtb/heap/handle/mod.rs" "$adtb/$f"
-done
-counts=$("$checker" --counts "$scratch")
-for f in heap/handle/mod.rs catalog/codec.rs catalog/layout.rs; do
-  grep -qxF "decode_panics prod 7 crates/adtb/src/$f" <<<"$counts" || fail "not counted: decode_panics $f: $counts"
-done
-[[ $(grep -c '^decode_panics ' <<<"$counts") == 3 ]] || fail "counted a test or another catalog file: $counts"
-rm -r "$adtb/heap" "$adtb/catalog"
-
-# kernel_door counts calls of `add_unchecked`, by method or path, across lines and in tests, not its
-# definition.
-mkdir -p crates/lang/src
-printf '%s\n' 'pub fn add_unchecked(&mut self) {}' 'fn f() { t.add_unchecked(k, ty); t' '    .add_unchecked(k, ty); Terms::add_unchecked(t, k, ty); t.add(k, ty); }' >crates/lang/src/k.rs
-cp crates/lang/src/k.rs crates/lang/src/k_tests.rs
-counts=$("$checker" --counts "$scratch")
-grep -qxF 'kernel_door prod 3 crates/lang/src/k.rs' <<<"$counts" || fail "not counted: kernel_door: $counts"
-grep -qxF 'kernel_door test 3 crates/lang/src/k_tests.rs' <<<"$counts" || fail "test not counted: kernel_door: $counts"
-rm -r crates/lang
-
-# kernel_overwrite counts calls of `overwrite_kind`, by method or path, not its definition.
-mkdir -p crates/lang/src
-printf '%s\n' 'pub fn overwrite_kind(&mut self) {}' 'fn f() { t.overwrite_kind(n, k); t' '    .overwrite_kind(n, k); Terms::overwrite_kind(t, n, k); t.overwrite(n); }' >crates/lang/src/k.rs
-counts=$("$checker" --counts "$scratch")
-grep -qxF 'kernel_overwrite prod 3 crates/lang/src/k.rs' <<<"$counts" || fail "not counted: kernel_overwrite: $counts"
-rm -r crates/lang
-
-# id_sentinels counts an id of `u32::MAX`, a `FileId`'s included, and a comparison with it, in
-# tests too, not the definition of a named constant.
-mkdir -p crates/lang/src
-printf '%s\n' 'pub const PRELUDE: FileId = FileId(u32::MAX);' 'pub const HEADER: FileId = FileId(u32::MAX - 2);' \
-  'fn f() { FileId(u32::MAX - 2); RelId(u32::MAX); m.0 == u32::MAX; FileId::HEADER; }' \
-  'fn g() { let f: FileId = FileId(u32::MAX - 3); }' >crates/lang/src/s.rs
-cp crates/lang/src/s.rs crates/lang/src/s_tests.rs
-counts=$("$checker" --counts "$scratch")
-grep -qxF 'id_sentinels prod 4 crates/lang/src/s.rs' <<<"$counts" || fail "not counted: id_sentinels: $counts"
-grep -qxF 'id_sentinels test 4 crates/lang/src/s_tests.rs' <<<"$counts" || fail "test not counted: id_sentinels: $counts"
-rm -r crates/lang
-
-# engine_names counts lookups of an engine module, relation, type or constructor by its spelling in
-# production sources, and in adtb a lookup of a module by a variable's text; not a user module
-# named as a literal, a lookup by fixed id, or tests.
-mkdir -p crates/lang/src "$adtb/catalog"
-cat >crates/lang/src/n.rs <<'RS'
-fn f() {
-    s.module_named("catalog"); s.module_named("sys"); s
-        .module_named("prelude"); s.module_named_in("catalog", scope);
-    values::relation(schema, "bundles"); values::relation(to, &name);
-    in_relation("catalog", "roles", "Role"); in_type("catalog", "GrantKind", "Log");
-    td.ctor_named("Service"); td.ctor_index("Log"); s.module(m).types["Setting"];
-    match m { "catalog" => 1, _ => 0 }; m.text == "prelude"; "sys" != m;
-    self.push("relations", "Relation", fields); self.ctor("Priority", "AdHoc");
-    self.audit_row(e, changes, "Grant", who, event);
-    s.module_named(m); s.module_named("app"); engine_relation(schema, engine_rel::JOBS);
-    td.ctor_named(&c.text); values::tag(schema, k::GRANT_LOG);
-}
-RS
-cp crates/lang/src/n.rs crates/lang/src/n_tests.rs
-printf '%s\n' 'fn f() { s.module_named(m); s.module_named(&q.text); s.module_named("app"); }' >"$adtb/catalog/n.rs"
-counts=$("$checker" --counts "$scratch")
-grep -qxF 'engine_names prod 17 crates/lang/src/n.rs' <<<"$counts" || fail "not counted: engine_names: $counts"
-grep -qxF 'engine_names prod 2 crates/adtb/src/catalog/n.rs' <<<"$counts" || fail "not counted: engine_names in adtb: $counts"
-! grep -q 'engine_names .*n_tests.rs' <<<"$counts" || fail "counted a test: $counts"
-rm -r crates/lang "$adtb/catalog"
-
-# prelude_positions counts each literal constructor position form in production sources, not a
-# named position or a test.
-mkdir -p crates/lang/src
-cat >crates/lang/src/p.rs <<'RS'
-m! {
-    Value::Ctor(1, fs); Val::tag(0); Val::Ctor(2, _); Val::ctor(1, vs); V::of_ctor(u32::from(b), v);
-    b.ctor(0, tms, ty); Kind::Ctor { ctor: 1, .. }; ctor == 1; *c == u32::from(value);
-    Value::Ctor(c @ (0 | 1), fs); *c <= 1; v.tag() == Some(1); v.tag() != Some(0); 3 => Rounding::Up,
-    Val::ctor(ctor::SOME, vs); Kind::Ctor { ctor: ctor::TRUE, .. }; ctor == ctor::bool(b);
-    v.tag() == Some(ctor::REJECT); ctor::UP => Rounding::Up,
-}
-RS
-cp crates/lang/src/p.rs crates/lang/src/p_tests.rs
-counts=$("$checker" --counts "$scratch")
-grep -qxF 'prelude_positions prod 14 crates/lang/src/p.rs' <<<"$counts" || fail "not counted: prelude_positions: $counts"
-! grep -q 'prelude_positions .*p_tests.rs' <<<"$counts" || fail "counted a test: $counts"
-rm -r crates/lang
-
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then
@@ -373,19 +216,19 @@ grep -qxF 'structure-check: work/tools/structure-allowlist: bad line: meta prod 
 
 # A count above the base revision's allowlist fails, however the tree stands.
 jj git init . >/dev/null 2>&1
-printf '%s\n' '# header' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' 'pub_fields prod 4 crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
+printf '%s\n' '# header' 'api_aborts prod 5 crates/adtb/src/api/base.rs' 'crash_allows prod 4 crates/aa/src/lib.rs' >work/tools/structure-allowlist
 jj file track --include-ignored work/tools/structure-allowlist >/dev/null 2>&1
 jj describe -m base >/dev/null 2>&1
 jj new >/dev/null 2>&1
-printf '%s\n' '# header' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' 'pub_fields prod 3 crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
+printf '%s\n' '# header' 'api_aborts prod 5 crates/adtb/src/api/base.rs' 'crash_allows prod 3 crates/aa/src/lib.rs' >work/tools/structure-allowlist
 "$checker" --against @- "$scratch" >out.txt 2>&1 || fail "a fall against the base refused: $(cat out.txt)"
-printf '%s\n' '# header' 'crate_fields prod 6 crates/adtb/src/exec/a.rs' 'pub_fields prod 3 crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
+printf '%s\n' '# header' 'api_aborts prod 6 crates/adtb/src/api/base.rs' 'crash_allows prod 3 crates/aa/src/lib.rs' >work/tools/structure-allowlist
 if "$checker" --against @- "$scratch" >out.txt 2>&1; then
   fail "a raised count passed against the base"
 fi
-[[ $(cat out.txt) == 'structure-check: crate_fields prod crates/adtb/src/exec/a.rs allows 6, the allowlist at the base allows 5: a rise is the lead'"'"'s act on main' ]] ||
+[[ $(cat out.txt) == 'structure-check: api_aborts prod crates/adtb/src/api/base.rs allows 6, the allowlist at the base allows 5: a rise is the lead'"'"'s act on main' ]] ||
   fail "rise against the base: $(cat out.txt)"
-printf '%s\n' '# header' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' 'pub_fields prod 3 crates/adtb/src/exec/a.rs' 'disallowed_methods prod 1 crates/adtb/src/exec/b.rs' >work/tools/structure-allowlist
+printf '%s\n' '# header' 'api_aborts prod 5 crates/adtb/src/api/base.rs' 'crash_allows prod 3 crates/aa/src/lib.rs' 'disallowed_methods prod 1 crates/adtb/src/exec/b.rs' >work/tools/structure-allowlist
 if "$checker" --against @- "$scratch" >out.txt 2>&1; then
   fail "a new line passed against the base"
 fi

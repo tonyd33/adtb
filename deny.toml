@@ -182,6 +182,14 @@ allow = [
     "indexmap",
     "equivalent",
     "foldhash",
+    # TOML for xtask's lint rules and allowlist, and serde's derive xtask reads them with; xtask only.
+    "toml",
+    "toml_parser",
+    "toml_datetime",
+    "serde_spanned",
+    "winnow",
+    "serde",
+    "serde_derive",
     # Read plan documents in engine scripts, and what it uses.
     "serde_json",
     "serde_core",

@@ -317,14 +317,13 @@ depend on `adtb-simkit`, which links a second `adtb`.
   `Database::open_in` in its own body, and a world through `Storage`. A
   test may call `Database::open_in` and `Sim::crash_at` directly, to
   test the public open and the simulator.
-- Local open helpers remain. `work/tools/structure-allowlist` counts
+- Local open helpers remain. `lint/allowlist.toml` counts
   them, in `adtb-sim`'s tests and in `adtb`'s unit-test files
   (`tests.rs`, `*_tests.rs`, `tests/`) and `test_world`, by name:
   functions taking parameters whose name begins or ends with an `open`
   form, closures bound to an `open` form, and `fn engine`
   where it opens the engine. A helper under another name is not
-  counted. The size products left are counted the same way. The counts
-  only fall.
+  counted. The counts only fall.
 
 `adtb_harness`:
 

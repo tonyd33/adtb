@@ -10,8 +10,8 @@
 # structure-check --counts [DIR]   print the allowlist lines for the counts found
 #
 # The rows, their rules and the allowlist format are in the header of structure-allowlist. This
-# tool owns the patterns; no other tool counts them. Field rows and the disallowed_methods row
-# come from the adtb-structure binary, which parses the sources; the other rows are text matches.
+# tool owns the patterns; no other tool counts them. The disallowed_methods row comes from the
+# adtb-structure binary, which parses the sources; the other rows are text matches.
 set -euo pipefail
 
 mode=check
@@ -57,28 +57,17 @@ count_under() {
   awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
 }
 
-# Print `ROW PATH COUNT` for each unit-test file of adtb (`tests.rs`, `*_tests.rs`, `tests/`,
-# `test_world/`) with matches of pattern $2, passing rg the flags $3...
-count_adtb_tests() {
-  local row=$1 pattern=$2 dir=crates/adtb/src out
-  shift 2
-  [[ -d $dir ]] || return 0
-  out=$(rg --no-ignore --count-matches --no-heading -g 'tests.rs' -g '*_tests.rs' -g '**/tests/**/*.rs' -g '**/test_world/**/*.rs' "$@" -- "$pattern" "$dir" || [[ $? == 1 ]])
-  awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
-}
-
-# Print `ROW PATH COUNT` of the field rows for files in src directories, and of the
-# disallowed_methods row for every file, `disallowed_methods_test` for an expect under cfg(test).
-fields() {
+# Print `ROW PATH COUNT` of the disallowed_methods row for every file, `disallowed_methods_test`
+# for an expect under cfg(test).
+disallowed() {
   ((${#roots[@]})) || return 0
-  cargo run --quiet --locked --offline --manifest-path "$tools_root/Cargo.toml" -p adtb-structure -- "${roots[@]}" |
-    awk '$1 ~ /^disallowed_methods/ || $2 ~ /^crates\/[^\/]+\/src\//'
+  cargo run --quiet --locked --offline --manifest-path "$tools_root/Cargo.toml" -p adtb-structure -- "${roots[@]}"
 }
 
 # Print the lines `ROW KIND COUNT FILE`, test files apart from production ones.
 found_counts() {
   {
-    fields
+    disallowed
     count crash_loops '\bfn \w*crash_loop\w*\b'
     count_under database_marks crates '(?<!is_quarantined\(|is_quarantined\(storage::|quarantined_name\(|&\[object, |for object in std::iter::once\(|quarantined_as\(&BTreeSet::from\(\[|1 => Some\()(storage::)?Quarantine::Database(?! =>)|\bMark::(Database|Held)\b' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/storage/policy.rs'
     count_under mark_setters crates '\.quarantine\(|\bmarks\(\)\s*\.(hold|change)\(' -P -U -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
@@ -86,28 +75,6 @@ found_counts() {
     count_under index_marks crates '(?<!is_quarantined\(|== |contains\(&|marked\(|matches!\(m, |\(id, _\)\| |release = Some\(|Ok\()(storage::)?Quarantine::Index\b|\bQuarantine::(\*|\{[^}]*\bIndex\b)' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/storage/policy.rs' -g '!**/storage/quarantine.rs'
     count_under api_aborts crates/adtb/src/api '\.abort\(' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**'
     count crash_allows '\bfn allows\b'
-    count_under decode_panics crates/adtb/src/heap 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|assert_ne!|\.unwrap\(\)' -g '!tests.rs' -g '!*_tests.rs'
-    count_under decode_panics crates/adtb/src/catalog 'panic!|unreachable!|\.expect\(|unwrap_or_else\(\|\| panic!|assert!|assert_eq!|assert_ne!|\.unwrap\(\)' -g '!*' -g 'codec.rs' -g 'layout.rs'
-    for dir in crates; do
-      count_under id_sentinels "$dir" '(?<!const [A-Z_]{1,64}: FileId = )\b(RelId|TypeId|FnId|ModuleId|FileId)\(u32::MAX|\.0 (==|!=) u32::MAX\b' -P -g '!**/target/**'
-      count_under engine_names "$dir" '\bmodule_named(_in)?\("(catalog|sys|prelude)"|\bvalues::relation\(|\bin_(relation|type)\("|\b(ctor_named|ctor_index)\("|\btypes\["|"(catalog|sys|prelude)" (=>|==|!=)|(==|!=) "(catalog|sys|prelude)"|\bself\.ctor\("|\b(audit|event)_row\([^;]*?, "[A-Z]' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
-      count_under engine_names "$dir" '\b\w+\.push\(\s*"[a-z_]+",' -P -U -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
-    done
-    count_under engine_names crates/adtb/src '\bmodule_named(_in)?\((?!")' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
-    count kernel_door '(\.|Terms::)add_unchecked\('
-    count kernel_overwrite '(\.|Terms::)overwrite_kind\('
-    for dir in crates; do
-      count_under prelude_positions "$dir" '(Value::Ctor|Val::tag|Val::Ctor|Val::ctor|of_ctor|\.ctor)\((u32::from|[0-9])|\bctor: ([0-9]\b|u32::from)|\bctor == ([0-9]\b|u32::from)|== u32::from\(|c @ \(0 \| 1\)|\*c <= 1|\btag\(\) (==|!=) Some\([0-9]|\b[0-9] => Rounding::' -P -g '!**/target/**' -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**'
-    done
-    for dir in crates; do
-      count_under denial_zips "$dir" '\.zip\([^);]*\b(checks|constraints)\b|\b(checks|constraints)\b[^;{}]*?\.zip\(' -P -U -g '!**/target/**'
-    done
-    count_under structure_listings crates/adtb/src '\bfn (holders|opens_from|inventory)\b|(?<!fn |self\.)\bholders_(of|meeting)\(|\.walk\(Holder::|\bInventory \{' -P -g '!tests.rs' -g '!*_tests.rs' -g '!**/tests/**' -g '!**/test_world/**' -g '!**/catalog/structures.rs'
-    count_under sim_test_opens crates/adtb-sim/tests '\bfn ((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)(<[^>]*>)?\((?!\))|\blet (mut )?(re)?open(ed|s|ing)? = (move )?\||\bfn engine\b[^{;]*\{\s*(let \w+ = )?Engine::open' -P -U
-    count_adtb_tests sim_test_opens '\bfn ((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)(<[^>]*>)?\((?!\))|\blet (mut )?(re)?open(ed|s|ing)? = (move )?\||\bfn engine\b[^{;]*\{\s*(let \w+ = )?Engine::open' -P -U
-    count_under sim_test_damage crates/adtb-sim/tests '\bfn (flip|zeroed|damage|damaged_part)\b'
-    count_under sim_test_offsets crates/adtb-sim/tests '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
-    count_adtb_tests sim_test_offsets '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
   } | awk '
     { test = ($1 == "disallowed_methods_test"); if (test) $1 = "disallowed_methods"
       kind = (test || $2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/ || $2 ~ /\/test_world\//) ? "test" : "prod"
@@ -161,7 +128,7 @@ found=$(found_counts)
 awk -v list="$allowlist" '
   function note(msg) { print "structure-check: " msg; bad = 1 }
   BEGIN {
-    split("crate_fields pub_fields decode_panics disallowed_methods database_marks structure_listings mark_setters index_marks marked_readers api_aborts crash_loops crash_allows id_sentinels engine_names kernel_door kernel_overwrite prelude_positions denial_zips sim_test_opens sim_test_damage sim_test_offsets", names, " ")
+    split("disallowed_methods database_marks mark_setters index_marks marked_readers api_aborts crash_loops crash_allows", names, " ")
     for (i in names) row[names[i]] = 1
     while ((getline line < list) > 0) {
       if (line ~ /^[[:space:]]*(#|$)/) continue

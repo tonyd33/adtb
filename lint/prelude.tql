@@ -1,0 +1,53 @@
+-- prelude_positions: a constructor position other than 0 written as a literal or as `u32::from` of a
+-- bool. A prelude constructor is named by `schema::prelude::ctor`.
+
+import Data.List (take);
+
+first_arg = Filter (\x -> take 1 (run (#arguments | named_children) x));
+
+position n = text n ~ r"^([1-9][0-9]*$|u32::from\()";
+
+constructed = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(Value::Ctor|Val::tag|Val::Ctor|Val::ctor|of_ctor|\.ctor)$";
+  a <- pure c | first_arg;
+  guard $ position a;
+  return c;
+};
+
+initialised = do {
+  i <- descendants_of_kind :field_initializer;
+  f <- pure i | #field;
+  guard $ text f == "ctor";
+  v <- pure i | #value;
+  guard $ position v;
+  return i;
+};
+
+compared = do {
+  b <- descendants_of_kind :binary_expression;
+  o <- pure b | #operator;
+  guard $ text o ~ r"^(==|!=|<=)$";
+  l <- pure b | #left;
+  r <- pure b | #right;
+  guard $ ((text l == "ctor") `and` position r) `or` (text r ~ r"^u32::from\(") `or` (text b ~ r"^\*c <= 1$") `or` ((text l ~ r"\.tag\(\)$") `and` (text r ~ r"^Some\([1-9]"));
+  return b;
+};
+
+ranged = do {
+  p <- descendants_of_kind :captured_pattern;
+  guard $ text p ~ r"@ \(0 \| 1\)$";
+  return p;
+};
+
+rounded = do {
+  a <- descendants_of_kind :match_arm;
+  p <- pure a | #pattern;
+  guard $ position p;
+  v <- pure a | #value;
+  guard $ text v ~ r"^Rounding::";
+  return a;
+};
+
+main = constructed `alt` initialised `alt` compared `alt` ranged `alt` rounded | arr range;

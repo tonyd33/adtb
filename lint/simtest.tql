@@ -1,0 +1,40 @@
+-- sim_test_opens: an open helper of a test, by name. A test opens through adtb_simkit::open or
+-- test_world::fixture::Storage, or calls `Database::open_in` in its own body. The sites left are
+-- local open helpers and helpers whose names only mention an open.
+
+import Data.List (take);
+
+open_fn = r"^((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)$";
+open_let = r"^(re)?open(ed|s|ing)?$";
+
+helpers = do {
+  f <- descendants_of_kind :function_item;
+  n <- pure f | #name;
+  guard $ text n ~ open_fn;
+  p <- pure f | #parameters;
+  guard $ length (run named_children p) > 0;
+  return f;
+};
+
+closures = do {
+  l <- descendants_of_kind :let_declaration;
+  p <- pure l | #pattern;
+  guard $ text p ~ open_let;
+  v <- pure l | #value;
+  guard $ is_kind :closure_expression v;
+  return l;
+};
+
+engines = do {
+  f <- descendants_of_kind :function_item;
+  n <- pure f | #name;
+  guard $ text n == "engine";
+  b <- pure f | #body;
+  first <- pure b | Filter (\x -> take 1 (run named_children x));
+  guard $ text first ~ r"^(let \w+ = )?Engine::open";
+  return f;
+};
+
+opens = collect (helpers `alt` closures `alt` engines) | arr length;
+
+main = opens;

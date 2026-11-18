@@ -1,0 +1,9 @@
+{"results":[
+ {"file":"crates/a/src/lib.rs","values":[
+  ["doc-verb",{"end_byte":19341,"end_point":{"column":0,"row":611},"start_byte":19279,"start_point":{"column":4,"row":610}}],
+  ["em-dash",{"end_byte":120,"end_point":{"column":30,"row":3},"start_byte":100,"start_point":{"column":10,"row":3}}],
+  ["doc-verb",{"end_byte":200,"end_point":{"column":0,"row":9},"start_byte":180,"start_point":{"column":0,"row":8}}],
+  ["bold",{"end_byte":20,"end_point":{"column":20,"row":0},"start_byte":0,"start_point":{"column":0,"row":0}}]
+ ],"syntax_errors":[],"stats":{}},
+ {"file":"crates/a/src/b.rs","values":[],"syntax_errors":[],"stats":{}}
+],"stats":{}}

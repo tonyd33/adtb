@@ -63,7 +63,7 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
   tree. Database, language or shared-runtime production changes and unbounded
   impact get one full check. Name one owner so author and lead do not duplicate it.
 - Authors run `cargo xtask check main..@` for their round: every part, then
-  `structure-check --against` and `house-check` over the range. After `land`, reuse the
+  `lint --against` and `structure-check --against` the range's base. After `land`, reuse the
   receipt when `jj diff --from TESTED --to main --summary` is empty, TESTED the checked
   revision; else rerun `cargo xtask check` on main.
 - A track that adds or changes a seeded search in `adtb-sim` runs those tests under
@@ -182,7 +182,7 @@ that the worker is unblocked.
 - Run at most 2 tracks that build at once, until the maintainer says otherwise: tracks spend most of their time waiting on builds. A read-only track, one that runs no build, is exempt. Run at most 5 agents at once in all.
 - In a fix round, ask for no failing-evidence builds; the reviewer's reproduction is the evidence. Judge a test's worth by what it checks, not by a mutation. Let the author run its post-review `cargo xtask check` while the delta reviewer reads.
 - When a track lands, dispatch the next brief before reporting to the user. Do not wait for main's `cargo xtask check` to dispatch: start it and the next track together. Commit nothing to main while it runs. If it fails, fix main and have the running track rebase onto the fix.
-- A brief's Report asks for one `cargo xtask check REVSET` plus only the runs it does not hold (a deep search, `cargo conformance`, a reopen script), never the suite, a package's tests or the damage profile beside it. A note-only round after a review with no blocker asks for fmt, clippy, house-check and the touched files' tests.
+- A brief's Report asks for one `cargo xtask check REVSET` plus only the runs it does not hold (a deep search, `cargo conformance`, a reopen script), never the suite, a package's tests or the damage profile beside it. A note-only round after a review with no blocker asks for fmt, clippy, `cargo xtask lint` and the touched files' tests.
 - A review of a large surface always finds something, so "until a review is clean" does not end. A blocker is a defect this track's diff introduces or makes reachable, that loses acknowledged data or gives a wrong answer through normal use, or structure the diff adds without an owner: state or an invariant that no one module owns behind private fields, an internal made visible past its module, a fix that adds a rule every caller must remember instead of an operation that keeps it, or a contract the diff relies on that no design or module doc states. Anything else, including a defect the base already has, goes on a ticket, and severe ones go first in the queue. Holding a track back does not protect anyone from a bug already on main. A track gets at most one delta review after its redesign, limited to that round's diff; a further blocker is fixed and checked with no new review. Past that, land or abandon it, and say which.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
@@ -204,8 +204,7 @@ Ask a fresh reviewer to challenge those layers and their responsibility placemen
 Passing tests do not justify unnecessary machinery.
 
 1. Review the workspace's diff against its brief and the rulings, and run
-   `work/tools/house-check DIR --from BASE --to NAME@`, with DIR the track's directory, and the track's base.
-   Without a range it checks only the working copy, which is empty once the agent commits.
+   `cargo xtask lint --against BASE` in the track's directory, with BASE the track's base.
 2. Run `work/tools/land NAME 'SUBJECT'` with the workspace name, not its
    directory. Propose SUBJECT to the user first unless they allowed
    commits without it. It snapshots the workspace, refuses while the

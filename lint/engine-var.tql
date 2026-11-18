@@ -1,0 +1,10 @@
+-- engine_names in crates/adtb/src: `module_named` or `module_named_in` of a variable's text.
+
+main = collect (do {
+  c <- descendants_of_kind :call_expression;
+  m <- pure c | #function | #field;
+  guard $ text m ~ r"^module_named(_in)?$";
+  a <- pure c | #arguments | named_children;
+  guard $ not (text a ~ r"^\x22");
+  return c;
+}) | arr length;
