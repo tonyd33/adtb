@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-16
-status: open
+status: resolved
+closed: 2026-11-17
 kind: feature
 priority: 115
 summary: "decoding a row or key from a page panics on a stored tag or form it does not know, where damage should be reported"
@@ -38,3 +39,7 @@ Split by the lead into three parts after the count (92 production sites, 6 on pa
 Remaining. Part 2, slot and header framing: slotted.rs line-pointer state, `Header::read` on a short slot, the large-store sweep and insert asserts and its `read` length assert, `Layout::split`/`Layout::decode`/`Reader::take`/`uvarint` slicing, row.rs `get_scalar`; a multi-chunk value is blamed on its first chunk's page; prune's refusal and `stretch`'s seen-restore untested. Resolves version-refuse-short-slot-panics and large-store-damage-panics. Part 3, index entry constructor id in `entries` and `fetch_past`: resolves index-entry-unmapped-ctor-panics. The row does not count `assert!`, `.unwrap()` or slicing.
 
 Part 2 landed 2026-11-17 as `fix: report slot and chunk framing that does not decode as damage of its page`: one frame gate (`slotted::framed`/`fault`) behind every `HeapPage`, blame by evidence in the large store, `decode_panics` extended to assert!/assert_eq!/.unwrap() (134 recounted at main, 127 after). Resolved version-refuse-short-slot-panics and large-store-damage-panics. Cost filed as heap-frame-gate-per-fetch. Remaining: part 3, index entry constructor id (index-entry-unmapped-ctor-panics).
+
+## Resolution 2026-11-17
+
+Exit met 2026-11-17 with part 3. The `decode_panics` row (now counting panic!, unreachable!, .expect(, unwrap_or_else(|| panic!, assert!, assert_eq!, assert_ne!, .unwrap() in production heap/, catalog/codec.rs, catalog/layout.rs) holds no site page bytes reach, by the audits in the three parts' receipts and part 3's review; it only falls. Instances resolved: heap-unknown-stored-tag-panics, version-refuse-short-slot-panics, large-store-damage-panics, index-entry-unmapped-ctor-panics. Follow-up: heap-frame-gate-per-fetch.
