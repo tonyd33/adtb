@@ -60,7 +60,7 @@ use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Committed, Schema};
 use adtb_lang::span::Diag;
-use adtb_lang::types::RelId;
+use adtb_lang::types::{KeyForm, RelId, Ty};
 
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
@@ -1190,9 +1190,27 @@ struct Checked {
 
 impl Checked {
     /// Returns `source` with its schema and program. Fail with [`Broken::Unsettled`] when the
-    /// schema takes a relation as added later.
+    /// schema takes a relation as added later, and with [`Error::Refused`] when an index element
+    /// is a set.
     fn new(source: Source, schema: Schema, program: Program) -> Result<Checked, Error> {
         let texts = ElementTexts::of(&source, &schema);
+        let sets: Vec<String> = program
+            .index_fields
+            .iter()
+            .filter(|(_, f)| {
+                matches!(program.terms.ty(f.value), Ty::Fn(_, t) if t.key_form() == Some(KeyForm::Entries))
+            })
+            .map(|(&(r, i, j), _)| {
+                format!(
+                    "index element `{}` of `{}` is a set: an index with an entry for each element of a set does not run in this engine yet",
+                    texts.get(r, i, j),
+                    schema.relation(r).name
+                )
+            })
+            .collect();
+        if !sets.is_empty() {
+            return Err(Error::Refused(sets));
+        }
         Ok(Checked {
             source,
             schema: committed(schema)?,

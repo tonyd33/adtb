@@ -425,7 +425,7 @@ impl Objects<'_> {
                     }
                 }
                 (
-                    RelationClause::Unique(fs, scope)
+                    RelationClause::Unique(fs, scope, _)
                     | RelationClause::Index {
                         fields: fs, scope, ..
                     },

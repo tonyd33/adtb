@@ -812,7 +812,7 @@ impl Cx<'_> {
                 Decl::Relation(rd) if home == module && rd.name.name.text == name => {
                     for c in &rd.clauses {
                         match c {
-                            RelationClause::Unique(_, Some(s))
+                            RelationClause::Unique(_, Some(s), _)
                             | RelationClause::Index { scope: Some(s), .. } => {
                                 found.extend(scope_idents(s).into_iter().cloned());
                             }

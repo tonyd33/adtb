@@ -96,7 +96,7 @@ impl Cx<'_> {
             };
             for (n, cl) in rd.clauses.iter().enumerate() {
                 let only = match cl {
-                    RelationClause::Unique(_, Some(s))
+                    RelationClause::Unique(_, Some(s), _)
                     | RelationClause::Index { scope: Some(s), .. } => schema
                         .relation_sel(*rel, &scope_sel(s))
                         .ok()

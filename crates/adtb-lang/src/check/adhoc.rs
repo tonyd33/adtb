@@ -644,7 +644,7 @@ impl Checker<'_> {
     ) -> R<Vec<IndexField>> {
         fields
             .iter()
-            .map(|e| self.index_field(rel, scope.clone(), e))
+            .map(|e| Ok(self.index_field(rel, scope.clone(), e)?.0))
             .collect()
     }
 

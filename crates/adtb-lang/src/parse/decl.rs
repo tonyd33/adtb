@@ -120,9 +120,9 @@ impl Parser<'_> {
         }
         if self.at_word("unique") && self.peek(1).tok == Tok::LParen {
             self.bump();
-            let fields = self.index_fields()?;
+            let (fields, texts) = self.index_elements()?;
             let scope = self.scope_after_in()?;
-            return Ok(Some(RelationClause::Unique(fields, scope)));
+            return Ok(Some(RelationClause::Unique(fields, scope, texts)));
         }
         let interval = self.at_word("interval") && self.peek_word(1, "index");
         if interval || (self.at_word("index") && self.peek(1).tok == Tok::LParen) {
@@ -130,11 +130,12 @@ impl Parser<'_> {
                 self.bump();
             }
             self.bump();
-            let fields = self.index_fields()?;
+            let (fields, texts) = self.index_elements()?;
             let scope = self.scope_after_in()?;
             return Ok(Some(RelationClause::Index {
                 interval,
                 fields,
+                texts,
                 scope,
             }));
         }

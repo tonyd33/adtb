@@ -234,9 +234,17 @@ pub enum Generator {
 #[derive(Clone, Debug)]
 pub struct IndexDef {
     pub fields: Vec<ast::Expr>,
+    texts: Vec<String>,
     pub scope: Option<CtorSet>,
     pub interval: bool,
     pub unique: bool,
+}
+
+impl IndexDef {
+    /// Returns the tokens of field `k`, joined by spaces.
+    pub fn text(&self, k: usize) -> &str {
+        &self.texts[k]
+    }
 }
 
 #[derive(Clone, Debug)]

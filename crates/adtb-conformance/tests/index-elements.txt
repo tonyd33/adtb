@@ -1,0 +1,90 @@
+base:I8	bare	index,unique	v: I8	{ id: $, n: 1, v: 1 }	v	admitted
+base:I8	record	index,unique	v: I8	{ id: $, n: 1, v: 1 }	{ a: v }	admitted
+base:I8	sum	index,unique	v: I8	{ id: $, n: 1, v: 1 }	Some { value: v }	admitted
+base:I16	bare	index,unique	v: I16	{ id: $, n: 1, v: 1 }	v	admitted
+base:I16	record	index,unique	v: I16	{ id: $, n: 1, v: 1 }	{ a: v }	admitted
+base:I16	sum	index,unique	v: I16	{ id: $, n: 1, v: 1 }	Some { value: v }	admitted
+base:I32	bare	index,unique	v: I32	{ id: $, n: 1, v: 1 }	v	admitted
+base:I32	record	index,unique	v: I32	{ id: $, n: 1, v: 1 }	{ a: v }	admitted
+base:I32	sum	index,unique	v: I32	{ id: $, n: 1, v: 1 }	Some { value: v }	admitted
+base:I64	bare	index,unique,interval index	v: I64	{ id: $, n: 1, v: 1 }	v	admitted
+base:I64	record	index,unique	v: I64	{ id: $, n: 1, v: 1 }	{ a: v }	admitted
+base:I64	sum	index,unique	v: I64	{ id: $, n: 1, v: 1 }	Some { value: v }	admitted
+base:Decimal	bare	index,unique	v: Decimal 2	{ id: $, n: 1, v: 1.50 }	v	admitted
+base:Decimal	record	index,unique	v: Decimal 2	{ id: $, n: 1, v: 1.50 }	{ a: v }	admitted
+base:Decimal	sum	index,unique	v: Decimal 2	{ id: $, n: 1, v: 1.50 }	Some { value: v }	admitted
+base:F32	bare	index,unique	v: F32	{ id: $, n: 1, v: 1.5 }	v	admitted
+base:F32	record	index,unique	v: F32	{ id: $, n: 1, v: 1.5 }	{ a: v }	admitted
+base:F32	sum	index,unique	v: F32	{ id: $, n: 1, v: 1.5 }	Some { value: v }	admitted
+base:F64	bare	index,unique	v: F64	{ id: $, n: 1, v: 1.5 }	v	admitted
+base:F64	record	index,unique	v: F64	{ id: $, n: 1, v: 1.5 }	{ a: v }	admitted
+base:F64	sum	index,unique	v: F64	{ id: $, n: 1, v: 1.5 }	Some { value: v }	admitted
+base:Text	bare	index,unique	v: Text	{ id: $, n: 1, v: "a" }	v	admitted
+base:Text	record	index,unique	v: Text	{ id: $, n: 1, v: "a" }	{ a: v }	admitted
+base:Text	sum	index,unique	v: Text	{ id: $, n: 1, v: "a" }	Some { value: v }	admitted
+base:Bytes	bare	index,unique	v: Bytes	{ id: $, n: 1, v: bytes("a") }	v	admitted
+base:Bytes	record	index,unique	v: Bytes	{ id: $, n: 1, v: bytes("a") }	{ a: v }	admitted
+base:Bytes	sum	index,unique	v: Bytes	{ id: $, n: 1, v: bytes("a") }	Some { value: v }	admitted
+base:SortKey	bare	index,unique	v: SortKey	{ id: $, n: 1, v: collate("a", "und@cldr-49") }	v	admitted
+base:SortKey	record	index,unique	v: SortKey	{ id: $, n: 1, v: collate("a", "und@cldr-49") }	{ a: v }	admitted
+base:SortKey	sum	index,unique	v: SortKey	{ id: $, n: 1, v: collate("a", "und@cldr-49") }	Some { value: v }	admitted
+base:Instant	bare	index,unique	v: Instant	from (match Instant.parse("2026-10-25T09:30:00Z") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	v	admitted
+base:Instant	record	index,unique	v: Instant	from (match Instant.parse("2026-10-25T09:30:00Z") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	{ a: v }	admitted
+base:Instant	sum	index,unique	v: Instant	from (match Instant.parse("2026-10-25T09:30:00Z") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	Some { value: v }	admitted
+base:Date	bare	index,unique	v: Date	from (match Date.parse("2026-10-25") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	v	admitted
+base:Date	record	index,unique	v: Date	from (match Date.parse("2026-10-25") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	{ a: v }	admitted
+base:Date	sum	index,unique	v: Date	from (match Date.parse("2026-10-25") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	Some { value: v }	admitted
+base:Time	bare	index,unique	v: Time	from (match Time.parse("09:30:00") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	v	admitted
+base:Time	record	index,unique	v: Time	from (match Time.parse("09:30:00") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	{ a: v }	admitted
+base:Time	sum	index,unique	v: Time	from (match Time.parse("09:30:00") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	Some { value: v }	admitted
+base:DateTime	bare	index,unique	v: DateTime	from (match DateTime.parse("2026-10-25T09:30:00") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	v	admitted
+base:DateTime	record	index,unique	v: DateTime	from (match DateTime.parse("2026-10-25T09:30:00") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	{ a: v }	admitted
+base:DateTime	sum	index,unique	v: DateTime	from (match DateTime.parse("2026-10-25T09:30:00") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	Some { value: v }	admitted
+base:ZonedDateTime	bare	index,unique	v: ZonedDateTime	from (match ZonedDateTime.parse("2026-10-25T09:30:00[UTC]") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	v	admitted
+base:ZonedDateTime	record	index,unique	v: ZonedDateTime	from (match ZonedDateTime.parse("2026-10-25T09:30:00[UTC]") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	{ a: v }	admitted
+base:ZonedDateTime	sum	index,unique	v: ZonedDateTime	from (match ZonedDateTime.parse("2026-10-25T09:30:00[UTC]") | Some s -> [{ id: $, n: 1, v: s.value }] | None -> [])	Some { value: v }	admitted
+base:Duration	bare	index,unique	v: Duration	{ id: $, n: 1, v: 90s }	v	admitted
+base:Duration	record	index,unique	v: Duration	{ id: $, n: 1, v: 90s }	{ a: v }	admitted
+base:Duration	sum	index,unique	v: Duration	{ id: $, n: 1, v: 90s }	Some { value: v }	admitted
+base:Period	bare	index,unique	v: Period	{ id: $, n: 1, v: days(1) }	v	admitted
+base:Period	record	index,unique	v: Period	{ id: $, n: 1, v: days(1) }	{ a: v }	admitted
+base:Period	sum	index,unique	v: Period	{ id: $, n: 1, v: days(1) }	Some { value: v }	admitted
+sum	bare	index,unique	v: Shape	{ id: $, n: 1, v: Line { len: 2 } }	v	admitted
+sum	record	index,unique	v: Shape	{ id: $, n: 1, v: Line { len: 2 } }	{ a: v }	admitted
+sum	sum	index,unique	v: Shape	{ id: $, n: 1, v: Line { len: 2 } }	Some { value: v }	admitted
+record	bare	index,unique	v: Pt	{ id: $, n: 1, v: { x: 1, y: 2 } }	v	admitted
+record	record	index,unique	v: Pt	{ id: $, n: 1, v: { x: 1, y: 2 } }	{ a: v }	admitted
+record	sum	index,unique	v: Pt	{ id: $, n: 1, v: { x: 1, y: 2 } }	Some { value: v }	admitted
+newtype	bare	index,unique	v: Email	{ id: $, n: 1, v: Email("a@x") }	v	admitted
+newtype	record	index,unique	v: Email	{ id: $, n: 1, v: Email("a@x") }	{ a: v }	admitted
+newtype	sum	index,unique	v: Email	{ id: $, n: 1, v: Email("a@x") }	Some { value: v }	admitted
+option	bare	index,unique	v: Option I64	{ id: $, n: 1, v: Some { value: 1 } }	v	admitted
+option	record	index,unique	v: Option I64	{ id: $, n: 1, v: Some { value: 1 } }	{ a: v }	admitted
+option	sum	index,unique	v: Option I64	{ id: $, n: 1, v: Some { value: 1 } }	Some { value: v }	admitted
+reference	bare	index,unique	v: Key others	{ id: $, n: 1, v: others.key(1) }	v	admitted
+reference	record	index,unique	v: Key others	{ id: $, n: 1, v: others.key(1) }	{ a: v }	admitted
+reference	sum	index,unique	v: Key others	{ id: $, n: 1, v: others.key(1) }	Some { value: v }	admitted
+tag	bare	index,unique	v: Tag Shape	{ id: $, n: 1, v: Dot }	v	admitted
+tag	record	index,unique	v: Tag Shape	{ id: $, n: 1, v: Dot }	{ a: v }	admitted
+tag	sum	index,unique	v: Tag Shape	{ id: $, n: 1, v: Dot }	Some { value: v }	admitted
+anon-record	bare	index,unique	-	{ id: $, n: 1 }	{ b: n }	admitted
+anon-record	record	index,unique	-	{ id: $, n: 1 }	{ a: { b: n } }	admitted
+anon-record	sum	index,unique	-	{ id: $, n: 1 }	Some { value: { b: n } }	admitted
+anon-sum	bare	index,unique	-	{ id: $, n: 1 }	anon(n)	admitted
+anon-sum	record	index,unique	-	{ id: $, n: 1 }	{ a: anon(n) }	admitted
+anon-sum	sum	index,unique	-	{ id: $, n: 1 }	Some { value: anon(n) }	admitted
+unit	bare	index,unique	-	{ id: $, n: 1 }	()	admitted
+unit	record	index,unique	-	{ id: $, n: 1 }	{ a: () }	admitted
+unit	sum	index,unique	-	{ id: $, n: 1 }	Some { value: () }	admitted
+set	bare	index	-	{ id: $, n: 1 }	[n]	entries:index element `[ n ]` of `items0` is a set: an index with an entry for each element of a set does not run in this engine yet
+set	bare	unique,interval index	-	{ id: $, n: 1 }	[n]	index element `[ n ]` of `items0` has type Set I64, which has no key form: a unique or interval index element is not a set
+set	record	index,unique,interval index	-	{ id: $, n: 1 }	{ a: [n] }	index element `{ a : [ n ] }` of `items0` has type { a: Set I64 }, which has no key form: its type contains a set or function type
+set	sum	index,unique,interval index	-	{ id: $, n: 1 }	Some { value: [n] }	index element `Some { value : [ n ] }` of `items0` has type Option.Some (Set I64), which has no key form: its type contains a set or function type
+set	anon-sum	index,unique,interval index	-	{ id: $, n: 1 }	anonset(n)	index element `anonset ( n )` of `items0` has type A { n: Set I64 } | B, which has no key form: its type contains a set or function type
+set-of-record	bare	index	-	{ id: $, n: 1 }	[{ a: n }]	entries:index element `[ { a : n } ]` of `items0` is a set: an index with an entry for each element of a set does not run in this engine yet
+set-of-record	bare	unique,interval index	-	{ id: $, n: 1 }	[{ a: n }]	index element `[ { a : n } ]` of `items0` has type Set { a: I64 }, which has no key form: a unique or interval index element is not a set
+set-of-set	bare	index,unique,interval index	-	{ id: $, n: 1 }	[[n]]	index element `[ [ n ] ]` of `items0` has type Set (Set I64), which has no key form: its type contains a set or function type
+nonempty	record	index,unique,interval index	-	{ id: $, n: 1 }	from x in [n] group x by x into g select g	index element `from x in [ n ] group x by x into g select g` of `items0` has type Set (Set I64), which has no key form: its type contains a set or function type
+function	bare	index,unique,interval index	-	{ id: $, n: 1 }	fn (x: I64) -> x + n	index element `fn ( x : I64 ) -> x + n` of `items0` has type I64 -> I64, which has no key form: its type contains a set or function type
+function	record	index,unique,interval index	-	{ id: $, n: 1 }	{ a: fn (x: I64) -> x + n }	index element `{ a : fn ( x : I64 ) -> x + n }` of `items0` has type { a: I64 -> I64 }, which has no key form: its type contains a set or function type
+function	sum	index,unique,interval index	-	{ id: $, n: 1 }	Some { value: fn (x: I64) -> x + n }	index element `Some { value : fn ( x : I64 ) -> x + n }` of `items0` has type Option.Some (I64 -> I64), which has no key form: its type contains a set or function type

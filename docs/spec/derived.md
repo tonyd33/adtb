@@ -346,6 +346,14 @@ a derived index and checked as any unique:
 add unique (lower(email)) in identities.EmailPass
 ```
 
+The type of each element of an index, unique or interval index
+contains no set or function type at any depth. An element of an index,
+not of a unique or interval index, may instead be a set whose element
+type contains none; each of its elements is one index entry for the
+row. `()` is the empty record. An element of another type is refused
+when the schema is checked, naming the element, its relation and its
+type.
+
 Rulings: derived/computed/virtual, derived/computed/expr-index
 
 ## 6. Reading the past

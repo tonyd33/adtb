@@ -1,0 +1,6 @@
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index element `[ n ]` of `items` is a set: an index with an entry for each element of a set does not run in this engine yet" } } }
+  module shop
+  add module shop
+  add type Item = { id: I64, n: I64 }
+  add relation items : Item key id
+    index ([n])

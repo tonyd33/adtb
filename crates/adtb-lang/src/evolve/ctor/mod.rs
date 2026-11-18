@@ -437,7 +437,7 @@ impl Cx<'_> {
                 match &d {
                     Decl::Relation(rd) if clauses && home == m && rd.name.name.text == rname => {
                         for c in &rd.clauses {
-                            if let RelationClause::Unique(_, Some(s))
+                            if let RelationClause::Unique(_, Some(s), _)
                             | RelationClause::Index { scope: Some(s), .. } = c
                             {
                                 sels.push(scope_idents(s).into_iter().cloned().collect());
@@ -882,11 +882,12 @@ impl Cx<'_> {
             let text = &self.src.decls[i].text;
             for (k, cl) in rd.clauses.iter().enumerate() {
                 let (kind, fs, s) = match cl {
-                    RelationClause::Unique(fs, s) => ("unique", fs, s),
+                    RelationClause::Unique(fs, s, _) => ("unique", fs, s),
                     RelationClause::Index {
                         interval: true,
                         fields,
                         scope,
+                        ..
                     } => ("interval index", fields, scope),
                     RelationClause::Index { fields, scope, .. } => ("index", fields, scope),
                     _ => continue,

@@ -279,6 +279,15 @@ impl KeyCtors {
     }
 }
 
+/// How an index element keys its row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyForm {
+    /// One entry, keyed by the element's value.
+    Value,
+    /// One entry for each element of the set the element gives.
+    Entries,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
     Base(Base),
@@ -312,6 +321,35 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// Returns how an index element of the type keys its row, `None` when it has no key form.
+    pub fn key_form(&self) -> Option<KeyForm> {
+        match self {
+            Ty::Set(t) | Ty::NonEmpty(t) if t.keyed_whole() => Some(KeyForm::Entries),
+            t if t.keyed_whole() => Some(KeyForm::Value),
+            _ => None,
+        }
+    }
+
+    /// Returns whether no set, group or function type occurs in the type at any depth, and no
+    /// type parameter or write.
+    fn keyed_whole(&self) -> bool {
+        match self {
+            Ty::Base(_) | Ty::Key { .. } | Ty::Tag(_) | Ty::Unit => true,
+            Ty::Data { args, .. } => args.iter().all(Ty::keyed_whole),
+            Ty::Record(fields) => fields.iter().all(|(_, f)| f.keyed_whole()),
+            Ty::Sum { ctors, .. } => ctors
+                .iter()
+                .flat_map(|(_, fs)| fs)
+                .all(|(_, f)| f.keyed_whole()),
+            Ty::Set(_)
+            | Ty::NonEmpty(_)
+            | Ty::Group(..)
+            | Ty::Fn(..)
+            | Ty::Param(_)
+            | Ty::Change => false,
+        }
+    }
+
     /// Returns the number of nodes of the type's tree.
     pub fn nodes(&self) -> usize {
         let mut nodes = 0;

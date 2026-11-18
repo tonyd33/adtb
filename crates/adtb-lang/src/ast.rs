@@ -463,10 +463,13 @@ pub struct RelationDecl {
 pub enum RelationClause {
     Key(Vec<Ident>, Option<Ident>),
     Volatile,
-    Unique(Vec<Expr>, Option<CtorScope>),
+    /// The fields, their scope, and each field's tokens joined by spaces.
+    Unique(Vec<Expr>, Option<CtorScope>, Vec<String>),
     Index {
         interval: bool,
         fields: Vec<Expr>,
+        /// Each field's tokens joined by spaces.
+        texts: Vec<String>,
         scope: Option<CtorScope>,
     },
     Default {

@@ -1285,7 +1285,8 @@ The structure behind a form is not observable.
 
 Special indexes are derived: an index over an expression of the row
 ([derived.md](derived.md#52-expression-indexes)). When the expression's
-type is a set, each of its elements is one index entry for the row.
+type is a set (of an index, not a unique or interval index), each of
+its elements is one index entry for the row.
 A derived index is maintained from each change set like any index, and
 has the same transactional, logging and recovery behaviour.
 

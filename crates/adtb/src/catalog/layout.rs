@@ -238,9 +238,12 @@ pub fn batch_type(schema: &Schema, ty: &Ty) -> Option<batch::Type> {
 
 /// Returns the type of an index key component of type `ty`, each declared sum's constructors
 /// encoded by their order keys in `keys`.
+///
+/// Precondition: `ty.key_form()` is `Some(KeyForm::Value)`.
 pub fn key_type(schema: &Schema, keys: &OrderKeys, ty: &Ty) -> KeyType {
     match repr(schema, ty) {
         Ty::Base(b) => KeyType::Scalar(scalar(b)),
+        Ty::Unit => KeyType::Record(Vec::new()),
         Ty::Key { rel, .. } => key_type(schema, keys, &key_value_ty(schema, rel)),
         Ty::Record(fs) => KeyType::AnonRecord(
             AnonRecordType::new(

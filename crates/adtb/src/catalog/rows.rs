@@ -198,7 +198,7 @@ impl ElementTexts {
     }
 
     /// Returns the text of element `j` of declared index `i` of `r`.
-    fn get(&self, r: RelId, i: usize, j: usize) -> String {
+    pub(super) fn get(&self, r: RelId, i: usize, j: usize) -> String {
         self.0
             .get(&(r, i, j))
             .unwrap_or_else(|| {

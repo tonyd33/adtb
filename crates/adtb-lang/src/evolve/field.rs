@@ -597,11 +597,12 @@ impl Cx<'_> {
         };
         for (k, cl) in rd.clauses.iter().enumerate() {
             let (fs, scope) = match cl {
-                RelationClause::Unique(fs, s) if unique => (fs, s),
+                RelationClause::Unique(fs, s, _) if unique => (fs, s),
                 RelationClause::Index {
                     interval: iv,
                     fields: fs,
                     scope: s,
+                    ..
                 } if !unique && *iv == interval => (fs, s),
                 _ => continue,
             };

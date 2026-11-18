@@ -162,10 +162,11 @@ impl Builder<'_> {
                         );
                     }
                 }
-                ast::RelationClause::Unique(fields, s) => {
+                ast::RelationClause::Unique(fields, s, texts) => {
                     let scope = scope_of(self, s);
                     indexes.push(IndexDef {
                         fields: fields.clone(),
+                        texts: texts.clone(),
                         scope,
                         interval: false,
                         unique: true,
@@ -174,11 +175,13 @@ impl Builder<'_> {
                 ast::RelationClause::Index {
                     interval,
                     fields,
+                    texts,
                     scope: s,
                 } => {
                     let scope = scope_of(self, s);
                     indexes.push(IndexDef {
                         fields: fields.clone(),
+                        texts: texts.clone(),
                         scope,
                         interval: *interval,
                         unique: false,

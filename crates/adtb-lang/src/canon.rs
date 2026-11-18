@@ -523,7 +523,7 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
 
 fn clause_scope(c: &RelationClause) -> Option<&CtorScope> {
     match c {
-        RelationClause::Unique(_, scope) | RelationClause::Index { scope, .. } => scope.as_ref(),
+        RelationClause::Unique(_, scope, _) | RelationClause::Index { scope, .. } => scope.as_ref(),
         _ => None,
     }
 }

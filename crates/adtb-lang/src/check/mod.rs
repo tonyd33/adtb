@@ -821,7 +821,8 @@ impl Bodies<'_, '_> {
             for (k, e) in ix.fields.iter().enumerate() {
                 let mut path = Vec::new();
                 if let Some(value) = self.run(r.module, Context::Schema, r.file, &mut |c| {
-                    let f = c.index_field(rel, ix.scope.clone(), e)?;
+                    let (f, ty) = c.index_field(rel, ix.scope.clone(), e)?;
+                    c.keyable(rel, ix, k, &ty)?;
                     path = f.path;
                     Ok(f.value)
                 }) {
@@ -1325,18 +1326,25 @@ impl Checker<'_> {
         Ok(self.check(e, &fty)?.tm)
     }
 
-    fn index_field(&mut self, rel: RelId, ctors: Option<CtorSet>, e: &ast::Expr) -> R<IndexField> {
+    /// Returns the term of index element `e` of `rel` and its type.
+    fn index_field(
+        &mut self,
+        rel: RelId,
+        ctors: Option<CtorSet>,
+        e: &ast::Expr,
+    ) -> R<(IndexField, Ty)> {
         let source = self.rel_out(rel, ctors);
         let elem = self.elem_ty(&source.ty).expect("a relation is a set");
         let segs = ctor_path(e)
             .filter(|(root, _)| self.fields_of(&elem).iter().any(|(n, _)| *n == root.text));
         let Some((root, segs)) = segs else {
             let (x, out) = self.in_row(&elem, rel, &mut |c| c.synth(e))?;
-            let value = self.lams(vec![x], out.tm, out.ty);
-            return Ok(IndexField {
+            let value = self.lams(vec![x], out.tm, out.ty.clone());
+            let field = IndexField {
                 value,
                 path: Vec::new(),
-            });
+            };
+            return Ok((field, out.ty));
         };
         let mut path = Vec::new();
         let x = self.fresh(elem.clone());
@@ -1349,8 +1357,28 @@ impl Checker<'_> {
         };
         let out = self.along(row, &[Seg::Field(root)], &mut path)?;
         let out = self.along(out, &segs, &mut path)?;
-        let value = self.lams(vec![x], out.tm, out.ty);
-        Ok(IndexField { value, path })
+        let value = self.lams(vec![x], out.tm, out.ty.clone());
+        Ok((IndexField { value, path }, out.ty))
+    }
+
+    /// Refuse element `k` of index `ix` of `rel`, of type `ty`, when the type has no key form, or
+    /// is a set and `ix` is a unique or interval index.
+    fn keyable(&self, rel: RelId, ix: &crate::schema::IndexDef, k: usize, ty: &Ty) -> R<()> {
+        let why = match ty.key_form() {
+            Some(KeyForm::Value) => return Ok(()),
+            Some(KeyForm::Entries) if !ix.unique && !ix.interval => return Ok(()),
+            Some(KeyForm::Entries) => "a unique or interval index element is not a set",
+            None => "its type contains a set or function type",
+        };
+        Err(diag(
+            ix.fields[k].span,
+            format!(
+                "index element `{}` of `{}` has type {}, which has no key form: {why}",
+                ix.text(k),
+                self.schema.relation(rel).name,
+                self.show(ty)
+            ),
+        ))
     }
 
     /// Follows `segs` from `o`, recording each step in `path`; a constructor step is a `case` whose other arms are unreachable.

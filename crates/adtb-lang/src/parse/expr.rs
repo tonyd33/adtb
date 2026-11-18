@@ -919,9 +919,16 @@ impl Parser<'_> {
 
     /// An index or unique field list, where a lone reserved word is a field name.
     pub(crate) fn index_fields(&mut self) -> PResult<Vec<Expr>> {
+        Ok(self.index_elements()?.0)
+    }
+
+    /// An index or unique field list, with each field's tokens joined by spaces.
+    pub(crate) fn index_elements(&mut self) -> PResult<(Vec<Expr>, Vec<String>)> {
         self.expect(Tok::LParen, "`(`")?;
         let mut fields = Vec::new();
+        let mut texts = Vec::new();
         loop {
+            let from = self.pos;
             let t = self.tok();
             if matches!(t.tok, Tok::Kw(_)) && matches!(self.peek(1).tok, Tok::Comma | Tok::RParen) {
                 self.bump();
@@ -933,12 +940,17 @@ impl Parser<'_> {
             } else {
                 fields.push(self.expr()?);
             }
+            let tokens: Vec<&str> = self.toks[from..self.pos]
+                .iter()
+                .map(|&t| self.text_of(t))
+                .collect();
+            texts.push(tokens.join(" "));
             if !self.eat(Tok::Comma) {
                 break;
             }
         }
         self.expect(Tok::RParen, "`)`")?;
-        Ok(fields)
+        Ok((fields, texts))
     }
 
     pub(crate) fn key_fields(&mut self) -> PResult<Vec<Ident>> {

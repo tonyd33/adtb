@@ -230,7 +230,7 @@ pub(super) fn decl_exprs(d: &Decl) -> Vec<&Expr> {
             .clauses
             .iter()
             .flat_map(|c| match c {
-                RelationClause::Unique(fs, _) | RelationClause::Index { fields: fs, .. } => {
+                RelationClause::Unique(fs, _, _) | RelationClause::Index { fields: fs, .. } => {
                     fs.iter().collect()
                 }
                 RelationClause::Default {
