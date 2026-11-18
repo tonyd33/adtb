@@ -16,3 +16,7 @@ Ruled with the maintainer in session, 2026-11-18 (work/briefs/tql-session-2026-1
 ## 2026-11-18: plumbing landed
 
 `feat: run TQL lint rules with cargo xtask lint`: lint/rules.toml declares runs (query, include, exclude, rows zero or ratchet), lint/allowlist.toml holds ratchet counts, both read with the toml crate (xtask only). tql 0.4.0 is a flake input, version checked at run. house-check deleted; house.tql, structure rows (pub_fields, crate_fields, decode_panics, engine_names, sim_test_opens ratchets; prelude_positions, doc-verb zero) ported. Open on this ticket: gate-rows wiring and deleting structure-check and adtb-structure (slot-4), retiring refusal-check into lint/.
+
+## 2026-11-18: gate rows landed
+
+`refactor: gate quarantine marks and api aborts by type, clippy and TQL, and delete structure-check`: opaque Mark, pub(super) Marks setters, clippy disallows Engine::abort; lint/holder-builders.tql, marked-readers.tql, api-aborts.tql zero rows (known misses in work/briefs/receipt-gate-rows-r1.md); structure-check, its allowlist and test and crates/adtb-structure deleted. Open: refusal rule into lint and tree-sitter-check into xtask (brief-public-checks-r1.md).
