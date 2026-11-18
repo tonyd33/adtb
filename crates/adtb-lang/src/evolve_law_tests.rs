@@ -1632,17 +1632,12 @@ fn differences(
 }
 
 /// A disagreement the search finds today: the case it shows in, the operator kind it is
-/// filed under, each difference it shows over every shape, and the tickets that cover it.
+/// filed under, and each difference it shows over every shape.
 struct Known {
     kind: &'static str,
     case: &'static str,
     differences: &'static [&'static str],
-    tickets: &'static [&'static str],
 }
-
-const REFUSED_ON_REPLACED: &str = "structural-operators-refuse-clauses-on-replaced-constructor";
-
-const SET_SCOPE: &str = "log-resolver-set-scope-as-ctor";
 
 /// The operators scoping an index by a named set do not resolve.
 const ADD_R: &str = "Unresolved: an object `add index (z) in ts.R2` creates or names is in neither the source before it nor the one after it";
@@ -1661,7 +1656,6 @@ const fn set_scoped(
         kind,
         case,
         differences,
-        tickets: &[SET_SCOPE],
     }
 }
 
@@ -1735,6 +1729,7 @@ const KNOWN: &[Known] = &[
         "unnest constructor T.N [named object's name reused]",
         &[DROP_S],
     ),
+    // The operator refuses a default or check naming a constructor it replaces.
     Known {
         kind: "Merge",
         case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q } [default A.x kept]",
@@ -1742,8 +1737,8 @@ const KNOWN: &[Known] = &[
             "Unapplied: `A` is not a constructor of `T`",
             "Unapplied: the merge of `A`, `B` into `M` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.M` to `support` in the same migration",
         ],
-        tickets: &[REFUSED_ON_REPLACED],
     },
+    // The operator refuses a default or check naming a constructor it replaces.
     Known {
         kind: "Nest",
         case: "nest constructor T.(A | B) into N { inner: Inner } [check on ts.A]",
@@ -1752,8 +1747,8 @@ const KNOWN: &[Known] = &[
             "Unapplied: the nest is refused: `ts.A` names some but not all of its constructors",
             DROP_S,
         ],
-        tickets: &[REFUSED_ON_REPLACED, SET_SCOPE],
     },
+    // The operator refuses a default or check naming a constructor it replaces.
     Known {
         kind: "Nest",
         case: "nest constructor T.(A | B) into N { inner: Inner } [default A.x kept]",
@@ -1762,13 +1757,12 @@ const KNOWN: &[Known] = &[
             "Unapplied: the nest of `A`, `B` into `N` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.N` to `support` in the same migration",
             DROP_S,
         ],
-        tickets: &[REFUSED_ON_REPLACED, SET_SCOPE],
     },
+    // The operator refuses a default or check naming a constructor it replaces.
     Known {
         kind: "Split",
         case: "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text } [default A.x kept]",
         differences: &["Unapplied: `A` is not a constructor of `T`"],
-        tickets: &[REFUSED_ON_REPLACED],
     },
 ];
 
@@ -1995,8 +1989,7 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
     }
     if got.is_empty() {
         return Some(format!(
-            "`{name}` now restores the source; delete its known row ({:?})",
-            k.tickets
+            "`{name}` now restores the source; delete its known row"
         ));
     }
     let holds = if every_shape {
@@ -2006,8 +1999,7 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
     };
     (!holds).then(|| {
         format!(
-            "`{name}` differs otherwise than its known row ({:?}):\n{}",
-            k.tickets,
+            "`{name}` differs otherwise than its known row:\n{}",
             shown()
         )
     })
@@ -2046,16 +2038,4 @@ fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
         found.reached,
         "the search applies every invertible kind"
     );
-}
-
-#[test]
-fn every_known_row_names_a_ticket() {
-    let issues = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/issues");
-    let missing: Vec<&str> = KNOWN
-        .iter()
-        .flat_map(|k| k.tickets.iter().copied())
-        .filter(|t| !issues.join(format!("{t}.md")).is_file())
-        .collect();
-    assert!(KNOWN.iter().all(|k| !k.tickets.is_empty()));
-    assert_eq!(Vec::<&str>::new(), missing);
 }

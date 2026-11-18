@@ -29,17 +29,9 @@ between machines. Project tools are listed in [AGENTS.md](AGENTS.md#tools).
 - [Specification](docs/spec/README.md): observable language and database behaviour.
 - [Subsystem contracts](docs/design/README.md): interfaces between engine components.
 - [Implementation plan](docs/plan.md).
-- [Tickets](work/issues/README.md): tracked work and ticket conventions.
-- [Knowledge base](work/kb/README.md): research facts and sources.
-- [Design space](work/research/): questions, prior art and adopted rulings;
-  run `quandary status` there to see the frontier.
 
 ## Coding agents
 
 Read [AGENTS.md](AGENTS.md) before working in the repository. It contains
 the shared instructions, commands and project conventions. Harnesses that
 do not discover it automatically can be pointed at it explicitly.
-
-Reusable workflows live in [.agents/skills/](.agents/skills/); read their
-`SKILL.md` files directly if your harness has no skill loader. Claude Code
-entry points import or reference these shared files.

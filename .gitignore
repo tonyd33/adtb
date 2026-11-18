@@ -13,10 +13,9 @@ devenv.local.yaml
 
 /target
 
-# Local session state
-/work/HANDOFF.md
-/work/briefs/
-/work/research/.quandary/
+# Local maintainer repository
+/work/
+/CLAUDE.local.md
 
 # Generated editor config
 /.nvim.lua

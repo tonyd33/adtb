@@ -33,9 +33,9 @@ jj config set --user user.name "Your Name"
 jj config set --user user.email "you@example.com"
 ```
 
-The dev shell supplies Rust, jj, quandary, tix, tql, tree-sitter, mdbook,
-lychee, cargo-nextest, cargo-deny and the shell utilities. You do not need local
-checkouts of quandary, tix or editorenv. Nix dependencies are pinned in
+The dev shell supplies Rust, jj, tql, tree-sitter, mdbook, lychee,
+cargo-nextest, cargo-deny and the shell utilities. You do not need a local
+checkout of editorenv. Nix dependencies are pinned in
 `devenv.lock`; Cargo dependencies are pinned in the workspace's `Cargo.lock`. Keep
 these lockfiles when moving machines.
 The Rust toolchain is recorded in `rust-toolchain.toml`.
@@ -158,22 +158,10 @@ uncommitted changes, unpublished jj changes, jj workspace registrations,
 local configuration, or an agent harness's private memory. Describe and
 publish the changes you need before switching machines.
 
-Read [AGENTS.md](../AGENTS.md) with any coding agent. Project workflows are
-in `.agents/skills/`; a harness can read their `SKILL.md` files directly.
-Keep resumable task state in tickets under `work/issues/` and supporting
-notes in tracked files, including paths, commands and unresolved failures.
-Verify essential paths with `jj file list PATH...`; an ignored ticket or
-brief is not part of a clone merely because a local tool can read it.
-Use [the evidence workflow](../.agents/skills/lead/verification.md) for check
-receipts and durable task state. `work/HANDOFF.md` is an optional, ignored
-local checkpoint, not the sole task record or a source of new permissions.
-
-The quality-review workflow defaults to the `reviewed..@` jj range. Check
-`jj bookmark list --all-remotes` for the review baseline. If `reviewed` is
-absent locally but published at origin, run `jj bookmark track
-reviewed@origin`. If it was not published, ask for the last review revision
-or supply an explicit range to the review workflow. Do not invent a new
-review baseline.
+Read [AGENTS.md](../AGENTS.md) with any coding agent. Keep resumable task
+state in tracked files, including paths, commands and unresolved failures.
+Verify essential paths with `jj file list PATH...`; an ignored file is not
+part of a clone merely because a local tool can read it.
 
 Global ignore rules are personal. Explicitly track a project file they
 match with `jj file track --include-ignored PATH` (or `git add -f PATH`

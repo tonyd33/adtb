@@ -74,26 +74,6 @@ in
       };
     };
 
-  processes.quandary =
-    let
-      quandaryPort = config.processes.quandary.ports.http.value;
-    in
-    {
-      ports.http.allocate = 8080;
-      exec = ''
-        ${lib.getExe quandary} -C work/research serve \
-          --port ${toString quandaryPort} \
-          --bind 0.0.0.0
-      '';
-      proxy.hostname = "adtb-qdry.localhost";
-      ready = {
-        http.get = {
-          port = quandaryPort;
-          path = "/";
-        };
-      };
-    };
-
   # https://devenv.sh/services/
   # services.postgres.enable = true;
 

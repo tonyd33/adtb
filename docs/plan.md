@@ -342,7 +342,7 @@ migrations. No application runs on the reference interpreter.
 
 ### Comparative benchmarks and optimization
 
-The lead schedules the first embedded comparison after the current
+The maintainer schedules the first embedded comparison after the current
 authority, permission and checked-binding correctness work is verified
 and the campaign workload reliably exercises concurrent writes and
 reopen. Run it before broader server expansion; it need not wait for
@@ -381,13 +381,11 @@ server supports correct binding, bounded admission/results and
 cancellation. Match execution models and expose protocol overhead;
 keep embedded and server results distinct. Rerun relevant comparisons
 after major engine changes and before embedded beta/server releases.
-Track the work in `work/issues/comparative-benchmarks.md`; the lead
-reevaluates readiness at each correctness milestone checkpoint.
+The maintainer reevaluates readiness at each correctness milestone checkpoint.
 
 ## Tracking
 
-Each milestone has a ticket in `work/issues/` that depends on its
-tasks; a task's ticket names the design sections it implements.
-Spec bugs found while implementing go through the spec process
-(design space first when they contradict a ruling) and are fixed in
-the spec, not worked around in code.
+Each milestone depends on its tasks; a task names the design sections
+it implements. Spec bugs found while implementing are fixed in the spec,
+after a new ruling from the maintainer when they contradict one, not
+worked around in code.

@@ -13,8 +13,6 @@ entered through direnv.
 This file holds the shared project instructions for coding agents. Read
 it directly if your harness does not load `AGENTS.md` automatically.
 Keep project guidance here; `CLAUDE.md` imports this file for Claude Code.
-Repository workflows live in `.agents/skills/`. They are Markdown files
-you can read and follow even without a skill loader.
 
 ## Version control
 
@@ -26,23 +24,10 @@ conventional form (`feat: ...`, `docs: ...`).
 Preserve uncommitted work. Never stash or discard changes to get a clean
 tree. Propose a commit subject before committing when a commit is requested.
 
-## In-progress work
-
-If `work/HANDOFF.md` exists, read it first: it records where the design
-work stands and the next steps.
-
-The handoff is local and may be absent or stale. Use the current tickets,
-code and `jj status` to establish implementation status. Record anything
-needed to resume work in repository files, with paths and commands that
-another agent can use without access to your session or private memory.
-
-To dispatch, coordinate or land agent tracks, read and follow
-[the lead workflow](.agents/skills/lead/SKILL.md).
-
 ## Build and checks
 
 Enter the development environment with `direnv allow` or `devenv shell`.
-Run commands from the repository root unless a workflow says otherwise.
+Run commands from the repository root.
 For a fresh clone, host prerequisites and optional editor setup, read
 [development setup](docs/development.md).
 
@@ -60,7 +45,7 @@ For a fresh clone, host prerequisites and optional editor setup, read
   zero row prints each site as `FILE:LINE: ROW`, and a ratchet row fails when a file's count
   differs from its entry in `lint/allowlist.toml` (none counts as 0): the counts only fall.
   `--counts` prints the allowlist for the tree; `--against REV` fails on an entry above the
-  allowlist at REV, so a rise is the lead's act on main. The rows: the comment rules of
+  allowlist at REV, so a rise is a maintainer's act on main. The rows: the comment rules of
   `house.tql`, struct fields visible past their module, decode panics, engine names, sim test
   open helpers and weak refusal assertions (`is_err()`, `is_ok()`, `matches!(.., Err(_))`, a
   substring of error text, a bare `unwrap_err()`, a call of `refused_with`): assert a refusal with
@@ -69,22 +54,9 @@ For a fresh clone, host prerequisites and optional editor setup, read
 Use targeted checks while working and run the checks appropriate to the
 change before reporting completion.
 
-## Tickets
-
-Tracked work lives in `work/issues/` and is managed with `tix`; the
-format and priority scheme are in `work/issues/README.md`. Design
-decisions are not tickets: they go through the design space. Check
-`tix -C work/issues list --ready` before starting work, and run
-`tix -C work/issues check` after editing a ticket. A ticket file `tix new` creates can be ignored by a
-global gitignore and so stay untracked: run
-`jj file track --include-ignored work/issues/STEM.md` and confirm it with
-`jj file list work/issues/STEM.md`. Run `tix` from the repository root as `tix -C work/issues ...`; the
-devenv shell puts it on PATH.
-
 ## Tools
 
-Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
-root, beside the `xtask` crate's two commands:
+The `xtask` crate's commands and the conformance runner:
 
 - `cargo xtask test [ARGS]`: the full nextest run, output in `target/test.txt`; prints failures,
   the summary and the run's peak memory. `cargo xtask test` and `cargo xtask check` each run in a
@@ -116,35 +88,17 @@ root, beside the `xtask` crate's two commands:
   unit tests under Miri with the nightly toolchain in `ADTB_NIGHTLY_BIN`, which the dev shell
   sets; the stable one stays the default. The two take about 35 s together from cold and 11 s
   warm.
-- `quality-metrics.sh [REVSET]`: review metrics for the changes in
-  REVSET, by default `reviewed..@`. `quality-metrics.sh --code-commits
-  [REVSET]` lists the commits of REVSET, by default `reviewed..main`, that
-  change a path outside docs/, work/ and Markdown files; the quality
-  cadence counts these.
 - `cargo xtask check` fails when a non-test source under `crates/` passes 1500 lines.
-- `land WS [SUBJECT]`: land workspace WS on `main` and move the main
-  working copy onto it; refuses while the main working copy has changes, or WS holds a file jj
-  does not track that its .gitignore files do not ignore.
-  A slot becomes free; any other workspace is forgotten.
 - `mdbook build`, `mdbook serve` and `lychee --offline --include-fragments` build, serve and
   link-check the documentation site. A new page under `docs/manual`, `docs/spec` or `docs/design`
   goes in `docs/SUMMARY.md`; the suite fails otherwise.
-- `slot NAME BRIEF [N]`: give a track a workspace in a reused directory, so its
-  `target/` stays valid; `land` frees it. It refuses BRIEF when its one `Ticket: STEM` line names a
-  bug ticket with no class tag, or a site fix in a class of three or more instances while a
-  mechanism ticket of the class is open or in progress and the brief has no
-  `Site fix because: REASON` line. It also refuses a BRIEF with no `## Contract` section holding text (a brief
-  that changes no code says `Contract: none, no code` on its own line), and any BRIEF while
-  `quality-metrics.sh --code-commits reviewed..main` prints more than 15 lines: run the quality
-  review, then `jj bookmark set reviewed -r main`. Clear an idle slot's build with `cargo clean`
-  in it.
 
 ## Invariants and fixes
 
 Before writing code a correctness rule depends on, state the rule and what enforces it: the type system, a lint, a test that searches, or nothing with a written reason. Prefer them in that order.
 
 - Do not stand a string or a position in for identity, or a panic in for an error, or a per-path check in for one gate.
-- A bug fix's report states its cause, its defect class from `.agents/skills/lead/defect-classes.md`, and what stops the next instance. Fix the cause when it is in reach. If a fix only handles the input in hand, say so.
+- A bug fix's report states its cause and what stops the next instance of that cause. Fix the cause when it is in reach. If a fix only handles the input in hand, say so.
 - A limit states the rule it comes from, not only the value that passes today.
 
 ## Test value
@@ -155,11 +109,11 @@ A test failure is evidence to assess, not an automatic requirement. Before
 changing behavior or architecture to satisfy it, identify the governing contract
 and whether the defect is in the implementation, expectation or test harness.
 Correct tests that preserve bugs or unjustified implementation details. Identify
-constraints imposed by the user or adopted rulings separately from track-local
+constraints imposed by the user or the maintainer's adopted rulings separately from track-local
 choices; do not silently relax the former. State migration compatibility
 constraints separately from lasting contracts; those scope choices can be
-reconsidered. Public contract changes still follow the
-design-space rules. Record material decisions in the existing receipt; routine
+reconsidered. Public contract changes still need a ruling from the
+maintainer. Record material decisions in the change's description; routine
 fixes need no new artifact or approval.
 
 - Assert the exact outcome: the refusal reason and value, not `is_err` or a substring. Do not compare two answers only with each other when both could be the same wrong answer. Do not repeat the code's own predicate as the expected value. An expected value comes from outside the code under test.
@@ -169,19 +123,11 @@ fixes need no new artifact or approval.
 - For a general property, write the test that searches: every op, every interleaving, generated pairs, n against 2n. One input from a review confirms that input alone.
 - Do not pin a detail no contract states, or test the standard library, a derive or a getter. Do not add what a stronger test in the same binary covers. When removing a test, name its valid property and retained or replacement coverage, or explain why its assertion has no contractual property to preserve.
 
-## Knowledge base
-
-Facts about other databases, formats, languages and papers live in
-`work/kb/`, one file per subject, each fact marked `[V date]`, `[S date]`
-or `[U]` with its source. Format and rules in `work/kb/README.md`.
-Before any web search or fetch, search `work/kb/`; after fetching,
-append what was learned. Research agents get the same instruction.
-
 ## Public repository
 
 This repository is public. Keep the maintainer's machine details out of tracked files and commit
-messages: disks, partitions, other installs, hardware and home paths. Put them in `work/briefs/`
-or `work/HANDOFF.md`, which are local.
+messages: disks, partitions, other installs, hardware and home paths. Keep them in untracked
+local files.
 
 ## Comments and reviews
 
@@ -196,18 +142,14 @@ or `work/HANDOFF.md`, which are local.
 - An `#[expect]` reason states what would have to change to remove it.
 - Before finishing, read the diff and run `cargo xtask lint`.
 
-For a periodic quality review, read
-[the quality-review workflow](.agents/skills/quality-review/SKILL.md).
-
 ## Specification
 
 The spec is `docs/spec/`, one file per part; `README.md` there is the
 index and assigns each topic to one file. Every part is normative and
 states only behaviour users and clients observe, declaratively. Where
 sources disagree: the conformance suite, then `semantics.md`, then the
-other parts. A spec change that contradicts a ruling goes through the
-design space first. Examples follow `syntax.md` and
-`work/research/notes/notation.md`.
+other parts. A spec change that contradicts one of the maintainer's
+adopted rulings needs a new ruling from the maintainer first. Examples follow `syntax.md`.
 
 Contracts between subsystems live in `docs/design/`, one file per
 boundary; a subsystem relies only on what its counterpart's design
@@ -217,44 +159,13 @@ change an implementation asks for as suspect: patch the spec only for
 undecided or contradictory observable behaviour, never to promote an
 internal choice into a promise.
 
-Before writing or reviewing spec parts, read and follow
-[the spec-revision workflow](.agents/skills/spec-revision/SKILL.md).
+## Design rulings
 
-## Design space
+Code follows the maintainer's adopted rulings. A change that contradicts
+one is a design change and needs a new ruling from the maintainer first.
 
-Design decisions live in a quandary space at `work/research/`:
-`questions/`, `notes/` (prior art under `notes/prior/`), `points/`
-(rulings). Run `quandary` from inside `work/research/`;
-`quandary check` after every edit,
-`quandary status` for the frontier, `quandary show ID` for a node.
-Rulings go through quandary commands, never by editing `points/`.
-
-Before working in the space, read and follow
-[the design-space workflow](.agents/skills/design-space/SKILL.md).
-
-Before designing or implementing anything, read the rulings in
-`current` (`quandary rulings`). Code follows them; a change that
-contradicts a ruling is a design change and goes through the space
-first.
-
-The project lead rules on design and spec decisions, including amending an accepted ruling, and records each ruling's reason; an agent that is not the lead reports the decision to the lead instead. Start with `quandary status` and
-`quandary show ID`; expand questions and options in `questions/`, and
-keep evidence in `notes/`. Check `quandary --help` and the relevant
-subcommand's help for command syntax. Before an edit spanning multiple
-files, run `quandary lock 'agent: description'`; finish with
-`quandary unlock`, which checks the space.
-
-Explore unapproved choices in a proposed point extending `current`
-(`quandary point new NAME current --proposed`). Before accepting an
-option, run `quandary whatif accept OPTION`. The lead adopts a proposed
-point with `quandary adopt NAME --confirmed` once it has ruled. Never rule
-in `current` directly, edit `points/` by hand, or delete defeated options.
-Use `quandary reopen` to backtrack. `quandary lock` refuses rulings and
-`point new` while it is held: lock only for edits to `questions/` and
-`notes/`, and unlock before ruling.
-
-The settled core, as of the adopted rulings (`quandary rulings` is the
-authority; this is a summary):
+The settled core, as of the maintainer's adopted rulings (the rulings are
+the authority; this is a summary):
 
 - Substrate: a new engine with its own pager, not a layer over another
   database or a KV store. The spec states guarantees over constructor
