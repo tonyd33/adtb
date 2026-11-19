@@ -11,11 +11,11 @@ use super::alloc::{Allocation, Hold, Reservation, diff};
 use super::damage_log::Recorded;
 use super::driver::Driver;
 use super::error::{Damage, OpenError, Shape};
-use super::evidence::{Against, Evidence, Judged, Met, Refusal, Unmapped, file_copy};
+use super::evidence::{Evidence, Judged, Met, Refusal, Unmapped};
 use super::header::{FileHeader, Header};
 use super::holding::{Holding, NO_HOLDER};
 use super::log::{Log, Pinned, Segments};
-use super::page::{self, FIRST_EDITABLE, HEADER_LEN, Verdict};
+use super::page::{self, FIRST_EDITABLE, HEADER_LEN};
 use super::pagetable::{DirtyTable, Logged};
 use super::quarantine::{Bitmapped, Marks, Quarantine};
 use super::record::{Edit, MapRoot, Record};
@@ -766,10 +766,10 @@ impl<R: Runtime> Pager<R> {
     pub(super) fn replay_page_in(&self, pid: Pid) -> Option<Damage> {
         let mut g = self.hold(pid);
         self.make_room(pid);
-        let read = self.read_disk(pid);
-        let failed = self.judge(pid, file_copy(&read), Against::LogEnd).damage();
+        let (judged, read) = self.read_judged(pid).parts();
+        let failed = judged.refused();
         match read {
-            Ok((buf, _)) if failed.is_none() => g.read_in(&buf),
+            Ok(buf) if failed.is_none() => g.read_in(&buf),
             _ => self.unreserve(pid),
         }
         failed
@@ -1205,15 +1205,15 @@ impl<R: Runtime> Pager<R> {
             return Ok(None);
         }
         self.make_room(pid);
-        let read = self.read_disk(pid);
-        let refused = match self.judge(pid, file_copy(&read), Against::Expected) {
+        let (judged, read) = self.read_judged(pid).parts();
+        let refused = match judged {
             Judged::Behind(_) if self.bitmapped(pid) == Bitmapped::Free => None,
-            judged => judged.damage(),
+            judged => judged.refused(),
         };
-        if let Some(damage) = refused {
-            return Err(self.refuse_latched(g, damage));
-        }
-        let (buf, _) = read.unwrap();
+        let buf = match (refused, read) {
+            (None, Ok(buf)) => buf,
+            (Some(damage), _) | (None, Err(damage)) => return Err(self.refuse_latched(g, damage)),
+        };
         g.read_in(&buf);
         Ok(Some(g))
     }
@@ -1247,7 +1247,7 @@ impl<R: Runtime> Pager<R> {
             return false;
         }
         let m = self.own_meta();
-        m.table.is_unwritten(pid) && m.evidence.armed()
+        m.table.is_unwritten(pid) && m.evidence.proven()
     }
 
     /// Stop counting `pid` as resident.
@@ -1269,16 +1269,6 @@ impl<R: Runtime> Pager<R> {
             m.table.file_end(pid, m.evidence.recovered())
         };
         end.unwrap_or_else(|| self.log().next_lsn())
-    }
-
-    /// Returns the page `pid` as the file holds it, verified.
-    pub(super) fn read_disk(&self, pid: Pid) -> Result<(AlignedBuf, Verdict), Damage> {
-        let size = self.page_size;
-        let buf = self
-            .io(|d| d.read(self.data, pid.0 * size as u64, size))
-            .map_err(|_| Damage::Unreadable)?;
-        let verdict = page::verify(pid, &buf);
-        Ok((buf, verdict))
     }
 
     /// Count `pid` as resident, first evicting pages by the clock while the pool is full.

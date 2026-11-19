@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::runtime::{AlignedBuf, Runtime};
+use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem, Mode, Resolutions, resolutions_from, scan};
 use super::error::Damage;
-use super::evidence::{self, Against, file_copy};
+use super::evidence::Judged;
 use super::log::parse_segment;
-use super::page::{self, Verdict};
+use super::page;
 use super::pager::Pager;
 use super::quarantine::Bitmapped;
 use super::record::Record;
@@ -34,31 +34,20 @@ pub struct Verification {
     pub safe_snapshots: Vec<(Lsn, Position, Vec<u8>)>,
 }
 
-/// A page's damage, the LSN it is judged at, what the log says of that LSN, whether no record wrote
-/// it, and the LSN past which the retained log holds every record but none wrote it.
-type Judged = (
-    Option<Damage>,
-    Option<Lsn>,
-    Option<Damage>,
-    bool,
-    Option<Lsn>,
-);
+/// How a check sees a page: the damage of the file's copy, the LSN it judges, `None` when the
+/// copy is bad and the pool holds none, and that LSN's judgement.
+struct Seen {
+    bad: Option<Damage>,
+    found: Option<Lsn>,
+    judged: Judged,
+}
 
-/// What the retained log says of every page at one moment.
+/// The chain breaks and findings of the retained log at one moment.
 #[derive(Clone, Debug)]
 pub struct RetainedLog {
     /// The log's end when it was read. A page at or past it was written since.
     end: Lsn,
-    last: BTreeMap<Pid, Lsn>,
     broken: BTreeMap<Pid, Damage>,
-    /// Whether the log runs from its start with no gap, so every page written has a record.
-    complete: bool,
-    /// Whether the log has no gap.
-    gapless: bool,
-    /// The end of the log recovery kept, when the log runs from at or before it with no gap.
-    recovered: Option<Lsn>,
-    /// Whether writers may run during the check.
-    live: bool,
     findings: Vec<Finding>,
     commits: Vec<u64>,
     safe_snapshots: Vec<(Lsn, Position, Vec<u8>)>,
@@ -71,12 +60,7 @@ impl RetainedLog {
         let lsn = Lsn(parse_segment(what).unwrap_or(0));
         RetainedLog {
             end,
-            last: BTreeMap::new(),
             broken: BTreeMap::new(),
-            complete: false,
-            gapless: false,
-            recovered: None,
-            live: false,
             findings: vec![Finding::Log(LogFinding {
                 lsn,
                 problem: LogProblem::Unreadable,
@@ -94,10 +78,16 @@ fn unlogged_at(pid: Pid, lsn: Lsn, page: Lsn) -> Finding {
     })
 }
 
-/// Returns the log finding a stale page `pid` implies when the LSN it is found at is past the one
-/// the log expects.
-fn lost_record(pid: Pid, damage: Damage) -> Option<Finding> {
-    match damage {
+/// Returns the log finding of a copy of `pid` judged `judged`.
+fn unlogged(pid: Pid, judged: Judged) -> Option<Finding> {
+    let (lsn, page) = judged.unlogged()?;
+    Some(unlogged_at(pid, lsn, page))
+}
+
+/// Returns the log finding of a record of `pid` whose previous LSN, `found` in `broken`, is past
+/// the page's record before it.
+fn unlogged_prev(pid: Pid, broken: Damage) -> Option<Finding> {
+    match broken {
         Damage::Stale { expected, found } if found > expected => {
             Some(unlogged_at(pid, expected, found))
         }
@@ -210,13 +200,12 @@ impl<R: Runtime> Pager<R> {
         resolutions_from(&mut img, since, recovered, pages)
     }
 
-    /// Check every page and the retained log. A page whose LSN is at or past the log's end when the
-    /// check starts has no orphan finding, and a stale one only when the file's copy is at or past
-    /// [`Pager::file_end`]. When `live` it has no unlogged finding either, unless it is stale.
+    /// Check every page and the retained log. When `live`, report no log finding at or past the
+    /// log's end when the check starts.
     fn verify_to(&self, live: bool) -> Verification {
         let mut log = self.read_log(live);
         let mut findings = std::mem::take(&mut log.findings);
-        for n in Pid::FIRST_DATA.0..self.pages_within(&log) {
+        for n in Pid::FIRST_DATA.0..self.pages_within() {
             findings.extend(self.check_page(Pid(n), &log));
         }
         let recorded = self.recorded();
@@ -292,12 +281,6 @@ impl<R: Runtime> Pager<R> {
                 }
             })
         });
-        let complete = s
-            .as_ref()
-            .is_some_and(|s| s.resumed == 0 && first == Some(Lsn(0)));
-        let gapless = s.as_ref().is_some_and(|s| s.resumed == 0);
-        let recovered = self.evidence().recovered();
-        let recovered = (gapless && first.is_some_and(|f| f <= recovered)).then_some(recovered);
         let findings = s.iter().flat_map(|s| &s.findings);
         let findings = findings
             .filter(|f| !live || f.lsn < end)
@@ -305,23 +288,20 @@ impl<R: Runtime> Pager<R> {
             .collect();
         RetainedLog {
             end,
-            last,
             broken,
-            complete,
-            gapless,
-            recovered,
-            live,
             findings,
             commits,
             safe_snapshots,
         }
     }
 
-    /// Returns the end of the page numbers to check against `log`.
-    pub fn pages_within(&self, log: &RetainedLog) -> u64 {
-        let logged = log.last.keys().next_back().map_or(0, |p| p.0 + 1);
-        let evidence = self.evidence().end();
-        self.file_pages().max(logged).max(evidence)
+    /// Returns the end of the page numbers to check: past the file, every page with an expected
+    /// LSN and every page refused or damaged.
+    pub fn pages_within(&self) -> u64 {
+        let e = self.evidence();
+        let (expected, damaged) = (e.expected_end(), e.end());
+        drop(e);
+        self.file_pages().max(expected).max(damaged)
     }
 
     /// Check page `pid` against `log`, refusing it from now on if its contents are lost. Read the
@@ -347,82 +327,24 @@ impl<R: Runtime> Pager<R> {
 
     fn judge_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let RetainedLog {
-            end,
-            last,
-            broken,
-            complete,
-            gapless,
-            recovered,
-            live,
-            ..
-        } = log;
-        let known = self.refusal(pid);
-        if let Some(damage) = known {
+        let broken = log.broken.get(&pid).copied();
+        let broken = broken.filter(|&d| !self.settled_at(pid, d));
+        let chained = broken.and_then(|d| unlogged_prev(pid, d));
+        if let Some(damage) = self.refusal(pid) {
             findings.push(Finding::Page { pid, damage });
-            findings.extend(lost_record(pid, damage));
+            let (judged, _) = self.read_verified(pid).parts();
+            findings.extend(unlogged(pid, judged));
+            findings.extend(chained);
             return findings;
         }
-        let mapped = if last.contains_key(&pid) {
-            None
-        } else {
-            self.mapped(pid).unwrap_or_else(|e| {
-                findings.push(Finding::Page {
-                    pid: e.pid,
-                    damage: e.damage,
-                });
-                None
-            })
-        };
-        let broken = broken.get(&pid).copied();
-        let broken = broken.filter(|&d| !self.settled_at(pid, d));
-        let judge =
-            |disk: &Result<(AlignedBuf, Verdict), Damage>, resident: Option<Lsn>, changed: bool| {
-                let judged = self.judge(pid, file_copy(disk), Against::LogEnd);
-                let bad = match judged {
-                    evidence::Judged::Bad(d) if !changed => Some(d),
-                    _ => None,
-                };
-                let found = match (disk, resident) {
-                    (Ok((_, Verdict::Corrupt)) | Err(_), r) => r,
-                    (Ok(_), Some(l)) => Some(l),
-                    (Ok((buf, _)), None) => Some(page::lsn(buf)),
-                };
-                let future = match (judged, resident) {
-                    (evidence::Judged::Stale(d), None) => Some(d),
-                    _ => None,
-                };
-                let stale = future.or_else(|| {
-                    found.and_then(|found| match (broken, last.get(&pid)) {
-                        (Some(d), _) if found < *end => Some(d),
-                        (None, Some(&expected)) if expected != found && found < *end => {
-                            Some(Damage::Stale { expected, found })
-                        }
-                        (None, None) => mapped
-                            .filter(|&expected| found < expected && found < *end)
-                            .map(|expected| Damage::Stale { expected, found }),
-                        _ => None,
-                    })
-                });
-                let orphan = found.is_some_and(|found| {
-                    *complete && !last.contains_key(&pid) && found != Lsn(0) && found < *end
-                });
-                let unlogged = found
-                    .filter(|&found| found != Lsn(0) && (found < *end || !live))
-                    .and_then(|found| {
-                        let last = last.get(&pid).copied();
-                        match *recovered {
-                            Some(r) if found >= r && last.is_none_or(|e| found > e) => Some(r),
-                            _ => last.filter(|&e| *gapless && found > e),
-                        }
-                    });
-                (bad, found, stale, orphan, unlogged)
-            };
-        let disk = self.read_disk(pid);
         let resident = self.shared_resident(pid).map(|g| page::lsn(&g));
-        let mut seen = judge(&disk, resident, false);
-        let wrong = |seen: &Judged| {
-            seen.0.is_some() || seen.1.is_none() || seen.2.is_some() || seen.3 || seen.4.is_some()
+        let mut seen = self.seen(pid, resident, false);
+        let wrong = |seen: &Seen| {
+            seen.bad.is_some()
+                || seen.judged != Judged::Sound
+                || seen
+                    .found
+                    .is_none_or(|found| broken.is_some() && found < log.end)
         };
         // Twice: a page freed and allocated again between the latched read and the look at the
         // bitmap is judged afresh. The bitmap's latch is never taken under this page's.
@@ -435,22 +357,20 @@ impl<R: Runtime> Pager<R> {
             if self.bitmapped(pid) == Bitmapped::Free {
                 if let Some(damage) = broken {
                     findings.push(Finding::Page { pid, damage });
-                    findings.extend(lost_record(pid, damage));
+                    findings.extend(chained);
                 }
                 return findings;
             }
             let g = self.hold(pid);
-            let disk = self.read_disk(pid);
             let resident = g.resident().then(|| page::lsn(&g));
-            let changed = self.is_unwritten(pid);
-            seen = judge(&disk, resident, changed);
+            seen = self.seen(pid, resident, self.is_unwritten(pid));
             latched = Some(g);
         }
         if !wrong(&seen) {
             return findings;
         }
         let latch = latched.expect("the second judgement holds its latch");
-        let (bad, found, stale, orphan, unlogged) = seen;
+        let Seen { bad, found, judged } = seen;
         if let Some(damage) = bad {
             findings.push(Finding::Page { pid, damage });
             if found.is_some() {
@@ -464,17 +384,47 @@ impl<R: Runtime> Pager<R> {
             }
             return findings;
         };
-        if let Some(lsn) = unlogged {
-            findings.push(unlogged_at(pid, lsn, found));
-        }
+        findings.extend(unlogged(pid, judged));
+        findings.extend(chained);
+        let stale = match judged {
+            Judged::Stale(d) => Some(d),
+            _ if found < log.end && broken.is_some() => broken,
+            Judged::Behind(d) | Judged::Unlogged(d) => Some(d),
+            _ => None,
+        };
         if let Some(damage) = stale.filter(|&d| !self.settled_at(pid, d)) {
             findings.push(Finding::Page { pid, damage });
-            findings.extend(lost_record(pid, damage));
             self.refuse_latched(latch, damage);
-        } else if orphan && unlogged.is_none() {
+        } else if judged == Judged::Orphan {
             findings.push(Finding::Orphan(pid));
         }
         findings
+    }
+
+    /// Returns how `pid` is seen: the damage of the file's copy unless `changed` says the pool's
+    /// copy is to overwrite it, and the LSN and judgement of `resident`, the pool's copy, when
+    /// there is one, else of the file's copy.
+    fn seen(&self, pid: Pid, resident: Option<Lsn>, changed: bool) -> Seen {
+        let (judged, read) = self.read_verified(pid).parts();
+        let bad = match judged {
+            Judged::Bad(d) if !changed => Some(d),
+            _ => None,
+        };
+        match resident {
+            Some(lsn) => Seen {
+                bad,
+                found: Some(lsn),
+                judged: self.judge_resident(pid, lsn),
+            },
+            None => Seen {
+                bad,
+                found: read
+                    .ok()
+                    .filter(|_| !matches!(judged, Judged::Bad(_)))
+                    .map(|b| page::lsn(&b)),
+                judged,
+            },
+        }
     }
 
     /// Returns whether `pid` is recorded settled at the LSNs `damage` finds it stale at.

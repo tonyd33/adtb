@@ -2,7 +2,7 @@ use crate::runtime::Runtime;
 
 pub(super) use self::owner::{Allocation, Hold};
 use super::error::Damage;
-use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
+use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind, Verdict};
 use super::pager::{PageError, PageExclusive, Pager};
 use super::record::{Edit, Record};
 use super::recovery::Replaying;
@@ -91,10 +91,9 @@ impl<R: Runtime> Pager<R> {
         let end = self.evidence().expected_end();
         let later = (group + 1..).map(|g| self.bitmap_page(g));
         for map in later.take_while(|m| m.0 < end) {
-            let expected = self.evidence().expected(map).filter(|&l| l > Lsn(0));
-            if let Some(expected) = expected {
-                let found = Lsn(0);
-                self.damage(map, Damage::Stale { expected, found });
+            let blank = Ok((Lsn(0), Verdict::Blank));
+            if let Some(damage) = self.judge(map, blank).refused() {
+                self.damage(map, damage);
             }
         }
     }

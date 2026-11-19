@@ -4,6 +4,7 @@ use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::storage::evidence::Judged;
 use crate::storage::order::ordered_for_test;
 use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
@@ -634,7 +635,9 @@ fn changed_after_its_write(pager: &Pager<SimRuntime>, pid: Pid, pages: &[Pid]) -
     for &other in pages {
         drop(pager.read(other).unwrap());
     }
-    let (file, _) = pager.read_disk(pid).unwrap();
+    let (judged, file) = pager.read_judged(pid).parts();
+    assert_eq!(Judged::Sound, judged, "the copy written at {first:?}");
+    let file = file.unwrap();
     assert_eq!(1u64.to_le_bytes(), file[HEADER_LEN..HEADER_LEN + 8]);
     [first, set(2)]
 }

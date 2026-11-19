@@ -3,10 +3,9 @@ use std::collections::BTreeSet;
 use crate::runtime::Runtime;
 
 use super::alloc::diff;
-use super::evidence::{Against, Evidence, Judged, file_copy};
+use super::evidence::{Evidence, Judged};
 use super::order::Ordered;
-use super::page::Verdict;
-use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
+use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
 use super::policy::{self, Fault, Holder, Mark, Phase};
 use super::{Damage, Lsn, Pid, Shape};
@@ -124,7 +123,7 @@ impl Quarantine {
 
 /// Returns the marks a quarantine page holds, or `None` if it does not decode.
 pub(crate) fn decode(page: &[u8]) -> Option<BTreeSet<Quarantine>> {
-    if super::page::kind(page) != PageKind::Quarantine as u16 {
+    if page::kind(page) != PageKind::Quarantine as u16 {
         return None;
     }
     let n = u64::from_le_bytes(page[COUNT..COUNT + 8].try_into().unwrap()) as usize;
@@ -490,7 +489,7 @@ impl<R: Runtime> Pager<R> {
             let mark = policy::mark(Fault::Page(damage), Holder::MarksPage, Phase::Opening);
             mark.durable().into_iter().collect()
         });
-        let checked = self.evidence().armed();
+        let checked = self.evidence().proven();
         self.marks().load(self.rt(), page, read, checked);
         Ok(())
     }
@@ -610,7 +609,7 @@ impl<R: Runtime> Pager<R> {
             append.change_page(&mut guard, edits, false);
         }
         drop(append);
-        let lsn = super::page::lsn(&guard);
+        let lsn = page::lsn(&guard);
         drop(guard);
         self.wait_durable(lsn);
         (out, objects, Ok(()))
@@ -733,14 +732,11 @@ impl<R: Runtime> Pager<R> {
             Ok(page) => return Ok((page.to_vec(), None)),
             Err(e) => e,
         };
-        let Damage::Stale { expected, found } = e.damage else {
-            return Err(e);
-        };
-        if found == Lsn(0) || found > expected {
+        if !matches!(e.damage, Damage::Stale { .. }) {
             return Err(e);
         }
-        match self.read_disk(pid) {
-            Ok((buf, Verdict::Valid)) => {
+        match self.read_judged(pid).parts() {
+            (Judged::Sound | Judged::Behind(_), Ok(buf)) if page::lsn(&buf) != Lsn(0) => {
                 Ok((buf.to_vec(), Some(StaleCopy::of(self, pid, e.damage))))
             }
             _ => Err(e),
@@ -755,14 +751,13 @@ impl<R: Runtime> Pager<R> {
         if held.resident() || self.refusal(pid).is_some() {
             return None;
         }
-        let read = self.read_disk(pid);
-        let judged = self.judge(pid, file_copy(&read), Against::Expected);
+        let (judged, read) = self.read_judged(pid).parts();
         let Judged::Behind(damage @ Damage::Stale { found, .. }) = judged else {
             return None;
         };
-        let (buf, verdict) = read.ok()?;
-        let lost = verdict == Verdict::Valid && found != Lsn(0);
-        (lost && self.bitmapped(pid) != Bitmapped::Free).then(|| (buf.to_vec(), damage))
+        let buf = read.ok()?;
+        let lost = found != Lsn(0) && self.bitmapped(pid) != Bitmapped::Free;
+        lost.then(|| (buf.to_vec(), damage))
     }
 
     /// Free damaged page `pid`, overwriting it, so no later read of the file finds the damage.
@@ -816,7 +811,7 @@ impl<R: Runtime> Pager<R> {
         let mut guard = self.exclusive(page)?;
         let set = self.marks().change_on_page(self.rt(), f);
         guard.update(|p| encode(p, &set));
-        let lsn = super::page::lsn(&guard);
+        let lsn = page::lsn(&guard);
         drop(guard);
         self.wait_durable(lsn);
         Ok(())

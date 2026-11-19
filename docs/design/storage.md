@@ -425,9 +425,9 @@ operating error and never handed out as data.
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
 | Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; at open, each bitmap page past the end of the file with an expected LSN is refused, whatever its group; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
-| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); on every read of a page from the file, an LSN below its expected LSN, refused as stale: its last record in the retained log, or else its entry in the page LSN map, or the LSN of the last record logged for it since the open. A blank page with an expected LSN is stale with LSN 0. A copy below its expected LSN of a page the allocation bitmap calls free is not refused at read-in: the expected LSN is of the incarnation a free ended (§5.1), whose lost write `verify` reports as a chain break (§7). A page whose bitmap page is refused counts as allocated. The commit log alone reads a stale status page, settles it and writes it back ([mvcc.md §4.2](mvcc.md#42-the-commit-log)) |
+| Lost write | Page LSN older than the retained log says it must be, in recovery (§7); after recovery, an LSN below the page's expected LSN, the one LSN every check of a copy read from the file compares against: its last record in the retained log, or else its entry in the page LSN map (§6), or the LSN of the last record logged for it since the open. A record the open read before a gap in the retained log still gives its page a least expected LSN. A read refuses such a copy as stale, a backup copies it as damaged, and `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)) report and refuse it; while the database is held quarantined because the open could not prove the retained log (§10.3), only `verify` and scrub check it. A blank page with an expected LSN is stale with LSN 0. A copy below its expected LSN of a page the allocation bitmap calls free is not refused at read-in: the expected LSN is of the incarnation a free ended (§5.1), whose lost write `verify` reports as a chain break (§7). A page whose bitmap page is refused counts as allocated. The commit log alone reads a stale status page, settles it and writes it back ([mvcc.md §4.2](mvcc.md#42-the-commit-log)) |
 | Page out of shape | A page whose checksum and LSN pass but whose bytes are not what the page naming it, or the role it is read for, requires: blank, of another kind, of another owner, with a header or entries outside their bounds (frame), or of an unknown format. A shape fault is refused, and recorded as `Shape`, only by a caller holding the page's exclusive latch that finds it still out of shape there; a page that changed before that latch is recorded as nothing and read again, or, when the caller abandoned its write to take that latch in order, the write fails as changed. The page refused is the one whose bytes are wrong under that latch: for an entry naming a page of another shape, the page holding the entry. Its `verify` finding is `Checksum` |
-| Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
+| Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7), judged from the file's copy on every check, whether or not an earlier check refused the page. A read serves a page past its last record below the end of the log; `verify` and scrub refuse it |
 
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
@@ -876,13 +876,20 @@ not hold for it. `verify` reports an `Unlogged` log finding naming the
 page, the LSN it carries and the LSN it is past:
 
 - the end of the log recovery kept, for a page at or past that end and
-  past its last record, when the retained log runs from at or before
-  that end with no gap;
-- otherwise its last record, for a page, or a record's previous LSN,
-  past the page's last record in a log with no gap.
+  past its last record, when the retained log the open read runs from
+  at or before that end with no gap; once the open recycles the log,
+  the LSN past the last record it folded, if later;
+- otherwise its last record, for a page past its last record that the
+  open read after the last gap in the log or that the open logged, or
+  for a record's previous LSN past the page's last record in a log with
+  no gap.
 
-A page below that end with no record in a log retained from its start
-is an `Orphan` finding. A check while writers run takes a page this open
+A check reports at most one `Unlogged` finding of a page's copy, and
+`verify` and scrub refuse the page, including a page this open wrote
+with no record in the log. A page below that end with no record in a
+log the open read retained from its start is an `Orphan` finding. A
+page below a record the open read before a gap is stale: the gap hides
+only later records. A check while writers run takes a page this open
 wrote, at or past the log's end when the check starts, as written since.
 A page the check reads from the file at or past the end of the log
 recovery kept, or at or past the log's next LSN once the open has written
@@ -1265,12 +1272,15 @@ and the LSNs past them that the retained log or a later record gives in
 a hash table of one entry per page those records name. Recovery builds
 both as its last step, before the open reads any page recovery did not
 replay: it reads the whole map, then scans the retained log to the end
-recovery kept, decoding only the page and LSN of each record. A segment
+recovery kept, decoding only the page and LSN of each record, past a
+gap as well. A segment
 it cannot list, open or read, a block missing or a batch whose records
 do not decode before that end quarantines the whole database for that
 open and writes no mark for it; a map page the open cannot
 read does the same. While the database is held quarantined this way,
-no page read in is checked against an expected LSN, and the marks page,
+no page read in is checked against an expected LSN, `verify` and scrub
+check every page against the expected LSNs the open could read, a
+record before a gap as a least one, and the marks page,
 read with no check, is never written: a mark set in that open, and a
 damage record it maps, live in memory for that open only (§8). Damaging a page
 outside recovery writes its memory first when it holds changes the file

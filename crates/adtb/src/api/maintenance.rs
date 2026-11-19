@@ -332,7 +332,7 @@ impl<R: Runtime> Background<R> {
 
     fn begin(&self, cursor: Cursor) -> Pass<'_, R> {
         let log = self.verifier.db.scrub_log();
-        let end = self.verifier.pager.pages_within(&log);
+        let end = self.verifier.pager.pages_within();
         let (job, run, at) = self.verifier.scrub_row(&self.schema, self.jobs);
         let first = cursor.next.map_or(Pid::FIRST_DATA.0, |p| p.0);
         job.phase("scrub", done(first, end));

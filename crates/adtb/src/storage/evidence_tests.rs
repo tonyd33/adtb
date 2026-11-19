@@ -213,46 +213,140 @@ fn stale(found: u64) -> Judged {
     })
 }
 
-/// A copy of a page, with its judgement against the expected LSN of a live page expecting 50, of
-/// a live page expecting none, of a freed page that expected 50 and of a page while recovery
-/// runs, then against a resident LSN of 60 and against the log's end alone.
-type Row = (Result<(Lsn, Verdict), Damage>, [Judged; 6]);
+fn unlogged(at: u64, found: u64) -> Judged {
+    Judged::Unlogged(Damage::Stale {
+        expected: Lsn(at),
+        found: Lsn(found),
+    })
+}
+
+/// Returns evidence of a reopened file: page `P`'s last record at 50 and page 10's map entry at
+/// 40 in a log retained with no gap from before 80, the end recovery kept, and from its start
+/// when `complete`.
+fn armed_file(complete: bool) -> Evidence {
+    let mut e = Evidence::new(Pid(0));
+    let mut folded = vec![Lsn(0); 11];
+    folded[10] = Lsn(40);
+    e.arm_for_test(folded, &[(P, Lsn(50))], None, Some(Lsn(80)), complete);
+    e
+}
+
+/// Returns evidence of a file whose retained log has its last gap at `gap` and page `P`'s last
+/// record at 50.
+fn gapped(gap: u64) -> Evidence {
+    let mut e = Evidence::new(Pid(0));
+    e.arm_for_test(Vec::new(), &[(P, Lsn(50))], Some(Lsn(gap)), None, false);
+    e
+}
+
+const JUDGES: usize = 11;
+
+/// A copy of a page, with its judgement by a read of a live page of a created file expecting 50,
+/// of one expecting none, of a freed page that expected 50 and of a page while recovery runs; by a
+/// read of the live page holding the pool's copy at 60; by a read of a reopened file's page with
+/// its last record at 50 and of one with a map entry of 40; by a read of a page of a log retained
+/// from its start with no record; of a page whose last record at 50 lies before a gap, by
+/// `verify` and by a read; and of one whose last record at 50 lies after the last gap, by `verify`.
+type Row = (Result<(Lsn, Verdict), Damage>, [Judged; JUDGES]);
 
 #[test]
 fn a_copy_is_judged_by_its_read_its_checksum_the_log_end_and_what_it_must_reach() {
-    use Judged::{Bad, Sound};
+    use Judged::{Bad, Orphan, Sound};
     let (unreadable, rot) = (Bad(Damage::Unreadable), Bad(Damage::Checksum));
     let valid = |lsn| Ok((Lsn(lsn), Verdict::Valid));
-    let rows: [Row; 8] = [
-        (Err(Damage::Unreadable), [unreadable; 6]),
-        (Ok((Lsn(50), Verdict::Corrupt)), [rot; 6]),
+    let (b, u, s) = (behind, unlogged, Sound);
+    let rows: [Row; 9] = [
+        (Err(Damage::Unreadable), [unreadable; JUDGES]),
+        (Ok((Lsn(50), Verdict::Corrupt)), [rot; JUDGES]),
         (
             Ok((Lsn(0), Verdict::Blank)),
-            [behind(50, 0), Sound, Sound, Sound, behind(60, 0), Sound],
+            [
+                b(50, 0),
+                s,
+                s,
+                s,
+                b(60, 0),
+                b(50, 0),
+                b(40, 0),
+                s,
+                b(50, 0),
+                s,
+                b(50, 0),
+            ],
         ),
         (
             valid(49),
-            [behind(50, 49), Sound, Sound, Sound, behind(60, 49), Sound],
+            [
+                b(50, 49),
+                u(0, 49),
+                s,
+                s,
+                b(60, 49),
+                b(50, 49),
+                s,
+                Orphan,
+                b(50, 49),
+                s,
+                b(50, 49),
+            ],
         ),
         (
             valid(50),
-            [Sound, Sound, Sound, Sound, behind(60, 50), Sound],
+            [s, u(0, 50), s, s, b(60, 50), s, s, Orphan, s, s, s],
         ),
-        (valid(60), [Sound; 6]),
-        (valid(100), [stale(100); 6]),
-        (valid(120), [stale(120); 6]),
+        (
+            valid(60),
+            [
+                u(0, 60),
+                u(0, 60),
+                s,
+                s,
+                u(0, 60),
+                u(50, 60),
+                s,
+                Orphan,
+                s,
+                s,
+                u(50, 60),
+            ],
+        ),
+        (
+            valid(85),
+            [
+                u(0, 85),
+                u(0, 85),
+                s,
+                s,
+                u(0, 85),
+                u(80, 85),
+                u(80, 85),
+                u(80, 85),
+                s,
+                s,
+                u(50, 85),
+            ],
+        ),
+        (valid(100), [stale(100); JUDGES]),
+        (valid(120), [stale(120); JUDGES]),
     ];
     let live = expecting();
     let mut freed = expecting();
     freed.free(&appending_for_test(), &mut log(), P, false);
     let recovering = Evidence::new(Pid(0));
-    let judges = [
-        (&live, P, Against::Expected),
-        (&live, Pid(10), Against::Expected),
-        (&freed, P, Against::Expected),
-        (&recovering, P, Against::Expected),
-        (&live, P, Against::Resident(Lsn(60))),
-        (&live, P, Against::LogEnd),
+    let (recycled, complete) = (armed_file(false), armed_file(true));
+    let (before_gap, after_gap) = (gapped(60), gapped(40));
+    let judges: [(&Evidence, Pid, Against); JUDGES] = [
+        (&live, P, Against::Read(None)),
+        (&live, Pid(10), Against::Read(None)),
+        (&freed, P, Against::Read(None)),
+        (&recovering, P, Against::Read(None)),
+        (&live, P, Against::Read(Some(Lsn(60)))),
+        (&recycled, P, Against::Read(None)),
+        (&recycled, Pid(10), Against::Read(None)),
+        (&complete, Pid(11), Against::Read(None)),
+        (&before_gap, P, Against::Verify),
+        (&before_gap, P, Against::Read(None)),
+        (&after_gap, P, Against::Verify),
     ];
     let mut cells = 0;
     for (copy, expected) in rows {
@@ -262,8 +356,8 @@ fn a_copy_is_judged_by_its_read_its_checksum_the_log_end_and_what_it_must_reach(
             cells += 1;
         }
     }
-    assert_eq!(rows.len() * judges.len(), cells);
-    let blank = live.judge(P, Ok((Lsn(0), Verdict::Blank)), Against::LogEnd, Lsn(0));
+    assert_eq!(rows.len() * JUDGES, cells);
+    let blank = recovering.judge(P, Ok((Lsn(0), Verdict::Blank)), Against::Read(None), Lsn(0));
     assert_eq!(Sound, blank, "LSN 0 is never past the log");
 }
 
@@ -272,7 +366,7 @@ fn a_freed_pages_next_incarnation_is_judged_by_its_own_expected_lsn() {
     let mut e = expecting();
     e.free(&appending_for_test(), &mut log(), P, false);
     e.logged_page(&appending_for_test(), P, Lsn(60), Some(Met::Start));
-    let found = e.judge(P, Ok((Lsn(55), Verdict::Valid)), Against::Expected, END);
+    let found = e.judge(P, Ok((Lsn(55), Verdict::Valid)), Against::Read(None), END);
     assert_eq!(behind(60, 55), found);
 }
 

@@ -104,32 +104,6 @@ impl<R: Runtime> Pager<R> {
         false
     }
 
-    /// Returns the LSN the map holds for `pid`, refusing a map page whose LSN is below the one
-    /// its parent gives it.
-    pub(crate) fn mapped(&self, pid: Pid) -> Result<Option<Lsn>, PageError> {
-        let Some(m) = self.map_root() else {
-            return Ok(None);
-        };
-        if pid.0 >= self.reach(m.height) {
-            return Ok(None);
-        }
-        let (mut at, mut expected) = (m.root, m.lsn);
-        for level in (2..=m.height).rev() {
-            let page = self.map_page(at, expected)?;
-            let slot = (pid.0 / self.reach(level - 1) % self.fanout()) as usize;
-            at = Pid(word(&page, 2 * slot));
-            if at == Pid(0) {
-                return Ok(None);
-            }
-            expected = Lsn(word(&page, 2 * slot + 1));
-        }
-        let lsn = word(
-            &self.map_page(at, expected)?,
-            (pid.0 % self.per_leaf()) as usize,
-        );
-        Ok((lsn != 0).then_some(Lsn(lsn)))
-    }
-
     /// Returns every page of the map. Fail with the first map page refused.
     pub fn map_pages(&self) -> Result<Vec<Pid>, PageError> {
         let mut out = Vec::new();
@@ -302,35 +276,4 @@ pub(crate) fn folded<S: LogSource>(
     });
     let damaged = s.findings.iter().any(|f| f.lsn.0 < floor);
     (whole && !damaged && s.resumed == 0 && s.end.0 >= floor).then_some(last)
-}
-
-/// Returns the LSN of the last record of each page in the retained log of `img`, reading only
-/// each page record's page. Fail with the first LSN before `end`, the end of the log recovery
-/// kept, that the log cannot prove: a gap, an unreadable or missing block, or a batch whose records
-/// do not decode.
-pub(crate) fn retained<S: LogSource>(
-    img: &mut LogImage<S>,
-    end: Lsn,
-) -> Result<BTreeMap<Pid, Lsn>, Lsn> {
-    let mut last = BTreeMap::new();
-    let Some(first) = img.first_batch() else {
-        return if end == Lsn(0) { Ok(last) } else { Err(end) };
-    };
-    let block = img.block;
-    let mut undecoded = None;
-    let s = scan(img, first, Mode::Verify, |batch, _| {
-        if batch.start >= end || undecoded.is_some() {
-            return;
-        }
-        match batch.pages(block) {
-            Ok(pages) => last.extend(pages.into_iter().map(|(lsn, pid)| (pid, lsn))),
-            Err(_) => undecoded = Some(batch.start),
-        }
-    });
-    let found = s.findings.iter().map(|f| f.lsn).filter(|&at| at < end);
-    let short = (s.end < end).then_some(s.end);
-    match found.chain(short).chain(undecoded).min() {
-        Some(at) => Err(at),
-        None => Ok(last),
-    }
 }

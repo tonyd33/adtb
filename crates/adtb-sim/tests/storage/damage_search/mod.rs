@@ -83,39 +83,6 @@ struct Known {
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
 const UNDER_RELATION_MARK: &str = "migrate-under-relation-mark";
 const APPLIES_UNDER_MARK: &str = "migrate-applies-under-mark";
-const STALE_BEFORE_GAP: &str = "verify-misses-stale-page-before-log-gap";
-
-/// Returns the known failure of a lost write of a `kind` page in `seed` at `at`, then the log write
-/// `write` lost at write-out `then` of a `then_kind` page, shown by `consumer` as `what`.
-const fn before_gap(
-    kind: Kind,
-    consumer: Consumer,
-    what: &'static str,
-    (seed, at): (u64, usize),
-    (write, then, then_kind): (usize, usize, Kind),
-) -> Known {
-    Known {
-        fault: Fault::LostCurrent,
-        kind,
-        owner: None,
-        consumer,
-        what,
-        ticket: STALE_BEFORE_GAP,
-        seed,
-        at,
-        then: Some((
-            Point {
-                at: then,
-                injection: Injection::LogLost { write },
-            },
-            then_kind,
-        )),
-    }
-}
-
-const VERIFY_MISSES: &str = "verify misses a stale page";
-const SCRUB_MISSES: &str = "a scrub misses the stale page";
-
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
 const KNOWN: &[Known] = &[
@@ -296,69 +263,6 @@ const KNOWN: &[Known] = &[
             Kind::Engine,
         )),
     },
-    before_gap(
-        Kind::Marks,
-        Consumer::Verify,
-        VERIFY_MISSES,
-        (2, 645),
-        (83, 647, Kind::Large),
-    ),
-    before_gap(
-        Kind::Marks,
-        Consumer::Scrub,
-        SCRUB_MISSES,
-        (2, 645),
-        (83, 647, Kind::Large),
-    ),
-    before_gap(
-        Kind::Engine,
-        Consumer::Verify,
-        VERIFY_MISSES,
-        (1, 612),
-        (33, 633, Kind::Large),
-    ),
-    before_gap(
-        Kind::Engine,
-        Consumer::Scrub,
-        SCRUB_MISSES,
-        (1, 612),
-        (33, 633, Kind::Large),
-    ),
-    before_gap(
-        Kind::Engine,
-        Consumer::Verify,
-        VERIFY_MISSES,
-        (1, 612),
-        (40, 633, Kind::Large),
-    ),
-    before_gap(
-        Kind::Engine,
-        Consumer::Scrub,
-        SCRUB_MISSES,
-        (1, 612),
-        (40, 633, Kind::Large),
-    ),
-    before_gap(
-        Kind::Engine,
-        Consumer::Verify,
-        VERIFY_MISSES,
-        (1, 612),
-        (47, 633, Kind::Large),
-    ),
-    before_gap(
-        Kind::Engine,
-        Consumer::Scrub,
-        SCRUB_MISSES,
-        (1, 612),
-        (47, 633, Kind::Large),
-    ),
-    before_gap(
-        Kind::CommitLog,
-        Consumer::Scrub,
-        SCRUB_MISSES,
-        (3, 711),
-        (53, 712, Kind::LsnMap),
-    ),
 ];
 
 /// The cells whose every case ends at a failed open, which no consumer after it can reach, with

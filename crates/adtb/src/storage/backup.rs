@@ -15,7 +15,7 @@ use super::block::{
 use super::digest::{hex, sealed, unhex, unsealed};
 use super::driver::{Driver, Failed};
 use super::error::Damage;
-use super::evidence::{Against, Judged};
+use super::evidence::Judged;
 use super::header::{FileHeader, HISTORY_CAPACITY, REGION};
 use super::log::{FileSource, parse_segment, segment_name};
 use super::page::{self, spoil, valid_page_size};
@@ -837,32 +837,25 @@ impl<R: Runtime> Pager<R> {
         visit: &mut dyn FnMut(Pid, &mut [u8]) -> bool,
         damaged: &mut BTreeSet<Pid>,
     ) -> Result<Vec<u8>, BackupError> {
-        let mapped = self.mapped(pid).map_err(|_| BackupError::Quarantined)?;
-        let first = self.read_disk(pid);
+        let pool = || self.shared_resident(pid).map(|g| page::lsn(&g));
+        let (go, read) = self.read_seen(pid, |buf| visit(pid, buf), pool);
+        let (judged, first) = read.parts();
+        if !go {
+            return Err(BackupError::Stopped);
+        }
         let bytes = match first {
-            Ok((mut buf, _)) => {
-                if !visit(pid, &mut buf) {
-                    return Err(BackupError::Stopped);
-                }
-                let held = self.shared_resident(pid);
-                if self.trusted(pid, &buf, held.as_deref(), mapped) {
-                    return Ok(buf.to_vec());
-                }
-                Some(buf)
-            }
-            Err(_) => {
-                if !visit(pid, &mut []) {
-                    return Err(BackupError::Stopped);
-                }
-                None
-            }
+            Ok(buf) if self.trusted(pid, judged) => return Ok(buf.to_vec()),
+            Ok(buf) => Some(buf),
+            Err(_) => None,
         };
         // Reading the bitmap under this latch can deadlock with a writer latching in page order.
         let free = matches!(self.is_free(pid), Ok(true));
         let g = self.hold(pid);
-        let again = self.read_disk(pid);
-        if let Ok((buf, _)) = &again
-            && self.trusted(pid, buf, g.resident().then(|| &*g), mapped)
+        let pool = g.resident().then(|| page::lsn(&g));
+        let ((), read) = self.read_seen(pid, |_| (), || pool);
+        let (judged, again) = read.parts();
+        if let Ok(buf) = &again
+            && self.trusted(pid, judged)
         {
             return Ok(buf.to_vec());
         }
@@ -870,7 +863,7 @@ impl<R: Runtime> Pager<R> {
             return Ok(self.staged(pid, &g).to_vec());
         }
         let mut copy = match (again, bytes) {
-            (Ok((buf, _)), _) | (Err(_), Some(buf)) => buf.to_vec(),
+            (Ok(buf), _) | (Err(_), Some(buf)) => buf.to_vec(),
             (Err(_), None) => unreadable_page(self.page_size()),
         };
         if !free {
@@ -880,16 +873,11 @@ impl<R: Runtime> Pager<R> {
         Ok(copy)
     }
 
-    /// Returns whether the file's copy `buf` of `pid` is sound and nothing shows it a lost write:
-    /// this open has not refused the page as stale, the pool holds it at no later LSN, and its
-    /// LSN is not below `mapped`, the page LSN map's entry for it. `image` is its resident copy
-    /// under the caller's latch.
-    fn trusted(&self, pid: Pid, buf: &[u8], image: Option<&[u8]>, mapped: Option<Lsn>) -> bool {
+    /// Returns whether the file's copy of `pid`, `judged`, is one a read serves and this open has
+    /// not refused the page as stale.
+    fn trusted(&self, pid: Pid, judged: Judged) -> bool {
         let stale = matches!(self.refusal(pid), Some(Damage::Stale { .. }));
-        let behind = mapped.is_some_and(|m| page::lsn(buf) < m);
-        let against = image.map_or(Against::Expected, |i| Against::Resident(page::lsn(i)));
-        let file = Ok((page::lsn(buf), page::verify(pid, buf)));
-        !stale && !behind && self.judge(pid, file, against) == Judged::Sound
+        !stale && judged.refused().is_none()
     }
 
     fn copy_log(

@@ -557,3 +557,29 @@ fn a_free_the_list_cannot_fold_clears_its_page_for_every_later_open() {
     });
     assert_eq!(None, recorded, "the open after");
 }
+
+#[test]
+fn verify_and_scrub_pass_a_page_whose_record_this_open_was_recycled_within_it() {
+    let (mut sim, pages) = created(16, false);
+    let (written, first, verified, scrubbed, damaged) = session(&mut sim, false, |pager, rt| {
+        storage::recycle_at_open(pager, None);
+        put(pager, pages[0], 1);
+        let written = Probe::of(pager).appended().0;
+        paced(pager, rt, &pages[1..], 8 * EVERY);
+        let first = listed(rt, false)[0];
+        let verified = pager.verify().findings;
+        let log = pager.read_log(true);
+        let scrubbed: Vec<Finding> = pages
+            .iter()
+            .flat_map(|&p| pager.check_page(p, &log))
+            .collect();
+        (written, first, verified, scrubbed, pager.damaged())
+    });
+    assert!(
+        first > written,
+        "the record at {written:#x} was not recycled, first segment {first:#x}"
+    );
+    assert_eq!(Vec::<Finding>::new(), verified);
+    assert_eq!(Vec::<Finding>::new(), scrubbed);
+    assert_eq!(BTreeMap::new(), damaged);
+}

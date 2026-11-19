@@ -6,11 +6,10 @@ use crate::runtime::{AlignedBuf, Runtime};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::marker::PhantomData;
 
-use super::block::LogFinding;
+use super::block::{LogFinding, LogImage, LogSource, Mode, scan};
 use super::damage_log::Recorded;
 use super::error::Damage;
 use super::log::Log;
-use super::lsnmap::retained;
 use super::page::{self, Verdict};
 use super::pager::{Appending, Held, Pager, Wrote};
 use super::quarantine::Quarantine;
@@ -24,33 +23,62 @@ enum Gate {
     /// Recovery is replaying the log; no page has an expected LSN until it ends.
     Recovering,
     Armed(Expected),
-    /// The open could not read the map or prove the retained log: the database is held
-    /// quarantined and no page is checked.
+    /// The open could not read the retained log: the database is held quarantined and no page is
+    /// checked.
     Off,
 }
 
-impl Gate {
-    fn expected(&self, pid: Pid) -> Option<Lsn> {
+/// The LSN a file's copy of a page must have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Expect {
+    /// The LSN of the page's last record.
+    Exact(Lsn),
+    /// A least LSN: the page's entry in the page LSN map, or its last record in a log with a gap.
+    AtLeast(Lsn),
+}
+
+impl Expect {
+    fn lsn(self) -> Lsn {
         match self {
-            Gate::Armed(e) => e.get(pid),
-            Gate::Recovering | Gate::Off => None,
+            Expect::Exact(l) | Expect::AtLeast(l) => l,
         }
     }
 }
 
-/// The LSN each page must have at least when read in.
-#[derive(Debug, Default)]
+/// The LSN each page must have when read in, and what the retained log proved at the open.
+#[derive(Debug)]
 struct Expected {
     /// The page LSN map's entry of each page, by pid, zero for none.
     folded: Vec<Lsn>,
     /// Each page whose last record is past its folded entry, with that record's LSN.
-    logged: HashMap<Pid, Lsn>,
+    logged: HashMap<Pid, Expect>,
+    /// Whether the open read the map and a retained log with no gap to the end recovery kept.
+    proven: bool,
+    /// The LSN from which `logged` holds the last record of every page with one, when the retained
+    /// log ran from at or before the end recovery kept with no gap.
+    covered: Option<Lsn>,
+    /// Whether the retained log ran from its start with no gap, so every page written has a record.
+    complete: bool,
 }
 
 impl Expected {
-    fn get(&self, pid: Pid) -> Option<Lsn> {
+    /// Returns the expectation of a file created empty: no page has one until a record gives it.
+    fn created() -> Expected {
+        Expected {
+            folded: Vec::new(),
+            logged: HashMap::new(),
+            proven: true,
+            covered: Some(Lsn(0)),
+            complete: true,
+        }
+    }
+
+    fn get(&self, pid: Pid) -> Option<Expect> {
+        if let Some(&logged) = self.logged.get(&pid) {
+            return Some(logged);
+        }
         let folded = self.folded.get(pid.0 as usize).copied();
-        self.logged.get(&pid).copied().or(folded)
+        folded.filter(|&l| l > Lsn(0)).map(Expect::AtLeast)
     }
 
     fn end(&self) -> u64 {
@@ -63,23 +91,67 @@ impl Expected {
         (folded as u64).max(logged)
     }
 
+    /// Fold `last`, each page's last record in the log being recycled, into the folded entries,
+    /// dropping each logged LSN no later than its page's entry, and move `covered` past the latest
+    /// record folded.
     fn absorb<'a>(&mut self, last: impl Iterator<Item = (&'a Pid, &'a Lsn)>) {
+        let mut latest = None;
         for (&pid, &lsn) in last {
+            latest = latest.max(Some(lsn));
             let at = pid.0 as usize;
             if self.folded.len() <= at {
                 self.folded.resize(at + 1, Lsn(0));
             }
             self.folded[at] = self.folded[at].max(lsn);
-            if self.logged.get(&pid).is_some_and(|&l| l <= self.folded[at]) {
+            if self
+                .logged
+                .get(&pid)
+                .is_some_and(|l| l.lsn() <= self.folded[at])
+            {
                 self.logged.remove(&pid);
             }
         }
+        if let (Some(covered), Some(latest)) = (&mut self.covered, latest) {
+            *covered = (*covered).max(Lsn(latest.0 + 1));
+        }
     }
 
-    /// Raise `pid`'s expected LSN to `lsn`, the LSN of its latest record.
-    fn raise(&mut self, pid: Pid, lsn: Lsn) {
-        if self.folded.get(pid.0 as usize).is_none_or(|&f| f < lsn) {
-            self.logged.insert(pid, lsn);
+    /// Raise `pid`'s expected LSN to `expect`, from its latest record.
+    fn raise(&mut self, pid: Pid, expect: Expect) {
+        if self
+            .folded
+            .get(pid.0 as usize)
+            .is_none_or(|&f| f < expect.lsn())
+        {
+            self.logged.insert(pid, expect);
+        }
+    }
+
+    /// Returns the judgement of a copy of `pid` at `found`, neither unreadable, failing its
+    /// checksum nor past the log's end.
+    fn judge(&self, found: Lsn, pid: Pid) -> Judged {
+        let expect = self.get(pid);
+        if let Some(behind) = expect.and_then(|x| behind(found, x.lsn())) {
+            return behind;
+        }
+        if found == Lsn(0) {
+            return Judged::Sound;
+        }
+        let last = match expect {
+            Some(Expect::Exact(last)) => Some(last),
+            Some(Expect::AtLeast(_)) | None => None,
+        };
+        let unlogged = match self.covered {
+            Some(c) if found >= c && last.is_none_or(|l| found > l) => Some(c),
+            _ => last.filter(|&l| found > l),
+        };
+        match (unlogged, expect) {
+            (Some(at), _) => Judged::Unlogged(Damage::Stale {
+                expected: at,
+                found,
+            }),
+            (None, None) if self.complete => Judged::Orphan,
+            _ => Judged::Sound,
         }
     }
 }
@@ -162,26 +234,33 @@ pub(super) type Begun = (Vec<Pending>, bool, Epoch);
 /// A file's copy of a page as read: its LSN and verdict, or why it cannot be read.
 pub(super) type FileCopy = Result<(Lsn, Verdict), Damage>;
 
-/// Returns the file's copy `read` as [`Pager::judge`] takes it.
-pub(super) fn file_copy(read: &Result<(AlignedBuf, Verdict), Damage>) -> FileCopy {
-    match read {
-        Ok((buf, verdict)) => Ok((page::lsn(buf), *verdict)),
-        Err(damage) => Err(*damage),
+/// A file's copy of a page with its judgement.
+#[must_use]
+#[derive(Debug)]
+pub(super) struct JudgedRead {
+    judged: Judged,
+    copy: Result<AlignedBuf, Damage>,
+}
+
+impl JudgedRead {
+    pub(super) fn parts(self) -> (Judged, Result<AlignedBuf, Damage>) {
+        (self.judged, self.copy)
     }
 }
 
 /// What a file's copy of a page must reach besides staying behind the log's end.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Against {
-    /// The page's expected LSN.
-    Expected,
-    /// The LSN of the pool's copy under the caller's latch.
-    Resident(Lsn),
-    /// Nothing more.
-    LogEnd,
+    /// A read's: the page's expected LSN once the open proved the map and the retained log, and
+    /// the LSN of the pool's copy the reader holds latched, if any.
+    Read(Option<Lsn>),
+    /// `verify`'s and scrub's: the page's expected LSN, while the database is held quarantined as
+    /// well.
+    Verify,
 }
 
-/// The judgement of a file's copy of a page.
+/// The judgement of a copy of a page.
+#[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Judged {
     Sound,
@@ -191,13 +270,29 @@ pub(super) enum Judged {
     Stale(Damage),
     /// The copy's LSN is below what it must reach.
     Behind(Damage),
+    /// The copy's LSN is past its last record below the log's end, or at or past the end of the
+    /// log recovery kept: no retained record wrote it. Its damage names the LSN it is past.
+    Unlogged(Damage),
+    /// The copy has an LSN, and no record of a log retained from its start wrote the page.
+    Orphan,
 }
 
 impl Judged {
-    pub(super) fn damage(self) -> Option<Damage> {
+    /// Returns why a read of the copy refuses it. A read serves an unlogged copy or an orphan,
+    /// which only `verify` and scrub report.
+    pub(super) fn refused(self) -> Option<Damage> {
         match self {
-            Judged::Sound => None,
+            Judged::Sound | Judged::Unlogged(_) | Judged::Orphan => None,
             Judged::Bad(d) | Judged::Stale(d) | Judged::Behind(d) => Some(d),
+        }
+    }
+
+    /// Returns the LSN the copy is past, which no retained record wrote, and the LSN it carries.
+    pub(super) fn unlogged(self) -> Option<(Lsn, Lsn)> {
+        match self {
+            Judged::Stale(Damage::Stale { expected, found })
+            | Judged::Unlogged(Damage::Stale { expected, found }) => Some((expected, found)),
+            _ => None,
         }
     }
 }
@@ -664,7 +759,7 @@ impl Evidence {
     /// `met` when that record is a full image.
     pub(super) fn logged_page(&mut self, _: &Appending, pid: Pid, lsn: Lsn, met: Option<Met>) {
         if let Gate::Armed(e) = &mut self.gate {
-            e.raise(pid, lsn);
+            e.raise(pid, Expect::Exact(lsn));
         }
         if let Some(met) = met {
             let changed = self.meet(pid, met);
@@ -781,7 +876,32 @@ impl Evidence {
 
     /// Arm the gate of a file created empty: no page has an expected LSN until a record gives one.
     pub(super) fn arm_created(&mut self) {
-        self.gate = Gate::Armed(Expected::default());
+        self.gate = Gate::Armed(Expected::created());
+    }
+
+    /// Arm the gate as an open that read `folded` from the map and `logged` from the retained log,
+    /// a record at or before `gap` as a least LSN, with `covered` the end recovery kept when the
+    /// log ran to it with no gap, `complete` when from its start.
+    #[cfg(test)]
+    pub(super) fn arm_for_test(
+        &mut self,
+        folded: Vec<Lsn>,
+        logged: &[(Pid, Lsn)],
+        gap: Option<Lsn>,
+        covered: Option<Lsn>,
+        complete: bool,
+    ) {
+        let mut expected = Expected {
+            folded,
+            logged: HashMap::new(),
+            proven: covered.is_some(),
+            covered,
+            complete,
+        };
+        for &(pid, lsn) in logged {
+            expected.raise(pid, read_past(gap, lsn));
+        }
+        self.gate = Gate::Armed(expected);
     }
 
     /// Raise the folded expected LSN of each page of `last` below `end` to its LSN, dropping the
@@ -807,7 +927,7 @@ impl Evidence {
     /// Take `base`, the list page's records, `None` when the page does not serve, then what replay
     /// met past it and `header_log` and `header_full`, the log findings the file header holds, as
     /// the records. Name `list` as the list page, and serve it when `base` is given and the
-    /// read-in gate is armed.
+    /// open proved the map and the log.
     pub(super) fn load_list(
         &mut self,
         base: Option<Recorded>,
@@ -815,7 +935,7 @@ impl Evidence {
         header_log: Vec<LogFinding>,
         header_full: bool,
     ) {
-        let sound = base.is_some() && matches!(self.gate, Gate::Armed(_));
+        let sound = base.is_some() && self.proven();
         self.list_unread = !sound;
         let mut recorded = base.unwrap_or_default();
         let mut unfolded = !header_log.is_empty() || header_full;
@@ -1024,10 +1144,6 @@ impl Evidence {
         self.list
     }
 
-    pub(super) fn expected(&self, pid: Pid) -> Option<Lsn> {
-        self.gate.expected(pid)
-    }
-
     /// Returns one past the last page with an expected LSN, 0 when none has one.
     pub(super) fn expected_end(&self) -> u64 {
         match &self.gate {
@@ -1036,16 +1152,18 @@ impl Evidence {
         }
     }
 
-    pub(super) fn armed(&self) -> bool {
-        matches!(self.gate, Gate::Armed(_))
+    /// Returns whether the open read the page LSN map and proved the retained log, so the gate
+    /// checks every page and the marks and list pages are written.
+    pub(super) fn proven(&self) -> bool {
+        matches!(&self.gate, Gate::Armed(e) if e.proven)
     }
 
     pub(super) fn recovered(&self) -> Lsn {
         self.recovered
     }
 
-    /// Returns the judgement of `file`, the file's copy of `pid`, below `file_end` and reaching
-    /// what `against` names. A page freed this open has no expected LSN.
+    /// Returns the judgement of `file`, a copy of `pid`, below `file_end` and reaching what
+    /// `against` names. A page freed this open has no expected LSN.
     pub(super) fn judge(
         &self,
         pid: Pid,
@@ -1058,21 +1176,39 @@ impl Evidence {
             Ok((_, Verdict::Corrupt)) => return Judged::Bad(Damage::Checksum),
             Ok((found, Verdict::Valid | Verdict::Blank)) => found,
         };
-        let expected = match against {
-            Against::Expected if self.is_freed(pid) => None,
-            Against::Expected => self.gate.expected(pid),
-            Against::Resident(lsn) => Some(lsn),
-            Against::LogEnd => None,
-        };
         if let Some(damage) = Damage::past_log_end(found, file_end) {
             return Judged::Stale(damage);
         }
-        expected
-            .filter(|&expected| found < expected)
-            .map_or(Judged::Sound, |expected| {
-                Judged::Behind(Damage::Stale { expected, found })
-            })
+        if let Against::Read(Some(pool)) = against
+            && let Some(behind) = behind(found, pool)
+        {
+            return behind;
+        }
+        match (against, &self.gate) {
+            (Against::Read(_), Gate::Armed(e)) if e.proven && !self.is_freed(pid) => {
+                e.judge(found, pid)
+            }
+            (Against::Verify, Gate::Armed(e)) if !self.is_freed(pid) => e.judge(found, pid),
+            (Against::Read(_) | Against::Verify, _) => Judged::Sound,
+        }
     }
+}
+
+/// Returns the expectation a record at `lsn` read from the retained log gives its page: a least
+/// LSN when at or before `gap`, the last LSN the log cannot prove.
+fn read_past(gap: Option<Lsn>, lsn: Lsn) -> Expect {
+    match gap {
+        Some(gap) if lsn <= gap => Expect::AtLeast(lsn),
+        _ => Expect::Exact(lsn),
+    }
+}
+
+/// Returns the judgement of a copy at `found` below `least`, `None` when it reaches it.
+fn behind(found: Lsn, least: Lsn) -> Option<Judged> {
+    (found < least).then_some(Judged::Behind(Damage::Stale {
+        expected: least,
+        found,
+    }))
 }
 
 impl<R: Runtime> Pager<R> {
@@ -1101,42 +1237,155 @@ impl<R: Runtime> Pager<R> {
         self.evidence().met.contains(&pid)
     }
 
-    /// Returns the judgement of `file`, the file's copy of `pid`, against [`Pager::file_end`] and
-    /// what `against` names.
+    /// Returns the judgement of `file`, a copy of `pid` the file holds, as a read's against
+    /// [`Pager::file_end`].
     ///
     /// Preconditions: as for [`Pager::file_end`].
-    pub(super) fn judge(&self, pid: Pid, file: FileCopy, against: Against) -> Judged {
+    pub(super) fn judge(&self, pid: Pid, file: FileCopy) -> Judged {
         let end = self.file_end(pid);
-        self.evidence().judge(pid, file, against, end)
+        self.evidence().judge(pid, file, Against::Read(None), end)
     }
 
-    /// End recovery: set each page's expected LSN from the page LSN map, then the retained log.
-    /// Turn the gate off, setting none, when the log cannot prove a record before the end
-    /// recovery kept, or fail with the map page refused.
+    /// Returns the judgement of `lsn`, the LSN of the pool's copy of `pid`, as `verify`'s.
+    pub(super) fn judge_resident(&self, pid: Pid, lsn: Lsn) -> Judged {
+        let file = Ok((lsn, Verdict::Valid));
+        self.evidence()
+            .judge(pid, file, Against::Verify, Lsn(u64::MAX))
+    }
+
+    /// Returns the file's copy of `pid` with a read's judgement of it.
+    ///
+    /// Preconditions: as for [`Pager::file_end`].
+    pub(super) fn read_judged(&self, pid: Pid) -> JudgedRead {
+        self.read_seen(pid, |_| (), || None).1
+    }
+
+    /// Returns the file's copy of `pid` with `verify`'s judgement of it, which checks the copy
+    /// while the database is held quarantined as well.
+    ///
+    /// Preconditions: as for [`Pager::file_end`].
+    pub(super) fn read_verified(&self, pid: Pid) -> JudgedRead {
+        self.read_as(pid, |_| (), || Against::Verify).1
+    }
+
+    /// Returns what `see` returns of the file's copy of `pid` as read, empty when it cannot be
+    /// read, and the copy as `see` left it with a read's judgement of it, behind when below the
+    /// LSN `pool` returns, that of the pool's copy the caller holds latched.
+    ///
+    /// Preconditions: as for [`Pager::file_end`].
+    pub(super) fn read_seen<T>(
+        &self,
+        pid: Pid,
+        see: impl FnOnce(&mut [u8]) -> T,
+        pool: impl FnOnce() -> Option<Lsn>,
+    ) -> (T, JudgedRead) {
+        self.read_as(pid, see, || Against::Read(pool()))
+    }
+
+    fn read_as<T>(
+        &self,
+        pid: Pid,
+        see: impl FnOnce(&mut [u8]) -> T,
+        against: impl FnOnce() -> Against,
+    ) -> (T, JudgedRead) {
+        let size = self.page_size();
+        let mut read = self
+            .io(|d| d.read(self.data(), pid.0 * size as u64, size))
+            .map_err(|_| Damage::Unreadable);
+        let seen = match &mut read {
+            Ok(buf) => see(buf),
+            Err(_) => see(&mut []),
+        };
+        let file = match &read {
+            Ok(buf) => Ok((page::lsn(buf), page::verify(pid, buf))),
+            Err(damage) => Err(*damage),
+        };
+        // `against` may latch the page, which must not happen under the evidence lock.
+        let (against, end) = (against(), self.file_end(pid));
+        let judged = self.evidence().judge(pid, file, against, end);
+        (seen, JudgedRead { judged, copy: read })
+    }
+
+    /// End recovery: set each page's expected LSN from the page LSN map, then the retained log,
+    /// a record before a gap or a damaged batch as a least LSN. Turn the gate off, setting none,
+    /// when the log cannot be read. Fail with the map page refused, or when the log cannot prove a
+    /// record before the end recovery kept.
     pub(super) fn arm(&self) -> Armed {
-        let armed = self.map_entries().map_err(Some).and_then(|folded| {
-            let end = self.evidence().recovered();
-            let (_pin, mut img) = self.load_log().map_err(|_| None)?;
-            let last = retained(&mut img, end).map_err(|_| None)?;
-            let mut expected = Expected {
-                folded,
-                logged: HashMap::new(),
-            };
-            for (pid, lsn) in last {
-                expected.raise(pid, lsn);
-            }
-            Ok(expected)
-        });
+        let (folded, map) = match self.map_entries() {
+            Ok(folded) => (folded, Ok(())),
+            Err(e) => (Vec::new(), Err(e)),
+        };
+        let end = self.evidence().recovered();
+        let log = self
+            .load_log()
+            .ok()
+            .map(|(_pin, mut img)| retained(&mut img, end));
         let mut e = self.evidence();
-        match armed {
-            Ok(expected) => {
-                e.gate = Gate::Armed(expected);
-                Ok(())
-            }
-            Err(err) => {
-                e.gate = Gate::Off;
-                Err(err)
-            }
+        let Some(log) = log else {
+            e.gate = Gate::Off;
+            return Err(map.err());
+        };
+        let gapless = log.gap.is_none();
+        let mut expected = Expected {
+            folded,
+            logged: HashMap::new(),
+            proven: gapless && map.is_ok(),
+            covered: (gapless && log.first.is_none_or(|f| f <= end)).then_some(end),
+            complete: gapless && log.first.is_none_or(|f| f == Lsn(0)),
+        };
+        for (pid, lsn) in log.last {
+            expected.raise(pid, read_past(log.gap, lsn));
         }
+        e.gate = Gate::Armed(expected);
+        match map {
+            Err(err) => Err(Some(err)),
+            Ok(()) if gapless => Ok(()),
+            Ok(()) => Err(None),
+        }
+    }
+}
+
+/// What the retained log holds of every page to the end of the log recovery kept.
+#[derive(Debug)]
+struct Retained {
+    /// The LSN of the last record read of each page.
+    last: BTreeMap<Pid, Lsn>,
+    /// The LSN of the first batch.
+    first: Option<Lsn>,
+    /// The last LSN before the end that the log cannot prove: a gap, an unreadable or missing
+    /// block, or a batch whose records do not decode.
+    gap: Option<Lsn>,
+}
+
+/// Returns what the retained log of `img` holds before `end`, the end of the log recovery kept,
+/// reading only each page record's page. Past a gap the records read go on; past a batch that
+/// does not decode none do.
+fn retained<S: LogSource>(img: &mut LogImage<S>, end: Lsn) -> Retained {
+    let mut last = BTreeMap::new();
+    let Some(first) = img.first_batch() else {
+        let gap = (end != Lsn(0)).then_some(end);
+        return Retained {
+            last,
+            first: None,
+            gap,
+        };
+    };
+    let block = img.block;
+    let mut undecoded = None;
+    let s = scan(img, first, Mode::Verify, |batch, _| {
+        if batch.start >= end || undecoded.is_some() {
+            return;
+        }
+        match batch.pages(block) {
+            Ok(pages) => last.extend(pages.into_iter().map(|(lsn, pid)| (pid, lsn))),
+            Err(_) => undecoded = Some(batch.start),
+        }
+    });
+    let found = s.findings.iter().map(|f| f.lsn).filter(|&at| at < end);
+    let short = (s.end < end).then_some(s.end);
+    Retained {
+        last,
+        first: Some(first),
+        gap: found.chain(short).chain(undecoded).max(),
     }
 }
