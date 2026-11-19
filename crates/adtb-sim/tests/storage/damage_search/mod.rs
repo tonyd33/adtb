@@ -6,6 +6,7 @@ mod consumers;
 mod generate;
 mod judge;
 mod ledger;
+mod plans;
 mod pool;
 mod stated;
 mod world;
@@ -631,7 +632,7 @@ struct Found {
 /// any cell never reached or any violation no known failure names. Returns what the shard found.
 fn shard(fault: Fault) -> String {
     let tier = tier();
-    let found = search(fault, kinds(fault), &tier, false, None);
+    let found = search(fault, kinds(fault), &tier, false);
     if fault == Fault::Torn {
         let lacking = |of: fn(&(usize, usize)) -> usize| {
             KINDS
@@ -697,7 +698,7 @@ fn named(k: &Known) -> String {
 /// still shows its shape.
 fn rerun(k: &Known) {
     let fault = k.fault;
-    let plan = case::plan(k.seed, generate::sequence(k.seed), false);
+    let plan = plans::plan(k.seed, false);
     let injection = fault.injection();
     assert_eq!(
         (Some(k.kind), k.owner, fault),
@@ -854,7 +855,10 @@ impl Window<'_> {
         let lacking = |j: usize| {
             let had = s.cases.get(&self.kinds[j]).copied().unwrap_or(0);
             let ahead: usize = self.planned.iter().map(|q| q.got[j].len()).sum();
-            (self.per_kind.saturating_sub(had).max(1) * 4).saturating_sub(ahead)
+            self.per_kind
+                .saturating_sub(had)
+                .max(1)
+                .saturating_sub(ahead)
         };
         let mut budget: Vec<usize> = (0..self.kinds.len()).map(lacking).collect();
         let mut taken: Vec<(usize, usize, usize)> = Vec::new();
@@ -922,7 +926,7 @@ impl Window<'_> {
             .kinds
             .iter()
             .map(|&kind| {
-                let candidates: Vec<usize> = (0..plan.clean.trace.writes.len())
+                let candidates: Vec<usize> = (0..plan.writes.len())
                     .filter(|&at| {
                         plan.kind(at) == Some(kind)
                             && plan.fault(at, injection) == self.fault
@@ -950,9 +954,9 @@ fn steer(fault: Fault, plan: &case::Plan, s: &Searched, most: usize) -> Vec<(Hel
         .map(|r| r.1)
         .filter(|h| s.steer_tries.get(h).copied().unwrap_or(0) < most)
         .collect();
-    let ids = &plan.observed.ids;
+    let ids = &plan.ids;
     let mut out: BTreeMap<Held, (Kind, usize)> = BTreeMap::new();
-    for (at, w) in plan.clean.trace.writes.iter().enumerate() {
+    for (at, w) in plan.writes.iter().enumerate() {
         let Some(kind) = plan.kind(at).filter(|k| s.kinds.contains(k)) else {
             continue;
         };
@@ -969,13 +973,7 @@ fn steer(fault: Fault, plan: &case::Plan, s: &Searched, most: usize) -> Vec<(Hel
 
 /// Returns the cases of `fault` the tier asks, with a vacuum beside each write when
 /// `concurrent`.
-fn search(
-    fault: Fault,
-    kinds: Vec<Kind>,
-    tier: &Tier,
-    concurrent: bool,
-    kept: Option<&mut pool::Kept>,
-) -> Searched {
+fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Searched {
     let mut s = Searched {
         kinds: kinds.clone(),
         cases: BTreeMap::new(),
@@ -1004,7 +1002,7 @@ fn search(
     let steered = generate::STEERED..generate::STEERED + tier.sequences;
     let seeds: Vec<u64> = (1..=tier.sequences).chain(steered).collect();
     let mut w = Window {
-        seeds: pool::Seeds::new(&seeds, concurrent, kept),
+        seeds: pool::Seeds::new(&seeds, concurrent),
         planned: VecDeque::new(),
         failed: None,
         fault,
@@ -1021,7 +1019,7 @@ fn search(
         }
         if fault == Fault::Torn {
             let plan = &w.first().plan;
-            for at in 0..plan.clean.trace.writes.len() {
+            for at in 0..plan.writes.len() {
                 if let Some(kind) = plan.kind(at) {
                     let n = s.tearable.entry(kind).or_default();
                     n.0 += 1;
@@ -1283,7 +1281,7 @@ fn a_pinned_case_of_each_row_asks_it_and_breaks_no_rule() {
         .zip(pool::map(
             &seeds,
             |s| format!("seed {s}"),
-            |&s| case::plan(s, generate::sequence(s), false),
+            |&s| plans::plan(s, false),
         ))
         .collect();
     let failed: Vec<String> = pool::map(
@@ -1293,7 +1291,7 @@ fn a_pinned_case_of_each_row_asks_it_and_breaks_no_rule() {
             let (fault, kind, seed, at, row) = *pin;
             let plan = &plans[&seed];
             let why = pin_fails(plan, pin, at)?;
-            let nearest = (0..plan.clean.trace.writes.len())
+            let nearest = (0..plan.writes.len())
                 .filter(|x| plan.kind(*x) == Some(kind))
                 .find(|x| pin_fails(plan, pin, *x).is_none());
             Some(format!(
@@ -1371,8 +1369,10 @@ fn wide() -> (u64, usize) {
     if every_case() { (6, 2) } else { (2, 1) }
 }
 
-#[test]
-fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_damage() {
+/// Search each of the faults `of` picks with a vacuum beside each write, and fail on a fault with
+/// fewer cases a vacuum overlapped than the tier asks, or a violation no known failure names.
+/// Returns what the searches found.
+fn vacuum(of: impl Fn(Fault) -> bool) -> String {
     let (sequences, per_kind) = wide();
     let tier = Tier {
         sequences: sequences * 4,
@@ -1380,18 +1380,18 @@ fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_damage() {
     };
     let mut unknown = Vec::new();
     let mut overlapped = BTreeMap::new();
-    let mut kept = pool::Kept::new();
-    for fault in FAULTS {
-        let s = search(fault, kinds(fault), &tier, true, Some(&mut kept));
+    let mut text = String::new();
+    for fault in FAULTS.into_iter().filter(|f| of(*f)) {
+        let s = search(fault, kinds(fault), &tier, true);
         overlapped.insert(fault, s.overlapped);
-        eprintln!(
-            "concurrent {fault:?}: cases {:?}, {} with a vacuum during a write",
+        text += &format!(
+            "concurrent {fault:?}: cases {:?}, {} with a vacuum during a write\n",
             s.cases, s.overlapped
         );
         for f in &s.found {
             let v = &f.violation;
-            eprintln!(
-                "concurrent {fault:?} {:?} {:?}: {}; seed {} at {}: {:?}; {}",
+            text += &format!(
+                "concurrent {fault:?} {:?} {:?}: {}; seed {} at {}: {:?}; {}\n",
                 f.kind, v.consumer, v.what, f.seed, f.at, f.ops, v.detail
             );
             if known(fault, f.kind, f.owner, v.consumer, &v.what).is_none() {
@@ -1403,12 +1403,33 @@ fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_damage() {
     assert_eq!(
         Vec::<(&Fault, &usize)>::new(),
         short,
-        "faults with fewer than {per_kind} cases a vacuum overlapped"
+        "faults with fewer than {per_kind} cases a vacuum overlapped\n{text}"
     );
     assert_eq!(
         Vec::<(Fault, Kind, Consumer, String, u64, usize)>::new(),
-        unknown
+        unknown,
+        "{text}"
     );
+    text
+}
+
+fn is_unreadable(fault: Fault) -> bool {
+    matches!(fault, Fault::UnreadableOnce | Fault::UnreadableLasting)
+}
+
+#[test]
+fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_lost_write() {
+    eprintln!("{}", vacuum(judge::is_lost));
+}
+
+#[test]
+fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_unreadable_page() {
+    eprintln!("{}", vacuum(is_unreadable));
+}
+
+#[test]
+fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_other_damage() {
+    eprintln!("{}", vacuum(|f| !judge::is_lost(f) && !is_unreadable(f)));
 }
 
 /// The second fault of a pair, as the pairs tier counts it.
@@ -1437,7 +1458,7 @@ enum Second {
 /// each at a later write-out of another write than `first`'s, and for an unreadable block of the
 /// log, one the run with no fault reads after its write.
 fn second_points(plan: &case::Plan, first: usize, second: Second) -> Vec<Point> {
-    let writes = &plan.clean.trace.writes;
+    let writes = &plan.writes;
     let other = |at: usize| at > first && writes[at].op != writes[first].op;
     let page = |at: usize| match second {
         Second::Lost | Second::Recycled => {
@@ -1456,7 +1477,7 @@ fn second_points(plan: &case::Plan, first: usize, second: Second) -> Vec<Point> 
     };
     let log = |write: usize, folds: bool| match second {
         Second::LogLost => Some(Injection::LogLost { write }),
-        Second::LogUnreadable => plan.clean.log[write]
+        Second::LogUnreadable => plan.log[write]
             .read_later
             .then_some(Injection::LogUnreadable { write }),
         Second::Fold(point) => folds.then_some(Injection::Crash { point, write }),
@@ -1470,7 +1491,7 @@ fn second_points(plan: &case::Plan, first: usize, second: Second) -> Vec<Point> 
                 injection: page(at)?,
             })
         });
-    let logged = plan.clean.log.iter().enumerate().filter_map(|(write, w)| {
+    let logged = plan.log.iter().enumerate().filter_map(|(write, w)| {
         let injection = log(write, w.folds)?;
         let at = match injection {
             Injection::Crash {
@@ -1487,7 +1508,7 @@ fn second_points(plan: &case::Plan, first: usize, second: Second) -> Vec<Point> 
 /// `per` times three write-outs that have a second point, each with up to `per` times two of its
 /// second points.
 fn pair_cases(plan: &case::Plan, seconds: &[Second], per: usize) -> Vec<(Second, Point, Point)> {
-    let writes = plan.clean.trace.writes.len();
+    let writes = plan.writes.len();
     let mut out = Vec::new();
     for &second in seconds {
         let lost: Vec<usize> = (0..writes)
@@ -1541,7 +1562,7 @@ fn pairs(seconds: &[Second]) -> String {
         |ran: &BTreeMap<Second, Ran>, second: Second| reached(second, &ran[&second]) < floor;
     let mut past: BTreeMap<Second, Vec<u64>> = BTreeMap::new();
     let seeds: Vec<u64> = (1..=sequences * 4).collect();
-    let mut ahead = pool::Seeds::new(&seeds, false, None);
+    let mut ahead = pool::Seeds::new(&seeds, false);
     let mut planned: VecDeque<pool::Ran<Arc<case::Plan>>> = VecDeque::new();
     for &seed in &seeds {
         let wanted: Vec<Second> = seconds
@@ -1714,8 +1735,8 @@ fn a_lost_write_beside_a_crash_in_a_fold_keeps_every_record_and_mark() {
 
 /// Returns why the case `k` pins no longer shows `k`, or `None` when it does.
 fn unpinned(k: &Known) -> Option<String> {
-    let plan = case::plan(k.seed, generate::sequence(k.seed), false);
-    let writes = plan.clean.trace.writes.len();
+    let plan = plans::plan(k.seed, false);
+    let writes = plan.writes.len();
     let then = k.then.map(|(t, _)| t);
     if k.at >= writes {
         return Some("names a write-out past the last".into());
@@ -1762,8 +1783,8 @@ fn shows(k: &Known, plan: &case::Plan, at: usize, then: Option<Point>) -> bool {
 fn nearest(k: &Known) -> Option<(u64, usize, Option<usize>)> {
     let steered = generate::STEERED..generate::STEERED + 60;
     for seed in std::iter::once(k.seed).chain(1..=60).chain(steered) {
-        let plan = case::plan(seed, generate::sequence(seed), false);
-        let writes = plan.clean.trace.writes.len();
+        let plan = plans::plan(seed, false);
+        let writes = plan.writes.len();
         let mut ats: Vec<usize> = (0..writes)
             .filter(|&at| plan.kind(at) == Some(k.kind))
             .collect();

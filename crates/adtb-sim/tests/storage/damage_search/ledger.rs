@@ -390,7 +390,7 @@ pub fn evidence(files: &Files) -> Option<Evidence> {
 }
 
 /// What one write to the log carried, by the search's reader of its blocks.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogWrite {
     pub path: String,
     pub offset: u64,

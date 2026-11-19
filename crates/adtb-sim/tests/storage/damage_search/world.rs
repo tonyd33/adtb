@@ -396,7 +396,7 @@ pub type Holdings = BTreeMap<Pid, Option<Rel>>;
 /// The owner each user relation's pages carry: its heap's and its history heap's, which their
 /// directory and visibility map pages carry too, its key index's and history index's, and its
 /// large-value store's; the marks a page of each takes; and the holder of every page.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ids {
     pub heaps: BTreeMap<u32, Rel>,
     pub indexes: BTreeMap<u32, Rel>,

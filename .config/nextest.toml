@@ -54,10 +54,34 @@ default-filter = "not test(/crash/) and not (binary(=differential) and (test(=ev
 default-filter = "binary(=storage) and test(/^damage_search::/)"
 slow-timeout = { period = "120s", terminate-after = 5 }
 
-# The slowest damage search test starts first.
+# The damage search tests start longest first.
 [[profile.damage.overrides]]
 filter = "binary(=storage) and test(=damage_search::a_lost_write_of_an_earlier_incarnation_judges_nothing_of_the_next)"
 priority = 10
+
+[[profile.damage.overrides]]
+filter = "binary(=storage) and test(=damage_search::a_lost_write_whose_log_is_recycled_is_still_reported)"
+priority = 9
+
+[[profile.damage.overrides]]
+filter = "binary(=storage) and test(=damage_search::a_page_unreadable_once_is_a_storage_failure_then_intact)"
+priority = 8
+
+[[profile.damage.overrides]]
+filter = "binary(=storage) and test(=damage_search::a_flipped_byte_of_a_page_is_refused_and_marked)"
+priority = 7
+
+[[profile.damage.overrides]]
+filter = "binary(=storage) and test(=damage_search::a_lost_write_of_a_live_page_is_reported_and_marked)"
+priority = 6
+
+[[profile.damage.overrides]]
+filter = "binary(=storage) and test(=damage_search::a_page_unreadable_for_good_is_a_storage_failure_that_marks_nothing)"
+priority = 5
+
+[[profile.damage.overrides]]
+filter = "binary(=storage) and (test(=damage_search::a_torn_write_is_restored_from_its_image) or test(/^damage_search::a_vacuum_beside_each_write_/))"
+priority = 4
 
 # A damage search test runs four plans or cases at once.
 [[profile.damage.overrides]]

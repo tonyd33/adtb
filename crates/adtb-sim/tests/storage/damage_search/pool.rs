@@ -1,14 +1,13 @@
 //! The worker threads a search runs its plans and cases on.
 
 use std::any::Any;
-use std::collections::BTreeMap;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use super::case::{self, Outcome, Plan, Point};
-use super::generate;
+use super::plans;
 
 /// The plans and cases one test runs at once. The damage and deep profiles give each damage
 /// search test as many nextest slots.
@@ -103,15 +102,10 @@ pub fn try_map<J: Sync, R: Send>(
 /// One case of a plan, and for a pair its second point.
 pub type Case = (Point, Option<Point>);
 
-/// The plans a test made, by seed, for its later runs of the same seeds with the same setting of
-/// a vacuum beside each write.
-pub type Kept = BTreeMap<u64, Arc<Plan>>;
-
-/// The seeds of a run of sequences still to plan, and the plans kept from earlier runs.
+/// The seeds of a run of sequences still to plan.
 pub struct Seeds<'a> {
     seeds: &'a [u64],
     concurrent: bool,
-    kept: Option<&'a mut Kept>,
 }
 
 enum Job<'p> {
@@ -125,14 +119,9 @@ enum Made {
 }
 
 impl<'a> Seeds<'a> {
-    /// Returns the seeds `seeds`, planned with a vacuum beside each write when `concurrent`,
-    /// taking and keeping plans in `kept`.
-    pub fn new(seeds: &'a [u64], concurrent: bool, kept: Option<&'a mut Kept>) -> Self {
-        Self {
-            seeds,
-            concurrent,
-            kept,
-        }
+    /// Returns the seeds `seeds`, planned with a vacuum beside each write when `concurrent`.
+    pub fn new(seeds: &'a [u64], concurrent: bool) -> Self {
+        Self { seeds, concurrent }
     }
 
     /// Run `cases` and, while fewer than [`WIDTH`] plans are `held`, plan the next seeds until
@@ -142,13 +131,7 @@ impl<'a> Seeds<'a> {
         let more = if held < WIDTH { 2 * WIDTH - held } else { 0 };
         let (now, later) = self.seeds.split_at(more.min(self.seeds.len()));
         self.seeds = later;
-        let kept = self.kept.as_deref();
-        let fresh: Vec<u64> = now
-            .iter()
-            .copied()
-            .filter(|s| kept.is_none_or(|k| !k.contains_key(s)))
-            .collect();
-        let mut jobs: Vec<Job<'_>> = fresh.iter().map(|s| Job::Plan(*s)).collect();
+        let mut jobs: Vec<Job<'_>> = now.iter().map(|s| Job::Plan(*s)).collect();
         jobs.extend(cases.iter().map(|(plan, c)| Job::Case(plan, *c)));
         let concurrent = self.concurrent;
         let name = |job: &Job<'_>| match job {
@@ -162,26 +145,21 @@ impl<'a> Seeds<'a> {
             ),
         };
         let made = try_map(&jobs, name, |job| match job {
-            Job::Plan(seed) => Made::Plan(Box::new(case::plan(
-                *seed,
-                generate::sequence(*seed),
-                concurrent,
-            ))),
+            Job::Plan(seed) => Made::Plan(Box::new(plans::plan(*seed, concurrent))),
             Job::Case(plan, (first, None)) => Made::Case(case::run(plan, *first)),
             Job::Case(plan, (first, Some(second))) => {
                 Made::Case(case::run_pair(plan, *first, *second))
             }
         });
         let mut made = made.into_iter();
-        let mut planned: BTreeMap<u64, Ran<Arc<Plan>>> = fresh
-            .iter()
-            .zip(made.by_ref())
-            .map(|(seed, m)| {
-                let plan = m.map(|m| match m {
+        let plans = made
+            .by_ref()
+            .take(now.len())
+            .map(|m| {
+                m.map(|m| match m {
                     Made::Plan(p) => Arc::new(*p),
                     Made::Case(_) => unreachable!("a plan job makes a plan"),
-                });
-                (*seed, plan)
+                })
             })
             .collect();
         let outcomes = made
@@ -192,18 +170,6 @@ impl<'a> Seeds<'a> {
                 })
             })
             .collect();
-        let plans = now
-            .iter()
-            .map(|seed| match planned.remove(seed) {
-                Some(plan) => plan,
-                None => Ok(self.kept.as_deref().expect("an unplanned seed is kept")[seed].clone()),
-            })
-            .collect::<Vec<_>>();
-        if let Some(kept) = self.kept.as_deref_mut() {
-            for plan in plans.iter().flatten() {
-                kept.insert(plan.seed, plan.clone());
-            }
-        }
         (plans, outcomes)
     }
 }
@@ -255,4 +221,46 @@ fn a_map_raises_the_panic_of_the_first_job_that_panics_named() {
         Some("job 3: job 3 fails"),
         raised.downcast_ref::<String>().map(String::as_str)
     );
+}
+
+/// Returns each test name or name prefix of the damage search the nextest `config` filters on,
+/// with whether it is a prefix.
+fn named_tests(config: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    for (open, prefix) in [
+        ("test(=damage_search::", false),
+        ("test(/^damage_search::", true),
+    ] {
+        for (at, _) in config.match_indices(open) {
+            let rest = &config[at + open.len()..];
+            let name = &rest[..rest.find([')', '/']).expect("a filter ends")];
+            if !name.is_empty() {
+                out.push((name.rsplit("::").next().expect("a name"), prefix));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_damage_search_test_the_nextest_config_names_exists() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.config/nextest.toml");
+    let config = std::fs::read_to_string(path).expect("the nextest config reads");
+    let sources = [
+        include_str!("mod.rs"),
+        include_str!("judge.rs"),
+        include_str!("plans.rs"),
+        include_str!("pool.rs"),
+    ]
+    .concat();
+    let named = named_tests(&config);
+    let missing: Vec<&(&str, bool)> = named
+        .iter()
+        .filter(|(name, prefix)| {
+            let declared = format!("fn {name}{}", if *prefix { "" } else { "()" });
+            !sources.contains(&declared)
+        })
+        .collect();
+    assert_eq!(Vec::<&(&str, bool)>::new(), missing, "of {named:?}");
+    assert!(named.len() > 8, "the config names its tests: {named:?}");
 }

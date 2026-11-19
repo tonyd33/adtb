@@ -160,7 +160,7 @@ impl Facts<'_> {
         let gone = |r: Rel| {
             !world::present(r, self.case.ran.acked.version) && !world::present(r, self.case.started)
         };
-        self.case.plan.observed.ids.marked(*m).is_some_and(gone)
+        self.case.plan.ids.marked(*m).is_some_and(gone)
             && self.case.ran.marked_before_drop.contains(m)
     }
 }
@@ -214,7 +214,7 @@ struct Judged {
 /// instead, so its expected mark is the one both phases state alike.
 fn judged(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Result<Judged, String> {
     let o = case.observed;
-    let ids = &case.plan.observed.ids;
+    let ids = &case.plan.ids;
     let holding = ids
         .holding(w.kind, w.owner, w.pid)
         .ok_or_else(|| format!("page {} of kind {} and owner {}", w.pid.0, w.kind, w.owner))?;
@@ -257,7 +257,7 @@ fn judged(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Result<Judged, String>
     })
 }
 
-fn is_lost(fault: Fault) -> bool {
+pub fn is_lost(fault: Fault) -> bool {
     matches!(
         fault,
         Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled
@@ -286,7 +286,7 @@ fn incarnation_met(case: &Case<'_>, w: WriteOut) -> WriteOut {
 
 fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     let plan = case.plan;
-    let ids = &plan.observed.ids;
+    let ids = &plan.ids;
     let mut pages = Vec::new();
     let mut unclassified = Vec::new();
     let mut open_only = false;
@@ -297,7 +297,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         };
         let mut batch = vec![written];
         if is_lost(hit.fault) {
-            let writes = &plan.clean.trace.writes;
+            let writes = &plan.writes;
             batch.extend(
                 writes
                     .iter()
@@ -473,7 +473,7 @@ fn past_lost<'a>(case: &'a Case<'_>, lost: &'a LostLog) -> impl Iterator<Item = 
 /// wrote after it at or past its LSN, the database for a page no heap or index holds, and the
 /// database for a lost batch before the log's last.
 fn past_lost_log(case: &Case<'_>, lost: &LostLog) -> BTreeSet<Quarantine> {
-    let ids = &case.plan.observed.ids;
+    let ids = &case.plan.ids;
     let mut out = BTreeSet::new();
     if !lost.tail {
         out.insert(Quarantine::Database);
@@ -720,7 +720,7 @@ fn refused_marks(f: &Facts<'_>, what: &str) -> Vec<Quarantine> {
     if what == "the database" {
         return vec![Quarantine::Database];
     }
-    let ids = &f.case.plan.observed.ids;
+    let ids = &f.case.plan.ids;
     ids.marks
         .iter()
         .filter(|(r, _)| {
@@ -1022,7 +1022,7 @@ fn judge_dump(f: &Facts<'_>, d: &Dumped) -> Vec<(String, String)> {
 fn reached(f: &Facts<'_>) -> BTreeSet<Consumer> {
     let o = f.case.observed;
     let p = f.primary();
-    let ids = &f.case.plan.observed.ids;
+    let ids = &f.case.plan.ids;
     let through = |l: &Lookups| l.probes;
     let read = match p.kind {
         Kind::Index => f.pages[0].rel.is_some_and(|rel| {
@@ -1196,7 +1196,7 @@ fn durable_marks_unmet(f: &Facts<'_>, snapshots: &[Evidence]) -> Vec<(String, St
         .filter_map(|s| s.marks.clone())
         .flatten()
         .collect();
-    let ids = &f.case.plan.observed.ids;
+    let ids = &f.case.plan.ids;
     let mut out = Vec::new();
     for (rel, read) in &f.case.observed.reads {
         let marked = |m: &Quarantine| {

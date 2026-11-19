@@ -11,7 +11,7 @@ use adtb_sys::runtime::Faults;
 use super::consumers;
 use super::judge::{self, Hit, Verdicts};
 use super::ledger;
-use super::world::{self, CREATING, Kind, Op, Ran, Rel, Rows, WriteOut};
+use super::world::{self, CREATING, Holdings, Ids, Kind, Op, Ran, Rel, Rows, WriteOut};
 
 /// How a case damages its page, or after its write-out the log or a checkpoint. A fault of the
 /// log names a write to the log of the run with no fault, by its index.
@@ -112,18 +112,21 @@ impl Fault {
     }
 }
 
-/// A sequence and what its run with no fault showed: the write-outs it numbered, and the
-/// relation holding each page after each operation.
-#[derive(Debug)]
+/// A sequence and what its run with no fault showed: the write-outs it numbered and its writes
+/// to the log, and the relation holding each page after each operation.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Plan {
     pub seed: u64,
     pub ops: Vec<Op>,
     /// Whether a second thread vacuums each write's relation during the write.
     pub concurrent: bool,
-    pub clean: Ran,
-    pub observed: Ran,
+    pub writes: Vec<WriteOut>,
+    pub log: Vec<ledger::LogWrite>,
     /// The damage list's page.
     pub list: Option<Pid>,
+    /// The owners the observing run read.
+    pub ids: Ids,
+    pub held: Vec<Holdings>,
 }
 
 /// Returns the plan of `ops`: one run counting its write-outs, and one observing its holdings.
@@ -137,8 +140,10 @@ pub fn plan(seed: u64, ops: Vec<Op>, concurrent: bool) -> Plan {
         ops,
         concurrent,
         list: ledger::list_page(&clean.files),
-        clean,
-        observed,
+        writes: clean.trace.writes,
+        log: clean.log,
+        ids: observed.ids,
+        held: observed.held,
     }
 }
 
@@ -146,11 +151,11 @@ impl Plan {
     /// Returns the kind of page write-out `at` writes, or `None` for one of the create or of a
     /// page of no kind the search counts.
     pub fn kind(&self, at: usize) -> Option<Kind> {
-        let w = self.clean.trace.writes[at];
+        let w = self.writes[at];
         if w.during == CREATING {
             return None;
         }
-        world::class(w.kind, w.owner, &self.observed.ids)
+        world::class(w.kind, w.owner, &self.ids)
     }
 
     /// Returns the units of [`world::UNIT`] bytes of its write that a tear of write-out `at`
@@ -158,7 +163,7 @@ impl Plan {
     /// one landing and one not; every other unit of the write. Returns `None` when the page
     /// changed in fewer than two units, which a tear lands whole or not at all.
     pub fn tear(&self, at: usize) -> Option<Vec<bool>> {
-        let changed = self.clean.trace.writes[at].changed;
+        let changed = self.writes[at].changed;
         if changed.count_ones() < 2 {
             return None;
         }
@@ -186,7 +191,7 @@ impl Plan {
     /// Returns the index of write-out `at`'s page in the write that carries it, and the pages that
     /// write carries.
     fn place(&self, at: usize) -> (usize, usize) {
-        let writes = &self.clean.trace.writes;
+        let writes = &self.writes;
         let same = |x: &&WriteOut| x.op == writes[at].op;
         let index = writes[..at].iter().rev().take_while(same).count();
         (index, index + writes[at..].iter().take_while(same).count())
@@ -205,8 +210,8 @@ impl Plan {
 
     /// Returns the user relation the page write-out `at` writes belongs to.
     pub fn owner(&self, at: usize) -> Option<Rel> {
-        let w = self.clean.trace.writes[at];
-        self.observed.ids.owner(self.kind(at)?, w.owner)
+        let w = self.writes[at];
+        self.ids.owner(self.kind(at)?, w.owner)
     }
 
     /// Returns the cell's fault an `injection` at write-out `at` makes.
@@ -224,7 +229,7 @@ impl Plan {
             Injection::Unreadable { lasting: true } => Fault::UnreadableLasting,
             Injection::Flipped => Fault::Flipped,
             Injection::Lost => {
-                let w = self.clean.trace.writes[at];
+                let w = self.writes[at];
                 let after = (w.during + 1).min(self.ops.len());
                 if self.ops[after..].contains(&Op::Recycle)
                     || self.ops.get(w.during) == Some(&Op::Recycle)
@@ -247,7 +252,7 @@ impl Plan {
     /// Returns the operation after which the incarnation `w` writes is first free, if the
     /// sequence frees it.
     fn freed_by(&self, w: WriteOut) -> Option<usize> {
-        let held = &self.observed.held;
+        let held = &self.held;
         if w.during >= held.len() {
             return None;
         }
@@ -264,7 +269,7 @@ impl Plan {
         let Some(freed) = self.freed_by(w) else {
             return w;
         };
-        let mut writes = self.clean.trace.writes.iter().rev().copied();
+        let mut writes = self.writes.iter().rev().copied();
         writes
             .find(|x| x.pid == w.pid && x.during != CREATING && x.during > freed)
             .unwrap_or(w)
@@ -272,10 +277,7 @@ impl Plan {
 
     /// Returns whether `pid` is allocated at the sequence's end, by the observing run.
     pub fn held_at_end(&self, pid: Pid) -> bool {
-        self.observed
-            .held
-            .last()
-            .is_some_and(|h| h.contains_key(&pid))
+        self.held.last().is_some_and(|h| h.contains_key(&pid))
     }
 }
 
@@ -293,7 +295,7 @@ fn arm(rt: &SimRuntime, plan: &Plan, points: &[Point]) {
     assert!(failing.count() <= 1, "at most one point plans failures");
     let mut planned = SimPlan::new();
     for point in points {
-        let w = plan.clean.trace.writes[point.at];
+        let w = plan.writes[point.at];
         let action = match point.injection {
             Injection::Crash {
                 point: Fold::List, ..
@@ -314,7 +316,7 @@ fn arm(rt: &SimRuntime, plan: &Plan, points: &[Point]) {
 /// Returns the action that plans, at its write-out, `injection` at the log write `write` of the
 /// run with no fault in `plan`.
 fn after(rt: &SimRuntime, plan: &Plan, injection: Injection, write: usize) -> Action {
-    let w = &plan.clean.log[write];
+    let w = &plan.log[write];
     let at = Match::kind(OpKind::Write).path(&w.path).offset(w.offset);
     let failing = |ops: Match| planning(rt, SimPlan::new().first(ops, failed()));
     let then = match injection {
@@ -434,7 +436,7 @@ fn run_all(plan: &Plan, points: &[Point]) -> Option<Outcome> {
     let mut hits = Vec::new();
     for p in points.iter().filter(|p| p.injection.on_page()) {
         hits.push(Hit {
-            written: plan.clean.trace.writes[p.at],
+            written: plan.writes[p.at],
             kind: plan.kind(p.at)?,
             fault: plan.fault(p.at, p.injection),
         });
@@ -547,7 +549,7 @@ fn took(plan: &Plan, ran: &Ran, injection: Injection) -> bool {
     let Some(write) = injection.log_write() else {
         return true;
     };
-    let w = &plan.clean.log[write];
+    let w = &plan.log[write];
     let list = matches!(
         injection,
         Injection::Crash {
@@ -601,7 +603,7 @@ fn faulted(plan: &Plan, points: &[Point], watched: bool) -> Option<Ran> {
         watched,
     );
     let reached = |p: &Point| {
-        let w = plan.clean.trace.writes[p.at];
+        let w = plan.writes[p.at];
         ran.trace.writes.get(p.at).is_some_and(|got| *got == w)
     };
     points.iter().all(reached).then_some(ran)
