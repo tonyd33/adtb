@@ -12,11 +12,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::testing::{PlanCheck, Rewrites, plans_checked, with_rewrites};
 use adtb::{
-    CallOptions, Called, CreateOptions, Database, Error, Log, OpenError, OpenOptions, Registration,
-    RejectReason,
+    CallOptions, Called, CreateOptions, Database, Error, Limit, Log, OpenError, OpenOptions,
+    Registration, RejectReason,
 };
 use adtb_lang::schema::Committed;
 use adtb_lang::textual;
+use adtb_reference::Limit as ReferenceLimit;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::cases::{Case, Forms, Inverse, Operator, Query, Walk, case, walk, walk_of};
@@ -76,6 +77,7 @@ enum Got {
 /// A rejection reason the engine and the reference both give, by the fields that identify it.
 #[derive(Clone, Debug, PartialEq)]
 enum Reason {
+    Rounds { rounds: i64 },
     Violated { constraint: String },
     KeyViolation { relation: String, key: String },
     KeyChanged { relation: String },
@@ -93,6 +95,9 @@ impl Reason {
             RejectReason::NotOpen { ctor, .. } => Reason::NotOpen { ctor },
             RejectReason::UserError { message } => Reason::UserError { message },
             RejectReason::BadInput { source, line, .. } => Reason::BadInput { source, line },
+            RejectReason::StatementLimit {
+                limit: Limit::Rounds { rounds },
+            } => Reason::Rounds { rounds },
             _ => return None,
         })
     }
@@ -199,6 +204,9 @@ fn reference_eval(fx: &Fixture, text: &str) -> Got {
         Ok(Value::Set(s)) => Got::Rows(s.into_iter().collect()),
         Ok(v) => Got::Rows(vec![v]),
         Err(Abort::Fault(_)) => Got::Faulted,
+        Err(Abort::Limit(ReferenceLimit::Rounds { rounds })) => {
+            Got::Rejected(Reason::Rounds { rounds })
+        }
         Err(Abort::Reject(r)) => match Reason::of_reference(r.clone()) {
             Some(reason) => Got::Rejected(reason),
             None => Got::Refused(format!("{:?}", Abort::Reject(r))),

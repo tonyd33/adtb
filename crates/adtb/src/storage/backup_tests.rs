@@ -2200,6 +2200,14 @@ fn stops_a_cleanup(struck: &Struck) -> bool {
     )
 }
 
+/// Returns whether `struck` is a read of the source's data file or log.
+fn reads_the_source(struck: &Struck) -> bool {
+    struck.kind() == OpKind::Read
+        && struck
+            .path()
+            .is_some_and(|p| p == FILE || p.starts_with(&format!("{FILE}-log")))
+}
+
 /// Returns a plan failing every read once an open `opening` matches has come.
 fn fail_reads_after_open(rt: &SimRuntime, opening: Match) -> Plan {
     let planner = rt.clone();
@@ -2239,7 +2247,8 @@ fn assert_backup_outcome(published: bool, retried: &Result<(), Error>, files: Fi
 }
 
 /// Fail each op of a backup: the source lives, the target is absent or whole, and a retry answers
-/// by which.
+/// by which. After a failed read of the source, the source reopens before it takes a write and the
+/// retry.
 #[test]
 fn a_backup_with_any_op_failed() {
     let workload = |rt: &SimRuntime| {
@@ -2251,6 +2260,12 @@ fn a_backup_with_any_op_failed() {
         assert_eq!(files_open, rt.files_open(), "{:?}", rt.numbered().struck());
         let published = sim_has(rt, TARGET);
         let asides = asides_at_top(rt);
+        let db = if rt.numbered().struck().is_some_and(reads_the_source) {
+            db.close().unwrap();
+            Database::open_in(rt.clone(), FILE, &Log::new([APP]), &no_create()).unwrap()
+        } else {
+            db
+        };
         insert(&db, LATER_ROW..LATER_ROW + 1);
         let retried = backup_text(&db);
         db.close().unwrap();

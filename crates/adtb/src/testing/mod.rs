@@ -328,6 +328,12 @@ impl<'a, R: Runtime> Probe<'a, R> {
         self.pager.quarantined()
     }
 
+    /// Returns every object marked quarantined, in memory or in the file, without the database
+    /// held for this open only.
+    pub fn marks_not_held(self) -> BTreeSet<Quarantine> {
+        self.pager.quarantined_not_held()
+    }
+
     /// Returns whether `object` is quarantined, by its own mark or the database's.
     pub fn marked(self, object: Quarantine) -> bool {
         self.pager.is_quarantined(object)

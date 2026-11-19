@@ -460,6 +460,11 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
     for i in 0..40 {
         let name = format!("\"c{i}{}\"", "x".repeat(NAME_PAD));
         let insert = format!("insert customers {{ name: {name} }}");
+        assert_eq!(
+            0,
+            db.testing().take_ends_by_drop(),
+            "seed {seed}: a transaction before commit {i} was dropped"
+        );
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
             db.query_text(&insert, &[], &CallOptions::default())
         }));
@@ -471,6 +476,11 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
                 commits.refused.insert(name);
             }
             Err(payload) if payload.is::<FatalIo>() => {
+                let unwound = db.testing().take_ends_by_drop();
+                assert!(
+                    unwound <= 1,
+                    "seed {seed}: commit {i}'s fatal I/O failure ended {unwound} transactions by drop"
+                );
                 commits.storage += 1;
                 commits.refused.insert(name);
                 break;
@@ -482,7 +492,11 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
     if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| drop(db)))
         && !payload.is::<FatalIo>()
     {
-        panic::resume_unwind(payload);
+        let message = payload.downcast_ref::<String>().map(String::as_str);
+        panic!(
+            "seed {seed}: the close fails: {}",
+            message.unwrap_or("a non-text panic")
+        );
     }
     commits
 }

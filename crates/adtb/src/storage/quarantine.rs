@@ -391,6 +391,12 @@ mod marks {
             m.state.set.union(&m.state.held).copied().collect()
         }
 
+        /// Returns every mark set, without those held for this open only.
+        #[cfg(any(test, feature = "testing"))]
+        pub(in crate::storage) fn not_held<R: Runtime>(&self, rt: &R) -> BTreeSet<Quarantine> {
+            self.lock(rt).state.set.clone()
+        }
+
         /// Returns whether any of `objects` is marked, set or held.
         pub(in crate::storage) fn any_of<R: Runtime>(
             &self,
@@ -482,6 +488,12 @@ impl<R: Runtime> Pager<R> {
     /// Returns every object quarantined.
     pub(crate) fn quarantined(&self) -> BTreeSet<Quarantine> {
         self.marks().all(self.rt())
+    }
+
+    /// Returns every object marked, without the database held for this open only.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn quarantined_not_held(&self) -> BTreeSet<Quarantine> {
+        self.marks().not_held(self.rt())
     }
 
     /// Returns whether any object is quarantined, without taking a lock.

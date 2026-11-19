@@ -15,7 +15,7 @@ use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Submitted}
 use adtb_sys::runtime::Faults;
 use adtb_testkit::common;
 use adtb_testkit::damage::{DataFile, Files};
-use adtb_testkit::profile::every_case;
+use adtb_testkit::profile::{assert_reached, every_case};
 use adtb_testkit::search::each_crash_image;
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
@@ -99,9 +99,15 @@ impl Load {
     }
 }
 
-/// Write until the log has grown by `bytes`: write `n` goes to a page of `pages[1..]` in turn, and
-/// every fourth also to the hot page `pages[0]`, each forced.
-fn load(rt: &SimRuntime, pager: &Pager<impl Runtime>, pages: &[Pid], bytes: u64) -> Load {
+/// Write until the log has grown by `bytes`: write `n` puts `base + n` to a page of `pages[1..]` in
+/// turn, and every fourth also to the hot page `pages[0]`, each forced.
+fn load(
+    rt: &SimRuntime,
+    pager: &Pager<impl Runtime>,
+    pages: &[Pid],
+    bytes: u64,
+    base: u64,
+) -> Load {
     let start = Probe::of(pager).appended().0;
     let mut out = Load::default();
     let mut n = 0;
@@ -117,9 +123,13 @@ fn load(rt: &SimRuntime, pager: &Pager<impl Runtime>, pages: &[Pid], bytes: u64)
     };
     while Probe::of(pager).appended().0 < start + bytes {
         n += 1;
-        acked(&mut out, pages[1 + n as usize % (pages.len() - 1)], n);
+        acked(
+            &mut out,
+            pages[1 + n as usize % (pages.len() - 1)],
+            base + n,
+        );
         if n % 4 == 0 {
-            acked(&mut out, pages[0], n);
+            acked(&mut out, pages[0], base + n);
         }
         out.times.push(rt.now());
         out.samples.push((
@@ -233,8 +243,9 @@ fn written_within(acked: &[Ack], from: Lsn, end: Lsn) -> usize {
 
 fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
     let (files, pages) = created(atomic);
-    let ledger = Arc::new(Mutex::new((Load::default(), Lsn(0))));
+    let ledger = Arc::new(Mutex::new((Load::default(), Lsn(0), 0)));
     let mut points = 0;
+    let mut ahead = 0;
     each_crash_image(
         &files,
         7,
@@ -242,19 +253,22 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
         1,
         |rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
-            let warm = load(rt, &pager, &pages, 2 * EVERY);
+            let warm = load(rt, &pager, &pages, 2 * EVERY, 0);
             rt.arm(Match::kinds([]));
-            let mut run = load(rt, &pager, &pages, 10 * EVERY);
+            let base = warm.acked.last().unwrap().value;
+            let mut run = load(rt, &pager, &pages, 10 * EVERY, base);
+            let first_hot = run.acked.iter().find(|a| a.pid == pages[0]).unwrap();
+            let before_first_acks = vec![run.acked[0].event - 1, first_hot.event - 1];
             let mut io = rt.io();
             common::sleep(rt, &mut io, Duration::from_secs(1));
             run.acked.splice(0..0, warm.acked);
             run.samples.splice(0..0, warm.samples);
             run.times.splice(0..0, warm.times);
-            *ledger.lock().unwrap() = (run, Probe::of(&pager).appended());
-            Vec::new()
+            *ledger.lock().unwrap() = (run, Probe::of(&pager).appended(), base);
+            before_first_acks
         },
         |at, image| {
-            let (load, last) = &*ledger.lock().unwrap();
+            let (load, last, base) = &*ledger.lock().unwrap();
             // Recovery starts at or past the checkpoint before the one the header names, so it
             // reads the threshold, the span of the named checkpoint's cycle and the log after it.
             let (named, redo) = header_checkpoint(&image);
@@ -277,12 +291,21 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
                     acked <= v && v <= wrote[&pid],
                     "crash after event {at}: {pid:?} holds {v}, acknowledged {acked}"
                 );
+                let first_run = load.acked.iter().find(|a| a.pid == pid && a.value > *base);
+                if acked <= *base && first_run.is_some_and(|a| a.value == v) {
+                    ahead += 1;
+                }
             }
             points += 1;
         },
     );
     assert!(points >= 4, "{points} crash points");
-    let (load, _) = &*ledger.lock().unwrap();
+    assert_reached(
+        "an image holding the run's unacknowledged first write of a page over the warm load's",
+        ahead,
+        1,
+    );
+    let (load, _, _) = &*ledger.lock().unwrap();
     let mut checkpoints: Vec<Lsn> = load.samples.iter().map(|(_, c, _)| *c).collect();
     checkpoints.dedup();
     assert!(checkpoints.len() >= 8, "{checkpoints:?}");
@@ -324,7 +347,7 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
         |rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
             let before = Probe::of(&pager).checkpoint();
-            let load = load(rt, &pager, &pages, EVERY);
+            let load = load(rt, &pager, &pages, EVERY, 0);
             *wrote.lock().unwrap() = acked_by(&load.acked, usize::MAX);
             rt.arm(Match::kinds([]));
             let mut io = rt.io();
@@ -391,7 +414,7 @@ fn a_backup_taken_while_the_checkpointer_runs_restores_and_verifies_clean() {
         let mut visit = |pid: Pid, _: &mut [u8]| {
             if pid == pages[0] && during.is_none() {
                 let before = Probe::of(&pager).checkpoint();
-                let load = load(&rt, &pager, &pages[1..], 3 * EVERY);
+                let load = load(&rt, &pager, &pages[1..], 3 * EVERY, 0);
                 during = Some((before, Probe::of(&pager).checkpoint(), load));
             }
             true
@@ -436,7 +459,7 @@ fn a_close_while_the_checkpointer_runs_waits_for_it_and_the_next_open_replays_no
     let mut wrote = BTreeMap::new();
     harness::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
-        let load = load(&rt, &pager, &pages, EVERY);
+        let load = load(&rt, &pager, &pages, EVERY, 0);
         wrote = acked_by(&load.acked, usize::MAX);
         let closer = pager;
         let spawner = rt.clone();
@@ -485,7 +508,7 @@ fn torn_run(files: &Files, pages: &[Pid], crash: Option<Instant>) -> (Sim, Load,
     let mut done = Load::default();
     let outcome = sim.run(|rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
-        done = load(&rt, &pager, pages, 12 * EVERY);
+        done = load(&rt, &pager, pages, 12 * EVERY, 0);
         let mut io = rt.io();
         common::sleep(&rt, &mut io, Duration::from_secs(1));
     });

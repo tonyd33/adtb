@@ -1003,7 +1003,9 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
 }
 
 /// A read fault lands on a page chosen by the seed, so some seeds fault the file header or a page
-/// the open passes over. A seed that faults a page the open needs refuses the open.
+/// the open passes over. A seed that faults a page the open needs refuses the open. A seed that
+/// faults the retained log, or the damage list's page at the open, may open holding the database
+/// for that open only.
 #[test]
 fn an_unreadable_page_fails_open_unmarked() {
     let (files, _) = seeded(62, status_page);
@@ -1023,8 +1025,11 @@ fn an_unreadable_page_fails_open_unmarked() {
                 refused += usize::from(detail.contains("Unreadable"));
             }
             if let Ok(db) = got {
-                let marks = db.testing().probe().marks();
-                assert!(!marks.contains(&Quarantine::Database), "seed {seed}");
+                let marks = db.testing().probe().marks_not_held();
+                assert!(
+                    !marks.contains(&Quarantine::Database),
+                    "seed {seed}: {marks:?}"
+                );
                 db.close().ok();
             }
         });
