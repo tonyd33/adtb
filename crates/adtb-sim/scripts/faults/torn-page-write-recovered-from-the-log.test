@@ -1,0 +1,24 @@
+# A write of a heap page torn by a crash before its force is repaired by recovery from the log:
+# every committed row reads back, and no damage is recorded.
+use dump-app
+
+reopen
+
+run
+  insert users { name: "cy" }
+
+tear heap app::users User
+
+crash at sync app.adt
+
+reopen
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"cy"
+
+probe damage
+----

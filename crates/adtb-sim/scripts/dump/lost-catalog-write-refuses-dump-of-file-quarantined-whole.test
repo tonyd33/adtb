@@ -1,0 +1,25 @@
+# A page of the catalog that lost a write fails the dump of a file quarantined whole naming the
+# database and writes nothing, the page recorded as having lost a write.
+use dump-app
+
+reopen
+
+role later
+
+lose heap catalog::roles Role
+
+mark database
+
+reopen
+
+fatal Quarantined { what: "the database" }
+  dump to "d"
+
+probe damage
+----
+heap catalog::roles Role: Stale
+
+probe files
+----
+app.adt
+app.adt-log/0000000000000000

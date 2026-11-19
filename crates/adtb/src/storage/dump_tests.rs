@@ -14,8 +14,7 @@ use crate::test_world::grants;
 use crate::test_world::load as open;
 use crate::{
     ArchiveTarget, CallOptions, Called, Capability, Database, Error, FatalReason, Log, OpenOptions,
-    Position, Registration, RejectReason, RestorePoint, Restored, TxnCallOptions, TxnOptions,
-    restore_in, restore_report_in,
+    Position, Registration, RejectReason, RestorePoint, TxnOptions, restore_in, restore_report_in,
 };
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
@@ -483,18 +482,6 @@ fn each_restored_bundle_answers_or_refuses_its_calls_as_its_source() {
 
 const GRANTED: &str = "module app\ngrant read users to web\n";
 
-/// Returns the rows of `catalog::grants` of `db`, with their ids and without.
-fn grant_rows(db: &Database<SimRuntime>) -> [String; 2] {
-    let rows = answer(db, "from g in catalog::grants select g");
-    let fields = "kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, \
-                  grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant";
-    let hidden = answer(
-        db,
-        &format!("from g in catalog::grants select {{ {fields} }}"),
-    );
-    [rows, hidden]
-}
-
 fn granted_log() -> [String; 2] {
     [APP.to_owned(), GRANTED.to_owned()]
 }
@@ -513,50 +500,6 @@ fn granted() -> Files {
         db.close().unwrap();
     });
     sim.files()
-}
-
-fn report(rt: &SimRuntime) -> Result<Restored, Error> {
-    let archive = ArchiveTarget::path(DUMP).unwrap();
-    restore_report_in(
-        rt.clone(),
-        (&archive, None),
-        COPY,
-        RestorePoint::Latest,
-        &no_create(),
-    )
-}
-
-/// Returns the grants of the source and of the restore of [`granted`], and the restore's dormant
-/// grants.
-fn restored_grants() -> ([[String; 2]; 2], Vec<Dormant>) {
-    let mut sim = Sim::with_files(4, Config::default(), granted());
-    process::run(&mut sim, |rt| {
-        let log = granted_log();
-        let dormant = report(&rt).unwrap().dormant;
-        let rows = [FILE, COPY].map(|name| {
-            let db = open::opened(&rt, name, &Log::new(&log), &open::options(2));
-            let rows = grant_rows(&db);
-            db.close().unwrap();
-            rows
-        });
-        (rows, dormant)
-    })
-}
-
-#[test]
-fn a_log_grant_to_a_restored_role_restores_active() {
-    let ([src, copy], dormant) = restored_grants();
-    assert_eq!(Vec::<Dormant>::new(), dormant);
-    let active = src[1].contains("kind: Log") && src[1].contains("dormant: False");
-    assert!(active, "{}", src[1]);
-    assert_eq!(src[1], copy[1]);
-}
-
-#[test]
-fn a_restore_keeps_the_id_of_each_log_grant() {
-    let ([src, copy], _) = restored_grants();
-    assert!(!src[0].contains("grants.key(2)"), "{}", src[0]);
-    assert_eq!(src[0], copy[0]);
 }
 
 #[test]
@@ -705,170 +648,6 @@ fn a_dormant_grant_stays_dormant_through_a_dump_and_restore_once_its_role_exists
     });
 }
 
-#[test]
-fn a_restored_file_begins_an_epoch_past_the_dump_and_keeps_no_past() {
-    let (files, at) = dumped();
-    let mut sim = Sim::with_files(3, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
-        let past = format!(
-            "at commit Position {{ epoch: {}, lsn: {} }} {{ from u in users select u.name }}",
-            at.epoch, at.lsn
-        );
-        let got = copy.query_text(&past, &[], &CallOptions::default());
-        assert!(
-            matches!(
-                &got,
-                Err(Error::Rejected {
-                    reason: RejectReason::HistoryUnavailable { .. }
-                })
-            ),
-            "{got:?}"
-        );
-        let mut t = copy.begin(&TxnOptions::default()).unwrap();
-        t.query_text(
-            "insert users { name: \"eve\" }",
-            &[],
-            &TxnCallOptions::default(),
-        )
-        .unwrap();
-        let later = t.commit(None).unwrap();
-        assert!(
-            later.epoch > at.epoch && later.epoch <= at.epoch + (1 << 32),
-            "{at:?} then {later:?}"
-        );
-        run(&copy, "backup to \"bk\"").unwrap();
-        copy.close().unwrap();
-    });
-    let manifest = String::from_utf8_lossy(&sim.files()["bk/manifest"]).into_owned();
-    let ended = format!("epoch_ended {} {}", at.epoch, at.lsn);
-    assert!(manifest.lines().any(|l| l == ended), "{manifest}");
-}
-
-fn expired(bundle: &str) -> Result<Vec<String>, RejectReason> {
-    let (bundle, query) = (bundle.to_owned(), String::new());
-    Err(RejectReason::BundleExpired { bundle, query })
-}
-
-#[test]
-fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
-    let mut sim = Sim::new(17, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
-        run(&db, "set setting LeaseGrace = { grace: 60s }").unwrap();
-        let owner = db.role_authority().session("owner").unwrap();
-        let short = bundle("s-1.0", " lease 1h", HELLO);
-        db.role_authority().register(&owner, &short).unwrap();
-        adtb_testkit::common::sleep(&rt, &mut rt.io(), Duration::from_secs(2 * 3600));
-        run(&db, "set setting LeaseGrace = { grace: 100h }").unwrap();
-        dump(&db).unwrap();
-        assert_eq!(expired("s-1.0"), outcome(&db, "s-1.0"), "source");
-        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
-        assert_eq!(expired("s-1.0"), outcome(&copy, "s-1.0"), "restored");
-        copy.close().unwrap();
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn a_registration_after_the_dump_snapshot_leaves_its_family_unowned_in_the_restore() {
-    let mut sim = Sim::new(18, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
-        let read_only = TxnOptions {
-            read_only: true,
-            ..TxnOptions::default()
-        };
-        let call = TxnCallOptions::default();
-        let mut reader = db.begin(&read_only).unwrap();
-        reader.query_text("users", &[], &call).unwrap();
-        let authority = db.role_authority();
-        authority.create_role("web").unwrap();
-        authority
-            .register(
-                &authority.session("web").unwrap(),
-                &bundle("zed-1.0", "", HELLO),
-            )
-            .unwrap();
-        reader
-            .query_text(&format!("dump to \"{DUMP}\""), &[], &call)
-            .unwrap();
-        reader.commit(None).unwrap();
-        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
-        let authority = copy.role_authority();
-        authority.create_role("ops").unwrap();
-        let ops = authority.session("ops").unwrap();
-        authority
-            .register(&ops, &bundle("zed-2.0", "", HELLO))
-            .unwrap();
-        copy.close().unwrap();
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn a_dump_in_a_transaction_that_wrote_is_refused_and_a_read_only_one_dumps_its_snapshot() {
-    let mut sim = Sim::new(16, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2));
-        run(&db, ROWS).unwrap();
-        let mut wrote = db.begin(&TxnOptions::default()).unwrap();
-        let call = TxnCallOptions::default();
-        wrote
-            .query_text("insert users { name: \"rolled\" }", &[], &call)
-            .unwrap();
-        let got = wrote.query_text(&format!("dump to \"{DUMP}\""), &[], &call);
-        refused_invalid(
-            got.map(drop),
-            "`dump` does not run in a transaction that has written",
-        );
-        wrote.rollback().unwrap();
-        let mut reader = db
-            .begin(&TxnOptions {
-                read_only: true,
-                ..TxnOptions::default()
-            })
-            .unwrap();
-        reader.query_text("users", &[], &call).unwrap();
-        run(&db, "insert users { name: \"later\" }").unwrap();
-        reader
-            .query_text(&format!("dump to \"{DUMP}\""), &[], &call)
-            .unwrap();
-        reader.commit(None).unwrap();
-        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open::opened(&rt, COPY, &Log::new(&[APP.to_owned()]), &open::options(2));
-        let names = "from u in users select u.name";
-        assert_eq!("\"ann\"\n\"bo\"\n\"cy\"", answer(&copy, names));
-        copy.close().unwrap();
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn a_restore_point_other_than_the_snapshot_is_unavailable() {
-    let (files, at) = dumped();
-    let mut sim = Sim::with_files(4, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        let other = Position {
-            lsn: at.lsn + 1,
-            ..at
-        };
-        for to in [RestorePoint::Position(other), RestorePoint::Version(1)] {
-            let got = restore(&rt, to, &no_create());
-            assert!(
-                matches!(&got, Err(Error::Rejected {
-                    reason: RejectReason::RestorePointUnavailable { oldest, newest }
-                }) if *oldest == at && *newest == at),
-                "{to:?}: {got:?}"
-            );
-        }
-        restore(&rt, RestorePoint::Position(at), &no_create()).unwrap();
-    });
-}
-
 /// Returns the match of the ops that change the names or bytes on the device.
 fn changes() -> Match {
     Match::any_of([
@@ -939,47 +718,6 @@ add relation notes : Note key id generate sequence
 define fn slugify (t: Text) -> Text = host "slugify" version "1.0" deterministic
 add constraint slugged = from n in notes where slugify(n.body) != n.body select n
 "#;
-
-#[test]
-fn a_restore_lacking_a_host_function_refuses_naming_it_and_one_given_it_restores() {
-    let mut sim = Sim::new(6, Config::default());
-    process::run(&mut sim, |rt| {
-        let mut host_fns = crate::HostFns::new();
-        host_fns.register("slugify", "1.0", crate::Determinism::Deterministic, |b| {
-            Ok(b.clone())
-        });
-        let options = OpenOptions {
-            host_fns,
-            ..open::options(2)
-        };
-        let db = Database::open_in(rt.clone(), FILE, &Log::new([HOSTED]), &options).unwrap();
-        run(&db, "insert notes { body: \"a\" }").unwrap();
-        dump(&db).unwrap();
-        db.close().unwrap();
-        let got = restore(&rt, RestorePoint::Latest, &no_create());
-        assert!(
-            matches!(&got, Err(Error::Fatal {
-                reason: FatalReason::MissingFunction { function }
-            }) if function == "slugify"),
-            "{got:?}"
-        );
-        let mut io = rt.io();
-        let listed = adtb_testkit::common::complete(&rt, &mut io, Op::List { dir: String::new() });
-        let Ok(crate::runtime::Done::Listed(top)) = listed.result else {
-            panic!("{listed:?}");
-        };
-        let left: Vec<&String> = top.iter().filter(|p| p.starts_with(COPY)).collect();
-        assert!(left.is_empty(), "{left:?}");
-        let given = OpenOptions {
-            create: None,
-            ..options
-        };
-        restore(&rt, RestorePoint::Latest, &given).unwrap();
-        let copy = Database::open_in(rt.clone(), COPY, &Log::new([HOSTED]), &given).unwrap();
-        assert_eq!("\"a\"", answer(&copy, "from n in notes select n.body"));
-        copy.close().unwrap();
-    });
-}
 
 #[test]
 fn a_restore_given_a_host_function_at_another_version_refuses_naming_it() {

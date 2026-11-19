@@ -1,0 +1,49 @@
+use dump-app
+
+crash after 1000000
+
+reopen
+
+crash at rename d
+
+crash at rename e
+
+run
+  dump to "d"
+
+run
+  insert users { name: "x" }
+
+reopen
+
+lose heap app::users Nope
+
+lose index app::users index (name)
+
+probe marks
+----
+x
+
+fatal Quarantined { what: "the database" }
+  from u in users select u.name
+
+restore nowhere to copy.adt
+----
+
+restore d to copy.adt error Invalid { detail: "x" }
+
+restore d to copy.adt at sometime
+----
+
+run
+  dump to "f"
+
+restore f to copy.adt
+----
+dormant { id: 1, grantee: "web", privilege: "read", target: "x" }
+
+damage index app::users index (name)
+
+reopen
+
+flip index app::users index (name)

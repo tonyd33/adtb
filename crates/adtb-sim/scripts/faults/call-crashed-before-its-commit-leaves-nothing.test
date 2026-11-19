@@ -1,0 +1,17 @@
+# A call the process crashes in before any of its writes reaches the device leaves nothing, and
+# every call acknowledged before it stays. `crash after 0` crashes the process at its next device
+# op, the call's first, before that op completes.
+use dump-app
+
+crash after 0
+
+run
+  insert users { name: "cy" }
+
+reopen
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"

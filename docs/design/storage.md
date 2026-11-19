@@ -978,9 +978,15 @@ database opens for `verify` and `dump` only
 Opening a file under that mark, postconditions:
 
 - Every call fails with `Quarantined` before its text is checked, except
-  one `verify` alone. As a call it always runs. As a task it needs a session,
-  and `session` reads the roles: on a file whose catalog or commit log cannot
-  be read, only a session issued before the damage has one.
+  one `verify` alone and one `dump` alone. As a call `verify` always runs. As a
+  task it needs a session, and `session` reads the roles: on a file whose
+  catalog or commit log cannot be read, only a session issued before the damage
+  has one.
+- A `dump` first checks every page of the commit log and the catalog as
+  `verify` does, by checksum and by log position. A finding fails it with
+  `Quarantined` naming the database, and it writes nothing. Past that check it
+  fails with `Quarantined` only where it must read a page it cannot prove,
+  naming what holds the page, and writes nothing.
 - Nothing past the mark is written. A damage found from then on is recorded
   in memory only. A checkpoint still folds into the damage list every
   record the log holds, including those replay reads at the open of a file

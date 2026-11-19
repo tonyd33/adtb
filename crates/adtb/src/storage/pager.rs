@@ -1098,7 +1098,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     fn refused(&self, pid: Pid) -> Result<(), PageError> {
-        match self.refusal(pid) {
+        match self.met_refusal(pid) {
             Some(damage) => Err(PageError { pid, damage }),
             None => Ok(()),
         }

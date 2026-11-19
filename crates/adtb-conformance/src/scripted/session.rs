@@ -9,7 +9,9 @@ use std::time::Duration;
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::testing::Knobs;
 use adtb::version_hash;
-use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, Value};
+use adtb::{
+    CallOptions, Database, Error, HostFns, Log, OpenError, OpenOptions, Registration, Value,
+};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::textual::{Form, print};
@@ -21,6 +23,7 @@ use crate::engine::{self, Ended};
 use crate::{Difference, Directive, Found, Got, Kind, panic_message};
 
 use super::clock;
+use super::fault;
 use super::read;
 use super::role::{self, Handles, OWNER, called};
 use super::shown;
@@ -100,7 +103,7 @@ impl Differs {
         self
     }
 
-    fn rows(mut self, expected: &[String], actual: &[String]) -> Differs {
+    pub(super) fn rows(mut self, expected: &[String], actual: &[String]) -> Differs {
         let values = (listed(Ok(expected.to_vec())), listed(Ok(actual.to_vec())));
         self.values = Some(Box::new(values));
         let (mut expected, mut actual) = (expected.to_vec(), actual.to_vec());
@@ -285,6 +288,15 @@ pub(super) fn arguments(db: &Database<SimRuntime>, step: &Step) -> Result<Vec<Va
     Ok(args)
 }
 
+/// Returns whether a step of `head` ends the process before it: an open, or a step that runs
+/// with the database closed.
+fn starts_process(head: &Head) -> bool {
+    matches!(
+        head,
+        Head::Migrate { .. } | Head::Reopen { .. } | Head::Probe(fault::Probed::Files(_))
+    )
+}
+
 struct Script {
     steps: Vec<Step>,
     next: usize,
@@ -295,6 +307,7 @@ struct Script {
     /// The position each `commit NAME position P` took, by P, in textual syntax.
     positions: BTreeMap<String, String>,
     clock: clock::Clock,
+    faults: fault::State,
     out: Vec<Differs>,
 }
 
@@ -304,6 +317,7 @@ impl Script {
     fn session(&mut self, rt: &SimRuntime) {
         let first = self.steps[self.next].clone();
         self.next += 1;
+        rt.disarm();
         let (log, refused) = match &first.head {
             Head::Migrate { at, refused } => {
                 let mut log = self.log.clone();
@@ -330,6 +344,21 @@ impl Script {
                 self.closed(&first);
                 return;
             }
+            Head::Restore(_) => {
+                let restored = self.resolved(first).and_then(|step| {
+                    let Head::Restore(restore) = &step.head else {
+                        unreachable!("a resolved step keeps its head")
+                    };
+                    self.faults.restore(rt, &self.options, &step, restore)
+                });
+                self.out.extend(restored.err());
+                return;
+            }
+            Head::Probe(fault::Probed::Files(prefix)) => {
+                self.out
+                    .extend(fault::probe_files(rt, &first, prefix).err());
+                return;
+            }
             _ => {
                 let message = "no database is open: `migrate` or `reopen` first";
                 self.out.push(Differs::at(&first, message));
@@ -340,7 +369,12 @@ impl Script {
             registrations: self.registrations(&log),
             ..self.options.clone()
         };
-        let opened = Database::open_in(rt.clone(), FILE, &Log::new(log.clone()), &options);
+        let opened = Database::open_in(
+            rt.clone(),
+            self.faults.file(),
+            &Log::new(log.clone()),
+            &options,
+        );
         let db = match (opened, refused) {
             (Ok(db), want) => {
                 self.log = log;
@@ -371,7 +405,7 @@ impl Script {
         };
         let mut txns = Txns::new();
         while let Some(step) = self.steps.get(self.next).cloned() {
-            if matches!(step.head, Head::Migrate { .. } | Head::Reopen { .. }) {
+            if starts_process(&step.head) {
                 break;
             }
             self.next += 1;
@@ -385,9 +419,15 @@ impl Script {
             self.out.push(Differs::at(&first, open));
         }
         self.handles = Handles::default();
+        let unmet = self.faults.unmet_damage(db.testing());
+        self.out.extend(unmet);
         if let Err(e) = db.close() {
             let closed = format!("the database does not close: {}", e.value());
             self.out.push(Differs::at(&first, closed));
+        }
+        if let Err(e) = self.faults.flip(rt) {
+            self.out
+                .push(Differs::at(&first, format!("the flip fails: {e}")));
         }
     }
 
@@ -432,6 +472,11 @@ impl Script {
         if !matches!(self.clock, clock::Clock::Untokened) && clock::tokened(&step.body) {
             done = Err("a token in a body, which is input and never compared".to_owned());
         }
+        if let Head::Restore(r) = &mut step.head
+            && let Some(at) = r.at_mut()
+        {
+            done = done.and_then(|()| place(at));
+        }
         if !matches!(step.head, Head::Bundle { .. } | Head::Loose(_) | Head::Log) {
             done = done.and_then(|()| place(&mut step.body));
             done = done.and_then(|()| pinned(&step.body, &self.log).map(|b| step.body = b));
@@ -443,12 +488,30 @@ impl Script {
         }
     }
 
+    /// Skip the steps a crash planted by `crash` left unrun, up to the next open, each a
+    /// difference.
+    fn crashed(&mut self, crash: &Step) {
+        let mut unrun = 0;
+        while let Some(step) = self.steps.get(self.next) {
+            if starts_process(&step.head) {
+                break;
+            }
+            unrun += 1;
+            self.next += 1;
+        }
+        if unrun > 0 {
+            let message = format!("steps after the crash do not run: {unrun}");
+            self.out.push(Differs::at(crash, message));
+        }
+    }
+
     /// Run a step that needs no open database.
     fn closed(&mut self, step: &Step) {
         match &step.head {
             Head::QueryMemory(bytes) => self.options.query_memory_bytes = *bytes,
             Head::Log => self.log.extend(read::migrations(&step.body)),
             Head::Bundle { .. } | Head::Loose(_) => self.bundles.push(step.clone()),
+            Head::Host(names) if names.is_empty() => self.options.host_fns = HostFns::new(),
             Head::Host(names) => names.iter().for_each(|n| role::host(&mut self.options, n)),
             _ => unreachable!("session runs only these before an open"),
         }
@@ -532,9 +595,13 @@ impl Script {
             {
                 role::sent_step(step, txn::texted(db, txns, step)?)
             }
-            Head::Command { .. } | Head::Adhoc(_) | Head::Plan => {
+            Head::Command { .. } | Head::Adhoc(_) | Head::Fatal(_) | Head::Plan => {
                 role::sent_step(step, txn::texted(db, txns, step)?)
             }
+            Head::Mark(_) | Head::Fault { .. } | Head::Crash(_) | Head::Probe(_) => {
+                self.faults.step(rt, db, step)
+            }
+            Head::Restore(restore) => self.faults.restore(rt, &self.options, step, restore),
             Head::Failed(_) => unreachable!("read gives `failed` an `as` prefix"),
             Head::DropRole { name, error } => {
                 let got = db.role_authority().drop_role(name);
@@ -620,8 +687,10 @@ fn compared(head: &mut Head) -> Option<&mut String> {
         Head::Error(v)
         | Head::Adhoc(v)
         | Head::Failed(v)
+        | Head::Fatal(v)
         | Head::Call { error: Some(v), .. }
         | Head::Commit { error: Some(v), .. } => Some(v),
+        Head::Restore(r) => r.want_mut(),
         _ => None,
     }
 }
@@ -645,18 +714,31 @@ fn run_steps(root: &Path, path: &Path, steps: Vec<Step>, clock: clock::Clock) ->
         handles: Handles::default(),
         positions: BTreeMap::new(),
         clock,
+        faults: fault::State::new(FILE),
         out: Vec::new(),
     };
     let ran = panic::catch_unwind(AssertUnwindSafe(|| {
         let mut sim = Sim::new(seed, Config::default());
         while script.next < script.steps.len() {
-            if sim.run(|rt| script.session(&rt)) != Outcome::Finished {
-                return Some(format!(
-                    "{}: the simulated process crashes",
-                    shown(root, path)
-                ));
+            let outcome = sim.run(|rt| script.session(&rt));
+            let unmet = script.faults.unmet();
+            script.out.extend(unmet);
+            match (outcome, script.faults.take_crash()) {
+                (Outcome::Finished, None) => {}
+                (Outcome::Finished, Some(step)) => {
+                    let differs = Differs::at(&step, "the process does not crash");
+                    script.out.push(differs);
+                }
+                (Outcome::Crashed, Some(step)) => script.crashed(&step),
+                (Outcome::Crashed, None) => {
+                    return Some(format!(
+                        "{}: the simulated process crashes",
+                        shown(root, path)
+                    ));
+                }
             }
         }
+        script.out.extend(script.faults.unread());
         None
     }));
     let mut out: Vec<Found> = script.out.iter().map(Differs::found).collect();

@@ -1,0 +1,35 @@
+# A dump restores only to the position its snapshot reads: any other position or version fails
+# naming that position as the oldest and the newest reachable.
+use dump-app
+
+begin t
+
+commit t position P
+
+run
+  dump to "d"
+
+begin u
+
+in u run
+  insert users { name: "cy" }
+
+commit u position Q
+
+restore d to copy.adt at $Q error RestorePointUnavailable { oldest: $P, newest: $P }
+
+restore d to copy.adt at version 1 error RestorePointUnavailable { oldest: $P, newest: $P }
+
+probe files copy
+----
+
+restore d to copy.adt at $P
+----
+
+reopen
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"

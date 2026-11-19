@@ -1,0 +1,36 @@
+# A restore needs the host functions of the dumped schema: without one it fails naming it and
+# writes nothing, and given it restores.
+host slugify
+
+migrate
+  module app
+  add module app
+  add type Note = { id: Key notes, body: Text }
+  add relation notes : Note key id generate sequence
+  define fn slugify (t: Text) -> Text = host "slugify" version "1.0" deterministic
+  add constraint slugged = from n in notes where slugify(n.body) != n.body select n
+
+run
+  insert notes { body: "slugify" }
+
+run
+  dump to "d"
+
+host none
+
+restore d to copy.adt fatal MissingFunction { function: "slugify" }
+
+probe files copy
+----
+
+host slugify
+
+restore d to copy.adt
+----
+
+reopen
+
+query
+  from n in notes select n.body
+----
+"slugify"

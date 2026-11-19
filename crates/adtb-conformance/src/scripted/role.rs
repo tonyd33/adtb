@@ -263,8 +263,11 @@ pub(super) fn sent_step(step: &Step, got: Sent) -> Result<(), Differs> {
             }
         }
         (Head::Plan, Sent::Done(results)) => plan::compare(step, results),
-        (Head::Error(reason) | Head::Adhoc(reason), got) => {
-            let want = rejected(reason);
+        (Head::Error(reason) | Head::Adhoc(reason) | Head::Fatal(reason), got) => {
+            let want = match &step.head {
+                Head::Fatal(_) => format!("Fatal {{ reason: {reason} }}"),
+                _ => rejected(reason),
+            };
             match got {
                 Sent::Refused(e) if refused(&e) == want => Ok(()),
                 Sent::Refused(e) => {

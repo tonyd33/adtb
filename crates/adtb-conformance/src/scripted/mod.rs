@@ -22,8 +22,8 @@
 //!   handle bound is kept: later calls of NAME in the same open go through it.
 //! - `advance N(s|m|h|d)`: the simulated clock advanced.
 //! - `role NAME`: the role created.
-//! - `host NAME...`: host functions supplied at each later open, each of version `1.0`,
-//!   deterministic, answering its own name as text.
+//! - `host NAME...`: host functions supplied at each later open and restore, each of version
+//!   `1.0`, deterministic, answering its own name as text. `host none` supplies none from then on.
 //! - `grant [error VALUE]`, `revoke [error VALUE]`: each line of the body, one grant or revoke
 //!   statement, given in order; only the last may be refused, with VALUE.
 //! - `register HEADER [use NAME] [error VALUE]`: the bundle file `bundle` states, registered
@@ -59,6 +59,55 @@
 //!   transaction NAME; `committed` states a registered transaction committing with it.
 //! - `assert VALUE` before `run`, `query`, `error`, `call` or `begin`, after any `as`: the call
 //!   or transaction runs for principal VALUE. With `in` or `assert` a body is one call.
+//! - `fatal VALUE`: the body, one ad hoc call in process, failing with exactly `Fatal { reason:
+//!   VALUE }`.
+//! - `restore SOURCE to FILE [at POINT] [error VALUE | fatal VALUE]`: the dump or backup at
+//!   SOURCE restored to the new file FILE, refused with `Rejected { reason: VALUE }` or `Fatal {
+//!   reason: VALUE }` when stated. POINT is `version N` or `$P`; with none, the latest. With no
+//!   refusal, the rows after `----` are the grants the restore reports dormant, in its order,
+//!   each `dormant { id: N, grantee: G, privilege: P, target: T }`. Once a restore succeeds,
+//!   every later open opens FILE. A restore with no database open runs as a process of its own.
+//!
+//! These name a page by the structure holding it, as PAGE: `heap RELATION CTOR`, the first data
+//! page of the heap of constructor CTOR; `index RELATION CLAUSE`, the root of the index of clause
+//! CLAUSE as the schema writes it; `catalog`, the catalog's root; `commit log`, the commit log's
+//! root; `status`, the commit log's status page of the newest transaction ids. A page is found in
+//! the open database when the step runs.
+//!
+//! - `mark OBJECT`: the mark of OBJECT set, durably: `database`, `heap RELATION CTOR` or `index
+//!   RELATION CLAUSE`.
+//! - `damage PAGE`: every later read of the page in this open refused as failing its checksum,
+//!   and the damage recorded.
+//! - `flip PAGE`: a byte of the page's body inverted on the device once this process closes the
+//!   database, so that the next open reads it failing its checksum.
+//! - `lose PAGE`: every later write of this process covering the page completes and changes
+//!   nothing.
+//! - `tear PAGE`: of the next write covering the page, a crash before its force lands only the
+//!   first atomic unit.
+//!
+//!   A `damage` that no read or latch of its page meets before the close differs, as does a
+//!   `flip` that no read of its page meets by the end of the script, and a `lose` or `tear`
+//!   whose process ends with no write it acts on.
+//! - `crash at KIND PATH`: the process crashes at the first device op of KIND on PATH, before
+//!   the op completes; the path of a `rename` is its new name. KIND is one of
+//!   `open`, `create_new`, `write`, `allocate`, `sync`, `sync_dir`, `remove`, `remove_dir`,
+//!   `rename` and `create_dir`.
+//! - `crash after N`: the process crashes at the device op after the next N, before it
+//!   completes; a timer is no device op.
+//!
+//!   A crash fires in the steps after it or the close, and a process that ends without it
+//!   differs. Steps after the one it fires in, up to the next `migrate`, `reopen` or `probe
+//!   files`, do not run, and differ.
+//! - `probe marks`: the rows after `----` are the name of each mark set, in memory or in the
+//!   file, as `Quarantined` names it, sorted.
+//! - `probe damage`: the rows are each damage recorded and not cleared: each page as `PAGE:
+//!   DAMAGE` by the page a fault named, or `a page no fault names: DAMAGE`, sorted; then each
+//!   finding of the log as `log: PROBLEM`; then `the damage list is full` when it is. DAMAGE is
+//!   the variant of the engine's damage, its shape named: `Checksum`, `Unreadable`,
+//!   `Shape(Blank)` and the other shapes, `Stale`, `LogUnproven` or `Settled`. PROBLEM is the
+//!   variant of the log's problem, `Unlogged PAGE` naming its page. Neither names a log position.
+//! - `probe files [PREFIX]`: the database closes first, as before an open, and the rows are the
+//!   path of each file on the device beginning with PREFIX, sorted.
 //!
 //! An instant is compared by rank, not value: `tN` in a row or an expected error, outside a text
 //! literal, stands for the instant of rank N, in time order, among the distinct instants the run
@@ -78,6 +127,7 @@
 //!
 
 mod clock;
+mod fault;
 mod plan;
 mod read;
 mod role;
@@ -154,6 +204,15 @@ enum Head {
     Error(String),
     Adhoc(String),
     Failed(String),
+    Fatal(String),
+    Mark(fault::Marked),
+    Fault {
+        fault: fault::Fault,
+        page: fault::Page,
+    },
+    Crash(fault::CrashAt),
+    Restore(fault::Restore),
+    Probe(fault::Probed),
 }
 
 /// One directive, with the file and line it was read from.

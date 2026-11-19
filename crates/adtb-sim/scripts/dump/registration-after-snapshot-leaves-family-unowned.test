@@ -1,0 +1,36 @@
+# A dump reads deployment state at its snapshot: a family first registered after it is owned by
+# no role in the restore, so another role registers into it.
+use dump-app
+
+begin read only r
+
+in r query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+
+role web
+
+role ops
+
+as web register zed-1.0 pins 1 edition "2026-10"
+  query hello () -> Text = "hi"
+
+as ops register zed-2.0 pins 1 edition "2026-10" error Denied { detail: "family zed is owned by role web" }
+  query hello () -> Text = "hi"
+
+in r run
+  dump to "d"
+
+commit r
+
+restore d to copy.adt
+----
+
+reopen
+
+role ops
+
+as ops register zed-2.0 pins 1 edition "2026-10"
+  query hello () -> Text = "hi"

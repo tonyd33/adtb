@@ -1,0 +1,29 @@
+# A dump crashed before it publishes its directory leaves no dump, and the next dump writes the
+# whole of it.
+use dump-app
+
+crash at rename d
+
+run
+  dump to "d"
+
+reopen
+
+probe files d/
+----
+
+reopen
+
+run
+  dump to "d"
+
+restore d to copy.adt
+----
+
+reopen
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"

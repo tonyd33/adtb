@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use crate::blocks;
 
-use super::{Head, Step, shown};
+use super::{Head, Step, fault, shown};
 
-const HEADS: [&str; 29] = [
+const HEADS: [&str; 38] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
     "run", "query", "error", "as", "grant", "revoke", "register", "host", "loose", "begin",
-    "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc", "plan",
+    "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc", "plan", "fatal",
+    "mark", "damage", "flip", "lose", "tear", "crash", "restore", "probe",
 ];
 
 fn head(line: &str) -> Option<Head> {
@@ -70,7 +71,7 @@ fn head(line: &str) -> Option<Head> {
                 error,
             }
         }
-        "host" if !rest.is_empty() => Head::Host(rest.split(' ').map(str::to_owned).collect()),
+        "host" if !rest.is_empty() => host(rest),
         "loose" if !rest.is_empty() && !rest.contains(' ') => Head::Loose(rest.to_owned()),
         "begin" => {
             let (rest, error) = split(rest, " error ");
@@ -96,8 +97,16 @@ fn head(line: &str) -> Option<Head> {
         "error" if !rest.is_empty() => Head::Error(rest.to_owned()),
         "adhoc" => Head::Adhoc(rest.strip_prefix("error ")?.to_owned()),
         "failed" if !rest.is_empty() => Head::Failed(rest.to_owned()),
-        _ => return None,
+        _ => return fault::head(word, rest),
     })
+}
+
+/// Returns the head of `host` with names `rest`, `none` naming none.
+fn host(rest: &str) -> Head {
+    match rest {
+        "none" => Head::Host(Vec::new()),
+        names => Head::Host(names.split(' ').map(str::to_owned).collect()),
+    }
 }
 
 /// Returns `rest` before `sep` and the text after it, or `rest` whole.
@@ -234,7 +243,11 @@ fn value_end(text: &str) -> usize {
 pub(super) fn takes_rows(line: &str) -> bool {
     let line = prefixed(line).1;
     let call = line.strip_prefix("call ").and_then(call);
-    ["query", "command", "plan"].contains(&line.split(' ').next().unwrap_or_default())
+    let restore = line
+        .strip_prefix("restore ")
+        .and_then(|r| fault::head("restore", r));
+    ["query", "command", "plan", "probe"].contains(&line.split(' ').next().unwrap_or_default())
+        || matches!(restore, Some(Head::Restore(r)) if !r.refused())
         || matches!(
             call,
             Some(Head::Call {
@@ -321,6 +334,7 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 | Head::Error(_)
                 | Head::Adhoc(_)
                 | Head::Failed(_)
+                | Head::Fatal(_)
                 | Head::Grant { .. }
                 | Head::Loose(_)
         ) || matches!(

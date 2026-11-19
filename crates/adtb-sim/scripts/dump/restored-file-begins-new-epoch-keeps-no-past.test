@@ -1,0 +1,37 @@
+# A restored file begins an epoch of its own: a position of the dumped history is not on its
+# history, and its own commits follow the dumped rows.
+use dump-app
+
+begin t
+
+commit t position P
+
+run
+  dump to "d"
+
+restore d to copy.adt
+----
+
+reopen
+
+begin r
+
+commit r position R
+
+error HistoryUnavailable { oldest: $R }
+  at commit $P { from u in users select u.name }
+
+query
+  $R.epoch > $P.epoch
+----
+true
+
+run
+  insert users { name: "eve" }
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"eve"

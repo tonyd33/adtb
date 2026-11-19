@@ -1,0 +1,26 @@
+# A status page of the commit log that lost a write fails the dump of a file quarantined whole
+# naming the database and writes nothing, the page recorded as having lost a write.
+use dump-app
+
+reopen
+
+run
+  insert users { name: "cy" }
+
+lose status
+
+mark database
+
+reopen
+
+fatal Quarantined { what: "the database" }
+  dump to "d"
+
+probe damage
+----
+status: Stale
+
+probe files
+----
+app.adt
+app.adt-log/0000000000000000

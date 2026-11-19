@@ -1,0 +1,38 @@
+# A grant of the log to a role the dump holds restores active, with its id, beside the grants
+# of deployment.
+use dump-app
+
+role web
+
+role gone
+
+grant
+  grant assert to web
+
+drop role gone
+
+log
+  module app
+  grant read users to web
+
+reopen
+
+query rowsort
+  catalog::grants
+----
+RoleGrant { id: grants.key(1), kind: Deployment, privilege: "assert", target: None, grantee: "web", grantor: "owner", grant_option: False, dormant: False }
+RoleGrant { id: grants.key(65), kind: Log, privilege: "read", target: Some { value: "app::users frozen (id, name)" }, grantee: "web", grantor: "owner", grant_option: False, dormant: False }
+
+run
+  dump to "d"
+
+restore d to copy.adt
+----
+
+reopen
+
+query rowsort
+  catalog::grants
+----
+RoleGrant { id: grants.key(1), kind: Deployment, privilege: "assert", target: None, grantee: "web", grantor: "owner", grant_option: False, dormant: False }
+RoleGrant { id: grants.key(65), kind: Log, privilege: "read", target: Some { value: "app::users frozen (id, name)" }, grantee: "web", grantor: "owner", grant_option: False, dormant: False }

@@ -45,8 +45,6 @@ mod damage_log_tests;
 #[cfg(test)]
 mod damage_race_tests;
 #[cfg(test)]
-mod dump_quarantine_tests;
-#[cfg(test)]
 mod dump_tests;
 #[cfg(test)]
 mod evidence_tests;

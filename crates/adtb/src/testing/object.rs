@@ -152,6 +152,11 @@ impl<'a, R: Runtime> Testing<'a, R> {
         }
     }
 
+    /// Returns the name a call refused under `mark` names, as `Quarantined`'s `what` holds it.
+    pub fn mark_name(self, mark: Quarantine) -> String {
+        self.db.tested_db().quarantined_name(mark)
+    }
+
     /// Returns the owner the pages of `object` carry in their headers.
     pub fn owner(self, object: Object) -> Result<u32, Failed> {
         Ok(match object {

@@ -397,6 +397,9 @@ pub(super) struct Evidence {
     epoch: Epoch,
     /// How many damaged pages this open has walked the objects for.
     walked: u64,
+    /// The refused pages a read or latch has met this open.
+    #[cfg(any(test, feature = "testing"))]
+    met: BTreeSet<Pid>,
 }
 
 impl Evidence {
@@ -419,6 +422,8 @@ impl Evidence {
             generation: 0,
             epoch: Epoch(0),
             walked: 0,
+            #[cfg(any(test, feature = "testing"))]
+            met: BTreeSet::new(),
         }
     }
 
@@ -993,6 +998,22 @@ impl<R: Runtime> Pager<R> {
 
     pub(super) fn refusal(&self, pid: Pid) -> Option<Damage> {
         self.evidence().refusal(pid)
+    }
+
+    /// Returns the refusal of `pid` that a read or latch of it meets.
+    pub(super) fn met_refusal(&self, pid: Pid) -> Option<Damage> {
+        let refusal = self.refusal(pid);
+        #[cfg(any(test, feature = "testing"))]
+        if refusal.is_some() {
+            self.evidence().met.insert(pid);
+        }
+        refusal
+    }
+
+    /// Returns whether a read or latch of `pid` has met its refusal this open.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn refusal_met(&self, pid: Pid) -> bool {
+        self.evidence().met.contains(&pid)
     }
 
     /// Returns the judgement of `file`, the file's copy of `pid`, against [`Pager::file_end`] and

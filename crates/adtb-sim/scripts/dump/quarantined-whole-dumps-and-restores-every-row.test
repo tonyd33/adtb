@@ -1,0 +1,79 @@
+# A file quarantined whole opens for `dump` alone, and a dump that reads every page it needs
+# restores every row. Every other text fails, a dump among them, and nothing else is written.
+use dump-app
+
+mark database
+
+reopen
+
+run
+  dump to "d"
+
+fatal Quarantined { what: "the database" }
+  from u in users select u.name
+
+fatal Quarantined { what: "the database" }
+  insert users { name: "cy" }
+
+fatal Quarantined { what: "the database" }
+  print schema
+
+fatal Quarantined { what: "the database" }
+  vacuum users
+
+fatal Quarantined { what: "the database" }
+  backup to "bk"
+
+fatal Quarantined { what: "the database" }
+  dump to "e"
+  verify
+
+fatal Quarantined { what: "the database" }
+  verify
+  dump to "e"
+
+fatal Quarantined { what: "the database" }
+  dump to "e"
+  from u in users select u.name
+
+fatal Quarantined { what: "the database" }
+  transact
+    dump to "e"
+
+restore d to copy.adt
+----
+
+reopen
+
+query rowsort
+  users
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+
+query rowsort
+  shapes
+----
+Circle { name: "c", r: 2 }
+Square { name: "s", side: 3 }
+
+probe files
+----
+app.adt
+app.adt-log/0000000000000000
+copy.adt
+copy.adt-log/0000000000000000
+d/audit
+d/bundles/index
+d/data/app::shapes.Circle.arrows
+d/data/app::shapes.Circle.txt
+d/data/app::shapes.Square.arrows
+d/data/app::shapes.Square.txt
+d/data/app::users.User.arrows
+d/data/app::users.User.txt
+d/generators
+d/ids
+d/log
+d/manifest
+d/security
+d/settings

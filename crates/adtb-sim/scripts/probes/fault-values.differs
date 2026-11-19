@@ -1,0 +1,23 @@
+scripts/probes/fault-values.test:3: the process does not crash
+scripts/probes/fault-values.test:9: a crash is planted already
+scripts/probes/fault-values.test:7: steps after the crash do not run: 1
+scripts/probes/fault-values.test:19: the page `heap app::users Nope` names is not found: no such constructor
+scripts/probes/fault-values.test:23: the probe differs
+  expected: [x]
+  actual:   []
+scripts/probes/fault-values.test:27: succeeds
+  expected: Fatal { reason: Quarantined { what: "the database" } }
+  actual:   success
+scripts/probes/fault-values.test:30: the restore differs
+  expected: []
+  actual:   Rejected { reason: Invalid { detail: "no backup is at `nowhere`" } }
+scripts/probes/fault-values.test:33: the restore differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Invalid { detail: "no backup is at `d`" } }
+scripts/probes/fault-values.test:35: the restore point is no version or position
+scripts/probes/fault-values.test:41: the restore differs
+  expected: [dormant { id: 1, grantee: "web", privilege: "read", target: "x" }]
+  actual:   []
+scripts/probes/fault-values.test:45: no read meets the fault
+scripts/probes/fault-values.test:21: the fault meets no write
+scripts/probes/fault-values.test:49: no read meets the fault

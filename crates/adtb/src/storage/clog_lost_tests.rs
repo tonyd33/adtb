@@ -684,10 +684,14 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
         );
         db.close().unwrap();
     });
+    let names = |sim: &Sim| sim.files().into_keys().collect::<Vec<_>>();
+    let before = names(&sim);
     process::run(&mut sim, |rt| {
         let db = open(&rt);
         assert_eq!(quarantined(), api::failure(&db, "dump to \"d\""));
+        db.close().unwrap();
     });
+    assert_eq!(before, names(&sim));
 }
 
 /// Returns what each page of the commit log, the sequence counters and `app::users` is, and the

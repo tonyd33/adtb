@@ -1,0 +1,17 @@
+# Users, keyed by a sequence and indexed by name, and shapes, a sum of circles and squares, two
+# rows of each.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+    index (name)
+  add type Shape { name: Text } = Circle { r: I64 } | Square { side: I64 }
+  add relation shapes : Shape key name
+
+run
+  transact
+    insert users { name: "ann" }
+    insert users { name: "bo" }
+    insert shapes.Circle { name: "c", r: 2 }
+    insert shapes.Square { name: "s", side: 3 }

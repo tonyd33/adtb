@@ -158,6 +158,16 @@ fn longkey() {
     run(&root().join("longkey"));
 }
 
+#[test]
+fn dump() {
+    run(&root().join("dump"));
+}
+
+#[test]
+fn faults() {
+    run(&root().join("faults"));
+}
+
 /// Returns the override blocks of the nextest configuration.
 fn overrides() -> Vec<String> {
     let config = crate_dir().join("../../.config/nextest.toml");

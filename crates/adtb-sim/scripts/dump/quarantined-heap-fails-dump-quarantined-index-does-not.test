@@ -1,0 +1,51 @@
+# A dump reads no index, so a quarantined index leaves it whole; a quarantined constructor
+# relation it must read fails it, naming the relation, and it writes nothing.
+use dump-app
+
+mark index app::users index (name)
+
+run
+  dump to "d"
+
+mark heap app::shapes Square
+
+reopen
+
+fatal Quarantined { what: "app::shapes.Square" }
+  dump to "e"
+
+probe files
+----
+app.adt
+app.adt-log/0000000000000000
+d/audit
+d/bundles/index
+d/data/app::shapes.Circle.arrows
+d/data/app::shapes.Circle.txt
+d/data/app::shapes.Square.arrows
+d/data/app::shapes.Square.txt
+d/data/app::users.User.arrows
+d/data/app::users.User.txt
+d/generators
+d/ids
+d/log
+d/manifest
+d/security
+d/settings
+
+restore d to copy.adt
+----
+
+reopen
+
+query rowsort
+  users
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+
+query rowsort
+  shapes
+----
+Circle { name: "c", r: 2 }
+Square { name: "s", side: 3 }

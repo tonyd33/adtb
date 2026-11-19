@@ -1,0 +1,25 @@
+# Damage to the commit log that a dump meets quarantines the database: the dump fails, and so
+# does every later call, a second dump among them. None writes anything.
+use dump-app
+
+reopen
+
+damage status
+
+fatal Quarantined { what: "the database" }
+  dump to "d"
+
+fatal Quarantined { what: "the database" }
+  insert users { name: "cy" }
+
+fatal Quarantined { what: "the database" }
+  dump to "d"
+
+probe marks
+----
+the database
+
+probe files
+----
+app.adt
+app.adt-log/0000000000000000

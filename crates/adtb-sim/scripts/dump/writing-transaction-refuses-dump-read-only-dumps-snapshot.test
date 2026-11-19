@@ -1,0 +1,40 @@
+# A transaction that has written cannot dump; a read-only one dumps its snapshot, without a row
+# committed after it began.
+use dump-app
+
+begin w
+
+in w run
+  insert users { name: "rolled" }
+
+in w error Invalid { detail: "`dump` does not run in a transaction that has written" }
+  dump to "d"
+
+rollback w
+
+begin read only r
+
+in r query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+
+run
+  insert users { name: "later" }
+
+in r run
+  dump to "d"
+
+commit r
+
+restore d to copy.adt
+----
+
+reopen
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"

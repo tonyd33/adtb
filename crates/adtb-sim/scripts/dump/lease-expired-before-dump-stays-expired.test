@@ -1,0 +1,26 @@
+# A lease that expired in the dumped database stays expired after the restore, though the grace
+# the dump carries would cover it.
+use dump-app
+
+run
+  set setting LeaseGrace = { grace: 60s }
+
+register s-1.0 pins 1 edition "2026-10" lease 1h
+  query hello () -> Text = "hi"
+
+advance 2h
+
+run
+  set setting LeaseGrace = { grace: 100h }
+
+run
+  dump to "d"
+
+call s-1.0 1 error BundleExpired { bundle: "s-1.0", query: "" }
+
+restore d to copy.adt
+----
+
+reopen
+
+call s-1.0 1 error BundleExpired { bundle: "s-1.0", query: "" }

@@ -1,0 +1,20 @@
+# A dump of a file quarantined whole that must read a page it cannot read fails naming the
+# constructor relation holding it, every time, and writes nothing.
+use dump-app
+
+reopen
+
+mark database
+
+damage heap app::shapes Square
+
+fatal Quarantined { what: "app::shapes.Square" }
+  dump to "d"
+
+fatal Quarantined { what: "app::shapes.Square" }
+  dump to "d"
+
+probe files
+----
+app.adt
+app.adt-log/0000000000000000

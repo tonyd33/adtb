@@ -31,8 +31,8 @@ pub use crate::plan::{
 use crate::storage::Position;
 pub use crate::storage::policy::Holder;
 pub use crate::storage::{
-    Damage, LogFinding, Lsn, PageError, PageKind, Pid, Position as LogPosition, Quarantine, Shape,
-    manifest_hash,
+    Damage, LogFinding, LogProblem, Lsn, PageError, PageKind, Pid, Position as LogPosition,
+    Quarantine, Shape, manifest_hash,
 };
 pub use crate::vacuum::Charged;
 pub use crate::write::panic_text;
@@ -411,6 +411,11 @@ impl<'a, R: Runtime> Probe<'a, R> {
 
     pub fn page_size(self) -> usize {
         self.pager.page_size()
+    }
+
+    /// Returns whether a read or latch of `page` has met its refusal since the database opened.
+    pub fn refusal_met(self, page: Pid) -> bool {
+        self.pager.refusal_met(page)
     }
 
     /// Returns the objects the damage of `page` was mapped to, `None` while it is not mapped.
