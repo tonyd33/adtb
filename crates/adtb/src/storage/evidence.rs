@@ -126,20 +126,16 @@ pub(super) fn refusal_for_test(pid: Pid) -> Refusal<'static> {
     Refusal(pid, PhantomData)
 }
 
-/// An incarnation of a page, live, or ended by a free and not started again since. The generation
-/// tells one from another within the open.
+/// The generation of an incarnation of a page, telling one from another within the open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Incarnation {
-    Live(u64),
-    Freed(u64),
-}
+pub(super) struct Generation(u64);
 
 /// A damage record not mapped this open: its page, its damage and the incarnation it is of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Pending {
     pid: Pid,
     damage: Damage,
-    of: Incarnation,
+    of: Generation,
 }
 
 impl Pending {
@@ -206,67 +202,136 @@ impl Judged {
     }
 }
 
-/// What the pager holds of one incarnation of a page with something to say.
+/// What the pager holds of a page with something to say.
 #[derive(Debug)]
 struct PageEvidence {
-    incarnation: Incarnation,
     /// Why the page is never handed out.
     refusal: Option<Damage>,
-    /// The damage recorded in the log or the list, to be folded.
-    recorded: Option<Damage>,
+    /// A page of a tree a swap replaced, until its own free.
+    retired: bool,
+    incarnation: Incarnation,
+    /// The epoch of the last change of the damage, the incarnation or the retirement.
+    changed: Epoch,
+}
+
+/// What the pager holds of the current incarnation of a page. A chain start or a free replaces
+/// it whole.
+#[derive(Debug)]
+struct Incarnation {
+    generation: Generation,
+    life: Life,
     /// The damage held in memory only, never logged or folded: found on a file quarantined
     /// whole, on a page freed and not allocated since, or in a file's copy while the pool holds
     /// a sound one.
     held: Option<Damage>,
-    /// The damage mapped this open, with the objects it quarantines.
-    mapped: Option<(Damage, BTreeSet<Quarantine>)>,
-    /// The damage whose last mapping set a mark only in memory, with the objects it marks.
-    unwritten: Option<(Damage, BTreeSet<Quarantine>)>,
+    mapping: MappedTo,
+}
+
+#[derive(Debug)]
+enum Life {
+    /// The damage recorded in the log or the list, to be folded.
+    Live { recorded: Option<Damage> },
+    /// Ended by a free and not started again: its damage is only ever held.
+    Freed,
+}
+
+/// What the damage of an incarnation was mapped to this open.
+#[derive(Debug, Default)]
+struct MappedTo {
+    /// The damage whose last complete mapping set its marks, with the objects it marks.
+    marked: Option<(Damage, Marked)>,
     /// The damage whose last mapping was incomplete.
     incomplete: Option<Damage>,
-    /// A page of a tree a swap replaced, until its own free.
-    retired: bool,
-    /// The epoch of the last change of the damage or the incarnation.
-    changed: Epoch,
+}
+
+#[derive(Debug)]
+enum Marked {
+    Durably(BTreeSet<Quarantine>),
+    /// Set only in memory, leaving the record unmapped.
+    InMemory(BTreeSet<Quarantine>),
+}
+
+impl Marked {
+    fn objects(&self) -> &BTreeSet<Quarantine> {
+        match self {
+            Marked::Durably(objects) | Marked::InMemory(objects) => objects,
+        }
+    }
+}
+
+impl MappedTo {
+    fn is_empty(&self) -> bool {
+        self.marked.is_none() && self.incomplete.is_none()
+    }
+
+    /// Returns the objects `damage` marks durably.
+    fn durably(&self, damage: Damage) -> Option<&BTreeSet<Quarantine>> {
+        match &self.marked {
+            Some((d, Marked::Durably(objects))) if *d == damage => Some(objects),
+            _ => None,
+        }
+    }
+
+    /// Returns the objects `damage` marks, durably or only in memory.
+    fn marks(&self, damage: Damage) -> Option<&BTreeSet<Quarantine>> {
+        let (d, marked) = self.marked.as_ref()?;
+        (*d == damage).then(|| marked.objects())
+    }
+}
+
+impl Incarnation {
+    fn new(generation: Generation, life: Life) -> Incarnation {
+        Incarnation {
+            generation,
+            life,
+            held: None,
+            mapping: MappedTo::default(),
+        }
+    }
+
+    fn recorded(&self) -> Option<Damage> {
+        match self.life {
+            Life::Live { recorded } => recorded,
+            Life::Freed => None,
+        }
+    }
+
+    fn is_freed(&self) -> bool {
+        matches!(self.life, Life::Freed)
+    }
 }
 
 impl PageEvidence {
-    fn new(incarnation: Incarnation) -> PageEvidence {
+    fn new(generation: Generation) -> PageEvidence {
         PageEvidence {
-            incarnation,
             refusal: None,
-            recorded: None,
-            held: None,
-            mapped: None,
-            unwritten: None,
-            incomplete: None,
             retired: false,
+            incarnation: Incarnation::new(generation, Life::Live { recorded: None }),
             changed: Epoch(0),
         }
     }
 
     fn is_empty(&self) -> bool {
-        matches!(self.incarnation, Incarnation::Live(_))
+        let i = &self.incarnation;
+        matches!(i.life, Life::Live { recorded: None })
             && self.refusal.is_none()
-            && self.recorded.is_none()
-            && self.held.is_none()
-            && self.mapped.is_none()
-            && self.unwritten.is_none()
-            && self.incomplete.is_none()
+            && i.held.is_none()
+            && i.mapping.is_empty()
             && !self.retired
     }
 
     fn damage(&self) -> Option<Damage> {
-        self.held.or(self.recorded)
+        self.incarnation.held.or(self.incarnation.recorded())
     }
 
     /// Returns the damage not mapped this open. A settled page maps to nothing, so it is never
     /// unmapped. `retried` false leaves it out when its last mapping was incomplete.
     fn unmapped(&self, retried: bool) -> Option<Damage> {
         let d = self.damage()?;
+        let mapping = &self.incarnation.mapping;
         let unmapped = !matches!(d, Damage::Settled { .. })
-            && self.mapped.as_ref().is_none_or(|m| m.0 != d)
-            && (retried || self.incomplete != Some(d));
+            && mapping.durably(d).is_none()
+            && (retried || mapping.incomplete != Some(d));
         unmapped.then_some(d)
     }
 }
@@ -439,19 +504,21 @@ impl Evidence {
         let generation = &mut self.generation;
         let p = self.pages.entry(pid).or_insert_with(|| {
             *generation += 1;
-            PageEvidence::new(Incarnation::Live(*generation))
+            PageEvidence::new(Generation(*generation))
         });
         let before = p.unmapped(true).is_some();
-        let was = (p.damage(), p.incarnation, p.retired);
+        let identity = |p: &PageEvidence| {
+            let i = &p.incarnation;
+            (p.damage(), i.generation, i.is_freed(), p.retired)
+        };
+        let was = identity(p);
         let out = f(p);
-        if (p.damage(), p.incarnation, p.retired) != was {
+        if identity(p) != was {
             self.epoch.0 += 1;
             p.changed = self.epoch;
         }
         if p.damage().is_none() {
-            p.mapped = None;
-            p.unwritten = None;
-            p.incomplete = None;
+            p.incarnation.mapping = MappedTo::default();
         }
         let after = p.unmapped(true).is_some();
         if p.is_empty() {
@@ -477,58 +544,78 @@ impl Evidence {
         {
             return None;
         }
-        if whole || self.is_freed(pid) {
-            self.update(pid, |p| p.held = Some(damage));
+        if whole {
+            self.update(pid, |p| p.incarnation.held = Some(damage));
             return None;
         }
-        let changed = self.meet(pid, Met::Damaged(damage));
+        let changed = self.take_damage(pid, damage)?;
         let at = log.append(&Record::Damaged { pid, damage });
         self.unfold_at(changed, at);
         Some(log.next_lsn())
     }
 
-    /// Note that `met`, a record of `pid`, ends or starts an incarnation of the page: drop what
-    /// was mapped of the one it ends and which thread detected its damage.
-    fn bound(&mut self, pid: Pid, met: Met) {
-        let freed = match met {
-            Met::Freed => true,
-            Met::Start if self.pages.contains_key(&pid) => false,
-            Met::Start | Met::Damaged(_) | Met::Image => return,
+    /// Note that `met`, a record of `pid`, ends or starts an incarnation of the page: replace the
+    /// one it ends whole. Returns whether that drops damage recorded.
+    fn bound(&mut self, pid: Pid, met: Met) -> bool {
+        let life = match met {
+            Met::Freed => Life::Freed,
+            Met::Start if self.pages.contains_key(&pid) => Life::Live { recorded: None },
+            Met::Start | Met::Damaged(_) | Met::Image => return false,
         };
         self.generation += 1;
-        let generation = self.generation;
+        let next = Incarnation::new(Generation(self.generation), life);
         self.update(pid, |p| {
-            p.incarnation = if freed {
+            if next.is_freed() {
                 p.retired = false;
-                Incarnation::Freed(generation)
-            } else {
-                Incarnation::Live(generation)
-            };
-            p.mapped = None;
-            p.unwritten = None;
-            p.incomplete = None;
+            }
+            std::mem::replace(&mut p.incarnation, next)
+                .recorded()
+                .is_some()
+        })
+    }
+
+    /// Take `damage` of `pid` into its incarnation: recorded, to be folded and logged, when it is
+    /// live, held when it is freed. Returns whether it is recorded, with whether that changes what
+    /// is to be folded.
+    fn take_damage(&mut self, pid: Pid, damage: Damage) -> Option<bool> {
+        let taken = self.update(pid, |p| {
+            let i = &mut p.incarnation;
+            i.held = None;
+            match &mut i.life {
+                Life::Live { recorded } => Some(meet_recorded(recorded, Met::Damaged(damage))),
+                Life::Freed => {
+                    i.held = Some(damage);
+                    None
+                }
+            }
         });
+        self.unfolded |= taken == Some(true);
+        taken
     }
 
     fn is_freed(&self, pid: Pid) -> bool {
         let p = self.pages.get(&pid);
-        p.is_some_and(|p| matches!(p.incarnation, Incarnation::Freed(_)))
+        p.is_some_and(|p| p.incarnation.is_freed())
     }
 
     /// Apply what `met` does to the damage recorded of `pid`, to be folded, and to what is held of
     /// it. Returns whether that changes what is to be folded.
     fn meet(&mut self, pid: Pid, met: Met) -> bool {
-        self.bound(pid, met);
-        if !matches!(met, Met::Damaged(_)) && !self.pages.contains_key(&pid) {
-            return false;
-        }
-        let changed = self.update(pid, |p| {
-            let settled = matches!(p.held, Some(Damage::Settled { .. }));
-            if met != Met::Image || !settled {
-                p.held = None;
-            }
-            meet_recorded(&mut p.recorded, met)
-        });
+        let changed = match met {
+            Met::Damaged(damage) => return self.take_damage(pid, damage).unwrap_or(false),
+            Met::Freed | Met::Start => self.bound(pid, met),
+            Met::Image if !self.pages.contains_key(&pid) => false,
+            Met::Image => self.update(pid, |p| {
+                let i = &mut p.incarnation;
+                if !matches!(i.held, Some(Damage::Settled { .. })) {
+                    i.held = None;
+                }
+                match &mut i.life {
+                    Life::Live { recorded } => meet_recorded(recorded, met),
+                    Life::Freed => false,
+                }
+            }),
+        };
         self.unfolded |= changed;
         changed
     }
@@ -602,8 +689,9 @@ impl Evidence {
             Some(Damage::Stale { .. }) => p.refusal = None,
             Some(Damage::Unreadable) | None => {}
             Some(damage) => {
-                p.held = Some(damage);
-                p.mapped = Some((damage, BTreeSet::new()));
+                let i = &mut p.incarnation;
+                i.held = Some(damage);
+                i.mapping.marked = Some((damage, Marked::Durably(BTreeSet::new())));
             }
         });
         let at = (self.logging && !whole).then(|| log.append(&Record::Freed { pid }));
@@ -636,10 +724,11 @@ impl Evidence {
     /// over the file's copy.
     pub(super) fn written_out(&mut self, wrote: &Wrote) {
         let pid = wrote.pid();
-        if self.pages.get(&pid).is_some_and(|p| p.held.is_some()) {
+        let held = |p: &PageEvidence| p.incarnation.held;
+        if self.pages.get(&pid).and_then(held).is_some() {
             self.update(pid, |p| {
-                if !matches!(p.held, Some(Damage::Settled { .. })) {
-                    p.held = None;
+                if !matches!(held(p), Some(Damage::Settled { .. })) {
+                    p.incarnation.held = None;
                 }
             });
         }
@@ -650,7 +739,7 @@ impl Evidence {
     /// lasts the open when the page is never written out.
     pub(super) fn hold(&mut self, pid: Pid, damage: Damage) {
         if damage != Damage::Unreadable {
-            self.update(pid, |p| p.held = Some(damage));
+            self.update(pid, |p| p.incarnation.held = Some(damage));
         }
     }
 
@@ -739,7 +828,10 @@ impl Evidence {
         pids.extend(recorded.pages.keys());
         for pid in pids {
             let damage = recorded.pages.get(&pid).copied();
-            self.update(pid, |p| p.recorded = damage);
+            self.update(pid, |p| match &mut p.incarnation.life {
+                Life::Live { recorded } => *recorded = damage,
+                Life::Freed => p.incarnation.held = damage.or(p.incarnation.held),
+            });
         }
         self.log = recorded.log;
         self.log.extend(header_log);
@@ -756,7 +848,7 @@ impl Evidence {
         let pages: BTreeMap<Pid, Damage> = self
             .pages
             .iter()
-            .filter_map(|(&pid, p)| Some((pid, p.recorded?)))
+            .filter_map(|(&pid, p)| Some((pid, p.incarnation.recorded()?)))
             .collect();
         self.tally
             .overflowed(pages.len() + self.log.len() > capacity);
@@ -771,7 +863,7 @@ impl Evidence {
     /// retirement unchanged since `begun`, the epoch its mapping began at.
     fn is_current(&self, begun: Epoch, pending: &Pending) -> bool {
         let p = self.pages.get(&pending.pid);
-        p.is_some_and(|p| p.changed <= begun && p.incarnation == pending.of)
+        p.is_some_and(|p| p.changed <= begun && p.incarnation.generation == pending.of)
     }
 
     /// Returns each of `mapped` still current since `begun`, the epoch its mapping began at.
@@ -789,13 +881,17 @@ impl Evidence {
                 continue;
             }
             let Pending { pid, damage, .. } = pending;
-            self.update(pid, |p| match objects {
-                Some(objects) => {
-                    p.incomplete = None;
-                    p.unwritten = None;
-                    p.mapped = Some((damage, objects));
+            self.update(pid, |p| {
+                let mapping = &mut p.incarnation.mapping;
+                match objects {
+                    Some(objects) => {
+                        *mapping = MappedTo {
+                            marked: Some((damage, Marked::Durably(objects))),
+                            incomplete: None,
+                        };
+                    }
+                    None => mapping.incomplete = Some(damage),
                 }
-                None => p.incomplete = Some(damage),
             });
         }
     }
@@ -809,8 +905,8 @@ impl Evidence {
             }
             let Pending { pid, damage, .. } = pending;
             self.update(pid, |p| {
-                p.mapped = None;
-                p.unwritten = objects.map(|o| (damage, o));
+                let marked = objects.map(|o| (damage, Marked::InMemory(o)));
+                p.incarnation.mapping.marked = marked;
             });
         }
     }
@@ -874,7 +970,7 @@ impl Evidence {
         let pages = self.pages.iter();
         let pages = pages.filter_map(|(&pid, p)| {
             let damage = p.unmapped(retried)?;
-            let of = p.incarnation;
+            let of = p.incarnation.generation;
             Some(Pending { pid, damage, of })
         });
         (pages.collect(), self.tally.full_unmapped(), self.epoch)
@@ -884,16 +980,14 @@ impl Evidence {
     #[cfg(any(test, feature = "testing"))]
     pub(super) fn mapped_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
         let p = self.pages.get(&pid)?;
-        let (damage, objects) = p.mapped.as_ref()?;
-        (p.damage() == Some(*damage)).then(|| objects.clone())
+        p.incarnation.mapping.durably(p.damage()?).cloned()
     }
 
     /// Returns what the damage of `pid` marks this open, durably or only in memory, `None` while
     /// no mapping has set its marks.
     pub(super) fn marked_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
         let p = self.pages.get(&pid)?;
-        let (damage, objects) = p.mapped.as_ref().or(p.unwritten.as_ref())?;
-        (p.damage() == Some(*damage)).then(|| objects.clone())
+        p.incarnation.mapping.marks(p.damage()?).cloned()
     }
 
     /// Returns the pages held as retired, none of them freed since.
