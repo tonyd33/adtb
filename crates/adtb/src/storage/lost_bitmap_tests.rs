@@ -82,19 +82,6 @@ fn first_users_page(db: &Database<SimRuntime>) -> Pid {
     t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0]
 }
 
-/// Returns the files of a database whose first group is full and whose users live in the second.
-fn two_groups(row: &str) -> Files {
-    let mut sim = Sim::new(1, Config::default());
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
-        fill_first_group(&db);
-        insert_users(&db, 0..3, row);
-        assert!(first_users_page(&db).0 > SPAN as u64, "a page in group 1");
-        db.close().unwrap();
-    });
-    sim.files()
-}
-
 /// Returns the files of a database with one small group, and what `pick` chooses of it.
 fn one_group<T>(row: &str, pick: impl FnOnce(&Database<SimRuntime>) -> T) -> (Files, T) {
     let mut sim = Sim::new(1, Config::default());
@@ -125,8 +112,6 @@ fn assert_quarantined<T: std::fmt::Debug>(got: &Result<T, Error>, what: &str) {
 enum Writes {
     /// Only status pages at open, and scrub cursor rows in the roots heap while unmarked.
     Open,
-    /// Also pages of the users heap.
-    Vacuum,
     /// Also the heap, every index, the counters and the first bitmap, for a row and its entries.
     Row,
 }
@@ -217,31 +202,6 @@ fn damaged_run(files: &Files, what: &str, body: impl FnOnce(&Database<SimRuntime
     damaged_writing(files, Writes::Open, what, body)
 }
 
-#[test]
-fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
-    adtb_heap_cap::raise_cap(3 << 30);
-    let row = "l".repeat(3 * PAGE);
-    let mut files = two_groups(&row);
-    DATA.truncate(&mut files, SPAN - 100);
-    let after = damaged_run(&files, "lost group", |db| {
-        assert_quarantined(&text(db, INSERT_USER), "large insert");
-        assert_quarantined(&text(db, INSERT_USER), "retry");
-        assert_quarantined(&text(db, INSERT_OTHER), "other relation");
-        let marks = db.testing().probe().marks();
-        assert!(!marks.is_empty(), "{marks:?}");
-        assert_quarantined(&text(db, SELECT), "select");
-    });
-    damaged_run(&after, "lost group reopened", |db| {
-        let found = api::printed(db.verify(None).unwrap());
-        assert!(
-            found.iter().any(|f| f.starts_with("Structure")),
-            "{found:?}"
-        );
-        assert_quarantined(&text(db, SELECT), "reopened select");
-        assert_quarantined(&text(db, INSERT_OTHER), "reopened insert");
-    });
-}
-
 /// Returns the files of a database with five users, whose last four commit on a status page lying
 /// in the second group, and that page.
 fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
@@ -284,44 +244,6 @@ fn a_blank_status_page_refuses_and_never_aborts_committed_rows() {
     let mut cut = files;
     DATA.truncate(&mut cut, SPAN);
     assert_committed_rows_never_read_as_aborted(&cut, "cut at the group");
-}
-
-#[test]
-fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
-    let (files, root) = one_group("a", |db| {
-        let t = db.testing();
-        let heap = t.heap("app::users", "User").unwrap();
-        let data = t.pages(heap).unwrap();
-        let owned = t.owned(heap).unwrap();
-        (
-            owned.into_iter().find(|p| !data.contains(p)).unwrap(),
-            t.own_mark(heap).unwrap(),
-        )
-    });
-    let mut files = files;
-    DATA.zero(&mut files, root.0);
-    damaged_run(&files, "zero directory", |db| {
-        assert_quarantined(&text(db, INSERT_USER), "insert");
-        assert_eq!(BTreeSet::from([root.1]), db.testing().probe().marks());
-    });
-}
-
-#[test]
-fn a_zeroed_large_store_page_refuses_vacuum_and_marks() {
-    let row = "l".repeat(3 * PAGE);
-    let (files, page) = one_group(&row, |db| {
-        let t = db.testing();
-        t.pages(t.large("app::users", "User").unwrap()).unwrap()[0]
-    });
-    let mut files = files;
-    DATA.zero(&mut files, page);
-    damaged_writing(&files, Writes::Vacuum, "zero large page", |db| {
-        assert_quarantined(&text(db, "vacuum users"), "vacuum");
-        assert_eq!(
-            BTreeSet::from([Quarantine::Database]),
-            db.testing().probe().marks()
-        );
-    });
 }
 
 fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {

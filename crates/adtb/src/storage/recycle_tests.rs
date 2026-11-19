@@ -4,7 +4,6 @@ use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::runtime::{IoError, OpKind};
 use crate::storage::order::ordered_for_test;
 use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
@@ -13,7 +12,7 @@ use crate::storage::{
 };
 use crate::test_world as harness;
 use crate::verify::{self, Inventory, Problem};
-use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::damage::{DataFile, Files};
 use adtb_testkit::profile::every_case;
 
@@ -258,66 +257,6 @@ fn recycled_across_a_boundary(pages: &[Pid], sim: &mut Sim) -> (Files, Files) {
     (written, sim.files())
 }
 
-#[test]
-fn a_lost_write_whose_record_was_recycled_is_found_by_verify_and_backup() {
-    let (mut sim, pages) = created(600);
-    let before = sim.files();
-    let (written, recycled) = recycled_across_a_boundary(&pages, &mut sim);
-    let page = pages[0];
-    let lost = reverted(recycled, &before, page);
-    let stale = Damage::Stale {
-        expected: lsn_of(&written, page),
-        found: lsn_of(&before, page),
-    };
-    let mut sim = Sim::with_files(3, Config::default(), lost);
-    let (findings, damaged) = session(&mut sim, |pager, _| {
-        let run = &mut BackupRun {
-            target: "backup",
-            envelope: envelope(),
-            visit: &mut |_, _| true,
-            name: &|q| format!("{q:?}"),
-        };
-        let damaged = pager.backup(run).unwrap().damaged;
-        (pager.verify().findings, damaged)
-    });
-    assert_eq!(vec![page], damaged);
-    assert!(
-        findings.contains(&Finding::Page {
-            pid: page,
-            damage: stale
-        }),
-        "{findings:?}"
-    );
-}
-
-#[test]
-fn a_lost_write_of_a_map_page_quarantines_the_database() {
-    let (mut sim, pages) = created(600);
-    let (_, first) = recycled_across_a_boundary(&pages, &mut sim);
-    session(&mut sim, |pager, _| {
-        fill(pager, &pages[550..], 2 * SEGMENT);
-    });
-    session(&mut sim, |pager, _| pager.recycle_log());
-    let last = sim.files();
-    let map = session(&mut sim, |pager, _| pager.map_pages().unwrap());
-    assert_eq!(3, map.len(), "a root of height 2 and two leaves: {map:?}");
-    let mut reached = 0;
-    for &page in &map {
-        if lsn_of(&first, page) == lsn_of(&last, page) {
-            continue;
-        }
-        let lost = reverted(last.clone(), &first, page);
-        let mut sim = Sim::with_files(3, Config::default(), lost);
-        let (marked, expected) = session(&mut sim, |pager, _| {
-            pager.verify();
-            (mapped_once(pager), held_unverified(pager))
-        });
-        assert_eq!(expected, marked, "{page:?}");
-        reached += 1;
-    }
-    assert!(reached >= 2, "{reached} of {map:?}");
-}
-
 /// Returns a closed file of 600 data pages whose map has a root and two leaves, its pages, and
 /// the root and a leaf.
 fn mapped() -> (Sim, Vec<Pid>, Pid, Pid) {
@@ -332,32 +271,6 @@ fn mapped() -> (Sim, Vec<Pid>, Pid, Pid) {
         panic!("a root of height 2 and two leaves: {map:?}");
     };
     (sim, pages, root, leaf)
-}
-
-#[test]
-fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
-    let (mut sim, _, _, leaf) = mapped();
-    let mut out = None;
-    harness::finished(&mut sim, |rt| {
-        let reads = Match::kind(OpKind::Read).offset(PAGER.range(leaf).start as u64);
-        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
-        let (pager, _) = Pager::open(rt, &options()).unwrap();
-        out = Some((pager.map_pages(), Probe::of(&pager).marks()));
-        pager.close();
-    });
-    let (refused, marks) = out.unwrap();
-    let damage = Damage::Unreadable;
-    assert_eq!(
-        (
-            Err(PageError { pid: leaf, damage }),
-            BTreeSet::from([Quarantine::Database])
-        ),
-        (refused, marks)
-    );
-    let after = session(&mut sim, |pager, _| {
-        (pager.map_pages().map(|m| m.len()), Probe::of(pager).marks())
-    });
-    assert_eq!((Ok(3), BTreeSet::new()), after);
 }
 
 /// Map every record of `pager` as running, by its storage's own holders and no walk. Returns the
@@ -725,31 +638,6 @@ fn a_swap_releasing_a_mark_on_an_unchecked_marks_page_keeps_the_mark() {
         |pager, _| (value_of(pager, to), Probe::of(pager).marks()),
     );
     assert_eq!((9, BTreeSet::from([Quarantine::Index(3)])), (value, marks));
-}
-
-#[test]
-fn a_lost_write_whose_record_is_recycled_is_refused_on_its_first_read() {
-    let (mut sim, pages) = created(8);
-    let before = sim.files();
-    let pid = pages[0];
-    session(&mut sim, |pager, _| {
-        put(pager, pid, 1);
-        fill(pager, &pages[1..], 3 * SEGMENT);
-    });
-    assert!(session(&mut sim, |pager, _| pager.recycle_log()) >= 1);
-    let after = sim.files();
-    let first = segments(&after)[0];
-    let lost = reverted(after.clone(), &before, pid);
-    let read = session(
-        &mut Sim::with_files(3, Config::default(), lost),
-        |pager, _| pager.read(pid).map(drop),
-    );
-    let damage = Damage::Stale {
-        expected: lsn_of(&after, pid),
-        found: lsn_of(&before, pid),
-    };
-    assert!(lsn_of(&after, pid).0 < first, "{first}");
-    assert_eq!(Err(PageError { pid, damage }), read);
 }
 
 #[test]

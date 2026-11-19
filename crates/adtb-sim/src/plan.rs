@@ -232,6 +232,9 @@ pub enum Action {
     /// Run the closure on the submitting thread, then complete the write as written; a crash
     /// before a force of it lands only the atomic units whose flag in the mask is set.
     Tear(Vec<bool>, Box<dyn FnOnce() + Send>),
+    /// Complete a write with the byte at the index into its buffer inverted on the device,
+    /// leaving the submitter's buffer as it was.
+    Flip(usize),
 }
 
 impl Action {
@@ -242,6 +245,7 @@ impl Action {
             Action::Run(_) => Planned::Run,
             Action::Hold => Planned::Hold,
             Action::Tear(..) => Planned::Tear,
+            Action::Flip(_) => Planned::Flip,
         }
     }
 
@@ -250,6 +254,7 @@ impl Action {
             Action::Fail(error) => Action::Fail(*error),
             Action::Lose => Action::Lose,
             Action::Hold => Action::Hold,
+            Action::Flip(at) => Action::Flip(*at),
             Action::Run(_) | Action::Tear(..) => unreachable!("a run or a tear acts once"),
         }
     }
@@ -269,6 +274,7 @@ pub enum Planned {
     Run,
     Hold,
     Tear,
+    Flip,
 }
 
 #[derive(Debug)]

@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use adtb::Proof;
 
-use super::case::{Fault, Plan};
+use super::case::{self, Fault, Plan};
 use super::consumers::{Backup, Consumer, Copy, Dumped, Finding, Lookups, Observed, Read};
 use super::ledger::{self, Ended, Evidence, Record, SETTLED};
 use super::stated::{self, Class, Held, PHASES, Phase, Stated};
@@ -41,6 +41,13 @@ pub struct Verdicts {
     pub rows: BTreeSet<Row>,
     /// The consumers whose judgement ran and could meet the first fault's page.
     pub reached: BTreeSet<Consumer>,
+    /// The consumers whose answer carries the first fault's page: the open recorded or settled
+    /// it, a read was refused or failed, verify or the scrub named it, the backup or its proof
+    /// failed, the dump failed or its copy refused a read.
+    pub met: BTreeSet<Consumer>,
+    /// The damage verify's findings give the first fault's page, by name: `Stale`, `Settled`,
+    /// `Checksum`.
+    pub named: Vec<String>,
     pub ending: Ending,
     /// The damage records and the durable marks the file's evidence held, for a case judged on
     /// it.
@@ -90,6 +97,8 @@ struct Page {
     fault: Fault,
     /// The user relation holding the page, by its write-out's header.
     rel: Option<Rel>,
+    /// Whether the file's copy is damaged at the end: stale for a lost write, failing its
+    /// checksum for a flip.
     stale: bool,
     must_report: bool,
     must_not_name: bool,
@@ -209,11 +218,13 @@ fn judged(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Result<Judged, String>
     let holding = ids
         .holding(w.kind, w.owner, w.pid)
         .ok_or_else(|| format!("page {} of kind {} and owner {}", w.pid.0, w.kind, w.owner))?;
-    let met_in_open = o.met_in_open && !is_lost(fault);
+    let met_in_open = o.met_in_open && !damages_file(fault);
     let class = match fault {
         Fault::Torn => return Ok(Judged::default()),
         _ if o.settled.contains(&w.pid) => Class::Settled,
-        Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled => Class::Damaged,
+        Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled | Fault::Flipped => {
+            Class::Damaged
+        }
         _ if met_in_open && holding.0 == Held::LsnMap => Class::Unarmed,
         Fault::UnreadableOnce | Fault::UnreadableLasting => Class::Unread,
     };
@@ -221,11 +232,11 @@ fn judged(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Result<Judged, String>
     let incomplete = case
         .hits
         .iter()
-        .any(|h| !is_lost(h.fault) && h.fault != Fault::Torn);
+        .any(|h| !damages_file(h.fault) && h.fault != Fault::Torn);
     let (surely, mut phases) = if met_in_open {
         (Some(Phase::Opening), vec![Phase::Opening])
     } else if o.recorded_at_open.contains(&w.pid) {
-        let surely = (!incomplete || !is_lost(fault)).then_some(Phase::Opening);
+        let surely = (!incomplete || !damages_file(fault)).then_some(Phase::Opening);
         (surely, vec![Phase::Opening])
     } else {
         (Some(Phase::Running), vec![Phase::Running])
@@ -251,6 +262,12 @@ fn is_lost(fault: Fault) -> bool {
         fault,
         Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled
     )
+}
+
+/// Returns whether `fault` leaves on the file a copy of its page that the pager refuses as
+/// damaged.
+fn damages_file(fault: Fault) -> bool {
+    is_lost(fault) || fault == Fault::Flipped
 }
 
 /// Returns the write-out of the incarnation of `w`'s page the consumers meet: the clean run's
@@ -292,11 +309,17 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
                 continue;
             };
             let rel = ids.owner(kind, w.owner);
-            let found = page::lsn(&world::page(&case.observed.files, w.pid)).0;
-            let stale = is_lost(hit.fault) && found < w.lsn;
+            let copy = world::page(&case.observed.files, w.pid);
+            let found = page::lsn(&copy).0;
+            let stale = match hit.fault {
+                Fault::Flipped => !case::sealed(w.pid, &copy),
+                fault => is_lost(fault) && found < w.lsn,
+            };
             let alive = !freed(kind) || plan.held_at_end(w.pid);
-            let must_report = matches!(hit.fault, Fault::LostCurrent | Fault::Recycled)
-                && stale
+            let must_report = matches!(
+                hit.fault,
+                Fault::LostCurrent | Fault::Recycled | Fault::Flipped
+            ) && stale
                 && alive
                 && !unlogged_before_gap(case, &w, found);
             let must_not_name = case.ran.damaged != Some(w.pid)
@@ -371,7 +394,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
             if matches!(p.fault, Fault::UnreadableOnce | Fault::UnreadableLasting) {
                 bites || observed
             } else {
-                p.stale && bites
+                (p.stale || case.observed.settled.contains(&p.pid)) && bites
             }
         })
         .filter_map(|p| p.row)
@@ -524,9 +547,13 @@ fn database_cause(f: &Facts<'_>) -> &'static str {
     let settled = &f.case.observed.settled;
     if f.pages.iter().all(|p| settled.contains(&p.pid)) {
         "for a settled status page"
-    } else if f.pages.iter().any(|p| p.rel.is_some() && is_lost(p.fault)) {
+    } else if f
+        .pages
+        .iter()
+        .any(|p| p.rel.is_some() && damages_file(p.fault))
+    {
         "the faults map to their relation"
-    } else if f.pages.iter().all(|p| !is_lost(p.fault)) {
+    } else if f.pages.iter().all(|p| !damages_file(p.fault)) {
         "for an unreadable page"
     } else {
         "the faults do not map to"
@@ -642,6 +669,8 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
         violations: out,
         rows: f.rows.clone(),
         reached: reached(&f),
+        met: met(&f),
+        named: named(&f),
         ending: ending(&f),
         evidence: held,
     }
@@ -823,7 +852,7 @@ fn judge_findings(f: &Facts<'_>, found: &Result<Vec<Finding>, String>) -> Vec<(S
 fn judge_marks(f: &Facts<'_>) -> Vec<(String, String)> {
     let marks = f.marks();
     let mut out = Vec::new();
-    if f.unreadable && !f.case.hits.iter().any(|h| is_lost(h.fault)) {
+    if f.unreadable && !f.case.hits.iter().any(|h| damages_file(h.fault)) {
         if f.open_only {
             let o = f.case.observed;
             let refused = o
@@ -1014,6 +1043,70 @@ fn reached(f: &Facts<'_>) -> BTreeSet<Consumer> {
     .into_iter()
     .filter_map(|(c, ran)| ran.then_some(c))
     .collect()
+}
+
+fn met(f: &Facts<'_>) -> BTreeSet<Consumer> {
+    let o = f.case.observed;
+    let pid = f.pages[0].pid;
+    let refused = |r: &Read| matches!(r, Read::Refused(_) | Read::Failed(_));
+    let read = o
+        .reads
+        .values()
+        .chain(o.lookups.values().map(|l| &l.read))
+        .any(refused);
+    let copy_refused = |c: &Option<Result<Copy, String>>| match c {
+        Some(Ok(copy)) => copy.reads.values().any(refused),
+        Some(Err(_)) => true,
+        None => false,
+    };
+    [
+        (
+            Consumer::Settle,
+            o.met_in_open || o.recorded_at_open.contains(&pid) || o.settled.contains(&pid),
+        ),
+        (Consumer::Read, read),
+        (Consumer::Verify, !named(f).is_empty()),
+        (
+            Consumer::Scrub,
+            o.scrubbed == Some(pid) && o.scrub.as_ref().is_some_and(|s| !s.is_empty()),
+        ),
+        (
+            Consumer::Backup,
+            o.backup.as_ref().is_some_and(|b| {
+                b.made.is_err()
+                    || !matches!(b.proof, Some(Ok(Proof::Proven)))
+                    || copy_refused(&b.copy)
+            }),
+        ),
+        (
+            Consumer::Dump,
+            o.dump
+                .as_ref()
+                .is_some_and(|d| d.made.is_err() || copy_refused(&d.copy)),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(c, met)| met.then_some(c))
+    .collect()
+}
+
+fn named(f: &Facts<'_>) -> Vec<String> {
+    let pid = f.pages[0].pid;
+    match &f.case.observed.verify {
+        Some(Ok(rows)) => rows
+            .iter()
+            .filter(|(_, at)| names(at, pid))
+            .map(|(_, at)| {
+                let damage = at.split_once(": ").map_or("", |(_, d)| d);
+                damage
+                    .split([' ', '"'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn ending(f: &Facts<'_>) -> Ending {

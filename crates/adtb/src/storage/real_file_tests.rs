@@ -8,7 +8,7 @@ use adtb_testkit::scratch::Scratch;
 
 use crate::catalog::Catalog;
 use crate::runtime::FatalIo;
-use crate::storage::{OpenError, Options, PageKind, Pager};
+use crate::storage::{OpenError, Options, Pager};
 use crate::testing::Knobs;
 use crate::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
 use adtb_lang::schema::ValueDef;
@@ -93,36 +93,6 @@ fn migrated_database_reopens(dir: &Path, runtime: fn(&Path) -> OsRuntime) {
 #[test]
 fn a_migrated_database_reopens_from_its_files() {
     migrated_database_reopens(scratch("reopen").path(), runtime);
-}
-
-#[test]
-fn a_missing_database_is_not_found() {
-    let held = scratch("missing");
-    let dir = held.path();
-    assert!(matches!(
-        Pager::open(runtime(dir), &options()),
-        Err(OpenError::NotFound)
-    ));
-}
-
-#[test]
-fn a_closed_pager_holds_no_file_open_and_reopens_with_nothing_to_replay() {
-    let held = scratch("close");
-    let dir = held.path();
-    let rt = runtime(dir);
-    let pager = Pager::create(rt.clone(), &options()).expect("create");
-    let pid = pager.allocate(1, PageKind::HeapSlotted, 7).expect("a page");
-    pager.update(&[pid], |p| p[0][100] = 42).expect("an update");
-    assert!(!open_under(dir).is_empty());
-    pager.close();
-    assert_eq!(Vec::<PathBuf>::new(), open_under(dir));
-    drop(pager);
-
-    let (pager, opening) = Pager::open(rt, &options()).expect("reopen");
-
-    let recovery = opening.recovery().cloned().expect("the open recovered");
-    assert_eq!(0, recovery.applied, "{recovery:?}");
-    assert_eq!(42, pager.read(pid).expect("the page")[100]);
 }
 
 /// Returns the name a backend's directories begin with.

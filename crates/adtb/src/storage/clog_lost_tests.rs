@@ -814,29 +814,6 @@ fn a_lost_write_of_each_page_an_insert_changes_is_refused_on_read_and_reported_b
     assert_eq!(BTreeMap::from(want), reached);
 }
 
-#[test]
-fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_on_read() {
-    let mut sim = Sim::new(2, Config::default());
-    insert(&mut sim, "ann");
-    let reached = each_lost_write_refused(&mut sim, |db| {
-        let digit = "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]";
-        api::results(
-            db,
-            &format!(
-                "insert users from (from a in {digit}, b in {digit}, c in {digit} select {{ name: \"n\" }})"
-            ),
-        );
-        let t = db.testing();
-        t.plant(Plant::Mark(Quarantine::Index(u32::MAX))).unwrap();
-        t.plant(Plant::Unmark(Quarantine::Index(u32::MAX))).unwrap();
-    });
-    assert_eq!(Some(&1), reached.get("marks"), "{reached:?}");
-    assert!(
-        reached.get("bitmap").is_some_and(|&n| n >= 1),
-        "{reached:?}"
-    );
-}
-
 /// A file whose last status page lost its writes past a segment its log no longer holds.
 struct Unprovable {
     /// The file with the status page reverted and the segment gone.

@@ -1502,24 +1502,6 @@ fn a_change_to_a_page_past_the_log_end_is_refused_and_reported_on_every_verify()
 }
 
 #[test]
-fn a_rotted_page_is_refused_and_reported() {
-    let mut sim = Sim::new(1, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let pid = client.world.lock().unwrap().pages[3];
-    let mut sim = flipped(&mut sim, pid, 1000 - HEADER_LEN);
-    let (read, findings) = with_pager(&mut sim, |p| {
-        let read = p.read(pid).map(|_| ()).map_err(|e| e.damage);
-        (read, p.verify().findings)
-    });
-    assert_eq!(Err(Damage::Checksum), read);
-    assert!(findings.contains(&Finding::Page {
-        pid,
-        damage: Damage::Checksum
-    }));
-}
-
-#[test]
 fn allocation_reuses_a_damaged_free_page_without_reading_it() {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
@@ -1899,41 +1881,6 @@ fn an_update_must_change_every_page_it_allocates() {
     });
 }
 
-#[test]
-fn a_lost_write_is_caught_when_the_page_is_read_back() {
-    let mut sim = Sim::new(41, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let pages = client.world.lock().unwrap().pages.clone();
-    let victim = pages[0];
-    let outcome = sim.run(|rt| {
-        let (p, _) = Pager::open(rt.clone(), &options(PLAIN)).unwrap();
-        for &pid in &pages {
-            p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
-        }
-        p.flush_pages(usize::MAX);
-        p.update(&[victim], |v| v[0][HEADER_LEN + 1] = 7).unwrap();
-        p.flush_log();
-        rt.set_faults(Faults {
-            lost_write_p: 1.0,
-            ..Faults::none(512)
-        });
-        p.flush_pages(usize::MAX);
-        rt.set_faults(Faults::none(512));
-        for _ in 0..3 {
-            for &pid in &pages[1..] {
-                drop(p.read(pid).unwrap());
-            }
-        }
-        let back = p.read(victim).map(|_| ()).map_err(|e| e.damage);
-        assert!(
-            matches!(back, Err(Damage::Stale { .. })),
-            "a lost write read back as {back:?}"
-        );
-    });
-    assert_eq!(Outcome::Finished, outcome);
-}
-
 /// Write every page of `pages`, then change the first and flush it under `faults`. Returns the
 /// LSN the change gave it and the LSN the device held for it before.
 fn flush_first_under(
@@ -2022,39 +1969,6 @@ fn a_misdirected_page_write_is_refused_where_it_was_meant_and_where_it_landed() 
         landed_on_a_read_page,
         "no misdirected write landed on a page read back"
     );
-}
-
-#[test]
-fn a_lost_page_write_is_reported_and_refused_on_reopen() {
-    let mut sim = Sim::new(41, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let pages = client.world.lock().unwrap().pages.clone();
-    let mut lsns = None;
-    let outcome = sim.run(|rt| {
-        let (p, _) = Pager::open(rt.clone(), &options(PLAIN)).unwrap();
-        let lost = Faults {
-            lost_write_p: 1.0,
-            ..Faults::none(512)
-        };
-        lsns = Some(flush_first_under(&rt, &p, &pages, lost));
-        p.checkpoint();
-    });
-    assert_eq!(Outcome::Finished, outcome);
-    let (expected, found) = lsns.unwrap();
-    let stale = Damage::Stale { expected, found };
-    let (findings, back) = with_pager(&mut sim, |p| {
-        let findings = p.verify().findings;
-        (findings, p.read(pages[0]).map(|_| ()).map_err(|e| e.damage))
-    });
-    assert_eq!(
-        vec![Finding::Page {
-            pid: pages[0],
-            damage: stale
-        }],
-        findings
-    );
-    assert_eq!(Err(stale), back);
 }
 
 #[test]

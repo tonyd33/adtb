@@ -117,6 +117,7 @@ enum Injected {
     Fail(IoError),
     Lose,
     Tear(Vec<bool>),
+    Flip(usize),
 }
 
 struct State {
@@ -614,6 +615,18 @@ impl State {
                 }
                 (Some(buf), result)
             }
+            Some(Injected::Flip(at)) => {
+                trace!(self.trace, "  planned flip of byte {at}");
+                let Op::Write { file, offset, buf } = op else {
+                    unreachable!("only a write is planned flipped")
+                };
+                let mut landed = buf.to_vec();
+                landed[at] ^= 0xff;
+                let ino = self.ino(file);
+                let (disk, cx) = self.ctx();
+                let result = disk.write(ino, offset, &landed, cx).map(|()| Done::Written);
+                (Some(buf), result)
+            }
             Some(injected) => {
                 trace!(self.trace, "  planned {injected:?}");
                 let buf = match op {
@@ -623,7 +636,9 @@ impl State {
                 let result = match injected {
                     Injected::Fail(error) => Err(error),
                     Injected::Lose => Ok(Done::Written),
-                    Injected::Tear(_) => unreachable!("a tear runs on the disk"),
+                    Injected::Tear(_) | Injected::Flip(_) => {
+                        unreachable!("a tear or a flip runs on the disk")
+                    }
                 };
                 (buf, result)
             }
@@ -1062,6 +1077,14 @@ impl Io for SimIo {
                     op.kind()
                 );
                 (Some(Injected::Tear(mask)), false)
+            }
+            Some(Action::Flip(at)) => {
+                assert!(
+                    op.kind() == OpKind::Write,
+                    "only a write can be flipped, not a {:?}",
+                    op.kind()
+                );
+                (Some(Injected::Flip(at)), false)
             }
         };
         let Some(mut st) = self.rt.enter() else {

@@ -174,6 +174,72 @@ const KNOWN: &[Known] = &[
         then: None,
     },
     Known {
+        fault: Fault::Flipped,
+        kind: Kind::VisibilityMap,
+        owner: Some(world::Rel::Tags),
+        consumer: Consumer::Verify,
+        what: "verify reports nothing of a mark",
+        ticket: UNDER_RELATION_MARK,
+        seed: 3,
+        at: 647,
+        then: None,
+    },
+    Known {
+        fault: Fault::Flipped,
+        kind: Kind::Engine,
+        owner: None,
+        consumer: Consumer::Catalog,
+        what: "applies a migration under a whole-database mark",
+        ticket: APPLIES_UNDER_MARK,
+        seed: 6,
+        at: 607,
+        then: None,
+    },
+    Known {
+        fault: Fault::Flipped,
+        kind: Kind::Directory,
+        owner: Some(world::Rel::Tags),
+        consumer: Consumer::Verify,
+        what: "verify reports nothing of a mark",
+        ticket: UNDER_RELATION_MARK,
+        seed: 3,
+        at: 651,
+        then: None,
+    },
+    Known {
+        fault: Fault::Flipped,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Tags),
+        consumer: Consumer::Verify,
+        what: "verify reports nothing of a mark",
+        ticket: UNDER_RELATION_MARK,
+        seed: 3,
+        at: 640,
+        then: None,
+    },
+    Known {
+        fault: Fault::Flipped,
+        kind: Kind::CommitLog,
+        owner: None,
+        consumer: Consumer::Catalog,
+        what: "applies a migration under a whole-database mark",
+        ticket: APPLIES_UNDER_MARK,
+        seed: 6,
+        at: 675,
+        then: None,
+    },
+    Known {
+        fault: Fault::Flipped,
+        kind: Kind::Directory,
+        owner: Some(world::Rel::Tags),
+        consumer: Consumer::Settle,
+        what: "the open fails",
+        ticket: BLANK_OPEN,
+        seed: 3,
+        at: 648,
+        then: None,
+    },
+    Known {
         fault: Fault::LostEarlier,
         kind: Kind::Heap,
         owner: Some(world::Rel::Tags),
@@ -341,6 +407,7 @@ fn classes(fault: Fault) -> &'static [Class] {
         Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled => {
             &[Class::Damaged, Class::Settled]
         }
+        Fault::Flipped => &[Class::Damaged],
         Fault::UnreadableOnce | Fault::UnreadableLasting => &[Class::Unread, Class::Unarmed],
         Fault::Torn => &[],
     }
@@ -395,7 +462,7 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         }
         _ => {}
     }
-    let lost = matches!(fault, Fault::LostCurrent | Fault::Recycled);
+    let lost = matches!(fault, Fault::LostCurrent | Fault::Recycled | Fault::Flipped);
     match (fault, class, held, phase) {
         (Fault::LostEarlier, _, Held::CommitLog, _) => Some(Unasked::Never(
             "truncation frees only a status page wholly below its bound, and one page holds the \
@@ -444,8 +511,8 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         (_, Class::Damaged, Held::EngineRelation, Running) if lost => {
             Some(Unasked::AtTier(AT_THE_OPEN))
         }
-        (_, Class::Settled, Held::CommitLog, _) if lost => Some(Unasked::AtTier(
-            "at the damage tier no case settles a lost status page from the log",
+        (_, Class::Settled, Held::CommitLog, Running) => Some(Unasked::Never(
+            "only the open of the commit log settles a status page",
         )),
         (Fault::UnreadableOnce, Class::Unarmed, Held::LsnMap, _) => Some(Unasked::Never(
             "whether the open met the page is observed only for a failure that lasts",
@@ -496,7 +563,7 @@ fn rows_of(fault: Fault) -> impl Iterator<Item = Row> {
 fn rows_due(fault: Fault, s: &Searched) -> Vec<Row> {
     rows_of(fault)
         .filter(|r| unasked(fault, *r).is_none())
-        .filter(|r| !s.rows.contains(r))
+        .filter(|r| !s.rows.contains_key(r))
         .collect()
 }
 
@@ -511,7 +578,7 @@ fn assert_rows_asked(fault: Fault, s: &Searched, text: &str) {
     );
     let came: Vec<Row> = rows_of(fault)
         .filter(|r| matches!(unasked(fault, *r), Some(Unasked::Never(_))))
-        .filter(|r| s.rows.contains(r))
+        .filter(|r| s.rows.contains_key(r))
         .collect();
     assert_eq!(
         Vec::<Row>::new(),
@@ -684,8 +751,8 @@ struct Searched {
     cases: BTreeMap<Kind, usize>,
     endings: BTreeMap<judge::Ending, usize>,
     reached: BTreeSet<(Kind, Consumer)>,
-    /// The rows of the stated table the cases asked.
-    rows: BTreeSet<Row>,
+    /// The rows of the stated table the cases asked, with the cases that asked each.
+    rows: BTreeMap<Row, usize>,
     /// The cases of each kind run on a write-out picked for a row still to ask, apart from
     /// `cases`.
     steered: BTreeMap<Kind, usize>,
@@ -725,7 +792,9 @@ impl Searched {
         }
         self.reached
             .extend(outcome.verdicts.reached.iter().map(|c| (kind, *c)));
-        self.rows.extend(outcome.verdicts.rows.iter().copied());
+        for row in &outcome.verdicts.rows {
+            *self.rows.entry(*row).or_default() += 1;
+        }
         for violation in outcome.verdicts.violations {
             self.found.push(Found {
                 kind,
@@ -912,7 +981,7 @@ fn search(
         cases: BTreeMap::new(),
         endings: BTreeMap::new(),
         reached: BTreeSet::new(),
-        rows: BTreeSet::new(),
+        rows: BTreeMap::new(),
         steered: BTreeMap::new(),
         steer_tries: BTreeMap::new(),
         failed_opens: BTreeMap::new(),
@@ -1130,11 +1199,126 @@ fn known(
     })
 }
 
+/// A case the default profile runs: its fault, the kind of the page its write-out writes, its
+/// seed and write-out, and the row of the stated table it asks.
+type Pinned = (Fault, Kind, u64, usize, Row);
+
+/// The cases the default profile runs: a lost write of each structure whose damage is refused and
+/// marked, a settled status page, a flipped byte, an LSN map page unreadable at the open and a
+/// lost write past a recycle and past the map's entry of its page.
+#[rustfmt::skip]
+const PINNED: &[Pinned] = {
+    use Class::{Damaged, Settled, Unarmed};
+    use Fault::{Flipped, LostCurrent, Recycled, UnreadableLasting};
+    use Held::{Bitmap, CatalogRoot, CommitLog, CommitTimes, Counters, LsnMap, MarksPage, Relation};
+    use Phase::{Opening, Running};
+    &[
+        (LostCurrent, Kind::Heap, 5, 641, (Damaged, Relation, Opening)),
+        (LostCurrent, Kind::Index, 5, 621, (Damaged, Relation, Opening)),
+        (LostCurrent, Kind::Engine, 5, 607, (Damaged, CatalogRoot, Opening)),
+        (LostCurrent, Kind::Engine, 5, 616, (Damaged, Counters, Opening)),
+        (LostCurrent, Kind::Engine, 5, 657, (Damaged, CommitTimes, Opening)),
+        (LostCurrent, Kind::CommitLog, 1001, 640, (Damaged, CommitLog, Opening)),
+        (LostCurrent, Kind::CommitLog, 5, 658, (Settled, CommitLog, Opening)),
+        (LostCurrent, Kind::LsnMap, 5, 660, (Damaged, LsnMap, Opening)),
+        (LostCurrent, Kind::Bitmap, 5, 648, (Damaged, Bitmap, Opening)),
+        (LostCurrent, Kind::Marks, 5, 655, (Damaged, MarksPage, Opening)),
+        (LostCurrent, Kind::Heap, 1001, 641, (Damaged, Relation, Running)),
+        (Recycled, Kind::Heap, 1001, 625, (Damaged, Relation, Running)),
+        (Flipped, Kind::Heap, 3, 621, (Damaged, Relation, Opening)),
+        (Flipped, Kind::CommitLog, 5, 610, (Damaged, CommitLog, Opening)),
+        (UnreadableLasting, Kind::LsnMap, 5, 660, (Unarmed, LsnMap, Opening)),
+    ]
+};
+
+/// Returns why the case of `plan` with the fault of `pin` at write-out `at` fails `pin`, `None`
+/// when it hits the pin's cell, asks its row, shows no violation and every consumer but the
+/// catalog meets its page, the open only for a page the open finds and a read only for a page
+/// that is neither settled nor an index page's. Verify names a settled page
+/// `Settled` and a flipped one `Checksum`, and nothing else of it.
+fn pin_fails(plan: &case::Plan, &(fault, kind, _, _, row): &Pinned, at: usize) -> Option<String> {
+    let injection = fault.injection();
+    let cell = (plan.kind(at), plan.fault(at, injection));
+    if cell != (Some(kind), fault) {
+        return Some(format!("writes another cell: {cell:?}"));
+    }
+    let Some(o) = case::run(plan, Point { at, injection }) else {
+        return Some("the fault does not take".into());
+    };
+    let v = &o.verdicts;
+    let unmet: Vec<Consumer> = CONSUMERS
+        .into_iter()
+        .filter(|c| *c != Consumer::Catalog)
+        .filter(|c| *c != Consumer::Settle || row.2 == Phase::Opening)
+        .filter(|c| *c != Consumer::Read || (row.0 != Class::Settled && kind != Kind::Index))
+        .filter(|c| !v.met.contains(c))
+        .collect();
+    let named = match row.0 {
+        Class::Settled => "Settled",
+        Class::Damaged if fault == Fault::Flipped => "Checksum",
+        _ => "",
+    };
+    let misnamed = !named.is_empty() && v.named != [named];
+    (!v.rows.contains(&row) || !unmet.is_empty() || misnamed || !v.violations.is_empty()).then(
+        || {
+            format!(
+                "asks {:?}, meets no {unmet:?}, verify names it {:?}, shows {:?}",
+                v.rows, v.named, v.violations
+            )
+        },
+    )
+}
+
+#[test]
+fn a_pinned_case_of_each_row_asks_it_and_breaks_no_rule() {
+    let seeds: Vec<u64> = PINNED
+        .iter()
+        .map(|p| p.2)
+        .collect::<BTreeSet<u64>>()
+        .into_iter()
+        .collect();
+    let plans: BTreeMap<u64, case::Plan> = seeds
+        .iter()
+        .copied()
+        .zip(pool::map(
+            &seeds,
+            |s| format!("seed {s}"),
+            |&s| case::plan(s, generate::sequence(s), false),
+        ))
+        .collect();
+    let failed: Vec<String> = pool::map(
+        PINNED,
+        |(fault, _, seed, at, _)| format!("{fault:?} seed {seed} at {at}"),
+        |pin| {
+            let (fault, kind, seed, at, row) = *pin;
+            let plan = &plans[&seed];
+            let why = pin_fails(plan, pin, at)?;
+            let nearest = (0..plan.clean.trace.writes.len())
+                .filter(|x| plan.kind(*x) == Some(kind))
+                .find(|x| pin_fails(plan, pin, *x).is_none());
+            Some(format!(
+                "{fault:?} {kind:?} {row:?}: seed {seed} at {at} {why}; nearest write-out that \
+                 holds {nearest:?}"
+            ))
+        },
+    )
+    .into_iter()
+    .flatten()
+    .collect();
+    assert_eq!(Vec::<String>::new(), failed);
+}
+
 #[test]
 fn a_pinned_known_failure_still_shows() {
     let pinned = KNOWN
         .iter()
-        .find(|k| k.ticket == BLANK_OPEN && k.consumer == Consumer::Settle)
+        .find(|k| {
+            k.ticket == BLANK_OPEN
+                && k.fault == Fault::LostEarlier
+                && k.kind == Kind::Heap
+                && k.consumer == Consumer::Settle
+                && (k.seed, k.at) == (6, 689)
+        })
         .expect("the failed open's entry is known");
     rerun(pinned);
 }
@@ -1173,6 +1357,12 @@ fn a_page_unreadable_once_is_a_storage_failure_then_intact() {
 fn a_page_unreadable_for_good_is_a_storage_failure_that_marks_nothing() {
     eprintln!("{}", shard(Fault::UnreadableLasting));
     reruns(Fault::UnreadableLasting);
+}
+
+#[test]
+fn a_flipped_byte_of_a_page_is_refused_and_marked() {
+    eprintln!("{}", shard(Fault::Flipped));
+    reruns(Fault::Flipped);
 }
 
 /// Returns the sequences and cases of each kind a concurrent or paired tier runs: a few under

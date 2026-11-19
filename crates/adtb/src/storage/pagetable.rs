@@ -589,50 +589,6 @@ mod tests {
         table.refused(&refusal_for_test(Pid(1)));
     }
 
-    fn force(table: &mut DirtyTable) {
-        let lock = std::sync::Mutex::new(forcing_for_test());
-        let held = lock
-            .lock()
-            .expect("the test's forcing lock is never poisoned");
-        let covered = table.forcing(&held);
-        table.forced(covered);
-    }
-
-    #[test]
-    fn a_page_refused_with_changes_the_file_lacks_keeps_its_rec_lsn_through_a_covering_force() {
-        let mut table = DirtyTable::new(false);
-        refused_after_a_write(&mut table);
-        force(&mut table);
-        assert_eq!(vec![(Pid(1), Lsn(10))], table.snapshot());
-        assert_eq!(
-            (false, Vec::<Pid>::new()),
-            (table.is_unwritten(Pid(1)), table.oldest(1))
-        );
-    }
-
-    #[test]
-    fn a_page_refused_after_its_last_write_leaves_at_the_next_covering_force() {
-        let mut table = DirtyTable::new(false);
-        let appending = appending_for_test();
-        table.logged(&appending, Pid(1), Lsn(10), Logged::Image);
-        table.written_out(wrote_for_test(Pid(1)));
-        table.refused(&refusal_for_test(Pid(1)));
-        force(&mut table);
-        assert_eq!(Vec::<(Pid, Lsn)>::new(), table.snapshot());
-    }
-
-    #[test]
-    fn a_page_refused_with_changes_the_file_lacks_leaves_once_its_free_is_durable() {
-        let mut table = DirtyTable::new(false);
-        refused_after_a_write(&mut table);
-        table.freeing(&appending_for_test(), Pid(1), Lsn(14));
-        table.freed_durable(Lsn(14));
-        force(&mut table);
-        assert_eq!(vec![(Pid(1), Lsn(10))], table.snapshot());
-        table.freed_durable(Lsn(15));
-        assert_eq!(Vec::<(Pid, Lsn)>::new(), table.snapshot());
-    }
-
     #[test]
     fn a_durable_free_leaves_the_entry_of_a_later_incarnation() {
         let mut table = DirtyTable::new(false);

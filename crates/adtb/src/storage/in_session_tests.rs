@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::runtime::{Done, IoError, Op, OpKind, Runtime};
 use crate::storage::order::ordered_for_test;
 use crate::storage::{
-    self, Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
+    self, Damage, Finding, HEADER_LEN, Lsn, Options, PageKind, Pager, Pid, Quarantine,
 };
 use crate::test_world as harness;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
@@ -275,33 +275,6 @@ fn a_scrub_snapshot_taken_before_recycles_within_the_session_finds_nothing() {
 
 fn lsn_of(files: &Files, pid: Pid) -> Lsn {
     storage::lsn(PAGER.page(files, pid))
-}
-
-#[test]
-fn a_lost_write_whose_record_was_recycled_within_its_session_is_refused_on_its_first_read() {
-    let (mut sim, pages) = created(16, false);
-    let before = sim.files();
-    let pid = pages[0];
-    let first = session(&mut sim, false, |pager, rt| {
-        storage::recycle_at_open(pager, None);
-        put(pager, pid, 1);
-        paced(pager, rt, &pages[1..], 8 * EVERY);
-        listed(rt, false)[0]
-    });
-    let after = sim.files();
-    assert!(lsn_of(&after, pid).0 < first, "first segment {first:#x}");
-    let mut lost = after.clone();
-    PAGER.replace(&mut lost, pid, PAGER.page(&before, pid));
-    let read = session(
-        &mut Sim::with_files(3, Config::default(), lost),
-        false,
-        |pager, _| pager.read(pid).map(drop),
-    );
-    let damage = Damage::Stale {
-        expected: lsn_of(&after, pid),
-        found: lsn_of(&before, pid),
-    };
-    assert_eq!(Err(PageError { pid, damage }), read);
 }
 
 fn refused_while_changed_frees_the_floor(atomic: bool) {

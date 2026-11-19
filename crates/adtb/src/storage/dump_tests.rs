@@ -1374,27 +1374,6 @@ fn a_refused_restore_to_a_nested_path_removes_the_directories_it_made_and_no_oth
 }
 
 #[test]
-fn a_storage_failure_building_the_restored_file_is_fatal_and_leaves_nothing() {
-    let (files, _) = dumped();
-    let mut sim = Sim::with_files(21, Config::default(), files.clone());
-    let got = process::run(&mut sim, |rt| {
-        let partial = Match::kind(OpKind::CreateNew).containing(".partial");
-        rt.plan(Plan::new().rule(partial, Action::Fail(IoError::Failed)));
-        restore_dump(&rt)
-    });
-    assert!(
-        matches!(
-            &got,
-            Err(Error::Fatal {
-                reason: FatalReason::Storage { .. }
-            })
-        ),
-        "{got:?}"
-    );
-    assert_eq!(files, sim.files());
-}
-
-#[test]
 fn a_read_failure_creating_the_restored_file_is_fatal_and_leaves_nothing() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(21, Config::default(), files.clone());

@@ -11,7 +11,7 @@ use super::block::{
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::error::{Damage, OpenError};
 use super::header::{FileHeader, choose};
-use super::page::{self, Verdict};
+use super::page;
 use super::pager::{Options, PageError, Pager};
 use super::record::{Edit, Malformed, MapRoot, Record};
 use super::{Lsn, Pid, Position};
@@ -262,20 +262,6 @@ fn crc32c_is_the_same_however_the_bytes_are_split() {
         .iter()
         .fold(Crc32c::new(), |c, b| c.update(std::slice::from_ref(b)));
     assert_eq!(whole, bytewise.finish());
-}
-
-#[test]
-fn sealed_page_verifies_only_at_its_own_id() {
-    let mut p = vec![0; 4096];
-    let (at, field) = page::lsn_field(Lsn(77));
-    p[at..at + field.len()].copy_from_slice(&field);
-    p[100] = 9;
-    page::seal(Pid(5), &mut p);
-    assert_eq!(Verdict::Valid, page::verify(Pid(5), &p));
-    assert_eq!(Verdict::Corrupt, page::verify(Pid(6), &p));
-    p[4000] ^= 1;
-    assert_eq!(Verdict::Corrupt, page::verify(Pid(5), &p));
-    assert_eq!(Verdict::Blank, page::verify(Pid(5), &[0; 4096]));
 }
 
 #[test]

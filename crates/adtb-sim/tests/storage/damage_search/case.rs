@@ -24,6 +24,9 @@ pub enum Injection {
     Torn,
     /// Every read of the page from the write-out on fails, once or for the rest of the case.
     Unreadable { lasting: bool },
+    /// The write-out lands with one byte of the page's body inverted, so the copy on the device
+    /// fails its checksum.
+    Flipped,
     /// The log write reports success and never reaches the device.
     LogLost { write: usize },
     /// The first read of the log write's first block after the write fails.
@@ -37,7 +40,7 @@ impl Injection {
     pub fn on_page(self) -> bool {
         matches!(
             self,
-            Injection::Lost | Injection::Torn | Injection::Unreadable { .. }
+            Injection::Lost | Injection::Torn | Injection::Unreadable { .. } | Injection::Flipped
         )
     }
 
@@ -47,7 +50,10 @@ impl Injection {
             Injection::LogLost { write }
             | Injection::LogUnreadable { write }
             | Injection::Crash { write, .. } => Some(write),
-            Injection::Lost | Injection::Torn | Injection::Unreadable { .. } => None,
+            Injection::Lost
+            | Injection::Torn
+            | Injection::Unreadable { .. }
+            | Injection::Flipped => None,
         }
     }
 }
@@ -81,15 +87,17 @@ pub enum Fault {
     Torn,
     UnreadableOnce,
     UnreadableLasting,
+    Flipped,
 }
 
-pub const FAULTS: [Fault; 6] = [
+pub const FAULTS: [Fault; 7] = [
     Fault::LostEarlier,
     Fault::LostCurrent,
     Fault::Recycled,
     Fault::Torn,
     Fault::UnreadableOnce,
     Fault::UnreadableLasting,
+    Fault::Flipped,
 ];
 
 impl Fault {
@@ -99,6 +107,7 @@ impl Fault {
             Fault::Torn => Injection::Torn,
             Fault::UnreadableOnce => Injection::Unreadable { lasting: false },
             Fault::UnreadableLasting => Injection::Unreadable { lasting: true },
+            Fault::Flipped => Injection::Flipped,
         }
     }
 }
@@ -149,17 +158,12 @@ impl Plan {
     /// one landing and one not; every other unit of the write. Returns `None` when the page
     /// changed in fewer than two units, which a tear lands whole or not at all.
     pub fn tear(&self, at: usize) -> Option<Vec<bool>> {
-        let writes = &self.clean.trace.writes;
-        let w = writes[at];
-        let changed = w.changed;
+        let changed = self.clean.trace.writes[at].changed;
         if changed.count_ones() < 2 {
             return None;
         }
-        let same = |x: &&WriteOut| x.op == w.op;
-        let index = writes[..at].iter().rev().take_while(same).count();
-        let pages = index + writes[at..].iter().take_while(same).count();
-        let golden = 0x9e37_79b9_7f4a_7c15_u64;
-        let draw = (self.seed.wrapping_mul(golden) ^ at as u64).wrapping_mul(golden) >> 32;
+        let (index, pages) = self.place(at);
+        let draw = self.draw(at);
         let subsets = (1_u64 << changed.count_ones()) - 2;
         let mut pick = 1 + draw % subsets;
         let units = world::PAGE / world::UNIT;
@@ -169,6 +173,29 @@ impl Plan {
             pick >>= 1;
         }
         Some(mask)
+    }
+
+    /// Returns the byte of its write that a flip of write-out `at` inverts: one past the page
+    /// header, drawn from the seed and `at`.
+    pub fn flip(&self, at: usize) -> usize {
+        let (index, _) = self.place(at);
+        let body = world::PAGE - page::HEADER_LEN;
+        index * world::PAGE + page::HEADER_LEN + (self.draw(at) % body as u64) as usize
+    }
+
+    /// Returns the index of write-out `at`'s page in the write that carries it, and the pages that
+    /// write carries.
+    fn place(&self, at: usize) -> (usize, usize) {
+        let writes = &self.clean.trace.writes;
+        let same = |x: &&WriteOut| x.op == writes[at].op;
+        let index = writes[..at].iter().rev().take_while(same).count();
+        (index, index + writes[at..].iter().take_while(same).count())
+    }
+
+    /// Returns a number drawn from the seed and write-out `at`.
+    fn draw(&self, at: usize) -> u64 {
+        let golden = 0x9e37_79b9_7f4a_7c15_u64;
+        (self.seed.wrapping_mul(golden) ^ at as u64).wrapping_mul(golden) >> 32
     }
 
     /// Returns whether `injection` at write-out `at` can take: a tear only of a page it splits.
@@ -195,6 +222,7 @@ impl Plan {
             Injection::Torn => Fault::Torn,
             Injection::Unreadable { lasting: false } => Fault::UnreadableOnce,
             Injection::Unreadable { lasting: true } => Fault::UnreadableLasting,
+            Injection::Flipped => Fault::Flipped,
             Injection::Lost => {
                 let w = self.clean.trace.writes[at];
                 let after = (w.during + 1).min(self.ops.len());
@@ -273,6 +301,7 @@ fn arm(rt: &SimRuntime, plan: &Plan, points: &[Point]) {
             Injection::LogLost { write }
             | Injection::LogUnreadable { write }
             | Injection::Crash { write, .. } => after(rt, plan, point.injection, write),
+            Injection::Flipped => Action::Flip(plan.flip(point.at)),
             Injection::Lost | Injection::Torn | Injection::Unreadable { .. } => {
                 injected(rt, point.injection, w.pid, plan.tear(point.at))
             }
@@ -308,7 +337,8 @@ fn after(rt: &SimRuntime, plan: &Plan, injection: Injection, write: usize) -> Ac
         }
         | Injection::Lost
         | Injection::Torn
-        | Injection::Unreadable { .. } => {
+        | Injection::Unreadable { .. }
+        | Injection::Flipped => {
             unreachable!(
                 "a fault of a page, or a crash past the list's write-out, is planned there"
             )
@@ -352,6 +382,7 @@ fn injected(rt: &SimRuntime, injection: Injection, pid: Pid, tear: Option<Vec<bo
         Injection::LogLost { .. } | Injection::LogUnreadable { .. } | Injection::Crash { .. } => {
             unreachable!("a fault of the log is planned at its write to the log")
         }
+        Injection::Flipped => unreachable!("a flip is planned at its write-out"),
         Injection::Unreadable { lasting } => Action::Run(Box::new(move || {
             let reads = world::on_data(Match::kind(OpKind::Read))
                 .covers(world::DATA.range(pid).start as u64);
@@ -578,7 +609,7 @@ fn faulted(plan: &Plan, points: &[Point], watched: bool) -> Option<Ran> {
 
 /// Returns whether `page` carries the checksum it has as page `pid`: whether a tear of it landed
 /// whole or not at all.
-fn sealed(pid: Pid, page: &[u8]) -> bool {
+pub fn sealed(pid: Pid, page: &[u8]) -> bool {
     let mut copy = page.to_vec();
     page::seal(pid, &mut copy);
     copy == page

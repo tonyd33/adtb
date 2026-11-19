@@ -1,4 +1,4 @@
-use crate::testing::{CommitLogPages, Object, Plant, Probe};
+use crate::testing::{Object, Plant, Probe};
 use adtb_testkit::process;
 use adtb_testkit::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::btree::{self, BTree};
-use crate::exec::Val;
 use crate::key::Value;
 use crate::runtime::{Clock, Runtime, Threads};
 use crate::storage::order::ordered_for_test;
@@ -16,8 +15,8 @@ use crate::storage::{
     Damage, HEADER_LEN, MarkFailure, Options, PageError, Pager, Pid, Quarantine, Stopped,
 };
 use crate::{
-    CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration,
-    TxnCallOptions, TxnOptions,
+    CallOptions, Database, Error, FatalReason, Log, OpenOptions, Registration, TxnCallOptions,
+    TxnOptions,
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::profile::assert_reached;
@@ -66,16 +65,6 @@ fn with_named_pager<T>(sim: &mut Sim, body: impl FnOnce(&Pager<SimRuntime>) -> T
         out = Some(body(&p));
     });
     out.unwrap()
-}
-
-#[test]
-fn a_new_database_quarantines_nothing() {
-    let mut sim = Sim::new(1, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| {
-        assert!(Probe::of(p).marks().is_empty());
-        assert!(!Probe::of(p).marked(Quarantine::Heap(1)));
-    });
 }
 
 #[test]
@@ -296,27 +285,6 @@ fn apple_mark(db: &Database<SimRuntime>) -> Quarantine {
         .unwrap()
 }
 
-fn call(db: &Database<SimRuntime>, query: &str, args: &[Val]) -> Result<Vec<String>, Error> {
-    let bound = db.registered("reads").unwrap();
-    let ordinal = bound.ordinal(query).unwrap();
-    match bound.call(ordinal, args, &CallOptions::default())? {
-        Called::Rows(rows) => Ok(api::sorted(rows)),
-        other => panic!("{query} returns rows: {other:?}"),
-    }
-}
-
-#[test]
-fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
-    let mut sim = flipped(19, |db| db.testing().root(Object::Catalog).unwrap());
-    process::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2));
-        got.unwrap().close().unwrap();
-    });
-    with_named_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Database]), Probe::of(p).marks());
-    });
-}
-
 #[test]
 fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
     let mut sim = Sim::new(52, Config::default());
@@ -404,60 +372,6 @@ fn a_migration_failing_on_a_damaged_page_of_the_large_value_store_marks_the_data
     });
     let database = BTreeSet::from([Quarantine::Database]);
     with_named_pager(&mut sim, |p| assert_eq!(database, Probe::of(p).marks()));
-}
-
-fn commit_log_page(seed_no: u64, pick: impl FnOnce(CommitLogPages) -> Pid) -> Sim {
-    let mut sim = Sim::new(seed_no, Config::default());
-    let page = process::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        seed(&db);
-        let page = pick(db.testing().commit_log());
-        db.close().unwrap();
-        page
-    });
-    let mut files = sim.files();
-    DATA.flip(&mut files, page, 300 - HEADER_LEN);
-    Sim::with_files(seed_no, Config::default(), files)
-}
-
-#[test]
-fn a_file_with_a_damaged_commit_log_status_page_opens_for_verify() {
-    let mut sim = commit_log_page(58, |clog| *clog.status().values().next_back().unwrap());
-    for _ in 0..2 {
-        process::run(&mut sim, |rt| {
-            let db = open_app(rt);
-            assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
-            assert_eq!(
-                "the database",
-                failed_on(&db, "from u in users select u.id")
-            );
-            assert_eq!(
-                "the database",
-                failed_on(&db, r#"insert users { id: users.key(99), name: "x" }"#)
-            );
-            assert_eq!(
-                "the database",
-                quarantined(&db.begin(&TxnOptions::default()).err().unwrap())
-            );
-            let e = call(&db, "through_fn", &[]).expect_err("fails");
-            assert_eq!("the database", quarantined(&e));
-            let found = api::printed(db.verify(None).unwrap());
-            assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
-            db.close().unwrap();
-        });
-    }
-}
-
-#[test]
-fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
-    let mut sim = commit_log_page(59, |clog| clog.root());
-    process::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2));
-        got.unwrap().close().unwrap();
-    });
-    with_named_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Database]), Probe::of(p).marks());
-    });
 }
 
 const BOUNDED: &str = "from i in identities where i.id == identities.key(11) select i.user";

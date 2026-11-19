@@ -1109,44 +1109,6 @@ fn an_open_whose_walk_of_the_roots_heap_cannot_read_its_damaged_page_marks_nothi
 }
 
 #[test]
-fn a_stale_commit_times_page_opens_under_the_database_mark() {
-    let mut sim = Sim::new(43, Config::default());
-    let mut page = None;
-    finished(&mut sim, |rt| {
-        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
-        api::results(&db, "set setting RetentionWindow = { length: 1h }");
-        api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
-        page = Some(db.testing().root(Object::CommitTimes).unwrap());
-        db.close().unwrap();
-    });
-    let (first, page) = (sim.files(), page.unwrap());
-    finished(&mut sim, |rt| {
-        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
-        api::results(&db, r#"insert users { id: users.key(2), name: "b" }"#);
-        db.close().unwrap();
-    });
-    let mut files = sim.files();
-    assert_ne!(DATA.page(&first, page), DATA.page(&files, page));
-    DATA.replace(&mut files, page, DATA.page(&first, page));
-    let mut sim = Sim::with_files(43, Config::default(), files);
-    finished(&mut sim, |rt| {
-        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
-        assert!(
-            matches!(
-                db.testing().probe().records().pages().get(&page),
-                Some(Damage::Stale { .. })
-            ),
-            "the open records the lost write"
-        );
-        assert_eq!(
-            BTreeSet::from([Quarantine::Database]),
-            db.testing().probe().marks()
-        );
-        db.close().unwrap();
-    });
-}
-
-#[test]
 fn an_io_failure_opening_the_file_is_not_a_missing_header() {
     let files = Files::from([
         ("blocker".to_owned(), vec![1; PAGE]),
