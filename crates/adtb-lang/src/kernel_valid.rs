@@ -129,6 +129,11 @@ pub(super) fn node(schema: &Schema, terms: &Terms, t: Tm) -> Result<(), String> 
     Validator { schema, terms }.node(t)
 }
 
+/// Check `t` against the typing invariant of its kind, its children taken as they are.
+pub fn validate_node(schema: &Schema, terms: &Terms, t: Tm) -> Result<(), Invalid> {
+    node(schema, terms, t).map_err(|reason| Invalid { at: t, reason })
+}
+
 /// Check every term reachable from `roots` against the typing invariants of its kind.
 fn typed(schema: &Schema, terms: &Terms, roots: impl Iterator<Item = Tm>) -> Result<(), Invalid> {
     let v = Validator { schema, terms };
@@ -616,7 +621,15 @@ impl Validator<'_> {
         let fits = match c {
             Const::Int(_) => matches!(
                 ty,
-                Ty::Base(Base::I8 | Base::I16 | Base::I32 | Base::I64) | Ty::Param(_)
+                Ty::Base(
+                    Base::I8
+                        | Base::I16
+                        | Base::I32
+                        | Base::I64
+                        | Base::Decimal(_)
+                        | Base::F32
+                        | Base::F64
+                ) | Ty::Param(_)
             ),
             Const::Decimal(_) => matches!(ty, Ty::Base(Base::Decimal(_))),
             Const::Float(_) => matches!(ty, Ty::Base(Base::F32 | Base::F64)),
@@ -807,7 +820,7 @@ impl Validator<'_> {
                 };
                 self.within("the key", &want, ty)
             }
-            Ty::Key { .. } => Ok(()),
+            Ty::Key { .. } => Err("`key` names a relation the schema does not declare".into()),
             _ => Err("`key` is not a key".into()),
         }
     }

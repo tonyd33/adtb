@@ -16,7 +16,9 @@ mod valid;
 
 pub use build::Build;
 
-pub use valid::{Invalid, assert_normal, assert_typed, assert_valid, validate, validate_normal};
+pub use valid::{
+    Invalid, assert_normal, assert_typed, assert_valid, validate, validate_node, validate_normal,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Tm(pub u32);

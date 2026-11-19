@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use adtb_lang::check::check_schema;
-use adtb_lang::kernel::{Build, Const, Prim, Terms, Tm};
+use adtb_lang::kernel::{Build, Const, Kind, Prim, Terms, Tm};
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{Committed, Schema, build};
 use adtb_lang::span::FileId;
@@ -605,6 +605,35 @@ fn a_case_with_one_reachable_arm_takes_it_and_fails_on_another_constructor() {
 }
 
 #[test]
+fn a_term_breaking_its_kind_s_typing_rule_is_refused_when_compiled() {
+    let schema = empty_schema();
+    let int = Ty::Base(Base::I64);
+    let mut terms = Terms::default();
+    let one = Build::new(&schema, &mut terms).constant(Const::Int(1), int.clone());
+    let text = terms.add_ill_typed(Kind::Const(Const::Text("x".into())), int.clone());
+    let negated = Build::new(&schema, &mut terms).prim(Prim::Neg, vec![text], int.clone());
+    let mut cases = vec![(text, text), (negated, text)];
+    for kind in [
+        Kind::Reject(one),
+        Kind::Key(one),
+        Kind::If(one, one, one),
+        Kind::Tag(one),
+    ] {
+        let t = terms.add_ill_typed(kind, int.clone());
+        cases.push((t, t));
+    }
+    for (t, at) in cases {
+        match Compiler::new(&schema, &terms).code(t) {
+            Err(Error::Internal(b)) => match *b {
+                Broken::IllTyped(e) => assert_eq!(at, e.at(), "{t:?}"),
+                other => panic!("{t:?} fails with {other:?}"),
+            },
+            other => panic!("{t:?} compiles to {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn an_accessor_of_a_mistyped_value_is_an_internal_error() {
     let one = Val::Int(1);
     let m = |want, found| Broken::Mistyped { want, found };
@@ -613,6 +642,7 @@ fn an_accessor_of_a_mistyped_value_is_an_internal_error() {
     assert_eq!(m("a constructor value", one.clone()), broken(one.ctor_of()));
     assert_eq!(m("a value with fields", one.clone()), broken(one.fields()));
     assert_eq!(m("a set", one.clone()), broken(one.as_set()));
+    assert_eq!(m("a Text", one.clone()), broken(one.as_text()));
     assert_eq!(
         m("an integer", Val::text("1")),
         broken(Val::text("1").int())

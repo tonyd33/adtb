@@ -82,12 +82,13 @@ impl<R: Runtime> Database<R> {
         };
         let stop = Stop::of(bounds, Some(started), None);
         let call = self.call(&self.store(tx), options, &stop)?;
-        let produced = exec::produce(
-            self.rt.clone(),
-            std::sync::Arc::new(program),
-            call,
-            text.params,
-        )?;
+        let bound = std::sync::Arc::new(program).bind(|v| {
+            text.params
+                .iter()
+                .find(|(p, _)| *p == v)
+                .map(|(_, x)| x.clone())
+        })?;
+        let produced = exec::produce(self.rt.clone(), bound, call)?;
         Ok(Some(match produced {
             exec::Produced::Whole(v) => Produced::Whole(v),
             exec::Produced::Stream(units) => Produced::Stream(Production {

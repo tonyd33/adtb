@@ -1,6 +1,6 @@
 use std::fmt;
 
-use adtb_lang::kernel::PathStep;
+use adtb_lang::kernel::{Invalid, PathStep};
 use adtb_lang::textual::PrintError;
 use adtb_lang::types::Ty;
 
@@ -58,19 +58,9 @@ pub enum Broken {
         types: usize,
     },
     Print(PrintError),
-    NoArm(u32),
-    RejectNotText,
+    IllTyped(Invalid),
     Unreachable,
-    DecimalLiteral,
-    IntegerLiteral,
-    CtorNotSum,
-    CtorField(String),
-    KeyNotKeyTyped(Ty),
-    RestrictNotSet,
-    CheckedNotOption,
     IntegerResult,
-    ConversionNotOption,
-    ParseNotOption,
     NestedPast,
     OutsideScope(HeapNo),
     UnlistedHeap(HeapId),
@@ -80,7 +70,6 @@ pub enum Broken {
     UnboundParam(String),
     NotPosition(Val),
     NotInstant(Val),
-    CtorLacksField(u32),
     RecordLacksField {
         ty: Ty,
         name: String,
@@ -162,19 +151,14 @@ impl fmt::Display for Broken {
                 )
             }
             Broken::Print(e) => f.write_str(&e.message),
-            Broken::NoArm(c) => write!(f, "a case has an arm for constructor {c}"),
-            Broken::RejectNotText => f.write_str("`reject` takes a Text"),
+            Broken::IllTyped(e) => write!(
+                f,
+                "kernel term {:?} satisfies its kind's typing rule: {}",
+                e.at(),
+                e.reason()
+            ),
             Broken::Unreachable => f.write_str("an evaluation reaches no `Unreachable`"),
-            Broken::DecimalLiteral => f.write_str("a decimal literal fits its type"),
-            Broken::IntegerLiteral => f.write_str("an integer literal fits its type"),
-            Broken::CtorNotSum => f.write_str("a constructor's type is a sum"),
-            Broken::CtorField(n) => write!(f, "constructor field `{n}` is given"),
-            Broken::KeyNotKeyTyped(ty) => write!(f, "`key` has a key type, found {ty:?}"),
-            Broken::RestrictNotSet => f.write_str("a restriction is of a set"),
-            Broken::CheckedNotOption => f.write_str("a checked primitive returns an Option"),
             Broken::IntegerResult => f.write_str("integer arithmetic has an integer result"),
-            Broken::ConversionNotOption => f.write_str("a checked conversion returns an Option"),
-            Broken::ParseNotOption => f.write_str("`parse` returns an Option"),
             Broken::NestedPast => f.write_str("a read of the past holds no other read of the past"),
             Broken::OutsideScope(heap) => write!(
                 f,
@@ -213,7 +197,6 @@ impl fmt::Display for Broken {
                 write!(f, "a position is an epoch and an LSN, found {v:?}")
             }
             Broken::NotInstant(v) => write!(f, "an `at instant` names an instant, found {v:?}"),
-            Broken::CtorLacksField(c) => write!(f, "constructor {c} of the type has the field"),
             Broken::RecordLacksField { ty, name } => {
                 write!(f, "a record of type {ty:?} has field `{name}`")
             }

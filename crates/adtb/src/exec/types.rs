@@ -65,6 +65,8 @@ pub enum At {
 }
 
 impl At {
+    /// Returns the field's position in a value of constructor `ctor`. Fail with
+    /// `Broken::Unreachable` for a constructor the type excludes.
     pub fn of(&self, ctor: u32) -> Result<usize, Error> {
         match self {
             At::Fixed(i) => Ok(*i),
@@ -72,14 +74,13 @@ impl At {
                 .get(ctor as usize)
                 .copied()
                 .flatten()
-                .ok_or_else(|| Broken::CtorLacksField(ctor).into()),
+                .ok_or_else(|| Broken::Unreachable.into()),
         }
     }
 }
 
-/// Returns where field `name` of a value of type `ty` lies. Reaching a value of a constructor of
-/// the set that lacks it is an error, as a translated upsert's `old` can. A type whose constructor
-/// set is empty holds no value, and the field lies at no constructor.
+/// Returns where field `name` of a value of type `ty` lies. A type whose constructor set is empty
+/// holds no value, and the field lies at no constructor.
 pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<At, Error> {
     if let Ty::Record(fs) = repr(schema, ty) {
         let i = fs

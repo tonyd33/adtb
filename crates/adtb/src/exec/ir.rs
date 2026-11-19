@@ -252,14 +252,45 @@ pub struct Program {
 }
 
 impl Program {
-    /// Returns the variables the caller binds, each with its name.
-    pub fn params(&self) -> &[(Var, String)] {
-        &self.params
-    }
-
     /// Returns the heaps and indexes the program reads.
     pub fn reads(&self) -> &Arc<plan::Reads> {
         &self.reads
+    }
+
+    /// Returns the program with each parameter it declares bound to the value `value` gives it.
+    ///
+    /// Fail with `Broken::UnboundParam` naming a parameter `value` gives no value.
+    pub fn bind(
+        self: Arc<Self>,
+        mut value: impl FnMut(Var) -> Option<super::Val>,
+    ) -> Result<Bound, Error> {
+        let values = self
+            .params
+            .iter()
+            .map(|(v, name)| {
+                value(*v)
+                    .map(|x| (*v, x))
+                    .ok_or_else(|| super::Broken::UnboundParam(name.clone()).into())
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(Bound {
+            program: self,
+            values,
+        })
+    }
+}
+
+/// A program with a value for each parameter it declares.
+#[derive(Debug)]
+pub struct Bound {
+    program: Arc<Program>,
+    values: Vec<(Var, super::Val)>,
+}
+
+impl Bound {
+    /// Returns the program and the value of each parameter it declares.
+    pub(super) fn into_parts(self) -> (Arc<Program>, Vec<(Var, super::Val)>) {
+        (self.program, self.values)
     }
 }
 

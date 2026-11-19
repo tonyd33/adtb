@@ -102,6 +102,20 @@ struct Case {
     want: R<Value>,
 }
 
+impl Case {
+    fn bound(&self) -> exec::Bound {
+        self.program
+            .clone()
+            .bind(|v| {
+                self.params
+                    .iter()
+                    .find(|(p, _)| *p == v)
+                    .map(|(_, x)| x.clone())
+            })
+            .unwrap_or_else(|e| panic!("{} binds its parameters: {e:?}", self.name))
+    }
+}
+
 /// Returns a case per rewrite variant of ad hoc `text` over `params`, each given as name, type
 /// and value.
 fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case> {
@@ -262,12 +276,7 @@ fn run_all(
         let mut got = Vec::new();
         for c in cases {
             let grant = budget.admit(64 << 20).expect("a grant fits");
-            let v = exec::execute(
-                rt.clone(),
-                c.program.clone(),
-                call(store, grant, pool, opts),
-                &c.params,
-            );
+            let v = exec::execute(rt.clone(), c.bound(), call(store, grant, pool, opts));
             got.push(outcome(&f.schema, &c.ty, v));
         }
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
@@ -407,6 +416,20 @@ fn running_cases(f: &Fixture) -> Vec<Case> {
         out.extend(cases_of(f, probe, &[("k", "Key identities", ident(f, n))]));
     }
     out
+}
+
+#[test]
+fn a_program_bound_without_a_value_for_its_parameter_is_refused_naming_it() {
+    let f = running();
+    let text = "from u in users where key u == me select u";
+    for c in cases_of(&f, text, &[("me", "Key users", key(1))]) {
+        assert_eq!(
+            Error::Internal(Box::new(Broken::UnboundParam("me".to_owned()))),
+            c.program.clone().bind(|_| None).unwrap_err(),
+            "{}",
+            c.name
+        );
+    }
 }
 
 #[test]
@@ -840,7 +863,7 @@ fn an_execution_over_a_store_that_does_not_list_its_program_s_reads_is_refused()
             .iter()
             .map(|c| {
                 let call = call(&narrowed, roomy(), None, XOptions::default());
-                exec::execute(rt.clone(), c.program.clone(), call, &c.params)
+                exec::execute(rt.clone(), c.bound(), call)
             })
             .collect::<Vec<_>>()
     });
@@ -869,12 +892,7 @@ fn an_exists_that_stops_early_reads_fewer_versions_than_the_heap_holds() {
             .iter()
             .map(|c| {
                 let g = budget.admit(64 << 20).expect("a grant fits");
-                let v = exec::execute(
-                    rt.clone(),
-                    c.program.clone(),
-                    call(&store, g, None, opts),
-                    &[],
-                );
+                let v = exec::execute(rt.clone(), c.bound(), call(&store, g, None, opts));
                 (c.name.clone(), v, count.take())
             })
             .collect::<Vec<_>>();
@@ -915,12 +933,7 @@ fn a_scan_of_a_heap_larger_than_its_grant_runs_within_the_grant() {
             .iter()
             .map(|c| {
                 let g = budget.admit(SPILL_GRANT).expect("a grant fits");
-                let v = exec::execute(
-                    rt.clone(),
-                    c.program.clone(),
-                    call(store, g.clone(), None, opts),
-                    &[],
-                );
+                let v = exec::execute(rt.clone(), c.bound(), call(store, g.clone(), None, opts));
                 (outcome(&f.schema, &c.ty, v), g.peak())
             })
             .collect::<Vec<_>>()
@@ -941,16 +954,14 @@ fn a_query_past_its_grant_is_rejected_for_its_statement_limit() {
         let small = budget.admit(4096).expect("a grant fits");
         let refused = exec::execute(
             rt.clone(),
-            c.program.clone(),
+            c.bound(),
             call(store, small, pool, XOptions::default()),
-            &[],
         );
         let roomy = budget.admit(64 << 20).expect("a grant fits");
         let done = exec::execute(
             rt.clone(),
-            c.program.clone(),
+            c.bound(),
             call(store, roomy, pool, XOptions::default()),
-            &[],
         );
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
         (
@@ -1068,14 +1079,8 @@ fn a_read_of_the_past_holds_the_deleted_rows_it_passed_within_its_grant() {
         let got: Vec<_> = cases
             .iter()
             .map(|c| {
-                let run = |grant| {
-                    exec::execute(
-                        rt.clone(),
-                        c.program.clone(),
-                        call(&past, grant, None, opts),
-                        &[],
-                    )
-                };
+                let run =
+                    |grant| exec::execute(rt.clone(), c.bound(), call(&past, grant, None, opts));
                 let refused = run(budget.admit(SPILL_GRANT).expect("a grant fits"));
                 let roomy = budget.admit(64 << 20).expect("a grant fits");
                 let done = run(roomy.clone());
@@ -1164,12 +1169,7 @@ fn the_batch_a_scan_fills_is_held_within_the_grant() {
                     most: AtomicUsize::new(0),
                 });
                 let watched = Arc::new(rereading(store, reads.clone()));
-                let v = exec::execute(
-                    rt.clone(),
-                    c.program.clone(),
-                    call(&watched, grant, None, opts),
-                    &[],
-                );
+                let v = exec::execute(rt.clone(), c.bound(), call(&watched, grant, None, opts));
                 (v, reads.most.load(Ordering::Relaxed))
             })
             .collect::<Vec<_>>()
@@ -1211,12 +1211,7 @@ fn stopped_scan_beside_a_writer_of_its_row(
                     .testing()
                     .store(&reader)
                     .expect("the transaction is open");
-                let v = exec::execute(
-                    rt,
-                    c.program.clone(),
-                    call(&store, roomy(), pool.as_ref(), opts),
-                    &[],
-                );
+                let v = exec::execute(rt, c.bound(), call(&store, roomy(), pool.as_ref(), opts));
                 drop(store);
                 assert_eq!(Ok(Val::bool(true)), v, "{}", c.name);
                 out = Some((c.rewrites.early_stop, skew(reader, writer)));
@@ -1322,12 +1317,7 @@ fn a_fixpoint_past_its_rounds_is_rejected_for_its_statement_limit() {
             .iter()
             .map(|c| {
                 let g = budget.admit(1 << 20).unwrap();
-                exec::execute(
-                    rt.clone(),
-                    c.program.clone(),
-                    call(store, g, pool, opts),
-                    &c.params,
-                )
+                exec::execute(rt.clone(), c.bound(), call(store, g, pool, opts))
             })
             .collect::<Vec<_>>()
     });
@@ -1354,7 +1344,7 @@ fn a_cancelled_call_stops_at_a_morsel_boundary() {
             XOptions::default(),
         );
         c.cancel = Arc::new(AtomicBool::new(true));
-        exec::execute(rt.clone(), cases[0].program.clone(), c, &[])
+        exec::execute(rt.clone(), cases[0].bound(), c)
     });
     assert_eq!(Err(Error::Cancelled), got);
 }
@@ -1373,14 +1363,13 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
         let budget = Budget::new(1 << 30);
         exec::execute(
             rt.clone(),
-            cases[0].program.clone(),
+            cases[0].bound(),
             call(
                 store,
                 budget.admit(1 << 20).unwrap(),
                 pool,
                 XOptions::default(),
             ),
-            &[],
         )
     })
     .expect("a value");
@@ -1654,12 +1643,7 @@ fn run_spilling(
         let mut got = Vec::new();
         for c in cases {
             let g = budget.admit(grant).expect("a grant fits");
-            let v = exec::execute(
-                rt.clone(),
-                c.program.clone(),
-                call(store, g.clone(), pool, opts),
-                &c.params,
-            );
+            let v = exec::execute(rt.clone(), c.bound(), call(store, g.clone(), pool, opts));
             got.push((outcome(&f.schema, &c.ty, v), g.spilled()));
         }
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
@@ -1780,13 +1764,7 @@ fn spill_errors(
             .iter()
             .map(|c| {
                 let g = budget.admit(SPILL_GRANT).expect("a grant fits");
-                exec::execute(
-                    rt.clone(),
-                    c.program.clone(),
-                    call(store, g, None, opts),
-                    &c.params,
-                )
-                .err()
+                exec::execute(rt.clone(), c.bound(), call(store, g, None, opts)).err()
             })
             .collect()
     })
@@ -1882,12 +1860,7 @@ fn groups_fit(f: &Fixture) -> Vec<(usize, String, bool)> {
         for grant in (4..=64).map(|k| k << 10) {
             for c in &cases {
                 let g = budget.admit(grant).expect("a grant fits");
-                let v = exec::execute(
-                    rt.clone(),
-                    c.program.clone(),
-                    call(store, g, None, opts),
-                    &[],
-                );
+                let v = exec::execute(rt.clone(), c.bound(), call(store, g, None, opts));
                 match v {
                     Ok(_) | Err(Error::StatementLimit(Exceeded::Memory { .. })) => {}
                     Err(e) => panic!("{} under a grant of {grant}: {e:?}", c.name),
@@ -1926,9 +1899,8 @@ fn a_call_removes_its_spill_file_when_it_ends() {
         let g = budget.admit(SPILL_GRANT).expect("a grant fits");
         let v = exec::execute(
             rt.clone(),
-            cases[0].program.clone(),
+            cases[0].bound(),
             call(store, g.clone(), pool, opts),
-            &[],
         );
         assert_eq!(Ok(Val::Int(300)), v);
         assert!(g.spilled() > 0, "the call spilled");

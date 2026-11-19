@@ -210,6 +210,9 @@ fn unsupported<T>(what: impl std::fmt::Display) -> Result<T, Error> {
 
 /// Choose the operation `p` performs on operands of types `args` with result type `ty`; `consts`
 /// holds the value of each operand that is a literal.
+///
+/// Preconditions:
+/// - The primitive's node satisfies its kind's typing rule.
 pub fn choose(
     schema: &Schema,
     p: Prim,
@@ -227,7 +230,7 @@ pub fn choose(
             | Prim::CheckedNeg
     );
     let result = if checked {
-        option_arg(schema, ty).ok_or(Broken::CheckedNotOption)?
+        option_arg(schema, ty).expect("a checked primitive returns an Option")
     } else {
         ty.clone()
     };
@@ -358,7 +361,7 @@ fn order_op(p: Prim, x: Option<Base>, y: Option<Base>) -> Result<Op, Error> {
 
 fn convert_op(schema: &Schema, checked: bool, x: Option<Base>, ty: &Ty) -> Result<Op, Error> {
     let to = if checked {
-        option_arg(schema, ty).ok_or(Broken::ConversionNotOption)?
+        option_arg(schema, ty).expect("a checked conversion returns an Option")
     } else {
         ty.clone()
     };
@@ -452,7 +455,7 @@ fn other_op(
         Prim::ToText => Op::ToText(Arc::new(form(schema, &args[0])?)),
         Prim::Print => Op::Print(Arc::new(form(schema, &args[0])?)),
         Prim::Parse => {
-            let t = option_arg(schema, ty).ok_or(Broken::ParseNotOption)?;
+            let t = option_arg(schema, ty).expect("`parse` returns an Option");
             Op::Parse(Arc::new(form(schema, &t)?))
         }
         Prim::AddPeriod => Op::AddPeriod {

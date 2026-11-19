@@ -33,7 +33,7 @@ pub use broken::Broken;
 pub use class::Class;
 pub(crate) use host::canonical;
 pub use host::{HostBody, HostError, Hosts};
-pub use ir::{Program, compile};
+pub use ir::{Bound, Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::print;
 pub use rot::{Rot, detail};
@@ -264,11 +264,12 @@ impl Scalar {
     }
 }
 
-/// Returns the arm of `arms` for a scrutinee of constructor `c`.
+/// Returns the arm of `arms` for a scrutinee of constructor `c`. Fail with
+/// `Broken::Unreachable` for a constructor the scrutinee's type excludes, whose arm is `None`.
 fn arm<T>(arms: &[Option<T>], c: u32) -> Result<&T, Error> {
     arms.get(c as usize)
         .and_then(Option::as_ref)
-        .ok_or_else(|| Broken::NoArm(c).into())
+        .ok_or_else(|| Broken::Unreachable.into())
 }
 
 /// Bounds and sizes of one statement's execution.
@@ -357,36 +358,24 @@ impl<R: Runtime> std::fmt::Debug for Call<R> {
     }
 }
 
-/// Returns the value of `program` with its parameters bound by `params`.
-pub fn execute<R: Runtime>(
-    rt: R,
-    program: Arc<Program>,
-    call: Call<R>,
-    params: &[(Var, Val)],
-) -> Result<Val, Error> {
-    let (cx, env) = start(rt, program, call, params)?;
+/// Returns the value of the bound program `bound`.
+pub fn execute<R: Runtime>(rt: R, bound: Bound, call: Call<R>) -> Result<Val, Error> {
+    let (cx, env) = start(rt, bound, call)?;
     cx.root(&env)
 }
 
-/// Returns the context that runs `program` for `call` over its store narrowed to the program's
-/// reads, and the frame binding its parameters by `params`.
+/// Returns the context that runs the program of `bound` for `call` over its store narrowed to the
+/// program's reads, and the frame binding its parameters.
 fn start<R: Runtime>(
     rt: R,
-    program: Arc<Program>,
+    bound: Bound,
     call: Call<R>,
-    params: &[(Var, Val)],
 ) -> Result<(Arc<run::Ctx<R>>, frame::Frame), Error> {
-    if let Some((_, name)) = program
-        .params()
-        .iter()
-        .find(|(v, _)| !params.iter().any(|(p, _)| p == v))
-    {
-        return Err(Broken::UnboundParam(name.clone()).into());
-    }
+    let (program, params) = bound.into_parts();
     let store = Arc::new(call.store.narrowed(program.reads())?);
     let mut env = frame::Frame::unit(program.vars);
     for (v, x) in params {
-        env.bind_one(v.0, x.clone());
+        env.bind_one(v.0, x);
     }
     let shared = code::Shared {
         grant: Some(call.grant.clone()),

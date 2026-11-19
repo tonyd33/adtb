@@ -242,6 +242,15 @@ impl Val {
     }
 
     /// Errors:
+    /// - It is not a text.
+    pub fn as_text(&self) -> Result<&str, Error> {
+        match self {
+            Val::Text(t) => Ok(t),
+            v => Err(mistyped("a Text", v)),
+        }
+    }
+
+    /// Errors:
     /// - It is not an integer.
     pub fn int(&self) -> Result<i64, Error> {
         match self {

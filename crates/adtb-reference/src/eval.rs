@@ -911,10 +911,17 @@ impl Run<'_, '_> {
 fn constant(c: &Const, ty: &Ty) -> R<Value> {
     Ok(match (c, ty) {
         (Const::Int(i), Ty::Base(Base::Decimal(s))) => {
-            Value::Decimal(i * 10i128.pow(u32::from(*s)), *s)
+            let d = i
+                .checked_mul(10i128.pow(u32::from(*s)))
+                .filter(|d| d.unsigned_abs() < 10u128.pow(38))
+                .ok_or(Abort::Fault(Fault::ArithmeticOverflow))?;
+            Value::Decimal(d, *s)
         }
         (Const::Int(i), Ty::Base(Base::F32)) => Value::F32(*i as f32),
         (Const::Int(i), Ty::Base(Base::F64)) => Value::F64(*i as f64),
+        (Const::Int(i), Ty::Base(b)) => {
+            Value::Int(in_range(*i, *b).ok_or(Abort::Fault(Fault::ArithmeticOverflow))?)
+        }
         (Const::Int(i), _) => Value::Int(*i as i64),
         (Const::Decimal(d), Ty::Base(Base::Decimal(s))) => Value::Decimal(*d, *s),
         (Const::Decimal(d), t) => return internal(format!("decimal constant {d} at {t:?}")),

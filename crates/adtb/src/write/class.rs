@@ -73,11 +73,7 @@ impl Broken {
             | Broken::RejectedRowNotRecord
             | Broken::NoUnique(_)
             | Broken::ReferenceUnindexed { .. }
-            | Broken::TopNotFor
-            | Broken::RowsNotSetTyped(_)
-            | Broken::InputNotSet(_)
-            | Broken::TopBinder(_)
-            | Broken::PriorNotSet(_)
+            | Broken::IllTyped(_)
             | Broken::Unprintable(_)
             | Broken::NoValueOutcome
             | Broken::NoSettingOutcome

@@ -1,8 +1,7 @@
 use std::fmt;
 
-use adtb_lang::kernel::{Const, Kind};
+use adtb_lang::kernel::{Const, Invalid, Kind};
 use adtb_lang::textual::PrintError;
-use adtb_lang::types::Ty;
 
 use crate::exec::Val;
 use crate::plan;
@@ -41,11 +40,8 @@ pub enum Broken {
         relation: String,
         field: String,
     },
-    TopNotFor,
-    RowsNotSetTyped(Ty),
-    InputNotSet(Ty),
-    TopBinder(TermKind),
-    PriorNotSet(Ty),
+    /// A constraint's normal form breaks a kernel typing rule.
+    IllTyped(Invalid),
     Unprintable(PrintError),
     NoValueOutcome,
     NoSettingOutcome,
@@ -150,13 +146,12 @@ impl fmt::Display for Broken {
                 f,
                 "a reference field has an index: {relation}.{field} has none"
             ),
-            Broken::TopNotFor => f.write_str("a top level read is the source of a `For`"),
-            Broken::RowsNotSetTyped(t) => write!(f, "a read of rows is a set, not {t:?}"),
-            Broken::InputNotSet(t) => write!(f, "a change set input is a set, not {t:?}"),
-            Broken::TopBinder(k) => {
-                write!(f, "a top level binder is a `For` or a `Let`, not {:?}", k.0)
-            }
-            Broken::PriorNotSet(t) => write!(f, "a prior relation is a set, not {t:?}"),
+            Broken::IllTyped(e) => write!(
+                f,
+                "a constraint's kernel term {:?} satisfies its kind's typing rule: {}",
+                e.at(),
+                e.reason()
+            ),
             Broken::Unprintable(e) => write!(f, "printing a cell: {e:?}"),
             Broken::NoValueOutcome | Broken::NoSettingOutcome | Broken::NoPointOutcome => {
                 f.write_str("a statement of one item has one outcome")

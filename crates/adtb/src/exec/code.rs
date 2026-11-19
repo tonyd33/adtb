@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use adtb_lang::ast::FnBody;
-use adtb_lang::kernel::{Const, Kind, Terms, Tm};
+use adtb_lang::kernel::{self, Const, Kind, Terms, Tm};
 use adtb_lang::schema::Schema;
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::{Base, FnId, RelRef, Ty};
@@ -117,6 +117,8 @@ pub enum Ins {
         args: Vec<Opd>,
         dst: u32,
     },
+    /// Fault every selected row with this fault.
+    Fault(Fault),
     /// Reject the statement's input with the text of `msg` at the first selected row.
     Reject {
         msg: Opd,
@@ -558,12 +560,17 @@ impl Code {
                         }
                     }
                 }
+                Ins::Fault(fault) => {
+                    let since = catch.faults.len();
+                    for &r in sel.iter() {
+                        catch.fault(r, *fault)?;
+                    }
+                    catch.drop_faulted(since, sel);
+                }
                 Ins::Reject { msg } => {
                     if let Some(&r) = sel.first() {
-                        let Val::Text(t) = self.get(*msg, f, regs, r) else {
-                            return Err(Broken::RejectNotText.into());
-                        };
-                        return Err(Error::Rejected(t.to_string()));
+                        let t = self.get(*msg, f, regs, r).as_text()?;
+                        return Err(Error::Rejected(t.to_owned()));
                     }
                 }
                 Ins::Unreachable => {
@@ -669,16 +676,26 @@ impl<'a> Compiler<'a> {
         Ok(Block { ins, out })
     }
 
-    fn constant(&self, c: &Const, ty: &Ty) -> Result<Val, Error> {
+    /// Returns the value of constant `c` at `ty`, or the fault of an integer constant outside the
+    /// range of its type.
+    fn constant(&self, c: &Const, ty: &Ty) -> Result<Val, Fault> {
         let b = base(self.schema, ty);
         Ok(match (c, b) {
             (Const::Int(i), Some(Base::Decimal(s))) => Val::Decimal(
                 i.checked_mul(10i128.pow(u32::from(s)))
-                    .ok_or(Broken::DecimalLiteral)?,
+                    .filter(|d| d.unsigned_abs() < 10u128.pow(38))
+                    .ok_or(Fault::ArithmeticOverflow)?,
             ),
             (Const::Int(i), Some(Base::F32)) => Val::F32(F32::new(*i as f32)),
             (Const::Int(i), Some(Base::F64)) => Val::F64(F64::new(*i as f64)),
-            (Const::Int(i), _) => Val::Int(i64::try_from(*i).map_err(|_| Broken::IntegerLiteral)?),
+            (Const::Int(i), b) => {
+                let (lo, hi) = b.and_then(Base::int_range).unwrap_or((i64::MIN, i64::MAX));
+                let v = i64::try_from(*i).map_err(|_| Fault::ArithmeticOverflow)?;
+                if !(lo..=hi).contains(&v) {
+                    return Err(Fault::ArithmeticOverflow);
+                }
+                Val::Int(v)
+            }
             (Const::Decimal(d), _) => Val::Decimal(*d),
             (Const::Float(x), Some(Base::F32)) => Val::F32(F32::new(*x as f32)),
             (Const::Float(x), _) => Val::F64(F64::new(*x)),
@@ -692,33 +709,38 @@ impl<'a> Compiler<'a> {
         reason = "one arm per term kind; each arm would have to be its own emitter"
     )]
     fn expr(&self, e: &mut Emit, ins: &mut Vec<Ins>, t: Tm) -> Result<Opd, Error> {
+        kernel::validate_node(self.schema, self.terms, t).map_err(Broken::IllTyped)?;
         let ty = self.terms.ty(t);
         let kind = self.terms.kind(t);
         Ok(match kind {
             Kind::Var(v) => Opd::Var(v.0),
-            Kind::Const(c) => match e.at.get(&t) {
-                Some(opd) => *opd,
-                None => {
-                    let v = self.constant(c, ty)?;
+            Kind::Const(c) => match (e.at.get(&t), self.constant(c, ty)) {
+                (Some(opd), _) => *opd,
+                (None, Ok(v)) => {
                     let opd = e.lit(v);
                     e.at.insert(t, opd);
                     opd
                 }
+                (None, Err(fault)) => {
+                    let dst = e.reg();
+                    ins.push(Ins::Fault(fault));
+                    Opd::Reg(dst)
+                }
             },
             Kind::Prim(p, xs) => {
-                let tys: Vec<Ty> = xs.iter().map(|x| self.terms.ty(*x).clone()).collect();
-                let consts = xs
-                    .iter()
-                    .map(|x| match self.terms.kind(*x) {
-                        Kind::Const(c) => self.constant(c, self.terms.ty(*x)).map(Some),
-                        _ => Ok(None),
-                    })
-                    .collect::<Result<Vec<_>, Error>>()?;
-                let op = prim::choose(self.schema, *p, &tys, &consts, ty)?;
-                let args = xs
+                let args: Vec<Opd> = xs
                     .iter()
                     .map(|x| self.expr(e, ins, *x))
                     .collect::<Result<_, _>>()?;
+                let tys: Vec<Ty> = xs.iter().map(|x| self.terms.ty(*x).clone()).collect();
+                let consts: Vec<Option<Val>> = args
+                    .iter()
+                    .map(|a| match a {
+                        Opd::Lit(i) => Some(e.lits[*i as usize].clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let op = prim::choose(self.schema, *p, &tys, &consts, ty)?;
                 let dst = e.reg();
                 ins.push(Ins::Prim { op, args, dst });
                 Opd::Reg(dst)
@@ -754,7 +776,7 @@ impl<'a> Compiler<'a> {
                     .collect::<Result<_, Error>>()?;
                 let order = match repr(self.schema, ty) {
                     Ty::Data { .. } => ctors(self.schema, ty)
-                        .ok_or(Broken::CtorNotSum)?
+                        .expect("a constructor's data type is a sum")
                         .swap_remove(*ctor as usize)
                         .into_iter()
                         .map(|(n, _)| n)
@@ -768,9 +790,9 @@ impl<'a> Compiler<'a> {
                             .iter()
                             .find(|(g, _)| g == n)
                             .map(|(_, o)| *o)
-                            .ok_or_else(|| Broken::CtorField(n.clone()).into())
+                            .expect("a constructor is given every field it declares")
                     })
-                    .collect::<Result<_, Error>>()?;
+                    .collect();
                 let dst = e.reg();
                 ins.push(Ins::Ctor {
                     ctor: *ctor,
@@ -792,7 +814,7 @@ impl<'a> Compiler<'a> {
                     ..
                 } = ty
                 else {
-                    return Err(Broken::KeyNotKeyTyped(ty.clone()).into());
+                    panic!("`key` names a declared relation, found {ty:?}");
                 };
                 let (at, single) = key_fields(self.schema, *rel, self.terms.ty(*x))?;
                 let src = self.expr(e, ins, *x)?;
@@ -828,7 +850,7 @@ impl<'a> Compiler<'a> {
             }
             Kind::Restrict(x, set) => {
                 let elem = super::types::elem(self.schema, self.terms.ty(*x))
-                    .ok_or(Broken::RestrictNotSet)?;
+                    .expect("a restriction is of a set");
                 let n = ctors(self.schema, &elem).map_or(0, |c| c.len());
                 let mut keep = vec![false; n];
                 for c in set {

@@ -331,7 +331,10 @@ impl<R: Runtime> Query<'_, R> {
             Arc::default(),
             None,
         );
-        let v = match exec::execute(store.pager().rt().clone(), program, call, &[]) {
+        let run = program
+            .bind(|_| None)
+            .and_then(|bound| exec::execute(store.pager().rt().clone(), bound, call));
+        let v = match run {
             Ok(v) => v,
             Err(exec::Error::Fault(f)) => {
                 return Ok(Err(Denied::Fault(format!(
@@ -482,7 +485,7 @@ fn breaks(
                 breaks(schema, domains, v, &base.subst(args), broken)
             }
             TypeDefKind::Sum { .. } => {
-                let cs = ctors(schema, ty).ok_or(exec::Broken::CtorNotSum)?;
+                let cs = ctors(schema, ty).expect("a declared sum's type has constructors");
                 let c = v.ctor_of()? as usize;
                 fields(&cs[c], v.fields()?, broken)
             }

@@ -371,13 +371,20 @@ fn store_broken_rows() -> Vec<Row> {
     ]
 }
 
+/// Returns the refusal of a record node typed `I64`.
+fn ill_typed() -> adtb_lang::kernel::Invalid {
+    use adtb_lang::kernel::{Kind, Terms, validate_node};
+    use adtb_lang::types::{Base, Ty};
+    let mut terms = Terms::default();
+    let t = terms.add_ill_typed(Kind::Record(Vec::new()), Ty::Base(Base::I64));
+    validate_node(&catalog::engine_schema(), &terms, t).expect_err("the node breaks its rule")
+}
+
 fn term_broken_rows() -> Vec<Row> {
     use adtb_lang::kernel::Kind;
     use adtb_lang::textual::PrintError;
-    use adtb_lang::types::{Base, Ty};
     use write::{Broken as B, TermKind};
     let kind = || TermKind(Kind::Record(Vec::new()));
-    let int = || Ty::Base(Base::I64);
     let c = Class::Checker;
     vec![
         broken_row(B::ReadOnly, c, "a read-only transaction runs no write"),
@@ -433,26 +440,11 @@ fn term_broken_rows() -> Vec<Row> {
             c,
             "a reference field has an index: r.f has none",
         ),
-        broken_row(B::TopNotFor, c, "a top level read is the source of a `For`"),
         broken_row(
-            B::RowsNotSetTyped(int()),
+            B::IllTyped(ill_typed()),
             c,
-            "a read of rows is a set, not Base(I64)",
-        ),
-        broken_row(
-            B::InputNotSet(int()),
-            c,
-            "a change set input is a set, not Base(I64)",
-        ),
-        broken_row(
-            B::TopBinder(kind()),
-            c,
-            "a top level binder is a `For` or a `Let`, not Record([])",
-        ),
-        broken_row(
-            B::PriorNotSet(int()),
-            c,
-            "a prior relation is a set, not Base(I64)",
+            "a constraint's kernel term Tm(0) satisfies its kind's typing rule: a record is not \
+             typed by a record",
         ),
         broken_row(
             B::Unprintable(PrintError {
@@ -523,7 +515,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 73;
+const SLOTS: usize = 69;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -590,26 +582,22 @@ fn slot(e: &write::Error) -> usize {
             B::RejectedRowNotRecord => 50,
             B::NoUnique(_) => 51,
             B::ReferenceUnindexed { .. } => 52,
-            B::TopNotFor => 53,
-            B::RowsNotSetTyped(_) => 54,
-            B::InputNotSet(_) => 55,
-            B::TopBinder(_) => 56,
-            B::PriorNotSet(_) => 57,
-            B::Unprintable(_) => 58,
-            B::NoValueOutcome => 59,
-            B::NoSettingOutcome => 60,
-            B::NoPointOutcome => 61,
-            B::NoTrialOutcome => 62,
-            B::RefusalUnrecorded(_) => 63,
-            B::WitnessDenialUnrecorded(_) => 64,
-            B::CallKeyNotInt => 65,
-            B::ExportNotSetTyped => 66,
-            B::ExportNotSet => 67,
-            B::SettingNotRecord => 68,
-            B::SettingField(_) => 69,
-            B::CatalogError(_) => 70,
-            B::DeploymentRefused => 71,
-            B::NoDenial(_) => 72,
+            B::IllTyped(_) => 53,
+            B::Unprintable(_) => 54,
+            B::NoValueOutcome => 55,
+            B::NoSettingOutcome => 56,
+            B::NoPointOutcome => 57,
+            B::NoTrialOutcome => 58,
+            B::RefusalUnrecorded(_) => 59,
+            B::WitnessDenialUnrecorded(_) => 60,
+            B::CallKeyNotInt => 61,
+            B::ExportNotSetTyped => 62,
+            B::ExportNotSet => 63,
+            B::SettingNotRecord => 64,
+            B::SettingField(_) => 65,
+            B::CatalogError(_) => 66,
+            B::DeploymentRefused => 67,
+            B::NoDenial(_) => 68,
         },
     }
 }

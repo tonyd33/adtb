@@ -255,7 +255,7 @@ with a `Let` binding a variable of a narrower type than its value.
 | Kind | Invariant |
 | --- | --- |
 | `Var(x)` | `τ` is `x`'s type |
-| `Const(Int(i))` | `τ` is an integer type, or a `Param` whose argument is any numeric type, the constant then being `i` at that type |
+| `Const(Int(i))` | `τ` is an integer type, or a `Param` whose argument is any numeric type, the constant then being `i` at that type; evaluating it where `i` lies outside that type's range faults with `ArithmeticOverflow` |
 | `Const(Decimal(d))` | `τ` is `Decimal s`; the value is `d / 10^s` |
 | `Const(Float(f))` | `τ` is `F32` or `F64`; for `F32`, `f` is already rounded to `F32` |
 | `Const(Text(t))` | `τ` is `Text`; `t` is NFC |

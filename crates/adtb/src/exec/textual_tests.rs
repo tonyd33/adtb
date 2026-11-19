@@ -172,8 +172,12 @@ fn engine(f: &Fixture, text: &str) -> (Ty, Val, Committed) {
             cancel: Arc::new(AtomicBool::new(false)),
             deadline: None,
         };
-        let v = exec::execute(rt, program, call, &[])
-            .unwrap_or_else(|e| panic!("`{text}` fails in the engine: {e:?}"));
+        let v = exec::execute(
+            rt,
+            program.bind(|_| None).expect("the text has no parameter"),
+            call,
+        )
+        .unwrap_or_else(|e| panic!("`{text}` fails in the engine: {e:?}"));
         out = Some((n.terms.ty(t).clone(), v, e.schema));
     });
     assert_eq!(Outcome::Finished, result);

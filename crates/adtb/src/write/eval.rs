@@ -411,8 +411,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
         };
         let call = self.db.call(&self.store, self.options, &self.stop)?;
-        let bound: Vec<(Var, Val)> = env.iter().map(|(v, x)| (*v, x.clone())).collect();
-        let v = exec::execute(self.db.rt.clone(), program, call, &bound)?;
+        let bound = program.bind(|v| env.get(&v).cloned())?;
+        let v = exec::execute(self.db.rt.clone(), bound, call)?;
         self.fill(a, v)
     }
 

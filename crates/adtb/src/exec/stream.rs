@@ -3,13 +3,11 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use adtb_lang::kernel::Var;
-
 use crate::runtime::Runtime;
 use crate::storage::Pid;
 
 use super::frame::Frame;
-use super::ir::{Eval, Pipeline, Program, Sink, Source};
+use super::ir::{Bound, Eval, Pipeline, Sink, Source};
 use super::run::{Ctx, Run};
 use super::value::Val;
 use super::{Call, Deadline, Error};
@@ -54,15 +52,10 @@ pub struct Production<R: Runtime> {
     units: VecDeque<Unit>,
 }
 
-/// Returns `program` with its parameters bound by `params`, as a production when its root is a
-/// query forming a set, else as its whole value.
-pub fn produce<R: Runtime>(
-    rt: R,
-    program: Arc<Program>,
-    call: Call<R>,
-    params: &[(Var, Val)],
-) -> Result<Produced<R>, Error> {
-    let (cx, env) = super::start(rt, program, Call { pool: None, ..call }, params)?;
+/// Returns the bound program `bound`, as a production when its root is a query forming a set,
+/// else as its whole value.
+pub fn produce<R: Runtime>(rt: R, bound: Bound, call: Call<R>) -> Result<Produced<R>, Error> {
+    let (cx, env) = super::start(rt, bound, Call { pool: None, ..call })?;
     let q = match &cx.program.root {
         Eval::Query(q) if matches!(q.sink, Sink::Set) => q.clone(),
         _ => return Ok(Produced::Whole(cx.root(&env)?)),

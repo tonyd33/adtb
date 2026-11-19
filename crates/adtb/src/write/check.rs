@@ -137,7 +137,13 @@ impl<R: Runtime> Stmt<'_, R> {
                     continue;
                 }
                 let call = self.db.call(&self.store, self.options, &self.stop)?;
-                match exec::execute(self.db.rt.clone(), program.clone(), call, &params)? {
+                let bound = program.clone().bind(|v| {
+                    params
+                        .iter()
+                        .find(|(p, _)| *p == v)
+                        .map(|(_, rows)| rows.clone())
+                })?;
+                match exec::execute(self.db.rt.clone(), bound, call)? {
                     Val::Set(report) => {
                         violate(
                             viol,

@@ -1,0 +1,16 @@
+# A literal of a generic body takes the type its argument instantiates, and faults where it falls outside that type's range.
+schema
+  module test
+  fn big [a: Num] (x: a) -> a = x + 300
+  fn lit [a: Num] (x: a) -> a = 300
+  fn small (x: I8) -> I8 = big(x)
+  fn wide (x: I16) -> I16 = big(x)
+  fn small_lit (x: I8) -> I8 = lit(x)
+error Faulted
+  small(1)
+error Faulted
+  small_lit(1)
+query
+  wide(1)
+----
+301

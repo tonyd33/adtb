@@ -10,7 +10,7 @@ use crate::catalog::indexed_fields;
 use crate::plan::explain::{Describe, Node};
 use crate::plan::{self, Catalog, Facts, Plan};
 
-use super::{Broken, TermKind};
+use super::Broken;
 
 #[cfg(test)]
 mod tests;
@@ -166,7 +166,8 @@ pub fn compile(
             Some(Build::new(schema, terms).var(v))
         });
         let free = own.iter().map(|(v, ..)| *v).collect();
-        adtb_lang::kernel::assert_valid(schema, terms, &[(t, free)]);
+        adtb_lang::kernel::validate(schema, terms, &[(t, free)])
+            .map_err(|e| Unadmitted::Internal(Broken::IllTyped(e)))?;
         found.push((of, qualified, t, reads));
         transitions.extend(own);
     }
@@ -307,13 +308,22 @@ struct Occurrence {
     origin: Origin,
     /// The node that reads the rows: a source, or a `Deref`.
     node: Tm,
+    /// The type of a row the node reads.
+    elem: Ty,
     at: At,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ForTm {
+    node: Tm,
+    var: Var,
+    body: Tm,
 }
 
 #[derive(Clone, Debug)]
 enum At {
     /// The source of a generator of the query's top level, the `For` node given.
-    Top(Tm),
+    Top(ForTm),
     /// A read inside an expression of the query: the row it binds and what of the expression
     /// encloses it.
     Nested { row: Row, within: Within },
@@ -349,8 +359,32 @@ enum Link {
 /// A variable the query's top level binds, with the node binding it and its position.
 #[derive(Clone, Copy, Debug)]
 struct Binder {
-    node: Tm,
+    node: BinderTm,
     order: usize,
+}
+
+/// A node of the query's top level that binds a variable, with the child giving its values and
+/// its body.
+#[derive(Clone, Copy, Debug)]
+enum BinderTm {
+    For { node: Tm, src: Tm, body: Tm },
+    Let { node: Tm, value: Tm, body: Tm },
+}
+
+impl BinderTm {
+    fn node(self) -> Tm {
+        match self {
+            BinderTm::For { node, .. } | BinderTm::Let { node, .. } => node,
+        }
+    }
+}
+
+/// A constructor set a source reads, the state it reads and the type of a row of it.
+struct Source {
+    rel: RelId,
+    ctors: CtorSet,
+    origin: Origin,
+    elem: Ty,
 }
 
 struct Compiler<'a> {
@@ -432,13 +466,26 @@ impl Compiler<'_> {
         }
     }
 
-    /// Returns the constructor set `src` reads and the state it reads, when it is one.
-    fn source(&self, src: Tm) -> Option<(RelId, CtorSet, Origin)> {
+    /// Returns the constructor set `src` reads, when it is one.
+    fn source(&self, src: Tm) -> Option<Source> {
+        let (Ty::Set(elem) | Ty::NonEmpty(elem)) = self.terms.ty(src) else {
+            return None;
+        };
+        let elem = elem.as_ref().clone();
         match self.terms.kind(src) {
-            Kind::Rel(r, s) => Some((*r, self.ctors_or_all(*r, s), Origin::State)),
+            Kind::Rel(r, s) => Some(Source {
+                rel: *r,
+                ctors: self.ctors_or_all(*r, s),
+                origin: Origin::State,
+                elem,
+            }),
             Kind::Restrict(inner, s) => {
-                let (r, cs, o) = self.source(*inner)?;
-                Some((r, cs.into_iter().filter(|c| s.contains(c)).collect(), o))
+                let inner = self.source(*inner)?;
+                Some(Source {
+                    ctors: inner.ctors.into_iter().filter(|c| s.contains(c)).collect(),
+                    elem,
+                    ..inner
+                })
             }
             Kind::Var(v) => {
                 let (x, r, s) = self.transitions.get(v)?;
@@ -447,7 +494,12 @@ impl Compiler<'_> {
                     Transition::Deleted => Origin::Deleted,
                     Transition::Prior => Origin::Prior,
                 };
-                Some((*r, self.ctors_or_all(*r, s), origin))
+                Some(Source {
+                    rel: *r,
+                    ctors: self.ctors_or_all(*r, s),
+                    origin,
+                    elem,
+                })
             }
             _ => None,
         }
@@ -500,21 +552,20 @@ impl Compiler<'_> {
         } else {
             for o in &occurrences {
                 let what = format!("changes to {}", self.scope_name(o.rel, &o.ctors));
-                let made = match (&o.at, o.origin) {
+                let (t, trigger) = match (&o.at, o.origin) {
                     (_, Origin::Prior) => continue,
                     (At::Top(f), _) => self.top_delta(q, *f, o),
                     (At::Nested { row, within }, _) => {
                         self.nested_delta(q, o, row, within, &binders)
                     }
                 };
-                let (t, trigger) = made.map_err(Outside::Internal)?;
                 terms.push((t, Some(trigger), what));
             }
         }
         let mut deltas = Vec::new();
         let mut why: Vec<String> = Vec::new();
         for (t, trigger, what) in terms {
-            let t = self.priors(t).map_err(Outside::Internal)?;
+            let t = self.priors(t);
             for reason in self.shapes(t) {
                 let r = format!("{what}: {reason}");
                 if !why.contains(&r) {
@@ -592,23 +643,33 @@ impl Compiler<'_> {
 
     /// Collect the reads of the query's top level `t`, recording each variable it binds.
     fn top(&mut self, t: Tm, binders: &mut HashMap<Var, Binder>, out: &mut Vec<Occurrence>) {
-        let bind = |binders: &mut HashMap<Var, Binder>, x: Var| {
+        let bind = |binders: &mut HashMap<Var, Binder>, x: Var, node: BinderTm| {
             let order = binders.len();
-            binders.insert(x, Binder { node: t, order });
+            binders.insert(x, Binder { node, order });
         };
         match self.kind(t) {
             Kind::For(x, src, body) => {
                 match self.source(src) {
-                    Some((rel, ctors, origin)) => out.push(Occurrence {
+                    Some(Source {
+                        rel,
+                        ctors,
+                        origin,
+                        elem,
+                    }) => out.push(Occurrence {
                         rel,
                         ctors,
                         origin,
                         node: src,
-                        at: At::Top(t),
+                        elem,
+                        at: At::Top(ForTm {
+                            node: t,
+                            var: x,
+                            body,
+                        }),
                     }),
                     None => self.nested(src, &mut Within::default(), out),
                 }
-                bind(binders, x);
+                bind(binders, x, BinderTm::For { node: t, src, body });
                 self.top(body, binders, out);
             }
             Kind::If(c, a, b) => {
@@ -618,7 +679,15 @@ impl Compiler<'_> {
             }
             Kind::Let(x, e, b) => {
                 self.nested(e, &mut Within::default(), out);
-                bind(binders, x);
+                bind(
+                    binders,
+                    x,
+                    BinderTm::Let {
+                        node: t,
+                        value: e,
+                        body: b,
+                    },
+                );
                 self.top(b, binders, out);
             }
             Kind::Union(a, b) => {
@@ -647,7 +716,12 @@ impl Compiler<'_> {
         match self.kind(t) {
             Kind::For(y, src, body) => {
                 let closed = match self.source(src) {
-                    Some((rel, ctors, origin)) => {
+                    Some(Source {
+                        rel,
+                        ctors,
+                        origin,
+                        elem,
+                    }) => {
                         let mut own = within.guards.clone();
                         own.extend(self.peel(body).0);
                         out.push(Occurrence {
@@ -655,6 +729,7 @@ impl Compiler<'_> {
                             ctors,
                             origin,
                             node: src,
+                            elem,
                             at: here(Row::Gen(y), within, own),
                         });
                         Some(src)
@@ -697,18 +772,26 @@ impl Compiler<'_> {
                         ctors: self.ctors_or_all(rel, &ctors),
                         origin: Origin::State,
                         node: t,
+                        elem: self.ty(t),
                         at: here(Row::Deref(key), within, within.guards.clone()),
                     });
                 }
                 self.nested(key, within, out);
             }
-            Kind::Rel(..) | Kind::Restrict(..) | Kind::Var(_) if self.source(t).is_some() => {
-                let (rel, ctors, origin) = self.source(t).expect("a source");
+            Kind::Rel(..) | Kind::Restrict(..) | Kind::Var(_)
+                if let Some(Source {
+                    rel,
+                    ctors,
+                    origin,
+                    elem,
+                }) = self.source(t) =>
+            {
                 out.push(Occurrence {
                     rel,
                     ctors,
                     origin,
                     node: t,
+                    elem,
                     at: here(Row::Bare, within, within.guards.clone()),
                 });
             }
@@ -724,10 +807,12 @@ impl Compiler<'_> {
     /// into its source, and that input.
     ///
     /// Precondition: `f` reads a constructor set in the state after the change.
-    fn top_delta(&mut self, q: Tm, f: Tm, o: &Occurrence) -> Result<(Tm, Var), Broken> {
-        let Kind::For(x, _, body) = self.kind(f) else {
-            return Err(Broken::TopNotFor);
-        };
+    fn top_delta(&mut self, q: Tm, f: ForTm, o: &Occurrence) -> (Tm, Var) {
+        let ForTm {
+            node: f,
+            var: x,
+            body,
+        } = f;
         let elem = self.terms.var_info(x).ty.clone();
         let d = self.input(o.rel, &o.ctors, Part::Inserted, &elem);
         let set = self.b().var(d);
@@ -735,7 +820,7 @@ impl Compiler<'_> {
         let new = self.b().for_(x, set, body, ty);
         let t = self.replace(q, &HashMap::from([(f, new)]), &mut HashMap::new());
         let (links, tail) = self.chain(t);
-        Ok((self.ordered(links, tail, self.ty(q)), d))
+        (self.ordered(links, tail, self.ty(q)), d)
     }
 
     /// Returns `q` restricted to the bindings of its top level that a changed row of the nested
@@ -747,23 +832,14 @@ impl Compiler<'_> {
         row: &Row,
         within: &Within,
         binders: &HashMap<Var, Binder>,
-    ) -> Result<(Tm, Var), Broken> {
+    ) -> (Tm, Var) {
         let elem = match row {
             Row::Gen(y) => self.terms.var_info(*y).ty.clone(),
-            Row::Deref(_) => self.ty(o.node),
-            Row::Bare => match self.ty(o.node) {
-                Ty::Set(e) | Ty::NonEmpty(e) => *e,
-                other => return Err(Broken::RowsNotSetTyped(other)),
-            },
+            Row::Deref(_) | Row::Bare => o.elem.clone(),
         };
-        let input = match (o.origin, self.kind(o.node)) {
-            (Origin::Inserted | Origin::Deleted, Kind::Var(v)) => v,
-            _ => self.input(o.rel, &o.ctors, Part::Changed, &elem),
-        };
-        let input_ty = self.terms.var_info(input).ty.clone();
-        let elem = match &input_ty {
-            Ty::Set(e) => e.as_ref().clone(),
-            other => return Err(Broken::InputNotSet(other.clone())),
+        let (input, elem) = match (o.origin, self.kind(o.node)) {
+            (Origin::Inserted | Origin::Deleted, Kind::Var(v)) => (v, o.elem.clone()),
+            _ => (self.input(o.rel, &o.ctors, Part::Changed, &elem), elem),
         };
         let d = self.terms.var("%changed", elem);
         let mut sub: HashMap<Var, Var> = HashMap::new();
@@ -837,7 +913,7 @@ impl Compiler<'_> {
             };
             links.push(Link::Gen(*v, src));
         }
-        let mut at_top: HashMap<Tm, Vec<Tm>> = HashMap::new();
+        let mut at_top: HashMap<Tm, (BinderTm, Vec<Tm>)> = HashMap::new();
         for c in kept {
             let free = self.facts.free(self.terms, c);
             let deepest = free
@@ -845,19 +921,22 @@ impl Compiler<'_> {
                 .filter_map(|v| binders.get(v).map(|b| (*v, b)))
                 .max_by_key(|(_, b)| b.order);
             match deepest {
-                Some((v, b)) if !chained.contains(&v) => at_top.entry(b.node).or_default().push(c),
+                Some((v, b)) if !chained.contains(&v) => {
+                    at_top
+                        .entry(b.node.node())
+                        .or_insert_with(|| (b.node, Vec::new()))
+                        .1
+                        .push(c);
+                }
                 _ => links.push(Link::Cond(c)),
             }
         }
         let ty = self.ty(q);
         let mut map = HashMap::new();
-        for (node, conds) in at_top {
-            let children = match self.kind(node) {
-                Kind::For(_, src, body) => [src, self.guard(&conds, body, &ty)],
-                Kind::Let(_, e, body) => [e, self.guard(&conds, body, &ty)],
-                k => {
-                    return Err(Broken::TopBinder(TermKind(k)));
-                }
+        for (node, (binder, conds)) in at_top {
+            let children = match binder {
+                BinderTm::For { src, body, .. } => [src, self.guard(&conds, body, &ty)],
+                BinderTm::Let { value, body, .. } => [value, self.guard(&conds, body, &ty)],
             };
             let n = self.b().rebuild_kept(node, &children);
             map.insert(node, n);
@@ -865,7 +944,7 @@ impl Compiler<'_> {
         let injected = self.replace(q, &map, &mut HashMap::new());
         let (rest, tail) = self.chain(injected);
         links.extend(rest);
-        Ok((self.ordered(links, tail, ty), input))
+        (self.ordered(links, tail, ty), input)
     }
 
     /// Returns key `t` with each row it reads through a key replaced by a generator over the
@@ -1118,52 +1197,52 @@ impl Compiler<'_> {
 
     /// Returns `t` with each read of a `prior` relation replaced by the rows of the state after
     /// the change that it does not insert, with the rows it deletes.
-    fn priors(&mut self, t: Tm) -> Result<Tm, Broken> {
+    fn priors(&mut self, t: Tm) -> Tm {
         let mut map = HashMap::new();
         let mut seen = BTreeSet::new();
-        self.find_priors(t, &mut seen, &mut map)?;
+        self.find_priors(t, &mut seen, &mut map);
         if map.is_empty() {
-            return Ok(t);
+            return t;
         }
-        Ok(self.replace(t, &map, &mut HashMap::new()))
+        self.replace(t, &map, &mut HashMap::new())
     }
 
-    fn find_priors(
-        &mut self,
-        t: Tm,
-        seen: &mut BTreeSet<Tm>,
-        map: &mut HashMap<Tm, Tm>,
-    ) -> Result<(), Broken> {
+    fn find_priors(&mut self, t: Tm, seen: &mut BTreeSet<Tm>, map: &mut HashMap<Tm, Tm>) {
         if !seen.insert(t) {
-            return Ok(());
+            return;
         }
         if let Kind::For(y, src, body) = self.kind(t)
-            && let Some((rel, ctors, Origin::Prior)) = self.source(src)
+            && let Some(Source {
+                rel,
+                ctors,
+                origin: Origin::Prior,
+                ..
+            }) = self.source(src)
         {
-            let body = self.priors(body)?;
+            let body = self.priors(body);
             let new = self.prior_for(y, rel, &ctors, body, self.ty(t));
             map.insert(t, new);
-            return Ok(());
+            return;
         }
         if let Kind::Var(_) = self.kind(t)
-            && let Some((rel, ctors, Origin::Prior)) = self.source(t)
+            && let Some(Source {
+                rel,
+                ctors,
+                origin: Origin::Prior,
+                elem,
+            }) = self.source(t)
         {
-            let elem = match self.ty(t) {
-                Ty::Set(e) | Ty::NonEmpty(e) => *e,
-                other => return Err(Broken::PriorNotSet(other)),
-            };
             let ty = Ty::Set(Box::new(elem.clone()));
             let y = self.terms.var("%prior", elem);
             let row = self.b().var(y);
             let body = self.b().singleton(row, ty.clone());
             let new = self.prior_for(y, rel, &ctors, body, ty);
             map.insert(t, new);
-            return Ok(());
+            return;
         }
         for c in self.terms.children(t) {
-            self.find_priors(c, seen, map)?;
+            self.find_priors(c, seen, map);
         }
-        Ok(())
     }
 
     /// Returns `for y in prior(ctors of rel) do body`, a set term of type `ty`.
@@ -1316,7 +1395,7 @@ impl Compiler<'_> {
         let Kind::For(y, src, inner) = self.kind(source) else {
             return None;
         };
-        let (rel, ctors, _) = self.source(src)?;
+        let Source { rel, ctors, .. } = self.source(src)?;
         let (conds, _) = self.peel(inner);
         let group = self.fixed(rel, y, &conds);
         if group.is_empty() {
