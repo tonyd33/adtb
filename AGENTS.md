@@ -105,7 +105,7 @@ Before writing code a correctness rule depends on, state the rule and what enfor
 
 A test earns its place by checking behaviour a user or caller relies on, at the level where that contract is stated, that no stronger test already covers. That is a judgement made when writing and reviewing it. Being able to fail is not enough: a test of a constructor fails when an assignment is deleted and is still worthless. Do not break code on purpose to prove a test can fail.
 
-Prefer structure to a test: make a defect impossible or obvious with a type, a single gate or a simpler design, and test only what structure cannot carry. Test observable behaviour through the runners (`cargo conformance` scripts) rather than reaching into internals; a test that needs internals says which observable surface it lacks. A bug fix tests the contract the bug broke across its class, not only the input in hand. Name the contract each new test checks. Every test costs iteration time: it lengthens the Rust build and the suite every change waits on. When a subsystem needs many tests, simplify the subsystem before adding to them.
+Prefer structure to a test: make a defect impossible or obvious with a type, a single gate or a simpler design, and test only what structure cannot carry. Test through the runners (`cargo conformance` scripts). Internal state is tested by printing it in a probe section; its expected text is a reviewed snapshot, and a change to it is reviewed as a diff. An answer a contract fixes (rows, refusals, findings) is checked against an expected value from outside the engine. A Rust test stays in the crate only for a search, an interleaving, or a function checked over every input. A bug fix tests the contract the bug broke across its class, not only the input in hand. Name the contract each new test checks. Every test costs iteration time: it lengthens the Rust build and the suite every change waits on. When a subsystem needs many tests, simplify the subsystem before adding to them.
 
 A test failure is evidence to assess, not an automatic requirement. Before
 changing behavior or architecture to satisfy it, identify the governing contract
@@ -118,7 +118,7 @@ reconsidered. Public contract changes still need a ruling from the
 maintainer. Record material decisions in the change's description; routine
 fixes need no new artifact or approval.
 
-- Assert the exact outcome: the refusal reason and value, not `is_err` or a substring. Do not compare two answers only with each other when both could be the same wrong answer. Do not repeat the code's own predicate as the expected value. An expected value comes from outside the code under test.
+- Assert the exact outcome: the refusal reason and value, not `is_err` or a substring. Do not compare two answers only with each other when both could be the same wrong answer. Do not repeat the code's own predicate as the expected value. An expected value comes from outside the code under test, except a probe's reviewed snapshot of internal state.
 - A loop or sweep checks that it ran, and that it reached the case it is for. No `|| true`, ignored results or skipped conditions on what is under test. A script's check must report its failure.
 - A test of a mechanism that runs beside the code under test (a worker, a pacer, a sweep, an interleaved command) asserts the mechanism ran where the property needs it. Work it cannot observe, such as work after the last measured step, counts as unmeasured, not as zero.
 - A name claims only what the test checks.
