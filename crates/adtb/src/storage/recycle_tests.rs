@@ -117,20 +117,24 @@ fn lsn_of(files: &Files, pid: Pid) -> Lsn {
 }
 
 #[test]
-fn the_log_holds_only_the_last_session_and_the_current_one() {
+fn a_recycle_keeps_the_log_from_the_checkpoint_the_last_session_closed_with() {
     let (mut sim, pages) = created(8);
-    let mut held = Vec::new();
-    for _ in 0..8 {
-        let removed = session(&mut sim, |pager, _| {
-            let removed = pager.recycle_log();
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for session_no in 0..8 {
+        let (start, end) = session(&mut sim, |pager, _| {
+            let start = Probe::of(pager).appended().0;
+            pager.recycle_log();
             fill(pager, &pages, 3 * SEGMENT);
-            removed
+            (start, Probe::of(pager).appended().0)
         });
-        held.push((removed, segments(&sim.files()).len()));
+        let held: Vec<u64> = (start / SEGMENT..=end / SEGMENT)
+            .map(|s| s * SEGMENT)
+            .collect();
+        want.push((session_no, held));
+        got.push((session_no, segments(&sim.files())));
     }
-    let written = session(&mut sim, |pager, _| Probe::of(pager).appended().0);
-    assert!(written > 24 * SEGMENT, "{written}");
-    assert!(held[1..].iter().all(|&(r, h)| r >= 2 && h <= 5), "{held:?}");
+    assert_eq!(want[1..], got[1..]);
 }
 
 #[test]
@@ -160,48 +164,27 @@ fn envelope() -> Envelope {
     }
 }
 
+/// Space: recycles while a backup copies the file's first page and while it copies a data page,
+/// each after the log has grown by four segments and a checkpoint has passed them.
 #[test]
-fn a_recycle_while_a_backup_copies_the_log_removes_nothing() {
-    let (mut sim, pages) = created(8);
-    session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
-    let (during, after) = session(&mut sim, |pager, _| {
-        let mut during = Vec::new();
-        let mut visit = |pid: Pid, _: &mut [u8]| {
-            if pid == Pid(0) {
-                during.push(pager.recycle_log());
-            }
-            true
-        };
-        let run = &mut BackupRun {
-            target: "backup",
-            envelope: envelope(),
-            visit: &mut visit,
-            name: &|q| format!("{q:?}"),
-        };
-        pager.backup(run).unwrap();
-        (during, pager.recycle_log())
-    });
-    assert!(
-        !during.is_empty() && during.iter().all(|&n| n == 0),
-        "{during:?}"
-    );
-    assert!(after >= 2, "{after}");
-}
-
-#[test]
-fn recycles_while_a_backup_copies_its_pages_keep_the_log_it_copies() {
+fn recycles_while_a_backup_runs_remove_nothing_and_it_restores_every_value() {
     let (mut sim, pages) = created(8);
     session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
     let (during, backup, after) = session(&mut sim, |pager, _| {
         storage::recycle_at_open(pager, None);
         let mut during = Vec::new();
         let mut visit = |pid: Pid, _: &mut [u8]| {
-            if pid == pages[0] && during.is_empty() {
+            let at = match pid {
+                Pid(0) => "first page",
+                p if p == pages[0] => "data page",
+                _ => return true,
+            };
+            if !during.iter().any(|&(was, _)| was == at) {
                 for _ in 0..2 {
                     fill(pager, &pages[1..], 2 * SEGMENT);
                     pager.flush_pages(usize::MAX);
                     pager.checkpoint();
-                    during.push(pager.recycle_log());
+                    during.push((at, pager.recycle_log()));
                 }
             }
             true
@@ -215,7 +198,10 @@ fn recycles_while_a_backup_copies_its_pages_keep_the_log_it_copies() {
         let backup = pager.backup(run).map(|m| (m.start, m.end));
         (during, backup, pager.recycle_log())
     });
-    assert_eq!(vec![0, 0], during);
+    let removed =
+        |at: &str| -> Vec<usize> { during.iter().filter(|r| r.0 == at).map(|r| r.1).collect() };
+    assert_eq!(vec![0, 0], removed("first page"));
+    assert_eq!(vec![0, 0], removed("data page"));
     let (start, end) = backup.unwrap();
     assert!(end.lsn.0 - start.lsn.0 > 4 * SEGMENT, "{start:?} {end:?}");
     assert!(
@@ -461,102 +447,90 @@ fn a_crash_at_any_point_of_a_recycle_growing_the_map_reopens_with_every_write() 
     );
 }
 
-#[test]
-fn a_change_to_a_page_damaged_before_its_write_is_replayed_by_the_next_open() {
-    let (mut sim, pages) = created(1);
-    let pid = pages[0];
-    session(&mut sim, |pager, _| {
-        put(pager, pid, 1);
-        pager.checkpoint();
-        put(pager, pid, 2);
-        pager.damage(pid, Damage::Checksum);
-        pager.checkpoint();
-    });
-    let value = session(&mut sim, |pager, _| {
-        let page = pager.read(pid).unwrap();
-        u64::from_le_bytes(page[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap())
-    });
-    assert_eq!(2, value);
-}
-
-#[test]
-fn a_gap_in_the_retained_log_quarantines_the_database_for_the_open_and_marks_nothing() {
-    let (mut sim, pages) = created(8);
-    session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
-    let files = sim.files();
-    let held = segments(&files);
-    assert!(held.len() >= 3, "{held:?}");
-    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
-    let mut gapped = files.clone();
+/// Returns what `held` finds in a session of `files` without the second of its log segments, the
+/// files after it, and what `whole` finds in the next session, with the segment back. Page
+/// `revert.1` of `files` is first reverted to its copy in `revert.0`.
+fn across_a_gap<T, U>(
+    files: &Files,
+    revert: Option<(&Files, Pid)>,
+    held: impl FnOnce(&Pager<SimRuntime>) -> T,
+    whole: impl FnOnce(&Pager<SimRuntime>) -> U,
+) -> (T, Files, U) {
+    let segments = segments(files);
+    assert!(segments.len() >= 3, "{segments:?}");
+    let gap = format!("{}/{:016x}", options().log_dir(), segments[1]);
+    let mut gapped = match revert {
+        Some((before, pid)) => reverted(files.clone(), before, pid),
+        None => files.clone(),
+    };
     gapped.remove(&gap).unwrap();
     let mut sim = Sim::with_files(3, Config::default(), gapped);
-    let marks = session(&mut sim, |pager, _| Probe::of(pager).marks());
-    assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
-    let mut back = sim.files();
-    back.insert(
-        gap,
-        files[&format!("{}/{:016x}", options().log_dir(), held[1])].clone(),
-    );
-    let marks = session(
+    let found = session(&mut sim, |pager, _| held(pager));
+    let after = sim.files();
+    let mut back = after.clone();
+    back.insert(gap.clone(), files[&gap].clone());
+    let again = session(
         &mut Sim::with_files(3, Config::default(), back),
-        |pager, _| Probe::of(pager).marks(),
+        |pager, _| whole(pager),
     );
-    assert_eq!(BTreeSet::new(), marks);
+    (found, after, again)
 }
 
+/// Space: an open held by a gap in its retained log that touches nothing, sets a mark on a marks
+/// page it read unchecked, folds a damage list it read unchecked, or releases a mark by a swap;
+/// then the open after the gap is filled.
 #[test]
-fn a_marks_page_loaded_unchecked_is_never_written_and_the_next_checked_open_refuses_it() {
+fn an_open_held_by_a_log_gap_quarantines_the_database_and_writes_no_mark_or_list_it_read_unchecked()
+{
+    let database = BTreeSet::from([Quarantine::Database]);
     let (mut sim, pages) = created(8);
+    session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
+    let marks = |pager: &Pager<SimRuntime>| Probe::of(pager).marks();
+    let (held, _, after) = across_a_gap(&sim.files(), None, marks, marks);
+    assert_eq!(
+        (database.clone(), BTreeSet::new()),
+        (held, after),
+        "a gap alone"
+    );
+
+    let (mut sim, _) = created(8);
     let before = sim.files();
-    let marks = session(&mut sim, |pager, _| {
+    let marks_page = session(&mut sim, |pager, _| {
         pager
             .quarantine(Quarantine::Index(3), &ordered_for_test())
             .unwrap();
         fill(pager, &pages[1..], 3 * SEGMENT);
         pager.quarantine_page()
     });
-    let files = sim.files();
-    let held = segments(&files);
-    assert!(held.len() >= 3, "{held:?}");
-    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
-    let mut gapped = reverted(files.clone(), &before, marks);
-    gapped.remove(&gap).unwrap();
-    let mut sim = Sim::with_files(3, Config::default(), gapped);
     let heap = Holder::Relation {
         object: Quarantine::Heap(7),
         engine_module: false,
     };
-    let (loaded, failed, after) = session(&mut sim, |pager, _| {
+    let mark = |pager: &Pager<SimRuntime>| {
         let loaded = Probe::of(pager).marks();
         pager.damage(pages[0], Damage::Checksum);
         let failed = pager.map_damage(|_| Some(BTreeSet::from([heap])), &ordered_for_test());
-        assert_eq!(None, pager.mapped_to(pages[0]), "the record stays unmapped");
-        let heap = Some(BTreeSet::from([Quarantine::Heap(7)]));
-        assert_eq!(heap, pager.marked_to(pages[0]));
-        (loaded, failed, Probe::of(pager).marks())
-    });
-    assert_eq!(BTreeSet::from([Quarantine::Database]), loaded);
+        let mapped = (pager.mapped_to(pages[0]), pager.marked_to(pages[0]));
+        (loaded, failed, mapped, Probe::of(pager).marks())
+    };
+    let (held, after, again) = across_a_gap(&sim.files(), Some((&before, marks_page)), mark, marks);
+    let failed = BTreeMap::from([(
+        Quarantine::Heap(7),
+        MarkFailure::Unverified { page: marks_page },
+    )]);
+    let heap7 = BTreeSet::from([Quarantine::Heap(7)]);
+    let both = BTreeSet::from([Quarantine::Database, Quarantine::Heap(7)]);
     assert_eq!(
-        BTreeMap::from([(Quarantine::Heap(7), MarkFailure::Unverified { page: marks })]),
-        failed
+        (
+            (database.clone(), failed, (None, Some(heap7)), both),
+            lsn_of(&before, marks_page),
+            database.clone()
+        ),
+        (held, lsn_of(&after, marks_page), again),
+        "a mark on an unchecked marks page"
     );
-    assert_eq!(
-        BTreeSet::from([Quarantine::Database, Quarantine::Heap(7)]),
-        after
-    );
-    assert_eq!(lsn_of(&before, marks), lsn_of(&sim.files(), marks));
-    let mut back = sim.files();
-    back.insert(gap.clone(), files[&gap].clone());
-    let marks = session(
-        &mut Sim::with_files(3, Config::default(), back),
-        |pager, _| Probe::of(pager).marks(),
-    );
-    assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
-}
 
-#[test]
-fn a_damage_list_loaded_unchecked_is_never_folded_and_the_next_checked_open_refuses_it() {
-    let (mut sim, pages) = created(8);
+    let (mut sim, _) = created(8);
     let before = sim.files();
     let mut list = Pid(0);
     harness::finished(&mut sim, |rt| {
@@ -578,36 +552,22 @@ fn a_damage_list_loaded_unchecked_is_never_folded_and_the_next_checked_open_refu
         lsn_of(&files, list),
         "the fold wrote the list"
     );
-    let held = segments(&files);
-    assert!(held.len() >= 3, "{held:?}");
-    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
-    let mut gapped = reverted(files.clone(), &before, list);
-    gapped.remove(&gap).unwrap();
-    let mut sim = Sim::with_files(3, Config::default(), gapped);
-    let marks = session(&mut sim, |pager, _| {
+    let fold = |pager: &Pager<SimRuntime>| {
         pager.checkpoint();
         Probe::of(pager).marks()
-    });
-    assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
-    assert_eq!(lsn_of(&before, list), lsn_of(&sim.files(), list));
-    let mut back = sim.files();
-    back.insert(gap.clone(), files[&gap].clone());
-    let (marks, recorded) = session(
-        &mut Sim::with_files(3, Config::default(), back),
-        |pager, _| {
-            let recorded = Probe::of(pager).records().pages().get(&pages[0]).copied();
-            (Probe::of(pager).marks(), recorded)
-        },
-    );
+    };
+    let recorded = |pager: &Pager<SimRuntime>| {
+        let recorded = Probe::of(pager).records().pages().get(&pages[0]).copied();
+        (Probe::of(pager).marks(), recorded)
+    };
+    let (held, after, again) = across_a_gap(&files, Some((&before, list)), fold, recorded);
     assert_eq!(
-        (BTreeSet::from([Quarantine::Database]), None),
-        (marks, recorded)
+        (database.clone(), lsn_of(&before, list), (database, None)),
+        (held, lsn_of(&after, list), again),
+        "a fold of an unchecked damage list"
     );
-}
 
-#[test]
-fn a_swap_releasing_a_mark_on_an_unchecked_marks_page_keeps_the_mark() {
-    let (mut sim, pages) = created(8);
+    let (mut sim, _) = created(8);
     let [to, from] = [pages[0], pages[1]];
     session(&mut sim, |pager, _| {
         pager
@@ -616,28 +576,20 @@ fn a_swap_releasing_a_mark_on_an_unchecked_marks_page_keeps_the_mark() {
         put(pager, from, 9);
         fill(pager, &pages[2..], 3 * SEGMENT);
     });
-    let files = sim.files();
-    let held = segments(&files);
-    assert!(held.len() >= 3, "{held:?}");
-    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
-    let mut gapped = files.clone();
-    gapped.remove(&gap).unwrap();
-    let mut sim = Sim::with_files(3, Config::default(), gapped);
-    let (value, marks) = session(&mut sim, |pager, _| {
+    let swap = |pager: &Pager<SimRuntime>| {
         pager
             .replace_contents(to, from, Some(Quarantine::Index(3)))
             .unwrap();
         (value_of(pager, to), Probe::of(pager).marks())
-    });
+    };
+    let read = |pager: &Pager<SimRuntime>| (value_of(pager, to), Probe::of(pager).marks());
+    let (held, _, again) = across_a_gap(&sim.files(), None, swap, read);
     let all = BTreeSet::from([Quarantine::Database, Quarantine::Index(3)]);
-    assert_eq!((9, all), (value, marks));
-    let mut back = sim.files();
-    back.insert(gap.clone(), files[&gap].clone());
-    let (value, marks) = session(
-        &mut Sim::with_files(3, Config::default(), back),
-        |pager, _| (value_of(pager, to), Probe::of(pager).marks()),
+    assert_eq!(
+        ((9, all), (9, BTreeSet::from([Quarantine::Index(3)]))),
+        (held, again),
+        "a swap releasing a mark"
     );
-    assert_eq!((9, BTreeSet::from([Quarantine::Index(3)])), (value, marks));
 }
 
 #[test]
@@ -723,23 +675,44 @@ fn refused_then_freed(pid: Pid, pages: &[Pid], sim: &mut Sim) -> ([Lsn; 4], adtb
     (lsns, sim.recording())
 }
 
+/// Space: a page changed after its write and refused with the change unwritten, under a whole
+/// quarantine or none, then a checkpoint, the session ended by a close or a crash.
 #[test]
-fn a_change_refused_unwritten_under_a_whole_quarantine_reads_back_after_the_close() {
-    let (mut sim, pages) = created(40);
-    let pid = pages[0];
-    session(&mut sim, |pager, _| {
-        pager
-            .quarantine(Quarantine::Database, &ordered_for_test())
-            .unwrap();
-        changed_after_its_write(pager, pid, &pages[1..]);
-        pager.damage(pid, Damage::Checksum);
-    });
-    let read = session(&mut sim, |pager, _| {
-        pager
-            .read(pid)
-            .map(|p| u64::from_le_bytes(p[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap()))
-    });
-    assert_eq!(Ok(2), read);
+fn a_change_refused_unwritten_is_replayed_by_the_next_open() {
+    let mut got = Vec::new();
+    for whole in [false, true] {
+        for crash in [false, true] {
+            let (mut sim, pages) = created(40);
+            let pid = pages[0];
+            let change = |pager: &Pager<SimRuntime>| {
+                if whole {
+                    pager
+                        .quarantine(Quarantine::Database, &ordered_for_test())
+                        .unwrap();
+                }
+                changed_after_its_write(pager, pid, &pages[1..]);
+                pager.damage(pid, Damage::Checksum);
+                pager.checkpoint();
+            };
+            if crash {
+                adtb_testkit::common::run_then_crash(&mut sim, |rt, _| {
+                    change(&Pager::open(rt.clone(), &options()).unwrap().0);
+                });
+            } else {
+                session(&mut sim, |pager, _| change(pager));
+            }
+            let read: Result<u64, PageError> = session(&mut sim, |pager, _| {
+                let page = pager.read(pid)?;
+                Ok(u64::from_le_bytes(
+                    page[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap(),
+                ))
+            });
+            got.push(((whole, crash), read));
+        }
+    }
+    let want: Vec<_> = got.iter().map(|&(row, _)| (row, Ok(2))).collect();
+    assert_eq!(4, got.len());
+    assert_eq!(want, got);
 }
 
 #[test]

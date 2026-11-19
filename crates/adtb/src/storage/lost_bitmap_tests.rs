@@ -5,6 +5,7 @@ use crate::testing::{Knobs, Object, Plant, Probe};
 use adtb_testkit::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::open_damage_tests::{NOT_KEPT, UNREAD, places};
 use crate::key::Value;
 use crate::runtime::Threads;
 use crate::storage::policy::{Holder, Phase};
@@ -225,7 +226,12 @@ fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
 
 fn assert_committed_rows_never_read_as_aborted(files: &Files, what: &str) {
     damaged_run(files, what, |db| {
-        assert_quarantined(&text(db, SELECT), what);
+        let database = Error::Fatal {
+            reason: FatalReason::Quarantined {
+                what: "the database".into(),
+            },
+        };
+        assert_eq!(Err(database), text(db, SELECT), "{what}");
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
             db.testing().probe().marks(),
@@ -235,7 +241,7 @@ fn assert_committed_rows_never_read_as_aborted(files: &Files, what: &str) {
 }
 
 #[test]
-fn a_blank_status_page_refuses_and_never_aborts_committed_rows() {
+fn a_blank_or_cut_status_page_of_committed_rows_refuses_the_select_and_marks_the_database() {
     adtb_heap_cap::raise_cap(3 << 30);
     let (files, status) = commits_on_a_status_page_in_group_one();
     let mut zeroed = files.clone();
@@ -246,66 +252,131 @@ fn a_blank_status_page_refuses_and_never_aborts_committed_rows() {
     assert_committed_rows_never_read_as_aborted(&cut, "cut at the group");
 }
 
-fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {
-    one_group("a", |db| {
+/// A role of zeroed pages, the pages, what the calls that meet them may write, the calls, and the
+/// mark they leave.
+type Zeroed = (
+    &'static str,
+    Vec<Pid>,
+    Writes,
+    &'static [&'static str],
+    Quarantine,
+);
+
+const OPEN_CALLS: &[&str] = &[SELECT, INSERT_OTHER];
+
+/// Returns a file with an index of 900 entries and its rows: the index root under a probe and
+/// under an insert, every index leaf under an insert that latches one, the visibility map root
+/// under vacuum, and the commit log root, commit log directory, counter page and first status page
+/// under an open.
+fn zeroed_index() -> (Files, Vec<Zeroed>) {
+    use Writes::{Open, Row};
+    const PROBE: &[&str] = &["from u in users where u.tag == 1 select u.id"];
+    let mut sim = Sim::new(1, Config::default());
+    let mut rows = Vec::new();
+    finished(&mut sim, |rt| {
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
+        let inserts: String = (0..900)
+            .map(|i| format!("insert users {{ id: users.key({i}), name: \"r\", tag: {i} }}\n"))
+            .collect();
+        text(&db, &inserts).unwrap();
         let t = db.testing();
         let index = t.index("app::users", "index (tag)").unwrap();
-        let pages = t.reachable(index).unwrap().0;
-        let pick = if root {
-            t.root(index).unwrap()
-        } else {
-            *pages.last().unwrap()
+        let heap = t.heap("app::users", "User").unwrap();
+        let of = |kind: PageKind| {
+            move |p: &Pid| storage::kind(&t.probe().page(*p).unwrap()) == kind as u16
         };
-        (pick, t.own_mark(index).unwrap())
+        let leaves = t
+            .reachable(index)
+            .unwrap()
+            .0
+            .into_iter()
+            .filter(of(PageKind::IndexLeaf));
+        let leaves: Vec<Pid> = leaves.collect();
+        assert!(leaves.len() > 1, "the index has an inner page");
+        let vm = t
+            .owned(heap)
+            .unwrap()
+            .into_iter()
+            .filter(of(PageKind::VisibilityMap));
+        let (root, mark) = (vec![t.root(index).unwrap()], t.own_mark(index).unwrap());
+        let insert: &[&str] = &[INSERT_USER];
+        rows.push(("index root", root.clone(), Row, PROBE, mark));
+        rows.push(("index root", root, Row, insert, mark));
+        rows.push(("index leaves", leaves, Row, insert, mark));
+        let heap_mark = t.own_mark(heap).unwrap();
+        rows.push(("vm root", vm.collect(), Open, &["vacuum users"], heap_mark));
+        let clog = t.commit_log();
+        for (role, page) in [
+            ("clog root", clog.root()),
+            ("clog directory", clog.directory()[0]),
+            ("counters", t.root(Object::Sequences).unwrap()),
+            ("status", clog.status()[&0]),
+        ] {
+            rows.push((role, vec![page], Open, OPEN_CALLS, Quarantine::Database));
+        }
+        db.close().unwrap();
+    });
+    (sim.files(), rows)
+}
+
+/// Returns a one group file and the row of its first status page once the ids it holds are
+/// resolved, under an open.
+fn zeroed_resolved_status() -> (Files, Vec<Zeroed>) {
+    one_group("a", |db| {
+        let t = db.testing();
+        let per_page = ((PAGE - HEADER_LEN) * 4) as u64;
+        while t.take_xid().unwrap().0 <= per_page {}
+        insert_users(db, 10..11, "a");
+        let (page, database) = (vec![t.commit_log().status()[&0]], Quarantine::Database);
+        vec![("resolved status", page, Writes::Open, OPEN_CALLS, database)]
     })
 }
 
-fn assert_index_page_refused(root: bool, query: &str) {
-    let (files, (page, mark)) = index_page(root);
-    let mut files = files;
-    DATA.zero(&mut files, page);
-    damaged_writing(&files, Writes::Row, query, |db| {
-        assert_quarantined(&text(db, query), query);
-        assert!(db.testing().probe().marks().contains(&mark), "{query}");
-    });
-}
-
+/// Space: a zeroed index root under a probe and an insert, zeroed index leaves under an insert
+/// that latches one, a zeroed visibility map root under vacuum, and a zeroed commit log root,
+/// commit log directory, counter page, first status page and status page below the resolved ids
+/// under an open and a select and an insert.
 #[test]
-fn a_zeroed_index_root_refuses_a_probe_and_an_insert() {
-    assert_index_page_refused(true, "from u in users where u.tag == 1 select u.id");
-    assert_index_page_refused(true, INSERT_USER);
-}
-
-#[test]
-fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
-    let mut sim = Sim::new(1, Config::default());
-    let mut leaves = Vec::new();
-    let mut mark = None;
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
-        let rows: String = (0..900)
-            .map(|i| format!("insert users {{ id: users.key({i}), name: \"r\", tag: {i} }}\n"))
-            .collect();
-        text(&db, &rows).unwrap();
-        let t = db.testing();
-        let index = t.index("app::users", "index (tag)").unwrap();
-        for page in t.reachable(index).unwrap().0 {
-            if storage::kind(&t.probe().page(page).unwrap()) == PageKind::IndexLeaf as u16 {
-                leaves.push(page);
-            }
+fn a_zeroed_page_refuses_each_call_that_meets_it_and_marks_only_its_holder() {
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for (files, rows) in [zeroed_index(), zeroed_resolved_status()] {
+        for (role, pages, writes, calls, mark) in rows {
+            let mut zeroed = files.clone();
+            pages.iter().for_each(|&p| DATA.zero(&mut zeroed, p));
+            let whole = mark == Quarantine::Database;
+            damaged_writing(&zeroed, writes, role, |db| {
+                let refused: Vec<_> = calls.iter().map(|c| text(db, c).map(drop)).collect();
+                let verify = whole.then(|| places(&api::sorted(db.verify(None).unwrap())));
+                got.push((role, refused, db.testing().probe().marks(), verify));
+            });
+            let what = match mark {
+                Quarantine::Database => "the database",
+                Quarantine::Index(_) => "app::users index (tag)",
+                Quarantine::Heap(_) => "app::users.User",
+            };
+            let refused = Err(Error::Fatal {
+                reason: FatalReason::Quarantined { what: what.into() },
+            });
+            let verify = whole.then(|| {
+                let (expected, found) = (storage::lsn(DATA.page(&files, pages[0])), Lsn(0));
+                let stale = format!(
+                    "page {}: {:?}",
+                    pages[0].0,
+                    Damage::Stale { expected, found }
+                );
+                let rows = [
+                    ("StalePage", stale.as_str()),
+                    ("Structure", UNREAD),
+                    ("Structure", NOT_KEPT),
+                ];
+                rows.map(|(c, a)| (c.to_owned(), a.to_owned())).to_vec()
+            });
+            let marks = BTreeSet::from([mark]);
+            want.push((role, vec![refused; calls.len()], marks, verify));
         }
-        mark = Some(t.own_mark(index).unwrap());
-        db.close().unwrap();
-    });
-    assert!(leaves.len() > 1, "the index has an inner page");
-    let mut files = sim.files();
-    for &p in &leaves {
-        DATA.zero(&mut files, p);
     }
-    damaged_writing(&files, Writes::Row, "zero leaves", |db| {
-        assert_quarantined(&text(db, INSERT_USER), "insert");
-        assert!(db.testing().probe().marks().contains(&mark.unwrap()));
-    });
+    assert_eq!(9, got.len());
+    assert_eq!(want, got);
 }
 
 #[test]
@@ -334,26 +405,6 @@ fn a_migration_over_a_zeroed_bitmap_is_refused_and_the_files_own_log_opens_for_v
     });
 }
 
-#[test]
-fn a_visibility_map_root_zeroed_refuses_vacuum_and_marks_the_heap() {
-    let (files, (page, mark)) = one_group("a", |db| {
-        let t = db.testing();
-        let heap = t.heap("app::users", "User").unwrap();
-        let owned = t.owned(heap).unwrap();
-        let vm = owned
-            .into_iter()
-            .find(|&p| storage::kind(&t.probe().page(p).unwrap()) == PageKind::VisibilityMap as u16)
-            .unwrap();
-        (vm, t.own_mark(heap).unwrap())
-    });
-    let mut files = files;
-    DATA.zero(&mut files, page);
-    damaged_run(&files, "zero vm", |db| {
-        assert_quarantined(&text(db, "vacuum users"), "vacuum");
-        assert!(db.testing().probe().marks().contains(&mark));
-    });
-}
-
 fn stored_groups(files: &Files, data: DataFile) -> [u64; 2] {
     [0, 1].map(|copy| {
         let at = HEADER_REGION - 8;
@@ -375,74 +426,6 @@ fn before_the_group_count(files: &Files, data: DataFile) -> Files {
         region[8..12].copy_from_slice(&sum.to_le_bytes());
     }
     files
-}
-
-#[test]
-fn a_file_before_the_count_opens_healthy_and_gains_it() {
-    let (files, ()) = one_group("a", |_| ());
-    let old = before_the_group_count(&files, DATA);
-    assert_eq!([0, 0], stored_groups(&old, DATA));
-    let mut sim = Sim::with_files(1, Config::default(), old);
-    finished(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
-        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
-        assert_eq!(4, text(&db, SELECT).unwrap().len());
-        text(&db, INSERT_OTHER).unwrap();
-        db.close().unwrap();
-    });
-    assert!(stored_groups(&sim.files(), DATA).contains(&1));
-}
-
-/// Zero the page `pick` chooses, and assert the open neither panics nor answers: it marks the
-/// database, keeps every page, and leaves `verify`.
-fn assert_open_refuses(what: &str, pick: impl FnOnce(&Database<SimRuntime>) -> Pid) {
-    let (files, page) = one_group("a", pick);
-    let mut files = files;
-    DATA.zero(&mut files, page);
-    damaged_run(&files, what, |db| {
-        assert!(
-            db.testing().probe().marks().contains(&Quarantine::Database),
-            "{what}"
-        );
-        assert_quarantined(&text(db, SELECT), what);
-        assert_quarantined(&text(db, INSERT_OTHER), what);
-        assert!(!api::printed(db.verify(None).unwrap()).is_empty(), "{what}");
-    });
-}
-
-#[test]
-fn a_zeroed_commit_log_root_refuses_the_open_for_verify_only() {
-    assert_open_refuses("clog root", |db| db.testing().commit_log().root());
-}
-
-#[test]
-fn a_zeroed_commit_log_directory_refuses_the_open_for_verify_only() {
-    assert_open_refuses("clog directory", |db| {
-        db.testing().commit_log().directory()[0]
-    });
-}
-
-#[test]
-fn a_zeroed_counter_page_refuses_the_open() {
-    assert_open_refuses("counters", |db| {
-        db.testing().root(Object::Sequences).unwrap()
-    });
-}
-
-#[test]
-fn a_zeroed_first_status_page_refuses_the_open() {
-    assert_open_refuses("status", |db| db.testing().commit_log().status()[&0]);
-}
-
-#[test]
-fn a_zeroed_status_page_below_the_resolved_ids_refuses_the_open() {
-    assert_open_refuses("resolved status", |db| {
-        let t = db.testing();
-        let per_page = ((PAGE - HEADER_LEN) * 4) as u64;
-        while t.take_xid().unwrap().0 <= per_page {}
-        insert_users(db, 10..11, "a");
-        t.commit_log().status()[&0]
-    });
 }
 
 fn small_options() -> Options {
@@ -583,23 +566,55 @@ fn the_bitmap_gate_refuses_a_bitmap_page_of_another_kind_under_either_latch() {
     }
 }
 
+/// How the second group's bitmap page is lost.
+#[derive(Clone, Copy, Debug)]
+enum Lost {
+    /// Cut away after an open.
+    Cut,
+    /// Zeroed with no open between.
+    ZeroedUnopened,
+}
+
+/// Space: a page granted in the second group by a closed session, or only in the log and recovered,
+/// with the header's group count erased as an engine before the count left it; an open of each,
+/// then the second group's bitmap page cut away, and for the closed session zeroed with no open
+/// between.
 #[test]
-fn growing_into_a_group_stores_the_count_and_a_file_before_the_count_gains_it() {
-    let (files, named) = grown();
-    assert!(stored_groups(&files, SMALL).contains(&2));
-    let old = before_the_group_count(&files, SMALL);
-    assert_eq!([0, 0], stored_groups(&old, SMALL));
-    let mut sim = Sim::with_files(1, Config::default(), old.clone());
-    finished(&mut sim, |rt| {
-        let pager = pager_of(rt);
-        assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals());
-        assert_eq!(Ok(false), pager.is_free(named));
-    });
-    assert!(stored_groups(&sim.files(), SMALL).contains(&2));
-    let lost = lost_damage(&old);
-    let mut blank = old;
-    SMALL.zero(&mut blank, Pid(SMALL_SPAN));
-    assert_second_group_refused(blank, named, lost, "old file, zeroed");
+fn an_open_stores_the_group_count_so_a_lost_group_is_refused_and_never_reused() {
+    let mut cells = Vec::new();
+    for (source, made) in [
+        ("grown", grown as fn() -> _),
+        ("recovered", crashed_after_growing),
+    ] {
+        let (base, named) = made();
+        let files = before_the_group_count(&base, SMALL);
+        assert_eq!([0, 0], stored_groups(&files, SMALL), "{source}");
+        let mut sim = Sim::with_files(1, Config::default(), files.clone());
+        finished(&mut sim, |rt| {
+            let pager = pager_of(rt);
+            assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals());
+            assert_eq!(Ok(false), pager.is_free(named));
+            pager.close();
+        });
+        let opened = sim.files();
+        assert!(stored_groups(&opened, SMALL).contains(&2), "{source}");
+        for damage in [Lost::Cut, Lost::ZeroedUnopened] {
+            let from = match damage {
+                Lost::ZeroedUnopened if source == "grown" => &files,
+                Lost::ZeroedUnopened => continue,
+                Lost::Cut => &opened,
+            };
+            let mut damaged = from.clone();
+            match damage {
+                Lost::Cut => SMALL.truncate(&mut damaged, SMALL_SPAN as usize),
+                Lost::ZeroedUnopened => SMALL.zero(&mut damaged, Pid(SMALL_SPAN)),
+            }
+            let what = format!("{source}, {damage:?}");
+            assert_second_group_refused(damaged, named, lost_damage(from), &what);
+            cells.push(what);
+        }
+    }
+    assert_eq!(3, cells.len(), "{cells:?}");
 }
 
 /// Returns the files of a pager whose grant of a page in the second group is only in the log.
@@ -612,22 +627,6 @@ fn crashed_after_growing() -> (Files, Pid) {
         pager.flush_log();
     });
     (sim.files(), named.unwrap())
-}
-
-#[test]
-fn recovery_stores_the_count_so_a_later_cut_never_reuses_a_named_page() {
-    let (files, named) = crashed_after_growing();
-    let mut sim = Sim::with_files(1, Config::default(), files);
-    finished(&mut sim, |rt| drop(pager_of(rt)));
-    let recovered = sim.files();
-    assert!(stored_groups(&recovered, SMALL).contains(&2));
-    let cut = lost_damage(&recovered);
-    assert_second_group_refused(
-        small_cut(&recovered, SMALL_SPAN),
-        named,
-        cut,
-        "after recovery",
-    );
 }
 
 #[test]

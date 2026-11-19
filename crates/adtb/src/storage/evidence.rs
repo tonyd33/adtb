@@ -1036,15 +1036,6 @@ impl Evidence {
         }
     }
 
-    /// Returns the number of pages whose expected LSN is past their folded entry.
-    #[cfg(test)]
-    pub(super) fn later(&self) -> usize {
-        match &self.gate {
-            Gate::Armed(e) => e.logged.len(),
-            Gate::Recovering | Gate::Off => 0,
-        }
-    }
-
     pub(super) fn armed(&self) -> bool {
         matches!(self.gate, Gate::Armed(_))
     }

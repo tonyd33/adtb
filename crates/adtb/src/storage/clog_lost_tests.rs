@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{CommitLog, Status, Transactions, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
+use crate::storage::{
+    self, Damage, Finding, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Quarantine,
+};
 use crate::test_world as harness;
 use crate::test_world::api;
 use crate::test_world::load as open;
@@ -220,20 +222,6 @@ fn served_on_reopen(sim: &mut Sim, bo: &[Xid], marks: &BTreeSet<Quarantine>) {
 }
 
 #[test]
-fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_marks_nothing() {
-    let (mut sim, bo, want) = lost_write();
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
-        assert_eq!(want, findings(api::sorted(db.verify(None).unwrap())));
-        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
-        let names = api::query(&db, "from u in app::users select u.name");
-        assert_eq!(vec!["\"ann\"", "\"bo\""], names);
-        db.close().unwrap();
-    });
-    served_on_reopen(&mut sim, &bo, &BTreeSet::new());
-}
-
-#[test]
 fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_database() {
     let (mut sim, _, _) = lost_write();
     process::run(&mut sim, |rt| {
@@ -272,90 +260,22 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
             t.probe().records().pages()[&page],
             Damage::Settled { .. }
         ));
-        let checked = t.check_page(page);
-        let finding = format!("Page {{ pid: {page:?}, damage: {stale:?} }}");
-        assert!(format!("{checked:?}").contains(&finding), "{checked:?}");
-        let rows = findings(api::sorted(db.verify(None).unwrap()));
-        let row = (
-            "StalePage".to_owned(),
-            format!("\"page {}: {stale:?}\"", page.0),
-        );
-        assert!(rows.contains(&row), "{rows:?}");
+        let finding = Finding::Page {
+            pid: page,
+            damage: stale,
+        };
+        assert_eq!(vec![finding], t.check_page(page));
+        let of_page = format!("\"page {}: ", page.0);
+        let rows: Vec<_> = findings(api::sorted(db.verify(None).unwrap()))
+            .into_iter()
+            .filter(|(_, a)| a.starts_with(&of_page))
+            .collect();
+        let row = ("StalePage".to_owned(), format!("{of_page}{stale:?}\""));
+        assert_eq!(vec![row], rows);
         let database = BTreeSet::from([Quarantine::Database]);
         assert_eq!(database, t.probe().marks());
         let names = api::failure(&db, "from u in app::users select u.name");
         assert_eq!(quarantined(), names);
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
-    let (mut sim, bo, _) = lost_write();
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
-        let found = db.verify(Some("app::users")).unwrap();
-        assert_eq!(Vec::<(String, String)>::new(), findings(api::sorted(found)));
-        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
-        db.close().unwrap();
-    });
-    served_on_reopen(&mut sim, &bo, &BTreeSet::new());
-}
-
-#[test]
-fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
-    let (mut sim, bo, _) = lost_write();
-    let index = process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
-        let t = db.testing();
-        let ix = t.index("app::users", "key id").unwrap();
-        let page = t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0];
-        let orphan = Entry {
-            key: vec![Value::I64(1000)],
-            ctor: *t.ctors(ix).unwrap().iter().next().unwrap(),
-            tid: Tid::new(page.0, 400).unwrap(),
-        };
-        t.plant(Plant::AddEntry {
-            index: ix,
-            entry: orphan,
-        })
-        .unwrap();
-        let found = findings(api::sorted(db.verify(Some("app::users")).unwrap()));
-        let at = format!(
-            "\"page {} slot 400: holds no version of the entry's key\"",
-            page.0
-        );
-        assert_eq!(vec![("Orphan".to_owned(), at)], found);
-        let index = BTreeSet::from([t.own_mark(ix).unwrap()]);
-        assert_eq!(index, db.testing().probe().marks());
-        db.close().unwrap();
-        index
-    });
-    served_on_reopen(&mut sim, &bo, &index);
-}
-
-#[test]
-fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
-    let mut sim = Sim::new(3, Config::default());
-    let (status, _) = insert(&mut sim, "ann");
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
-        db.testing()
-            .plant(Plant::Refuse {
-                page: status,
-                damage: Damage::Unreadable,
-            })
-            .unwrap();
-        let unreadable = PageError {
-            pid: status,
-            damage: Damage::Unreadable,
-        };
-        let detail = format!("{unreadable:?}");
-        let want = Error::Fatal {
-            reason: FatalReason::Storage { detail },
-        };
-        assert_eq!(Some(want), db.verify(None).err());
-        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().unwrap();
     });
 }
@@ -405,22 +325,88 @@ fn calls_after_an_unreadable_status_page_refuses_every_transaction_fail_as_stora
     });
 }
 
+/// A call that meets a database whose status page settled a lost write at open.
+#[derive(Clone, Copy, Debug)]
+enum Beside {
+    /// A `verify` of the whole database.
+    Verify,
+    /// A `verify` of the relation `app::users`.
+    VerifyRelation,
+    /// A `verify` of the whole database as a task of a session.
+    Task,
+    /// A `verify` of `app::users` after an orphan entry is planted in its index.
+    IndexFinding,
+}
+
+/// Space: a database whose status page settled a lost write, met by a `verify` of the whole
+/// database, in process and as a task, a `verify` of one relation, and one that finds an index
+/// orphan; then a reopen.
 #[test]
-fn the_first_verify_through_a_server_of_a_settled_status_page_reports_it_once() {
-    let (mut sim, bo, want) = lost_write();
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
-        let owner = db.role_authority().session("owner").unwrap();
-        let rows = api::task_rows(&rt, &owner, "verify").unwrap();
-        assert_eq!(
-            want,
-            rows.iter().map(|r| task_finding(r)).collect::<Vec<_>>()
-        );
-        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
-        api::task(&rt, &owner, "app::users").unwrap();
-        db.close().unwrap();
-    });
-    served_on_reopen(&mut sim, &bo, &BTreeSet::new());
+fn a_settled_status_page_is_reported_once_by_verify_and_marks_only_what_verify_marks() {
+    let (sim, bo, settled) = lost_write();
+    let files = sim.files();
+    let mut reached = 0;
+    for beside in [
+        Beside::Verify,
+        Beside::VerifyRelation,
+        Beside::Task,
+        Beside::IndexFinding,
+    ] {
+        let mut sim = Sim::with_files(1, Config::default(), files.clone());
+        let marks = process::run(&mut sim, |rt| {
+            let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
+            let t = db.testing();
+            let (found, want, marks) = match beside {
+                Beside::Verify => (
+                    findings(api::sorted(db.verify(None).unwrap())),
+                    settled.clone(),
+                    BTreeSet::new(),
+                ),
+                Beside::VerifyRelation => (
+                    findings(api::sorted(db.verify(Some("app::users")).unwrap())),
+                    Vec::new(),
+                    BTreeSet::new(),
+                ),
+                Beside::Task => {
+                    let owner = db.role_authority().session("owner").unwrap();
+                    let rows = api::task_rows(&rt, &owner, "verify").unwrap();
+                    api::task(&rt, &owner, "app::users").unwrap();
+                    let found = rows.iter().map(|r| task_finding(r)).collect();
+                    (found, settled.clone(), BTreeSet::new())
+                }
+                Beside::IndexFinding => {
+                    let ix = t.index("app::users", "key id").unwrap();
+                    let page = t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0];
+                    let orphan = Entry {
+                        key: vec![Value::I64(1000)],
+                        ctor: *t.ctors(ix).unwrap().iter().next().unwrap(),
+                        tid: Tid::new(page.0, 400).unwrap(),
+                    };
+                    t.plant(Plant::AddEntry {
+                        index: ix,
+                        entry: orphan,
+                    })
+                    .unwrap();
+                    let at = format!(
+                        "\"page {} slot 400: holds no version of the entry's key\"",
+                        page.0
+                    );
+                    (
+                        findings(api::sorted(db.verify(Some("app::users")).unwrap())),
+                        vec![("Orphan".to_owned(), at)],
+                        BTreeSet::from([t.own_mark(ix).unwrap()]),
+                    )
+                }
+            };
+            assert_eq!(want, found, "{beside:?}");
+            assert_eq!(marks, t.probe().marks(), "{beside:?}");
+            db.close().unwrap();
+            marks
+        });
+        served_on_reopen(&mut sim, &bo, &marks);
+        reached += 1;
+    }
+    assert_eq!(4, reached);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -592,19 +578,16 @@ fn without_segment(mut files: Files, base: u64) -> Files {
     files
 }
 
+/// Space: a status page that lost its writes after the first segment, its log without the first
+/// segment, which holds none of the lost writes' records, or without a later one that does.
 #[test]
-fn a_segment_recycled_before_the_lost_writes_records_leaves_the_status_page_to_settle_from_its_log()
-{
+fn a_status_page_settles_from_the_log_it_keeps_and_is_unproven_past_a_missing_segment() {
+    let segment = harness::options(FRAMES).segment_size;
     let (files, root, _, ids) = lost_past_the_first_segment(3);
     let files = without_segment(files, 0);
     let (xs, want): (Vec<Xid>, Vec<Status>) = ids.into_iter().unzip();
     assert_eq!([want.clone(), want], reopened(5, &files, root, &xs));
-}
 
-#[test]
-fn a_segment_missing_after_the_status_pages_last_write_quarantines_the_database_and_writes_nothing()
-{
-    let segment = harness::options(FRAMES).segment_size;
     let commits = (segment / 512) as usize + 16;
     let (files, root, page, ids) = lost_past_the_first_segment(commits);
     let files = without_segment(files, segment);
@@ -674,14 +657,25 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
         db.close().unwrap();
     });
     let lost = reverted(sim.files(), &before, page, DB);
+    let mut intact = Sim::with_files(3, Config::default(), lost.clone());
+    let straddling = process::run(&mut intact, |rt| {
+        let options = storage::Options {
+            page_size: DB_PAGE as u32,
+            ..storage::Options::new(harness::NAME)
+        };
+        let (pager, _) = Pager::open(rt, &options).unwrap();
+        let (_pin, mut img) = pager.load_log().unwrap();
+        img.batch_start(Lsn(segment))
+            .expect("a batch holds the segment's first block")
+    });
     let mut sim = Sim::with_files(3, Config::default(), without_segment(lost, segment));
     process::run(&mut sim, |rt| {
         let db = open(&rt);
-        let damage = db.testing().commit_log_damage();
-        assert!(
-            matches!(damage, Some(PageError { pid, damage: Damage::LogUnproven { .. } }) if pid == page),
-            "{damage:?}"
-        );
+        let unproven = PageError {
+            pid: page,
+            damage: Damage::LogUnproven { at: straddling },
+        };
+        assert_eq!(Some(unproven), db.testing().commit_log_damage());
         db.close().unwrap();
     });
     let names = |sim: &Sim| sim.files().into_keys().collect::<Vec<_>>();
@@ -825,8 +819,6 @@ struct Unprovable {
     page: Pid,
     old: Lsn,
     base: u64,
-    /// The root page of the heap of the catalog's rows.
-    rows: Pid,
 }
 
 fn unprovable_options() -> crate::OpenOptions {
@@ -842,7 +834,7 @@ fn unprovable() -> Unprovable {
     let open =
         |rt: SimRuntime| Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
     let mut sim = Sim::new(6, Config::default());
-    let (page, rows) = process::run(&mut sim, |rt| {
+    let page = process::run(&mut sim, |rt| {
         let db = open(rt);
         api::results(&db, r#"insert users { name: "ann" }"#);
         let page = *db
@@ -852,9 +844,8 @@ fn unprovable() -> Unprovable {
             .values()
             .next_back()
             .unwrap();
-        let rows = db.testing().root(Object::CatalogRows).unwrap();
         db.close().unwrap();
-        (page, rows)
+        page
     });
     let before = sim.files();
     process::run(&mut sim, |rt| {
@@ -885,7 +876,6 @@ fn unprovable() -> Unprovable {
         page,
         old,
         base,
-        rows,
     }
 }
 
@@ -940,7 +930,7 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
 const ARCHIVE: &str = "store";
 
 /// How the second process of [`resolved_then_lost`] resolves its id.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Resolve {
     Commit,
     Abort,
@@ -1045,111 +1035,74 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
     }
 }
 
-/// Assert an open of a status page that lost the write of an id resolved as `resolve`, whose log
-/// is recycled, records the page's damage and quarantines the database, at that open and the next.
-fn refused_unproven(resolve: Resolve, archived: bool) {
-    let lost = resolved_then_lost(resolve, true, archived);
-    let options = engine_options(archived);
-    let damage = PageError {
-        pid: lost.page,
-        damage: lost.stale,
-    };
-    let whole = BTreeSet::from([Quarantine::Database]);
-    let mut sim = Sim::with_files(7, Config::default(), lost.files);
-    for open in 0..2 {
-        process::run(&mut sim, |rt| {
-            let db = Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
-            let at = format!("{resolve:?}, archived {archived}, open {open}");
-            assert_eq!(Some(damage), db.testing().commit_log_damage(), "{at}");
-            assert_eq!(
-                Some(&lost.stale),
-                db.testing().probe().records().pages().get(&lost.page),
-                "{at}"
-            );
-            assert_eq!(whole, db.testing().probe().marks(), "{at}");
-            let names = api::failure(&db, "from u in app::users select u.name");
-            assert_eq!(quarantined(), names, "{at}");
-            db.close().unwrap();
-        });
-    }
-}
-
+/// Space: a status page that lost the write of a commit or an abort, whose record the log
+/// retains, recycled, or recycled past an archive; two opens of each.
 #[test]
-fn an_open_that_fails_after_its_log_cannot_settle_a_status_page_keeps_the_lowest_damaged_page_as_its_commit_log_damage()
- {
-    let Unprovable {
-        mut lost,
-        page,
-        rows,
-        ..
-    } = unprovable();
-    DB.flip(&mut lost, rows, 300 - HEADER_LEN);
-    let mut sim = Sim::with_files(6, Config::default(), lost);
-    process::run(&mut sim, |rt| {
-        let db =
-            Database::open_in(rt, harness::NAME, &Log::new([APP]), &unprovable_options()).unwrap();
-        let damaged = db.testing().probe().refusals();
-        let lowest = damaged
-            .iter()
-            .next()
-            .map(|(&pid, &damage)| PageError { pid, damage });
-        assert_eq!(
-            Some(PageError {
-                pid: rows,
-                damage: Damage::Checksum
-            }),
-            lowest,
-            "status page {page:?}: {damaged:?}"
-        );
-        assert_eq!(lowest, db.testing().commit_log_damage());
-        let users = db.schema().relations.iter().any(|r| r.name == "users");
-        assert!(
-            !users,
-            "the open fell back to the engine of an unread catalog"
-        );
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn a_status_page_that_lost_a_commit_whose_record_is_recycled_quarantines_the_database() {
-    refused_unproven(Resolve::Commit, false);
-}
-
-#[test]
-fn a_status_page_that_lost_a_commit_whose_record_is_recycled_past_an_archive_quarantines_the_database()
- {
-    refused_unproven(Resolve::Commit, true);
-}
-
-#[test]
-fn a_status_page_that_lost_an_abort_whose_record_is_recycled_quarantines_the_database() {
-    refused_unproven(Resolve::Abort, false);
-}
-
-#[test]
-fn a_status_page_that_lost_a_commit_whose_record_is_retained_settles_it_committed() {
-    let lost = resolved_then_lost(Resolve::Commit, false, false);
-    let mut sim = Sim::with_files(7, Config::default(), lost.files);
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
-        assert_eq!(
-            vec![Status::Committed; lost.ids.len()],
-            statuses(&db, &lost.ids)
-        );
+fn a_status_page_that_lost_a_resolution_settles_from_its_record_or_quarantines_without_it() {
+    let rows = [
+        (Resolve::Commit, false, false),
+        (Resolve::Commit, true, false),
+        (Resolve::Commit, true, true),
+        (Resolve::Abort, true, false),
+    ];
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for (resolve, recycled, archived) in rows {
+        let lost = resolved_then_lost(resolve, recycled, archived);
+        let options = engine_options(archived);
         let Damage::Stale { expected, found } = lost.stale else {
             panic!("{:?} is a lost write", lost.stale);
         };
-        let settled = Damage::Settled { expected, found };
-        assert_eq!(
-            Some(&settled),
-            db.testing().probe().records().pages().get(&lost.page)
-        );
-        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
-        let names = api::query(&db, "from u in app::users select u.name");
-        assert_eq!(vec!["\"ann\"", "\"bo\""], names);
-        db.close().unwrap();
-    });
+        let mut sim = Sim::with_files(7, Config::default(), lost.files);
+        for open in 0..2 {
+            process::run(&mut sim, |rt| {
+                let db = Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
+                let t = db.testing();
+                let names = db.query_text(
+                    "from u in app::users select u.name",
+                    &[],
+                    &crate::CallOptions::default(),
+                );
+                let names = names.map(|mut r| api::sorted(r.remove(0)));
+                got.push((
+                    (resolve, recycled, archived, open),
+                    t.commit_log_damage(),
+                    t.probe().records().pages().get(&lost.page).copied(),
+                    t.probe().marks(),
+                    names,
+                ));
+                if !recycled {
+                    let committed = vec![Status::Committed; lost.ids.len()];
+                    assert_eq!(committed, statuses(&db, &lost.ids), "{resolve:?}");
+                }
+                db.close().unwrap();
+            });
+            want.push(if recycled {
+                let damage = PageError {
+                    pid: lost.page,
+                    damage: lost.stale,
+                };
+                (
+                    (resolve, recycled, archived, open),
+                    Some(damage),
+                    Some(lost.stale),
+                    BTreeSet::from([Quarantine::Database]),
+                    Err(quarantined()),
+                )
+            } else {
+                let names = vec!["\"ann\"".to_owned(), "\"bo\"".to_owned()];
+                (
+                    (resolve, recycled, archived, open),
+                    None,
+                    Some(Damage::Settled { expected, found }),
+                    BTreeSet::new(),
+                    Ok(names),
+                )
+            });
+        }
+    }
+    assert_eq!(8, got.len());
+    assert_eq!(want, got);
 }
 
 #[test]

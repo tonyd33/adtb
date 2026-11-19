@@ -854,48 +854,11 @@ mod tests {
     use adtb_sys::os::{Backend, OsRuntime};
     use adtb_testkit::scratch::Scratch;
 
-    use super::{Allocation, Hold};
-    use crate::storage::Pid;
+    use super::Allocation;
     use crate::storage::recovery::replaying_for_test;
-
-    const P: Pid = Pid(9);
 
     fn runtime(scratch: &Scratch) -> OsRuntime {
         OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 })
-    }
-
-    #[test]
-    fn a_page_reserved_and_latched_blank_is_released_only_once_both_end() {
-        let scratch = Scratch::new("storage", "alloc-holds");
-        let rt = runtime(&scratch);
-        for (first, second) in [
-            (Hold::Reservation, Hold::Blank),
-            (Hold::Blank, Hold::Reservation),
-        ] {
-            let alloc = Allocation::new(0);
-            let mut held = alloc.lock(&rt);
-            held.hold(0, P);
-            held.blank(P);
-            held.release(P, first);
-            assert!(held.is_held(P), "the page left when {first:?} ended alone");
-            held.release(P, second);
-            assert!(!held.is_held(P), "the page stayed once both ended");
-        }
-    }
-
-    #[test]
-    fn a_committed_allocation_ends_the_blank_latch_and_the_reservation_releases_the_page() {
-        let scratch = Scratch::new("storage", "alloc-commit");
-        let rt = runtime(&scratch);
-        let alloc = Allocation::new(0);
-        let mut held = alloc.lock(&rt);
-        held.hold(0, P);
-        held.blank(P);
-        held.committed([P].into_iter(), None);
-        assert!(!held.is_blank(P));
-        assert!(held.is_held(P));
-        held.release(P, Hold::Reservation);
-        assert!(!held.is_held(P));
     }
 
     #[test]

@@ -21,7 +21,7 @@ filter = "test(=truncated_open::a_cut_that_loses_a_later_bitmap_group_refuses_th
 threads-required = 3
 
 [[profile.default.overrides]]
-filter = "test(=storage::lost_bitmap_tests::a_blank_status_page_refuses_and_never_aborts_committed_rows)"
+filter = "test(=storage::lost_bitmap_tests::a_blank_or_cut_status_page_of_committed_rows_refuses_the_select_and_marks_the_database)"
 threads-required = 2
 
 [[profile.default.overrides]]

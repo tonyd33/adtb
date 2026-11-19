@@ -2,7 +2,6 @@
 //! again, folded by checkpoints into the damage list.
 
 use crate::testing::Probe;
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mvcc::Transactions;
@@ -13,7 +12,6 @@ use crate::storage::{
     self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, Options,
     PageKind, Pager, Pid, Quarantine, Shape, Undecoded,
 };
-use crate::storage::{Ordered, Orders};
 use crate::test_world as harness;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimIo, SimRuntime};
 use adtb_testkit::common;
@@ -87,33 +85,58 @@ fn rotted(mut files: Files, pid: Pid) -> Files {
     files
 }
 
+/// A call that finds a page damaged and returns the damage.
+type Detect = Box<dyn Fn(&Pager<SimRuntime>, &SimRuntime, Pid) -> Damage>;
+
 /// One `damage` call site: the file it starts from, the page it finds damaged, and the call
 /// finding it, `None` when the open does.
 struct Site {
-    name: &'static str,
+    name: String,
     files: Files,
     pid: Pid,
     atomic: bool,
     unreadable: bool,
-    detect: Option<fn(&Pager<SimRuntime>, Pid) -> Damage>,
+    detect: Option<Detect>,
 }
 
 fn read_refused(pager: &Pager<SimRuntime>, pid: Pid) -> Damage {
     pager.read(pid).unwrap_err().damage
 }
 
-fn verify_refused(pager: &Pager<SimRuntime>, pid: Pid) -> Damage {
+fn verify_refused(pager: &Pager<SimRuntime>, _: &SimRuntime, pid: Pid) -> Damage {
     let found = pager.verify().findings;
     let damage = Probe::of(pager).refusals()[&pid];
     assert!(found.contains(&Finding::Page { pid, damage }), "{found:?}");
     damage
 }
 
-fn refused_dirty(pager: &Pager<SimRuntime>, pid: Pid) -> Damage {
+fn refused_dirty(pager: &Pager<SimRuntime>, _: &SimRuntime, pid: Pid) -> Damage {
     put(pager, pid, 2);
     pager.flush_log();
     pager.damage(pid, Damage::Checksum).damage
 }
+
+fn rotted_since_the_checkpoint(pager: &Pager<SimRuntime>, rt: &SimRuntime, pid: Pid) -> Damage {
+    rotted_after_its_write(pager, rt, &mut rt.io(), pid).expect("the read refuses the page")
+}
+
+fn refused_past_the_end(pager: &Pager<SimRuntime>, _: &SimRuntime, pid: Pid) -> Damage {
+    pager.damage(pid, Damage::Checksum).damage
+}
+
+const SHAPES: [Shape; 11] = [
+    Shape::Blank,
+    Shape::Kind,
+    Shape::Owner,
+    Shape::Frame,
+    Shape::Format,
+    Shape::Row(Undecoded::Tag),
+    Shape::Row(Undecoded::Cut),
+    Shape::Row(Undecoded::Trailing),
+    Shape::Row(Undecoded::Text),
+    Shape::Row(Undecoded::Pointer),
+    Shape::Stray,
+];
 
 fn sites() -> Vec<Site> {
     let (files, pages) = created(false);
@@ -141,28 +164,28 @@ fn sites() -> Vec<Site> {
         put(pager, q, 3);
         pager.flush_log();
     });
-    let site = |name, files, pid, atomic, detect| Site {
-        name,
+    let site = |name: &str, files, pid, atomic, detect: Option<Detect>| Site {
+        name: name.to_owned(),
         files,
         pid,
         atomic,
         unreadable: false,
         detect,
     };
-    vec![
+    let mut sites = vec![
         site(
             "read, checksum",
             rotted(files.clone(), p),
             p,
             false,
-            Some(read_refused),
+            Some(Box::new(|pager, _, pid| read_refused(pager, pid))),
         ),
         site(
             "read, lost write",
             with_page(newer, p, PAGER.page(&files, p)),
             p,
             false,
-            Some(read_refused),
+            Some(Box::new(|pager, _, pid| read_refused(pager, pid))),
         ),
         Site {
             unreadable: true,
@@ -171,9 +194,16 @@ fn sites() -> Vec<Site> {
                 files.clone(),
                 p,
                 false,
-                Some(read_refused),
+                Some(Box::new(|pager, _, pid| read_refused(pager, pid))),
             )
         },
+        site(
+            "read, checksum of a page written since the checkpoint",
+            files.clone(),
+            p,
+            false,
+            Some(Box::new(rotted_since_the_checkpoint)),
+        ),
         site(
             "open, bitmap page",
             with_page(files.clone(), bitmap, &map),
@@ -195,72 +225,110 @@ fn sites() -> Vec<Site> {
             rotted(files.clone(), p),
             p,
             false,
-            Some(verify_refused),
+            Some(Box::new(verify_refused)),
         ),
         site(
             "damage of a dirty page",
-            files,
+            files.clone(),
             p,
             false,
-            Some(refused_dirty),
+            Some(Box::new(refused_dirty)),
         ),
-    ]
+        site(
+            "damage of a page past the file and the log",
+            files.clone(),
+            Pid(1000),
+            false,
+            Some(Box::new(refused_past_the_end)),
+        ),
+    ];
+    for shape in SHAPES {
+        let detect: Detect =
+            Box::new(move |pager, _, pid| pager.damage(pid, Damage::Shape(shape)).damage);
+        sites.push(site(
+            &format!("damage, {shape:?}"),
+            files.clone(),
+            p,
+            false,
+            Some(detect),
+        ));
+    }
+    sites
 }
 
-/// Returns the damage `site` finds and what the pager records of its page after the call.
-fn detected(site: &Site, rt: &SimRuntime) -> (Option<Damage>, Option<Damage>) {
+/// Returns the damage `site` finds and what the pager records of its page after the call,
+/// closing the pager after when `close`.
+fn detected(site: &Site, rt: &SimRuntime, close: bool) -> (Option<Damage>, Option<Damage>) {
     if site.unreadable {
         let at = PAGER.range(site.pid).start as u64;
         let reads = Match::kind(OpKind::Read).offset(at);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
     }
     let (pager, _) = Pager::open(rt.clone(), &options(site.atomic)).unwrap();
-    let damage = match site.detect {
-        Some(detect) => detect(&pager, site.pid),
+    let damage = match &site.detect {
+        Some(detect) => detect(&pager, rt, site.pid),
         None => Probe::of(&pager).refusals()[&site.pid],
     };
     let recorded = Probe::of(&pager).records().pages().get(&site.pid).copied();
+    if close {
+        pager.close();
+    }
     (Some(damage).filter(|d| *d != Damage::Unreadable), recorded)
 }
 
+/// Space: every call site that refuses a page as damaged, each shape among them, each ended by a
+/// crash, which the log keeps the record through, and by a close, which the list keeps it
+/// through.
 #[test]
-fn each_of_nine_detections_leaves_a_record_a_crash_keeps_but_an_unreadable_page_none() {
+fn each_detection_leaves_a_record_a_crash_and_a_close_keep_but_an_unreadable_page_none() {
     let mut reached = BTreeSet::new();
     for site in sites() {
-        let mut sim = Sim::with_files(SEED, Config::default(), site.files.clone());
-        let mut found = None;
-        common::run_then_crash(&mut sim, |rt, _| found = Some(detected(&site, rt)));
-        let (damage, recorded) = found.unwrap();
-        assert_eq!(damage, recorded, "{}: the record of the call", site.name);
-        let mut after = Sim::with_files(SEED, Config::default(), sim.files());
-        harness::finished(&mut after, |rt| {
-            let (pager, _) = Pager::open(rt, &options(site.atomic)).unwrap();
-            let listed = Probe::of(&pager).records().pages().get(&site.pid).copied();
-            let found = pager.verify().findings;
-            let of_page = |f: &&Finding| matches!(f, Finding::Page { pid, .. } if *pid == site.pid);
-            let found: Vec<&Finding> = found.iter().filter(of_page).collect();
-            let Some(damage) = damage else {
-                assert_eq!((None, vec![]), (listed, found), "{}", site.name);
-                return;
-            };
-            let listed = listed.unwrap_or_else(|| panic!("{}: no record after a crash", site.name));
-            let kind = |d: &Damage| std::mem::discriminant(d);
-            if site.detect.is_some() {
-                assert_eq!(damage, listed, "{}: the record after a crash", site.name);
-                let want = Finding::Page {
-                    pid: site.pid,
-                    damage,
-                };
-                assert!(found.contains(&&want), "{}: {found:?}", site.name);
+        for close in [false, true] {
+            let name = format!(
+                "{} then {}",
+                site.name,
+                if close { "a close" } else { "a crash" }
+            );
+            let mut sim = Sim::with_files(SEED, Config::default(), site.files.clone());
+            let mut found = None;
+            if close {
+                harness::finished(&mut sim, |rt| found = Some(detected(&site, &rt, true)));
             } else {
-                assert_eq!(kind(&damage), kind(&listed), "{}: found again", site.name);
-                let again = |f: &&Finding| matches!(f, Finding::Page { damage: d, .. } if kind(d) == kind(&damage));
-                assert!(found.iter().any(again), "{}: {found:?}", site.name);
+                common::run_then_crash(&mut sim, |rt, _| found = Some(detected(&site, rt, false)));
             }
-        });
-        reached.insert(site.name);
+            let (damage, recorded) = found.unwrap();
+            assert_eq!(damage, recorded, "{name}: the record of the call");
+            let mut after = Sim::with_files(SEED, Config::default(), sim.files());
+            harness::finished(&mut after, |rt| {
+                let (pager, _) = Pager::open(rt, &options(site.atomic)).unwrap();
+                let listed = Probe::of(&pager).records().pages().get(&site.pid).copied();
+                let found = pager.verify().findings;
+                let of_page =
+                    |f: &&Finding| matches!(f, Finding::Page { pid, .. } if *pid == site.pid);
+                let found: Vec<&Finding> = found.iter().filter(of_page).collect();
+                let Some(damage) = damage else {
+                    assert_eq!((None, vec![]), (listed, found), "{name}");
+                    return;
+                };
+                let listed = listed.unwrap_or_else(|| panic!("{name}: no record after"));
+                let kind = |d: &Damage| std::mem::discriminant(d);
+                if site.detect.is_some() {
+                    assert_eq!(damage, listed, "{name}: the record after");
+                    let want = Finding::Page {
+                        pid: site.pid,
+                        damage,
+                    };
+                    assert!(found.contains(&&want), "{name}: {found:?}");
+                } else {
+                    assert_eq!(kind(&damage), kind(&listed), "{name}: found again");
+                    let again = |f: &&Finding| matches!(f, Finding::Page { damage: d, .. } if kind(d) == kind(&damage));
+                    assert!(found.iter().any(again), "{name}: {found:?}");
+                }
+            });
+            reached.insert(name);
+        }
     }
-    assert_eq!(9, reached.len(), "{reached:?}");
+    assert_eq!(2 * 22, reached.len(), "{reached:?}");
 }
 
 /// Write `p`, write it to the file, rot it there, evict it and read it. Returns the damage the
@@ -333,37 +401,6 @@ fn rot_under_a_page_the_pool_holds_is_recorded_until_a_change_writes_the_page_ou
 }
 
 #[test]
-fn a_checksum_failure_of_a_page_written_since_the_checkpoint_is_listed_after_a_crash() {
-    let (files, pages) = created(false);
-    let p = pages[1];
-    let mut sim = Sim::with_files(SEED, Config::default(), files);
-    let mut refused = None;
-    common::run_then_crash(&mut sim, |rt, io| {
-        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
-        refused = rotted_after_its_write(&pager, rt, io, p);
-    });
-    assert_eq!(
-        Some(Damage::Checksum),
-        refused,
-        "the read refuses the rotted page"
-    );
-    let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
-    harness::finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        assert_eq!(
-            Some(&Damage::Checksum),
-            Probe::of(&pager).records().pages().get(&p)
-        );
-        let want = Finding::Page {
-            pid: p,
-            damage: Damage::Checksum,
-        };
-        let found = pager.verify().findings;
-        assert!(found.contains(&want), "{found:?}");
-    });
-}
-
-#[test]
 fn a_record_forced_before_a_whole_file_mark_is_kept_by_every_later_open_and_after_the_release() {
     let (files, pages) = created(false);
     let p = pages[1];
@@ -407,62 +444,6 @@ fn a_record_forced_before_a_whole_file_mark_is_kept_by_every_later_open_and_afte
         opened(&mut sim, "the first open", false);
         opened(&mut sim, "the second open", true);
         opened(&mut sim, "the open after the release", false);
-    }
-}
-
-#[test]
-fn a_shape_record_is_kept_by_the_log_through_a_crash_and_by_the_list_through_a_close() {
-    let (files, pages) = created(false);
-    let shapes = [
-        Shape::Blank,
-        Shape::Kind,
-        Shape::Owner,
-        Shape::Frame,
-        Shape::Format,
-        Shape::Row(Undecoded::Tag),
-        Shape::Row(Undecoded::Cut),
-        Shape::Row(Undecoded::Trailing),
-        Shape::Row(Undecoded::Text),
-        Shape::Row(Undecoded::Pointer),
-        Shape::Stray,
-    ];
-    let refuse = |pager: &Pager<SimRuntime>| {
-        let more = (pages.len()..shapes.len())
-            .map(|_| pager.allocate(1, PageKind::HeapSlotted, 7).unwrap())
-            .collect::<Vec<_>>();
-        let pids = pages.iter().copied().chain(more);
-        let want: BTreeMap<Pid, Damage> = pids.zip(shapes.map(Damage::Shape)).collect();
-        for (&pid, &damage) in &want {
-            pager.damage(pid, damage);
-        }
-        want
-    };
-    let mut want = BTreeMap::new();
-    let mut crash = Sim::with_files(SEED, Config::default(), files.clone());
-    common::run_then_crash(&mut crash, |rt, _| {
-        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
-        want = refuse(&pager);
-    });
-    let mut close = Sim::with_files(SEED, Config::default(), files);
-    common::run(&mut close, |rt, _| {
-        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
-        assert_eq!(want, refuse(&pager), "both runs refuse the same pages");
-        pager.close();
-    });
-    assert_eq!(shapes.len(), want.len(), "a page for each shape");
-    for (what, files) in [("a crash", crash.files()), ("a close", close.files())] {
-        let mut sim = Sim::with_files(SEED, Config::default(), files);
-        harness::finished(&mut sim, |rt| {
-            let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-            let listed = Probe::of(&pager).records().pages().clone();
-            assert_eq!(want, listed, "{what}");
-            let found = pager.verify().findings;
-            for (&pid, &damage) in &want {
-                let page = Finding::Page { pid, damage };
-                assert!(found.contains(&page), "{what}: {page:?} in {found:?}");
-            }
-            pager.close();
-        });
     }
 }
 
@@ -538,112 +519,123 @@ fn stale_past_the_end(page_size: u32, wide: usize, blocks: Option<usize>) -> Fil
     out
 }
 
-#[test]
-fn stale_log_blocks_past_the_end_are_reported_after_a_crash_anywhere_in_the_open() {
-    let files = stale_past_the_end(harness::PAGE as u32, 2, None);
-    let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
-    let mut want = Vec::new();
-    harness::finished(&mut sim, |rt| {
-        let (pager, opening) = Pager::open(rt, &options(false)).unwrap();
-        let recovery = opening.recovery().cloned().expect("the open recovered");
-        want = recovery.log;
-        let reported: Vec<LogFinding> = pager
-            .verify()
-            .findings
-            .into_iter()
-            .filter_map(|f| match f {
-                Finding::Log(l) if l.problem == LogProblem::Stale => Some(l),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(want, reported, "the open's own verify");
+/// What the open of a file reports: the stale log blocks and whether the file is unlisted, by
+/// `verify`, and the page findings and damage record of page `pid`.
+type Reported = (Vec<LogFinding>, bool, Vec<Finding>, Option<Damage>);
+
+fn reported(pager: &Pager<SimRuntime>, pid: Pid) -> Reported {
+    let found = pager.verify().findings;
+    let stale = found.iter().filter_map(|f| match f {
+        Finding::Log(l) if l.problem == LogProblem::Stale => Some(*l),
+        _ => None,
     });
-    assert_reached("stale blocks past the end", want.len(), 1);
-    let (mut uncleared, mut in_header, mut listed) = (0, 0, 0);
-    search::each_crash_image(
-        &files,
-        SEED,
-        12,
-        2,
-        |rt| {
-            rt.arm(Match::any());
-            let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
-            pager.close();
-            Vec::new()
-        },
-        |at, image| {
-            let count = header_log_count(&image);
-            let mut sim = Sim::with_files(SEED, Config::default(), image);
-            harness::finished(&mut sim, |rt| {
-                let (pager, opening) = Pager::open(rt, &options(false)).unwrap();
-                let recovery = opening.recovery().cloned().expect("the open recovered");
-                match (recovery.log.is_empty(), count) {
-                    (false, _) => uncleared += 1,
-                    (true, 0) => listed += 1,
-                    (true, _) => in_header += 1,
-                }
-                let reported: Vec<LogFinding> = pager
-                    .verify()
-                    .findings
-                    .into_iter()
-                    .filter_map(|f| match f {
-                        Finding::Log(l) if l.problem == LogProblem::Stale => Some(l),
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(want, reported, "crash at event {at}");
-            });
-        },
-    );
-    assert_reached("a crash before the log's tail is cleared", uncleared, 1);
-    assert_reached("a crash with the findings in the file header", in_header, 1);
-    assert_reached("a crash with the findings in the damage list", listed, 1);
+    let of_page = found
+        .iter()
+        .filter(|f| matches!(f, Finding::Page { pid: p, .. } if *p == pid));
+    (
+        stale.collect(),
+        found.contains(&Finding::Unlisted),
+        of_page.copied().collect(),
+        Probe::of(pager).records().pages().get(&pid).copied(),
+    )
 }
 
+/// Returns what an open reports given the stale log blocks its recovery found.
+type Wanted = Box<dyn Fn(&[LogFinding]) -> Reported>;
+
+/// Space: a crash at every point of an open that finds stale log blocks past the end of the log,
+/// more of them than the file header holds, or page damage replay finds.
 #[test]
-fn page_damage_recovery_finds_is_reported_after_a_crash_anywhere_in_the_open() {
+fn what_an_open_finds_is_reported_after_a_crash_anywhere_in_the_open() {
+    let capacity = 62;
     let (atomic, pages) = created(true);
     let q = pages[1];
     let unreplayed = crashed(&atomic, true, |pager| {
         put(pager, q, 2);
         pager.flush_log();
     });
-    let files = rotted(unreplayed, q);
-    let want = Finding::Page {
+    let rotted_page = Finding::Page {
         pid: q,
         damage: Damage::Checksum,
     };
-    let mut images = 0;
-    search::each_crash_image(
-        &files,
-        SEED,
-        12,
-        2,
-        |rt| {
-            rt.arm(Match::any());
-            let (pager, _) = Pager::open(rt.clone(), &options(true)).unwrap();
-            pager.close();
-            Vec::new()
-        },
-        |at, image| {
-            images += 1;
-            let mut sim = Sim::with_files(SEED, Config::default(), image);
-            harness::finished(&mut sim, |rt| {
-                let (pager, _) = Pager::open(rt, &options(true)).unwrap();
-                let findings = pager.verify().findings;
-                assert!(
-                    findings.contains(&want),
-                    "crash at event {at}: {findings:?}"
-                );
-                assert_eq!(
-                    Some(&Damage::Checksum),
-                    Probe::of(&pager).records().pages().get(&q),
-                    "crash at event {at}"
-                );
-            });
-        },
-    );
-    assert_reached("crash images of the open", images, 3);
+    let rows: [(&str, Files, Options, Wanted); 3] = [
+        (
+            "stale blocks",
+            stale_past_the_end(harness::PAGE as u32, 2, None),
+            options(false),
+            Box::new(|log| (log.to_vec(), false, Vec::new(), None)),
+        ),
+        (
+            "more stale blocks than the header holds",
+            stale_past_the_end(16384, 5, Some(capacity + 1)),
+            sized(16384),
+            Box::new(move |log| {
+                assert_eq!(capacity + 1, log.len(), "{log:?}");
+                (log[..capacity].to_vec(), true, Vec::new(), None)
+            }),
+        ),
+        (
+            "page damage replay finds",
+            rotted(unreplayed, q),
+            options(true),
+            Box::new(move |_| (Vec::new(), false, vec![rotted_page], Some(Damage::Checksum))),
+        ),
+    ];
+    for (name, files, o, wanted) in rows {
+        let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
+        let mut want = None;
+        harness::finished(&mut sim, |rt| {
+            let (pager, opening) = Pager::open(rt, &o).unwrap();
+            let recovery = opening.recovery().cloned().expect("the open recovered");
+            let w = wanted(&recovery.log);
+            assert_eq!(w, reported(&pager, q), "{name}: the open");
+            want = Some(w);
+        });
+        let want = want.unwrap();
+        let stale = !want.0.is_empty();
+        let (mut uncleared, mut in_header, mut listed) = (0, 0, 0);
+        search::each_crash_image(
+            &files,
+            SEED,
+            12,
+            2,
+            |rt| {
+                rt.arm(Match::any());
+                let (pager, _) = Pager::open(rt.clone(), &o).unwrap();
+                pager.close();
+                Vec::new()
+            },
+            |at, image| {
+                let count = header_log_count(&image);
+                let mut sim = Sim::with_files(SEED, Config::default(), image);
+                harness::finished(&mut sim, |rt| {
+                    let (pager, opening) = Pager::open(rt, &o).unwrap();
+                    let recovery = opening.recovery().cloned().expect("the open recovered");
+                    match (recovery.log.is_empty(), count) {
+                        (false, _) => uncleared += 1,
+                        (true, 0) => listed += 1,
+                        (true, _) => in_header += 1,
+                    }
+                    assert_eq!(want, reported(&pager, q), "{name}: crash at event {at}");
+                });
+            },
+        );
+        let images = uncleared + in_header + listed;
+        assert_reached(&format!("{name}: crash images of the open"), images, 3);
+        if stale {
+            assert_reached(
+                &format!("{name}: before the log's tail is cleared"),
+                uncleared,
+                1,
+            );
+            assert_reached(
+                &format!("{name}: with the findings in the header"),
+                in_header,
+                1,
+            );
+            assert_reached(&format!("{name}: with the findings in the list"), listed, 1);
+        }
+    }
 }
 
 /// Returns a file whose one status page lost the writes after its first, the commit log's root and
@@ -698,55 +690,6 @@ fn with_commit_log<T>(
     (got, marks, sim.files())
 }
 
-/// Returns what `verify` finds of page `pid`.
-fn findings_of(pager: &Pager<SimRuntime>, pid: Pid) -> Vec<Finding> {
-    let found = pager.verify().findings.into_iter();
-    found
-        .filter(|f| matches!(f, Finding::Page { pid: p, .. } if *p == pid))
-        .collect()
-}
-
-#[test]
-fn a_settled_status_page_is_a_finding_after_reopen_and_after_its_segment_is_recycled() {
-    let (files, root, status) = lost_status_page();
-    let (recorded, marks, files) = with_commit_log(files, root, |p| {
-        Probe::of(p).records().pages().get(&status).copied()
-    });
-    let Some(damage @ Damage::Settled { .. }) = recorded else {
-        panic!("the open settles the status page: {recorded:?}");
-    };
-    assert_eq!(BTreeSet::new(), marks, "a settle marks nothing");
-    let settled = Finding::Page {
-        pid: status,
-        damage,
-    };
-    let segment = harness::options(6).segment_size;
-    let (again, marks, files) = with_commit_log(files, root, |pager| {
-        let found = findings_of(pager, status);
-        let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        while Probe::of(pager).appended().0 <= 2 * segment {
-            put(pager, scratch, (Probe::of(pager).appended().0 % 251) as u8);
-            pager.flush_log();
-        }
-        found
-    });
-    assert!(again.contains(&settled), "after reopen: {again:?}");
-    assert_eq!(BTreeSet::new(), marks, "after reopen");
-    let (recycled, _, files) = with_commit_log(files, root, Pager::recycle_log);
-    assert_reached("segments recycled", recycled, 1);
-    let first_segment = format!("{}/{:016x}", harness::options(6).log_dir(), 0);
-    assert!(
-        !files.contains_key(&first_segment),
-        "the settle's segment is recycled"
-    );
-    let (found, marks, _) = with_commit_log(files, root, |p| findings_of(p, status));
-    assert_eq!(
-        (vec![settled], BTreeSet::new()),
-        (found, marks),
-        "after the recycle"
-    );
-}
-
 #[test]
 fn a_settle_in_the_open_that_reads_the_page_stale_logs_no_stale_record() {
     let (files, root, status) = lost_status_page();
@@ -764,105 +707,110 @@ fn a_settle_in_the_open_that_reads_the_page_stale_logs_no_stale_record() {
     );
 }
 
+/// What changes a damage record while the mapper walks its page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Supersede {
+    /// The commit log settles the stale status page the record names.
+    Settle,
+    /// The page is found damaged again, otherwise.
+    Damage,
+    Free,
+}
+
+/// Space: a record superseded during its walk by a settle of its status page, a new damage of its
+/// page or a free of it; then a second mapping of what replaced it.
 #[test]
-fn a_status_page_settled_during_its_walk_marks_nothing() {
-    let (files, root, status) = lost_status_page();
-    let mut sim = Sim::with_files(SEED, Config::default(), files);
-    harness::finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt.clone(), &harness::options(6)).unwrap();
-        let Damage::Stale { expected, found } = read_refused(&pager, status) else {
-            panic!("the status page lost a write");
+fn a_record_superseded_during_its_walk_marks_nothing_and_what_replaced_it_maps_on_its_own() {
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for supersede in [Supersede::Settle, Supersede::Damage, Supersede::Free] {
+        let (files, root, pid, o) = match supersede {
+            Supersede::Settle => {
+                let (files, root, status) = lost_status_page();
+                (files, root, status, harness::options(6))
+            }
+            Supersede::Damage | Supersede::Free => {
+                let (files, pages) = created(false);
+                (files, Pid(0), pages[0], options(false))
+            }
         };
-        let mut walks = 0;
-        let failed = pager.map_damage(
-            |_| {
-                walks += 1;
-                Transactions::open(rt.clone(), &pager, root).unwrap();
-                Some(BTreeSet::from([Holder::CommitLog]))
-            },
-            &ordered_for_test(),
-        );
-        assert_eq!(BTreeMap::new(), failed);
-        assert_reached("walks of the stale record", walks, 1);
-        assert_eq!(
-            (BTreeSet::new(), Some(&Damage::Settled { expected, found })),
-            (
+        let mut sim = Sim::with_files(SEED, Config::default(), files);
+        harness::finished(&mut sim, |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &o).unwrap();
+            let first = match supersede {
+                Supersede::Settle => read_refused(&pager, pid),
+                Supersede::Damage | Supersede::Free => pager.damage(pid, Damage::Checksum).damage,
+            };
+            let stale = Damage::Stale {
+                expected: Lsn(90),
+                found: Lsn(30),
+            };
+            let mut walks = 0;
+            let failed = pager.map_damage(
+                |walked| {
+                    walks += 1;
+                    match supersede {
+                        Supersede::Settle => {
+                            drop(Transactions::open(rt.clone(), &pager, root).unwrap());
+                        }
+                        Supersede::Damage => drop(pager.damage(walked, stale)),
+                        Supersede::Free => drop(pager.free(walked).unwrap()),
+                    }
+                    let holder = match supersede {
+                        Supersede::Settle => Holder::CommitLog,
+                        Supersede::Damage | Supersede::Free => heap(1),
+                    };
+                    Some(BTreeSet::from([holder]))
+                },
+                &ordered_for_test(),
+            );
+            let superseded = (
+                failed,
+                walks,
                 Probe::of(&pager).marks(),
-                Probe::of(&pager).records().pages().get(&status)
-            ),
-            "the settle supersedes the record its walk maps"
-        );
-    });
-}
-
-#[test]
-fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
-    let (files, pages) = created(false);
-    let p = pages[0];
-    let stale = Damage::Stale {
-        expected: Lsn(90),
-        found: Lsn(30),
-    };
-    closed(&files, false, |pager| {
-        pager.damage(p, Damage::Checksum);
-        let failed = pager.map_damage(
-            |pid| {
-                pager.damage(pid, stale);
-                Some(BTreeSet::from([heap(1)]))
-            },
-            &ordered_for_test(),
-        );
-        assert_eq!(BTreeMap::new(), failed);
-        assert_eq!(
-            (BTreeSet::new(), None),
-            (Probe::of(pager).marks(), pager.mapped_to(p)),
-            "the superseded record"
-        );
-        let failed = pager.map_damage(|_| Some(BTreeSet::from([heap(2)])), &ordered_for_test());
-        assert_eq!(BTreeMap::new(), failed);
-        let successor = BTreeSet::from([Quarantine::Heap(2)]);
-        assert_eq!(
-            (successor.clone(), Some(successor)),
-            (Probe::of(pager).marks(), pager.mapped_to(p)),
-            "the successor maps on its own"
-        );
-    });
-}
-
-/// A source of commit order that counts its holds.
-struct Counted(Cell<usize>);
-
-impl Orders for Counted {
-    fn ordered<T>(&self, f: impl FnOnce(Ordered<'_>) -> T) -> T {
-        self.0.set(self.0.get() + 1);
-        f(ordered_for_test())
+                pager.mapped_to(pid),
+                Probe::of(&pager).records().pages().get(&pid).copied(),
+            );
+            let failed = pager.map_damage(|_| Some(BTreeSet::from([heap(2)])), &ordered_for_test());
+            let replaced = (failed, Probe::of(&pager).marks(), pager.mapped_to(pid));
+            got.push((supersede, superseded, replaced));
+            let none = BTreeMap::new();
+            let empty = BTreeSet::new();
+            let heap2 = BTreeSet::from([Quarantine::Heap(2)]);
+            want.push(match (supersede, first) {
+                (Supersede::Settle, Damage::Stale { expected, found }) => (
+                    supersede,
+                    (
+                        none.clone(),
+                        1,
+                        empty.clone(),
+                        None,
+                        Some(Damage::Settled { expected, found }),
+                    ),
+                    (none, empty, None),
+                ),
+                (Supersede::Damage, _) => (
+                    supersede,
+                    (none.clone(), 1, empty, None, Some(stale)),
+                    (none, heap2.clone(), Some(heap2)),
+                ),
+                (Supersede::Free, _) => (
+                    supersede,
+                    (
+                        none.clone(),
+                        1,
+                        empty.clone(),
+                        Some(empty.clone()),
+                        Some(Damage::Checksum),
+                    ),
+                    (none, empty.clone(), Some(empty)),
+                ),
+                (_, first) => panic!("the status page lost a write; read {first:?}"),
+            });
+        });
     }
-}
-
-#[test]
-fn a_mapping_sets_the_database_and_an_object_under_one_hold_of_commit_order() {
-    let (files, pages) = created(false);
-    closed(&files, false, |pager| {
-        pager.damage(pages[0], Damage::Checksum);
-        pager.damage(pages[1], Damage::Checksum);
-        let order = Counted(Cell::new(0));
-        let failed = pager.map_damage(
-            |pid| match pid == pages[0] {
-                true => Some(BTreeSet::from([Holder::CommitLog])),
-                false => Some(BTreeSet::from([heap(1)])),
-            },
-            &order,
-        );
-        assert_eq!(BTreeMap::new(), failed);
-        assert_eq!(
-            (
-                1,
-                BTreeSet::from([Quarantine::Database, Quarantine::Heap(1)])
-            ),
-            (order.0.get(), Probe::of(pager).marks()),
-            "holds taken, and the marks"
-        );
-    });
+    assert_eq!(3, got.len());
+    assert_eq!(want, got);
 }
 
 fn heap(id: u32) -> Holder {
@@ -997,148 +945,94 @@ fn a_file_marked_whole_writes_no_record_and_keeps_its_records_in_memory() {
     );
 }
 
-/// Returns the stale log findings and whether the list is full, as `verify` of `pager` reports.
-fn stale_reported(pager: &Pager<SimRuntime>) -> (Vec<LogFinding>, bool) {
-    let found = pager.verify().findings;
-    let stale = found.iter().filter_map(|f| match f {
-        Finding::Log(l) if l.problem == LogProblem::Stale => Some(*l),
-        _ => None,
-    });
-    (stale.collect(), found.contains(&Finding::Unlisted))
+/// What ends a damage record of a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Removal {
+    /// A change of the page, logged as a full-page image.
+    Image,
+    Free,
+    /// A free and an allocation of the page again, which changes it.
+    Reallocate,
 }
 
+/// Space: a page's damage record listed by a close, held in the log by a crash, or made in the
+/// same session, then removed by a free or a free and an allocation, or by a full-page image of
+/// the listed page, which no read refuses; the session ended by a crash or a close.
 #[test]
-fn one_stale_log_block_past_what_the_header_holds_records_the_whole_file() {
-    let capacity = 62;
-    let files = stale_past_the_end(16384, 5, Some(capacity + 1));
-    let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
-    let mut want = Vec::new();
-    harness::finished(&mut sim, |rt| {
-        let (pager, opening) = Pager::open(rt, &sized(16384)).unwrap();
-        let recovery = opening.recovery().cloned().expect("the open recovered");
-        assert_eq!(capacity + 1, recovery.log.len(), "{:?}", recovery.log);
-        want = recovery.log[..capacity].to_vec();
-        assert_eq!((want.clone(), true), stale_reported(&pager), "the open");
-    });
-    let mut images = 0;
-    search::each_crash_image(
-        &files,
-        SEED,
-        12,
-        2,
-        |rt| {
-            rt.arm(Match::any());
-            let (pager, _) = Pager::open(rt.clone(), &sized(16384)).unwrap();
-            pager.close();
-            Vec::new()
-        },
-        |at, image| {
-            images += 1;
-            let mut sim = Sim::with_files(SEED, Config::default(), image);
-            harness::finished(&mut sim, |rt| {
-                let (pager, _) = Pager::open(rt, &sized(16384)).unwrap();
-                let got = stale_reported(&pager);
-                assert_eq!((want.clone(), true), got, "crash at event {at}");
-            });
-        },
-    );
-    assert_reached("crash images of the open", images, 3);
-}
-
-#[test]
-fn a_damaged_page_freed_or_freed_and_allocated_again_is_reported_by_nothing() {
+fn an_image_or_a_free_of_a_damaged_page_removes_its_record_unless_the_free_copy_holds_it() {
     let (files, pages) = created(false);
     let p = pages[1];
     let listed = closed(&files, false, |pager| {
         pager.damage(p, Damage::Checksum);
     });
-    let unlisted = crashed(&files, false, |pager| {
+    let in_log = crashed(&files, false, |pager| {
         pager.damage(p, Damage::Checksum);
     });
-    for (what, files) in [("listed", listed), ("in the log", unlisted)] {
-        let check = |pager: &Pager<SimRuntime>, when: &str| {
-            assert_eq!(
-                None,
-                Probe::of(pager).records().pages().get(&p),
-                "{what}: {when}"
-            );
-            let found = pager.verify().findings;
-            let of_p = |f: &&Finding| matches!(f, Finding::Page { pid, .. } if *pid == p);
-            let found: Vec<&Finding> = found.iter().filter(of_p).collect();
-            assert_eq!(Vec::<&Finding>::new(), found, "{what}: {when}");
-        };
-        let freed = |pager: &Pager<SimRuntime>| {
-            assert_eq!(
-                Some(&Damage::Checksum),
-                Probe::of(pager).records().pages().get(&p),
-                "{what}: before the free"
-            );
-            pager.free(p).unwrap();
-            pager.flush_log();
-            check(pager, "after the free");
-        };
-        let only_freed = crashed(&files, false, freed);
-        let allocated = crashed(&files, false, |pager| {
-            freed(pager);
-            assert_eq!(Ok(p), pager.allocate(1, PageKind::HeapSlotted, 7), "{what}");
-            put(pager, p, 9);
-            pager.flush_log();
-            check(pager, "after the allocation");
-        });
-        for (when, after) in [("the free", only_freed), ("the allocation", allocated)] {
-            let mut sim = Sim::with_files(SEED, Config::default(), after);
-            harness::finished(&mut sim, |rt| {
-                let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-                check(&pager, &format!("a crash after {when}"));
-            });
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for (origin, files) in [
+        ("listed", &listed),
+        ("in the log", &in_log),
+        ("this session", &files),
+    ] {
+        let image = (origin == "listed").then_some(Removal::Image);
+        for removal in image
+            .into_iter()
+            .chain([Removal::Free, Removal::Reallocate])
+        {
+            for close in [false, true] {
+                let mut in_session = None;
+                let remove = |pager: &Pager<SimRuntime>| {
+                    if origin == "this session" {
+                        pager.damage(p, Damage::Checksum);
+                    }
+                    let before = Probe::of(pager).records().pages().get(&p).copied();
+                    match removal {
+                        Removal::Image => put(pager, p, 9),
+                        Removal::Free => {
+                            pager.free(p).unwrap();
+                        }
+                        Removal::Reallocate => {
+                            pager.free(p).unwrap();
+                            assert_eq!(Ok(p), pager.allocate(1, PageKind::HeapSlotted, 7));
+                            put(pager, p, 9);
+                        }
+                    }
+                    pager.flush_log();
+                    let after = Probe::of(pager).records().pages().get(&p).copied();
+                    let mapped = pager.mapped_to(p);
+                    in_session = Some((before, after, mapped, mapped_whole(pager)));
+                };
+                let after = if close {
+                    closed(files, false, remove)
+                } else {
+                    crashed(files, false, remove)
+                };
+                let mut sim = Sim::with_files(SEED, Config::default(), after);
+                let mut reopened = None;
+                harness::finished(&mut sim, |rt| {
+                    let (pager, _) = Pager::open(rt, &options(false)).unwrap();
+                    let listed = Probe::of(&pager).records().pages().get(&p).copied();
+                    let found = pager.verify().findings;
+                    let of_p = |f: &&Finding| matches!(f, Finding::Page { pid, .. } if *pid == p);
+                    let found: Vec<Finding> = found.iter().filter(of_p).copied().collect();
+                    reopened = Some((listed, found));
+                });
+                got.push((origin, removal, close, in_session, reopened));
+                let held = origin == "this session" && matches!(removal, Removal::Free);
+                let kept = held.then_some(Damage::Checksum);
+                let mapped = held.then(BTreeSet::<Quarantine>::new);
+                let session = (Some(Damage::Checksum), kept, mapped, (BTreeSet::new(), 0));
+                want.push((
+                    origin,
+                    removal,
+                    close,
+                    Some(session),
+                    Some((None, Vec::new())),
+                ));
+            }
         }
     }
-}
-
-#[test]
-fn a_full_page_image_logged_after_the_record_drops_it() {
-    let (files, pages) = created(false);
-    let p = pages[1];
-    let planted = closed(&files, false, |pager| {
-        pager.damage(p, Damage::Checksum);
-    });
-    let after = crashed(&planted, false, |pager| {
-        assert_eq!(
-            Some(&Damage::Checksum),
-            Probe::of(pager).records().pages().get(&p)
-        );
-        put(pager, p, 9);
-        pager.flush_log();
-        assert_eq!(
-            None,
-            Probe::of(pager).records().pages().get(&p),
-            "after the image"
-        );
-    });
-    let mut sim = Sim::with_files(SEED, Config::default(), after);
-    harness::finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        assert_eq!(
-            None,
-            Probe::of(&pager).records().pages().get(&p),
-            "after a crash"
-        );
-    });
-}
-
-#[test]
-fn the_damage_of_a_page_freed_since_maps_to_nothing_with_no_walk() {
-    let (files, pages) = created(false);
-    let p = pages[0];
-    closed(&files, false, |pager| {
-        pager.damage(p, Damage::Checksum);
-        pager.free(p).unwrap();
-        assert_eq!(
-            Some(&Damage::Checksum),
-            Probe::of(pager).records().pages().get(&p),
-            "held as the free copy's damage"
-        );
-        assert_eq!((BTreeSet::new(), 0), mapped_whole(pager));
-        assert_eq!(Some(BTreeSet::new()), pager.mapped_to(p));
-    });
+    assert_eq!(14, got.len());
+    assert_eq!(want, got);
 }
