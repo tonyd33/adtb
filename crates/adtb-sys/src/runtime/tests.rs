@@ -121,8 +121,8 @@ impl Gen {
 }
 
 /// A write: with `no_space`, past the end is `Full` with no draw; then fail, and a coin per
-/// sector; then lost; then misdirect, and a uniform pick among the other sector-aligned offsets
-/// where it fits within the file, or just past its end when there is none.
+/// atomic unit; then lost; then misdirect, and a uniform pick among the other sector-aligned
+/// offsets where it fits within the file, or just past its end when there is none.
 fn expected_write(
     e: &mut Expect<'_>,
     f: &Faults,
@@ -134,10 +134,12 @@ fn expected_write(
         return WriteFate::Full;
     }
     if e.strikes(f.fail_p) {
-        let sectors = len.div_ceil(f.sector);
-        let landed = (0..sectors)
+        let units = len.div_ceil(f.atomic_unit);
+        let landed = (0..units)
             .filter(|_| e.coin())
-            .map(|i| offset + i * f.sector..(offset + (i + 1) * f.sector).min(offset + len))
+            .map(|i| {
+                offset + i * f.atomic_unit..(offset + (i + 1) * f.atomic_unit).min(offset + len)
+            })
             .collect();
         return WriteFate::Fail { landed };
     }

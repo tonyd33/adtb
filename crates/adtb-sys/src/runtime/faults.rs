@@ -90,8 +90,8 @@ pub enum WriteFate {
 /// Postconditions:
 ///
 /// - With `no_space`, a write past `file_len` is `Full` and draws nothing.
-/// - Otherwise it draws fail, then one coin per sector of the write for whether it lands, then
-///   lost, then misdirect, stopping at the first that strikes.
+/// - Otherwise it draws fail, then one coin per atomic unit of the write, counted from its
+///   offset, for whether it lands, then lost, then misdirect, stopping at the first that strikes.
 /// - A misdirected write lands at a sector-aligned offset other than its own, drawn uniformly
 ///   from those where it fits within the file; when there is none, it lands just past its end.
 pub fn decide_write(
@@ -108,7 +108,7 @@ pub fn decide_write(
         let mut landed = Vec::new();
         let mut at = offset;
         while at < offset + len {
-            let end = (at + faults.sector).min(offset + len);
+            let end = (at + faults.atomic_unit).min(offset + len);
             if draw.coin() {
                 landed.push(at..end);
             }

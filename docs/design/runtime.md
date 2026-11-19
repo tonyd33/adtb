@@ -296,7 +296,7 @@ What each fault leaves behind:
 | Latent sector error | Reads of a sector fail with `Failed` until the sector is written again. |
 | Misdirected write | The write completes, and its data lands at another offset of the same file; the target keeps its old contents. |
 | Lost write | The write completes and never reaches the device, forced or not. |
-| Failed write or force | The op completes with `Failed`; a failed write may have changed any of its blocks. |
+| Failed write or force | The op completes with `Failed`; a failed write may have changed any subset of its atomic units, each whole. |
 
 A backend with faults decides the fate of each op from one
 `adtb_sys::runtime::Faults` and a source of draws, by the decision
@@ -316,10 +316,11 @@ Postconditions, in the order of the draws:
 
 - A write: with `no_space`, a write past the file's end is `Full` and
   draws nothing. Otherwise it draws fail, and for a failed write one
-  coin per sector of it, the sectors that land; then lost; then
-  misdirect, and for a misdirected write a uniform pick among the other
-  sector-aligned offsets where it fits within the file, or just past
-  the file's end when there is none. `At(offset)` is the write as asked.
+  coin per atomic unit of it from its offset, the units that land; then
+  lost; then misdirect, and for a misdirected write a uniform pick among
+  the other sector-aligned offsets where it fits within the file, or
+  just past the file's end when there is none. `At(offset)` is the write
+  as asked.
 - A read that finds `n` bytes: none is `Clean` and draws nothing.
   Otherwise it draws latent, and its sector uniformly among those of
   the bytes; then, unless one of those sectors is unreadable already,

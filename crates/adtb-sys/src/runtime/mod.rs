@@ -276,7 +276,8 @@ pub enum IoError {
     NotADirectory,
     /// The device has no space for the op; a `Full` `Write` may have changed any of its blocks.
     Full,
-    /// The device refused the op; a failed `Write` may have changed any of its blocks.
+    /// The device refused the op; a failed `Write` may have changed any subset of its atomic units,
+    /// each whole.
     Failed,
 }
 
