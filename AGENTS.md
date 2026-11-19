@@ -105,7 +105,7 @@ Before writing code a correctness rule depends on, state the rule and what enfor
 
 A test earns its place by checking behaviour a user or caller relies on, at the level where that contract is stated, that no stronger test already covers. That is a judgement made when writing and reviewing it. Being able to fail is not enough: a test of a constructor fails when an assignment is deleted and is still worthless. Do not break code on purpose to prove a test can fail.
 
-Prefer structure to a test: make a defect impossible or obvious with a type, a single gate or a simpler design, and test only what structure cannot carry. Test observable behaviour through the runners (`cargo conformance` scripts) rather than reaching into internals; a test that needs internals says which observable surface it lacks. A bug fix tests the contract the bug broke across its class, not only the input in hand. Name the contract each new test checks.
+Prefer structure to a test: make a defect impossible or obvious with a type, a single gate or a simpler design, and test only what structure cannot carry. Test observable behaviour through the runners (`cargo conformance` scripts) rather than reaching into internals; a test that needs internals says which observable surface it lacks. A bug fix tests the contract the bug broke across its class, not only the input in hand. Name the contract each new test checks. Every test costs iteration time: it lengthens the Rust build and the suite every change waits on. When a subsystem needs many tests, simplify the subsystem before adding to them.
 
 A test failure is evidence to assess, not an automatic requirement. Before
 changing behavior or architecture to satisfy it, identify the governing contract
