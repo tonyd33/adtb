@@ -263,14 +263,30 @@ mod marks {
         caused: AtomicBool,
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct State {
         set: BTreeSet<Quarantine>,
         /// Marks held for this open only, never written.
         held: BTreeSet<Quarantine>,
-        page: Pid,
-        unreadable: bool,
-        unverified: bool,
+        page: MarksPage,
+    }
+
+    /// The page holding the marks, and whether it takes a write.
+    #[derive(Clone, Copy, Debug)]
+    enum MarksPage {
+        Writable(Pid),
+        Unwritable(Unwritable),
+    }
+
+    impl MarksPage {
+        fn pid(self) -> Pid {
+            match self {
+                MarksPage::Writable(pid)
+                | MarksPage::Unwritable(
+                    Unwritable::Unreadable(pid) | Unwritable::Unverified(pid),
+                ) => pid,
+            }
+        }
     }
 
     /// Why the marks page takes no write.
@@ -288,8 +304,9 @@ mod marks {
         pub(in crate::storage) fn new(page: Pid) -> Marks {
             Marks {
                 state: Lock::new(State {
-                    page,
-                    ..State::default()
+                    set: BTreeSet::new(),
+                    held: BTreeSet::new(),
+                    page: MarksPage::Writable(page),
                 }),
                 any: AtomicBool::new(false),
                 cause: Lock::new(None),
@@ -344,25 +361,22 @@ mod marks {
             checked: bool,
         ) {
             let mut m = self.lock(rt);
-            m.state.page = page;
-            m.state.unverified = !checked;
-            match read {
-                Ok(set) => m.state.set = set,
-                Err(set) => {
-                    m.state.set = set;
-                    m.state.unreadable = true;
-                }
-            }
+            m.state.page = match (&read, checked) {
+                (Err(_), _) => MarksPage::Unwritable(Unwritable::Unreadable(page)),
+                (Ok(_), false) => MarksPage::Unwritable(Unwritable::Unverified(page)),
+                (Ok(_), true) => MarksPage::Writable(page),
+            };
+            m.state.set = read.unwrap_or_else(|set| set);
         }
 
         /// Hold the marks on page `page`, formatted empty.
         pub(in crate::storage) fn formatted<R: Runtime>(&self, rt: &R, page: Pid) {
-            self.lock(rt).state.page = page;
+            self.lock(rt).state.page = MarksPage::Writable(page);
         }
 
         /// Returns the page holding the marks.
         pub(in crate::storage) fn page<R: Runtime>(&self, rt: &R) -> Pid {
-            self.lock(rt).state.page
+            self.lock(rt).state.page.pid()
         }
 
         /// Returns the page holding the marks, or why it takes no write.
@@ -370,13 +384,9 @@ mod marks {
             &self,
             rt: &R,
         ) -> Result<Pid, Unwritable> {
-            let m = self.lock(rt);
-            if m.state.unreadable {
-                Err(Unwritable::Unreadable(m.state.page))
-            } else if m.state.unverified {
-                Err(Unwritable::Unverified(m.state.page))
-            } else {
-                Ok(m.state.page)
+            match self.lock(rt).state.page {
+                MarksPage::Writable(pid) => Ok(pid),
+                MarksPage::Unwritable(why) => Err(why),
             }
         }
 

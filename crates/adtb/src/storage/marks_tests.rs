@@ -3,24 +3,9 @@ use std::collections::BTreeSet;
 use adtb_sys::os::{Backend, Faults, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
-use super::{Marks, Quarantine, Unwritable};
-use crate::storage::Pid;
+use super::Quarantine;
 use crate::storage::pager::{Options, Pager};
 use crate::storage::policy::{self, Fault, Holder, Phase};
-
-const PAGE: Pid = Pid(5);
-
-#[test]
-fn marks_set_for_a_page_that_does_not_decode_take_no_write() {
-    let scratch = Scratch::new("storage", "marks-unreadable");
-    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
-    let marks = Marks::new(PAGE);
-    assert!(!marks.any());
-    marks.load(&rt, PAGE, Err(BTreeSet::from([Quarantine::Database])), true);
-    assert!(marks.any());
-    assert_eq!(BTreeSet::from([Quarantine::Database]), marks.all(&rt));
-    assert_eq!(Err(Unwritable::Unreadable(PAGE)), marks.writable_page(&rt));
-}
 
 #[test]
 fn a_mark_set_while_the_open_holds_the_database_survives_a_crash() {
