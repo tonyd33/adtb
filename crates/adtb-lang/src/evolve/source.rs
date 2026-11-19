@@ -81,7 +81,7 @@ impl Source {
         let mut errs = Vec::new();
         for (i, d) in self.decls.iter().enumerate() {
             let text = format!("{}{}", header(&d.module), d.text);
-            match parse_schema(&text, Options { elisions: true }).ok() {
+            match self.parsed.parsed(&text) {
                 Ok(f) => out.push((FileId(i as u32), f)),
                 Err(ds) => errs.extend(ds.into_iter().map(|diag| FileDiag {
                     file: FileId(i as u32),

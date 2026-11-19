@@ -160,6 +160,7 @@ pub struct Source {
     /// no later grant operator of it has stated.
     unstated: Vec<carry::Unstated>,
     memo: memo::BuiltMemo,
+    parsed: memo::ParsedMemo,
     /// While the operators being applied replay a logged migration as an inverse, the id each
     /// object the inverse created again takes, by the id it had; a `revert` among them applies
     /// without its dependency gate and names those objects by the ids this maps them to.
