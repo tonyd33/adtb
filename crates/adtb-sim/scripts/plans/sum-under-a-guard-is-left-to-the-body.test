@@ -1,0 +1,28 @@
+# An aggregate under a guard is computed by the body over the group's rows, not by the group.
+use planner
+
+probe plan
+  explain from o in orders group o by o.user into g
+    select { user: g.key, big: if count(x for x in g) > 1 then sum(x.total for x in g) else 0 }
+----
+Set
+  reads orders.Order
+  Pipeline
+    One row
+    Bind
+      Group 1 aggregates, keeps rows
+        Pipeline
+          Scan orders.Order
+          Emit
+    Unnest
+    Bind
+      Let
+        If
+          Aggregate sum, total
+            Pipeline
+              One row
+              Unnest
+              Emit
+          Compute
+        Compute
+    Emit

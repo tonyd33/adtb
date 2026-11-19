@@ -1,0 +1,52 @@
+# An equality inside a function whose argument branches still probes the index.
+migrate
+  module app
+  add module app
+  add type Membership = { id: Key memberships, user: Text }
+  add relation memberships : Membership key id generate sequence unique (user)
+  add type Assignment = { id: Key assignments, mine: Bool, user: Text, other: Text }
+  add relation assignments : Assignment key id generate sequence
+  define fn same (a: Text, b: Text) -> Bool = a == b
+  define fn same2 (a: Text, b: Text) -> Bool = a == b and b == a
+
+probe plan
+  explain from a in assignments where key a == assignments.key(2)
+    select (from m in memberships where same(m.user, if a.mine then a.user else a.other) select key m)
+----
+Set total
+  reads memberships.Membership, assignments.Assignment, memberships (user), assignments (id)
+  Pipeline
+    One row
+    Probe assignments (id)
+      Assignment ->
+        Chain
+          Bind
+            Set total
+              Pipeline
+                One row
+                Probe memberships (user)
+                  Membership ->
+                    Chain
+                      Emit
+          Emit
+
+probe plan
+  explain from a in assignments where key a == assignments.key(2)
+    select (from m in memberships where same2(m.user, if a.mine then a.user else a.other) select key m)
+----
+Set total
+  reads memberships.Membership, assignments.Assignment, memberships (user), assignments (id)
+  Pipeline
+    One row
+    Probe assignments (id)
+      Assignment ->
+        Chain
+          Bind
+            Set total
+              Pipeline
+                One row
+                Probe memberships (user)
+                  Membership ->
+                    Chain
+                      Emit
+          Emit

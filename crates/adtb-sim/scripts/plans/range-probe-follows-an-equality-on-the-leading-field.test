@@ -1,0 +1,15 @@
+# A range probe bounds the field after those an equality fixes.
+use planner
+
+probe plan
+  explain from x in follows where x.src == users.key(2) and x.dst > users.key(2) select x.dst
+----
+Set total
+  reads follows.Follow, follows (src, dst)
+  Pipeline
+    One row
+    Range probe follows (src, dst), 1 key equal, lower exclusive, no upper
+      Follow ->
+        Chain
+          Filter
+          Emit

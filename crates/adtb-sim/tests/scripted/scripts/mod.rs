@@ -154,6 +154,11 @@ fn past() {
 }
 
 #[test]
+fn plans() {
+    run(&root().join("plans"));
+}
+
+#[test]
 fn longkey() {
     run(&root().join("longkey"));
 }

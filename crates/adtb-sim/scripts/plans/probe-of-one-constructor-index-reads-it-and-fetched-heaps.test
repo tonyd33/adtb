@@ -1,0 +1,15 @@
+# A probe of an index over one constructor reads that index and the heaps its fetch walks.
+use planner
+
+probe plan
+  explain from i in identities.Google where i.gid == "root" select key i
+----
+Set total
+  reads identities.EmailPass, identities.Google, identities.Apple, identities (gid)
+  Pipeline
+    One row
+    Probe identities (gid)
+      pruned EmailPass at compile, Apple at compile
+      Google ->
+        Chain
+          Emit

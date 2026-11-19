@@ -1,0 +1,11 @@
+# A constraint whose incremental check would read a relation through a field no index leads with
+# is refused, naming the missing index.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::seen_logins is not admitted: changes to app::logins: index (seen) in app::phones is missing\nconstraint app::seen_logins is not admitted: changes to app::phones: index (at) in app::logins is missing" } } }
+  module app
+  add module app
+  add type Phone = { id: Key phones, seen: Instant }
+  add relation phones : Phone key id generate sequence
+  add type Login = { id: Key logins, at: Instant }
+  add relation logins : Login key id generate sequence
+  add constraint seen_logins =
+    from l in logins, p in phones where p.seen == l.at select p

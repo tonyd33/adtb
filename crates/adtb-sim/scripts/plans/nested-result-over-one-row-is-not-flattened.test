@@ -1,0 +1,16 @@
+# A nested result outside any comprehension is computed by its own pipeline, not a grouping.
+use planner
+
+probe plan
+  explain { n: count(o for o in orders where o.user == users.key(1)) }
+----
+Let
+  reads orders.Order, orders (user)
+  Aggregate count, total
+    Pipeline
+      One row
+      Probe orders (user)
+        Order ->
+          Chain
+            Emit
+  Compute

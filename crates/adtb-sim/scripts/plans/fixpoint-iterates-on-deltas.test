@@ -1,0 +1,50 @@
+# A recursive binding iterates on what the previous step added.
+use planner
+
+probe plan
+  explain fix reach = (from f in follows where f.src == users.key(1) select f.dst)
+        union (from r in reach, f in follows where f.src == r select f.dst)
+    in from u in users where exists r in reach where r == key u select u
+----
+Fixpoint
+  reads users.User, follows.Follow, follows (src, dst)
+  Step delta
+    Set total
+      Build #0
+        Pipeline
+          Scan follows.Follow
+          Emit
+      Union
+        Pipeline
+          One row
+          Probe follows (src, dst)
+            Follow ->
+              Chain
+                Emit
+        Pipeline
+          One row
+          Unnest
+          Probe build #0, 1 key
+          Emit
+    Set total
+      Build #0
+        Pipeline
+          Scan follows.Follow
+          Emit
+      Pipeline
+        One row
+        Unnest
+        Probe build #0, 1 key
+        Emit
+  Set total
+    Pipeline
+      Scan users.User
+      Bind
+        Exists total
+          Pipeline
+            One row
+            Unnest
+            Filter
+            Emit
+      Filter
+      Emit

@@ -1,0 +1,16 @@
+# A constructor whose arm's condition is false is read from no heap.
+use planner
+
+probe plan
+  explain from i in identities
+    where match i | Google g -> g.gid == "root" | _ -> false
+    select key i
+----
+Set total
+  reads identities.Google
+  Pipeline
+    Scan identities.Google
+    Bind
+      Compute
+    Filter
+    Emit

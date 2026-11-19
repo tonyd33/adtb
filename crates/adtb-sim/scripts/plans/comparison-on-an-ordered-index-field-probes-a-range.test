@@ -1,0 +1,57 @@
+# A comparison on the leading field of an ordered index probes the range it bounds, each bound
+# inclusive exactly when its comparison admits equality.
+use planner
+
+probe plan
+  explain from o in orders where o.id > orders.key(2) select o.total
+----
+Set total
+  reads orders.Order, orders (id)
+  Pipeline
+    One row
+    Range probe orders (id), 0 keys equal, lower exclusive, no upper
+      Order ->
+        Chain
+          Filter
+          Emit
+
+probe plan
+  explain from o in orders where orders.key(2) >= o.id select o.total
+----
+Set total
+  reads orders.Order, orders (id)
+  Pipeline
+    One row
+    Range probe orders (id), 0 keys equal, no lower, upper inclusive
+      Order ->
+        Chain
+          Filter
+          Emit
+
+probe plan
+  explain from o in orders where o.id >= orders.key(2) and o.id < orders.key(4) select o.total
+----
+Set total
+  reads orders.Order, orders (id)
+  Pipeline
+    One row
+    Range probe orders (id), 0 keys equal, lower inclusive, upper exclusive
+      Order ->
+        Chain
+          Filter
+          Filter
+          Emit
+
+probe plan
+  explain from o in orders where orders.key(3) < o.id and o.qty > 0 select o.total
+----
+Set total
+  reads orders.Order, orders (id)
+  Pipeline
+    One row
+    Range probe orders (id), 0 keys equal, lower exclusive, no upper
+      Order ->
+        Chain
+          Filter
+          Filter
+          Emit

@@ -1,0 +1,11 @@
+# A read of one constructor relation reads its heap and no other heap of the sum.
+use planner
+
+probe plan
+  explain from g in identities.Google select g.gid
+----
+Set total
+  reads identities.Google
+  Pipeline
+    Scan identities.Google
+    Emit

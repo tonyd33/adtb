@@ -1,0 +1,133 @@
+# A nested result correlated with its outer row by an equality is computed once as a grouping,
+# each outer row reading its group's rows.
+use planner
+
+probe plan
+  explain from u in users
+    select { name: u.name, phones: from d in phones where d.owner == key u select d.seen }
+----
+Set total
+  reads users.User, phones.Phone
+  Let
+    Group 0 aggregates, keeps rows, total
+      Pipeline
+        Scan phones.Phone
+        Emit
+    Pipeline
+      Scan users.User
+      Bind
+        Let
+          Compute
+          Let
+            Let
+              Rows of a group
+              Set total
+                Pipeline
+                  One row
+                  Unnest
+                  Emit
+            Compute
+      Emit
+
+probe plan
+  explain from u in users select { name: u.name, n: count(i for i in u.<identities.user) }
+----
+Set total
+  reads users.User, identities.EmailPass, identities.Google, identities.Apple
+  Let
+    Group 0 aggregates, keeps rows, total
+      Union
+        Pipeline
+          Scan identities.EmailPass
+          Emit
+        Pipeline
+          Scan identities.Google
+          Emit
+        Pipeline
+          Scan identities.Apple
+          Emit
+    Pipeline
+      Scan users.User
+      Bind
+        Let
+          Let
+            Rows of a group
+            Aggregate count, total
+              Pipeline
+                One row
+                Unnest
+                Emit
+          Compute
+      Emit
+
+probe plan
+  explain from u in users where exists p in posts where p.author == key u select u.name
+----
+Set total
+  reads users.User, posts.Post
+  Let
+    Group 0 aggregates, keeps rows, total
+      Pipeline
+        Scan posts.Post
+        Emit
+    Pipeline
+      Scan users.User
+      Bind
+        Let
+          Rows of a group
+          Exists total
+            Pipeline
+              One row
+              Unnest
+              Emit
+      Filter
+      Emit
+
+probe plan
+  explain from u in users
+    select { u: u.name, out: from x in follows where x.src == key u and x.dst == key u select x.dst }
+----
+Set total
+  reads users.User, follows.Follow
+  Let
+    Group 0 aggregates, keeps rows, total
+      Pipeline
+        Scan follows.Follow
+        Emit
+    Pipeline
+      Scan users.User
+      Bind
+        Let
+          Let
+            Rows of a group
+            Set total
+              Pipeline
+                One row
+                Unnest
+                Emit
+          Compute
+      Emit
+
+probe plan
+  explain from u in users
+    select from p in posts where p.author == key u and p.title != u.name select p.title
+----
+Set total
+  reads users.User, posts.Post
+  Let
+    Group 0 aggregates, keeps rows, total
+      Pipeline
+        Scan posts.Post
+        Emit
+    Pipeline
+      Scan users.User
+      Bind
+        Let
+          Rows of a group
+          Set total
+            Pipeline
+              One row
+              Unnest
+              Filter
+              Emit
+      Emit

@@ -1,0 +1,32 @@
+# A comparison inside a function whose argument branches still probes the range.
+migrate
+  module app
+  add module app
+  add type M = { id: Key ms, n: I64 }
+  add relation ms : M key id generate sequence index (n)
+  add type A = { id: Key as_, mine: Bool, x: I64, y: I64 }
+  add relation as_ : A key id generate sequence
+  define fn near (a: I64, b: I64) -> Bool = a >= b and a < b + 10
+
+probe plan
+  explain from a in as_ where key a == as_.key(1)
+    select (from m in ms where near(m.n, if a.mine then a.x else a.y) select key m)
+----
+Set
+  reads ms.M, as_.A, ms (n), as_ (id)
+  Pipeline
+    One row
+    Probe as_ (id)
+      A ->
+        Chain
+          Bind
+            Set
+              Pipeline
+                One row
+                Range probe ms (n), 0 keys equal, lower inclusive, no upper
+                  M ->
+                    Chain
+                      Filter
+                      Filter
+                      Emit
+          Emit

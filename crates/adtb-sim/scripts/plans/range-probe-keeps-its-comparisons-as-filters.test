@@ -1,0 +1,28 @@
+# A range probe bounded by one of two comparisons on its field keeps both as conditions on its
+# rows.
+use planner
+
+probe plan
+  explain from o in orders where o.id > orders.key(1) and o.id > orders.key(2) select o.id
+----
+Set total
+  reads orders.Order, orders (id)
+  Pipeline
+    One row
+    Range probe orders (id), 0 keys equal, lower exclusive, no upper
+      Order ->
+        Chain
+          Filter
+          Filter
+          Emit
+
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert orders from (from k in [1, 2, 3, 4]
+    select { id: orders.key(k), user: users.key(1), total: 10 * k, qty: k })
+
+query rowsort
+  from o in orders where o.id > orders.key(1) and o.id > orders.key(2) select o.total
+----
+30
+40

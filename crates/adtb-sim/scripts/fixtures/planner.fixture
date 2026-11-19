@@ -1,0 +1,27 @@
+# The planner's running schema: users with identities by email, Google or Apple, posts, phones,
+# follows, orders and sessions.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  add relation identities : Identity key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+    index (user)
+  add set OAuth of identities = Google | Apple
+  add type Post = { id: Key posts, author: Key users, created_at: Instant, title: Text }
+  add relation posts : Post key id generate sequence
+    index (author)
+  add type Phone = { id: Key phones, owner: Key users, seen: Instant }
+  add relation phones : Phone key id generate sequence
+  add type Follow = { src: Key users, dst: Key users }
+  add relation follows : Follow key (src, dst)
+  add type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
+  add relation orders : Order key id generate sequence
+  add type Session = { id: Key sessions, owner: Option (Key users) }
+  add relation sessions : Session key id generate sequence

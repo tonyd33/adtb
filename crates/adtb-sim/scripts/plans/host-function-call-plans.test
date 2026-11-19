@@ -1,0 +1,12 @@
+# A query calling a host function plans and runs.
+host slugify
+use users
+
+migrate
+  module app
+  define fn slugify (t: Text) -> Text = host "slugify" version "1.0" deterministic
+
+query rowsort
+  from u in users select slugify(u.name)
+----
+"slugify"

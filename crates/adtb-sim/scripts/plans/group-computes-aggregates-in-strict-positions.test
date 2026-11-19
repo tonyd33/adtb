@@ -1,0 +1,82 @@
+# A group computes each aggregate in a strict position itself and drops its rows when nothing
+# else reads them; a nested result over the group's rows keeps them.
+use planner
+
+probe plan
+  explain from i in identities group i by i.user into g
+    select { user: g.key, n: count(x for x in g) }
+----
+Set total
+  reads identities.EmailPass, identities.Google, identities.Apple
+  Pipeline
+    One row
+    Bind
+      Group 1 aggregates
+        Union
+          Pipeline
+            Scan identities.EmailPass
+            Emit
+          Pipeline
+            Scan identities.Google
+            Emit
+          Pipeline
+            Scan identities.Apple
+            Emit
+    Unnest
+    Emit
+
+probe plan
+  explain from o in orders group o by o.user into g
+    select { user: g.key, total: sum(x.total for x in g) }
+----
+Set
+  reads orders.Order
+  Pipeline
+    One row
+    Bind
+      Group 1 aggregates
+        Pipeline
+          Scan orders.Order
+          Emit
+    Unnest
+    Emit
+
+probe plan
+  explain from o in orders group o by o.user into g
+    select { user: g.key, top: max(x.total for x in g), n: count(x for x in g where x.qty > 0) }
+----
+Set total
+  reads orders.Order
+  Pipeline
+    One row
+    Bind
+      Group 2 aggregates
+        Pipeline
+          Scan orders.Order
+          Emit
+    Unnest
+    Emit
+
+probe plan
+  explain from o in orders group o by o.user into g
+    select { user: g.key, ids: from x in g select x.id, n: count(x for x in g) }
+----
+Set total
+  reads orders.Order
+  Pipeline
+    One row
+    Bind
+      Group 1 aggregates, keeps rows
+        Pipeline
+          Scan orders.Order
+          Emit
+    Unnest
+    Bind
+      Let
+        Set total
+          Pipeline
+            One row
+            Unnest
+            Emit
+        Compute
+    Emit

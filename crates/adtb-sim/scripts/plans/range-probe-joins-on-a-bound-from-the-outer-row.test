@@ -1,0 +1,17 @@
+# A comparison with a field of an outer row probes the range it bounds, once per outer row.
+use planner
+
+probe plan
+  explain from a in orders, b in orders where b.id > a.id and b.qty < a.qty
+    select { a: a.id, b: b.id }
+----
+Set total
+  reads orders.Order, orders (id)
+  Pipeline
+    Scan orders.Order
+    Range probe orders (id), 0 keys equal, lower exclusive, no upper
+      Order ->
+        Chain
+          Filter
+          Filter
+          Emit

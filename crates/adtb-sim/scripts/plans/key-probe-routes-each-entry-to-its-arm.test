@@ -1,0 +1,22 @@
+# An equality on the key probes the key index once, routing each entry to the arm of its
+# constructor.
+use users
+
+probe plan
+  explain from i in identities where i.id == identities.key(2)
+    select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+Set total
+  reads identities.EmailPass, identities.Google, identities.Apple, identities (id)
+  Pipeline
+    One row
+    Probe identities (id)
+      EmailPass ->
+        Chain
+          Emit
+      Google ->
+        Chain
+          Emit
+      Apple ->
+        Chain
+          Emit

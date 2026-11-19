@@ -1,0 +1,54 @@
+# An arm naming a constructor probes the index of a path through it, unless another arm yields
+# rows.
+
+migrate
+  module app
+  add module app
+  add type Status = Draft | Paid { ref: Text }
+  add type Invoice = { id: Key invoices, status: Status, email: Text }
+  add relation invoices : Invoice key id generate sequence
+    unique (status.Paid.ref)
+    index (lower(email))
+
+probe plan
+  explain from i in invoices, k in (match i.status
+      | Paid p -> if p.ref == "r1" then [key i] else []
+      | Draft -> [])
+    select k
+----
+Set total
+  reads invoices.Invoice, invoices (#0.0)
+  Pipeline
+    One row
+    Probe invoices (#0.0)
+      Invoice ->
+        Chain
+          Unnest
+          Emit
+
+probe plan
+  explain from i in invoices where (match i.status | Paid p -> p.ref == "r1" | Draft -> false)
+    select key i
+----
+Set total
+  reads invoices.Invoice, invoices (#0.0)
+  Pipeline
+    One row
+    Probe invoices (#0.0)
+      Invoice ->
+        Chain
+          Filter
+          Emit
+
+probe plan
+  explain from i in invoices, k in (match i.status
+      | Paid p -> if p.ref == "r1" then [key i] else []
+      | Draft -> [key i])
+    select k
+----
+Set total
+  reads invoices.Invoice
+  Pipeline
+    Scan invoices.Invoice
+    Unnest
+    Emit

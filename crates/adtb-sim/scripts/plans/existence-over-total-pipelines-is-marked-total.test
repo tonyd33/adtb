@@ -1,0 +1,64 @@
+# A query that can stop at its first rows is marked total exactly when no evaluation of it can
+# abort.
+use planner
+
+probe plan
+  explain exists p in posts where p.author == users.key(1)
+----
+Exists total
+  reads posts.Post, posts (author)
+  Pipeline
+    One row
+    Probe posts (author)
+      Post ->
+        Chain
+          Emit
+
+probe plan
+  explain exists o in orders where o.total / o.qty > 10
+----
+Exists
+  reads orders.Order
+  Pipeline
+    Scan orders.Order
+    Filter
+    Emit
+
+probe plan
+  explain exists o in orders where o.qty > 0 and o.total / o.qty > 10
+----
+Exists
+  reads orders.Order
+  Pipeline
+    Scan orders.Order
+    Filter
+    Filter
+    Emit
+
+probe plan
+  explain exists p in posts where p.title == "hello"
+----
+Exists total
+  reads posts.Post
+  Pipeline
+    Scan posts.Post
+    Filter
+    Emit
+
+probe plan
+  explain top 0 by (o.total, key o) (from o in orders select o)
+----
+Top total
+  reads orders.Order
+  Pipeline
+    Scan orders.Order
+    Emit
+
+probe plan
+  explain top 1 by (o.total / o.qty, key o) (from o in orders select o)
+----
+Top
+  reads orders.Order
+  Pipeline
+    Scan orders.Order
+    Emit

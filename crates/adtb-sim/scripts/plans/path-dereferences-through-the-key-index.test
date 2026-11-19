@@ -1,0 +1,36 @@
+# A path through a reference looks its row up in the key index of the referenced relation.
+use planner
+
+probe plan
+  explain from i in identities select i.user.name
+----
+Set total
+  reads users.User, identities.EmailPass, identities.Google, identities.Apple, users (id)
+  Union
+    Pipeline
+      Scan identities.EmailPass
+      Bind
+        Let
+          Lookup users (id)
+            User ->
+              Fetch users.User
+          Compute
+      Emit
+    Pipeline
+      Scan identities.Google
+      Bind
+        Let
+          Lookup users (id)
+            User ->
+              Fetch users.User
+          Compute
+      Emit
+    Pipeline
+      Scan identities.Apple
+      Bind
+        Let
+          Lookup users (id)
+            User ->
+              Fetch users.User
+          Compute
+      Emit

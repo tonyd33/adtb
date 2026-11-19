@@ -1,0 +1,33 @@
+# An equality on an indexed expression probes its index; one on another expression does not.
+
+migrate
+  module app
+  add module app
+  add type Status = Draft | Paid { ref: Text }
+  add type Invoice = { id: Key invoices, status: Status, email: Text }
+  add relation invoices : Invoice key id generate sequence
+    unique (status.Paid.ref)
+    index (lower(email))
+
+probe plan
+  explain from i in invoices where lower(i.email) == "ann@x" select key i
+----
+Set total
+  reads invoices.Invoice, invoices (#1.0)
+  Pipeline
+    One row
+    Probe invoices (#1.0)
+      Invoice ->
+        Chain
+          Filter
+          Emit
+
+probe plan
+  explain from i in invoices where upper(i.email) == "ANN@X" select key i
+----
+Set total
+  reads invoices.Invoice
+  Pipeline
+    Scan invoices.Invoice
+    Filter
+    Emit

@@ -1,0 +1,15 @@
+# A constraint whose incremental check would compute a fixpoint is refused.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::no_self_reach is not admitted: changes to app::users: `fix` is outside the bound\nconstraint app::no_self_reach is not admitted: changes to app::follows: `fix` is outside the bound\nconstraint app::no_self_reach is not admitted: changes to app::follows: no field connects them to app::users, so every row of it is read" } } }
+  module app
+  add module app
+  add type User = { id: Key users }
+  add relation users : User key id generate sequence
+  add type Follow = { src: Key users, dst: Key users }
+  add relation follows : Follow key (src, dst)
+  add constraint no_self_reach =
+    from u in users
+    where exists r in (fix reach = (from f in follows where f.src == key u select f.dst)
+                         union (from r in reach, g in follows where g.src == r select g.dst)
+                       in reach)
+      where r == key u
+    select u

@@ -1,0 +1,27 @@
+# A join into every arm of a match builds its other side once, each arm's pipeline probing that
+# one build on one key.
+use planner
+
+probe plan
+  explain from i in identities, u in users where i.user == key u
+    select { name: u.name, login: match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub }
+----
+Set total
+  reads users.User, identities.EmailPass, identities.Google, identities.Apple
+  Build #0
+    Pipeline
+      Scan users.User
+      Emit
+  Union
+    Pipeline
+      Scan identities.EmailPass
+      Probe build #0, 1 key
+      Emit
+    Pipeline
+      Scan identities.Google
+      Probe build #0, 1 key
+      Emit
+    Pipeline
+      Scan identities.Apple
+      Probe build #0, 1 key
+      Emit

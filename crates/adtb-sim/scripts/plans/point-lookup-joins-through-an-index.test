@@ -1,0 +1,24 @@
+# A join from a point lookup probes an index for each side and builds nothing.
+use planner
+
+probe plan
+  explain from u in users, i in identities where key u == users.key(1) and i.user == key u
+    select i.id
+----
+Set total
+  reads users.User, identities.EmailPass, identities.Google, identities.Apple, users (id), identities (user)
+  Pipeline
+    One row
+    Probe users (id)
+      User ->
+        Chain
+          Probe identities (user)
+            EmailPass ->
+              Chain
+                Emit
+            Google ->
+              Chain
+                Emit
+            Apple ->
+              Chain
+                Emit

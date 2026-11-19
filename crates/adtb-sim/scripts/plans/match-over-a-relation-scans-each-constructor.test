@@ -1,0 +1,19 @@
+# A match over a relation runs one pipeline per constructor, each scanning its own heap.
+use planner
+
+probe plan
+  explain from i in identities
+    select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+Set total
+  reads identities.EmailPass, identities.Google, identities.Apple
+  Union
+    Pipeline
+      Scan identities.EmailPass
+      Emit
+    Pipeline
+      Scan identities.Google
+      Emit
+    Pipeline
+      Scan identities.Apple
+      Emit
