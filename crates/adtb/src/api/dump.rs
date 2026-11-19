@@ -703,8 +703,33 @@ pub(super) fn restore_dump<R: Runtime>(
                 reason: FatalReason::MissingFunction { function: name },
             },
             OpenError::Io(e) => Error::storage(format!("`{aside}`: {e}")),
-            OpenError::MigrationRefused { .. } => damaged(LOG),
-            e => Error::invalid(format!("the dumped log does not open: {e}")),
+            OpenError::Corrupt { detail } => {
+                Error::storage(format!("`{aside}`: the file is corrupt: {detail}"))
+            }
+            OpenError::MigrationRefused {
+                reason: Error::Rejected { .. },
+                ..
+            } => damaged(LOG),
+            OpenError::MigrationRefused {
+                reason:
+                    Error::Fatal {
+                        reason: FatalReason::Quarantined { what },
+                    },
+                ..
+            } => Error::storage(format!("`{aside}`: {what} is quarantined")),
+            OpenError::MigrationRefused { reason, .. } => reason,
+            e @ (OpenError::Locked { .. }
+            | OpenError::AlreadyOpen
+            | OpenError::NotFound
+            | OpenError::KeyRequired
+            | OpenError::WrongKey
+            | OpenError::FormatTooNew { .. }
+            | OpenError::Diverged { .. }
+            | OpenError::RegistrationRefused { .. }
+            | OpenError::HostFnMismatch { .. }
+            | OpenError::DowngradeRefused { .. }) => {
+                Error::invalid(format!("the dumped log does not open: {e}"))
+            }
         })
     };
     let built = open(Log::default(), &opening)

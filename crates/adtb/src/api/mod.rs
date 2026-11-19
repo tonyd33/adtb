@@ -28,6 +28,8 @@ mod migrate;
 #[cfg(test)]
 mod open_tests;
 mod pinned;
+#[cfg(test)]
+mod prove_tests;
 mod reads;
 mod registered;
 mod reindex;

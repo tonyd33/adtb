@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use adtb_sys::pages::{self, PageMemory, PageState};
 
-use crate::runtime::{AlignedBuf, FileId, Runtime, ThreadId};
+use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 
 use super::alloc::{Allocation, Hold, Reservation, diff};
 use super::damage_log::Recorded;
@@ -941,7 +941,10 @@ impl<R: Runtime> Pager<R> {
         });
         if let Err(e) = made {
             pager.close_files();
-            return Err(OpenError::Unformatted(e));
+            return Err(match e.damage {
+                Damage::Unreadable => OpenError::Io(IoError::Failed),
+                _ => OpenError::Unformatted(e),
+            });
         }
         pager.checkpoint();
         pager.write_header(None);

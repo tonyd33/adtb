@@ -260,6 +260,7 @@ pub fn prove_in<R: Runtime>(
     }
     let proved = test_restore(&rt, &file, log, options, &manifest);
     storage::remove_scratch(&rt, &scratch).map_err(refused)?;
+    let proved = proved?;
     storage::write_proof(&rt, source, &hash, &proved).map_err(refused)?;
     Ok(proof_of(proved))
 }
@@ -296,13 +297,15 @@ fn test_restore<R: Runtime>(
     log: &Log,
     options: &OpenOptions,
     manifest: &Manifest,
-) -> Proved {
-    match opened_and_verified(rt, file, log, options, manifest) {
-        Proved::Unproven { .. } if !manifest.damaged.is_empty() => {
-            Proved::Failed(damage_lines(manifest))
-        }
-        proved => proved,
-    }
+) -> Result<Proved, Error> {
+    Ok(
+        match opened_and_verified(rt, file, log, options, manifest)? {
+            Proved::Unproven { .. } if !manifest.damaged.is_empty() => {
+                Proved::Failed(damage_lines(manifest))
+            }
+            proved => proved,
+        },
+    )
 }
 
 fn damage_lines(manifest: &Manifest) -> Vec<String> {
@@ -319,45 +322,60 @@ fn opened_and_verified<R: Runtime>(
     log: &Log,
     options: &OpenOptions,
     manifest: &Manifest,
-) -> Proved {
+) -> Result<Proved, Error> {
     let opening = OpenOptions {
         create: None,
         ..options.clone()
     };
     let db = match Database::open_in(rt.clone(), file, log, &opening) {
         Ok(db) => db,
-        Err(OpenError::HostFnMissing { name }) => return Proved::Unproven { function: name },
-        Err(e) => return Proved::Failed(vec![e.to_string()]),
+        Err(OpenError::HostFnMissing { name }) => return Ok(Proved::Unproven { function: name }),
+        Err(OpenError::Io(e)) => return Err(Error::storage(format!("`{file}`: {e}"))),
+        Err(e) => return Ok(Proved::Failed(vec![e.to_string()])),
     };
     let verdict = verified(&db, manifest);
-    match db.close() {
-        Ok(()) => verdict,
-        Err(e) => Proved::Failed(vec![e.to_string()]),
+    let closed = db.close();
+    let verdict = verdict?;
+    match closed {
+        Ok(()) => Ok(verdict),
+        Err(e) if is_storage(&e) => Err(e),
+        Err(e) => Ok(Proved::Failed(vec![e.to_string()])),
     }
 }
 
-fn verified<R: Runtime>(db: &Database<R>, manifest: &Manifest) -> Proved {
+fn is_storage(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Fatal {
+            reason: FatalReason::Storage { .. }
+        }
+    )
+}
+
+fn verified<R: Runtime>(db: &Database<R>, manifest: &Manifest) -> Result<Proved, Error> {
     let found = match db.verify_holding() {
         Ok(found) => found,
         Err(Error::Fatal {
             reason: FatalReason::MissingFunction { function },
             ..
-        }) => return Proved::Unproven { function },
-        Err(e) => return Proved::Failed(vec![e.to_string()]),
+        }) => return Ok(Proved::Unproven { function }),
+        Err(e) if is_storage(&e) => return Err(e),
+        Err(e) => return Ok(Proved::Failed(vec![e.to_string()])),
     };
     let form = found.form().clone();
     let mut lines = damage_lines(manifest);
     for row in found {
         lines.push(match row {
             Ok(v) => print(&v, &form).unwrap_or_else(|e| e.to_string()),
+            Err(e) if is_storage(&e) => return Err(e),
             Err(e) => e.to_string(),
         });
     }
-    if lines.is_empty() {
+    Ok(if lines.is_empty() {
         Proved::Proven
     } else {
         Proved::Failed(lines)
-    }
+    })
 }
 
 /// Returns the directory a relative `backup` or `restore` path of a host database resolves

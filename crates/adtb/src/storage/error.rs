@@ -82,7 +82,7 @@ pub enum OpenError {
     Reserved,
     /// Another open holds the lock on a file `create` would remove or rename.
     Locked,
-    /// `create` took the log directory, then failed on a page of the new file.
+    /// `create` took the log directory, then found a page of the new file damaged.
     Unformatted(PageError),
     /// The options' segment size is not a positive multiple of their log block.
     SegmentSize(u64),

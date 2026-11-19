@@ -19,7 +19,7 @@ use crate::{
 };
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime, Struck};
 use adtb_testkit::corpus;
 use adtb_testkit::process;
 use adtb_testkit::profile::{assert_reached, count, every_case};
@@ -981,6 +981,35 @@ fn a_restore_lacking_a_host_function_refuses_naming_it_and_one_given_it_restores
     });
 }
 
+#[test]
+fn a_restore_given_a_host_function_at_another_version_refuses_naming_it() {
+    let mut sim = Sim::new(6, Config::default());
+    process::run(&mut sim, |rt| {
+        let hosted = |version: &str| {
+            let mut host_fns = crate::HostFns::new();
+            host_fns.register("slugify", version, crate::Determinism::Deterministic, |b| {
+                Ok(b.clone())
+            });
+            OpenOptions {
+                host_fns,
+                ..open::options(2)
+            }
+        };
+        let db = Database::open_in(rt.clone(), FILE, &Log::new([HOSTED]), &hosted("1.0")).unwrap();
+        run(&db, "insert notes { body: \"a\" }").unwrap();
+        dump(&db).unwrap();
+        db.close().unwrap();
+        let other = OpenOptions {
+            create: None,
+            ..hosted("2.0")
+        };
+        refused_invalid(
+            restore(&rt, RestorePoint::Latest, &other),
+            "the dumped log does not open: host function slugify is bound at another type",
+        );
+    });
+}
+
 /// Returns the content of each part the dump's manifest in `files` lists, by name.
 fn parts(files: &Files) -> Vec<(String, u64)> {
     let manifest = String::from_utf8_lossy(&files[&format!("{DUMP}/manifest")]).into_owned();
@@ -1751,6 +1780,31 @@ fn a_storage_failure_building_the_restored_file_is_fatal_and_leaves_nothing() {
 }
 
 #[test]
+fn a_read_failure_creating_the_restored_file_is_fatal_and_leaves_nothing() {
+    let (files, _) = dumped();
+    let mut sim = Sim::with_files(21, Config::default(), files.clone());
+    let read = || Match::kind(OpKind::Read).containing(".creating/");
+    let (got, reads) = process::run(&mut sim, |rt| {
+        let reads = rt.logged(read());
+        rt.plan(Plan::new().first(read(), Action::Fail(IoError::Failed)));
+        (restore_dump(&rt), reads.entries())
+    });
+    let failed = reads
+        .first()
+        .and_then(|r| r.path())
+        .expect("the restore reads its file");
+    let (aside, _) = failed.split_once(".creating/").unwrap();
+    let detail = format!("`{aside}`: other error");
+    assert_eq!(
+        Err(Error::Fatal {
+            reason: FatalReason::Storage { detail }
+        }),
+        got
+    );
+    assert_eq!(files, sim.files());
+}
+
+#[test]
 fn a_restore_to_a_free_path_with_an_occupied_log_directory_is_refused_naming_it() {
     let (mut files, _) = dumped();
     files.insert(format!("{COPY}-log/x"), b"x".to_vec());
@@ -1844,6 +1898,30 @@ fn restore_dump(rt: &SimRuntime) -> Result<(), Error> {
     .map(drop)
 }
 
+fn reads_the_created_file(op: &Struck) -> bool {
+    op.kind() == OpKind::Read
+        && op
+            .path()
+            .is_some_and(|p| p.starts_with(&format!("{COPY}.partial-")) && p.contains(".creating/"))
+}
+
+fn lists_the_restored_log(op: &Struck) -> bool {
+    op.kind() == OpKind::List
+        && op
+            .path()
+            .is_some_and(|p| p.starts_with(&format!("{COPY}.partial-")) && p.ends_with("-log"))
+}
+
+type Strikes = fn(&Struck) -> bool;
+
+/// Failed ops the default profile always searches: a read while the new file is formatted, a read
+/// of a catalog page while the new file first opens, and the listing of its log when it reopens.
+const PINNED: [(u64, Strikes); 3] = [
+    (63, reads_the_created_file),
+    (74, reads_the_created_file),
+    (1171, lists_the_restored_log),
+];
+
 #[test]
 fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
     let (base, _) = dumped();
@@ -1853,8 +1931,12 @@ fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
         rt.disarm();
         got
     };
-    search::each_fatal_failure(&base, 11, FAILURES, &[], workload, |failed| {
+    let pinned = PINNED.map(|(at, _)| at);
+    search::each_fatal_failure(&base, 11, FAILURES, &pinned, workload, |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
+        if let Some((_, strikes)) = PINNED.iter().find(|(at, _)| *at == failed.at) {
+            assert!(strikes(&failed.struck), "{label}: the pinned op moved");
+        }
         match &failed.out {
             Some(Ok(())) => assert!(
                 failed.files.contains_key(COPY),
