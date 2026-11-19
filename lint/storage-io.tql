@@ -1,0 +1,27 @@
+-- storage_io_panics: a panic over a failed storage operation other than `fatal`, whose payload
+-- carries the failure: a panicking macro in an `Err(..)` arm, or an `expect` or `unwrap` of an
+-- operation's completion or of its failure's cause.
+
+panicking = r"^(panic|unreachable|todo|unimplemented|assert|assert_eq|assert_ne)$";
+
+err_arms = do {
+  a <- descendants_of_kind :match_arm;
+  p <- pure a | #pattern;
+  guard $ text p ~ r"^Err\(";
+  m <- pure a | descendants_of_kind :macro_invocation;
+  n <- pure m | #macro;
+  guard $ text n ~ panicking;
+  return m;
+};
+
+io_unwraps = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  m <- pure f | #field;
+  guard $ text m ~ r"^(expect|unwrap)$";
+  v <- pure f | #value;
+  guard $ text v ~ r"\.result$|\.map_err\(Failed::cause\)$";
+  return c;
+};
+
+main = err_arms `alt` io_unwraps | arr range;

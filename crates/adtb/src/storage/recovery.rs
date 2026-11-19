@@ -5,7 +5,7 @@ use crate::runtime::{IoError, Runtime};
 
 use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
 use super::create::check_options;
-use super::driver::Driver;
+use super::driver::{Driver, Failed};
 use super::error::{Damage, OpenError};
 use super::evidence::Met;
 use super::header::{self, FileHeader, REGION};
@@ -62,10 +62,13 @@ impl<R: Runtime> Pager<R> {
     pub fn open(rt: R, options: &Options) -> Result<(Pager<R>, Opening), OpenError> {
         check_options(options)?;
         let mut drv = Driver::new(rt.clone());
-        let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
-            IoError::NotFound => OpenError::NotFound,
-            e => OpenError::Io(e),
-        })?;
+        let (data, _) = drv
+            .open(&options.name, false)
+            .map_err(Failed::cause)
+            .map_err(|e| match e {
+                IoError::NotFound => OpenError::NotFound,
+                e => OpenError::Io(e),
+            })?;
         let read = |drv: &mut Driver<R>, at: u64| drv.read(data, at, REGION).ok();
         let first = read(&mut drv, 0).and_then(|b| FileHeader::decode(0, &b));
         let mut second: Option<FileHeader> = None;

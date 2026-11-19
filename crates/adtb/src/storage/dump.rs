@@ -12,6 +12,7 @@ use super::backup::{
     final_name, inside, io_error, make_parent, name_taken, occupied, publish_restored,
 };
 use super::digest::{hex, sealed, unhex, unhex_all, unsealed};
+use super::driver::Failed;
 use super::dump_crypt::{DumpKey, Kdf, Passphrase, SALT};
 use super::header::REGION;
 use super::pager::parent;
@@ -364,7 +365,7 @@ fn read_entry<R: Runtime>(fs: &mut Fs<R>, source: &str, part: &Part) -> Io<Vec<u
         part: part.name.clone(),
     };
     let path = inside(source, &part.name);
-    let (file, len) = match fs.drv.open(&path, false) {
+    let (file, len) = match fs.drv.open(&path, false).map_err(Failed::cause) {
         Ok(opened) => opened,
         Err(IoError::NotFound | IoError::NotADirectory) => return Err(damaged()),
         Err(e) => return Err(io_error(&path)(e)),

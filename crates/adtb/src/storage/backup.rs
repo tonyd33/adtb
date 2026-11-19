@@ -13,7 +13,7 @@ use super::block::{
     Batch, BlockState, LogImage, LogProblem, LogSource, Mode, Slot, read_block, scan,
 };
 use super::digest::{hex, sealed, unhex, unsealed};
-use super::driver::Driver;
+use super::driver::{Driver, Failed};
 use super::error::Damage;
 use super::evidence::{Against, Judged};
 use super::header::{FileHeader, HISTORY_CAPACITY, REGION};
@@ -153,6 +153,11 @@ pub(super) fn io_error(what: impl Into<String>) -> impl FnOnce(IoError) -> Backu
     move |error| BackupError::Io { what, error }
 }
 
+fn failed(what: &str) -> impl FnOnce(Failed) -> BackupError {
+    let refused = io_error(what);
+    move |f| refused(f.cause())
+}
+
 impl<R: Runtime> Fs<R> {
     pub(super) fn new(rt: R) -> Fs<R> {
         Fs {
@@ -161,11 +166,11 @@ impl<R: Runtime> Fs<R> {
     }
 
     pub(super) fn open(&mut self, path: &str, create: bool) -> Io<(FileId, u64)> {
-        self.drv.open(path, create).map_err(io_error(path))
+        self.drv.open(path, create).map_err(failed(path))
     }
 
     pub(super) fn create(&mut self, path: &str) -> Io<FileId> {
-        let (file, _) = self.drv.create_new(path).map_err(io_error(path))?;
+        let (file, _) = self.drv.create_new(path).map_err(failed(path))?;
         Ok(file)
     }
 
@@ -179,7 +184,7 @@ impl<R: Runtime> Fs<R> {
         loop {
             let dir = self.aside_name(name);
             let op = Op::CreateDir { dir: dir.clone() };
-            match self.drv.attempt(op).result {
+            match self.drv.attempt(op).map_err(Failed::cause) {
                 Ok(Done::Created) => return Ok(dir),
                 Ok(_) | Err(IoError::Exists) => {}
                 Err(e) => return Err(io_error(dir)(e)),
@@ -191,7 +196,7 @@ impl<R: Runtime> Fs<R> {
     pub(super) fn aside_file(&mut self, name: &str) -> Io<(String, FileId)> {
         loop {
             let path = self.aside_name(name);
-            match self.drv.create_new(&path) {
+            match self.drv.create_new(&path).map_err(Failed::cause) {
                 Ok((file, _)) => return Ok((path, file)),
                 Err(IoError::Exists) => {}
                 Err(e) => return Err(io_error(path)(e)),
@@ -211,7 +216,7 @@ impl<R: Runtime> Fs<R> {
             to: to.to_owned(),
             replace: false,
         };
-        match self.drv.attempt(op).result {
+        match self.drv.attempt(op).map_err(Failed::cause) {
             Ok(_) => Ok(()),
             Err(IoError::Exists | IoError::NotADirectory) => Err(taken()),
             Err(e) => Err(io_error(to)(e)),
@@ -268,7 +273,7 @@ impl<R: Runtime> Fs<R> {
     }
 
     fn run(&mut self, what: &str, op: Op) -> Io<Done> {
-        self.drv.attempt(op).result.map_err(io_error(what))
+        self.drv.attempt(op).map_err(failed(what))
     }
 
     pub(super) fn write(&mut self, what: &str, file: FileId, offset: u64, bytes: &[u8]) -> Io<()> {
@@ -289,7 +294,7 @@ impl<R: Runtime> Fs<R> {
         let op = Op::List {
             dir: dir.to_owned(),
         };
-        match self.drv.attempt(op).result {
+        match self.drv.attempt(op).map_err(Failed::cause) {
             Ok(Done::Listed(paths)) => Ok(paths),
             Ok(other) => unreachable!("list completed as {other:?}"),
             Err(IoError::NotFound) => Ok(Vec::new()),
@@ -319,8 +324,8 @@ impl<R: Runtime> Fs<R> {
             if name.is_empty() || name == "." || name == ".." {
                 continue;
             }
-            let path = at.clone();
-            match self.drv.attempt(Op::CreateDir { dir: path }).result {
+            let created = self.drv.attempt(Op::CreateDir { dir: at.clone() });
+            match created.map_err(Failed::cause) {
                 Ok(Done::Created) => {
                     made.push(at.clone());
                     self.sync_dir(parent(&at))?;
@@ -337,7 +342,7 @@ impl<R: Runtime> Fs<R> {
         let op = Op::Remove {
             path: path.to_owned(),
         };
-        match self.drv.attempt(op).result {
+        match self.drv.attempt(op).map_err(Failed::cause) {
             Ok(_) | Err(IoError::NotFound) => Ok(()),
             Err(error) => Err(BackupError::Io {
                 what: path.to_owned(),
@@ -350,7 +355,7 @@ impl<R: Runtime> Fs<R> {
         let op = Op::RemoveDir {
             path: path.to_owned(),
         };
-        match self.drv.attempt(op).result {
+        match self.drv.attempt(op).map_err(Failed::cause) {
             Ok(_) | Err(IoError::NotFound) => Ok(()),
             Err(error) => Err(BackupError::Io {
                 what: path.to_owned(),
@@ -364,7 +369,7 @@ impl<R: Runtime> Fs<R> {
     }
 
     pub(super) fn read(&mut self, what: &str, file: FileId, at: u64, len: usize) -> Io<AlignedBuf> {
-        self.drv.read(file, at, len).map_err(io_error(what))
+        self.drv.read(file, at, len).map_err(failed(what))
     }
 
     /// Write `text` to the open file `file`, zero to a multiple of [`REGION`], force it and close
@@ -381,7 +386,7 @@ impl<R: Runtime> Fs<R> {
 
     /// Returns the text of `path` up to its first zero byte, `None` when the file is absent.
     pub(super) fn read_text(&mut self, path: &str) -> Io<Option<String>> {
-        let (file, len) = match self.drv.open(path, false) {
+        let (file, len) = match self.drv.open(path, false).map_err(Failed::cause) {
             Ok(opened) => opened,
             Err(IoError::NotFound | IoError::NotADirectory) => return Ok(None),
             Err(e) => return Err(io_error(path)(e)),
@@ -1075,7 +1080,7 @@ fn check_parts<R: Runtime>(fs: &mut Fs<R>, source: &str, manifest: &Manifest) ->
             part: part.name.clone(),
         };
         let path = inside(source, &part.name);
-        let (file, len) = match fs.drv.open(&path, false) {
+        let (file, len) = match fs.drv.open(&path, false).map_err(Failed::cause) {
             Ok(opened) => opened,
             Err(IoError::NotFound | IoError::NotADirectory) => return Err(damaged()),
             Err(e) => return Err(io_error(&path)(e)),

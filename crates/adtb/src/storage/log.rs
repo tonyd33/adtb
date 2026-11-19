@@ -6,7 +6,7 @@ use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime, fatal};
 
 use super::alloc::edits_by;
 use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
-use super::driver::Driver;
+use super::driver::{Driver, Failed};
 use super::pager::{ArchiveHook, PageError, Pager, parent};
 use super::record::Record;
 use super::{Lsn, Pid, Position};
@@ -259,12 +259,14 @@ impl Segments {
                 drv.close(file);
                 true
             }
-            Err(IoError::Exists) => false,
-            Err(IoError::NotFound) => return false,
-            Err(e) => fatal(format!("create {first}"), e),
+            Err(f) => match f.cause() {
+                IoError::Exists => false,
+                IoError::NotFound => return false,
+                e => fatal(format!("create {first}"), e),
+            },
         };
         let dir = self.dir.clone();
-        let entries = match drv.attempt(Op::List { dir }).result {
+        let entries = match drv.attempt(Op::List { dir }).map_err(Failed::cause) {
             Ok(Done::Listed(paths)) => paths,
             Err(IoError::NotFound) => return false,
             Err(e) => fatal(format!("list {}", self.dir), e),
@@ -283,7 +285,7 @@ impl Segments {
     /// Force the directory's names. Returns whether it was there.
     fn force_dir_if_present<R: Runtime>(&self, drv: &mut Driver<R>) -> bool {
         let dir = self.dir.clone();
-        match drv.attempt(Op::SyncDir { dir }).result {
+        match drv.attempt(Op::SyncDir { dir }).map_err(Failed::cause) {
             Ok(_) => true,
             Err(IoError::NotFound) => false,
             Err(e) => fatal(format!("force {}", self.dir), e),
@@ -316,7 +318,7 @@ impl Segments {
         let path = self.path(base);
         let (file, len) = drv
             .open(&path, true)
-            .unwrap_or_else(|e| fatal(format!("create {path}"), e));
+            .unwrap_or_else(|f| f.fatal(format!("create {path}")));
         if len < self.segment {
             drv.allocate(file, self.segment);
             drv.sync_all(&[file]);
@@ -397,7 +399,7 @@ impl Segments {
         let listed = drv.attempt(Op::List {
             dir: self.dir.clone(),
         });
-        let paths = match listed.result {
+        let paths = match listed.map_err(Failed::cause) {
             Ok(Done::Listed(paths)) => paths,
             Ok(other) => unreachable!("list completed as {other:?}"),
             Err(IoError::NotFound) => Vec::new(),
@@ -416,7 +418,7 @@ impl Segments {
         for base in bases {
             let file = match self.files.get(&base) {
                 Some(&f) => f,
-                None => match drv.open(&self.path(base), false) {
+                None => match drv.open(&self.path(base), false).map_err(Failed::cause) {
                     Ok((f, _)) => f,
                     Err(IoError::NotFound) => continue,
                     Err(e) => return Err((self.path(base), e)),

@@ -93,7 +93,7 @@ pub use create::creating;
 pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log, remove_leftover};
 #[cfg(any(test, feature = "testing"))]
 pub use create::{aside, marker, marker_bytes};
-pub(crate) use driver::Driver;
+pub(crate) use driver::{Driver, Failed};
 pub use dump::{
     DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside, write_dump,
 };

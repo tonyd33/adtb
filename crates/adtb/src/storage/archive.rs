@@ -19,6 +19,7 @@ use crate::runtime::{Done, FileId, Io as _, IoError, Op, Runtime, ThreadId};
 use super::Lsn;
 use super::backup::{BackupError, Fs, IO_CHUNK, Io, PARTIAL, inside, io_error};
 use super::digest::hex;
+use super::driver::Failed;
 use super::header::REGION;
 use super::log::{parse_segment, segment_name};
 use super::pager::{Pager, parent};
@@ -182,7 +183,7 @@ impl<R: Runtime> Archiver<R> {
                 .attempt(Op::CreateDir {
                     dir: dir.to_owned(),
                 })
-                .result
+                .map_err(Failed::cause)
             {
                 Ok(Done::Created) => fs.sync_dir(parent(dir))?,
                 Ok(_) => {}

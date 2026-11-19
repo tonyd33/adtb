@@ -7,7 +7,7 @@ use crate::runtime::{AlignedBuf, Done, IoError, Op, Runtime};
 use super::Lsn;
 use super::block::{BlockState, read_block};
 use super::crc::crc32c;
-use super::driver::Driver;
+use super::driver::{Driver, Failed};
 use super::error::OpenError;
 use super::log::parse_segment;
 use super::order::Opening;
@@ -147,7 +147,7 @@ pub(crate) fn create<R: Runtime>(
     check_options(options)?;
     let mut drv = Driver::new(rt.clone());
     let name = &options.name;
-    let replace = match drv.open(name, false) {
+    let replace = match drv.open(name, false).map_err(Failed::cause) {
         Ok((file, len)) => {
             drv.close(file);
             if len > 0 {
@@ -179,7 +179,10 @@ pub(crate) fn create<R: Runtime>(
         name: aside(name, &id),
         ..options.clone()
     };
-    let (data, _) = drv.create_new(&aside.name).map_err(OpenError::Io)?;
+    let (data, _) = drv
+        .create_new(&aside.name)
+        .map_err(Failed::cause)
+        .map_err(OpenError::Io)?;
     drv.sync_dir(&creating(name));
     match Pager::format_new(rt.clone(), &aside, data, id) {
         Ok(pager) => {
@@ -199,7 +202,10 @@ impl Unpublished {
     fn build<R: Runtime>(&self, drv: &mut Driver<R>, options: &Options) -> Result<(), OpenError> {
         let reserved = creating(&self.name);
         drv.sync_dir(parent(&reserved));
-        let (file, _) = drv.open(&marker(&self.name), true).map_err(OpenError::Io)?;
+        let (file, _) = drv
+            .open(&marker(&self.name), true)
+            .map_err(Failed::cause)
+            .map_err(OpenError::Io)?;
         let mut block = vec![0; options.log_block as usize];
         block[..MARKER].copy_from_slice(&marker_bytes(&self.id));
         drv.write_all(vec![(file, 0, AlignedBuf::from_slice(&block))]);
@@ -292,7 +298,7 @@ fn settle<R: Runtime>(
 ) -> Result<Option<[u8; 16]>, OpenError> {
     let name = &options.name;
     let dir = creating(name);
-    match drv.attempt(Op::CreateDir { dir }).result {
+    match drv.attempt(Op::CreateDir { dir }).map_err(Failed::cause) {
         Ok(Done::Created) => return Ok(None),
         Ok(_) => {}
         Err(IoError::Exists) => return Err(OpenError::Reserved),
@@ -360,9 +366,14 @@ pub(crate) fn remove_leftover<R: Runtime>(pager: &Pager<R>, options: &Options, h
 }
 
 fn read_marker<R: Runtime>(drv: &mut Driver<R>, options: &Options) -> Result<Marked, OpenError> {
-    match drv.open(&marker(&options.name), false) {
+    match drv
+        .open(&marker(&options.name), false)
+        .map_err(Failed::cause)
+    {
         Ok((file, len)) => {
-            let read = drv.read(file, 0, options.log_block as usize);
+            let read = drv
+                .read(file, 0, options.log_block as usize)
+                .map_err(Failed::cause);
             drv.close(file);
             Ok(marked(len, &read.map_err(OpenError::Io)?))
         }
@@ -380,7 +391,7 @@ pub(crate) fn refuse_foreign_log<R: Runtime>(rt: R, options: &Options) -> Result
         Ok(Some(_)) | Err(OpenError::Io(IoError::NotADirectory)) => {}
         Err(e) => return Err(e),
     }
-    match drv.open(&options.name, false) {
+    match drv.open(&options.name, false).map_err(Failed::cause) {
         Ok((file, len)) => {
             drv.close(file);
             if len > 0 {
@@ -448,12 +459,14 @@ fn carries<R: Runtime>(
     id: &[u8; 16],
 ) -> Result<bool, OpenError> {
     let first = format!("{}/{:016x}", options.log_dir(), 0);
-    let file = match drv.open(&first, false) {
+    let file = match drv.open(&first, false).map_err(Failed::cause) {
         Ok((file, _)) => file,
         Err(IoError::NotFound) => return Ok(false),
         Err(e) => return Err(OpenError::Io(e)),
     };
-    let block = drv.read(file, 0, options.log_block as usize);
+    let block = drv
+        .read(file, 0, options.log_block as usize)
+        .map_err(Failed::cause);
     drv.close(file);
     let block = block.map_err(OpenError::Io)?;
     Ok(matches!(read_block(Lsn(0), &block), BlockState::Valid(h, _) if h.file_id == *id))
@@ -470,7 +483,7 @@ fn rename<R: Runtime>(
 }
 
 fn run<R: Runtime>(drv: &mut Driver<R>, op: Op) -> Result<(), IoError> {
-    drv.attempt(op).result.map(drop)
+    drv.attempt(op).map_err(Failed::cause).map(drop)
 }
 
 fn remove<R: Runtime>(drv: &mut Driver<R>, path: &str) -> Result<(), OpenError> {
@@ -486,7 +499,7 @@ fn remove_dir<R: Runtime>(drv: &mut Driver<R>, path: &str) -> Result<(), OpenErr
 /// Returns the entries of `dir`, `None` when it is absent.
 fn listed<R: Runtime>(drv: &mut Driver<R>, dir: &str) -> Result<Option<Vec<String>>, OpenError> {
     let dir = dir.to_owned();
-    match drv.attempt(Op::List { dir }).result {
+    match drv.attempt(Op::List { dir }).map_err(Failed::cause) {
         Ok(Done::Listed(paths)) => Ok(Some(paths)),
         Err(IoError::NotFound) => Ok(None),
         Err(e) => Err(OpenError::Io(e)),

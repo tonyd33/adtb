@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use adtb_sys::lock::Lock;
 
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
-use crate::storage::{Driver, Malformed, Reader};
+use crate::storage::{Driver, Failed, Malformed, Reader};
 
 use super::memory::{Arena, Grant};
 use super::value::{F32, F64, Val};
@@ -78,7 +78,10 @@ impl<R: Runtime> Spill<R> {
         let t = driver.submit(Op::CreateDir { dir: DIR.into() });
         driver.wait(t).result.map_err(|io| self.failed(io))?;
         let path = format!("{DIR}/{:016x}", self.rt.next_u64());
-        let (id, _) = driver.open(&path, true).map_err(|io| self.failed(io))?;
+        let (id, _) = driver
+            .open(&path, true)
+            .map_err(Failed::cause)
+            .map_err(|io| self.failed(io))?;
         Ok(File {
             driver,
             id,

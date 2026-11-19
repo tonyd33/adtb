@@ -3,6 +3,23 @@ use std::collections::BTreeMap;
 use crate::runtime::fatal;
 use crate::runtime::{AlignedBuf, Completion, Done, FileId, Io, IoError, Op, Runtime, Ticket};
 
+/// A failed storage operation.
+///
+/// Never derive `Debug`: without it no caller can `unwrap` or `expect` a failed operation.
+pub(crate) struct Failed(IoError);
+
+impl Failed {
+    /// End the process with this failure as a fatal I/O payload.
+    pub(crate) fn fatal(self, context: impl Into<String>) -> ! {
+        fatal(context, self.0)
+    }
+
+    /// Returns the failure, for an operation whose failure is a stated refusal.
+    pub(crate) fn cause(self) -> IoError {
+        self.0
+    }
+}
+
 /// Blocking calls over one I/O queue, for a thread that waits on each op it submits.
 pub(crate) struct Driver<R: Runtime> {
     pub(crate) rt: R,
@@ -39,8 +56,8 @@ impl<R: Runtime> Driver<R> {
     }
 
     /// Run `op` to completion and hand back its outcome, a failure included.
-    pub(crate) fn attempt(&mut self, op: Op) -> Completion {
-        self.run(op)
+    pub(crate) fn attempt(&mut self, op: Op) -> Result<Done, Failed> {
+        self.run(op).result.map_err(Failed)
     }
 
     fn run(&mut self, op: Op) -> Completion {
@@ -48,17 +65,17 @@ impl<R: Runtime> Driver<R> {
         self.wait(t)
     }
 
-    pub(crate) fn create_new(&mut self, path: &str) -> Result<(FileId, u64), IoError> {
+    pub(crate) fn create_new(&mut self, path: &str) -> Result<(FileId, u64), Failed> {
         let path = path.to_owned();
-        match self.run(Op::CreateNew { path }).result? {
+        match self.attempt(Op::CreateNew { path })? {
             Done::Opened { file, len } => Ok((file, len)),
             other => unreachable!("exclusive create completed as {other:?}"),
         }
     }
 
-    pub(crate) fn open(&mut self, path: &str, create: bool) -> Result<(FileId, u64), IoError> {
+    pub(crate) fn open(&mut self, path: &str, create: bool) -> Result<(FileId, u64), Failed> {
         let path = path.to_owned();
-        match self.run(Op::Open { path, create }).result? {
+        match self.attempt(Op::Open { path, create })? {
             Done::Opened { file, len } => Ok((file, len)),
             other => unreachable!("open completed as {other:?}"),
         }
@@ -70,10 +87,10 @@ impl<R: Runtime> Driver<R> {
         file: FileId,
         offset: u64,
         len: usize,
-    ) -> Result<AlignedBuf, IoError> {
+    ) -> Result<AlignedBuf, Failed> {
         let buf = AlignedBuf::zeroed(len);
         let c = self.run(Op::Read { file, offset, buf });
-        c.result?;
+        c.result.map_err(Failed)?;
         Ok(c.buf.expect("a read returns its buffer"))
     }
 

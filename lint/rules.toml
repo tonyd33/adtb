@@ -73,3 +73,9 @@ rows = { api_aborts = "zero" }
 query = "refusal.tql"
 include = ["crates/**/*.rs"]
 rows = { weak_refusals = "zero" }
+
+[[rule]]
+query = "storage-io.tql"
+include = ["crates/adtb/src/storage/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
+rows = { storage_io_panics = "zero" }
