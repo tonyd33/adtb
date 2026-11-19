@@ -3,9 +3,10 @@
 //! it leaves readable.
 
 use adtb::testing::{Lsn, Plant, page, panic_text};
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Entropy, Runtime, Threads};
@@ -85,12 +86,29 @@ fn running(db: &Database<SimRuntime>) -> bool {
     !api::query(db, "from v in sys::vacuums select v").is_empty()
 }
 
-/// Returns `db` once a background vacuum of 1500 deleted rows of `items` runs at a budget of 0.01.
+static DELETED: OnceLock<BTreeMap<String, Vec<u8>>> = OnceLock::new();
+
+/// Returns a simulation seeded `seed` over the closed files of a database whose 1500 rows of
+/// `items` are deleted and not vacuumed.
+fn vacuuming_sim(seed: u64) -> Sim {
+    let files = DELETED.get_or_init(|| {
+        let mut sim = Sim::new(0, Config::default());
+        process::run(&mut sim, |rt| {
+            let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
+            budget(&db, 0.0);
+            fill(&db, 1500);
+            api::results(&db, "delete i in items where true");
+            db.close().expect("the deleted rows close");
+        });
+        sim.files()
+    });
+    Sim::with_files(seed, Config::default(), files.clone())
+}
+
+/// Returns `db` of [`vacuuming_sim`]'s files once a background vacuum of its deleted rows runs at
+/// a budget of 0.01.
 fn vacuuming(rt: &SimRuntime) -> Database<SimRuntime> {
     let db = open::opened(rt, NAME, &Log::new([SCHEMA]), &pooled());
-    budget(&db, 0.0);
-    fill(&db, 1500);
-    api::results(&db, "delete i in items where true");
     budget(&db, 0.01);
     started(rt, &db);
     db
@@ -186,7 +204,7 @@ fn a_background_vacuum_gives_way_to_a_command_waiting_for_it() {
         "set setting VacuumBudget = { io: 0.01, cpu: 1.0 }",
     ];
     for seed in seeds::sweep(0..3) {
-        process::once(seed, |rt| {
+        process::run(&mut vacuuming_sim(seed), |rt| {
             let db = vacuuming(&rt);
             sleep(&rt, rt.next_u64() % 2000);
             assert!(
@@ -286,7 +304,7 @@ fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
 
 #[test]
 fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
-    let mut sim = Sim::new(24, Config::default());
+    let mut sim = vacuuming_sim(24);
     process::run(&mut sim, |rt| {
         let db = vacuuming(&rt);
         let (held, began) = (db.clone(), rt.now());

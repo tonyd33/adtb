@@ -1267,8 +1267,12 @@ add relation users : User key id generate sequence
     });
 }
 
+/// The yields the vacuum waits between its reads of `sys::jobs`.
+const YIELDS: usize = 400;
+
 #[test]
 fn a_vacuum_during_the_index_phase_leaves_no_false_orphan() {
+    let mut during = 0;
     for seed in adtb_testkit::seeds::sweep(0..4) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
@@ -1285,6 +1289,8 @@ fn a_vacuum_during_the_index_phase_leaves_no_false_orphan() {
             let (vacuumer, rt2) = (db.clone(), rt.clone());
             let over = Arc::new(AtomicBool::new(false));
             let stop = over.clone();
+            let began = Arc::new(AtomicBool::new(false));
+            let marked = began.clone();
             let vacuum = rt.spawn("vacuum", move || {
                 loop {
                     if stop.load(Ordering::Relaxed) {
@@ -1293,20 +1299,23 @@ fn a_vacuum_during_the_index_phase_leaves_no_false_orphan() {
                     let phases =
                         api::printed(api::result(&vacuumer, "from j in sys::jobs select j.phase"));
                     if phases.iter().any(|p| p.contains("indexes")) {
-                        break;
+                        marked.store(true, Ordering::Relaxed);
+                        run_text(&vacuumer, "vacuum users");
+                        return;
                     }
-                    for _ in 0..40 {
+                    for _ in 0..YIELDS {
                         rt2.yield_now();
                     }
                 }
-                run_text(&vacuumer, "vacuum users");
             });
             let got = verified(&db, Some("users"));
             over.store(true, Ordering::Relaxed);
             rt.join(vacuum);
+            during += usize::from(began.load(Ordering::Relaxed));
             assert_eq!(Vec::<String>::new(), got, "seed {seed}");
         });
     }
+    adtb_testkit::seeds::assert_reached("a vacuum begun in the index phase", during, 3);
 }
 
 #[test]

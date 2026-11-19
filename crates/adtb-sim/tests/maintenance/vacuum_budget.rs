@@ -1,13 +1,14 @@
 //! `VacuumBudget` on the simulated clock: the pace of `vacuum r`, a budget of 0, and the share
 //! vacuum and the scrub take together.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::testing::{Charged, Knobs};
 use adtb::{CallOptions, CancelToken, Database, Error, Log, OpenOptions, RejectReason};
-use adtb_sim::SimRuntime;
+use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
 use adtb_testkit::common;
@@ -23,6 +24,8 @@ add relation items : Item key id generate sequence
 ";
 
 const ROWS: i64 = 200;
+
+type Files = BTreeMap<String, Vec<u8>>;
 
 /// The rows `fill` deletes.
 const DELETED: i64 = ROWS - ROWS / 3;
@@ -76,7 +79,7 @@ fn vacuum(db: &Database<SimRuntime>) -> i64 {
 
 /// Returns the simulated time `vacuum items` of `wide` takes at budget `io`, `cpu`.
 fn timed(io: f64, cpu: f64) -> Duration {
-    process::once(5, |rt| {
+    process::run(&mut wide_sim(5, false, false), |rt| {
         let db = wide(&rt);
         budget(&db, io, cpu);
         let began = rt.now();
@@ -88,7 +91,7 @@ fn timed(io: f64, cpu: f64) -> Duration {
 /// Returns what the pacer was charged by `vacuum items` of `wide` at a budget of 0.1, beside a
 /// scrub pass when `scrubbing`, and the time from its first step to the end.
 fn shared(scrubbing: bool) -> (Charged, Duration) {
-    process::once(5, |rt| {
+    process::run(&mut wide_sim(5, false, false), |rt| {
         let db = wide(&rt);
         if scrubbing {
             budget(&db, 0.2, 1.0);
@@ -224,16 +227,42 @@ add relation items : Item key id generate sequence
 /// The rows of `WIDE`, every tenth with a value stored out of line.
 const WIDE_ROWS: i64 = 1500;
 
-/// Returns a database of `WIDE_ROWS` rows of `WIDE`, all but every third deleted, the first
-/// with a value of 400 KB when `big`, the deleted versions kept in history when `retained`.
-fn wide_as(rt: &SimRuntime, big: bool, retained: bool) -> Database<SimRuntime> {
-    let options = OpenOptions {
+fn wide_options() -> OpenOptions {
+    OpenOptions {
         pool_bytes: Some(256 * 1024),
         testing: Knobs::without_background_vacuum(),
         ..open::options(2)
-    };
-    let db = Database::open_in(rt.clone(), "wide.adt", &Log::new([WIDE]), &options)
-        .expect("the database opens");
+    }
+}
+
+static WIDE_FILES: Mutex<BTreeMap<(bool, bool), Files>> = Mutex::new(BTreeMap::new());
+
+/// Returns a simulation seeded `seed` over the closed files of [`built_wide`], built once for each
+/// `big` and `retained`.
+fn wide_sim(seed: u64, big: bool, retained: bool) -> Sim {
+    let mut built = WIDE_FILES.lock().unwrap_or_else(PoisonError::into_inner);
+    let files = built.entry((big, retained)).or_insert_with(|| {
+        let mut sim = Sim::new(0, Config::default());
+        process::run(&mut sim, |rt| {
+            built_wide(&rt, big, retained)
+                .close()
+                .expect("the wide database closes");
+        });
+        sim.files()
+    });
+    Sim::with_files(seed, Config::default(), files.clone())
+}
+
+/// Returns the database of [`wide_sim`]'s files.
+fn wide(rt: &SimRuntime) -> Database<SimRuntime> {
+    Database::open_in(rt.clone(), "wide.adt", &Log::new([WIDE]), &wide_options())
+        .expect("the database opens")
+}
+
+/// Returns a database of `WIDE_ROWS` rows of `WIDE`, all but every third deleted, the first
+/// with a value of 400 KB when `big`, the deleted versions kept in history when `retained`.
+fn built_wide(rt: &SimRuntime, big: bool, retained: bool) -> Database<SimRuntime> {
+    let db = wide(rt);
     for from in (1..=WIDE_ROWS).step_by(100) {
         let text: String = (from..from + 100)
             .map(|k| {
@@ -276,10 +305,6 @@ fn expired(rt: &SimRuntime) -> Database<SimRuntime> {
     api::results(&db, "delete i in items where true");
     common::sleep(rt, &mut rt.io(), Duration::from_secs(2));
     db
-}
-
-fn wide(rt: &SimRuntime) -> Database<SimRuntime> {
-    wide_as(rt, false, false)
 }
 
 /// Returns the chunks `vacuum items` reports freed, the relation's count that every row repeats.
@@ -325,8 +350,8 @@ fn paced_throughout(what: &str, took: Duration, charged: Charged, parts: u32) {
 fn no_step_of_a_vacuum_runs_longer_than_one_unit_of_work() {
     for (seed, big, retained) in [(8, false, false), (11, true, false), (12, false, true)] {
         let what = format!("big {big}, retained {retained}");
-        process::once(seed, |rt| {
-            let db = wide_as(&rt, big, retained);
+        process::run(&mut wide_sim(seed, big, retained), |rt| {
+            let db = wide(&rt);
             let (took, rows, charged) = stepped(&rt, &db);
             assert!(
                 chunks(&rows) > 0,
@@ -437,12 +462,12 @@ fn a_vacuum_walks_each_index_of_a_relation_once() {
     );
 }
 
-/// Run `vacuum items` of `wide_as(retained)` at a budget of 0.5, cancelled, or the database
+/// Run `vacuum items` of `wide_sim(retained)` at a budget of 0.5, cancelled, or the database
 /// closed when `close`, once the pacer has been charged `at` steps when given. Returns the steps
 /// charged by then, the I/O queues the vacuum opened and what it returned.
 fn cancelled(retained: bool, at: Option<u64>, close: bool) -> (u64, usize, Result<(), Error>) {
-    process::once(13, |rt| {
-        let db = wide_as(&rt, false, retained);
+    process::run(&mut wide_sim(13, false, retained), |rt| {
+        let db = wide(&rt);
         budget(&db, 0.5, 1.0);
         let token = CancelToken::new();
         let (canceller, clock, watched) = (token.clone(), rt.clone(), db.clone());

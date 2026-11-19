@@ -6,7 +6,8 @@ use adtb_simkit::api;
 use adtb_simkit::open;
 use adtb_testkit::process::{once, run};
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
@@ -49,8 +50,23 @@ fn log(migrations: &[&str]) -> Log {
     Log::new(migrations.iter().copied())
 }
 
+type Files = BTreeMap<String, Vec<u8>>;
+
+static HASHES: Mutex<BTreeMap<Vec<String>, String>> = Mutex::new(BTreeMap::new());
+
+static CREATED: Mutex<BTreeMap<Vec<String>, Files>> = Mutex::new(BTreeMap::new());
+
 /// Returns the version hash of `migrations` as 64 hex digits.
 fn hash(migrations: &[&str]) -> String {
+    let key = migrations.iter().map(|m| (*m).to_owned()).collect();
+    let mut hashes = HASHES.lock().unwrap_or_else(PoisonError::into_inner);
+    hashes
+        .entry(key)
+        .or_insert_with(|| hashed(migrations))
+        .clone()
+}
+
+fn hashed(migrations: &[&str]) -> String {
     let mut source = Source::default();
     for text in migrations {
         let file = parse_migration(text, Options::default())
@@ -92,6 +108,29 @@ fn with(regs: Vec<Registration>) -> OpenOptions {
 fn opened(rt: &SimRuntime, migrations: &[&str], regs: Vec<Registration>) -> Database<SimRuntime> {
     open::open(rt, open::FILE, &log(migrations), &with(regs))
         .unwrap_or_else(|e| panic!("the database opens: {e:?}"))
+}
+
+/// Returns the files of a database created at `migrations` with no bundle and closed.
+fn created(migrations: &[&str]) -> Files {
+    let key = migrations.iter().map(|m| (*m).to_owned()).collect();
+    let mut created = CREATED.lock().unwrap_or_else(PoisonError::into_inner);
+    created
+        .entry(key)
+        .or_insert_with(|| {
+            let mut sim = Sim::new(0, Config::default());
+            run(&mut sim, |rt| {
+                opened(&rt, migrations, Vec::new())
+                    .close()
+                    .expect("the created database closes");
+            });
+            sim.files()
+        })
+        .clone()
+}
+
+/// Returns a simulation seeded `seed` over the files of [`created`] at `migrations`.
+fn from_created(seed: u64, migrations: &[&str]) -> Sim {
+    Sim::with_files(seed, Config::default(), created(migrations))
 }
 
 fn reason(e: &Error) -> &RejectReason {
@@ -179,7 +218,7 @@ fn write(db: &Database<SimRuntime>, text: &str) -> Result<(), Error> {
 }
 
 /// Returns the name and state of each bundle of the file `sim` holds, opened with no bundles.
-fn reopened_states(seed: u64, files: std::collections::BTreeMap<String, Vec<u8>>) -> Vec<String> {
+fn reopened_states(seed: u64, files: BTreeMap<String, Vec<u8>>) -> Vec<String> {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     run(&mut sim, |rt| states(&opened(&rt, &[V1], Vec::new())))
 }
@@ -865,7 +904,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
             };
             seed += 1;
             if live {
-                let mut sim = Sim::new(seed, Config::default());
+                let mut sim = from_created(seed, &before);
                 run(&mut sim, |rt| {
                     opened(&rt, &before, registered());
                 });
@@ -890,7 +929,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
             if !at_registration {
                 continue;
             }
-            once(seed, |rt| {
+            run(&mut from_created(seed, &before), |rt| {
                 let got = open::open(&rt, open::FILE, &self::log(&log), &with(registered()));
                 if blocks && !hides {
                     assert_eq!(link_stale(), refusal(got, "web-1.0"), "{name}{clauses}");
@@ -920,7 +959,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
     let links = cases
         .lines()
         .map(|l| (branch_case(l).0, branch_case(l).1))
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
     let outcomes = reached
         .iter()
         .map(|&(name, hides, phase)| {
@@ -1122,7 +1161,7 @@ fn key_answers(seed: u64, rel: &Section, op: Option<&Section>, bodies: &[&Sectio
     let text: String = bodies.iter().map(|b| b.text.as_str()).collect();
     let bundled = || vec![bundle("web-1.0", &pin, "", &format!("import auth\n{text}"))];
     let case = format!("{} seed {seed}", rel.name[0]);
-    let mut sim = Sim::new(seed, Config::default());
+    let mut sim = from_created(seed, &pin);
     let pinned = run(&mut sim, |rt| {
         let db = opened(&rt, &pin, bundled());
         key_rows(rel, &db, &case);
@@ -1161,7 +1200,7 @@ fn a_pinned_key_answers_at_its_pin_and_after_each_operator_it_crosses() {
     let sections = sections(&key_file("search.txt"));
     let translations = expectations(&key_file("translations.txt"));
     let expected = expectations(&key_file("answers.txt"));
-    let mut got = std::collections::BTreeMap::new();
+    let mut got = BTreeMap::new();
     let mut seed = 400;
     let mut runs = (0, 0, 0);
     for rel in sections.iter().filter(|s| s.kind == "relation") {
@@ -1251,7 +1290,7 @@ impl Pinned<'_> {
     }
 
     /// Returns the files of a database at the pin holding the operator's rows.
-    fn files(&self, seed: u64) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn files(&self, seed: u64) -> BTreeMap<String, Vec<u8>> {
         let mut sim = Sim::new(seed, Config::default());
         run(&mut sim, |rt| {
             let case = format!("{} seed {seed}", self.op.name[0]);
@@ -1264,12 +1303,7 @@ impl Pinned<'_> {
 
     /// Returns the answer of each body called once `then`, migrations each without its
     /// `module auth` line, applies to `files`.
-    fn crossed(
-        &self,
-        seed: u64,
-        files: std::collections::BTreeMap<String, Vec<u8>>,
-        then: &[&str],
-    ) -> Vec<String> {
+    fn crossed(&self, seed: u64, files: BTreeMap<String, Vec<u8>>, then: &[&str]) -> Vec<String> {
         let log = self.log(then);
         let log: Vec<&str> = log.iter().map(String::as_str).collect();
         let mut sim = Sim::with_files(seed, Config::default(), files);
@@ -1294,7 +1328,7 @@ fn a_pinned_call_answers_across_a_revert_as_across_its_inverse_or_a_marked_stand
         .iter()
         .find(|s| s.kind == "base")
         .expect("the search has a base");
-    let mut got = std::collections::BTreeMap::new();
+    let mut got = BTreeMap::new();
     let mut seed = 600;
     for op in sections.iter().filter(|s| s.kind == "operator") {
         let name = &op.name[0];
@@ -1416,7 +1450,7 @@ fn assert_reader_blocks(
     let text = format!("import auth\n{body}\n");
     let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
     if let Some(at_pin) = at_pin {
-        once(seed, |rt| {
+        run(&mut from_created(seed, &pin), |rt| {
             let db = opened(&rt, &pin, registered());
             reader_rows(&db, "Ink { depth: 7 }");
             assert_eq!(vec![at_pin.called], reader_called(&db), "{clauses}: {body}");
@@ -1428,7 +1462,7 @@ fn assert_reader_blocks(
         });
     }
     if live {
-        let mut sim = Sim::new(seed, Config::default());
+        let mut sim = from_created(seed, &before);
         run(&mut sim, |rt| {
             opened(&rt, &before, registered());
         });
@@ -1440,7 +1474,7 @@ fn assert_reader_blocks(
             assert_eq!(READER_REFUSED, detail, "{clauses}: {body}");
         });
     }
-    once(seed, |rt| {
+    run(&mut from_created(seed, &before), |rt| {
         assert_eq!(
             RejectReason::BundleStale {
                 bundle: "web-1.0".into(),
@@ -1462,7 +1496,7 @@ fn assert_reader_runs(seed: u64, clauses: &str, body: &str, outcome: Option<Read
     let log = [V1, READER_ADD, READER_GROW, READER_ENABLE];
     let text = format!("import auth\n{body}\n");
     let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
-    let mut sim = Sim::new(seed, Config::default());
+    let mut sim = from_created(seed, &pin);
     run(&mut sim, |rt| {
         opened(&rt, &pin, registered());
     });
@@ -1953,7 +1987,7 @@ fn a_removal_is_refused_while_a_stored_field_of_each_shape_holds_the_constructor
         };
         let insert = row(kept, field, value);
         let log = [V1, STORED_TYPES, deprecate.as_str(), remove.as_str()];
-        let mut sim = Sim::new(seed, Config::default());
+        let mut sim = from_created(seed, &[V1, STORED_TYPES]);
         run(&mut sim, |rt| {
             let db = opened(&rt, &[V1, STORED_TYPES], vec![]);
             results(&db, &insert);

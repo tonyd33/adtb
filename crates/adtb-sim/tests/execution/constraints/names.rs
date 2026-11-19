@@ -140,10 +140,43 @@ fn reference(case: &Case, f: &mut Fixture, constraint: &str) {
     );
 }
 
+const ORDERS: [&str; 6] = [
+    "Alpha-Middle-Zulu",
+    "Alpha-Zulu-Middle",
+    "Middle-Alpha-Zulu",
+    "Middle-Zulu-Alpha",
+    "Zulu-Alpha-Middle",
+    "Zulu-Middle-Alpha",
+];
+
+const SCOPES: [&str; 4] = ["full", "omitted", "pair", "single"];
+
+/// Returns the positions in `ORDERS` and `SCOPES` of a case named for a constructor order and a
+/// scope.
+fn ordered(name: &str) -> Option<(usize, usize)> {
+    let (order, scope) = name.rsplit_once('-')?;
+    Some((
+        ORDERS.iter().position(|o| *o == order)?,
+        SCOPES.iter().position(|s| *s == scope)?,
+    ))
+}
+
+/// Every case runs under the deep profile. A default run takes every case that is no constructor
+/// order, and of those that are, the case of each order whose scope's position is the order's
+/// position modulo the scopes: every order once and every scope at least once.
 #[test]
 fn canonical_unique_names_cover_constructor_orders_scopes_paths_and_ids() {
+    let every = adtb_testkit::profile::every_case();
     let mut reached = BTreeMap::new();
+    let (mut orders, mut scopes) = (BTreeSet::new(), BTreeSet::new());
     for case in cases() {
+        if let Some((order, scope)) = ordered(&case.name) {
+            if !every && order % SCOPES.len() != scope {
+                continue;
+            }
+            orders.insert(order);
+            scopes.insert(scope);
+        }
         let mut fixture = reference_fixture(&case);
         if case.get("entry") == "reference" {
             assert!(case.get("catalog").is_empty());
@@ -214,5 +247,11 @@ fn canonical_unique_names_cover_constructor_orders_scopes_paths_and_ids() {
         });
         *reached.entry("public").or_insert(0usize) += 1;
     }
-    assert_eq!(reached, [("named", 2), ("public", 29)].into());
+    let public = if every { 29 } else { 11 };
+    assert_eq!(reached, [("named", 2), ("public", public)].into());
+    assert_eq!(
+        (ORDERS.len(), SCOPES.len()),
+        (orders.len(), scopes.len()),
+        "every constructor order and every scope ran"
+    );
 }

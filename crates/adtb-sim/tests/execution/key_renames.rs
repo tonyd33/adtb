@@ -1,6 +1,7 @@
 //! Rename the fields of composite keys over generated relations and read back each stored row,
 //! and each stored reference to it, with its values under the new names.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use adtb::Log;
@@ -21,6 +22,8 @@ const GAPS: [&str; 5] = ["a", "d", "g", "j", "m"];
 const TYPES: [&str; 3] = ["Text", "I64", "Bool"];
 
 const ROWS: usize = 2;
+
+type Files = BTreeMap<String, Vec<u8>>;
 
 /// Returns the value of key field `field`, of type `ty`, of row `row`: each differs from the
 /// others of its row, and from the same field of the other rows, unless of type `Bool`.
@@ -48,20 +51,11 @@ fn schema(names: &[&str], types: &[&str]) -> String {
     )
 }
 
-/// Store `ROWS` rows of a relation keyed by fields `NAMES[..types.len()]` of types `types`, each
-/// referenced by a row of `orders`, rename key field `NAMES[at]` to `to`, and read back each row
-/// with its values under the new names, through the relation and through its reference.
-fn renamed(seed: u64, types: &[&str], at: usize, to: &str) {
+/// Returns the files of a database holding `ROWS` rows of a relation keyed by fields
+/// `NAMES[..types.len()]` of types `types`, each referenced by a row of `orders`.
+fn stored(seed: u64, types: &[&str]) -> Files {
     let names = &NAMES[..types.len()];
     let first = schema(names, types);
-    let rename = format!("module shop\nrename field Price.{} to {to}\n", names[at]);
-    let after: Vec<&str> = (0..names.len())
-        .map(|f| if f == at { to } else { names[f] })
-        .collect();
-    let case = format!(
-        "seed {seed}: key {names:?} of {types:?}, `{}` to `{to}`",
-        names[at]
-    );
     let mut sim = Sim::new(seed, Config::default());
     process::run(&mut sim, |rt| {
         let db = open::opened(
@@ -83,7 +77,25 @@ fn renamed(seed: u64, types: &[&str], at: usize, to: &str) {
                 ),
             );
         }
+        db.close().expect("the stored rows close");
     });
+    sim.files()
+}
+
+/// Rename key field `NAMES[at]` of the relation [`stored`] writes to `to`, and read back each row
+/// with its values under the new names, through the relation and through its reference.
+fn renamed(seed: u64, types: &[&str], files: &Files, at: usize, to: &str) {
+    let names = &NAMES[..types.len()];
+    let first = schema(names, types);
+    let rename = format!("module shop\nrename field Price.{} to {to}\n", names[at]);
+    let after: Vec<&str> = (0..names.len())
+        .map(|f| if f == at { to } else { names[f] })
+        .collect();
+    let case = format!(
+        "seed {seed}: key {names:?} of {types:?}, `{}` to `{to}`",
+        names[at]
+    );
+    let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     process::run(&mut sim, |rt| {
         let db = open::opened(
             &rt,
@@ -117,7 +129,8 @@ fn renamed(seed: u64, types: &[&str], at: usize, to: &str) {
 #[test]
 fn a_rename_of_a_composite_key_field_keeps_every_stored_row_and_reference() {
     let (mut reordered, mut kept, mut same_types) = (0, 0, 0);
-    renamed(SEEDS.end, &["Text", "Text"], 0, GAPS[2]);
+    let same = ["Text", "Text"];
+    renamed(SEEDS.end, &same, &stored(SEEDS.end, &same), 0, GAPS[2]);
     same_types += 1;
     for seed in seeds::sweep(SEEDS) {
         let types: Vec<&str> = process::once(seed, |rt| {
@@ -126,11 +139,12 @@ fn a_rename_of_a_composite_key_field_keeps_every_stored_row_and_reference() {
                 .map(|_| TYPES[entropy::below(&rt, TYPES.len())])
                 .collect()
         });
-        renamed(seed, &types, 0, GAPS[0]);
+        let files = stored(seed, &types);
+        renamed(seed, &types, &files, 0, GAPS[0]);
         kept += 1;
         for at in 0..types.len() {
             for gap in (0..=types.len()).filter(|&j| j != at && j != at + 1) {
-                renamed(seed, &types, at, GAPS[gap]);
+                renamed(seed, &types, &files, at, GAPS[gap]);
                 reordered += 1;
                 let mut moved = types.clone();
                 let ty = moved.remove(at);

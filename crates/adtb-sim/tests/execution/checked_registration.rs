@@ -8,7 +8,7 @@ use adtb_testkit::process::run;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use adtb::runtime::Threads;
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, RejectReason};
@@ -64,6 +64,18 @@ fn shop(rt: &SimRuntime) -> Database<SimRuntime> {
     }
     db.close().expect("close");
     opened(rt, &[SHOP, GRANTS])
+}
+
+static SHOP_FILES: OnceLock<BTreeMap<String, Vec<u8>>> = OnceLock::new();
+
+/// Returns a simulation seeded `seed` over the closed files of [`shop`].
+fn shop_sim(seed: u64) -> Sim {
+    let files = SHOP_FILES.get_or_init(|| {
+        let mut sim = Sim::new(0, Config::default());
+        run(&mut sim, |rt| shop(&rt).close().expect("close"));
+        sim.files()
+    });
+    Sim::with_files(seed, Config::default(), files.clone())
 }
 
 /// Returns the version hash of `migrations` as 64 hex digits.
@@ -328,12 +340,10 @@ fn a_crash_at_every_flush_of_a_registration_keeps_all_of_it_or_none() {
     assert!(kept, "seed {seed}: the last flush keeps the registration");
 }
 
-/// Assert that a bundle importing the last function of `fns` is refused when it registers.
-fn import_is_refused(seed: u64, fns: &str, last: &str) {
-    let mut sim = Sim::new(seed, Config::default());
+/// Assert that a bundle importing function `last`, pinned at `pins`, is refused when it registers
+/// in `sim`.
+fn import_is_refused(mut sim: Sim, pins: &[&str], last: &str) {
     run(&mut sim, |rt| {
-        let pins = &[SHOP, GRANTS, fns];
-        shop(&rt).close().expect("close");
         let db = opened(&rt, pins);
         let body = format!("import shop\nimport fn {last}\n");
         let got = register(&db, "owner", &bundle("deep-1.0", pins, &body));
@@ -350,28 +360,57 @@ fn import_is_refused(seed: u64, fns: &str, last: &str) {
 /// Returns a module defining `d0` to `d{last}`, each two operators above the one before.
 fn deepening_fns(last: usize) -> String {
     let mut fns = String::from("module shop\ndefine fn d0 (x: I64) -> I64 = x + 1\n");
-    for n in 1..=last {
-        let p = n - 1;
-        fns.push_str(&format!(
-            "define fn d{n} (x: I64) -> I64 = (d{p}(x) + 1) + 1\n"
-        ));
-    }
+    fns.push_str(&deepened(1, last));
     fns
+}
+
+/// Returns the definitions of `d{first}` to `d{last}`, each two operators above the one before.
+fn deepened(first: usize, last: usize) -> String {
+    (first..=last)
+        .map(|n| {
+            let p = n - 1;
+            format!("define fn d{n} (x: I64) -> I64 = (d{p}(x) + 1) + 1\n")
+        })
+        .collect()
+}
+
+/// The last function of `CHAIN_FNS`.
+const CHAIN: usize = 29;
+
+static CHAIN_FNS: LazyLock<String> = LazyLock::new(|| deepening_fns(CHAIN));
+
+static CHAIN_FILES: OnceLock<BTreeMap<String, Vec<u8>>> = OnceLock::new();
+
+/// Returns a simulation seeded `seed` over the closed files of [`shop`] after `CHAIN_FNS`.
+fn chain_sim(seed: u64) -> Sim {
+    let files = CHAIN_FILES.get_or_init(|| {
+        let mut sim = shop_sim(0);
+        run(&mut sim, |rt| {
+            opened(&rt, &[SHOP, GRANTS, CHAIN_FNS.as_str()])
+                .close()
+                .expect("close");
+        });
+        sim.files()
+    });
+    Sim::with_files(seed, Config::default(), files.clone())
+}
+
+/// Returns a module defining `d{CHAIN + 1}` to `d{last}` over `CHAIN_FNS`.
+fn past_chain(last: usize) -> String {
+    format!("module shop\n{}", deepened(CHAIN + 1, last))
 }
 
 #[test]
 fn a_function_too_deep_to_run_is_refused_at_its_definition() {
-    let mut sim = Sim::new(380, Config::default());
+    let mut sim = shop_sim(380);
     run(&mut sim, |rt| {
-        shop(&rt).close().expect("close");
         let fns = deepening_fns(42);
         opened(&rt, &[SHOP, GRANTS, fns.as_str()])
             .close()
             .expect("the deepest that is defined");
     });
-    let mut sim = Sim::new(381, Config::default());
+    let mut sim = shop_sim(381);
     run(&mut sim, |rt| {
-        shop(&rt).close().expect("close");
         let fns = deepening_fns(43);
         match open::open(
             &rt,
@@ -397,17 +436,19 @@ fn a_function_too_deep_to_run_is_refused_at_its_definition() {
 
 #[test]
 fn an_imported_function_past_the_run_bound_is_refused() {
-    let mut sim = Sim::new(382, Config::default());
+    let mut sim = chain_sim(382);
     run(&mut sim, |rt| {
-        let fns = deepening_fns(31);
-        let pins = &[SHOP, GRANTS, fns.as_str()];
-        shop(&rt).close().expect("close");
+        let fns = past_chain(31);
+        let pins = &[SHOP, GRANTS, CHAIN_FNS.as_str(), fns.as_str()];
         let db = opened(&rt, pins);
         let body = "import shop\nimport fn d31\n";
         register(&db, "owner", &bundle("deep-1.0", pins, body)).expect("the deepest that runs");
     });
-    import_is_refused(383, &deepening_fns(32), "d32");
-    import_is_refused(384, &deepening_fns(42), "d42");
+    for (seed, last) in [(383, 32), (384, 42)] {
+        let fns = past_chain(last);
+        let pins = [SHOP, GRANTS, CHAIN_FNS.as_str(), fns.as_str()];
+        import_is_refused(chain_sim(seed), &pins, &format!("d{last}"));
+    }
 }
 
 #[test]
@@ -419,12 +460,13 @@ fn an_imported_function_that_doubles_is_refused() {
             "define fn d{n} (x: I64) -> Set I64 = d{p}(x) union d{p}(x)\n"
         ));
     }
-    import_is_refused(385, &fns, "d40");
+    import_is_refused(shop_sim(385), &[SHOP, GRANTS, &fns], "d40");
 }
 
-/// Returns the migration that adds `body`, calling `d{k}`, over the function chain to `d{k}`.
+/// Returns the migration that adds `body`, calling `d{k}`, over the function chain from
+/// `CHAIN_FNS` to `d{k}`.
 fn planned_body(k: usize, body: &str) -> String {
-    let fns = deepening_fns(k);
+    let fns = past_chain(k);
     let body = body.replace("DEEP", &format!("d{k}"));
     format!("{fns}{body}\n")
 }
@@ -457,14 +499,17 @@ const PLANNED_BODIES: [(&str, usize); 5] = [
 fn a_planned_body_past_the_run_bound_is_refused_at_its_definition() {
     for (body, deepest) in PLANNED_BODIES {
         for (k, passes) in [(deepest, true), (deepest + 1, false)] {
-            let mut sim = Sim::new(386, Config::default());
+            let mut sim = chain_sim(386);
             run(&mut sim, |rt| {
-                shop(&rt).close().expect("close");
                 let migration = planned_body(k, body);
                 match open::open(
                     &rt,
                     "shop.adt",
-                    &Log::new([SHOP, GRANTS, migration.as_str()].iter().copied()),
+                    &Log::new(
+                        [SHOP, GRANTS, CHAIN_FNS.as_str(), migration.as_str()]
+                            .iter()
+                            .copied(),
+                    ),
                     &OpenOptions {
                         registrations: Vec::new(),
                         ..options(2)
@@ -495,10 +540,9 @@ fn a_registered_transaction_of_a_thousand_inserts_registers_and_runs() {
         ));
     }
     body.push_str("    return 1\n");
-    let mut sim = Sim::new(387, Config::default());
+    let mut sim = shop_sim(387);
     run(&mut sim, |rt| {
         let pins = &[SHOP, GRANTS];
-        shop(&rt).close().expect("close");
         let db = opened(&rt, pins);
         register(&db, "owner", &bundle("many-1.0", pins, &body)).expect("it registers");
         let served = db.registered("many-1.0").expect("it is served");
@@ -525,9 +569,8 @@ fn a_tall_function_chain_is_defined_up_to_its_limit() {
         fns
     };
     let opens = |seed: u64, fns: String| {
-        let mut sim = Sim::new(seed, Config::default());
+        let mut sim = shop_sim(seed);
         run(&mut sim, |rt| {
-            shop(&rt).close().expect("close");
             open::open(
                 &rt,
                 "shop.adt",
