@@ -8,6 +8,9 @@ pub const MAX_PAGE_SIZE: u32 = 65536;
 /// The length of the plaintext page header; kind-specific contents start here.
 pub const HEADER_LEN: usize = 24;
 
+#[cfg(test)]
+const _: () = assert!(adtb_testkit::damage::HEADER_LEN == HEADER_LEN);
+
 /// The first byte a page change may write: the LSN and checksum are the pager's.
 pub const FIRST_EDITABLE: usize = 12;
 

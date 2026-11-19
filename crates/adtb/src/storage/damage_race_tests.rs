@@ -292,14 +292,22 @@ fn every_refusal_race_refuses_as_checksum(files: &Files, pid: Pid, whole: bool) 
         );
         assert!(
             r.seen.served.iter().all(|&b| b == CHANGED),
-            "seed {seed}: {r:?}"
+            "whole {whole} seed {seed}: {r:?}"
         );
-        assert_eq!(Some(refusal), r.seen.refused, "seed {seed}: {r:?}");
-        assert_eq!(Some(Damage::Checksum), r.damaged, "seed {seed}: {r:?}");
+        assert_eq!(
+            Some(refusal),
+            r.seen.refused,
+            "whole {whole} seed {seed}: {r:?}"
+        );
+        assert_eq!(
+            Some(Damage::Checksum),
+            r.damaged,
+            "whole {whole} seed {seed}: {r:?}"
+        );
         raced += usize::from(r.seen.in_window);
     }
     assert_reached(
-        "a read that began once the refusal was under way",
+        &format!("whole {whole}: a read that began once the refusal was under way"),
         raced,
         share(SEEDS, 8),
     );
@@ -308,19 +316,17 @@ fn every_refusal_race_refuses_as_checksum(files: &Files, pid: Pid, whole: bool) 
 #[test]
 fn a_reader_racing_the_refusal_of_a_changed_page_is_refused_as_the_refusal_says() {
     let w = written();
-    every_refusal_race_refuses_as_checksum(&w.files, w.pid, false);
-}
-
-#[test]
-fn a_reader_racing_the_refusal_of_a_changed_page_of_a_file_quarantined_whole_is_never_served_the_file_copy()
- {
-    let w = written();
     let gap = without_segment(w.files.clone(), SEGMENT);
-    every_refusal_race_refuses_as_checksum(&gap, w.pid, true);
+    for (files, whole) in [(&w.files, false), (&gap, true)] {
+        every_refusal_race_refuses_as_checksum(files, w.pid, whole);
+    }
 }
 
+/// What the main thread does on the pager while the reader reads.
+type Act = dyn Fn(&Pager<SimRuntime>);
+
 #[test]
-fn verify_racing_a_reader_of_a_page_that_lost_its_write_records_its_refusal_once() {
+fn a_reader_racing_verify_or_another_read_of_a_page_that_lost_its_write_records_its_refusal_once() {
     let w = written();
     let (files, expected) = lost(&w);
     let stale = Damage::Stale {
@@ -331,28 +337,30 @@ fn verify_racing_a_reader_of_a_page_that_lost_its_write_records_its_refusal_once
         pid: w.pid,
         damage: stale,
     };
-    let mut raced = 0;
-    for seed in sweep(SEEDS) {
-        let r = race(
-            seed,
-            &files,
-            w.pid,
-            false,
-            true,
-            |_| (),
-            |p| drop(p.verify()),
+    let verify = |p: &Pager<SimRuntime>| drop(p.verify());
+    let pid = w.pid;
+    let read = move |p: &Pager<SimRuntime>| assert_eq!(Err(refusal), p.read(pid).map(drop));
+    let racers: [(&str, &Act); 2] = [("verify", &verify), ("a read", &read)];
+    for (racer, act) in racers {
+        let mut raced = 0;
+        for seed in sweep(SEEDS) {
+            let r = race(seed, &files, w.pid, false, true, |_| (), act);
+            assert_eq!(
+                Vec::<u8>::new(),
+                r.seen.served,
+                "{racer} seed {seed}: {r:?}"
+            );
+            assert_eq!(Some(refusal), r.seen.refused, "{racer} seed {seed}: {r:?}");
+            assert_eq!(Some(stale), r.damaged, "{racer} seed {seed}: {r:?}");
+            assert_eq!(1, r.records, "{racer} seed {seed}: {r:?}");
+            raced += usize::from(r.seen.in_window);
+        }
+        assert_reached(
+            &format!("a read that began once {racer} was under way"),
+            raced,
+            share(SEEDS, 8),
         );
-        assert_eq!(Vec::<u8>::new(), r.seen.served, "seed {seed}: {r:?}");
-        assert_eq!(Some(refusal), r.seen.refused, "seed {seed}: {r:?}");
-        assert_eq!(Some(stale), r.damaged, "seed {seed}: {r:?}");
-        assert_eq!(1, r.records, "seed {seed}: {r:?}");
-        raced += usize::from(r.seen.in_window);
     }
-    assert_reached(
-        "a read that began once verify was under way",
-        raced,
-        share(SEEDS, 8),
-    );
 }
 
 #[test]
@@ -379,41 +387,4 @@ fn verify_of_a_file_quarantined_whole_refuses_the_page_that_lost_its_write() {
         assert!(found.contains(&page), "{found:?}");
         assert_eq!(Err(refusal), pager.read(w.pid).map(|g| g[HEADER_LEN]));
     });
-}
-
-#[test]
-fn two_readers_racing_the_read_in_of_a_page_that_lost_its_write_record_its_refusal_once() {
-    let w = written();
-    let (files, expected) = lost(&w);
-    let refusal = PageError {
-        pid: w.pid,
-        damage: Damage::Stale {
-            expected,
-            found: w.lsn,
-        },
-    };
-    let mut raced = 0;
-    for seed in sweep(SEEDS) {
-        let mut sim = switching(seed, &files);
-        finished(&mut sim, |rt| {
-            let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-            let first_read = Window::default();
-            let (a, first) = reader(&rt, &pager, w.pid, &Window::default(), &first_read, false);
-            let (b, second) = reader(&rt, &pager, w.pid, &first_read, &Window::default(), false);
-            rt.join(a);
-            rt.join(b);
-            for seen in [&first, &second] {
-                let seen = seen.lock().unwrap();
-                assert_eq!(Vec::<u8>::new(), seen.served, "seed {seed}: {seen:?}");
-                assert_eq!(Some(refusal), seen.refused, "seed {seed}: {seen:?}");
-            }
-            assert_eq!(1, records_of(&pager, w.pid), "seed {seed}");
-            raced += usize::from(second.lock().unwrap().in_window);
-        });
-    }
-    assert_reached(
-        "a second read that began while the first ran",
-        raced,
-        share(SEEDS, 8),
-    );
 }

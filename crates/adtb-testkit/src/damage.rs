@@ -112,6 +112,18 @@ mod tests {
     }
 
     #[test]
+    fn a_flip_changes_one_byte_of_its_page_past_the_header() {
+        let (files, data) = (file(4), DataFile::new("db", PAGE));
+        for at in [0, PAGE / 2, PAGE - HEADER_LEN - 1] {
+            let mut flipped = files.clone();
+            data.flip(&mut flipped, 2u64, at);
+            let (old, new) = (data.bytes(&files), data.bytes(&flipped));
+            let changed: Vec<usize> = (0..old.len()).filter(|&i| old[i] != new[i]).collect();
+            assert_eq!(vec![2 * PAGE + HEADER_LEN + at], changed, "byte {at}");
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "byte 4072 of a body of 4072 bytes")]
     fn a_flip_past_the_body_is_refused() {
         DataFile::new("db", PAGE).flip(&mut file(4), 2u64, PAGE - HEADER_LEN);

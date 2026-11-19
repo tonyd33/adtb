@@ -164,7 +164,7 @@ fn long_session_keeps_its_log_bounded(atomic: bool) {
             if let Some(floor) = oldest_kept(&named) {
                 assert!(
                     first + SEGMENT >= segment_of(floor),
-                    "first segment {first:#x}, checkpoints {named:x?}"
+                    "atomic {atomic}: first segment {first:#x}, checkpoints {named:x?}"
                 );
             }
             retained = retained.max(Probe::of(pager).appended().0 - first);
@@ -174,18 +174,20 @@ fn long_session_keeps_its_log_bounded(atomic: bool) {
     });
     assert!(
         last >= start + 30 * EVERY,
-        "the log of this open was not recycled: first segment {last:#x}, open at {start:#x}"
+        "atomic {atomic}: the log of this open was not recycled: first segment {last:#x}, open at \
+         {start:#x}"
     );
     let longest = named[1..].windows(2).map(|w| w[1] - w[0]).max().unwrap();
     assert!(
         longest <= INTERVAL,
-        "checkpoints {longest} bytes apart, over the threshold and a cycle's log"
+        "atomic {atomic}: checkpoints {longest} bytes apart, over the threshold and a cycle's log"
     );
     let bound = 4 * INTERVAL + 2 * SEGMENT;
     assert!(
         retained <= bound,
-        "retained {retained} bytes: a sample sees the log from three checkpoints before the named \
-         one, less a straddling batch, so at most four intervals of {INTERVAL} and two segments, {bound}"
+        "atomic {atomic}: retained {retained} bytes: a sample sees the log from three checkpoints \
+         before the named one, less a straddling batch, so at most four intervals of {INTERVAL} \
+         and two segments, {bound}"
     );
     let values = session(&mut sim, atomic, |pager, _| {
         wrote
@@ -193,17 +195,14 @@ fn long_session_keeps_its_log_bounded(atomic: bool) {
             .map(|&p| (p, value_of(pager, p)))
             .collect::<BTreeMap<_, _>>()
     });
-    assert_eq!(wrote, values);
+    assert_eq!(wrote, values, "atomic {atomic}");
 }
 
 #[test]
 fn a_long_session_keeps_its_log_from_the_checkpoint_three_before_the_named_one() {
-    long_session_keeps_its_log_bounded(false);
-}
-
-#[test]
-fn under_atomic_page_writes_a_long_session_keeps_its_log_bounded() {
-    long_session_keeps_its_log_bounded(true);
+    for atomic in [false, true] {
+        long_session_keeps_its_log_bounded(atomic);
+    }
 }
 
 #[test]
@@ -324,33 +323,33 @@ fn refused_while_changed_frees_the_floor(atomic: bool) {
             listed(rt, false)[0],
         )
     });
-    assert!(!dirty, "the refused page kept its dirty entry");
+    assert!(!dirty, "atomic {atomic}: the refused page stayed dirty");
     assert!(
         first > logged.0,
-        "first segment {first:#x}, change at {logged:?}"
+        "atomic {atomic}: first segment {first:#x}, change at {logged:?}"
     );
     assert_eq!(
         logged,
         lsn_of(&sim.files(), pid),
-        "the file holds the change"
+        "atomic {atomic}: the file holds the change"
     );
     let (value, findings) = session(&mut sim, atomic, |pager, _| {
         let findings = pager.verify().findings;
         (value_of(pager, pid), findings)
     });
-    assert_eq!(2, value);
     let damage = Damage::Checksum;
-    assert_eq!(vec![Finding::Page { pid, damage }], findings);
+    assert_eq!(
+        (2, vec![Finding::Page { pid, damage }]),
+        (value, findings),
+        "atomic {atomic}"
+    );
 }
 
 #[test]
 fn a_page_refused_while_changed_is_written_and_holds_no_segment_past_the_next_force() {
-    refused_while_changed_frees_the_floor(false);
-}
-
-#[test]
-fn under_atomic_page_writes_a_page_refused_while_changed_holds_no_segment() {
-    refused_while_changed_frees_the_floor(true);
+    for atomic in [false, true] {
+        refused_while_changed_frees_the_floor(atomic);
+    }
 }
 
 #[test]
@@ -466,12 +465,12 @@ fn crash_through_recycles_in_session(atomic: bool) {
             assert_eq!(
                 (Vec::<Finding>::new(), &wanted),
                 (findings, &allocated),
-                "crash after event {at}"
+                "atomic {atomic}: crash after event {at}"
             );
             for (pid, v) in values {
                 assert!(
                     by[&pid] <= v && v <= last[&pid],
-                    "crash after event {at}: {pid:?} holds {v}, acknowledged {}",
+                    "atomic {atomic}: crash after event {at}: {pid:?} holds {v}, acknowledged {}",
                     by[&pid]
                 );
             }
@@ -479,18 +478,16 @@ fn crash_through_recycles_in_session(atomic: bool) {
     );
     assert!(
         reached.iter().all(|&n| n >= 1),
-        "crashes before a recycle's first removal and between two of its removals: {reached:?}"
+        "atomic {atomic}: crashes before a recycle's first removal and between two of its \
+         removals: {reached:?}"
     );
 }
 
 #[test]
 fn a_crash_between_a_recycles_checkpoint_and_its_removals_or_during_them_loses_nothing() {
-    crash_through_recycles_in_session(false);
-}
-
-#[test]
-fn under_atomic_page_writes_a_crash_through_a_recycle_within_a_session_loses_nothing() {
-    crash_through_recycles_in_session(true);
+    for atomic in [false, true] {
+        crash_through_recycles_in_session(atomic);
+    }
 }
 
 #[test]

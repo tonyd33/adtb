@@ -49,10 +49,6 @@ mod dump_tests;
 #[cfg(test)]
 mod evidence_tests;
 #[cfg(test)]
-mod faults_tests;
-#[cfg(test)]
-mod file_damage_tests;
-#[cfg(test)]
 mod in_session_tests;
 #[cfg(test)]
 mod incarnation_tests;

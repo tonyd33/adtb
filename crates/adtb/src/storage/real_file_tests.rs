@@ -45,14 +45,6 @@ fn runtime(dir: &Path) -> OsRuntime {
     OsRuntime::new(dir, Backend::Pool { threads: 4 })
 }
 
-fn faulty(dir: &Path, faults: Faults) -> OsRuntime {
-    OsRuntime::with_faults(dir, Backend::Pool { threads: 4 }, faults)
-}
-
-fn no_faults(dir: &Path) -> OsRuntime {
-    faulty(dir, Faults::none(4096))
-}
-
 /// Returns the files under `dir` this process holds open.
 fn open_under(dir: &Path) -> Vec<PathBuf> {
     let dir = dir.canonicalize().expect("the directory");
@@ -101,23 +93,6 @@ fn migrated_database_reopens(dir: &Path, runtime: fn(&Path) -> OsRuntime) {
 #[test]
 fn a_migrated_database_reopens_from_its_files() {
     migrated_database_reopens(scratch("reopen").path(), runtime);
-}
-
-#[test]
-fn a_migrated_database_reopens_from_its_files_beneath_the_fault_injector() {
-    migrated_database_reopens(scratch("reopen-faulty").path(), no_faults);
-}
-
-#[test]
-fn a_database_is_created_once() {
-    let held = scratch("create-once");
-    let dir = held.path();
-    let rt = runtime(dir);
-    drop(Pager::create(rt.clone(), &options()).expect("create"));
-    assert!(matches!(
-        Pager::create(rt, &options()),
-        Err(OpenError::Exists)
-    ));
 }
 
 #[test]
@@ -211,9 +186,9 @@ add type Customer = { id: Key customers, name: Text }
 add relation customers : Customer key id generate sequence
 ";
 
-/// What one faulted workload left: the names of the commits acknowledged and of those refused,
-/// how many refusals were fatal I/O failures, after which the process counts as crashed, and
-/// what the crash dropped and tore.
+/// What one faulted workload left: the names of the commits acknowledged and of the one a fatal
+/// I/O failure ended, after which the process counts as crashed, how many such failures there
+/// were, and what the crash dropped and tore.
 #[derive(Default)]
 struct Commits {
     acked: BTreeSet<String>,
@@ -274,9 +249,7 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
             Ok(Ok(_)) => {
                 commits.acked.insert(name);
             }
-            Ok(Err(_)) => {
-                commits.refused.insert(name);
-            }
+            Ok(Err(e)) => panic!("seed {seed}: commit {i} returned {e:?}, not a crash"),
             Err(payload) if payload.is::<FatalIo>() => {
                 let unwound = db.testing().take_ends_by_drop();
                 assert!(

@@ -234,85 +234,54 @@ fn race(seed: u64, files: &Files, pages: Pages, racer: Racer) -> Raced {
     out.unwrap()
 }
 
-/// Race the mapper against `racer` on every seed. Check a mark set was set before the racer's
+const RACERS: [Racer; 4] = [Racer::Free, Racer::Restart, Racer::Allocate, Racer::Swap];
+
+/// Race the mapper against each racer on every seed. Check a mark set was set before the racer's
 /// change and that a swap leaves no mark on the index it repaired. Check that changes begun after
 /// the walk followed a mark, and that ones begun before the mapping's end preceded it.
-fn every_mark_precedes_the_change_of_its_page(racer: Racer) {
+#[test]
+fn a_change_racing_the_mapper_leaves_no_mark_set_after_it() {
     let (files, pages) = pages();
-    let (mut marked, mut unmarked) = (0, 0);
-    for seed in sweep(SEEDS) {
-        let r = race(seed, &files, pages, racer);
-        if let Racer::Swap = racer {
-            assert_eq!(BTreeSet::new(), r.marks, "seed {seed}: {r:?}");
-        }
-        if r.marked {
-            if !matches!(racer, Racer::Swap) {
-                assert!(r.marked_at < r.changed_at, "seed {seed}: {r:?}");
-                assert_eq!(
-                    BTreeSet::from([racer.object()]),
-                    r.marks,
-                    "seed {seed}: {r:?}"
-                );
+    for racer in RACERS {
+        let (mut marked, mut unmarked) = (0, 0);
+        for seed in sweep(SEEDS) {
+            let r = race(seed, &files, pages, racer);
+            if let Racer::Swap = racer {
+                assert_eq!(BTreeSet::new(), r.marks, "seed {seed}: {r:?}");
             }
-            marked += usize::from(r.after_walk);
-        } else {
-            assert_eq!(BTreeSet::new(), r.marks, "seed {seed}: {r:?}");
-            unmarked += usize::from(r.in_window);
+            if r.marked {
+                if !matches!(racer, Racer::Swap) {
+                    assert!(r.marked_at < r.changed_at, "{racer:?} seed {seed}: {r:?}");
+                    let object = BTreeSet::from([racer.object()]);
+                    assert_eq!(object, r.marks, "{racer:?} seed {seed}: {r:?}");
+                }
+                marked += usize::from(r.after_walk);
+            } else {
+                assert_eq!(BTreeSet::new(), r.marks, "{racer:?} seed {seed}: {r:?}");
+                unmarked += usize::from(r.in_window);
+            }
         }
+        let reached = |what| format!("{racer:?}: {what}");
+        let set_before = reached("a mark set before a change begun after the walk");
+        assert_reached(&set_before, marked, floor(4));
+        let none =
+            reached("a change begun after the walk and before the mapping's end, then no mark");
+        assert_reached(&none, unmarked, floor(4));
     }
-    assert_reached(
-        "a mark set before a change begun after the walk",
-        marked,
-        floor(4),
-    );
-    assert_reached(
-        "a change begun after the walk and before the mapping's end, then no mark",
-        unmarked,
-        floor(4),
-    );
 }
 
 #[test]
-fn a_free_racing_the_mapper_leaves_no_mark_set_after_it() {
-    every_mark_precedes_the_change_of_its_page(Racer::Free);
-}
-
-#[test]
-fn a_restart_racing_the_mapper_leaves_no_mark_set_after_it() {
-    every_mark_precedes_the_change_of_its_page(Racer::Restart);
-}
-
-#[test]
-fn an_allocation_racing_the_mapper_leaves_no_mark_set_after_it() {
-    every_mark_precedes_the_change_of_its_page(Racer::Allocate);
-}
-
-#[test]
-fn a_swap_racing_the_mapper_leaves_no_mark_on_the_repaired_index() {
-    every_mark_precedes_the_change_of_its_page(Racer::Swap);
-}
-
-#[test]
-fn a_page_free_before_the_walk_and_allocated_during_it_is_held_free() {
-    let (files, Pages { freed: p, .. }) = pages();
+fn a_page_allocated_or_retired_during_the_walk_is_held_as_the_walk_began_or_ended() {
+    let (files, Pages { p, freed, .. }) = pages();
     let mut sim = Sim::with_files(1, Config::default(), files);
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options()).unwrap();
-        let held = pager.holders_of(p, Phase::Running, |_| {
+        let held = pager.holders_of(freed, Phase::Running, |_| {
             let allocated = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-            assert_eq!(p, allocated, "the walk allocates the free page");
+            assert_eq!(freed, allocated, "the walk allocates the free page");
         });
-        assert_eq!(Some(BTreeSet::from([Holder::Free])), held);
-    });
-}
-
-#[test]
-fn a_page_retired_during_the_walk_is_held_retired() {
-    let (files, Pages { p, .. }) = pages();
-    let mut sim = Sim::with_files(1, Config::default(), files);
-    finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &options()).unwrap();
+        assert_eq!(Some(BTreeSet::from([Holder::Free])), held, "allocated");
         let held = pager.holders_of(p, Phase::Running, |_| pager.retire([p]));
-        assert_eq!(Some(BTreeSet::from([Holder::Retired])), held);
+        assert_eq!(Some(BTreeSet::from([Holder::Retired])), held, "retired");
     });
 }

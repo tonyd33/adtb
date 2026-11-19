@@ -276,20 +276,21 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
             let end = log_end_by(&load.acked, at, *last);
             assert!(
                 before <= redo && redo <= end,
-                "crash after event {at}: redo {redo:?}, previous checkpoint {before:?}"
+                "atomic {atomic}: crash after event {at}: redo {redo:?}, previous checkpoint {before:?}"
             );
             assert!(
                 named.0 - before.0 >= EVERY,
-                "crash after event {at}: checkpoints {before:?} and {named:?} are under the threshold apart"
+                "atomic {atomic}: crash after event {at}: checkpoints {before:?} and {named:?} are \
+                 under the threshold apart"
             );
             let got = reopen(image, atomic, &pages);
-            assert!(got.clean, "crash after event {at}");
+            assert!(got.clean, "atomic {atomic}: crash after event {at}");
             let wrote = acked_by(&load.acked, usize::MAX);
             for (pid, acked) in acked_by(&load.acked, at) {
                 let v = got.values[&pid];
                 assert!(
                     acked <= v && v <= wrote[&pid],
-                    "crash after event {at}: {pid:?} holds {v}, acknowledged {acked}"
+                    "atomic {atomic}: crash after event {at}: {pid:?} holds {v}, acknowledged {acked}"
                 );
                 let first_run = load.acked.iter().find(|a| a.pid == pid && a.value > *base);
                 if acked <= *base && first_run.is_some_and(|a| a.value == v) {
@@ -299,39 +300,34 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
             points += 1;
         },
     );
-    assert!(points >= 4, "{points} crash points");
-    assert_reached(
-        "an image holding the run's unacknowledged first write of a page over the warm load's",
-        ahead,
-        1,
-    );
+    assert!(points >= 4, "atomic {atomic}: {points} crash points");
+    let first =
+        "an image holding the run's unacknowledged first write of a page over the warm load's";
+    assert_reached(&format!("atomic {atomic}: {first}"), ahead, 1);
     let (load, _, _) = &*ledger.lock().unwrap();
     let mut checkpoints: Vec<Lsn> = load.samples.iter().map(|(_, c, _)| *c).collect();
     checkpoints.dedup();
-    assert!(checkpoints.len() >= 8, "{checkpoints:?}");
+    assert!(checkpoints.len() >= 8, "atomic {atomic}: {checkpoints:?}");
     for (end, named, dirty) in &load.samples {
         let from = previous(&load.samples, *named).unwrap_or(Lsn(0));
         let bound = written_within(&load.acked, from, *end);
         assert!(
             dirty.len() <= bound,
-            "{} dirty pages, bound {bound}",
+            "atomic {atomic}: {} dirty pages, bound {bound}",
             dirty.len()
         );
     }
     assert!(
         !load.raised(pages[0]).is_empty(),
-        "the hot page's rec_lsn never moved while it stayed dirty"
+        "atomic {atomic}: the hot page's rec_lsn never moved while it stayed dirty"
     );
 }
 
 #[test]
 fn a_write_load_keeps_what_recovery_reads_and_the_dirty_page_table_bounded() {
-    load_keeps_recovery_and_the_dirty_page_table_bounded(false);
-}
-
-#[test]
-fn under_atomic_page_writes_a_write_load_keeps_recovery_and_the_dirty_page_table_bounded() {
-    load_keeps_recovery_and_the_dirty_page_table_bounded(true);
+    for atomic in [false, true] {
+        load_keeps_recovery_and_the_dirty_page_table_bounded(atomic);
+    }
 }
 
 fn crash_in_a_cycle_loses_nothing(atomic: bool) {
@@ -354,7 +350,7 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
             common::sleep(rt, &mut io, Duration::from_secs(1));
             assert!(
                 Probe::of(&pager).checkpoint() > before,
-                "the checkpointer ran"
+                "atomic {atomic}: the checkpointer ran"
             );
             Vec::new()
         },
@@ -381,27 +377,24 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
                 phases[k] += 1;
             }
             let got = reopen(image, atomic, &pages);
-            assert!(got.clean, "crash after event {at}");
+            assert!(got.clean, "atomic {atomic}: crash after event {at}");
             let wrote = wrote.lock().unwrap();
             let held: BTreeMap<Pid, u64> = got
                 .values
                 .into_iter()
                 .filter(|(p, _)| wrote.contains_key(p))
                 .collect();
-            assert_eq!(*wrote, held, "crash after event {at}");
+            assert_eq!(*wrote, held, "atomic {atomic}: crash after event {at}");
         },
     );
-    assert!(phases.iter().all(|&n| n >= 1), "{phases:?}");
+    assert!(phases.iter().all(|&n| n >= 1), "atomic {atomic} {phases:?}");
 }
 
 #[test]
 fn a_crash_at_any_step_of_a_checkpoint_cycle_loses_no_acknowledged_write() {
-    crash_in_a_cycle_loses_nothing(false);
-}
-
-#[test]
-fn under_atomic_page_writes_a_crash_in_a_checkpoint_cycle_loses_no_acknowledged_write() {
-    crash_in_a_cycle_loses_nothing(true);
+    for atomic in [false, true] {
+        crash_in_a_cycle_loses_nothing(atomic);
+    }
 }
 
 #[test]

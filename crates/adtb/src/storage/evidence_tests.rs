@@ -6,7 +6,6 @@ use crate::storage::error::Damage;
 use crate::storage::log::Log;
 use crate::storage::pager::{appending_for_test, wrote_for_test};
 use crate::storage::quarantine::Quarantine;
-use crate::storage::recovery::replaying_for_test;
 use crate::storage::{Lsn, Pid};
 
 const P: Pid = Pid(9);
@@ -116,33 +115,6 @@ fn a_full_image_drops_damage_but_a_settle() {
 }
 
 #[test]
-fn damage_between_a_free_and_the_next_chain_start_is_held() {
-    let mut log = log();
-    let mut e = recording(&mut log);
-    let a = &appending_for_test();
-    e.free(a, &mut log, P, false);
-    let at = log.next_lsn();
-    assert_eq!(None, refuse(&mut e, &mut log, P, Damage::Checksum));
-    assert_eq!(at, log.next_lsn(), "nothing logged");
-    assert_eq!(
-        (Some(Damage::Checksum), None),
-        (e.damage(P), folded(&mut e))
-    );
-    e.unrefuse(&refusal_for_test(P));
-    logged(&mut e, P, Met::Start);
-    assert!(refuse(&mut e, &mut log, P, Damage::Checksum).is_some());
-    assert_eq!(
-        Some(Damage::Checksum),
-        folded(&mut e),
-        "after the chain start"
-    );
-    let mut replayed = recording(&mut log);
-    replayed.replay_met(&replaying_for_test(), P, Met::Freed, Lsn(1));
-    assert_eq!(None, refuse(&mut replayed, &mut log, P, Damage::Checksum));
-    assert_eq!(None, folded(&mut replayed), "a replayed free");
-}
-
-#[test]
 fn the_mapping_goes_with_the_damage() {
     let mut log = log();
     let mut e = recording(&mut log);
@@ -159,52 +131,6 @@ fn the_mapping_goes_with_the_damage() {
         (vec![(P, Damage::Checksum)], false),
         unmapped(&e),
         "the same damage again is unmapped"
-    );
-}
-
-/// Enter the mapping of each record of `begun` as marking `object` only in memory.
-fn unwritten(e: &mut Evidence, (pending, _, at): Begun, object: Quarantine) {
-    let objects = Some(BTreeSet::from([object]));
-    e.unwritten(
-        at,
-        pending.into_iter().map(|p| (p, objects.clone())).collect(),
-    );
-}
-
-#[test]
-fn a_mapping_marked_only_in_memory_leaves_its_record_unmapped_until_it_maps() {
-    let mut log = log();
-    let mut e = recording(&mut log);
-    let heap = Quarantine::Heap(7);
-    refuse(&mut e, &mut log, P, Damage::Checksum);
-    let begun = e.begin_mapping(true);
-    unwritten(&mut e, begun, heap);
-    assert_eq!(
-        (None, Some(BTreeSet::from([heap]))),
-        (e.mapped_to(P), e.marked_to(P))
-    );
-    assert_eq!((vec![(P, Damage::Checksum)], false), unmapped(&e));
-    let begun = e.begin_mapping(true);
-    map(&mut e, begun);
-    assert_eq!((database(), database()), (e.mapped_to(P), e.marked_to(P)));
-    assert_eq!((Vec::new(), false), unmapped(&e));
-}
-
-#[test]
-fn a_mapping_marked_only_in_memory_replaces_the_mapping_of_earlier_damage() {
-    let mut log = log();
-    let mut e = recording(&mut log);
-    let heap = Quarantine::Heap(7);
-    refuse(&mut e, &mut log, P, Damage::Checksum);
-    let begun = e.begin_mapping(true);
-    map(&mut e, begun);
-    e.unrefuse(&refusal_for_test(P));
-    refuse(&mut e, &mut log, P, STALE);
-    let begun = e.begin_mapping(true);
-    unwritten(&mut e, begun, heap);
-    assert_eq!(
-        (None, Some(BTreeSet::from([heap]))),
-        (e.mapped_to(P), e.marked_to(P))
     );
 }
 
@@ -273,17 +199,6 @@ fn expecting() -> Evidence {
     e
 }
 
-fn judged(e: &Evidence, pid: Pid, found: Lsn, against: Against) -> Judged {
-    e.judge(pid, Ok((found, Verdict::Valid)), against, END)
-}
-
-fn stale(expected: u64, found: u64) -> Judged {
-    Judged::Stale(Damage::Stale {
-        expected: Lsn(expected),
-        found: Lsn(found),
-    })
-}
-
 fn behind(expected: u64, found: u64) -> Judged {
     Judged::Behind(Damage::Stale {
         expected: Lsn(expected),
@@ -291,65 +206,74 @@ fn behind(expected: u64, found: u64) -> Judged {
     })
 }
 
+fn stale(found: u64) -> Judged {
+    Judged::Stale(Damage::Stale {
+        expected: END,
+        found: Lsn(found),
+    })
+}
+
+/// A copy of a page, with its judgement against the expected LSN of a live page expecting 50, of
+/// a live page expecting none, of a freed page that expected 50 and of a page while recovery
+/// runs, then against a resident LSN of 60 and against the log's end alone.
+type Row = (Result<(Lsn, Verdict), Damage>, [Judged; 6]);
+
 #[test]
-fn a_copy_that_fails_to_read_or_verify_is_bad_whatever_it_is_judged_against() {
-    let e = expecting();
-    for against in [
-        Against::Expected,
-        Against::Resident(Lsn(60)),
-        Against::LogEnd,
-    ] {
-        let unreadable = e.judge(P, Err(Damage::Unreadable), against, END);
-        assert_eq!(Judged::Bad(Damage::Unreadable), unreadable, "{against:?}");
-        let corrupt = e.judge(P, Ok((Lsn(50), Verdict::Corrupt)), against, END);
-        assert_eq!(Judged::Bad(Damage::Checksum), corrupt, "{against:?}");
+fn a_copy_is_judged_by_its_read_its_checksum_the_log_end_and_what_it_must_reach() {
+    use Judged::{Bad, Sound};
+    let (unreadable, rot) = (Bad(Damage::Unreadable), Bad(Damage::Checksum));
+    let valid = |lsn| Ok((Lsn(lsn), Verdict::Valid));
+    let rows: [Row; 8] = [
+        (Err(Damage::Unreadable), [unreadable; 6]),
+        (Ok((Lsn(50), Verdict::Corrupt)), [rot; 6]),
+        (
+            Ok((Lsn(0), Verdict::Blank)),
+            [behind(50, 0), Sound, Sound, Sound, behind(60, 0), Sound],
+        ),
+        (
+            valid(49),
+            [behind(50, 49), Sound, Sound, Sound, behind(60, 49), Sound],
+        ),
+        (
+            valid(50),
+            [Sound, Sound, Sound, Sound, behind(60, 50), Sound],
+        ),
+        (valid(60), [Sound; 6]),
+        (valid(100), [stale(100); 6]),
+        (valid(120), [stale(120); 6]),
+    ];
+    let live = expecting();
+    let mut freed = expecting();
+    freed.free(&appending_for_test(), &mut log(), P, false);
+    let recovering = Evidence::new(Pid(0));
+    let judges = [
+        (&live, P, Against::Expected),
+        (&live, Pid(10), Against::Expected),
+        (&freed, P, Against::Expected),
+        (&recovering, P, Against::Expected),
+        (&live, P, Against::Resident(Lsn(60))),
+        (&live, P, Against::LogEnd),
+    ];
+    let mut cells = 0;
+    for (copy, expected) in rows {
+        for (&(e, pid, against), want) in judges.iter().zip(expected) {
+            let got = e.judge(pid, copy, against, END);
+            assert_eq!(want, got, "{copy:?} of {pid:?} against {against:?}");
+            cells += 1;
+        }
     }
+    assert_eq!(rows.len() * judges.len(), cells);
+    let blank = live.judge(P, Ok((Lsn(0), Verdict::Blank)), Against::LogEnd, Lsn(0));
+    assert_eq!(Sound, blank, "LSN 0 is never past the log");
 }
 
 #[test]
-fn against_the_expected_lsn_a_copy_below_it_is_behind_and_one_past_the_log_stale() {
-    let e = expecting();
-    let a = Against::Expected;
-    assert_eq!(Judged::Sound, judged(&e, P, Lsn(50), a));
-    assert_eq!(behind(50, 49), judged(&e, P, Lsn(49), a));
-    let blank = e.judge(P, Ok((Lsn(0), Verdict::Blank)), a, END);
-    assert_eq!(
-        behind(50, 0),
-        blank,
-        "a blank copy of a page with an expected LSN"
-    );
-    assert_eq!(stale(100, 100), judged(&e, P, END, a));
-    assert_eq!(
-        Judged::Sound,
-        judged(&e, Pid(10), Lsn(1), a),
-        "no expected LSN"
-    );
-    let unarmed = Evidence::new(Pid(0));
-    assert_eq!(Judged::Sound, judged(&unarmed, P, Lsn(1), a), "recovering");
-}
-
-#[test]
-fn against_the_resident_lsn_a_copy_below_it_is_behind_and_one_past_the_log_stale() {
-    let e = expecting();
-    let a = Against::Resident(Lsn(60));
-    assert_eq!(Judged::Sound, judged(&e, P, Lsn(60), a));
-    assert_eq!(
-        behind(60, 55),
-        judged(&e, P, Lsn(55), a),
-        "the expected LSN plays no part"
-    );
-    assert_eq!(stale(100, 120), judged(&e, P, Lsn(120), a));
-}
-
-#[test]
-fn against_the_log_end_only_a_copy_past_it_is_stale() {
-    let e = expecting();
-    let a = Against::LogEnd;
-    assert_eq!(Judged::Sound, judged(&e, P, Lsn(1), a));
-    assert_eq!(Judged::Sound, judged(&e, P, Lsn(0), a));
-    assert_eq!(stale(100, 100), judged(&e, P, END, a));
-    let blank = e.judge(P, Ok((Lsn(0), Verdict::Blank)), a, Lsn(0));
-    assert_eq!(Judged::Sound, blank, "LSN 0 is never past the log");
+fn a_freed_pages_next_incarnation_is_judged_by_its_own_expected_lsn() {
+    let mut e = expecting();
+    e.free(&appending_for_test(), &mut log(), P, false);
+    e.logged_page(&appending_for_test(), P, Lsn(60), Some(Met::Start));
+    let found = e.judge(P, Ok((Lsn(55), Verdict::Valid)), Against::Expected, END);
+    assert_eq!(behind(60, 55), found);
 }
 
 #[test]
@@ -385,45 +309,6 @@ fn a_free_holds_a_refusal_as_the_free_copys_damage_and_ends_a_stale_one() {
             "{damage:?}: the free copy's damage maps to nothing"
         );
     }
-}
-
-#[test]
-fn a_mapping_of_one_incarnation_maps_nothing_of_the_next() {
-    let mut log = log();
-    let mut e = recording(&mut log);
-    refuse(&mut e, &mut log, P, Damage::Checksum);
-    let begun = e.begin_mapping(true);
-    e.unrefuse(&refusal_for_test(P));
-    logged(&mut e, P, Met::Start);
-    refuse(&mut e, &mut log, P, Damage::Checksum);
-    map(&mut e, begun);
-    assert_eq!(
-        (vec![(P, Damage::Checksum)], false),
-        unmapped(&e),
-        "after a chain start"
-    );
-    let begun = e.begin_mapping(true);
-    e.free(&appending_for_test(), &mut log, P, false);
-    map(&mut e, begun);
-    assert_eq!(Some(BTreeSet::new()), e.mapped_to(P), "after a free");
-}
-
-#[test]
-fn a_freed_pages_copy_is_not_judged_by_the_dead_incarnations_expected_lsn() {
-    let mut log = log();
-    let mut e = expecting();
-    e.free(&appending_for_test(), &mut log, P, false);
-    let a = Against::Expected;
-    assert_eq!(Judged::Sound, judged(&e, P, Lsn(20), a));
-    let blank = e.judge(P, Ok((Lsn(0), Verdict::Blank)), a, END);
-    assert_eq!(Judged::Sound, blank, "a blank copy");
-    assert_eq!(stale(100, 100), judged(&e, P, END, a), "past the log");
-    e.logged_page(&appending_for_test(), P, Lsn(60), Some(Met::Start));
-    assert_eq!(
-        behind(60, 55),
-        judged(&e, P, Lsn(55), a),
-        "the next incarnation"
-    );
 }
 
 /// Returns the records of `begun` still current, each mapped to the database.

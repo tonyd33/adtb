@@ -13,7 +13,6 @@ use crate::test_world as harness;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_testkit::common;
 use adtb_testkit::damage::{DataFile, Files};
-use adtb_testkit::profile::{assert_reached, every_case};
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 
@@ -21,18 +20,10 @@ const SEED: u64 = 23;
 const OLD_OWNER: u32 = 7;
 const NEW_OWNER: u32 = 9;
 
-/// The kinds of page the engine frees.
-const FREEABLE: [PageKind; 9] = [
-    PageKind::HeapFixed,
-    PageKind::HeapSlotted,
-    PageKind::IndexLeaf,
-    PageKind::IndexInner,
-    PageKind::HashBucket,
-    PageKind::FreeSpaceMap,
-    PageKind::VisibilityMap,
-    PageKind::CommitLog,
-    PageKind::Catalog,
-];
+/// The kinds of the freed incarnation and of the next. The pager judges no page by its kind but
+/// the pages it keeps itself, which it never frees.
+const OLD_KIND: PageKind = PageKind::HeapSlotted;
+const NEW_KIND: PageKind = PageKind::IndexLeaf;
 
 const SEGMENT: u64 = 64 * 1024;
 
@@ -170,8 +161,6 @@ const EVIDENCE: [Evidence; 6] = [
 
 #[derive(Clone, Copy, Debug)]
 struct Case {
-    old: PageKind,
-    new: PageKind,
     evidence: Evidence,
     atomic: bool,
     /// Whether the allocation comes in an open after the one that leaves the evidence.
@@ -179,12 +168,9 @@ struct Case {
 }
 
 /// Run `case`, asserting the new incarnation is judged by its own operations alone: in the open
-/// that allocates it, after a crash, and after a close that folds the damage records. Returns
-/// `case` once every step has run.
-fn run(case: Case) -> Case {
+/// that allocates it, after a crash, and after a close that folds the damage records.
+fn run(case: Case) {
     let Case {
-        old,
-        new,
         evidence,
         atomic,
         reopened,
@@ -202,7 +188,7 @@ fn run(case: Case) -> Case {
     let mut pids = None;
     harness::finished(&mut sim, |rt| {
         let pager = Pager::create(rt, &options).unwrap();
-        let p = ops.allocate(&pager, old, OLD_OWNER);
+        let p = ops.allocate(&pager, OLD_KIND, OLD_OWNER);
         ops.put(&pager, p, 1);
         let filler = pager.allocate(1, PageKind::HeapSlotted, OLD_OWNER).unwrap();
         pids = Some((p, filler));
@@ -249,7 +235,11 @@ fn run(case: Case) -> Case {
     };
     let mut sim = Sim::with_files(SEED, Config::default(), files);
     let allocate = |pager: &Pager<SimRuntime>, ops: &mut Ops| {
-        assert_eq!(p, ops.allocate(pager, new, NEW_OWNER), "{case:?}: reuse");
+        assert_eq!(
+            p,
+            ops.allocate(pager, NEW_KIND, NEW_OWNER),
+            "{case:?}: reuse"
+        );
         ops.put(pager, p, 5);
         pager.flush_log();
         intact(pager, p, ops, &format!("{case:?}: allocated"));
@@ -270,7 +260,12 @@ fn run(case: Case) -> Case {
             }
             Evidence::ReadWhileFree => {
                 assert_eq!(Ok(1), pager.read(p).map(|g| g[HEADER_LEN]), "{case:?}");
-                assert_eq!(None, Probe::of(&pager).refusals().get(&p), "{case:?}");
+                let probe = Probe::of(&pager);
+                let judged = (
+                    probe.refusals().remove(&p),
+                    probe.records().pages().get(&p).copied(),
+                );
+                assert_eq!((None, None), judged, "{case:?}");
             }
             Evidence::RecordedAfterFree => drop(pager.damage(p, Damage::Checksum)),
             Evidence::RecordedAfterRecycle => {
@@ -301,48 +296,67 @@ fn run(case: Case) -> Case {
         let (pager, _) = Pager::open(rt, &options).unwrap();
         intact(&pager, p, &ops, &format!("{case:?}: after a close"));
     });
-    case
 }
 
-/// Returns the cases: each freeable kind with each evidence, the atomic writes and the reopen
-/// varied across kinds, or every combination under the deep profile.
-fn cases() -> Vec<Case> {
-    let mut out = Vec::new();
-    for (i, &old) in FREEABLE.iter().enumerate() {
-        let new = FREEABLE[(i + 1) % FREEABLE.len()];
-        for (e, &evidence) in EVIDENCE.iter().enumerate() {
-            let varied = [((i + e) % 2 == 0, (i / 2 + e) % 2 == 0)];
-            let all = [(false, false), (false, true), (true, false), (true, true)];
-            let shapes: &[(bool, bool)] = if every_case() { &all } else { &varied };
-            for &(atomic, reopened) in shapes {
-                out.push(Case {
-                    old,
-                    new,
-                    evidence,
-                    atomic,
-                    reopened,
-                });
-            }
-        }
-    }
-    out
-}
+const SHAPES: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
 
 #[test]
 fn no_consumer_judges_a_reallocated_page_by_the_evidence_of_its_last_incarnation() {
-    let ran: Vec<Case> = cases().into_iter().map(run).collect();
-    for kind in FREEABLE {
-        let reached = ran.iter().filter(|c| c.old == kind || c.new == kind);
-        assert_reached(&format!("{kind:?}"), reached.count(), 2);
-    }
+    let mut ran = 0;
     for evidence in EVIDENCE {
-        for shape in [(false, false), (false, true), (true, false), (true, true)] {
-            let reached = ran
-                .iter()
-                .filter(|c| c.evidence == evidence && (c.atomic, c.reopened) == shape);
-            assert_reached(&format!("{evidence:?} {shape:?}"), reached.count(), 1);
+        for (atomic, reopened) in SHAPES {
+            run(Case {
+                evidence,
+                atomic,
+                reopened,
+            });
+            ran += 1;
         }
     }
+    assert_eq!(EVIDENCE.len() * SHAPES.len(), ran);
+}
+
+#[test]
+fn damage_of_a_page_whose_free_a_crash_left_to_replay_is_held_unrecorded() {
+    let options = options(false);
+    let mut sim = Sim::new(SEED, Config::default());
+    let mut allocated = None;
+    harness::finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options).unwrap();
+        allocated = Some(pager.allocate(1, OLD_KIND, OLD_OWNER).unwrap());
+        pager.close();
+    });
+    let p = allocated.unwrap();
+    common::run_then_crash(&mut sim, |rt, _| {
+        let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+        pager.free(p).unwrap();
+        pager.flush_log();
+    });
+    let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
+    harness::finished(&mut sim, |rt| {
+        let (pager, opening) = Pager::open(rt, &options).unwrap();
+        let applied = opening.recovery().map(|r| r.applied);
+        assert!(applied > Some(0), "the open replays the free: {applied:?}");
+        let _ = pager.damage(p, Damage::Checksum);
+        let probe = Probe::of(&pager);
+        let held = (
+            probe.refusals().remove(&p),
+            probe.records().pages().get(&p).copied(),
+            probe.damage_in_log(),
+        );
+        let checksum = Some(Damage::Checksum);
+        assert_eq!((checksum, checksum, Vec::new()), held, "held, not logged");
+        pager.close();
+    });
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options).unwrap();
+        let probe = Probe::of(&pager);
+        let after = (
+            probe.refusals().remove(&p),
+            probe.records().pages().get(&p).copied(),
+        );
+        assert_eq!((None, None), after, "after a close, nothing folded");
+    });
 }
 
 /// Returns a file whose status page 0 lost the write of the open that aborted its ids, the commit log's root,
@@ -485,50 +499,11 @@ fn read_after_a_failed_allocation(refused: bool) -> (Pid, Result<u8, PageError>)
 
 #[test]
 fn a_failed_allocation_leaves_its_free_page_as_the_file_holds_it() {
-    assert_eq!(Ok(7), read_after_a_failed_allocation(false).1);
-}
-
-#[test]
-fn a_failed_allocation_leaves_its_free_page_refused_as_before() {
+    assert_eq!(Ok(7), read_after_a_failed_allocation(false).1, "unrefused");
     let (p, read) = read_after_a_failed_allocation(true);
     let refusal = PageError {
         pid: p,
         damage: Damage::Checksum,
     };
-    assert_eq!(Err(refusal), read);
-}
-
-#[test]
-fn a_free_page_whose_last_write_was_lost_is_read_unrefused_after_a_reopen() {
-    let options = options(false);
-    let mut sim = Sim::new(SEED, Config::default());
-    let mut freed = None;
-    harness::finished(&mut sim, |rt| {
-        let pager = Pager::create(rt, &options).unwrap();
-        let p = pager.allocate(1, PageKind::HeapSlotted, OLD_OWNER).unwrap();
-        pager.update(&[p], |v| v[0][HEADER_LEN] = 1).unwrap();
-        freed = Some(p);
-        pager.close();
-    });
-    let p = freed.unwrap();
-    let written = sim.files();
-    harness::finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &options).unwrap();
-        pager.update(&[p], |v| v[0][HEADER_LEN] = 2).unwrap();
-        pager.free(p).unwrap();
-        pager.close();
-    });
-    let files = reverted(sim.files(), &written, p);
-    let mut sim = Sim::with_files(SEED, Config::default(), files);
-    harness::finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &options).unwrap();
-        assert_eq!(
-            Ok(1),
-            pager.read(p).map(|g| g[HEADER_LEN]),
-            "the lost write"
-        );
-        assert_eq!(None, Probe::of(&pager).records().pages().get(&p));
-        assert_eq!(None, Probe::of(&pager).refusals().get(&p));
-        pager.close();
-    });
+    assert_eq!(Err(refusal), read, "refused before");
 }

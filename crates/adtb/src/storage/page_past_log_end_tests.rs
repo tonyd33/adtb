@@ -175,34 +175,47 @@ const ENTRIES: [(&str, Enter); 12] = [
     ("backup", backup),
 ];
 
-/// Returns whether `rows` are what verify and scrub find of the damaged page `page`.
-type Reported = fn(Pid, &[String]) -> bool;
-
-fn stale_reported(page: Pid, rows: &[String]) -> bool {
-    let stale = format!("page {}: Stale {{", page.0);
-    let unlogged = format!("Unlogged {{ pid: Pid({}), page: Lsn({PAST}) }}", page.0);
-    rows.len() == 2
-        && rows
-            .iter()
-            .any(|r| r.starts_with("StalePage") && r.contains(&stale))
-        && rows
-            .iter()
-            .any(|r| r.starts_with("Structure") && r.contains(&unlogged))
+/// Returns `rows`, printed findings, without the time each was found.
+fn unclocked(rows: &[String]) -> Vec<String> {
+    let cut = |r: &String| match (r.find(", at: "), r.find(", where: ")) {
+        (Some(at), Some(place)) => format!("{}{}", &r[..at], &r[place..]),
+        _ => r.clone(),
+    };
+    rows.iter().map(cut).collect()
 }
 
-fn checksum_reported(page: Pid, rows: &[String]) -> bool {
-    let checksum = format!("where: \"page {}: Checksum\" }}", page.0);
-    rows.len() == 1 && rows[0].starts_with("Checksum") && rows[0].ends_with(&checksum)
+/// Returns what verify and scrub find of `page` at `PAST` in a file whose log recovery ends at
+/// `end`.
+fn stale_reported(page: Pid, end: Lsn) -> Vec<String> {
+    let (p, end) = (page.0, end.0);
+    vec![
+        format!(
+            "StalePage {{ id: verify_findings.key(1), run: RunId(1), where: \"page {p}: Stale {{ \
+             expected: Lsn({end}), found: Lsn({PAST}) }}\" }}"
+        ),
+        format!(
+            "Structure {{ id: verify_findings.key(2), run: RunId(1), where: \"log at {end}: \
+             Unlogged {{ pid: Pid({p}), page: Lsn({PAST}) }}\" }}"
+        ),
+    ]
+}
+
+/// Returns what verify and scrub find of `page` failing its checksum.
+fn checksum_reported(page: Pid) -> Vec<String> {
+    let p = page.0;
+    vec![format!(
+        "Checksum {{ id: verify_findings.key(1), run: RunId(1), where: \"page {p}: Checksum\" }}"
+    )]
 }
 
 /// Returns why `met` is not what the spec states for `entry` meeting page `page`.
-fn wrong(entry: &str, page: Pid, met: &Met, reported: Reported) -> Option<String> {
+fn wrong(entry: &str, page: Pid, met: &Met, reported: &[String]) -> Option<String> {
     let right = match met {
         Met::Refused(what) => {
             !matches!(entry, "verify" | "verify identities" | "scrub" | "backup") && what == GOOGLE
         }
         Met::Found(rows) => {
-            matches!(entry, "verify" | "verify identities" | "scrub") && reported(page, rows)
+            matches!(entry, "verify" | "verify identities" | "scrub") && unclocked(rows) == reported
         }
         Met::Copied(damaged) => entry == "backup" && *damaged == [page.0],
         Met::Finished => entry == "reindex",
@@ -213,7 +226,7 @@ fn wrong(entry: &str, page: Pid, met: &Met, reported: Reported) -> Option<String
 
 /// Returns how each entry, run on the file `name` of `files`, departs from the spec for its
 /// damaged page `page`.
-fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String> {
+fn sweep(files: &Files, name: &str, page: Pid, reported: &[String]) -> Vec<String> {
     let bytes = DataFile::new(name, PAGE).page(files, page).to_vec();
     let mut defects = Vec::new();
     for (entry, enter) in ENTRIES {
@@ -251,10 +264,8 @@ fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String
 #[test]
 fn every_entry_refuses_or_reports_a_page_past_the_log_end_and_leaves_it_unchanged() {
     let (files, page) = planted();
-    assert_eq!(
-        Vec::<String>::new(),
-        sweep(&files, FILE, page, stale_reported)
-    );
+    let reported = stale_reported(page, recovered_end(&files));
+    assert_eq!(Vec::<String>::new(), sweep(&files, FILE, page, &reported));
 }
 
 /// Returns a file whose page of `identities.Google` `damage` changed, given the end of the log its
@@ -302,9 +313,10 @@ fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
 #[test]
 fn a_page_a_backup_copied_past_the_log_end_stays_refused_in_the_restored_file() {
     let (files, page) = restored(|files, page, end| stamp(files, page, end.0));
+    let reported = checksum_reported(page);
     assert_eq!(
         Vec::<String>::new(),
-        sweep(&files, RESTORED, page, checksum_reported)
+        sweep(&files, RESTORED, page, &reported)
     );
 }
 
@@ -313,8 +325,9 @@ fn a_page_a_backup_copied_rotted_stays_refused_in_the_restored_file() {
     let (files, page) = restored(|files, page, _| {
         DataFile::new(FILE, PAGE).flip(files, page, 200 - HEADER_LEN);
     });
+    let reported = checksum_reported(page);
     assert_eq!(
         Vec::<String>::new(),
-        sweep(&files, RESTORED, page, checksum_reported)
+        sweep(&files, RESTORED, page, &reported)
     );
 }

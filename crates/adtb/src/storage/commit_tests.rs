@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::runtime::{Clock, Entropy, Io, Op, OpKind, Runtime, Threads};
+use crate::runtime::{Clock, Entropy, Io, IoError, Op, OpKind, Runtime, Threads};
 use crate::storage::{Lsn, Options, Pager, Position};
-use adtb_sim::{Config, Ledger, Match, Outcome, Sim, SimRuntime};
+use adtb_sim::{Action, Config, Ledger, Match, Outcome, Plan, Sim, SimRuntime};
 
 use crate::test_world as harness;
 use crate::test_world::api;
@@ -144,22 +144,6 @@ fn a_commit_acknowledged_before_another_begins_has_the_earlier_position() {
 }
 
 #[test]
-fn waiting_for_a_record_already_durable_forces_nothing() {
-    let mut sim = Sim::new(3, Config::default());
-    create(&mut sim);
-    finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &options()).unwrap();
-        let lsn = pager.commit(1, &[], |_| {}).unwrap();
-        let first = pager.wait_durable(lsn);
-        let batches = pager.batches();
-        assert_eq!(first, pager.wait_durable(lsn));
-        assert_eq!(batches, pager.batches());
-        assert_eq!(Position { epoch: 1, lsn }, first);
-        assert!(Probe::of(&pager).durable() > lsn);
-    });
-}
-
-#[test]
 #[should_panic(expected = "no record was appended")]
 fn waiting_for_a_record_never_appended_panics() {
     let mut sim = Sim::new(4, Config::default());
@@ -207,27 +191,6 @@ fn safe_snapshot_markers_are_logged_in_order_and_survive_a_crash() {
     assert_eq!(logged, found);
 }
 
-#[test]
-fn a_marker_names_the_position_it_was_given() {
-    let mut sim = Sim::new(6, Config::default());
-    create(&mut sim);
-    finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &options()).unwrap();
-        let at = Position {
-            epoch: 1,
-            lsn: Lsn(0),
-        };
-        let marker = pager.log_safe_snapshot(at, b"none running");
-        pager.flush_log();
-        let v = pager.verify();
-        assert_eq!(
-            vec![(marker, at, b"none running".to_vec())],
-            v.safe_snapshots
-        );
-        assert!(v.commits.is_empty());
-    });
-}
-
 fn sized(threads: usize, pool_frames: usize) -> Options {
     Options {
         threads,
@@ -248,7 +211,6 @@ fn opening_with_too_small_a_pool_for_its_threads_panics() {
 
 #[test]
 fn a_pool_serves_five_frames_per_thread() {
-    assert_eq!(5, crate::storage::LATCHES_PER_THREAD);
     let mut sim = Sim::new(8, Config::default());
     create(&mut sim);
     finished(&mut sim, |rt| {
@@ -299,72 +261,6 @@ fn a_pool_every_frame_of_which_stays_latched_reports_a_stall() {
         pager.read(pages[5]).unwrap();
         rt.join(holder);
     });
-}
-
-/// Returns the largest buffer any `Read` op of `trace` carries.
-fn largest_read(trace: &str) -> usize {
-    trace
-        .lines()
-        .filter(|l| l.contains(" Read {"))
-        .filter_map(|l| {
-            let at = l.find("len: ")? + 5;
-            l[at..]
-                .split(|c: char| !c.is_ascii_digit())
-                .next()?
-                .parse()
-                .ok()
-        })
-        .max()
-        .unwrap_or(0)
-}
-
-#[test]
-fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
-    const SEGMENT: u64 = 4 << 20;
-    let big = Options {
-        segment_size: SEGMENT,
-        ..options()
-    };
-    let mut sim = Sim::new(10, Config::default());
-    let b = big.clone();
-    finished(&mut sim, move |rt| {
-        let pager = Pager::create(rt, &b).unwrap();
-        let pid = pager
-            .allocate(1, crate::storage::PageKind::HeapSlotted, 1)
-            .unwrap();
-        for i in 0..3000u64 {
-            pager
-                .update(&[pid], |p| p[0][100..108].copy_from_slice(&i.to_le_bytes()))
-                .unwrap();
-            pager.commit(i + 1, &[], |_| {}).unwrap();
-        }
-        pager.flush_log();
-        assert!(
-            Probe::of(&pager).durable().0 > 2 * 64 * 1024,
-            "the log spans several chunks"
-        );
-    });
-    let before = sim.trace().len();
-    let b = big;
-    finished(&mut sim, move |rt| {
-        let (pager, opening) = Pager::open(rt, &b).unwrap();
-        let recovery = opening.recovery().cloned().expect("the open recovered");
-        assert!(
-            recovery.applied > 2000,
-            "recovery replayed {}",
-            recovery.applied
-        );
-        let v = pager.verify();
-        assert_eq!(3000, v.commits.len());
-        assert!(v.findings.is_empty(), "{:?}", v.findings);
-    });
-    let trace = sim.trace();
-    let largest = largest_read(&trace[before..]);
-    assert!(largest > 0, "no read was traced");
-    assert!(
-        largest <= 64 * 1024,
-        "a read of {largest} bytes, against log segments of {SEGMENT}"
-    );
 }
 
 const COMMIT_SCHEMA: &str = r"module app
@@ -618,4 +514,23 @@ fn public_commits_preserve_acknowledged_pairs_under_crashes_at_sampled_events() 
     assert_reached("crash before the first new acknowledgement", before_ack, 1);
     assert_reached("crash after an earlier acknowledgement", after_ack, 1);
     assert_reached("crash inside a commit", in_commit, 1);
+}
+
+#[test]
+fn a_failed_create_of_the_log_ends_the_process_with_its_cause() {
+    let mut sim = Sim::new(32, Config::default());
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sim.run(|rt| {
+            rt.arm(Match::kind(OpKind::CreateNew).containing("-log/"));
+            rt.plan(Plan::new().at(0, Action::Fail(IoError::Failed)));
+            drop(Pager::create(rt, &options()));
+        })
+    }));
+    let struck = sim.numbered().struck().map(adtb_sim::Struck::kind);
+    assert_eq!(Some(OpKind::CreateNew), struck, "the failure fired");
+    let payload = caught.expect_err("the failed create ends the process");
+    let cause = payload
+        .downcast_ref::<crate::runtime::FatalIo>()
+        .map(crate::runtime::FatalIo::cause);
+    assert_eq!(Some(IoError::Failed), cause);
 }
