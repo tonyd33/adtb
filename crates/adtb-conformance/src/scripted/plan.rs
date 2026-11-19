@@ -27,7 +27,7 @@ pub(super) fn compare(step: &Step, mut results: Results) -> Result<(), Differs> 
     }
     unsound(&want, "").map_err(|(path, why)| at(format!("the expected `{path}` {why}")))?;
     let document = match (results.pop(), results.is_empty()) {
-        (Some((form, rows)), true) => document(&form, &rows),
+        (Some((form, rows)), true) => field(&form, &rows, "document"),
         _ => None,
     };
     let document = document.ok_or_else(|| at("the body has no one explain result".into()))?;
@@ -38,12 +38,41 @@ pub(super) fn compare(step: &Step, mut results: Results) -> Result<(), Differs> 
         .map_err(|(path, e, a)| at(format!("the plan differs at `{path}`")).values(e, a))
 }
 
-/// Returns the `document` of `rows` when they are the one row of an explain.
-fn document(form: &Form, rows: &[Value]) -> Option<String> {
+/// Compare the plan text of the one result of the step's body, an explain that runs nothing,
+/// with the step's rows, one line each.
+pub(super) fn text(step: &Step, mut results: Results) -> Result<(), Differs> {
+    let at = |m: &str| Differs::at(step, m);
+    let (document, text) = match (results.pop(), results.is_empty()) {
+        (Some((form, rows)), true) => {
+            (field(&form, &rows, "document"), field(&form, &rows, "text"))
+        }
+        _ => (None, None),
+    };
+    let (Some(document), Some(text)) = (document, text) else {
+        return Err(at("the body has no one explain result"));
+    };
+    let document: Json = serde_json::from_str(&document)
+        .map_err(|e| at(&format!("the plan document does not read: {e}")))?;
+    if descendants(&document["root"])
+        .iter()
+        .chain([&&document["root"]])
+        .any(|n| n.get("actual").is_some())
+    {
+        return Err(at("the explain runs its statement"));
+    }
+    let got: Vec<String> = text.lines().map(str::to_owned).collect();
+    if got == step.rows {
+        return Ok(());
+    }
+    Err(at("the plan differs").rows(&step.rows, &got))
+}
+
+/// Returns field `name` of `rows` when they are the one row of an explain.
+fn field(form: &Form, rows: &[Value], name: &str) -> Option<String> {
     let Form::Record(fields) = form else {
         return None;
     };
-    let i = fields.iter().position(|(n, _)| n == "document")?;
+    let i = fields.iter().position(|(n, _)| n == name)?;
     match rows {
         [Value::Record(fs)] => match fs.get(i) {
             Some(Value::Text(t)) => Some(t.to_string()),

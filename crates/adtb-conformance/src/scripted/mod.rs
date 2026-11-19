@@ -39,6 +39,8 @@
 //!   preorder, through children and arms, the first after the one the child before matched. An
 //!   empty `children` or `actual` differs. Each node of the plan holds `kind`, `estimate` and the
 //!   array `children`, and each arm, pruned constructor and `actual` its members.
+//! - `probe plan`: the body, one explain sent as a `command` is; the rows after `----` are the
+//!   lines of its `text`, in order. An explain that runs its statement differs.
 //! - `error VALUE`: as in a conformance script, the last statement refused with exactly the
 //!   reason VALUE in textual syntax.
 //! - `adhoc error VALUE`: the body, one ad hoc call in process committing on its own, refused
@@ -55,8 +57,9 @@
 //!   VALUE]`, `rollback NAME`: interactive transaction NAME; one open at the next open differs.
 //!   `$P` in a later body or compared value stands for the position the commit took, in textual
 //!   syntax; a second binding of P differs.
-//! - `in NAME` before `run`, `query`, `error`, `plan` or a `call` with an ordinal: one call of
-//!   transaction NAME; `committed` states a registered transaction committing with it.
+//! - `in NAME` before `run`, `query`, `error`, `plan`, `probe plan` or a `call` with an ordinal:
+//!   one call of transaction NAME; `committed` states a registered transaction committing with
+//!   it.
 //! - `assert VALUE` before `run`, `query`, `error`, `call` or `begin`, after any `as`: the call
 //!   or transaction runs for principal VALUE. With `in` or `assert` a body is one call.
 //! - `fatal VALUE`: the body, one ad hoc call in process, failing with exactly `Fatal { reason:
@@ -201,6 +204,7 @@ enum Head {
         rowsort: bool,
     },
     Plan,
+    ProbePlan,
     Error(String),
     Adhoc(String),
     Failed(String),

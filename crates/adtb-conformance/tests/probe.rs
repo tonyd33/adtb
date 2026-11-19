@@ -176,7 +176,7 @@ fn checks_print_the_plan_of_each_incremental_check_without_a_text() {
     assert_eq!(
         out,
         "check app::adults on insert into app::users:
-  Set
+  Set total
     Pipeline
       One row
       Unnest

@@ -1,0 +1,5 @@
+scripts/probes/probe-plan-values.test:3: the body has no one explain result
+scripts/probes/probe-plan-values.test:8: the explain runs its statement
+scripts/probes/probe-plan-values.test:13: the plan differs
+  expected: [Set total]
+  actual:   [Set total,   reads users.User,   Pipeline,     Scan users.User,     Emit]

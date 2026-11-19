@@ -595,9 +595,11 @@ impl Script {
             {
                 role::sent_step(step, txn::texted(db, txns, step)?)
             }
-            Head::Command { .. } | Head::Adhoc(_) | Head::Fatal(_) | Head::Plan => {
-                role::sent_step(step, txn::texted(db, txns, step)?)
-            }
+            Head::Command { .. }
+            | Head::Adhoc(_)
+            | Head::Fatal(_)
+            | Head::Plan
+            | Head::ProbePlan => role::sent_step(step, txn::texted(db, txns, step)?),
             Head::Mark(_) | Head::Fault { .. } | Head::Crash(_) | Head::Probe(_) => {
                 self.faults.step(rt, db, step)
             }

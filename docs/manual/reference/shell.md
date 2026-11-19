@@ -330,7 +330,7 @@ JSON text for programs, and `text`, the same plan indented for people.
 ```console
 $ adtb shelter.db
 adtb> explain from c in pets.Cat select c.name
-{ document: "{\"format\": 1, \"release\": \"0.1.0\", \"root\": {\"kind\": \"Set\", \"detail\": \"\", \"estimate\": null, \"children\": [{\"kind\": \"Pipeline\", \"detail\": \"\", \"estimate\": null, \"children\": [{\"kind\": \"Scan\", \"detail\": \"pets.Cat\", \"estimate\": null, \"children\": [], \"pruned\": []}, {\"kind\": \"Emit\", \"detail\": \"\", \"estimate\": null, \"children\": [], \"pruned\": []}], \"pruned\": []}], \"pruned\": []}}", text: "Set\n  Pipeline\n    Scan pets.Cat\n    Emit\n" }
+{ document: "{\"format\": 1, \"release\": \"0.1.0\", \"root\": {\"kind\": \"Set\", \"detail\": \"total\", \"estimate\": null, \"children\": [{\"kind\": \"Pipeline\", \"detail\": \"\", \"estimate\": null, \"children\": [{\"kind\": \"Scan\", \"detail\": \"pets.Cat\", \"estimate\": null, \"children\": [], \"pruned\": []}, {\"kind\": \"Emit\", \"detail\": \"\", \"estimate\": null, \"children\": [], \"pruned\": []}], \"pruned\": []}], \"pruned\": [], \"reads\": [\"pets.Cat\"]}}", text: "Set total\n  reads pets.Cat\n  Pipeline\n    Scan pets.Cat\n    Emit\n" }
 adtb> set setting VacuumBudget = { io: 0.2, cpu: 0.5 }
 VacuumBudget { id: settings.key(207), io: 0.2, cpu: 0.5 }
 adtb> \q

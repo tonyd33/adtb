@@ -312,7 +312,7 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 );
             let txn = prefix.role.is_none()
                 && prefix.assert.is_none()
-                && (sent(h) || call(h) || matches!(h, Head::Plan));
+                && (sent(h) || call(h) || matches!(h, Head::Plan | Head::ProbePlan));
             let assert = sent(h) || call(h) || matches!(h, Head::Begin { .. });
             let failed = !matches!(h, Head::Failed(_)) || prefix.role.is_some();
             failed
@@ -331,6 +331,7 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 | Head::Query { .. }
                 | Head::Command { .. }
                 | Head::Plan
+                | Head::ProbePlan
                 | Head::Error(_)
                 | Head::Adhoc(_)
                 | Head::Failed(_)

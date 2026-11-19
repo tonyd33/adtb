@@ -188,6 +188,7 @@ pub(super) fn head(word: &str, rest: &str) -> Option<Head> {
                 ("marks", "") => Probed::Marks,
                 ("damage", "") => Probed::Damage,
                 ("files", prefix) => Probed::Files(prefix.to_owned()),
+                ("plan", "") => return Some(Head::ProbePlan),
                 _ => return None,
             },
         )),

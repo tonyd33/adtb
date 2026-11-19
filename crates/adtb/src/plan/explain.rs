@@ -8,7 +8,8 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
 use super::{
-    Catalog, Chain, End, Eval, HeapId, IndexId, Pipeline, Plan, Query, Sink, Source, Spine, Step,
+    Catalog, Chain, End, Eval, HeapId, IndexId, Pipeline, Plan, Query, RangeBound, Reads, Sink,
+    Source, Spine, Step,
 };
 
 /// The version of the shape of [`Node::document`].
@@ -25,6 +26,8 @@ pub struct Node {
     pub arms: Vec<Arm>,
     /// The constructors of a read of a sum it reads none of.
     pub pruned: Vec<Pruned>,
+    /// The heaps and indexes the plan this node is the root of may read.
+    reads: Vec<String>,
     pub actual: Option<Actual>,
 }
 
@@ -102,6 +105,10 @@ impl Node {
             writeln!(out, "{pad}  pruned {}", names.join(", "))
                 .expect("a String takes every write");
         }
+        if !self.reads.is_empty() {
+            writeln!(out, "{pad}  reads {}", self.reads.join(", "))
+                .expect("a String takes every write");
+        }
         if let Some(a) = &self.actual {
             writeln!(
                 out,
@@ -159,6 +166,10 @@ impl Node {
             ])
         });
         members.push(("pruned".to_string(), array(pruned)));
+        if !self.reads.is_empty() {
+            let reads = self.reads.iter().map(|r| json_text(r));
+            members.push(("reads".to_string(), array(reads)));
+        }
         if let Some(a) = &self.actual {
             members.push((
                 "actual".to_string(),
@@ -171,6 +182,21 @@ impl Node {
             ));
         }
         object(&members)
+    }
+}
+
+fn keys(n: usize) -> String {
+    match n {
+        1 => "1 key".to_string(),
+        n => format!("{n} keys"),
+    }
+}
+
+fn bound(end: &str, b: Option<RangeBound>) -> String {
+    match b {
+        None => format!("no {end}"),
+        Some(b) if b.inclusive => format!("{end} inclusive"),
+        Some(_) => format!("{end} exclusive"),
     }
 }
 
@@ -257,7 +283,16 @@ impl<'a> Describe<'a> {
 
     /// Returns the operators of `plan`.
     pub fn plan(&self, plan: &Plan) -> Node {
-        self.eval(plan, &plan.root)
+        let mut root = self.eval(plan, &plan.root);
+        root.reads = self.reads(&plan.reads);
+        root
+    }
+
+    fn reads(&self, reads: &Reads) -> Vec<String> {
+        let heaps = reads.heaps.iter().map(|h| self.heap(*h));
+        heaps
+            .chain(reads.indexes.iter().map(|i| self.index(*i)))
+            .collect()
     }
 
     fn heap(&self, h: HeapId) -> String {
@@ -342,13 +377,22 @@ impl<'a> Describe<'a> {
                     Some(v) => format!("{point}, typed at version {v}"),
                     None => point.to_string(),
                 };
-                Node::new("Read the past", detail, vec![self.eval(plan, &a.body)])
+                let mut n = Node::new("Read the past", detail, vec![self.eval(plan, &a.body)]);
+                n.reads = self.reads(&a.reads);
+                n
             }
             Eval::Fix(f) => {
                 let mut children: Vec<Node> = f
                     .binds
                     .iter()
-                    .map(|b| Node::new("Step", "", vec![self.eval(plan, &b.body)]))
+                    .map(|b| match &b.step {
+                        Some(step) => Node::new(
+                            "Step",
+                            "delta",
+                            vec![self.eval(plan, &b.body), self.eval(plan, step)],
+                        ),
+                        None => Node::new("Step", "", vec![self.eval(plan, &b.body)]),
+                    })
                     .collect();
                 children.push(self.eval(plan, &f.body));
                 Node::new("Fixpoint", "", children)
@@ -395,16 +439,25 @@ impl<'a> Describe<'a> {
             })
             .collect();
         children.push(self.spine(plan, &q.spine));
-        let (kind, detail) = match &q.sink {
+        let (kind, mut detail) = match &q.sink {
             Sink::Set => ("Set", String::new()),
             Sink::Exists => ("Exists", String::new()),
             Sink::IsEmpty => ("Is empty", String::new()),
             Sink::Agg { op, .. } => ("Aggregate", format!("{op:?}").to_lowercase()),
             Sink::Fold { .. } => ("Aggregate", "user-defined".to_string()),
-            Sink::Group { aggs, .. } => ("Group", format!("{} aggregates", aggs.len())),
+            Sink::Group { rows, aggs, .. } => {
+                let kept = if *rows { ", keeps rows" } else { "" };
+                ("Group", format!("{} aggregates{kept}", aggs.len()))
+            }
             Sink::Top { .. } => ("Top", String::new()),
             Sink::Present { .. } => ("Present", String::new()),
         };
+        if q.total {
+            detail = match detail.as_str() {
+                "" => "total".to_string(),
+                d => format!("{d}, total"),
+            };
+        }
         Node::new(kind, detail, children)
     }
 
@@ -459,9 +512,11 @@ impl<'a> Describe<'a> {
                 Step::Filter(_) => Node::new("Filter", "", Vec::new()),
                 Step::Bind(_, e) => Node::new("Bind", "", vec![self.eval(plan, e)]),
                 Step::Unnest(..) => Node::new("Unnest", "", Vec::new()),
-                Step::Probe { build, .. } => {
-                    Node::new("Probe build", format!("#{}", build.0), Vec::new())
-                }
+                Step::Probe { build, key, .. } => Node::new(
+                    "Probe build",
+                    format!("#{}, {}", build.0, keys(key.len())),
+                    Vec::new(),
+                ),
             })
             .collect();
         out.push(self.end(plan, &c.end));
@@ -489,11 +544,20 @@ impl<'a> Describe<'a> {
                 n
             }
             End::Index { index, routes, .. } | End::Range { index, routes, .. } => {
-                let kind = match e {
-                    End::Range { .. } => "Range probe",
-                    _ => "Probe",
+                let (kind, detail) = match e {
+                    End::Range { key, lo, hi, .. } => (
+                        "Range probe",
+                        format!(
+                            "{}, {} equal, {}, {}",
+                            self.index(*index),
+                            keys(key.len()),
+                            bound("lower", *lo),
+                            bound("upper", *hi)
+                        ),
+                    ),
+                    _ => ("Probe", self.index(*index)),
                 };
-                let mut n = Node::new(kind, self.index(*index), Vec::new());
+                let mut n = Node::new(kind, detail, Vec::new());
                 n.arms = routes
                     .iter()
                     .map(|r| Arm {

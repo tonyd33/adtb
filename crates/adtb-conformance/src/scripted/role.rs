@@ -247,15 +247,17 @@ pub(super) fn grant(
 pub(super) fn sent_step(step: &Step, got: Sent) -> Result<(), Differs> {
     match (&step.head, got) {
         (Head::Run, Sent::Done(_)) => Ok(()),
-        (Head::Run | Head::Query { .. } | Head::Command { .. } | Head::Plan, Sent::Refused(e)) => {
-            Err(Differs::at(step, format!("refused with {}", refused(&e))))
-        }
-        (Head::Run | Head::Query { .. } | Head::Command { .. } | Head::Plan, Sent::Failed(e)) => {
-            Err(Differs::at(
-                step,
-                format!("fails at completion with {}", refused(&e)),
-            ))
-        }
+        (
+            Head::Run | Head::Query { .. } | Head::Command { .. } | Head::Plan | Head::ProbePlan,
+            Sent::Refused(e),
+        ) => Err(Differs::at(step, format!("refused with {}", refused(&e)))),
+        (
+            Head::Run | Head::Query { .. } | Head::Command { .. } | Head::Plan | Head::ProbePlan,
+            Sent::Failed(e),
+        ) => Err(Differs::at(
+            step,
+            format!("fails at completion with {}", refused(&e)),
+        )),
         (Head::Query { rowsort } | Head::Command { rowsort }, Sent::Done(mut results)) => {
             match (results.pop(), results.is_empty()) {
                 (Some((form, rows)), true) => call_rows(step, &form, rows, *rowsort),
@@ -263,6 +265,7 @@ pub(super) fn sent_step(step: &Step, got: Sent) -> Result<(), Differs> {
             }
         }
         (Head::Plan, Sent::Done(results)) => plan::compare(step, results),
+        (Head::ProbePlan, Sent::Done(results)) => plan::text(step, results),
         (Head::Error(reason) | Head::Adhoc(reason) | Head::Fatal(reason), got) => {
             let want = match &step.head {
                 Head::Fatal(_) => format!("Fatal {{ reason: {reason} }}"),

@@ -1,0 +1,16 @@
+use users
+
+probe plan
+  from u in users select u.name
+----
+Set
+
+probe plan
+  explain analyze from u in users select u.name
+----
+Set total
+
+probe plan
+  explain from u in users select u.name
+----
+Set total
