@@ -1,6 +1,7 @@
-//! The engine-free helpers the tests share: fixtures, generators, sweep sizes, byte damage and the
-//! isolation checker. The `sim` feature adds the crash loops, failure searches, the loading of
-//! rows through a session and runs of a simulation, which need `adtb-sim` and `adtb-sys`.
+//! The engine-free helpers the tests share: fixtures, generators, sweep sizes, byte damage, the
+//! storage design's mark table and the isolation checker. The `sim` feature adds the crash loops,
+//! failure searches, the loading of rows through a session and runs of a simulation, which need
+//! `adtb-sim` and `adtb-sys`.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "sim")]
@@ -21,6 +22,7 @@ pub mod inhabit;
 pub mod isolation;
 #[cfg(feature = "sim")]
 pub mod load;
+pub mod marks;
 #[cfg(feature = "sim")]
 pub mod process;
 pub mod profile;

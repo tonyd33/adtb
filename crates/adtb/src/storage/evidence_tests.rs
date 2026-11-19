@@ -44,8 +44,15 @@ fn folded(e: &mut Evidence) -> Option<Damage> {
 }
 
 /// Returns each page whose damage is unmapped, with that damage, and whether a full list is.
+///
+/// Panic if the unmapped flag differs from whether any is.
 fn unmapped(e: &Evidence) -> (Vec<(Pid, Damage)>, bool) {
     let (pages, full, _) = e.begin_mapping(true);
+    assert_eq!(
+        !pages.is_empty() || full,
+        e.unmapped_flag().any(),
+        "the flag says whether a record or a full list is unmapped"
+    );
     (
         pages
             .iter()
@@ -208,40 +215,52 @@ fn database() -> Option<BTreeSet<Quarantine>> {
 }
 
 #[test]
-fn a_list_that_overflows_with_every_record_mapped_is_unmapped() {
+fn a_list_that_overflows_with_every_record_mapped_is_unmapped_until_it_maps() {
     let mut log = log();
     let mut e = recording(&mut log);
-    let flag = e.unmapped_flag();
     e.record(&appending_for_test(), &mut log, P, Damage::Checksum, false);
     let begun = e.begin_mapping(true);
     map(&mut e, begun);
-    assert!(!flag.any(), "every record is mapped");
+    assert_eq!((Vec::new(), false), unmapped(&e), "every record is mapped");
     e.snapshot(0);
-    assert_eq!((Vec::new(), true), unmapped(&e));
-    assert!(flag.any(), "the full list is unmapped");
+    assert_eq!(
+        (Vec::new(), true),
+        unmapped(&e),
+        "the full list is unmapped"
+    );
     let (_, _, at) = e.begin_mapping(true);
     e.mapped(true, at, Vec::new());
-    assert!(!flag.any(), "the full list is mapped");
+    assert_eq!((Vec::new(), false), unmapped(&e), "the full list is mapped");
 }
 
 #[test]
-fn a_write_out_that_exposes_an_unmapped_record_raises_the_flag() {
+fn a_write_out_that_exposes_a_record_a_hold_covered_leaves_it_unmapped_until_it_maps() {
     let mut log = log();
     let mut e = recording(&mut log);
-    let flag = e.unmapped_flag();
     e.record(&appending_for_test(), &mut log, P, STALE, false);
     e.hold(P, Damage::Checksum);
     let begun = e.begin_mapping(true);
     map(&mut e, begun);
-    assert!(!flag.any(), "the held damage is mapped");
+    assert_eq!(
+        (Vec::new(), false),
+        unmapped(&e),
+        "the held damage is mapped"
+    );
     e.written_out(&wrote_for_test(P));
     assert_eq!((vec![(P, STALE)], false), unmapped(&e));
-    assert!(flag.any(), "the record the hold covered is unmapped");
     let (pending, _, at) = e.begin_mapping(true);
     e.mapped(false, at, vec![(pending[0], INCOMPLETE)]);
-    assert!(flag.any(), "an incomplete mapping leaves it unmapped");
+    assert_eq!(
+        (vec![(P, STALE)], false),
+        unmapped(&e),
+        "an incomplete mapping leaves it unmapped"
+    );
     map(&mut e, (pending, false, at));
-    assert!(!flag.any(), "the last record is mapped");
+    assert_eq!(
+        (Vec::new(), false),
+        unmapped(&e),
+        "the last record is mapped"
+    );
 }
 
 const END: Lsn = Lsn(100);

@@ -135,20 +135,6 @@ fn a_mark_is_durable_once_quarantine_returns() {
     }
 }
 
-#[test]
-fn a_database_mark_covers_every_object() {
-    let mut sim = Sim::new(3, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| {
-        p.quarantine(Quarantine::Database, &ordered_for_test())
-            .unwrap();
-    });
-    with_pager(&mut sim, |p| {
-        assert!(Probe::of(p).marked(Quarantine::Heap(9)));
-        assert!(Probe::of(p).marked(Quarantine::Index(9)));
-    });
-}
-
 /// Returns a closed file of `sim` holding two heap pages, the second written with 9, whose marks
 /// page fails its checksum, and the pages.
 fn with_damaged_marks_page(sim: &mut Sim) -> (Sim, [Pid; 2]) {

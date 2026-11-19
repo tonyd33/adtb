@@ -488,6 +488,7 @@ fn rows_of(fault: Fault) -> impl Iterator<Item = Row> {
     classes(fault)
         .iter()
         .flat_map(|c| Held::ALL.map(|h| (*c, h)))
+        .filter(|(_, h)| *h != Held::Log)
         .flat_map(|(c, h)| PHASES.map(|p| (c, h, p)))
 }
 

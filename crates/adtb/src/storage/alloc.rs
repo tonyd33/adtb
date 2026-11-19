@@ -1,9 +1,9 @@
 use crate::runtime::Runtime;
 
 pub(super) use self::owner::{Allocation, Hold};
-use super::error::{Damage, Shape};
+use super::error::Damage;
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
-use super::pager::{PageError, PageExclusive, PageShared, Pager};
+use super::pager::{PageError, PageExclusive, Pager};
 use super::record::{Edit, Record};
 use super::recovery::Replaying;
 use super::{Lsn, Pid};
@@ -68,36 +68,6 @@ impl<R: Runtime> Pager<R> {
         pid == self.bitmap_page(pid.0 / self.bitmap_span())
     }
 
-    /// Returns whether `page`, read under a latch as the bitmap page of group `g`, can serve as
-    /// one: it is a bitmap page, or blank in a group no batch has started.
-    fn map_is_sound(&self, page: &[u8], g: u64) -> bool {
-        self.bitmap_fault(page, g).is_none()
-    }
-
-    /// Returns how `page` is out of shape as the bitmap page of group `g`: neither a bitmap page nor
-    /// blank in a group no batch has started.
-    fn bitmap_fault(&self, page: &[u8], g: u64) -> Option<Shape> {
-        let sound = page::kind(page) == PageKind::AllocationBitmap as u16
-            || g >= self.allocation().started() && page.iter().all(|&b| b == 0);
-        (!sound).then(|| page::kind_fault(page))
-    }
-
-    /// Returns the bitmap page of group `g` under a shared latch. Refuses it, from then on, when
-    /// the group was started and the page holds no bitmap under its exclusive latch.
-    fn read_map(&self, g: u64) -> Result<PageShared<'_>, PageError> {
-        let map = self.bitmap_page(g);
-        loop {
-            let page = self.read(map)?;
-            if self.map_is_sound(&page, g) {
-                return Ok(page);
-            }
-            drop(page);
-            if let Some(e) = self.refuse_if(map, |p| self.bitmap_fault(p, g)) {
-                return Err(e);
-            }
-        }
-    }
-
     /// Count every group the file reaches into as started. Returns the pages the file holds.
     ///
     /// Preconditions: recovery has written every page the log holds.
@@ -136,14 +106,12 @@ impl<R: Runtime> Pager<R> {
             self.damage(map, Damage::Checksum);
             return;
         }
-        let Ok(bits) = self.read_map(group).map(|page| page[HEADER_LEN..].to_vec()) else {
+        let Ok(bits) = self.read_map(group).map(|map| map.bits()) else {
             return;
         };
-        let first = group * span;
-        for pid in pages..first + span {
-            let i = (pid - first) as usize;
-            if bits[i / 8] >> (i % 8) & 1 == 1 {
-                self.damage(Pid(pid), Damage::Checksum);
+        for pid in (pages..(group + 1) * span).map(Pid) {
+            if bits.is_set(pid) {
+                self.damage(pid, Damage::Checksum);
             }
         }
     }
@@ -178,23 +146,21 @@ impl<R: Runtime> Pager<R> {
         let mut state = self.allocation().lock(self.rt());
         let mut g = state.group();
         loop {
-            let map = self.bitmap_page(g);
             let first = g * span;
-            let bits = self.read_map(g)?[HEADER_LEN..].to_vec();
-            let taken = |pid: u64| {
-                let i = (pid - first) as usize;
-                pid < Pid::FIRST_DATA.0
-                    || pid == map.0
-                    || bits[i / 8] >> (i % 8) & 1 == 1
-                    || state.is_held(Pid(pid))
-                    || self.refusal(Pid(pid)) == Some(Damage::Unreadable)
+            let (map, bits) = self.read_map(g).map(|map| (map.pid(), map.bits()))?;
+            let taken = |pid: Pid| {
+                pid < Pid::FIRST_DATA
+                    || pid == map
+                    || bits.is_set(pid)
+                    || state.is_held(pid)
+                    || self.refusal(pid) == Some(Damage::Unreadable)
             };
-            let Some(pid) = (first..first + span).find(|&p| !taken(p)) else {
+            let Some(pid) = (first..first + span).map(Pid).find(|&p| !taken(p)) else {
                 g += 1;
                 continue;
             };
-            state.hold(g, Pid(pid));
-            return Ok(Pid(pid));
+            state.hold(g, pid);
+            return Ok(pid);
         }
     }
 
@@ -351,11 +317,7 @@ impl<R: Runtime> Pager<R> {
         groups.dedup();
         let mut maps = Vec::new();
         for &g in &groups {
-            let map = self.exclusive(self.bitmap_page(g))?;
-            if let Some(shape) = self.bitmap_fault(&map, g) {
-                return Err(map.refuse(shape));
-            }
-            maps.push(map);
+            maps.push(self.latch_map(g)?);
         }
         let mut copies: Vec<Vec<u8>> = guards.iter().map(|g| g.to_vec()).collect();
         for (copy, g) in copies.iter_mut().zip(guards.iter()) {
@@ -373,34 +335,19 @@ impl<R: Runtime> Pager<R> {
             .map(|(g, new)| diff(g, new))
             .collect();
         for (map, &g) in maps.iter().zip(&groups) {
-            let mut bits = map.to_vec();
-            bits[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&page::header_edit(
-                1,
-                PageKind::AllocationBitmap,
-                0,
-                0,
-            ));
-            let first = g * span;
-            let owned = new.pages.iter().map(|r| r.pid.0).filter(|p| p / span == g);
-            for p in std::iter::once(self.bitmap_page(g).0).chain(owned) {
-                let i = (p - first) as usize;
-                bits[HEADER_LEN + i / 8] |= 1 << (i % 8);
-            }
-            for p in new.freed.iter().filter(|p| p.0 / span == g) {
-                let i = (p.0 - first) as usize;
-                let byte = &mut bits[HEADER_LEN + i / 8];
-                assert!(*byte >> (i % 8) & 1 == 1, "{p:?} is not allocated");
-                *byte &= !(1 << (i % 8));
+            let owned = new.pages.iter().map(|r| r.pid).filter(|p| p.0 / span == g);
+            let freed = || new.freed.iter().copied().filter(|p| p.0 / span == g);
+            edits.push(map.changed(owned, freed()));
+            if freed().next().is_some() {
                 state.lower_group(g);
             }
-            edits.push(diff(map, &bits));
         }
         let mut all: Vec<&mut PageExclusive<'p, R>> = Vec::new();
         for g in guards.iter_mut() {
             all.push(g);
         }
         for m in &mut maps {
-            all.push(m);
+            all.push(m.latch());
         }
         let lsn = self.apply_freeing(&mut all, edits, Some(new), tail);
         state.committed(new.allocated(), groups.last().map(|g| g + 1));
@@ -426,12 +373,7 @@ impl<R: Runtime> Pager<R> {
             return Ok(false);
         }
         let page = self.read_map(pid.0 / span)?;
-        if page::kind(&page) != PageKind::AllocationBitmap as u16 {
-            return Ok(true);
-        }
-        let i = pid.0 % span;
-        let bits = &page[HEADER_LEN..];
-        Ok(bits[(i / 8) as usize] >> (i % 8) & 1 == 0)
+        Ok(!page.is_formatted() || !page.is_set(pid))
     }
 
     /// Returns every page the allocation bitmap marks allocated, in order, leaving out the pages
@@ -446,16 +388,15 @@ impl<R: Runtime> Pager<R> {
         let map = self.map_pages()?;
         let mut out = Vec::new();
         for g in 0.. {
-            let bitmap = self.bitmap_page(g);
-            let page = self.read_map(g)?.to_vec();
-            if page::kind(&page) != PageKind::AllocationBitmap as u16 {
+            let page = self.read_map(g)?;
+            if !page.is_formatted() {
                 break;
             }
-            let bits = &page[HEADER_LEN..];
+            let bitmap = page.pid();
             out.extend(
-                (0..span)
-                    .filter(|&i| bits[(i / 8) as usize] >> (i % 8) & 1 == 1)
-                    .map(|i| Pid(g * span + i))
+                (g * span..(g + 1) * span)
+                    .map(Pid)
+                    .filter(|&p| page.is_set(p))
                     .filter(|&p| p != bitmap && p != marks && p != list && p >= Pid::FIRST_DATA)
                     .filter(|p| !map.contains(p)),
             );
@@ -581,6 +522,156 @@ impl<R: Runtime> Drop for Reservation<'_, R> {
         let mut state = self.pager.allocation().lock(self.pager.rt());
         for r in &self.pages {
             state.release(r.pid, Hold::Reservation);
+        }
+    }
+}
+
+mod gate {
+    use std::ops::Deref;
+
+    use crate::runtime::Runtime;
+    use crate::storage::Pid;
+    use crate::storage::error::Shape;
+    use crate::storage::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
+    use crate::storage::pager::{PageError, PageExclusive, PageShared, Pager};
+    use crate::storage::record::Edit;
+
+    /// The bitmap page of one group under a latch, judged sound under it: a bitmap page, or blank
+    /// in a group no batch has started. Only [`Pager::read_map`] and [`Pager::latch_map`] make one.
+    pub(super) struct SoundMap<G> {
+        page: G,
+        pid: Pid,
+        first: u64,
+    }
+
+    /// A copy of the bits of a [`SoundMap`], taken under its latch.
+    pub(super) struct Bits {
+        bits: Vec<u8>,
+        first: u64,
+    }
+
+    fn is_set(bits: &[u8], first: u64, pid: Pid) -> bool {
+        let i = pid.0 - first;
+        bits[(i / 8) as usize] >> (i % 8) & 1 == 1
+    }
+
+    impl Bits {
+        /// Returns whether the bitmap marks `pid`, a page of its group, allocated.
+        pub(super) fn is_set(&self, pid: Pid) -> bool {
+            is_set(&self.bits, self.first, pid)
+        }
+    }
+
+    impl<G: Deref<Target = [u8]>> SoundMap<G> {
+        pub(super) fn pid(&self) -> Pid {
+            self.pid
+        }
+
+        /// Returns whether the page holds a bitmap, `false` for a blank page of a group no batch
+        /// has started, which marks every page free.
+        pub(super) fn is_formatted(&self) -> bool {
+            page::kind(&self.page) == PageKind::AllocationBitmap as u16
+        }
+
+        /// Returns whether the bitmap marks `pid`, a page of its group, allocated.
+        pub(super) fn is_set(&self, pid: Pid) -> bool {
+            is_set(&self.page[HEADER_LEN..], self.first, pid)
+        }
+
+        pub(super) fn bits(&self) -> Bits {
+            Bits {
+                bits: self.page[HEADER_LEN..].to_vec(),
+                first: self.first,
+            }
+        }
+    }
+
+    impl<'p, R: Runtime> SoundMap<PageExclusive<'p, R>> {
+        /// Returns the edits that format the page as a bitmap page, mark the page itself and
+        /// `allocated` allocated, and mark `freed` free.
+        ///
+        /// Panic if a page of `freed` is not marked allocated.
+        pub(super) fn changed(
+            &self,
+            allocated: impl Iterator<Item = Pid>,
+            freed: impl Iterator<Item = Pid>,
+        ) -> Vec<Edit> {
+            let mut bits = self.page.to_vec();
+            bits[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&page::header_edit(
+                1,
+                PageKind::AllocationBitmap,
+                0,
+                0,
+            ));
+            for p in std::iter::once(self.pid).chain(allocated) {
+                let i = (p.0 - self.first) as usize;
+                bits[HEADER_LEN + i / 8] |= 1 << (i % 8);
+            }
+            for p in freed {
+                let i = (p.0 - self.first) as usize;
+                let byte = &mut bits[HEADER_LEN + i / 8];
+                assert!(*byte >> (i % 8) & 1 == 1, "{p:?} is not allocated");
+                *byte &= !(1 << (i % 8));
+            }
+            super::diff(&self.page, &bits)
+        }
+
+        pub(super) fn latch(&mut self) -> &mut PageExclusive<'p, R> {
+            &mut self.page
+        }
+    }
+
+    impl<R: Runtime> Pager<R> {
+        /// Returns how `page` is out of shape as the bitmap page of group `g`: neither a bitmap
+        /// page nor blank in a group no batch has started.
+        fn bitmap_fault(&self, page: &[u8], g: u64) -> Option<Shape> {
+            let sound = page::kind(page) == PageKind::AllocationBitmap as u16
+                || g >= self.allocation().started() && page.iter().all(|&b| b == 0);
+            (!sound).then(|| page::kind_fault(page))
+        }
+
+        /// Returns `page`, latched as the bitmap page of group `g`, as sound, or with how it is
+        /// out of shape.
+        fn judged<G: Deref<Target = [u8]>>(
+            &self,
+            page: G,
+            g: u64,
+        ) -> Result<SoundMap<G>, (G, Shape)> {
+            match self.bitmap_fault(&page, g) {
+                Some(shape) => Err((page, shape)),
+                None => Ok(SoundMap {
+                    page,
+                    pid: self.bitmap_page(g),
+                    first: g * self.bitmap_span(),
+                }),
+            }
+        }
+
+        /// Returns the bitmap page of group `g` under a shared latch. Refuses it, from then on,
+        /// when the group was started and the page holds no bitmap under its exclusive latch.
+        pub(super) fn read_map(&self, g: u64) -> Result<SoundMap<PageShared<'_>>, PageError> {
+            let map = self.bitmap_page(g);
+            loop {
+                let page = self.read(map)?;
+                match self.judged(page, g) {
+                    Ok(sound) => return Ok(sound),
+                    Err((page, _)) => drop(page),
+                }
+                if let Some(e) = self.refuse_if(map, |p| self.bitmap_fault(p, g)) {
+                    return Err(e);
+                }
+            }
+        }
+
+        /// Returns the bitmap page of group `g` under its exclusive latch, refusing it under that
+        /// latch when the group was started and the page holds no bitmap.
+        pub(super) fn latch_map(
+            &self,
+            g: u64,
+        ) -> Result<SoundMap<PageExclusive<'_, R>>, PageError> {
+            let page = self.exclusive(self.bitmap_page(g))?;
+            self.judged(page, g)
+                .map_err(|(page, shape)| page.refuse(shape))
         }
     }
 }

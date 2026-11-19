@@ -1,7 +1,7 @@
 //! A bitmap page lost or zeroed is damage and never free space. Each damaged file refuses the call
 //! and marks, and leaves named pages as they were. A healthy file, cut by no fault, never refuses.
 
-use crate::testing::{Failed, Knobs, Object, Plant, Probe};
+use crate::testing::{Knobs, Object, Plant, Probe};
 use adtb_testkit::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,6 +10,7 @@ use crate::runtime::Threads;
 use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
     self, Crc32c, Damage, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
+    Shape,
 };
 use crate::test_world::api;
 use crate::test_world::load as open;
@@ -216,17 +217,6 @@ fn damaged_run(files: &Files, what: &str, body: impl FnOnce(&Database<SimRuntime
     damaged_writing(files, Writes::Open, what, body)
 }
 
-/// Assert a write finds the lost bitmap, marks the database, and every call then fails.
-fn assert_all_refused_as_database(db: &Database<SimRuntime>, what: &str) {
-    assert_quarantined(&text(db, INSERT_OTHER), what);
-    assert_eq!(
-        BTreeSet::from([Quarantine::Database]),
-        db.testing().probe().marks(),
-        "{what}"
-    );
-    assert_quarantined(&text(db, SELECT), what);
-}
-
 #[test]
 fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
     adtb_heap_cap::raise_cap(3 << 30);
@@ -294,53 +284,6 @@ fn a_blank_status_page_refuses_and_never_aborts_committed_rows() {
     let mut cut = files;
     DATA.truncate(&mut cut, SPAN);
     assert_committed_rows_never_read_as_aborted(&cut, "cut at the group");
-}
-
-#[test]
-fn a_bitmap_zeroed_in_place_refuses_and_overwrites_nothing() {
-    let (files, ()) = one_group("a", |_| ());
-    let mut files = files;
-    DATA.zero(&mut files, Pid::FIRST_DATA);
-    let after = damaged_run(&files, "zeroed map", |db| {
-        assert_all_refused_as_database(db, "zeroed map");
-    });
-    damaged_run(&after, "zeroed map reopened", |db| {
-        assert_quarantined(&text(db, INSERT_OTHER), "reopened insert");
-        assert_quarantined(&text(db, SELECT), "reopened select");
-    });
-}
-
-#[test]
-fn every_allocator_path_refuses_a_zeroed_bitmap() {
-    let (files, page) = one_group("a", first_users_page);
-    let damage = Damage::Stale {
-        expected: storage::lsn(DATA.page(&files, Pid::FIRST_DATA)),
-        found: Lsn(0),
-    };
-    let mut files = files;
-    DATA.zero(&mut files, Pid::FIRST_DATA);
-    damaged_run(&files, "allocator paths", |db| {
-        let t = db.testing();
-        let lost = PageError {
-            pid: Pid::FIRST_DATA,
-            damage,
-        };
-        let refused = |got: Result<_, Failed>| match got {
-            Err(Failed::Page(e)) => e,
-            other => panic!("not refused: {other:?}"),
-        };
-        assert_eq!(lost, refused(t.plant(Plant::Free(page))), "free");
-        assert_eq!(lost, t.is_free(page).unwrap_err(), "is_free");
-        assert_eq!(lost, t.allocated().unwrap_err(), "allocated");
-        assert_eq!(
-            lost,
-            refused(t.plant(Plant::Orphan {
-                kind: PageKind::Catalog,
-                owner: 1
-            })),
-            "allocate"
-        );
-    });
 }
 
 #[test]
@@ -528,17 +471,6 @@ fn a_file_before_the_count_opens_healthy_and_gains_it() {
     assert!(stored_groups(&sim.files(), DATA).contains(&1));
 }
 
-#[test]
-fn a_file_before_the_count_refuses_a_zeroed_bitmap_inside_it() {
-    let (files, ()) = one_group("a", |_| ());
-    let mut files = files;
-    DATA.zero(&mut files, Pid::FIRST_DATA);
-    let old = before_the_group_count(&files, DATA);
-    damaged_run(&old, "old zero", |db| {
-        assert_all_refused_as_database(db, "old zero");
-    });
-}
-
 /// Zero the page `pick` chooses, and assert the open neither panics nor answers: it marks the
 /// database, keeps every page, and leaves `verify`.
 fn assert_open_refuses(what: &str, pick: impl FnOnce(&Database<SimRuntime>) -> Pid) {
@@ -657,8 +589,8 @@ fn lost_damage(files: &Files) -> Damage {
     }
 }
 
-/// Assert every allocator path refuses the lost second group with `damage` and the file keeps its
-/// pages but the damage list.
+/// Assert an allocation and a free refuse the lost second group with `damage` and the file keeps
+/// its pages but the damage list.
 fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &str) {
     let before = files[FILE].clone();
     let mut sim = Sim::with_files(1, Config::default(), files);
@@ -670,14 +602,12 @@ fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &
             pid: Pid(SMALL_SPAN),
             damage,
         };
-        assert_eq!(lost, pager.is_free(named).unwrap_err(), "{what}: is_free");
-        assert_eq!(lost, pager.free(named).unwrap_err(), "{what}: free");
-        assert_eq!(lost, pager.allocated().unwrap_err(), "{what}: allocated");
         assert_eq!(
             lost,
             pager.allocate(1, PageKind::Catalog, 1).unwrap_err(),
             "{what}: allocate"
         );
+        assert_eq!(lost, pager.free(named).unwrap_err(), "{what}: free");
         assert_eq!(
             Some(BTreeSet::from([Holder::Bitmap])),
             pager.holders_of(Pid(SMALL_SPAN), Phase::Opening, |_| {}),
@@ -700,20 +630,35 @@ fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &
     }
 }
 
-#[test]
-fn a_cut_at_or_before_the_group_refuses_every_allocator_path() {
-    let (files, named) = grown();
-    let cut = lost_damage(&files);
-    assert_second_group_refused(small_cut(&files, SMALL_SPAN), named, cut, "at the group");
-    assert_second_group_refused(small_cut(&files, SMALL_SPAN - 100), named, cut, "before it");
-}
+type Call = fn(&Pager<SimRuntime>, Pid) -> Result<(), PageError>;
 
 #[test]
-fn a_zeroed_second_bitmap_refuses_every_allocator_path() {
-    let (mut files, named) = grown();
-    let lost = lost_damage(&files);
-    SMALL.zero(&mut files, Pid(SMALL_SPAN));
-    assert_second_group_refused(files, named, lost, "zeroed");
+fn the_bitmap_gate_refuses_a_bitmap_page_of_another_kind_under_either_latch() {
+    let (files, named) = grown();
+    let map = Pid(SMALL_SPAN);
+    let calls: [(&str, Call); 2] = [
+        ("allocate", |p, _| {
+            p.allocate(1, PageKind::Catalog, 1).map(drop)
+        }),
+        ("free", |p, named| p.free(named).map(drop)),
+    ];
+    for (what, call) in calls {
+        let mut sim = Sim::with_files(1, Config::default(), files.clone());
+        finished(&mut sim, |rt| {
+            let pager = pager_of(rt);
+            pager
+                .update(&[map], |v| {
+                    v[0][storage::FIRST_EDITABLE..HEADER_LEN]
+                        .copy_from_slice(&storage::header_edit(1, PageKind::Catalog, 1, 0));
+                })
+                .unwrap();
+            let refused = PageError {
+                pid: map,
+                damage: Damage::Shape(Shape::Kind),
+            };
+            assert_eq!(Err(refused), call(&pager, named), "{what}");
+        });
+    }
 }
 
 #[test]

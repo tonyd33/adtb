@@ -411,37 +411,6 @@ fn a_record_forced_before_a_whole_file_mark_is_kept_by_every_later_open_and_afte
 }
 
 #[test]
-fn each_shape_is_stored_as_its_fixed_number() {
-    let stored = [
-        (Shape::Blank, 0),
-        (Shape::Kind, 1),
-        (Shape::Owner, 2),
-        (Shape::Frame, 3),
-        (Shape::Format, 4),
-        (Shape::Row(Undecoded::Tag), 5),
-        (Shape::Row(Undecoded::Cut), 6),
-        (Shape::Row(Undecoded::Trailing), 7),
-        (Shape::Row(Undecoded::Text), 8),
-        (Shape::Row(Undecoded::Pointer), 9),
-        (Shape::Stray, 10),
-    ];
-    for (shape, code) in stored {
-        let damage = Damage::Shape(shape);
-        assert_eq!(
-            (5, Lsn(code), Lsn(0)),
-            super::record::damage_words(damage),
-            "{shape:?}"
-        );
-        assert_eq!(
-            Some(damage),
-            super::record::damage_of(5, Lsn(code), Lsn(0)),
-            "{shape:?}"
-        );
-    }
-    assert_eq!(None, super::record::damage_of(5, Lsn(11), Lsn(0)));
-}
-
-#[test]
 fn a_shape_record_is_kept_by_the_log_through_a_crash_and_by_the_list_through_a_close() {
     let (files, pages) = created(false);
     let shapes = [

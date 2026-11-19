@@ -86,20 +86,31 @@ const LOG_UNPROVEN: u8 = 3;
 const SETTLED: u8 = 4;
 const SHAPE: u8 = 5;
 
-/// Each shape a damage record can hold. A shape's position is its stored code: append only.
-const SHAPES: [Shape; 11] = [
-    Shape::Blank,
-    Shape::Kind,
-    Shape::Owner,
-    Shape::Frame,
-    Shape::Format,
-    Shape::Row(Undecoded::Tag),
-    Shape::Row(Undecoded::Cut),
-    Shape::Row(Undecoded::Trailing),
-    Shape::Row(Undecoded::Text),
-    Shape::Row(Undecoded::Pointer),
-    Shape::Stray,
+/// Each shape a damage record can hold, with its stored code, at the position of its code.
+const SHAPES: [(u64, Shape); 11] = [
+    (0, Shape::Blank),
+    (1, Shape::Kind),
+    (2, Shape::Owner),
+    (3, Shape::Frame),
+    (4, Shape::Format),
+    (5, Shape::Row(Undecoded::Tag)),
+    (6, Shape::Row(Undecoded::Cut)),
+    (7, Shape::Row(Undecoded::Trailing)),
+    (8, Shape::Row(Undecoded::Text)),
+    (9, Shape::Row(Undecoded::Pointer)),
+    (10, Shape::Stray),
 ];
+
+const _: () = {
+    let mut at = 0;
+    while at < SHAPES.len() {
+        assert!(
+            SHAPES[at].0 as usize == at,
+            "a shape's stored code is its position"
+        );
+        at += 1;
+    }
+};
 
 /// Returns the kind of `damage` and its two LSNs, zero where it has none.
 ///
@@ -111,11 +122,11 @@ pub(crate) fn damage_words(damage: Damage) -> (u8, Lsn, Lsn) {
         Damage::LogUnproven { at } => (LOG_UNPROVEN, at, Lsn(0)),
         Damage::Settled { expected, found } => (SETTLED, expected, found),
         Damage::Shape(shape) => {
-            let code = SHAPES
-                .iter()
-                .position(|&s| s == shape)
+            let (code, _) = SHAPES
+                .into_iter()
+                .find(|&(_, s)| s == shape)
                 .expect("every shape is listed");
-            (SHAPE, Lsn(code as u64), Lsn(0))
+            (SHAPE, Lsn(code), Lsn(0))
         }
         Damage::Unreadable => panic!("an unreadable page is never recorded as damaged"),
     }
@@ -134,7 +145,7 @@ pub(crate) fn damage_of(kind: u8, a: Lsn, b: Lsn) -> Option<Damage> {
             expected: a,
             found: b,
         },
-        SHAPE => Damage::Shape(*SHAPES.get(usize::try_from(a.0).ok()?)?),
+        SHAPE => Damage::Shape(SHAPES.get(usize::try_from(a.0).ok()?)?.1),
         _ => return None,
     })
 }

@@ -2,12 +2,9 @@
 //! reach, whether the page is refused and why, the damage recorded of it, in the log or held in
 //! memory, and what that damage was mapped to this open.
 
+use crate::runtime::{AlignedBuf, Runtime};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use crate::runtime::{AlignedBuf, Runtime};
 
 use super::block::LogFinding;
 use super::damage_log::Recorded;
@@ -274,15 +271,87 @@ impl PageEvidence {
     }
 }
 
-/// Whether the evidence holds a record not mapped this open, read without the meta lock.
-#[derive(Debug, Clone)]
-pub(super) struct Unmapped(Arc<AtomicBool>);
+mod tally {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-impl Unmapped {
-    pub(super) fn any(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+    /// Whether the evidence holds a record not mapped this open, read without the meta lock.
+    #[derive(Debug, Clone)]
+    pub(in crate::storage) struct Unmapped(Arc<AtomicBool>);
+
+    impl Unmapped {
+        pub(in crate::storage) fn any(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+
+    /// How many entries hold unmapped damage and whether a full list is unmapped, with the
+    /// [`Unmapped`] flag set from both by every change.
+    #[derive(Debug)]
+    pub(super) struct Tally {
+        pages: usize,
+        full: bool,
+        full_mapped: bool,
+        flag: Unmapped,
+    }
+
+    impl Tally {
+        pub(super) fn new() -> Tally {
+            Tally {
+                pages: 0,
+                full: false,
+                full_mapped: false,
+                flag: Unmapped(Arc::new(AtomicBool::new(false))),
+            }
+        }
+
+        pub(super) fn flag(&self) -> Unmapped {
+            self.flag.clone()
+        }
+
+        /// Count an entry whose damage was unmapped, `before`, and is, `after`, a change.
+        pub(super) fn changed(&mut self, before: bool, after: bool) {
+            self.pages = self.pages + usize::from(after) - usize::from(before);
+            self.publish();
+        }
+
+        /// Returns whether the list ran out of room.
+        pub(super) fn full(&self) -> bool {
+            self.full
+        }
+
+        /// Returns whether a full list is not mapped this open.
+        pub(super) fn full_unmapped(&self) -> bool {
+            self.full && !self.full_mapped
+        }
+
+        /// Count the list full as the open found it.
+        pub(super) fn found_full(&mut self, full: bool) {
+            self.full = full;
+            self.publish();
+        }
+
+        /// Count the list full from now on when `full`.
+        pub(super) fn overflowed(&mut self, full: bool) {
+            self.full |= full;
+            self.publish();
+        }
+
+        /// Count a full list mapped from now on when `mapped`.
+        pub(super) fn mapped_full(&mut self, mapped: bool) {
+            self.full_mapped |= mapped;
+            self.publish();
+        }
+
+        fn publish(&self) {
+            let any = self.pages > 0 || self.full_unmapped();
+            self.flag.0.store(any, Ordering::Release);
+        }
     }
 }
+
+use self::tally::Tally;
+pub(super) use self::tally::Unmapped;
 
 /// The evidence of every page, under the meta lock.
 ///
@@ -292,9 +361,7 @@ impl Unmapped {
 ///   or replayed is a free.
 /// - No two incarnations of a page share a generation.
 /// - An entry with no damage recorded or held has no mapping and no detecting thread.
-/// - `unmapped_pages` counts the entries whose damage is unmapped, and the [`Unmapped`] flag is
-///   set exactly while one is or a full list is unmapped. Every method that changes either sets
-///   both before it returns.
+/// - `tally` counts the entries whose damage is unmapped. Only `update` changes an entry.
 #[derive(Debug)]
 pub(super) struct Evidence {
     pages: BTreeMap<Pid, PageEvidence>,
@@ -321,15 +388,13 @@ pub(super) struct Evidence {
     list_unread: bool,
     /// Stale blocks recovery found past the end of the log.
     log: BTreeSet<LogFinding>,
-    /// Whether the list ran out of room, so the whole file counts as damaged.
-    full: bool,
-    full_mapped: bool,
+    /// The entries holding unmapped damage, and whether the list ran out of room, so the whole
+    /// file counts as damaged.
+    tally: Tally,
     /// The last generation an incarnation took.
     generation: u64,
     /// The last change of any page's damage or incarnation.
     epoch: Epoch,
-    unmapped_pages: usize,
-    unmapped: Unmapped,
     /// How many damaged pages this open has walked the objects for.
     walked: u64,
 }
@@ -350,19 +415,16 @@ impl Evidence {
             list_unread: false,
             folding: None,
             log: BTreeSet::new(),
-            full: false,
-            full_mapped: false,
+            tally: Tally::new(),
             generation: 0,
             epoch: Epoch(0),
-            unmapped_pages: 0,
-            unmapped: Unmapped(Arc::new(AtomicBool::new(false))),
             walked: 0,
         }
     }
 
     /// Returns the flag of whether a record is unmapped, read without the meta lock.
     pub(super) fn unmapped_flag(&self) -> Unmapped {
-        self.unmapped.clone()
+        self.tally.flag()
     }
 
     /// Apply `f` to the evidence of `pid`, drop its mapping once it has no damage and the entry
@@ -390,14 +452,8 @@ impl Evidence {
         if p.is_empty() {
             self.pages.remove(&pid);
         }
-        self.unmapped_pages = self.unmapped_pages + usize::from(after) - usize::from(before);
-        self.publish();
+        self.tally.changed(before, after);
         out
-    }
-
-    fn publish(&self) {
-        let any = self.unmapped_pages > 0 || self.full && !self.full_mapped;
-        self.unmapped.0.store(any, Ordering::Release);
     }
 
     /// Record `damage` of `pid` and log it, unless recovery has not ended or `whole` says the
@@ -682,11 +738,10 @@ impl Evidence {
         }
         self.log = recorded.log;
         self.log.extend(header_log);
-        self.full = recorded.full || header_full;
+        self.tally.found_full(recorded.full || header_full);
         self.unfolded = unfolded;
         self.named = list;
         self.list = sound.then_some(list);
-        self.publish();
     }
 
     /// Returns what a fold writes, counting the list full when it holds more than `capacity`.
@@ -698,12 +753,12 @@ impl Evidence {
             .iter()
             .filter_map(|(&pid, p)| Some((pid, p.recorded?)))
             .collect();
-        self.full |= pages.len() + self.log.len() > capacity;
-        self.publish();
+        self.tally
+            .overflowed(pages.len() + self.log.len() > capacity);
         Recorded {
             pages,
             log: self.log.clone(),
-            full: self.full,
+            full: self.tally.full(),
         }
     }
 
@@ -723,7 +778,7 @@ impl Evidence {
     /// Enter each of `mapped` still current since `begun`, the epoch its mapping began at, and
     /// whether a full list was mapped.
     pub(super) fn mapped(&mut self, full: bool, begun: Epoch, mapped: Vec<Mapping>) {
-        self.full_mapped |= full;
+        self.tally.mapped_full(full);
         for (pending, objects) in mapped {
             if !self.is_current(begun, &pending) {
                 continue;
@@ -738,7 +793,6 @@ impl Evidence {
                 None => p.incomplete = Some(damage),
             });
         }
-        self.publish();
     }
 
     /// Enter each of `unwritten` still current since `begun` as marked only in memory, leaving it
@@ -797,7 +851,7 @@ impl Evidence {
                 .filter_map(|(&pid, p)| Some((pid, p.damage()?)))
                 .collect(),
             log: self.log.clone(),
-            full: self.full,
+            full: self.tally.full(),
         }
     }
 
@@ -818,7 +872,7 @@ impl Evidence {
             let of = p.incarnation;
             Some(Pending { pid, damage, of })
         });
-        (pages.collect(), self.full && !self.full_mapped, self.epoch)
+        (pages.collect(), self.tally.full_unmapped(), self.epoch)
     }
 
     /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.
