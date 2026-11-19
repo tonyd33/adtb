@@ -67,6 +67,8 @@ too_many_arguments = "deny"
 [profile.test]
 opt-level = 1
 debug = 0
+# Crate-local ThinLTO re-optimises most of a crate's codegen units after a one-function edit.
+lto = "off"
 
 [profile.dev]
 debug = 0
