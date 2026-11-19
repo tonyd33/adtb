@@ -42,7 +42,9 @@ fn opts() -> Options {
 }
 
 const LONG: Duration = Duration::from_secs(3600);
-const VACUUM_CRASH_SEEDS: [u64; 2] = [11, 14];
+/// The seeds of the vacuum crash search; the default profile runs the first, whose crashes leave
+/// a copy without its entry.
+const VACUUM_CRASH_SEEDS: [u64; 2] = [14, 11];
 
 /// Each key's value.
 type State = BTreeMap<i64, i64>;
@@ -839,7 +841,8 @@ fn crash_config() -> Config {
 #[test]
 fn a_crash_at_every_flush_while_vacuum_moves_versions_loses_no_past_row() {
     let mut unindexed = 0;
-    for seed in VACUUM_CRASH_SEEDS {
+    let seeds = adtb_testkit::profile::count(1) as usize;
+    for &seed in VACUUM_CRASH_SEEDS.iter().take(seeds) {
         unindexed += crash_every_flush_of_vacuum(seed);
     }
     assert!(

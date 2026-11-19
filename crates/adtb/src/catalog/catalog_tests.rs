@@ -10,6 +10,7 @@ use adtb_lang::types::RelId;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::process::finished;
+use adtb_testkit::profile::{every_case, spread};
 
 use crate::test_world as harness;
 use adtb_testkit::damage::DataFile;
@@ -236,6 +237,10 @@ fn appended_log_rows_and_hashes_survive_reopen_refusal_and_revert() {
     });
 }
 
+/// How many flushes of a create, evenly spread, the default profile crashes at; `deep` crashes
+/// at every flush.
+const CREATE_CRASHES: u64 = 8;
+
 #[test]
 fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
     let seed = 2;
@@ -252,6 +257,11 @@ fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
         .filter(|&f| f >= start)
         .collect();
     assert!(flushes.len() > 4, "{} flushes", flushes.len());
+    let flushes = if every_case() {
+        flushes
+    } else {
+        spread(&flushes, CREATE_CRASHES)
+    };
     let mut found = BTreeSet::new();
     let mut redone = Vec::new();
     for at in flushes {

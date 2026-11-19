@@ -15,6 +15,7 @@ use adtb_testkit::crash;
 use adtb_testkit::entropy;
 use adtb_testkit::seeds;
 
+use adtb_testkit::profile::every_case;
 use crash::{Reopen, Rounds, crash_loop};
 use entropy::below;
 use harness::{PAGE, finished, options};
@@ -671,11 +672,13 @@ fn reopen(rt: SimRuntime, world: &Mutex<World>, shape: Shape, repaired: &mut usi
     Reopen::found(problems)
 }
 
+/// Run seeds 0 and 1, one of each shape; the profile `deep` sweeps seeds 0..4 at its size.
 #[test]
 fn threads_crashed_together_recover_a_prefix_of_each_threads_operations() {
-    const SEEDS: Range<u64> = 0..4;
+    const SEEDS: Range<u64> = 0..2;
+    let seeds = if every_case() { sweep(0..4) } else { SEEDS };
     let (mut crashes, mut repaired) = (0, 0);
-    for seed in sweep(SEEDS) {
+    for seed in seeds {
         let shape = if seed % 2 == 0 {
             Shape::Whole
         } else {

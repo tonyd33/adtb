@@ -1079,9 +1079,11 @@ fn every_fault_at_once() {
     crash_row(Simulated, Every, Plain, 500..512, floors);
 }
 
+/// Run seeds 700..705; the profile `deep` sweeps seeds 700..710 at its size.
 #[test]
 fn threads_sharing_a_pager_lose_nothing_across_crashes() {
-    crash_row(Simulated, Torn, Threaded, 700..710, floors(11, 101, 0));
+    let seeds = if every_case() { 700..710 } else { 700..705 };
+    crash_row(Simulated, Torn, Threaded, seeds, floors(11, 101, 0));
 }
 
 #[test]
@@ -1119,6 +1121,8 @@ fn rot_latent_errors_and_misdirected_and_lost_writes_on_real_files_are_refused_n
     crash_row(Pool, Every, Plain, 0..2, floors(1, 0, 0));
 }
 
+/// Crash at every flush, two images of each and one layout unless the profile is `deep`, which
+/// draws eight and runs every layout.
 #[test]
 fn crash_replay_at_every_flush_boundary() {
     let shapes: &[Shape] = if every_case() { &Shape::ALL } else { &[Plain] };
@@ -1135,8 +1139,9 @@ fn crash_replay_at_every_flush_boundary() {
         let recording = sim.recording();
         let world = client.world.lock().unwrap();
         let mut images = 0;
+        let drawn = if every_case() { 8 } else { 2 };
         for at in recording.flushes() {
-            for files in recording.images(at, 8, at as u64) {
+            for files in recording.images(at, drawn, at as u64) {
                 images += 1;
                 let ledger = Ledger::new();
                 for (&xid, &stamp) in &world.submitted {
@@ -1166,7 +1171,7 @@ fn crash_replay_at_every_flush_boundary() {
         }
         let flushes = recording.flushes().len();
         assert!(
-            flushes > 20 && images > 100,
+            flushes > 20 && images > 100 * drawn / 8,
             "{layout:?}: {flushes} flushes, {images} images"
         );
     }

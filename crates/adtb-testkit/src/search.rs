@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::profile::{assert_reached, count, every_case};
+use crate::profile::{assert_reached, count, every_case, spread};
 use adtb_sim::{Action, Config, Outcome, Plan, Sim, SimRuntime, Struck};
 use adtb_sys::runtime::{IoError, OpKind};
 
@@ -13,21 +13,6 @@ pub type Files = BTreeMap<String, Vec<u8>>;
 
 /// How many times the images a crash search draws around a rename, where the order of names counts.
 const RENAME_IMAGES: usize = 4;
-
-/// Returns up to `most` of `items`, evenly spread and holding both ends.
-fn spread(items: &[u64], most: u64) -> Vec<u64> {
-    let len = items.len() as u64;
-    if len <= most || most < 2 {
-        return items
-            .iter()
-            .copied()
-            .take(most.max(len.min(1)) as usize)
-            .collect();
-    }
-    (0..most)
-        .map(|i| items[(i * (len - 1) / (most - 1)) as usize])
-        .collect()
-}
 
 fn is_bulk(kind: OpKind) -> bool {
     matches!(kind, OpKind::Read | OpKind::Write | OpKind::Size)

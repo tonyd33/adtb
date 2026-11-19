@@ -4,9 +4,11 @@
 //! versions pointing at it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::process::run;
+use adtb_testkit::search::Files;
 
 use super::root::{Changing, Root};
 use super::{Catalog, Read, Reader, Transactions};
@@ -72,6 +74,26 @@ fn inserts(more: &str) -> String {
         })
         .collect();
     format!("transact\n{rows}")
+}
+
+/// Returns a simulation whose file a create at the migrations `texts` left closed. The files of
+/// each list of migrations are made once.
+fn created_at(texts: &[&'static str]) -> Sim {
+    static FILES: Mutex<BTreeMap<Vec<&'static str>, Files>> = Mutex::new(BTreeMap::new());
+    let files = FILES
+        .lock()
+        .expect("no panic while the files are held")
+        .entry(texts.to_vec())
+        .or_insert_with(|| {
+            let mut sim = Sim::new(SEED, Config::default());
+            run(&mut sim, |rt| {
+                let db = opened(&rt, FILE, &log(texts), &options(1));
+                db.close().expect("the database closes");
+            });
+            sim.files()
+        })
+        .clone();
+    Sim::with_files(SEED, Config::default(), files)
 }
 
 /// Arm `fail` and forget the runs of steps so far on this thread.
@@ -149,7 +171,7 @@ struct Ran {
 /// unless a sweep after the next open leaves the store as large as before the migration.
 fn migrated(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("migration {fail:?}");
-    let mut sim = Sim::new(SEED, Config::default());
+    let mut sim = created_at(&[NOTES]);
     run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[NOTES]), &options(1));
         write(&db, &inserts(""));
@@ -179,7 +201,7 @@ fn migrated(fail: Option<(Site, usize)>) -> Ran {
 /// Settle at open the pending drop of a unique whose holder no open registers, failing `fail`.
 fn settled(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("pending drop {fail:?}");
-    let mut sim = Sim::new(SEED, Config::default());
+    let mut sim = created_at(&[NOTES, UNIQUE]);
     run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[NOTES, UNIQUE]), &options(1));
         db.close().expect("the database closes");
@@ -224,7 +246,7 @@ fn settled(fail: Option<(Site, usize)>) -> Ran {
 /// Insert [`ROWS`] rows into a file at [`RANKED`], failing `fail`.
 fn inserted(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("insert {fail:?}");
-    let mut sim = Sim::new(SEED, Config::default());
+    let mut sim = created_at(&[NOTES, RANKED]);
     let (runs, ok) = run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
         arm(fail);
@@ -248,7 +270,7 @@ fn inserted(fail: Option<(Site, usize)>) -> Ran {
 /// failing `fail`.
 fn updated(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("update {fail:?}");
-    let mut sim = Sim::new(SEED, Config::default());
+    let mut sim = created_at(&[NOTES, RANKED]);
     let (runs, ok) = run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
         write(&db, &inserts(", rank: 7"));
@@ -281,7 +303,7 @@ fn widened(fail: Option<(Site, usize)>) -> Ran {
         field('c'),
         field('d')
     );
-    let mut sim = Sim::new(SEED, Config::default());
+    let mut sim = created_at(&[WIDE]);
     let (runs, ok) = run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[WIDE]), &options(1));
         arm(fail);
@@ -320,7 +342,7 @@ fn widened(fail: Option<(Site, usize)>) -> Ran {
 /// Delete every row of a file at [`RANKED`], then vacuum, failing `fail`.
 fn vacuumed(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("vacuum {fail:?}");
-    let mut sim = Sim::new(SEED, Config::default());
+    let mut sim = created_at(&[NOTES, RANKED]);
     let (runs, ok) = run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
         write(&db, &inserts(", rank: 7"));

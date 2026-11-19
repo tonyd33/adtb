@@ -7,6 +7,7 @@ use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
 use adtb_lang::visit::each_expr;
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::search::Files;
 
 use crate::catalog::{Catalog, Error, Migrating, change, delete_rows, layout};
 use crate::key::Value;
@@ -345,13 +346,25 @@ fn clauses(
         .collect()
 }
 
-/// Returns what a fresh catalog does with a migration declaring an index over `element`.
-fn declare(seed: u64, element: &str) -> Declared {
-    let mut sim = Sim::new(seed, Config::default());
-    let mut out = None;
+/// Returns the files of a closed file holding a fresh catalog.
+fn created() -> Files {
+    let mut sim = Sim::new(0, Config::default());
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options(64)).expect("create");
-        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        Catalog::create(rt, &pager).expect("the catalog");
+        pager.close();
+    });
+    sim.files()
+}
+
+/// Returns what the fresh catalog of `files` does with a migration declaring an index over
+/// `element`.
+fn declare(files: &Files, seed: u64, element: &str) -> Declared {
+    let mut sim = Sim::with_files(seed, Config::default(), files.clone());
+    let mut out = None;
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(64)).expect("the file opens");
+        let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog");
         out = Some(match catalog.migrate(&pager, &txns, &declaring(element)) {
             Ok(()) => {
                 let declared = clauses(&pager, &catalog, &txns);
@@ -375,12 +388,17 @@ fn declare(seed: u64, element: &str) -> Declared {
 fn every_index_element_form_is_stored_as_one_canonical_text_whatever_its_spelling() {
     let mut forms = BTreeSet::new();
     let mut respelled = 0;
+    let files = created();
     for (seed, (element, other, want)) in elements().into_iter().enumerate() {
         let seed = seed as u64;
         forms.extend(forms_of(element));
-        assert_eq!(want, declare(seed, element), "`{element}`, seed {seed}");
+        assert_eq!(
+            want,
+            declare(&files, seed, element),
+            "`{element}`, seed {seed}"
+        );
         if let Some(other) = other {
-            assert_eq!(want, declare(seed, other), "`{other}`, seed {seed}");
+            assert_eq!(want, declare(&files, seed, other), "`{other}`, seed {seed}");
             respelled += 1;
         }
     }

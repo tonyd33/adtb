@@ -1825,26 +1825,55 @@ struct Outcome {
 struct Found {
     /// Each case by name.
     cases: BTreeMap<String, Outcome>,
-    /// The kinds of every operator that applied.
-    reached: BTreeSet<&'static str>,
+    /// The kind of every invertible operator that applied, with the shape it applied in.
+    reached: BTreeSet<(&'static str, u64)>,
     /// A case whose setup migration is refused, with the refusal.
     unapplied: Vec<String>,
-    /// A case whose revert is refused for the reason the spec states, with the reason.
-    stated: Vec<String>,
+    /// A case whose revert is refused for the reason the spec states: its shape, its name and
+    /// the reason.
+    stated: Vec<(u64, String, String)>,
     /// Why each migration the case being run applied does not resolve.
     unresolved: Vec<(Aspect, String)>,
-    /// The cases run, over every shape.
+    /// The cases the first pass ran, over every shape.
     ran: usize,
+    /// The cases of the first pass whose revert is refused for a reason the spec states.
+    first_stated: usize,
 }
 
-fn search(count: usize) -> Found {
+/// Run the cases of the first `count` shapes: every case of each when `every`, else case `i` of
+/// the cases every shape runs in shape `i % count` only, and each case a shape's bits add. Then
+/// run again, in each shape, each case every shape runs whose kinds that shape has not reached.
+fn search(count: usize, every: bool) -> Found {
+    let shapes: Vec<(u64, Source, Vec<Case>)> = SHAPES
+        .into_iter()
+        .take(count)
+        .map(|bits| {
+            let shape = Shape::of(bits);
+            (bits, shape.source(), shape.cases())
+        })
+        .collect();
     let mut found = Found::default();
-    for bits in SHAPES.into_iter().take(count) {
-        let shape = Shape::of(bits);
-        let start = shape.source();
-        for case in shape.cases() {
-            found.ran += 1;
-            found.case(bits, &start, &case);
+    let mut ran = BTreeSet::new();
+    for (k, (bits, start, cases)) in shapes.iter().enumerate() {
+        for (i, case) in cases.iter().enumerate() {
+            if every || i >= CASES.0 || i % count == k {
+                ran.insert((*bits, i));
+                found.ran += 1;
+                found.case(*bits, start, case);
+            }
+        }
+    }
+    found.first_stated = found.stated.len();
+    for (bits, start, cases) in &shapes {
+        for (i, case) in cases.iter().enumerate().take(CASES.0) {
+            let unreached = found.cases.get(&case.name()).is_some_and(|o| {
+                o.kinds
+                    .iter()
+                    .any(|k| !UNINVERTED.contains(k) && !found.reached.contains(&(*k, *bits)))
+            });
+            if unreached && !ran.contains(&(*bits, i)) {
+                found.case(*bits, start, case);
+            }
         }
     }
     found
@@ -1880,8 +1909,12 @@ impl Found {
                 return;
             }
         };
-        self.reached
-            .extend(kinds.iter().copied().filter(|k| !UNINVERTED.contains(k)));
+        self.reached.extend(
+            kinds
+                .iter()
+                .filter(|k| !UNINVERTED.contains(k))
+                .map(|&k| (k, bits)),
+        );
         let number = mid.log.last().expect("the case is logged").number;
         let base = was.clone();
         let cased = mid.clone();
@@ -1918,7 +1951,7 @@ impl Found {
             (got, Some(reason)) => {
                 let want = Refused(vec![reason.clone()]);
                 adtb_testkit::refused_as(got.map_err(Refused), &want, &reason);
-                self.stated.push(format!("{what}: {reason}"));
+                self.stated.push((bits, case.name(), reason));
                 Vec::new()
             }
             (Ok(now), None) => differences(&target, &mid, &now, [&base, &cased]),
@@ -1966,8 +1999,8 @@ impl Found {
 }
 
 /// Returns, for case `name` and what the search found of it, why its known row does not hold,
-/// when it does not. Under the `quick` profile, which runs one shape, a row's differences need
-/// only include the case's.
+/// when it does not. Unless the case ran in every shape, a row's differences need only include
+/// the case's.
 fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
     let shown = || {
         o.differences
@@ -2011,13 +2044,17 @@ const CASES: (usize, usize, usize) = (168, 2, 5);
 /// The cases of each shape whose revert is refused for a reason the spec states.
 const REFUSED: usize = 18;
 
+/// Unless the profile is `deep`, each case runs in one of the first two shapes, which set each bit
+/// both ways, and again in the other when that shape has not reached one of its kinds; `deep` runs
+/// every case in every shape.
 #[test]
 fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
     let count = adtb_testkit::profile::count(2).min(SHAPES.len() as u64) as usize;
-    let found = search(count);
+    let every = adtb_testkit::profile::every_case();
+    let found = search(count, every);
     let mut failures = found.unapplied.clone();
     for (name, o) in &found.cases {
-        failures.extend(unknown(name, o, count >= 2));
+        failures.extend(unknown(name, o, every));
     }
     for k in KNOWN {
         if !found.cases.contains_key(k.case) {
@@ -2025,17 +2062,27 @@ fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let shared = if every { count * CASES.0 } else { CASES.0 };
     let ran: usize = SHAPES
         .into_iter()
         .take(count)
         .map(Shape::of)
-        .map(|s| CASES.0 + usize::from(s.declared) * CASES.1 + usize::from(s.granted) * CASES.2)
+        .map(|s| usize::from(s.declared) * CASES.1 + usize::from(s.granted) * CASES.2)
         .sum();
-    assert_eq!(ran, found.ran);
-    assert_eq!(count * REFUSED, found.stated.len(), "{:?}", found.stated);
+    assert_eq!(shared + ran, found.ran);
+    let runs_of_each = if every { count } else { 1 };
     assert_eq!(
-        invertible(),
-        found.reached,
-        "the search applies every invertible kind"
+        runs_of_each * REFUSED,
+        found.first_stated,
+        "{:?}",
+        found.stated
+    );
+    let reachable: BTreeSet<(&str, u64)> = invertible()
+        .into_iter()
+        .flat_map(|k| SHAPES.into_iter().take(count).map(move |bits| (k, bits)))
+        .collect();
+    assert_eq!(
+        reachable, found.reached,
+        "the search applies every invertible kind in every shape"
     );
 }

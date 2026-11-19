@@ -1257,6 +1257,18 @@ fn kinds<'m>(migrations: &'m [&str], model: &'m Model) -> impl Iterator<Item = &
         ("depth 3", migrations.len() == 3),
         ("revert", any(&|t| t.contains("revert"))),
         ("put back", model.slots.iter().flatten().any(|h| h.put_back)),
+        (
+            "revert at depth 3",
+            migrations.len() == 3 && migrations[2].contains("revert"),
+        ),
+        (
+            "put back at depth 3",
+            model
+                .slots
+                .iter()
+                .flatten()
+                .any(|h| h.put_back && h.added == Some(3)),
+        ),
     ]
     .into_iter()
     .filter_map(|(kind, here)| here.then_some(kind))
@@ -1281,6 +1293,10 @@ fn replayed(cases: &[(Vec<String>, Model)]) -> Vec<Result<Source, signature::Rep
     out
 }
 
+/// Of the histories of three migrations, in the order [`generated`] gives them, the default
+/// profile runs one in this many; `deep` runs every history.
+const THREE_STRIDE: usize = 8;
+
 #[test]
 fn a_pinned_insert_translates_across_every_generated_history_of_two_relations() {
     let pinned = checked(&[PIN]);
@@ -1293,7 +1309,16 @@ txn put_y () -> I64 =
     let r = insert ys { n: 1 }
     return 1";
     let transactions = normalised(&pinned, body);
-    let mut cases = generated(3);
+    let every = adtb_testkit::profile::every_case();
+    let (mut cases, three): (Vec<_>, Vec<_>) =
+        generated(3).into_iter().partition(|(log, _)| log.len() < 4);
+    cases.extend(
+        three
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| every || i % THREE_STRIDE == 0)
+            .map(|(_, c)| c),
+    );
     cases.push(renamed_then_added());
     let sources = replayed(&cases);
     let mut reached = BTreeSet::new();
@@ -1359,8 +1384,10 @@ txn put_y () -> I64 =
                 "depth 3",
                 "drop",
                 "put back",
+                "put back at depth 3",
                 "rename",
                 "revert",
+                "revert at depth 3",
                 "two at once",
                 "xs Err",
                 "xs Ok",

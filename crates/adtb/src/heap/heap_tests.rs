@@ -27,7 +27,7 @@ use crash::{Reopen, Rounds, crash_loop};
 use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
 use rows::{APPLE, EMAIL, Live, Op, Rows, key_of, pair, replay, row_type};
-use seeds::{share, sweep};
+use seeds::{assert_reached, share, sweep};
 
 const GOOGLE: usize = 1;
 const FRAMES: usize = 32;
@@ -1088,8 +1088,9 @@ fn unsettled(pager: &Pager<SimRuntime>, inventory: &Inventory) -> bool {
 
 #[test]
 fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
+    const STEPS: Range<u64> = 0..20;
     let (mut crashes, mut caught) = (0, 0);
-    for step in 0..40u64 {
+    for step in sweep(STEPS) {
         let mut sim = Sim::new(
             step,
             Config {
@@ -1168,9 +1169,8 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
         );
         crashes += out.crashed();
     }
-    eprintln!("{crashes} of 40 runs crashed, {caught} left entries to settle");
-    assert!(crashes > 16, "{crashes} crashes");
-    assert!(caught > 2, "{caught} runs left entries to settle");
+    assert_reached("a crash", crashes, share(STEPS, 9));
+    assert_reached("a run leaving entries to settle", caught, share(STEPS, 3));
 }
 
 /// What the client knows, kept outside the simulated process so it survives crashes.

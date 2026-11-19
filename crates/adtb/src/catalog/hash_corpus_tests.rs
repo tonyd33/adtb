@@ -10,7 +10,7 @@ use adtb_lang::types::Ty;
 use crate::heap::FieldType;
 use crate::key::Value;
 
-use super::{layout, oplog, version_hash};
+use super::{layout, oplog};
 
 const SAMPLE_LOG: [&str; 5] = [
     include_str!("hash_corpus/0001.adt"),
@@ -291,20 +291,17 @@ fn every_version_of_a_log_holding_each_operator_keeps_its_stored_hash() {
         field_ty(&schema, "migration_ops", "op"),
         field_ty(&schema, "migration_clauses", "body"),
     );
-    let log = oplog::Log::new(&schema);
-    let (mut h, mut got, mut reached) = ([0; 32], Vec::new(), BTreeSet::new());
-    for l in &src.log {
-        let ops = oplog::operators(&log, &src, l.number);
-        for (op, clauses) in &ops {
+    let (mut got, mut reached) = (Vec::new(), BTreeSet::new());
+    oplog::chain(&schema, &src, |ops, h| {
+        for (op, clauses) in ops {
             reach(&schema, &op_ty, op, &mut reached);
             for c in clauses {
                 reach(&schema, &clause_ty, c, &mut reached);
             }
         }
-        h = log.chained(h, &ops);
         got.push(hex(h));
-    }
-    assert_eq!(hex(version_hash(&schema, &src)), got[got.len() - 1]);
+    })
+    .expect("every logged migration resolves");
     let mut want = BTreeSet::new();
     every_ctor(&schema, &op_ty, &mut want);
     every_ctor(&schema, &clause_ty, &mut want);

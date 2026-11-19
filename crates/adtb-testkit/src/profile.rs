@@ -39,6 +39,21 @@ pub fn share(seeds: Range<u64>, count: usize) -> usize {
     count * kept.min(all) as usize / all as usize
 }
 
+/// Returns up to `most` of `items`, evenly spread and holding both ends.
+pub fn spread<T: Copy>(items: &[T], most: u64) -> Vec<T> {
+    let len = items.len() as u64;
+    if len <= most || most < 2 {
+        return items
+            .iter()
+            .copied()
+            .take(most.max(len.min(1)) as usize)
+            .collect();
+    }
+    (0..most)
+        .map(|i| items[(i * (len - 1) / (most - 1)) as usize])
+        .collect()
+}
+
 /// Fail unless a sweep reached the case `what` at least `floor` times.
 #[track_caller]
 pub fn assert_reached(what: &str, count: usize, floor: usize) {

@@ -33,10 +33,22 @@ pub fn version_hash(schema: &Schema, source: &Source) -> Hash {
 /// Returns the hash `version_hash` returns, or the diagnostics of the first migration of the
 /// log that does not resolve.
 pub fn try_version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Diag>> {
+    chain(schema, source, |_, _| {})
+}
+
+/// Returns the hash [`try_version_hash`] returns, giving `each` the operators of each migration
+/// of the log in order with the hash of the version it leaves.
+pub fn chain(
+    schema: &Schema,
+    source: &Source,
+    mut each: impl FnMut(&[OperatorRow], Hash),
+) -> Result<Hash, Vec<Diag>> {
     let log = Log::new(schema);
     let mut h = [0; 32];
     for l in &source.log {
-        h = log.chained(h, &log.rows(&source.resolved(l.number)?));
+        let ops = log.rows(&source.resolved(l.number)?);
+        h = log.chained(h, &ops);
+        each(&ops, h);
     }
     Ok(h)
 }
