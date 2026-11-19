@@ -356,6 +356,8 @@ struct Engine<R: Runtime> {
     program: Arc<Program>,
     /// The source of the version the database is at.
     source: Source,
+    /// The hash of the version the database is at.
+    hash: catalog::VersionHash,
     /// The registered queries of the live bundles, which `explain B::q(args)` names.
     bundles: Lock<Arc<Bundles>>,
     registered: Lock<Vec<Arc<registered::Checked>>>,
@@ -998,6 +1000,7 @@ impl<R: Runtime> Engine<R> {
             schema: parts.schema,
             program: parts.program,
             source: catalog.source().clone(),
+            hash: catalog.version_hash(),
             bundles: Lock::new(Arc::new(parts.bundles)),
             registered: Lock::new(parts.registered.into_iter().map(Arc::new).collect()),
             deployed: bundle::StoredLock::new(parts.deployed),
@@ -1115,11 +1118,8 @@ impl<R: Runtime> Engine<R> {
         options.host_fns.bound(&schema, &normal, &pending)?;
         let schema = Arc::new(schema);
         let now = micros(pager.wall());
-        let over = registered::Over {
-            source: catalog.source(),
-            schema: &schema,
-            program: &program,
-        };
+        let hash = catalog.version_hash();
+        let over = registered::Over::new(catalog.source(), &schema, &program, &hash);
         let registered = match unapplied {
             None => registered::register(&over, regs, &stored, now, &settings)?,
             Some(_) => Vec::new(),

@@ -115,11 +115,11 @@ pub(super) fn recorded(
     schema: &Schema,
     source: &Source,
     ops: &[oplog::OperatorRow],
-    previous: oplog::Hash,
+    hash: oplog::Hash,
     applied: i64,
 ) -> Rows {
     let log = oplog::Log::new(schema);
-    let rows = applied_hash(schema, source, log.chained(previous, ops), applied);
+    let rows = applied_hash(schema, source, hash, applied);
     let mut b = Builder {
         schema,
         source,

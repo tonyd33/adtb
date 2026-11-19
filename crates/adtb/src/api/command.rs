@@ -437,7 +437,7 @@ impl<R: Runtime> Engine<R> {
 
     /// Returns the folded schema: its version and hash, then each module's declarations.
     fn printed_schema(&self) -> String {
-        let hash = crate::catalog::version_hash(&self.schema, &self.source);
+        let hash = self.hash.get(&self.schema, &self.source);
         let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
         let mut out = format!("-- version {} hash {hash}\n", self.source.version);
         let mut module = None;

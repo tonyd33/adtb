@@ -17,7 +17,7 @@ use adtb_lang::signature;
 use adtb_lang::translate::{Pinned, Untranslatable, held_other_code, host_conflict};
 use adtb_lang::types::Ty;
 
-use crate::catalog::{self, Catalog};
+use crate::catalog::{self, Catalog, VersionHash};
 use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 
@@ -468,6 +468,24 @@ pub(super) struct Over<'a> {
     pub(super) source: &'a Source,
     pub(super) schema: &'a Arc<CommittedSchema>,
     pub(super) program: &'a Arc<Program>,
+    /// The hash of the version `source` is at.
+    hash: &'a VersionHash,
+}
+
+impl<'a> Over<'a> {
+    pub(super) fn new(
+        source: &'a Source,
+        schema: &'a Arc<CommittedSchema>,
+        program: &'a Arc<Program>,
+        hash: &'a VersionHash,
+    ) -> Over<'a> {
+        Over {
+            source,
+            schema,
+            program,
+            hash,
+        }
+    }
 }
 
 /// Returns `schema`, the schema of a settled source.
@@ -481,6 +499,7 @@ struct Pin {
     source: Source,
     schema: Arc<CommittedSchema>,
     program: Arc<Program>,
+    hash: VersionHash,
 }
 
 impl Pin {
@@ -489,6 +508,7 @@ impl Pin {
             source: &self.source,
             schema: &self.schema,
             program: &self.program,
+            hash: &self.hash,
         }
     }
 }
@@ -622,10 +642,12 @@ fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
 /// enabled since. A bundle that does not check at its pin is left for registration to refuse.
 pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), OpenError> {
     let schema = Arc::new(catalog.schema().clone());
+    let hash = catalog.version_hash();
     let now = Over {
         source: catalog.source(),
         schema: &schema,
         program: catalog.program(),
+        hash: &hash,
     };
     let version = catalog.source().version;
     for r in regs {
@@ -671,8 +693,10 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
         )));
     }
     let at = now.source.version;
-    let hashed = |schema: &Schema, source: &Source| {
-        let hash: String = catalog::version_hash(schema, source)
+    let hashed = |over: &Over<'_>| {
+        let hash: String = over
+            .hash
+            .get(over.schema, over.source)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
@@ -685,10 +709,10 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
         )))
     };
     if h.pins == at {
-        return hashed(now.schema, now.source).map(|()| None);
+        return hashed(now).map(|()| None);
     }
     if let Some(pin) = pins.0.get(&h.pins) {
-        return hashed(&pin.schema, &pin.source).map(|()| Some(pin.clone()));
+        return hashed(&pin.over()).map(|()| Some(pin.clone()));
     }
     let source = catalog::source_at(now.source, h.pins).ok_or_else(|| {
         Error::invalid(format!(
@@ -703,9 +727,10 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
         source,
         schema: Arc::new(settled(schema).map_err(Error::rejected)?),
         program: Arc::new(program),
+        hash: VersionHash::default(),
     });
     pins.0.insert(h.pins, pin.clone());
-    hashed(&pin.schema, &pin.source)?;
+    hashed(&pin.over())?;
     Ok(Some(pin))
 }
 
@@ -755,10 +780,12 @@ pub(super) fn readers(
             bundle: r.name.clone(),
             reason,
         };
+        let hash = catalog.version_hash();
         let now = Over {
             source: catalog.source(),
             schema: &schema,
             program: &program,
+            hash: &hash,
         };
         let (c, source) = match pinned(&now, h, &mut pins).map_err(refused)? {
             Some(pin) => (checked(&pin.over(), r), pin.source.clone()),

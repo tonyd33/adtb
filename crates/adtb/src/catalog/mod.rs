@@ -87,7 +87,7 @@ pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 use memo::Memo;
-pub use oplog::{Hash, try_version_hash, version_hash};
+pub use oplog::{Hash, VersionHash, try_version_hash, version_hash};
 #[cfg(test)]
 pub use readers::PendingDrop;
 pub use readers::{Read, Reader, source_at, stale};
@@ -178,6 +178,8 @@ impl From<mvcc::Error> for Error {
 /// migrations declare, stored as heaps with their key, unique and plain indexes.
 pub struct Catalog {
     source: Source,
+    /// The hash of the version `source` is at.
+    hash: VersionHash,
     schema: Committed,
     /// The checked program of `source`.
     program: Arc<Program>,
@@ -481,7 +483,7 @@ fn visible<R: Runtime>(
 type Log = (BTreeMap<u64, String>, BTreeMap<u64, BTreeSet<String>>);
 
 /// The source a log folds to, its schema and its checked program.
-type Folded = (Source, Committed, Arc<Program>);
+type Folded = (Source, Committed, Arc<Program>, VersionHash);
 
 /// The most logs [`FOLDED`] holds: the distinct logs a process reopens while it works. A server
 /// on one database reopens 1 or 2; a test sweep reopens one for each schema it sweeps.
@@ -529,7 +531,12 @@ fn fold_from_empty(
             ds.into_iter().map(|d| d.diag.message).collect(),
         )
     })?;
-    Ok((source, committed(schema)?, Arc::new(program)))
+    Ok((
+        source,
+        committed(schema)?,
+        Arc::new(program),
+        VersionHash::default(),
+    ))
 }
 
 /// Returns whether `keys` holds an order key for each constructor of every declared sum of
@@ -615,6 +622,7 @@ impl Catalog {
         let next = Checked::new(Source::default(), schema, program)?;
         let empty = Catalog {
             source: Source::default(),
+            hash: VersionHash::default(),
             schema: engine_schema(),
             program: next.program.clone(),
             texts: next.texts.clone(),
@@ -753,7 +761,7 @@ impl Catalog {
         let large = LargeStore::open(root.large.0, root.large.1);
         let roots = Heap::open(pager, root.roots.0, root.roots.1, roots::row_type(), large)?;
         let named = named(pager, &txns, &roots)?;
-        let (source, schema, program) = fold(&named.migrations, &named.dormant)?;
+        let (source, schema, program, hash) = fold(&named.migrations, &named.dormant)?;
         check_order_keys(&schema, &named.keys)?;
         let readers = Readers::reopened(&source, named.pending)?;
         let mut heaps = BTreeMap::new();
@@ -801,6 +809,7 @@ impl Catalog {
         )?;
         let catalog = Catalog {
             source,
+            hash,
             schema,
             program,
             texts,
@@ -831,6 +840,7 @@ impl Catalog {
         Ok(Catalog {
             texts: ElementTexts::of(&Source::default(), &schema),
             source: Source::default(),
+            hash: VersionHash::default(),
             schema: committed(schema)?,
             program: Arc::new(program),
             root: pager.catalog_root(),
@@ -1003,6 +1013,11 @@ impl Catalog {
     /// Returns the source the catalog's migrations fold to.
     pub fn source(&self) -> &Source {
         &self.source
+    }
+
+    /// Returns the hash of the version the catalog is at, made at most once for every holder.
+    pub fn version_hash(&self) -> VersionHash {
+        self.hash.clone()
     }
 
     /// Returns the page the file header names as the catalog's root.

@@ -56,11 +56,12 @@ impl<'e, R: Runtime> Calls<'e, R> {
         let mark = self.stored.deployed.registered.get(&row.id)?;
         let mut reread = self.reread.borrow_mut();
         let got = reread.entry(name.clone()).or_insert_with(|| {
-            let over = Over {
-                source: &self.e.source,
-                schema: &self.e.schema,
-                program: &self.e.program,
-            };
+            let over = Over::new(
+                &self.e.source,
+                &self.e.schema,
+                &self.e.program,
+                &self.e.hash,
+            );
             registered::reread(&over, &mark.text)
                 .map(Arc::new)
                 .map_err(|why| why.to_string())

@@ -32,10 +32,11 @@ use super::root;
 use super::roots::RootsRow;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
-    Hash, IndexKeys, IndexSpec, Migrating, OrderKeys, Readers, change, ctor_count, ctor_id,
-    ctor_index, ctor_relations, delete_keyed, delete_rows, element_types, heap_root, index_ctors,
-    index_keys, index_program, indexes, key_schema, layout, moved, oplog, owner, pending, planned,
-    reasons, rel_id, relation, row_key, row_type, rows, steps, update_root, visible,
+    Hash, IndexKeys, IndexSpec, Migrating, OrderKeys, Readers, VersionHash, change, ctor_count,
+    ctor_id, ctor_index, ctor_relations, delete_keyed, delete_rows, element_types, heap_root,
+    index_ctors, index_keys, index_program, indexes, key_schema, layout, moved, oplog, owner,
+    pending, planned, reasons, rel_id, relation, row_key, row_type, rows, steps, update_root,
+    visible,
 };
 
 impl Catalog {
@@ -526,6 +527,7 @@ impl Catalog {
         let (heap_ids, next_heap) = self.heap_ids(&schema, b.rewritten)?;
         let mut next = Catalog {
             source: b.next.source.clone(),
+            hash: VersionHash::default(),
             schema,
             program: b.next.program.clone(),
             texts: b.next.texts.clone(),
@@ -730,11 +732,13 @@ impl Catalog {
             return Ok(());
         }
         let previous = self.stored_hash(m)?;
+        let hash = oplog::Log::new(&next.schema).chained(previous, b.operators);
+        next.hash.made(hash);
         for (r, rows) in rows::recorded(
             &next.schema,
             &next.source,
             b.operators,
-            previous,
+            hash,
             micros(pager.wall()),
         ) {
             for (c, row) in rows {

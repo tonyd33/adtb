@@ -102,11 +102,7 @@ fn decide<R: Runtime>(
     }
     let now = e.clock();
     let s = *e.settings.lock(&e.rt);
-    let over = Over {
-        source: &e.source,
-        schema: &e.schema,
-        program: &e.program,
-    };
+    let over = Over::new(&e.source, &e.schema, &e.program, &e.hash);
     let checked =
         registered::registration(&over, bundle, stored, now, &s, &mut Default::default())?;
     let passed = checked

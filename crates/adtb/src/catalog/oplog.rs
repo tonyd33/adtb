@@ -1,3 +1,5 @@
+use std::sync::{Arc, OnceLock};
+
 use adtb_lang::evolve::{
     ArmTarget, Clause, IndexKind, Place, Resolved, ResolvedOp, Source, Target,
 };
@@ -15,6 +17,26 @@ use super::operators::{
 
 /// A BLAKE3-256 hash.
 pub type Hash = [u8; 32];
+
+/// The hash of one version, made at most once and shared by every clone.
+#[derive(Clone, Debug, Default)]
+pub struct VersionHash(Arc<OnceLock<Hash>>);
+
+impl VersionHash {
+    /// Returns the hash of the version `source` is at, as [`version_hash`] gives it, made on the
+    /// first call.
+    ///
+    /// Preconditions:
+    /// - `schema` and `source` are those of the version this hash is of.
+    pub fn get(&self, schema: &Schema, source: &Source) -> Hash {
+        *self.0.get_or_init(|| version_hash(schema, source))
+    }
+
+    /// Hold `hash` as the version's when no hash is held yet.
+    pub(super) fn made(&self, hash: Hash) {
+        self.0.get_or_init(|| hash);
+    }
+}
 
 /// A resolved operator as a value of `catalog::Operator`, with its clauses as values of
 /// `catalog::ClauseBody` in clause order.

@@ -5,7 +5,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::textual::print;
 use adtb_lang::types::{Base, Ty};
 
-use crate::catalog::{self, Dormant};
+use crate::catalog::Dormant;
 use crate::exec::{self, Val};
 use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphrase, Proved};
@@ -507,7 +507,7 @@ impl<R: Runtime> Engine<R> {
             .log
             .last()
             .map_or(0, |migration| migration.number);
-        let hash = catalog::version_hash(&self.schema, self.catalog.source());
+        let hash = self.hash.get(&self.schema, self.catalog.source());
         Envelope {
             release: env!("CARGO_PKG_VERSION").to_owned(),
             edition: super::bundle::EDITION.to_owned(),
