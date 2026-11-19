@@ -11,7 +11,7 @@ use crate::api::{
     CallOptions, Error, FatalReason, Fault, Limit, Log, Position, RejectReason, RetryReason, TxnId,
 };
 
-use super::tests::opened;
+use super::tests::in_database;
 use super::{CallOrigin, CallRow, Form, Val, print};
 
 fn retry(reason: RetryReason) -> Error {
@@ -494,65 +494,70 @@ fn cases() -> Vec<(Error, &'static str)> {
 /// Returns the error each call's audit row holds, one call failing with each of `errors`, and the
 /// form of the prelude sum `Error`.
 fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
-    let (_scratch, db) = opened(&Log::new(["module shop\nadd module shop\n"]));
-    let engine = db.engine.clone();
-    let caller = engine.principal(None).expect("principal");
-    let origin = CallOrigin::Function { name: text("f") };
-    for error in errors {
-        engine
-            .audit_call(&CallRow {
-                role: "",
-                caller: &caller,
-                origin: &origin,
-                args: &[0; 32],
-                failed: Some(error),
-            })
-            .expect("the call's audit row is written");
-    }
-    let mut results = db
-        .query_text(
-            "from a in catalog::audit.Call select { n: a.seq, outcome: a.outcome }",
-            &[],
-            &CallOptions::default(),
-        )
-        .expect("read the audit rows");
-    let rows = results.remove(0);
-    let Form::Record(fields) = rows.form().clone() else {
-        panic!("the select is a record")
-    };
-    let mut got: Vec<Val> = rows.map(|r| r.expect("audit row")).collect();
-    got.sort();
-    assert_eq!(errors.len(), got.len());
-    let outcome_form = &fields[1].1;
-    let failed = prelude_ctor(&engine.schema, engine.schema.prelude().outcome(), "Failed");
-    let held = errors
-        .iter()
-        .zip(&got)
-        .map(|(error, row)| {
-            let Val::Record(row) = row else {
-                panic!("an audit row is a record, found {row:?}")
+    in_database(
+        421,
+        &Log::new(["module shop\nadd module shop\n"]),
+        |_, db| {
+            let engine = db.engine.clone();
+            let caller = engine.principal(None).expect("principal");
+            let origin = CallOrigin::Function { name: text("f") };
+            for error in errors {
+                engine
+                    .audit_call(&CallRow {
+                        role: "",
+                        caller: &caller,
+                        origin: &origin,
+                        args: &[0; 32],
+                        failed: Some(error),
+                    })
+                    .expect("the call's audit row is written");
+            }
+            let mut results = db
+                .query_text(
+                    "from a in catalog::audit.Call select { n: a.seq, outcome: a.outcome }",
+                    &[],
+                    &CallOptions::default(),
+                )
+                .expect("read the audit rows");
+            let rows = results.remove(0);
+            let Form::Record(fields) = rows.form().clone() else {
+                panic!("the select is a record")
             };
-            let outcome = &row[1];
-            let shown = print(outcome, outcome_form).expect("the outcome prints");
-            let Val::Ctor(c, fields) = outcome else {
-                panic!("an outcome is a constructor, found {shown}")
-            };
-            assert_eq!(failed, *c, "{error:?} is recorded as {shown}");
-            fields
-                .first()
-                .expect("a failed outcome holds its error")
-                .clone()
-        })
-        .collect();
-    let error_form = Form::of(
-        &engine.schema,
-        &Ty::Data {
-            def: engine.schema.prelude().error(),
-            args: Vec::new(),
-            ctors: None,
+            let mut got: Vec<Val> = rows.map(|r| r.expect("audit row")).collect();
+            got.sort();
+            assert_eq!(errors.len(), got.len());
+            let outcome_form = &fields[1].1;
+            let failed = prelude_ctor(&engine.schema, engine.schema.prelude().outcome(), "Failed");
+            let held = errors
+                .iter()
+                .zip(&got)
+                .map(|(error, row)| {
+                    let Val::Record(row) = row else {
+                        panic!("an audit row is a record, found {row:?}")
+                    };
+                    let outcome = &row[1];
+                    let shown = print(outcome, outcome_form).expect("the outcome prints");
+                    let Val::Ctor(c, fields) = outcome else {
+                        panic!("an outcome is a constructor, found {shown}")
+                    };
+                    assert_eq!(failed, *c, "{error:?} is recorded as {shown}");
+                    fields
+                        .first()
+                        .expect("a failed outcome holds its error")
+                        .clone()
+                })
+                .collect();
+            let error_form = Form::of(
+                &engine.schema,
+                &Ty::Data {
+                    def: engine.schema.prelude().error(),
+                    args: Vec::new(),
+                    ctors: None,
+                },
+            );
+            (held, error_form)
         },
-    );
-    (held, error_form)
+    )
 }
 
 #[test]

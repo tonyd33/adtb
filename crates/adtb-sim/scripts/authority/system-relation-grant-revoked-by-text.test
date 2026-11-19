@@ -1,0 +1,37 @@
+# A read grant on a system relation is revoked by its text, widened as a revoke of a log grant is.
+seed 362
+use empty
+role web
+
+grant
+  grant read catalog::roles to web
+query
+  from g in catalog::grants where g.grantee == "web" select g.target
+----
+Some { value: "catalog::roles frozen (id, name, created)" }
+revoke error Invalid { detail: "`revoke read catalog::roles (id, name) from web` matches no grant `owner` may revoke" }
+  revoke read catalog::roles (id, name) from web
+revoke
+  revoke read catalog::roles from web
+
+grant
+  grant read catalog::roles to web
+revoke error Invalid { detail: "`revoke read catalog::roles frozen (id) from web` matches no grant `owner` may revoke" }
+  revoke read catalog::roles frozen (id) from web
+revoke
+  revoke read catalog::roles frozen (name, created, id) from web
+
+grant
+  grant read catalog::roles (id, name) to web
+query
+  from g in catalog::grants where g.grantee == "web" select g.target
+----
+Some { value: "catalog::roles (id, name)" }
+revoke error Invalid { detail: "`revoke read catalog::roles from web` matches no grant `owner` may revoke" }
+  revoke read catalog::roles from web
+revoke
+  revoke read catalog::roles (name, id) from web
+
+query
+  from g in catalog::grants where g.grantee == "web" select g.target
+----

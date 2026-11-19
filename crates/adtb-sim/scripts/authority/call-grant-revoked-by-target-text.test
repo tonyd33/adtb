@@ -1,0 +1,40 @@
+# A call grant is revoked by its target's text; a family grant also by its family alone.
+seed 361
+use binding
+register web-2.4 pins 2 edition "2026-10" use by-text
+
+grant
+  grant call web-2.4 to web
+revoke error Invalid { detail: "`revoke call web-2.5 from web` matches no grant `owner` may revoke" }
+  revoke call web-2.5 from web
+revoke
+  revoke call web-2.4 from web
+
+grant
+  grant call web-2.4::q to web
+revoke error Invalid { detail: "`revoke call web-2.4 from web` matches no grant `owner` may revoke" }
+  revoke call web-2.4 from web
+revoke
+  revoke call web-2.4::q from web
+
+grant
+  grant call web::q to web
+query
+  from g in catalog::grants where g.grantee == "web" select g.target
+----
+Some { value: "web::q at 2 (n: Text) -> Set Text" }
+revoke error Invalid { detail: "`revoke call web::q at 3 (n: Text) -> Set Text from web` matches no grant `owner` may revoke" }
+  revoke call web::q at 3 (n: Text) -> Set Text from web
+revoke
+  revoke call web::q from web
+
+grant
+  grant call web::q to web
+revoke error Invalid { detail: "`revoke call web::r from web` matches no grant `owner` may revoke" }
+  revoke call web::r from web
+revoke
+  revoke call web::q at 2 (n: Text) -> Set Text from web
+
+query
+  from g in catalog::grants where g.grantee == "web" select g.target
+----
