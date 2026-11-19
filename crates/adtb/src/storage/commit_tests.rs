@@ -7,8 +7,7 @@ use std::time::Duration;
 
 use crate::runtime::{Clock, Entropy, Io, Op, OpKind, Runtime, Threads};
 use crate::storage::{Lsn, Options, Pager, Position};
-use adtb_sim::{Config, Finding, FindingKind, Ledger, Match, Outcome, Recovered, Sim, SimRuntime};
-use adtb_sys::runtime::Faults;
+use adtb_sim::{Config, Ledger, Match, Outcome, Sim, SimRuntime};
 
 use crate::test_world as harness;
 use crate::test_world::api;
@@ -16,7 +15,7 @@ use crate::test_world::load as open;
 use adtb_testkit::profile::assert_reached;
 use adtb_testkit::{crash, search};
 
-use crash::{Reopened, Rounds, crash_loop, silence_fatal_panics};
+use crash::silence_fatal_panics;
 
 fn options() -> Options {
     Options {
@@ -142,73 +141,6 @@ fn a_commit_acknowledged_before_another_begins_has_the_earlier_position() {
         }
     }
     assert!(pairs > 1000, "{pairs} ordered pairs");
-}
-
-/// What a reopened pager shows the checks: the commits its log holds and the findings of `verify`.
-#[derive(Debug, Default)]
-struct Logged {
-    commits: BTreeSet<u64>,
-    findings: Vec<Finding>,
-}
-
-impl Recovered for Logged {
-    fn committed(&self) -> BTreeSet<u64> {
-        self.commits.clone()
-    }
-
-    fn verify(&self) -> Vec<Finding> {
-        self.findings.clone()
-    }
-}
-
-impl Reopened for Logged {}
-
-#[test]
-fn every_acknowledged_commit_survives_a_crash() {
-    for seed in 0..12 {
-        let faults = Faults {
-            torn_p: 0.5,
-            ..Faults::none(512)
-        };
-        let mut sim = Sim::new(
-            seed,
-            Config {
-                faults,
-                ..Config::default()
-            },
-        );
-        create(&mut sim);
-        let seen = Arc::new(Mutex::new(Seen::default()));
-        let out = crash_loop(
-            &mut sim,
-            seed,
-            faults,
-            Rounds::new(3, 500, 20_000),
-            |r| {
-                let (l, s) = (r.ledger().clone(), seen.clone());
-                r.crash(|rt| {
-                    let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-                    committers(&rt, &pager, &l, &s, 5, 1000);
-                });
-            },
-            |rt, _| {
-                let (pager, _) = Pager::open(rt, &options()).unwrap();
-                let v = pager.verify();
-                Logged {
-                    commits: v.commits.into_iter().collect(),
-                    findings: v
-                        .findings
-                        .iter()
-                        .map(|f| Finding {
-                            kind: FindingKind::Structure,
-                            at: format!("{f:?}"),
-                        })
-                        .collect(),
-                }
-            },
-        );
-        assert_eq!(3, out.crashed(), "seed {seed}");
-    }
 }
 
 #[test]

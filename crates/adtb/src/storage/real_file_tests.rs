@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use adtb_testkit::scratch::Scratch;
 
 use crate::catalog::Catalog;
-use crate::runtime::{FatalIo, IoError};
-use crate::storage::{OpenError, Options, PageKind, Pager, Pid};
+use crate::runtime::FatalIo;
+use crate::storage::{OpenError, Options, PageKind, Pager};
 use crate::testing::Knobs;
 use crate::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
 use adtb_lang::schema::ValueDef;
@@ -150,81 +150,6 @@ fn a_closed_pager_holds_no_file_open_and_reopens_with_nothing_to_replay() {
     assert_eq!(42, pager.read(pid).expect("the page")[100]);
 }
 
-const PAGES: usize = 12;
-const AT: usize = 100;
-
-fn counter_options() -> Options {
-    Options {
-        pool_frames: 6,
-        ..options()
-    }
-}
-
-fn counter(pager: &Pager<OsRuntime>, pid: Pid) -> Result<u64, String> {
-    let page = pager.read(pid).map_err(|e| format!("{e:?}"))?;
-    Ok(u64::from_le_bytes(page[AT..AT + 8].try_into().unwrap()))
-}
-
-/// Create a database of `PAGES` counter pages on `rt`, with every allocation durable.
-fn counters(rt: OsRuntime) -> (Pager<OsRuntime>, Vec<Pid>) {
-    let pager = Pager::create(rt, &counter_options()).expect("create");
-    let pids: Vec<Pid> = (0..PAGES)
-        .map(|_| pager.allocate(1, PageKind::HeapSlotted, 7).expect("a page"))
-        .collect();
-    pager.checkpoint();
-    (pager, pids)
-}
-
-/// Commit `steps` increments of counters `seed` picks, recording in `acked` each one acknowledged
-/// and in `doubt` the page of a commit begun and not acknowledged.
-fn increment(
-    pager: &Pager<OsRuntime>,
-    pids: &[Pid],
-    seed: u64,
-    steps: u64,
-    acked: &mut [u64],
-    doubt: &mut Option<usize>,
-) {
-    for step in 0..steps {
-        let i = ((step * 7 + seed * 3) % PAGES as u64) as usize;
-        *doubt = Some(i);
-        let next = acked[i] + 1;
-        let lsn = pager
-            .commit(step + 1, &[pids[i]], |p| {
-                p[0][AT..AT + 8].copy_from_slice(&next.to_le_bytes());
-            })
-            .expect("a commit");
-        pager.wait_durable(lsn);
-        acked[i] = next;
-        *doubt = None;
-    }
-}
-
-/// Check every counter after a restart: an acknowledged increment is present, and only the one
-/// in doubt may be past it.
-fn check_counters(
-    dir: &Path,
-    backend: Backend,
-    pids: &[Pid],
-    acked: &[u64],
-    doubt: Option<usize>,
-    seed: u64,
-) {
-    let rt = OsRuntime::new(dir, backend);
-    let (pager, _) = Pager::open(rt, &counter_options()).expect("reopen");
-    for (i, &pid) in pids.iter().enumerate() {
-        let got = counter(&pager, pid).unwrap_or_else(|e| panic!("seed {seed}: page {i}: {e}"));
-        let ok = got == acked[i] || (doubt == Some(i) && got == acked[i] + 1);
-        assert!(
-            ok,
-            "seed {seed}: page {i} holds {got}, acknowledged {}",
-            acked[i]
-        );
-    }
-    let findings = pager.verify().findings;
-    assert!(findings.is_empty(), "seed {seed}: {findings:?}");
-}
-
 /// Returns the name a backend's directories begin with.
 fn label(backend: Backend) -> &'static str {
     match backend {
@@ -256,130 +181,7 @@ macro_rules! on_both_backends {
     };
 }
 
-on_both_backends!(
-    acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes,
-    a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowledged_commit,
-    acknowledged_commits_survive_injected_failures_and_a_crash,
-);
-
-fn acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes(backend: Backend) {
-    for seed in 0..6 {
-        let held = scratch(&format!("crash-{}-{seed}", label(backend)));
-        let dir = held.path();
-        let rt = OsRuntime::with_faults(
-            dir,
-            backend,
-            Faults {
-                seed,
-                torn_p: 0.5,
-                atomic_unit: 4096,
-                ..Faults::none(4096)
-            },
-        );
-        let (pager, pids) = counters(rt.clone());
-        let mut acked = vec![0; PAGES];
-        let mut doubt = None;
-        increment(&pager, &pids, seed, 20 + seed * 7, &mut acked, &mut doubt);
-        pager.flush_pages(seed as usize);
-        rt.crash();
-        drop(pager);
-        check_counters(dir, backend, &pids, &acked, doubt, seed);
-    }
-}
-
-fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowledged_commit(
-    backend: Backend,
-) {
-    for seed in 0..6 {
-        let held = scratch(&format!("fail-{}-{seed}", label(backend)));
-        let dir = held.path();
-        let rt = OsRuntime::with_faults(
-            dir,
-            backend,
-            Faults {
-                seed,
-                ..Faults::none(4096)
-            },
-        );
-        let (pager, pids) = counters(rt.clone());
-        rt.set_faults(Faults {
-            seed,
-            fail_p: 0.05,
-            torn_p: 0.5,
-            ..Faults::none(4096)
-        });
-        let mut acked = vec![0; PAGES];
-        let mut doubt = None;
-        let run = panic::catch_unwind(AssertUnwindSafe(|| {
-            increment(&pager, &pids, seed, 400, &mut acked, &mut doubt);
-        }));
-        let Err(payload) = run else {
-            panic!("seed {seed}: no write or force fails")
-        };
-        let failure = payload
-            .downcast_ref::<FatalIo>()
-            .unwrap_or_else(|| panic!("seed {seed}: not a fatal I/O failure"));
-        assert_eq!(IoError::Failed, failure.cause(), "seed {seed}: {failure}");
-        rt.crash();
-        drop(pager);
-        check_counters(dir, backend, &pids, &acked, doubt, seed);
-    }
-}
-
-#[test]
-fn rot_latent_errors_and_misdirected_and_lost_writes_are_refused_never_returned() {
-    let (mut returned, mut refused) = (0, 0);
-    for seed in 0..6 {
-        let held = scratch(&format!("damage-{seed}"));
-        let dir = held.path();
-        let rt = faulty(
-            dir,
-            Faults {
-                seed,
-                ..Faults::none(4096)
-            },
-        );
-        let (pager, pids) = counters(rt.clone());
-        let mut acked = [0u64; PAGES];
-        rt.set_faults(Faults {
-            seed,
-            corrupt_p: 0.02,
-            latent_p: 0.02,
-            misdirect_p: 0.02,
-            lost_write_p: 0.02,
-            lose_unsynced: false,
-            ..Faults::none(4096)
-        });
-        for step in 0..60u64 {
-            let i = ((step * 7 + seed * 3) % PAGES as u64) as usize;
-            let next = acked[i] + 1;
-            let commit = pager.commit(step + 1, &[pids[i]], |p| {
-                p[0][AT..AT + 8].copy_from_slice(&next.to_le_bytes());
-            });
-            if let Ok(lsn) = commit {
-                pager.wait_durable(lsn);
-                acked[i] = next;
-            }
-        }
-        pager.flush_pages(usize::MAX);
-        for (i, &pid) in pids.iter().enumerate() {
-            match counter(&pager, pid) {
-                Ok(got) => {
-                    returned += 1;
-                    assert_eq!(
-                        acked[i], got,
-                        "seed {seed}: page {i} returned wrong contents"
-                    );
-                }
-                Err(_) => refused += 1,
-            }
-        }
-    }
-    assert!(
-        returned > 0 && refused > 0,
-        "{returned} returned, {refused} refused"
-    );
-}
+on_both_backends!(acknowledged_commits_survive_injected_failures_and_a_crash);
 
 #[test]
 fn a_failed_open_or_create_holds_no_file_open() {

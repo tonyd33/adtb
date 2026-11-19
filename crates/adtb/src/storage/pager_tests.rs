@@ -5,7 +5,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::runtime::{Entropy, IoError, OpKind, Threads};
+use crate::runtime::{Entropy, FatalIo, IoError, OpKind, Runtime};
 use crate::storage::{
     Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, LogFinding, LogProblem, Lsn, OpenError,
     Options, PageError, PageKind, Pager, Pid,
@@ -14,13 +14,19 @@ use adtb_sim::{
     Action, Config, Fate, FindingKind, Ledger, Match, Outcome, Plan, Recovered, Sim, SimRuntime,
     Violation, check,
 };
+use adtb_sys::os::{Backend, OsRuntime};
 use adtb_sys::runtime::Faults;
 use std::cell::Cell;
 
+use adtb_testkit::Rng;
 use adtb_testkit::crash;
 use adtb_testkit::damage::DataFile;
+use adtb_testkit::scratch::Scratch;
 use adtb_testkit::seeds;
 
+use Device::{Pool, Simulated, Uring};
+use Fault::{Every, Failed, Misdirected, Rot, Torn, TornAll};
+use Shape::{Atomic, Everything, Plain, Threaded, WideLog};
 use adtb_testkit::profile::every_case;
 use crash::{Reopen, Reopened, Rounds, crash_loop, run_process, silence_fatal_panics};
 use seeds::{assert_reached, share, sweep};
@@ -47,6 +53,13 @@ const PLAIN: Layout = Layout {
     log_block: 512,
     threads: 0,
     frames: 5,
+};
+
+const THREADED: Layout = Layout {
+    atomic: false,
+    log_block: 512,
+    threads: 4,
+    frames: 20,
 };
 
 fn options(layout: Layout) -> Options {
@@ -101,34 +114,71 @@ impl Client {
     }
 }
 
-fn setup(sim: &mut Sim, client: &Client, layout: Layout) {
-    let world = client.world.clone();
-    let outcome = sim.run(move |rt| {
-        let pager = Pager::create(rt, &options(layout)).expect("create");
-        let mut pages = Vec::new();
-        for _ in 0..PAGES {
-            pages.push(
-                pager
-                    .allocate(1, PageKind::HeapSlotted, 7)
-                    .expect("allocate"),
-            );
+/// The draws a workload takes and the count of device events recorded so far.
+#[derive(Clone)]
+struct Host {
+    draw: Arc<dyn Fn() -> u64 + Send + Sync>,
+    stamp: Arc<dyn Fn() -> usize + Send + Sync>,
+}
+
+impl Host {
+    /// Returns the simulator's draws and its recorded events.
+    fn sim(rt: &SimRuntime) -> Host {
+        let (draws, events) = (rt.clone(), rt.clone());
+        Host {
+            draw: Arc::new(move || draws.next_u64()),
+            stamp: Arc::new(move || events.recorded()),
         }
-        pager.flush_log();
-        world.lock().unwrap().pages = pages;
-    });
+    }
+
+    /// Returns draws that depend only on `seed`, with no events recorded.
+    fn seeded(seed: u64) -> Host {
+        let rng = Mutex::new(Rng::new(seed));
+        Host {
+            draw: Arc::new(move || rng.lock().unwrap().next_u64()),
+            stamp: Arc::new(|| 0),
+        }
+    }
+
+    fn draw(&self) -> u64 {
+        (self.draw)()
+    }
+
+    fn stamp(&self) -> usize {
+        (self.stamp)()
+    }
+}
+
+/// Create the database with `PAGES` pages on `rt`, every allocation durable.
+fn create<R: Runtime>(rt: R, client: &Client, layout: Layout) {
+    let pager = Pager::create(rt, &options(layout)).expect("create");
+    let mut pages = Vec::new();
+    for _ in 0..PAGES {
+        pages.push(
+            pager
+                .allocate(1, PageKind::HeapSlotted, 7)
+                .expect("allocate"),
+        );
+    }
+    pager.flush_log();
+    client.world.lock().unwrap().pages = pages;
+}
+
+fn setup(sim: &mut Sim, client: &Client, layout: Layout) {
+    let outcome = sim.run(|rt| create(rt, client, layout));
     assert_eq!(Outcome::Finished, outcome);
 }
 
 /// Open the database and run random transactions, flushes and checkpoints for `steps` steps.
-fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
-    let Ok((mut pager, _)) = Pager::open(rt.clone(), &options(layout)) else {
+fn workload<R: Runtime>(rt: R, host: &Host, client: &Client, layout: Layout, steps: usize) {
+    let Ok((mut pager, _)) = Pager::open(rt, &options(layout)) else {
         return;
     };
     let pages = client.world.lock().unwrap().pages.clone();
     let mut unacked: Vec<u64> = Vec::new();
-    let ack = |pager: &mut Pager<SimRuntime>, unacked: &mut Vec<u64>| {
+    let ack = |pager: &mut Pager<R>, unacked: &mut Vec<u64>| {
         pager.flush_log();
-        let stamp = rt.recorded();
+        let stamp = host.stamp();
         let mut w = client.world.lock().unwrap();
         for xid in unacked.drain(..) {
             client.ledger.acknowledge(xid);
@@ -136,12 +186,12 @@ fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
         }
     };
     for _ in 0..steps {
-        match rt.next_u64() % 20 {
+        match host.draw() % 20 {
             0..=13 => {
-                let n = 1 + (rt.next_u64() % 3) as usize;
+                let n = 1 + (host.draw() % 3) as usize;
                 let mut chosen = BTreeSet::new();
                 while chosen.len() < n {
-                    chosen.insert(pages[(rt.next_u64() % pages.len() as u64) as usize]);
+                    chosen.insert(pages[(host.draw() % pages.len() as u64) as usize]);
                 }
                 let xid = {
                     let mut w = client.world.lock().unwrap();
@@ -151,8 +201,8 @@ fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
                 let mut writes = Vec::new();
                 let mut changes = Vec::new();
                 for pid in chosen {
-                    let start = (rt.next_u64() % SLOTS as u64) as usize;
-                    let len = 1 + (rt.next_u64() % 6) as usize;
+                    let start = (host.draw() % SLOTS as u64) as usize;
+                    let len = 1 + (host.draw() % 6) as usize;
                     let slots: Vec<usize> = (start..(start + len).min(SLOTS)).collect();
                     let mut bytes = Vec::new();
                     for &s in &slots {
@@ -171,7 +221,7 @@ fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
                 {
                     let mut w = client.world.lock().unwrap();
                     w.writes.insert(xid, writes);
-                    w.submitted.insert(xid, rt.recorded());
+                    w.submitted.insert(xid, host.stamp());
                 }
                 client.ledger.submit(xid);
                 let pids: Vec<Pid> = changes.iter().map(|(p, _)| *p).collect();
@@ -187,12 +237,12 @@ fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
                     Ok(_) => unacked.push(xid),
                     Err(_) => client.ledger.abort(xid),
                 }
-                if rt.next_u64().is_multiple_of(2) {
+                if host.draw().is_multiple_of(2) {
                     ack(&mut pager, &mut unacked);
                 }
             }
             14..=16 => {
-                let n = 1 + (rt.next_u64() % 4) as usize;
+                let n = 1 + (host.draw() % 4) as usize;
                 pager.flush_pages(n);
             }
             17 => pager.checkpoint(),
@@ -214,13 +264,13 @@ fn plausible(pid: Pid, page: &[u8]) -> bool {
 
 /// One of several threads sharing `pager`: transactions under exclusive latches taken in page
 /// order, optimistic and shared reads, flushes and checkpoints.
-fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: usize) {
+fn worker<R: Runtime>(pager: &Pager<R>, rt: &R, host: &Host, client: &Client, steps: usize) {
     let pages = client.world.lock().unwrap().pages.clone();
-    let pick = || pages[(rt.next_u64() % pages.len() as u64) as usize];
+    let pick = || pages[(host.draw() % pages.len() as u64) as usize];
     let mut unacked: Vec<u64> = Vec::new();
     let ack = |unacked: &mut Vec<u64>| {
         pager.flush_log();
-        let stamp = rt.recorded();
+        let stamp = host.stamp();
         let mut w = client.world.lock().unwrap();
         for xid in unacked.drain(..) {
             client.ledger.acknowledge(xid);
@@ -228,9 +278,9 @@ fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: us
         }
     };
     for _ in 0..steps {
-        match rt.next_u64() % 12 {
+        match host.draw() % 12 {
             0..=6 => {
-                let n = 1 + (rt.next_u64() % 3) as usize;
+                let n = 1 + (host.draw() % 3) as usize;
                 let mut chosen = BTreeSet::new();
                 while chosen.len() < n {
                     chosen.insert(pick());
@@ -244,8 +294,8 @@ fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: us
                 };
                 let mut writes = Vec::new();
                 for &pid in &chosen {
-                    let start = (rt.next_u64() % SLOTS as u64) as usize;
-                    let len = 1 + (rt.next_u64() % 6) as usize;
+                    let start = (host.draw() % SLOTS as u64) as usize;
+                    let len = 1 + (host.draw() % 6) as usize;
                     writes.push((pid, (start..(start + len).min(SLOTS)).collect::<Vec<_>>()));
                 }
                 let xid = {
@@ -253,7 +303,7 @@ fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: us
                     w.next_xid += 1;
                     let xid = w.next_xid;
                     w.writes.insert(xid, writes.clone());
-                    w.submitted.insert(xid, rt.recorded());
+                    w.submitted.insert(xid, host.stamp());
                     xid
                 };
                 client.ledger.submit(xid);
@@ -270,7 +320,7 @@ fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: us
                 });
                 drop(guards);
                 unacked.push(xid);
-                if rt.next_u64().is_multiple_of(3) {
+                if host.draw().is_multiple_of(3) {
                     ack(&mut unacked);
                 }
             }
@@ -293,7 +343,7 @@ fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: us
             10 => {
                 pager.flush_pages(2);
             }
-            _ if rt.next_u64().is_multiple_of(4) => pager.checkpoint(),
+            _ if host.draw().is_multiple_of(4) => pager.checkpoint(),
             _ => ack(&mut unacked),
         }
     }
@@ -301,20 +351,30 @@ fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: us
 }
 
 /// Open the database and run `layout.threads` workers over it for `steps` steps each.
-fn concurrent(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
+fn concurrent<R: Runtime>(rt: R, host: &Host, client: &Client, layout: Layout, steps: usize) {
     let Ok((pager, _)) = Pager::open(rt.clone(), &options(layout)) else {
         return;
     };
     let workers: Vec<_> = (0..layout.threads)
         .map(|i| {
-            let (pager, rt2, client) = (pager.clone(), rt.clone(), client.clone());
+            let (pager, rt2, host, client) =
+                (pager.clone(), rt.clone(), host.clone(), client.clone());
             rt.spawn(&format!("worker {i}"), move || {
-                worker(&pager, &rt2, &client, steps);
+                worker(&pager, &rt2, &host, &client, steps);
             })
         })
         .collect();
     for w in workers {
         rt.join(w);
+    }
+}
+
+/// Run the workload `layout` asks for: `steps` steps, shared among its threads when it has any.
+fn drive<R: Runtime>(rt: R, host: &Host, client: &Client, layout: Layout, steps: usize) {
+    if layout.threads == 0 {
+        workload(rt, host, client, layout, steps);
+    } else {
+        concurrent(rt, host, client, layout, steps * 3 / 8);
     }
 }
 
@@ -374,7 +434,7 @@ impl Reopened for Report {
     }
 }
 
-fn inspect(rt: SimRuntime, pages: &[Pid], layout: Layout) -> Report {
+fn inspect<R: Runtime>(rt: R, pages: &[Pid], layout: Layout) -> Report {
     let (pager, opening) = match Pager::open(rt, &options(layout)) {
         Ok(opened) => opened,
         Err(e) => {
@@ -506,9 +566,12 @@ fn judged(mut report: Report, ledger: &Ledger, world: &World) -> Vec<String> {
 /// refused-open rate is about 7% of crashes, and up to 25% over 8 seeds, so the bound is 33%.
 const CRASHES_PER_REFUSAL: usize = 3;
 
-/// The least a sweep under every fault reaches over all of its seeds, its kinds of finding only
+/// The least a row of the crash table reaches over all of its seeds, its kinds of finding only
 /// under the nextest profile `deep`.
+#[derive(Clone, Copy, Debug)]
 struct Floors {
+    /// Strikes of the row's fault.
+    struck: usize,
     crashes: usize,
     acked: usize,
     reopened: usize,
@@ -517,9 +580,25 @@ struct Floors {
 }
 
 /// At least `found` findings of one kind per `per` seeds run.
+#[derive(Clone, Copy, Debug)]
 struct Rate {
     found: usize,
     per: usize,
+}
+
+const NO_KIND: Rate = Rate { found: 0, per: 1 };
+
+/// Returns floors of one strike and of `crashes`, `acked` and `reopened`, with no kind of
+/// finding.
+const fn floors(crashes: usize, acked: usize, reopened: usize) -> Floors {
+    Floors {
+        struck: 1,
+        crashes,
+        acked,
+        reopened,
+        pages: NO_KIND,
+        logs: NO_KIND,
+    }
 }
 
 /// Page findings under misdirected and lost writes: under half the measured 104 over 64 seeds.
@@ -538,19 +617,166 @@ const THREADED_PAGES: Rate = Rate { found: 1, per: 2 };
 /// seeds then all miss with chance under 0.2%.
 const THREADED_LOGS: Rate = Rate { found: 1, per: 64 };
 
-#[must_use]
+/// The layouts of the crash table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    Plain,
+    WideLog,
+    Atomic,
+    Threaded,
+    /// Four threads, atomic page writes and wide log blocks.
+    Everything,
+}
+
+impl Shape {
+    const ALL: [Shape; 5] = [Plain, WideLog, Atomic, Threaded, Everything];
+
+    fn layout(self) -> Layout {
+        match self {
+            Plain => PLAIN,
+            WideLog => Layout {
+                log_block: 2048,
+                ..PLAIN
+            },
+            Atomic => Layout {
+                atomic: true,
+                ..PLAIN
+            },
+            Threaded => THREADED,
+            Everything => Layout {
+                atomic: true,
+                log_block: 2048,
+                ..THREADED
+            },
+        }
+    }
+}
+
+/// The faults of the crash table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fault {
+    Torn,
+    TornAll,
+    Rot,
+    Misdirected,
+    Failed,
+    Every,
+}
+
+impl Fault {
+    const ALL: [Fault; 6] = [Torn, TornAll, Rot, Misdirected, Failed, Every];
+
+    fn faults(self) -> Faults {
+        let torn = Faults {
+            torn_p: 0.3,
+            ..Faults::none(512)
+        };
+        match self {
+            Torn => Faults {
+                torn_p: 0.5,
+                ..torn
+            },
+            TornAll => Faults {
+                torn_p: 1.0,
+                ..torn
+            },
+            Rot => Faults {
+                corrupt_p: 0.004,
+                latent_p: 0.002,
+                ..torn
+            },
+            Misdirected => Faults {
+                misdirect_p: 0.004,
+                lost_write_p: 0.004,
+                ..torn
+            },
+            Failed => Faults {
+                fail_p: 0.004,
+                ..torn
+            },
+            Every => Faults {
+                corrupt_p: 0.002,
+                latent_p: 0.001,
+                misdirect_p: 0.002,
+                lost_write_p: 0.002,
+                fail_p: 0.002,
+                ..torn
+            },
+        }
+    }
+
+    /// Returns whether the fault may damage the file.
+    fn damages(self) -> bool {
+        matches!(self, Rot | Misdirected | Every)
+    }
+
+    /// Returns the strikes of the fault `t` counted.
+    fn struck(self, t: &Tally) -> usize {
+        match self {
+            Torn | TornAll => t.torn,
+            Failed => t.failed,
+            Rot | Misdirected | Every => t.damage,
+        }
+    }
+}
+
+/// What the crash table runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Device {
+    Simulated,
+    Pool,
+    Uring,
+}
+
 #[derive(Debug, Default)]
 struct Tally {
     seeds: usize,
     crashes: usize,
     acked: usize,
-    findings: usize,
     pages: usize,
     logs: usize,
     reopened: usize,
     unopenable: usize,
+    /// Unforced writes a crash tore.
+    torn: usize,
+    /// The writes, forces and allocations the faults failed.
+    failed: usize,
+    /// Findings, refused page reads and refused opens.
+    damage: usize,
     /// Each acknowledged commit a round allowed lost, by seed, round and id.
     lost: Vec<(u64, usize, u64)>,
+}
+
+impl Tally {
+    /// Count what `report`, reopened after a crash, found and whether it opened.
+    fn count(&mut self, report: &Report) {
+        self.damage +=
+            report.findings.len() + report.pages.values().filter(|p| p.is_none()).count();
+        for f in &report.findings {
+            match f {
+                Finding::Page { .. } => self.pages += 1,
+                Finding::Log(_) => self.logs += 1,
+                Finding::Orphan(_) | Finding::Unlisted => {}
+            }
+        }
+        if report.open.is_some() {
+            self.unopenable += 1;
+            self.damage += 1;
+        } else {
+            self.reopened += 1;
+        }
+    }
+
+    fn count_acked(&mut self, client: &Client, ledger: &Ledger) {
+        self.acked += client
+            .world
+            .lock()
+            .unwrap()
+            .writes
+            .keys()
+            .filter(|&&x| ledger.fate(x) == Some(Fate::Acknowledged))
+            .count();
+    }
 }
 
 /// Returns the findings `rate` asks of `seeds` seeds run, at least one unless `rate` asks none.
@@ -558,63 +784,64 @@ fn kind_floor(seeds: usize, rate: &Rate) -> usize {
     (seeds * rate.found / rate.per).max(rate.found.min(1))
 }
 
-impl Tally {
-    /// Fail unless a sweep under every fault crashed, acknowledged, reopened and found each kind
-    /// of damage `floors` claims.
-    #[track_caller]
-    fn assert_every_fault_reached(&self, seeds: Range<u64>, floors: &Floors) {
-        assert_reached(
-            "reopens",
-            self.reopened,
-            share(seeds.clone(), floors.reopened),
-        );
-        assert!(
-            self.unopenable <= self.crashes.div_ceil(CRASHES_PER_REFUSAL),
-            "{} refused opens over {} crashes",
-            self.unopenable,
-            self.crashes
-        );
-        assert_reached(
-            "crashes",
-            self.crashes,
-            share(seeds.clone(), floors.crashes),
-        );
-        assert_reached(
-            "acknowledged writes",
-            self.acked,
-            share(seeds, floors.acked),
-        );
-        if !every_case() {
-            return;
+/// Run `seeds` of `fault` under `shape` on `device`, failing unless the fault struck, the row
+/// reached `floors` and it lost an acknowledged write only to faults that damage the file.
+fn crash_row(device: Device, fault: Fault, shape: Shape, seeds: Range<u64>, floors: Floors) {
+    let row = (device, fault, shape, seeds.clone());
+    let mut t = Tally::default();
+    for seed in sweep(seeds.clone()) {
+        t.seeds += 1;
+        match device {
+            Simulated => crash_rounds(&mut t, seed, fault, shape.layout()),
+            Pool => os_rounds(&mut t, Backend::Pool { threads: 4 }, fault, shape, seed),
+            Uring => os_rounds(&mut t, Backend::Uring { entries: 64 }, fault, shape, seed),
         }
-        assert_reached(
-            "page findings",
-            self.pages,
-            kind_floor(self.seeds, &floors.pages),
+    }
+    let f = &floors;
+    let reach = |what: &str, count: usize, floor: usize| {
+        assert_reached(&format!("{row:?} {t:?}: {what}"), count, floor);
+    };
+    reach(
+        "strikes",
+        fault.struck(&t),
+        share(seeds.clone(), f.struck).max(1),
+    );
+    reach("crashes", t.crashes, share(seeds.clone(), f.crashes));
+    reach(
+        "acknowledged writes",
+        t.acked,
+        share(seeds.clone(), f.acked),
+    );
+    reach("reopens", t.reopened, share(seeds, f.reopened));
+    if fault.damages() {
+        assert!(
+            t.unopenable <= t.crashes.div_ceil(CRASHES_PER_REFUSAL),
+            "{row:?}: {} refused opens over {} crashes",
+            t.unopenable,
+            t.crashes
         );
-        assert_reached(
-            "log findings",
-            self.logs,
-            kind_floor(self.seeds, &floors.logs),
+    } else {
+        assert_eq!(
+            Vec::<(u64, usize, u64)>::new(),
+            t.lost,
+            "{row:?}: no fault of the row loses a write or damages the file"
         );
+    }
+    if every_case() {
+        reach("page findings", t.pages, kind_floor(t.seeds, &f.pages));
+        reach("log findings", t.logs, kind_floor(t.seeds, &f.logs));
     }
 }
 
-/// Crash a random workload `rounds` times under `faults`, reopening and checking after each.
-fn crash_rounds(
-    seed: u64,
-    faults: Faults,
-    layout: Layout,
-    damage_allowed: bool,
-    rounds: usize,
-) -> Tally {
+/// Crash a random workload four times under `fault`, reopening and checking after each.
+fn crash_rounds(tally: &mut Tally, seed: u64, fault: Fault, layout: Layout) {
     let quiet = Faults {
         atomic_unit: if layout.atomic { PAGE as u64 } else { 512 },
         ..Faults::none(512)
     };
     let faults = Faults {
         atomic_unit: quiet.atomic_unit,
-        ..faults
+        ..fault.faults()
     };
     let mut sim = Sim::new(
         seed,
@@ -625,26 +852,19 @@ fn crash_rounds(
     );
     let client = Client::new();
     setup(&mut sim, &client, layout);
-    let world = client.world;
+    let world = client.world.clone();
     let lost_log_write = Cell::new(false);
-    let rounds = Rounds::new(rounds, 500, 60_000);
     let out = crash_loop(
         &mut sim,
         seed,
         faults,
-        rounds,
+        Rounds::new(4, 500, 60_000),
         |r| {
             let c = Client {
                 ledger: r.ledger().clone(),
                 world: world.clone(),
             };
-            r.crash(|rt| {
-                if layout.threads == 0 {
-                    workload(rt, &c, layout, 400);
-                } else {
-                    concurrent(rt, &c, layout, 150);
-                }
-            });
+            r.crash(|rt| drive(rt.clone(), &Host::sim(&rt), &c, layout, 400));
             lost_log_write.set(
                 r.sim()
                     .trace()
@@ -655,7 +875,7 @@ fn crash_rounds(
         |rt, ledger| {
             let pages = world.lock().unwrap().pages.clone();
             let mut report = inspect(rt, &pages, layout);
-            report.damage_allowed = damage_allowed;
+            report.damage_allowed = fault.damages();
             judge(
                 &mut report,
                 ledger,
@@ -665,186 +885,331 @@ fn crash_rounds(
             report
         },
     );
-    let mut tally = Tally::default();
+    for line in sim.trace().lines() {
+        tally.torn += usize::from(line.starts_with("crash torn"));
+        tally.failed += usize::from(line.starts_with("fault fail"));
+    }
     for (round, v) in out.allowed() {
         if let Violation::Lost(x) = v {
             tally.lost.push((seed, round, *x));
         }
     }
     for round in out.rounds() {
-        let report = round.reopened();
         tally.crashes += usize::from(round.crashed());
-        tally.findings += report.findings.len();
-        for f in &report.findings {
-            match f {
-                Finding::Page { .. } => tally.pages += 1,
-                Finding::Log(_) => tally.logs += 1,
-                Finding::Orphan(_) | Finding::Unlisted => {}
-            }
-        }
-        if report.open.is_some() {
-            tally.unopenable += 1;
-        } else {
-            tally.reopened += 1;
-        }
+        tally.count(round.reopened());
     }
-    tally.acked = world
-        .lock()
-        .unwrap()
-        .writes
-        .keys()
-        .filter(|&&x| out.ledger().fate(x) == Some(Fate::Acknowledged))
-        .count();
-    tally
+    tally.count_acked(&client, out.ledger());
 }
 
-fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) -> Tally {
-    let mut total = Tally::default();
-    for seed in sweep(range) {
-        total.seeds += 1;
-        let t = crash_rounds(seed, faults, layout, damage_allowed, 4);
-        total.crashes += t.crashes;
-        total.acked += t.acked;
-        total.findings += t.findings;
-        total.pages += t.pages;
-        total.logs += t.logs;
-        total.reopened += t.reopened;
-        total.unopenable += t.unopenable;
-        total.lost.extend(t.lost);
+/// The sector and atomic unit of a real device.
+const SECTOR: u64 = 4096;
+
+/// Run six rounds of a random workload under `fault` and `shape` on real files, each ending in a
+/// crash of the device and a reopen with no faults that is checked as [`crash_rounds`] checks it,
+/// allowing the loss of an acknowledged commit under lost writes.
+fn os_rounds(tally: &mut Tally, backend: Backend, fault: Fault, shape: Shape, seed: u64) {
+    const ROUNDS: u64 = 6;
+    silence_fatal_panics();
+    let layout = Layout {
+        log_block: SECTOR as u32,
+        ..shape.layout()
+    };
+    let faults = fault.faults();
+    let held = Scratch::new("pager", &format!("{fault:?}-{shape:?}-{seed}"));
+    let dir = held.path();
+    let client = Client::new();
+    create(OsRuntime::new(dir, backend), &client, layout);
+    for round in 0..ROUNDS {
+        let rt = OsRuntime::with_faults(
+            dir,
+            backend,
+            Faults {
+                seed: seed * ROUNDS + round,
+                sector: SECTOR,
+                atomic_unit: SECTOR,
+                ..faults
+            },
+        );
+        let host = Host::seeded(seed * ROUNDS + round);
+        let steps = 20 + (host.draw() % 60) as usize;
+        let run = panic::catch_unwind(AssertUnwindSafe(|| {
+            drive(rt.clone(), &host, &client, layout, steps);
+        }));
+        if let Err(payload) = run {
+            let Some(failure) = payload.downcast_ref::<FatalIo>() else {
+                panic::resume_unwind(payload)
+            };
+            assert_eq!(
+                IoError::Failed,
+                failure.cause(),
+                "seed {seed} round {round}: {failure}"
+            );
+            tally.failed += 1;
+        }
+        tally.torn += rt.crash().torn;
+        tally.crashes += 1;
+        let pages = client.world.lock().unwrap().pages.clone();
+        let mut report = inspect(OsRuntime::new(dir, backend), &pages, layout);
+        report.damage_allowed = fault.damages();
+        judge(
+            &mut report,
+            &client.ledger,
+            &client.world.lock().unwrap(),
+            faults.lost_write_p > 0.0,
+        );
+        let (allowed, violations): (Vec<Violation>, Vec<Violation>) =
+            check(&client.ledger, &report)
+                .into_iter()
+                .partition(|v| report.allows(v));
+        assert_eq!(
+            Vec::<Violation>::new(),
+            violations,
+            "{fault:?} {shape:?} seed {seed} round {round}"
+        );
+        for v in allowed {
+            if let Violation::Lost(x) = v {
+                tally.lost.push((seed, round as usize, x));
+            }
+        }
+        report.settle(&client.ledger);
+        tally.count(&report);
+        if report.last() {
+            break;
+        }
     }
-    total
+    tally.count_acked(&client, &client.ledger);
+}
+
+/// Run one seed of every fault under every shape `device` runs, each crashing and reopening in
+/// every round unless the fault damages the file.
+///
+/// A real device runs no failing fault under threads: the failure ends the host process from
+/// the worker thread it reaches. Torn writes run only on the simulator without atomic page writes,
+/// where a write can be wider than its atomic unit.
+fn every_cell(device: Device) {
+    let (rounds, shapes) = match device {
+        Simulated => (4, &Shape::ALL[..]),
+        Pool | Uring => (6, &[Plain, Atomic, Threaded][..]),
+    };
+    for &shape in shapes {
+        for fault in Fault::ALL {
+            let real = device != Simulated;
+            let tears = matches!(fault, Torn | TornAll);
+            if real && shape.layout().threads > 0 && fault.faults().fail_p > 0.0
+                || tears && (real || shape.layout().atomic)
+            {
+                continue;
+            }
+            let start = 10_000 + 1000 * device as u64 + 100 * shape as u64 + 10 * fault as u64;
+            let whole = usize::from(!fault.damages());
+            let floors = floors(1.max(whole * rounds), 15, whole * rounds);
+            crash_row(device, fault, shape, start..start + 1, floors);
+        }
+    }
+}
+
+#[test]
+fn every_cell_crashes_on_the_simulator() {
+    every_cell(Simulated);
+}
+
+#[test]
+fn every_cell_crashes_on_a_thread_pool() {
+    every_cell(Pool);
+}
+
+#[test]
+fn every_cell_crashes_on_io_uring() {
+    if adtb_testkit::backends::uring(64).is_some() {
+        every_cell(Uring);
+    }
 }
 
 #[test]
 fn crashes_with_torn_writes_lose_nothing_and_find_nothing() {
-    const SEEDS: Range<u64> = 0..12;
-    let t = seeds(
-        SEEDS,
-        Faults {
-            torn_p: 0.5,
-            ..Faults::none(512)
-        },
-        PLAIN,
-        false,
-    );
-    assert!(t.crashes > share(SEEDS, 20), "{t:?}");
-    assert!(t.acked > share(SEEDS, 200), "{t:?}");
-    assert_eq!(
-        Vec::<(u64, usize, u64)>::new(),
-        t.lost,
-        "no fault of the cell loses a write or damages the file"
-    );
+    crash_row(Simulated, Torn, Plain, 0..12, floors(21, 201, 0));
 }
 
 #[test]
 fn torn_log_blocks_lose_no_acknowledged_commit() {
-    const SEEDS: Range<u64> = 600..612;
-    let t = seeds(
-        SEEDS,
-        Faults {
-            torn_p: 1.0,
-            ..Faults::none(512)
-        },
-        Layout {
-            atomic: false,
-            log_block: 2048,
-            threads: 0,
-            frames: 5,
-        },
-        false,
-    );
-    assert!(t.crashes > share(SEEDS, 20), "{t:?}");
-    assert!(t.acked > share(SEEDS, 200), "{t:?}");
-    assert_eq!(
-        Vec::<(u64, usize, u64)>::new(),
-        t.lost,
-        "no fault of the cell loses a write or damages the file"
-    );
+    crash_row(Simulated, TornAll, WideLog, 600..612, floors(21, 201, 0));
 }
 
 #[test]
-fn atomic_page_writes_need_no_images() {
-    const SEEDS: Range<u64> = 100..106;
-    let t = seeds(
-        SEEDS,
-        Faults {
-            torn_p: 0.5,
-            ..Faults::none(512)
-        },
-        Layout {
-            atomic: true,
-            log_block: 512,
-            threads: 0,
-            frames: 5,
-        },
-        false,
-    );
-    assert!(t.crashes > share(SEEDS, 10), "{t:?}");
-    assert_eq!(
-        Vec::<(u64, usize, u64)>::new(),
-        t.lost,
-        "no fault of the cell loses a write or damages the file"
-    );
+fn crashes_with_atomic_page_writes_lose_nothing() {
+    crash_row(Simulated, Failed, Atomic, 100..106, floors(11, 0, 0));
+}
+
+#[test]
+fn a_failed_write_under_atomic_page_writes_loses_nothing() {
+    crash_row(Simulated, Failed, Atomic, 10257..10258, floors(1, 0, 0));
+}
+
+#[test]
+fn a_failed_write_of_threads_under_atomic_page_writes_loses_nothing() {
+    crash_row(Simulated, Failed, Everything, 10451..10452, floors(1, 0, 0));
 }
 
 #[test]
 fn bit_rot_and_latent_errors_are_reported_never_returned() {
-    const SEEDS: Range<u64> = 200..212;
-    let t = seeds(
-        SEEDS,
-        Faults {
-            torn_p: 0.3,
-            corrupt_p: 0.004,
-            latent_p: 0.002,
-            ..Faults::none(512)
-        },
-        PLAIN,
-        true,
-    );
-    assert!(
-        t.findings >= share(SEEDS, 1),
-        "no seed corrupted anything: {t:?}"
-    );
+    crash_row(Simulated, Rot, Plain, 200..212, floors(0, 0, 0));
 }
 
 #[test]
 fn misdirected_and_lost_writes_are_reported_never_returned() {
-    let t = seeds(
-        300..312,
-        Faults {
-            torn_p: 0.3,
-            misdirect_p: 0.004,
-            lost_write_p: 0.004,
-            ..Faults::none(512)
-        },
-        PLAIN,
-        true,
-    );
-    if every_case() {
-        let pages = kind_floor(t.seeds, &MISDIRECTED_PAGES);
-        assert_reached("page findings", t.pages, pages);
-        assert_reached(
-            "log findings",
-            t.logs,
-            kind_floor(t.seeds, &MISDIRECTED_LOGS),
+    let floors = Floors {
+        pages: MISDIRECTED_PAGES,
+        logs: MISDIRECTED_LOGS,
+        ..floors(0, 0, 0)
+    };
+    crash_row(Simulated, Misdirected, Plain, 300..312, floors);
+}
+
+#[test]
+fn failed_writes_and_forces_crash_and_recover() {
+    crash_row(Simulated, Failed, Plain, 400..412, floors(21, 0, 0));
+}
+
+#[test]
+fn every_fault_at_once() {
+    let floors = Floors {
+        pages: EVERY_FAULT_PAGES,
+        ..floors(25, 300, 33)
+    };
+    crash_row(Simulated, Every, Plain, 500..512, floors);
+}
+
+#[test]
+fn threads_sharing_a_pager_lose_nothing_across_crashes() {
+    crash_row(Simulated, Torn, Threaded, 700..710, floors(11, 101, 0));
+}
+
+#[test]
+fn threads_sharing_a_pager_under_every_fault() {
+    let floors = Floors {
+        pages: THREADED_PAGES,
+        logs: THREADED_LOGS,
+        ..floors(15, 1000, THREADED_REOPENS)
+    };
+    crash_row(Simulated, Every, Threaded, 800..808, floors);
+}
+
+#[test]
+fn a_failed_write_or_force_on_a_thread_pool_crashes_and_recovery_keeps_every_commit() {
+    let floors = Floors {
+        struck: 6,
+        ..floors(6, 0, 0)
+    };
+    crash_row(Pool, Failed, Plain, 0..2, floors);
+}
+
+#[test]
+fn a_failed_write_or_force_on_io_uring_crashes_and_recovery_keeps_every_commit() {
+    let floors = Floors {
+        struck: 6,
+        ..floors(6, 0, 0)
+    };
+    if adtb_testkit::backends::uring(64).is_some() {
+        crash_row(Uring, Failed, Plain, 0..2, floors);
+    }
+}
+
+#[test]
+fn rot_latent_errors_and_misdirected_and_lost_writes_on_real_files_are_refused_never_returned() {
+    crash_row(Pool, Every, Plain, 0..2, floors(1, 0, 0));
+}
+
+#[test]
+fn crash_replay_at_every_flush_boundary() {
+    let shapes: &[Shape] = if every_case() { &Shape::ALL } else { &[Plain] };
+    for layout in shapes.iter().map(|s| s.layout()) {
+        let mut sim = Sim::new(11, Config::default());
+        let client = Client::new();
+        setup(&mut sim, &client, layout);
+        sim.record();
+        let c = client.clone();
+        assert_eq!(
+            Outcome::Finished,
+            sim.run(|rt| drive(rt.clone(), &Host::sim(&rt), &c, layout, 60))
+        );
+        let recording = sim.recording();
+        let world = client.world.lock().unwrap();
+        let mut images = 0;
+        for at in recording.flushes() {
+            for files in recording.images(at, 8, at as u64) {
+                images += 1;
+                let ledger = Ledger::new();
+                for (&xid, &stamp) in &world.submitted {
+                    if stamp <= at {
+                        ledger.submit(xid);
+                        match world.acked.get(&xid) {
+                            Some(&a) if a <= at => ledger.acknowledge(xid),
+                            _ if client.ledger.fate(xid) == Some(Fate::Aborted) => {
+                                ledger.abort(xid);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let mut replay = Sim::with_files(at as u64, Config::default(), files);
+                let mut report = Report::default();
+                assert_eq!(
+                    Outcome::Finished,
+                    replay.run(|rt| report = inspect(rt, &world.pages, layout))
+                );
+                let problems = judged(report, &ledger, &world);
+                assert!(
+                    problems.is_empty(),
+                    "{layout:?} flush boundary {at}: {problems:#?}"
+                );
+            }
+        }
+        let flushes = recording.flushes().len();
+        assert!(
+            flushes > 20 && images > 100,
+            "{layout:?}: {flushes} flushes, {images} images"
         );
     }
 }
 
 #[test]
-fn failed_writes_and_forces_crash_and_recover() {
-    const SEEDS: Range<u64> = 400..412;
-    let t = seeds(
-        SEEDS,
-        Faults {
-            torn_p: 0.3,
-            fail_p: 0.004,
-            ..Faults::none(512)
-        },
-        PLAIN,
-        false,
-    );
-    assert!(t.crashes > share(SEEDS, 20), "{t:?}");
+fn threads_finish_and_every_acknowledged_write_stays() {
+    let shapes: &[Shape] = if every_case() {
+        &Shape::ALL
+    } else {
+        &[Threaded]
+    };
+    for layout in shapes.iter().map(|s| s.layout()) {
+        for seed in sweep(900..904) {
+            let mut sim = Sim::new(seed, Config::default());
+            let client = Client::new();
+            setup(&mut sim, &client, layout);
+            let c = client.clone();
+            assert_eq!(
+                Outcome::Finished,
+                sim.run(|rt| drive(rt.clone(), &Host::sim(&rt), &c, layout, 320))
+            );
+            let pages = client.world.lock().unwrap().pages.clone();
+            let mut report = Report::default();
+            assert_eq!(
+                Outcome::Finished,
+                sim.run(|rt| report = inspect(rt, &pages, layout))
+            );
+            let world = client.world.lock().unwrap();
+            let problems = judged(report, &client.ledger, &world);
+            assert!(problems.is_empty(), "seed {seed}: {problems:#?}");
+            let acked = world
+                .writes
+                .keys()
+                .filter(|&&x| client.ledger.fate(x) == Some(Fate::Acknowledged))
+                .count();
+            assert_eq!(
+                world.writes.len(),
+                acked,
+                "{layout:?} seed {seed}: every transaction ends acknowledged"
+            );
+        }
+    }
 }
 
 #[test]
@@ -881,35 +1246,6 @@ fn a_failed_log_allocate_is_fatal_and_leaves_a_file_a_later_create_can_use() {
 }
 
 #[test]
-fn every_fault_at_once() {
-    const SEEDS: Range<u64> = 500..512;
-    seeds(
-        SEEDS,
-        Faults {
-            torn_p: 0.3,
-            corrupt_p: 0.002,
-            latent_p: 0.001,
-            misdirect_p: 0.002,
-            lost_write_p: 0.002,
-            fail_p: 0.002,
-            ..Faults::none(512)
-        },
-        PLAIN,
-        true,
-    )
-    .assert_every_fault_reached(
-        SEEDS,
-        &Floors {
-            crashes: 25,
-            acked: 300,
-            reopened: 33,
-            pages: EVERY_FAULT_PAGES,
-            logs: Rate { found: 0, per: 1 },
-        },
-    );
-}
-
-#[test]
 fn a_seed_replays_exactly() {
     let run = |seed| {
         let mut sim = Sim::new(seed, Config::default());
@@ -917,7 +1253,9 @@ fn a_seed_replays_exactly() {
         setup(&mut sim, &client, PLAIN);
         sim.crash_at(sim.now() + Duration::from_millis(20));
         let c = client.clone();
-        run_process(&mut sim, |rt| workload(rt, &c, PLAIN, 200));
+        run_process(&mut sim, |rt| {
+            workload(rt.clone(), &Host::sim(&rt), &c, PLAIN, 200);
+        });
         (sim.trace(), sim.files())
     };
     assert_eq!(run(9), run(9));
@@ -1313,224 +1651,97 @@ fn allocations_survive_crashes_and_never_repeat() {
     }
 }
 
-#[test]
-fn crash_replay_at_every_flush_boundary() {
-    let mut sim = Sim::new(
-        11,
-        Config {
-            ..Config::default()
-        },
-    );
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    sim.record();
-    let c = client.clone();
-    assert_eq!(Outcome::Finished, sim.run(|rt| workload(rt, &c, PLAIN, 60)));
-    let recording = sim.recording();
-    let world = client.world.lock().unwrap();
-    let mut images = 0;
-    for at in recording.flushes() {
-        for files in recording.images(at, 8, at as u64) {
-            images += 1;
-            let ledger = Ledger::new();
-            for (&xid, &stamp) in &world.submitted {
-                if stamp <= at {
-                    ledger.submit(xid);
-                    match world.acked.get(&xid) {
-                        Some(&a) if a <= at => ledger.acknowledge(xid),
-                        _ if client.ledger.fate(xid) == Some(Fate::Aborted) => ledger.abort(xid),
-                        _ => {}
-                    }
-                }
+/// A latch a thread takes on a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Latch {
+    Shared,
+    Exclusive,
+    Optimistic,
+    /// An update, which takes the exclusive latch for its change.
+    Update,
+}
+
+impl Latch {
+    const ALL: [Latch; 4] = [
+        Latch::Shared,
+        Latch::Exclusive,
+        Latch::Optimistic,
+        Latch::Update,
+    ];
+
+    /// Take this latch on `pid` and give it back.
+    fn take(self, p: &Pager<SimRuntime>, pid: Pid) {
+        match self {
+            Latch::Shared => drop(p.read(pid).unwrap()),
+            Latch::Exclusive => drop(p.exclusive(pid).unwrap()),
+            Latch::Optimistic => assert!(p.optimistic(pid).unwrap().validate()),
+            Latch::Update => {
+                p.update(&[pid], |_| {}).unwrap();
             }
-            let mut replay = Sim::with_files(at as u64, Config::default(), files);
-            let mut report = Report::default();
-            assert_eq!(
-                Outcome::Finished,
-                replay.run(|rt| report = inspect(rt, &world.pages, PLAIN))
-            );
-            let problems = judged(report, &ledger, &world);
-            assert!(problems.is_empty(), "flush boundary {at}: {problems:#?}");
         }
     }
-    assert!(
-        recording.flushes().len() > 20,
-        "{} flushes",
-        recording.flushes().len()
-    );
-    assert!(images > 100, "{images} images");
 }
 
-const THREADED: Layout = Layout {
-    atomic: false,
-    log_block: 512,
-    threads: 4,
-    frames: 20,
-};
-
-#[test]
-fn threads_sharing_a_pager_lose_nothing_across_crashes() {
-    const SEEDS: Range<u64> = 700..710;
-    let t = seeds(
-        SEEDS,
-        Faults {
-            torn_p: 0.5,
-            ..Faults::none(512)
-        },
-        THREADED,
-        false,
-    );
-    assert!(t.crashes > share(SEEDS, 10), "{t:?}");
-    assert!(t.acked > share(SEEDS, 100), "{t:?}");
+/// What a thread holds on a page when it asks for a latch on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    Shared,
+    Exclusive,
+    /// A shared and then an exclusive latch, each given back.
+    Released,
 }
 
-#[test]
-fn threads_sharing_a_pager_under_every_fault() {
-    const SEEDS: Range<u64> = 800..808;
-    seeds(
-        SEEDS,
-        Faults {
-            torn_p: 0.3,
-            corrupt_p: 0.002,
-            latent_p: 0.001,
-            misdirect_p: 0.002,
-            lost_write_p: 0.002,
-            fail_p: 0.002,
-            ..Faults::none(512)
-        },
-        THREADED,
-        true,
-    )
-    .assert_every_fault_reached(
-        SEEDS,
-        &Floors {
-            crashes: 15,
-            acked: 1000,
-            reopened: THREADED_REOPENS,
-            pages: THREADED_PAGES,
-            logs: THREADED_LOGS,
-        },
-    );
-}
-
-#[test]
-fn threads_finish_and_every_acknowledged_write_stays() {
-    for seed in sweep(900..904) {
-        let mut sim = Sim::new(seed, Config::default());
-        let client = Client::new();
-        setup(&mut sim, &client, THREADED);
-        let c = client.clone();
-        assert_eq!(
-            Outcome::Finished,
-            sim.run(|rt| concurrent(rt, &c, THREADED, 120))
-        );
-        let pages = client.world.lock().unwrap().pages.clone();
-        let mut report = Report::default();
-        assert_eq!(
-            Outcome::Finished,
-            sim.run(|rt| report = inspect(rt, &pages, THREADED))
-        );
-        let world = client.world.lock().unwrap();
-        let problems = judged(report, &client.ledger, &world);
-        assert!(problems.is_empty(), "seed {seed}: {problems:#?}");
-        let acked = world
-            .writes
-            .keys()
-            .filter(|&&x| client.ledger.fate(x) == Some(Fate::Acknowledged))
-            .count();
-        assert_eq!(
-            world.writes.len(),
-            acked,
-            "seed {seed}: every transaction ends acknowledged"
-        );
-    }
-}
-
-fn reacquire(second: impl FnOnce(&Pager<SimRuntime>, Pid)) {
+/// Returns the page and the panic message of asking for `call` on it while holding `held` on it,
+/// or `None` when the call returns.
+fn latch_again(held: Held, call: Latch) -> (Pid, Option<String>) {
     let mut sim = Sim::new(21, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
     let pid = client.world.lock().unwrap().pages[0];
-    with_pager(&mut sim, |p| {
-        let held = p.read(pid).unwrap();
-        second(p, pid);
-        drop(held);
-    });
-}
-
-#[test]
-#[should_panic(expected = "is already latched by this thread")]
-fn changing_a_page_while_holding_its_shared_latch_panics() {
-    reacquire(|p, pid| {
-        p.update(&[pid], |_| {}).unwrap();
-    });
-}
-
-#[test]
-#[should_panic(expected = "is already latched by this thread")]
-fn reading_a_page_while_holding_its_exclusive_latch_panics() {
-    let mut sim = Sim::new(22, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let pid = client.world.lock().unwrap().pages[0];
-    with_pager(&mut sim, |p| {
-        let held = p.exclusive(pid).unwrap();
-        drop(p.read(pid));
-        drop(held);
-    });
-}
-
-#[test]
-#[should_panic(expected = "is already latched by this thread")]
-fn an_optimistic_read_of_a_page_held_exclusive_panics() {
-    let mut sim = Sim::new(23, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let pid = client.world.lock().unwrap().pages[0];
-    with_pager(&mut sim, |p| {
-        let held = p.exclusive(pid).unwrap();
-        p.optimistic(pid).unwrap();
-        drop(held);
-    });
-}
-
-#[test]
-fn the_panic_names_the_page() {
-    let mut sim = Sim::new(24, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let pid = client.world.lock().unwrap().pages[0];
     let caught = panic::catch_unwind(AssertUnwindSafe(|| {
-        with_pager(&mut sim, |p| {
-            let held = p.read(pid).unwrap();
-            drop(p.exclusive(pid));
-            drop(held);
+        with_pager(&mut sim, |p| match held {
+            Held::Shared => {
+                let guard = p.read(pid).unwrap();
+                call.take(p, pid);
+                drop(guard);
+            }
+            Held::Exclusive => {
+                let guard = p.exclusive(pid).unwrap();
+                call.take(p, pid);
+                drop(guard);
+            }
+            Held::Released => {
+                Latch::Shared.take(p, pid);
+                Latch::Exclusive.take(p, pid);
+                call.take(p, pid);
+            }
         });
     }));
-    let payload = caught.expect_err("asking again for a held latch returned");
-    let msg = payload
-        .downcast_ref::<String>()
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(
-        format!("page {} is already latched by this thread", pid.0),
-        msg
-    );
+    let message = caught.err().map(|payload| {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_else(|| format!("{call:?} under {held:?} panicked with no message"))
+    });
+    (pid, message)
 }
 
 #[test]
-fn releasing_a_latch_lets_the_thread_take_it_again() {
-    reacquire(|_, _| {});
-    let mut sim = Sim::new(25, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let pid = client.world.lock().unwrap().pages[0];
-    with_pager(&mut sim, |p| {
-        drop(p.read(pid).unwrap());
-        p.update(&[pid], |_| {}).unwrap();
-        drop(p.exclusive(pid).unwrap());
-        assert!(p.optimistic(pid).unwrap().validate());
-    });
+fn a_thread_latching_a_page_it_holds_panics_naming_the_page_except_optimistic_beside_shared() {
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for held in [Held::Shared, Held::Exclusive, Held::Released] {
+        for call in Latch::ALL {
+            let (pid, message) = latch_again(held, call);
+            got.push((held, call, message));
+            let allowed =
+                held == Held::Released || (held, call) == (Held::Shared, Latch::Optimistic);
+            let named = format!("page {} is already latched by this thread", pid.0);
+            want.push((held, call, (!allowed).then_some(named)));
+        }
+    }
+    assert_eq!(12, got.len());
+    assert_eq!(want, got);
 }
 
 /// Returns the pages the allocation bitmap of group 0 marks allocated.

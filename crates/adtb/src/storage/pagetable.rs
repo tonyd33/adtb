@@ -646,4 +646,19 @@ mod tests {
         table.refused(&refusal_for_test(Pid(1)));
         assert_eq!(vec![(Pid(1), Lsn(10))], table.snapshot());
     }
+
+    #[test]
+    fn under_atomic_page_writes_no_change_logs_a_full_image() {
+        let appending = appending_for_test();
+        let (pid, checkpoint) = (Pid(3), Lsn(100));
+        let kinds = |atomic| {
+            let mut table = DirtyTable::new(atomic);
+            let clean = table.record_kind(&appending, pid, checkpoint);
+            table.logged(&appending, pid, Lsn(10), Logged::Change);
+            table.written_out(wrote_for_test(pid));
+            [clean, table.record_kind(&appending, pid, checkpoint)]
+        };
+        assert_eq!([Logged::Image; 2], kinds(false));
+        assert_eq!([Logged::Change; 2], kinds(true));
+    }
 }
