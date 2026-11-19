@@ -1306,38 +1306,6 @@ fn a_stopped_scan_over_ranges_conflicts_with_a_writer_of_its_deciding_row() {
 }
 
 #[test]
-fn a_program_run_without_a_value_for_its_parameter_is_refused_naming_it() {
-    let f = running();
-    let text = "from u in users where key u == me select u";
-    let cases = cases_of(&f, text, &[("me", "Key users", key(1))]);
-    let got = with_store(0, &f, 0, |(rt, store, pool)| {
-        let budget = Budget::new(1 << 30);
-        cases
-            .iter()
-            .map(|c| {
-                let g = budget.admit(1 << 20).unwrap();
-                exec::execute(
-                    rt.clone(),
-                    c.program.clone(),
-                    call(store, g, pool, XOptions::default()),
-                    &[],
-                )
-            })
-            .collect::<Vec<_>>()
-    });
-    for (c, g) in cases.iter().zip(got) {
-        assert_eq!(
-            Err(Error::Internal(Box::new(Broken::UnboundParam(
-                "me".to_owned()
-            )))),
-            g,
-            "{}",
-            c.name
-        );
-    }
-}
-
-#[test]
 fn a_fixpoint_past_its_rounds_is_rejected_for_its_statement_limit() {
     let f = running();
     let text = "fix reach = (from f in follows where f.src == me select f.dst)

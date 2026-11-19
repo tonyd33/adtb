@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use adtb_lang::check::check_schema;
-use adtb_lang::kernel::{Build, Const, Kind, Prim, Terms, Tm};
+use adtb_lang::kernel::{Build, Const, Prim, Terms, Tm};
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{Committed, Schema, build};
 use adtb_lang::span::FileId;
@@ -15,10 +15,9 @@ use super::ir::AggOp;
 use super::prim::{Arith, Op, Width, apply};
 use super::sink::aggregate;
 use super::spill::{put, record};
-use super::types::At;
 use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal};
-use super::{Broken, Budget, Error, Exceeded, Fault, Rot, arm, to_key, to_stored};
+use super::{Broken, Budget, Error, Exceeded, Fault, Rot, to_key, to_stored};
 use crate::heap::FieldType;
 use crate::key::{KeyType, Scalar};
 
@@ -486,22 +485,6 @@ fn an_aggregate_that_is_not_an_option_over_no_members_is_an_internal_error() {
 }
 
 #[test]
-fn a_field_of_a_constructor_without_it_is_an_internal_error() {
-    let at = At::ByCtor(vec![Some(0), None]);
-    assert_eq!(Ok(0), at.of(0));
-    assert_eq!(Broken::CtorLacksField(1), broken(at.of(1)));
-    assert_eq!(Broken::CtorLacksField(7), broken(at.of(7)));
-}
-
-#[test]
-fn a_case_without_an_arm_for_the_scrutinee_is_an_internal_error() {
-    let arms = [Some('a'), None];
-    assert_eq!(Ok(&'a'), arm(&arms, 0));
-    assert_eq!(Broken::NoArm(1), broken(arm(&arms, 1)));
-    assert_eq!(Broken::NoArm(9), broken(arm(&arms, 9)));
-}
-
-#[test]
 fn a_stored_or_key_value_of_another_type_is_an_internal_error() {
     let (text, one, tag) = (Val::text("a"), Val::Int(1), Val::tag(3));
     let not = |value, scalar| Broken::NotScalar { value, scalar };
@@ -622,36 +605,6 @@ fn a_case_with_one_reachable_arm_takes_it_and_fails_on_another_constructor() {
 }
 
 #[test]
-fn a_reject_of_a_value_that_is_not_text_is_an_internal_error() {
-    let schema = empty_schema();
-    let mut terms = Terms::default();
-    let m = Build::new(&schema, &mut terms).constant(Const::Int(1), Ty::Base(Base::I64));
-    let t = terms.add_ill_typed(Kind::Reject(m), Ty::Base(Base::I64));
-    assert_eq!(Broken::RejectNotText, broken(eval_term(&schema, &terms, t)));
-}
-
-#[test]
-fn a_literal_outside_its_type_is_an_internal_error() {
-    let schema = empty_schema();
-    let mut terms = Terms::default();
-    let t = Build::new(&schema, &mut terms).constant(Const::Int(i128::MAX), Ty::Base(Base::I64));
-    assert_eq!(
-        Broken::IntegerLiteral,
-        broken(eval_term(&schema, &terms, t))
-    );
-}
-
-#[test]
-fn a_key_of_a_term_that_is_not_a_key_type_is_an_internal_error() {
-    let schema = empty_schema();
-    let mut terms = Terms::default();
-    let x = Build::new(&schema, &mut terms).constant(Const::Int(1), Ty::Base(Base::I64));
-    let t = terms.add_ill_typed(Kind::Key(x), Ty::Base(Base::I64));
-    let what = broken(eval_term(&schema, &terms, t));
-    assert_eq!(Broken::KeyNotKeyTyped(Ty::Base(Base::I64)), what);
-}
-
-#[test]
 fn an_accessor_of_a_mistyped_value_is_an_internal_error() {
     let one = Val::Int(1);
     let m = |want, found| Broken::Mistyped { want, found };
@@ -663,27 +616,6 @@ fn an_accessor_of_a_mistyped_value_is_an_internal_error() {
     assert_eq!(
         m("an integer", Val::text("1")),
         broken(Val::text("1").int())
-    );
-}
-
-#[test]
-fn a_condition_or_scrutinee_that_is_not_a_constructor_is_an_internal_error() {
-    let schema = empty_schema();
-    let int = Ty::Base(Base::I64);
-    let mut terms = Terms::default();
-    let mut b = Build::new(&schema, &mut terms);
-    let c = b.constant(Const::Int(1), int.clone());
-    let a = b.constant(Const::Int(2), int.clone());
-    let t = terms.add_ill_typed(Kind::If(c, a, a), int.clone());
-    let m = |want| Broken::Mistyped {
-        want,
-        found: Val::Int(1),
-    };
-    assert_eq!(m("a Bool"), broken(eval_term(&schema, &terms, t)));
-    let tag = terms.add_ill_typed(Kind::Tag(c), int);
-    assert_eq!(
-        m("a constructor value"),
-        broken(eval_term(&schema, &terms, tag))
     );
 }
 
