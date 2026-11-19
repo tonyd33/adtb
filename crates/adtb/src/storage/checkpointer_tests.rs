@@ -554,3 +554,199 @@ fn a_crash_tearing_a_write_of_a_page_whose_rec_lsn_was_raised_loses_no_acknowled
     }
     assert!(tore >= 1, "no crash tore the hot page's write");
 }
+
+const USERS: &str = r"module app
+add module app
+add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence
+";
+
+/// Commit the insert of user `id` to `db`.
+fn commit_user<R: Runtime>(db: &crate::Database<R>, id: i64) {
+    let text = format!(r#"insert users {{ id: users.key({id}), name: "user {id}" }}"#);
+    let mut t = db.begin(&crate::TxnOptions::default()).unwrap();
+    t.query_text(&text, &[], &crate::TxnCallOptions::default())
+        .unwrap();
+    t.commit(None).unwrap();
+}
+
+/// Keep every commit acknowledged under checkpoints and page flushes of other threads across a
+/// crash.
+#[test]
+fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
+    use crate::test_world::load as open;
+    let log = || crate::Log::new([USERS]);
+    let file = "checkpointed.adt";
+    for seed in adtb_testkit::profile::sweep(40..42) {
+        let acked: Arc<Mutex<Vec<i64>>> = Arc::default();
+        let torn = Faults {
+            torn_p: 0.5,
+            ..Faults::none(512)
+        };
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                faults: torn,
+                ..Config::default()
+            },
+        );
+        adtb_testkit::process::run(&mut sim, |rt| {
+            open::opened(&rt, file, &log(), &open::options(2))
+                .close()
+                .unwrap();
+        });
+        sim.crash_at(sim.now() + Duration::from_millis(300));
+        let shared = acked.clone();
+        let outcome = sim.run(move |rt| {
+            let db = open::opened(&rt, file, &log(), &open::options(2));
+            for w in 0..2 {
+                let (db, acked) = (db.clone(), shared.clone());
+                rt.spawn("writer", move || {
+                    for id in (w..).step_by(2) {
+                        commit_user(&db, id);
+                        acked.lock().unwrap().push(id);
+                    }
+                });
+            }
+            let other = db.clone();
+            rt.spawn("flusher", move || {
+                loop {
+                    other.testing().flush_pages(usize::MAX);
+                }
+            });
+            loop {
+                db.testing().flush_pages(usize::MAX);
+                db.testing().checkpoint();
+                rt.yield_now();
+            }
+        });
+        assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
+        let acked: BTreeSet<i64> = acked.lock().unwrap().iter().copied().collect();
+        assert!(!acked.is_empty(), "seed {seed}: no commit before the crash");
+        adtb_testkit::process::run(&mut sim, |rt| {
+            let none = crate::OpenOptions {
+                create: None,
+                ..open::options(2)
+            };
+            let db = open::open_in(&rt, file, &log(), &none).unwrap();
+            let rows = crate::test_world::api::query(&db, "from u in users select u.id");
+            let rows: BTreeSet<i64> = rows
+                .iter()
+                .map(|r| {
+                    r.trim_start_matches("users.key(")
+                        .trim_end_matches(')')
+                        .parse()
+                        .unwrap()
+                })
+                .collect();
+            assert!(
+                acked.is_subset(&rows),
+                "seed {seed}: {:?} lost",
+                acked.difference(&rows)
+            );
+            let holding = db.testing().verify_holding().unwrap().count();
+            assert_eq!(0, holding, "seed {seed}");
+            db.close().unwrap();
+        });
+    }
+}
+
+/// Keep a page changed and written while another thread's force of the data file runs, through a
+/// checkpoint whose header reaches the device ahead of that page.
+#[test]
+fn page_written_during_a_force_stays_dirty_through_a_checkpoint() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let options = Options {
+        page_size: 4096,
+        segment_size: 1 << 20,
+        pool_frames: 64,
+        max_pages: 4096,
+        ..Options::new("forced.adt")
+    };
+    let mut sim = Sim::new(31, Config::default());
+    sim.record();
+    sim.crash_at(sim.now() + Duration::from_secs(1));
+    let mut changed = None;
+    let updated = Arc::new(AtomicBool::new(false));
+    let published = sim.logged(Match::kind(OpKind::Rename).path("forced.adt"));
+    let mut logs = None;
+    let outcome = sim.run(|rt| {
+        let pager = Arc::new(Pager::create(rt.clone(), &options).unwrap());
+        let data = published.entries()[0].from().unwrap().to_owned();
+        let pid = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        changed = Some(pid);
+        pager.update(&[pid], |v| v[0][100] = 1).unwrap();
+        pager.flush_log();
+        let second = pager.clone();
+        let (spawner, first, marked, seen) =
+            (rt.clone(), rt.clone(), updated.clone(), updated.clone());
+        let during = Action::Run(Box::new(move || {
+            let (waker, waiter) = (first.clone(), first.current());
+            spawner.spawn("second force", move || {
+                second.update(&[pid], |v| v[0][100] = 2).unwrap();
+                marked.store(true, Ordering::SeqCst);
+                waker.unpark(waiter);
+                second.flush_log();
+                second.flush_pages(usize::MAX);
+            });
+            while !seen.load(Ordering::SeqCst) {
+                first.park();
+            }
+        }));
+        let data_forces = Match::kind(OpKind::Sync).path(&data);
+        let page = pid.0 * u64::from(options.page_size);
+        logs = Some((
+            rt.logged(data_forces.clone()),
+            rt.logged(Match::kind(OpKind::Write).path(&data).covers(page)),
+            page,
+        ));
+        rt.plan(
+            Plan::new()
+                .first(data_forces.clone(), during)
+                .rule(data_forces, Action::Hold),
+        );
+        rt.spawn("first force", move || {
+            pager.flush_pages(usize::MAX);
+            pager.checkpoint();
+        });
+        let mut io = rt.io();
+        common::sleep(&rt, &mut io, Duration::from_secs(10));
+        unreachable!("the crash comes first");
+    });
+    assert_eq!(Outcome::Crashed, outcome);
+    assert!(
+        updated.load(Ordering::SeqCst),
+        "the page changed during the first force"
+    );
+    let (forces, writes, page) = logs.expect("the run planned");
+    let forces = forces.entries();
+    assert!(
+        forces.len() >= 2,
+        "a later force of the data file was held: {forces:?}"
+    );
+    let first = &forces[0];
+    let changed_write = writes
+        .entries()
+        .into_iter()
+        .find(|w| {
+            let at = (page - w.offset().unwrap()) as usize;
+            w.bytes().unwrap()[at + 100] == 2
+        })
+        .expect("the changed page was written");
+    let completed = first.completed().expect("the first force completed");
+    assert!(
+        first.ticket() < changed_write.ticket() && changed_write.at() < completed,
+        "the page's write came during the first force: {first:?}, {changed_write:?}"
+    );
+    let pid = changed.unwrap();
+    let recording = sim.recording();
+    let images = recording.images(recording.len(), 64, 31);
+    for (i, image) in images.into_iter().enumerate() {
+        let mut after = Sim::with_files(32, Config::default(), image);
+        adtb_testkit::process::run(&mut after, |rt| {
+            let (copy, _) = Pager::open(rt, &options).unwrap();
+            assert_eq!(2, copy.read(pid).unwrap()[100], "image {i}");
+            copy.close();
+        });
+    }
+}

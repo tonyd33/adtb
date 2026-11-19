@@ -1185,3 +1185,122 @@ fn an_io_failure_opening_the_file_is_not_a_missing_header() {
         assert_eq!(std::io::ErrorKind::NotADirectory, e.kind());
     });
 }
+
+/// Returns the files of `FILE` holding `rows` users, written under `seed`.
+fn with_users(seed: u64, rows: i64) -> Files {
+    let mut sim = Sim::new(seed, Config::default());
+    adtb_testkit::process::run(&mut sim, |rt| {
+        let db = open::opened(&rt, FILE, &app(), &open::options(2));
+        for id in 0..rows {
+            let text = format!(r#"insert users {{ id: users.key({id}), name: "user {id}" }}"#);
+            api::results(&db, &text);
+        }
+        db.close().unwrap();
+    });
+    sim.files()
+}
+
+/// Refuse a log another file wrote, placed beside a file, as long, shorter or longer than its own,
+/// as foreign.
+#[test]
+#[ignore = "the pager answers a whole log of another file as `Damaged` at its first block, not `Foreign`"]
+fn a_foreign_log_beside_a_file_is_refused_as_foreign() {
+    let log_dir = format!("{FILE}-log/");
+    let ours = with_users(7, 8);
+    for rows in [8, 0, 40] {
+        let mut files = ours.clone();
+        files.retain(|path, _| !path.starts_with(&log_dir));
+        let theirs = with_users(8, rows);
+        files.extend(theirs.into_iter().filter(|(p, _)| p.starts_with(&log_dir)));
+        let mut sim = Sim::with_files(9, Config::default(), files);
+        let (cause, got) = adtb_testkit::process::run(&mut sim, |rt| {
+            let cause = Pager::open(rt.clone(), &Options::new(FILE)).err();
+            let none = OpenOptions {
+                create: None,
+                ..open::options(2)
+            };
+            (
+                cause,
+                Database::open_in(rt, FILE, &app(), &none).map(Database::close),
+            )
+        });
+        let Some(
+            cause @ crate::storage::OpenError::Log(crate::storage::LogFinding {
+                problem: crate::storage::LogProblem::Foreign,
+                ..
+            }),
+        ) = cause
+        else {
+            panic!("a log of {rows} rows: the pager answers {cause:?}");
+        };
+        let Err(OpenError::Corrupt { detail }) = got else {
+            panic!("a log of {rows} rows opens");
+        };
+        assert_eq!(format!("{cause:?}"), detail, "a log of {rows} rows");
+    }
+}
+
+/// Refuse a log of this file whose tail holds a block another file wrote, naming it foreign.
+#[test]
+fn a_foreign_block_past_the_end_of_a_log_is_refused_as_foreign() {
+    const BLOCK: usize = 512;
+    let segment = format!("{FILE}-log/");
+    let mut files = with_users(7, 8);
+    let theirs = with_users(8, 40);
+    let (name, ours) = files
+        .iter_mut()
+        .find(|(path, _)| path.starts_with(&segment))
+        .expect("a segment");
+    let end = ours
+        .chunks(BLOCK)
+        .position(|block| block.iter().all(|&b| b == 0))
+        .expect("the log ends before the segment does")
+        * BLOCK;
+    let tail = &theirs[name.as_str()][end..end + BLOCK];
+    assert!(tail.iter().any(|&b| b != 0), "their log passes ours");
+    ours[end..end + BLOCK].copy_from_slice(tail);
+    let mut sim = Sim::with_files(9, Config::default(), files.clone());
+    let cause =
+        adtb_testkit::process::run(&mut sim, |rt| Pager::open(rt, &Options::new(FILE)).err());
+    let Some(
+        cause @ crate::storage::OpenError::Log(crate::storage::LogFinding {
+            problem: crate::storage::LogProblem::Foreign,
+            ..
+        }),
+    ) = cause
+    else {
+        panic!("the pager refuses the log as foreign: {cause:?}");
+    };
+    let mut sim = Sim::with_files(9, Config::default(), files);
+    let got = adtb_testkit::process::run(&mut sim, |rt| {
+        let none = OpenOptions {
+            create: None,
+            ..open::options(2)
+        };
+        Database::open_in(rt, FILE, &app(), &none).map(Database::close)
+    });
+    let Err(OpenError::Corrupt { detail }) = got else {
+        panic!("the open is no refusal of a corrupt file");
+    };
+    assert_eq!(format!("{cause:?}"), detail);
+}
+
+/// Answer a log a read-only check cannot list as a finding of an unreadable log.
+#[test]
+fn a_check_reports_a_log_it_cannot_list() {
+    let mut sim = Sim::with_files(28, Config::default(), with_users(1, 2));
+    adtb_testkit::process::run(&mut sim, |rt| {
+        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
+        let lists = Match::kind(OpKind::List).prefixed(FILE);
+        rt.plan(Plan::new().rule(lists, Action::Fail(IoError::Failed)));
+        let t = db.testing();
+        assert!(t.probe().logged_commits().is_empty());
+        let unreadable = crate::storage::Finding::Log(crate::storage::LogFinding {
+            lsn: crate::storage::Lsn(0),
+            problem: crate::storage::LogProblem::Unreadable,
+        });
+        assert_eq!(vec![unreadable], t.verify_pages().findings);
+        rt.plan(Plan::new());
+        db.close().unwrap();
+    });
+}

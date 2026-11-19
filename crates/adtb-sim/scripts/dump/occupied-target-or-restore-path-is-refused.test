@@ -1,0 +1,49 @@
+# A backup or dump to a target holding anything is refused, and so is a restore to a path or log
+# directory that exists, as a file or a directory. Each refusal writes nothing.
+use dump-app
+
+run
+  backup to "bk"
+
+run
+  dump to "d"
+
+run
+  dump to "copy.adt"
+
+run
+  dump to "c2.adt-log"
+
+adhoc error Invalid { detail: "the backup target `bk` holds files" }
+  backup to "bk"
+
+adhoc error Invalid { detail: "the backup target `bk` holds files" }
+  dump to "bk"
+
+adhoc error Invalid { detail: "the backup target `d` holds files" }
+  backup to "d"
+
+restore bk to app.adt error Invalid { detail: "the restore path `app.adt` exists" }
+
+restore bk to copy.adt error Invalid { detail: "the restore path `copy.adt` exists" }
+
+restore d to c2.adt error Invalid { detail: "the restore path `c2.adt-log` exists" }
+
+restore bk to f.adt-log
+----
+
+restore d to f.adt-log error Invalid { detail: "the restore path `f.adt-log` exists" }
+
+adhoc error Invalid { detail: "the backup target `f.adt-log` holds files" }
+  backup to "f.adt-log"
+
+adhoc error Invalid { detail: "the backup target `f.adt-log/sub` holds files" }
+  backup to "f.adt-log/sub"
+
+probe files copy.adt-
+----
+
+probe files f
+----
+f.adt-log
+f.adt-log-log/0000000000000000

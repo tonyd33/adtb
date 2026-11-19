@@ -1,0 +1,11 @@
+# A backup target or restore source is a file system path: a URL is refused naming its scheme.
+use dump-app
+
+adhoc error Invalid { detail: "`s3://bucket/app`: a backup target is a file system path, not a `s3` URL" }
+  backup to "s3://bucket/app"
+
+adhoc error Invalid { detail: "`s3://bucket/app`: a backup target is a file system path, not a `s3` URL" }
+  restore from "s3://bucket/app" to "x.adt"
+
+probe files x
+----

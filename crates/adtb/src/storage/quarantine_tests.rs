@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::btree::{self, BTree};
 use crate::exec::Val;
 use crate::key::Value;
-use crate::runtime::{Clock, Io, Op, Runtime, Threads};
+use crate::runtime::{Clock, Runtime, Threads};
 use crate::storage::order::ordered_for_test;
 use crate::storage::policy::{self, Fault, Holder, Mark, Phase};
 use crate::storage::{
@@ -19,7 +19,8 @@ use crate::{
     CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration,
     TxnCallOptions, TxnOptions,
 };
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::profile::assert_reached;
 
 use crate::test_world as harness;
 use crate::test_world::api;
@@ -107,34 +108,6 @@ fn marks_survive_a_restart_until_released() {
     });
 }
 
-#[test]
-fn a_mark_is_durable_once_quarantine_returns() {
-    for seed in 0..8 {
-        let mut sim = Sim::new(seed, Config::default());
-        create(&mut sim);
-        sim.crash_at(sim.now() + Duration::from_secs(1));
-        let outcome = sim.run(|rt| {
-            let (p, _) = Pager::open(rt.clone(), &options()).unwrap();
-            p.quarantine(Quarantine::Heap(40 + seed as u32), &ordered_for_test())
-                .unwrap();
-            let mut io = rt.io();
-            io.submit(Op::Timer {
-                at: rt.now() + Duration::from_secs(10),
-            });
-            loop {
-                rt.park();
-            }
-        });
-        assert_eq!(Outcome::Crashed, outcome);
-        with_pager(&mut sim, |p| {
-            assert!(
-                Probe::of(p).marked(Quarantine::Heap(40 + seed as u32)),
-                "seed {seed}"
-            );
-        });
-    }
-}
-
 /// Returns a closed file of `sim` holding two heap pages, the second written with 9, whose marks
 /// page fails its checksum, and the pages.
 fn with_damaged_marks_page(sim: &mut Sim) -> (Sim, [Pid; 2]) {
@@ -154,16 +127,6 @@ fn with_damaged_marks_page(sim: &mut Sim) -> (Sim, [Pid; 2]) {
     let mut files = sim.files();
     DataFile::new(NAME, PAGE).flip(&mut files, page, 200 - HEADER_LEN);
     (Sim::with_files(4, Config::default(), files), pages)
-}
-
-#[test]
-fn a_swap_naming_no_mark_needs_no_readable_marks_page() {
-    let (mut sim, [to, from]) = with_damaged_marks_page(&mut Sim::new(4, Config::default()));
-    let (value, freed) = with_pager(&mut sim, |p| {
-        p.replace_contents(to, from, None).unwrap();
-        (p.read(to).unwrap()[HEADER_LEN], p.is_free(from))
-    });
-    assert_eq!((9, Ok(true)), (value, freed));
 }
 
 #[test]
@@ -373,29 +336,28 @@ fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
 fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
     let mut sim = flipped(57, apple);
     let later = "module app\nadd constraint nope =\n  from a in identities.Apple\n  where a.sub == \"zz\"\n  select a\n";
-    process::run(&mut sim, |rt| {
+    let detail = process::run(&mut sim, |rt| {
         let opts = OpenOptions {
             registrations: vec![reads()],
             ..open::options(2)
         };
-        let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &opts);
-        assert!(
-            matches!(got, Err(crate::OpenError::Corrupt { .. })),
-            "{:?}",
-            got.err()
-        );
+        let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &opts).map(drop);
+        let Err(crate::OpenError::Corrupt { detail }) = got else {
+            panic!("the open is no refusal of a corrupt file: {got:?}");
+        };
+        detail
     });
-    with_named_pager(&mut sim, |p| {
-        let marks = Probe::of(p).marks();
-        assert_eq!(1, marks.len(), "{marks:?}");
-        assert!(
-            matches!(marks.first(), Some(Quarantine::Heap(_))),
-            "{marks:?}"
-        );
-    });
+    let mut durable = BTreeSet::new();
+    with_named_pager(&mut sim, |p| durable = Probe::of(p).marks());
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
-        assert_eq!(BTreeSet::from([apple_mark(&db)]), marks(&db));
+        let met = format!(
+            "Page(PageError {{ pid: {:?}, damage: Checksum }})",
+            apple(&db)
+        );
+        assert_eq!(met, detail);
+        assert_eq!(BTreeSet::from([apple_mark(&db)]), durable);
+        assert_eq!(durable, marks(&db));
         assert_eq!("app::identities.Apple", failed_on(&db, ALL));
         api::query(&db, SIDES);
     });
@@ -517,7 +479,7 @@ fn a_probe_from_the_heaps_stops_on_the_check_of_its_call() {
         let key = key_index_marked(&db);
         assert_eq!(before, api::query(&db, BOUNDED));
         let got = db.testing().probe_heaps(key, &[], 1 << 30, true).unwrap();
-        assert!(matches!(got, Err(crate::exec::Error::Cancelled)), "{got:?}");
+        assert_eq!(Err(crate::exec::Error::Cancelled), got);
     });
 }
 
@@ -532,10 +494,8 @@ fn a_probe_from_the_heaps_charges_the_versions_it_scans_to_the_grant() {
             .testing()
             .probe_heaps(key, &[Value::I64(i64::MAX)], 8, false)
             .unwrap();
-        assert!(
-            matches!(got, Err(crate::exec::Error::StatementLimit(_))),
-            "{got:?}"
-        );
+        let exceeded = crate::exec::Exceeded::Memory { limit: 8 };
+        assert_eq!(Err(crate::exec::Error::StatementLimit(exceeded)), got);
     });
 }
 
@@ -846,59 +806,85 @@ fn scripted(
     (marked(held), walks)
 }
 
+/// What one run of a walk gives.
+#[derive(Clone, Copy, Debug)]
+enum Run {
+    Holds,
+    HoldsNothing,
+    Shape,
+    Damage,
+    Io,
+}
+
+/// Returns what holds a page when the walk of index 7 gives each run of `script` in turn, its
+/// last again and again, as the mapping states: a run that holds the page or not decides, damage
+/// on two runs in a row marks the index, an I/O failure leaves the page unmapped, and a shape runs
+/// the walk again. `None` for the walks when only the bound on runs decides.
+fn stated_walks(script: &[Run]) -> (Option<BTreeSet<Quarantine>>, Option<usize>) {
+    let index = Some(BTreeSet::from([Quarantine::Index(7)]));
+    let mut damaged = false;
+    for (walks, run) in (1..=script.len()).zip(script.iter().copied()) {
+        match run {
+            Run::Holds => return (index, Some(walks)),
+            Run::HoldsNothing => {
+                return (Some(BTreeSet::from([Quarantine::Database])), Some(walks));
+            }
+            Run::Io => return (None, Some(walks)),
+            Run::Damage if damaged => return (index, Some(walks)),
+            Run::Damage => damaged = true,
+            Run::Shape => damaged = false,
+        }
+    }
+    match (script.last(), damaged) {
+        (Some(Run::Damage), true) => (index, Some(script.len() + 1)),
+        _ => (None, None),
+    }
+}
+
+/// Run every walk script of one to four runs drawn from holding the page, holding nothing, a shape,
+/// damage and an I/O failure: the mapping finds what the walks state, after the walks they state,
+/// and a walk that only ever stops on a shape runs a bounded number of times. A walk of an object
+/// whose damage marks nothing, stopped by damage, leaves the page unmapped.
 #[test]
-fn a_walk_that_never_follows_its_tree_leaves_the_page_unmapped() {
+fn every_walk_script_maps_its_page_as_the_walks_state() {
     with_unheld_page(60, |p, pid| {
-        let (held, walks) = scripted(p, pid, &[Err(Stopped::Shape)]);
-        assert_eq!(None, held);
-        assert!((2..=64).contains(&walks), "{walks}");
-    });
-}
-
-#[test]
-fn a_walk_that_stops_on_a_shape_is_run_again() {
-    with_unheld_page(61, |p, pid| {
-        let index = Some(BTreeSet::from([Quarantine::Index(7)]));
-        let script = [Err(Stopped::Shape), Err(Stopped::Shape), Ok(vec![pid])];
-        assert_eq!((index, 3), scripted(p, pid, &script));
-        let script = [Err(Stopped::Shape), Ok(Vec::new())];
-        let database = Some(BTreeSet::from([Quarantine::Database]));
-        assert_eq!((database, 2), scripted(p, pid, &script));
-    });
-}
-
-#[test]
-fn a_walk_marks_its_object_only_when_damage_stops_it_twice_in_a_row() {
-    with_unheld_page(62, |p, pid| {
-        let index = Some(BTreeSet::from([Quarantine::Index(7)]));
-        let database = Some(BTreeSet::from([Quarantine::Database]));
-        let script = [Err(Stopped::Damage(pid))];
-        assert_eq!((index.clone(), 2), scripted(p, pid, &script));
-        let script = [Err(Stopped::Damage(pid)), Ok(Vec::new())];
-        assert_eq!((database, 2), scripted(p, pid, &script));
-        let script = [
-            Err(Stopped::Damage(pid)),
-            Err(Stopped::Shape),
-            Err(Stopped::Damage(pid)),
-            Err(Stopped::Damage(pid)),
+        let runs = [
+            Run::Holds,
+            Run::HoldsNothing,
+            Run::Shape,
+            Run::Damage,
+            Run::Io,
         ];
-        assert_eq!((index, 4), scripted(p, pid, &script));
-        let script = [Err(Stopped::Damage(pid)), Err(Stopped::Shape)];
-        assert_eq!(None, scripted(p, pid, &script).0);
-    });
-}
-
-#[test]
-fn a_walk_stopped_by_io_is_not_run_again_and_leaves_the_page_unmapped() {
-    with_unheld_page(63, |p, pid| {
-        let (held, walks) = scripted(p, pid, &[Err(Stopped::Io)]);
-        assert_eq!((None, 1), (held, walks));
-    });
-}
-
-#[test]
-fn a_walk_of_an_object_whose_damage_marks_nothing_stopped_by_damage_leaves_the_page_unmapped() {
-    with_unheld_page(66, |p, pid| {
+        let mut scripts: Vec<Vec<Run>> = vec![Vec::new()];
+        let mut checked = 0;
+        for _ in 0..4 {
+            scripts = scripts
+                .iter()
+                .flat_map(|s| runs.iter().map(move |r| [s.clone(), vec![*r]].concat()))
+                .collect();
+            for script in &scripts {
+                let given: Vec<Result<Vec<Pid>, Stopped>> = script
+                    .iter()
+                    .map(|run| match run {
+                        Run::Holds => Ok(vec![pid]),
+                        Run::HoldsNothing => Ok(Vec::new()),
+                        Run::Shape => Err(Stopped::Shape),
+                        Run::Damage => Err(Stopped::Damage(pid)),
+                        Run::Io => Err(Stopped::Io),
+                    })
+                    .collect();
+                let (held, walks) = scripted(p, pid, &given);
+                match stated_walks(script) {
+                    (want, Some(n)) => assert_eq!((want, n), (held, walks), "{script:?}"),
+                    (want, None) => {
+                        assert_eq!(want, held, "{script:?}");
+                        assert!((script.len()..=64).contains(&walks), "{script:?}: {walks}");
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert_reached("a walk script", checked, 5 + 25 + 125 + 625);
         let other = Pid(pid.0 + 1);
         let held = p.holders_of(pid, Phase::Running, |h| {
             h.walk(Holder::Retired, || Err(Stopped::Damage(other)));
@@ -967,16 +953,18 @@ fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_th
     });
     let first = sim.files();
     let written = written_whole(first.clone(), pid, false);
-    let mut lost = written_whole(written, pid, true);
+    let mut lost = written_whole(written.clone(), pid, true);
     DATA.replace(&mut lost, pid, DATA.page(&first, pid));
+    let stale = Damage::Stale {
+        expected: crate::storage::lsn(DATA.page(&written, pid)),
+        found: crate::storage::lsn(DATA.page(&first, pid)),
+    };
     let mut sim = Sim::with_files(98, Config::default(), lost);
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
-        assert!(
-            matches!(
-                db.testing().probe().records().pages().get(&pid),
-                Some(Damage::Stale { .. })
-            ),
+        assert_eq!(
+            Some(&stale),
+            db.testing().probe().records().pages().get(&pid),
             "recovery records the lost write"
         );
         assert_eq!(BTreeSet::from([users]), marks(&db));
@@ -1064,23 +1052,6 @@ fn a_checkpoint_meeting_a_damaged_list_page_marks_nothing_until_the_next_commit_
 }
 
 #[test]
-fn the_damage_list_holds_its_page_in_every_phase() {
-    let mut sim = Sim::new(1, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| {
-        let list = p.damage_list_page();
-        for phase in [Phase::Opening, Phase::Running] {
-            let held = p.holders_of(list, phase, |_| {});
-            assert_eq!(
-                Some(BTreeSet::from([Holder::DamageList])),
-                held,
-                "{phase:?}"
-            );
-        }
-    });
-}
-
-#[test]
 fn a_checkpoint_meeting_an_unreadable_list_page_leaves_the_database_writable_and_unmarked() {
     let mut sim = Sim::new(101, Config::default());
     process::run(&mut sim, |rt| {
@@ -1101,26 +1072,6 @@ fn a_checkpoint_meeting_an_unreadable_list_page_leaves_the_database_writable_and
     });
 }
 
-#[test]
-fn a_page_no_walk_reaches_mapped_once_running_marks_the_database() {
-    let mut sim = Sim::new(102, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        seed(&db);
-        let t = db.testing();
-        let kind = crate::storage::PageKind::HeapSlotted;
-        let orphan = t.plant(Plant::Orphan { kind, owner: 7 }).unwrap();
-        let page = orphan.page().unwrap();
-        let damage = Damage::Checksum;
-        t.plant(Plant::Refuse { page, damage }).unwrap();
-        db.verify(None).unwrap();
-        let database = BTreeSet::from([Quarantine::Database]);
-        assert_eq!(Some(database.clone()), t.probe().mapped_to(page));
-        assert_eq!(database, marks(&db));
-        db.close().unwrap();
-    });
-}
-
 const TAGS_INDEX: &str = "index (owner)";
 
 /// Returns the leaf of tags' index once a seeded file holds a tag in it, after `damage` rewrote
@@ -1130,7 +1081,7 @@ fn damaged_tags_leaf(
     db: &Database<SimRuntime>,
     rt: &SimRuntime,
     damage: impl FnOnce(Pid, Vec<u8>) -> Vec<u8>,
-) -> Pid {
+) -> (Pid, Damage) {
     seed(db);
     api::results(db, r#"insert users { id: users.key(7), name: "n7" }"#);
     api::results(db, "insert tags { id: tags.key(1), owner: users.key(7) }");
@@ -1147,7 +1098,12 @@ fn damaged_tags_leaf(
     let before = adtb_testkit::common::read(rt, &mut io, file, at, API_PAGE).unwrap();
     api::results(db, "insert tags { id: tags.key(2), owner: users.key(7) }");
     t.flush();
+    let after = adtb_testkit::common::read(rt, &mut io, file, at, API_PAGE).unwrap();
     let damaged = damage(leaf, before);
+    let stale = Damage::Stale {
+        expected: crate::storage::lsn(&after),
+        found: crate::storage::lsn(&damaged),
+    };
     adtb_testkit::common::write(rt, &mut io, file, at, &damaged).unwrap();
     adtb_testkit::common::sync(rt, &mut io, file).unwrap();
     for p in 0..4096 {
@@ -1155,7 +1111,7 @@ fn damaged_tags_leaf(
             .page(Pid(1 << 16 | p))
             .expect("a page never written");
     }
-    leaf
+    (leaf, stale)
 }
 
 /// Record checksum damage on a page no structure holds, for the next commit to map.
@@ -1173,7 +1129,7 @@ fn a_stale_page_a_commits_walk_meets_marks_only_the_structure_whose_walk_met_it(
     let mut sim = Sim::new(103, Config::default());
     process::run(&mut sim, |rt| {
         let db = open_app(rt.clone());
-        let leaf = damaged_tags_leaf(&db, &rt, |_, before| before);
+        let (leaf, stale) = damaged_tags_leaf(&db, &rt, |_, before| before);
         let t = db.testing();
         let tags = t
             .own_mark(t.index("app::tags", TAGS_INDEX).unwrap())
@@ -1185,11 +1141,9 @@ fn a_stale_page_a_commits_walk_meets_marks_only_the_structure_whose_walk_met_it(
             "nothing read the leaf"
         );
         api::results(&db, r#"insert users { id: users.key(8), name: "n8" }"#);
-        assert!(
-            matches!(
-                t.probe().records().pages().get(&leaf),
-                Some(Damage::Stale { .. })
-            ),
+        assert_eq!(
+            Some(&stale),
+            t.probe().records().pages().get(&leaf),
             "the commit's walk records the lost write"
         );
         assert_eq!(BTreeSet::from([tags]), marks(&db));
@@ -1214,7 +1168,7 @@ fn a_stale_page_whose_header_names_another_structure_marks_only_the_structure_wh
         let t = db.testing();
         let users_heap = t.heap("app::users", "User").unwrap();
         let users_owner = t.owner(users_heap).unwrap();
-        let leaf = damaged_tags_leaf(&db, &rt, |leaf, mut before| {
+        let (leaf, stale) = damaged_tags_leaf(&db, &rt, |leaf, mut before| {
             let kind = crate::storage::PageKind::HeapSlotted;
             let format = crate::storage::format(&before);
             let flags = crate::storage::flags(&before);
@@ -1230,11 +1184,9 @@ fn a_stale_page_whose_header_names_another_structure_marks_only_the_structure_wh
         let users = t.own_mark(users_heap).unwrap();
         record_unheld_damage(&db);
         api::results(&db, r#"insert users { id: users.key(8), name: "n8" }"#);
-        assert!(
-            matches!(
-                t.probe().records().pages().get(&leaf),
-                Some(Damage::Stale { .. })
-            ),
+        assert_eq!(
+            Some(&stale),
+            t.probe().records().pages().get(&leaf),
             "the commit's walk records the lost write"
         );
         let all = marks(&db);

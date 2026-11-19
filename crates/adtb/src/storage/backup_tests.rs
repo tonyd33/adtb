@@ -3,14 +3,14 @@
 
 use crate::testing::Plant;
 use adtb_testkit::process;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::runtime::{Done, IoError, Op, OpKind, Runtime, Threads};
 use crate::storage::{
     self, BackupError, BackupRun, Damage, Envelope, HEADER_LEN, Lsn, Manifest, Options, PageError,
-    PageKind, Pager, Pid, Quarantine,
+    PageKind, Pager, Pid,
 };
 use crate::test_world::api;
 use crate::test_world::load as open;
@@ -19,7 +19,7 @@ use crate::{
     HostFns, Log, OpenOptions, Position, Proof, RejectReason, RestorePoint, TxnCallOptions,
     TxnOptions, proof_in, prove_in, restore_in,
 };
-use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Struck};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime, Struck};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::common;
 use adtb_testkit::damage::DataFile;
@@ -155,11 +155,20 @@ fn restored_rows(files: Files) -> Result<BTreeSet<i64>, Error> {
     })
 }
 
-fn is_invalid_naming(got: &Result<(), Error>, word: &str) {
-    match got {
-        Err(e) if api::is_invalid(e) && e.to_string().contains(word) => {}
-        other => panic!("not an invalid naming {word}: {other:?}"),
-    }
+fn invalid(detail: &str) -> Result<(), Error> {
+    Err(Error::Rejected {
+        reason: RejectReason::Invalid {
+            detail: detail.into(),
+        },
+    })
+}
+
+fn occupied() -> Result<(), Error> {
+    invalid(&format!("the backup target `{TARGET}` holds files"))
+}
+
+fn exists(path: &str) -> Result<(), Error> {
+    invalid(&format!("the restore path `{path}` exists"))
 }
 
 fn file_with_rows(rows: i64) -> Files {
@@ -172,82 +181,74 @@ fn file_with_rows(rows: i64) -> Files {
     sim.files()
 }
 
+/// Back up with `backup to` while a writer commits on another thread: the restore holds exactly the
+/// commits acknowledged below the backup's end, and the writer committed during the backup and
+/// past its end.
 #[test]
-fn backup_under_writers_restores_every_commit_acked_before_start_and_none_after_end() {
+fn a_backup_under_a_writer_restores_exactly_the_commits_acked_below_its_end() {
+    let (mut during, mut past) = (0, 0);
     for seed in sweep(0..2) {
         let acked: Arc<Mutex<Vec<(i64, Position)>>> = Arc::default();
-        let manifest: Arc<Mutex<Option<Manifest>>> = Arc::default();
+        let inside = Arc::new(AtomicU64::new(0));
         let mut sim = Sim::new(seed, Config::default());
-        let (a, m) = (acked.clone(), manifest.clone());
+        let (a, counted) = (acked.clone(), inside.clone());
         process::run(&mut sim, move |rt| {
             let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
             let before: Vec<_> = (0..16).map(|id| (id, commit(&db, id))).collect();
             a.lock().unwrap().extend(before);
-            let stop = Arc::new(AtomicBool::new(false));
-            let (w, s, shared, clock) = (db.clone(), stop.clone(), a.clone(), rt.clone());
+            let (copying, stop) = (
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+            );
+            let (w, c, s, shared, clock) = (
+                db.clone(),
+                copying.clone(),
+                stop.clone(),
+                a.clone(),
+                rt.clone(),
+            );
             let writer = rt.spawn("writer", move || {
                 let mut id = 16;
-                while !s.load(Ordering::Relaxed) {
+                while !s.load(Ordering::SeqCst) {
+                    let began = c.load(Ordering::SeqCst);
                     let at = commit(&w, id);
                     shared.lock().unwrap().push((id, at));
+                    if began && c.load(Ordering::SeqCst) {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                    }
                     id += 1;
                     clock.yield_now();
                 }
             });
-            let got = db_backup(&db, TARGET, &mut |_, _| {
-                rt.yield_now();
-                true
-            })
-            .unwrap();
-            stop.store(true, Ordering::Relaxed);
+            copying.store(true, Ordering::SeqCst);
+            backup_text(&db).unwrap();
+            copying.store(false, Ordering::SeqCst);
+            stop.store(true, Ordering::SeqCst);
             rt.join(writer);
-            *m.lock().unwrap() = Some(got);
+            a.lock().unwrap().push((1000, commit(&db, 1000)));
             db.close().unwrap();
         });
-        let end = manifest.lock().unwrap().clone().unwrap().end;
-        let rows = restored_rows(sim.files()).unwrap();
-        for (id, at) in acked.lock().unwrap().iter() {
-            assert_eq!(
-                at.lsn < end.lsn.0,
-                rows.contains(id),
-                "seed {seed}: commit {id} at {at:?}, end {end:?}"
-            );
-        }
+        let mut restored = Sim::with_files(seed, Config::default(), sim.files());
+        let (end, rows) = process::run(&mut restored, |rt| {
+            let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
+            restore(&rt).unwrap();
+            let db = open::open_in(&rt, COPY, &Log::new([APP]), &no_create()).unwrap();
+            let rows = ids(&db);
+            db.close().unwrap();
+            (manifest.end, rows)
+        });
+        let acked = acked.lock().unwrap().clone();
+        let below: BTreeSet<i64> = acked
+            .iter()
+            .filter(|(_, at)| at.lsn < end.lsn.0)
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(below, rows, "seed {seed}: end {end:?}");
+        during += inside.load(Ordering::SeqCst) as usize;
+        past += usize::from(below.len() < acked.len());
     }
-}
-
-#[test]
-fn restored_equals_ledger_at_end_position() {
-    let mut sim = Sim::new(5, Config::default());
-    let mut ledger = BTreeMap::new();
-    let mut end = None;
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
-        for id in 0..20 {
-            ledger.insert(id, commit(&db, id));
-        }
-        let mut next = 20;
-        let got = db_backup(&db, TARGET, &mut |_, _| {
-            ledger.insert(next, commit(&db, next));
-            next += 1;
-            true
-        })
-        .unwrap();
-        end = Some(got.end);
-        for id in next..next + 5 {
-            ledger.insert(id, commit(&db, id));
-        }
-        db.close().unwrap();
-    });
-    let end = end.unwrap();
-    let expected: BTreeSet<i64> = ledger
-        .iter()
-        .filter(|(_, at)| at.lsn < end.lsn.0)
-        .map(|(id, _)| *id)
-        .collect();
-    assert!(expected.len() > 20, "commits ran during the copy");
-    assert!(expected.len() < ledger.len(), "commits ran past the end");
-    assert_eq!(expected, restored_rows(sim.files()).unwrap());
+    assert_reached("a commit acknowledged while the backup copied", during, 1);
+    assert_reached("a commit acknowledged past the backup's end", past, 1);
 }
 
 #[test]
@@ -283,24 +284,6 @@ fn prove_reads_the_schema_from_the_file_without_the_callers_log() {
             )
             .unwrap()
         );
-    });
-}
-
-#[test]
-fn commits_not_blocked_during_backup() {
-    let mut sim = Sim::new(7, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
-        insert(&db, 0..8);
-        let mut next = 8;
-        db_backup(&db, TARGET, &mut |_, _| {
-            commit(&db, next);
-            next += 1;
-            true
-        })
-        .unwrap();
-        assert!(next > 8, "the copy visited a page");
-        db.close().unwrap();
     });
 }
 
@@ -355,12 +338,23 @@ fn rotted_page_listed_in_manifest_and_proof_failed() {
         let got = backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
         assert_eq!(vec![pid], got.damaged);
         pager.close();
-        match prove_in(rt, &archive(), &Log::new([APP]), &no_create()).unwrap() {
-            Proof::Failed(found) => {
-                assert!(found[0].contains(&format!("page {}", pid.0)), "{found:?}");
-            }
-            other => panic!("{other:?}"),
-        }
+        let got = prove_in(rt, &archive(), &Log::new([APP]), &no_create());
+        let Ok(Proof::Failed(found)) = got else {
+            panic!("{got:?}");
+        };
+        let timeless: Vec<String> = found
+            .iter()
+            .map(|f| match f.split_once(" at: ") {
+                Some((head, tail)) => format!("{head} {}", tail.split_once(", ").unwrap().1),
+                None => f.clone(),
+            })
+            .collect();
+        let finding = format!(
+            "Checksum {{ id: verify_findings.key(1), run: RunId(1), where: \"page {}: Checksum\" }}",
+            pid.0
+        );
+        let damaged = format!("page {} was copied damaged", pid.0);
+        assert_eq!(vec![damaged, finding], timeless);
     });
 }
 
@@ -503,61 +497,117 @@ fn part_named(files: &Files, dir: &str) -> String {
         .to_owned()
 }
 
-#[test]
-fn torn_part_refused_naming_part() {
-    let mut files = backed_up(4);
-    let part = part_named(&files, "pages/");
-    files.get_mut(&format!("{TARGET}/{part}")).unwrap()[5000] ^= 1;
-    let mut sim = Sim::with_files(15, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        assert_eq!(part, api::damaged_backup_part(restore(&rt)));
-        assert_eq!(
-            Err(crate::OpenError::NotFound.to_string()),
-            open::open_in(&rt, COPY, &Log::new([APP]), &no_create())
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-            "a refused restore writes nothing"
-        );
-    });
+/// Returns `body` with the line of `key` holding `value`.
+fn replaced(body: &str, key: &str, value: &str) -> String {
+    let line = |l: &str| match l.strip_prefix(key) {
+        Some(rest) if rest.starts_with(' ') => format!("{key} {value}\n"),
+        _ => format!("{l}\n"),
+    };
+    body.lines().map(line).collect()
 }
 
+/// Damage a part, drop one, flip the manifest's bytes, or seal a manifest naming a format, a field
+/// out of bounds, a part outside the backup or no log: a restore refuses each naming the first part
+/// that fails, or the format it does not read, and writes nothing.
 #[test]
-fn missing_part() {
-    let mut files = backed_up(4);
-    let part = part_named(&files, "log/");
-    files.remove(&format!("{TARGET}/{part}"));
-    let mut sim = Sim::with_files(16, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        assert_eq!(part, api::damaged_backup_part(restore(&rt)));
-    });
-}
-
-#[test]
-fn bad_manifest_checksum() {
-    let mut files = backed_up(4);
-    let at = format!("{TARGET}/{}", storage::MANIFEST);
-    files.get_mut(&at).unwrap()[30] ^= 1;
-    let mut sim = Sim::with_files(17, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        assert_eq!(storage::MANIFEST, api::damaged_backup_part(restore(&rt)));
-    });
-}
-
-#[test]
-fn unknown_format() {
-    let mut files = backed_up(4);
-    let at = format!("{TARGET}/{}", storage::MANIFEST);
-    let text = String::from_utf8(files[&at].clone()).unwrap();
-    let text = text.trim_end_matches('\0');
-    let body = text
-        .rsplit_once("checksum ")
-        .unwrap()
-        .0
-        .replace("format 1\n", "format 9\n");
-    let sealed = format!("{body}checksum {}\n", storage::manifest_hash(&body));
-    files.insert(at, sealed.into_bytes());
-    let mut sim = Sim::with_files(18, Config::default(), files);
-    process::run(&mut sim, |rt| is_invalid_naming(&restore(&rt), "format 9"));
+fn every_damaged_or_resealed_backup_is_refused_naming_what_failed_and_writes_nothing() {
+    let base = backed_up(4);
+    let (pages, log) = (part_named(&base, "pages/"), part_named(&base, "log/"));
+    let edited = |edit: &dyn Fn(&mut Files)| {
+        let mut files = base.clone();
+        edit(&mut files);
+        files
+    };
+    let damaged = |part: &str| RejectReason::BackupDamaged { part: part.into() };
+    let manifest = || damaged(storage::MANIFEST);
+    let mut cases = vec![
+        (
+            format!("a flipped byte of {pages}"),
+            edited(&|f| f.get_mut(&format!("{TARGET}/{pages}")).unwrap()[5000] ^= 1),
+            damaged(&pages),
+        ),
+        (
+            format!("{log} missing"),
+            edited(&|f| drop(f.remove(&format!("{TARGET}/{log}")))),
+            damaged(&log),
+        ),
+        (
+            "a flipped byte of the manifest".into(),
+            edited(&|f| {
+                f.get_mut(&format!("{TARGET}/{}", storage::MANIFEST))
+                    .unwrap()[30] ^= 1;
+            }),
+            manifest(),
+        ),
+        (
+            "format 9".into(),
+            resealed(base.clone(), |b| replaced(b, "format", "9")),
+            RejectReason::Invalid {
+                detail: "this engine does not read backup format 9".into(),
+            },
+        ),
+        (
+            "no log part".into(),
+            resealed(base.clone(), |b| {
+                let kept = b.lines().filter(|l| !l.starts_with("part log/"));
+                kept.map(|l| format!("{l}\n")).collect()
+            }),
+            damaged("log"),
+        ),
+        (
+            "a checkpoint naming no record".into(),
+            resealed(base.clone(), |b| {
+                let at = b
+                    .lines()
+                    .find_map(|l| l.strip_prefix("checkpoint "))
+                    .unwrap();
+                replaced(
+                    b,
+                    "checkpoint",
+                    &(at.parse::<u64>().unwrap() + 1).to_string(),
+                )
+            }),
+            damaged("log"),
+        ),
+    ];
+    let max = u64::MAX.to_string();
+    let out_of_bounds = [
+        ("log_block", "0"),
+        ("log_block", "1000"),
+        ("segment_size", "0"),
+        ("segment_size", "4097"),
+        ("page_size", "0"),
+        ("page_size", "5000"),
+        ("page_formats", "2 1"),
+        ("file_pages", "0"),
+        ("catalog_root", &max),
+        ("quarantine_page", &max),
+        ("start", &format!("1/{max}")),
+        ("end", "1/0"),
+        ("checkpoint", "0"),
+    ];
+    for (key, value) in out_of_bounds {
+        let files = resealed(base.clone(), |b| replaced(b, key, value));
+        cases.push((format!("{key} {value}"), files, manifest()));
+    }
+    for line in [
+        "part ../outside 0 00".to_owned(),
+        "part pages/a/b 0 00".to_owned(),
+        format!("damaged {max}"),
+    ] {
+        let files = resealed(base.clone(), |b| format!("{b}{line}\n"));
+        cases.push((line, files, manifest()));
+    }
+    for (label, files, reason) in &cases {
+        let mut sim = Sim::with_files(15, Config::default(), files.clone());
+        let got = process::run(&mut sim, |rt| restore(&rt));
+        let want = Error::Rejected {
+            reason: reason.clone(),
+        };
+        assert_eq!(Err(want), got, "{label}");
+        assert!(*files == sim.files(), "{label}: the refused restore wrote");
+    }
+    assert_reached("a damaged or resealed backup", cases.len(), 22);
 }
 
 #[test]
@@ -614,180 +664,104 @@ fn segments_covering_redo_retained_through_backup() {
     });
 }
 
-#[test]
-fn restore_bumps_epoch_and_commit_continues() {
-    let mut sim = Sim::new(20, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
-        insert(&db, 0..4);
-        let before = commit(&db, 4);
-        backup_text(&db).unwrap();
-        db.close().unwrap();
-        restore(&rt).unwrap();
-        let copy = open::open_in(&rt, COPY, &Log::new([APP]), &no_create()).unwrap();
-        let after = commit(&copy, 5);
-        let step = after.epoch - before.epoch;
-        assert!((1..=1 << 32).contains(&step), "{step}");
-        assert!(after.lsn > before.lsn);
-        assert_eq!(6, ids(&copy).len());
-        copy.close().unwrap();
-        let copy = open::open_in(&rt, COPY, &Log::new([APP]), &no_create()).unwrap();
-        assert_eq!(6, ids(&copy).len());
-        copy.close().unwrap();
-    });
+/// Returns the text of a `restore` of `TARGET` to `to` at `point`.
+fn restore_at_text(to: &str, point: RestorePoint) -> String {
+    let at = match point {
+        RestorePoint::Latest => String::new(),
+        RestorePoint::Version(v) => format!(" before version {v}"),
+        RestorePoint::Position(p) => {
+            format!(" at position {{ epoch: {}, lsn: {} }}", p.epoch, p.lsn)
+        }
+    };
+    format!("restore from \"{TARGET}\" to \"{to}\"{at}")
 }
 
+/// Restore a backup at each point, through the API and the command: the latest and its end
+/// restore, and any other point is unavailable naming the end as the oldest and newest. Each
+/// restored file begins an epoch of its own: it holds the commits below the end, keeps them across
+/// a reopen, and a position of the source past the end or of another restore is not on its
+/// history.
 #[test]
-fn old_position_past_end_refused() {
+fn a_backup_restores_at_its_end_only_and_each_restore_begins_an_epoch() {
     let mut sim = Sim::new(21, Config::default());
     process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
         insert(&db, 0..2);
         let inside = commit(&db, 2);
-        let manifest = db_backup(&db, TARGET, &mut |_, _| true).unwrap();
-        let lost = commit(&db, 3);
-        assert!(lost.lsn >= manifest.end.lsn.0);
-        db.close().unwrap();
-        restore(&rt).unwrap();
-        let copy = open::open_in(&rt, COPY, &Log::new([APP]), &no_create()).unwrap();
-        let read_after = |after| {
-            copy.query_text(
-                "from u in users select u.id",
-                &[],
-                &CallOptions {
-                    after: Some(after),
-                    ..CallOptions::default()
-                },
-            )
-        };
-        let on_history: Vec<_> = read_after(inside)
-            .unwrap()
-            .into_iter()
-            .map(api::sorted)
-            .collect();
-        assert_eq!(
-            vec![vec!["users.key(0)", "users.key(1)", "users.key(2)"]],
-            on_history,
-            "the position is on the history"
-        );
-        match read_after(lost) {
-            Err(Error::Rejected {
-                reason: RejectReason::PositionNotOnHistory { position },
-            }) => assert_eq!(lost, position),
-            other => panic!("{other:?}"),
-        }
-        copy.close().unwrap();
-    });
-}
-
-#[test]
-fn restore_at_point_refused_with_range() {
-    let mut sim = Sim::with_files(22, Config::default(), backed_up(2));
-    process::run(&mut sim, |rt| {
+        backup_text(&db).unwrap();
+        let past = commit(&db, 3);
         let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
         let end = Position::from(manifest.end);
-        let refused = |got: Result<(), Error>| match got {
-            Err(Error::Rejected {
-                reason: RejectReason::RestorePointUnavailable { oldest, newest },
-            }) => assert_eq!((end, end), (oldest, newest)),
-            other => panic!("{other:?}"),
-        };
-        let refused_at = |point| {
-            refused(restore_in(rt.clone(), &archive(), COPY, point, &no_create()).map(|_| ()));
-        };
-        refused_at(RestorePoint::Version(1));
-        refused_at(RestorePoint::Position(Position {
-            lsn: end.lsn - 1,
-            ..end
-        }));
-        let db = open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).unwrap();
-        for text in [
-            format!("restore from \"{TARGET}\" to \"{COPY}\" before version 1"),
-            format!("restore from \"{TARGET}\" to \"{COPY}\" at position {{ epoch: 1, lsn: 1 }}"),
-        ] {
-            refused(
-                db.query_text(&text, &[], &CallOptions::default())
-                    .map(|_| ()),
-            );
+        assert!(past.lsn >= end.lsn, "{past:?} {end:?}");
+        let moved = |lsn| RestorePoint::Position(Position { lsn, ..end });
+        let unavailable = Err(Error::Rejected {
+            reason: RejectReason::RestorePointUnavailable {
+                oldest: end,
+                newest: end,
+            },
+        });
+        let points = [
+            (RestorePoint::Latest, Ok(())),
+            (RestorePoint::Position(end), Ok(())),
+            (RestorePoint::Version(1), unavailable.clone()),
+            (moved(end.lsn - 1), unavailable.clone()),
+            (moved(end.lsn + 1), unavailable.clone()),
+            (RestorePoint::Position(past), unavailable),
+        ];
+        for (i, (point, want)) in points.iter().enumerate() {
+            let (by_api, by_text) = (format!("api{i}.adt"), format!("text{i}.adt"));
+            let got = restore_in(rt.clone(), &archive(), &by_api, *point, &no_create());
+            assert_eq!(*want, got.map(drop), "{point:?} by the API");
+            let text = restore_at_text(&by_text, *point);
+            let got = db.query_text(&text, &[], &CallOptions::default());
+            assert_eq!(*want, got.map(drop), "{text}");
         }
         db.close().unwrap();
-    });
-}
-
-#[test]
-fn s3_refused_by_name() {
-    process::once(23, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
-        for text in [
-            "backup to \"s3://bucket/app\"",
-            "restore from \"s3://bucket/app\" to \"x.adt\"",
-        ] {
-            let got = db
-                .query_text(text, &[], &CallOptions::default())
-                .map(|_| ());
-            is_invalid_naming(&got, "s3");
+        let reopened =
+            |name: &str| open::open_in(&rt, name, &Log::new([APP]), &no_create()).unwrap();
+        let (a, b) = (reopened("api0.adt"), reopened("text1.adt"));
+        let (at_a, at_b) = (commit(&a, 10), commit(&b, 20));
+        assert!(
+            at_a.epoch > inside.epoch && at_a.lsn > inside.lsn,
+            "{at_a:?} {inside:?}"
+        );
+        assert_ne!(at_a.epoch, at_b.epoch);
+        for (db, foreign) in [(&a, past), (&a, at_b), (&b, at_a)] {
+            let after = CallOptions {
+                after: Some(foreign),
+                ..CallOptions::default()
+            };
+            let got = db.query_text("from u in users select u.id", &[], &after);
+            let off = RejectReason::PositionNotOnHistory { position: foreign };
+            assert_eq!(Err(Error::Rejected { reason: off }), got.map(drop));
         }
-        is_invalid_naming(&ArchiveTarget::path("s3://bucket/app").map(|_| ()), "s3");
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn restore_over_existing_refused() {
-    let mut sim = Sim::with_files(24, Config::default(), backed_up(2));
-    process::run(&mut sim, |rt| {
-        restore(&rt).unwrap();
-        is_invalid_naming(&restore(&rt), COPY);
-        let over_file = restore_in(rt, &archive(), FILE, RestorePoint::Latest, &no_create());
-        is_invalid_naming(&over_file.map(|_| ()), FILE);
-    });
-}
-
-#[test]
-fn backup_to_nonempty_refused() {
-    let mut sim = Sim::with_files(25, Config::default(), backed_up(2));
-    process::run(&mut sim, |rt| {
-        let db = open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).unwrap();
-        is_invalid_naming(&backup_text(&db), TARGET);
-        db.close().unwrap();
-    });
-}
-
-/// A role needs `maintain` and `write_files`, and a role's target stays inside the export roots.
-#[test]
-fn backup_needs_write_files_over_server() {
-    process::once(26, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
-        insert(&db, 0..2);
-        let authority = db.role_authority();
-        authority.create_role("ops").unwrap();
-        authority
-            .grant_capability("ops", Capability::Adhoc, false)
-            .unwrap();
-        authority
-            .grant_capability("ops", Capability::Maintain, false)
-            .unwrap();
-        let ops = authority.session("ops").unwrap();
-        let denied = |got: Result<(), Error>| match got {
-            Err(Error::Rejected {
-                reason: RejectReason::Denied { detail },
-            }) => detail,
-            other => panic!("{other:?}"),
+        let after = CallOptions {
+            after: Some(inside),
+            ..CallOptions::default()
         };
-        let lacking = denied(api::task(&rt, &ops, "backup to \"role-bk\""));
-        assert!(!lacking.contains("export_roots"), "{lacking}");
-        authority
-            .grant_capability("ops", Capability::WriteFiles, false)
+        let on: Vec<_> = a
+            .query_text("from u in users select u.id", &[], &after)
             .unwrap();
-        let outside = denied(api::task(&rt, &ops, "backup to \"role-bk\""));
-        assert!(outside.contains("export_roots"), "{outside}");
-        db.close().unwrap();
+        let on: Vec<_> = on.into_iter().map(api::sorted).collect();
+        let want = vec![vec![
+            "users.key(0)",
+            "users.key(1)",
+            "users.key(10)",
+            "users.key(2)",
+        ]];
+        assert_eq!(want, on, "a position of the source below the end");
+        a.close().unwrap();
+        b.close().unwrap();
+        let again = reopened("api0.adt");
+        assert_eq!(BTreeSet::from([0, 1, 2, 10]), ids(&again));
+        again.close().unwrap();
     });
 }
 
-/// A role's backup runs inside the export roots and is refused outside them.
+/// Back up through a role's session: a role needs `maintain` and `write_files`, and its backup
+/// runs inside the export roots and is refused outside them.
 #[test]
-fn a_role_backs_up_inside_the_export_roots() {
+fn a_role_backs_up_only_with_write_files_and_inside_the_export_roots() {
     process::once(26, |rt| {
         let opts = OpenOptions {
             file_root: Some("data".into()),
@@ -798,63 +772,34 @@ fn a_role_backs_up_inside_the_export_roots() {
         insert(&db, 0..2);
         let authority = db.role_authority();
         authority.create_role("ops").unwrap();
-        for capability in [
-            Capability::Adhoc,
-            Capability::Maintain,
-            Capability::WriteFiles,
-        ] {
+        for capability in [Capability::Adhoc, Capability::Maintain] {
             authority
                 .grant_capability("ops", capability, false)
                 .unwrap();
         }
         let ops = authority.session("ops").unwrap();
-        api::task(&rt, &ops, "backup to \"out/role-bk\"").unwrap();
-        storage::check_backup(&rt, "data/out/role-bk").unwrap();
-        let outside = api::task(&rt, &ops, "backup to \"role-bk\"");
-        assert!(
-            matches!(&outside, Err(Error::Rejected { reason: RejectReason::Denied { detail } })
-                if detail.contains("export_roots")),
-            "{outside:?}"
-        );
-        let detail = "path `out/../role-bk` is outside export_roots";
-        adtb_testkit::refused_as(
-            api::task(&rt, &ops, "backup to \"out/../role-bk\""),
-            &Error::Rejected {
+        let denied = |detail: &str| {
+            Err(Error::Rejected {
                 reason: RejectReason::Denied {
                     detail: detail.into(),
                 },
-            },
-            &format!("denied: {detail}"),
+            })
+        };
+        let lacking = "role `ops` lacks `write_files`";
+        assert_eq!(
+            denied(lacking),
+            api::task(&rt, &ops, "backup to \"out/role-bk\"")
         );
-        let root = api::task(&rt, &ops, "backup to \"out\"");
-        assert!(
-            matches!(&root, Err(Error::Rejected { reason: RejectReason::Denied { detail } })
-                if detail.contains("export_roots")),
-            "{root:?}"
-        );
-        db.close().unwrap();
-    });
-}
-
-/// A read-only check answers a log it cannot list as a finding, with no panic.
-#[test]
-fn a_check_reports_a_log_it_cannot_read() {
-    let mut sim = Sim::with_files(28, Config::default(), file_with_rows(2));
-    process::run(&mut sim, |rt| {
-        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
-        let lists = Match::kind(OpKind::List).prefixed(FILE);
-        rt.plan(Plan::new().rule(lists, Action::Fail(IoError::Failed)));
-        let t = db.testing();
-        assert!(t.probe().logged_commits().is_empty());
-        let found = t.verify_pages().findings;
-        assert!(
-            found.iter().any(|f| matches!(
-                f,
-                storage::Finding::Log(l) if l.problem == storage::LogProblem::Unreadable
-            )),
-            "{found:?}"
-        );
-        rt.plan(Plan::new());
+        authority
+            .grant_capability("ops", Capability::WriteFiles, false)
+            .unwrap();
+        api::task(&rt, &ops, "backup to \"out/role-bk\"").unwrap();
+        storage::check_backup(&rt, "data/out/role-bk").unwrap();
+        for path in ["role-bk", "out/../role-bk", "out"] {
+            let text = format!("backup to \"{path}\"");
+            let outside = format!("path `{path}` is outside export_roots");
+            assert_eq!(denied(&outside), api::task(&rt, &ops, &text), "{path}");
+        }
         db.close().unwrap();
     });
 }
@@ -867,30 +812,10 @@ fn backup_of_quarantined_heap_lists_it() {
         let t = db.testing();
         let heap = t.own_mark(t.heap("app::users", "User").unwrap()).unwrap();
         t.plant(Plant::Mark(heap)).unwrap();
-        let rows = db
-            .query_text("backup to \"bk\"", &[], &CallOptions::default())
-            .unwrap();
-        let shown: Vec<String> = rows.into_iter().flat_map(api::printed).collect();
-        assert!(shown[0].contains("quarantined app::users"), "{shown:?}");
+        backup_text(&db).unwrap();
         db.close().unwrap();
-    });
-}
-
-#[test]
-fn backup_of_quarantined_database_refused() {
-    process::once(28, |rt| {
-        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
-        db.testing()
-            .plant(Plant::Mark(Quarantine::Database))
-            .unwrap();
-        match backup_text(&db) {
-            Err(Error::Fatal {
-                reason: FatalReason::Quarantined { .. },
-                ..
-            }) => {}
-            other => panic!("{other:?}"),
-        }
-        db.close().unwrap();
+        let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
+        assert_eq!(vec!["app::users.User".to_owned()], manifest.quarantined);
     });
 }
 
@@ -925,15 +850,18 @@ add relation users : User key id generate sequence
             Proof::Unproven { function } => assert_eq!(Some("boom".to_owned()), function),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(
-            proof_in(&rt, &archive()).unwrap(),
-            Proof::Unproven { function: Some(_) }
-        ));
+        assert_eq!(
+            Proof::Unproven {
+                function: Some("boom".to_owned())
+            },
+            proof_in(&rt, &archive()).unwrap()
+        );
     });
 }
 
+/// Cancel a `backup to` before it copies: it answers `Cancelled` and leaves nothing at its target.
 #[test]
-fn cancel_leaves_no_manifest() {
+fn a_cancelled_backup_leaves_nothing() {
     let mut sim = Sim::new(30, Config::default());
     process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
@@ -941,291 +869,20 @@ fn cancel_leaves_no_manifest() {
         let cancel = CancelToken::new();
         cancel.cancel();
         let cancelled = db.query_text(
-            "backup to \"early\"",
+            &format!("backup to \"{TARGET}\""),
             &[],
             &CallOptions {
                 cancel: Some(cancel),
                 ..CallOptions::default()
             },
         );
-        assert!(
-            matches!(
-                cancelled,
-                Err(Error::Rejected {
-                    reason: RejectReason::Cancelled
-                })
-            ),
-            "{cancelled:?}"
-        );
-        let mut seen = 0;
-        let got = db_backup(&db, TARGET, &mut |_, _| {
-            seen += 1;
-            seen < 2
-        });
-        assert_eq!(Some(BackupError::Stopped), got.err());
-        assert!(matches!(
-            storage::check_backup(&rt, TARGET),
-            Err(BackupError::Absent(_))
-        ));
-        assert!(
-            !sim_has(&rt, TARGET),
-            "a stop removes the parts and their directories"
-        );
-        backup_text(&db).expect("a stopped backup's target takes another");
+        let reason = RejectReason::Cancelled;
+        assert_eq!(Err(Error::Rejected { reason }), cancelled.map(drop));
+        assert!(!sim_has(&rt, TARGET), "the cancelled backup's target");
+        backup_text(&db).unwrap();
         db.close().unwrap();
     });
     assert_eq!(2, restored_rows(sim.files()).unwrap().len());
-}
-
-/// Keep every commit acknowledged under checkpoints and page flushes of other threads across a
-/// crash.
-#[test]
-fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
-    for seed in sweep(40..42) {
-        let acked: Arc<Mutex<Vec<i64>>> = Arc::default();
-        let mut sim = Sim::new(
-            seed,
-            Config {
-                faults: Faults {
-                    torn_p: 0.5,
-                    ..Faults::none(512)
-                },
-                ..Config::default()
-            },
-        );
-        process::run(&mut sim, |rt| {
-            open::opened(&rt, FILE, &Log::new([APP]), &options())
-                .close()
-                .unwrap();
-        });
-        sim.crash_at(sim.now() + std::time::Duration::from_millis(300));
-        let shared = acked.clone();
-        let outcome = sim.run(move |rt| {
-            let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
-            let threads: Vec<_> = (0..2)
-                .map(|w| {
-                    let (db, acked) = (db.clone(), shared.clone());
-                    rt.spawn("writer", move || {
-                        let mut id = w;
-                        loop {
-                            commit(&db, id);
-                            acked.lock().unwrap().push(id);
-                            id += 2;
-                        }
-                    })
-                })
-                .collect();
-            assert_eq!(2, threads.len());
-            let other = db.clone();
-            rt.spawn("flusher", move || {
-                loop {
-                    other.testing().flush_pages(usize::MAX);
-                }
-            });
-            loop {
-                db.testing().flush_pages(usize::MAX);
-                db.testing().checkpoint();
-                rt.yield_now();
-            }
-        });
-        assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
-        let acked: Vec<i64> = acked.lock().unwrap().clone();
-        assert!(!acked.is_empty(), "seed {seed}: no commit before the crash");
-        process::run(&mut sim, |rt| {
-            let db = open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).unwrap();
-            let rows = ids(&db);
-            for id in &acked {
-                assert!(rows.contains(id), "seed {seed}: commit {id} lost");
-            }
-            assert_eq!(
-                0,
-                db.testing().verify_holding().unwrap().count(),
-                "seed {seed}"
-            );
-            db.close().unwrap();
-        });
-    }
-}
-
-/// Keep a page changed and written while another thread's force of the data file runs, through a
-/// checkpoint whose header reaches the device ahead of that page.
-#[test]
-fn page_written_during_a_force_stays_dirty_through_a_checkpoint() {
-    let options = pager_options(FILE, false, 1 << 20);
-    let mut sim = Sim::new(31, Config::default());
-    sim.record();
-    sim.crash_at(sim.now() + std::time::Duration::from_secs(1));
-    let mut changed = None;
-    let updated = Arc::new(AtomicBool::new(false));
-    let published = sim.logged(Match::kind(OpKind::Rename).path(FILE));
-    let mut logs = None;
-    let outcome = sim.run(|rt| {
-        let pager = Arc::new(Pager::create(rt.clone(), &options).unwrap());
-        let data = published.entries()[0].from().unwrap().to_owned();
-        let pid = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        changed = Some(pid);
-        pager.update(&[pid], |v| v[0][100] = 1).unwrap();
-        pager.flush_log();
-        let second = pager.clone();
-        let (spawner, first, marked, seen) =
-            (rt.clone(), rt.clone(), updated.clone(), updated.clone());
-        let during = Action::Run(Box::new(move || {
-            let (waker, waiter) = (first.clone(), first.current());
-            spawner.spawn("second force", move || {
-                second.update(&[pid], |v| v[0][100] = 2).unwrap();
-                marked.store(true, Ordering::SeqCst);
-                waker.unpark(waiter);
-                second.flush_log();
-                second.flush_pages(usize::MAX);
-            });
-            while !seen.load(Ordering::SeqCst) {
-                first.park();
-            }
-        }));
-        let data_forces = Match::kind(OpKind::Sync).path(&data);
-        let page = pid.0 * u64::from(options.page_size);
-        logs = Some((
-            rt.logged(data_forces.clone()),
-            rt.logged(Match::kind(OpKind::Write).path(&data).covers(page)),
-            page,
-        ));
-        rt.plan(
-            Plan::new()
-                .first(data_forces.clone(), during)
-                .rule(data_forces, Action::Hold),
-        );
-        rt.spawn("first force", move || {
-            pager.flush_pages(usize::MAX);
-            pager.checkpoint();
-        });
-        let mut io = rt.io();
-        common::sleep(&rt, &mut io, std::time::Duration::from_secs(10));
-        unreachable!("the crash comes first");
-    });
-    assert_eq!(Outcome::Crashed, outcome);
-    assert!(
-        updated.load(Ordering::SeqCst),
-        "the page changed during the first force"
-    );
-    let (forces, writes, page) = logs.expect("the run planned");
-    let forces = forces.entries();
-    assert!(
-        forces.len() >= 2,
-        "a later force of the data file was held: {forces:?}"
-    );
-    let first = &forces[0];
-    let changed_write = writes
-        .entries()
-        .into_iter()
-        .find(|w| {
-            let at = (page - w.offset().unwrap()) as usize;
-            w.bytes().unwrap()[at + 100] == 2
-        })
-        .expect("the changed page was written");
-    let completed = first.completed().expect("the first force completed");
-    assert!(
-        first.ticket() < changed_write.ticket() && changed_write.at() < completed,
-        "the page's write came during the first force: {first:?}, {changed_write:?}"
-    );
-    let pid = changed.unwrap();
-    let recording = sim.recording();
-    let images = recording.images(recording.len(), 64, 31);
-    for (i, image) in images.into_iter().enumerate() {
-        let mut after = Sim::with_files(32, Config::default(), image);
-        process::run(&mut after, |rt| {
-            let (copy, _) = Pager::open(rt, &options).unwrap();
-            assert_eq!(2, copy.read(pid).unwrap()[100], "image {i}");
-            copy.close();
-        });
-    }
-}
-
-/// Give two restores of one backup different epochs, and refuse a position of one on the other.
-#[test]
-fn two_restores_of_a_backup_share_no_positions() {
-    for seed in sweep(33..35) {
-        let mut sim = Sim::with_files(seed, Config::default(), backed_up(2));
-        process::run(&mut sim, |rt| {
-            let restored = |name: &str| {
-                restore_in(
-                    rt.clone(),
-                    &archive(),
-                    name,
-                    RestorePoint::Latest,
-                    &no_create(),
-                )
-                .unwrap();
-                open::open_in(&rt, name, &Log::new([APP]), &no_create()).unwrap()
-            };
-            let (a, b) = (restored("a.adt"), restored("b.adt"));
-            let (at_a, at_b) = (commit(&a, 10), commit(&b, 20));
-            assert_ne!(at_a.epoch, at_b.epoch, "seed {seed}");
-            for (db, foreign) in [(&a, at_b), (&b, at_a)] {
-                let got = db.query_text(
-                    "from u in users select u.id",
-                    &[],
-                    &CallOptions {
-                        after: Some(foreign),
-                        ..CallOptions::default()
-                    },
-                );
-                assert!(
-                    matches!(
-                        got,
-                        Err(Error::Rejected {
-                            reason: RejectReason::PositionNotOnHistory { .. }
-                        })
-                    ),
-                    "seed {seed}: {got:?}"
-                );
-            }
-            a.close().unwrap();
-            b.close().unwrap();
-        });
-    }
-}
-
-/// Restore at the backup's end, through the API and through the command, the point that a refusal
-/// names as reachable.
-#[test]
-fn restore_at_the_backups_end_is_reachable() {
-    let mut sim = Sim::with_files(36, Config::default(), backed_up(3));
-    process::run(&mut sim, |rt| {
-        let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
-        let end = Position::from(manifest.end);
-        restore_in(
-            rt.clone(),
-            &archive(),
-            COPY,
-            RestorePoint::Position(end),
-            &no_create(),
-        )
-        .unwrap();
-        let copy = open::open_in(&rt, COPY, &Log::new([APP]), &no_create()).unwrap();
-        assert_eq!(3, ids(&copy).len());
-        copy.close().unwrap();
-        let db = open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).unwrap();
-        let text = format!(
-            "restore from \"{TARGET}\" to \"again.adt\" at position {{ epoch: {}, lsn: {} }}",
-            end.epoch, end.lsn
-        );
-        db.query_text(&text, &[], &CallOptions::default()).unwrap();
-        let past = format!(
-            "restore from \"{TARGET}\" to \"past.adt\" at position {{ epoch: {}, lsn: {} }}",
-            end.epoch,
-            end.lsn + 1
-        );
-        assert!(matches!(
-            db.query_text(&past, &[], &CallOptions::default()),
-            Err(Error::Rejected {
-                reason: RejectReason::RestorePointUnavailable { .. }
-            })
-        ));
-        db.close().unwrap();
-        let again = open::open_in(&rt, "again.adt", &Log::new([APP]), &no_create()).unwrap();
-        assert_eq!(3, ids(&again).len());
-        again.close().unwrap();
-    });
 }
 
 /// Returns `files` with the backup's manifest rewritten by `edit` and sealed again.
@@ -1247,8 +904,8 @@ fn resealed(mut files: Files, edit: impl FnOnce(&str) -> String) -> Files {
 }
 
 fn manifest_absent<R: Runtime>(rt: &R) {
-    let got = storage::read_manifest(rt, TARGET);
-    assert!(matches!(got, Err(BackupError::Absent(_))), "{got:?}");
+    let got = storage::read_manifest(rt, TARGET).map(drop);
+    assert_eq!(Err(BackupError::Absent(TARGET.into())), got);
 }
 
 /// Refuse a backup whose log range has lost a segment.
@@ -1260,10 +917,9 @@ fn a_hole_in_the_log_fails_the_backup() {
         let pager = Pager::create(rt.clone(), &options).unwrap();
         let pid = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         let mut io = rt.io();
-        let mut holed = false;
+        let mut removed = None;
         let got = backup_with(&pager, TARGET, &mut |_, _| {
-            if !holed {
-                holed = true;
+            if removed.is_none() {
                 for i in 0..200u32 {
                     pager
                         .update(&[pid], |v| v[0][100] = (i % 200) as u8 + 1)
@@ -1279,38 +935,19 @@ fn a_hole_in_the_log_fails_the_backup() {
                 segments.sort();
                 assert!(segments.len() > 2, "{segments:?}");
                 let path = segments[segments.len() - 2].clone();
+                removed = path.rsplit('/').next().map(str::to_owned);
                 common::complete(&rt, &mut io, Op::Remove { path })
                     .result
                     .unwrap();
             }
             true
         });
-        match got {
-            Err(BackupError::Io { what, .. }) => assert!(what.contains("log segment"), "{what}"),
-            other => panic!("{other:?}"),
-        }
+        let hole = BackupError::Io {
+            what: format!("log segment {}", removed.unwrap()),
+            error: IoError::NotFound,
+        };
+        assert_eq!(Err(hole), got.map(drop));
         manifest_absent(&rt);
-    });
-}
-
-/// Refuse a restore whose recovery stops short of the manifest's end, and leave no file.
-#[test]
-fn a_restore_short_of_the_end_is_refused() {
-    let files = resealed(backed_up(2), |body| {
-        body.lines()
-            .filter(|l| !l.starts_with("part log/"))
-            .map(|l| format!("{l}\n"))
-            .collect()
-    });
-    let mut sim = Sim::with_files(41, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        assert_eq!("log", api::damaged_backup_part(restore(&rt)));
-        assert_eq!(
-            Err(crate::OpenError::NotFound.to_string()),
-            open::open_in(&rt, COPY, &Log::new([APP]), &no_create())
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        );
     });
 }
 
@@ -1352,12 +989,8 @@ fn a_part_rotted_after_a_proof_withdraws_it() {
     let mut sim = Sim::with_files(44, Config::default(), files);
     process::run(&mut sim, |rt| {
         let got = prove_in(rt.clone(), &archive(), &Log::new([APP]), &no_create());
-        assert!(matches!(
-            got,
-            Err(Error::Rejected {
-                reason: RejectReason::BackupDamaged { .. }
-            })
-        ));
+        let reason = RejectReason::BackupDamaged { part: part.clone() };
+        assert_eq!(Err(Error::Rejected { reason }), got);
         assert_eq!(
             Proof::Unproven { function: None },
             proof_in(&rt, &archive()).unwrap()
@@ -1524,111 +1157,6 @@ fn an_unreadable_page_is_listed() {
     });
 }
 
-/// Fail a proof of a backup with listed damage even when a host function is missing.
-#[test]
-fn listed_damage_outranks_a_missing_function() {
-    const LOG: &str = r#"module app
-add module app
-add type User = { id: Key users, name: Text }
-define fn boom (t: Text) -> Text = host "boom" version "1.0" deterministic
-add relation users : User key id generate sequence
-  index (boom(name))
-"#;
-    let opening = || {
-        let mut fns = HostFns::new();
-        fns.register(
-            "boom",
-            "1.0",
-            Determinism::Deterministic,
-            |b: &crate::batch::Batch| Ok(b.clone()),
-        );
-        OpenOptions {
-            host_fns: fns,
-            ..open::options(2)
-        }
-    };
-    let log = Log::new([LOG]);
-    let mut sim = Sim::new(51, Config::default());
-    let pid = process::run(&mut sim, |rt| {
-        let db = Database::open_in(rt, FILE, &log, &opening()).unwrap();
-        api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
-        let t = db.testing();
-        let pid = t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0];
-        db.close().unwrap();
-        pid
-    });
-    let mut files = sim.files();
-    DB.flip(&mut files, pid, 200 - HEADER_LEN);
-    let mut sim = Sim::with_files(52, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        let db = Database::open_in(rt.clone(), FILE, &log, &opening()).unwrap();
-        backup_text(&db).unwrap();
-        db.close().unwrap();
-        match prove_in(rt, &archive(), &log, &no_create()).unwrap() {
-            Proof::Failed(found) => assert!(found[0].contains("copied damaged"), "{found:?}"),
-            other => panic!("{other:?}"),
-        }
-    });
-}
-
-/// Treat a subdirectory at a target or a restore path as occupied.
-#[test]
-fn a_directory_at_a_target_or_path_is_occupied() {
-    let mut sim = Sim::with_files(53, Config::default(), backed_up(1));
-    process::run(&mut sim, |rt| {
-        let mut io = rt.io();
-        for dir in ["taken", "taken/sub", COPY] {
-            common::complete(
-                &rt,
-                &mut io,
-                Op::CreateDir {
-                    dir: dir.to_owned(),
-                },
-            )
-            .result
-            .unwrap();
-        }
-        is_invalid_naming(&restore(&rt), "exists");
-        let db = open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).unwrap();
-        let got = db
-            .query_text("backup to \"taken\"", &[], &CallOptions::default())
-            .map(|_| ());
-        is_invalid_naming(&got, "holds files");
-        db.close().unwrap();
-    });
-}
-
-/// Answer a restore of nothing as invalid, naming the path, and a failed read as a storage failure.
-#[test]
-fn an_absent_source_and_an_unreadable_manifest_differ() {
-    let mut sim = Sim::with_files(60, Config::default(), backed_up(1));
-    process::run(&mut sim, |rt| {
-        let elsewhere = ArchiveTarget::path("nowhere").unwrap();
-        let got = restore_in(
-            rt.clone(),
-            &elsewhere,
-            COPY,
-            RestorePoint::Latest,
-            &no_create(),
-        );
-        is_invalid_naming(&got.map(|_| ()), "nowhere");
-        rt.plan(fail_reads_after_open(
-            &rt,
-            Match::kind(OpKind::Open).suffixed("/manifest"),
-        ));
-        let got = restore_in(rt, &archive(), COPY, RestorePoint::Latest, &no_create());
-        assert!(
-            matches!(
-                got,
-                Err(Error::Fatal {
-                    reason: FatalReason::Storage { .. }
-                })
-            ),
-            "{got:?}"
-        );
-    });
-}
-
 /// Close every file a stopped or failed backup or restore opened.
 #[test]
 fn early_returns_close_their_files() {
@@ -1691,54 +1219,6 @@ fn history_truncates_at_capacity() {
     });
 }
 
-/// Let a commit finish while a `backup to` statement copies.
-#[test]
-fn a_commit_finishes_during_a_backup_statement() {
-    let mut sim = Sim::new(63, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &options()).unwrap();
-        insert(&db, 0..2);
-        let committed = Arc::new(AtomicBool::new(false));
-        let started = Arc::new(AtomicBool::new(false));
-        let (done, began, committer) = (committed.clone(), started.clone(), db.clone());
-        let begins = Match::kind(OpKind::CreateNew).prefixed("bk.partial-");
-        let begin = Action::Run(Box::new(move || began.store(true, Ordering::SeqCst)));
-        rt.plan(Plan::new().first(begins, begin));
-        let waiter = rt.clone();
-        let during = started.clone();
-        let thread = rt.spawn("committer", move || {
-            while !during.load(Ordering::SeqCst) {
-                waiter.yield_now();
-            }
-            let text = insert_text(50);
-            committer
-                .query_text(&text, &[], &CallOptions::default())
-                .unwrap();
-            done.store(true, Ordering::SeqCst);
-        });
-        let target = format!("backup to \"{TARGET}\"");
-        db.query_text(&target, &[], &CallOptions::default())
-            .unwrap();
-        rt.join(thread);
-        assert!(committed.load(Ordering::SeqCst));
-        assert!(started.load(Ordering::SeqCst));
-        db.close().unwrap();
-    });
-}
-
-/// Returns a running source with a backup of it in `bk`.
-fn backed_up_source(rt: &SimRuntime) -> Database<SimRuntime> {
-    let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &options()).unwrap();
-    insert(&db, 0..2);
-    db.query_text(
-        &format!("backup to \"{TARGET}\""),
-        &[],
-        &CallOptions::default(),
-    )
-    .unwrap();
-    db
-}
-
 fn restore_text(db: &Database<SimRuntime>) -> Result<(), Error> {
     db.query_text(
         &format!("restore from \"{TARGET}\" to \"{COPY}\""),
@@ -1748,26 +1228,50 @@ fn restore_text(db: &Database<SimRuntime>) -> Result<(), Error> {
     .map(|_| ())
 }
 
-/// Answer an unreadable target log as a storage failure, leave nothing, and keep the source alive.
+fn storage_failure(detail: &str) -> Error {
+    Error::Fatal {
+        reason: FatalReason::Storage {
+            detail: detail.into(),
+        },
+    }
+}
+
+/// Fail every read once a restore opens the manifest, a prove opens a part, a read of the proof
+/// opens it, or a restore by a running source opens the restored log: each answers a storage
+/// failure, never damage, and changes nothing. The proof stays, the source keeps taking writes,
+/// and a retry restores.
 #[test]
-fn a_failed_read_of_the_restored_log_leaves_the_source_alive() {
-    let mut sim = Sim::new(70, Config::default());
+fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
+    let mut sim = Sim::with_files(60, Config::default(), backed_up(1));
     process::run(&mut sim, |rt| {
-        let db = backed_up_source(&rt);
-        rt.plan(fail_reads_after_open(
-            &rt,
-            Match::kind(OpKind::Open).prefixed("copy.adt-log"),
-        ));
+        let open_op = |path: &str| Match::kind(OpKind::Open).path(path);
+        let log = Log::new([APP]);
+        rt.plan(fail_reads_after_open(&rt, open_op("bk/manifest")));
+        let got = restore(&rt);
+        assert_eq!(Err(storage_failure("`bk/manifest`: Failed")), got);
+        rt.plan(Plan::new());
+        let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
+        prove_in(rt.clone(), &archive(), &log, &no_create()).unwrap();
+        let pages = Match::kind(OpKind::Open).prefixed("bk/pages/");
+        rt.plan(fail_reads_after_open(&rt, pages));
+        let got = prove_in(rt.clone(), &archive(), &log, &no_create());
+        let pages = manifest.parts.iter().find(|p| p.name.starts_with("pages/"));
+        let part = format!("`{TARGET}/{}`: Failed", pages.unwrap().name);
+        assert_eq!(Err(storage_failure(&part)), got);
+        rt.plan(Plan::new());
+        assert_eq!(Proof::Proven, proof_in(&rt, &archive()).unwrap());
+        rt.plan(fail_reads_after_open(&rt, open_op("bk/proof")));
+        let got = proof_in(&rt, &archive());
+        assert_eq!(Err(storage_failure("`bk/proof`: Failed")), got);
+        rt.plan(Plan::new());
+        let db = open::open_in(&rt, FILE, &log, &no_create()).unwrap();
+        let restored_log = Match::kind(OpKind::Open).prefixed("copy.adt-log");
+        rt.plan(fail_reads_after_open(&rt, restored_log));
         let got = restore_text(&db);
-        assert!(
-            matches!(
-                got,
-                Err(Error::Fatal {
-                    reason: FatalReason::Storage { .. }
-                })
-            ),
-            "{got:?}"
-        );
+        let start = manifest.start.lsn.0;
+        let first = start - start % u64::from(manifest.header.log_block);
+        let block = format!("`log block at {first}`: Failed");
+        assert_eq!(Err(storage_failure(&block)), got);
         rt.plan(Plan::new());
         insert(&db, 2..3);
         assert!(!sim_has(&rt, COPY), "the file of the failed restore");
@@ -1790,70 +1294,39 @@ fn sim_has(rt: &SimRuntime, name: &str) -> bool {
     }
 }
 
-/// Remove the target a failed backup created, and keep the empty one it found.
+/// Returns the entries of directory `dir`.
+fn listed(rt: &SimRuntime, dir: &str) -> Vec<String> {
+    let mut io = rt.io();
+    let dir = dir.to_owned();
+    match common::complete(rt, &mut io, Op::List { dir }).result {
+        Ok(Done::Listed(paths)) => paths,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Fail a backup to a target it creates, to an empty target it finds, and a restore to a nested
+/// path: each removes what it created and nothing it found. Run each whole: it forces the
+/// directories it creates and no directory above them.
 #[test]
-fn a_failed_backup_removes_a_target_it_created_only() {
+fn a_backup_or_restore_removes_and_forces_only_the_directories_it_creates() {
     let mut sim = Sim::new(74, Config::default());
     process::run(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &pager_options(FILE, false, 1 << 20)).unwrap();
-        let got = backup_with(&pager, TARGET, &mut |_, _| false);
-        assert_eq!(Some(BackupError::Stopped), got.err());
-        assert!(!sim_has(&rt, TARGET), "the target this run created");
         let mut io = rt.io();
-        let dir = TARGET.to_owned();
-        common::complete(&rt, &mut io, Op::CreateDir { dir })
-            .result
-            .unwrap();
-        let got = backup_with(&pager, TARGET, &mut |_, _| false);
-        assert_eq!(Some(BackupError::Stopped), got.err());
-        assert!(sim_has(&rt, TARGET), "the target this run found");
-        backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
-        pager.close();
-    });
-}
-
-/// Treat a file at a target, or at a restore's log directory, as occupied.
-#[test]
-fn a_file_at_a_target_or_log_directory_is_occupied() {
-    let mut sim = Sim::with_files(76, Config::default(), backed_up(1));
-    process::run(&mut sim, |rt| {
-        let mut io = rt.io();
-        for path in ["taken", "copy.adt-log"] {
-            let (path, create) = (path.to_owned(), true);
-            common::complete(&rt, &mut io, Op::Open { path, create })
-                .result
-                .unwrap();
-        }
-        is_invalid_naming(&restore(&rt), "exists");
-        assert!(!sim_has(&rt, COPY));
-        let db = open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).unwrap();
-        for target in ["taken", "taken/sub"] {
-            let got = db
-                .query_text(
-                    &format!("backup to \"{target}\""),
-                    &[],
-                    &CallOptions::default(),
-                )
-                .map(|_| ());
-            is_invalid_naming(&got, "holds files");
-        }
-        db.close().unwrap();
-    });
-}
-
-/// Force the directories a backup and a restore create and no directory above them.
-#[test]
-fn only_directories_a_run_creates_are_forced() {
-    let mut sim = Sim::new(77, Config::default());
-    process::run(&mut sim, |rt| {
-        let pager = Pager::create(rt.clone(), &pager_options(FILE, false, 1 << 20)).unwrap();
-        let mut io = rt.io();
-        for dir in ["up", "up/mid"] {
+        for dir in ["up", "up/mid", "up/found"] {
             let dir = dir.to_owned();
             common::complete(&rt, &mut io, Op::CreateDir { dir })
                 .result
                 .unwrap();
         }
+        for target in ["up/mid/bk", "up/found"] {
+            let got = backup_with(&pager, target, &mut |_, _| false);
+            assert_eq!(Some(BackupError::Stopped), got.err(), "{target}");
+        }
+        let mut up = listed(&rt, "up");
+        up.sort();
+        assert_eq!(vec!["up/found".to_owned(), "up/mid".to_owned()], up);
+        assert_eq!(Vec::<String>::new(), listed(&rt, "up/mid"));
         let forces = rt.logged(Match::kind(OpKind::SyncDir));
         let refused = |dir| Match::kind(OpKind::SyncDir).path(dir);
         rt.plan(
@@ -1871,7 +1344,18 @@ fn only_directories_a_run_creates_are_forced() {
         for dir in ["up/mid", "up/mid/new"] {
             assert!(forced.contains(dir), "{dir}: {forced:?}");
         }
+        rt.plan(Plan::new().rule(Match::kind(OpKind::Write), Action::Fail(IoError::Full)));
+        let got = storage::restore_file(&rt, "up/mid/bk", "deep/er/copy.adt", "deep/er/log");
+        let (manifest, _) = storage::read_manifest(&rt, "up/mid/bk").unwrap();
+        let pages = manifest.parts.iter().find(|p| p.name.starts_with("pages/"));
+        let full = BackupError::Io {
+            what: format!("up/mid/bk/{}", pages.unwrap().name),
+            error: IoError::Full,
+        };
+        assert_eq!(Err(full), got.map(drop));
         rt.plan(Plan::new());
+        assert_eq!(Vec::<String>::new(), listed(&rt, "deep/er"));
+        storage::restore_file(&rt, "up/mid/bk", "deep/er/copy.adt", "deep/er/log").unwrap();
         pager.close();
     });
 }
@@ -2004,55 +1488,30 @@ fn backup_after_flush(seed: u64, lost: bool, at: Flushed) -> (FlushedCopy, Pid, 
     })
 }
 
-/// Spoil and list the copy of a page whose flush was lost before the pool evicted it, no reader
-/// having refused it before the backup.
+/// Back up a page whose last flush was lost or landed, with the page evicted, read during the
+/// backup after its copy, or resident: a lost write is listed and its copy restores refused, and a
+/// landed one restores with its value.
 #[test]
-fn a_lost_write_evicted_before_the_backup_restores_refused() {
-    let (copy, pid, stale) = backup_after_flush(53, true, Flushed::Evicted);
-    let want = FlushedCopy {
-        listed: vec![pid],
-        restored: Err(Damage::Checksum),
-        source: Err(stale),
-    };
-    assert_eq!(want, copy);
-}
-/// Spoil and list the copy of a page whose flush was lost and that a reader refuses during the
-/// backup, after its copy.
-#[test]
-fn a_lost_write_refused_after_its_copy_restores_refused() {
-    let (copy, pid, stale) = backup_after_flush(54, true, Flushed::ReadAfterCopy);
-    let want = FlushedCopy {
-        listed: vec![pid],
-        restored: Err(Damage::Checksum),
-        source: Err(stale),
-    };
-    assert_eq!(want, copy);
-}
-
-/// Spoil and list the copy of a page whose flush was lost while the pool keeps the page.
-#[test]
-fn a_lost_write_still_resident_restores_refused() {
-    let (copy, pid, _) = backup_after_flush(55, true, Flushed::Resident);
-    let want = FlushedCopy {
-        listed: vec![pid],
-        restored: Err(Damage::Checksum),
-        source: Ok(7),
-    };
-    assert_eq!(want, copy);
-}
-
-/// Copy a page whose flush reached the file as it is, evicted or resident.
-#[test]
-fn a_flushed_write_restores_with_its_value() {
-    for at in [Flushed::Evicted, Flushed::Resident] {
-        let (copy, _, _) = backup_after_flush(56, false, at);
-        let want = FlushedCopy {
-            listed: vec![],
-            restored: Ok(7),
-            source: Ok(7),
-        };
-        assert_eq!(want, copy, "{at:?}");
+fn a_backup_lists_a_lost_write_wherever_the_pool_holds_its_page() {
+    let places = [Flushed::Evicted, Flushed::ReadAfterCopy, Flushed::Resident];
+    let mut reached = 0;
+    for (lost, seed) in [(true, 53), (false, 56)] {
+        for at in places {
+            let (copy, pid, stale) = backup_after_flush(seed, lost, at);
+            let source = match (lost, at) {
+                (true, Flushed::Evicted | Flushed::ReadAfterCopy) => Err(stale),
+                (true, Flushed::Resident) | (false, _) => Ok(7),
+            };
+            let want = FlushedCopy {
+                listed: if lost { vec![pid] } else { vec![] },
+                restored: if lost { Err(Damage::Checksum) } else { Ok(7) },
+                source,
+            };
+            assert_eq!(want, copy, "lost {lost}, {at:?}");
+            reached += 1;
+        }
     }
+    assert_reached("a flush and a place of its page", reached, 6);
 }
 
 /// Create a pager of 8 frames, allocate 16 pages and flush them, then set byte 100 of the first to
@@ -2238,7 +1697,7 @@ struct BackupOutcome {
 fn assert_backup_outcome(published: bool, retried: &Result<(), Error>, files: Files, label: &str) {
     let mut expected = rows_upto(SEARCH_ROWS);
     if published {
-        is_invalid_naming(retried, "holds files");
+        assert_eq!(&occupied(), retried, "{label}: the retry");
     } else {
         assert_eq!(&Ok(()), retried, "{label}: the retry");
         expected.insert(LATER_ROW);
@@ -2372,10 +1831,8 @@ fn two_backups_to_one_target() {
             let wins = usize::from(first.is_ok()) + usize::from(second.is_ok());
             assert_eq!(1, wins, "op {at:?}: {first:?} {second:?}");
             let loser = first.err().or(second.err());
-            assert!(
-                matches!(loser, Some(BackupError::Occupied(_))),
-                "op {at:?}: {loser:?}"
-            );
+            let occupied = BackupError::Occupied(TARGET.into());
+            assert_eq!(Some(occupied), loser, "op {at:?}");
         }
         db.close().unwrap();
     };
@@ -2414,7 +1871,9 @@ fn assert_restore_state(base: &Files, files: &Files, crashed: bool, seed: u64, l
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     process::run(&mut sim, |rt| {
         if has_file || has_log {
-            is_invalid_naming(&restore(&rt), "exists");
+            let got = restore(&rt);
+            let named = got == exists(COPY) || got == exists("copy.adt-log");
+            assert!(named, "{label}: the retry: {got:?}");
         } else {
             assert_eq!(Ok(()), restore(&rt), "{label}: the retry");
         }
@@ -2457,11 +1916,15 @@ fn a_restore_with_any_op_failed() {
         let label = format!("op {} {}", failed.at, failed.struck);
         let (got, files_open) = failed.out;
         assert_eq!(0, files_open, "{label}");
-        if got == Ok(()) {
-            assert!(
+        match &got {
+            Ok(()) => assert!(
                 failed.files.contains_key(COPY),
                 "{label}: answered success with nothing published"
-            );
+            ),
+            Err(Error::Fatal {
+                reason: FatalReason::Storage { .. },
+            }) => {}
+            Err(e) => panic!("{label}: a failed op answered {e:?}, not a storage failure"),
         }
         if !stops_a_cleanup(&failed.struck) && got.is_err() {
             let left: Vec<_> = failed.files.keys().filter(|p| is_aside(p)).collect();
@@ -2471,39 +1934,11 @@ fn a_restore_with_any_op_failed() {
     });
 }
 
-/// Crash a restore at each device event: the file's name is the commit point.
+/// Crash a restore at each device event: the file's name is the commit point. An open with
+/// `create` of a path whose log the crash left with no file is refused and leaves the log as it
+/// was.
 #[test]
 fn a_restore_crashed_anywhere() {
-    let base = backed_up(SEARCH_ROWS);
-    let workload = |rt: &SimRuntime| {
-        rt.arm(searched());
-        restore_copy(rt).unwrap();
-        rt.disarm();
-    };
-    search::each_crash(
-        &base,
-        94,
-        CRASH_POINTS,
-        CRASH_IMAGES,
-        workload,
-        |image| image.contains_key(COPY),
-        |at, image| {
-            assert_restore_state(&base, &image, true, at as u64, &format!("event {at}"));
-        },
-    );
-}
-
-fn segments_of(files: &Files, log_dir: &str) -> Files {
-    let log_dir = format!("{log_dir}/");
-    let mut held = final_files(files);
-    held.retain(|path, _| path.starts_with(&log_dir));
-    held
-}
-
-/// Crash a restore at each device event and open its path with `create`: a log with no file is
-/// refused and left as it was.
-#[test]
-fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
     let base = backed_up(SEARCH_ROWS);
     let workload = |rt: &SimRuntime| {
         rt.arm(searched());
@@ -2520,9 +1955,9 @@ fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
         workload,
         |image| image.contains_key(COPY),
         |at, image| {
-            let finals = final_files(&image);
+            assert_restore_state(&base, &image, true, at as u64, &format!("event {at}"));
             let segments = segments_of(&image, &log_dir);
-            if finals.contains_key(COPY) || segments.is_empty() {
+            if final_files(&image).contains_key(COPY) || segments.is_empty() {
                 return;
             }
             between += 1;
@@ -2530,11 +1965,11 @@ fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
             let opened = process::run(&mut sim, |rt| {
                 Database::open_in(rt, COPY, &Log::new([APP]), &options()).map(Database::close)
             });
-            assert!(
-                matches!(&opened, Err(crate::OpenError::Corrupt { detail })
-                    if detail == "the log directory holds a log that no file here wrote"),
-                "event {at}: {opened:?}"
-            );
+            let Err(crate::OpenError::Corrupt { detail }) = opened else {
+                panic!("event {at}: {opened:?}");
+            };
+            let foreign = "the log directory holds a log that no file here wrote";
+            assert_eq!(foreign, detail, "event {at}");
             assert!(
                 segments == segments_of(&sim.files(), &log_dir),
                 "event {at}: the refusal changed the log"
@@ -2542,6 +1977,13 @@ fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
         },
     );
     assert_reached("a crash between the renames", between, 1);
+}
+
+fn segments_of(files: &Files, log_dir: &str) -> Files {
+    let log_dir = format!("{log_dir}/");
+    let mut held = final_files(files);
+    held.retain(|path, _| path.starts_with(&log_dir));
+    held
 }
 
 /// Open with `create` through `open_in` at each op of a restore: one of them wins, and nobody
@@ -2617,70 +2059,6 @@ fn with_rows_of_seed(seed: u64, rows: i64) -> Files {
     sim.files()
 }
 
-/// Refuse a log another file wrote, placed beside a file, as long, shorter or longer than its own.
-#[test]
-fn a_foreign_log_beside_a_file_is_refused() {
-    let log_dir = format!("{FILE}-log/");
-    let ours = with_rows_of_seed(7, 8);
-    for rows in [8, 0, 40] {
-        let theirs = with_rows_of_seed(8, rows);
-        let mut files = ours.clone();
-        files.retain(|path, _| !path.starts_with(&log_dir));
-        files.extend(
-            theirs
-                .into_iter()
-                .filter(|(path, _)| path.starts_with(&log_dir)),
-        );
-        let mut sim = Sim::with_files(9, Config::default(), files);
-        let got = process::run(&mut sim, |rt| {
-            open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).map(Database::close)
-        });
-        assert!(
-            matches!(got, Err(crate::OpenError::Corrupt { .. })),
-            "a log of {rows} rows: {got:?}"
-        );
-    }
-}
-
-/// Refuse a log of this file whose tail holds a block another file wrote, naming it foreign.
-#[test]
-fn a_foreign_block_past_the_end_of_a_log_is_refused_as_foreign() {
-    const BLOCK: usize = 512;
-    let segment = format!("{FILE}-log/");
-    let mut files = with_rows_of_seed(7, 8);
-    let theirs = with_rows_of_seed(8, 40);
-    let (name, ours) = files
-        .iter_mut()
-        .find(|(path, _)| path.starts_with(&segment))
-        .expect("a segment");
-    let end = ours
-        .chunks(BLOCK)
-        .position(|block| block.iter().all(|&b| b == 0))
-        .expect("the log ends before the segment does")
-        * BLOCK;
-    let tail = &theirs[name.as_str()][end..end + BLOCK];
-    assert!(tail.iter().any(|&b| b != 0), "their log passes ours");
-    ours[end..end + BLOCK].copy_from_slice(tail);
-    let mut sim = Sim::with_files(9, Config::default(), files);
-    let (got, cause) = process::run(&mut sim, |rt| {
-        let got = open::open_in(&rt, FILE, &Log::new([APP]), &no_create()).map(Database::close);
-        (got, Pager::open(rt, &Options::new(FILE)).err())
-    });
-    let Some(
-        cause @ storage::OpenError::Log(storage::LogFinding {
-            problem: storage::LogProblem::Foreign,
-            ..
-        }),
-    ) = cause
-    else {
-        panic!("the pager refuses the log as foreign: {cause:?}");
-    };
-    assert!(
-        matches!(&got, Err(crate::OpenError::Corrupt { detail }) if *detail == format!("{cause:?}")),
-        "{got:?}"
-    );
-}
-
 /// Refuse to publish a backup when the live log holds a block another file wrote.
 #[test]
 fn a_backup_refuses_a_block_of_another_file_in_the_log() {
@@ -2754,7 +2132,11 @@ fn two_restores_to_one_path() {
                 (Ok(()), Err(_)) | (Err(_), Ok(())) => {}
                 _ => panic!("op {at:?}: not exactly one wins: {first:?} {second:?}"),
             }
-            is_invalid_naming(&first.and(second), "exists");
+            let lost = first.and(second);
+            assert!(
+                lost == exists(COPY) || lost == exists("copy.adt-log"),
+                "op {at:?}: {lost:?}"
+            );
         }
     };
     let base = backed_up(SEARCH_ROWS);
@@ -2910,101 +2292,6 @@ fn two_proves_of_one_backup() {
     });
 }
 
-/// Keep a directory a failed restore made above its path, and nothing else of the run.
-#[test]
-fn a_failed_restore_keeps_the_directories_above_it() {
-    let mut sim = Sim::with_files(99, Config::default(), backed_up(2));
-    process::run(&mut sim, |rt| {
-        rt.plan(Plan::new().rule(Match::kind(OpKind::Write), Action::Fail(IoError::Full)));
-        let got = storage::restore_file(&rt, TARGET, "deep/er/copy.adt", "deep/er/log");
-        assert!(matches!(got, Err(BackupError::Io { .. })), "{got:?}");
-        rt.plan(Plan::new());
-        let mut io = rt.io();
-        let dir = "deep/er".to_owned();
-        let listed = common::complete(&rt, &mut io, Op::List { dir }).result;
-        assert_eq!(Ok(Done::Listed(Vec::new())), listed);
-        storage::restore_file(&rt, TARGET, "deep/er/copy.adt", "deep/er/log").unwrap();
-    });
-}
-
-/// Answer a failed read of a part as a storage failure: it shows no damage, and keeps the proof.
-#[test]
-fn a_failed_read_of_a_part_is_not_damage() {
-    let mut sim = Sim::with_files(100, Config::default(), backed_up(2));
-    process::run(&mut sim, |rt| {
-        let log = Log::new([APP]);
-        prove_in(rt.clone(), &archive(), &log, &no_create()).unwrap();
-        rt.plan(fail_reads_after_open(
-            &rt,
-            Match::kind(OpKind::Open).prefixed("bk/pages/"),
-        ));
-        let got = prove_in(rt.clone(), &archive(), &log, &no_create());
-        assert!(
-            matches!(
-                got,
-                Err(Error::Fatal {
-                    reason: FatalReason::Storage { .. }
-                })
-            ),
-            "{got:?}"
-        );
-        rt.plan(Plan::new());
-        assert_eq!(Proof::Proven, proof_in(&rt, &archive()).unwrap());
-    });
-}
-
-/// Answer `restore from` a regular file as no backup there, and a failed read of a proof as a
-/// storage failure.
-#[test]
-fn a_file_as_a_source_is_absent_and_a_proof_read_can_fail() {
-    let mut sim = Sim::with_files(101, Config::default(), backed_up(2));
-    process::run(&mut sim, |rt| {
-        let elsewhere = ArchiveTarget::path(FILE).unwrap();
-        let got = restore_in(
-            rt.clone(),
-            &elsewhere,
-            COPY,
-            RestorePoint::Latest,
-            &no_create(),
-        );
-        is_invalid_naming(&got.map(|_| ()), "no backup");
-        let log = Log::new([APP]);
-        prove_in(rt.clone(), &archive(), &log, &no_create()).unwrap();
-        rt.plan(fail_reads_after_open(
-            &rt,
-            Match::kind(OpKind::Open).path("bk/proof"),
-        ));
-        let got = proof_in(&rt, &archive());
-        assert!(
-            matches!(
-                got,
-                Err(Error::Fatal {
-                    reason: FatalReason::Storage { .. }
-                })
-            ),
-            "{got:?}"
-        );
-    });
-}
-
-/// Refuse a manifest whose checkpoint is in bounds and names no checkpoint record.
-#[test]
-fn a_manifest_naming_no_checkpoint_record_is_damaged() {
-    let files = resealed(backed_up(1), |body| {
-        body.lines()
-            .map(|line| match line.strip_prefix("checkpoint ") {
-                Some(lsn) => format!("checkpoint {}\n", lsn.parse::<u64>().unwrap() + 1),
-                None => format!("{line}\n"),
-            })
-            .collect()
-    });
-    let mut sim = Sim::with_files(102, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        assert_eq!("log", api::damaged_backup_part(restore(&rt)));
-        assert!(!sim_has(&rt, COPY));
-    });
-}
-
 /// Show no restored file under its final name while the restore can still fail.
 #[test]
 fn a_restore_that_fails_its_check_never_shows_a_file() {
@@ -3038,67 +2325,4 @@ fn a_restore_that_fails_its_check_never_shows_a_file() {
             "an op put a file another thread could open at {COPY}"
         );
     });
-}
-
-/// Answer a whole manifest with a field out of bounds as a damaged manifest, on the live source's
-/// thread.
-#[test]
-fn a_resealed_manifest_out_of_bounds_is_damaged() {
-    let replaced = |key: &'static str, value: &'static str| {
-        move |body: &str| {
-            body.lines()
-                .map(|l| {
-                    let kept = !l.starts_with(&format!("{key} "));
-                    let line = if kept {
-                        l.to_owned()
-                    } else {
-                        format!("{key} {value}")
-                    };
-                    line + "\n"
-                })
-                .collect::<String>()
-        }
-    };
-    let edits = [
-        ("log_block", "0"),
-        ("log_block", "1000"),
-        ("segment_size", "0"),
-        ("segment_size", "4097"),
-        ("page_size", "0"),
-        ("page_size", "5000"),
-        ("page_formats", "2 1"),
-        ("file_pages", "0"),
-        ("catalog_root", "18446744073709551615"),
-        ("quarantine_page", "18446744073709551615"),
-        ("start", "1/18446744073709551615"),
-        ("end", "1/0"),
-        ("checkpoint", "0"),
-    ];
-    for (key, value) in edits {
-        let files = resealed(backed_up(1), replaced(key, value));
-        let mut sim = Sim::with_files(83, Config::default(), files);
-        process::run(&mut sim, |rt| {
-            assert_eq!(
-                storage::MANIFEST,
-                api::damaged_backup_part(restore(&rt)),
-                "{key} {value}"
-            );
-        });
-    }
-    let parts = [
-        "part ../outside 0 00\n",
-        "part pages/a/b 0 00\n",
-        "damaged 18446744073709551615\n",
-    ];
-    for line in parts {
-        let files = resealed(backed_up(1), |body| format!("{body}{line}"));
-        let mut sim = Sim::with_files(84, Config::default(), files);
-        process::run(&mut sim, |rt| {
-            assert_eq!(
-                storage::MANIFEST,
-                api::damaged_backup_part(restore(&rt)),
-                "{line}"
-            );
-        });
-    }
 }

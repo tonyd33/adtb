@@ -54,15 +54,6 @@ pub fn failure(db: &Database<SimRuntime>, text: &str) -> Error {
     }
 }
 
-pub fn is_invalid(e: &Error) -> bool {
-    matches!(
-        e,
-        Error::Rejected {
-            reason: RejectReason::Invalid { .. }
-        }
-    )
-}
-
 /// Returns every result of `text` run in `t`.
 pub fn in_txn_results(t: &mut AdHocTransaction<'_, SimRuntime>, text: &str) -> Vec<DynRows> {
     t.query_text(text, &[], &TxnCallOptions::default())
@@ -131,15 +122,5 @@ pub fn damaged_dump_part<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
             reason: RejectReason::DumpDamaged { part },
         }) => part,
         other => panic!("not DumpDamaged: {other:?}"),
-    }
-}
-
-/// Returns the part a backup refused as damaged. Panics on any other outcome.
-pub fn damaged_backup_part<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
-    match got {
-        Err(Error::Rejected {
-            reason: RejectReason::BackupDamaged { part },
-        }) => part,
-        other => panic!("not BackupDamaged: {other:?}"),
     }
 }

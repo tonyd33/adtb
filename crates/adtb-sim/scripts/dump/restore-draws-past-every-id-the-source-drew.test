@@ -1,0 +1,64 @@
+# A restored file draws each next generated key and role id past every one its source drew, a
+# deleted row's and a dropped role's included, and keeps each role's capabilities.
+use dump-app
+
+role web
+
+role gone
+
+grant
+  grant adhoc to web
+
+drop role gone
+
+log
+  module app
+  grant read users to web
+
+reopen
+
+run
+  insert users { name: "cy" }
+
+query
+  from u in users where u.name == "cy" select u.id
+----
+users.key(65)
+
+run
+  delete u in users where u.name == "cy"
+
+run
+  dump to "d"
+
+restore d to copy.adt
+----
+
+reopen
+
+run
+  insert users { name: "dee" }
+
+query rowsort
+  users
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+User { id: users.key(66), name: "dee" }
+
+role new
+
+query
+  from r in catalog::roles where r.name == "new" select r.id
+----
+roles.key(66)
+
+as web query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"dee"
+
+as web error Denied { detail: "role `web` lacks `maintain`" }
+  vacuum users

@@ -1,0 +1,10 @@
+# A restore from a path holding no backup, absent or a regular file, is refused naming the path and
+# writes nothing.
+use dump-app
+
+restore nowhere to copy.adt error Invalid { detail: "no backup is at `nowhere`" }
+
+restore app.adt to copy.adt error Invalid { detail: "no backup is at `app.adt`" }
+
+probe files copy
+----

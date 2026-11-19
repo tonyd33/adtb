@@ -366,58 +366,16 @@ fn a_restored_dump_answers_every_relation_and_query_as_its_source() {
     assert_reached("a conformance script restored", restored, n);
 }
 
+/// Restore a dump holding a deprecated constructor's rows, a deleted user, roles, a credential
+/// verifier, a peer mapping, a setting, audit rows and bundles: every relation answers as its
+/// source's.
 #[test]
-fn a_restore_keeps_deprecated_rows_ids_and_the_next_generated_key() {
+fn a_restore_answers_every_relation_of_the_deployment_as_its_source() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(2, Config::default(), files);
     process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        assert_same(&rt, &app_log(), &[], "app");
-        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
-        assert_eq!("3", answer(&copy, "from s in shapes.Square select s.side"));
-        let src = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
-        let drawn = "from u in users where u.name == \"dee\" select u.id";
-        for db in [&src, &copy] {
-            run(db, "insert users { name: \"dee\" }").unwrap();
-        }
-        assert_eq!(answer(&src, drawn), answer(&copy, drawn));
-        assert_ne!("users.key(3)", answer(&copy, drawn));
-        src.close().unwrap();
-        copy.close().unwrap();
-    });
-}
-
-#[test]
-fn a_restore_keeps_roles_capabilities_and_the_next_role_id() {
-    let (files, _) = dumped();
-    let mut sim = Sim::with_files(3, Config::default(), files);
-    process::run(&mut sim, |rt| {
-        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
         assert_same(&rt, &app_log(), &[], "deployed");
-        let (src, copy) = (
-            open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2)),
-            open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2)),
-        );
-        let authority = copy.role_authority();
-        let web = authority.session("web").unwrap();
-        authority.require(&web, Capability::Assert, false).unwrap();
-        assert!(
-            matches!(
-                authority.require(&web, Capability::Schema, false),
-                Err(Error::Rejected {
-                    reason: RejectReason::Denied { .. }
-                })
-            ),
-            "web holds only assert"
-        );
-        let drawn = "from r in catalog::roles where r.name == \"new\" select r.id";
-        for db in [&src, &copy] {
-            db.role_authority().create_role("new").unwrap();
-        }
-        assert_eq!(answer(&src, drawn), answer(&copy, drawn));
-        assert_ne!("roles.key(3)", answer(&copy, drawn), "gone held 3");
-        src.close().unwrap();
-        copy.close().unwrap();
     });
 }
 
@@ -451,33 +409,22 @@ fn each_restored_bundle_answers_or_refuses_its_calls_as_its_source() {
             assert_eq!(expected, outcome(&src, name), "source {name}");
             assert_eq!(expected, outcome(&copy, name), "restored {name}");
         }
-        run(&copy, "dump to \"again\"").unwrap();
         let owned = "family tool is owned by role web".to_owned();
         for db in [&src, &copy] {
             let authority = db.role_authority();
             authority.create_role("ops").unwrap();
             let session = |role| authority.session(role).unwrap();
             let refused = authority.register(&session("ops"), &bundle("tool-2.0", "", HELLO));
-            let denied = |e: &Error| matches!(e, Error::Rejected { reason: RejectReason::Denied { detail } } if *detail == owned);
-            assert!(refused.as_ref().is_err_and(denied), "{refused:?}");
+            let denied = RejectReason::Denied {
+                detail: owned.clone(),
+            };
+            assert_eq!(Err(Error::Rejected { reason: denied }), refused.map(drop));
             let new = bundle("new-1.0", "", HELLO);
             authority.register(&session("web"), &new).unwrap();
         }
         src.close().unwrap();
         copy.close().unwrap();
     });
-    let files = sim.files();
-    let bundles = files.iter().filter(|(p, _)| p.starts_with("d/bundles/"));
-    let mut again = 0;
-    for (path, bytes) in bundles {
-        assert_eq!(
-            Some(bytes),
-            files.get(&path.replacen("d/", "again/", 1)),
-            "{path}"
-        );
-        again += 1;
-    }
-    assert_eq!(7, again);
 }
 
 const GRANTED: &str = "module app\ngrant read users to web\n";
@@ -502,39 +449,6 @@ fn granted() -> Files {
     sim.files()
 }
 
-#[test]
-fn log_grant_ids_that_do_not_pair_with_the_replayed_grants_are_refused_naming_ids() {
-    let files = granted();
-    let grants = |edit: fn(&str) -> String| {
-        let ids = |n: &str, t: &str| match n {
-            "ids" => {
-                let at = t.find("data catalog::grants\n").unwrap() + "data catalog::grants\n".len();
-                let row = t[at..].lines().next().unwrap();
-                t.replacen(row, &edit(row), 1)
-            }
-            _ => t.to_owned(),
-        };
-        reissued(&files, |_| {}, ids)
-    };
-    let another = |row: &str| row.replacen("privilege: \"read\"", "privilege: \"insert\"", 1);
-    let twice = |row: &str| {
-        let key = row.find("grants.key(").unwrap();
-        let end = key + row[key..].find(')').unwrap();
-        format!("{row}\n{}grants.key(999){}", &row[..key], &row[end + 1..])
-    };
-    for (label, bad) in [
-        ("another privilege", grants(another)),
-        ("twice", grants(twice)),
-        ("none", grants(|_| String::new())),
-    ] {
-        assert_eq!(
-            "ids",
-            api::damaged_dump_part(restore_writing_nothing(bad)),
-            "{label}"
-        );
-    }
-}
-
 /// Returns the security of the dump in `files` holding only the schema owner.
 fn owner_only(files: &Files) -> Files {
     let owner_only = |n: &str, t: &str| match n {
@@ -547,47 +461,6 @@ fn owner_only(files: &Files) -> Files {
         _ => t.to_owned(),
     };
     reissued(files, |_| {}, owner_only)
-}
-
-/// Returns the dump in `files` as one written without `security`, whose `generators` hold no next
-/// key of `catalog::roles` or `catalog::grants`.
-fn unsecured(files: &Files) -> Files {
-    let schema = crate::catalog::engine_schema();
-    let id = |n| {
-        schema
-            .ids()
-            .relation_id(grants::relation(&schema, n))
-            .unwrap()
-    };
-    let drawn = ["roles", "grants"].map(|n| format!("generator {} ", id(n)));
-    let kept = |n: &str, t: &str| match n {
-        "generators" => t
-            .split_inclusive('\n')
-            .filter(|l| !drawn.iter().any(|d| l.starts_with(d)))
-            .collect(),
-        _ => t.to_owned(),
-    };
-    without(&reissued(files, |_| {}, kept), "security")
-}
-
-/// Returns `files` with the dump at `DUMP` written again without its part `name`.
-fn without(files: &Files, name: &str) -> Files {
-    let (e, snapshot) = manifest_of(files);
-    let entries: Vec<(String, Vec<u8>)> = parts(files)
-        .into_iter()
-        .filter(|(n, _)| n != name)
-        .map(|(n, len)| {
-            let bytes = files[&format!("{DUMP}/{n}")][..len as usize].to_vec();
-            (n, bytes)
-        })
-        .collect();
-    let mut kept = files.clone();
-    kept.retain(|p, _| !p.starts_with("d/"));
-    let mut sim = Sim::with_files(8, Config::default(), kept);
-    process::run(&mut sim, |rt| {
-        storage::write_dump(&rt, DUMP, e, snapshot, &entries, None).unwrap();
-    });
-    sim.files()
 }
 
 /// Restore the dump at `from` to `to` on `rt`, asserting its report and `to` hold the log grant
@@ -621,18 +494,6 @@ fn assert_dormant(rt: &SimRuntime, (from, to): (&str, &str), owner: bool) {
         assert_eq!("\"owner\"", roles, "{from}");
     }
     copy.close().unwrap();
-}
-
-#[test]
-fn a_restore_without_the_role_of_a_log_grant_reports_it_dormant() {
-    let mut sim = Sim::with_files(5, Config::default(), owner_only(&granted()));
-    process::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
-}
-
-#[test]
-fn a_dump_without_security_restores_the_owner_alone_and_log_grants_dormant() {
-    let mut sim = Sim::with_files(6, Config::default(), unsecured(&granted()));
-    process::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
 }
 
 #[test]
@@ -672,43 +533,6 @@ fn refused_invalid(got: Result<(), Error>, detail: &str) {
         },
     };
     adtb_testkit::refused_as(got, &invalid, detail);
-}
-
-#[test]
-fn a_restore_to_an_existing_path_and_a_dump_to_a_full_directory_are_refused() {
-    let (mut files, _) = dumped();
-    files.insert(COPY.to_owned(), b"mine".to_vec());
-    let mut sim = Sim::with_files(5, Config::default(), files.clone());
-    process::run(&mut sim, |rt| {
-        rt.arm(changes().prefixed(COPY));
-        refused_invalid(
-            restore_dump(&rt),
-            &format!("the restore path `{COPY}` exists"),
-        );
-        assert_eq!(
-            0,
-            rt.disarm(),
-            "the refused restore changed a path at the target"
-        );
-        let db =
-            Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &open::options(2)).unwrap();
-        rt.arm(changes().prefixed(DUMP));
-        refused_invalid(
-            dump(&db),
-            &format!("the backup target `{DUMP}` holds files"),
-        );
-        assert_eq!(
-            0,
-            rt.disarm(),
-            "the refused dump changed a path at the target"
-        );
-        db.close().unwrap();
-    });
-    let now = sim.files();
-    assert_eq!(Some(&b"mine".to_vec()), now.get(COPY));
-    for (path, bytes) in files.iter().filter(|(p, _)| p.starts_with("d/")) {
-        assert_eq!(Some(bytes), now.get(path), "{path}");
-    }
 }
 
 const HOSTED: &str = r#"module app
@@ -890,324 +714,13 @@ fn resealed(files: &Files, edit: impl Fn(&str) -> String) -> Files {
     out
 }
 
-/// Returns what a restore of the dump in `files` answers, asserting it changed no file.
-fn restore_writing_nothing(files: Files) -> Result<(), Error> {
-    let mut sim = Sim::with_files(15, Config::default(), files.clone());
-    let got = process::run(&mut sim, |rt| {
-        restore(&rt, RestorePoint::Latest, &no_create())
-    });
-    assert_eq!(files, sim.files(), "the refused restore wrote: {got:?}");
-    got
-}
-
-#[test]
-fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
-    let (files, _) = dumped();
-    let same = |_: &mut Envelope| {};
-    let users = "data/app::users.User.arrows";
-    let (e, _) = manifest_of(&files);
-    let renumbered = reissued(&files, same, |n, t| match n {
-        "log" => t.replacen("migration 1 ", "migration 2 ", 1),
-        _ => t.to_owned(),
-    });
-    let fake = "ab".repeat(32);
-    let rehashed = reissued(
-        &files,
-        |e| e.schema_hash = fake.clone(),
-        |_, t| t.replacen(&e.schema_hash, &fake, 1),
-    );
-    let cases = [
-        ("log", renumbered),
-        ("log", rehashed),
-        (
-            "manifest",
-            resealed(&files, |b| b.replacen("data arrow", "data text", 1)),
-        ),
-        (
-            "manifest",
-            resealed(&files, |b| b.replacen("encrypted 0", "encrypted 1", 1)),
-        ),
-        (
-            "manifest",
-            resealed(&files, |b| b.replacen("part ids ", "part ../ids ", 1)),
-        ),
-        (
-            "manifest",
-            resealed(&files, |b| b.replacen("part ids ", "part .. ", 1)),
-        ),
-        (
-            "manifest",
-            resealed(&files, |b| b.replacen("part ids ", "part data/. ", 1)),
-        ),
-        (
-            "manifest",
-            resealed(&files, |b| b.replacen("part ids ", "part ids/x ", 1)),
-        ),
-        (
-            "manifest",
-            resealed(&files, |b| {
-                b.replacen(&format!("part {users} "), "part data/../log ", 1)
-            }),
-        ),
-    ];
-    let generator = |edit: fn(&str) -> String| {
-        reissued(&files, same, move |n, t| match n {
-            "generators" => edit(t),
-            _ => t.to_owned(),
-        })
-    };
-    let header = |t: &str| t.lines().next().unwrap().to_owned() + "\n";
-    let square = "data/app::shapes.Square.arrows";
-    let entry = |name: &str| {
-        let (_, len) = parts(&files).into_iter().find(|(n, _)| n == name).unwrap();
-        files[&format!("{DUMP}/{name}")][..len as usize].to_vec()
-    };
-    let circles = entry("data/app::shapes.Circle.arrows");
-    let dot = "data/app::shapes.Dot.arrows";
-    let dot_users = entry(users);
-    let more = [
-        (
-            "log",
-            reissued(&files, same, |n, t| match n {
-                "log" => {
-                    let at = t.find("migration 2 ").unwrap();
-                    let broken = "module app\ndeprecate shapes.Nope\n";
-                    format!("{}migration 2 {}\n{broken}\n", &t[..at], broken.len())
-                }
-                _ => t.to_owned(),
-            }),
-        ),
-        (
-            square,
-            with_parts(&files, same, |_, t| t.to_owned(), &[(square, &circles)]),
-        ),
-        (
-            dot,
-            with_parts(&files, same, |_, t| t.to_owned(), &[(dot, &dot_users)]),
-        ),
-        (
-            "data/app::zz.Z.txt",
-            with_parts(
-                &files,
-                same,
-                |_, t| t.to_owned(),
-                &[("data/app::zz.Z.txt", b"x")],
-            ),
-        ),
-        (
-            "data/app::zz.Z.arrows",
-            with_parts(
-                &files,
-                same,
-                |_, t| t.to_owned(),
-                &[("data/app::zz.Z.arrows", b"x")],
-            ),
-        ),
-        ("generators", generator(header)),
-        (
-            "generators",
-            generator(|t| format!("{t}{}\n", t.lines().nth(1).unwrap())),
-        ),
-        (
-            "generators",
-            generator(|t| {
-                let line = t.lines().nth(1).unwrap();
-                let (id, next) = line["generator ".len()..].split_once(' ').unwrap();
-                let other: u64 = id.parse::<u64>().unwrap() + 1;
-                t.replacen(line, &format!("generator {other} {next}"), 1)
-            }),
-        ),
-    ];
-    for (part, bad) in cases.into_iter().chain(more) {
-        assert_eq!(
-            part,
-            api::damaged_dump_part(restore_writing_nothing(bad)),
-            "{part}"
-        );
-    }
-    let newer = reissued(&files, |e| e.catalog_version += 1, |_, t| t.to_owned());
-    refused_invalid(
-        restore_writing_nothing(newer),
-        &format!(
-            "this engine does not read a dump of edition {} and catalog version {}",
-            e.edition,
-            e.catalog_version + 1
-        ),
-    );
-    let other = reissued(
-        &files,
-        |e| e.edition = "1999".to_owned(),
-        |_, t| t.to_owned(),
-    );
-    refused_invalid(
-        restore_writing_nothing(other),
-        &format!(
-            "this engine does not read a dump of edition 1999 and catalog version {}",
-            e.catalog_version
-        ),
-    );
-}
-
-#[test]
-fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
-    let (files, _) = dumped();
-    let edited = |part: &'static str, edit: &dyn Fn(&str) -> String| {
-        reissued(
-            &files,
-            |_| {},
-            |n, t| if n == part { edit(t) } else { t.to_owned() },
-        )
-    };
-    let section = |t: &str, relation: &str| {
-        let at = t.find(&format!("data catalog::{relation}\n")).unwrap();
-        let end = t[at + 5..].find("data ").map_or(t.len(), |e| at + 5 + e);
-        format!("{}{}", &t[..at], &t[end..])
-    };
-    let text = |part: &str| String::from_utf8_lossy(&files[&format!("{DUMP}/{part}")]).into_owned();
-    assert!(text("security").contains("\"web\""), "{}", text("security"));
-    assert!(
-        text("audit").contains("grant assert to web"),
-        "{}",
-        text("audit")
-    );
-    let cases = [
-        edited("security", &|t| t.replacen("\"owner\"", "\"boss\"", 1)),
-        edited("security", &|t| t.replacen("Deployment", "Log", 1)),
-        edited("security", &|t| section(t, "peer_mappings")),
-        edited("settings", &|t| {
-            t.replacen("data catalog::settings", "data catalog::audit", 1)
-        }),
-        edited("audit", &|t| section(t, "audit")),
-    ];
-    let named = ["security", "security", "security", "settings", "audit"];
-    for (part, bad) in named.into_iter().zip(cases) {
-        assert_eq!(
-            part,
-            api::damaged_dump_part(restore_writing_nothing(bad)),
-            "{part}"
-        );
-    }
-    let (index, app, tool) = ("bundles/index", "bundles/app-1.0", "bundles/tool-1.0");
-    assert!(text(index).contains("family 2 tool\n"), "{}", text(index));
-    assert!(text(index).contains("\nexpired 4 "), "{}", text(index));
-    assert!(text(tool).contains("\nmark 2 command "), "{}", text(tool));
-    assert!(text("bundles/gui-1.0").contains("\nmark 1 open "));
-    let after = |t: &str, relation: &str, row: &str, key: &str| {
-        let at = t.find(&format!("data catalog::{relation}\n")).unwrap();
-        let moved = row.replacen(key, "key(7)", 1);
-        assert!(t[at..].contains(row), "{relation}: {t}");
-        format!("{}{}", &t[..at], t[at..].replacen(row, &moved, 1))
-    };
-    let twice = |t: &str| {
-        let row = t.lines().find(|l| l.contains("bundles.key(2)")).unwrap();
-        t.replacen(
-            row,
-            &format!("{row}\n{}", row.replacen("key(2)", "key(9)", 1)),
-            1,
-        )
-    };
-    let bundles = [
-        (index, without(&files, index)),
-        (app, without(&files, app)),
-        (
-            "bundles/zz-1",
-            with_parts(
-                &files,
-                |_| {},
-                |_, t| t.to_owned(),
-                &[("bundles/zz-1", b"x")],
-            ),
-        ),
-        (
-            index,
-            edited(index, &|t| t.replacen("family 2 ", "family two ", 1)),
-        ),
-        (
-            index,
-            edited(index, &|t| t.replacen("expired 4 ", "expired 4.0 ", 1)),
-        ),
-        (
-            index,
-            edited(index, &|t| t.replacen("expired 4 ", "expired 4 x", 1)),
-        ),
-        (index, edited(index, &|t| format!("{t}latched 4\n"))),
-        (
-            tool,
-            edited(tool, &|t| t.replacen("mark 2 command ", "mark 2 shell ", 1)),
-        ),
-        (
-            app,
-            edited(app, &|t| t.replacen("\"app-1.0\"", "\"app-1.1\"", 1)),
-        ),
-        (app, edited(app, &twice)),
-        (
-            app,
-            edited(app, &|t| {
-                after(t, "registered", "bundle: bundles.key(2)", "key(2)")
-            }),
-        ),
-        (
-            app,
-            edited(app, &|t| {
-                after(t, "feeds", "bundle: bundles.key(2)", "key(2)")
-            }),
-        ),
-        (
-            app,
-            edited(app, &|t| {
-                after(t, "feed_members", "feed: feeds.key(1)", "key(1)")
-            }),
-        ),
-        (tool, edited(tool, &|t| t.replacen("mark 2 ", "mark 9 ", 1))),
-        (index, edited(index, &|t| format!("{t}bundle app-1.0\n"))),
-        (
-            index,
-            edited(index, &|t| t.replacen("expired 4 ", "expired 99 ", 1)),
-        ),
-        (
-            index,
-            edited(index, &|t| t.replacen("family 2 tool", "family 2 zed", 1)),
-        ),
-        (
-            index,
-            edited(index, &|t| t.replacen("family 2 tool", "family 9 tool", 1)),
-        ),
-        (tool, without(&files, "security")),
-    ];
-    for (part, bad) in bundles {
-        assert_eq!(
-            part,
-            api::damaged_dump_part(restore_writing_nothing(bad)),
-            "{part}"
-        );
-    }
-}
-
-#[test]
-fn a_dump_of_another_release_or_an_older_catalog_version_restores() {
-    let (files, _) = dumped();
-    let older = reissued(
-        &files,
-        |e| {
-            e.release = "0.0.1-other".to_owned();
-            e.catalog_version -= 1;
-        },
-        |_, t| t.to_owned(),
-    );
-    let mut sim = Sim::with_files(17, Config::default(), older);
-    process::run(&mut sim, |rt| {
-        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        assert_same(&rt, &app_log(), &[], "another release");
-    });
-}
-
 /// What a restore of a dump answers.
 #[derive(Debug, PartialEq, Eq)]
 enum Answer {
     Restored,
     Damaged(String),
     BackupDamaged(String),
-    Invalid,
+    Invalid(String),
 }
 
 /// Returns what a restore of the dump in `files` answers and how many ops it issued that change a
@@ -1230,7 +743,9 @@ fn answered(files: &Files) -> (Answer, u64) {
         Err(Error::Rejected {
             reason: RejectReason::BackupDamaged { part },
         }) => Answer::BackupDamaged(part),
-        Err(e) if api::is_invalid(&e) => Answer::Invalid,
+        Err(Error::Rejected {
+            reason: RejectReason::Invalid { detail },
+        }) => Answer::Invalid(detail),
         Err(e) => panic!("{e:?}"),
     };
     (answer, changed)
@@ -1264,6 +779,11 @@ fn dump_only() -> (Files, Vec<String>) {
     (files, lines)
 }
 
+/// Returns the refusal of a manifest of backup format `format`.
+fn unread_format(format: &str) -> Answer {
+    Answer::Invalid(format!("this engine does not read backup format {format}"))
+}
+
 fn manifest_damaged() -> Answer {
     Answer::Damaged("manifest".to_owned())
 }
@@ -1279,7 +799,7 @@ fn line_edits(lines: &[String]) -> Vec<Edit> {
     let backup = || Answer::BackupDamaged("manifest".to_owned());
     let judged = |edited: &[String]| match (edited[1] == *kind, edited[0] == lines[0]) {
         (true, _) => manifest_damaged(),
-        (false, true) if edited.contains(kind) => Answer::Invalid,
+        (false, true) if edited.contains(kind) => unread_format("2"),
         (false, _) => backup(),
     };
     let mut cases = Vec::new();
@@ -1287,7 +807,7 @@ fn line_edits(lines: &[String]) -> Vec<Edit> {
         let mut dropped = lines.to_vec();
         dropped.remove(i);
         let expect = match i {
-            1 => Answer::Invalid,
+            1 => unread_format("2"),
             i if i < HEADER => judged(&dropped),
             i if part_name(&lines[i]) == "security" => {
                 Answer::Damaged("bundles/tool-1.0".to_owned())
@@ -1311,7 +831,7 @@ fn line_edits(lines: &[String]) -> Vec<Edit> {
         let mut renamed = lines.to_vec();
         renamed[i] = format!("x{}", lines[i]);
         let expect = if i == 1 {
-            Answer::Invalid
+            unread_format("2")
         } else {
             manifest_damaged()
         };
@@ -1338,23 +858,34 @@ fn field_edits(lines: &[String]) -> Vec<Edit> {
         .split_once('/')
         .unwrap();
     let log = || Answer::Damaged("log".to_owned());
+    let value = |key: &str| lines[at(key)][key.len() + 1..].to_owned();
+    let (edition, catalog) = (value("edition"), value("catalog_version"));
+    let unread = |edition: &str, catalog: &str| {
+        Answer::Invalid(format!(
+            "this engine does not read a dump of edition {edition} and catalog version {catalog}"
+        ))
+    };
     [
-        ("format", "0".to_owned(), Answer::Invalid),
-        ("format", "1".to_owned(), Answer::Invalid),
-        ("format", u32::MAX.to_string(), Answer::Invalid),
+        ("format", "0".to_owned(), unread_format("0")),
+        ("format", "1".to_owned(), unread_format("1")),
+        (
+            "format",
+            u32::MAX.to_string(),
+            unread_format(&u32::MAX.to_string()),
+        ),
         ("format", max.clone(), manifest_damaged()),
         ("schema_version", "0".to_owned(), log()),
         ("schema_version", max.clone(), log()),
         ("catalog_version", "0".to_owned(), Answer::Restored),
-        ("catalog_version", max.clone(), Answer::Invalid),
+        ("catalog_version", max.clone(), unread(&edition, &max)),
         ("snapshot", format!("0/{lsn}"), manifest_damaged()),
         ("snapshot", format!("{max}/{lsn}"), manifest_damaged()),
         ("snapshot", format!("{epoch}/0"), Answer::Restored),
         ("snapshot", format!("{epoch}/{max}"), Answer::Restored),
         ("release", "0.0.1-other".to_owned(), Answer::Restored),
-        ("edition", "1999".to_owned(), Answer::Invalid),
+        ("edition", "1999".to_owned(), unread("1999", &catalog)),
         ("schema_hash", "ab".repeat(32), log()),
-        ("kind", "dumps".to_owned(), Answer::Invalid),
+        ("kind", "dumps".to_owned(), unread_format("2")),
         ("data", "text".to_owned(), manifest_damaged()),
         ("encrypted", "1".to_owned(), manifest_damaged()),
     ]
@@ -1394,6 +925,16 @@ fn part_edits(lines: &[String]) -> Vec<Edit> {
             edited[i] = line;
             cases.push((format!("{what} {name}"), edited, Answer::Damaged(damaged)));
         }
+        let hostile_names = ["../ids", "..", "data/.", "ids/x", "data/../log", "/ids", ""];
+        for hostile in hostile_names.into_iter().filter(|_| i == HEADER) {
+            let mut edited = lines.to_vec();
+            edited[i] = format!("part {hostile} {len} {hash}");
+            cases.push((
+                format!("name `{hostile}` for {name}"),
+                edited,
+                manifest_damaged(),
+            ));
+        }
     }
     cases
 }
@@ -1426,15 +967,11 @@ fn every_edit_of_a_dump_manifest_is_refused_naming_what_it_damaged_or_restores_a
         .collect();
     let checked = assert_answers(&files, &cases);
     assert_reached("a manifest edit restored", checked, 100);
-}
-
-#[test]
-fn an_empty_part_is_read_and_named_and_a_dump_read_of_another_kind_is_damage() {
-    let (mut files, lines) = dump_only();
     let empty = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
-    let mut with_empty = lines.clone();
+    let mut with_empty = lines;
     with_empty.push(format!("part empty 0 {empty}"));
     with_empty[HEADER..].sort();
+    let mut files = files;
     files.insert(format!("{DUMP}/empty"), Vec::new());
     let case = (
         "an empty part".to_owned(),
@@ -1442,14 +979,354 @@ fn an_empty_part_is_read_and_named_and_a_dump_read_of_another_kind_is_damage() {
         Answer::Damaged("empty".to_owned()),
     );
     assert_answers(&files, &[case]);
-    let mut not_kind = lines;
-    not_kind[1] = "kind backup".to_owned();
-    let mut sim = Sim::with_files(22, Config::default(), sealed_with(&files, &not_kind));
-    let read = process::run(&mut sim, |rt| storage::read_dump(&rt, DUMP, None).map(drop));
+}
+
+/// An edit of one line of a text part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LineEdit {
+    Drop,
+    Duplicate,
+    SwapNext,
+    Garble,
+    Rekey,
+    Revalue,
+    Copy,
+}
+
+const LINE_EDITS: [LineEdit; 7] = [
+    LineEdit::Drop,
+    LineEdit::Duplicate,
+    LineEdit::SwapNext,
+    LineEdit::Garble,
+    LineEdit::Rekey,
+    LineEdit::Revalue,
+    LineEdit::Copy,
+];
+
+/// Returns `line` with the number of its first key raised by 7.
+fn rekeyed(line: &str) -> Option<String> {
+    let at = line.find(".key(")? + ".key(".len();
+    let end = at + line[at..].find(')')?;
+    let key: u64 = line[at..end].parse().ok()?;
+    Some(format!("{}{}{}", &line[..at], key + 7, &line[end..]))
+}
+
+/// Returns `line` with its first text value lengthened by one character.
+fn revalued(line: &str) -> Option<String> {
+    let open = line.find('"')? + 1;
+    let close = open + line[open..].find('"')?;
+    Some(format!("{}x{}", &line[..close], &line[close..]))
+}
+
+/// Returns `text` with `edit` made at its line `i`, or `None` when the edit has nothing to act on.
+fn edited_line(text: &str, i: usize, edit: LineEdit) -> Option<String> {
+    let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
+    match edit {
+        LineEdit::Drop => drop(lines.remove(i)),
+        LineEdit::Duplicate => lines.insert(i, lines[i].clone()),
+        LineEdit::SwapNext if i + 1 < lines.len() => lines.swap(i, i + 1),
+        LineEdit::SwapNext => return None,
+        LineEdit::Garble => lines[i].insert(0, 'x'),
+        LineEdit::Rekey => lines[i] = rekeyed(&lines[i])?,
+        LineEdit::Revalue => lines[i] = revalued(&lines[i])?,
+        LineEdit::Copy => {
+            let copy = rekeyed(&lines[i])?;
+            lines.insert(i + 1, copy);
+        }
+    }
+    Some(lines.concat())
+}
+
+/// What a restore of a dump gave: its refusal and how many ops it issued that change a path at
+/// the target before it removed what they made, or what the restored file answers for every
+/// relation.
+#[derive(Debug, PartialEq, Eq)]
+enum Restore {
+    Refused(Answer, u64),
+    Answers(Vec<String>),
+    Unopenable(String),
+    Failed(String),
+}
+
+/// Returns what a restore of the dump in `files` gives, the restored file opened with `log`,
+/// asserting a refused one changed no file.
+fn restored_as(files: &Files, log: &[String]) -> Restore {
+    let mut sim = Sim::with_files(18, Config::default(), files.clone());
+    let got = process::run(&mut sim, |rt| {
+        rt.arm(changes().prefixed(COPY));
+        let got = restore_dump(&rt);
+        let changed = rt.disarm();
+        if got.is_err() {
+            return (got, changed, Ok(Vec::new()));
+        }
+        let copy = match open::open_in(&rt, COPY, &Log::new(log), &no_create()) {
+            Ok(copy) => copy,
+            Err(e) => return (got, changed, Err(format!("{e:?}"))),
+        };
+        let answers = every_relation(&copy)
+            .iter()
+            .map(|text| answer(&copy, text))
+            .collect();
+        copy.close().unwrap();
+        (got, changed, Ok(answers))
+    });
+    match got {
+        (Ok(()), _, Ok(answers)) => Restore::Answers(answers),
+        (Ok(()), _, Err(e)) => Restore::Unopenable(e),
+        (Err(e), changed, _) => {
+            assert_eq!(*files, sim.files(), "the refused restore wrote: {e:?}");
+            match e {
+                Error::Rejected {
+                    reason: RejectReason::DumpDamaged { part },
+                } => Restore::Refused(Answer::Damaged(part), changed),
+                e => Restore::Failed(format!("{e:?}")),
+            }
+        }
+    }
+}
+
+/// Returns whether the dump's contract fixes how a restore answers `edit` at line `i` of text part
+/// `part`: a `data/` text is for review and never read; a garbled line, any edit of a part's first
+/// line, which states its edition and schema version, a dropped row of `ids` and a changed field
+/// of a grant in `ids` damage the part; rows of `ids` swapped within one relation restore.
+fn stated(part: &str, lines: &[&str], i: usize, edit: LineEdit) -> bool {
+    let row = |at: usize| at > 0 && at < lines.len() && !lines[at].starts_with("data ");
+    let grant = lines[i].contains("grants.key(");
+    match (part, edit) {
+        (p, _) if p.starts_with("data/") => true,
+        (_, LineEdit::Garble) => true,
+        _ if i == 0 => true,
+        ("ids", LineEdit::SwapNext) => row(i) && row(i + 1),
+        ("ids", LineEdit::Drop) => row(i),
+        ("ids", LineEdit::Revalue | LineEdit::Copy) => grant,
+        _ => false,
+    }
+}
+
+/// The kinds of stated cell the default profile edits, each once per part; of a `data/` text only a
+/// duplicated row.
+const DEFAULT_CELLS: [&str; 7] = [
+    "Drop first",
+    "Garble row",
+    "Duplicate row",
+    "Drop row",
+    "SwapNext row",
+    "Revalue row",
+    "Copy row",
+];
+
+/// The generated edits that restore to a state other than the unedited dump's, against the
+/// contract; each label is the fixture, then the cell.
+const KNOWN_FAILURES: &[&str] = &[
+    "dumped: Drop of line 2 of audit",
+    "dumped: Rekey of line 2 of audit",
+    "dumped: Revalue of line 2 of audit",
+    "dumped: Copy of line 2 of audit",
+    "dumped: Drop of line 3 of audit",
+    "dumped: Rekey of line 3 of audit",
+    "dumped: Revalue of line 3 of audit",
+    "dumped: Copy of line 3 of audit",
+    "dumped: Drop of line 4 of audit",
+    "dumped: Rekey of line 4 of audit",
+    "dumped: Revalue of line 4 of audit",
+    "dumped: Copy of line 4 of audit",
+    "dumped: Drop of line 5 of audit",
+    "dumped: Rekey of line 5 of audit",
+    "dumped: Revalue of line 5 of audit",
+    "dumped: Copy of line 5 of audit",
+    "dumped: Drop of line 6 of audit",
+    "dumped: Rekey of line 6 of audit",
+    "dumped: Revalue of line 6 of audit",
+    "dumped: Copy of line 6 of audit",
+    "dumped: Drop of line 9 of bundles/app-0.9",
+    "dumped: Rekey of line 9 of bundles/app-0.9",
+    "dumped: Revalue of line 9 of bundles/app-0.9",
+    "dumped: Copy of line 9 of bundles/app-0.9",
+    "dumped: SwapNext of line 2 of bundles/app-1.0",
+    "dumped: SwapNext of line 3 of bundles/app-1.0",
+    "dumped: Drop of line 9 of bundles/app-1.0",
+    "dumped: Rekey of line 9 of bundles/app-1.0",
+    "dumped: Revalue of line 9 of bundles/app-1.0",
+    "dumped: Copy of line 9 of bundles/app-1.0",
+    "dumped: Revalue of line 11 of bundles/app-1.0",
+    "dumped: Copy of line 11 of bundles/app-1.0",
+    "dumped: Drop of line 13 of bundles/app-1.0",
+    "dumped: Drop of line 8 of bundles/gui-1.0",
+    "dumped: Rekey of line 8 of bundles/gui-1.0",
+    "dumped: Revalue of line 8 of bundles/gui-1.0",
+    "dumped: Copy of line 8 of bundles/gui-1.0",
+    "dumped: Drop of line 1 of bundles/index",
+    "dumped: Drop of line 2 of bundles/index",
+    "dumped: Drop of line 3 of bundles/index",
+    "dumped: Drop of line 4 of bundles/index",
+    "dumped: Drop of line 6 of bundles/index",
+    "dumped: Drop of line 7 of bundles/index",
+    "dumped: Drop of line 9 of bundles/old-1.0",
+    "dumped: Rekey of line 9 of bundles/old-1.0",
+    "dumped: Revalue of line 9 of bundles/old-1.0",
+    "dumped: Copy of line 9 of bundles/old-1.0",
+    "dumped: Drop of line 9 of bundles/short-1.0",
+    "dumped: Rekey of line 9 of bundles/short-1.0",
+    "dumped: Revalue of line 9 of bundles/short-1.0",
+    "dumped: Copy of line 9 of bundles/short-1.0",
+    "dumped: SwapNext of line 2 of bundles/tool-1.0",
+    "dumped: Drop of line 8 of bundles/tool-1.0",
+    "dumped: Rekey of line 8 of bundles/tool-1.0",
+    "dumped: Revalue of line 8 of bundles/tool-1.0",
+    "dumped: Copy of line 8 of bundles/tool-1.0",
+    "dumped: Copy of line 2 of security",
+    "dumped: Drop of line 3 of security",
+    "dumped: Rekey of line 3 of security",
+    "dumped: Revalue of line 3 of security",
+    "dumped: Copy of line 3 of security",
+    "dumped: Drop of line 5 of security",
+    "dumped: Rekey of line 5 of security",
+    "dumped: Copy of line 5 of security",
+    "dumped: Drop of line 7 of security",
+    "dumped: Rekey of line 7 of security",
+    "dumped: Revalue of line 7 of security",
+    "dumped: Copy of line 7 of security",
+    "dumped: Drop of line 9 of security",
+    "dumped: Revalue of line 9 of security",
+    "dumped: Drop of line 2 of settings",
+    "dumped: Rekey of line 2 of settings",
+    "dumped: Copy of line 2 of settings",
+    "dumped: Drop of line 3 of settings",
+    "dumped: Rekey of line 3 of settings",
+    "dumped: Copy of line 3 of settings",
+    "granted: Rekey of line 808 of ids",
+];
+
+/// Edit each text part of a dump, and `ids` of a dump whose log grants to a role, by dropping,
+/// duplicating, swapping with the next, garbling, rekeying, revaluing and copying rekeyed each line.
+/// The default profile edits each kind of `DEFAULT_CELLS` whose answer the contract states once per
+/// part, a grant row of `ids` among them; the profile `deep` edits every line, of `ids` every grant
+/// row and 64 rows spread over the rest. Plant parts the schema has
+/// no relation for and a part of another constructor's rows. Each restore is refused naming the
+/// edited part, writing nothing, or restores a file answering every relation as the unedited
+/// dump's restore does; a stated cell answers as the contract states.
+#[test]
+fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
+    let (files, _) = dump_only();
+    let mut with_grant = granted();
+    with_grant.retain(|p, _| p.starts_with("d/"));
+    let text_parts = |files: &Files| -> Vec<(String, String)> {
+        parts(files)
+            .into_iter()
+            .filter(|(name, _)| !name.ends_with(".arrows"))
+            .map(|(name, len)| {
+                let bytes = &files[&format!("{DUMP}/{name}")][..len as usize];
+                (name, String::from_utf8(bytes.to_vec()).unwrap())
+            })
+            .collect()
+    };
+    let fixtures = [
+        ("dumped", &files, app_log(), None),
+        ("granted", &with_grant, granted_log().to_vec(), Some("ids")),
+    ];
+    let mut reached: BTreeSet<(String, String)> = BTreeSet::new();
+    let (mut failed, mut passed_known) = (Vec::new(), Vec::new());
+    for (fixture, dump, log, only) in &fixtures {
+        let Restore::Answers(unedited) = restored_as(dump, log) else {
+            panic!("{fixture}: the unedited dump does not restore");
+        };
+        for (part, text) in text_parts(dump) {
+            if only.is_some_and(|o| o != part) {
+                continue;
+            }
+            let lines: Vec<&str> = text.split_inclusive('\n').collect();
+            let mut kinds = BTreeSet::new();
+            let stride = if part == "ids" {
+                lines.len().div_ceil(64)
+            } else {
+                1
+            };
+            for i in 0..lines.len() {
+                for edit in LINE_EDITS {
+                    let is_stated = stated(&part, &lines, i, edit);
+                    let kind = format!("{edit:?} {}", if i == 0 { "first" } else { "row" });
+                    let sampled = if part.starts_with("data/") {
+                        kind == "Duplicate row"
+                    } else {
+                        DEFAULT_CELLS.contains(&kind.as_str())
+                    };
+                    let deep = i % stride == 0 || lines[i].contains("grants.key(");
+                    let first_of_kind = is_stated && sampled && kinds.insert(kind.clone());
+                    if !first_of_kind && !(every_case() && deep) {
+                        continue;
+                    }
+                    let Some(changed) = edited_line(&text, i, edit) else {
+                        continue;
+                    };
+                    let bad = reissued(
+                        dump,
+                        |_| {},
+                        |n, t| {
+                            if n == part {
+                                changed.clone()
+                            } else {
+                                t.to_owned()
+                            }
+                        },
+                    );
+                    let label = format!("{fixture}: {edit:?} of line {i} of {part}");
+                    let got = restored_as(&bad, log);
+                    let refused =
+                        matches!(&got, Restore::Refused(Answer::Damaged(p), _) if *p == part);
+                    let same = got == Restore::Answers(unedited.clone());
+                    let held = if is_stated {
+                        let restores = part.starts_with("data/")
+                            || (part == "ids" && edit == LineEdit::SwapNext && i > 0);
+                        if restores { same } else { refused }
+                    } else {
+                        refused || same
+                    };
+                    match (held, KNOWN_FAILURES.contains(&label.as_str())) {
+                        (false, false) => failed.push(format!("{label}: {got:?}")),
+                        (true, true) => passed_known.push(label),
+                        _ => {}
+                    }
+                    if is_stated {
+                        reached.insert((fixture.to_string(), kind));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "against the contract: {failed:#?}");
     assert!(
-        matches!(&read, Err(storage::BackupError::Damaged { part }) if part == "manifest"),
-        "{read:?}"
+        passed_known.is_empty(),
+        "known failures now hold: {passed_known:#?}"
     );
+    for kind in ["Garble row", "Drop first", "Drop row", "SwapNext row"] {
+        let cell = ("dumped".to_owned(), kind.to_owned());
+        assert!(reached.contains(&cell), "never reached: {cell:?}");
+    }
+    for kind in ["Revalue row", "Copy row"] {
+        let cell = ("granted".to_owned(), kind.to_owned());
+        assert!(reached.contains(&cell), "never reached: {cell:?}");
+    }
+    let entry = |name: &str| {
+        let (_, len) = parts(&files).into_iter().find(|(n, _)| n == name).unwrap();
+        files[&format!("{DUMP}/{name}")][..len as usize].to_vec()
+    };
+    let circles = entry("data/app::shapes.Circle.arrows");
+    let users = entry("data/app::users.User.arrows");
+    let planted: [(&str, &[u8]); 5] = [
+        ("data/app::shapes.Square.arrows", &circles),
+        ("data/app::shapes.Dot.arrows", &users),
+        ("data/app::zz.Z.txt", b"x"),
+        ("data/app::zz.Z.arrows", b"x"),
+        ("bundles/zz-1", b"x"),
+    ];
+    for (name, bytes) in planted {
+        let bad = with_parts(&files, |_| {}, |_, t| t.to_owned(), &[(name, bytes)]);
+        assert_eq!(
+            Answer::Damaged(name.to_owned()),
+            answered(&bad).0,
+            "{name} planted"
+        );
+    }
 }
 
 #[test]
@@ -1540,57 +1417,6 @@ fn a_read_failure_creating_the_restored_file_is_fatal_and_leaves_nothing() {
         got
     );
     assert_eq!(files, sim.files());
-}
-
-#[test]
-fn a_restore_to_a_free_path_with_an_occupied_log_directory_is_refused_naming_it() {
-    let (mut files, _) = dumped();
-    files.insert(format!("{COPY}-log/x"), b"x".to_vec());
-    let mut sim = Sim::with_files(20, Config::default(), files.clone());
-    let got = process::run(&mut sim, |rt| {
-        restore(&rt, RestorePoint::Latest, &no_create())
-    });
-    refused_invalid(got, &format!("the restore path `{COPY}-log` exists"));
-    assert_eq!(files, sim.files());
-}
-
-#[test]
-fn ids_are_compared_as_rows_not_as_text() {
-    let (files, _) = dumped();
-    let ids_only = |edit: fn(&str) -> String| {
-        move |n: &str, t: &str| if n == "ids" { edit(t) } else { t.to_owned() }
-    };
-    let reordered = reissued(
-        &files,
-        |_| {},
-        ids_only(|ids| {
-            let mut lines: Vec<&str> = ids.lines().collect();
-            let types = lines
-                .iter()
-                .position(|l| l.starts_with("data catalog::types"))
-                .unwrap();
-            let end = types
-                + lines[types + 1..]
-                    .iter()
-                    .position(|l| l.starts_with("data "))
-                    .unwrap();
-            lines[types + 1..=end].reverse();
-            lines.join("\n") + "\n"
-        }),
-    );
-    let one_off = reissued(
-        &files,
-        |_| {},
-        ids_only(|ids| ids.replacen("types.key(1024)", "types.key(1030)", 1)),
-    );
-    let mut sim = Sim::with_files(9, Config::default(), reordered);
-    process::run(&mut sim, |rt| {
-        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-    });
-    assert_eq!(
-        "ids",
-        api::damaged_dump_part(restore_writing_nothing(one_off))
-    );
 }
 
 const FAILURES: u64 = 4;

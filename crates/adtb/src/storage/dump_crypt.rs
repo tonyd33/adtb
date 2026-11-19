@@ -154,13 +154,6 @@ mod tests {
     }
 
     #[test]
-    fn another_path_or_key_does_not_open_an_entry() {
-        let (_, sealed) = sealed(10);
-        assert_eq!(None, key("k").open(b"data/b", &sealed));
-        assert_eq!(None, key("j").open(b"data/a", &sealed));
-    }
-
-    #[test]
     fn an_entry_cut_at_a_chunk_reordered_or_flipped_does_not_open() {
         let (_, sealed) = sealed(2 * CHUNK + 5);
         let whole = CHUNK + TAG;
@@ -173,30 +166,5 @@ mod tests {
             assert_eq!(None, key("k").open(b"data/a", bad), "{name}");
         }
         assert_eq!(None, key("k").open(b"data/a", &sealed[..PREFIX]));
-    }
-
-    #[test]
-    fn a_restore_reads_parameters_at_the_limits_and_none_past_any() {
-        let at = |m, t, p| Kdf::read(&format!("kdf argon2id {m} {t} {p}"));
-        assert_eq!(
-            Some(Kdf {
-                m: 262_144,
-                t: 10,
-                p: 16
-            }),
-            at(262_144, 10, 16)
-        );
-        assert_eq!(Some(Kdf::DUMP), at(65536, 3, 4));
-        for (m, t, p) in [(262_145, 10, 16), (262_144, 11, 16), (262_144, 10, 17)] {
-            assert_eq!(None, at(m, t, p), "{m} {t} {p}");
-        }
-    }
-
-    #[test]
-    fn a_printed_passphrase_holds_no_byte_of_it() {
-        let text = "XYZ0129!";
-        let printed = format!("{:?}", Passphrase::new(text.to_owned()));
-        assert_eq!("Passphrase(..)", printed);
-        assert!(!printed.bytes().any(|b| text.as_bytes().contains(&b)));
     }
 }

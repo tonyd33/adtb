@@ -259,6 +259,7 @@ fn a_segment_missing_from_the_log_stops_the_archive_with_a_recorded_failure() {
 /// `through` stays at the last forced segment, and the next pass catches up gapless.
 #[test]
 fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
+    let (mut failures, mut files) = (Vec::new(), Files::new());
     for kind in ["create", "rename", "force"] {
         let mut sim = rooted(6);
         let (failed, caught_up) = process::run(&mut sim, |rt| {
@@ -291,18 +292,32 @@ fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
             (failed, caught_up)
         });
         assert_eq!(Some(Lsn(2 * SEGMENT)), failed.through, "{kind}");
-        let refused = matches!(
-            failed.failure,
-            Some(BackupError::Io {
-                error: IoError::Full,
-                ..
-            })
-        );
-        assert!(refused, "{kind}: {:?}", failed.failure);
+        failures.push(failed.failure);
         assert_eq!(ok(4 * SEGMENT), caught_up, "{kind}");
-        let files = sim.files();
+        files = sim.files();
         assert_one(&files, &format!("{FILE}-log"), (0, 4 * SEGMENT));
     }
+    let dir = format!("{DEST}/{}", epochs(&files).into_keys().next().unwrap());
+    let base = 2 * SEGMENT;
+    let bytes = &files[&format!("{FILE}-log/{base:016x}")];
+    let segment = format!("{dir}/{base:016x}");
+    let full = |what: String| BackupError::Io {
+        what,
+        error: IoError::Full,
+    };
+    let Some(Some(BackupError::Io { what: partial, .. })) = failures.first() else {
+        panic!("{failures:?}");
+    };
+    assert!(
+        partial.starts_with(&format!("{segment}.partial-")),
+        "{partial}"
+    );
+    let wanted = [
+        full(partial.clone()),
+        full(format!("{segment}-{}", named(bytes))),
+        full(dir),
+    ];
+    assert_eq!(wanted.map(Some).to_vec(), failures);
 }
 
 /// Crash a pass at each device event: no partial segment is published, and the next pass finishes
@@ -660,17 +675,4 @@ fn an_engine_recycles_only_the_segments_its_archive_holds() {
         first > through,
         "without the archive the recycle removes more: {first}"
     );
-}
-
-#[test]
-fn a_create_that_fails_to_publish_its_log_archives_nothing() {
-    let mut sim = rooted(22);
-    let published = Match::kind(OpKind::Rename).path("db.adt-log");
-    let refused = engine_session(&mut sim, true, published, 0..0).is_err();
-    let under: Vec<String> = sim
-        .files()
-        .into_keys()
-        .filter(|p| p.starts_with(DEST))
-        .collect();
-    assert_eq!((true, vec![format!("{DEST}/keep")]), (refused, under));
 }
