@@ -35,9 +35,6 @@ pub struct Plan {
     pub terms: Terms,
     params: BTreeSet<Var>,
     pub root: Eval,
-    /// The type of `root`'s value.
-    #[cfg(test)]
-    pub ty: Ty,
     pub reads: Reads,
 }
 

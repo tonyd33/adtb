@@ -33,3 +33,14 @@ query
   tally(t for t in (from o in sales select o.total))
 ----
 Some { value: 2005 }
+# A user-defined aggregate correlated with the outer row folds once per outer row.
+query rowsort
+  from o in sales select { id: o.id, t: tally(p.total for p in sales where p.region == o.region) }
+----
+{ id: sales.key(1), t: Some { value: 2002 } }
+{ id: sales.key(2), t: Some { value: 2002 } }
+{ id: sales.key(3), t: Some { value: 1004 } }
+query
+  { a: tally(o.total for o in sales), b: count(o for o in sales) }
+----
+{ a: Some { value: 3006 }, b: 3 }

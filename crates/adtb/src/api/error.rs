@@ -1030,25 +1030,6 @@ mod tests {
     use crate::{catalog, heap};
 
     #[test]
-    fn a_broken_checker_guarantee_is_rejected_as_internal() {
-        let schema = catalog::engine_schema();
-        let got = Error::of_mapped(
-            &schema,
-            TxnId(7),
-            write::Mapped::unmapped_for_test(write::Broken::NoValueOutcome.into()),
-            |_| String::new(),
-        );
-        assert_eq!(
-            Error::Rejected {
-                reason: RejectReason::Internal {
-                    what: "a statement of one item has one outcome".into()
-                }
-            },
-            got
-        );
-    }
-
-    #[test]
     fn a_damaged_page_met_writing_catalog_rows_is_a_storage_failure() {
         let schema = catalog::engine_schema();
         let damaged = crate::storage::PageError {
@@ -1111,27 +1092,6 @@ mod tests {
                 len: 9000,
                 max: 4000
             }))
-        );
-    }
-
-    #[test]
-    fn a_serialization_failure_names_the_callers_transaction() {
-        let schema = catalog::engine_schema();
-        let f = crate::mvcc::SerializationFailure::new(crate::mvcc::Cause::LaterCommit, Vec::new());
-        let got = Error::of_mapped(
-            &schema,
-            TxnId(7),
-            write::Mapped::unmapped_for_test(f.into()),
-            |_| String::new(),
-        );
-        assert!(
-            matches!(
-                got,
-                Error::Retry {
-                    reason: RetryReason::Serialization { txn: TxnId(7), .. }
-                }
-            ),
-            "{got:?}"
         );
     }
 

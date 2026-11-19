@@ -244,9 +244,6 @@ pub struct HeapInfo {
 #[derive(Debug)]
 pub struct Program {
     pub root: Eval,
-    /// The type of the root's value.
-    #[cfg(test)]
-    pub ty: Ty,
     pub vars: usize,
     pub heaps: BTreeMap<HeapId, HeapInfo>,
     pub shared: Shared,
@@ -312,8 +309,6 @@ pub fn compile(
     }
     Ok(Program {
         root,
-        #[cfg(test)]
-        ty: plan.ty.clone(),
         vars: plan.terms.vars().len(),
         heaps: infos,
         shared: Shared {

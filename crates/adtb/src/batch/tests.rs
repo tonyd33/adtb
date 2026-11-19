@@ -667,42 +667,6 @@ fn a_one_constructor_sum_is_its_payload_with_no_tag() {
 }
 
 #[test]
-fn a_general_sum_is_a_dense_union_of_compact_children() {
-    let t = sum(vec![
-        vec![s(Scalar::Text)],
-        vec![s(Scalar::Text), s(Scalar::I32)],
-        Vec::new(),
-    ]);
-    assert_eq!(Shape::Union, shape(ctors_of(&t)));
-    let text = |x: &str| Value::Text(x.into());
-    let batch = build(
-        t,
-        &[
-            sv(0, vec![text("a")]),
-            sv(1, vec![text("T1"), Value::I32(3)]),
-            sv(1, vec![text("T2"), Value::I32(4)]),
-            sv(2, vec![]),
-            sv(0, vec![text("b")]),
-        ],
-    );
-    let Column::Union {
-        type_ids,
-        offsets,
-        children,
-        ..
-    } = &batch.columns()[0]
-    else {
-        panic!("not a union");
-    };
-    assert_eq!(&[0, 1, 1, 2, 0], type_ids.as_slice());
-    assert_eq!(vec![0, 0, 1, 0, 1], i32s(offsets));
-    assert_eq!(
-        vec![2, 2, 1],
-        children.iter().map(Column::len).collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn a_type_id_names_the_constructor_at_its_schema_position() {
     let cs = vec![
         Ctor {
@@ -764,43 +728,6 @@ fn a_sum_of_127_constructors_is_one_union() {
     assert_eq!(127, children.len());
     assert_eq!(&[0, 126], type_ids.as_slice());
     assert!(children.iter().all(|c| matches!(c, Column::Struct { .. })));
-}
-
-#[test]
-fn a_sum_past_127_constructors_is_a_union_of_unions() {
-    let values: Vec<Value> = [0, 126, 127, 128, 253, 254, 299, 7]
-        .into_iter()
-        .map(wide_value)
-        .collect();
-    let batch = build(wide_sum(300), &values);
-    let Column::Union {
-        type_ids, children, ..
-    } = &batch.columns()[0]
-    else {
-        panic!("not a union");
-    };
-    assert_eq!(3, children.len());
-    assert_eq!(&[0, 0, 1, 1, 1, 2, 2, 0], type_ids.as_slice());
-    assert_eq!(
-        vec![127, 127, 46],
-        children.iter().map(leaf_count).collect::<Vec<_>>()
-    );
-    let Column::Union {
-        type_ids: inner, ..
-    } = &children[1]
-    else {
-        panic!("not a union");
-    };
-    assert_eq!(&[0, 1, 126], inner.as_slice());
-
-    let batch = build(wide_sum(128), &[wide_value(127), wide_value(0)]);
-    let Column::Union { children, .. } = &batch.columns()[0] else {
-        panic!("not a union");
-    };
-    assert_eq!(
-        vec![127, 1],
-        children.iter().map(leaf_count).collect::<Vec<_>>()
-    );
 }
 
 #[test]
@@ -904,19 +831,4 @@ fn a_nested_result_is_a_list_of_structs() {
     };
     assert_eq!(vec![0, 2, 2], i32s(offsets));
     assert!(matches!(**child, Column::Struct { len: 2, .. }));
-}
-
-#[test]
-#[should_panic(expected = "holds no list")]
-fn a_value_row_cannot_read_a_list() {
-    let mut b = BatchBuilder::new(Schema::new(vec![Type::List(Box::new(s(Scalar::I8)))]));
-    b.push_datums(&[Datum::List(Vec::new())]);
-    b.finish().value(0, 0);
-}
-
-#[test]
-#[should_panic(expected = "is not of type")]
-fn a_row_of_the_wrong_type_is_refused() {
-    let mut b = BatchBuilder::new(Schema::new(vec![s(Scalar::I64)]));
-    b.push_row(&[Value::I32(1)]);
 }

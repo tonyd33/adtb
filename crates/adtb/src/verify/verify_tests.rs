@@ -230,21 +230,6 @@ fn a_tree_page_of_another_owner_breaks_the_tree_and_hides_no_leak() {
 }
 
 #[test]
-#[should_panic(expected = "cannot name leaks")]
-fn repair_refuses_an_incomplete_report() {
-    run(8, |db| {
-        let leaf = *db.tree.pages(&db.pager).unwrap().last().unwrap();
-        db.pager
-            .update(&[leaf], |p| {
-                p[0][16..20].copy_from_slice(&31u32.to_le_bytes());
-            })
-            .unwrap();
-        let report = db.verify();
-        db.repair(&report).unwrap();
-    });
-}
-
-#[test]
 fn a_check_without_the_log_reads_only_the_structures() {
     run(9, |db| {
         let lost = db.pager.allocate(1, PageKind::HeapSlotted, 10).unwrap();

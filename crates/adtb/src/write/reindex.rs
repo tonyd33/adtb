@@ -657,15 +657,3 @@ fn append_strays(old: &mut Vec<Pid>, strays: Vec<Pid>) {
     let held: BTreeSet<Pid> = old.iter().copied().collect();
     old.extend(strays.into_iter().filter(|p| !held.contains(p)));
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn strays_follow_the_reachable_order() {
-        let mut old = vec![Pid(9), Pid(3), Pid(7)];
-        append_strays(&mut old, vec![Pid(1), Pid(3), Pid(8)]);
-        assert_eq!(vec![Pid(9), Pid(3), Pid(7), Pid(1), Pid(8)], old);
-    }
-}

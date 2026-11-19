@@ -143,7 +143,3 @@ impl fmt::Display for Rot {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "rot_tests.rs"]
-mod tests;

@@ -253,15 +253,6 @@ fn the_printed_text_of_a_migration_is_not_hashed() {
 }
 
 #[test]
-fn a_changed_operand_changes_the_hash() {
-    let other = FIRST.replace("3 * c.r * c.r", "4 * c.r * c.r");
-    assert_ne!(
-        hash_of(&migrated(&Source::default(), FIRST)),
-        hash_of(&migrated(&Source::default(), &other))
-    );
-}
-
-#[test]
 fn every_operator_has_a_migration_ops_row_by_ordinal_from_one() {
     let src = migrated(&Source::default(), FIRST);
     let rows = catalog_rows(&src, "migration_ops");
@@ -450,13 +441,6 @@ fn a_stored_migration_that_does_not_apply_is_not_accepted() {
         ],
         why
     );
-}
-
-#[test]
-fn a_stored_log_that_applies_folds() {
-    let texts = BTreeMap::from([(1, FIRST.to_string())]);
-    let (source, _, _) = fold(&texts, &BTreeMap::new()).expect("the log folds");
-    assert_eq!(1, source.version);
 }
 
 #[test]

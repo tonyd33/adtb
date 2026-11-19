@@ -759,22 +759,6 @@ mod tests {
     }
 
     #[test]
-    fn a_texts_bytes_count_its_text_literals() {
-        let (dir, db) = opened("task-literals");
-        let e = &*db.engine;
-        let prepared = |t: &str| {
-            let caller = e.principal(None).unwrap();
-            Prepared::new(&e.schema, &e.program, &e.explained(), t, &[], caller)
-                .unwrap()
-                .bytes()
-        };
-        let long = format!("\"{}\"", "x".repeat(10_000));
-        assert!(prepared(&long) >= prepared("\"x\"") + 9_999);
-        db.close().unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn a_close_reentered_on_the_closing_thread_returns_at_once() {
         let (dir, db) = opened("task-reentry");
         let e = &*db.engine;

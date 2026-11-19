@@ -1,0 +1,17 @@
+seed 12
+use shop
+use customers
+
+migrate
+  module shop
+  deprecate payments.Invoice
+
+error NotOpen { ctor: "payments.Invoice", stage: "Deprecated" }
+  insert payments.Invoice { customer: customers.key(1), due: "may" }
+
+error NotOpen { ctor: "payments.Invoice", stage: "Deprecated" }
+  update p in payments.Card set Invoice { customer: p.customer, due: "may" }
+
+query rowsort
+  from p in payments.Invoice select p.due
+----

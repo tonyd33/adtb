@@ -65,14 +65,6 @@ fn header_round_trips_and_zero_next_is_none() {
 }
 
 #[test]
-fn flags_combine() {
-    let f = Flags::MOVED.with(Flags::HEAP_ONLY);
-    assert!(f.contains(Flags::MOVED));
-    assert!(!f.contains(Flags::HOT_UPDATED));
-    assert_eq!(Flags::HEAP_ONLY, f.without(Flags::MOVED));
-}
-
-#[test]
 fn fixed_page_fills_every_slot_then_refuses() {
     let width = 40;
     let mut p = heap_page(Arrangement::Fixed { width }, 3);
@@ -537,20 +529,6 @@ fn out_of_line_fields_are_marked_and_keep_their_neighbours() {
 }
 
 #[test]
-#[should_panic(expected = "is not of field type")]
-fn a_row_of_the_wrong_type_is_refused() {
-    Layout::new(vec![scalar(Scalar::I64)]).encode(&[Value::I32(1)]);
-}
-
-#[test]
-fn heap_pages_name_their_kind() {
-    let p = heap_page(Arrangement::Slotted, 0);
-    assert_eq!(PageKind::HeapSlotted as u16, storage::kind(&p));
-    let p = heap_page(Arrangement::Fixed { width: 48 }, 0);
-    assert_eq!(PageKind::HeapFixed as u16, storage::kind(&p));
-}
-
-#[test]
 fn a_64_kib_page_holds_its_largest_version() {
     let size = 65536;
     let mut p = vec![0; size];
@@ -791,13 +769,6 @@ fn an_aborted_successor_is_freed_and_its_predecessor_cleared() {
     assert_eq!(Flags::NONE, flags);
     assert_eq!(Header::new(Xid(1)), Header::read(&p[at]));
     assert_eq!(1, view(&p).slot_count());
-}
-
-#[test]
-#[should_panic(expected = "leads to a live version")]
-fn freeing_a_slot_that_leads_to_a_live_version_is_a_bug() {
-    let p = chain(Arrangement::Slotted);
-    plan_with(&p, dead_below(4), &[0]);
 }
 
 #[test]

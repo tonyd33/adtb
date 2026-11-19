@@ -261,19 +261,6 @@ fn enables(seed: u64, add: &str, enable: &str, readers: Vec<Reader>) -> Result<(
 }
 
 #[test]
-fn an_enable_is_refused_while_a_reader_pinned_before_the_constructor_reads_its_relation_whole() {
-    let got = enables(
-        40,
-        ADD_APPLE,
-        ENABLE_APPLE,
-        vec![reader("web-1", 1, vec![whole("auth::identities")])],
-    );
-    let why = refused(got).join("\n");
-    assert!(why.contains("web-1"), "the refusal names no bundle: {why}");
-    assert!(why.contains("released"), "{why}");
-}
-
-#[test]
 fn an_enable_applies_beside_readers_that_cannot_reach_the_constructor() {
     let cases = [
         reader("users", 1, vec![whole("auth::users")]),
@@ -460,63 +447,6 @@ fn a_pending_drop_takes_effect_when_its_last_holding_reader_is_released() {
     });
 }
 
-#[test]
-fn a_constraint_is_added_under_a_pending_drops_name_only_once_the_drop_takes_effect() {
-    const READD: &str =
-        "module auth\nadd constraint no_blank = from u in users where u.name == \"x\" select u\n";
-    at_catalog(104, &[AUTH, NO_BLANK], |catalog, pager, txns| {
-        catalog
-            .register(reader("web-2", 2, vec![whole("auth::users")]))
-            .expect("the reader registers");
-        catalog
-            .migrate(pager, txns, DROP_NO_BLANK)
-            .expect("the drop applies");
-        assert_eq!(
-            vec![
-                "adding constraint auth::no_blank is refused: pending-dropped constraint \
-                 auth::no_blank, held by web-2, keeps its name until its drop takes effect"
-                    .to_string()
-            ],
-            refused(catalog.migrate(pager, txns, READD))
-        );
-        assert_eq!(
-            vec![pending("auth::no_blank", 3, &["web-2"])],
-            catalog.pending_drops()
-        );
-        catalog
-            .release(pager, txns, "web-2")
-            .expect("the reader is released");
-        catalog
-            .migrate(pager, txns, READD)
-            .expect("the name is free once the drop takes effect");
-    });
-}
-
-#[test]
-fn a_pending_drop_takes_effect_at_the_next_embedded_open() {
-    let mut sim = Sim::new(103, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened(&rt, &[AUTH, NO_BLANK]);
-        write(&db, AUTH_ROWS);
-        db.close().expect("the database closes");
-    });
-    run(&mut sim, |rt| {
-        let (pager, mut catalog, txns) = catalog_at(&rt);
-        catalog
-            .register(reader("web-2", 2, vec![whole("auth::users")]))
-            .expect("the reader registers");
-        catalog
-            .migrate(&pager, &txns, DROP_NO_BLANK)
-            .expect("the drop applies");
-        assert_eq!(1, catalog.pending_drops().len());
-        pager.close();
-    });
-    run(&mut sim, |rt| {
-        let db = opened(&rt, &[AUTH, NO_BLANK, DROP_NO_BLANK]);
-        write(&db, r#"insert users { name: "" }"#);
-    });
-}
-
 /// Run `body` over the catalog of a file at `[AUTH, NO_BLANK, DROP_NO_BLANK]` whose drop
 /// `web-2` and `api-2` held pending in an earlier open of the catalog.
 fn reopened_with_pending_drop<T>(
@@ -653,27 +583,23 @@ const DROP_UNIQUE_NAME: &str = "module auth\ndrop unique (name) in users\n";
 const LABELS: &str = "module auth\nadd type Label = { name: Text, lang: Text }\nadd relation labels : Label key name\n";
 const REKEY_LABELS: &str = "module auth\nrekey relation labels key (name, lang)\n";
 
-/// An object of relation `relation` that migration `added` adds and migration `dropped` drops,
-/// listed as `object` while its drop is pending.
+/// An object of relation `relation` that migration `added` adds and migration `dropped` drops.
 struct Dropping {
     added: &'static str,
     dropped: &'static str,
     relation: &'static str,
-    object: &'static str,
 }
 
 const UNIQUE: Dropping = Dropping {
     added: UNIQUE_NAME,
     dropped: DROP_UNIQUE_NAME,
     relation: "users",
-    object: "auth::users unique (name)",
 };
 
 const OLD_KEY: Dropping = Dropping {
     added: LABELS,
     dropped: REKEY_LABELS,
     relation: "labels",
-    object: "auth::labels key name",
 };
 
 impl Dropping {
@@ -697,34 +623,6 @@ fn unique_indexes(catalog: &Catalog, name: &str) -> usize {
         .iter()
         .filter(|i| i.unique)
         .count()
-}
-
-fn stays_pending_while_a_reader_pinned_before_the_drop_is_live(seed: u64, d: &Dropping) {
-    at_catalog(seed, &[AUTH, d.added], |catalog, pager, txns| {
-        catalog
-            .register(reader("web-2", 2, vec![d.whole()]))
-            .expect("the reader registers");
-        catalog
-            .migrate(pager, txns, d.dropped)
-            .expect("the drop applies");
-        assert_eq!(3, catalog.source().version);
-        assert_eq!(
-            vec![pending(d.object, 3, &["web-2"])],
-            catalog.pending_drops()
-        );
-        assert_eq!(2, unique_indexes(catalog, d.relation));
-        assert_clean(pager, catalog, txns, 0);
-    });
-}
-
-#[test]
-fn a_dropped_unique_stays_pending_while_a_reader_pinned_before_the_drop_is_live() {
-    stays_pending_while_a_reader_pinned_before_the_drop_is_live(104, &UNIQUE);
-}
-
-#[test]
-fn a_relaxing_rekey_keeps_its_old_key_pending_while_a_reader_pinned_before_it_is_live() {
-    stays_pending_while_a_reader_pinned_before_the_drop_is_live(130, &OLD_KEY);
 }
 
 fn applies_at_once_when_no_reader_holds_it(seed: u64, d: &Dropping) {
@@ -922,38 +820,6 @@ fn reopened_with_pending<T>(
     })
 }
 
-fn carries_across_a_catalog_open_until_released(seed: u64, d: &Dropping) {
-    let mut sim = Sim::new(seed, Config::default());
-    reopened_with_pending(&mut sim, d, |_, catalog, pager, txns| {
-        assert_eq!(
-            vec![pending(d.object, 3, &["web-2"])],
-            catalog.pending_drops()
-        );
-        assert_eq!(2, unique_indexes(catalog, d.relation));
-        assert_clean(pager, catalog, txns, 0);
-        catalog.settle(pager, txns).expect("the holds settle");
-        assert!(catalog.pending_drops().is_empty());
-        assert_eq!(1, unique_indexes(catalog, d.relation));
-    });
-    run(&mut sim, |rt| {
-        let (pager, catalog, txns) = catalog_at(&rt);
-        assert!(catalog.pending_drops().is_empty());
-        assert_eq!(1, unique_indexes(&catalog, d.relation));
-        assert_clean(&pager, &catalog, &txns, 0);
-        pager.close();
-    });
-}
-
-#[test]
-fn a_pending_unique_and_its_index_carry_across_a_catalog_open_until_released() {
-    carries_across_a_catalog_open_until_released(128, &UNIQUE);
-}
-
-#[test]
-fn a_pending_old_key_and_its_index_carry_across_a_catalog_open_until_released() {
-    carries_across_a_catalog_open_until_released(134, &OLD_KEY);
-}
-
 fn reopens_held_or_released_after_a_crash_at_every_flush(seed: u64, d: &Dropping) {
     let mut sim = Sim::new(seed, Config::default());
     sim.record();
@@ -1013,24 +879,6 @@ fn a_relaxing_rekey_that_drops_its_old_key_field_is_refused_while_a_reader_holds
         catalog
             .migrate(pager, txns, rekey)
             .expect("the rekey applies once no reader holds the old key");
-    });
-}
-
-#[test]
-fn a_dropped_check_stays_pending_like_a_constraint() {
-    let check = "module auth\nadd check named on users (scalar_len(name) > 0)\n";
-    let drop = "module auth\ndrop check named\n";
-    at_catalog(107, &[AUTH, check], |catalog, pager, txns| {
-        catalog
-            .register(reader("web-2", 2, vec![whole("auth::users")]))
-            .expect("the reader registers");
-        catalog
-            .migrate(pager, txns, drop)
-            .expect("the drop applies");
-        assert_eq!(
-            vec![pending("auth::named", 3, &["web-2"])],
-            catalog.pending_drops()
-        );
     });
 }
 

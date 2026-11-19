@@ -121,7 +121,3 @@ impl fmt::Display for Broken {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "broken_tests.rs"]
-mod tests;

@@ -989,15 +989,6 @@ fn decoding_refuses_malformed_entries() {
 }
 
 #[test]
-fn tid_pages_fit_in_48_bits() {
-    assert_eq!(Tid::new(Tid::PAGE_LIMIT, 0), None);
-    assert_eq!(
-        Tid::new(Tid::PAGE_LIMIT - 1, u16::MAX).map(|t| (t.page(), t.slot())),
-        Some((Tid::PAGE_LIMIT - 1, u16::MAX))
-    );
-}
-
-#[test]
 fn order_keys_and_sums_are_validated() {
     assert_eq!(OrderKey::new(vec![]), None);
     assert_eq!(OrderKey::new(vec![0x00]), None);

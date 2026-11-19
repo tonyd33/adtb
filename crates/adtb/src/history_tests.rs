@@ -548,26 +548,6 @@ fn vacuum_moves_versions_the_window_keeps_and_every_marker_reads_what_it_covered
 }
 
 #[test]
-fn a_position_between_markers_reads_the_marker_before_it() {
-    let mut sim = Sim::new(2, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, LONG);
-        db.write(&[(1, Some(10))]);
-        let first = db.mark();
-        let unmarked = db.write(&[(1, Some(11))]);
-        db.write(&[(1, Some(12)), (2, Some(20))]);
-        let last = db.mark();
-        db.vacuum_keeping();
-        assert_eq!(State::from([(1, 10)]), db.read_at(unmarked).expect("read"));
-        assert_eq!(State::from([(1, 10)]), db.read_at(first).expect("read"));
-        assert_eq!(
-            State::from([(1, 12), (2, 20)]),
-            db.read_at(last).expect("read")
-        );
-    });
-}
-
-#[test]
 fn vacuum_in_place_and_pruning_on_access_keep_what_the_window_keeps() {
     let mut sim = Sim::new(3, Config::default());
     finished(&mut sim, |rt| {

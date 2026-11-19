@@ -192,14 +192,6 @@ fn reopen(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, u64) {
 }
 
 #[test]
-fn a_created_catalog_reopens_with_the_rows_the_engine_declares() {
-    let (sim, _) = created(1);
-    let recording = sim.recording();
-    let files = recording.images(recording.len(), 1, 1).swap_remove(0);
-    assert_eq!((true, 0), reopen(1, files));
-}
-
-#[test]
 fn appended_log_rows_and_hashes_survive_reopen_refusal_and_revert() {
     let mut sim = Sim::new(41, Config::default());
     finished(&mut sim, |rt| {

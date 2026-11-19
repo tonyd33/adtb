@@ -117,8 +117,6 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         terms: p.t,
         params,
         root,
-        #[cfg(test)]
-        ty: terms.ty(input.root).clone(),
         reads,
     };
     validate(schema, catalog, &mut p.facts, &plan)?;

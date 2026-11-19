@@ -377,6 +377,21 @@ const QUERIES: &[&str] = &[
     "exists p in posts where p.author == me",
     "top 0 by (o.total, key o) (from o in orders select o)",
     "top (0 - 1) by (o.total, key o) (from o in orders select o)",
+    "from o in orders where orders.key(2) >= o.id select o.total",
+    "from o in orders where orders.key(3) < o.id and o.qty > 0 select o.total",
+    "from x in follows where x.src == users.key(2) and x.dst > users.key(2) select x.dst",
+    "from u in users, o in orders where o.id <= orders.key(2) and o.user == key u select { u: u.name, o: o.id }",
+    "from o in orders where o.id > orders.key(1) and o.id > orders.key(2) select o.id",
+    "exists p in posts where p.author == users.key(1)",
+    "exists p in posts where p.title == \"hello\"",
+    "top 1 by (o.total / o.qty, key o) (from o in orders select o)",
+    "from u in users select { u: u.name, out: from x in follows where x.src == key u and x.dst == key u select x.dst }",
+    "from u in users select from p in posts where p.author == key u and p.title != u.name select p.title",
+    "{ n: count(o for o in orders where o.user == me) }",
+    "from u in users where u.name != \"cy\" select count(o for o in orders where o.qty > 0 and o.user == key u and o.total / o.qty > 10)",
+    "from u in users, v in users, w in users where key v == key u and key v == users.key(999) select 1",
+    "from u in users, v in users where key v == key u and key v == me select key u",
+    "exists o in orders where o.qty > 0 and o.total / o.qty > 10",
 ];
 
 fn running_cases(f: &Fixture) -> Vec<Case> {
@@ -502,26 +517,6 @@ fn scanned_rows(
     })
     .expect("a scan");
     rows
-}
-
-#[test]
-fn scans_of_ranges_of_a_heap_s_pages_read_what_a_scan_of_the_heap_reads() {
-    let f = stock();
-    let heap = f.catalog.heap(f.rel("stock"), 0);
-    let (whole, ranges, pages) = with_store(0, &f, 0, |(_, store, _)| {
-        let pages = store.pages(heap).expect("the heap's pages").pages.clone();
-        let whole = scanned_rows(|each| store.scan(heap, 1000, &roomy(), each));
-        let ranges: Vec<Vec<KValue>> = pages
-            .chunks(1)
-            .flat_map(|r| {
-                scanned_rows(|each| store.scan_pages(heap, r, 7, &roomy(), each).map(|_read| ()))
-            })
-            .collect();
-        (whole, ranges, pages.len())
-    });
-    assert!(pages > 1, "the heap spans {pages} pages");
-    assert_eq!(300, whole.len());
-    assert_eq!(whole, ranges);
 }
 
 /// The reads that count the versions whose visibility they decide.
@@ -1656,14 +1651,6 @@ fn every_primitive_agrees_with_the_reference() {
         check(0, &f, &cases, 0, XOptions::default());
     }
     assert!(refused.is_empty(), "refused: {refused:#?}");
-}
-
-#[test]
-fn every_program_records_the_type_of_its_root() {
-    let f = running();
-    for c in running_cases(&f) {
-        assert_eq!(c.ty, c.program.ty, "{}", c.name);
-    }
 }
 
 /// Queries over `stock` whose inputs exceed `SPILL_GRANT` while their results fit it.

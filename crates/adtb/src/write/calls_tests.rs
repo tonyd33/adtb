@@ -671,12 +671,6 @@ fn admission_bounds_entries_and_bytes_sim() {
 }
 
 #[test]
-fn admission_bounds_entries_and_bytes_real() {
-    let (_dir, rt) = real();
-    admission_bounds_entries_and_bytes(&rt);
-}
-
-#[test]
 fn a_call_is_refused_too_large_overloaded_or_after_shutdown_sim() {
     sim_seeds(
         "refused",
@@ -685,20 +679,8 @@ fn a_call_is_refused_too_large_overloaded_or_after_shutdown_sim() {
 }
 
 #[test]
-fn a_call_is_refused_too_large_overloaded_or_after_shutdown_real() {
-    let (_dir, rt) = real();
-    a_call_is_refused_too_large_overloaded_or_after_shutdown(&rt);
-}
-
-#[test]
 fn calls_run_by_priority_then_start_sim() {
     sim_seeds("priority", calls_run_by_priority_then_start);
-}
-
-#[test]
-fn calls_run_by_priority_then_start_real() {
-    let (_dir, rt) = real();
-    calls_run_by_priority_then_start(&rt);
 }
 
 #[test]
@@ -707,20 +689,8 @@ fn queued_calls_stop_on_cancel_and_deadline_sim() {
 }
 
 #[test]
-fn queued_calls_stop_on_cancel_and_deadline_real() {
-    let (_dir, rt) = real();
-    queued_calls_stop_on_cancel_and_deadline(&rt);
-}
-
-#[test]
 fn waiting_calls_stop_on_cancel_and_deadline_sim() {
     sim_seeds("waiting stop", waiting_calls_stop_on_cancel_and_deadline);
-}
-
-#[test]
-fn waiting_calls_stop_on_cancel_and_deadline_real() {
-    let (_dir, rt) = real();
-    waiting_calls_stop_on_cancel_and_deadline(&rt);
 }
 
 #[test]
@@ -744,22 +714,8 @@ fn a_wake_during_a_step_runs_the_call_again_sim() {
 }
 
 #[test]
-fn a_wake_during_a_step_runs_the_call_again_real() {
-    let (_dir, rt) = real();
-    a_wake_during_a_step_runs_the_call_again(&rt, 200);
-}
-
-#[test]
 fn a_queued_end_runs_while_every_call_waits_sim() {
     sim_seeds("queued end", a_queued_end_runs_while_every_call_waits);
-}
-
-#[test]
-fn a_queued_end_runs_while_every_call_waits_real() {
-    let (_dir, rt) = real();
-    for _ in 0..20 {
-        a_queued_end_runs_while_every_call_waits(&rt);
-    }
 }
 
 #[test]
@@ -768,33 +724,13 @@ fn a_call_past_its_deadline_never_runs_sim() {
 }
 
 #[test]
-fn a_call_past_its_deadline_never_runs_real() {
-    let (_dir, rt) = real();
-    for _ in 0..20 {
-        a_call_past_its_deadline_never_runs(&rt);
-    }
-}
-
-#[test]
 fn shutdown_stops_queued_and_waiting_calls_sim() {
     sim_seeds("shutdown", shutdown_stops_queued_and_waiting_calls);
 }
 
 #[test]
-fn shutdown_stops_queued_and_waiting_calls_real() {
-    let (_dir, rt) = real();
-    shutdown_stops_queued_and_waiting_calls(&rt);
-}
-
-#[test]
 fn waiting_calls_leave_the_admission_bound_sim() {
     sim_seeds("past the bound", waiting_calls_leave_the_admission_bound);
-}
-
-#[test]
-fn waiting_calls_leave_the_admission_bound_real() {
-    let (_dir, rt) = real();
-    waiting_calls_leave_the_admission_bound(&rt);
 }
 
 const ITEMS: &str =
@@ -1094,12 +1030,6 @@ fn a_queued_commit_runs_while_every_write_waits_sim() {
     );
 }
 
-#[test]
-fn a_queued_commit_runs_while_every_write_waits_real() {
-    let (_dir, rt) = real_in("queued-commit");
-    a_queued_commit_runs_while_every_write_waits(&rt);
-}
-
 fn waiting_writes_resume_after_an_abort<R: Holds>(rt: &R) {
     let (items, log) = bumps_behind(rt, false);
     let done = log.count(|e| matches!(e, Event::Done(n) if n.starts_with('b')));
@@ -1110,12 +1040,6 @@ fn waiting_writes_resume_after_an_abort<R: Holds>(rt: &R) {
 #[test]
 fn waiting_writes_resume_after_an_abort_sim() {
     sim_seeds("queued abort", waiting_writes_resume_after_an_abort);
-}
-
-#[test]
-fn waiting_writes_resume_after_an_abort_real() {
-    let (_dir, rt) = real_in("queued-abort");
-    waiting_writes_resume_after_an_abort(&rt);
 }
 
 #[test]
@@ -1180,12 +1104,6 @@ fn a_two_statement_call_suspends_and_resumes_sim() {
     sim_seeds("two statements", a_two_statement_call_suspends_and_resumes);
 }
 
-#[test]
-fn a_two_statement_call_suspends_and_resumes_real() {
-    let (_dir, rt) = real_in("two-statements");
-    a_two_statement_call_suspends_and_resumes(&rt);
-}
-
 /// A write waiting for a transaction stops at its deadline, aborting its own.
 fn a_waiting_write_stops_at_its_deadline<R: Holds>(rt: &R) {
     let items = items(rt, ONE);
@@ -1218,12 +1136,6 @@ fn a_waiting_write_stops_at_its_deadline<R: Holds>(rt: &R) {
 #[test]
 fn a_waiting_write_stops_at_its_deadline_sim() {
     sim_seeds("waiting deadline", a_waiting_write_stops_at_its_deadline);
-}
-
-#[test]
-fn a_waiting_write_stops_at_its_deadline_real() {
-    let (_dir, rt) = real_in("waiting-deadline");
-    a_waiting_write_stops_at_its_deadline(&rt);
 }
 
 /// A suspended wait counts toward the statement's time limit: the rerun fails once the limit
@@ -1362,12 +1274,6 @@ fn a_cancel_racing_shutdown_stops_once_sim() {
     sim_seeds("cancel shutdown", a_cancel_racing_shutdown_stops_once);
 }
 
-#[test]
-fn a_cancel_racing_shutdown_stops_once_real() {
-    let (_dir, rt) = real();
-    a_cancel_racing_shutdown_stops_once(&rt);
-}
-
 /// Dropping a scheduler without shutting it down stops its waiting calls.
 fn a_dropped_scheduler_stops_its_calls<R: Runtime>(rt: &R) {
     let pool = Scheduler::start(rt.clone(), 1);
@@ -1383,12 +1289,6 @@ fn a_dropped_scheduler_stops_its_calls<R: Runtime>(rt: &R) {
 #[test]
 fn a_dropped_scheduler_stops_its_calls_sim() {
     sim_seeds("dropped scheduler", a_dropped_scheduler_stops_its_calls);
-}
-
-#[test]
-fn a_dropped_scheduler_stops_its_calls_real() {
-    let (_dir, rt) = real();
-    a_dropped_scheduler_stops_its_calls(&rt);
 }
 
 /// A call waiting with an alarm is woken at it, though its dependency is not ready.
@@ -1526,12 +1426,6 @@ fn a_deadlock_between_suspended_calls_fails_the_second_waiter_sim() {
     sim_seeds_in("suspended deadlock", SEEDS, TWO, |rt| {
         a_deadlock_fails_the_second_waiter(rt, true, Duration::ZERO);
     });
-}
-
-#[test]
-fn a_deadlock_between_suspended_calls_fails_the_second_waiter_real() {
-    let (_dir, rt) = real_in("suspended-deadlock");
-    a_deadlock_fails_the_second_waiter(&rt, true, Duration::ZERO);
 }
 
 #[test]

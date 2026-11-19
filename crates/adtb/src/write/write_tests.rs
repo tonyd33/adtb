@@ -496,14 +496,6 @@ fn invoices() -> Fixture {
     Fixture::new(INVOICES)
 }
 
-fn deprecated_apple() -> Fixture {
-    let mut f = fixture();
-    let (_, apple) = f.ctor("Identity", "Apple");
-    let identities = f.rel("identities");
-    f.stage_relation((identities, apple), adtb_lang::schema::Stage::Deprecated);
-    f
-}
-
 fn declared_intl() -> Fixture {
     let mut f = fixture();
     let (address, intl) = f.ctor("Address", "Intl");
@@ -520,213 +512,303 @@ fn cases() -> Vec<Case> {
     let u = |i: i64| ("u", "Key users", key(i));
     let ik = |n: u8| ("k", "Key identities", identity_key(n));
     vec![
-        Case { name: "insert of an existing key", fixture, steps: vec![step(r#"insert users { id: users.key(1), name: "ann" }"#)] },
-        Case { name: "generated key", fixture, steps: vec![with("insert users { name: n }", vec![("n", "Text", text("eve"))])] },
-        Case { name: "insert into a constructor relation", fixture, steps: vec![with("insert identities.Google { user: u, gid: g }", vec![u(3), ("g", "Text", text("g-cy"))])] },
-        Case { name: "insert from a query", fixture, steps: vec![
-            step("delete i in identities.Google where i.gid == \"s-bo\""),
-            step("insert identities.Google from (from x in imports.Oauth select { user: x.user, gid: x.sub })"),
-        ] },
-        Case { name: "insert into a sum", fixture, steps: vec![
-            step("delete i in identities.Google where i.gid == \"s-bo\""),
-            step("insert identities from (
-                    from x in imports
-                    select match x
-                      | Email e -> EmailPass { user: e.user, email: e.addr, hash: e.h }
-                      | Oauth o -> Google { user: o.user, gid: o.sub })"),
-        ] },
-        Case { name: "two rows with one key", fixture, steps: vec![step(r#"(insert users { id: users.key(9), name: "a" }, insert users { id: users.key(9), name: "b" })"#)] },
-        Case { name: "two updates to different values", fixture, steps: vec![step(r#"(update u in users where key u == users.key(1) set User { u with name: "x" },
-                update u in users where key u == users.key(1) set User { u with name: "y" })"#)] },
-        Case { name: "two equal updates", fixture, steps: vec![step(r#"(update u in users where key u == users.key(1) set User { u with name: "x" },
-                update u in users where key u == users.key(1) set User { u with name: "x" })"#)] },
-        Case { name: "a delete and an insert of one key", fixture, steps: vec![step(r#"(delete u in users where key u == users.key(1),
-                insert users { id: users.key(1), name: "new" })"#)] },
-        Case { name: "an update that changes nothing", fixture, steps: vec![step("update i in identities where i.user == users.key(1)
-             set match i
-               | EmailPass e -> EmailPass { e with hash: rehash(e.hash) }
-               | Google g    -> g
-               | Apple a     -> a")] },
-        Case { name: "one snapshot", fixture, steps: vec![step(r#"(insert users { name: "eve" }, update u in users set User { u with name: u.name ++ "!" })"#)] },
-        Case { name: "a fault", fixture, steps: vec![with(r#"(insert users { name: "eve" }, if 1 / z > 0 then skip else skip)"#, vec![("z", "I64", Value::Int(0))])] },
-        Case { name: "fail", fixture, steps: vec![
-            step(r#"(insert users { name: "eve" }, fail "no")"#),
-            step(r#"if false then fail "no" else insert users { name: "eve" }"#),
-        ] },
-        Case { name: "try does not catch fail", fixture, steps: vec![step(r#"transact let x = try(1) fail "stop" return x"#)] },
-        Case { name: "a block binds generated keys", fixture, steps: vec![with("transact
+        Case {
+            name: "generated key",
+            fixture,
+            steps: vec![with(
+                "insert users { name: n }",
+                vec![("n", "Text", text("eve"))],
+            )],
+        },
+        Case {
+            name: "insert into a constructor relation",
+            fixture,
+            steps: vec![with(
+                "insert identities.Google { user: u, gid: g }",
+                vec![u(3), ("g", "Text", text("g-cy"))],
+            )],
+        },
+        Case {
+            name: "a fault",
+            fixture,
+            steps: vec![with(
+                r#"(insert users { name: "eve" }, if 1 / z > 0 then skip else skip)"#,
+                vec![("z", "I64", Value::Int(0))],
+            )],
+        },
+        Case {
+            name: "fail",
+            fixture,
+            steps: vec![
+                step(r#"(insert users { name: "eve" }, fail "no")"#),
+                step(r#"if false then fail "no" else insert users { name: "eve" }"#),
+            ],
+        },
+        Case {
+            name: "a block binds generated keys",
+            fixture,
+            steps: vec![with(
+                "transact
                let u = insert users { name: n }
                let i = insert identities.Google { user: key u, gid: g }
-               return key i", vec![("n", "Text", text("eve")), ("g", "Text", text("g-eve"))])] },
-        Case { name: "a nested insert", fixture, steps: vec![step(r#"insert identities.Google { user: key (insert users { name: "nest" }), gid: "g-n" }"#)] },
-        Case { name: "a sequence never reissues", fixture, steps: vec![
-            step(r#"insert users { id: users.key(42), name: "imported" }"#),
-            step("delete u in users where key u == users.key(42)"),
-            step(r#"insert users { name: "next" }"#),
-        ] },
-        Case { name: "generated keys are distinct", fixture, steps: vec![step(r#"insert users from (from u in users select User { name: u.name ++ "2" })"#)] },
-        Case { name: "one clock value", fixture, steps: vec![at(777, "update s in logins where s.user == users.key(1) set Revoked { }")] },
-        Case { name: "rejects into", fixture, steps: vec![step(r#"insert users from (
-                 from r in raws select User { name: if r.n > 0 then "ok" else reject "negative" })
-               rejects into user_rejects"#)] },
-        Case { name: "bad input", fixture, steps: vec![step(r#"insert users from (
-                 from r in raws select User { name: if r.n > 0 then "ok" else reject "negative" })"#)] },
-        Case { name: "an update of a constructor relation", fixture, steps: vec![with("update g in identities.Google where g.user == u set Google { g with gid: g2 }", vec![u(2), ("g2", "Text", text("g2"))])] },
-        Case { name: "an update over a key-preserving query", fixture, steps: vec![with("update g in (from g in identities.Google, x in imports.Oauth
-                     where g.gid == x.sub select g)
-         set Google { g with user: u }", vec![u(2)])] },
-        Case { name: "an update rebuilds a value-level sum", fixture, steps: vec![with(r#"update c in customers where c.id == k
-           set Customer { c with address: match c.address
-                                            | US a   -> US { a with zip: "02139" }
-                                            | Intl i -> i }"#, vec![("k", "Key customers", key(1))])] },
-        Case { name: "key changed", fixture, steps: vec![with("update u in users where key u == users.key(1) set v", vec![("v", "User", Value::Ctor(0, vec![("id".into(), key(2)), ("name".into(), text("x"))]))])] },
-        Case { name: "a retag", fixture, steps: vec![step(&format!("update i in identities where i.id == {}
-             set match i
-               | EmailPass e -> Google {{ gid: lookup(e.email) }}
-               | Google g    -> g
-               | Apple a     -> a", uuid(5)))] },
-        Case { name: "a retag fills omitted fields", fixture, steps: vec![at(99, "update s in logins where s.user == users.key(1) set Revoked { }")] },
-        Case { name: "a retag refused by a reference", fixture, steps: vec![step(&format!(r#"update i in identities.EmailPass where i.id == {} set Google {{ gid: "g" }}"#, uuid(1)))] },
-        Case { name: "a retag with its referrers deleted", fixture, steps: vec![step(&format!(r#"transact
-             delete r in resets where r.identity == {k}
-             update i in identities.EmailPass where i.id == {k} set Google {{ gid: "g" }}"#, k = uuid(1)))] },
-        Case { name: "a let on an update", fixture, steps: vec![step(r#"transact
-                 let x = update u in users where key u == users.key(1) set User { u with name: "z" }
-                 return from y in x select y.name"#)] },
-        Case { name: "a delete over a constructor relation", fixture, steps: vec![with("delete s in logins.Revoked where s.user == u", vec![u(1)])] },
-        Case { name: "a delete over a key-preserving query", fixture, steps: vec![with("delete s in (from s in logins.Active, i in identities.Google
-                      where s.identity == key i and i.gid == g select s)", vec![("g", "Text", text("g-bo"))])] },
-        Case { name: "a let on a delete", fixture, steps: vec![step(r#"transact
-                 let x = delete n in notes where n.body == "plain"
-                 return from y in x select y.body"#)] },
-        Case { name: "cascade and retag", fixture, steps: vec![at(1234, &format!("delete i in identities where i.id == {}", uuid(1)))] },
-        Case { name: "restrict", fixture, steps: vec![step("delete x in users where key x == users.key(2)")] },
-        Case { name: "referrers deleted with the target", fixture, steps: vec![with("transact
-           delete d in badges where d.owner == u
-           delete x in users where key x == u", vec![u(4)])] },
-        Case { name: "only the target of a restrict", fixture, steps: vec![step("delete x in users where key x == users.key(4)")] },
-        Case { name: "a cascaded row", fixture, steps: vec![step("transact
-            delete i in identities where i.user == users.key(1)
-            delete t in tickets
-            delete x in users where key x == users.key(1)")] },
-        Case { name: "a repointed reference", fixture, steps: vec![step(&format!("transact
-           update s in logins.Active where s.id == logins.key(1) set Active {{ s with identity: {} }}
-           delete i in identities where i.id == {}", uuid(2), uuid(1)))] },
-        Case { name: "an inserted row referencing a gone key", fixture, steps: vec![step(r#"transact
-             insert notes { author: Some { value: users.key(4) }, body: "new" }
-             delete d in badges where d.owner == users.key(4)
-             delete t in tickets
-             delete x in users where key x == users.key(4)"#)] },
-        Case { name: "a retag and a clear", fixture, steps: vec![step(&format!("transact
-           delete d in badges where d.owner == users.key(4)
-           delete i in identities where i.id == {}
-           delete x in users where key x == users.key(4)", uuid(2)))] },
-        Case { name: "a retag of the target", fixture, steps: vec![step(&format!(r#"update i in identities.Google where i.id == {} set Apple {{ sub: "a" }}"#, uuid(3)))] },
-        Case { name: "a retag, by parameter", fixture, steps: vec![with("update i in identities where i.id == k
+               return key i",
+                vec![("n", "Text", text("eve")), ("g", "Text", text("g-eve"))],
+            )],
+        },
+        Case {
+            name: "one clock value",
+            fixture,
+            steps: vec![at(
+                777,
+                "update s in logins where s.user == users.key(1) set Revoked { }",
+            )],
+        },
+        Case {
+            name: "an update of a constructor relation",
+            fixture,
+            steps: vec![with(
+                "update g in identities.Google where g.user == u set Google { g with gid: g2 }",
+                vec![u(2), ("g2", "Text", text("g2"))],
+            )],
+        },
+        Case {
+            name: "key changed",
+            fixture,
+            steps: vec![with(
+                "update u in users where key u == users.key(1) set v",
+                vec![(
+                    "v",
+                    "User",
+                    Value::Ctor(0, vec![("id".into(), key(2)), ("name".into(), text("x"))]),
+                )],
+            )],
+        },
+        Case {
+            name: "a retag fills omitted fields",
+            fixture,
+            steps: vec![at(
+                99,
+                "update s in logins where s.user == users.key(1) set Revoked { }",
+            )],
+        },
+        Case {
+            name: "a delete over a constructor relation",
+            fixture,
+            steps: vec![with(
+                "delete s in logins.Revoked where s.user == u",
+                vec![u(1)],
+            )],
+        },
+        Case {
+            name: "cascade and retag",
+            fixture,
+            steps: vec![at(
+                1234,
+                &format!("delete i in identities where i.id == {}", uuid(1)),
+            )],
+        },
+        Case {
+            name: "a retag, by parameter",
+            fixture,
+            steps: vec![with(
+                "update i in identities where i.id == k
              set match i
                | EmailPass e -> Google { gid: e.email }
                | Google g    -> g
-               | Apple a     -> a", vec![ik(5)])] },
-        Case { name: "a retag refused by a reference, by parameter", fixture, steps: vec![with(r#"update i in identities.EmailPass where i.id == k set Google { gid: "g" }"#, vec![ik(1)])] },
-        Case { name: "a retag with its referrers deleted, by parameter", fixture, steps: vec![with(r#"transact
+               | Apple a     -> a",
+                vec![ik(5)],
+            )],
+        },
+        Case {
+            name: "a retag refused by a reference, by parameter",
+            fixture,
+            steps: vec![with(
+                r#"update i in identities.EmailPass where i.id == k set Google { gid: "g" }"#,
+                vec![ik(1)],
+            )],
+        },
+        Case {
+            name: "a retag with its referrers deleted, by parameter",
+            fixture,
+            steps: vec![with(
+                r#"transact
              delete r in resets where r.identity == k
-             update i in identities.EmailPass where i.id == k set Google { gid: "g" }"#, vec![ik(1)])] },
-        Case { name: "cascade and retag, by parameter", fixture, steps: vec![Step { clock: 1234, ..with("delete i in identities where i.id == k", vec![ik(1)]) }] },
-        Case { name: "a repointed reference, by parameter", fixture, steps: vec![with("transact
+             update i in identities.EmailPass where i.id == k set Google { gid: "g" }"#,
+                vec![ik(1)],
+            )],
+        },
+        Case {
+            name: "cascade and retag, by parameter",
+            fixture,
+            steps: vec![Step {
+                clock: 1234,
+                ..with("delete i in identities where i.id == k", vec![ik(1)])
+            }],
+        },
+        Case {
+            name: "a repointed reference, by parameter",
+            fixture,
+            steps: vec![with(
+                "transact
            update s in logins.Active where s.id == logins.key(1) set Active { s with identity: j }
-           delete i in identities where i.id == k", vec![("j", "Key identities", identity_key(2)), ik(1)])] },
-        Case { name: "a retag and a clear, by parameter", fixture, steps: vec![with("transact
+           delete i in identities where i.id == k",
+                vec![("j", "Key identities", identity_key(2)), ik(1)],
+            )],
+        },
+        Case {
+            name: "a retag and a clear, by parameter",
+            fixture,
+            steps: vec![with(
+                "transact
            delete d in badges where d.owner == users.key(4)
            delete i in identities where i.id == k
-           delete x in users where key x == users.key(4)", vec![ik(2)])] },
-        Case { name: "a retag of the target, by parameter", fixture, steps: vec![with(r#"update i in identities.Google where i.id == k set Apple { sub: "a" }"#, vec![ik(3)])] },
-        Case { name: "an upsert on a unique", fixture, steps: vec![with("insert identities.Google { user: u, gid: g }
+           delete x in users where key x == users.key(4)",
+                vec![ik(2)],
+            )],
+        },
+        Case {
+            name: "a retag of the target, by parameter",
+            fixture,
+            steps: vec![with(
+                r#"update i in identities.Google where i.id == k set Apple { sub: "a" }"#,
+                vec![ik(3)],
+            )],
+        },
+        Case {
+            name: "an upsert on a unique",
+            fixture,
+            steps: vec![with(
+                "insert identities.Google { user: u, gid: g }
          unless conflict on (gid) in Google
-         else update old set Google { old with user: u }", vec![u(2), ("g", "Text", text("g-ann"))])] },
-        Case { name: "an upsert with no conflict", fixture, steps: vec![with("insert identities.Google { user: u, gid: g }
+         else update old set Google { old with user: u }",
+                vec![u(2), ("g", "Text", text("g-ann"))],
+            )],
+        },
+        Case {
+            name: "an upsert with no conflict",
+            fixture,
+            steps: vec![with(
+                "insert identities.Google { user: u, gid: g }
          unless conflict on (gid) in Google
-         else update old set Google { old with user: u }", vec![u(2), ("g", "Text", text("fresh"))])] },
-        Case { name: "an upsert on the key", fixture, steps: vec![
-            with(ON_KEY, vec![("k", "Key identities", identity_key(2)), u(1), ("g", "Text", text("g-new"))]),
-            with(ON_KEY, vec![("k", "Key identities", identity_key(1)), u(1), ("g", "Text", text("g-x"))]),
-        ] },
-        Case { name: "an upsert on a unique over expressions", fixture, steps: vec![
-            with("insert identities.EmailPass { user: u, email: e, hash: h }
+         else update old set Google { old with user: u }",
+                vec![u(2), ("g", "Text", text("fresh"))],
+            )],
+        },
+        Case {
+            name: "an upsert on the key",
+            fixture,
+            steps: vec![
+                with(
+                    ON_KEY,
+                    vec![
+                        ("k", "Key identities", identity_key(2)),
+                        u(1),
+                        ("g", "Text", text("g-new")),
+                    ],
+                ),
+                with(
+                    ON_KEY,
+                    vec![
+                        ("k", "Key identities", identity_key(1)),
+                        u(1),
+                        ("g", "Text", text("g-x")),
+                    ],
+                ),
+            ],
+        },
+        Case {
+            name: "an upsert on a unique over expressions",
+            fixture,
+            steps: vec![
+                with(
+                    "insert identities.EmailPass { user: u, email: e, hash: h }
          unless conflict on (lower(email)) in EmailPass
-         else update old set old", vec![u(3), ("e", "Text", text("ANN@example.com")), ("h", "Bytes", Value::Bytes(b"h".to_vec()))]),
-            step(r#"insert identities.EmailPass { user: users.key(3), email: "ANN@example.com", hash: bytes("h") }"#),
-        ] },
-        Case { name: "a bulk upsert", fixture, steps: vec![step("insert identities.Google from (
-            from x in imports.Oauth select { user: x.user, gid: x.sub })
-          unless conflict on (gid) in Google
-          else update old set Google { old with user: new.user }")] },
-        Case { name: "get or create, existing", fixture, steps: vec![with(GET_OR_CREATE, vec![u(2), ("x", "Text", text("g-ann"))])] },
-        Case { name: "get or create, created", fixture, steps: vec![with(GET_OR_CREATE, vec![u(2), ("x", "Text", text("g-new"))])] },
-        Case { name: "an upsert binding", fixture, steps: vec![with(r#"transact
-                 let b = insert identities.Google { id: k, user: users.key(2), gid: "gg" }
-                         unless conflict on key
-                         else match old
-                           | Google o    -> update o set o
-                           | EmailPass e -> update e set Google { gid: "from-email" }
-                           | Apple a     -> update a set a
-                 return match b | Google g -> g.gid | Apple a -> a.sub"#, vec![("k", "Key identities", identity_key(5))])] },
-        Case { name: "two proposed rows with one unique value", fixture, steps: vec![step(r#"insert identities.Google from (
-             from p in [{ u: users.key(1), g: "dup" }, { u: users.key(2), g: "dup" }]
-             select { user: p.u, gid: p.g })
-           unless conflict on (gid) in Google
-           else update old set old"#)] },
-        Case { name: "an upsert does not see another insert", fixture, steps: vec![step(r#"(insert identities.Google { user: users.key(1), gid: "z" },
-            insert identities.Google { user: users.key(2), gid: "z" }
-            unless conflict on (gid) in Google
-            else update old set old)"#)] },
-        Case { name: "an upsert on the key meets another insert", fixture, steps: vec![step(r#"(insert users { id: users.key(9), name: "a" },
-                insert users { id: users.key(9), name: "b" }
-                unless conflict on key
-                else update old set old)"#)] },
-        Case { name: "a constraint violation", fixture, steps: vec![step(r#"insert identities.Google { user: users.key(3), gid: "" }"#)] },
-        Case { name: "the least name", fixture, steps: vec![
-            step(r#"(insert identities.Google { user: users.key(3), gid: "" },
-            insert identities.Google { user: users.key(4), gid: "" })"#),
-            step(r#"insert users { id: users.key(1), name: "aa" }"#),
-            step(r#"insert users { id: users.key(1), name: "zz" }"#),
-        ] },
-        Case { name: "a row check", fixture, steps: vec![step(r#"insert users { name: "a name longer than twenty" }"#)] },
-        Case { name: "a transition constraint", fixture, steps: vec![
-            step(r#"delete n in notes where n.body == "frozen""#),
-            step(r#"delete n in notes where n.body == "plain""#),
-        ] },
-        Case { name: "a domain", fixture, steps: vec![
-            step(r#"insert contacts { email: Email("ab") }"#),
-            step(r#"insert contacts { email: Email("abcd") }"#),
-        ] },
-        Case { name: "a fault in a constraint", fixture, steps: vec![step(r#"(insert raws { n: 0 }, insert users { id: users.key(1), name: "ann" })"#)] },
-        Case { name: "a deprecated constructor relation", fixture: deprecated_apple, steps: vec![step(r#"insert identities.Apple { user: users.key(4), sub: "a-dee" }"#)] },
-        Case { name: "a declared value-level constructor", fixture: declared_intl, steps: vec![
-            step(r#"update c in customers where c.id == customers.key(1)
-               set Customer { c with address: Intl { country: "de", postcode: "1" } }"#),
-            step(r#"update c in customers where c.id == customers.key(2) set Customer { c with name: "e" }"#),
-        ] },
-        Case { name: "a block returns unit", fixture, steps: vec![step(r#"transact insert users { name: "eve" }"#)] },
-        Case { name: "a block result reads the snapshot", fixture, steps: vec![step(r#"transact insert users { name: "eve" } return count(u for u in users)"#)] },
-        Case { name: "a block with options", fixture, steps: vec![
-            step("transact retry 3 read_only return count(u for u in users)"),
-            step(r#"transact durability quorum insert users { name: "q" }"#),
-        ] },
-        Case { name: "a query statement", fixture, steps: vec![step("count(u for u in users)")] },
-        Case { name: "a value-level unique", fixture: invoices, steps: vec![
-            step("(insert invoices { status: Draft, n: 0 }, insert invoices { status: Draft, n: 1 })"),
-            step(r#"insert invoices { status: Paid { ref: "r1" }, n: 2 }"#),
-            step(r#"insert invoices { status: Paid { ref: "r1" }, n: 3 }"#),
-        ] },
-        Case { name: "an upsert on a value-level path", fixture: invoices, steps: vec![
-            step(r#"insert invoices { status: Paid { ref: "r1" }, n: 1 }"#),
-            step(r#"insert invoices { status: Paid { ref: "r1" }, n: 2 }
+         else update old set old",
+                    vec![
+                        u(3),
+                        ("e", "Text", text("ANN@example.com")),
+                        ("h", "Bytes", Value::Bytes(b"h".to_vec())),
+                    ],
+                ),
+                step(
+                    r#"insert identities.EmailPass { user: users.key(3), email: "ANN@example.com", hash: bytes("h") }"#,
+                ),
+            ],
+        },
+        Case {
+            name: "get or create, existing",
+            fixture,
+            steps: vec![with(
+                GET_OR_CREATE,
+                vec![u(2), ("x", "Text", text("g-ann"))],
+            )],
+        },
+        Case {
+            name: "get or create, created",
+            fixture,
+            steps: vec![with(
+                GET_OR_CREATE,
+                vec![u(2), ("x", "Text", text("g-new"))],
+            )],
+        },
+        Case {
+            name: "the least name",
+            fixture,
+            steps: vec![
+                step(
+                    r#"(insert identities.Google { user: users.key(3), gid: "" },
+            insert identities.Google { user: users.key(4), gid: "" })"#,
+                ),
+                step(r#"insert users { id: users.key(1), name: "aa" }"#),
+                step(r#"insert users { id: users.key(1), name: "zz" }"#),
+            ],
+        },
+        Case {
+            name: "a transition constraint",
+            fixture,
+            steps: vec![
+                step(r#"delete n in notes where n.body == "frozen""#),
+                step(r#"delete n in notes where n.body == "plain""#),
+            ],
+        },
+        Case {
+            name: "a domain",
+            fixture,
+            steps: vec![
+                step(r#"insert contacts { email: Email("ab") }"#),
+                step(r#"insert contacts { email: Email("abcd") }"#),
+            ],
+        },
+        Case {
+            name: "a declared value-level constructor",
+            fixture: declared_intl,
+            steps: vec![
+                step(
+                    r#"update c in customers where c.id == customers.key(1)
+               set Customer { c with address: Intl { country: "de", postcode: "1" } }"#,
+                ),
+                step(
+                    r#"update c in customers where c.id == customers.key(2) set Customer { c with name: "e" }"#,
+                ),
+            ],
+        },
+        Case {
+            name: "an upsert on a value-level path",
+            fixture: invoices,
+            steps: vec![
+                step(r#"insert invoices { status: Paid { ref: "r1" }, n: 1 }"#),
+                step(
+                    r#"insert invoices { status: Paid { ref: "r1" }, n: 2 }
                unless conflict on (status.Paid.ref)
-               else update old set Invoice { old with n: old.n + 10 }"#),
-            step(r"insert invoices { status: Draft, n: 5 }
+               else update old set Invoice { old with n: old.n + 10 }"#,
+                ),
+                step(
+                    r"insert invoices { status: Draft, n: 5 }
             unless conflict on (status.Paid.ref)
-            else update old set Invoice { old with n: 0 }"),
-        ] },
+            else update old set Invoice { old with n: 0 }",
+                ),
+            ],
+        },
     ]
 }
 
@@ -1302,31 +1384,6 @@ fn a_failed_commit_whose_abort_record_fails_returns_the_records_failure_and_coun
         let failed = write::Error::Transactions(crate::mvcc::Error::Corrupt(damage));
         assert_eq!((Err(failed), 1), got);
     });
-}
-
-#[test]
-fn only_a_sequence_key_has_a_counter() {
-    use crate::storage::HEADER_LEN;
-    let f = Fixture::new(
-        "type Item = { id: I64, n: I64 }
-relation items : Item key id
-type Label = { id: Key tags, name: Text }
-relation tags : Label key id generate sequence",
-    );
-    let mut counters = None;
-    let mut sim = write_path::sim(0, Config::default(), &f);
-    finished(&mut sim, |rt| {
-        let w = WritePath::loaded(&rt, &f, None);
-        let item = prep(&w, "insert items { id: 7, n: 0 }", false);
-        let tag = prep(&w, "insert tags { name: \"a\" }", false);
-        let (db, schema, pager) = (w.db(), w.schema(), w.db().pager());
-        run_txn(db, schema, &item, "").expect("the item commits");
-        run_txn(db, schema, &tag, "").expect("the tag commits");
-        let page = pager.read(db.sequences_root()).expect("the counters");
-        let n = &page[HEADER_LEN..HEADER_LEN + 4];
-        counters = Some(u32::from_le_bytes(n.try_into().expect("4 bytes")));
-    });
-    assert_eq!(Some(1), counters, "only tags has a counter");
 }
 
 fn field(r: &Val, i: usize) -> Val {

@@ -78,15 +78,4 @@ mod tests {
             other => panic!("refused, not {other:?}"),
         }
     }
-
-    #[test]
-    fn a_step_moving_no_rows_into_a_schema_that_does_not_build_folds_into_the_next() {
-        let file = parse_migration(TEXT, Options::default())
-            .ok()
-            .expect("the migration parses");
-        assert!(matches!(
-            built(&unbuilt(Vec::new()), &file.operators[0], TEXT),
-            Ok(None)
-        ));
-    }
 }

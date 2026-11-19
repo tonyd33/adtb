@@ -1,0 +1,35 @@
+# An index over an expression or a constructor path answers a query as a scan of the relation does.
+schema
+  module test
+  type Status = Draft | Paid { ref: Text }
+  type Invoice = { id: Key invoices, status: Status, email: Text }
+  relation invoices : Invoice key id generate sequence
+    unique (status.Paid.ref)
+    index (lower(email))
+run
+  insert invoices from [Invoice { id: invoices.key(1), status: Draft, email: "Ann@X" },
+                        Invoice { id: invoices.key(2), status: Paid { ref: "r1" }, email: "bo@x" },
+                        Invoice { id: invoices.key(3), status: Paid { ref: "r2" }, email: "ANN@x" }]
+query rowsort
+  from i in invoices where lower(i.email) == "ann@x" select key i
+----
+invoices.key(1)
+invoices.key(3)
+query rowsort
+  from i in invoices where upper(i.email) == "ANN@X" select key i
+----
+invoices.key(1)
+invoices.key(3)
+query rowsort
+  from i in invoices, k in (match i.status | Paid p -> if p.ref == "r1" then [key i] else [] | Draft -> []) select k
+----
+invoices.key(2)
+query rowsort
+  from i in invoices where (match i.status | Paid p -> p.ref == "r1" | Draft -> false) select key i
+----
+invoices.key(2)
+query rowsort
+  from i in invoices, k in (match i.status | Paid p -> if p.ref == "r1" then [key i] else [] | Draft -> [key i]) select k
+----
+invoices.key(1)
+invoices.key(2)

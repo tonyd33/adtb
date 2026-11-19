@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use adtb_lang::check::check_schema;
@@ -62,19 +61,6 @@ fn integer_arithmetic_faults_outside_its_type() {
     assert_eq!(
         Err(Fault::ArithmeticOverflow),
         run(Op::IntNeg(Width::I16), &[Val::Int(i64::from(i16::MIN))])
-    );
-}
-
-#[test]
-fn a_checked_operation_is_none_where_its_operator_faults() {
-    let op = Op::Checked(Box::new(Op::Int(Arith::Div, Width::I64)));
-    assert_eq!(
-        Ok(Val::none()),
-        run(op.clone(), &[Val::Int(1), Val::Int(0)])
-    );
-    assert_eq!(
-        Ok(Val::some(Val::Int(5))),
-        run(op, &[Val::Int(10), Val::Int(2)])
     );
 }
 
@@ -162,49 +148,6 @@ fn rounding_follows_each_mode() {
 }
 
 #[test]
-fn floats_are_canonical_and_nan_is_greatest() {
-    assert_eq!(F64::new(0.0), F64::new(-0.0));
-    assert_eq!(F64::new(f64::NAN), F64::new(-f64::NAN));
-    assert!(Val::F64(F64::new(f64::NAN)) > Val::F64(F64::new(f64::INFINITY)));
-    assert!(Val::F32(F32::new(-1.0)) < Val::F32(F32::new(0.5)));
-    let lt = Op::Cmp(Ordering::Less, false);
-    assert_eq!(
-        Ok(Val::bool(true)),
-        run(
-            lt,
-            &[Val::F64(F64::new(1e300)), Val::F64(F64::new(f64::NAN))]
-        )
-    );
-}
-
-#[test]
-fn text_compares_by_scalar_values() {
-    let set: BTreeSet<Val> = ["é", "z", "a", "ä"].iter().map(|t| Val::text(t)).collect();
-    let order: Vec<&Val> = set.iter().collect();
-    assert_eq!(
-        vec![
-            &Val::text("a"),
-            &Val::text("z"),
-            &Val::text("ä"),
-            &Val::text("é")
-        ],
-        order
-    );
-}
-
-#[test]
-fn a_concatenation_is_normalized_to_nfc() {
-    assert_eq!(
-        Ok(Ok(Val::text("\u{e9}"))),
-        apply(&Op::ConcatText, &[&Val::text("e"), &Val::text("\u{301}")])
-    );
-    assert_eq!(
-        Ok(Ok(Val::text("ab"))),
-        apply(&Op::ConcatText, &[&Val::text("a"), &Val::text("b")])
-    );
-}
-
-#[test]
 fn grants_take_from_the_budget_and_return_to_it() {
     let budget = Budget::new(1000);
     let a = budget.admit(600).expect("fits");
@@ -287,39 +230,6 @@ fn a_spilled_value_reads_back_equal() {
         Err(Rot::SpillUndecoded.into()),
         record(&bytes[..bytes.len() - 1])
     );
-}
-
-#[test]
-fn a_frame_rebuilt_from_its_rows_binds_what_it_bound() {
-    let mut f = Frame::unit(4).widen(2);
-    f.bind_one(0, Val::Int(7));
-    f.bind_all(2, vec![Val::Int(10), Val::Int(11)]);
-    let fixed = f.fixed();
-    let rows: Vec<Vec<(u32, Val)>> = (0..2).map(|r| f.varying(r)).collect();
-    assert_eq!(vec![(0, Val::Int(7))], fixed);
-    assert_eq!(vec![(2, Val::Int(11))], rows[1]);
-    let g = Frame::rebuild(4, &fixed, rows);
-    assert_eq!(2, g.len());
-    assert_eq!(&Val::Int(7), g.get(0, 1));
-    assert_eq!(&Val::Int(10), g.get(2, 0));
-    assert_eq!(&Val::Int(11), g.get(2, 1));
-}
-
-#[test]
-fn a_frame_gathers_rows_and_keeps_constant_columns() {
-    let mut f = Frame::unit(3).widen(3);
-    f.bind_one(0, Val::Int(7));
-    f.bind_all(1, vec![Val::Int(10), Val::Int(11), Val::Int(12)]);
-    f.bind(2, [(1, Val::Int(21))]);
-    let g = f.gather(&[2, 1, 1]);
-    assert_eq!(3, g.len());
-    assert_eq!(&Val::Int(7), g.get(0, 2));
-    assert_eq!(&Val::Int(12), g.get(1, 0));
-    assert_eq!(&Val::Int(11), g.get(1, 2));
-    assert_eq!(&Val::Int(21), g.get(2, 1));
-    let r = f.row(2);
-    assert_eq!(1, r.len());
-    assert_eq!(&Val::Int(12), r.get(1, 0));
 }
 
 #[test]

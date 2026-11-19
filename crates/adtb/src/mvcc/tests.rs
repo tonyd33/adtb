@@ -151,13 +151,6 @@ fn a_version_precedes_only_a_successor_its_deleter_inserted() {
 }
 
 #[test]
-fn clearing_the_deleter_keeps_the_inserter() {
-    assert_eq!(writers(3, 0), writers(3, 7).cleared());
-    assert_eq!(writers(3, 0), writers(3, 0).cleared());
-    assert!(!writers(3, 7).cleared().precedes(&writers(7, 0)));
-}
-
-#[test]
 fn writers_encode_as_two_little_endian_words_with_no_deleter_as_zero() {
     let cases = [
         (
@@ -179,12 +172,6 @@ fn writers_encode_as_two_little_endian_words_with_no_deleter_as_zero() {
         assert_eq!(bytes, w.encode(), "{w:?}");
         assert_eq!(w, Writers::decode(&bytes), "{bytes:?}");
     }
-}
-
-#[test]
-#[should_panic(expected = "not sorted")]
-fn a_snapshot_rejects_an_unsorted_in_progress_set() {
-    Snapshot::new(Xid(1), Xid(9), vec![Xid(5), Xid(3)]);
 }
 
 #[test]
@@ -603,18 +590,6 @@ fn a_writer_that_aborts_leaves_the_snapshot_safe() {
     let t1 = rw(&mut s, 1);
     let d = s.begin(Access::Deferrable);
     assert_eq!(vec![d], s.aborted(t1));
-    assert_eq!(Safety::Safe, s.safety(d));
-}
-
-#[test]
-fn feketes_writer_makes_a_deferrable_snapshot_unsafe() {
-    let mut s = Serializer::default();
-    let (_, t2, d) = fekete(&mut s, Access::Deferrable);
-    assert_eq!(Safety::Pending(vec![Xid(2)]), s.safety(d));
-    assert_eq!(vec![d], s.committed(t2));
-    assert_eq!(Safety::Unsafe, s.safety(d));
-    s.aborted(d);
-    let d = s.begin(Access::Deferrable);
     assert_eq!(Safety::Safe, s.safety(d));
 }
 

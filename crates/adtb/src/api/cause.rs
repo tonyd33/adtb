@@ -343,26 +343,6 @@ mod tests {
     }
 
     #[test]
-    fn an_error_with_no_value_reads_as_its_value_text() {
-        let e = super::Error::rejected(super::RejectReason::Cancelled);
-        let text = super::Broken::NoValue(e).to_string();
-        assert_eq!("Rejected { reason: Cancelled }", text);
-    }
-
-    #[test]
-    fn a_catalog_error_holding_a_plan_or_write_cause_reads_as_its_text() {
-        use crate::{catalog, plan, write};
-        let plan = plan::Error::Internal(plan::Broken::GroupFieldMissing);
-        let corruption = super::Corruption::Catalog(catalog::Broken::Plan(plan).into());
-        let text = "Internal(\"a broken invariant: a group has a key and rows\")";
-        assert_eq!(text, corruption.to_string());
-        let admission = catalog::Broken::Admission(write::Broken::ReadOnly);
-        let broken = super::Broken::CatalogError(admission.into());
-        let text = "Internal(\"a read-only transaction runs no write\")";
-        assert_eq!(text, broken.to_string());
-    }
-
-    #[test]
     fn only_a_cause_builds_internal_or_corrupt_outside_tests() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();

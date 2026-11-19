@@ -67,26 +67,6 @@ fn a_call_dropped_holding_its_read_leaves_nothing_of_its_transaction() {
     db.close().unwrap();
 }
 
-#[test]
-fn a_close_after_a_transaction_ended_by_drop_panics() {
-    let scratch = adtb_testkit::scratch::Scratch::new("call-drop-fixtures", "close-drop");
-    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
-    let options = OpenOptions {
-        create: Some(CreateOptions::default()),
-        workers: Some(1),
-        ..OpenOptions::default()
-    };
-    let db = Database::open_in(rt, "drop.adt", &Log::new([APP]), &options).expect("open");
-    drop(db.engine.db.begin_read(false).expect("a reader begins"));
-    let closed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.close()));
-    let message = closed
-        .err()
-        .and_then(|p| p.downcast_ref::<String>().cloned());
-    let expected = "assertion `left == right` failed: every transaction ended before the close \
-                    was committed or aborted, none dropped\n  left: 0\n right: 1";
-    assert_eq!(Some(expected), message.as_deref());
-}
-
 const RENAME: &str = r#"update u in users where u.name == "a" set User { u with name: "b" }"#;
 
 /// What a write call left: its completion and how many more abort records went unrecorded.

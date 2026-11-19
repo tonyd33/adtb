@@ -28,3 +28,11 @@ query rowsort
 ----
 Local { email: "a@x" }
 Remote { provider: "google" }
+query rowsort
+  shapes().Remote
+----
+Remote { provider: "google" }
+query rowsort
+  from r in shapes().Local, s in shapes().Remote select { e: r.email, p: s.provider }
+----
+{ e: "a@x", p: "google" }

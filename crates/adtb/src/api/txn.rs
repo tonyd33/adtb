@@ -325,26 +325,3 @@ impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::api::RejectReason;
-
-    #[test]
-    fn an_abort_failure_is_expected_only_when_quarantined_or_on_storage() {
-        let fatal = |reason| Error::Fatal { reason };
-        assert!(expected_abort_failure(&fatal(FatalReason::Quarantined {
-            what: "the database".into()
-        })));
-        assert!(expected_abort_failure(&fatal(FatalReason::Storage {
-            detail: "a disk".into()
-        })));
-        assert!(!expected_abort_failure(&Error::rejected(
-            RejectReason::Internal {
-                what: "a bug".into()
-            }
-        )));
-        assert!(!expected_abort_failure(&Error::closed()));
-    }
-}

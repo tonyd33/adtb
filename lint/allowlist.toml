@@ -158,7 +158,7 @@
 "crates/adtb/src/catalog/rows.rs" = 6
 "crates/adtb/src/exec/code.rs" = 7
 "crates/adtb/src/exec/host.rs" = 7
-"crates/adtb/src/exec/ir.rs" = 47
+"crates/adtb/src/exec/ir.rs" = 46
 "crates/adtb/src/exec/join.rs" = 4
 "crates/adtb/src/exec/mod.rs" = 7
 "crates/adtb/src/exec/run.rs" = 10
@@ -181,7 +181,7 @@
 "crates/adtb/src/plan/catalog.rs" = 10
 "crates/adtb/src/plan/explain.rs" = 16
 "crates/adtb/src/plan/fixture.rs" = 5
-"crates/adtb/src/plan/mod.rs" = 66
+"crates/adtb/src/plan/mod.rs" = 65
 "crates/adtb/src/storage/archive.rs" = 2
 "crates/adtb/src/storage/backup.rs" = 22
 "crates/adtb/src/storage/block.rs" = 29

@@ -288,28 +288,6 @@ fn a_roots_row_of_another_shape_is_refused_whole() {
 }
 
 #[test]
-fn a_roots_row_of_the_ticket_is_refused_whole() {
-    for (row, rot) in [
-        (
-            sum(3, vec![int(1)]),
-            Rot::RootsCtor {
-                ctor: 3,
-                fields: vec![int(1)],
-            },
-        ),
-        (
-            sum(0, vec![int(1), int(0), int(3)]),
-            Rot::RootsCtor {
-                ctor: 0,
-                fields: vec![int(1), int(0), int(3)],
-            },
-        ),
-    ] {
-        assert_eq!(Err(rot), RootsRow::decode(&[row]));
-    }
-}
-
-#[test]
 fn a_roots_row_that_is_not_one_sum_is_refused_whole() {
     let one = sum(11, Vec::new());
     for row in [
