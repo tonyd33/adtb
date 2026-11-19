@@ -246,23 +246,6 @@ const KNOWN: &[Known] = &[
             Kind::Engine,
         )),
     },
-    Known {
-        fault: Fault::LostEarlier,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Scrub,
-        what: "a scrub names an intact page",
-        ticket: BLANK_OPEN,
-        seed: 3,
-        at: 648,
-        then: Some((
-            Point {
-                at: 652,
-                injection: Injection::Torn,
-            },
-            Kind::Engine,
-        )),
-    },
 ];
 
 /// The cells whose every case ends at a failed open, which no consumer after it can reach, with

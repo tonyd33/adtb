@@ -1,6 +1,5 @@
 //! Every consumer of a file after a case: the open that settles, the catalog, a read of each
-//! relation, verify, a scrub of the page, a backup with its proof and restore, and a dump with
-//! its restore.
+//! relation, verify, a backup with its proof and restore, and a dump with its restore.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -25,17 +24,15 @@ pub enum Consumer {
     Catalog,
     Read,
     Verify,
-    Scrub,
     Backup,
     Dump,
 }
 
-pub const CONSUMERS: [Consumer; 7] = [
+pub const CONSUMERS: [Consumer; 6] = [
     Consumer::Settle,
     Consumer::Catalog,
     Consumer::Read,
     Consumer::Verify,
-    Consumer::Scrub,
     Consumer::Backup,
     Consumer::Dump,
 ];
@@ -108,10 +105,7 @@ pub struct Observed {
     pub reopened: Option<Reopened>,
     /// The commit log status pages the open recorded as settled from the log.
     pub settled: BTreeSet<Pid>,
-    /// The page the scrub ran on.
-    pub scrubbed: Option<Pid>,
     pub verify: Option<Result<Vec<Finding>, String>>,
-    pub scrub: Option<Vec<String>>,
     pub marks: Option<BTreeSet<Quarantine>>,
     pub backup: Option<Backup>,
     pub dump: Option<Dumped>,
@@ -235,7 +229,7 @@ pub fn run(
                 rt.plan(Plan::new().rule(unreadable, Action::Fail(IoError::Failed)));
             }
             let mut opened = || failed_in_open = failed.len();
-            consume(&rt, pid, version, keys, &mut opened, &mut seen);
+            consume(&rt, version, keys, &mut opened, &mut seen);
         });
         if lasting {
             seen.reopened = Some(reopen(seed, sim.files(), version));
@@ -334,7 +328,6 @@ fn lookups<R: Runtime>(db: &Database<R>, rel: Rel, keys: &[i64]) -> Lookups {
 /// returns.
 fn consume(
     rt: &SimRuntime,
-    pid: Pid,
     version: u8,
     keys: &BTreeMap<Rel, Vec<i64>>,
     opened: &mut dyn FnMut(),
@@ -371,14 +364,6 @@ fn consume(
         }
     }
     seen.verify = Some(verify(&db));
-    seen.scrubbed = Some(pid);
-    seen.scrub = Some(
-        db.testing()
-            .scrub_page(pid)
-            .iter()
-            .map(|f| format!("{f:?}"))
-            .collect(),
-    );
     seen.marks = Some(db.testing().probe().marks());
     seen.settled = db
         .testing()

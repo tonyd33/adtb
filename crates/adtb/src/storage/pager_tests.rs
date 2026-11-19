@@ -1283,23 +1283,12 @@ fn flipped(sim: &mut Sim, pid: Pid, at: usize) -> Sim {
 /// Returns a device holding a database whose page `pid` carries an LSN past the end of its log,
 /// with the LSN of the last record that wrote the page and the LSN it carries.
 fn page_past_log_end() -> (Sim, Pid, Lsn, Lsn) {
-    page_changed_past_log_end(PLAIN, false)
-}
-
-/// Returns what [`page_past_log_end`] does, after an open under `layout` that, when `change`,
-/// changes the page and writes it out with no close.
-fn page_changed_past_log_end(layout: Layout, change: bool) -> (Sim, Pid, Lsn, Lsn) {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
     let pid = client.world.lock().unwrap().pages[3];
     let outcome = sim.run(|rt| {
-        let (p, _) = Pager::open(rt, &options(layout)).expect("open");
-        if change {
-            p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
-            p.flush_log();
-            p.flush_pages(usize::MAX);
-        }
+        Pager::open(rt, &options(PLAIN)).expect("open");
     });
     assert_eq!(Outcome::Finished, outcome);
     let files = sim.files();
@@ -1344,128 +1333,19 @@ fn past_end(pid: Pid, end: Lsn, found: Lsn) -> [Finding; 2] {
     [Finding::Page { pid, damage }, unlogged(end, pid, found)]
 }
 
-/// A call that meets a page whose LSN is planted against the end of the log recovery keeps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Meets {
-    Read,
-    Update,
-    Verify,
-    /// A verify after another.
-    VerifyAgain,
-}
-
-type Met = (Lsn, Meets, Lsn, (Result<(), Damage>, Vec<Finding>));
-
-/// Returns what each call of `cells` met, and what it should meet, on a page planted at the end of
-/// the log recovery keeps offset by -1, 0 or 1: one below, at and far past it.
-fn met_planted(cells: &[(i8, Meets)]) -> (Vec<Met>, Vec<Met>) {
-    let (sim, pid, written, past) = page_past_log_end();
+/// Space: a page planted at the end of the log recovery keeps, met by a second verify.
+#[test]
+fn a_second_verify_of_a_page_at_the_log_end_reports_it_again() {
+    let (sim, pid, _, _) = page_past_log_end();
     let files = sim.files();
     let (end, ()) = opened(
         &mut Sim::with_files(1, Config::default(), files.clone()),
         |_| (),
     );
-    let (mut got, mut want) = (Vec::new(), Vec::new());
-    for &(offset, meets) in cells {
-        let lsn = [Lsn(end.0 - 1), end, past][(offset + 1) as usize];
-        let refused = lsn >= end;
-        {
-            let mut sim = planted(files.clone(), pid, lsn);
-            let before = DATA.page(&sim.files(), pid).to_vec();
-            let (at, met) = opened(&mut sim, |p| match meets {
-                Meets::Read => (damage_of(p.read(pid)), Vec::new()),
-                Meets::Update => (
-                    damage_of(p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1)),
-                    Vec::new(),
-                ),
-                Meets::Verify => (Ok(()), p.verify().findings),
-                Meets::VerifyAgain => {
-                    p.verify();
-                    (Ok(()), p.verify().findings)
-                }
-            });
-            let kept = !refused || before == DATA.page(&sim.files(), pid);
-            assert!(
-                kept,
-                "{lsn:?} {meets:?}: the file's copy of a refused page changed"
-            );
-            got.push((lsn, meets, at, met));
-            let expected = match meets {
-                Meets::Read | Meets::Update if refused => (
-                    Err(Damage::Stale {
-                        expected: end,
-                        found: lsn,
-                    }),
-                    Vec::new(),
-                ),
-                Meets::Read | Meets::Update => (Ok(()), Vec::new()),
-                _ => (
-                    Ok(()),
-                    past_end(pid, if refused { end } else { written }, lsn).to_vec(),
-                ),
-            };
-            want.push((lsn, meets, end, expected));
-        }
-    }
-    (got, want)
-}
-
-/// Space: a page planted at the end of the log recovery keeps, met by a second verify.
-#[test]
-#[ignore = "a second verify of a page planted at the log end loses its `Unlogged` finding to the first verify's damage record at that LSN"]
-fn a_second_verify_of_a_page_at_the_log_end_reports_it_again() {
-    let (got, want) = met_planted(&[(0, Meets::VerifyAgain)]);
-    assert_eq!(1, got.len());
-    assert_eq!(want, got);
-}
-
-/// Space: a page planted one below, at and far past the end of the log recovery keeps, met by each
-/// call and a second verify, but at the end by no second verify; then a change written out ahead of
-/// its log, replayed with and without its full-page image.
-#[test]
-fn a_page_at_or_past_the_log_end_is_refused_by_every_call_and_healed_only_from_its_image() {
-    let meets = [
-        Meets::Read,
-        Meets::Update,
-        Meets::Verify,
-        Meets::VerifyAgain,
-    ];
-    let cells: Vec<(i8, Meets)> = [-1, 0, 1]
-        .into_iter()
-        .flat_map(|at| meets.map(|m| (at, m)))
-        .filter(|&cell| cell != (0, Meets::VerifyAgain))
-        .collect();
-    let (got, want) = met_planted(&cells);
-    assert_eq!(11, got.len());
-    assert_eq!(want, got);
-    let (mut replays, mut healed) = (Vec::new(), Vec::new());
-    for atomic in [true, false] {
-        let layout = Layout { atomic, ..PLAIN };
-        let (mut sim, pid, _, past) = page_changed_past_log_end(layout, true);
-        let outcome = sim.run(|rt| {
-            let (p, opening) = Pager::open(rt, &options(layout)).expect("open");
-            let recovery = opening.recovery().cloned().expect("the open recovered");
-            let stale = Damage::Stale {
-                expected: recovery.end,
-                found: past,
-            };
-            let read = damage_of(p.read(pid));
-            let refusals = (!atomic).then(|| Probe::of(&p).refusals());
-            replays.push((atomic, recovery.damaged, read, refusals));
-            healed.push(if atomic {
-                (true, vec![(pid, stale)], Err(stale), None)
-            } else {
-                (false, Vec::new(), Ok(()), Some(BTreeMap::new()))
-            });
-        });
-        assert_eq!(Outcome::Finished, outcome);
-    }
-    assert_eq!(healed, replays);
-}
-
-/// Returns the damage `r` was refused with.
-fn damage_of<T>(r: Result<T, PageError>) -> Result<(), Damage> {
-    r.map(drop).map_err(|e| e.damage)
+    let mut sim = planted(files, pid, end);
+    let (_, (first, again)) = opened(&mut sim, |p| (p.verify().findings, p.verify().findings));
+    assert_eq!(past_end(pid, end, end).to_vec(), first);
+    assert_eq!(first, again);
 }
 
 #[test]

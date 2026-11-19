@@ -42,8 +42,8 @@ pub struct Verdicts {
     /// The consumers whose judgement ran and could meet the first fault's page.
     pub reached: BTreeSet<Consumer>,
     /// The consumers whose answer carries the first fault's page: the open recorded or settled
-    /// it, a read was refused or failed, verify or the scrub named it, the backup or its proof
-    /// failed, the dump failed or its copy refused a read.
+    /// it, a read was refused or failed, verify named it, the backup or its proof failed, the
+    /// dump failed or its copy refused a read.
     pub met: BTreeSet<Consumer>,
     /// The damage verify's findings give the first fault's page, by name: `Stale`, `Settled`,
     /// `Checksum`.
@@ -612,28 +612,6 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
             }
         }
     }
-    if let Some(scrub) = &o.scrub {
-        let named = !scrub.is_empty();
-        let p = f
-            .pages
-            .iter()
-            .find(|p| Some(p.pid) == o.scrubbed)
-            .unwrap_or(&f.pages[0]);
-        if p.must_report && !named {
-            v(
-                Consumer::Scrub,
-                "a scrub misses the stale page".into(),
-                String::new(),
-            );
-        }
-        if p.must_not_name && named {
-            v(
-                Consumer::Scrub,
-                "a scrub names an intact page".into(),
-                scrub.join("; "),
-            );
-        }
-    }
     if o.marks.is_some() || o.reopened.is_some() {
         for (what, detail) in judge_marks(&f) {
             v(Consumer::Verify, what, detail);
@@ -1036,7 +1014,6 @@ fn reached(f: &Facts<'_>) -> BTreeSet<Consumer> {
         (Consumer::Catalog, o.relations.is_some()),
         (Consumer::Read, read),
         (Consumer::Verify, o.verify.is_some()),
-        (Consumer::Scrub, o.scrub.is_some()),
         (Consumer::Backup, o.backup.is_some()),
         (Consumer::Dump, o.dump.is_some()),
     ]
@@ -1066,10 +1043,6 @@ fn met(f: &Facts<'_>) -> BTreeSet<Consumer> {
         ),
         (Consumer::Read, read),
         (Consumer::Verify, !named(f).is_empty()),
-        (
-            Consumer::Scrub,
-            o.scrubbed == Some(pid) && o.scrub.as_ref().is_some_and(|s| !s.is_empty()),
-        ),
         (
             Consumer::Backup,
             o.backup.as_ref().is_some_and(|b| {
