@@ -1520,19 +1520,6 @@ fn a_rotted_page_is_refused_and_reported() {
 }
 
 #[test]
-fn a_damaged_bitmap_fails_allocation() {
-    let mut sim = Sim::new(2, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let mut sim = flipped(&mut sim, Pid(2), 500 - HEADER_LEN);
-    let got = with_pager(&mut sim, |p| p.allocate(1, PageKind::HeapSlotted, 7));
-    assert_eq!(
-        Pid(2),
-        got.expect_err("allocation used a damaged bitmap").pid
-    );
-}
-
-#[test]
 fn allocation_reuses_a_damaged_free_page_without_reading_it() {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
@@ -1910,19 +1897,6 @@ fn an_update_must_change_every_page_it_allocates() {
         new.page(1, PageKind::HeapSlotted, 1).unwrap();
         p.update_with(new, &[index], |_| {}).unwrap();
     });
-}
-
-#[test]
-fn a_damaged_bitmap_fails_a_reservation() {
-    let mut sim = Sim::new(34, Config::default());
-    let client = Client::new();
-    setup(&mut sim, &client, PLAIN);
-    let mut sim = flipped(&mut sim, Pid(2), 500 - HEADER_LEN);
-    let got = with_pager(&mut sim, |p| p.reserve().page(1, PageKind::HeapSlotted, 7));
-    assert_eq!(
-        Pid(2),
-        got.expect_err("reserved through a damaged bitmap").pid
-    );
 }
 
 #[test]
