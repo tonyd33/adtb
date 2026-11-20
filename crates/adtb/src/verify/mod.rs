@@ -11,7 +11,7 @@ use std::ops::Bound;
 use crate::btree::{self, BTree, Index};
 use crate::heap::{Flags, Heap, LargeStore, Link, successor};
 use crate::key::{CtorId, Tid};
-use crate::mvcc::{CommitLog, Owes};
+use crate::mvcc::{CommitLog, Owes, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
 
@@ -263,9 +263,10 @@ impl<R: Runtime> Walk<'_, R> {
         }
     }
 
-    /// Check every version's `next` that is not hot-updated: a version with no deleter names no
-    /// successor, and one whose deleter is running names a version that deleter wrote, in the heap
-    /// of `sum` its chain places it in.
+    /// Check every version's writers and its `next` that is not hot-updated: each writer is
+    /// reserved by the commit log, a version with no deleter names no successor, and one whose
+    /// deleter is running names a version that deleter wrote, in the heap of `sum` its chain
+    /// places it in.
     fn chains(&mut self, heap: &Heap, sum: &[&Heap], clog: &CommitLog) {
         let name = format!("heap {}", heap.id());
         let versions = match heap.headers(self.pager) {
@@ -274,7 +275,22 @@ impl<R: Runtime> Walk<'_, R> {
         };
         for (t, h, flags) in versions {
             let pid = Pid(t.page());
-            if h.next.is_none() {
+            let writers = [
+                ("inserter", Some(h.writers.inserter())),
+                ("deleter", h.writers.deleter()),
+            ];
+            let mut unreserved = false;
+            for (role, x) in writers {
+                let Some(x) = x.filter(|&x| x < Xid::FIRST || x >= clog.reserved()) else {
+                    continue;
+                };
+                unreserved = true;
+                self.structure(
+                    pid,
+                    format!("{name}: slot {} names unreserved {role} {}", t.slot(), x.0),
+                );
+            }
+            if unreserved || h.next.is_none() {
                 continue;
             }
             if flags.contains(Flags::HOT_UPDATED) {
@@ -292,14 +308,7 @@ impl<R: Runtime> Walk<'_, R> {
             }
             let deleter = match clog.owes(self.pager, &h.writers) {
                 Ok(Owes::Successor(x)) => x,
-                Ok(Owes::Nothing) => continue,
-                Ok(Owes::Unreserved(x)) => {
-                    self.structure(
-                        pid,
-                        format!("{name}: slot {} names unreserved deleter {}", t.slot(), x.0),
-                    );
-                    continue;
-                }
+                Ok(Owes::Nothing | Owes::Unreserved(_)) => continue,
                 Err(e) => return self.damaged(e),
             };
             let of = Link {
