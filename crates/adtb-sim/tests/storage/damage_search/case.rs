@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb::runtime::{IoError, OpKind};
 use adtb_sim::{Action, Match, Plan as SimPlan, SimRuntime};
 use adtb_sys::runtime::Faults;
+use adtb_testkit::search::Files;
 
 use super::consumers;
 use super::judge::{self, Hit, Verdicts};
@@ -414,6 +415,9 @@ pub struct Outcome {
     pub opened: bool,
     /// Whether a process after the first a planned read failure struck in had one too.
     pub failed_after_restart: bool,
+    /// Whether the faulted run of a pair ended with a page torn whose retained log holds an image
+    /// of it after a settled record of it.
+    pub torn_settle: bool,
     pub verdicts: Verdicts,
 }
 
@@ -504,8 +508,26 @@ fn run_all(plan: &Plan, points: &[Point]) -> Option<Outcome> {
             .iter()
             .position(|n| *n > 0)
             .is_some_and(|first| ran.failed_reads[first + 1..].iter().any(|n| *n > 0)),
+        torn_settle: paired && torn_settle(&ran.files),
         verdicts,
     })
+}
+
+/// Returns whether `files` hold a page whose copy fails its checksum and whose retained log holds
+/// an image of it after a settled record of it.
+fn torn_settle(files: &Files) -> bool {
+    let Some(e) = ledger::evidence(files) else {
+        return false;
+    };
+    let imaged = |pid: Pid, at: u64| {
+        e.ended
+            .iter()
+            .any(|&(p, l, image)| p == pid && l > at && image)
+    };
+    e.records
+        .iter()
+        .filter(|(_, _, kind)| *kind == ledger::SETTLED)
+        .any(|&(pid, at, _)| imaged(pid, at) && !sealed(pid, &world::page(files, pid)))
 }
 
 /// Returns the write to the log a plan made the device lose in `ran`.

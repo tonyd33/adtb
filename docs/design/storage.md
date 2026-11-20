@@ -808,7 +808,8 @@ detections are recorded once it ends (§7), and a file quarantined whole
 records in memory only (§8). The commit log reads a status page it may
 settle without refusing it or recording its damage; one it does not
 settle is then refused and recorded as any other. A commit log status page settled from the
-log is recorded as settled before its rewrite is logged. A checkpoint
+log is recorded as settled before its rewrite is logged, as a full-page image chained from the
+file's copy it was settled from. A checkpoint
 folds every record into the damage list, one page of kind damage list the file header names
 (§1.2): it takes the records under the log lock with the checkpoint
 record, and logs the list page's change after that record, so recovery
@@ -861,7 +862,9 @@ Each page record names the page's LSN before it. Replay reads the log
 from the start of the batch holding the redo LSN, and a record whose
 previous LSN is not the LSN of the record before it for the same page
 marks a page that was changed from a stale copy: a lost write, which
-quarantines the page's heap or index. `verify` checks the same chain
+quarantines the page's heap or index. A full-page image that breaks the
+chain at the LSNs of the page's last settled record since its last
+chain start is a settle's rewrite: replay installs it. `verify` checks the same chain
 over the whole retained log, and that each page's LSN is that of its
 last record there.
 

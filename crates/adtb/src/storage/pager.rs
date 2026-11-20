@@ -156,7 +156,8 @@ impl<R: Runtime> Append<'_, R> {
     }
 
     /// Apply `edits` to the page under `g` and log its record: a full image starting a chain when
-    /// `start`, else the record [`DirtyTable::record_kind`] chooses. Returns the record's LSN.
+    /// `start`, a full image chained from the copy a restored latch holds, else the record
+    /// [`DirtyTable::record_kind`] chooses. Returns the record's LSN.
     pub(super) fn change_page(
         &mut self,
         g: &mut PageExclusive<'_, R>,
@@ -174,6 +175,13 @@ impl<R: Runtime> Append<'_, R> {
             Record::Image {
                 pid,
                 prev: Lsn::UNCHAINED,
+                page: g.to_vec(),
+            }
+        } else if matches!(g.kind, Kind::Restored { .. }) {
+            g.kind = Kind::Latched;
+            Record::Image {
+                pid,
+                prev,
                 page: g.to_vec(),
             }
         } else if m
@@ -485,6 +493,10 @@ enum Kind {
     /// A damaged page overwritten unread: its next change starts a chain, and its drop before
     /// one refuses the page again.
     Overwriting,
+    /// The file's copy of a page refused as `prior`, which the log does not chain from: its next
+    /// change, even an empty one, logs a full image, and its drop before one refuses the page
+    /// again as `prior`.
+    Restored { prior: Damage },
 }
 
 impl<R: Runtime> std::fmt::Debug for PageExclusive<'_, R> {
@@ -554,8 +566,8 @@ impl<'a, R: Runtime> PageExclusive<'a, R> {
 }
 
 impl<R: Runtime> Drop for PageExclusive<'_, R> {
-    /// Undo a frame no logged change took over: evict a reservation's blank frame and refuse the
-    /// page again as before it, or refuse a damaged page overwritten unread.
+    /// Undo a frame no logged change took over: evict a reservation's blank frame or a restored
+    /// copy and refuse the page again as before it, or refuse a damaged page overwritten unread.
     fn drop(&mut self) {
         let Some(held) = self.held.take() else {
             return;
@@ -565,6 +577,9 @@ impl<R: Runtime> Drop for PageExclusive<'_, R> {
             Kind::Blank { prior } => held.unblank(prior),
             Kind::Overwriting => {
                 held.pager.refuse_latched(held, Damage::Checksum);
+            }
+            Kind::Restored { prior } => {
+                held.pager.refuse_latched(held, prior);
             }
         }
     }
@@ -679,17 +694,21 @@ impl<'a, R: Runtime> Held<'a, R> {
         }
     }
 
-    /// Returns the guard of the page holding `copy`, the file's copy a settle changes from.
+    /// Returns the guard of the page holding `copy`, the file's copy a settle changes from, of a
+    /// page refused as `prior`.
     #[expect(
         clippy::disallowed_methods,
         reason = "permanent: the settle's restore writer clippy.toml admits"
     )]
-    fn restore_copy(mut self, copy: &[u8]) -> PageExclusive<'a, R> {
+    fn restore_copy(mut self, copy: &[u8], prior: Damage) -> PageExclusive<'a, R> {
         if !self.resident() {
             self.pager.make_room(self.pid());
         }
         self.g.write(0, copy);
-        self.latched()
+        PageExclusive {
+            held: Some(self),
+            kind: Kind::Restored { prior },
+        }
     }
 
     /// Evict a reservation's blank frame no allocation committed, and refuse the page again with
@@ -738,7 +757,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the exclusive latch on the page `stale` refuses, holding `copy`, the file's copy
-    /// of that page, and no longer refused.
+    /// of that page, and no longer refused. Its next change logs a full image chained from `copy`;
+    /// its drop before one refuses the page again as `stale` does.
     ///
     /// Fail with `stale` when the page is resident, and with the page's refusal when it is refused
     /// other than as stale.
@@ -756,7 +776,7 @@ impl<R: Runtime> Pager<R> {
             Some(damage) => return Err(PageError { damage, ..stale }),
         }
         self.evidence().unrefuse(&Refusal::of(&held));
-        Ok(held.restore_copy(copy))
+        Ok(held.restore_copy(copy, stale.damage))
     }
 
     /// Read `pid` in for replay from the file's copy. Returns why the copy cannot be read in,
@@ -1386,7 +1406,7 @@ impl<R: Runtime> Pager<R> {
         let mut last = append.log.log.next_lsn();
         for (g, edits) in guards.iter_mut().zip(edits) {
             let start = matches!(g.kind, Kind::Overwriting) || allocated.contains(&g.pid());
-            if edits.is_empty() && !start {
+            if edits.is_empty() && !start && !matches!(g.kind, Kind::Restored { .. }) {
                 continue;
             }
             last = append.change_page(g, edits, start);

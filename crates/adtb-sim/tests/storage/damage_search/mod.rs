@@ -93,7 +93,6 @@ struct Known {
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
 const UNDER_RELATION_MARK: &str = "migrate-under-relation-mark";
 const APPLIES_UNDER_MARK: &str = "migrate-applies-under-mark";
-const SETTLE_TORN: &str = "settle-rewrite-torn-unrestored";
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
 const KNOWN: &[Known] = &[
@@ -257,38 +256,7 @@ const KNOWN: &[Known] = &[
             Kind::Engine,
         )),
     },
-    settle_torn(Consumer::Read, "users fails"),
-    settle_torn(Consumer::Read, "docs fails"),
-    settle_torn(Consumer::Read, "tags fails"),
-    settle_torn(Consumer::Read, "by key: users fails"),
-    settle_torn(Consumer::Read, "by key: docs fails"),
-    settle_torn(Consumer::Read, "by key: tags fails"),
-    settle_torn(Consumer::Backup, "the backup fails"),
-    settle_torn(Consumer::Dump, "the dump fails"),
 ];
-
-/// Returns the entry of the pair at seed 6, as `consumer` shows it: the crash at the force after
-/// the tear of an engine page at 679 tears every write not yet forced, among them the rewrite of
-/// the status page the open settled.
-const fn settle_torn(consumer: Consumer, what: &'static str) -> Known {
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer,
-        what,
-        ticket: SETTLE_TORN,
-        seed: 6,
-        at: 677,
-        then: Some((
-            Point {
-                at: 679,
-                injection: Injection::Torn,
-            },
-            Kind::Engine,
-        )),
-    }
-}
 
 /// The cells whose every case ends at a failed open, which no consumer after it can reach, with
 /// the rule that makes the open fail.
@@ -1614,7 +1582,7 @@ fn pairs(seconds: &[Second]) -> String {
         .collect();
     pool::map(
         &pinned,
-        |(seed, (at, _), then, _)| format!("pinned pair seed {seed} at {at} then {then:?}"),
+        |(seed, (at, _), then, _, _)| format!("pinned pair seed {seed} at {at} then {then:?}"),
         |p| rerun_pair(p),
     );
     assert_reached("pairs whose file held a damage record", recorded, 1);
@@ -1636,25 +1604,48 @@ fn pairs(seconds: &[Second]) -> String {
     text
 }
 
-/// A pair that breaks no rule: its seed, the write-out of its lost write and that page's kind, and
-/// its second fault with the kind of page that fault's write-out writes.
-type PinnedPair = (u64, (usize, Kind), Point, Kind);
+/// A pair that breaks no rule: its seed, the write-out of its lost write and that page's kind, its
+/// second fault with the kind of page that fault's write-out writes, and what its case shows.
+type PinnedPair = (u64, (usize, Kind), Point, Kind, Shows);
+
+/// What a pinned pair's case shows besides an open with no violation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shows {
+    /// Its planned read failure fired.
+    ReadFailed,
+    /// Its faulted run tore the rewrite of a status page the commit log settled.
+    TornSettle,
+}
 
 /// The pairs the search must still reach: a lost write of the settings heap beside a damage list
-/// page unreadable for good, which opens for verify.
-const PINNED_PAIRS: &[PinnedPair] = &[(
-    2,
-    (610, Kind::Engine),
-    Point {
-        at: 639,
-        injection: Injection::Unreadable { lasting: true },
-    },
-    Kind::DamageList,
-)];
+/// page unreadable for good, which opens for verify; and a lost write of a status page whose
+/// settle's rewrite the crash after the tear of an engine page at 679 tears.
+const PINNED_PAIRS: &[PinnedPair] = &[
+    (
+        2,
+        (610, Kind::Engine),
+        Point {
+            at: 639,
+            injection: Injection::Unreadable { lasting: true },
+        },
+        Kind::DamageList,
+        Shows::ReadFailed,
+    ),
+    (
+        6,
+        (677, Kind::CommitLog),
+        Point {
+            at: 679,
+            injection: Injection::Torn,
+        },
+        Kind::Engine,
+        Shows::TornSettle,
+    ),
+];
 
-/// Fail unless the write-outs of the pair `p` still have their kinds and its case fires its
-/// planned read failure, opens and shows no violation.
-fn rerun_pair(&(seed, (at, kind), then, then_kind): &PinnedPair) {
+/// Fail unless the write-outs of the pair `p` still have their kinds and its case shows what it
+/// pins, opens and shows no violation.
+fn rerun_pair(&(seed, (at, kind), then, then_kind, shows): &PinnedPair) {
     let plan = plans::plan(seed, false);
     assert_eq!(
         (Some(kind), Some(then_kind), true),
@@ -1671,9 +1662,19 @@ fn rerun_pair(&(seed, (at, kind), then, then_kind): &PinnedPair) {
     };
     let o = case::run_pair(&plan, first, then).expect("the pinned pair's faults take");
     assert_eq!(
-        (true, true, Vec::<Violation>::new()),
-        (o.read_failed, o.opened, o.verdicts.violations),
-        "pinned pair seed {seed} at {at} then {then:?}: fired, opened, violations"
+        (
+            shows == Shows::ReadFailed,
+            shows == Shows::TornSettle,
+            true,
+            Vec::<Violation>::new()
+        ),
+        (
+            o.read_failed,
+            o.torn_settle,
+            o.opened,
+            o.verdicts.violations
+        ),
+        "pinned pair seed {seed} at {at} then {then:?}: fired, torn settle, opened, violations"
     );
 }
 

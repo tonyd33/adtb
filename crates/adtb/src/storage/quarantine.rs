@@ -41,7 +41,7 @@ impl<'a, R: Runtime> StaleCopy<'a, R> {
     }
 
     /// Latch the page over `copy`, the file's copy, record it settled, then change it to
-    /// `contents`, logging the change as one from that copy.
+    /// `contents`, logging a full image chained from that copy.
     ///
     /// Fail, recording nothing, when the page is refused other than as stale or resident.
     pub(crate) fn settle(

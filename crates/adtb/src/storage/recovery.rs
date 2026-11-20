@@ -46,6 +46,8 @@ struct Replay {
     last: BTreeMap<Pid, Lsn>,
     /// Pages that failed verification, waiting for a full-page image.
     unverified: BTreeMap<Pid, Damage>,
+    /// The stale refusal each page's last settled record since its last chain start names.
+    settled: BTreeMap<Pid, Damage>,
     applied: usize,
 }
 
@@ -176,6 +178,7 @@ impl<R: Runtime> Pager<R> {
             redo,
             last: BTreeMap::new(),
             unverified: BTreeMap::new(),
+            settled: BTreeMap::new(),
             applied: 0,
         };
         let block = img.block;
@@ -263,24 +266,33 @@ impl<R: Runtime> Pager<R> {
         if let Some((pid, m)) = met {
             self.evidence().replay_met(&st.replaying, pid, m, lsn);
         }
+        if let Record::Damaged {
+            pid,
+            damage: Damage::Settled { expected, found },
+        } = record
+        {
+            st.settled.insert(pid, Damage::Stale { expected, found });
+        }
         let Some((pid, prev)) = record.page() else {
             return;
         };
         let before = st.last.insert(pid, lsn);
         if prev == Lsn::UNCHAINED {
+            st.settled.remove(&pid);
             self.evidence().replay_start(&st.replaying, pid);
         }
         if let Some(expected) = before.filter(|&l| l != prev && prev != Lsn::UNCHAINED) {
-            st.unverified.remove(&pid);
-            self.damage_replayed(
-                st,
-                pid,
-                Damage::Stale {
-                    expected,
-                    found: prev,
-                },
-            );
-            return;
+            let damage = Damage::Stale {
+                expected,
+                found: prev,
+            };
+            let settle =
+                matches!(record, Record::Image { .. }) && st.settled.get(&pid) == Some(&damage);
+            if !settle {
+                st.unverified.remove(&pid);
+                self.damage_replayed(st, pid, damage);
+                return;
+            }
         }
         if lsn < st.redo || self.refusal(pid).is_some() {
             return;
