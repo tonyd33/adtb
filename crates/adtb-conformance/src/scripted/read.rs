@@ -25,9 +25,13 @@ fn head(line: &str) -> Option<Head> {
     Some(match word {
         "seed" => Head::Seed(rest.parse().ok()?),
         "use" if !rest.is_empty() => Head::Use(rest.to_owned()),
-        "option" => match rest.strip_prefix("query_memory_bytes ")? {
-            "default" => Head::QueryMemory(None),
-            bytes => Head::QueryMemory(Some(bytes.parse().ok()?)),
+        "option" => match rest.split_once(' ').unwrap_or((rest, "")) {
+            ("query_memory_bytes", "default") => Head::QueryMemory(None),
+            ("query_memory_bytes", bytes) => Head::QueryMemory(Some(bytes.parse().ok()?)),
+            ("export_roots", paths) => {
+                Head::ExportRoots(paths.split_whitespace().map(str::to_owned).collect())
+            }
+            _ => return None,
         },
         "migrate" => match rest.strip_prefix("at ") {
             Some(at) => {

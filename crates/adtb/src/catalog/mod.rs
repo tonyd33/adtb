@@ -20,6 +20,8 @@ mod moved;
 pub(crate) mod operators;
 mod oplog;
 mod pending;
+#[cfg(any(test, feature = "testing"))]
+mod probed;
 mod readers;
 mod root;
 mod roots;

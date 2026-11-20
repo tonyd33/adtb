@@ -5,6 +5,8 @@
 //! - `seed N`, first: the simulator's seed, 0 without it.
 //! - `use NAME`: the directives of `fixtures/NAME.fixture`, in place.
 //! - `option query_memory_bytes N`: the open option for each later open; `default` clears it.
+//! - `option export_roots PATH...`: the directories a session confined to them may write in, for
+//!   each later open; none, with no PATH.
 //! - `migrate [at V] [refused VALUE]`: the body's migrations, each starting at a `module` line,
 //!   appended to the log, after its first V - 1 when `at V`, and the file reopened with it;
 //!   `at V` with no body reopens the file with the first V - 1.
@@ -133,6 +135,17 @@
 //!   `Redirect P.S`, or `Normal FLAGS, xI[ to xD][, next P.S]` with the version's flags joined
 //!   by `|` or `NONE`, its inserter and deleter, and its successor, `elsewhere` off the heap's
 //!   pages. A transaction id `xN` is ranked among the ids the probe names, in id order.
+//! - `probe catalog [engine]`: the rows are the structures the catalog names for the relations of
+//!   every module the engine does not declare, or with `engine` of those it does, by name:
+//!   `change C`, the change in progress the catalog's root records, `None`, `Schema`,
+//!   `NamingSequences` or `Reindexing`; `next heap N`, the id the next heap takes; then for each
+//!   module in name order and each of its relations in name order, a row `RELATION.CTOR heap N`
+//!   for each constructor in declaration order, then `RELATION CLAUSE over CTOR | ...` for each of
+//!   its indexes, sorted, its clause as the catalog writes it; then `TYPE order CTOR < ...` for
+//!   each sum of several constructors the module declares, its constructors in the order the
+//!   catalog stores them. A heap id counts from 0 at one past the highest id a structure of a
+//!   relation the engine declares holds, its history included, and is negative below it; the
+//!   heaps of those relations show `heap` alone.
 //! - `probe files [PREFIX]`: the database closes first, as before an open, and the rows are the
 //!   path of each file on the device beginning with PREFIX, sorted.
 //!
@@ -172,6 +185,7 @@ enum Head {
     Seed(u64),
     Use(String),
     QueryMemory(Option<u64>),
+    ExportRoots(Vec<String>),
     Migrate {
         at: Option<usize>,
         refused: Option<String>,

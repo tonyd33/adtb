@@ -175,6 +175,9 @@ pub(super) enum Probed {
     },
     /// The device's files whose path begins with the text.
     Files(String),
+    /// The structures the catalog names for the relations of the engine's modules when true, else
+    /// of the others.
+    Catalog(bool),
 }
 
 /// A restore of the dump or backup at `source` to the new file `to`.
@@ -243,6 +246,8 @@ pub(super) fn head(word: &str, rest: &str) -> Option<Head> {
                     }
                 }
                 ("files", prefix) => Probed::Files(prefix.to_owned()),
+                ("catalog", "") => Probed::Catalog(false),
+                ("catalog", "engine") => Probed::Catalog(true),
                 ("plan", "") => return Some(Head::ProbePlan),
                 _ => return None,
             },
@@ -517,6 +522,9 @@ impl State {
             }
             Probed::Files(prefix) => files(rt, prefix),
             Probed::Holding => pages::held(t, &self.roles),
+            Probed::Catalog(engine) => t
+                .catalog(*engine)
+                .unwrap_or_else(|e| vec![format!("the catalog is not read: {e:?}")]),
             Probed::Heap {
                 relation,
                 ctor,

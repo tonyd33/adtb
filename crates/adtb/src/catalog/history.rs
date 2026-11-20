@@ -210,6 +210,17 @@ impl Kept {
         self.heaps.values()
     }
 
+    /// Returns the heap id or page owner of each history structure of a relation `of` holds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn ids(&self, of: impl Fn(RelId) -> bool) -> Vec<u32> {
+        let heaps = self.heaps.iter().filter(|((r, _), _)| of(*r));
+        let indexes = self.indexes.iter().filter(|(r, _)| of(**r));
+        heaps
+            .map(|(_, h)| h.id().0)
+            .chain(indexes.map(|(_, i)| i.tree().owner()))
+            .collect()
+    }
+
     fn heap_of(&self, old: &Schema, rid: CatRelId, cid: CatCtorId) -> Arc<Heap> {
         let r = relation(old, rid).expect("a relation kept has history heaps");
         let c = ctor_index(old, r, cid).expect("a constructor kept has a history heap");

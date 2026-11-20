@@ -27,6 +27,10 @@ impl<R: Runtime> Database<R> {
         &self.engine.db
     }
 
+    pub(crate) fn tested_catalog(&self) -> &crate::catalog::Catalog {
+        &self.engine.catalog
+    }
+
     /// Returns the store the statements of `txn` read, `None` once it has ended.
     ///
     /// Precondition: `txn` is a transaction of this database, or this panics.

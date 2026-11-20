@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::panic::{self, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
@@ -337,6 +337,7 @@ impl Script {
             }
             Head::Reopen { refused } => (self.log.clone(), refused.clone()),
             Head::QueryMemory(_)
+            | Head::ExportRoots(_)
             | Head::Log
             | Head::Bundle { .. }
             | Head::Host(_)
@@ -509,6 +510,9 @@ impl Script {
     fn closed(&mut self, step: &Step) {
         match &step.head {
             Head::QueryMemory(bytes) => self.options.query_memory_bytes = *bytes,
+            Head::ExportRoots(paths) => {
+                self.options.export_roots = paths.iter().map(PathBuf::from).collect();
+            }
             Head::Log => self.log.extend(read::migrations(&step.body)),
             Head::Bundle { .. } | Head::Loose(_) => self.bundles.push(step.clone()),
             Head::Host(names) if names.is_empty() => self.options.host_fns = HostFns::new(),
@@ -534,6 +538,7 @@ impl Script {
                 unreachable!("read takes seeds and uses, and session takes opens")
             }
             Head::QueryMemory(_)
+            | Head::ExportRoots(_)
             | Head::Log
             | Head::Bundle { .. }
             | Head::Host(_)

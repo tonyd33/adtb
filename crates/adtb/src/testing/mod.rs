@@ -227,6 +227,15 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.tested_db().readers_held()
     }
 
+    /// Returns the structures the catalog names for the relations of the modules the engine
+    /// declares when `engine`, else of every other module, one line each.
+    pub fn catalog(self, engine: bool) -> Result<Vec<String>, Failed> {
+        Ok(self
+            .db
+            .tested_catalog()
+            .probed(self.db.tested_pager(), engine)?)
+    }
+
     /// Returns the transactions a waiter may wait on, started and not yet ended.
     pub fn waits_running(self) -> BTreeSet<Xid> {
         self.db.tested_db().waits_running()
