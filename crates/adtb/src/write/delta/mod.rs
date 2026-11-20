@@ -177,7 +177,8 @@ pub fn compile(
         catalog,
         terms,
         facts: Facts::default(),
-        total: Totality::new(schema, false),
+        total: Totality::new(schema, false)
+            .with_aggregates(&normal.terms, normal.aggregate_parts()),
         transitions: transitions
             .into_iter()
             .map(|(v, x, r, s)| (v, (x, r, s)))

@@ -52,26 +52,80 @@ impl NormalProgram {
         self.checks.iter().map(|(&c, &t)| (c, t))
     }
 
+    /// Returns each user-defined aggregate's init, step, merge and finish bodies; `None` for one
+    /// with none.
+    pub fn aggregate_parts(&self) -> impl Iterator<Item = Option<[Tm; 4]>> + '_ {
+        self.aggregates.iter().map(|a| {
+            a.as_ref()
+                .map(|a| [a.init, a.step.1, a.merge.1, a.finish.1])
+        })
+    }
+
     /// Returns every body of the program with the variables free in it.
     pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
-        let mut out: Vec<(Tm, Vec<Var>)> = Vec::new();
+        self.bodies()
+            .into_iter()
+            .map(|(_, t, free)| (t, free))
+            .collect()
+    }
+
+    /// Returns every body of the program with the object it belongs to and the variables free in it.
+    pub fn bodies(&self) -> Vec<(Root, Tm, Vec<Var>)> {
+        let NormalProgram {
+            terms: _,
+            functions,
+            constraints,
+            checks,
+            domains,
+            retags,
+            defaults,
+            computed,
+            index_fields,
+            aggregates,
+        } = self;
+        let mut out: Vec<(Root, Tm, Vec<Var>)> = Vec::new();
+        for (i, f) in functions.iter().enumerate() {
+            if let Some((ps, t)) = f {
+                out.push((Root::Function(FnId(i as u32)), *t, ps.clone()));
+            }
+        }
         out.extend(
-            self.functions
+            constraints
                 .iter()
-                .flatten()
-                .map(|(ps, t)| (*t, ps.clone())),
+                .map(|(&c, &t)| (Root::Constraint(c), t, vec![])),
         );
-        out.extend(self.constraints.values().map(|t| (*t, vec![])));
-        out.extend(self.checks.values().map(|t| (*t, vec![])));
-        out.extend(self.domains.values().map(|(v, t)| (*t, vec![*v])));
-        out.extend(self.retags.values().map(|(v, t)| (*t, vec![*v])));
-        out.extend(self.defaults.values().map(|t| (*t, vec![])));
-        out.extend(self.computed.values().map(|(v, t)| (*t, vec![*v])));
-        out.extend(self.index_fields.values().map(|(v, f)| (f.value, vec![*v])));
-        for a in self.aggregates.iter().flatten() {
-            out.push((a.init, vec![]));
-            for (vs, t) in [&a.step, &a.merge, &a.finish] {
-                out.push((*t, vs.clone()));
+        out.extend(checks.iter().map(|(&c, &t)| (Root::Check(c), t, vec![])));
+        out.extend(
+            domains
+                .iter()
+                .map(|(&d, (v, t))| (Root::Domain(d), *t, vec![*v])),
+        );
+        out.extend(
+            retags
+                .iter()
+                .map(|(&r, (v, t))| (Root::Retag(r), *t, vec![*v])),
+        );
+        out.extend(
+            defaults
+                .iter()
+                .map(|(&(r, i), &t)| (Root::Default(r, i), t, vec![])),
+        );
+        out.extend(
+            computed
+                .iter()
+                .map(|(&(r, i), (v, t))| (Root::Computed(r, i), *t, vec![*v])),
+        );
+        out.extend(
+            index_fields
+                .iter()
+                .map(|(&(r, i, j), (v, f))| (Root::IndexField(r, i, j), f.value, vec![*v])),
+        );
+        for (i, a) in aggregates.iter().enumerate() {
+            if let Some(a) = a {
+                out.push((Root::Aggregate(i), a.init, vec![]));
+                for (vs, t) in [&a.step, &a.merge, &a.finish] {
+                    out.push((Root::Aggregate(i), *t, vs.clone()));
+                }
             }
         }
         out
@@ -173,7 +227,7 @@ fn at<T>(root: Root, r: Result<T, String>) -> Result<T, Error> {
 
 /// Normalise every body of a checked schema.
 pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
-    let mut n = Normaliser::new(schema, [&p.terms, &p.terms], &p.functions);
+    let mut n = Normaliser::new(schema, [&p.terms, &p.terms], p);
     let mut functions = Vec::with_capacity(p.functions.len());
     for (i, (f, def)) in p.functions.iter().zip(&schema.functions).enumerate() {
         functions.push(match f {
@@ -258,7 +312,7 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
 
 /// Normalise checked ad hoc text, inlining the functions of `p`.
 pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Error> {
-    let mut n = Normaliser::new(schema, [&a.terms, &p.terms], &p.functions);
+    let mut n = Normaliser::new(schema, [&a.terms, &p.terms], p);
     let params = a
         .params
         .iter()
@@ -302,7 +356,7 @@ pub fn txn(schema: &Schema, p: &Program, t: &Txn) -> Result<NormalQuery, Error> 
 }
 
 fn registered(schema: &Schema, p: &Program, terms: &Terms, term: Tm) -> Result<NormalQuery, Error> {
-    let mut n = Normaliser::new(schema, [terms, &p.terms], &p.functions);
+    let mut n = Normaliser::new(schema, [terms, &p.terms], p);
     let (params, body) = n.under_lams(MAIN, term, usize::MAX);
     let params: Vec<Var> = params.into_iter().map(|v| n.free_var(MAIN, v)).collect();
     let body = n.root(Root::Query, body)?;
@@ -435,14 +489,15 @@ struct Normaliser<'a> {
 }
 
 impl<'a> Normaliser<'a> {
-    fn new(schema: &'a Schema, src: [&'a Terms; 2], fns: &'a [Option<Tm>]) -> Self {
+    fn new(schema: &'a Schema, src: [&'a Terms; 2], p: &'a Program) -> Self {
+        let fns = &p.functions;
         Normaliser {
             schema,
             src,
             fns,
             out: Terms::default(),
             out_frees: Frees::default(),
-            tot: Totality::new(schema, false),
+            tot: Totality::new(schema, false).with_aggregates(&p.terms, p.aggregate_parts()),
             free: HashMap::new(),
             fv: [HashMap::new(), HashMap::new()],
             memo: HashMap::new(),

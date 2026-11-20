@@ -6,7 +6,7 @@ use crate::ast::FnBody;
 use crate::check::rel::key_value_ty;
 use crate::check::ty::{ctor_fields, ctor_names, elem, fields, restrict, subtype};
 use crate::schema::{Generator, Schema};
-use crate::types::{Base, CtorSet, KeyCtors, RelId, RelRef, Ty, TypeId};
+use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty, TypeId};
 
 /// A node that breaks the kernel's typing invariants, with the invariant it breaks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +51,10 @@ pub fn validate(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) -> Res
 
 /// Check that every term reachable from `roots` is in normal form: no `Lam` but the new-value
 /// function of a `Replace`, no `App`, no `Call` but of a Wasm or host function, and no `Only`.
+#[deny(
+    clippy::wildcard_enum_match_arm,
+    clippy::match_wildcard_for_single_variants
+)]
 pub fn validate_normal(
     schema: &Schema,
     terms: &Terms,
@@ -74,7 +78,50 @@ pub fn validate_normal(
             Kind::Call { func, .. } => matches!(schema.function(*func).body, FnBody::Expr(_))
                 .then_some("a call of a schema function remains"),
             Kind::Only(_) => Some("an `Only` remains"),
-            _ => None,
+            Kind::Var(_)
+            | Kind::Const(_)
+            | Kind::Prim(..)
+            | Kind::Record(_)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::Case { .. }
+            | Kind::If(..)
+            | Kind::Let(..)
+            | Kind::Caller
+            | Kind::Key(_)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(_)
+            | Kind::Try(_)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::Restrict(..)
+            | Kind::EmptySet
+            | Kind::Singleton(_)
+            | Kind::Union(..)
+            | Kind::For(..)
+            | Kind::IsEmpty(_)
+            | Kind::Exists(_)
+            | Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Top { .. }
+            | Kind::Fix(..)
+            | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
+            | Kind::At { .. }
+            | Kind::Present { .. }
+            | Kind::Reject(_)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Upsert { .. }
+            | Kind::Rejects { .. }
+            | Kind::Par(_)
+            | Kind::Fail(_)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => None,
         };
         if let Some(reason) = refused {
             return Err(Invalid {
@@ -315,6 +362,10 @@ impl Validator<'_> {
         }
     }
 
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn node(&self, t: Tm) -> Checked {
         let ty = self.ty(t);
         self.well_formed(ty)?;
@@ -326,13 +377,7 @@ impl Validator<'_> {
             Kind::Field(e, l) => self.field(*e, l, ty),
             Kind::Ctor { ctor, fields } => self.ctor(*ctor, fields, ty),
             Kind::Case { scrutinee, arms } => self.case(*scrutinee, arms, ty),
-            Kind::If(c, a, b) => {
-                expect(self.is_bool(self.ty(*c)), || {
-                    "the condition is not `Bool`".into()
-                })?;
-                self.within("the then branch", self.ty(*a), ty)?;
-                self.within("the else branch", self.ty(*b), ty)
-            }
+            Kind::If(c, a, b) => self.conditional(*c, *a, *b, ty),
             Kind::Let(x, e, b) => {
                 self.within("the bound value", self.ty(*e), &self.terms.var_info(*x).ty)?;
                 self.within("the let's body", self.ty(*b), ty)
@@ -344,42 +389,12 @@ impl Validator<'_> {
                 );
                 self.within("the lambda", &want, ty)
             }
-            Kind::App(f, a) => {
-                let Ty::Fn(param, result) = self.ty(*f) else {
-                    return Err("the applied term is not a function".into());
-                };
-                self.within("the argument", self.ty(*a), param)?;
-                self.within("the application", result, ty)
-            }
-            other => self.rest(other, ty),
-        }
-    }
-
-    fn rest(&self, kind: &Kind, ty: &Ty) -> Checked {
-        match kind {
+            Kind::App(f, a) => self.application(*f, *a, ty),
             Kind::Call {
                 func,
                 type_args,
                 args,
-            } => {
-                let f = self.schema.function(*func);
-                expect(f.params.len() == args.len(), || {
-                    format!(
-                        "`{}` takes {} arguments, given {}",
-                        f.name,
-                        f.params.len(),
-                        args.len()
-                    )
-                })?;
-                for ((n, pt), a) in f.params.iter().zip(args) {
-                    self.within(
-                        &format!("argument `{n}`"),
-                        self.ty(*a),
-                        &pt.subst(type_args),
-                    )?;
-                }
-                self.within("the call", &f.result.subst(type_args), ty)
-            }
+            } => self.call(*func, type_args, args, ty),
             Kind::Caller => {
                 let principal = Ty::Data {
                     def: self.schema.principal,
@@ -388,103 +403,34 @@ impl Validator<'_> {
                 };
                 self.same("`caller`", ty, &principal)
             }
-            Kind::KeyOf(r, e) => {
-                let value = key_value_ty(self.schema, *r)?;
-                self.within("the key value", self.ty(*e), &value)?;
-                let key = Ty::Key {
-                    rel: RelRef::Declared(*r),
-                    ctors: KeyCtors::All,
-                };
-                self.within("the key", &key, ty)
-            }
+            Kind::KeyOf(r, e) => self.key_of(*r, *e, ty),
             Kind::Fresh(g, r) => self.fresh(*g, *r, ty),
             Kind::Placeholder {
                 generator,
                 rel,
                 scope,
                 ..
-            } => {
-                expect(
-                    scope
-                        .iter()
-                        .all(|t| matches!(self.terms.kind(*t), Kind::Var(_))),
-                    || "a placeholder's scope holds a term that is not a variable".into(),
-                )?;
-                self.fresh(*generator, *rel, ty)
-            }
+            } => self.placeholder(*generator, *rel, scope, ty),
             Kind::Only(_) => Err("an `Only` is never produced".into()),
             Kind::Unreachable => Ok(()),
             Kind::Key(e) => self.key(*e, ty),
-            Kind::Deref { key, admits, .. } => match self.ty(*key) {
-                Ty::Key {
-                    rel: RelRef::Declared(r),
-                    ctors,
-                } => {
-                    let row = |s: &Option<CtorSet>| self.row(*r, s);
-                    let named = match ctors {
-                        KeyCtors::All | KeyCtors::Late(_) => None,
-                        KeyCtors::Only(cs) => Some(cs.clone()),
-                    };
-                    expect(self.sub(&row(admits), &row(&named)), || {
-                        format!(
-                            "the admitted constructors are not within those of `{}`",
-                            self.schema.show_ty(self.ty(*key))
-                        )
-                    })?;
-                    self.within("the dereferenced row", &row(admits), ty)
-                }
-                Ty::Key { .. } => Ok(()),
-                _ => Err("a dereference of a term that is not a key".into()),
-            },
+            Kind::Deref { key, admits, .. } => self.deref(*key, admits, ty),
             Kind::Tag(e) => self.tag(*e, ty),
-            Kind::Try(e) => match ty {
-                Ty::Data { def, args, .. } if *def == self.schema.prelude().result() => {
-                    self.within("the tried value", self.ty(*e), &args[0])?;
-                    self.same(
-                        "the failure of `try`",
-                        &args[1],
-                        &Self::data(self.schema.prelude().fault(), Vec::new()),
-                    )
-                }
-                _ => Err("`try` is not a `Result`".into()),
-            },
+            Kind::Try(e) => self.tried(*e, ty),
             Kind::Rel(r, s) | Kind::Transition(_, r, s) => {
                 self.selection(s, self.rel_ctors(*r))?;
                 self.same("the relation", ty, &Ty::Set(Box::new(self.row(*r, s))))
             }
             Kind::Restrict(e, s) => self.restricted(*e, s, ty),
-            kind => self.sets(kind, ty),
-        }
-    }
-
-    fn sets(&self, kind: &Kind, ty: &Ty) -> Checked {
-        let element = || elem(ty).ok_or_else(|| "a set term is not a set".to_string());
-        match kind {
             Kind::EmptySet => {
-                element()?;
+                element(ty)?;
                 expect(!matches!(ty, Ty::NonEmpty(_)), || {
                     "an empty set is typed `Set⁺`".into()
                 })
             }
-            Kind::Singleton(e) => self.within("the element", self.ty(*e), element()?),
-            Kind::Union(a, b) => {
-                let el = element()?;
-                for x in [a, b] {
-                    let Some(xe) = elem(self.ty(*x)) else {
-                        return Err("a union of a term that is not a set".into());
-                    };
-                    self.within("a union's element", xe, el)?;
-                }
-                Ok(())
-            }
-            Kind::For(x, src, b) => {
-                let Some(se) = elem(self.ty(*src)) else {
-                    return Err("a generator over a term that is not a set".into());
-                };
-                self.within("the generator's element", se, &self.terms.var_info(*x).ty)?;
-                element()?;
-                self.within("the comprehension's body", self.ty(*b), ty)
-            }
+            Kind::Singleton(e) => self.within("the element", self.ty(*e), element(ty)?),
+            Kind::Union(a, b) => self.union(*a, *b, ty),
+            Kind::For(x, src, b) => self.generator(*x, *src, *b, ty),
             Kind::IsEmpty(e) | Kind::Exists(e) => {
                 expect(elem(self.ty(*e)).is_some(), || {
                     "a test of a term that is not a set".into()
@@ -497,72 +443,24 @@ impl Validator<'_> {
                 source,
                 body,
             } => self.aggregate(*op, *var, *source, *body, ty),
-            Kind::Group { var, source, by } => {
-                let Some(se) = elem(self.ty(*source)) else {
-                    return Err("a grouping of a term that is not a set".into());
-                };
-                let vt = &self.terms.var_info(*var).ty;
-                self.within("the grouping's element", se, vt)?;
-                if let Ty::Set(el) = ty
-                    && let Ty::Record(fs) = el.as_ref()
-                    && let [(k, key), (r, Ty::NonEmpty(rows))] = fs.as_slice()
-                    && k == "key"
-                    && r == "rows"
-                {
-                    self.within("the grouping's key", self.ty(*by), key)?;
-                    return self.same("the grouping's rows", rows, vt);
-                }
-                Err("the grouping is not a `Set` of `key` and `rows` records".into())
-            }
+            Kind::Group { var, source, by } => self.group(*var, *source, *by, ty),
             Kind::Top { count, source, .. } => {
                 self.same("the count", self.ty(*count), &Ty::Base(Base::I64))?;
                 self.within("the top's source", self.ty(*source), ty)
             }
             Kind::Present { source, .. } => self.within("the result", self.ty(*source), ty),
-            Kind::Fix(binds, b) => {
-                for (x, body) in binds {
-                    self.within(
-                        "a fixpoint body",
-                        self.ty(*body),
-                        &self.terms.var_info(*x).ty,
-                    )?;
-                }
-                self.within("the fixpoint's body", self.ty(*b), ty)
-            }
+            Kind::Fix(binds, b) => self.fixpoint(binds, *b, ty),
             Kind::At {
                 instant,
                 point,
                 body,
                 ..
-            } => {
-                let pt = self.ty(*point);
-                let position =
-                    matches!(pt, Ty::Data { def, .. } if *def == self.schema.prelude().position());
-                expect(
-                    *pt == Ty::Base(Base::Instant) || (!instant && position),
-                    || format!("the point is `{}`", self.schema.show_ty(pt)),
-                )?;
-                self.within("the read at a point", self.ty(*body), ty)
-            }
-            kind => self.writes(kind, ty),
-        }
-    }
-
-    fn writes(&self, kind: &Kind, ty: &Ty) -> Checked {
-        match kind {
+            } => self.at(*instant, *point, *body, ty),
             Kind::Insert(r, e) | Kind::Delete(r, e) => {
                 self.rows(*r, *e)?;
                 self.same("the write", ty, &Ty::Change)
             }
-            Kind::Replace(r, e, f) => {
-                let el = self.rows(*r, *e)?;
-                let Ty::Fn(param, result) = self.ty(*f) else {
-                    return Err("the new value of a `Replace` is not a function".into());
-                };
-                self.within("a replaced row", el, param)?;
-                self.within("a new value", result, &self.row(*r, &None))?;
-                self.same("the write", ty, &Ty::Change)
-            }
+            Kind::Replace(r, e, f) => self.replace(*r, *e, *f, ty),
             Kind::Upsert {
                 rel,
                 rows,
@@ -570,17 +468,7 @@ impl Validator<'_> {
                 new,
                 otherwise,
                 ..
-            } => {
-                let el = self.rows(*rel, *rows)?;
-                self.within("a proposed row", el, &self.terms.var_info(*new).ty)?;
-                self.within(
-                    "the conflicting row",
-                    &self.terms.var_info(*old).ty,
-                    &self.row(*rel, &None),
-                )?;
-                self.same("the conflict branch", self.ty(*otherwise), &Ty::Change)?;
-                self.same("the write", ty, &Ty::Change)
-            }
+            } => self.upsert(*rel, *rows, *old, *new, *otherwise, ty),
             Kind::Rejects { .. } | Kind::Skip => self.same("the write", ty, &Ty::Change),
             Kind::Par(ws) => {
                 for w in ws {
@@ -599,22 +487,196 @@ impl Validator<'_> {
                 self.same("a block's write", self.ty(*w), &Ty::Change)?;
                 self.within("the block's result", self.ty(*k), ty)
             }
-            Kind::LetBang(_, w, k) => {
-                expect(
-                    matches!(
-                        self.terms.kind(*w),
-                        Kind::Replace(..) | Kind::Upsert { .. } | Kind::Rejects { .. }
-                    ),
-                    || {
-                        "a `LetBang` binds a write other than `Replace`, `Upsert` or `Rejects`"
-                            .into()
-                    },
-                )?;
-                self.within("the block's result", self.ty(*k), ty)
-            }
+            Kind::LetBang(_, w, k) => self.let_bang(*w, *k, ty),
             Kind::Transact(b, _) => self.within("the transaction's block", self.ty(*b), ty),
-            _ => Ok(()),
         }
+    }
+
+    fn conditional(&self, c: Tm, a: Tm, b: Tm, ty: &Ty) -> Checked {
+        expect(self.is_bool(self.ty(c)), || {
+            "the condition is not `Bool`".into()
+        })?;
+        self.within("the then branch", self.ty(a), ty)?;
+        self.within("the else branch", self.ty(b), ty)
+    }
+
+    fn application(&self, f: Tm, a: Tm, ty: &Ty) -> Checked {
+        let Ty::Fn(param, result) = self.ty(f) else {
+            return Err("the applied term is not a function".into());
+        };
+        self.within("the argument", self.ty(a), param)?;
+        self.within("the application", result, ty)
+    }
+
+    fn call(&self, func: FnId, type_args: &[Ty], args: &[Tm], ty: &Ty) -> Checked {
+        let f = self.schema.function(func);
+        expect(f.params.len() == args.len(), || {
+            format!(
+                "`{}` takes {} arguments, given {}",
+                f.name,
+                f.params.len(),
+                args.len()
+            )
+        })?;
+        for ((n, pt), a) in f.params.iter().zip(args) {
+            self.within(
+                &format!("argument `{n}`"),
+                self.ty(*a),
+                &pt.subst(type_args),
+            )?;
+        }
+        self.within("the call", &f.result.subst(type_args), ty)
+    }
+
+    fn key_of(&self, r: RelId, e: Tm, ty: &Ty) -> Checked {
+        let value = key_value_ty(self.schema, r)?;
+        self.within("the key value", self.ty(e), &value)?;
+        let key = Ty::Key {
+            rel: RelRef::Declared(r),
+            ctors: KeyCtors::All,
+        };
+        self.within("the key", &key, ty)
+    }
+
+    fn placeholder(&self, generator: Generator, rel: RelId, scope: &[Tm], ty: &Ty) -> Checked {
+        expect(
+            scope
+                .iter()
+                .all(|t| matches!(self.terms.kind(*t), Kind::Var(_))),
+            || "a placeholder's scope holds a term that is not a variable".into(),
+        )?;
+        self.fresh(generator, rel, ty)
+    }
+
+    fn deref(&self, key: Tm, admits: &Option<CtorSet>, ty: &Ty) -> Checked {
+        match self.ty(key) {
+            Ty::Key {
+                rel: RelRef::Declared(r),
+                ctors,
+            } => {
+                let row = |s: &Option<CtorSet>| self.row(*r, s);
+                let named = match ctors {
+                    KeyCtors::All | KeyCtors::Late(_) => None,
+                    KeyCtors::Only(cs) => Some(cs.clone()),
+                };
+                expect(self.sub(&row(admits), &row(&named)), || {
+                    format!(
+                        "the admitted constructors are not within those of `{}`",
+                        self.schema.show_ty(self.ty(key))
+                    )
+                })?;
+                self.within("the dereferenced row", &row(admits), ty)
+            }
+            Ty::Key { .. } => Ok(()),
+            _ => Err("a dereference of a term that is not a key".into()),
+        }
+    }
+
+    fn tried(&self, e: Tm, ty: &Ty) -> Checked {
+        match ty {
+            Ty::Data { def, args, .. } if *def == self.schema.prelude().result() => {
+                self.within("the tried value", self.ty(e), &args[0])?;
+                self.same(
+                    "the failure of `try`",
+                    &args[1],
+                    &Self::data(self.schema.prelude().fault(), Vec::new()),
+                )
+            }
+            _ => Err("`try` is not a `Result`".into()),
+        }
+    }
+
+    fn union(&self, a: Tm, b: Tm, ty: &Ty) -> Checked {
+        let el = element(ty)?;
+        for x in [a, b] {
+            let Some(xe) = elem(self.ty(x)) else {
+                return Err("a union of a term that is not a set".into());
+            };
+            self.within("a union's element", xe, el)?;
+        }
+        Ok(())
+    }
+
+    fn generator(&self, x: Var, src: Tm, b: Tm, ty: &Ty) -> Checked {
+        let Some(se) = elem(self.ty(src)) else {
+            return Err("a generator over a term that is not a set".into());
+        };
+        self.within("the generator's element", se, &self.terms.var_info(x).ty)?;
+        element(ty)?;
+        self.within("the comprehension's body", self.ty(b), ty)
+    }
+
+    fn group(&self, var: Var, source: Tm, by: Tm, ty: &Ty) -> Checked {
+        let Some(se) = elem(self.ty(source)) else {
+            return Err("a grouping of a term that is not a set".into());
+        };
+        let vt = &self.terms.var_info(var).ty;
+        self.within("the grouping's element", se, vt)?;
+        if let Ty::Set(el) = ty
+            && let Ty::Record(fs) = el.as_ref()
+            && let [(k, key), (r, Ty::NonEmpty(rows))] = fs.as_slice()
+            && k == "key"
+            && r == "rows"
+        {
+            self.within("the grouping's key", self.ty(by), key)?;
+            return self.same("the grouping's rows", rows, vt);
+        }
+        Err("the grouping is not a `Set` of `key` and `rows` records".into())
+    }
+
+    fn fixpoint(&self, binds: &[(Var, Tm)], b: Tm, ty: &Ty) -> Checked {
+        for (x, body) in binds {
+            self.within(
+                "a fixpoint body",
+                self.ty(*body),
+                &self.terms.var_info(*x).ty,
+            )?;
+        }
+        self.within("the fixpoint's body", self.ty(b), ty)
+    }
+
+    fn at(&self, instant: bool, point: Tm, body: Tm, ty: &Ty) -> Checked {
+        let pt = self.ty(point);
+        let position =
+            matches!(pt, Ty::Data { def, .. } if *def == self.schema.prelude().position());
+        expect(
+            *pt == Ty::Base(Base::Instant) || (!instant && position),
+            || format!("the point is `{}`", self.schema.show_ty(pt)),
+        )?;
+        self.within("the read at a point", self.ty(body), ty)
+    }
+
+    fn replace(&self, r: RelId, e: Tm, f: Tm, ty: &Ty) -> Checked {
+        let el = self.rows(r, e)?;
+        let Ty::Fn(param, result) = self.ty(f) else {
+            return Err("the new value of a `Replace` is not a function".into());
+        };
+        self.within("a replaced row", el, param)?;
+        self.within("a new value", result, &self.row(r, &None))?;
+        self.same("the write", ty, &Ty::Change)
+    }
+
+    fn upsert(&self, rel: RelId, rows: Tm, old: Var, new: Var, otherwise: Tm, ty: &Ty) -> Checked {
+        let el = self.rows(rel, rows)?;
+        self.within("a proposed row", el, &self.terms.var_info(new).ty)?;
+        self.within(
+            "the conflicting row",
+            &self.terms.var_info(old).ty,
+            &self.row(rel, &None),
+        )?;
+        self.same("the conflict branch", self.ty(otherwise), &Ty::Change)?;
+        self.same("the write", ty, &Ty::Change)
+    }
+
+    fn let_bang(&self, w: Tm, k: Tm, ty: &Ty) -> Checked {
+        expect(
+            matches!(
+                self.terms.kind(w),
+                Kind::Replace(..) | Kind::Upsert { .. } | Kind::Rejects { .. }
+            ),
+            || "a `LetBang` binds a write other than `Replace`, `Upsert` or `Rejects`".into(),
+        )?;
+        self.within("the block's result", self.ty(k), ty)
     }
 
     fn constant(&self, c: &Const, ty: &Ty) -> Checked {
@@ -964,4 +1026,8 @@ impl Validator<'_> {
             Agg::User(a) => partial(&self.schema.aggregates[a as usize].result),
         }
     }
+}
+
+fn element(ty: &Ty) -> Result<&Ty, String> {
+    elem(ty).ok_or_else(|| "a set term is not a set".to_string())
 }

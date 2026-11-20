@@ -134,6 +134,10 @@ impl Keyed<'_> {
 }
 
 /// Returns the sets whose elements a set of kind `kind` holds, outside a comprehension.
+#[deny(
+    clippy::wildcard_enum_match_arm,
+    clippy::match_wildcard_for_single_variants
+)]
 fn sources(kind: &Kind) -> Vec<Tm> {
     match kind {
         Kind::Union(a, b) | Kind::If(_, a, b) => vec![*a, *b],
@@ -141,7 +145,48 @@ fn sources(kind: &Kind) -> Vec<Tm> {
         Kind::Let(_, _, b)
         | Kind::Restrict(b, _)
         | Kind::Top { source: b, .. }
-        | Kind::At { body: b, .. } => vec![*b],
-        _ => Vec::new(),
+        | Kind::At { body: b, .. }
+        | Kind::Present { source: b, .. }
+        | Kind::Fix(_, b) => vec![*b],
+        Kind::Var(_)
+        | Kind::Const(_)
+        | Kind::Prim(..)
+        | Kind::Record(_)
+        | Kind::Field(..)
+        | Kind::Ctor { .. }
+        | Kind::Lam(..)
+        | Kind::App(..)
+        | Kind::Call { .. }
+        | Kind::Caller
+        | Kind::Key(_)
+        | Kind::KeyOf(..)
+        | Kind::Deref { .. }
+        | Kind::Tag(_)
+        | Kind::Try(_)
+        | Kind::Rel(..)
+        | Kind::Transition(..)
+        | Kind::EmptySet
+        | Kind::Singleton(_)
+        | Kind::For(..)
+        | Kind::IsEmpty(_)
+        | Kind::Exists(_)
+        | Kind::Agg { .. }
+        | Kind::Group { .. }
+        | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
+        | Kind::Only(_)
+        | Kind::Reject(_)
+        | Kind::Unreachable
+        | Kind::Skip
+        | Kind::Insert(..)
+        | Kind::Delete(..)
+        | Kind::Replace(..)
+        | Kind::Upsert { .. }
+        | Kind::Rejects { .. }
+        | Kind::Par(_)
+        | Kind::Fail(_)
+        | Kind::LetBang(..)
+        | Kind::Block(..)
+        | Kind::Transact(..) => Vec::new(),
     }
 }

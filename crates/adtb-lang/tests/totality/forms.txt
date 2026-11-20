@@ -1,0 +1,380 @@
+# Cases of the totality search in adtb-lang's analysis tests.
+#
+# `row KEY` is the row of a table of docs/spec/prelude.md with a Faults column whose first cell,
+# or first two cells joined by ` | ` where the first is not unique, is KEY; its texts are partial
+# exactly when that cell names a fault, a fault `try` catches. `form FILE "PHRASE"` is a form the
+# spec file names in PHRASE, and `expect total`, `expect fault` or `expect escape` states its class:
+# an escape is partial and stays partial under `try`. `given` lists the parameters, `schema` adds a
+# declaration, `hiding` judges as a bundle declaring `hide new constructors`, and `untried` marks a
+# form `try` cannot enclose. Each indented line is one ad hoc text; one written `OP ~ TEXT` must
+# reach the operator whose `Debug` form is OP, and each text of a row names the one its row names.
+
+row `uuid (t: Text) -> Uuid`
+given t: Text
+  ParseUuid ~ uuid(t)
+
+row `text (u: Uuid) -> Text`
+given u: Uuid
+  ToText ~ text(u)
+
+row `a + b`, `a - b` | `Int -> Int -> Int`, one type
+given n: I64
+  Add ~ n + 1
+  Sub ~ n - 1
+
+row `a * b` | `Int -> Int -> Int`, one type
+given n: I64
+  Mul ~ n * 2
+
+row `a / b`
+given n: I64
+  Div ~ 10 / n
+
+row `a % b`
+given n: I64
+  Rem ~ 10 % n
+
+row `-a` | `Int -> Int`
+given n: I64
+  Neg ~ -n
+
+row `a + b`, `a - b` | `Decimal s -> Decimal t -> Decimal (max(s, t))`
+given d: Decimal 2
+  Add ~ d + d
+  Sub ~ d - d
+
+row `a * b` | `Decimal s -> Decimal t -> Decimal (s + t)`; refused when `s + t > 38`
+given d: Decimal 2
+  Mul ~ d * d
+
+row `-a` | `Decimal s -> Decimal s`
+given d: Decimal 2
+  Neg ~ -d
+
+row `a + b`, `a - b`, `a * b`, `a / b`
+given x: F64
+  Add ~ x + x
+  Sub ~ x - x
+  Mul ~ x * x
+  Div ~ 10.0 / x
+
+row `-a` | `Float -> Float`
+given x: F64
+  Neg ~ -x
+
+row `div (a: Decimal s, b: Decimal t, u: constant I64, r: Rounding) -> Decimal u`
+given d: Decimal 2
+  DecimalDiv ~ div(d, d, 2, HalfEven)
+
+row `round (a: Decimal s, u: constant I64, r: Rounding) -> Decimal u`, `u < s`
+given d: Decimal 2
+  Round ~ round(d, 1, HalfEven)
+
+row `rescale (a: Decimal s, u: constant I64) -> Decimal u`, `u >= s`
+given d: Decimal 2
+  Rescale ~ rescale(d, 4)
+
+row `abs (a: N) -> N`
+given n: I64
+  Abs ~ abs(n)
+
+row `i8`, `i16`, `i32`, `i64` `(x)`
+given n: I64
+  Convert { checked: false } ~ i8(n)
+  Convert { checked: false } ~ i16(n)
+  Convert { checked: false } ~ i32(n)
+
+row `i8`, `i16`, `i32`, `i64` `(x, r: Rounding)`
+given x: F64, d: Decimal 2
+  Convert { checked: false } ~ i64(x, HalfEven)
+  Convert { checked: false } ~ i32(d, HalfEven)
+
+row `decimal (x, s: constant I64)`
+given n: I64
+  Convert { checked: false } ~ decimal(n, 20)
+
+row `decimal (x, s: constant I64, r: Rounding)`
+given x: F64
+  Convert { checked: false } ~ decimal(x, 2, HalfEven)
+
+row `f32 (x)`, `f64 (x)`
+given x: F64
+  Convert { checked: false } ~ f32(x)
+
+row `N (x: B) -> N`, for a newtype `N` over `B`
+schema type Cents = new I64
+given n: I64
+  Wrap ~ Cents(n)
+
+row `unwrap (x: N) -> B`, for a newtype `N` over `B`
+schema type Cents = new I64
+given c: Cents
+  Unwrap ~ unwrap(c)
+
+row `value (k: Key r.S)`
+given k: Key users
+  KeyValue ~ value(k)
+
+row `a ++ b` with `a, b: Text`
+given t: Text
+  Concat ~ t ++ "x"
+
+row `a ++ b` with `a, b: Bytes`
+given b: Bytes
+  Concat ~ b ++ b
+
+row `bytes_len (t: Text) -> I64`, `bytes_len (b: Bytes) -> I64`
+given t: Text, b: Bytes
+  BytesLen ~ bytes_len(t)
+  BytesLen ~ bytes_len(b)
+
+row `scalar_len (t: Text) -> I64`
+given t: Text
+  ScalarLen ~ scalar_len(t)
+
+row `grapheme_len (t: Text) -> I64`
+given t: Text
+  GraphemeLen ~ grapheme_len(t)
+
+row `starts_with (t: Text, p: Text) -> Bool`
+given t: Text
+  StartsWith ~ starts_with(t, "a")
+
+row `ends_with (t: Text, p: Text) -> Bool`
+given t: Text
+  EndsWith ~ ends_with(t, "a")
+
+row `contains (t: Text, p: Text) -> Bool`
+given t: Text
+  Contains ~ contains(t, "a")
+
+row `matches (t: Text, re: constant Text) -> Bool`
+given t: Text
+  Matches ~ matches(t, "a+")
+
+row `lower (t: Text) -> Text`
+given t: Text
+  Lower ~ lower(t)
+
+row `upper (t: Text) -> Text`
+given t: Text
+  Upper ~ upper(t)
+
+row `fold (t: Text) -> Text`
+given t: Text
+  Fold ~ fold(t)
+
+row `collate (t: Text, c: constant Text) -> SortKey`
+given t: Text
+  Collate ~ collate(t, "und@cldr-49")
+
+row `text (x) -> Text`
+given n: I64
+  ToText ~ text(n)
+
+row `utf8 (b: Bytes) -> Option Text`
+given b: Bytes
+  Utf8 ~ utf8(b)
+
+row `bytes (t: Text) -> Bytes`
+given t: Text
+  Bytes ~ bytes(t)
+
+row `micros`, `millis`, `seconds`, `minutes`, `hours` `(n: I64) -> Duration`
+given n: I64
+  Micros ~ micros(n)
+  Millis ~ millis(n)
+  Seconds ~ seconds(n)
+  Minutes ~ minutes(n)
+  Hours ~ hours(n)
+
+row `days`, `weeks`, `months`, `years` `(n: I64) -> Period`
+given n: I64
+  Days ~ days(n)
+  Weeks ~ weeks(n)
+  Months ~ months(n)
+  Years ~ years(n)
+
+row `zoned (dt: DateTime, zone: Text, o: constant Overflow)`
+given dt: DateTime, z: Text
+  Zoned ~ zoned(dt, z, Clamp)
+  Zoned ~ zoned(dt, z, Reject)
+
+row `in_zone (i: Instant, zone: Text) -> ZonedDateTime`
+given i: Instant, z: Text
+  InZone ~ in_zone(i, z)
+
+row `to_instant (z: ZonedDateTime) -> Instant`
+given z: ZonedDateTime
+  ToInstant ~ to_instant(z)
+
+form prelude.md "Each checked form returns `None` exactly where its operator faults"
+expect total
+given n: I64, x: F64
+  checked_add(n, 1)
+  checked_sub(n, 1)
+  checked_mul(n, 2)
+  checked_div(10, n)
+  checked_rem(10, n)
+  checked_neg(n)
+  checked_i32(n)
+  checked_i64(x, HalfEven)
+
+form prelude.md "the span; faults `InvalidSpan` when `start > end`"
+expect fault
+given a: I64, b: I64
+  span(a, b)
+
+form prelude.md "| `start [a: Ord] (s: Span a) -> a` | `s.start` |"
+expect total
+given s: Span I64, t: Span I64
+  start(s)
+  end(s)
+  overlaps(s, t)
+  covers(s, t)
+  covers(s, 3)
+
+form prelude.md "Every operation faults with `ArithmeticOverflow` when its result leaves its type's range"
+expect fault
+given d: Duration, n: I64, p: Period, i: Instant, dt: DateTime
+  d + d
+  -d
+  d * n
+  d / n
+  p + p
+  -p
+  i + d
+  i - i
+  dt - d
+
+form semantics.md "`add_period` with either overflow rule included"
+expect fault
+given d: Date, p: Period
+  add_period(d, p, Clamp)
+  add_period(d, p, Reject)
+
+form typing.md "Every other expression is total"
+expect total
+given n: I64, t: Text
+  n == 1
+  n != 1
+  n < 1
+  n <= 1
+  n > 1
+  n >= 1
+  I64.parse(t)
+  print(n)
+
+form typing.md "A checked operator is total"
+expect total
+given n: I64
+  checked_i8(n)
+
+form semantics.md "an aggregate whose combining operator or final map is partial on its type"
+expect fault
+  sum(o.total for o in orders)
+
+form prelude.md "| `count(e for ...)` | any | `I64` | `I64`; `0` when empty |"
+expect total
+  sum(r.value for r in readings)
+  count(o for o in orders)
+  max(o.total for o in orders)
+  min(o.total for o in orders)
+  avg(r.value for r in readings)
+
+form semantics.md "`top` whose count is not a nonnegative literal"
+expect fault
+given n: I64
+  top n by o.id desc (from o in orders select o)
+  top -3 by o.id desc (from o in orders select o)
+
+form typing.md "a `top` or `take` whose count is not an `INT` literal"
+expect fault
+untried
+given n: I64
+  from o in orders select o order by o.id take n
+  from o in orders select o order by o.id take -3
+
+form typing.md "a `top` or `take` whose count is not an `INT` literal"
+expect total
+  top 3 by o.id desc (from o in orders select o)
+  from o in orders select o order by o.id take 3
+
+form semantics.md "a `fix` that is not bounded"
+expect escape
+  fix n = [1] union (from x in n select x + 1) in n
+
+form semantics.md "a `fix` that is not bounded"
+expect total
+  fix a = (from u in users select key u) union (from x in a, f in follows where f.src == x select f.dst) in a
+
+form semantics.md "a `deref` of a key that is not a reference field of a row of the snapshot"
+expect fault
+given k: Key users
+  k.name
+
+form typing.md "a `match` on a key that is not a reference field of a row"
+expect fault
+given k: Key shapes
+  match k | Circle c -> c.r | Square s -> s.side
+
+form semantics.md "any `deref`, and every path through a reference, in a bundle declaring `hide new constructors`"
+expect fault
+hiding
+  from p in posts select p.author.name
+
+form typing.md "Hiding is not transitive"
+expect total
+  from p in posts select p.author.name
+
+form semantics.md "an `at` block"
+expect escape
+  at commit Position { epoch: 1, lsn: 1 } { from u in users select u.name }
+  from u in users select { a: key u, b: at commit Position { epoch: 1, lsn: 1 } { from v in users select v.name } }
+
+form semantics.md "an application of a function whose body is not total"
+expect fault
+schema fn inv (n: I64) -> I64 = 100 / n
+given y: I64
+  inv(y)
+
+form semantics.md "an application of a function whose body is not total"
+expect escape
+schema fn past () -> Set Text = at commit Position { epoch: 1, lsn: 1 } { from u in users select u.name }
+  past()
+
+form typing.md "a call of a function whose body is partial"
+expect total
+schema fn same (n: I64) -> I64 = n
+given y: I64
+  same(y)
+
+form interop.md "a call that reaches the function fails with `Fatal { reason: MissingFunction {..} }`"
+expect escape
+schema fn stamp (t: Text) -> Text = host "stamp" version "1"
+given t: Text
+  stamp(t)
+
+form interop.md "fails with `Rejected { reason: BadInput {..} }` naming the file"
+expect escape
+  read_csv("u.csv", User)
+
+form semantics.md "a `fix` that is not bounded"
+expect escape
+  fix a = (from o in orders select o.qty) union (from x in a select { v: x + 1, w: 1 / x }.v) in a
+
+form semantics.md "an aggregate whose combining operator or final map is partial on its type"
+expect fault
+schema aggregate tot (x: I64) -> I64 = state { s: I64 } init { s: 0 } step (st, x) -> { s: st.s + x } merge (a, b) -> { s: a.s + b.s } finish st -> st.s
+  tot(o.total for o in orders)
+
+form semantics.md "an aggregate whose combining operator or final map is partial on its type"
+expect escape
+schema fn stamp (n: I64) -> I64 = host "stamp" version "1"
+schema aggregate stamped (x: I64) -> I64 = state { s: I64 } init { s: 0 } step (st, x) -> { s: stamp(x) } merge (a, b) -> { s: a.s } finish st -> st.s
+  stamped(o.total for o in orders)
+
+form semantics.md "an aggregate whose combining operator or final map is partial on its type"
+expect total
+schema aggregate mean (x: F64) -> F64 = state { s: F64, n: F64 } init { s: 0.0, n: 0.0 } step (st, x) -> { s: st.s + x, n: st.n + 1.0 } merge (a, b) -> { s: a.s + b.s, n: a.n + b.n } finish st -> st.s / st.n
+  mean(r.value for r in readings)

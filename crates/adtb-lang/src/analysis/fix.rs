@@ -41,66 +41,117 @@ impl Strata<'_> {
             return Ok(());
         }
         let terms = self.terms;
-        match (terms.kind(t), pos) {
-            (Kind::Var(v), Pos::Not(why)) if self.xs.contains(v) => Err(format!(
-                "`{}` occurs in a body of its own `fix` at a position that is not positive ({why}); negation and aggregation reach only relations of a lower stratum",
-                terms.var_info(*v).name
-            )),
-            (Kind::Var(_), _) => Ok(()),
-            (Kind::Union(a, b) | Kind::For(_, a, b), Pos::Positive) => {
-                self.walk(*a, pos)?;
-                self.walk(*b, pos)
-            }
-            (Kind::If(c, a, b), Pos::Positive) => {
-                let cond = if matches!(terms.kind(*b), Kind::EmptySet) {
-                    Pos::Condition
+        let kind = terms.kind(t);
+        if let Kind::Var(v) = kind {
+            return match pos {
+                Pos::Not(why) if self.xs.contains(v) => Err(format!(
+                    "`{}` occurs in a body of its own `fix` at a position that is not positive ({why}); negation and aggregation reach only relations of a lower stratum",
+                    terms.var_info(*v).name
+                )),
+                Pos::Positive | Pos::Condition | Pos::Not(_) => Ok(()),
+            };
+        }
+        if let Some(operands) = self.operands(kind, pos) {
+            return operands.into_iter().try_for_each(|(c, p)| self.walk(c, p));
+        }
+        let why = match (reason(terms, kind), pos) {
+            (Some(why), _) | (None, Pos::Not(why)) => why,
+            (None, Pos::Positive | Pos::Condition) => {
+                if matches!(kind, Kind::Exists(_)) {
+                    "an `exists` that is not a positive condition"
+                } else if matches!(kind, Kind::Case { .. } | Kind::If(..)) {
+                    "a condition that is not positive"
                 } else {
-                    Pos::Not("a condition whose `else` is not empty")
-                };
-                self.walk(*c, cond)?;
-                self.walk(*a, pos)?;
-                self.walk(*b, pos)
-            }
-            (Kind::Case { scrutinee, arms }, Pos::Positive) => {
-                self.walk(*scrutinee, Pos::Not("a scrutinee"))?;
-                for (_, _, e) in arms {
-                    self.walk(*e, pos)?;
+                    "a position that is not positive"
                 }
-                Ok(())
             }
-            (Kind::Let(_, a, b), Pos::Positive) => {
-                self.walk(*a, Pos::Not("the bound expression of a `let`"))?;
-                self.walk(*b, pos)
-            }
-            (Kind::Fix(binds, body), Pos::Positive) => {
-                for (_, e) in binds {
-                    self.walk(*e, pos)?;
+        };
+        terms
+            .children(t)
+            .into_iter()
+            .try_for_each(|c| self.walk(c, Pos::Not(why)))
+    }
+
+    /// Returns the position of each operand of `kind` at `pos`, or `None` when the form makes none
+    /// of them positive or a positive condition there.
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
+    fn operands(&self, kind: &Kind, pos: Pos) -> Option<Vec<(Tm, Pos)>> {
+        let positive = pos == Pos::Positive;
+        match kind {
+            Kind::Union(a, b) | Kind::For(_, a, b) => positive.then(|| vec![(*a, pos), (*b, pos)]),
+            Kind::If(c, a, b) => match pos {
+                Pos::Positive => {
+                    let cond = if matches!(self.terms.kind(*b), Kind::EmptySet) {
+                        Pos::Condition
+                    } else {
+                        Pos::Not("a condition whose `else` is not empty")
+                    };
+                    Some(vec![(*c, cond), (*a, pos), (*b, pos)])
                 }
-                self.walk(*body, pos)
-            }
-            (Kind::Restrict(x, _), Pos::Positive) => self.walk(*x, pos),
-            (Kind::Exists(x), Pos::Condition) => self.walk(*x, Pos::Positive),
-            (Kind::If(p, q, r), Pos::Condition)
-                if self.is_bool(*r, false) || self.is_bool(*q, true) =>
-            {
-                self.walk(*p, pos)?;
-                self.walk(*q, pos)?;
-                self.walk(*r, pos)
-            }
-            (k, pos) => {
-                let why = match (reason(terms, k), pos) {
-                    (Some(why), _) | (None, Pos::Not(why)) => why,
-                    (None, _) => match k {
-                        Kind::Exists(_) => "an `exists` that is not a positive condition",
-                        Kind::Case { .. } | Kind::If(..) => "a condition that is not positive",
-                        _ => "a position that is not positive",
-                    },
-                };
-                for c in terms.children(t) {
-                    self.walk(c, Pos::Not(why))?;
+                Pos::Condition if self.is_bool(*b, false) || self.is_bool(*a, true) => {
+                    Some(vec![(*c, pos), (*a, pos), (*b, pos)])
                 }
-                Ok(())
+                Pos::Condition | Pos::Not(_) => None,
+            },
+            Kind::Case { scrutinee, arms } => positive.then(|| {
+                let mut ops = vec![(*scrutinee, Pos::Not("a scrutinee"))];
+                ops.extend(arms.iter().map(|(_, _, e)| (*e, pos)));
+                ops
+            }),
+            Kind::Let(_, a, b) => {
+                positive.then(|| vec![(*a, Pos::Not("the bound expression of a `let`")), (*b, pos)])
             }
+            Kind::Fix(binds, body) => positive.then(|| {
+                let mut ops: Vec<(Tm, Pos)> = binds.iter().map(|(_, e)| (*e, pos)).collect();
+                ops.push((*body, pos));
+                ops
+            }),
+            Kind::Restrict(x, _) => positive.then(|| vec![(*x, pos)]),
+            Kind::Exists(x) => (pos == Pos::Condition).then(|| vec![(*x, Pos::Positive)]),
+            Kind::Var(_)
+            | Kind::Const(_)
+            | Kind::Prim(..)
+            | Kind::Record(_)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Call { .. }
+            | Kind::Caller
+            | Kind::Key(_)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(_)
+            | Kind::Try(_)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::EmptySet
+            | Kind::Singleton(_)
+            | Kind::IsEmpty(_)
+            | Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Top { .. }
+            | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
+            | Kind::Only(_)
+            | Kind::At { .. }
+            | Kind::Present { .. }
+            | Kind::Reject(_)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Upsert { .. }
+            | Kind::Rejects { .. }
+            | Kind::Par(_)
+            | Kind::Fail(_)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => None,
         }
     }
 
@@ -118,23 +169,61 @@ fn ctor_of(terms: &Terms, t: Tm) -> Option<u32> {
 }
 
 /// Returns what makes the operands of `k` not positive, for the forms that are never positive.
+#[deny(
+    clippy::wildcard_enum_match_arm,
+    clippy::match_wildcard_for_single_variants
+)]
 fn reason(terms: &Terms, k: &Kind) -> Option<&'static str> {
-    Some(match k {
-        Kind::IsEmpty(_) => "the argument of `empty`",
-        Kind::If(_, a, b)
-            if ctor_of(terms, *a) == Some(ctor::FALSE)
-                && ctor_of(terms, *b) == Some(ctor::TRUE) =>
-        {
-            "the operand of `not`"
-        }
-        Kind::Agg { .. } => "the range or body of an aggregate",
-        Kind::Group { .. } => "the source or key of `group`",
-        Kind::Top { .. } => "the source or key of `top`",
-        Kind::Record(_) | Kind::Ctor { .. } => "a field of a record or constructor value",
-        Kind::Prim(..) => "an argument of a primitive",
-        Kind::Call { .. } | Kind::App(..) | Kind::Lam(..) => "a function body or argument",
-        _ => return None,
-    })
+    match k {
+        Kind::IsEmpty(_) => Some("the argument of `empty`"),
+        Kind::If(_, a, b) => (ctor_of(terms, *a) == Some(ctor::FALSE)
+            && ctor_of(terms, *b) == Some(ctor::TRUE))
+        .then_some("the operand of `not`"),
+        Kind::Agg { .. } => Some("the range or body of an aggregate"),
+        Kind::Group { .. } => Some("the source or key of `group`"),
+        Kind::Top { .. } => Some("the source or key of `top`"),
+        Kind::Record(_) | Kind::Ctor { .. } => Some("a field of a record or constructor value"),
+        Kind::Prim(..) => Some("an argument of a primitive"),
+        Kind::Call { .. } | Kind::App(..) | Kind::Lam(..) => Some("a function body or argument"),
+        Kind::Var(_)
+        | Kind::Const(_)
+        | Kind::Field(..)
+        | Kind::Case { .. }
+        | Kind::Let(..)
+        | Kind::Caller
+        | Kind::Key(_)
+        | Kind::KeyOf(..)
+        | Kind::Deref { .. }
+        | Kind::Tag(_)
+        | Kind::Try(_)
+        | Kind::Rel(..)
+        | Kind::Transition(..)
+        | Kind::Restrict(..)
+        | Kind::EmptySet
+        | Kind::Singleton(_)
+        | Kind::Union(..)
+        | Kind::For(..)
+        | Kind::Exists(_)
+        | Kind::Fix(..)
+        | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
+        | Kind::Only(_)
+        | Kind::At { .. }
+        | Kind::Present { .. }
+        | Kind::Reject(_)
+        | Kind::Unreachable
+        | Kind::Skip
+        | Kind::Insert(..)
+        | Kind::Delete(..)
+        | Kind::Replace(..)
+        | Kind::Upsert { .. }
+        | Kind::Rejects { .. }
+        | Kind::Par(_)
+        | Kind::Fail(_)
+        | Kind::LetBang(..)
+        | Kind::Block(..)
+        | Kind::Transact(..) => None,
+    }
 }
 
 /// How a value of a `fix` body depends on the relations of the `fix`'s own stratum.
@@ -189,6 +278,10 @@ impl Bounds<'_> {
         r
     }
 
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn compute(&mut self, t: Tm) -> Taint {
         let terms = self.terms;
         match terms.kind(t) {
@@ -252,7 +345,41 @@ impl Bounds<'_> {
                 self.vars.insert(*var, ts);
                 derived(ts.max(self.taint(*by)))
             }
-            _ => {
+            Kind::Const(_)
+            | Kind::Prim(..)
+            | Kind::Record(_)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Call { .. }
+            | Kind::Caller
+            | Kind::Key(_)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(_)
+            | Kind::Try(_)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::EmptySet
+            | Kind::IsEmpty(_)
+            | Kind::Exists(_)
+            | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
+            | Kind::Present { .. }
+            | Kind::Reject(_)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Upsert { .. }
+            | Kind::Rejects { .. }
+            | Kind::Par(_)
+            | Kind::Fail(_)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => {
                 let mut r = Taint::None;
                 for c in terms.children(t) {
                     r = r.max(self.taint(c));
@@ -263,6 +390,10 @@ impl Bounds<'_> {
     }
 
     /// Visit `t`, whose value or elements can become elements of a relation of the stratum, recording any construction over a tainted value.
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn flow(&mut self, t: Tm) {
         if !self.flowed.insert(t) {
             return;
@@ -289,9 +420,15 @@ impl Bounds<'_> {
                     self.flow(*e);
                 }
             }
-            Kind::Singleton(x) | Kind::Restrict(x, _) | Kind::Only(x) => self.flow(*x),
-            Kind::Top { source, .. } => self.flow(*source),
-            Kind::At { body, .. } => self.flow(*body),
+            Kind::Singleton(x)
+            | Kind::Restrict(x, _)
+            | Kind::Only(x)
+            | Kind::Field(x, _)
+            | Kind::Key(x)
+            | Kind::KeyOf(_, x)
+            | Kind::Top { source: x, .. }
+            | Kind::Present { source: x, .. }
+            | Kind::At { body: x, .. } => self.flow(*x),
             Kind::Fix(binds, body) => {
                 let bodies: Vec<Tm> = binds.iter().map(|(_, e)| *e).collect();
                 for (x, _) in binds {
@@ -315,12 +452,45 @@ impl Bounds<'_> {
                     self.ok = false;
                 }
             }
-            Kind::Agg { .. } | Kind::Group { .. } | Kind::Call { .. }
-                if self.taint(t) != Taint::None =>
-            {
-                self.ok = false;
+            Kind::Try(x) => {
+                if self.taint(*x) == Taint::Elem {
+                    self.ok = false;
+                }
+                self.flow(*x);
             }
-            _ => {}
+            Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Call { .. }
+            | Kind::App(..)
+            | Kind::Placeholder { .. } => {
+                if self.taint(t) != Taint::None {
+                    self.ok = false;
+                }
+            }
+            Kind::Fresh(..) => self.ok = false,
+            Kind::Const(_)
+            | Kind::Lam(..)
+            | Kind::Caller
+            | Kind::Deref { .. }
+            | Kind::Tag(_)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::EmptySet
+            | Kind::IsEmpty(_)
+            | Kind::Exists(_)
+            | Kind::Reject(_)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Upsert { .. }
+            | Kind::Rejects { .. }
+            | Kind::Par(_)
+            | Kind::Fail(_)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => {}
         }
     }
 }

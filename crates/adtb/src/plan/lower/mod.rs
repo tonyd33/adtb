@@ -102,7 +102,8 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         bounded,
         past: false,
         t: terms.clone(),
-        total: Totality::new(schema, options.hiding),
+        total: Totality::new(schema, options.hiding)
+            .with_aggregates(&normal.terms, normal.aggregate_parts()),
         facts: Facts::default(),
         vars: HashMap::new(),
         outer: Vec::new(),

@@ -1,0 +1,11 @@
+# `try` catches faults only: an unbounded fixpoint past its rounds is refused through it.
+use planner
+
+run
+  insert users from [{ id: users.key(1), name: "ann" }]
+
+option fix_rounds 1
+reopen
+
+error StatementLimit { limit: Rounds { rounds: 1 } }
+  { a: 1, b: try (fix n = (from u in users select 0) union (from x in n select x + 1) in n) }.a

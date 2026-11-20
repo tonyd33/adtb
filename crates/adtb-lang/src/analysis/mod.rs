@@ -16,6 +16,8 @@ mod volatile;
 
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod totality_tests;
 
 pub use aggregate::ranges_over_bindings;
 pub use fix::{bounded, stratified};
@@ -104,41 +106,9 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
         Ok(n) => n,
         Err(e) => return vec![site(e.root, e.message)],
     };
-    let mut roots: Vec<(Root, Tm)> = Vec::new();
-    for (i, f) in n.functions.iter().enumerate() {
-        if let Some((_, body)) = f {
-            roots.push((Root::Function(crate::types::FnId(i as u32)), *body));
-        }
-    }
-    roots.extend(n.constraints().map(|(c, t)| (Root::Constraint(c), t)));
-    roots.extend(n.checks().map(|(c, t)| (Root::Check(c), t)));
-    roots.extend(n.domains.iter().map(|(id, (_, t))| (Root::Domain(*id), *t)));
-    roots.extend(n.retags.iter().map(|(r, (_, t))| (Root::Retag(*r), *t)));
-    roots.extend(
-        n.defaults
-            .iter()
-            .map(|(&(r, i), t)| (Root::Default(r, i), *t)),
-    );
-    roots.extend(
-        n.computed
-            .iter()
-            .map(|(&(r, i), (_, t))| (Root::Computed(r, i), *t)),
-    );
-    roots.extend(
-        n.index_fields
-            .iter()
-            .map(|(&(r, i, j), (_, f))| (Root::IndexField(r, i, j), f.value)),
-    );
-    for (i, a) in n.aggregates.iter().enumerate() {
-        if let Some(a) = a {
-            for t in [a.init, a.step.1, a.merge.1, a.finish.1] {
-                roots.push((Root::Aggregate(i), t));
-            }
-        }
-    }
-    roots
+    n.bodies()
         .into_iter()
-        .filter_map(|(root, t)| {
+        .filter_map(|(root, t, _)| {
             accept(&n.terms, &[t])
                 .and_then(|()| volatile_free(schema, &n.terms, root, t))
                 .err()

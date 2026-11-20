@@ -111,6 +111,14 @@ pub struct Program {
 }
 
 impl Program {
+    /// Returns each user-defined aggregate's init, step, merge and finish bodies; `None` for one
+    /// that did not check.
+    pub fn aggregate_parts(&self) -> impl Iterator<Item = Option<[Tm; 4]>> + '_ {
+        self.aggregates
+            .iter()
+            .map(|a| a.as_ref().map(|a| [a.init, a.step, a.merge, a.finish]))
+    }
+
     /// Returns the term of constraint `c`, a denial query; `None` when it did not check.
     pub fn constraint(&self, c: ConstraintIdx) -> Option<Tm> {
         self.constraints.get(&c).copied()

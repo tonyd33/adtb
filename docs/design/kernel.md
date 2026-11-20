@@ -591,6 +591,7 @@ Postconditions on a normal form, beyond those of §1:
 
 ```text
 fn Totality::new(schema: &Schema, hiding: bool) -> Totality
+fn Totality::with_aggregates(self, terms: &Terms, parts: impl IntoIterator<Item = Option<[Tm; 4]>>) -> Totality
 fn Totality::total(&mut self, terms: &Terms, t: Tm) -> bool
 fn Totality::draws(&mut self, terms: &Terms, t: Tm) -> bool
 fn Totality::copyable(&mut self, terms: &Terms, t: Tm) -> bool
@@ -617,10 +618,19 @@ total and does not draw.
 
 Partial, besides the primitive faults of
 [../spec/prelude.md](../spec/prelude.md): integer and decimal `sum`, a
-user-defined aggregate, `top` whose count is not a nonnegative literal,
-an unbounded `fix`, a `Deref` of a key that is not a reference field's
-value or admitting fewer constructors than its key's type names, a Wasm or host `Call`, `At`, `Fail`, `Reject` and `Replace`.
-`Try` is total whatever its operand. A `fix` is bounded when no
+user-defined aggregate with a partial part, `top`, or `Present` with a `take`, whose count
+is not a nonnegative literal, an unbounded `fix`, a `Deref` of a key
+that is not a reference field's value or admitting fewer constructors
+than its key's type names, a `Call`, `App`, `At`, `Fail`, `Reject`,
+`Replace`, a file read and `Unreachable`. A `Case` or `If` is judged
+on its operands other than an `Unreachable` branch. `Try` is total
+when every partial form in its operand only faults: a primitive fault,
+integer and decimal `sum`, `top` or `take`, a `Deref`, a Wasm `Call`,
+and a user-defined aggregate whose parts only fault. A host `Call` is
+not, since a missing host function fails the call `Fatal`. A
+user-defined aggregate is judged from its parts only by a classifier
+given them (`Totality::with_aggregates`); otherwise it is partial under
+`Try`. A `fix` is bounded when no
 constructing operation over a value of its own stratum can produce an
 element of one of its relations; an operation whose result is used only
 in a condition, a comparison or an aggregate key does not count.

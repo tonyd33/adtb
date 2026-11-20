@@ -94,7 +94,7 @@ fn body(s: &Schema, n: &NormalProgram, name: &str) -> Tm {
     n.functions[i].as_ref().expect("first-order").1
 }
 
-fn adhoc(
+pub(super) fn adhoc(
     extra: &str,
     params: &[(&str, &str)],
     text: &str,
@@ -141,7 +141,11 @@ fn adhoc_refuses(params: &[(&str, &str)], text: &str, needle: &str) {
 }
 
 /// The normal form of the single item of ad hoc `text`, with the declarations of `extra`.
-fn adhoc_normal(extra: &str, params: &[(&str, &str)], text: &str) -> (Committed, NormalAdhoc) {
+pub(super) fn adhoc_normal(
+    extra: &str,
+    params: &[(&str, &str)],
+    text: &str,
+) -> (Committed, NormalAdhoc) {
     let (s, a) = adhoc(extra, params, text).unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
     let n = norm::adhoc(&s, &p, &a).expect("normalises");
@@ -712,20 +716,6 @@ fn boundedness_is_judged_on_the_normal_form() {
 }
 
 #[test]
-fn faulting_primitives_are_partial_and_checked_forms_total() {
-    assert!(!is_total(&[("n", "I64")], "10 / n"));
-    assert!(!is_total(&[("n", "I64")], "n + 1"));
-    assert!(!is_total(&[("n", "I64")], "-n"));
-    assert!(is_total(&[("x", "F64")], "10.0 / x"));
-    assert!(is_total(&[("x", "F64")], "-x"));
-    assert!(is_total(&[("n", "I64")], "checked_div(10, n)"));
-    assert!(is_total(&[("n", "I64")], "try (10 / n)"));
-    assert!(is_total(&[("t", "Text")], "lower(t) ++ \"x\""));
-    assert!(!is_total(&[("t", "Text")], "uuid(t)"));
-    assert!(is_total(&[("n", "I64")], "n == 1 and n < 3"));
-}
-
-#[test]
 fn try_of_a_reject_is_partial() {
     let (s, n) = adhoc_normal(
         "",
@@ -747,62 +737,6 @@ fn widening_conversions_are_total_and_narrowing_ones_partial() {
     assert!(is_total(&[("x", "I32")], "f64(x)"));
     assert!(!is_total(&[("x", "F64")], "f32(x)"));
     assert!(is_total(&[("x", "I64")], "checked_i32(x)"));
-}
-
-#[test]
-fn calendar_arithmetic_is_partial_whatever_its_overflow() {
-    assert!(!is_total(
-        &[("d", "Date"), ("p", "Period")],
-        "add_period(d, p, Reject)"
-    ));
-    assert!(!is_total(
-        &[("d", "Date"), ("p", "Period")],
-        "add_period(d, p, Clamp)"
-    ));
-}
-
-#[test]
-fn integer_sums_are_partial_and_float_sums_total() {
-    assert!(!is_total(&[], "sum(o.total for o in orders)"));
-    assert!(is_total(&[], "sum(r.value for r in readings)"));
-    assert!(is_total(&[], "count(o for o in orders)"));
-    assert!(is_total(&[], "max(o.total for o in orders)"));
-}
-
-#[test]
-fn top_is_total_only_with_a_literal_count() {
-    assert!(is_total(
-        &[],
-        "top 3 by o.id desc (from o in orders select o)"
-    ));
-    assert!(!is_total(
-        &[("n", "I64")],
-        "top n by o.id desc (from o in orders select o)"
-    ));
-}
-
-#[test]
-fn a_path_through_a_reference_field_is_total_and_through_a_key_partial() {
-    assert!(is_total(&[], "from p in posts select p.author.name"));
-    assert!(!is_total(&[("k", "Key users")], "k.name"));
-}
-
-#[test]
-fn hiding_new_constructors_makes_every_reference_path_partial() {
-    let (s, n) = adhoc_normal("", &[], "from p in posts select p.author.name");
-    assert!(!Totality::new(&s, true).total(&n.terms, n.items[0]));
-}
-
-#[test]
-fn a_call_is_partial_exactly_when_its_inlined_body_is() {
-    let (s, n) = adhoc_normal(
-        "fn inv (n: I64) -> I64 = 100 / n",
-        &[("y", "I64")],
-        "inv(y)",
-    );
-    assert!(!Totality::new(&s, false).total(&n.terms, n.items[0]));
-    let (s, n) = adhoc_normal("fn same (n: I64) -> I64 = n", &[("y", "I64")], "same(y)");
-    assert!(Totality::new(&s, false).total(&n.terms, n.items[0]));
 }
 
 #[test]
