@@ -89,6 +89,12 @@ pub fn get(page: &[u8], slot: usize) -> Slot {
     }
 }
 
+/// Give the line pointer of `slot` a state no slot holds.
+#[cfg(any(test, feature = "testing"))]
+pub fn break_pointer(page: &mut [u8], slot: usize) {
+    page[POINTERS + POINTER * slot + 4] = 9;
+}
+
 pub fn set_flags(page: &mut [u8], slot: usize, flags: Flags) {
     let mut p = pointer(page, slot);
     assert_eq!(NORMAL, p.state, "flags of a slot holding no version");

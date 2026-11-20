@@ -136,7 +136,7 @@ impl PageCopy {
         self.bytes = bytes;
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn owned_by(owner: u32, bytes: Vec<u8>) -> PageCopy {
         PageCopy { owner, bytes }
     }

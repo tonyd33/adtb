@@ -20,7 +20,7 @@ use super::{Error, Heap, Refused, Slots};
 
 const NEXT: usize = 0;
 const WRITER: usize = 8;
-const COUNT: usize = 16;
+pub(super) const COUNT: usize = 16;
 const ROLE: usize = 20;
 const BYTES: usize = 24;
 

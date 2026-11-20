@@ -11,7 +11,7 @@ use adtb::{ArchiveTarget, Database, OpenOptions, Position, RestorePoint, restore
 use adtb_sim::{Action, Match, OpLog, Plan, Planned, SimRuntime};
 
 use super::session::{Differs, refused};
-use super::{Head, Step};
+use super::{Head, Step, pages};
 
 /// The byte of a page a flip inverts, inside its body.
 const FLIPPED: usize = 300;
@@ -21,6 +21,10 @@ const FLIPPED: usize = 300;
 pub(super) enum Page {
     /// The first data page of the heap of a constructor.
     Heap { relation: String, ctor: String },
+    /// The root of the directory of the heap of a constructor.
+    Directory { relation: String, ctor: String },
+    /// The first page of the store of the large values of the heap of a constructor.
+    Large { relation: String, ctor: String },
     /// The root of an index, by its clause as the schema writes it.
     Index { relation: String, clause: String },
     /// The root page of the catalog.
@@ -32,17 +36,19 @@ pub(super) enum Page {
 }
 
 impl Page {
-    fn parse(text: &str) -> Option<Page> {
+    pub(super) fn parse(text: &str) -> Option<Page> {
         Some(match text.split_once(' ').unwrap_or((text, "")) {
             ("heap", rest) => {
-                let (relation, ctor) = rest.split_once(' ')?;
-                if ctor.contains(' ') {
-                    return None;
-                }
-                Page::Heap {
-                    relation: relation.to_owned(),
-                    ctor: ctor.to_owned(),
-                }
+                let (relation, ctor) = heap_words(rest)?;
+                Page::Heap { relation, ctor }
+            }
+            ("directory", rest) => {
+                let (relation, ctor) = heap_words(rest)?;
+                Page::Directory { relation, ctor }
+            }
+            ("large", rest) => {
+                let (relation, ctor) = heap_words(rest)?;
+                Page::Large { relation, ctor }
             }
             ("index", rest) => {
                 let (relation, clause) = rest.split_once(' ')?;
@@ -58,7 +64,7 @@ impl Page {
         })
     }
 
-    fn pid(&self, t: Testing<'_, SimRuntime>) -> Result<Pid, String> {
+    pub(super) fn pid(&self, t: Testing<'_, SimRuntime>) -> Result<Pid, String> {
         self.found(t)
             .map_err(|e| format!("the page `{self}` names is not found: {e}"))
     }
@@ -69,6 +75,16 @@ impl Page {
             Page::Heap { relation, ctor } => {
                 let heap = t.heap(relation, ctor).ok_or("no such constructor")?;
                 t.pages(heap)
+                    .map_err(|e| format!("{e:?}"))
+                    .and_then(|p| Ok(first(p)?))
+            }
+            Page::Directory { relation, ctor } => {
+                let heap = t.heap(relation, ctor).ok_or("no such constructor")?;
+                t.root(heap).map_err(|e| format!("{e:?}"))
+            }
+            Page::Large { relation, ctor } => {
+                let large = t.large(relation, ctor).ok_or("no such constructor")?;
+                t.pages(large)
                     .map_err(|e| format!("{e:?}"))
                     .and_then(|p| Ok(first(p)?))
             }
@@ -87,10 +103,18 @@ impl Page {
     }
 }
 
+/// Returns the relation and constructor `rest` names, two words.
+fn heap_words(rest: &str) -> Option<(String, String)> {
+    let (relation, ctor) = rest.split_once(' ')?;
+    (!ctor.contains(' ')).then(|| (relation.to_owned(), ctor.to_owned()))
+}
+
 impl fmt::Display for Page {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Page::Heap { relation, ctor } => write!(f, "heap {relation} {ctor}"),
+            Page::Directory { relation, ctor } => write!(f, "directory {relation} {ctor}"),
+            Page::Large { relation, ctor } => write!(f, "large {relation} {ctor}"),
             Page::Index { relation, clause } => write!(f, "index {relation} {clause}"),
             Page::Catalog => f.write_str("catalog"),
             Page::CommitLog => f.write_str("commit log"),
@@ -110,6 +134,12 @@ pub(super) enum Fault {
     Lose,
     /// Tear the next write that covers the page.
     Tear,
+    /// Edit the page as the step's body states, keeping its checksum valid.
+    Scribble,
+    /// Allocate a page of the page's kind and owner that no structure names.
+    Leak,
+    /// Free the page in the allocation bitmap, whatever still names it.
+    Free,
 }
 
 /// An object a mark names.
@@ -134,6 +164,15 @@ pub(super) enum CrashAt {
 pub(super) enum Probed {
     Marks,
     Damage,
+    /// The rows of the run of `verify` that holds the database.
+    Holding,
+    /// The directory positions and pages of the heap of a constructor, with each page's slots
+    /// unless `pages` only.
+    Heap {
+        relation: String,
+        ctor: String,
+        pages: bool,
+    },
     /// The device's files whose path begins with the text.
     Files(String),
 }
@@ -180,6 +219,9 @@ pub(super) fn head(word: &str, rest: &str) -> Option<Head> {
         "flip" => fault(Fault::Flip),
         "lose" => fault(Fault::Lose),
         "tear" => fault(Fault::Tear),
+        "scribble" => fault(Fault::Scribble),
+        "leak" => fault(Fault::Leak),
+        "free" => fault(Fault::Free),
         "crash" => Some(Head::Crash(crash_at(rest)?)),
         "restore" => Some(Head::Restore(restore(rest)?)),
         "fatal" if !rest.is_empty() => Some(Head::Fatal(rest.to_owned())),
@@ -187,6 +229,19 @@ pub(super) fn head(word: &str, rest: &str) -> Option<Head> {
             match rest.split_once(' ').unwrap_or((rest, "")) {
                 ("marks", "") => Probed::Marks,
                 ("damage", "") => Probed::Damage,
+                ("holding", "verify") => Probed::Holding,
+                ("heap", rest) => {
+                    let (rest, pages) = match rest.strip_suffix(" pages") {
+                        Some(rest) => (rest, true),
+                        None => (rest, false),
+                    };
+                    let (relation, ctor) = heap_words(rest)?;
+                    Probed::Heap {
+                        relation,
+                        ctor,
+                        pages,
+                    }
+                }
                 ("files", prefix) => Probed::Files(prefix.to_owned()),
                 ("plan", "") => return Some(Head::ProbePlan),
                 _ => return None,
@@ -268,8 +323,9 @@ fn point(at: Option<&str>) -> Option<RestorePoint> {
 pub(super) struct State {
     /// The file each open opens, the last a restore wrote.
     file: String,
-    /// The page each fault named, by page, to print damage records by.
-    roles: BTreeMap<Pid, Page>,
+    /// The name of each page a fault named or allocated, by page, to print damage records and
+    /// findings by.
+    roles: BTreeMap<Pid, String>,
     /// Each `flip` step of this process, with its page and the page size.
     flips: Vec<(Step, Pid, usize)>,
     /// Each `flip` step done, with the reads of its page since.
@@ -323,9 +379,26 @@ impl State {
             }
             Head::Fault { fault, page } => {
                 let pid = page.pid(t).map_err(|e| Differs::at(step, e))?;
-                self.roles.insert(pid, page.clone());
-                self.fault(rt, t, step, *fault, pid)
-                    .map_err(|e| failed("the fault is not planted", &e))
+                self.roles.insert(pid, page.to_string());
+                match fault {
+                    Fault::Scribble => {
+                        let named = pages::scribble(t, page, pid, &step.body)
+                            .map_err(|e| Differs::at(step, e))?;
+                        self.roles.extend(named);
+                        Ok(())
+                    }
+                    Fault::Leak => {
+                        let leaked = t
+                            .leak(pid)
+                            .map_err(|e| failed("no page is allocated", &e))?;
+                        self.roles
+                            .insert(leaked, format!("a page leaked beside {page}"));
+                        Ok(())
+                    }
+                    fault => self
+                        .fault(rt, t, step, *fault, pid)
+                        .map_err(|e| failed("the fault is not planted", &e)),
+                }
             }
             Head::Crash(at) => {
                 if self.crashing.is_some() {
@@ -371,6 +444,8 @@ impl State {
                 let torn = Action::Tear(vec![true], Box::new(|| {}));
                 rt.extend(Plan::new().first(writes(), torn));
             }
+            Fault::Free => drop(t.plant(Plant::Free(pid))?),
+            Fault::Scribble | Fault::Leak => unreachable!("an edit or a leak is no device fault"),
         }
         Ok(())
     }
@@ -441,14 +516,18 @@ impl State {
                 out
             }
             Probed::Files(prefix) => files(rt, prefix),
+            Probed::Holding => pages::held(t, &self.roles),
+            Probed::Heap {
+                relation,
+                ctor,
+                pages,
+            } => pages::laid(t, relation, ctor, *pages),
         }
     }
 
     /// Returns the role a fault named `pid` by.
     fn role(&self, pid: Pid) -> String {
-        self.roles
-            .get(&pid)
-            .map_or_else(|| "a page no fault names".to_owned(), ToString::to_string)
+        pages::role(&self.roles, pid)
     }
 
     /// Returns the problem of `finding`, a page it names by its role.

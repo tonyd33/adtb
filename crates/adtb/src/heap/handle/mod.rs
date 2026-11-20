@@ -26,6 +26,8 @@ pub(in crate::heap) use decode::before_next_row_refusal;
 
 #[cfg(any(test, feature = "testing"))]
 mod observe;
+#[cfg(any(test, feature = "testing"))]
+pub use observe::Laid;
 
 /// A stored row and the pointers of its out-of-line values.
 type Decoded = (Vec<Value>, Vec<Pointer>);

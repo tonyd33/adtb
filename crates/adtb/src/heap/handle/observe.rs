@@ -2,7 +2,62 @@
 
 use super::*;
 
+/// One position of a heap's directory, as a test prints it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Laid {
+    /// A position that names no page.
+    Hole,
+    /// A page and what each of its slots holds, with the header of each version.
+    Page {
+        pid: Pid,
+        kind: Option<storage::PageKind>,
+        format: u16,
+        flagged: bool,
+        mapped: bool,
+        slots: Vec<(Slot, Option<Header>)>,
+    },
+}
+
 impl Heap {
+    /// Returns each position of the heap's directory in order, with the page it names: the
+    /// page's kind and row format, whether its header flags it all-visible, whether the
+    /// visibility map has its bit set, and its slots. A page whose slot table does not fit it
+    /// lists no slots.
+    pub fn layout<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Laid>, PageError> {
+        let mut out = Vec::new();
+        for leaf in self.space.check(pager)?.leaves {
+            let Some((pid, _)) = leaf else {
+                out.push(Laid::Hole);
+                continue;
+            };
+            let guard = pager.read(pid)?;
+            let page = HeapPage::any(&guard);
+            let slots = page.map_or_else(Vec::new, |page| {
+                (0..page.slot_count())
+                    .map(|s| match page.get(s) {
+                        Slot::Normal { flags, at } => {
+                            let header = Header::read(&page[at.clone()]);
+                            (Slot::Normal { flags, at }, Some(header))
+                        }
+                        slot => (slot, None),
+                    })
+                    .collect()
+            });
+            let (kind, format) = (storage::kind(&guard), storage::format(&guard));
+            let flagged = page.is_some_and(HeapPage::all_visible);
+            drop(guard);
+            out.push(Laid::Page {
+                pid,
+                kind: storage::PageKind::from_u16(kind),
+                format,
+                flagged,
+                mapped: self.all_visible(pager, pid)?,
+                slots,
+            });
+        }
+        Ok(out)
+    }
+
     /// Add a newer row format whose rows `upgrade` makes from rows of the newest one. Returns its
     /// format version.
     pub fn add_format(&mut self, row: Vec<FieldType>, upgrade: Upgrade) -> Result<u16, Error> {

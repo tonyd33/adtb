@@ -8,11 +8,12 @@ use crate::blocks;
 
 use super::{Head, Step, fault, shown};
 
-const HEADS: [&str; 38] = [
+const HEADS: [&str; 41] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
     "run", "query", "error", "as", "grant", "revoke", "register", "host", "loose", "begin",
     "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc", "plan", "fatal",
-    "mark", "damage", "flip", "lose", "tear", "crash", "restore", "probe",
+    "mark", "damage", "flip", "lose", "tear", "scribble", "leak", "free", "crash", "restore",
+    "probe",
 ];
 
 fn head(line: &str) -> Option<Head> {
@@ -338,6 +339,10 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 | Head::Fatal(_)
                 | Head::Grant { .. }
                 | Head::Loose(_)
+                | Head::Fault {
+                    fault: fault::Fault::Scribble,
+                    ..
+                }
         ) || matches!(
             &head,
             Head::Bundle { fixture: None, .. } | Head::Register { fixture: None, .. }

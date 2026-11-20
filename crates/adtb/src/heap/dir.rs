@@ -92,6 +92,25 @@ fn init(node: &mut [u8], level: u32, capacity: u64) {
     node[VM..VM + 8].copy_from_slice(&vm.to_le_bytes());
 }
 
+/// Make entry `at` of directory page `node` name `pid`, raising the page's count to hold it.
+#[cfg(any(test, feature = "testing"))]
+pub(super) fn plant_entry(node: &mut [u8], at: usize, pid: Pid) {
+    let category = if at < count(node) {
+        entry(node, at).1
+    } else {
+        0
+    };
+    set_word(node, at, pid, category, false);
+    let n = count(node).max(at + 1) as u16;
+    node[COUNT..COUNT + 2].copy_from_slice(&n.to_le_bytes());
+}
+
+/// Make the directory root `node` name no visibility map.
+#[cfg(any(test, feature = "testing"))]
+pub(super) fn plant_no_map(node: &mut [u8]) {
+    node[VM..VM + 8].fill(0);
+}
+
 pub(super) fn vm_root(node: &[u8]) -> Option<Pid> {
     let pid = u64_at(node, VM);
     (pid != 0).then_some(Pid(pid))

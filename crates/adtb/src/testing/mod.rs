@@ -8,6 +8,7 @@
 //! [`Probe::safe_snapshots`] writes the log first.
 
 mod control;
+mod layout;
 mod object;
 mod plant;
 
@@ -23,7 +24,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write;
 
-pub use crate::heap::{Error as HeapError, Flags};
+pub use crate::heap::{Edit, Error as HeapError, Flags, Header, Laid, Slot};
 pub use crate::mvcc::{Limits, Snapshot, Xid};
 pub use crate::plan::{
     Check as PlanCheck, Checked as PlansChecked, Rewrites, checked as plans_checked, with_rewrites,

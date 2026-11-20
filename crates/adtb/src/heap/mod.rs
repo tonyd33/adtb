@@ -11,6 +11,8 @@ mod page;
 mod prune;
 mod rooted;
 mod row;
+#[cfg(any(test, feature = "testing"))]
+mod scribble;
 mod slotted;
 mod stage;
 mod version;
@@ -33,6 +35,8 @@ mod unreserved_tests;
 pub use chain::{successor, walk};
 #[cfg(test)]
 pub use dir::max_fanout;
+#[cfg(any(test, feature = "testing"))]
+pub use handle::Laid;
 #[cfg(test)]
 pub use handle::Pruned;
 pub use handle::{Heap, HeapNo, Link, Slots, Version, fits};
@@ -40,12 +44,16 @@ pub use large::LargeStore;
 #[cfg(any(test, feature = "testing"))]
 pub(crate) use named::before_next_refusal;
 pub use named::{OrphanEntry, refuse_named, vacant};
+#[cfg(any(test, feature = "testing"))]
+pub use page::Slot;
 #[cfg(test)]
 pub(crate) use row::Layout;
 #[cfg(test)]
 pub use row::Pointer;
 pub(crate) use row::put_uvarint;
 pub use row::{CtorType, FieldType};
+#[cfg(any(test, feature = "testing"))]
+pub use scribble::{Edit, scribble};
 #[cfg(test)]
 pub use version::HEADER_LEN;
 pub use version::{Flags, Header};

@@ -72,10 +72,12 @@
 //!   every later open opens FILE. A restore with no database open runs as a process of its own.
 //!
 //! These name a page by the structure holding it, as PAGE: `heap RELATION CTOR`, the first data
-//! page of the heap of constructor CTOR; `index RELATION CLAUSE`, the root of the index of clause
-//! CLAUSE as the schema writes it; `catalog`, the catalog's root; `commit log`, the commit log's
-//! root; `status`, the commit log's status page of the newest transaction ids. A page is found in
-//! the open database when the step runs.
+//! page of the heap of constructor CTOR; `directory RELATION CTOR`, the root of that heap's
+//! directory; `large RELATION CTOR`, the first page of the store of that heap's large values;
+//! `index RELATION CLAUSE`, the root of the index of clause CLAUSE as the schema writes it;
+//! `catalog`, the catalog's root; `commit log`, the commit log's root; `status`, the commit log's
+//! status page of the newest transaction ids. A page is found in the open database when the step
+//! runs.
 //!
 //! - `mark OBJECT`: the mark of OBJECT set, durably: `database`, `heap RELATION CTOR` or `index
 //!   RELATION CLAUSE`.
@@ -91,6 +93,16 @@
 //!   A `damage` that no read or latch of its page meets before the close differs, as does a
 //!   `flip` that no read of its page meets by the end of the script, and a `lose` or `tear`
 //!   whose process ends with no write it acts on.
+//! - `scribble PAGE`: the page edited as the body's one line states, as one logged change that
+//!   keeps its checksum valid: `kind KIND`, its header relabelled to page kind KIND, by name as
+//!   `HeapFixed`; `entry N names PAGE`, entry N of a directory page naming that page, its count
+//!   raised to hold it; `no map`, a directory root naming no visibility map; `slot N broken`, slot
+//!   N of a slotted page in a state no slot holds; `slot N deleter unreserved`, the version in slot
+//!   N deleted by the first transaction id past the commit log's reservation; `slot N count C`,
+//!   the large value's head in slot N counting C versions. On an index, `entry N again at slot S`:
+//!   the index's entry N added again, naming slot S of the page its own names.
+//! - `leak PAGE`: a page of the kind and owner of PAGE allocated, zero, that no structure names.
+//! - `free PAGE`: the page freed in the allocation bitmap, whatever still names it.
 //! - `crash at KIND PATH`: the process crashes at the first device op of KIND on PATH, before
 //!   the op completes; the path of a `rename` is its new name. KIND is one of
 //!   `open`, `create_new`, `write`, `allocate`, `sync`, `sync_dir`, `remove`, `remove_dir`,
@@ -104,11 +116,23 @@
 //! - `probe marks`: the rows after `----` are the name of each mark set, in memory or in the
 //!   file, as `Quarantined` names it, sorted.
 //! - `probe damage`: the rows are each damage recorded and not cleared: each page as `PAGE:
-//!   DAMAGE` by the page a fault named, or `a page no fault names: DAMAGE`, sorted; then each
-//!   finding of the log as `log: PROBLEM`; then `the damage list is full` when it is. DAMAGE is
-//!   the variant of the engine's damage, its shape named: `Checksum`, `Unreadable`,
-//!   `Shape(Blank)` and the other shapes, `Stale`, `LogUnproven` or `Settled`. PROBLEM is the
-//!   variant of the log's problem, `Unlogged PAGE` naming its page. Neither names a log position.
+//!   DAMAGE` by the page a fault named, `a page leaked beside PAGE` for a `leak`, `the page
+//!   entry N of PAGE names` for an index's `scribble`, or `a page no fault names: DAMAGE`,
+//!   sorted; then each finding of the log as `log: PROBLEM`; then `the damage list is full` when
+//!   it is. DAMAGE is the variant of the engine's damage, its shape named: `Checksum`,
+//!   `Unreadable`, `Shape(Blank)` and the other shapes, `Stale`, `LogUnproven` or `Settled`.
+//!   PROBLEM is the variant of the log's problem, `Unlogged PAGE` naming its page. Neither names
+//!   a log position.
+//! - `probe holding verify`: the rows are those of the run of `verify` that holds the database,
+//!   as `adtb verify FILE` runs it, printed and sorted, each `page N` written as `probe damage`
+//!   names page N.
+//! - `probe heap RELATION CTOR [pages]`: the rows are, for each position of the directory of the
+//!   heap of CTOR in order, `P: hole`, or `P: KIND format F, N slots` with `, flagged all
+//!   visible` when the page header says so and `, mapped all visible` when the visibility map
+//!   does; then, without `pages`, a row `P.S: SLOT` for each of its slots: `Unused`, `Dead`,
+//!   `Redirect P.S`, or `Normal FLAGS, xI[ to xD][, next P.S]` with the version's flags joined
+//!   by `|` or `NONE`, its inserter and deleter, and its successor, `elsewhere` off the heap's
+//!   pages. A transaction id `xN` is ranked among the ids the probe names, in id order.
 //! - `probe files [PREFIX]`: the database closes first, as before an open, and the rows are the
 //!   path of each file on the device beginning with PREFIX, sorted.
 //!
@@ -131,6 +155,7 @@
 
 mod clock;
 mod fault;
+mod pages;
 mod plan;
 mod read;
 mod role;
