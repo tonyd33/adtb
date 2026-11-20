@@ -1,8 +1,11 @@
 # The target text of each kind of log grant, carried through a split and a rename, names its
-# grant again: a revoke of each row's printed text, a retag's without its except list, revokes it.
+# grant again: a revoke of each row's printed text, a retag's with its except list, revokes it, and
+# a retag revoke without the except list revokes the row whatever pairs it excepts. A revoke that
+# names a constructor the schema lacks is refused, naming it.
 use shop
 
 role web
+role api
 
 migrate
   module shop
@@ -11,6 +14,12 @@ migrate
   grant read payments.Late to web
   grant update payments.(Card | Invoice) (customer) to web
   grant retag payments.Card -> payments.(Card | Invoice) to web
+  grant retag payments.Card -> payments.(Card | Invoice) to api
+  grant retag payments.Invoice -> payments.Card to web
+  grant retag payments.(Card | Invoice) -> payments.(Card | Invoice) except (Invoice -> Card) to web
+  grant read payments to web
+  grant retag payments.Late -> payments.Card to web
+  grant delete payments.Late to web
   grant insert customers to web
   grant delete payments.Invoice to web
   grant call fn shout to web
@@ -24,25 +33,45 @@ migrate
 reopen
 
 query rowsort
-  from g in catalog::grants select g.privilege ++ " " ++ print(g.target)
+  from g in catalog::grants select g.grantee ++ " " ++ g.privilege ++ " " ++ print(g.target)
 ----
-"call Some { value: \"shop::shout\" }"
-"delete Some { value: \"shop::payments.Invoice\" }"
-"insert Some { value: \"shop::clients\" }"
-"read Some { value: \"shop::clients (name)\" }"
-"read Some { value: \"shop::payments.Late frozen (id, customer, Invoice.due)\" }"
-"retag Some { value: \"shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Visa -> Other, Other -> Visa)\" }"
-"update Some { value: \"shop::payments.(Invoice | Visa | Other) (customer)\" }"
+"api retag Some { value: \"shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Visa -> Other, Other -> Visa)\" }"
+"web call Some { value: \"shop::shout\" }"
+"web delete Some { value: \"shop::payments.Invoice\" }"
+"web delete Some { value: \"shop::payments.Late\" }"
+"web insert Some { value: \"shop::clients\" }"
+"web read Some { value: \"shop::clients (name)\" }"
+"web read Some { value: \"shop::payments frozen (id, customer, Invoice.due, Visa.last4)\" }"
+"web read Some { value: \"shop::payments.Late frozen (id, customer, Invoice.due)\" }"
+"web retag Some { value: \"shop::payments.(Invoice | Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Invoice -> Visa, Invoice -> Other, Visa -> Other, Other -> Visa)\" }"
+"web retag Some { value: \"shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Visa -> Other, Other -> Visa)\" }"
+"web retag Some { value: \"shop::payments.Invoice -> shop::payments.(Visa | Other)\" }"
+"web retag Some { value: \"shop::payments.Late -> shop::payments.(Visa | Other)\" }"
+"web update Some { value: \"shop::payments.(Invoice | Visa | Other) (customer)\" }"
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`payments` has no constructor `Card`" } } }
+  module shop
+  revoke retag shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Card -> Other) from web
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`Card` is neither a constructor of `Payment` nor a named set of `payments`" } } }
+  module shop
+  revoke read shop::payments.Card (customer) from web
 
 migrate
   module shop
   revoke call fn shop::shout from web
   revoke delete shop::payments.Invoice from web
+  revoke delete shop::payments.Late from web
   revoke insert shop::clients from web
   revoke read shop::clients (name) from web
+  revoke read shop::payments frozen (id, customer, Invoice.due, Visa.last4) from web
   revoke read shop::payments.Late frozen (id, customer, Invoice.due) from web
-  revoke retag shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) from web
+  revoke retag shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Visa -> Other, Other -> Visa) from web
+  revoke retag shop::payments.Invoice -> shop::payments.(Visa | Other) from web
+  revoke retag shop::payments.(Invoice | Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Invoice -> Visa, Invoice -> Other, Visa -> Other, Other -> Visa) from web
+  revoke retag shop::payments.Late -> shop::payments.(Visa | Other) from web
   revoke update shop::payments.(Invoice | Visa | Other) (customer) from web
+  revoke retag shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) from api
 
 query rowsort
   catalog::grants

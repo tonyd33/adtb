@@ -405,29 +405,21 @@ impl Resolving<'_> {
                 let ctors = schema
                     .relation_sel(rel, sel)
                     .map_err(|e| vec![Diag::new(r.span, e)])?;
-                for x in sel_idents(sel) {
-                    self.refs.push(match schema.ty(def).ctor_index(&x.text) {
-                        Some(c) => (x.span, Ref::Ctor(def, c)),
-                        None => (x.span, Ref::Set(rel, x.text.clone())),
-                    });
-                }
-                match sel {
-                    CtorSel::One(x) if schema.ty(def).ctor_index(&x.text).is_none() => (
-                        GrantSel::Set(ids.set_id(rel, &x.text).expect(USER_IDS).raw()),
-                        ctors,
-                    ),
-                    _ => {
-                        let mut out: Vec<u64> = ctors
-                            .iter()
-                            .map(|&c| {
-                                let c = schema.ty(def).ctor_at(c).expect(USER_IDS);
-                                ids.ctor_id(c).expect(USER_IDS).raw()
-                            })
-                            .collect();
-                        out.sort_unstable();
-                        (GrantSel::Ctors(out), ctors)
+                let sel = match sel {
+                    CtorSel::One(x) if schema.ty(def).ctor_index(&x.text).is_none() => {
+                        self.refs.push((x.span, Ref::Set(rel, x.text.clone())));
+                        GrantSel::Set(ids.set_id(rel, &x.text).expect(USER_IDS).raw())
                     }
-                }
+                    _ => {
+                        let mut out = sel_idents(sel)
+                            .iter()
+                            .map(|x| self.ctor_id(rel, x))
+                            .collect::<R<Vec<u64>>>()?;
+                        out.sort_unstable();
+                        GrantSel::Ctors(out)
+                    }
+                };
+                (sel, ctors)
             }
         };
         let relation = ids.relation_id(rel).expect(USER_IDS).raw();
@@ -469,9 +461,7 @@ impl Resolving<'_> {
             let refuse = |msg: String| Err(vec![Diag::new(f.name.span, msg)]);
             let name = &f.name.text;
             if let Some(c) = &f.ctor {
-                let Some(k) = schema.ty(def).ctor_index(&c.text) else {
-                    return refuse(format!("`{}` has no constructor `{}`", rd.name, c.text));
-                };
+                let k = self.ctor(rel, c)?;
                 if self.statement == Statement::Grant && !ctors.contains(&k) {
                     return refuse(format!(
                         "`{}` is not a constructor this grant covers",
@@ -484,7 +474,6 @@ impl Resolving<'_> {
                         c.text, name, rd.name
                     ));
                 };
-                self.refs.push((c.span, Ref::Ctor(def, k)));
                 self.refs.push((f.name.span, field_ref(def, Some(k), name)));
                 out.push(id.raw());
             } else if let Some(id) = td.field(None, name).and_then(|f| ids.field_id(f)) {
@@ -517,30 +506,41 @@ impl Resolving<'_> {
         })
     }
 
-    fn excepted(&self, from: RelId, to: RelId, e: Option<&ast::Excepted>) -> R<Vec<(u64, u64)>> {
-        let schema = self.schema;
-        let ctor = |rel: RelId, c: &ast::Ident| -> R<u64> {
-            let def = schema.relation(rel).elem_def;
-            schema
-                .ty(def)
-                .ctor_named(&c.text)
-                .and_then(|k| schema.ids().ctor_id(k))
-                .map(CatCtorId::raw)
-                .ok_or_else(|| {
-                    let name = &schema.relation(rel).name;
-                    vec![Diag::new(
-                        c.span,
-                        format!("`{name}` has no constructor `{}`", c.text),
-                    )]
-                })
-        };
+    fn excepted(
+        &mut self,
+        from: RelId,
+        to: RelId,
+        e: Option<&ast::Excepted>,
+    ) -> R<Vec<(u64, u64)>> {
         let mut pairs = Vec::new();
         for (x, y) in e.iter().flat_map(|e| &e.pairs) {
-            pairs.push((ctor(from, x)?, ctor(to, y)?));
+            pairs.push((self.ctor_id(from, x)?, self.ctor_id(to, y)?));
         }
         pairs.sort_unstable();
         pairs.dedup();
         Ok(pairs)
+    }
+
+    /// Record the name `c` and return the index of the constructor it names in the type of `rel`.
+    fn ctor(&mut self, rel: RelId, c: &ast::Ident) -> R<u32> {
+        let rd = self.schema.relation(rel);
+        let Some(k) = self.schema.ty(rd.elem_def).ctor_index(&c.text) else {
+            return Err(vec![Diag::new(
+                c.span,
+                format!("`{}` has no constructor `{}`", rd.name, c.text),
+            )]);
+        };
+        self.refs.push((c.span, Ref::Ctor(rd.elem_def, k)));
+        Ok(k)
+    }
+
+    /// Record the name `c` and return the catalog id of the constructor it names in the type of
+    /// `rel`.
+    fn ctor_id(&mut self, rel: RelId, c: &ast::Ident) -> R<u64> {
+        let k = self.ctor(rel, c)?;
+        let def = self.schema.relation(rel).elem_def;
+        let ctor = self.schema.ty(def).ctor_at(k).expect(USER_IDS);
+        Ok(self.schema.ids().ctor_id(ctor).expect(USER_IDS).raw())
     }
 
     fn privilege(&mut self, p: &ast::Privilege) -> R<Stated> {
