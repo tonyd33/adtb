@@ -9,19 +9,24 @@ use std::sync::atomic::Ordering;
 use adtb_sys::lock::Ranked;
 
 use crate::mvcc::{self, Access, Begun, Hold, Limits, Scope, SerialId, Serializer};
-use crate::mvcc::{Transactions, Waits, Xid};
+use crate::mvcc::{Transactions, Waits};
 use crate::ranks;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
-use super::{Ended, Error, Held, Left, Session, Txn, vacuums};
+use super::{Error, Held, Session, Txn, vacuums};
 
-/// Release what the end of a transaction has not.
-pub(super) trait Abandon: Send + Sync {
-    fn abandon(&self, tx: &mut Ended);
+pub(super) trait Release: Send + Sync {
+    /// Release what `held` has left, aborting its id when it still runs. Returns the abort
+    /// record's failure. A drop on a panicking thread records no abort, and a drop on a
+    /// panicking thread or after the pager closes logs no safe snapshot marker.
+    fn release(&self, held: &mut Held, dropped: bool) -> Result<(), mvcc::Error>;
 
     /// Count a transaction ended by being dropped.
     fn count_drop(&self);
+
+    /// Count an abort record that failed.
+    fn count_unrecorded(&self);
 }
 
 impl<R: Runtime> Session<R> {
@@ -52,7 +57,7 @@ impl<R: Runtime> Session<R> {
             let mut ser = self.ser.lock(&self.rt);
             let hold = self.txns.take(Scope::Every)?;
             let sid = ser.begin(Access::ReadWrite(xid));
-            self.txn(Some(begun), sid, hold)
+            self.txn(Some(begun), None, sid, hold)
         };
         self.waits.started(xid);
         Ok(tx)
@@ -74,19 +79,33 @@ impl<R: Runtime> Session<R> {
             self.log_safe(&mut ser);
             (sid, hold)
         };
-        Ok(self.txn(None, sid, hold))
+        Ok(self.txn(None, Some(sid), sid, hold))
     }
 
-    fn txn(self: &Arc<Self>, begun: Option<Begun>, sid: SerialId, hold: Hold) -> Txn {
+    fn txn(
+        self: &Arc<Self>,
+        begun: Option<Begun>,
+        reader: Option<SerialId>,
+        sid: SerialId,
+        hold: Hold,
+    ) -> Txn {
+        let xid = begun.as_ref().map(Begun::xid);
         Txn {
-            xid: begun.as_ref().map(Begun::xid),
+            xid,
             sid,
             taken: hold.taken(),
             written: RefCell::default(),
-            changed: RefCell::default(),
-            failed: Cell::new(false),
-            held: Some(Held { begun, hold }),
-            session: self.clone(),
+            held: Held {
+                begun,
+                serial: Some(sid),
+                reader,
+                hold: Some(hold),
+                waits: xid,
+                changed: RefCell::default(),
+                failed: Cell::new(false),
+                ending: false,
+                session: self.clone(),
+            },
         }
     }
 
@@ -99,136 +118,101 @@ impl<R: Runtime> Session<R> {
         }
     }
 
-    /// Abort `tx` and release what it holds, leaving its dead versions to count.
-    ///
-    /// Fail if the database is quarantined, the commit log still saying `tx`'s id is in
-    /// progress.
-    pub(super) fn abort(&self, tx: &mut Ended) -> Result<(), mvcc::Error> {
-        let aborted = {
-            let mut ser = self.ser.lock(&self.rt);
-            let aborted = tx
-                .begun
-                .take()
-                .map(|b| self.txns.abort(&self.pager, b))
-                .transpose();
-            self.release(&mut ser, tx, true);
-            aborted
-        };
-        self.ended(tx.xid);
-        tx.left.waits = false;
-        aborted.map(drop)
-    }
-
-    /// Release `tx`'s entry in the serializer unless already released, then its reader's
-    /// snapshot and its hold, logging the safe snapshots found when `log` is set.
-    fn release(&self, ser: &mut Serializer, tx: &mut Ended, log: bool) {
-        if tx.left.serial {
-            ser.aborted(tx.sid);
-            tx.left.serial = false;
-            if log {
-                self.log_safe(ser);
-            }
-        }
-        self.readers.lock(&self.rt).remove(&tx.sid);
-        drop(tx.hold.take());
-    }
-
-    /// Wake the waiters of `xid`, a transaction that has ended.
-    fn ended(&self, xid: Option<Xid>) {
-        if let Some(x) = xid {
-            self.waits.ended(x);
-        }
-    }
-
     /// Count the versions `changed` made dead, as [`vacuums::Dead::add`] does.
     pub(super) fn count_dead(&self, changed: &vacuums::Changed, committed: bool) {
         self.dead.lock(&self.rt).add(changed, committed);
     }
 }
 
-impl<R: Runtime> Abandon for Session<R> {
-    fn abandon(&self, tx: &mut Ended) {
+impl<R: Runtime> Release for Session<R> {
+    fn release(&self, held: &mut Held, dropped: bool) -> Result<(), mvcc::Error> {
+        let unwinding = dropped && std::thread::panicking();
+        let committed = held.serial.is_none();
+        let mut recorded = Ok(());
+        if held.begun.is_some()
+            || held.serial.is_some()
+            || held.reader.is_some()
+            || held.hold.is_some()
         {
             let mut ser = self.ser.lock(&self.rt);
-            drop(tx.begun.take());
-            let log = !std::thread::panicking() && !self.pager.is_closed();
-            self.release(&mut ser, tx, log);
+            match held.begun.take() {
+                Some(b) if !unwinding => {
+                    recorded = self.txns.abort(&self.pager, b).map(drop);
+                }
+                begun => drop(begun),
+            }
+            if let Some(sid) = held.serial.take() {
+                ser.aborted(sid);
+                if !dropped || (!unwinding && !self.pager.is_closed()) {
+                    self.log_safe(&mut ser);
+                }
+            }
+            if let Some(sid) = held.reader.take() {
+                self.readers.lock(&self.rt).remove(&sid);
+            }
+            drop(held.hold.take());
         }
-        if tx.left.waits {
-            self.ended(tx.xid);
+        if let Some(x) = held.waits.take() {
+            self.waits.ended(x);
         }
-        if tx.left.dead {
-            self.count_dead(&tx.changed, tx.left.committed);
+        let changed = held.changed.take();
+        if !changed.is_empty() {
+            self.count_dead(&changed, committed);
         }
+        recorded
     }
 
     fn count_drop(&self) {
         #[cfg(any(test, feature = "testing"))]
         self.dropped.fetch_add(1, Ordering::Relaxed);
     }
+
+    fn count_unrecorded(&self) {
+        self.txns.count_unrecorded();
+    }
 }
 
 impl Txn {
     /// Returns the hold on the transaction's snapshot.
     pub(super) fn hold(&self) -> &Hold {
-        &self
-            .held
-            .as_ref()
-            .expect("a transaction not ended holds its snapshot")
+        self.held
             .hold
+            .as_ref()
+            .expect("a transaction holds its snapshot until its end takes it")
     }
 
     /// Returns `done`, marking the transaction failed when it is an `Err`.
     pub(super) fn noted<T, E>(&self, done: Result<T, E>) -> Result<T, E> {
         if done.is_err() {
-            self.failed.set(true);
+            self.held.failed.set(true);
         }
         done
     }
 
-    /// Returns the transaction ended, with what its end releases.
-    pub(super) fn end(mut self) -> Ended {
-        let held = self
-            .held
-            .take()
-            .expect("a transaction is ended only as it is consumed");
-        self.parts(held)
-    }
-
-    fn parts(&mut self, held: Held) -> Ended {
-        Ended {
-            begun: held.begun,
-            hold: Some(held.hold),
-            xid: self.xid,
-            sid: self.sid,
-            taken: self.taken,
-            written: self.written.take(),
-            changed: self.changed.take(),
-            left: Left {
-                serial: true,
-                waits: true,
-                dead: true,
-                committed: false,
-            },
-            session: self.session.clone(),
-        }
+    /// Returns what the transaction holds, taken by its end.
+    pub(super) fn end(self) -> Held {
+        let mut held = self.held;
+        held.ending = true;
+        held
     }
 }
 
-impl Drop for Txn {
-    fn drop(&mut self) {
-        if let Some(held) = self.held.take() {
-            if !self.failed.get() {
-                self.session.count_drop();
-            }
-            drop(self.parts(held));
-        }
+impl Held {
+    /// Release what is left, as a drop does. Returns the abort record's failure, uncounted.
+    pub(super) fn close(mut self) -> Result<(), mvcc::Error> {
+        let session = self.session.clone();
+        session.release(&mut self, false)
     }
 }
 
-impl Drop for Ended {
+impl Drop for Held {
     fn drop(&mut self) {
         let session = self.session.clone();
-        session.abandon(self);
+        if !self.ending && !self.failed.get() {
+            session.count_drop();
+        }
+        if session.release(self, true).is_err() {
+            session.count_unrecorded();
+        }
     }
 }

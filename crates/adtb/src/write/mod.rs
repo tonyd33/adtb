@@ -366,48 +366,29 @@ pub struct Txn {
     taken: Taken,
     /// What its statements that succeeded wrote into the file.
     written: RefCell<quarantine::Touched>,
+    held: Held,
+}
+
+/// What a transaction holds: its running id, its entry in the serializer, its reader's snapshot
+/// in the readers, its hold, its registration with the waits and the versions it made dead.
+/// Dropping it releases what is left of each, once, on every path.
+struct Held {
+    /// `None` for a read-only transaction, or once its commit or abort takes it.
+    begun: Option<Begun>,
+    /// `None` once its commit or its release ends it in the serializer.
+    serial: Option<SerialId>,
+    /// `None` for a read-write transaction.
+    reader: Option<SerialId>,
+    hold: Option<Hold>,
+    /// `None` for a read-only transaction.
+    waits: Option<Xid>,
     changed: RefCell<vacuums::Changed>,
     /// Set once one of its operations has failed other than by suspending on a wait; dropping it
     /// then counts no end by drop.
     failed: Cell<bool>,
-    /// `None` once the transaction has ended.
-    held: Option<Held>,
-    session: Arc<dyn session::Abandon>,
-}
-
-/// What a running transaction holds that its end releases.
-struct Held {
-    /// `None` for a read-only transaction.
-    begun: Option<Begun>,
-    hold: Hold,
-}
-
-/// A transaction whose end has begun, with what its end releases.
-///
-/// Dropping it releases what its end has not, as a dropped [`Txn`] does.
-struct Ended {
-    begun: Option<Begun>,
-    /// `None` once released.
-    hold: Option<Hold>,
-    xid: Option<Xid>,
-    sid: SerialId,
-    taken: Taken,
-    written: quarantine::Touched,
-    changed: vacuums::Changed,
-    left: Left,
-    session: Arc<dyn session::Abandon>,
-}
-
-/// What the end of a transaction has yet to release.
-#[derive(Clone, Copy, Debug)]
-struct Left {
-    /// Its entry in the serializer.
-    serial: bool,
-    /// Its id's registration with the waits.
-    waits: bool,
-    /// The count of the versions it made dead.
-    dead: bool,
-    committed: bool,
+    /// Set once a commit, abort or abandon takes it; dropping it then counts no end by drop.
+    ending: bool,
+    session: Arc<dyn session::Release>,
 }
 
 /// The transaction resources of one database: the transactions, the serializer, the snapshots
@@ -434,7 +415,6 @@ impl std::fmt::Debug for Txn {
         f.debug_struct("Txn")
             .field("xid", &self.xid)
             .field("sid", &self.sid)
-            .field("ended", &self.held.is_none())
             .finish_non_exhaustive()
     }
 }
@@ -1003,7 +983,7 @@ impl<R: Runtime> Database<R> {
         }
         for o in &out {
             self.record_written(&mut tx.written.borrow_mut(), o);
-            self.record_changed(&mut tx.changed.borrow_mut(), o);
+            self.record_changed(&mut tx.held.changed.borrow_mut(), o);
         }
         Ok(out)
     }
@@ -1192,7 +1172,7 @@ impl<R: Runtime> Database<R> {
     /// Count each version `ran` inserted as dead in `tx`, and undo the effects of `ran` on the
     /// file, the last first, unless the transaction `ends`.
     fn take_back(&self, tx: &Txn, ran: &[eval::Stmt<'_, R>], ends: bool) -> Result<(), Error> {
-        let mut changed = tx.changed.borrow_mut();
+        let mut changed = tx.held.changed.borrow_mut();
         for s in ran {
             for u in s.undo.borrow().iter() {
                 if let apply::Undo::Kill(heap, ..) = u {
@@ -1266,14 +1246,16 @@ impl<R: Runtime> Database<R> {
     /// the rule that stops a statement. On any failure, abandon `tx` as [`Database::abandon`]
     /// does: fail with the commit's failure, or with the abort record's when it fails.
     pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
-        let mut tx = tx.end();
+        let (sid, xid, upto) = (tx.sid, tx.xid, tx.taken.upto());
+        let written = tx.written.take();
+        let mut held = tx.end();
         let done = {
             let mut ser = self.session.ser.lock(&self.rt);
             self.map_committing(ser.ordered());
-            let admitted = self.admit_commit(&ser.ordered(), std::mem::take(&mut tx.written));
-            match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::from)) {
+            let admitted = self.admit_commit(&ser.ordered(), written);
+            match admitted.and_then(|()| ser.precommit(sid).map_err(Error::from)) {
                 Err(e) => Err(e),
-                Ok(()) => match tx
+                Ok(()) => match held
                     .begun
                     .take()
                     .map(|b| self.session.txns.commit(&self.pager, b).map(|c| c.lsn()))
@@ -1281,36 +1263,32 @@ impl<R: Runtime> Database<R> {
                 {
                     Err(e) => Err(e.into()),
                     Ok(own) => {
-                        ser.committed(tx.sid);
-                        tx.left.serial = false;
-                        tx.left.committed = true;
-                        if let (Some(xid), Some(lsn)) = (tx.xid, own) {
+                        if let Some(sid) = held.serial.take() {
+                            ser.committed(sid);
+                        }
+                        if let (Some(xid), Some(lsn)) = (xid, own) {
                             self.session.txns.publish_commit(&self.pager, xid, lsn);
                         }
                         self.session.log_safe(&mut ser);
-                        self.session.readers.lock(&self.rt).remove(&tx.sid);
-                        Ok(own.max(tx.taken.upto()))
+                        Ok(own.max(upto))
                     }
                 },
             }
         };
         match done {
             Ok(wait) => {
-                drop(tx.hold.take());
-                if tx.xid.is_some() && self.session.txns.history().is_some() {
+                drop(held.hold.take());
+                if xid.is_some() && self.session.txns.history().is_some() {
                     self.pager.flush_below(self.pager.appended());
                 }
                 let wait = wait.unwrap_or_else(|| self.pager.durable());
                 self.pager.wait_durable(wait);
-                if let Some(x) = tx.xid {
-                    self.session.waits.ended(x);
-                }
-                tx.left.waits = false;
-                tx.left.dead = false;
-                self.add_dead(&tx.changed, true);
+                let changed = held.changed.take();
+                drop(held);
+                self.add_dead(&changed, true);
                 Ok(self.pager.position(wait))
             }
-            Err(e) => Err(either(self.abandon_ended(tx, || e, |r| r))),
+            Err(e) => Err(either(self.abandon_held(held, || e, |r| r))),
         }
     }
 
@@ -1350,13 +1328,13 @@ impl<R: Runtime> Database<R> {
     /// Fail if the database is quarantined, the commit log still saying `tx`'s id is in
     /// progress.
     pub fn abort(&self, tx: Txn) -> Result<(), Error> {
-        self.abort_ended(tx.end())
+        self.abort_held(tx.end())
     }
 
-    fn abort_ended(&self, mut tx: Ended) -> Result<(), Error> {
-        let aborted = self.session.abort(&mut tx);
-        tx.left.dead = false;
-        self.add_dead(&tx.changed, false);
+    fn abort_held(&self, held: Held) -> Result<(), Error> {
+        let changed = held.changed.take();
+        let aborted = held.close();
+        self.add_dead(&changed, false);
         aborted?;
         Ok(())
     }
@@ -1371,16 +1349,16 @@ impl<R: Runtime> Database<R> {
         cause: impl FnOnce() -> E,
         reply: impl FnOnce(Error) -> E,
     ) -> Result<E, E> {
-        self.abandon_ended(tx.end(), cause, reply)
+        self.abandon_held(tx.end(), cause, reply)
     }
 
-    fn abandon_ended<E>(
+    fn abandon_held<E>(
         &self,
-        tx: Ended,
+        held: Held,
         cause: impl FnOnce() -> E,
         reply: impl FnOnce(Error) -> E,
     ) -> Result<E, E> {
-        match self.abort_ended(tx) {
+        match self.abort_held(held) {
             Ok(()) => Ok(cause()),
             Err(e) => {
                 self.session.txns.count_unrecorded();

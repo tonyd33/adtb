@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use adtb_sim::{Config, Outcome, SimRuntime};
 use adtb_sys::lock::Ranked;
 use adtb_testkit::fixture::Fixture;
 
-use crate::mvcc::Xid;
+use crate::mvcc::{Status, Xid};
 use crate::ranks::{self, broken, order_broken};
 use crate::test_world::write_path::{self, WritePath};
 
@@ -52,6 +53,43 @@ fn a_commit_and_an_abort_end_their_transactions_by_hand() {
         db.commit(tx).expect("the reader commits");
         assert_eq!(nothing(), holding(db));
         assert_eq!(0, db.take_ends_by_drop());
+    });
+}
+
+/// Drop `tx` on a thread panicking with the injected failure.
+fn drop_panicking<T: Send>(tx: T) {
+    let ran = catch_unwind(AssertUnwindSafe(move || {
+        let _tx = tx;
+        panic!("the injected failure");
+    }));
+    let message = ran.err().and_then(|p| p.downcast_ref::<&str>().copied());
+    assert_eq!(Some("the injected failure"), message);
+}
+
+/// A drop on a panicking thread or after the pager closes releases what the transaction holds,
+/// records nothing, and counts its abort unrecorded and its end by drop.
+#[test]
+fn a_drop_while_panicking_or_once_closed_releases_records_nothing_and_counts() {
+    at(3, |db| {
+        let w = db.begin().expect("a writer begins");
+        let x = w.xid().expect("a writer has an id");
+        let r = db.begin_read(false).expect("a reader begins");
+        drop_panicking(w);
+        drop_panicking(r);
+        assert_eq!(nothing(), holding(db));
+        assert_eq!(Ok(Status::InProgress), db.txns().recorded(db.pager(), x));
+        assert_eq!(1, db.txns().unrecorded_aborts());
+        assert_eq!(2, db.take_ends_by_drop());
+        let w = db.begin().expect("a writer begins");
+        let r = db.begin_read(false).expect("a reader begins");
+        db.pager().close();
+        let files = db.pager().rt().files();
+        drop(w);
+        drop(r);
+        assert_eq!(nothing(), holding(db));
+        assert_eq!(files, db.pager().rt().files());
+        assert_eq!(2, db.txns().unrecorded_aborts());
+        assert_eq!(2, db.take_ends_by_drop());
     });
 }
 
