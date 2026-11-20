@@ -200,6 +200,8 @@ pub struct Catalog {
     kept: Kept,
     /// The grantee, privilege and target of each grant [`Catalog::replay_holding`] keeps dormant.
     held: BTreeSet<(String, String, String)>,
+    /// The catalog rows of the objects of `source`, once read.
+    objects: Arc<OnceLock<Rows>>,
 }
 
 /// The memory a migration's validation may hold until [`Catalog::set_query_memory`] sets it.
@@ -639,6 +641,7 @@ impl Catalog {
             hosts: Arc::default(),
             kept,
             held: BTreeSet::new(),
+            objects: Arc::default(),
         };
         let begun = txns.begin(pager)?;
         let x = begun.xid();
@@ -664,7 +667,7 @@ impl Catalog {
                 data: &Data::new(),
                 rewritten: &every,
                 readers: None,
-                old: Rows::new(),
+                old: &Rows::new(),
                 operators: &[],
             },
         );
@@ -826,6 +829,7 @@ impl Catalog {
             hosts: Arc::default(),
             kept,
             held: BTreeSet::new(),
+            objects: Arc::default(),
         };
         Ok((catalog, txns))
     }
@@ -856,6 +860,7 @@ impl Catalog {
             hosts: Arc::default(),
             kept: Kept::unread(),
             held: BTreeSet::new(),
+            objects: Arc::default(),
         })
     }
 
@@ -983,6 +988,12 @@ impl Catalog {
         self.readers
             .enforced()
             .map_or((&self.schema, &self.program), |e| (&e.schema, &e.program))
+    }
+
+    /// Returns the catalog rows of the objects of the catalog's version.
+    fn objects(&self) -> &Rows {
+        self.objects
+            .get_or_init(|| rows::objects(&self.schema, &self.source, &self.texts))
     }
 
     /// Returns the index element texts of the schema [`Catalog::checking`] returns.
@@ -1238,7 +1249,7 @@ struct Built<'a> {
     /// The readers after the migration, whose pending drops the indexes keep.
     readers: Option<&'a Readers>,
     /// The catalog rows of the catalog before the migration, by its relations.
-    old: Rows,
+    old: &'a Rows,
     operators: &'a [oplog::OperatorRow],
 }
 

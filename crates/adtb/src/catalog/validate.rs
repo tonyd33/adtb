@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::check::Program;
-use adtb_lang::depends;
 use adtb_lang::kernel::{Build, Kind, Terms, Tm};
 use adtb_lang::norm::{self, NormalProgram, Root};
 use adtb_lang::schema::{Schema, TypeDefKind};
@@ -19,10 +17,10 @@ use super::ids::{CatConstraintId, CatRelId};
 use super::{Broken, Catalog, Error, Migrating};
 
 impl Catalog {
-    /// Returns, for each constraint and check of this catalog that `old`, a schema and its
-    /// checked program, lacks, whose meaning [`depends::changed`] finds changed, or that reads a
-    /// relation whose catalog id is in `rewritten`, why the rows transaction `m.x` sees at the
-    /// snapshot of `m.hold` violate it.
+    /// Returns, for each constraint and check of this catalog that `old` lacks, whose root is in
+    /// `roots`, the roots [`adtb_lang::depends::changed`] finds changed from `old` to this
+    /// catalog, or that reads a relation whose catalog id is in `rewritten`, why the rows
+    /// transaction `m.x` sees at the snapshot of `m.hold` violate it.
     ///
     /// A constraint that reads a transition is not validated.
     ///
@@ -31,12 +29,12 @@ impl Catalog {
     pub(super) fn violations<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
-        old: (&Schema, &Program),
+        old: &Schema,
         rewritten: &BTreeSet<CatRelId>,
+        roots: &BTreeSet<Root>,
     ) -> Result<Vec<String>, Error> {
         let (pager, x) = (m.pager, m.x);
         let (schema, program) = self.checking();
-        let roots = depends::changed(old.0, old.1, schema, program);
         let changed: BTreeSet<CatConstraintId> = roots
             .iter()
             .filter_map(|root| match *root {
@@ -55,11 +53,10 @@ impl Catalog {
         let normal =
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let existed: BTreeSet<CatConstraintId> = old
-            .0
             .ids()
             .constraint_ids()
             .map(|(_, id)| id)
-            .chain(old.0.ids().check_ids().map(|(_, id)| id))
+            .chain(old.ids().check_ids().map(|(_, id)| id))
             .collect();
         let catalog = self.plan();
         let bindings = self.bindings();

@@ -427,7 +427,11 @@ fn a_redefinition_rewrites_the_relation_of_a_dependent_index_only_when_the_body_
             };
             assert_eq!(
                 want,
-                change::rewritten(&old, &old_program, &new, &new_program),
+                change::rewritten(
+                    &old,
+                    &new,
+                    &adtb_lang::depends::changed(&old, &old_program, &new, &new_program),
+                ),
                 "{via:?} under {body:?}"
             );
         }

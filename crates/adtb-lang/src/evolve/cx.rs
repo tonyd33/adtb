@@ -408,7 +408,7 @@ impl Cx<'_> {
     ///
     /// The failures of other declarations are left to the recheck at the end of the migration.
     fn checks_where_written(&self, i: usize) -> R<()> {
-        let Err(ds) = self.src.check() else {
+        let Err(ds) = self.src.check_declared() else {
             return Ok(());
         };
         let own: Vec<Diag> = ds

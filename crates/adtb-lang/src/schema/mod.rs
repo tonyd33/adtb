@@ -1,11 +1,10 @@
 //! Hold a resolved schema: modules, types, relations and functions, and the built-in sources.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use crate::ast;
 use crate::ids::{CatCtorId, CatRelId, CatalogIds, TempRelId};
-use crate::parse::{self, Options};
 use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
 
@@ -28,6 +27,8 @@ pub use names::field_path;
 mod ahead;
 pub use ahead::{Adder, AheadState};
 mod build;
+mod built_in;
+use built_in::{BUILT_IN, built_in};
 mod committed;
 pub use committed::Committed;
 mod engine;
@@ -403,6 +404,8 @@ pub struct SchemaDefs {
     prelude: Option<Prelude>,
     /// `None` until the schema builds.
     engine_ctors: Option<EngineCtors>,
+    /// The fixed ids of the engine's objects. `None` until the schema builds.
+    engine_ids: Option<Arc<CatalogIds>>,
 }
 
 impl SchemaDefs {
@@ -1355,6 +1358,7 @@ fn build_over(
                 late_sels: Vec::new(),
                 prelude: None,
                 engine_ctors: None,
+                engine_ids: None,
             }),
             ids: CatalogIds::default(),
             stages: BTreeMap::new(),
@@ -1375,6 +1379,7 @@ fn build_over(
         let id = TypeId(b.schema.types.len() as u32);
         b.schema.defs_mut().types.push(tag_former(id));
         b.schema.defs_mut().engine_ctors = Some(EngineCtors::of(&b.schema));
+        b.schema.defs_mut().engine_ids = Some(Arc::new(crate::ids::engine(&b.schema)));
         b.schema.ids = crate::ids::declared(&b.schema, files);
         Ok(b.schema)
     } else {
@@ -1415,47 +1420,6 @@ fn tag_former(id: TypeId) -> TypeDef {
         file: FileId::PRELUDE,
         span: Span::default(),
     }
-}
-
-/// The prelude and the engine's own module files, parsed once.
-static BUILT_IN: LazyLock<Vec<(FileId, ast::SchemaFile)>> =
-    LazyLock::new(|| built_in(PRELUDE_SRC, ENGINE_SRC));
-
-/// Returns the prelude and the module files of the engine's declarations `engine`, parsed.
-fn built_in(prelude: &str, engine: &str) -> Vec<(FileId, ast::SchemaFile)> {
-    let prelude = parse::parse_schema(prelude, Options::default())
-        .ok()
-        .expect("the prelude parses");
-    let mut all = vec![(FileId::PRELUDE, prelude)];
-    all.extend(
-        engine_files(engine)
-            .into_iter()
-            .map(|f| (FileId::ENGINE, f)),
-    );
-    all
-}
-
-/// Returns the module files of the engine's declarations `engine`.
-fn engine_files(engine: &str) -> Vec<ast::SchemaFile> {
-    let items = parse::parse_example(engine, Options::default())
-        .ok()
-        .expect("the engine's declarations parse");
-    let mut files: Vec<ast::SchemaFile> = Vec::new();
-    for item in items {
-        match item {
-            ast::ExampleItem::Module(m) => files.push(ast::SchemaFile {
-                module: m,
-                decls: Vec::new(),
-            }),
-            ast::ExampleItem::Decl(d) => files
-                .last_mut()
-                .expect("the engine's declarations start with a module")
-                .decls
-                .push(d),
-            _ => panic!("the engine's declarations hold only modules and declarations"),
-        }
-    }
-    files
 }
 
 pub fn has_param(ty: &Ty) -> bool {

@@ -329,6 +329,10 @@ fn a_migration_that_only_moves_an_index_declaration_rewrites_no_relation() {
     );
     assert_eq!(
         BTreeSet::new(),
-        change::rewritten(&old, &old_program, &new, &new_program)
+        change::rewritten(
+            &old,
+            &new,
+            &adtb_lang::depends::changed(&old, &old_program, &new, &new_program),
+        )
     );
 }

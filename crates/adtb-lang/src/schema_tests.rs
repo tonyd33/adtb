@@ -1,6 +1,6 @@
 use super::*;
 use crate::ids::{CatConstraintId, CatFunctionId, CatIndexId, CatRelId, CatSetId, CatTypeId};
-use crate::parse::parse_schema;
+use crate::parse::{Options, parse_schema};
 
 const RUNNING: &str = r"
 module auth

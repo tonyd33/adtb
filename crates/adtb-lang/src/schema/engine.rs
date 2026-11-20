@@ -1,5 +1,6 @@
 use super::prelude::ctor;
 use super::{CtorRef, SchemaDefs, ValueDef};
+use crate::ids::CatalogIds;
 use crate::types::Ty;
 
 /// The constructors the engine names in the prelude's and its own declarations, and the
@@ -98,5 +99,14 @@ impl EngineCtors {
     /// Returns the row constructor of `sys::verify_findings`.
     pub fn violation(&self) -> CtorRef {
         self.violation
+    }
+}
+
+impl SchemaDefs {
+    /// Returns the fixed ids of the engine's objects.
+    pub(crate) fn engine_ids(&self) -> &CatalogIds {
+        self.engine_ids
+            .as_deref()
+            .expect("a built schema holds the engine's ids")
     }
 }

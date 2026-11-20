@@ -1,4 +1,3 @@
-use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, Decl, RelationClause};
@@ -11,7 +10,7 @@ use crate::types::*;
 use super::key::{KeyKind, ObjectKey, Owner, Part, PathStep};
 use super::named::anonymous_row;
 use super::reach::{Correspondence, Replacement};
-use super::{CatalogIds, FIRST_LOG_ID, Slot, Space};
+use super::{FIRST_LOG_ID, Slot, Space};
 
 /// What holds an object, before the ids of the objects are known.
 #[derive(Clone, Debug)]
@@ -191,7 +190,6 @@ pub fn assign(
 struct Objects<'a> {
     schema: &'a Schema,
     text: &'a dyn Fn(FileId, Span) -> String,
-    engine: OnceCell<CatalogIds>,
     out: Vec<Object>,
 }
 
@@ -220,7 +218,6 @@ pub fn objects(
     let mut o = Objects {
         schema,
         text,
-        engine: OnceCell::new(),
         out: Vec::new(),
     };
     for (file, sf) in files {
@@ -621,19 +618,17 @@ impl Objects<'_> {
         self.schema.module(self.schema.ty(def).module).engine
     }
 
-    fn engine_ids(&self) -> &CatalogIds {
-        self.engine.get_or_init(|| super::engine(self.schema))
-    }
-
     fn fixed_field(&self, f: FieldRef) -> u64 {
-        self.engine_ids()
+        self.schema
+            .engine_ids()
             .field_id(f)
             .expect("every field of an engine type has a fixed id")
             .raw()
     }
 
     fn fixed_ctor(&self, c: CtorRef) -> u64 {
-        self.engine_ids()
+        self.schema
+            .engine_ids()
             .ctor_id(c)
             .expect("every constructor of an engine type has a fixed id")
             .raw()

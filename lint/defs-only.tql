@@ -1,0 +1,16 @@
+-- schema_labels: a method call, or a path to a method, of a schema's catalog ids or write states.
+
+called = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"\.(ids|stage|value_stage|all_enabled|temp_id|states|unique_name|catalog_id)$";
+  return c;
+};
+
+pathed = do {
+  p <- descendants_of_kind :scoped_identifier;
+  guard $ text p ~ r"::(ids|stage|value_stage|all_enabled|temp_id|states|unique_name|catalog_id)$";
+  return p;
+};
+
+main = called `alt` pathed | arr range;

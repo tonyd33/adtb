@@ -1,12 +1,13 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
+use adtb_lang::depends;
 use adtb_lang::evolve::{Code, Listed, Recorded, Resolved, RowMap, Source};
 use adtb_lang::kernel;
-use adtb_lang::norm::{self, NormalProgram};
+use adtb_lang::norm::{self, NormalProgram, Root};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Committed, Schema, Stage};
 use adtb_lang::textual::{self, Form, key_names};
@@ -138,7 +139,8 @@ impl Catalog {
                 (&e.schema, &e.program, &e.texts)
             });
         let (old, old_program) = self.checking();
-        let rewritten = change::rewritten(old, old_program, schema, program);
+        let changed = depends::changed(old, old_program, schema, program);
+        let rewritten = change::rewritten(old, schema, &changed);
         self.admits(schema, program, texts, &rewritten)?;
         let begun = txns.begin(pager)?;
         let x = begun.xid();
@@ -162,6 +164,7 @@ impl Catalog {
             next,
             operators,
             grantees,
+            changed,
         };
         let built = self.mapped(&m, (&file, text, &stepped), prepared, &rewritten, readers);
         let made = m.made.take();
@@ -252,6 +255,7 @@ impl Catalog {
             next,
             operators,
             grantees,
+            changed,
         } = prepared;
         let mut data = Data::new();
         for &rid in rewritten {
@@ -314,7 +318,7 @@ impl Catalog {
                 data: &data,
                 rewritten,
                 readers: Some(&readers),
-                old: rows::objects(&self.schema, &self.source, &self.texts),
+                old: self.objects(),
                 operators: &operators,
             },
         )?;
@@ -342,8 +346,7 @@ impl Catalog {
         let dormant = dormant?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;
         built.readers = readers;
-        let (old, old_program) = self.checking();
-        let why = built.violations(m, (old, old_program), rewritten)?;
+        let why = built.violations(m, self.checking().0, rewritten, &changed)?;
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }
@@ -516,6 +519,7 @@ impl Catalog {
             hosts: self.hosts.clone(),
             kept: self.kept.clone(),
             held: BTreeSet::new(),
+            objects: b.next.objects.clone(),
         };
         let (held, held_program, held_texts) = b
             .readers
@@ -680,16 +684,16 @@ impl Catalog {
         for (&r, rows) in b.next.objects() {
             let rid = rel_id(&next.schema, r);
             let (was, before) = old.get(&rid).copied().unwrap_or((r, &[]));
-            let fresh = rows
-                .iter()
-                .filter(|&(c, row)| !before.contains(&(*c, row.clone())));
+            let had: HashSet<&(u32, Vec<Value>)> = before.iter().collect();
+            let fresh = rows.iter().filter(|&row| !had.contains(row));
             for (c, rows) in by_ctor(fresh) {
                 next.insert_all(m, r, c, &rows)?;
             }
+            let held: HashSet<&(u32, Vec<Value>)> = rows.iter().collect();
             let mut gone: BTreeMap<u32, Vec<Vec<Value>>> = BTreeMap::new();
-            for (c, row) in before {
-                if !rows.contains(&(*c, row.clone())) {
-                    gone.entry(*c).or_default().push(row.clone());
+            for row in before {
+                if !held.contains(row) {
+                    gone.entry(row.0).or_default().push(row.1.clone());
                 }
             }
             for (c, rows) in gone {
@@ -933,4 +937,7 @@ struct Prepared {
     next: Checked,
     operators: Vec<oplog::OperatorRow>,
     grantees: Grantees,
+    /// The roots [`depends::changed`] finds changed from the schema [`Catalog::checking`]
+    /// returns to the one the migration leaves.
+    changed: BTreeSet<Root>,
 }

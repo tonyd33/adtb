@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::check::Program;
-use adtb_lang::depends;
 use adtb_lang::norm::Root;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{key_field_ty, key_names};
@@ -114,23 +112,16 @@ fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
     out
 }
 
-/// Returns the ids of the relations that `old` and `new`, whose checked programs are
-/// `old_program` and `new_program`, store otherwise: those only one of them has, those whose
-/// constructors, fields, indexes or reached keys differ, and those with an index element whose
-/// meaning [`depends::changed`] finds changed.
-pub fn rewritten(
-    old: &Schema,
-    old_program: &Program,
-    new: &Schema,
-    new_program: &Program,
-) -> BTreeSet<CatRelId> {
+/// Returns the ids of the relations that `old` and `new` store otherwise: those only one of them
+/// has, those whose constructors, fields, indexes or reached keys differ, and those with an index
+/// element in `changed`, the roots [`adtb_lang::depends::changed`] finds changed from `old` to
+/// `new`.
+pub fn rewritten(old: &Schema, new: &Schema, changed: &BTreeSet<Root>) -> BTreeSet<CatRelId> {
     let (a, b) = (shapes(old), shapes(new));
-    let elements = depends::changed(old, old_program, new, new_program)
-        .into_iter()
-        .filter_map(|root| match root {
-            Root::IndexField(r, ..) => Some(rel_id(new, r)),
-            _ => None,
-        });
+    let elements = changed.iter().filter_map(|root| match *root {
+        Root::IndexField(r, ..) => Some(rel_id(new, r)),
+        _ => None,
+    });
     a.keys()
         .chain(b.keys())
         .filter(|id| a.get(id) != b.get(id))

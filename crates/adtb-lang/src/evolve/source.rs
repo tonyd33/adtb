@@ -101,7 +101,6 @@ impl Source {
     /// Build the schema, with the catalog ids and write states the source holds.
     pub fn schema(&self) -> Result<Schema, Vec<FileDiag>> {
         let built = self.built()?;
-        let ids = self.assigned_ids(&built);
         let mut states = schema::States::default();
         for (&(r, c), s) in &self.states {
             states.set_relation(r, c, s.stage);
@@ -109,7 +108,7 @@ impl Source {
         for (&c, s) in &self.value_states {
             states.set_value(c, s.stage);
         }
-        Ok(built.relabelled(&|_| ids.clone(), &states))
+        Ok(built.relabelled(&|s| self.assigned_ids(s), &states))
     }
 
     /// Returns the schema [`Source::schema`] builds, committed.
@@ -184,6 +183,12 @@ impl Source {
         let schema = self.schema()?;
         let program = check::check_schema(&schema)?;
         Ok((schema, program))
+    }
+
+    /// Type check the schema the declarations build, without the source's catalog ids and write
+    /// states.
+    pub(super) fn check_declared(&self) -> Result<(), Vec<FileDiag>> {
+        check::check_schema(&*self.built()?).map(drop)
     }
 
     pub(super) fn parsed(&self, i: usize) -> Option<Decl> {

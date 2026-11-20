@@ -85,3 +85,15 @@ query = "replay.tql"
 include = ["crates/adtb/src/catalog/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb/src/catalog/*_testing.rs"]
 rows = { source_replays = "zero" }
+
+[[rule]]
+query = "defs-only.tql"
+include = [
+  "crates/adtb-lang/src/check/**/*.rs",
+  "crates/adtb-lang/src/analysis/**/*.rs",
+  "crates/adtb-lang/src/norm/**/*.rs",
+  "crates/adtb-lang/src/kernel*.rs",
+  "crates/adtb-lang/src/resolve.rs",
+]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb-lang/src/check/adhoc.rs"]
+rows = { schema_labels = "zero" }

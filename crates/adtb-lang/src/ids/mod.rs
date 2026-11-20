@@ -558,7 +558,7 @@ pub const FIRST_LOG_ID: u64 = 1024;
 /// Returns the ids of a schema built from `files`: the engine's fixed ones, and for the user modules
 /// those one migration declaring every declaration of `files` in order, as `add` operators, gives.
 pub fn declared(schema: &Schema, files: &[(FileId, ast::SchemaFile)]) -> CatalogIds {
-    let mut ids = engine(schema);
+    let mut ids = schema.engine_ids().clone();
     let mut next: BTreeMap<Space, u64> = BTreeMap::new();
     for o in objects(schema, files, &|_, _| String::new()) {
         let n = next.entry(o.space()).or_insert(FIRST_LOG_ID);
@@ -568,7 +568,7 @@ pub fn declared(schema: &Schema, files: &[(FileId, ast::SchemaFile)]) -> Catalog
     ids
 }
 
-fn engine(schema: &Schema) -> CatalogIds {
+pub(crate) fn engine(schema: &Schema) -> CatalogIds {
     let mut ids = CatalogIds::default();
     for (i, t) in schema.types.iter().enumerate() {
         let m = &schema.module(t.module).name;
