@@ -1,0 +1,39 @@
+# A value-level sum field indexed whole and by one constructor's field: a range of whole values
+# running from one constructor into another probes the whole index, and an equality on the field
+# of one constructor probes the field's index.
+
+migrate
+  module app
+  add module app
+  add type Status ordered = Draft | Sent { at: I64 } | Paid { at: I64, ref: I64 }
+  add type Invoice = { id: Key invoices, status: Status }
+  add relation invoices : Invoice key id generate sequence
+    index (status)
+    index (status.Paid.ref)
+
+probe plan
+  explain from i in invoices where i.status >= Sent { at: 0 } and i.status < Paid { at: 0, ref: 0 } select key i
+----
+Set total
+  reads invoices.Invoice, invoices (status)
+  Pipeline
+    One row
+    Range probe invoices (status), 0 keys equal, lower inclusive, upper exclusive
+      Invoice ->
+        Chain
+          Filter
+          Filter
+          Emit
+
+probe plan
+  explain from i in invoices where (match i.status | Paid p -> p.ref == 8 | Draft -> false | Sent s -> false) select key i
+----
+Set total
+  reads invoices.Invoice, invoices (#1.0)
+  Pipeline
+    One row
+    Probe invoices (#1.0)
+      Invoice ->
+        Chain
+          Filter
+          Emit

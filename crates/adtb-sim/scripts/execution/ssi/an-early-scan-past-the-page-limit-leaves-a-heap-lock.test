@@ -1,0 +1,35 @@
+# A scan that stops early reading more pages than the page locks one heap may hold locks the
+# heap.
+option morsel_rows 16
+use stocked
+reopen
+
+begin d
+
+in d query
+  exists s in stock where s.name == "item120"
+----
+True
+
+probe locks d
+----
+page app::stock.Item
+page app::stock.Item
+
+rollback d
+
+option lock_pages 1
+reopen
+
+begin e
+
+in e query
+  exists s in stock where s.name == "item120"
+----
+True
+
+probe locks e
+----
+heap app::stock.Item
+
+rollback e

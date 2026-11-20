@@ -16,8 +16,6 @@ mod tests;
 
 pub use index::Index;
 #[cfg(test)]
-pub use index::{SumKey, tag_prefix};
-#[cfg(test)]
 pub use node::FORMAT;
 pub use tree::{BTree, Error, prefix_end};
 #[cfg(test)]

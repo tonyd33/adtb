@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::mvcc::Fate as Verdict;
-use crate::mvcc::{Begun, CommitLog, Hold, Rule, Scope, Status, StatusError, Transactions, Xid};
+use crate::mvcc::{Begun, CommitLog, Hold, Rule, Scope, Status, Transactions, Xid};
 
 use super::writers;
 use crate::storage::{Damage, Edit, HEADER_LEN, PageKind, Pager, Pid};
@@ -521,28 +521,6 @@ fn failed_writes_crash_and_recover_the_commit_log() {
     assert!(crashes >= share(SEEDS, 18), "{crashes} crashes");
 }
 
-/// Commit a few transactions, write every page to the data file, and return the database's
-/// files with the root page of the commit log and its first status page.
-fn written(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
-    let mut sim = Sim::new(seed, Config::default());
-    let mut out = None;
-    finished(&mut sim, |rt| {
-        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
-        let txns = Transactions::create(rt, &pager).expect("commit log");
-        for _ in 0..3 {
-            let begun = txns.begin(&pager).expect("begin");
-            txns.commit(&pager, begun).expect("commit");
-        }
-        pager.flush_log();
-        pager.flush_pages(usize::MAX);
-        pager.checkpoint();
-        let clog = txns.commit_log();
-        out = Some((clog.root(), clog.status_pages()[&0]));
-    });
-    let (root, status) = out.unwrap();
-    (sim.files(), root, status)
-}
-
 /// Returns `files` with a byte in the middle of page `pid` of the data file inverted.
 fn flipped(mut files: Files, pid: Pid) -> Files {
     let options = options(FRAMES);
@@ -580,46 +558,6 @@ fn a_damaged_status_page_no_unresolved_id_lies_on_quarantines_the_database() {
             Some(status),
             TxnProbe::of(&txns).commit_log_damage().map(|e| e.pid)
         );
-    });
-}
-
-#[test]
-fn a_damaged_status_page_quarantines_the_database() {
-    let (files, root, status) = written(1);
-    let mut sim = Sim::with_files(1, Config::default(), flipped(files, status));
-    finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
-        let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
-        let damage = TxnProbe::of(&txns)
-            .commit_log_damage()
-            .expect("the database is quarantined");
-        assert_eq!(status, damage.pid);
-        let refused = crate::mvcc::Error::Corrupt(damage);
-        assert_eq!(Some(refused), txns.begin(&pager).err());
-        assert_eq!(Some(refused), txns.take(Scope::Every).err());
-        assert_eq!(Err(StatusError::Page(damage)), txns.status(&pager, Xid(1)));
-        assert_eq!(root, txns.commit_log().root());
-        let clog = txns.commit_log();
-        let inventory = Inventory {
-            commit_log: Some(&clog),
-            ..Inventory::default()
-        };
-        let report = crate::verify::verify(&pager, &inventory);
-        assert!(
-            !report.is_clean(),
-            "verify reports the damaged status page: {report:?}"
-        );
-    });
-}
-
-#[test]
-fn a_damaged_root_refuses_to_open_the_commit_log() {
-    let (files, root, _) = written(2);
-    let mut sim = Sim::with_files(2, Config::default(), flipped(files, root));
-    finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
-        let e = Transactions::open(rt, &pager, root).expect_err("the root is damaged");
-        assert_eq!(root, e.pid);
     });
 }
 

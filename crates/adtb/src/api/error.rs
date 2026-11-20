@@ -1156,36 +1156,4 @@ mod tests {
             open("no type `Int`\nno type `P`").to_string()
         );
     }
-
-    #[test]
-    fn an_error_value_prints_as_the_prelude_sum_on_one_line() {
-        let refused = Error::rejected(RejectReason::SchemaRefused {
-            operator: String::new(),
-            detail: "no \"users\"\nno `ids`".into(),
-        });
-        assert_eq!(
-            r#"Rejected { reason: SchemaRefused { operator: "", detail: "no \"users\"\nno `ids`" } }"#,
-            refused.value().to_string()
-        );
-        let limit = Error::rejected(RejectReason::StatementLimit {
-            limit: Limit::Time {
-                after: Duration::from_millis(1500),
-            },
-        });
-        assert_eq!(
-            "Rejected { reason: StatementLimit { limit: Time { after: 1500ms } } }",
-            limit.value().to_string()
-        );
-        assert_eq!(
-            "Rejected { reason: Cancelled }",
-            Error::rejected(RejectReason::Cancelled).value().to_string()
-        );
-        let old = Error::rejected(RejectReason::TooOld {
-            oldest: Position { epoch: 1, lsn: 40 },
-        });
-        assert_eq!(
-            "Rejected { reason: TooOld { oldest: { epoch: 1, lsn: 40 } } }",
-            old.value().to_string()
-        );
-    }
 }

@@ -1,0 +1,41 @@
+# A delete on a page a vacuum left all-visible clears its flag and map bit before its transaction
+# ends; once it rolls back, the next vacuum makes the page all-visible again.
+use pages
+
+run
+  insert docs.Draft { id: 1, text: "a" }
+  insert docs.Draft { id: 2, text: "b" }
+
+run
+  vacuum docs
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 2 slots, flagged all visible, mapped all visible
+
+begin t
+
+in t run
+  delete d in docs where d.id == 1
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 2 slots
+
+rollback t
+
+probe holding verify
+----
+
+run
+  vacuum docs
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 2 slots, flagged all visible, mapped all visible
+
+query rowsort
+  from d in docs.Draft select d.text
+----
+"a"
+"b"

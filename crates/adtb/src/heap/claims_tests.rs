@@ -97,13 +97,10 @@ fn rejected_changes(cross_page: bool) {
 }
 
 #[test]
-fn stale_claims_preserve_same_page_successor_after_recovery() {
-    rejected_changes(false);
-}
-
-#[test]
-fn stale_claims_preserve_cross_page_successor_after_recovery() {
-    rejected_changes(true);
+fn stale_claims_preserve_a_same_page_or_cross_page_successor_after_recovery() {
+    for cross_page in [false, true] {
+        rejected_changes(cross_page);
+    }
 }
 
 #[test]

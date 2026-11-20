@@ -1,0 +1,41 @@
+# Once vacuum moves the versions a commit replaced, a read at an instant between two commits still
+# reads the state of the earlier one, and a read at the later commit's instant reads its state.
+seed 7
+use history
+
+advance 1s
+
+begin w
+
+in w run
+  update i in items.Open where key i == items.key(1) set Open { i with name: "dee" }
+
+commit w position third
+
+run
+  from i in items select key i
+
+run
+  vacuum items
+
+probe heap stock::items Open
+----
+0: HeapSlotted format 1, 4 slots, flagged all visible, mapped all visible
+0.0: Redirect 0.3
+0.1: Unused
+0.2: Unused
+0.3: Normal HEAP_ONLY, x0
+
+query rowsort
+  from c in (from c in sys::commit_times where c.position == $third select c), n in (at instant c.at - 500ms { from i in items select i.name })
+  select n
+----
+"bo"
+"cy"
+
+query rowsort
+  from c in (from c in sys::commit_times where c.position == $third select c), n in (at instant c.at { from i in items select i.name })
+  select n
+----
+"bo"
+"dee"

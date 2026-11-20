@@ -358,22 +358,6 @@ impl Db {
         out
     }
 
-    /// Returns the value a read of the past at `at` finds for `k`, probing by key.
-    fn probe_at(&self, at: Position, k: i64) -> Option<i64> {
-        let pinned = self.txns.pin(&self.pager, at, self.upto()).expect("pin");
-        let found = probe(
-            &self.pager,
-            &self.txns,
-            &pinned,
-            CTOR,
-            (self.heap(), &[self.heap()], &self.index),
-            &self.history(),
-            &[Value::I64(k)],
-        )
-        .expect("probe");
-        found.map(|row| pair(&row).1)
-    }
-
     /// Returns the value a read of the past at `at` finds for each key of `keys`, probing by key
     /// under one marker.
     fn probes_at(
@@ -514,42 +498,6 @@ fn check_probes(db: &Db, marks: &[(Position, State)], keys: i64, why: &str) {
 }
 
 #[test]
-fn vacuum_moves_versions_the_window_keeps_and_every_marker_reads_what_it_covered() {
-    let mut sim = Sim::new(1, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, LONG);
-        let marks = history_of(&mut db, 1, 40, 12);
-        check_reads(&db, &marks, "before vacuum");
-        let report = db.vacuum_keeping();
-        assert!(report.moved > 0, "{report:?}");
-        let (current, past) = db.versions();
-        assert_eq!(
-            db.live.len(),
-            current,
-            "the current heap holds only live versions"
-        );
-        assert_eq!(report.moved, past);
-        check_reads(&db, &marks, "after vacuum");
-        assert_eq!(
-            0,
-            db.vacuum_keeping().moved,
-            "a second vacuum moves nothing"
-        );
-        assert_eq!(past, db.versions().1);
-        for (at, want) in &marks {
-            for k in 0..12 {
-                assert_eq!(
-                    want.get(&k).copied(),
-                    db.probe_at(*at, k),
-                    "key {k} at {at:?}"
-                );
-            }
-        }
-        assert!(db.verify_file().is_empty(), "{:?}", db.verify_file());
-    });
-}
-
-#[test]
 fn vacuum_in_place_and_pruning_on_access_keep_what_the_window_keeps() {
     let mut sim = Sim::new(3, Config::default());
     finished(&mut sim, |rt| {
@@ -575,63 +523,6 @@ fn vacuum_in_place_and_pruning_on_access_keep_what_the_window_keeps() {
             );
         }
         check_reads(&db, &marks, "after vacuum in place");
-    });
-}
-
-#[test]
-fn versions_past_the_window_are_freed_and_reads_there_are_unavailable() {
-    let mut sim = Sim::new(4, Config::default());
-    finished(&mut sim, |rt| {
-        let window = Duration::from_millis(200);
-        let (mut db, _) = Db::create(rt, window);
-        let old = history_of(&mut db, 4, 10, 5);
-        db.vacuum_keeping();
-        let moved = db.versions().1;
-        assert!(moved > 0);
-        db.idle(window);
-        let recent = history_of(&mut db, 5, 10, 5);
-        db.vacuum_keeping();
-        db.expire();
-        let oldest = recent[0].0;
-        for (at, _) in &old {
-            assert_eq!(
-                Err(PastError::Unavailable {
-                    oldest: Some(oldest)
-                }),
-                db.read_at(*at),
-                "a read at {at:?}, before the window"
-            );
-        }
-        check_reads(&db, &recent, "within the window");
-        let after = Position {
-            epoch: db.upto().epoch,
-            lsn: crate::storage::Lsn(db.upto().lsn.0 + 1),
-        };
-        assert_eq!(
-            Err(PastError::Unavailable {
-                oldest: Some(oldest)
-            }),
-            db.read_at(after),
-            "a read after the latest commit"
-        );
-        let history = db.past_heap.headers(&db.pager).expect("headers");
-        let record = db.txns.history().expect("history");
-        let cutoff = db.txns.cutoff().expect("a cutoff");
-        for (tid, h, _) in history {
-            let t = record
-                .committed_at(
-                    &db.pager,
-                    h.writers
-                        .deleter()
-                        .expect("a history version has a deleter"),
-                )
-                .expect("ledger");
-            assert!(
-                t.is_some_and(|t| t >= cutoff),
-                "history keeps {tid:?}, deleted at {t:?}, before {cutoff}"
-            );
-        }
-        assert!(db.verify_file().is_empty(), "{:?}", db.verify_file());
     });
 }
 
@@ -697,44 +588,6 @@ fn a_reader_at_a_marker_keeps_it_pinned_after_the_pin_drops() {
             db.read_at(at),
             "the marker leaves the window once the reader drops"
         );
-    });
-}
-
-#[test]
-fn a_read_of_the_past_without_history_is_unavailable() {
-    let mut sim = Sim::new(6, Config::default());
-    finished(&mut sim, |rt| {
-        let pager = Pager::create(rt.clone(), &opts()).expect("create");
-        let txns = Transactions::create(rt, &pager).expect("commit log");
-        let begun = txns.begin(&pager).expect("begin");
-        let lsn = txns.commit(&pager, begun).expect("commit").lsn();
-        let at = pager.wait_durable(lsn);
-        assert_eq!(
-            Some(PastError::Unavailable { oldest: None }),
-            txns.pin(&pager, at, at).err()
-        );
-        assert_eq!(None, txns.cutoff());
-    });
-}
-
-#[test]
-fn a_read_by_time_reads_the_latest_marker_committed_by_then() {
-    let mut sim = Sim::new(7, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, LONG);
-        db.write(&[(1, Some(1))]);
-        db.mark();
-        let between = db.pager.wall();
-        db.idle(Duration::from_millis(5));
-        db.write(&[(1, Some(2))]);
-        db.mark();
-        db.vacuum_keeping();
-        let read = |t: SystemTime| {
-            let m = db.txns.pin_time(&db.pager, t, db.upto()).expect("pin");
-            db.scan_at(&m)
-        };
-        assert_eq!(State::from([(1, 1)]), read(between));
-        assert_eq!(State::from([(1, 2)]), read(db.pager.wall()));
     });
 }
 
@@ -996,110 +849,6 @@ fn a_crash_at_every_flush_while_a_removed_constructors_heap_drops_keeps_its_past
         });
     }
     assert_eq!(BTreeSet::from([false, true]), dropped);
-}
-
-#[test]
-fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
-    let mut sim = Sim::new(14, Config::default());
-    finished(&mut sim, |rt| {
-        let window = Duration::from_millis(200);
-        let pager = Pager::create(rt.clone(), &opts()).expect("create");
-        let txns = Transactions::create(rt, &pager).expect("commit log");
-        let past = Past::create(&pager, LEDGER).expect("ledger");
-        txns.keep_history(&pager, past, window).expect("history");
-        let fields = vec![
-            FieldType::Scalar(Scalar::I64),
-            FieldType::Scalar(Scalar::Bytes),
-        ];
-        let large = LargeStore::create(&pager, LARGE).expect("large store");
-        let past_large = LargeStore::create(&pager, PAST_LARGE).expect("large store");
-        let heap = Heap::create(&pager, HEAP, fields.clone(), large).expect("heap");
-        let past_heap = Heap::create(&pager, PAST_HEAP, fields, past_large).expect("heap");
-        let index = Index::create(&pager, INDEX, key_schema(), ctors()).expect("index");
-        let past_index = Index::create(&pager, PAST_INDEX, key_schema(), ctors()).expect("index");
-        let blob: Vec<u8> = (0..9000u32).map(|i| (i * 7) as u8).collect();
-        let row = vec![Value::I64(1), Value::Bytes(blob)];
-        let commit = |begun| pager.wait_durable(txns.commit(&pager, begun).expect("commit").lsn());
-        let begun = txns.begin(&pager).expect("begin");
-        let x = begun.xid();
-        let tid = heap.insert(&pager, x, &row).expect("insert");
-        let entry = Entry {
-            key: vec![Value::I64(1)],
-            ctor: CTOR,
-            tid,
-        };
-        index.insert(&pager, &entry).expect("index");
-        let at = commit(begun);
-        let hold = txns.take(Scope::Every).expect("snapshot");
-        txns.log_safe_snapshot(&pager, hold.taken(), hold.snapshot());
-        drop(hold);
-        let begun = txns.begin(&pager).expect("begin");
-        let x = begun.xid();
-        heap.delete(&pager, tid, x).expect("delete");
-        commit(begun);
-        let sum = Sum {
-            heaps: vec![(CTOR, &heap)],
-            indexes: vec![&index],
-        };
-        let history = History {
-            heaps: vec![(CTOR, &past_heap)],
-            index: &past_index,
-            key: &key,
-        };
-        let progress = vacuum::Progress::new();
-        let report = vacuum::vacuum_keeping(
-            &pager,
-            &txns,
-            &sum,
-            &history,
-            usize::MAX,
-            &progress,
-            &mut || true,
-        )
-        .expect("vacuum");
-        assert_eq!(1, report.moved);
-        assert!(
-            report.chunks > 0,
-            "the current heap's copy is swept: {report:?}"
-        );
-        let pinned = txns.pin(&pager, at, at).expect("pin");
-        let rows = rows(&pager, &txns, &pinned, &[&heap, &past_heap]).expect("rows");
-        drop(pinned);
-        assert_eq!(vec![row], rows);
-        let until = pager.wall() + window * 2;
-        while pager.wall() <= until {
-            commit(txns.begin(&pager).expect("begin"));
-        }
-        let past = Sum {
-            heaps: vec![(CTOR, &past_heap)],
-            indexes: vec![&past_index],
-        };
-        let report = vacuum::expire(&pager, &txns, &past, usize::MAX, &progress, &mut || true)
-            .expect("expire");
-        assert_eq!(1, report.freed, "{report:?}");
-        assert!(
-            report.chunks > 0,
-            "the history heap's copy is swept: {report:?}"
-        );
-        let clog = txns.commit_log();
-        let inventory = Inventory {
-            commit_log: Some(&clog),
-            sums: vec![
-                verify::Sum {
-                    heaps: vec![(CTOR, &heap)],
-                    indexes: vec![&index],
-                },
-                verify::Sum {
-                    heaps: vec![(CTOR, &past_heap)],
-                    indexes: vec![&past_index],
-                },
-            ],
-            trees: vec![txns.history().expect("history").tree()],
-            ..Inventory::default()
-        };
-        let problems = verify_after_crash(&pager, &inventory);
-        assert!(problems.is_empty(), "{problems:?}");
-    });
 }
 
 #[test]

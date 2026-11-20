@@ -574,48 +574,89 @@ fn ovarint_refuses_other_forms() {
 }
 
 #[test]
-fn integers_flip_the_sign_bit() {
-    let i8s = asc(vec![scalar(Scalar::I8)]);
-    assert_eq!(i8s.encode(&[Value::I8(i8::MIN)]), [0x00]);
-    assert_eq!(i8s.encode(&[Value::I8(-1)]), [0x7F]);
-    assert_eq!(i8s.encode(&[Value::I8(0)]), [0x80]);
-    assert_eq!(i8s.encode(&[Value::I8(i8::MAX)]), [0xFF]);
-    let i64s = asc(vec![scalar(Scalar::I64)]);
-    assert_eq!(i64s.encode(&[Value::I64(3)]), [0x80, 0, 0, 0, 0, 0, 0, 3]);
-    assert_eq!(i64s.encode(&[Value::I64(i64::MIN)]), [0; 8]);
-    let dates = asc(vec![scalar(Scalar::Date)]);
-    assert_eq!(dates.encode(&[Value::Date(-1)]), [0x7F, 0xFF, 0xFF, 0xFF]);
-}
-
-#[test]
-fn decimals_are_sixteen_bytes_whatever_the_scale() {
-    for scale in [0, 2, 38] {
-        let schema = asc(vec![scalar(Scalar::Decimal(scale))]);
-        let mut expected = vec![0x80];
-        expected.extend([0; 14]);
-        expected.push(1);
-        assert_eq!(schema.encode(&[Value::Decimal(1)]), expected);
-        let ordered: Vec<Vec<u8>> = [-MAX_DECIMAL, -1, 0, 1, MAX_DECIMAL]
-            .iter()
-            .map(|&n| schema.encode(&[Value::Decimal(n)]))
-            .collect();
-        assert!(ordered.is_sorted());
+fn each_type_encodes_as_its_row_of_the_encoding_table() {
+    let t: i64 = 1_700_000_000_000_000;
+    let mut sent = vec![0x80, 0x00];
+    sent.extend((t as u64 ^ 1 << 63).to_be_bytes());
+    let mut decimal_one = vec![0x80];
+    decimal_one.extend([0; 14]);
+    decimal_one.push(1);
+    let status = sum(vec![
+        (&[0x40], vec![]),
+        (&[0x80], vec![scalar(Scalar::Instant)]),
+        (&[0xC0], vec![scalar(Scalar::Instant)]),
+    ]);
+    let point = KeyType::Record(vec![scalar(Scalar::I8), scalar(Scalar::Text)]);
+    let foo_bar = vec![0x66, 0x6F, 0x6F, 0x00, 0xFF, 0x62, 0x61, 0x72, 0x00, 0x01];
+    let rows: Vec<(KeyType, Value, Vec<u8>)> = vec![
+        (scalar(Scalar::I8), Value::I8(i8::MIN), vec![0x00]),
+        (scalar(Scalar::I8), Value::I8(-1), vec![0x7F]),
+        (scalar(Scalar::I8), Value::I8(0), vec![0x80]),
+        (scalar(Scalar::I8), Value::I8(i8::MAX), vec![0xFF]),
+        (
+            scalar(Scalar::I64),
+            Value::I64(3),
+            vec![0x80, 0, 0, 0, 0, 0, 0, 3],
+        ),
+        (scalar(Scalar::I64), Value::I64(i64::MIN), vec![0; 8]),
+        (
+            scalar(Scalar::Date),
+            Value::Date(-1),
+            vec![0x7F, 0xFF, 0xFF, 0xFF],
+        ),
+        (
+            scalar(Scalar::Decimal(0)),
+            Value::Decimal(1),
+            decimal_one.clone(),
+        ),
+        (
+            scalar(Scalar::Decimal(2)),
+            Value::Decimal(1),
+            decimal_one.clone(),
+        ),
+        (scalar(Scalar::Decimal(38)), Value::Decimal(1), decimal_one),
+        (
+            scalar(Scalar::Text),
+            Value::Text(String::new()),
+            vec![0x00, 0x01],
+        ),
+        (
+            scalar(Scalar::Text),
+            Value::Text("foo\0bar".into()),
+            foo_bar,
+        ),
+        (
+            scalar(Scalar::Bytes),
+            Value::Bytes(vec![0x00]),
+            vec![0x00, 0xFF, 0x00, 0x01],
+        ),
+        (
+            status.clone(),
+            Value::Sum {
+                ctor: 1,
+                fields: vec![Value::Instant(t)],
+            },
+            sent,
+        ),
+        (
+            status,
+            Value::Sum {
+                ctor: 0,
+                fields: vec![],
+            },
+            vec![0x40, 0x00],
+        ),
+        (
+            point,
+            Value::Record(vec![Value::I8(1), Value::Text("x".into())]),
+            vec![0x81, 0x78, 0x00, 0x01],
+        ),
+        (KeyType::Record(vec![]), Value::Record(vec![]), vec![]),
+    ];
+    for (ty, v, bytes) in rows {
+        let encoded = asc(vec![ty]).encode(std::slice::from_ref(&v));
+        assert_eq!(encoded, bytes, "{v:?}");
     }
-}
-
-#[test]
-fn text_escapes_zero_and_ends_with_zero_one() {
-    let schema = asc(vec![scalar(Scalar::Text)]);
-    assert_eq!(schema.encode(&[Value::Text(String::new())]), [0x00, 0x01]);
-    assert_eq!(
-        schema.encode(&[Value::Text("foo\0bar".into())]),
-        [0x66, 0x6F, 0x6F, 0x00, 0xFF, 0x62, 0x61, 0x72, 0x00, 0x01]
-    );
-    let bytes = asc(vec![scalar(Scalar::Bytes)]);
-    assert_eq!(
-        bytes.encode(&[Value::Bytes(vec![0x00])]),
-        [0x00, 0xFF, 0x00, 0x01]
-    );
 }
 
 #[test]
@@ -729,29 +770,6 @@ fn floats_are_canonical_and_ordered() {
 }
 
 #[test]
-fn sum_values_encode_order_key_then_payload() {
-    let status = sum(vec![
-        (&[0x40], vec![]),
-        (&[0x80], vec![scalar(Scalar::Instant)]),
-        (&[0xC0], vec![scalar(Scalar::Instant)]),
-    ]);
-    let schema = asc(vec![status]);
-    let t: i64 = 1_700_000_000_000_000;
-    let sent = Value::Sum {
-        ctor: 1,
-        fields: vec![Value::Instant(t)],
-    };
-    let mut expected = vec![0x80, 0x00];
-    expected.extend((t as u64 ^ 1 << 63).to_be_bytes());
-    assert_eq!(schema.encode(std::slice::from_ref(&sent)), expected);
-    let draft = Value::Sum {
-        ctor: 0,
-        fields: vec![],
-    };
-    assert_eq!(schema.encode(&[draft]), [0x40, 0x00]);
-}
-
-#[test]
 fn sums_order_by_declaration_through_order_keys() {
     let ty = sum(vec![
         (&[0x80], vec![scalar(Scalar::I8)]),
@@ -810,19 +828,6 @@ fn nested_options_order() {
 }
 
 #[test]
-fn records_concatenate_fields() {
-    let point = KeyType::Record(vec![scalar(Scalar::I8), scalar(Scalar::Text)]);
-    let schema = asc(vec![point]);
-    let v = Value::Record(vec![Value::I8(1), Value::Text("x".into())]);
-    assert_eq!(
-        schema.encode(std::slice::from_ref(&v)),
-        [0x81, 0x78, 0x00, 0x01]
-    );
-    let empty = asc(vec![KeyType::Record(vec![])]);
-    assert_eq!(empty.encode(&[Value::Record(vec![])]), Vec::<u8>::new());
-}
-
-#[test]
 fn unordered_types_encode_their_parts() {
     let schema = asc(vec![scalar(Scalar::ZonedDateTime), scalar(Scalar::Period)]);
     let key = [
@@ -846,126 +851,129 @@ fn unordered_types_encode_their_parts() {
     assert_eq!(schema.decode(&bytes), Ok(key.to_vec()));
 }
 
-fn decode_one(s: Scalar, bytes: &[u8]) -> Result<Vec<Value>, DecodeError> {
-    asc(vec![scalar(s)]).decode(bytes)
-}
+type Decoded = Result<Vec<Value>, DecodeError>;
 
 #[test]
-fn decoding_refuses_malformed_scalars() {
+fn decoding_refuses_each_form_the_encoding_does_not_produce() {
     use DecodeError::*;
-    assert_eq!(decode_one(Scalar::I64, &[0x80; 7]), Err(UnexpectedEnd));
-    assert_eq!(decode_one(Scalar::I8, &[0x80, 0x00]), Err(TrailingBytes));
-    assert_eq!(decode_one(Scalar::Text, &[0x61]), Err(UnexpectedEnd));
-    assert_eq!(decode_one(Scalar::Text, &[0x61, 0x00]), Err(UnexpectedEnd));
-    assert_eq!(
-        decode_one(Scalar::Text, &[0x61, 0x00, 0x02]),
-        Err(BadEscape)
-    );
-    assert_eq!(
-        decode_one(Scalar::Text, &[0x61, 0x00, 0x00]),
-        Err(BadEscape)
-    );
-    assert_eq!(
-        decode_one(Scalar::Text, &[0xFF, 0x00, 0x01]),
-        Err(InvalidUtf8)
-    );
-    assert_eq!(
-        decode_one(Scalar::Text, &[0xED, 0xA0, 0x80, 0x00, 0x01]),
-        Err(InvalidUtf8)
-    );
-    assert_eq!(
-        decode_one(Scalar::Bytes, &[0xFF, 0x00, 0x01]),
-        Ok(vec![Value::Bytes(vec![0xFF])])
-    );
-}
-
-#[test]
-fn decoding_refuses_non_canonical_floats() {
-    let encoded = |bits: u64| {
+    let float = |bits: u64| {
         let order = if bits >> 63 == 1 {
             !bits
         } else {
             bits ^ 1 << 63
         };
-        order.to_be_bytes()
+        order.to_be_bytes().to_vec()
     };
-    let refused = [
-        (-0.0_f64).to_bits(),
-        0x7FF8_0000_0000_0001,
-        0x7FF0_0000_0000_0001,
-        0xFFF8_0000_0000_0000,
-    ];
-    for bits in refused {
-        assert_eq!(
-            decode_one(Scalar::F64, &encoded(bits)),
-            Err(DecodeError::NonCanonicalFloat),
-            "{bits:x}"
-        );
-    }
-    assert_eq!(
-        decode_one(Scalar::F64, &encoded(F64::NAN_BITS)),
-        Ok(vec![Value::F64(F64::new(f64::NAN))])
-    );
-    assert_eq!(
-        decode_one(Scalar::F32, &[0x7F, 0xFF, 0xFF, 0xFF]),
-        Err(DecodeError::NonCanonicalFloat)
-    );
-}
-
-#[test]
-fn decoding_refuses_out_of_range_values() {
     let decimal = |n: i128| {
         let mut b = n.to_be_bytes();
         b[0] ^= 0x80;
-        decode_one(Scalar::Decimal(0), &b)
+        b.to_vec()
     };
-    assert_eq!(decimal(MAX_DECIMAL), Ok(vec![Value::Decimal(MAX_DECIMAL)]));
-    assert_eq!(
-        decimal(-MAX_DECIMAL),
-        Ok(vec![Value::Decimal(-MAX_DECIMAL)])
-    );
-    assert_eq!(
-        decimal(MAX_DECIMAL + 1),
-        Err(DecodeError::DecimalOutOfRange)
-    );
-    assert_eq!(
-        decimal(-MAX_DECIMAL - 1),
-        Err(DecodeError::DecimalOutOfRange)
-    );
-    assert_eq!(decimal(i128::MIN), Err(DecodeError::DecimalOutOfRange));
+    let time = |t: i64| (t as u64 ^ 1 << 63).to_be_bytes().to_vec();
+    let date = |d: i32| (d as u32 ^ 1 << 31).to_be_bytes().to_vec();
+    let one = |s: Scalar| vec![scalar(s)];
+    let opt = || vec![option(scalar(Scalar::I8))];
+    let rows: Vec<(Vec<KeyType>, Vec<u8>, Decoded)> = vec![
+        (one(Scalar::I64), vec![0x80; 7], Err(UnexpectedEnd)),
+        (one(Scalar::I8), vec![0x80, 0x00], Err(TrailingBytes)),
+        (one(Scalar::Text), vec![0x61], Err(UnexpectedEnd)),
+        (one(Scalar::Text), vec![0x61, 0x00], Err(UnexpectedEnd)),
+        (one(Scalar::Text), vec![0x61, 0x00, 0x02], Err(BadEscape)),
+        (one(Scalar::Text), vec![0x61, 0x00, 0x00], Err(BadEscape)),
+        (one(Scalar::Text), vec![0xFF, 0x00, 0x01], Err(InvalidUtf8)),
+        (
+            one(Scalar::Text),
+            vec![0xED, 0xA0, 0x80, 0x00, 0x01],
+            Err(InvalidUtf8),
+        ),
+        (
+            one(Scalar::Bytes),
+            vec![0xFF, 0x00, 0x01],
+            Ok(vec![Value::Bytes(vec![0xFF])]),
+        ),
+        (
+            one(Scalar::F64),
+            float((-0.0_f64).to_bits()),
+            Err(NonCanonicalFloat),
+        ),
+        (
+            one(Scalar::F64),
+            float(0x7FF8_0000_0000_0001),
+            Err(NonCanonicalFloat),
+        ),
+        (
+            one(Scalar::F64),
+            float(0x7FF0_0000_0000_0001),
+            Err(NonCanonicalFloat),
+        ),
+        (
+            one(Scalar::F64),
+            float(0xFFF8_0000_0000_0000),
+            Err(NonCanonicalFloat),
+        ),
+        (
+            one(Scalar::F64),
+            float(F64::NAN_BITS),
+            Ok(vec![Value::F64(F64::new(f64::NAN))]),
+        ),
+        (
+            one(Scalar::F32),
+            vec![0x7F, 0xFF, 0xFF, 0xFF],
+            Err(NonCanonicalFloat),
+        ),
+        (
+            one(Scalar::Decimal(0)),
+            decimal(MAX_DECIMAL),
+            Ok(vec![Value::Decimal(MAX_DECIMAL)]),
+        ),
+        (
+            one(Scalar::Decimal(0)),
+            decimal(-MAX_DECIMAL),
+            Ok(vec![Value::Decimal(-MAX_DECIMAL)]),
+        ),
+        (
+            one(Scalar::Decimal(0)),
+            decimal(MAX_DECIMAL + 1),
+            Err(DecimalOutOfRange),
+        ),
+        (
+            one(Scalar::Decimal(0)),
+            decimal(-MAX_DECIMAL - 1),
+            Err(DecimalOutOfRange),
+        ),
+        (
+            one(Scalar::Decimal(0)),
+            decimal(i128::MIN),
+            Err(DecimalOutOfRange),
+        ),
+        (
+            one(Scalar::Time),
+            time(MICROS_PER_DAY - 1),
+            Ok(vec![Value::Time(MICROS_PER_DAY - 1)]),
+        ),
+        (one(Scalar::Time), time(MICROS_PER_DAY), Err(TimeOutOfRange)),
+        (one(Scalar::Time), time(-1), Err(TimeOutOfRange)),
+        (
+            one(Scalar::Date),
+            date(MAX_DATE),
+            Ok(vec![Value::Date(MAX_DATE)]),
+        ),
+        (
+            one(Scalar::Date),
+            date(-MAX_DATE),
+            Ok(vec![Value::Date(-MAX_DATE)]),
+        ),
+        (one(Scalar::Date), date(MAX_DATE + 1), Err(DateOutOfRange)),
+        (one(Scalar::Date), date(-MAX_DATE - 1), Err(DateOutOfRange)),
+        (opt(), vec![0x60, 0x00], Err(UnknownOrderKey)),
+        (opt(), vec![0x40], Err(UnexpectedEnd)),
+        (opt(), vec![0x80, 0x00], Err(UnexpectedEnd)),
+        (opt(), vec![0x40, 0x00], Ok(vec![none()])),
+    ];
+    for (tys, bytes, want) in rows {
+        assert_eq!(asc(tys).decode(&bytes), want, "{bytes:x?}");
+    }
 
-    let time = |t: i64| decode_one(Scalar::Time, &(t as u64 ^ 1 << 63).to_be_bytes());
-    assert_eq!(
-        time(MICROS_PER_DAY - 1),
-        Ok(vec![Value::Time(MICROS_PER_DAY - 1)])
-    );
-    assert_eq!(time(MICROS_PER_DAY), Err(DecodeError::TimeOutOfRange));
-    assert_eq!(time(-1), Err(DecodeError::TimeOutOfRange));
-
-    let date = |d: i32| decode_one(Scalar::Date, &(d as u32 ^ 1 << 31).to_be_bytes());
-    assert_eq!(date(MAX_DATE), Ok(vec![Value::Date(MAX_DATE)]));
-    assert_eq!(date(-MAX_DATE), Ok(vec![Value::Date(-MAX_DATE)]));
-    assert_eq!(date(MAX_DATE + 1), Err(DecodeError::DateOutOfRange));
-    assert_eq!(date(-MAX_DATE - 1), Err(DecodeError::DateOutOfRange));
-}
-
-#[test]
-fn decoding_refuses_unknown_order_keys() {
-    let schema = asc(vec![option(scalar(Scalar::I8))]);
-    assert_eq!(
-        schema.decode(&[0x60, 0x00]),
-        Err(DecodeError::UnknownOrderKey)
-    );
-    assert_eq!(schema.decode(&[0x40]), Err(DecodeError::UnexpectedEnd));
-    assert_eq!(
-        schema.decode(&[0x80, 0x00]),
-        Err(DecodeError::UnexpectedEnd)
-    );
-    assert_eq!(schema.decode(&[0x40, 0x00]), Ok(vec![none()]));
-}
-
-#[test]
-fn decoding_refuses_malformed_entries() {
     let schema = asc(vec![scalar(Scalar::I8)]);
     let entry = Entry {
         key: vec![Value::I8(7)],
@@ -977,14 +985,14 @@ fn decoding_refuses_malformed_entries() {
     assert_eq!(schema.decode_entry(&bytes), Ok(entry));
     assert_eq!(
         schema.decode_entry(&bytes[..bytes.len() - 1]),
-        Err(DecodeError::UnexpectedEnd)
+        Err(UnexpectedEnd)
     );
     let mut long = bytes;
     long.push(0);
-    assert_eq!(schema.decode_entry(&long), Err(DecodeError::TrailingBytes));
+    assert_eq!(schema.decode_entry(&long), Err(TrailingBytes));
     assert_eq!(
         schema.decode_entry(&[0x87, 0xF0, 0x05, 0, 0, 0, 0, 0, 12, 0, 3]),
-        Err(DecodeError::BadVarint)
+        Err(BadVarint)
     );
 }
 
@@ -1172,14 +1180,9 @@ fn order_keys_between_neighbours_never_run_out() {
 }
 
 #[test]
-fn spread_order_keys_split_the_room_evenly() {
-    assert_eq!(
-        OrderKey::spread(3),
-        [order_key(&[0x40]), order_key(&[0x80]), order_key(&[0xC0])]
-    );
-    assert_eq!(OrderKey::spread(1), [order_key(&[0x80])]);
+fn spread_order_keys_are_valid_and_in_order() {
     assert_eq!(OrderKey::spread(0), []);
-    for n in [2, 7, 255, 256, 1000] {
+    for n in [1, 2, 7, 255, 256, 1000] {
         let keys = OrderKey::spread(n);
         assert_eq!(keys.len(), n);
         keys.iter().for_each(assert_valid);

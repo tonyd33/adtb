@@ -1,0 +1,14 @@
+# A write that fails returns its own failure, its abort recorded.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+
+error UserError { message: "no" }
+  (insert users { name: "a" }, fail "no")
+
+query
+  count(u for u in users)
+----
+0

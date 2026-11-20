@@ -1,0 +1,28 @@
+# A commit log root that fails its checksum at the open quarantines the database, the damage
+# recorded on the root.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id generate sequence
+
+run
+  insert items { value: 100 }
+  insert items { value: 200 }
+
+flip commit log
+
+reopen
+
+fatal Quarantined { what: "the database" }
+  from i in items select i.value
+
+probe marks
+----
+the database
+
+probe holding verify
+----
+Checksum { id: verify_findings.key(1), run: RunId(1), at: t1, where: "commit log: Checksum" }
+Structure { id: verify_findings.key(2), run: RunId(1), at: t1, where: "the database: only the pages and the log were checked" }
+Structure { id: verify_findings.key(3), run: RunId(1), at: t1, where: "the database: quarantined whole, so the findings of this run are not kept" }

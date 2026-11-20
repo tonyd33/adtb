@@ -151,30 +151,6 @@ fn a_version_precedes_only_a_successor_its_deleter_inserted() {
 }
 
 #[test]
-fn writers_encode_as_two_little_endian_words_with_no_deleter_as_zero() {
-    let cases = [
-        (
-            writers(1, 0),
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        ),
-        (
-            writers(0x0102, 0),
-            [2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        ),
-        (
-            writers(1, 0x0304),
-            [1, 0, 0, 0, 0, 0, 0, 0, 4, 3, 0, 0, 0, 0, 0, 0],
-        ),
-        (writers(u64::MAX, u64::MAX), [0xff; Writers::LEN]),
-        (Writers::decode(&[0; Writers::LEN]), [0; Writers::LEN]),
-    ];
-    for (w, bytes) in cases {
-        assert_eq!(bytes, w.encode(), "{w:?}");
-        assert_eq!(w, Writers::decode(&bytes), "{bytes:?}");
-    }
-}
-
-#[test]
 fn visibility_matches_a_model_of_random_histories() {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
     let (mut on_inserter, mut on_deleter) = (0, 0);
@@ -364,57 +340,26 @@ fn probe(xmin: u64, xmax: u64) -> Probe {
 }
 
 #[test]
-fn a_live_committed_version_in_the_snapshot_conflicts() {
-    assert_eq!(Probe::Conflict, probe(3, 0));
-}
-
-#[test]
-fn a_live_version_committed_after_the_snapshot_fails() {
-    assert_eq!(Probe::Fail(later(7)), probe(7, 0));
-}
-
-#[test]
-fn a_version_inserted_by_a_running_transaction_waits_for_it() {
-    assert_eq!(Probe::Wait(Xid(5)), probe(5, 0));
-    assert_eq!(Probe::Wait(Xid(5)), probe(5, 5));
-}
-
-#[test]
-fn a_version_deleted_before_the_snapshot_is_skipped() {
-    assert_eq!(Probe::Skip, probe(2, 3));
-}
-
-#[test]
-fn a_version_deleted_after_the_snapshot_fails() {
-    assert_eq!(Probe::Fail(later(7)), probe(2, 7));
-}
-
-#[test]
-fn a_visible_version_a_running_transaction_deletes_waits_for_the_deleter() {
-    assert_eq!(Probe::Wait(Xid(6)), probe(2, 6));
-}
-
-#[test]
-fn a_version_committed_after_the_snapshot_and_being_deleted_fails() {
-    assert_eq!(Probe::Fail(later(7)), probe(7, 6));
-}
-
-#[test]
-fn dead_versions_and_the_inserters_own_deletes_are_skipped() {
-    assert_eq!(Probe::Skip, probe(8, 0));
-    assert_eq!(Probe::Skip, probe(2, 10));
-    assert_eq!(Probe::Skip, probe(10, 10));
-}
-
-#[test]
-fn a_version_whose_deleter_aborted_is_live() {
-    assert_eq!(Probe::Conflict, probe(2, 8));
-    assert_eq!(Probe::Fail(later(7)), probe(7, 8));
-}
-
-#[test]
-fn the_inserters_own_version_conflicts() {
-    assert_eq!(Probe::Conflict, probe(10, 0));
+fn a_unique_probe_answers_each_status_of_the_inserter_and_deleter() {
+    let cases = [
+        ((3, 0), Probe::Conflict),
+        ((7, 0), Probe::Fail(later(7))),
+        ((5, 0), Probe::Wait(Xid(5))),
+        ((5, 5), Probe::Wait(Xid(5))),
+        ((2, 3), Probe::Skip),
+        ((2, 7), Probe::Fail(later(7))),
+        ((2, 6), Probe::Wait(Xid(6))),
+        ((7, 6), Probe::Fail(later(7))),
+        ((8, 0), Probe::Skip),
+        ((2, 10), Probe::Skip),
+        ((10, 10), Probe::Skip),
+        ((2, 8), Probe::Conflict),
+        ((7, 8), Probe::Fail(later(7))),
+        ((10, 0), Probe::Conflict),
+    ];
+    for ((xmin, xmax), want) in cases {
+        assert_eq!(want, probe(xmin, xmax), "inserter {xmin}, deleter {xmax}");
+    }
 }
 
 #[test]
@@ -501,159 +446,12 @@ fn tid(page: u64, slot: u16) -> Tid {
 }
 
 #[test]
-fn write_skew_aborts_one_side() {
-    let mut s = Serializer::default();
-    let (t1, t2) = (rw(&mut s, 1), rw(&mut s, 2));
-    for t in [t1, t2] {
-        read_key(&mut s, t, 1, &[E]);
-        read_key(&mut s, t, 2, &[E]);
-    }
-    s.insert_entry(t1, INDEX, &key(1), E).unwrap();
-    s.insert_entry(t2, INDEX, &key(2), E).unwrap();
-    assert_eq!(BTreeSet::from([t2]), s.writers_after(t1));
-    assert_eq!(BTreeSet::from([t1]), s.writers_after(t2));
-    commit(&mut s, t1).unwrap();
-    assert_eq!(Err(dangerous(&[1])), commit(&mut s, t2));
-}
-
-#[test]
-fn write_skew_fails_at_the_write_once_the_other_side_committed() {
-    let mut s = Serializer::default();
-    let (t1, t2) = (rw(&mut s, 1), rw(&mut s, 2));
-    for t in [t1, t2] {
-        read_key(&mut s, t, 1, &[E]);
-        read_key(&mut s, t, 2, &[E]);
-    }
-    s.insert_entry(t1, INDEX, &key(1), E).unwrap();
-    commit(&mut s, t1).unwrap();
-    assert_eq!(Err(dangerous(&[1])), s.insert_entry(t2, INDEX, &key(2), E));
-}
-
-/// Fekete's read-only anomaly: `t2` reads X and Y and writes X; `t1` writes Y and commits; `t3`
-/// reads X and Y after `t1` committed and before `t2` does.
-fn fekete(s: &mut Serializer, access: Access) -> (SerialId, SerialId, SerialId) {
-    let t2 = rw(s, 2);
-    read_key(s, t2, b'x', &[E]);
-    read_key(s, t2, b'y', &[E]);
-    let t1 = rw(s, 1);
-    read_key(s, t1, b'y', &[E]);
-    s.insert_entry(t1, INDEX, &key(b'y'), E).unwrap();
-    commit(s, t1).unwrap();
-    s.insert_entry(t2, INDEX, &key(b'x'), E).unwrap();
-    let t3 = s.begin(access);
-    (t1, t2, t3)
-}
-
-#[test]
-fn feketes_read_only_anomaly_aborts_the_writer() {
-    let mut s = Serializer::default();
-    let (_, t2, t3) = fekete(&mut s, Access::ReadOnly);
-    read_key(&mut s, t3, b'x', &[E]);
-    s.read_from(t3, Xid(2)).unwrap();
-    read_key(&mut s, t3, b'y', &[E]);
-    commit(&mut s, t3).unwrap();
-    assert_eq!(Err(dangerous(&[1])), commit(&mut s, t2));
-}
-
-#[test]
-fn a_reader_that_began_before_the_first_commit_completes_no_anomaly() {
-    let mut s = Serializer::default();
-    let t2 = rw(&mut s, 2);
-    read_key(&mut s, t2, b'y', &[E]);
-    let t3 = s.begin(Access::ReadOnly);
-    let t1 = rw(&mut s, 1);
-    s.insert_entry(t1, INDEX, &key(b'y'), E).unwrap();
-    commit(&mut s, t1).unwrap();
-    s.insert_entry(t2, INDEX, &key(b'x'), E).unwrap();
-    s.read_from(t3, Xid(2)).unwrap();
-    s.read_from(t3, Xid(1)).unwrap();
-    commit(&mut s, t3).unwrap();
-    commit(&mut s, t2).unwrap();
-}
-
-#[test]
-fn a_deferrable_transaction_waits_out_writers_and_takes_no_locks() {
-    let mut s = Serializer::default();
-    let t1 = rw(&mut s, 1);
-    let d = s.begin(Access::Deferrable);
-    assert_eq!(Safety::Pending(vec![Xid(1)]), s.safety(d));
-    read_key(&mut s, t1, 1, &[E]);
-    assert_eq!(vec![d], s.committed(t1));
-    assert_eq!(Safety::Safe, s.safety(d));
-    read_key(&mut s, d, 1, &[E]);
-    assert_eq!(0, s.locks(d));
-}
-
-#[test]
 fn a_writer_that_aborts_leaves_the_snapshot_safe() {
     let mut s = Serializer::default();
     let t1 = rw(&mut s, 1);
     let d = s.begin(Access::Deferrable);
     assert_eq!(vec![d], s.aborted(t1));
     assert_eq!(Safety::Safe, s.safety(d));
-}
-
-#[test]
-fn a_transaction_with_no_concurrent_writer_starts_safe() {
-    let mut s = Serializer::default();
-    let r = s.begin(Access::ReadOnly);
-    assert_eq!(Safety::Safe, s.safety(r));
-    read_key(&mut s, r, 1, &[E]);
-    s.read_tuple(r, HEAP, tid(5, 1)).unwrap();
-    assert_eq!(0, s.locks(r));
-}
-
-#[test]
-fn a_range_lock_ignores_inserts_of_other_constructors() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    read_key(&mut s, r, 7, &[G, A]);
-    s.insert_entry(w, INDEX, &key(7), E).unwrap();
-    s.insert_entry(w, INDEX, &key(8), G).unwrap();
-    assert!(s.writers_after(r).is_empty());
-    s.insert_entry(w, INDEX, &key(7), G).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_range_covers_the_keys_between_its_bounds() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    s.read_range(
-        r,
-        INDEX,
-        Bound::Excluded(key(3)),
-        Bound::Unbounded,
-        BTreeSet::from([E]),
-    )
-    .unwrap();
-    s.insert_entry(w, INDEX, &key(3), E).unwrap();
-    assert!(s.writers_after(r).is_empty());
-    s.insert_entry(w, INDEX, &[3, 0], E).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_tuple_lock_conflicts_with_a_write_of_that_version_only() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    s.read_tuple(r, HEAP, tid(5, 1)).unwrap();
-    s.write_tuple(w, HEAP, tid(5, 2)).unwrap();
-    s.insert_heap(w, HEAP).unwrap();
-    assert!(s.writers_after(r).is_empty());
-    s.write_tuple(w, HEAP, tid(5, 1)).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_heap_lock_conflicts_with_any_insert_into_the_heap() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    s.read_heap(r, HEAP).unwrap();
-    s.insert_heap(w, HEAP + 1).unwrap();
-    assert!(s.writers_after(r).is_empty());
-    s.insert_heap(w, HEAP).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
 }
 
 #[test]
@@ -668,59 +466,6 @@ fn an_open_scan_conflicts_with_any_insert_into_its_heap() {
 }
 
 #[test]
-fn a_scan_ended_whole_leaves_a_heap_lock() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
-    s.end_scan(r, HEAP, scan, None);
-    assert_eq!(1, s.locks(r));
-    s.insert_heap(w, HEAP).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_scan_ended_early_leaves_page_locks_on_the_pages_it_read() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
-    s.end_scan(r, HEAP, scan, Some(&[5, 6]));
-    assert_eq!(2, s.locks(r));
-    s.insert_heap(w, HEAP).unwrap();
-    s.write_tuple(w, HEAP, tid(7, 1)).unwrap();
-    assert!(s.writers_after(r).is_empty());
-    s.write_tuple(w, HEAP, tid(6, 3)).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_scan_ended_early_past_the_page_limit_leaves_a_heap_lock() {
-    let limits = Limits {
-        pages_per_heap: 2,
-        ..Limits::default()
-    };
-    let mut s = Serializer::new(limits);
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
-    s.end_scan(r, HEAP, scan, Some(&[5, 6, 7]));
-    assert_eq!(1, s.locks(r));
-    s.insert_heap(w, HEAP).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_scan_ended_early_keeps_a_heap_lock_another_read_took() {
-    let mut s = Serializer::default();
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    let early = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
-    let whole = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
-    s.end_scan(r, HEAP, whole, None);
-    s.end_scan(r, HEAP, early, Some(&[5]));
-    assert_eq!(1, s.locks(r));
-    s.insert_heap(w, HEAP).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
 fn an_open_scan_leaves_tuple_reads_their_own_locks() {
     let mut s = Serializer::default();
     let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
@@ -728,64 +473,6 @@ fn an_open_scan_leaves_tuple_reads_their_own_locks() {
     s.read_tuple(r, HEAP, tid(9, 1)).unwrap();
     s.end_scan(r, HEAP, scan, Some(&[5]));
     s.write_tuple(w, HEAP, tid(9, 1)).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-}
-
-#[test]
-fn a_scan_after_a_heap_lock_takes_no_lock_of_its_own() {
-    let mut s = Serializer::default();
-    let r = rw(&mut s, 1);
-    s.read_heap(r, HEAP).unwrap();
-    assert_eq!(None, s.read_scan(r, HEAP).unwrap());
-}
-
-#[test]
-fn tuple_locks_promote_to_a_page_lock_then_a_heap_lock() {
-    let limits = Limits {
-        tuples_per_page: 2,
-        pages_per_heap: 2,
-        ranges_per_index: 2,
-        ..Limits::default()
-    };
-    let mut s = Serializer::new(limits);
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    for slot in 0..3 {
-        s.read_tuple(r, HEAP, tid(5, slot)).unwrap();
-    }
-    assert_eq!(1, s.locks(r));
-    s.write_tuple(w, HEAP, tid(5, 9)).unwrap();
-    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
-
-    let w2 = rw(&mut s, 3);
-    s.insert_heap(w2, HEAP).unwrap();
-    assert!(s.readers_before(w2).is_empty());
-    for page in 6..8 {
-        for slot in 0..3 {
-            s.read_tuple(r, HEAP, tid(page, slot)).unwrap();
-        }
-    }
-    assert_eq!(1, s.locks(r));
-    s.insert_heap(w2, HEAP).unwrap();
-    assert_eq!(BTreeSet::from([r]), s.readers_before(w2));
-}
-
-#[test]
-fn range_locks_promote_to_an_index_lock_keeping_their_constructors() {
-    let limits = Limits {
-        tuples_per_page: 2,
-        pages_per_heap: 2,
-        ranges_per_index: 2,
-        ..Limits::default()
-    };
-    let mut s = Serializer::new(limits);
-    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
-    read_key(&mut s, r, 1, &[G]);
-    read_key(&mut s, r, 2, &[A]);
-    read_key(&mut s, r, 3, &[G]);
-    assert_eq!(1, s.locks(r));
-    s.insert_entry(w, INDEX, &key(200), E).unwrap();
-    assert!(s.writers_after(r).is_empty());
-    s.insert_entry(w, INDEX, &key(200), A).unwrap();
     assert_eq!(BTreeSet::from([w]), s.writers_after(r));
 }
 
@@ -850,12 +537,41 @@ fn committed_transactions_are_forgotten_once_no_concurrent_one_runs() {
 }
 
 #[test]
-fn a_doomed_transaction_fails_its_next_operation() {
+fn a_failure_names_the_other_transactions_of_its_conflict() {
     let mut s = Serializer::default();
-    let (_, t2, t3) = fekete(&mut s, Access::ReadOnly);
-    s.read_from(t3, Xid(2)).unwrap();
-    assert_eq!(Err(dangerous(&[1])), s.check(t2));
-    assert_eq!(Err(dangerous(&[1])), s.insert_entry(t2, INDEX, &key(9), E));
+    let (t1, t2, t3) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3));
+    read_key(&mut s, t1, 1, &[E]);
+    s.insert_entry(t2, INDEX, &key(1), E).unwrap();
+    read_key(&mut s, t2, 2, &[E]);
+    s.insert_entry(t3, INDEX, &key(2), E).unwrap();
+    commit(&mut s, t3).unwrap();
+    assert_eq!(Err(dangerous(&[1, 3])), commit(&mut s, t2));
+}
+
+#[test]
+fn a_deferrable_transaction_waits_out_writers_and_takes_no_locks() {
+    let mut s = Serializer::default();
+    let t1 = rw(&mut s, 1);
+    let d = s.begin(Access::Deferrable);
+    assert_eq!(Safety::Pending(vec![Xid(1)]), s.safety(d));
+    read_key(&mut s, t1, 1, &[E]);
+    assert_eq!(vec![d], s.committed(t1));
+    assert_eq!(Safety::Safe, s.safety(d));
+    read_key(&mut s, d, 1, &[E]);
+    assert_eq!(0, s.locks(d));
+}
+
+#[test]
+fn a_scan_ended_early_keeps_a_heap_lock_another_read_took() {
+    let mut s = Serializer::default();
+    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
+    let early = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    let whole = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    s.end_scan(r, HEAP, whole, None);
+    s.end_scan(r, HEAP, early, Some(&[5]));
+    assert_eq!(1, s.locks(r));
+    s.insert_heap(w, HEAP).unwrap();
+    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
 }
 
 #[test]
@@ -882,18 +598,6 @@ fn the_total_budget_promotes_the_largest_holders_locks() {
     s.insert_entry(w, INDEX, &key(200), G).unwrap();
     s.write_tuple(w, HEAP, tid(6, 9)).unwrap();
     assert_eq!(BTreeSet::from([big]), s.readers_before(w));
-}
-
-#[test]
-fn a_failure_names_the_other_transactions_of_its_conflict() {
-    let mut s = Serializer::default();
-    let (t1, t2, t3) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3));
-    read_key(&mut s, t1, 1, &[E]);
-    s.insert_entry(t2, INDEX, &key(1), E).unwrap();
-    read_key(&mut s, t2, 2, &[E]);
-    s.insert_entry(t3, INDEX, &key(2), E).unwrap();
-    commit(&mut s, t3).unwrap();
-    assert_eq!(Err(dangerous(&[1, 3])), commit(&mut s, t2));
 }
 
 #[test]

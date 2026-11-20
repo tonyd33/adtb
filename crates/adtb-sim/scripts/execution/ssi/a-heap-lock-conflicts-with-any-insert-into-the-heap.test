@@ -1,0 +1,65 @@
+# A whole scan of items locks the heap: a writer inserting into another relation, whose read the
+# reader then writes, commits beside it; one inserting into items fails.
+use locks
+reopen
+
+begin p
+
+in p query
+  count(1 for i in items)
+----
+30
+
+probe locks p
+----
+heap app::items.Item
+
+rollback p
+
+begin r1 id R1
+
+begin w1 id W1
+
+in r1 query
+  count(1 for i in items)
+----
+30
+
+in w1 query
+  count(1 for m in marks where m.n == 0)
+----
+0
+
+in r1 run
+  insert marks { n: 1 }
+
+in w1 run
+  insert marks { n: 2 }
+
+commit r1
+
+commit w1
+
+begin r2 id R2
+
+begin w2 id W2
+
+in r2 query
+  count(1 for i in items)
+----
+30
+
+in w2 query
+  count(1 for m in marks where m.n == 0)
+----
+0
+
+in r2 run
+  insert marks { n: 1 }
+
+in w2 run
+  insert items { k: 50, pad: "z" }
+
+commit r2
+
+commit w2 retry Serialization { txn: $W2, on: "" }

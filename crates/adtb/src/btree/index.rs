@@ -2,8 +2,6 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use crate::key::{CtorId, Entry, KeySchema, Value, ovarint};
-#[cfg(test)]
-use crate::key::{CtorType, Dir, KeyType, SumType};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Walk};
 
@@ -246,81 +244,5 @@ impl Index {
             hi.as_ref().map(Vec::as_slice),
         );
         self.decode_all(pager, cursor)
-    }
-}
-
-/// How an index keys a value-level sum field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(test)]
-pub enum SumKey {
-    /// The whole value.
-    Whole,
-    /// The constructor's order key only.
-    Tag,
-    /// One field of one constructor; rows holding another constructor have
-    /// no entry.
-    Field { ctor: u32, field: usize },
-}
-
-/// Returns `sum` with every constructor's fields dropped, the type of its
-/// tags.
-#[cfg(test)]
-pub fn tag_type(sum: &SumType) -> SumType {
-    let ctors = sum
-        .ctors()
-        .iter()
-        .map(|c| CtorType {
-            order_key: c.order_key.clone(),
-            fields: Vec::new(),
-        })
-        .collect();
-    SumType::new(ctors).expect("a sum's order keys increase")
-}
-
-/// Returns the bytes that start every key whose first component is a value
-/// of `sum` built by `ctor`, whether the index keys the whole value or its
-/// tag.
-#[cfg(test)]
-pub fn tag_prefix(sum: &SumType, ctor: u32, dir: Dir) -> Vec<u8> {
-    let schema = KeySchema::new(vec![(KeyType::Sum(tag_type(sum)), dir)]);
-    schema.encode(&[Value::Sum {
-        ctor,
-        fields: Vec::new(),
-    }])
-}
-
-#[cfg(test)]
-impl SumKey {
-    /// Returns the type of the key component for a field of type `sum`.
-    ///
-    /// Panics:
-    /// - A `Field` names a constructor or field `sum` lacks.
-    #[cfg(test)]
-    pub fn key_type(&self, sum: &SumType) -> KeyType {
-        match *self {
-            SumKey::Whole => KeyType::Sum(sum.clone()),
-            SumKey::Tag => KeyType::Sum(tag_type(sum)),
-            SumKey::Field { ctor, field } => sum.ctors()[ctor as usize].fields[field].clone(),
-        }
-    }
-
-    /// Returns the key component of the sum value `v`, or `None` when the
-    /// index holds no entry for it.
-    ///
-    /// Panics:
-    /// - `v` is not a sum value.
-    #[cfg(test)]
-    pub fn component(&self, v: &Value) -> Option<Value> {
-        let Value::Sum { ctor, fields } = v else {
-            panic!("{v:?} is not a sum value");
-        };
-        match *self {
-            SumKey::Whole => Some(v.clone()),
-            SumKey::Tag => Some(Value::Sum {
-                ctor: *ctor,
-                fields: Vec::new(),
-            }),
-            SumKey::Field { ctor: c, field } => (c == *ctor).then(|| fields[field].clone()),
-        }
     }
 }

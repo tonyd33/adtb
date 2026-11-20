@@ -4,8 +4,7 @@
 use crate::test_world::load as open;
 use adtb_testkit::process::run;
 
-use crate::{CallOptions, Database, Log, Value};
-use adtb_lang::types::{Base, Ty};
+use crate::Log;
 use adtb_sim::{Config, Sim, SimRuntime};
 
 use crate::test_world::load::options;
@@ -28,27 +27,8 @@ add constraint paid =
   select c
 ";
 
-/// Insert a customer named `n` with a card, as one statement.
-const SIGN_UP: &str = r#"transact
-  let c = insert customers { name: n }
-  insert payments.Card { customer: key c, last4: "4242" }
-  return key c"#;
-
 fn log() -> Log {
     Log::new([SHOP])
-}
-
-fn text(t: &str) -> Value {
-    Value::text(t)
-}
-
-fn name(n: &str) -> [(&'static str, Ty, Value); 1] {
-    [("n", Ty::Base(Base::Text), text(n))]
-}
-
-fn sign_up(db: &Database<SimRuntime>, n: &str) {
-    db.query_text(SIGN_UP, &name(n), &CallOptions::default())
-        .unwrap_or_else(|e| panic!("signing up {n} fails: {e:?}"));
 }
 
 /// Returns what `verify` finds in the closed file `app.adt`, and whether its counters page is
@@ -63,22 +43,6 @@ fn verified(rt: SimRuntime) -> (crate::verify::Report, bool) {
     let (catalog, txns) = crate::catalog::Catalog::open(rt, &pager).expect("the catalog");
     let report = crate::verify::verify(&pager, &catalog.structures().inventory(&txns.commit_log()));
     (report, catalog.sequences().is_some())
-}
-
-#[test]
-fn a_closed_file_verifies_clean_with_every_page_accounted_for() {
-    let mut sim = Sim::new(7, Config::default());
-    run(&mut sim, |rt| {
-        let db = open::opened(&rt, open::FILE, &log(), &options(4));
-        sign_up(&db, "ann");
-        db.close().expect("close");
-    });
-    run(&mut sim, |rt| {
-        drop(open::opened(&rt, open::FILE, &log(), &options(4)));
-    });
-    let (report, named) = run(&mut sim, verified);
-    assert!(named, "the counters page is named");
-    assert!(report.is_clean() && report.complete, "{report:#?}");
 }
 
 #[test]

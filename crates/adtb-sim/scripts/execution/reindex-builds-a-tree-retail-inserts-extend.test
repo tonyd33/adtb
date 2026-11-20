@@ -1,0 +1,62 @@
+# A reindex builds each index of a relation of no row, one row and 5000 rows; inserts extend the
+# built trees, a probe finds an old and a new row, and verify finds every page reached.
+migrate
+  module app
+  add module app
+  add type Empty = { id: Key empties, n: I64 }
+  add relation empties : Empty key id generate sequence
+    index (n)
+  add type One = { id: Key ones, n: I64 }
+  add relation ones : One key id generate sequence
+    index (n)
+  add type Many = { id: Key manies, n: I64 }
+  add relation manies : Many key id generate sequence
+    index (n)
+
+run
+  insert ones { n: 0 }
+  insert manies from (
+    from a in [0, 1, 2, 3, 4], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+         c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], d in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { n: 2 * (a * 1000 + b * 100 + c * 10 + d) })
+
+run
+  reindex empties
+
+run
+  reindex ones
+
+run
+  reindex manies
+
+run
+  insert empties { n: 1 }
+  insert ones { n: 1 }
+  insert manies from (from a in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { n: 2 * (a * 10 + b) + 1 })
+
+probe plan
+  explain from i in manies where i.n == 3 select i.n
+----
+Set total
+  reads manies.Many, manies (n)
+  Pipeline
+    One row
+    Probe manies (n)
+      Many ->
+        Chain
+          Emit
+
+query
+  from i in manies where i.n == 3 or i.n == 9998 select i.n
+----
+3
+9998
+
+query
+  from x in [0] select { manies: count(i for i in manies), ones: count(i for i in ones where i.n == 0 or i.n == 1), empties: count(i for i in empties where i.n == 1) }
+----
+{ empties: 1, manies: 5100, ones: 2 }
+
+probe holding verify
+----

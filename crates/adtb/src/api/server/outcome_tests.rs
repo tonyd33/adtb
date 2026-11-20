@@ -582,37 +582,6 @@ fn a_failed_calls_audit_row_holds_the_error_value_returned_for_every_reason_but_
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-#[test]
-#[ignore = "a constraint report has no value form yet"]
-fn a_violated_calls_audit_row_holds_the_violation_returned_with_its_report() {
-    let error = reject(RejectReason::Violated {
-        constraint: text("shop::paid"),
-        report: vec![Val::Int(1)],
-        redacted: 2,
-    });
-    assert_eq!(7, slot(&error));
-    let (held, error_form) = recorded(std::slice::from_ref(&error));
-    let schema = crate::catalog::engine_schema();
-    let report: Vec<u8> = [0x04, 0x01].into_iter().chain(1i64.to_le_bytes()).collect();
-    let expected = Val::ctor(
-        prelude_ctor(&schema, schema.prelude().error(), "Rejected"),
-        vec![Val::ctor(
-            prelude_ctor(&schema, schema.prelude().reject_reason(), "Violated"),
-            vec![
-                Val::text("shop::paid"),
-                Val::Bytes(report.into()),
-                Val::Int(2),
-            ],
-        )],
-    );
-    assert_eq!(
-        expected,
-        held[0],
-        "holds {}",
-        print(&held[0], &error_form).expect("the error prints")
-    );
-}
-
 /// Returns the index of constructor `name` of the prelude type `ty`.
 fn prelude_ctor(schema: &Schema, ty: TypeId, name: &str) -> u32 {
     let def = schema.ty(ty);

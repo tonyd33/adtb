@@ -1,0 +1,29 @@
+# Two transactions each read items 1 and 2 and write one of them. Once the first commits, the
+# second's write closes the cycle and fails at once.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id generate sequence
+
+begin a id A
+
+begin b id B
+
+in a query
+  from i in items where i.id == items.key(1) or i.id == items.key(2) select i.value
+----
+
+in b query
+  from i in items where i.id == items.key(1) or i.id == items.key(2) select i.value
+----
+
+in a run
+  insert items { id: items.key(1), value: 1 }
+
+commit a
+
+in b retry Serialization { txn: $B, on: "" }
+  insert items { id: items.key(2), value: 2 }
+
+rollback b

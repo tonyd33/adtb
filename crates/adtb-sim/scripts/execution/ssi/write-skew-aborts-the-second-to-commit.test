@@ -1,0 +1,43 @@
+# Of two transactions that read items 1 and 2 and each write one of them, the second to commit
+# fails, naming itself.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id generate sequence
+
+run
+  insert items { value: 100 }
+  insert items { value: 200 }
+
+begin a
+
+begin b id B
+
+in a query
+  from i in items select i.value
+----
+100
+200
+
+in b query
+  from i in items select i.value
+----
+100
+200
+
+in a run
+  update i in items where i.id == items.key(1) set { i with value: 1 }
+
+in b run
+  update i in items where i.id == items.key(2) set { i with value: 2 }
+
+commit a
+
+commit b retry Serialization { txn: $B, on: "" }
+
+query
+  from i in items select i.value
+----
+1
+200

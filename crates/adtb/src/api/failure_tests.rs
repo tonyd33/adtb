@@ -46,16 +46,6 @@ fn failing_write(
 }
 
 #[test]
-fn a_failing_write_returns_its_failure_once_its_abort_is_recorded() {
-    let failed = Error::Rejected {
-        reason: RejectReason::UserError {
-            message: "no".to_owned(),
-        },
-    };
-    assert_eq!((Err(failed), 0), failing_write(4, |_| {}));
-}
-
-#[test]
 fn a_failing_write_whose_abort_record_fails_returns_the_records_failure_and_counts_it() {
     let mut status = None;
     let got = failing_write(4, |db| {
@@ -384,41 +374,4 @@ fn a_refused_command_whose_take_back_meets_damage_ends_its_transaction() {
         ended_by_damage(),
         undo_meets_damage(22, "retire bundle nosuch-1.0")
     );
-}
-
-#[test]
-fn a_dump_that_meets_damage_ends_its_transaction() {
-    let mut sim = Sim::new(23, Config::default());
-    let got = run(&mut sim, |rt| {
-        let db = open::opened(&rt, harness::NAME, &Log::new([HELD]), &options(2));
-        let opts = TxnCallOptions::default();
-        db.query_text(
-            r#"insert users { name: "a" }"#,
-            &[],
-            &CallOptions::default(),
-        )
-        .expect("a user");
-        let users = db.testing().heap("app::users", "User").expect("the heap");
-        for page in db.testing().pages(users).expect("its pages") {
-            let refused = Plant::Refuse {
-                page,
-                damage: Damage::Checksum,
-            };
-            db.testing().plant(refused).expect("planted");
-        }
-        let mut txn = db.begin(&TxnOptions::default()).expect("a transaction");
-        let reply = txn.query_text("dump to \"d\"", &[], &opts).map(drop);
-        let later = txn.query_text("1", &[], &opts).map(drop);
-        let commit = txn.commit(None).map(drop);
-        let mark = db.testing().own_mark(users).expect("its mark");
-        let marked = db.testing().probe().marked(mark);
-        db.close().expect("the database closes");
-        Undone {
-            reply,
-            later,
-            commit,
-            marked,
-        }
-    });
-    assert_eq!(ended_by_damage(), got);
 }

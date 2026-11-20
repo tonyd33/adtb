@@ -1,0 +1,172 @@
+# A value-level sum field indexed whole, by its tag and by one constructor's field reads, through
+# each, the rows a scan reads.
+schema
+  module test
+  type Status ordered = Draft | Sent { at: I64 } | Paid { at: I64, ref: I64 }
+  type Invoice = { id: Key invoices, status: Status }
+  relation invoices : Invoice key id generate sequence
+    index (status)
+    index (tag(status))
+    index (status.Paid.ref)
+run
+  insert invoices from [Invoice { id: invoices.key(1), status: Sent { at: -20 } },
+                        Invoice { id: invoices.key(2), status: Draft },
+                        Invoice { id: invoices.key(3), status: Sent { at: 2 } },
+                        Invoice { id: invoices.key(4), status: Sent { at: 8 } },
+                        Invoice { id: invoices.key(5), status: Sent { at: -17 } },
+                        Invoice { id: invoices.key(6), status: Paid { at: -13, ref: 8 } },
+                        Invoice { id: invoices.key(7), status: Sent { at: -25 } },
+                        Invoice { id: invoices.key(8), status: Draft },
+                        Invoice { id: invoices.key(9), status: Sent { at: -24 } },
+                        Invoice { id: invoices.key(10), status: Draft },
+                        Invoice { id: invoices.key(11), status: Paid { at: 6, ref: 13 } },
+                        Invoice { id: invoices.key(12), status: Draft },
+                        Invoice { id: invoices.key(13), status: Paid { at: 21, ref: 13 } },
+                        Invoice { id: invoices.key(14), status: Sent { at: 24 } },
+                        Invoice { id: invoices.key(15), status: Draft },
+                        Invoice { id: invoices.key(16), status: Draft },
+                        Invoice { id: invoices.key(17), status: Sent { at: 17 } },
+                        Invoice { id: invoices.key(18), status: Draft },
+                        Invoice { id: invoices.key(19), status: Draft },
+                        Invoice { id: invoices.key(20), status: Sent { at: 11 } },
+                        Invoice { id: invoices.key(21), status: Sent { at: 11 } },
+                        Invoice { id: invoices.key(22), status: Sent { at: 17 } },
+                        Invoice { id: invoices.key(23), status: Sent { at: 11 } },
+                        Invoice { id: invoices.key(24), status: Draft },
+                        Invoice { id: invoices.key(25), status: Draft },
+                        Invoice { id: invoices.key(26), status: Sent { at: 12 } },
+                        Invoice { id: invoices.key(27), status: Sent { at: 18 } },
+                        Invoice { id: invoices.key(28), status: Paid { at: -15, ref: 5 } },
+                        Invoice { id: invoices.key(29), status: Draft },
+                        Invoice { id: invoices.key(30), status: Sent { at: 18 } },
+                        Invoice { id: invoices.key(31), status: Paid { at: -13, ref: 18 } },
+                        Invoice { id: invoices.key(32), status: Draft },
+                        Invoice { id: invoices.key(33), status: Draft },
+                        Invoice { id: invoices.key(34), status: Draft },
+                        Invoice { id: invoices.key(35), status: Sent { at: 11 } },
+                        Invoice { id: invoices.key(36), status: Sent { at: 12 } },
+                        Invoice { id: invoices.key(37), status: Sent { at: -19 } },
+                        Invoice { id: invoices.key(38), status: Sent { at: -7 } },
+                        Invoice { id: invoices.key(39), status: Paid { at: -6, ref: 14 } },
+                        Invoice { id: invoices.key(40), status: Paid { at: -12, ref: 8 } },
+                        Invoice { id: invoices.key(41), status: Draft },
+                        Invoice { id: invoices.key(42), status: Paid { at: -18, ref: 15 } },
+                        Invoice { id: invoices.key(43), status: Draft },
+                        Invoice { id: invoices.key(44), status: Paid { at: -16, ref: 18 } },
+                        Invoice { id: invoices.key(45), status: Draft },
+                        Invoice { id: invoices.key(46), status: Draft },
+                        Invoice { id: invoices.key(47), status: Draft },
+                        Invoice { id: invoices.key(48), status: Paid { at: 1, ref: 12 } },
+                        Invoice { id: invoices.key(49), status: Draft },
+                        Invoice { id: invoices.key(50), status: Draft },
+                        Invoice { id: invoices.key(51), status: Draft },
+                        Invoice { id: invoices.key(52), status: Paid { at: -22, ref: 17 } },
+                        Invoice { id: invoices.key(53), status: Sent { at: 22 } },
+                        Invoice { id: invoices.key(54), status: Draft },
+                        Invoice { id: invoices.key(55), status: Draft },
+                        Invoice { id: invoices.key(56), status: Sent { at: -13 } },
+                        Invoice { id: invoices.key(57), status: Draft },
+                        Invoice { id: invoices.key(58), status: Sent { at: 4 } },
+                        Invoice { id: invoices.key(59), status: Paid { at: -13, ref: 14 } },
+                        Invoice { id: invoices.key(60), status: Sent { at: -12 } }]
+# Every status in its order: by constructor, then by fields.
+query
+  from i in invoices select i.status order by i.status
+----
+Draft
+Sent { at: -25 }
+Sent { at: -24 }
+Sent { at: -20 }
+Sent { at: -19 }
+Sent { at: -17 }
+Sent { at: -13 }
+Sent { at: -12 }
+Sent { at: -7 }
+Sent { at: 2 }
+Sent { at: 4 }
+Sent { at: 8 }
+Sent { at: 11 }
+Sent { at: 12 }
+Sent { at: 17 }
+Sent { at: 18 }
+Sent { at: 22 }
+Sent { at: 24 }
+Paid { at: -22, ref: 17 }
+Paid { at: -18, ref: 15 }
+Paid { at: -16, ref: 18 }
+Paid { at: -15, ref: 5 }
+Paid { at: -13, ref: 8 }
+Paid { at: -13, ref: 14 }
+Paid { at: -13, ref: 18 }
+Paid { at: -12, ref: 8 }
+Paid { at: -6, ref: 14 }
+Paid { at: 1, ref: 12 }
+Paid { at: 6, ref: 13 }
+Paid { at: 21, ref: 13 }
+# The rows of each constructor.
+query rowsort
+  from i in invoices where (match i.status | Sent s -> true | Draft -> false | Paid p -> false) select key i
+----
+invoices.key(1)
+invoices.key(14)
+invoices.key(17)
+invoices.key(20)
+invoices.key(21)
+invoices.key(22)
+invoices.key(23)
+invoices.key(26)
+invoices.key(27)
+invoices.key(3)
+invoices.key(30)
+invoices.key(35)
+invoices.key(36)
+invoices.key(37)
+invoices.key(38)
+invoices.key(4)
+invoices.key(5)
+invoices.key(53)
+invoices.key(56)
+invoices.key(58)
+invoices.key(60)
+invoices.key(7)
+invoices.key(9)
+query rowsort
+  from i in invoices group i by tag(i.status) into g select { stage: g.key, n: count(x for x in g) }
+----
+{ n: 12, stage: Paid }
+{ n: 23, stage: Sent }
+{ n: 25, stage: Draft }
+# A range of whole statuses runs from one constructor's values into another's.
+query rowsort
+  from i in invoices where i.status >= Sent { at: 0 } and i.status < Paid { at: 0, ref: 0 } select i
+----
+Invoice { id: invoices.key(14), status: Sent { at: 24 } }
+Invoice { id: invoices.key(17), status: Sent { at: 17 } }
+Invoice { id: invoices.key(20), status: Sent { at: 11 } }
+Invoice { id: invoices.key(21), status: Sent { at: 11 } }
+Invoice { id: invoices.key(22), status: Sent { at: 17 } }
+Invoice { id: invoices.key(23), status: Sent { at: 11 } }
+Invoice { id: invoices.key(26), status: Sent { at: 12 } }
+Invoice { id: invoices.key(27), status: Sent { at: 18 } }
+Invoice { id: invoices.key(28), status: Paid { at: -15, ref: 5 } }
+Invoice { id: invoices.key(3), status: Sent { at: 2 } }
+Invoice { id: invoices.key(30), status: Sent { at: 18 } }
+Invoice { id: invoices.key(31), status: Paid { at: -13, ref: 18 } }
+Invoice { id: invoices.key(35), status: Sent { at: 11 } }
+Invoice { id: invoices.key(36), status: Sent { at: 12 } }
+Invoice { id: invoices.key(39), status: Paid { at: -6, ref: 14 } }
+Invoice { id: invoices.key(4), status: Sent { at: 8 } }
+Invoice { id: invoices.key(40), status: Paid { at: -12, ref: 8 } }
+Invoice { id: invoices.key(42), status: Paid { at: -18, ref: 15 } }
+Invoice { id: invoices.key(44), status: Paid { at: -16, ref: 18 } }
+Invoice { id: invoices.key(52), status: Paid { at: -22, ref: 17 } }
+Invoice { id: invoices.key(53), status: Sent { at: 22 } }
+Invoice { id: invoices.key(58), status: Sent { at: 4 } }
+Invoice { id: invoices.key(59), status: Paid { at: -13, ref: 14 } }
+Invoice { id: invoices.key(6), status: Paid { at: -13, ref: 8 } }
+# A field of one constructor holds an entry only for rows of that constructor.
+query rowsort
+  from i in invoices where (match i.status | Paid p -> p.ref == 8 | Draft -> false | Sent s -> false) select i
+----
+Invoice { id: invoices.key(40), status: Paid { at: -12, ref: 8 } }
+Invoice { id: invoices.key(6), status: Paid { at: -13, ref: 8 } }

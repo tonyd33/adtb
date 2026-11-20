@@ -337,6 +337,7 @@ fn concurrent_operations_are_linearizable_by_key() {
     for seed in sweep(SEEDS) {
         overlaps += concurrent_run(seed, 6, 500, 32, Keys::Hot(48), Shape::Whole).1;
     }
+    concurrent_run(7, 4, 600, 512, Keys::Hot(48), Shape::Whole);
     assert!(
         overlaps >= share(SEEDS, 100),
         "only {overlaps} overlapping pairs"
@@ -368,11 +369,6 @@ fn postings_changed_by_many_threads_stay_linearizable_by_entry() {
         overlaps >= share(SEEDS, 100),
         "only {overlaps} overlapping pairs"
     );
-}
-
-#[test]
-fn concurrent_operations_through_a_roomy_pool_are_linearizable_by_key() {
-    concurrent_run(7, 4, 600, 512, Keys::Hot(48), Shape::Whole);
 }
 
 #[test]

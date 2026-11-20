@@ -1,0 +1,50 @@
+# Past two tuple locks on a page they become a page lock, and past two page locks on a heap a
+# heap lock. The three items of each k lie on one page.
+option lock_tuples 2
+option lock_pages 2
+use locks
+reopen
+
+begin r
+
+in r query
+  from i in items where i.k == 0 select key i
+----
+items.key(1)
+items.key(2)
+items.key(3)
+
+probe locks r
+----
+page app::items.Item
+range app::items index (k) over Item
+
+in r query
+  from i in items where i.k == 2 select key i
+----
+items.key(7)
+items.key(8)
+items.key(9)
+
+probe locks r
+----
+page app::items.Item
+page app::items.Item
+range app::items index (k) over Item
+range app::items index (k) over Item
+
+in r query
+  from i in items where i.k == 4 select key i
+----
+items.key(13)
+items.key(14)
+items.key(15)
+
+probe locks r
+----
+heap app::items.Item
+range app::items index (k) over Item
+range app::items index (k) over Item
+range app::items index (k) over Item
+
+rollback r

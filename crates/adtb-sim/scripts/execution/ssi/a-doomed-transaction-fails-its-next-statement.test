@@ -1,0 +1,44 @@
+# Fekete's read-only anomaly: once the reader that saw the first writer's commit reads the row the
+# second writer overwrote, the second writer is doomed and its next statement fails.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id generate sequence
+
+run
+  insert items { value: 100 }
+  insert items { value: 200 }
+
+begin t2 id T2
+
+in t2 query
+  from i in items select i.value
+----
+100
+200
+
+begin t1
+
+in t1 run
+  update i in items where i.id == items.key(2) set { i with value: 210 }
+
+commit t1
+
+in t2 run
+  update i in items where i.id == items.key(1) set { i with value: 120 }
+
+begin read only t3
+
+in t3 query
+  from i in items select i.value
+----
+100
+210
+
+in t2 retry Serialization { txn: $T2, on: "" }
+  from i in items select i.value
+
+rollback t2
+
+commit t3

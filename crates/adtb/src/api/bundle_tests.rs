@@ -48,11 +48,6 @@ fn a_file_recording_no_family_owners_gives_the_schema_owner_every_family_it_hold
 }
 
 #[test]
-fn a_new_file_records_family_owners_from_its_first_open() {
-    assert_eq!(vec![Fact::Deployed], legacy(&Stored::default()));
-}
-
-#[test]
 fn the_bundle_writer_waited_for_under_an_index_latch_panics() {
     let mut sim = adtb_sim::Sim::new(1, adtb_sim::Config::default());
     let outcome = sim.run(|rt| {

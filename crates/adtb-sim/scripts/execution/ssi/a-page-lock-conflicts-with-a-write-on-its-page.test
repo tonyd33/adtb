@@ -1,0 +1,33 @@
+# An existence test that stops at item 2 locks the page it read: a writer of item 3 on that page,
+# whose read of item 1 the reader then writes, fails at its commit.
+option morsel_rows 16
+use stocked
+reopen
+
+begin r
+
+begin w id W
+
+in r query
+  exists s in stock where s.name == "item2"
+----
+True
+
+probe locks r
+----
+page app::stock.Item
+
+in w query
+  from s in stock where key s == stock.key(1) select s.v
+----
+37
+
+in r run
+  update s in stock where key s == stock.key(1) set { s with v: s.v + 1 }
+
+in w run
+  update s in stock where key s == stock.key(3) set { s with v: s.v + 1 }
+
+commit r
+
+commit w retry Serialization { txn: $W, on: "" }

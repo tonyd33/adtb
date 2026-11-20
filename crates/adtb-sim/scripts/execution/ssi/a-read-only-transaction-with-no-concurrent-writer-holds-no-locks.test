@@ -1,0 +1,56 @@
+# A read-only transaction, deferrable or not, begun while no writer runs is safe from the start
+# and takes no read lock; the same reads in a read-write transaction take them.
+use locks
+reopen
+
+begin read only r
+
+in r query
+  from i in items where i.k == 0 select key i
+----
+items.key(1)
+items.key(2)
+items.key(3)
+
+in r query
+  count(1 for i in items)
+----
+30
+
+probe locks r
+----
+
+commit r
+
+begin read only deferrable d
+
+in d query
+  count(1 for i in items where i.k > 6)
+----
+9
+
+probe locks d
+----
+
+commit d
+
+begin w
+
+in w query
+  from i in items where i.k == 0 select key i
+----
+items.key(1)
+items.key(2)
+items.key(3)
+
+in w query
+  count(1 for i in items)
+----
+30
+
+probe locks w
+----
+heap app::items.Item
+range app::items index (k) over Item
+
+rollback w

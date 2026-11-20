@@ -1,0 +1,58 @@
+# An open of a file marked whole refuses a log that differs from the file's with `Diverged` at
+# the first migration that differs, whether shorter, as long or longer, and opens with its own.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+
+run
+  insert users { name: "ann" }
+
+migrate
+  module more
+  add module more
+  add type T = { id: Key ts }
+  add relation ts : T key id generate sequence
+
+damage status
+
+fatal Quarantined { what: "the database" }
+  insert users { name: "bob" }
+
+migrate at 2 refused Diverged { version: 2 }
+  module more
+  add module more
+  add type U = { id: Key us }
+  add relation us : U key id generate sequence
+
+migrate at 1 refused Diverged { version: 1 }
+  module app
+  add module app
+  add type User = { id: Key people, name: Text }
+  add relation people : User key id generate sequence
+
+migrate at 2 refused Diverged { version: 2 }
+  module more
+  add module more
+  add type U = { id: Key us }
+  add relation us : U key id generate sequence
+  module more
+  add module more
+  add type T = { id: Key ts }
+  add relation ts : T key id generate sequence
+
+reopen
+
+probe marks
+----
+the database
+
+probe catalog
+----
+change None
+next heap 6
+app::users.User heap 0
+app::users key id over User
+more::ts.T heap 3
+more::ts key id over T

@@ -1,0 +1,319 @@
+# Rows of 300 keys, each with a sum field of a nullary and a text constructor and one of fixed,
+# variable and nullary constructors, read back as the values stored.
+schema
+  module test
+  type Note = Blank | Said { text: Text }
+  type Detail = Count { n: I32 } | Label { t: Text, m: I64 } | Empty
+  type Row = { id: Key rows, note: Note, detail: Detail }
+  relation rows : Row key id generate sequence
+run
+  insert rows from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: rows.key(a * 100 + b * 10 + c),
+             note: if (a * 100 + b * 10 + c) % 3 == 0 then Blank else Said { text: "n" ++ print(a * 100 + b * 10 + c) },
+             detail: if (a * 100 + b * 10 + c) % 4 == 0 then Count { n: i32(a * 100 + b * 10 + c) }
+                     else if (a * 100 + b * 10 + c) % 4 == 1 then Label { t: print((a * 100 + b * 10 + c) % 7), m: 0 - (a * 100 + b * 10 + c) }
+                     else Empty })
+query rowsort
+  rows
+----
+Row { id: rows.key(0), note: Blank, detail: Count { n: 0 } }
+Row { id: rows.key(1), note: Said { text: "n1" }, detail: Label { t: "1", m: -1 } }
+Row { id: rows.key(10), note: Said { text: "n10" }, detail: Empty }
+Row { id: rows.key(100), note: Said { text: "n100" }, detail: Count { n: 100 } }
+Row { id: rows.key(101), note: Said { text: "n101" }, detail: Label { t: "3", m: -101 } }
+Row { id: rows.key(102), note: Blank, detail: Empty }
+Row { id: rows.key(103), note: Said { text: "n103" }, detail: Empty }
+Row { id: rows.key(104), note: Said { text: "n104" }, detail: Count { n: 104 } }
+Row { id: rows.key(105), note: Blank, detail: Label { t: "0", m: -105 } }
+Row { id: rows.key(106), note: Said { text: "n106" }, detail: Empty }
+Row { id: rows.key(107), note: Said { text: "n107" }, detail: Empty }
+Row { id: rows.key(108), note: Blank, detail: Count { n: 108 } }
+Row { id: rows.key(109), note: Said { text: "n109" }, detail: Label { t: "4", m: -109 } }
+Row { id: rows.key(11), note: Said { text: "n11" }, detail: Empty }
+Row { id: rows.key(110), note: Said { text: "n110" }, detail: Empty }
+Row { id: rows.key(111), note: Blank, detail: Empty }
+Row { id: rows.key(112), note: Said { text: "n112" }, detail: Count { n: 112 } }
+Row { id: rows.key(113), note: Said { text: "n113" }, detail: Label { t: "1", m: -113 } }
+Row { id: rows.key(114), note: Blank, detail: Empty }
+Row { id: rows.key(115), note: Said { text: "n115" }, detail: Empty }
+Row { id: rows.key(116), note: Said { text: "n116" }, detail: Count { n: 116 } }
+Row { id: rows.key(117), note: Blank, detail: Label { t: "5", m: -117 } }
+Row { id: rows.key(118), note: Said { text: "n118" }, detail: Empty }
+Row { id: rows.key(119), note: Said { text: "n119" }, detail: Empty }
+Row { id: rows.key(12), note: Blank, detail: Count { n: 12 } }
+Row { id: rows.key(120), note: Blank, detail: Count { n: 120 } }
+Row { id: rows.key(121), note: Said { text: "n121" }, detail: Label { t: "2", m: -121 } }
+Row { id: rows.key(122), note: Said { text: "n122" }, detail: Empty }
+Row { id: rows.key(123), note: Blank, detail: Empty }
+Row { id: rows.key(124), note: Said { text: "n124" }, detail: Count { n: 124 } }
+Row { id: rows.key(125), note: Said { text: "n125" }, detail: Label { t: "6", m: -125 } }
+Row { id: rows.key(126), note: Blank, detail: Empty }
+Row { id: rows.key(127), note: Said { text: "n127" }, detail: Empty }
+Row { id: rows.key(128), note: Said { text: "n128" }, detail: Count { n: 128 } }
+Row { id: rows.key(129), note: Blank, detail: Label { t: "3", m: -129 } }
+Row { id: rows.key(13), note: Said { text: "n13" }, detail: Label { t: "6", m: -13 } }
+Row { id: rows.key(130), note: Said { text: "n130" }, detail: Empty }
+Row { id: rows.key(131), note: Said { text: "n131" }, detail: Empty }
+Row { id: rows.key(132), note: Blank, detail: Count { n: 132 } }
+Row { id: rows.key(133), note: Said { text: "n133" }, detail: Label { t: "0", m: -133 } }
+Row { id: rows.key(134), note: Said { text: "n134" }, detail: Empty }
+Row { id: rows.key(135), note: Blank, detail: Empty }
+Row { id: rows.key(136), note: Said { text: "n136" }, detail: Count { n: 136 } }
+Row { id: rows.key(137), note: Said { text: "n137" }, detail: Label { t: "4", m: -137 } }
+Row { id: rows.key(138), note: Blank, detail: Empty }
+Row { id: rows.key(139), note: Said { text: "n139" }, detail: Empty }
+Row { id: rows.key(14), note: Said { text: "n14" }, detail: Empty }
+Row { id: rows.key(140), note: Said { text: "n140" }, detail: Count { n: 140 } }
+Row { id: rows.key(141), note: Blank, detail: Label { t: "1", m: -141 } }
+Row { id: rows.key(142), note: Said { text: "n142" }, detail: Empty }
+Row { id: rows.key(143), note: Said { text: "n143" }, detail: Empty }
+Row { id: rows.key(144), note: Blank, detail: Count { n: 144 } }
+Row { id: rows.key(145), note: Said { text: "n145" }, detail: Label { t: "5", m: -145 } }
+Row { id: rows.key(146), note: Said { text: "n146" }, detail: Empty }
+Row { id: rows.key(147), note: Blank, detail: Empty }
+Row { id: rows.key(148), note: Said { text: "n148" }, detail: Count { n: 148 } }
+Row { id: rows.key(149), note: Said { text: "n149" }, detail: Label { t: "2", m: -149 } }
+Row { id: rows.key(15), note: Blank, detail: Empty }
+Row { id: rows.key(150), note: Blank, detail: Empty }
+Row { id: rows.key(151), note: Said { text: "n151" }, detail: Empty }
+Row { id: rows.key(152), note: Said { text: "n152" }, detail: Count { n: 152 } }
+Row { id: rows.key(153), note: Blank, detail: Label { t: "6", m: -153 } }
+Row { id: rows.key(154), note: Said { text: "n154" }, detail: Empty }
+Row { id: rows.key(155), note: Said { text: "n155" }, detail: Empty }
+Row { id: rows.key(156), note: Blank, detail: Count { n: 156 } }
+Row { id: rows.key(157), note: Said { text: "n157" }, detail: Label { t: "3", m: -157 } }
+Row { id: rows.key(158), note: Said { text: "n158" }, detail: Empty }
+Row { id: rows.key(159), note: Blank, detail: Empty }
+Row { id: rows.key(16), note: Said { text: "n16" }, detail: Count { n: 16 } }
+Row { id: rows.key(160), note: Said { text: "n160" }, detail: Count { n: 160 } }
+Row { id: rows.key(161), note: Said { text: "n161" }, detail: Label { t: "0", m: -161 } }
+Row { id: rows.key(162), note: Blank, detail: Empty }
+Row { id: rows.key(163), note: Said { text: "n163" }, detail: Empty }
+Row { id: rows.key(164), note: Said { text: "n164" }, detail: Count { n: 164 } }
+Row { id: rows.key(165), note: Blank, detail: Label { t: "4", m: -165 } }
+Row { id: rows.key(166), note: Said { text: "n166" }, detail: Empty }
+Row { id: rows.key(167), note: Said { text: "n167" }, detail: Empty }
+Row { id: rows.key(168), note: Blank, detail: Count { n: 168 } }
+Row { id: rows.key(169), note: Said { text: "n169" }, detail: Label { t: "1", m: -169 } }
+Row { id: rows.key(17), note: Said { text: "n17" }, detail: Label { t: "3", m: -17 } }
+Row { id: rows.key(170), note: Said { text: "n170" }, detail: Empty }
+Row { id: rows.key(171), note: Blank, detail: Empty }
+Row { id: rows.key(172), note: Said { text: "n172" }, detail: Count { n: 172 } }
+Row { id: rows.key(173), note: Said { text: "n173" }, detail: Label { t: "5", m: -173 } }
+Row { id: rows.key(174), note: Blank, detail: Empty }
+Row { id: rows.key(175), note: Said { text: "n175" }, detail: Empty }
+Row { id: rows.key(176), note: Said { text: "n176" }, detail: Count { n: 176 } }
+Row { id: rows.key(177), note: Blank, detail: Label { t: "2", m: -177 } }
+Row { id: rows.key(178), note: Said { text: "n178" }, detail: Empty }
+Row { id: rows.key(179), note: Said { text: "n179" }, detail: Empty }
+Row { id: rows.key(18), note: Blank, detail: Empty }
+Row { id: rows.key(180), note: Blank, detail: Count { n: 180 } }
+Row { id: rows.key(181), note: Said { text: "n181" }, detail: Label { t: "6", m: -181 } }
+Row { id: rows.key(182), note: Said { text: "n182" }, detail: Empty }
+Row { id: rows.key(183), note: Blank, detail: Empty }
+Row { id: rows.key(184), note: Said { text: "n184" }, detail: Count { n: 184 } }
+Row { id: rows.key(185), note: Said { text: "n185" }, detail: Label { t: "3", m: -185 } }
+Row { id: rows.key(186), note: Blank, detail: Empty }
+Row { id: rows.key(187), note: Said { text: "n187" }, detail: Empty }
+Row { id: rows.key(188), note: Said { text: "n188" }, detail: Count { n: 188 } }
+Row { id: rows.key(189), note: Blank, detail: Label { t: "0", m: -189 } }
+Row { id: rows.key(19), note: Said { text: "n19" }, detail: Empty }
+Row { id: rows.key(190), note: Said { text: "n190" }, detail: Empty }
+Row { id: rows.key(191), note: Said { text: "n191" }, detail: Empty }
+Row { id: rows.key(192), note: Blank, detail: Count { n: 192 } }
+Row { id: rows.key(193), note: Said { text: "n193" }, detail: Label { t: "4", m: -193 } }
+Row { id: rows.key(194), note: Said { text: "n194" }, detail: Empty }
+Row { id: rows.key(195), note: Blank, detail: Empty }
+Row { id: rows.key(196), note: Said { text: "n196" }, detail: Count { n: 196 } }
+Row { id: rows.key(197), note: Said { text: "n197" }, detail: Label { t: "1", m: -197 } }
+Row { id: rows.key(198), note: Blank, detail: Empty }
+Row { id: rows.key(199), note: Said { text: "n199" }, detail: Empty }
+Row { id: rows.key(2), note: Said { text: "n2" }, detail: Empty }
+Row { id: rows.key(20), note: Said { text: "n20" }, detail: Count { n: 20 } }
+Row { id: rows.key(200), note: Said { text: "n200" }, detail: Count { n: 200 } }
+Row { id: rows.key(201), note: Blank, detail: Label { t: "5", m: -201 } }
+Row { id: rows.key(202), note: Said { text: "n202" }, detail: Empty }
+Row { id: rows.key(203), note: Said { text: "n203" }, detail: Empty }
+Row { id: rows.key(204), note: Blank, detail: Count { n: 204 } }
+Row { id: rows.key(205), note: Said { text: "n205" }, detail: Label { t: "2", m: -205 } }
+Row { id: rows.key(206), note: Said { text: "n206" }, detail: Empty }
+Row { id: rows.key(207), note: Blank, detail: Empty }
+Row { id: rows.key(208), note: Said { text: "n208" }, detail: Count { n: 208 } }
+Row { id: rows.key(209), note: Said { text: "n209" }, detail: Label { t: "6", m: -209 } }
+Row { id: rows.key(21), note: Blank, detail: Label { t: "0", m: -21 } }
+Row { id: rows.key(210), note: Blank, detail: Empty }
+Row { id: rows.key(211), note: Said { text: "n211" }, detail: Empty }
+Row { id: rows.key(212), note: Said { text: "n212" }, detail: Count { n: 212 } }
+Row { id: rows.key(213), note: Blank, detail: Label { t: "3", m: -213 } }
+Row { id: rows.key(214), note: Said { text: "n214" }, detail: Empty }
+Row { id: rows.key(215), note: Said { text: "n215" }, detail: Empty }
+Row { id: rows.key(216), note: Blank, detail: Count { n: 216 } }
+Row { id: rows.key(217), note: Said { text: "n217" }, detail: Label { t: "0", m: -217 } }
+Row { id: rows.key(218), note: Said { text: "n218" }, detail: Empty }
+Row { id: rows.key(219), note: Blank, detail: Empty }
+Row { id: rows.key(22), note: Said { text: "n22" }, detail: Empty }
+Row { id: rows.key(220), note: Said { text: "n220" }, detail: Count { n: 220 } }
+Row { id: rows.key(221), note: Said { text: "n221" }, detail: Label { t: "4", m: -221 } }
+Row { id: rows.key(222), note: Blank, detail: Empty }
+Row { id: rows.key(223), note: Said { text: "n223" }, detail: Empty }
+Row { id: rows.key(224), note: Said { text: "n224" }, detail: Count { n: 224 } }
+Row { id: rows.key(225), note: Blank, detail: Label { t: "1", m: -225 } }
+Row { id: rows.key(226), note: Said { text: "n226" }, detail: Empty }
+Row { id: rows.key(227), note: Said { text: "n227" }, detail: Empty }
+Row { id: rows.key(228), note: Blank, detail: Count { n: 228 } }
+Row { id: rows.key(229), note: Said { text: "n229" }, detail: Label { t: "5", m: -229 } }
+Row { id: rows.key(23), note: Said { text: "n23" }, detail: Empty }
+Row { id: rows.key(230), note: Said { text: "n230" }, detail: Empty }
+Row { id: rows.key(231), note: Blank, detail: Empty }
+Row { id: rows.key(232), note: Said { text: "n232" }, detail: Count { n: 232 } }
+Row { id: rows.key(233), note: Said { text: "n233" }, detail: Label { t: "2", m: -233 } }
+Row { id: rows.key(234), note: Blank, detail: Empty }
+Row { id: rows.key(235), note: Said { text: "n235" }, detail: Empty }
+Row { id: rows.key(236), note: Said { text: "n236" }, detail: Count { n: 236 } }
+Row { id: rows.key(237), note: Blank, detail: Label { t: "6", m: -237 } }
+Row { id: rows.key(238), note: Said { text: "n238" }, detail: Empty }
+Row { id: rows.key(239), note: Said { text: "n239" }, detail: Empty }
+Row { id: rows.key(24), note: Blank, detail: Count { n: 24 } }
+Row { id: rows.key(240), note: Blank, detail: Count { n: 240 } }
+Row { id: rows.key(241), note: Said { text: "n241" }, detail: Label { t: "3", m: -241 } }
+Row { id: rows.key(242), note: Said { text: "n242" }, detail: Empty }
+Row { id: rows.key(243), note: Blank, detail: Empty }
+Row { id: rows.key(244), note: Said { text: "n244" }, detail: Count { n: 244 } }
+Row { id: rows.key(245), note: Said { text: "n245" }, detail: Label { t: "0", m: -245 } }
+Row { id: rows.key(246), note: Blank, detail: Empty }
+Row { id: rows.key(247), note: Said { text: "n247" }, detail: Empty }
+Row { id: rows.key(248), note: Said { text: "n248" }, detail: Count { n: 248 } }
+Row { id: rows.key(249), note: Blank, detail: Label { t: "4", m: -249 } }
+Row { id: rows.key(25), note: Said { text: "n25" }, detail: Label { t: "4", m: -25 } }
+Row { id: rows.key(250), note: Said { text: "n250" }, detail: Empty }
+Row { id: rows.key(251), note: Said { text: "n251" }, detail: Empty }
+Row { id: rows.key(252), note: Blank, detail: Count { n: 252 } }
+Row { id: rows.key(253), note: Said { text: "n253" }, detail: Label { t: "1", m: -253 } }
+Row { id: rows.key(254), note: Said { text: "n254" }, detail: Empty }
+Row { id: rows.key(255), note: Blank, detail: Empty }
+Row { id: rows.key(256), note: Said { text: "n256" }, detail: Count { n: 256 } }
+Row { id: rows.key(257), note: Said { text: "n257" }, detail: Label { t: "5", m: -257 } }
+Row { id: rows.key(258), note: Blank, detail: Empty }
+Row { id: rows.key(259), note: Said { text: "n259" }, detail: Empty }
+Row { id: rows.key(26), note: Said { text: "n26" }, detail: Empty }
+Row { id: rows.key(260), note: Said { text: "n260" }, detail: Count { n: 260 } }
+Row { id: rows.key(261), note: Blank, detail: Label { t: "2", m: -261 } }
+Row { id: rows.key(262), note: Said { text: "n262" }, detail: Empty }
+Row { id: rows.key(263), note: Said { text: "n263" }, detail: Empty }
+Row { id: rows.key(264), note: Blank, detail: Count { n: 264 } }
+Row { id: rows.key(265), note: Said { text: "n265" }, detail: Label { t: "6", m: -265 } }
+Row { id: rows.key(266), note: Said { text: "n266" }, detail: Empty }
+Row { id: rows.key(267), note: Blank, detail: Empty }
+Row { id: rows.key(268), note: Said { text: "n268" }, detail: Count { n: 268 } }
+Row { id: rows.key(269), note: Said { text: "n269" }, detail: Label { t: "3", m: -269 } }
+Row { id: rows.key(27), note: Blank, detail: Empty }
+Row { id: rows.key(270), note: Blank, detail: Empty }
+Row { id: rows.key(271), note: Said { text: "n271" }, detail: Empty }
+Row { id: rows.key(272), note: Said { text: "n272" }, detail: Count { n: 272 } }
+Row { id: rows.key(273), note: Blank, detail: Label { t: "0", m: -273 } }
+Row { id: rows.key(274), note: Said { text: "n274" }, detail: Empty }
+Row { id: rows.key(275), note: Said { text: "n275" }, detail: Empty }
+Row { id: rows.key(276), note: Blank, detail: Count { n: 276 } }
+Row { id: rows.key(277), note: Said { text: "n277" }, detail: Label { t: "4", m: -277 } }
+Row { id: rows.key(278), note: Said { text: "n278" }, detail: Empty }
+Row { id: rows.key(279), note: Blank, detail: Empty }
+Row { id: rows.key(28), note: Said { text: "n28" }, detail: Count { n: 28 } }
+Row { id: rows.key(280), note: Said { text: "n280" }, detail: Count { n: 280 } }
+Row { id: rows.key(281), note: Said { text: "n281" }, detail: Label { t: "1", m: -281 } }
+Row { id: rows.key(282), note: Blank, detail: Empty }
+Row { id: rows.key(283), note: Said { text: "n283" }, detail: Empty }
+Row { id: rows.key(284), note: Said { text: "n284" }, detail: Count { n: 284 } }
+Row { id: rows.key(285), note: Blank, detail: Label { t: "5", m: -285 } }
+Row { id: rows.key(286), note: Said { text: "n286" }, detail: Empty }
+Row { id: rows.key(287), note: Said { text: "n287" }, detail: Empty }
+Row { id: rows.key(288), note: Blank, detail: Count { n: 288 } }
+Row { id: rows.key(289), note: Said { text: "n289" }, detail: Label { t: "2", m: -289 } }
+Row { id: rows.key(29), note: Said { text: "n29" }, detail: Label { t: "1", m: -29 } }
+Row { id: rows.key(290), note: Said { text: "n290" }, detail: Empty }
+Row { id: rows.key(291), note: Blank, detail: Empty }
+Row { id: rows.key(292), note: Said { text: "n292" }, detail: Count { n: 292 } }
+Row { id: rows.key(293), note: Said { text: "n293" }, detail: Label { t: "6", m: -293 } }
+Row { id: rows.key(294), note: Blank, detail: Empty }
+Row { id: rows.key(295), note: Said { text: "n295" }, detail: Empty }
+Row { id: rows.key(296), note: Said { text: "n296" }, detail: Count { n: 296 } }
+Row { id: rows.key(297), note: Blank, detail: Label { t: "3", m: -297 } }
+Row { id: rows.key(298), note: Said { text: "n298" }, detail: Empty }
+Row { id: rows.key(299), note: Said { text: "n299" }, detail: Empty }
+Row { id: rows.key(3), note: Blank, detail: Empty }
+Row { id: rows.key(30), note: Blank, detail: Empty }
+Row { id: rows.key(31), note: Said { text: "n31" }, detail: Empty }
+Row { id: rows.key(32), note: Said { text: "n32" }, detail: Count { n: 32 } }
+Row { id: rows.key(33), note: Blank, detail: Label { t: "5", m: -33 } }
+Row { id: rows.key(34), note: Said { text: "n34" }, detail: Empty }
+Row { id: rows.key(35), note: Said { text: "n35" }, detail: Empty }
+Row { id: rows.key(36), note: Blank, detail: Count { n: 36 } }
+Row { id: rows.key(37), note: Said { text: "n37" }, detail: Label { t: "2", m: -37 } }
+Row { id: rows.key(38), note: Said { text: "n38" }, detail: Empty }
+Row { id: rows.key(39), note: Blank, detail: Empty }
+Row { id: rows.key(4), note: Said { text: "n4" }, detail: Count { n: 4 } }
+Row { id: rows.key(40), note: Said { text: "n40" }, detail: Count { n: 40 } }
+Row { id: rows.key(41), note: Said { text: "n41" }, detail: Label { t: "6", m: -41 } }
+Row { id: rows.key(42), note: Blank, detail: Empty }
+Row { id: rows.key(43), note: Said { text: "n43" }, detail: Empty }
+Row { id: rows.key(44), note: Said { text: "n44" }, detail: Count { n: 44 } }
+Row { id: rows.key(45), note: Blank, detail: Label { t: "3", m: -45 } }
+Row { id: rows.key(46), note: Said { text: "n46" }, detail: Empty }
+Row { id: rows.key(47), note: Said { text: "n47" }, detail: Empty }
+Row { id: rows.key(48), note: Blank, detail: Count { n: 48 } }
+Row { id: rows.key(49), note: Said { text: "n49" }, detail: Label { t: "0", m: -49 } }
+Row { id: rows.key(5), note: Said { text: "n5" }, detail: Label { t: "5", m: -5 } }
+Row { id: rows.key(50), note: Said { text: "n50" }, detail: Empty }
+Row { id: rows.key(51), note: Blank, detail: Empty }
+Row { id: rows.key(52), note: Said { text: "n52" }, detail: Count { n: 52 } }
+Row { id: rows.key(53), note: Said { text: "n53" }, detail: Label { t: "4", m: -53 } }
+Row { id: rows.key(54), note: Blank, detail: Empty }
+Row { id: rows.key(55), note: Said { text: "n55" }, detail: Empty }
+Row { id: rows.key(56), note: Said { text: "n56" }, detail: Count { n: 56 } }
+Row { id: rows.key(57), note: Blank, detail: Label { t: "1", m: -57 } }
+Row { id: rows.key(58), note: Said { text: "n58" }, detail: Empty }
+Row { id: rows.key(59), note: Said { text: "n59" }, detail: Empty }
+Row { id: rows.key(6), note: Blank, detail: Empty }
+Row { id: rows.key(60), note: Blank, detail: Count { n: 60 } }
+Row { id: rows.key(61), note: Said { text: "n61" }, detail: Label { t: "5", m: -61 } }
+Row { id: rows.key(62), note: Said { text: "n62" }, detail: Empty }
+Row { id: rows.key(63), note: Blank, detail: Empty }
+Row { id: rows.key(64), note: Said { text: "n64" }, detail: Count { n: 64 } }
+Row { id: rows.key(65), note: Said { text: "n65" }, detail: Label { t: "2", m: -65 } }
+Row { id: rows.key(66), note: Blank, detail: Empty }
+Row { id: rows.key(67), note: Said { text: "n67" }, detail: Empty }
+Row { id: rows.key(68), note: Said { text: "n68" }, detail: Count { n: 68 } }
+Row { id: rows.key(69), note: Blank, detail: Label { t: "6", m: -69 } }
+Row { id: rows.key(7), note: Said { text: "n7" }, detail: Empty }
+Row { id: rows.key(70), note: Said { text: "n70" }, detail: Empty }
+Row { id: rows.key(71), note: Said { text: "n71" }, detail: Empty }
+Row { id: rows.key(72), note: Blank, detail: Count { n: 72 } }
+Row { id: rows.key(73), note: Said { text: "n73" }, detail: Label { t: "3", m: -73 } }
+Row { id: rows.key(74), note: Said { text: "n74" }, detail: Empty }
+Row { id: rows.key(75), note: Blank, detail: Empty }
+Row { id: rows.key(76), note: Said { text: "n76" }, detail: Count { n: 76 } }
+Row { id: rows.key(77), note: Said { text: "n77" }, detail: Label { t: "0", m: -77 } }
+Row { id: rows.key(78), note: Blank, detail: Empty }
+Row { id: rows.key(79), note: Said { text: "n79" }, detail: Empty }
+Row { id: rows.key(8), note: Said { text: "n8" }, detail: Count { n: 8 } }
+Row { id: rows.key(80), note: Said { text: "n80" }, detail: Count { n: 80 } }
+Row { id: rows.key(81), note: Blank, detail: Label { t: "4", m: -81 } }
+Row { id: rows.key(82), note: Said { text: "n82" }, detail: Empty }
+Row { id: rows.key(83), note: Said { text: "n83" }, detail: Empty }
+Row { id: rows.key(84), note: Blank, detail: Count { n: 84 } }
+Row { id: rows.key(85), note: Said { text: "n85" }, detail: Label { t: "1", m: -85 } }
+Row { id: rows.key(86), note: Said { text: "n86" }, detail: Empty }
+Row { id: rows.key(87), note: Blank, detail: Empty }
+Row { id: rows.key(88), note: Said { text: "n88" }, detail: Count { n: 88 } }
+Row { id: rows.key(89), note: Said { text: "n89" }, detail: Label { t: "5", m: -89 } }
+Row { id: rows.key(9), note: Blank, detail: Label { t: "2", m: -9 } }
+Row { id: rows.key(90), note: Blank, detail: Empty }
+Row { id: rows.key(91), note: Said { text: "n91" }, detail: Empty }
+Row { id: rows.key(92), note: Said { text: "n92" }, detail: Count { n: 92 } }
+Row { id: rows.key(93), note: Blank, detail: Label { t: "2", m: -93 } }
+Row { id: rows.key(94), note: Said { text: "n94" }, detail: Empty }
+Row { id: rows.key(95), note: Said { text: "n95" }, detail: Empty }
+Row { id: rows.key(96), note: Blank, detail: Count { n: 96 } }
+Row { id: rows.key(97), note: Said { text: "n97" }, detail: Label { t: "6", m: -97 } }
+Row { id: rows.key(98), note: Said { text: "n98" }, detail: Empty }
+Row { id: rows.key(99), note: Blank, detail: Empty }

@@ -1,0 +1,29 @@
+# A dump meeting damage of a heap fails, the transaction fails each later call and its commit
+# with the quarantine of that heap, and no dump file is left.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+
+run
+  insert users { name: "a" }
+
+damage heap app::users User
+
+begin t
+
+in t fatal Quarantined { what: "app::users.User" }
+  dump to "d"
+
+in t fatal Quarantined { what: "app::users.User" }
+  1
+
+commit t fatal Quarantined { what: "app::users.User" }
+
+probe marks
+----
+app::users.User
+
+probe files d
+----

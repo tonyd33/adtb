@@ -1,0 +1,37 @@
+# An open of a file marked whole refuses a log with migrations past the file's with the
+# quarantine and opens with the file's own log, its reads refused with the quarantine.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+
+run
+  insert users { name: "ann" }
+
+damage status
+
+fatal Quarantined { what: "the database" }
+  insert users { name: "bob" }
+
+migrate refused MigrationRefused { version: 2, reason: Fatal { reason: Quarantined { what: "the database" } } }
+  module more
+  add module more
+  add type T = { id: Key ts }
+  add relation ts : T key id generate sequence
+
+reopen
+
+probe marks
+----
+the database
+
+probe catalog
+----
+change None
+next heap 3
+app::users.User heap 0
+app::users key id over User
+
+fatal Quarantined { what: "the database" }
+  from u in users select u.name

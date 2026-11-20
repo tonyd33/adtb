@@ -1,0 +1,34 @@
+# A migration whose open meets damage in the rows it rewrites is refused with the quarantine; the
+# file opens with its own log, the database quarantined.
+use long
+
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+
+run
+  insert users { name: long::x20000() ++ long::x1000() }
+
+flip large app::users User
+
+migrate refused MigrationRefused { version: 3, reason: Fatal { reason: Quarantined { what: "the database" } } }
+  module app
+  add field User.age: I64 fill 0
+
+reopen
+
+probe marks
+----
+the database
+
+probe catalog
+----
+change Schema
+next heap 3
+app::users.User heap 0
+app::users key id over User
+
+fatal Quarantined { what: "the database" }
+  from u in users select u.name

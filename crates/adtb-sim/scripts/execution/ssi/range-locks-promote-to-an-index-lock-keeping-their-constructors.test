@@ -1,0 +1,102 @@
+# Past two range locks on an index they become an index lock over the constructors the ranges
+# covered, so an insert of another constructor, whose writer's read the reader then writes,
+# commits beside it, and one of a covered constructor fails.
+option lock_ranges 2
+migrate
+  module app
+  add module app
+  add type Thing { id: Key things, k: I64 } = G | A | E
+  add relation things : Thing key id generate sequence
+    index (k)
+  add type Flag = { id: Key flags, on: Bool }
+  add relation flags : Flag key id generate sequence
+
+run
+  insert flags { on: False }
+
+begin r
+
+in r query
+  from t in things.G where t.k == 1 select t.id
+----
+
+in r query
+  from t in things.A where t.k == 2 select t.id
+----
+
+probe locks r
+----
+range app::things index (k) over A
+range app::things index (k) over G
+
+in r query
+  from t in things.G where t.k == 3 select t.id
+----
+
+probe locks r
+----
+index app::things index (k) over G | A
+
+rollback r
+
+begin r1
+
+begin w1
+
+in r1 query
+  from t in things.G where t.k == 1 select t.id
+----
+
+in r1 query
+  from t in things.A where t.k == 2 select t.id
+----
+
+in r1 query
+  from t in things.G where t.k == 3 select t.id
+----
+
+in w1 query
+  from f in flags select f.on
+----
+False
+
+in r1 run
+  update f in flags set { f with on: True }
+
+in w1 run
+  insert things.E { k: 200 }
+
+commit r1
+
+commit w1
+
+begin r2
+
+begin w2 id W2
+
+in r2 query
+  from t in things.G where t.k == 1 select t.id
+----
+
+in r2 query
+  from t in things.A where t.k == 2 select t.id
+----
+
+in r2 query
+  from t in things.G where t.k == 3 select t.id
+----
+
+in w2 query
+  from f in flags select f.on
+----
+True
+
+in r2 run
+  update f in flags set { f with on: False }
+
+in w2 run
+  insert things.A { k: 200 }
+
+commit r2
+
+commit w2 retry Serialization { txn: $W2, on: "" }

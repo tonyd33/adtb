@@ -1,0 +1,97 @@
+# A read of one constructor's rows by an index range conflicts only with an insert of that
+# constructor inside the range: in a write skew over that read, both sides commit when the insert
+# is of another constructor at the key or of the same constructor at another key, and the second
+# fails when it is of the same constructor at the key.
+migrate
+  module app
+  add module app
+  add type Thing { id: Key things, k: I64 } = G | A | E
+  add relation things : Thing key id generate sequence
+    index (k)
+  add type Flag = { id: Key flags, on: Bool }
+  add relation flags : Flag key id generate sequence
+
+run
+  insert flags { on: False }
+
+probe plan
+  explain from t in things.G where t.k == 7 select t.id
+----
+Set total
+  reads things.G, things.A, things.E, things (k)
+  Pipeline
+    One row
+    Probe things (k)
+      pruned A at compile, E at compile
+      G ->
+        Chain
+          Emit
+
+begin r
+
+begin w
+
+in r query
+  from t in things.G where t.k == 7 select t.id
+----
+
+in w query
+  from f in flags select f.on
+----
+False
+
+in r run
+  update f in flags set { f with on: True }
+
+in w run
+  insert things.E { k: 7 }
+
+commit r
+
+commit w
+
+begin r3
+
+begin w3
+
+in r3 query
+  from t in things.G where t.k == 7 select t.id
+----
+
+in w3 query
+  from f in flags select f.on
+----
+True
+
+in r3 run
+  update f in flags set { f with on: True }
+
+in w3 run
+  insert things.G { k: 8 }
+
+commit r3
+
+commit w3
+
+begin r2
+
+begin w2 id W2
+
+in r2 query
+  from t in things.G where t.k == 7 select t.id
+----
+
+in w2 query
+  from f in flags select f.on
+----
+True
+
+in r2 run
+  update f in flags set { f with on: False }
+
+in w2 run
+  insert things.G { k: 7 }
+
+commit r2
+
+commit w2 retry Serialization { txn: $W2, on: "" }

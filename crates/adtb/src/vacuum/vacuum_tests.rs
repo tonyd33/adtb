@@ -720,38 +720,6 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
     }
 }
 
-#[test]
-fn a_write_clears_the_all_visible_bit() {
-    let mut sim = Sim::new(32, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(&rt, 4);
-        let begun = db.txns.begin(&db.pager).unwrap();
-        let x = begun.xid();
-        let mut tids = Vec::new();
-        for key in 0..40 {
-            let row = make_row(APPLE, key, key as u64);
-            let tid = db.heaps[APPLE].insert(&db.pager, x, &row).unwrap();
-            db.index(APPLE, &row, tid);
-            tids.push(tid);
-        }
-        db.txns.commit(&db.pager, begun).unwrap();
-        db.vacuum(usize::MAX);
-        let pid = Pid(tids[7].page());
-        assert!(db.heaps[APPLE].all_visible(&db.pager, pid).unwrap());
-        assert_eq!(1, db.vacuum(usize::MAX).skipped);
-        let begun = db.txns.begin(&db.pager).unwrap();
-        let x = begun.xid();
-        db.heaps[APPLE].delete(&db.pager, tids[7], x).unwrap();
-        assert!(!db.heaps[APPLE].all_visible(&db.pager, pid).unwrap());
-        assert_eq!(Vec::<String>::new(), db.verify());
-        db.txns.abort(&db.pager, begun).unwrap();
-        let report = db.vacuum(usize::MAX);
-        assert_eq!((1, 1), (report.cleared, report.all_visible), "{report:?}");
-        assert!(db.heaps[APPLE].all_visible(&db.pager, pid).unwrap());
-        assert_eq!(Vec::<String>::new(), db.verify());
-    });
-}
-
 /// The heap of the sum with [`EMAIL`]'s row type that a copy writes into.
 const OTHER: usize = 1;
 

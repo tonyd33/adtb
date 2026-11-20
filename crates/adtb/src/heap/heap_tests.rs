@@ -3,9 +3,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::batch::{Batch, BatchBuilder, Column, Schema};
 use crate::heap::handle::Updated;
-use crate::heap::{CtorType, Error, FieldType, Flags, Heap, HeapNo, max_fanout, walk};
+use crate::heap::{Error, FieldType, Flags, Heap, HeapNo, max_fanout, walk};
 use crate::key::{CtorId, Scalar, Tid, Value};
 use crate::mvcc::{Fate, Writers, Xid};
 use crate::runtime::{Entropy, Threads};
@@ -385,36 +384,6 @@ fn large_values_go_out_of_line_and_a_retag_keeps_their_pointers() {
 }
 
 #[test]
-fn rows_too_large_for_a_page_are_refused() {
-    let mut sim = Sim::new(5, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(&rt, 4);
-        let pager = &mut db.pager;
-        let large = db.heaps[EMAIL].large();
-        let over = |e: Result<_, Error>| match e {
-            Err(Error::TooLarge { len, limit }) => assert!(len > limit, "{len} over {limit}"),
-            other => panic!("not too large: {other:?}"),
-        };
-        let wide = vec![scalar(Scalar::Decimal(0)); 300];
-        over(Heap::create(pager, 20, wide.clone(), large).map(|_| ()));
-        over(crate::heap::fits(pager.page_size(), wide));
-        let narrow = vec![scalar(Scalar::Decimal(0)); 100];
-        assert_eq!(Ok(()), crate::heap::fits(pager.page_size(), narrow));
-        let empties = vec![scalar(Scalar::Text); 4000];
-        over(Heap::create(pager, 22, empties, large).map(|_| ()));
-        let many = vec![scalar(Scalar::Text); 400];
-        let heap = Heap::create(pager, 21, many, large).unwrap();
-        let row = vec![Value::Text("y".repeat(30)); 400];
-        over(heap.insert(pager, Xid(1), &row).map(|_| ()));
-        assert!(heap.pages(pager).unwrap().is_empty());
-        assert!(
-            large.pages(pager).unwrap().is_empty(),
-            "a refused row writes no large value"
-        );
-    });
-}
-
-#[test]
 fn the_directory_splits_and_its_root_stays() {
     let mut sim = Sim::new(6, Config::default());
     finished(&mut sim, |rt| {
@@ -530,70 +499,6 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
             .filter(|f| !matches!(f.problem, crate::verify::Problem::Overcounted { .. }))
             .collect();
         assert!(wrong.is_empty(), "{wrong:#?}");
-    });
-}
-
-#[test]
-fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
-    let mut sim = Sim::new(8, Config::default());
-    finished(&mut sim, |rt| {
-        let (db, _) = Db::create(&rt, 4);
-        let ctor = |id, fields| CtorType {
-            id: CtorId(id),
-            fields,
-        };
-        let row_type = vec![
-            scalar(Scalar::I64),
-            FieldType::Sum(vec![ctor(1, vec![]), ctor(2, vec![scalar(Scalar::Text)])]),
-            FieldType::Sum(vec![
-                ctor(1040, vec![scalar(Scalar::I32)]),
-                ctor(1041, vec![scalar(Scalar::Text), scalar(Scalar::I64)]),
-                ctor(1042, vec![]),
-            ]),
-        ];
-        let large = db.heaps[EMAIL].large();
-        let heap = Heap::create(&db.pager, 20, row_type.clone(), large).unwrap();
-        let rows: Vec<Vec<Value>> = (0..300i64)
-            .map(|k| {
-                let note = match k % 3 {
-                    0 => Value::Sum {
-                        ctor: 0,
-                        fields: vec![],
-                    },
-                    _ => Value::Sum {
-                        ctor: 1,
-                        fields: vec![Value::Text(format!("n{k}"))],
-                    },
-                };
-                let detail = match k % 4 {
-                    0 => Value::Sum {
-                        ctor: 0,
-                        fields: vec![Value::I32(k as i32)],
-                    },
-                    1 => Value::Sum {
-                        ctor: 1,
-                        fields: vec![Value::Text("t".repeat((k % 7) as usize)), Value::I64(-k)],
-                    },
-                    _ => Value::Sum {
-                        ctor: 2,
-                        fields: vec![],
-                    },
-                };
-                vec![Value::I64(k), note, detail]
-            })
-            .collect();
-        for r in &rows {
-            heap.insert(&db.pager, Xid(1), r).unwrap();
-        }
-        let mut b = BatchBuilder::new(Schema::of_heap(&row_type));
-        heap.scan(&db.pager, |v| b.push_row(&v.row)).unwrap();
-        let batch: Batch = b.finish();
-        assert_eq!(rows.len(), batch.len());
-        let mut read: Vec<Vec<Value>> = (0..batch.len()).map(|i| batch.row(i)).collect();
-        read.sort_by_key(|r| key_of(r));
-        assert_eq!(rows, read);
-        assert!(matches!(batch.columns()[1], Column::Nullable { .. }));
-        assert!(matches!(batch.columns()[2], Column::Union { .. }));
     });
 }
 

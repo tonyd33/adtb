@@ -1,0 +1,74 @@
+# A read of the items whose k is above 6 locks that range of index (k): an insert at k 6, whose
+# writer's read the reader then writes, commits beside it; one at k 7 fails.
+use locks
+reopen
+
+begin p
+
+in p query
+  count(1 for i in items where i.k > 6)
+----
+9
+
+probe locks p
+----
+range app::items index (k) over Item
+tuple app::items.Item
+tuple app::items.Item
+tuple app::items.Item
+tuple app::items.Item
+tuple app::items.Item
+tuple app::items.Item
+tuple app::items.Item
+tuple app::items.Item
+tuple app::items.Item
+
+rollback p
+
+begin r1 id R1
+
+begin w1 id W1
+
+in r1 query
+  count(1 for i in items where i.k > 6)
+----
+9
+
+in w1 query
+  count(1 for m in marks where m.n == 0)
+----
+0
+
+in r1 run
+  insert marks { n: 1 }
+
+in w1 run
+  insert items { k: 6, pad: "z" }
+
+commit r1
+
+commit w1
+
+begin r2 id R2
+
+begin w2 id W2
+
+in r2 query
+  count(1 for i in items where i.k > 6)
+----
+9
+
+in w2 query
+  count(1 for m in marks where m.n == 0)
+----
+0
+
+in r2 run
+  insert marks { n: 1 }
+
+in w2 run
+  insert items { k: 7, pad: "z" }
+
+commit r2
+
+commit w2 retry Serialization { txn: $W2, on: "" }

@@ -1,0 +1,36 @@
+# A scan that stops early locks the pages it read; a whole scan locks the heap, replacing them,
+# and a later early scan takes no lock of its own.
+option morsel_rows 16
+use stocked
+reopen
+
+begin e
+
+in e query
+  exists s in stock where s.name == "item2"
+----
+True
+
+probe locks e
+----
+page app::stock.Item
+
+in e query
+  count(1 for s in stock)
+----
+300
+
+probe locks e
+----
+heap app::stock.Item
+
+in e query
+  exists s in stock where s.name == "item2"
+----
+True
+
+probe locks e
+----
+heap app::stock.Item
+
+rollback e

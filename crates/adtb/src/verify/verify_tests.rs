@@ -137,15 +137,6 @@ fn a_page_nothing_refers_to_is_leaked_and_repair_frees_it() {
 }
 
 #[test]
-fn a_sound_file_verifies_clean() {
-    run(1, |db| {
-        let report = db.verify();
-        assert!(report.is_clean() && report.complete, "{report:#?}");
-        assert!(!report.commits.is_empty());
-    });
-}
-
-#[test]
 fn a_tree_page_of_another_owner_breaks_the_tree_and_hides_no_leak() {
     run(7, |db| {
         let pages = db.tree.pages(&db.pager).unwrap();

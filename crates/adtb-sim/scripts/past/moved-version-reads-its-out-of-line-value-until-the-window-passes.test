@@ -1,0 +1,65 @@
+# Vacuum moves a deleted version with a value out of line out of the current heap; a read at a
+# marker before the delete still reads the whole value. Once the window passes the marker, a read
+# there is unavailable, and the file verifies clean after each vacuum.
+seed 14
+use long
+
+migrate
+  module app
+  add module app
+  add type Doc = { id: Key docs, text: Text }
+  add relation docs : Doc key id generate sequence
+
+run
+  set setting RetentionWindow = { length: 1s }
+
+begin w
+
+in w run
+  insert docs { text: long::x20000() }
+
+commit w position first
+
+run
+  from d in docs select key d
+
+run
+  delete d in docs
+
+run
+  from d in docs select key d
+
+run
+  vacuum docs
+
+probe heap app::docs Doc
+----
+
+query
+  at commit $first { from d in docs select d.text == long::x20000() }
+----
+True
+
+probe holding verify
+----
+
+advance 3s
+
+begin w
+
+in w run
+  insert docs { text: "y" }
+
+commit w position kept
+
+run
+  from d in docs select key d
+
+run
+  vacuum docs
+
+error HistoryUnavailable { oldest: $kept }
+  at commit $first { from d in docs select d.text }
+
+probe holding verify
+----

@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, Range};
 use std::sync::atomic::AtomicBool;
@@ -6,10 +5,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
 use crate::btree::build::BuildError;
-use crate::btree::{BTree, Cursor, Error, Index, SumKey, tag_prefix};
-use crate::key::{
-    CtorId, CtorType, Dir, Entry, KeySchema, KeyType, OrderKey, Scalar, SumType, Tid, Value,
-};
+use crate::btree::{BTree, Cursor, Error, Index};
+use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::runtime::{Entropy, OpKind, Runtime, Threads};
 use crate::storage::{Options, Pager, Pid};
 use crate::verify::Inventory;
@@ -261,48 +258,6 @@ fn ascending_and_descending_inserts_split_cleanly() {
     });
 }
 
-#[test]
-fn oversized_entries_are_refused() {
-    with_pager(10, |_, pager| {
-        let tree = BTree::create(pager, OWNER).unwrap();
-        let max = BTree::max_entry_len(PAGE);
-        assert_eq!(tree.insert(pager, &vec![1; max]), Ok(true));
-        assert_eq!(
-            tree.insert(pager, &vec![1; max + 1]),
-            Err(Error::TooLong { len: max + 1, max })
-        );
-    });
-}
-
-#[test]
-fn a_tree_reopens_from_its_root() {
-    let mut sim = Sim::new(11, Config::default());
-    let root = Arc::new(Mutex::new(Pid(0)));
-    let r = root.clone();
-    finished(&mut sim, move |rt| {
-        let pager = Pager::create(rt, &options(FRAMES)).unwrap();
-        let tree = BTree::create(&pager, OWNER).unwrap();
-        for i in 0..2000_u32 {
-            tree.insert(&pager, &[i.to_be_bytes().as_slice(), &[7; 60]].concat())
-                .unwrap();
-        }
-        pager.flush_log();
-        *r.lock().unwrap() = tree.root();
-    });
-    let root = *root.lock().unwrap();
-    finished(&mut sim, move |rt| {
-        let (pager, _) = Pager::open(rt, &options(FRAMES)).unwrap();
-        let tree = BTree::open(root, OWNER);
-        assert_eq!(tree.verify(&pager).unwrap().len(), 2000);
-        assert!(
-            tree.contains(&pager, &[&1999_u32.to_be_bytes()[..], &[7; 60]].concat())
-                .unwrap()
-        );
-        let other = BTree::open(root, OWNER + 1);
-        assert_eq!(other.verify(&pager), Err(Error::Malformed(root)));
-    });
-}
-
 fn tid(page: u64, slot: u16) -> Tid {
     Tid::new(page, slot).unwrap()
 }
@@ -377,35 +332,6 @@ fn entries_order_by_key_then_constructor_then_tid() {
 }
 
 #[test]
-fn the_identities_key_index_reads_one_key_as_one_range() {
-    with_pager(21, |_, pager| {
-        let (email, google, apple) = (CtorId(0), CtorId(1), CtorId(2));
-        let index =
-            Index::create(pager, OWNER, i64_schema(), [email, google, apple].into()).unwrap();
-        let entries = [
-            (8, google, tid(4, 2)),
-            (7, google, tid(4, 1)),
-            (7, email, tid(12, 3)),
-            (7, apple, tid(1, 1)),
-            (9, email, tid(2, 2)),
-        ]
-        .map(|(k, c, t)| Entry {
-            key: vec![Value::I64(k)],
-            ctor: c,
-            tid: t,
-        });
-        for e in &entries {
-            index.insert(pager, e).unwrap();
-        }
-        let seven = index.probe(pager, &[Value::I64(7)]).unwrap();
-        let ctors: Vec<CtorId> = seven.iter().map(|e| e.ctor).collect();
-        assert_eq!(ctors, [email, google, apple]);
-        let google_seven = index.probe_ctor(pager, &[Value::I64(7)], google).unwrap();
-        assert_eq!(google_seven, [entries[1].clone()]);
-    });
-}
-
-#[test]
 #[should_panic(expected = "is not in the index's constructor set")]
 fn an_entry_of_a_constructor_outside_the_set_is_refused() {
     with_pager(22, |_, pager| {
@@ -420,178 +346,6 @@ fn an_entry_of_a_constructor_outside_the_set_is_refused() {
                 },
             )
             .unwrap();
-    });
-}
-
-/// `type Status ordered = Draft | Sent { at: Instant } | Paid { at: Instant, ref: I64 }`.
-fn status() -> SumType {
-    let keys = OrderKey::spread(3);
-    let fields = [
-        vec![],
-        vec![KeyType::Scalar(Scalar::Instant)],
-        vec![
-            KeyType::Scalar(Scalar::Instant),
-            KeyType::Scalar(Scalar::I64),
-        ],
-    ];
-    SumType::new(
-        keys.into_iter()
-            .zip(fields)
-            .map(|(order_key, fields)| CtorType { order_key, fields })
-            .collect(),
-    )
-    .unwrap()
-}
-
-fn gen_status(rt: &SimRuntime) -> Value {
-    let at = Value::Instant(below(rt, 50) as i64 - 25);
-    match below(rt, 3) {
-        0 => Value::Sum {
-            ctor: 0,
-            fields: vec![],
-        },
-        1 => Value::Sum {
-            ctor: 1,
-            fields: vec![at],
-        },
-        _ => Value::Sum {
-            ctor: 2,
-            fields: vec![at, Value::I64(below(rt, 1000) as i64)],
-        },
-    }
-}
-
-fn cmp_status(a: &Value, b: &Value) -> Ordering {
-    let (Value::Sum { ctor: c, fields: f }, Value::Sum { ctor: d, fields: g }) = (a, b) else {
-        unreachable!()
-    };
-    let key = |fs: &[Value]| -> Vec<i64> {
-        fs.iter()
-            .map(|v| match v {
-                Value::Instant(x) | Value::I64(x) => *x,
-                _ => unreachable!(),
-            })
-            .collect()
-    };
-    c.cmp(d).then_with(|| key(f).cmp(&key(g)))
-}
-
-#[test]
-fn value_level_sum_fields_index_whole_by_tag_and_by_constructor_field() {
-    with_pager(23, |rt, pager| {
-        let sum = status();
-        let row = CtorId(0);
-        let index_for = |pager: &Pager<SimRuntime>, owner: u32, how: SumKey| {
-            let schema = KeySchema::new(vec![(how.key_type(&sum), Dir::Asc)]);
-            Index::create(pager, owner, schema, [row].into()).unwrap()
-        };
-        let whole = index_for(pager, 1, SumKey::Whole);
-        let tag = index_for(pager, 2, SumKey::Tag);
-        let paid_ref = SumKey::Field { ctor: 2, field: 1 };
-        let by_ref = index_for(pager, 3, paid_ref);
-        let mut rows: Vec<(Tid, Value)> = Vec::new();
-        for slot in 0..1500 {
-            let t = tid(100 + slot / 50, (slot % 50) as u16);
-            let v = gen_status(rt);
-            for (index, how) in [
-                (&whole, SumKey::Whole),
-                (&tag, SumKey::Tag),
-                (&by_ref, paid_ref),
-            ] {
-                if let Some(c) = how.component(&v) {
-                    let e = Entry {
-                        key: vec![c],
-                        ctor: row,
-                        tid: t,
-                    };
-                    assert_eq!(index.insert(pager, &e), Ok(true));
-                }
-            }
-            rows.push((t, v));
-        }
-
-        let mut ordered = rows.clone();
-        ordered.sort_by(|a, b| cmp_status(&a.1, &b.1).then(a.0.cmp(&b.0)));
-        let scanned: Vec<(Tid, Value)> = whole
-            .range(pager, Bound::Unbounded, Bound::Unbounded)
-            .unwrap()
-            .into_iter()
-            .map(|e| (e.tid, e.key[0].clone()))
-            .collect();
-        assert_eq!(scanned, ordered);
-
-        for ctor in 0..3 {
-            let mut holding: Vec<Tid> = rows
-                .iter()
-                .filter(|(_, v)| matches!(v, Value::Sum { ctor: c, .. } if *c == ctor))
-                .map(|(t, _)| *t)
-                .collect();
-            let prefix = tag_prefix(&sum, ctor, Dir::Asc);
-            let mut from_whole: Vec<Tid> = whole
-                .scan_prefix(pager, &prefix)
-                .unwrap()
-                .iter()
-                .map(|e| e.tid)
-                .collect();
-            let from_tag: Vec<Tid> = tag
-                .probe(
-                    pager,
-                    &[Value::Sum {
-                        ctor,
-                        fields: vec![],
-                    }],
-                )
-                .unwrap()
-                .iter()
-                .map(|e| e.tid)
-                .collect();
-            holding.sort();
-            assert_eq!(from_tag, holding, "tag {ctor}");
-            from_whole.sort();
-            assert_eq!(from_whole, holding, "whole {ctor}");
-        }
-
-        let lo = Value::Sum {
-            ctor: 1,
-            fields: vec![Value::Instant(0)],
-        };
-        let hi = Value::Sum {
-            ctor: 2,
-            fields: vec![Value::Instant(0), Value::I64(0)],
-        };
-        let sent_or_paid = whole
-            .range(
-                pager,
-                Bound::Included(std::slice::from_ref(&lo)),
-                Bound::Excluded(std::slice::from_ref(&hi)),
-            )
-            .unwrap();
-        let expected: Vec<Tid> = ordered
-            .iter()
-            .filter(|(_, v)| cmp_status(v, &lo).is_ge() && cmp_status(v, &hi).is_lt())
-            .map(|(t, _)| *t)
-            .collect();
-        let sent_or_paid: Vec<Tid> = sent_or_paid.iter().map(|e| e.tid).collect();
-        assert_eq!(sent_or_paid, expected);
-
-        let paid: Vec<(i64, Tid)> = rows
-            .iter()
-            .filter_map(|(t, v)| match v {
-                Value::Sum { ctor: 2, fields } => match fields[1] {
-                    Value::I64(r) => Some((r, *t)),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        let all_refs = by_ref
-            .range(pager, Bound::Unbounded, Bound::Unbounded)
-            .unwrap();
-        assert_eq!(all_refs.len(), paid.len());
-        let (r, t) = paid[0];
-        let found = by_ref.probe(pager, &[Value::I64(r)]).unwrap();
-        assert!(found.iter().any(|e| e.tid == t));
-        assert!(found.iter().all(|e| e.key == [Value::I64(r)]));
     });
 }
 
@@ -1047,37 +801,6 @@ fn an_index_keeps_the_entries_of_one_key_as_postings() {
             "{pages} pages, {whole} without postings"
         );
     });
-}
-
-#[test]
-fn a_bulk_build_gives_a_sound_tree_a_retail_insert_can_extend() {
-    for (n, seed) in [(0u32, 90), (1, 91), (5000, 92)] {
-        let mut sim = Sim::new(seed, Config::default());
-        finished(&mut sim, |rt| {
-            let pager = Pager::create(rt, &options(64)).unwrap();
-            let entries: Vec<Vec<u8>> = (0..n).map(|i| (2 * i).to_be_bytes().to_vec()).collect();
-            let mut made = Vec::new();
-            let tree = BTree::bulk(&pager, 7, entries.clone(), &mut made, &|| false).unwrap();
-            assert_eq!(entries, tree.verify(&pager).unwrap(), "{n} entries");
-            let mut pages = tree.pages(&pager).unwrap();
-            pages.sort();
-            made.sort();
-            assert_eq!(made, pages, "{n} entries: every page written is reached");
-            if n >= 5000 {
-                assert!(tree.height(&pager).unwrap() >= 1, "{n} entries");
-                let leaves = pages.len() as u32;
-                assert!(
-                    leaves < n / 100,
-                    "{leaves} pages for {n} entries are filled"
-                );
-            }
-            for i in (1..n.min(2000)).step_by(2) {
-                assert!(tree.insert(&pager, &i.to_be_bytes()).unwrap());
-                assert!(!tree.insert(&pager, &(2 * i).to_be_bytes()).unwrap());
-            }
-            tree.verify(&pager).unwrap();
-        });
-    }
 }
 
 #[test]

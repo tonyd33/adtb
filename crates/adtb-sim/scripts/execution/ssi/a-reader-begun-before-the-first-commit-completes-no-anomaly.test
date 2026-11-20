@@ -1,0 +1,46 @@
+# Fekete's schedule with the reader begun before the first commit: the reader sees neither write,
+# so it is ordered before both writers and every transaction commits.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id generate sequence
+
+run
+  insert items { value: 100 }
+  insert items { value: 200 }
+
+begin t2
+
+in t2 query
+  from i in items where i.id == items.key(2) select i.value
+----
+200
+
+begin read only t3
+
+begin t1
+
+in t1 run
+  update i in items where i.id == items.key(2) set { i with value: 10 }
+
+commit t1
+
+in t2 run
+  update i in items where i.id == items.key(1) set { i with value: 20 }
+
+in t3 query
+  from i in items select i.value
+----
+100
+200
+
+commit t3
+
+commit t2
+
+query
+  from i in items select { k: i.id, v: i.value }
+----
+{ k: items.key(1), v: 20 }
+{ k: items.key(2), v: 10 }
