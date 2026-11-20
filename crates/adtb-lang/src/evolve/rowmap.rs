@@ -86,7 +86,7 @@ impl Source {
     /// - Each step's `maps` are stated against the `after` of the step before it, the first's
     ///   against this source as it was.
     /// - The last step's `after` is this source as the operator leaves it.
-    pub fn steps(
+    pub(crate) fn steps(
         &mut self,
         module: &str,
         op: Listed<'_>,
@@ -95,11 +95,23 @@ impl Source {
         let steps = RefCell::new(Vec::new());
         let before = self.clone();
         self.apply_recording(module, op, text, None, Some(&steps))?;
-        let mut steps = steps.into_inner();
+        before.stepped(module, op, text, self, steps.into_inner())
+    }
+
+    /// Returns the steps of operator `op` of a migration of `module` whose text is `text`, which
+    /// took this source to `after`, `steps` those its inverses recorded.
+    pub(super) fn stepped(
+        &self,
+        module: &str,
+        op: Listed<'_>,
+        text: &str,
+        after: &Source,
+        mut steps: Vec<Step>,
+    ) -> Result<Vec<Step>, Vec<Diag>> {
         if !matches!(op.kind, OperatorKind::Revert { .. }) {
-            let maps = before.row_maps(module, &op, text, self, How::Written)?;
+            let maps = self.row_maps(module, &op, text, after, How::Written)?;
             steps.push(Step {
-                after: self.clone(),
+                after: after.clone(),
                 maps,
                 applied: Some(Applied {
                     module: module.to_string(),
@@ -107,14 +119,17 @@ impl Source {
                     op: (*op).clone(),
                 }),
             });
-        }
-        match steps.last_mut() {
-            Some(last) => last.after = self.clone(),
-            None => steps.push(Step {
-                after: self.clone(),
+        } else if let Some(last) = steps.last_mut() {
+            last.after = after.clone();
+        } else {
+            steps.push(Step {
+                after: after.clone(),
                 maps: Vec::new(),
                 applied: None,
-            }),
+            });
+        }
+        for step in &mut steps {
+            step.after.marks = None;
         }
         Ok(steps)
     }

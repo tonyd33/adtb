@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
-use adtb_lang::evolve::{Kept, Listed, Source};
+use adtb_lang::evolve::{Kept, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Schema, Stage, ValueDef};
 use adtb_lang::span::Diag;
@@ -13,6 +13,7 @@ use super::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId, CatSetId, ctor_id, ctor_index,
     rel_id, relation, type_ctor_id,
 };
+use super::steps::Stepped;
 use super::{Broken, Catalog, Checked, ElementTexts, Error, ctor_count};
 
 /// A live reader of the database: a bundle with its feeds and registered change consumers, at
@@ -276,38 +277,23 @@ impl Changes {
     }
 }
 
-/// Returns what the steps of `file`, the migration of `text` applied to `source`, whose schema
+/// Returns what `stepped`, the steps of the operators of `file` applied to `source`, whose schema
 /// is `schema`, do to write states, constraints and uniques.
-fn changes(
-    source: &Source,
-    schema: &Schema,
-    file: &MigrationFile,
-    text: &str,
-) -> Result<Changes, Error> {
-    let module = &file.module.text;
-    let mut at = source.clone();
-    at.version += 1;
-    at.expecting(module, &file.operators);
-    let mut before = schema.clone();
-    let mut before_source = source.clone();
+fn changes(source: &Source, schema: &Schema, file: &MigrationFile, stepped: &Stepped) -> Changes {
+    let mut before = schema;
+    let mut before_source = source;
     let mut changes = Changes::default();
-    for (i, op) in Listed::all(&file.operators).enumerate() {
-        let steps = at
-            .steps(module, op, text)
-            .map_err(|ds| Error::Refused(ds.into_iter().map(|d| d.message).collect()))?;
-        for step in steps {
-            let Some(schema) = super::steps::built(&step, &op, text)? else {
-                continue;
-            };
-            changes.add(&before, &schema);
+    for (i, (op, steps)) in file.operators.iter().zip(stepped).enumerate() {
+        for (step, schema) in steps {
+            changes.add(before, schema);
             if matches!(op.kind, OperatorKind::DropUnique(..)) {
-                changes.drop_uniques(i, &before_source, &before, &schema);
+                changes.drop_uniques(i, before_source, before, schema);
             }
             before = schema;
-            before_source = step.after;
+            before_source = &step.after;
         }
     }
-    Ok(changes)
+    changes
 }
 
 /// Returns `file` without the operators `skipped` names by position.
@@ -360,7 +346,12 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
                 .before
                 .schema()
                 .map_err(|ds| refused(ds.into_iter().map(|d| d.diag.message).collect()))?;
-            let drops = changes(&l.before, &before, &file, &l.text)?.uniques;
+            let steps = l
+                .before
+                .record_steps(&file, &l.text)
+                .map_err(|r| Error::Refused(super::reasons(r)))?;
+            let stepped = super::steps::stepped(&steps, &file, &l.text)?;
+            let drops = changes(&l.before, &before, &file, &stepped).uniques;
             let skipped: BTreeSet<usize> = drops
                 .iter()
                 .filter(|u| held.contains(&u.id))
@@ -464,9 +455,9 @@ impl Catalog {
         out
     }
 
-    /// Returns the readers after `file`, the migration of `text` whose result is `next`: the
-    /// live readers, the drops they hold back, and the source that keeps every pending-dropped
-    /// object.
+    /// Returns the readers after `file`, the migration of `text` whose result is `next` and whose
+    /// operators take `stepped`: the live readers, the drops they hold back, and the source that
+    /// keeps every pending-dropped object.
     ///
     /// Fail with [`Error::Refused`] when a live reader refuses the migration, naming the
     /// reader, or when the migration leaves a pending-dropped object without an image, naming
@@ -476,8 +467,9 @@ impl Catalog {
         file: &MigrationFile,
         text: &str,
         next: &Checked,
+        stepped: &Stepped,
     ) -> Result<Readers, Error> {
-        let changes = changes(&self.source, &self.schema, file, text)?;
+        let changes = changes(&self.source, &self.schema, file, stepped);
         let now = &next.schema;
         let mut refused = Vec::new();
         for &(rid, cid) in &changes.enabled {

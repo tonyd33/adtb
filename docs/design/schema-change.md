@@ -445,8 +445,9 @@ not this function's.
 | `Source::new(decls)` | the source of a schema declared directly, every constructor relation and value-level constructor `Enabled` at version 0 |
 | `Source::migrate(m, text)` | the source after migration `m`, whose spans index `text`, numbered `version + 1` and appended to `log`; or a `Refusal` |
 | `Source::check()` | the built `Schema` and its `Program` ([kernel.md](kernel.md)) |
-| `Source::steps(module, op, text)` | applies operator `op` as `Source::apply` does, and returns its steps: each the source after it and the `RowMap`s that move rows beyond what each kept field and constructor carries by id |
-| `Source::expecting(module, ops)`, `Source::settled()` | prepare a source for the operators `ops` of one migration applied one at a time by `apply` or `steps`, and end it |
+| `Source::record(m, text, accepting)` | applies migration `m` as `migrate` does, or as `accept` does when `accepting`, each operator once, and returns the source after it with its `check()`, and a `Recorded`: the steps of each operator, each the source after it and the `RowMap`s that move rows beyond what each kept field and constructor carries by id, up to the first operator whose steps fail, and the operators as `Source::resolved` resolves them; or a `Refusal` |
+| `Source::record_steps(m, text)` | applies migration `m` as `migrate` does, each operator once, without checking the result, and returns the steps of each operator as `Recorded` holds them; or a `Refusal` naming the operators that do not apply |
+| `Source::expecting(module, ops)`, `Source::settled()` | prepare a source for the operators `ops` of one migration applied one at a time by `apply`, and end it |
 
 A `Source` holds the declaration texts of every user module, the
 modules that hold nothing, the installed extensions, the extension
@@ -583,19 +584,19 @@ product. The refusal names the sources and the product.
 A `revoke` of a retag removes each held retag with the same targets as
 written, whatever pairs it excepts.
 
-Preconditions of `apply` and `steps` for the operators of one migration
+Preconditions of `apply` for the operators of one migration
 applied one at a time: `expecting` was called with all of them on the
 source before the first, and `settled` is called after the last before
 the source is checked or migrated again.
 
-Postconditions of `steps`:
+Postconditions of the steps of each operator `Recorded` and `record_steps` hold:
 
 - An operator other than `revert` is one step. A `revert` is a step
   per operator of each inverse, last first, and a step per other
   inverse, as the table states.
 - Each step's `RowMap`s are stated against the source after the step
-  before it, the first's against the source `steps` is called on; the
-  last step's source is the source `steps` leaves.
+  before it, the first's against the source the operators before it
+  leave; the last step's source is the source the operator leaves.
 - Every object of a step's source has its catalog id: ids are
   reconciled after each step, so the last step's ids are the result's.
 - A step's schema may hold a `Key r` type whose `r` a later operator

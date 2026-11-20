@@ -466,7 +466,7 @@ impl Source {
     /// Fail with the operators whose data the source lacks, at their spans, or with the operands
     /// whose names do not resolve. Panics if the log holds no migration `number`.
     pub fn resolved(&self, number: u64) -> Result<Vec<ResolvedOp>, Vec<Diag>> {
-        self.resolving(number).map(|(ops, _)| ops)
+        self.resolving(number, Logged::replayed).map(|(ops, _)| ops)
     }
 
     /// Returns every object the operators of migration `number` name: as an operand, in a clause,
@@ -475,7 +475,7 @@ impl Source {
     ///
     /// Fail as [`Source::resolved`] does.
     pub(super) fn named_by(&self, number: u64) -> Result<BTreeSet<Reached>, Vec<Diag>> {
-        let (ops, names) = self.resolving(number)?;
+        let (ops, names) = self.resolving(number, Logged::replayed)?;
         let mut out: BTreeSet<Reached> = ops
             .iter()
             .flat_map(ResolvedOp::operands)
@@ -498,7 +498,13 @@ impl Source {
             .unwrap_or_else(|| panic!("the log holds migration {number}"))
     }
 
-    fn resolving(&self, number: u64) -> Result<(Vec<ResolvedOp>, Names), Vec<Diag>> {
+    /// Resolve migration `number` as [`Source::resolved`] does, `replayed` giving the names of its
+    /// text and the source before each operator.
+    pub(super) fn resolving(
+        &self,
+        number: u64,
+        replayed: impl FnOnce(&Logged) -> Result<(Names, Vec<Source>), Vec<Diag>>,
+    ) -> Result<(Vec<ResolvedOp>, Names), Vec<Diag>> {
         let i = self.at(number);
         let logged = &self.log[i];
         let after = self.log.get(i + 1).map_or(self, |l| &*l.before);
@@ -518,7 +524,7 @@ impl Source {
         if !unavailable.is_empty() {
             return Err(unavailable);
         }
-        let (names, sources) = logged.replayed()?;
+        let (names, sources) = replayed(logged)?;
         let unbuilt = |ds: Vec<FileDiag>| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>();
         let mut schemas = vec![Some(logged.before.schema().map_err(unbuilt)?)];
         schemas.extend(sources.iter().skip(1).map(|s| s.schema().ok()));

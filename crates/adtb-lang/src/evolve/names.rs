@@ -78,62 +78,108 @@ impl Logged {
         src.version += 1;
         src.expecting(&self.module, &self.operators);
         src.marks = Some(Marks::default());
-        let mut names = Names::default();
-        let mut late = Vec::new();
-        let mut missing = Vec::new();
+        let mut naming = Naming::default();
         for op in Listed::all(&self.operators) {
             let prior = src.clone();
             let noted = RefCell::new(Names::default());
             src.apply_noting(&self.module, op, &self.text, Some(&noted))?;
-            names.extend(noted.into_inner());
+            let names = naming.noted(noted.into_inner());
             if operands {
-                operands::tie_operands(&prior, &src, &self.module, &op, &mut names);
+                operands::tie_operands(&prior, &src, &self.module, &op, names);
             }
-            let marks = src.marks.as_mut().expect("a replay records its copies");
-            let read = std::mem::take(&mut marks.read);
-            let written: Vec<Mark> = marks
-                .written
-                .iter()
-                .filter(|m| op.span.range().contains(&m.from.start))
-                .cloned()
-                .collect();
-            if !read.is_empty() {
-                let before = prior.names().map_err(unbuilt)?;
-                copy_marked(&mut names, &before, &prior, &read);
-            }
-            match src.names_built() {
-                Some((after, waiting)) => {
-                    copy_marked(&mut names, &after, &src, &written);
-                    late.extend(
-                        written
-                            .into_iter()
-                            .filter(|m| waiting.contains(&m.decl))
-                            .map(|m| m.from),
-                    );
-                    copy_late(&mut names, &after, &src, &waiting, &mut late, &mut missing);
-                }
-                None => late.extend(written.into_iter().map(|m| m.from)),
-            }
+            naming.copied(&prior, &mut src, op.span)?;
             if let Some(out) = sources.as_deref_mut() {
                 out.push(prior);
             }
         }
-        if !late.is_empty() {
+        naming.finish(&src)?;
+        Ok(naming.into_names())
+    }
+}
+
+/// The names of a migration's text, gathered as its operators apply one at a time to a source
+/// that records its copies.
+#[derive(Default)]
+pub(super) struct Naming {
+    names: Names,
+    late: Vec<Range<usize>>,
+    missing: Vec<Diag>,
+}
+
+impl Naming {
+    /// Add the names an operator noted. Returns the names so far.
+    pub(super) fn noted(&mut self, noted: Names) -> &mut Names {
+        self.names.extend(noted);
+        &mut self.names
+    }
+
+    /// Name the text of the migration the operator at `span` matched in `prior`, the source
+    /// before it, and copied into `src`, the source after it.
+    pub(super) fn copied(
+        &mut self,
+        prior: &Source,
+        src: &mut Source,
+        span: Span,
+    ) -> Result<(), Vec<Diag>> {
+        let marks = src.marks.as_mut().expect("a replay records its copies");
+        let read = std::mem::take(&mut marks.read);
+        let written: Vec<Mark> = marks
+            .written
+            .iter()
+            .filter(|m| span.range().contains(&m.from.start))
+            .cloned()
+            .collect();
+        if !read.is_empty() {
+            let before = prior.names().map_err(unbuilt)?;
+            copy_marked(&mut self.names, &before, prior, &read);
+        }
+        match src.names_built() {
+            Some((after, waiting)) => {
+                copy_marked(&mut self.names, &after, src, &written);
+                self.late.extend(
+                    written
+                        .into_iter()
+                        .filter(|m| waiting.contains(&m.decl))
+                        .map(|m| m.from),
+                );
+                copy_late(
+                    &mut self.names,
+                    &after,
+                    src,
+                    &waiting,
+                    &mut self.late,
+                    &mut self.missing,
+                );
+            }
+            None => self.late.extend(written.into_iter().map(|m| m.from)),
+        }
+        Ok(())
+    }
+
+    /// Name the copies still unnamed in `src`, the source the last operator leaves.
+    ///
+    /// Fail when the source does not build or a later operator rewrote a copy.
+    pub(super) fn finish(&mut self, src: &Source) -> Result<(), Vec<Diag>> {
+        if !self.late.is_empty() {
             let result = src.names().map_err(unbuilt)?;
             copy_late(
-                &mut names,
+                &mut self.names,
                 &result,
-                &src,
+                src,
                 &BTreeSet::new(),
-                &mut late,
-                &mut missing,
+                &mut self.late,
+                &mut self.missing,
             );
         }
-        if missing.is_empty() {
-            Ok(names)
+        if self.missing.is_empty() {
+            Ok(())
         } else {
-            Err(missing)
+            Err(std::mem::take(&mut self.missing))
         }
+    }
+
+    pub(super) fn into_names(self) -> Names {
+        self.names
     }
 }
 

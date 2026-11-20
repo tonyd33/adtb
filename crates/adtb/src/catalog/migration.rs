@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
-use adtb_lang::evolve::{Code, Listed, Resolved, RowMap, Source};
+use adtb_lang::evolve::{Code, Listed, Recorded, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
@@ -30,6 +30,7 @@ use super::ids::{stored, type_ctor_id};
 use super::keying::broken;
 use super::root;
 use super::roots::RootsRow;
+use super::steps::Stepped;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
     Hash, IndexKeys, IndexSpec, Migrating, OrderKeys, Readers, VersionHash, change, ctor_count,
@@ -117,28 +118,20 @@ impl Catalog {
             Ok(f) => f,
             Err(ds) => return refused(ds.into_iter().map(|d| d.message).collect()),
         };
-        let next = if new {
-            self.source.accept(&file, text)
-        } else {
-            self.source.migrate(&file, text)
-        };
-        let next = match next {
-            Ok(s) => s,
+        let (next, (schema, program), recorded) = match self.source.record(&file, text, new) {
+            Ok(migrated) => migrated,
             Err(r) => return refused(reasons(r)),
         };
         if next.grants.iter().any(|g| g.row.is_none()) {
             self.counters(pager)?;
         }
-        let (schema, program) = match next.check() {
-            Ok(checked) => checked,
-            Err(ds) => return refused(ds.into_iter().map(|d| d.diag.message).collect()),
-        };
-        let operators = match recordable(&next) {
-            Ok(ops) => oplog::Log::new(&schema).rows(&ops),
+        let operators = match recordable(&next, &recorded) {
+            Ok(ops) => oplog::Log::new(&schema).rows(ops),
             Err(why) => return refused(why),
         };
         let next = Checked::new(next, schema, program)?;
-        let readers = self.held(&file, text, &next)?;
+        let stepped = steps::stepped(recorded.steps(), &file, text)?;
+        let readers = self.held(&file, text, &next, &stepped)?;
         let (schema, program, texts) = readers
             .enforced()
             .map_or((&next.schema, &next.program, &next.texts), |e| {
@@ -170,7 +163,7 @@ impl Catalog {
             operators,
             grantees,
         };
-        let built = self.mapped(&m, &file, text, prepared, &rewritten, readers);
+        let built = self.mapped(&m, (&file, text, &stepped), prepared, &rewritten, readers);
         let made = m.made.take();
         let top = m.top.get();
         drop(hold);
@@ -243,15 +236,14 @@ impl Catalog {
         ))
     }
 
-    /// Returns the catalog of `next`, the source after migration `file`, as `m.x` writes it: the
-    /// rows of every relation `rewritten` names mapped through each of the migration's operators
-    /// in turn from the rows the snapshot of `m.hold` sees, and the `Log` rows of its grants;
-    /// and returns too each dormant grant row written.
+    /// Returns the catalog of `next`, the source after migration `file` of `text`, as `m.x`
+    /// writes it: the rows of every relation `rewritten` names mapped through `stepped`, the
+    /// steps of each of the migration's operators in turn, from the rows the snapshot of `m.hold`
+    /// sees, and the `Log` rows of its grants; and returns too each dormant grant row written.
     fn mapped<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
-        file: &MigrationFile,
-        text: &str,
+        (file, text, stepped): (&MigrationFile, &str, &Stepped),
         prepared: Prepared,
         rewritten: &BTreeSet<CatRelId>,
         readers: Readers,
@@ -277,36 +269,14 @@ impl Catalog {
             }
             data.insert(rid, ctors);
         }
-        let module = &file.module.text;
-        let mut at = self.source.clone();
-        at.version += 1;
-        at.expecting(module, &file.operators);
-        let mut before = Schema::clone(&self.schema);
+        let mut before: &Schema = &self.schema;
         let mut why = Vec::new();
         let mut blamed = None;
-        for op in Listed::all(&file.operators) {
-            let refused_by = |blamed: Option<String>, why: Vec<String>| Error::RefusedBy {
-                operator: blamed.unwrap_or_else(|| operator_text(text, &op)),
-                why,
-            };
+        for (op, steps) in Listed::all(&file.operators).zip(stepped) {
             let held = why.len();
-            let mut after = at.clone();
-            let steps = match after.steps(module, op, text) {
-                Ok(s) => s,
-                Err(ds) => {
-                    why.extend(ds.into_iter().map(|d| d.message));
-                    return Err(refused_by(blamed, why));
-                }
-            };
-            for step in steps {
-                let schema = match steps::built(&step, &op, text) {
-                    Ok(Some(schema)) => schema,
-                    Ok(None) => continue,
-                    Err(Error::Refused(w)) => return Err(refused_by(blamed, [why, w].concat())),
-                    Err(e) => return Err(e),
-                };
-                why.extend(self.emptied(m, &before, &schema, &step.maps, &data)?);
-                let moved = match moved::moved(&before, &schema, &step.maps, &data, &self.hosts) {
+            for (step, schema) in steps {
+                why.extend(self.emptied(m, before, schema, &step.maps, &data)?);
+                let moved = match moved::moved(before, schema, &step.maps, &data, &self.hosts) {
                     Ok(m) => m,
                     Err(Error::Refused(w)) => {
                         why.extend(w);
@@ -314,10 +284,13 @@ impl Catalog {
                     }
                     Err(e) => return Err(e),
                 };
-                match change::step(&before, &schema, &mut data, moved) {
+                match change::step(before, schema, &mut data, moved) {
                     Ok(()) => {}
                     Err(Error::Refused(w)) => {
-                        return Err(refused_by(blamed, [why, w].concat()));
+                        return Err(Error::RefusedBy {
+                            operator: blamed.unwrap_or_else(|| operator_text(text, &op)),
+                            why: [why, w].concat(),
+                        });
                     }
                     Err(e) => return Err(e),
                 }
@@ -326,7 +299,6 @@ impl Catalog {
             if blamed.is_none() && why.len() > held {
                 blamed = Some(operator_text(text, &op));
             }
-            at = after;
         }
         why.extend(oversized(m.pager.page_size(), &next.schema, rewritten));
         if !why.is_empty() {
@@ -890,13 +862,17 @@ fn oversized(page_size: usize, schema: &Schema, rewritten: &BTreeSet<CatRelId>) 
     why
 }
 
-/// Resolve the last migration, refusing scripts and unavailable function code.
-fn recordable(source: &Source) -> Result<Vec<adtb_lang::evolve::ResolvedOp>, Vec<String>> {
+/// Returns the operators `recorded` resolves of the migration that left `source`, refusing
+/// scripts and unavailable function code.
+fn recordable<'a>(
+    source: &Source,
+    recorded: &'a Recorded,
+) -> Result<&'a [adtb_lang::evolve::ResolvedOp], Vec<String>> {
     let mut why = Vec::new();
-    let ops = match source.resolved(source.version) {
+    let ops = match recorded.resolved() {
         Err(ds) => {
-            why.extend(ds.into_iter().map(|d| d.message));
-            Vec::new()
+            why.extend(ds.iter().map(|d| d.message.clone()));
+            &[]
         }
         Ok(ops) => ops,
     };

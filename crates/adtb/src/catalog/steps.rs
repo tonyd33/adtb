@@ -1,5 +1,5 @@
-use adtb_lang::ast::Operator;
-use adtb_lang::evolve::Step;
+use adtb_lang::ast::{MigrationFile, Operator};
+use adtb_lang::evolve::{Listed, OpSteps, Step};
 use adtb_lang::schema::Schema;
 use adtb_lang::translate::operator_text;
 
@@ -28,6 +28,36 @@ pub fn built(step: &Step, op: &Operator, text: &str) -> Result<Option<Schema>, E
             ))
         }
     }
+}
+
+/// The steps of each operator of a migration in order, each step with the schema [`built`]
+/// returns for it, a step it folds left out.
+pub type Stepped<'a> = Vec<Vec<(&'a Step, Schema)>>;
+
+/// Returns `steps`, the steps of each operator of `file` in order, `text` its text, each with
+/// its schema.
+///
+/// Fail as [`built`] does, and with [`Error::Refused`] at the first operator whose steps fail.
+pub fn stepped<'a>(
+    steps: &'a [OpSteps],
+    file: &MigrationFile,
+    text: &str,
+) -> Result<Stepped<'a>, Error> {
+    Listed::all(&file.operators)
+        .zip(steps)
+        .map(|(op, steps)| {
+            let steps = steps
+                .as_ref()
+                .map_err(|ds| Error::Refused(ds.iter().map(|d| d.message.clone()).collect()))?;
+            let mut out = Vec::new();
+            for step in steps {
+                if let Some(schema) = built(step, &op, text)? {
+                    out.push((step, schema));
+                }
+            }
+            Ok(out)
+        })
+        .collect()
 }
 
 #[cfg(test)]

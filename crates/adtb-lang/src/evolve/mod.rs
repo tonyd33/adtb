@@ -33,6 +33,7 @@ mod keep;
 mod memo;
 mod names;
 mod operands;
+mod recorded;
 mod resolved;
 mod revert;
 mod rowmap;
@@ -61,6 +62,8 @@ pub use grant::{
     deployment_grant, deployment_revoke, family_query, target_covers,
 };
 pub use keep::Kept;
+use recorded::Recorder;
+pub use recorded::{Migrated, OpSteps, Recorded};
 use resolved::Reached;
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,

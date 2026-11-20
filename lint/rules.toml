@@ -79,3 +79,9 @@ query = "storage-io.tql"
 include = ["crates/adtb/src/storage/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
 rows = { storage_io_panics = "zero" }
+
+[[rule]]
+query = "replay.tql"
+include = ["crates/adtb/src/catalog/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb/src/catalog/*_testing.rs"]
+rows = { source_replays = "zero" }

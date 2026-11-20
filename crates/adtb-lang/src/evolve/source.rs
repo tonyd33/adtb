@@ -330,7 +330,7 @@ impl Source {
     /// Apply migration text the log does not hold yet as [`Source::migrate`] does, and refuse
     /// what only new text may not state: a `revert` fill no inverse takes.
     pub fn accept(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
-        self.migrating(m, text, &[], true)
+        self.migrating(m, text, &[], true, None).map(|(s, _)| s)
     }
 
     /// Apply a migration as [`Source::migrate`] does, putting back after each operator every
@@ -341,21 +341,70 @@ impl Source {
         text: &str,
         kept: &[Kept],
     ) -> Result<Source, Refusal> {
-        self.migrating(m, text, kept, false)
+        self.migrating(m, text, kept, false, None).map(|(s, _)| s)
     }
 
-    fn migrating(
+    /// Apply migration `m` as [`Source::migrate_keeping`] does, refusing as [`Source::accept`]
+    /// does when `accepting`, and with `recorder` recording each operator. Returns the source
+    /// it leaves, checked.
+    pub(super) fn migrating(
         &self,
         m: &MigrationFile,
         text: &str,
         kept: &[Kept],
         accepting: bool,
-    ) -> Result<Source, Refusal> {
+        recorder: Option<&mut Recorder>,
+    ) -> Result<(Source, (Schema, Program)), Refusal> {
+        let (mut next, mut refusal, applied) = self.applying(m, text, kept, accepting, recorder);
+        let checked = next.check().map_err(|ds| {
+            let reported: BTreeSet<String> = refusal
+                .operators
+                .iter()
+                .map(|d| d.message.clone())
+                .collect();
+            refusal.recheck = ds
+                .into_iter()
+                .filter(|d| !reported.contains(&d.diag.message))
+                .collect();
+            refusal.recheck_from = self.copied_from(m, text, &applied, &refusal.recheck);
+        });
+        match checked {
+            Ok(checked) if refusal.operators.is_empty() => {
+                next.log.push(Logged {
+                    number: next.version,
+                    module: m.module.text.clone(),
+                    text: text.to_string(),
+                    operators: m.operators.clone(),
+                    before: Arc::new(self.clone()),
+                });
+                Ok((next, checked))
+            }
+            _ => {
+                refusal.result = Some(Box::new(next));
+                Err(refusal)
+            }
+        }
+    }
+
+    /// Apply the operators of migration `m` one at a time to a copy of this source, as
+    /// [`Source::migrating`] does, up to the check of the result. Returns the source they leave,
+    /// settled, the refusals of its operators, and whether each operator applied.
+    pub(super) fn applying(
+        &self,
+        m: &MigrationFile,
+        text: &str,
+        kept: &[Kept],
+        accepting: bool,
+        mut recorder: Option<&mut Recorder>,
+    ) -> (Source, Refusal, Vec<bool>) {
         let mut next = self.clone();
         next.accepting = accepting;
         next.version += 1;
         next.expecting(&m.module.text, &m.operators);
         next.unstated.clear();
+        if let Some(r) = recorder.as_deref() {
+            r.start(&mut next);
+        }
         let mut refusal = Refusal::default();
         let mut rekeyed = Vec::new();
         let mut applied = Vec::with_capacity(m.operators.len());
@@ -364,7 +413,10 @@ impl Source {
                 rekeyed.push((relation.clone(), op.span));
             }
             let prior = (!kept.is_empty()).then(|| next.clone());
-            let ended = next.apply(&m.module.text, op, text);
+            let ended = match recorder.as_deref_mut() {
+                Some(r) => r.apply(&mut next, &m.module.text, op, text),
+                None => next.apply(&m.module.text, op, text),
+            };
             applied.push(ended.is_ok());
             if let Err(mut ds) = ended {
                 refusal.operators.append(&mut ds);
@@ -372,6 +424,9 @@ impl Source {
             if let Some(prior) = prior {
                 next.keep(&prior, kept);
             }
+        }
+        if let Some(r) = recorder {
+            r.end(&mut next);
         }
         next.accepting = false;
         refusal.operators.extend(
@@ -385,31 +440,7 @@ impl Source {
             }
         }
         next.settled();
-        if let Err(ds) = next.check() {
-            let reported: BTreeSet<String> = refusal
-                .operators
-                .iter()
-                .map(|d| d.message.clone())
-                .collect();
-            refusal.recheck = ds
-                .into_iter()
-                .filter(|d| !reported.contains(&d.diag.message))
-                .collect();
-            refusal.recheck_from = self.copied_from(m, text, &applied, &refusal.recheck);
-        }
-        if refusal.operators.is_empty() && refusal.recheck.is_empty() {
-            next.log.push(Logged {
-                number: next.version,
-                module: m.module.text.clone(),
-                text: text.to_string(),
-                operators: m.operators.clone(),
-                before: Arc::new(self.clone()),
-            });
-            Ok(next)
-        } else {
-            refusal.result = Some(Box::new(next));
-            Err(refusal)
-        }
+        (next, refusal, applied)
     }
 
     /// Returns, for each diagnostic of the result of migration `m`, the span of `text` an operator
