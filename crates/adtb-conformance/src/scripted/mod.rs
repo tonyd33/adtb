@@ -5,6 +5,10 @@
 //! - `seed N`, first: the simulator's seed, 0 without it.
 //! - `use NAME`: the directives of `fixtures/NAME.fixture`, in place.
 //! - `option query_memory_bytes N`: the open option for each later open; `default` clears it.
+//! - `option workers N`, `option morsel_rows N`, `option range_pages N`, `option spill_bytes N`,
+//!   `option fix_rounds N`: the threads of each later open, and the rows of a morsel, the heap
+//!   pages of one task of a parallel scan, the bytes of a statement's spill file and the rounds
+//!   of a fixpoint of each statement in it; `default` restores 4 threads, or the engine's size.
 //! - `option export_roots PATH...`: the directories a session confined to them may write in, for
 //!   each later open; none, with no PATH.
 //! - `migrate [at V] [refused VALUE]`: the body's migrations, each starting at a `module` line,
@@ -43,6 +47,10 @@
 //!   array `children`, and each arm, pruned constructor and `actual` its members.
 //! - `probe plan`: the body, one explain sent as a `command` is; the rows after `----` are the
 //!   lines of its `text`, in order. An explain that runs its statement differs.
+//! - `probe checks NAME`: the rows are, for each incremental check of constraint or check NAME, by
+//!   its qualified name, a row `on insert into REL`, `on delete from REL`, `on change to REL` or
+//!   `on any change`, REL the constructor relation whose change runs it, then the lines of its
+//!   plan's text.
 //! - `error VALUE`: as in a conformance script, the last statement refused with exactly the
 //!   reason VALUE in textual syntax.
 //! - `adhoc error VALUE`: the body, one ad hoc call in process committing on its own, refused
@@ -180,12 +188,23 @@ use std::time::Duration;
 use crate::runner::shown;
 use crate::{Block, Difference};
 
+/// A size of an open that `option` sets.
+#[derive(Clone, Copy, Debug)]
+enum Knob {
+    Workers,
+    MorselRows,
+    RangePages,
+    SpillBytes,
+    FixRounds,
+}
+
 #[derive(Clone, Debug)]
 enum Head {
     Seed(u64),
     Use(String),
     QueryMemory(Option<u64>),
     ExportRoots(Vec<String>),
+    Knob(Knob, Option<usize>),
     Migrate {
         at: Option<usize>,
         refused: Option<String>,
@@ -244,6 +263,7 @@ enum Head {
     },
     Plan,
     ProbePlan,
+    ProbeChecks(String),
     Error(String),
     Adhoc(String),
     Failed(String),

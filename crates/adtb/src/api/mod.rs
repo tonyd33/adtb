@@ -180,6 +180,13 @@ impl OpenOptions {
         Limits::default()
     }
 
+    fn exec(&self) -> exec::Options {
+        let options = exec::Options::default().with_fix_rounds(self.fix_rounds);
+        #[cfg(any(test, feature = "testing"))]
+        let options = self.testing.exec(options);
+        options
+    }
+
     fn background_vacuum(&self) -> bool {
         #[cfg(any(test, feature = "testing"))]
         return self.testing.background_vacuum();
@@ -222,9 +229,7 @@ impl OpenOptions {
         let memory = self
             .query_memory_bytes
             .unwrap_or(DEFAULT_QUERY_MEMORY as u64);
-        let rounds = self
-            .fix_rounds
-            .unwrap_or(exec::Options::default().fix_rounds);
+        let rounds = self.exec().fix_rounds;
         let root = self
             .file_root
             .as_ref()
@@ -795,7 +800,6 @@ fn setup_of<R: Runtime>(
 ) -> Setup<R> {
     let memory = query_memory(options);
     let bindings = catalog.bindings();
-    let defaults = exec::Options::default();
     Setup {
         schema,
         normal: Arc::new(normal),
@@ -806,10 +810,7 @@ fn setup_of<R: Runtime>(
         budget: Budget::new(memory),
         grant: STATEMENT_GRANT.min(memory),
         pool: None,
-        options: exec::Options {
-            fix_rounds: options.fix_rounds.unwrap_or(defaults.fix_rounds),
-            ..defaults
-        },
+        options: options.exec(),
         limits: options.limits(),
         structures: catalog.structures(),
     }

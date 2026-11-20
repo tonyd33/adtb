@@ -64,6 +64,9 @@ pub struct Knobs {
     no_background_vacuum: bool,
     segment_size: Option<u64>,
     limits: Option<Limits>,
+    morsel_rows: Option<usize>,
+    range_pages: Option<usize>,
+    spill_bytes: Option<usize>,
 }
 
 impl Knobs {
@@ -92,6 +95,42 @@ impl Knobs {
         Knobs {
             limits: Some(limits),
             ..self
+        }
+    }
+
+    /// Returns these knobs running each statement in morsels of `morsel_rows` rows, or of the engine's
+    /// size with `None`.
+    pub fn with_morsel_rows(self, morsel_rows: Option<usize>) -> Knobs {
+        Knobs {
+            morsel_rows,
+            ..self
+        }
+    }
+
+    /// Returns these knobs scanning a heap in parallel tasks of `range_pages` pages each, or of the
+    /// engine's size with `None`.
+    pub fn with_range_pages(self, range_pages: Option<usize>) -> Knobs {
+        Knobs {
+            range_pages,
+            ..self
+        }
+    }
+
+    /// Returns these knobs bounding the spill file of each statement at `spill_bytes`, or at the
+    /// engine's bound with `None`.
+    pub fn with_spill_bytes(self, spill_bytes: Option<usize>) -> Knobs {
+        Knobs {
+            spill_bytes,
+            ..self
+        }
+    }
+
+    pub(crate) fn exec(&self, defaults: exec::Options) -> exec::Options {
+        exec::Options {
+            morsel_rows: self.morsel_rows.unwrap_or(defaults.morsel_rows),
+            range_pages: self.range_pages.unwrap_or(defaults.range_pages),
+            spill_bytes: self.spill_bytes.unwrap_or(defaults.spill_bytes),
+            ..defaults
         }
     }
 

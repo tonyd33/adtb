@@ -249,6 +249,9 @@ pub(super) fn head(word: &str, rest: &str) -> Option<Head> {
                 ("catalog", "") => Probed::Catalog(false),
                 ("catalog", "engine") => Probed::Catalog(true),
                 ("plan", "") => return Some(Head::ProbePlan),
+                ("checks", name) if !name.is_empty() => {
+                    return Some(Head::ProbeChecks(name.to_owned()));
+                }
                 _ => return None,
             },
         )),

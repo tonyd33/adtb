@@ -1,2 +1,2 @@
 use shop
-option workers 3
+option pool_bytes 3

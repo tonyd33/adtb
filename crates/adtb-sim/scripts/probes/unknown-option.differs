@@ -1,1 +1,1 @@
-scripts/probes/unknown-option.test:2: `option workers 3` is not a directive
+scripts/probes/unknown-option.test:2: `option pool_bytes 3` is not a directive

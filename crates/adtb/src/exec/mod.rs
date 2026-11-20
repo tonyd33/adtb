@@ -288,6 +288,17 @@ pub struct Options {
     pub spill_bytes: usize,
 }
 
+impl Options {
+    /// Returns these options bounding a fixpoint at `rounds`, or at these options' bound with
+    /// `None`.
+    pub fn with_fix_rounds(self, rounds: Option<usize>) -> Options {
+        Options {
+            fix_rounds: rounds.unwrap_or(self.fix_rounds),
+            ..self
+        }
+    }
+}
+
 impl Default for Options {
     fn default() -> Options {
         Options {

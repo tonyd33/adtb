@@ -1,7 +1,8 @@
 //! Compare the plan document of an explain with the one a `plan` step states.
 
-use adtb::Value;
+use adtb::{Database, DeltaPart, Value};
 use adtb_lang::textual::Form;
+use adtb_sim::SimRuntime;
 use serde_json::Value as Json;
 
 use super::Step;
@@ -65,6 +66,27 @@ pub(super) fn text(step: &Step, mut results: Results) -> Result<(), Differs> {
         return Ok(());
     }
     Err(at("the plan differs").rows(&step.rows, &got))
+}
+
+/// Compare the plan of each incremental check of constraint or check `name` with the step's rows.
+pub(super) fn checks(db: &Database<SimRuntime>, step: &Step, name: &str) -> Result<(), Differs> {
+    let plans = db
+        .explain_checks(name)
+        .map_err(|e| Differs::at(step, format!("the checks are not read: {}", e.value())))?;
+    let mut got = Vec::new();
+    for p in plans {
+        got.push(match &p.trigger {
+            None => "on any change".to_owned(),
+            Some((rel, DeltaPart::Inserted)) => format!("on insert into {rel}"),
+            Some((rel, DeltaPart::Deleted)) => format!("on delete from {rel}"),
+            Some((rel, DeltaPart::Changed)) => format!("on change to {rel}"),
+        });
+        got.extend(p.plan.text().lines().map(str::to_owned));
+    }
+    if got == step.rows {
+        return Ok(());
+    }
+    Err(Differs::at(step, "the checks differ").rows(&step.rows, &got))
 }
 
 /// Returns field `name` of `rows` when they are the one row of an explain.

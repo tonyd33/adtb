@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::blocks;
 
-use super::{Head, Step, fault, shown};
+use super::{Head, Knob, Step, fault, shown};
 
 const HEADS: [&str; 41] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
@@ -15,6 +15,30 @@ const HEADS: [&str; 41] = [
     "mark", "damage", "flip", "lose", "tear", "scribble", "leak", "free", "crash", "restore",
     "probe",
 ];
+
+/// Returns the size `n` states, `Some(None)` for `default`, or `None` when it states none.
+fn size(n: &str) -> Option<Option<usize>> {
+    match n {
+        "default" => Some(None),
+        n => n.parse().ok().map(Some),
+    }
+}
+
+fn option(rest: &str) -> Option<Head> {
+    Some(match rest.split_once(' ').unwrap_or((rest, "")) {
+        ("query_memory_bytes", "default") => Head::QueryMemory(None),
+        ("query_memory_bytes", bytes) => Head::QueryMemory(Some(bytes.parse().ok()?)),
+        ("workers", n) => Head::Knob(Knob::Workers, size(n)?),
+        ("morsel_rows", n) => Head::Knob(Knob::MorselRows, size(n)?),
+        ("range_pages", n) => Head::Knob(Knob::RangePages, size(n)?),
+        ("spill_bytes", n) => Head::Knob(Knob::SpillBytes, size(n)?),
+        ("fix_rounds", n) => Head::Knob(Knob::FixRounds, size(n)?),
+        ("export_roots", paths) => {
+            Head::ExportRoots(paths.split_whitespace().map(str::to_owned).collect())
+        }
+        _ => return None,
+    })
+}
 
 fn head(line: &str) -> Option<Head> {
     let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -25,14 +49,7 @@ fn head(line: &str) -> Option<Head> {
     Some(match word {
         "seed" => Head::Seed(rest.parse().ok()?),
         "use" if !rest.is_empty() => Head::Use(rest.to_owned()),
-        "option" => match rest.split_once(' ').unwrap_or((rest, "")) {
-            ("query_memory_bytes", "default") => Head::QueryMemory(None),
-            ("query_memory_bytes", bytes) => Head::QueryMemory(Some(bytes.parse().ok()?)),
-            ("export_roots", paths) => {
-                Head::ExportRoots(paths.split_whitespace().map(str::to_owned).collect())
-            }
-            _ => return None,
-        },
+        "option" => option(rest)?,
         "migrate" => match rest.strip_prefix("at ") {
             Some(at) => {
                 let (v, rest) = at.split_once(' ').unwrap_or((at, ""));

@@ -22,13 +22,14 @@ use adtb_simkit::open::options;
 use crate::engine::{self, Ended};
 use crate::{Difference, Directive, Found, Got, Kind, panic_message};
 
+use super::Knob;
 use super::clock;
 use super::fault;
 use super::read;
 use super::role::{self, Handles, OWNER, called};
 use super::shown;
 use super::txn::{self, Txns};
-use super::{Head, Step};
+use super::{Head, Step, plan};
 
 const FILE: &str = "app.adt";
 
@@ -297,6 +298,9 @@ fn starts_process(head: &Head) -> bool {
     )
 }
 
+/// The threads of an open no `option workers` sets.
+const WORKERS: usize = 4;
+
 struct Script {
     steps: Vec<Step>,
     next: usize,
@@ -338,6 +342,7 @@ impl Script {
             Head::Reopen { refused } => (self.log.clone(), refused.clone()),
             Head::QueryMemory(_)
             | Head::ExportRoots(_)
+            | Head::Knob(..)
             | Head::Log
             | Head::Bundle { .. }
             | Head::Host(_)
@@ -510,6 +515,7 @@ impl Script {
     fn closed(&mut self, step: &Step) {
         match &step.head {
             Head::QueryMemory(bytes) => self.options.query_memory_bytes = *bytes,
+            Head::Knob(knob, size) => set(&mut self.options, *knob, *size),
             Head::ExportRoots(paths) => {
                 self.options.export_roots = paths.iter().map(PathBuf::from).collect();
             }
@@ -539,6 +545,7 @@ impl Script {
             }
             Head::QueryMemory(_)
             | Head::ExportRoots(_)
+            | Head::Knob(..)
             | Head::Log
             | Head::Bundle { .. }
             | Head::Host(_)
@@ -609,6 +616,7 @@ impl Script {
                 self.faults.step(rt, db, step)
             }
             Head::Restore(restore) => self.faults.restore(rt, &self.options, step, restore),
+            Head::ProbeChecks(name) => plan::checks(db, step, name),
             Head::Failed(_) => unreachable!("read gives `failed` an `as` prefix"),
             Head::DropRole { name, error } => {
                 let got = db.role_authority().drop_role(name);
@@ -702,6 +710,24 @@ fn compared(head: &mut Head) -> Option<&mut String> {
     }
 }
 
+/// Set `knob` of `options` to `size`, or to the runner's own with `None`.
+fn set(options: &mut OpenOptions, knob: Knob, size: Option<usize>) {
+    let testing = std::mem::take(&mut options.testing);
+    options.testing = match knob {
+        Knob::Workers => {
+            options.workers = Some(size.unwrap_or(WORKERS));
+            testing
+        }
+        Knob::MorselRows => testing.with_morsel_rows(size),
+        Knob::RangePages => testing.with_range_pages(size),
+        Knob::SpillBytes => testing.with_spill_bytes(size),
+        Knob::FixRounds => {
+            options.fix_rounds = size;
+            testing
+        }
+    };
+}
+
 /// Run `steps`, the script at `path`, its tokens standing for what `clock` says. Returns each
 /// directive that differs.
 fn run_steps(root: &Path, path: &Path, steps: Vec<Step>, clock: clock::Clock) -> Vec<Found> {
@@ -715,7 +741,7 @@ fn run_steps(root: &Path, path: &Path, steps: Vec<Step>, clock: clock::Clock) ->
         log: Vec::new(),
         options: OpenOptions {
             testing: Knobs::without_background_vacuum(),
-            ..options(4)
+            ..options(WORKERS)
         },
         bundles: Vec::new(),
         handles: Handles::default(),
