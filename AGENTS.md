@@ -41,9 +41,9 @@ For a fresh clone, host prerequisites and optional editor setup, read
   its link check, `cargo xtask lint` and the editor grammar's generated sources and tests. With REVSET it
   also checks the lint and structure allowlists against those of the parent of REVSET's root.
   Every stage starts at once. In the memory scope on 8 or more cores the suite and the damage
-  profile run at once, the damage profile on a quarter of the test threads and the suite on the
-  rest, and clippy builds into `target/clippy` beside them; when clippy fails, the check kills the
-  suite and the damage profile, reports them stopped and marks `target/test.txt` partial.
+  profile run at once, the damage profile on a quarter of the cores' test threads and the suite on
+  a thread for every core, and clippy builds into `target/clippy` beside them; when clippy fails,
+  the check kills the suite and the damage profile, reports them stopped and marks `target/test.txt` partial.
   Otherwise, as in CI, clippy runs first in the shared target, then the suite, then the damage
   profile. Each stage's output goes to
   `target/check/STAGE.log`; the check prints each stage's wall time as it ends and the whole
@@ -94,8 +94,8 @@ The `xtask` crate's commands and the conformance runner:
 - `cargo xtask check` runs clippy over adtb-sys under `--cfg adtb_loom`, then the Loom models
   of the page state word, its unit tests built with that cfg into `target/loom`, then adtb-sys's
   unit tests under Miri with the nightly toolchain in `ADTB_NIGHTLY_BIN`, which the dev shell
-  sets; the stable one stays the default. The two take about 35 s together from cold and 11 s
-  warm.
+  sets; the stable one stays the default. Warm and alone, Loom takes about 2 s and Miri about 30 s
+  on one core; beside the suite, Miri's one core is shared and it takes about three times as long.
 - `cargo xtask check` fails when a non-test source under `crates/` passes 1500 lines.
 - `cargo xtask check` runs the damage search under `--profile damage`: one case of each page
   kind and fault, unsteered, with its pairs and its concurrent tier. `--profile deep` runs 32

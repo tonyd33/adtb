@@ -116,16 +116,16 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
             s.spawn(move || launch.run(stage, &[]).map(|ran| sender.send(ran)));
         }
         match overlap() {
-            Some((suite, damage)) => {
+            Some(damage) => {
                 let sender_clippy = sender.clone();
                 s.spawn(move || {
                     launch
                         .run(Stage::Clippy, &[OWN_TARGET.to_owned()])
                         .map(|ran| sender_clippy.send(ran))
                 });
-                for (stage, threads) in TESTS.into_iter().zip([suite, damage]) {
+                let damage = vec!["--test-threads".to_owned(), damage.to_string()];
+                for (stage, threads) in TESTS.into_iter().zip([Vec::new(), damage]) {
                     let sender = sender.clone();
-                    let threads = ["--test-threads".to_owned(), threads.to_string()];
                     s.spawn(move || launch.run(stage, &threads).map(|ran| sender.send(ran)));
                 }
             }
@@ -172,17 +172,14 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// Returns the test threads of the suite and of the damage search when they run at once: in a
-/// scope `cargo xtask` made, on at least twice the damage search's slots of cores. The damage
-/// search gets a quarter of the cores and at least its slots, the suite the rest. Returns `None`
-/// otherwise, and the damage search runs after the suite.
-fn overlap() -> Option<(usize, usize)> {
+/// Returns the test threads of the damage search when it runs at once with the suite: in a scope
+/// `cargo xtask` made, on at least twice the damage search's slots of cores. The damage search
+/// gets a quarter of the cores and at least its slots; the suite keeps a thread for every core.
+/// Returns `None` otherwise, and the damage search runs after the suite.
+fn overlap() -> Option<usize> {
     scope::own_scope()?;
     let cores = thread::available_parallelism().ok()?.get();
-    (cores >= 2 * DAMAGE_SLOTS).then(|| {
-        let damage = (cores / 4).max(DAMAGE_SLOTS);
-        (cores - damage, damage)
-    })
+    (cores >= 2 * DAMAGE_SLOTS).then(|| (cores / 4).max(DAMAGE_SLOTS))
 }
 
 /// Run `stage` of `workspace` with the standard streams of this process. With `base`, the lint

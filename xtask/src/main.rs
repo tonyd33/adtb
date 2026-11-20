@@ -55,13 +55,14 @@ enum Task {
     },
     /// Run every check of the workspace in one memory-limited scope, as `test` does.
     ///
-    /// In a scope of its own on at least 8 cores, run the tests and the damage profile at once, a
-    /// quarter of the test threads to the damage profile, and beside them clippy, building into
-    /// `clippy` under the target directory; when clippy fails, kill the tests and the damage
-    /// profile and report them stopped. Otherwise run clippy, then, once it passes, the tests, then
-    /// the damage profile. Beside them run rustfmt, the TQL rules, cargo-deny, the source-size
-    /// limit, the documentation build and its link check, the editor grammar's generated sources
-    /// and its corpus and highlight tests, the Loom models and Miri.
+    /// In a scope of its own on at least 8 cores, run the tests and the damage profile at once, the
+    /// damage profile on a quarter of the cores' test threads and the tests on a thread for every
+    /// core, and beside them clippy, building into `clippy` under the target directory; when
+    /// clippy fails, kill the tests and the damage profile and report them stopped. Otherwise run
+    /// clippy, then, once it passes, the tests, then the damage profile. Beside them run rustfmt,
+    /// the TQL rules, cargo-deny, the source-size limit, the documentation build and its link
+    /// check, the editor grammar's generated sources and its corpus and highlight tests, the Loom
+    /// models and Miri.
     /// Each stage's output goes to `check/STAGE.log` under the target directory. Print each
     /// stage's wall time as it ends, with the whole output of one that failed, and fail when any
     /// stage fails. Miri needs `ADTB_NIGHTLY_BIN`, which the dev shell sets.
