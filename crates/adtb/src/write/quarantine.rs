@@ -13,7 +13,7 @@ use crate::exec::Class;
 use crate::plan::{Catalog, IndexId};
 use crate::ranks;
 use crate::runtime::Runtime;
-use crate::storage::policy::{Fault, Holder, Phase};
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{Damage, MarkFailure, Ordered, Orders, Quarantine};
 
 use super::schema::Rel;
@@ -195,7 +195,7 @@ impl<R: Runtime> Database<R> {
     ) -> BTreeSet<Quarantine> {
         self.unlocked();
         let mut objects = BTreeSet::new();
-        let finding = self.pager.map_fault(Fault::Finding, holder, self);
+        let finding = self.pager.map_finding(holder, self);
         let Ok(marked) = finding else {
             return objects;
         };

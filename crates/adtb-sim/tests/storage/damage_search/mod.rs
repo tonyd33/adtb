@@ -93,7 +93,7 @@ struct Known {
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
 const UNDER_RELATION_MARK: &str = "migrate-under-relation-mark";
 const APPLIES_UNDER_MARK: &str = "migrate-applies-under-mark";
-const SETTLED_CAUSE_MARKS: &str = "settled-status-cause-marks-database";
+const SETTLE_TORN: &str = "settle-rewrite-torn-unrestored";
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
 const KNOWN: &[Known] = &[
@@ -257,58 +257,38 @@ const KNOWN: &[Known] = &[
             Kind::Engine,
         )),
     },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark the faults do not map to",
-        ticket: SETTLED_CAUSE_MARKS,
-        seed: 6,
-        at: 677,
-        then: Some((
-            Point {
-                at: 679,
-                injection: Injection::Torn,
-            },
-            Kind::Engine,
-        )),
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark the faults do not map to",
-        ticket: SETTLED_CAUSE_MARKS,
-        seed: 6,
-        at: 677,
-        then: Some((
-            Point {
-                at: 679,
-                injection: Injection::Torn,
-            },
-            Kind::Engine,
-        )),
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Verify,
-        what: "a mark the faults do not map to",
-        ticket: SETTLED_CAUSE_MARKS,
-        seed: 6,
-        at: 677,
-        then: Some((
-            Point {
-                at: 679,
-                injection: Injection::Torn,
-            },
-            Kind::Engine,
-        )),
-    },
+    settle_torn(Consumer::Read, "users fails"),
+    settle_torn(Consumer::Read, "docs fails"),
+    settle_torn(Consumer::Read, "tags fails"),
+    settle_torn(Consumer::Read, "by key: users fails"),
+    settle_torn(Consumer::Read, "by key: docs fails"),
+    settle_torn(Consumer::Read, "by key: tags fails"),
+    settle_torn(Consumer::Backup, "the backup fails"),
+    settle_torn(Consumer::Dump, "the dump fails"),
 ];
+
+/// Returns the entry of the pair at seed 6, as `consumer` shows it: the crash at the force after
+/// the tear of an engine page at 679 tears every write not yet forced, among them the rewrite of
+/// the status page the open settled.
+const fn settle_torn(consumer: Consumer, what: &'static str) -> Known {
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::CommitLog,
+        owner: None,
+        consumer,
+        what,
+        ticket: SETTLE_TORN,
+        seed: 6,
+        at: 677,
+        then: Some((
+            Point {
+                at: 679,
+                injection: Injection::Torn,
+            },
+            Kind::Engine,
+        )),
+    }
+}
 
 /// The cells whose every case ends at a failed open, which no consumer after it can reach, with
 /// the rule that makes the open fail.
@@ -691,16 +671,33 @@ fn rerun(k: &Known) {
         }
         None => case::run(&plan, first),
     };
-    let shows = outcome.is_some_and(|o| {
-        o.verdicts
-            .violations
+    let shown: BTreeSet<(Consumer, &str)> = outcome
+        .iter()
+        .flat_map(|o| &o.verdicts.violations)
+        .map(|v| (v.consumer, v.what.as_str()))
+        .collect();
+    if k.then.is_some() {
+        let pinned: BTreeSet<(Consumer, &str)> = KNOWN
             .iter()
-            .any(|v| v.consumer == k.consumer && v.what == k.what)
-    });
+            .filter(|p| (p.fault, p.seed, p.at, p.then) == (fault, k.seed, k.at, k.then))
+            .map(|p| (p.consumer, p.what))
+            .collect();
+        assert_eq!(
+            pinned, shown,
+            "{fault:?} {:?}: pair seed {} at {} then {:?} shows other violations than its entries \
+             of {}",
+            k.kind, k.seed, k.at, k.then, k.ticket
+        );
+    }
     assert!(
-        shows,
+        shown.contains(&(k.consumer, k.what)),
         "{fault:?} {:?} {:?}: seed {} at {} no longer shows {:?} of {}; drop the expectation",
-        k.kind, k.consumer, k.seed, k.at, k.what, k.ticket
+        k.kind,
+        k.consumer,
+        k.seed,
+        k.at,
+        k.what,
+        k.ticket
     );
 }
 

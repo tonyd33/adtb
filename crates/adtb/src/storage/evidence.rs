@@ -11,7 +11,8 @@ use super::damage_log::Recorded;
 use super::error::Damage;
 use super::log::Log;
 use super::page::{self, Verdict};
-use super::pager::{Appending, Held, Pager, Wrote};
+use super::pager::{Appending, Held, PageError, Pager, Wrote};
+use super::policy::Fault;
 use super::quarantine::Quarantine;
 use super::record::Record;
 use super::recovery::{Armed, Replaying};
@@ -167,6 +168,15 @@ pub(super) enum Met {
     Freed,
 }
 
+/// Returns whether `recorded`, the damage recorded of a page, is the settle of `refused`: a
+/// settled status page found stale at the LSNs it was settled at.
+fn settled_as(recorded: Option<Damage>, refused: Damage) -> bool {
+    let Damage::Stale { expected, found } = refused else {
+        return false;
+    };
+    recorded == Some(Damage::Settled { expected, found })
+}
+
 /// Apply what `met` does to `recorded`, the damage recorded of a page. Returns whether that
 /// changes it.
 pub(super) fn meet_recorded(recorded: &mut Option<Damage>, met: Met) -> bool {
@@ -214,14 +224,38 @@ impl Pending {
     pub(super) fn pid(&self) -> Pid {
         self.pid
     }
-
-    pub(super) fn damage(&self) -> Damage {
-        self.damage
-    }
 }
 
 /// A damage record and what it quarantines, `None` when its mapping is incomplete.
 pub(super) type Mapping = (Pending, Option<BTreeSet<Quarantine>>);
+
+/// What a mark is set for, judged under the lock that publishes the mark.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Cause {
+    /// A damage record a mapping took at the epoch it began at.
+    Record(Pending, Epoch),
+    /// A page refused with damage its record may settle.
+    Refusal(PageError),
+    /// The damage list ran out of room.
+    Full,
+    /// The open could not read the retained log or a page LSN map page whole.
+    Unarmed,
+    /// A finding of verify on an index.
+    Finding,
+}
+
+impl Cause {
+    /// Returns the fault the cause is.
+    pub(super) fn fault(self) -> Fault {
+        match self {
+            Cause::Record(pending, _) => Fault::Page(pending.damage),
+            Cause::Refusal(e) => Fault::Page(e.damage),
+            Cause::Full => Fault::Full,
+            Cause::Unarmed => Fault::Unarmed,
+            Cause::Finding => Fault::Finding,
+        }
+    }
+}
 
 /// A count of the changes of any page's damage, incarnation or retirement. A record whose page
 /// changed past the epoch its mapping began at is superseded.
@@ -634,9 +668,7 @@ impl Evidence {
         if damage == Damage::Unreadable || !self.logging {
             return None;
         }
-        if let Damage::Stale { expected, found } = damage
-            && self.damage(pid) == Some(Damage::Settled { expected, found })
-        {
+        if settled_as(self.damage(pid), damage) {
             return None;
         }
         if whole {
@@ -986,10 +1018,14 @@ impl Evidence {
         p.is_some_and(|p| p.changed <= begun && p.incarnation.generation == pending.of)
     }
 
-    /// Returns each of `mapped` still current since `begun`, the epoch its mapping began at.
-    pub(super) fn current(&self, begun: Epoch, mut mapped: Vec<Mapping>) -> Vec<Mapping> {
-        mapped.retain(|(p, _)| self.is_current(begun, p));
-        mapped
+    /// Returns whether `cause` still stands: a record unchanged since its mapping began, a refusal
+    /// its page's record does not settle, or no page.
+    pub(super) fn stands(&self, cause: &Cause) -> bool {
+        match *cause {
+            Cause::Record(pending, begun) => self.is_current(begun, &pending),
+            Cause::Refusal(e) => !settled_as(self.damage(e.pid), e.damage),
+            Cause::Full | Cause::Unarmed | Cause::Finding => true,
+        }
     }
 
     /// Enter each of `mapped` still current since `begun`, the epoch its mapping began at, and

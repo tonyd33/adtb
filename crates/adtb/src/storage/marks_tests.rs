@@ -5,7 +5,7 @@ use adtb_testkit::scratch::Scratch;
 
 use super::Quarantine;
 use crate::storage::pager::{Options, Pager};
-use crate::storage::policy::{self, Fault, Holder, Phase};
+use crate::storage::policy::Holder;
 
 #[test]
 fn a_mark_set_while_the_open_holds_the_database_survives_a_crash() {
@@ -24,8 +24,7 @@ fn a_mark_set_while_the_open_holds_the_database_survives_a_crash() {
     };
     let pager = Pager::create(rt(), &options).expect("create pager");
     let opening = crate::storage::Opening::begin(&pager);
-    let held = policy::mark(Fault::Unarmed, Holder::LsnMap, Phase::Opening);
-    pager.hold_quarantine(&opening, held);
+    pager.map_unarmed(Holder::LsnMap, &opening);
     pager
         .plant_mark(Quarantine::Heap(1), &opening)
         .expect("mark the heap");

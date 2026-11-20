@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::evidence::{Against, Begun, Evidence, Judged, Met, refusal_for_test};
+use super::evidence::{Against, Begun, Cause, Evidence, Judged, Met, Pending, refusal_for_test};
 use super::page::Verdict;
 use crate::storage::error::Damage;
 use crate::storage::log::Log;
@@ -405,13 +405,12 @@ fn a_free_holds_a_refusal_as_the_free_copys_damage_and_ends_a_stale_one() {
     }
 }
 
-/// Returns the records of `begun` still current, each mapped to the database.
+/// Returns the records of `begun` still current.
 fn current(e: &Evidence, (pending, _, at): &Begun) -> Vec<Pid> {
-    let mapped = pending.iter().map(|p| (*p, database())).collect();
-    e.current(*at, mapped)
+    let current = pending
         .iter()
-        .map(|(p, _)| p.pid())
-        .collect()
+        .filter(|p| e.stands(&Cause::Record(**p, *at)));
+    current.map(Pending::pid).collect()
 }
 
 #[test]

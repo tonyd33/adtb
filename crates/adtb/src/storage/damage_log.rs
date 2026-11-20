@@ -8,11 +8,11 @@ use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem};
 use super::error::{Damage, Shape};
-use super::evidence::{Begun, Evidence, Mapping, Met, meet_recorded};
+use super::evidence::{Begun, Cause, Mapping, Met, meet_recorded};
 use super::order::{Opening, Ordered, Orders};
 use super::page::{self, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
-use super::policy::{self, Fault, Holder, Mark, Phase};
+use super::policy::{self, Holder, Mark, Phase};
 use super::quarantine::MarkFailure;
 use super::quarantine::Quarantine;
 use super::record::{damage_of, damage_words};
@@ -123,6 +123,9 @@ fn encode(page: &mut [u8], r: &Recorded) {
     page[FLAGS..FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
 }
 
+/// Each object an open's fault marked durably, with whether its mark failed.
+pub type OpenMarks = BTreeMap<Quarantine, Result<(), MarkFailure>>;
+
 /// A refusal of a mark held for an open only, asked for with no open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unheld;
@@ -190,67 +193,52 @@ impl<R: Runtime> Pager<R> {
         self.map_records(begun, Phase::Running, holders, &ordered)
     }
 
-    /// Set what `fault` on a page of `holder` marks in the phase the pager is in, in the commit
+    /// Set what a finding on a page of `holder` marks in the phase the pager is in, in the commit
     /// order that `order` gives. Returns each object marked durably, with whether its mark failed.
     ///
-    /// Fail with [`Unheld`], setting nothing, if `fault` marks the database for an open only.
-    pub fn map_fault(
+    /// Fail with [`Unheld`], setting nothing, if the finding marks the database for an open only.
+    pub fn map_finding(
         &self,
-        fault: Fault,
         holder: Holder,
         order: &impl Orders,
     ) -> Result<BTreeMap<Quarantine, Result<(), MarkFailure>>, Unheld> {
-        let marks = policy::marks(fault, [holder], self.phase());
+        let phase = self.phase();
+        let marks = policy::marks(Cause::Finding.fault(), [holder], phase);
         if marks.iter().any(|m| m.open_only()) {
             return Err(Unheld);
         }
-        if !marks.iter().any(|m| m.durable().is_some()) {
-            return Ok(BTreeMap::new());
-        }
-        let ((), objects, marked) = self.set_judged(order, |_| ((), marks));
+        let causes = vec![(Cause::Finding, BTreeSet::from([holder]))];
+        let (_, objects, marked) = self.set_standing(order, phase, causes, None);
         Ok(objects.into_iter().map(|o| (o, marked)).collect())
     }
 
-    /// Set what `fault` on a page of `holder` marks during `opening`, holding a mark for this open
-    /// only. Returns each object marked durably, with whether its mark failed.
-    pub fn map_open_fault(
-        &self,
-        fault: Fault,
-        holder: Holder,
-        opening: &Opening,
-    ) -> BTreeMap<Quarantine, Result<(), MarkFailure>> {
-        let marks = policy::marks(fault, [holder], Phase::Opening);
-        let out = match marks.iter().any(|m| m.durable().is_some()) {
-            true => {
-                let ((), objects, marked) = self.set_judged(opening, |_| ((), marks.clone()));
-                objects.into_iter().map(|o| (o, marked)).collect()
-            }
-            false => BTreeMap::new(),
-        };
-        for mark in marks {
-            self.hold_quarantine(opening, mark);
-        }
-        out
+    /// Set what the refusal `e` of a page of `holder` marks during `opening`, holding a mark for
+    /// this open only, unless the page's record settles the damage `e` names. Returns each object
+    /// marked durably, with whether its mark failed.
+    pub fn map_open_fault(&self, e: PageError, holder: Holder, opening: &Opening) -> OpenMarks {
+        self.map_open(Cause::Refusal(e), holder, opening)
+    }
+
+    /// Set what the open's unknown expected LSNs mark during `opening`, `holder` holding the
+    /// record that could not be read. Returns each object marked durably, with whether its mark
+    /// failed.
+    pub fn map_unarmed(&self, holder: Holder, opening: &Opening) -> OpenMarks {
+        self.map_open(Cause::Unarmed, holder, opening)
     }
 
     /// Set what the damage of the commit log that refuses the database whole marks during
-    /// `opening`.
+    /// `opening`, unless the page's record settles that damage.
     pub fn map_open_cause(&self, opening: &Opening) {
         if let Some(cause) = self.whole_cause() {
-            self.map_open_fault(Fault::Page(cause.damage), Holder::CommitLog, opening);
+            self.map_open_fault(cause, Holder::CommitLog, opening);
         }
     }
 
-    /// Set the durable marks of the marks `judge` returns from the evidence, in one change of the
-    /// marks page under one hold of the order `order` gives, as [`Pager::quarantine_judged`] does.
-    /// Returns what `judge` returns, the objects marked, and why their marks hold only in memory
-    /// when they do.
-    fn set_judged<T>(
-        &self,
-        order: &impl Orders,
-        judge: impl FnOnce(&Evidence) -> (T, BTreeSet<Mark>),
-    ) -> (T, BTreeSet<Quarantine>, Result<(), MarkFailure>) {
-        order.ordered(|ordered| self.quarantine_judged(&ordered, judge))
+    fn map_open(&self, cause: Cause, holder: Holder, opening: &Opening) -> OpenMarks {
+        let causes = vec![(cause, BTreeSet::from([holder]))];
+        let (_, objects, marked) =
+            self.set_standing(opening, Phase::Opening, causes, Some(opening));
+        objects.into_iter().map(|o| (o, marked)).collect()
     }
 
     /// Find the holders of each of `pages` with `holders` and map the page to what they mark
@@ -265,43 +253,30 @@ impl<R: Runtime> Pager<R> {
         mut holders: impl FnMut(Pid) -> Option<BTreeSet<Holder>>,
         order: &impl Orders,
     ) -> BTreeMap<Quarantine, MarkFailure> {
-        let overflow = policy::marks(Fault::Full, [Holder::DamageList], phase);
+        let list = BTreeSet::from([Holder::DamageList]);
+        let overflow = policy::marks(Cause::Full.fault(), list.clone(), phase);
         let mut mapped: Vec<Mapping> = Vec::new();
-        let mut marks: BTreeMap<Pid, BTreeSet<Mark>> = BTreeMap::new();
+        let mut causes: Vec<(Cause, BTreeSet<Holder>)> = Vec::new();
         for p in pages {
-            let found = if full {
-                Some(overflow.clone())
-            } else {
-                holders(p.pid()).map(|held| policy::marks(Fault::Page(p.damage()), held, phase))
+            let cause = Cause::Record(p, begun);
+            let held = if full { None } else { holders(p.pid()) };
+            let found = match &held {
+                _ if full => Some(overflow.clone()),
+                Some(held) => Some(policy::marks(cause.fault(), held.clone(), phase)),
+                None => None,
             };
             let found = found.filter(|f| !f.iter().any(|m| m.open_only()));
             let objects = found
                 .as_ref()
                 .map(|f| f.iter().filter_map(|m| m.durable()).collect());
-            if let Some(found) = found {
-                marks.insert(p.pid(), found);
-            }
+            let held = held.filter(|_| found.is_some()).unwrap_or_default();
+            causes.push((cause, held));
             mapped.push((p, objects));
         }
-        let full_marks = full.then_some(&overflow).into_iter().flatten();
-        let durable = marks.values().flatten().chain(full_marks);
-        let any_durable = durable.into_iter().any(|m| m.durable().is_some());
-        let judge = |evidence: &Evidence| {
-            let mapped = evidence.current(begun, mapped);
-            let mut set: BTreeSet<Mark> = mapped
-                .iter()
-                .filter_map(|m| marks.remove(&m.0.pid()))
-                .flatten()
-                .collect();
-            if full {
-                set.extend(overflow.iter().copied());
-            }
-            (mapped, set)
-        };
-        let (mapped, objects, marked) = match any_durable {
-            true => self.set_judged(order, judge),
-            false => (judge(&self.evidence()).0, BTreeSet::new(), Ok(())),
-        };
+        if full {
+            causes.push((Cause::Full, list));
+        }
+        let (_, objects, marked) = self.set_standing(order, phase, causes, None);
         let failed: BTreeMap<Quarantine, MarkFailure> = match marked {
             Ok(()) => BTreeMap::new(),
             Err(e) => objects.into_iter().map(|o| (o, e)).collect(),
@@ -399,7 +374,7 @@ impl<R: Runtime> Pager<R> {
             };
             read.inspect_err(|e| {
                 self.refuse_list();
-                self.map_open_fault(Fault::Page(e.damage), Holder::DamageList, opening);
+                self.map_open_fault(*e, Holder::DamageList, opening);
             })
             .ok()
         } else if self.is_quarantined(Quarantine::Database) {

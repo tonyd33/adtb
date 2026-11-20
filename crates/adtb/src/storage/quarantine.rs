@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::runtime::Runtime;
 
 use super::alloc::diff;
-use super::evidence::{Evidence, Judged};
+use super::evidence::{Cause, Evidence, Judged};
 use super::order::Ordered;
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
@@ -566,6 +566,47 @@ impl<R: Runtime> Pager<R> {
         marked
     }
 
+    /// Set what each of `causes` that still stands marks on the pages its holders hold during
+    /// `phase`: its durable marks in one change of the marks page under one hold of the order
+    /// `order` gives, and its marks for an open only held for `opening`. Returns whether each
+    /// cause stands, the objects marked durably, and why their marks hold only in memory when
+    /// they do.
+    ///
+    /// Precondition: the calling thread holds no page latch.
+    ///
+    /// Postcondition: no cause's page changes its damage, incarnation or retirement between the
+    /// judgement that it stands and the setting of its marks, durable and held; the durable ones
+    /// also have their change of the marks page logged.
+    ///
+    /// Panic if a cause that stands holds the database for an open only and `opening` is `None`.
+    pub(super) fn set_standing(
+        &self,
+        order: &impl super::Orders,
+        phase: Phase,
+        causes: Vec<(Cause, BTreeSet<Holder>)>,
+        opening: Option<&super::Opening>,
+    ) -> (Vec<bool>, BTreeSet<Quarantine>, Result<(), MarkFailure>) {
+        let causes: Vec<(Cause, BTreeSet<Mark>)> = causes
+            .into_iter()
+            .map(|(c, held)| (c, policy::marks(c.fault(), held, phase)))
+            .collect();
+        let judge = |evidence: &Evidence| {
+            let stands: Vec<bool> = causes.iter().map(|(c, _)| evidence.stands(c)).collect();
+            let standing = causes.iter().zip(&stands).filter(|(_, s)| **s);
+            let set: BTreeSet<Mark> = standing.flat_map(|((_, m), _)| m.iter().copied()).collect();
+            if set.iter().any(|m| m.open_only()) {
+                let opening = opening.expect("a mark held for an open only is set during an open");
+                self.hold_database(opening);
+            }
+            (stands, set)
+        };
+        let marks = causes.iter().flat_map(|(_, m)| m);
+        match marks.into_iter().any(|m| m.durable().is_some()) {
+            true => order.ordered(|ordered| self.quarantine_judged(&ordered, judge)),
+            false => (judge(&self.evidence()).0, BTreeSet::new(), Ok(())),
+        }
+    }
+
     /// Mark quarantined, as [`Pager::quarantine`] marks each, the objects the marks `judge`
     /// returns from the evidence mark durably. Returns what `judge` returns, the objects marked,
     /// and why their marks hold only in memory when they do.
@@ -574,7 +615,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Postcondition: no page's damage or incarnation changes from the start of `judge` until its
     /// marks are set in memory and their change of the marks page is logged.
-    pub(in crate::storage) fn quarantine_judged<T>(
+    fn quarantine_judged<T>(
         &self,
         _: &Ordered<'_>,
         judge: impl FnOnce(&Evidence) -> (T, BTreeSet<Mark>),
@@ -626,11 +667,9 @@ impl<R: Runtime> Pager<R> {
         order.ordered(|o| self.quarantine(object, &o))
     }
 
-    /// Hold the database marked for this open only, never written, when `mark` holds it so.
-    pub(super) fn hold_quarantine(&self, _opening: &super::Opening, mark: Mark) {
-        if mark.open_only() {
-            self.marks().hold(self.rt(), Quarantine::Database);
-        }
+    /// Hold the database marked for this open only, never written.
+    fn hold_database(&self, _opening: &super::Opening) {
+        self.marks().hold(self.rt(), Quarantine::Database);
     }
 
     /// Remove the mark on `object`, once it is repaired. Durable on return.

@@ -12,7 +12,7 @@ use super::header::{self, FileHeader, REGION};
 use super::order::Opening;
 use super::page;
 use super::pager::{Options, Pager};
-use super::policy::{Fault, Holder};
+use super::policy::Holder;
 use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
@@ -122,14 +122,14 @@ impl<R: Runtime> Pager<R> {
         self.start_recording();
         self.checkpoint();
         if let Err(e) = self.check_map() {
-            self.map_open_fault(Fault::Page(e.damage), Holder::LsnMap, opening);
+            self.map_open_fault(e, Holder::LsnMap, opening);
         }
         if let Err(map) = armed {
             let holder = map.map_or(Holder::Log, |_| Holder::LsnMap);
             if let Some(e) = map {
-                self.map_open_fault(Fault::Page(e.damage), holder, opening);
+                self.map_open_fault(e, holder, opening);
             }
-            self.map_open_fault(Fault::Unarmed, holder, opening);
+            self.map_unarmed(holder, opening);
         }
         Ok(recovery)
     }
