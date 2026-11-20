@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 
 use crate::runtime::{IoError, Runtime};
+use crate::storage::policy::{self, Phase};
 use crate::storage::{self, Pager, Unpublished};
 
 use super::{Engine, OpenError, corrupt};
@@ -48,4 +49,33 @@ pub(super) fn host_error(e: IoError) -> std::io::Error {
         IoError::Full => ErrorKind::StorageFull,
         IoError::Failed => ErrorKind::Other,
     })
+}
+
+/// Returns the damage an open that failed may still answer `verify` over: a page that failed
+/// verification on a database quarantined whole. Returns `None` while any page is unreadable,
+/// but one whose damage holds the database for the open alone.
+pub(super) fn open_damage<R: Runtime>(pager: &Pager<R>) -> Option<storage::PageError> {
+    if !pager.database_marked() {
+        return None;
+    }
+    let open_only = |pid: storage::Pid, damage: storage::Damage| {
+        pager.held_unwalked(pid).is_some_and(|holder| {
+            policy::mark(policy::Fault::Page(damage), holder, Phase::Opening).open_only()
+        })
+    };
+    let damaged: Vec<_> = pager
+        .damaged()
+        .into_iter()
+        .filter(|&(pid, damage)| !open_only(pid, damage))
+        .collect();
+    if damaged
+        .iter()
+        .any(|(_, d)| matches!(d, storage::Damage::Unreadable))
+    {
+        return None;
+    }
+    damaged
+        .into_iter()
+        .next()
+        .map(|(pid, damage)| storage::PageError { pid, damage })
 }

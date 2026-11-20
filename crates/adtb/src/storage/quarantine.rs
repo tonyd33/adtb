@@ -849,16 +849,25 @@ impl<R: Runtime> Pager<R> {
         phase: Phase,
         walk: impl FnOnce(&mut Holders),
     ) -> Option<BTreeSet<Holder>> {
+        match self.held_unwalked(pid) {
+            Some(holder) => Some(BTreeSet::from([holder])),
+            None => self.holders_walked(pid, phase, walk),
+        }
+    }
+
+    /// Returns what holds `pid` with no walk: an allocation bitmap page, the damage list's page
+    /// or a page of the page LSN map.
+    pub fn held_unwalked(&self, pid: Pid) -> Option<Holder> {
         if self.is_bitmap_page(pid) {
-            return Some(BTreeSet::from([Holder::Bitmap]));
+            return Some(Holder::Bitmap);
         }
         if pid != Pid(0) && pid == self.damage_list_page() {
-            return Some(BTreeSet::from([Holder::DamageList]));
+            return Some(Holder::DamageList);
         }
         if self.holds_map_page(pid) {
-            return Some(BTreeSet::from([Holder::LsnMap]));
+            return Some(Holder::LsnMap);
         }
-        self.holders_walked(pid, phase, walk)
+        None
     }
 
     /// Returns what holds the damaged page `pid` during `phase` from the walks `walk` reports

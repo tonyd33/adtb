@@ -1027,7 +1027,9 @@ Opening a file under that mark, postconditions:
 - A failed open that found no damaged page, or an unreadable one, still fails.
   So do a file header with neither copy valid, a file that is no adtb file, a
   retained log recovery refuses, and a row that fails to decode on a page
-  that verifies.
+  that verifies. A damage list page the device cannot read at the open holds
+  the database for that open only and counts as neither: the open fails when
+  it is the only damaged page, and otherwise the other damaged pages decide.
 
 Quarantine is a mark the storage layer sets on one heap, one index or
 the whole database, and keeps until the object is repaired. The mapper is

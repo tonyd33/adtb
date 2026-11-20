@@ -46,7 +46,7 @@ mod value;
 mod verify;
 
 use cause::{Broken, corrupt};
-use failed_open::{failed_create, finish_create};
+use failed_open::{failed_create, finish_create, open_damage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -740,25 +740,6 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Openin
         opening,
     );
     pager.end_open_attempt(opening);
-}
-
-/// Returns the damage an open that failed may still answer `verify` over: a page that failed
-/// verification on a database quarantined whole. Returns `None` while any page is unreadable.
-fn open_damage<R: Runtime>(pager: &Pager<R>) -> Option<storage::PageError> {
-    if !pager.database_marked() {
-        return None;
-    }
-    let damaged = pager.damaged();
-    if damaged
-        .values()
-        .any(|d| matches!(d, storage::Damage::Unreadable))
-    {
-        return None;
-    }
-    damaged
-        .into_iter()
-        .next()
-        .map(|(pid, damage)| storage::PageError { pid, damage })
 }
 
 /// An engine's parts, opened and not yet put together.

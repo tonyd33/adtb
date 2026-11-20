@@ -93,6 +93,7 @@ struct Known {
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
 const UNDER_RELATION_MARK: &str = "migrate-under-relation-mark";
 const APPLIES_UNDER_MARK: &str = "migrate-applies-under-mark";
+const SETTLED_CAUSE_MARKS: &str = "settled-status-cause-marks-database";
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
 const KNOWN: &[Known] = &[
@@ -251,6 +252,57 @@ const KNOWN: &[Known] = &[
         then: Some((
             Point {
                 at: 651,
+                injection: Injection::Torn,
+            },
+            Kind::Engine,
+        )),
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::CommitLog,
+        owner: None,
+        consumer: Consumer::Read,
+        what: "refused the database with a Database mark the faults do not map to",
+        ticket: SETTLED_CAUSE_MARKS,
+        seed: 6,
+        at: 677,
+        then: Some((
+            Point {
+                at: 679,
+                injection: Injection::Torn,
+            },
+            Kind::Engine,
+        )),
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::CommitLog,
+        owner: None,
+        consumer: Consumer::Read,
+        what: "by key: refused the database with a Database mark the faults do not map to",
+        ticket: SETTLED_CAUSE_MARKS,
+        seed: 6,
+        at: 677,
+        then: Some((
+            Point {
+                at: 679,
+                injection: Injection::Torn,
+            },
+            Kind::Engine,
+        )),
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::CommitLog,
+        owner: None,
+        consumer: Consumer::Verify,
+        what: "a mark the faults do not map to",
+        ticket: SETTLED_CAUSE_MARKS,
+        seed: 6,
+        at: 677,
+        then: Some((
+            Point {
+                at: 679,
                 injection: Injection::Torn,
             },
             Kind::Engine,
@@ -1559,6 +1611,15 @@ fn pairs(seconds: &[Second]) -> String {
         })
         .collect();
     pool::map(&paired, |k| named(k), |k| rerun(k));
+    let pinned: Vec<&PinnedPair> = PINNED_PAIRS
+        .iter()
+        .filter(|p| seconds.iter().any(|s| holds(*s, p.2)))
+        .collect();
+    pool::map(
+        &pinned,
+        |(seed, (at, _), then, _)| format!("pinned pair seed {seed} at {at} then {then:?}"),
+        |p| rerun_pair(p),
+    );
     assert_reached("pairs whose file held a damage record", recorded, 1);
     assert_reached("pairs whose file held a durable mark", marked, 1);
     let under: Vec<_> = ran
@@ -1576,6 +1637,47 @@ fn pairs(seconds: &[Second]) -> String {
         "violations\n{text}"
     );
     text
+}
+
+/// A pair that breaks no rule: its seed, the write-out of its lost write and that page's kind, and
+/// its second fault with the kind of page that fault's write-out writes.
+type PinnedPair = (u64, (usize, Kind), Point, Kind);
+
+/// The pairs the search must still reach: a lost write of the settings heap beside a damage list
+/// page unreadable for good, which opens for verify.
+const PINNED_PAIRS: &[PinnedPair] = &[(
+    2,
+    (610, Kind::Engine),
+    Point {
+        at: 639,
+        injection: Injection::Unreadable { lasting: true },
+    },
+    Kind::DamageList,
+)];
+
+/// Fail unless the write-outs of the pair `p` still have their kinds and its case fires its
+/// planned read failure, opens and shows no violation.
+fn rerun_pair(&(seed, (at, kind), then, then_kind): &PinnedPair) {
+    let plan = plans::plan(seed, false);
+    assert_eq!(
+        (Some(kind), Some(then_kind), true),
+        (
+            plan.kind(at),
+            plan.kind(then.at),
+            plan.takes(then.at, then.injection)
+        ),
+        "pinned pair seed {seed} at {at} then {then:?} writes other cells; pin it again"
+    );
+    let first = Point {
+        at,
+        injection: Injection::Lost,
+    };
+    let o = case::run_pair(&plan, first, then).expect("the pinned pair's faults take");
+    assert_eq!(
+        (true, true, Vec::<Violation>::new()),
+        (o.read_failed, o.opened, o.verdicts.violations),
+        "pinned pair seed {seed} at {at} then {then:?}: fired, opened, violations"
+    );
 }
 
 /// Returns the cases of `second` that reached what it is for: those whose planned read failure
