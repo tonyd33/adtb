@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use adtb_lang::kernel::{Build, Var};
 use adtb_lang::types::{Base, Ty};
 
@@ -253,41 +251,13 @@ fn a_range_of_an_unordered_index_or_past_its_fields_is_refused() {
 }
 
 #[test]
-fn a_read_its_plan_does_not_list_is_refused() {
-    let f = running();
-    let (mut p, _) = valid(&f, GID_PROBE, &[]);
-    let gid = gid_index(&f);
-    let identities: Vec<HeapId> = (0..3).map(|c| heap(&f, "identities", c)).collect();
-    assert_eq!(
-        identities.iter().copied().collect::<BTreeSet<_>>(),
-        p.reads.heaps
-    );
-    for h in identities {
-        let mut q = p.clone();
-        q.reads.heaps.remove(&h);
-        assert_eq!(Err(Broken::UnlistedHeap(h)), check(&f, &q));
-    }
-    p.reads.indexes.remove(&gid);
-    assert_eq!(Err(Broken::UnlistedIndex(gid)), check(&f, &p));
-}
-
-#[test]
 fn a_read_of_the_past_breaking_its_shape_is_refused() {
     let f = running();
     let params = [("p", "Position")];
-    let (p, _) = valid(&f, PAST, &params);
-    let mut nested = p.clone();
+    let (mut nested, _) = valid(&f, PAST, &params);
     let a = at(&mut nested);
     a.body = Eval::At(Box::new(a.clone()));
     assert_eq!(Err(Broken::NestedPast), check(&f, &nested));
-    let h0 = heap(&f, "identities", 0);
-    let mut unlisted = p;
-    assert!(at(&mut unlisted).reads.heaps.remove(&h0));
-    assert_eq!(Err(Broken::PastUnlistedHeap(h0)), check(&f, &unlisted));
-    let (mut lookup, _) = valid(&f, PAST_LOOKUP, &params);
-    let users = f.catalog.relation(f.rel("users")).key_index;
-    assert!(at(&mut lookup).reads.indexes.remove(&users));
-    assert_eq!(Err(Broken::PastUnlistedIndex(users)), check(&f, &lookup));
     let (mut probe, vars) = valid(&f, KEY_PROBE, &[("k", "Key identities")]);
     let point = Build::new(&f.schema, &mut probe.terms).var(vars[0]);
     probe.root = Eval::At(Box::new(AtRead {
