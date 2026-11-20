@@ -446,7 +446,8 @@ fn perform(db: &mut Db, live: &mut Live, op: &Op, xid: Xid) {
             let (heap, tid, _) = live.remove(key).unwrap();
             db.heaps[heap]
                 .delete(&db.pager, tid, Xid(x))
-                .expect("delete");
+                .expect("delete")
+                .unchecked(crate::heap::Unchecked::Test);
         }
         Op::Retag { key, to, row } => {
             let (heap, tid, _) = live[key].clone();
@@ -762,7 +763,10 @@ fn a_version_copy_clears_the_all_visible_flag_of_the_page_it_lands_on() {
             let before = all_visible_marks(&db);
             let tid = tids[target as usize];
             let begun = db.txns.begin(&db.pager).unwrap();
-            db.heaps[EMAIL].delete(&db.pager, tid, begun.xid()).unwrap();
+            db.heaps[EMAIL]
+                .delete(&db.pager, tid, begun.xid())
+                .unwrap()
+                .unchecked(crate::heap::Unchecked::Test);
             db.txns.commit(&db.pager, begun).unwrap();
             let v = db.heaps[EMAIL]
                 .read(&db.pager, tid)
@@ -829,7 +833,10 @@ fn the_sweep_reads_only_pages_written_since_the_last() {
         assert!(large.touched(&db.pager).unwrap().is_empty());
         let begun = db.txns.begin(&db.pager).unwrap();
         let x = begun.xid();
-        db.heaps[EMAIL].delete(&db.pager, kept, x).unwrap();
+        db.heaps[EMAIL]
+            .delete(&db.pager, kept, x)
+            .unwrap()
+            .unchecked(crate::heap::Unchecked::Test);
         db.txns.commit(&db.pager, begun).unwrap();
         let begun = db.txns.begin(&db.pager).unwrap();
         let x = begun.xid();
@@ -912,7 +919,9 @@ fn vacuum_reopens_a_page_conversion_left_full() {
         let t = heap.insert(pager, x, &fresh(1000)).unwrap();
         assert_ne!(first, t.page());
         for t in &old[..old.len() * 3 / 4] {
-            heap.delete(pager, *t, x).unwrap();
+            heap.delete(pager, *t, x)
+                .unwrap()
+                .unchecked(crate::heap::Unchecked::Test);
         }
         db.txns.commit(pager, begun).unwrap();
         let w = db.txns.horizon_now(31);
@@ -1006,7 +1015,10 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         db.txns.commit(&db.pager, begun).unwrap();
         let begun = db.txns.begin(&db.pager).unwrap();
         let x = begun.xid();
-        db.heaps[EMAIL].delete(&db.pager, moved, x).unwrap();
+        db.heaps[EMAIL]
+            .delete(&db.pager, moved, x)
+            .unwrap()
+            .unchecked(crate::heap::Unchecked::Test);
         db.txns.commit(&db.pager, begun).unwrap();
         let report = db.vacuum(usize::MAX);
         assert!(report.freed >= 1, "{report:?}");
@@ -1338,7 +1350,10 @@ fn dead_rows(rt: SimRuntime) -> Db {
     let begun = db.txns.begin(&db.pager).unwrap();
     let x = begun.xid();
     for (heap, tid) in tids {
-        db.heaps[heap].delete(&db.pager, tid, x).unwrap();
+        db.heaps[heap]
+            .delete(&db.pager, tid, x)
+            .unwrap()
+            .unchecked(crate::heap::Unchecked::Test);
     }
     db.txns.commit(&db.pager, begun).unwrap();
     db

@@ -54,7 +54,9 @@ fn build(rt: SimRuntime, pool_frames: usize) -> (Db, Vec<(i64, Tid)>) {
         if key % 2 == 0 {
             kept.push((key, tid));
         } else {
-            heap.delete(&pager, tid, Xid(DELETER)).expect("delete");
+            heap.delete(&pager, tid, Xid(DELETER))
+                .expect("delete")
+                .unchecked(crate::heap::Unchecked::Test);
         }
     }
     let judge = |w: &Writers| {
@@ -265,7 +267,9 @@ fn clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole() {
             let clearer = rt.spawn("clearer", move || {
                 for t in low {
                     let before = g.load(Ordering::Relaxed);
-                    h.delete(&p, t, Xid(3)).expect("delete");
+                    h.delete(&p, t, Xid(3))
+                        .expect("delete")
+                        .unchecked(crate::heap::Unchecked::Test);
                     if before && g.load(Ordering::Relaxed) {
                         d.fetch_add(1, Ordering::Relaxed);
                     }
@@ -368,7 +372,10 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
                     .heap
                     .insert(&db.pager, Xid(2 * r + 3), &row(1, 0))
                     .unwrap();
-                db.heap.delete(&db.pager, filler, Xid(2 * r + 3)).unwrap();
+                db.heap
+                    .delete(&db.pager, filler, Xid(2 * r + 3))
+                    .unwrap()
+                    .unchecked(crate::heap::Unchecked::Test);
                 rt.yield_now();
             }
             stop.store(true, Ordering::Relaxed);
@@ -414,7 +421,10 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
                     let mut xid = 1;
                     while !stop.load(Ordering::Relaxed) {
                         let tid = db.heap.insert(&db.pager, Xid(xid), &large_row(-1)).unwrap();
-                        db.heap.delete(&db.pager, tid, Xid(xid)).unwrap();
+                        db.heap
+                            .delete(&db.pager, tid, Xid(xid))
+                            .unwrap()
+                            .unchecked(crate::heap::Unchecked::Test);
                         db.heap
                             .prune(&db.pager, Pid(tid.page()), dead_once_deleted, &[], false)
                             .unwrap();
@@ -530,7 +540,10 @@ fn emptying_a_page_beside_a_settle_of_its_neighbours_entry_finishes() {
                     "seed {seed}: {emptied:?} and {roomier:?} share a level-0 page"
                 );
                 for &t in gone.iter().chain(&thinned[..1]) {
-                    db.heap.delete(&db.pager, t, Xid(DELETER)).unwrap();
+                    db.heap
+                        .delete(&db.pager, t, Xid(DELETER))
+                        .unwrap()
+                        .unchecked(crate::heap::Unchecked::Test);
                 }
                 let started = Arc::new(AtomicUsize::new(0));
                 let finished = Arc::new(AtomicUsize::new(0));

@@ -9,11 +9,12 @@ use adtb_lang::types::{RelRef, Ty};
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
 use crate::catalog::IndexKeys;
-use crate::heap::{FieldType, Heap, HeapNo, Slots, Version, refuse_named, walk};
+use crate::heap::{FieldType, Heap, HeapNo, Link, Slots, Version, refuse_named, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{Logged, Reader, ScanId, SerialId, SerializationFailure, Serializer, Writers};
 use crate::plan::{self, HeapId, IndexId};
 use crate::runtime::Runtime;
+use crate::steps::{Step, Steps};
 use crate::storage::{Pager, Pid, Quarantine};
 use adtb_sys::lock::Ranked;
 
@@ -67,6 +68,9 @@ pub trait Reads: Send + Sync {
 
     /// Returns whether a read of heap `heap` sees what the reader's snapshot sees.
     fn covers(&self, heap: HeapNo) -> bool;
+
+    /// Call the step hook of a serializable reader with `step`.
+    fn reached(&self, _: Step) {}
 }
 
 /// The reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
@@ -75,6 +79,7 @@ struct AtSnapshot<R: Runtime> {
     rt: R,
     reader: Reader<Logged<R>>,
     serial: Option<(Arc<Ranked<Serializer>>, SerialId)>,
+    steps: Arc<Steps>,
 }
 
 impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
@@ -137,6 +142,12 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
 
     fn covers(&self, heap: HeapNo) -> bool {
         self.reader.covers(heap.0)
+    }
+
+    fn reached(&self, step: Step) {
+        if self.serial.is_some() {
+            self.steps.at(step);
+        }
     }
 }
 
@@ -334,14 +345,15 @@ impl<R: Runtime> std::fmt::Debug for Store<R> {
 impl<R: Runtime> Store<R> {
     /// Returns the store of a serializable transaction's statements: it reads every heap and
     /// index of `bindings` at `reader`'s snapshot, records SIREAD locks as `serial` in its
-    /// serializer, and reads the past through `past`.
+    /// serializer, calls the step hook of `steps`, and reads the past through `past`.
     pub fn serializable(
         reader: Reader<Logged<R>>,
         serial: (Arc<Ranked<Serializer>>, SerialId),
+        steps: Arc<Steps>,
         bindings: Bindings,
         past: Option<Arc<dyn PastReads<R>>>,
     ) -> Store<R> {
-        let mut store = Store::at_snapshot(reader, Some(serial), bindings);
+        let mut store = Store::at_snapshot(reader, Some(serial), steps, bindings);
         store.past = past;
         store
     }
@@ -349,13 +361,13 @@ impl<R: Runtime> Store<R> {
     /// Returns the store of a read at the safe snapshot of `reader`: it reads every heap and
     /// index of `bindings` and records no SIREAD lock.
     pub fn safe(reader: Reader<Logged<R>>, bindings: Bindings) -> Store<R> {
-        Store::at_snapshot(reader, None, bindings)
+        Store::at_snapshot(reader, None, Arc::default(), bindings)
     }
 
     /// Returns the store of a migration's validation at `reader`'s snapshot: it reads every
     /// heap and index of `bindings` and records no SIREAD lock.
     pub fn migrating(reader: Reader<Logged<R>>, bindings: Bindings) -> Store<R> {
-        Store::at_snapshot(reader, None, bindings)
+        Store::at_snapshot(reader, None, Arc::default(), bindings)
     }
 
     /// Returns the store of a read of the past through `reader`, built at a pinned marker,
@@ -409,6 +421,7 @@ impl<R: Runtime> Store<R> {
     fn at_snapshot(
         reader: Reader<Logged<R>>,
         serial: Option<(Arc<Ranked<Serializer>>, SerialId)>,
+        steps: Arc<Steps>,
         bindings: Bindings,
     ) -> Store<R> {
         let pager = reader.pager().clone();
@@ -416,6 +429,7 @@ impl<R: Runtime> Store<R> {
             rt: pager.rt().clone(),
             reader,
             serial,
+            steps,
         };
         Store {
             pager,
@@ -483,6 +497,7 @@ impl Listing {
     /// heap.
     pub fn stopped(mut self, read: &[Pid]) {
         if let Some(scan) = self.scan.take() {
+            self.reads.reached(Step::ScanRead);
             self.reads.scanned(self.heap, scan, Some(read));
         }
     }
@@ -491,6 +506,7 @@ impl Listing {
 impl Drop for Listing {
     fn drop(&mut self) {
         if let Some(scan) = self.scan.take() {
+            self.reads.reached(Step::ScanRead);
             self.reads.scanned(self.heap, scan, None);
         }
     }
@@ -886,10 +902,11 @@ impl<R: Runtime> Store<R> {
             }
             self.covered(h)?;
         }
-        let walked = walk(&self.pager, heap.id(), sum, tid, |l, _| {
+        let saw = |l: &Link, _: &[Value]| {
             self.reads
                 .saw((Pid(l.tid.page()), heap.id()), &l.header.writers)
-        })?;
+        };
+        let walked = walk(&self.pager, heap.id(), sum, tid, saw)?;
         if walked.is_none()
             && let Some((index, entry)) = &at.entry
         {
@@ -906,9 +923,13 @@ impl<R: Runtime> Store<R> {
         let Some((link, row)) = walked.filter(|(l, _)| l.heap == heap.id()) else {
             return Ok(None);
         };
+        self.reads.reached(Step::VersionRead);
         self.reads
             .fetched(link.heap, link.tid)
             .map_err(Error::Serialization)?;
+        // Read the version again under its lock: a write that changed it before the lock records
+        // its rw-antidependency here.
+        walk(&self.pager, heap.id(), sum, link.tid, saw)?;
         Ok(Some((link.tid, row)))
     }
 

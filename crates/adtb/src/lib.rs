@@ -15,6 +15,7 @@ pub mod key;
 mod mvcc;
 mod plan;
 mod ranks;
+mod steps;
 mod storage;
 #[cfg(test)]
 mod test_world;

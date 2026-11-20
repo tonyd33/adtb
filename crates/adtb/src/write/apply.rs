@@ -4,11 +4,12 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_stored};
-use crate::heap::{self, Heap, Slots, WriteTarget};
+use crate::heap::{self, Heap, Slots, Superseded, Unchecked, WriteTarget};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
+use crate::steps::Step;
 use crate::storage::Pid;
 
 use super::eval::{Stmt, Violations, Violator, pairs, violate, violate_key};
@@ -145,15 +146,7 @@ impl<R: Runtime> Stmt<'_, R> {
             let header = version.header;
             let checked = reader.check_write(xid, &header.writers);
             match checked.map_err(|e| version.refuse(&self.db.pager, e))? {
-                Write::Proceed => {
-                    let id = self.heap(heap).id().0;
-                    self.db
-                        .session
-                        .ser
-                        .lock(&self.db.rt)
-                        .write_tuple(self.tx.sid, id, tid)?;
-                    return Ok((c, WriteTarget::checked(tid, header)));
-                }
+                Write::Proceed => return Ok((c, WriteTarget::checked(tid, header))),
                 Write::Wait(x) => self.wait(xid, x)?,
                 Write::Fail(f) => return Err(f.into()),
             }
@@ -208,6 +201,18 @@ impl<R: Runtime> Stmt<'_, R> {
         Ok(WriteTarget::checked(tid, header))
     }
 
+    /// Record the statement's write of the version `old` names against the SIREAD locks on it.
+    fn superseded(&self, old: Superseded) -> Result<(), Error> {
+        self.db.session.steps.at(Step::WriteChanged(old.change()));
+        self.db
+            .session
+            .ser
+            .lock(&self.db.rt)
+            .write_tuple(self.tx.sid, old)?;
+        self.db.session.steps.at(Step::WriteChecked);
+        Ok(())
+    }
+
     fn inserted_into(&self, heap: HeapId) -> Result<(), Error> {
         let id = self.heap(heap).id().0;
         self.db
@@ -250,10 +255,12 @@ impl<R: Runtime> Stmt<'_, R> {
                 (Some(_), None) => {
                     let (c, tid) = self.writable(*rel, key)?;
                     let heap = r.ctors[c as usize].heap;
-                    self.heap(heap).delete(pager, tid, xid)?;
+                    let old = self.heap(heap).delete(pager, tid, xid)?;
+                    let checked = self.superseded(old);
                     self.undo
                         .borrow_mut()
                         .push(Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?));
+                    checked?;
                 }
                 (Some((c, _)), Some((d, n))) if c == d => {
                     let (c, tid) = self.writable(*rel, key)?;
@@ -266,13 +273,15 @@ impl<R: Runtime> Stmt<'_, R> {
                     let row = self.stored(heap, n)?;
                     let h = self.heap(heap);
                     let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
-                    let up = h
+                    let (up, old) = h
                         .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
                         .map_err(too_large(*rel, c))?;
+                    let checked = self.superseded(old);
                     self.undo.borrow_mut().extend([
                         Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?),
                         Undo::Kill(heap, up.tid, xid),
                     ]);
+                    checked?;
                     self.inserted_into(heap)?;
                     if !up.heap_only {
                         written.push(Written {
@@ -291,14 +300,16 @@ impl<R: Runtime> Stmt<'_, R> {
                     let from = r.ctors[c as usize].heap;
                     let into = self.heap(to);
                     let mut judge = self.db.session.txns.judge_now(pager, into.id().0);
-                    let at = self
+                    let (at, old) = self
                         .heap(from)
                         .retag_pruning(pager, tid, xid, into, &row, &mut judge)
                         .map_err(too_large(*rel, *d))?;
+                    let checked = self.superseded(old);
                     self.undo.borrow_mut().extend([
                         Undo::Restore(from, self.restorable(from, tid.tid, xid)?),
                         Undo::Kill(to, at, xid),
                     ]);
+                    checked?;
                     self.inserted_into(to)?;
                     written.push(Written {
                         rel: *rel,
@@ -372,7 +383,8 @@ impl<R: Runtime> Stmt<'_, R> {
                     );
                     self.heap(heap)
                         .delete(pager, WriteTarget::checked(tid, header), xid)
-                        .map_err(undo_failure)?;
+                        .map_err(undo_failure)?
+                        .unchecked(Unchecked::OwnInsert);
                 }
                 Undo::Restore(heap, tid) => {
                     self.heap(heap).restore(pager, tid).map_err(undo_failure)?;

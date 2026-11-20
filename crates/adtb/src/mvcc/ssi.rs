@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, RangeBounds};
 
+use crate::heap::Superseded;
 use crate::key::{CtorId, Tid};
 use crate::storage::Pid;
 
@@ -559,8 +560,17 @@ impl Serializer {
         }
     }
 
-    /// Record the write by `id` of the version at `tid` of `heap`: an update, delete or retag.
+    /// Record the write by `id` of the version `old` names, its change in its page: an update,
+    /// delete or retag.
     pub fn write_tuple(
+        &mut self,
+        id: SerialId,
+        old: Superseded,
+    ) -> Result<(), SerializationFailure> {
+        self.write_at(id, old.heap().0, old.tid())
+    }
+
+    pub(super) fn write_at(
         &mut self,
         id: SerialId,
         heap: u32,

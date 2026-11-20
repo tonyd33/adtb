@@ -264,7 +264,7 @@ fn perform(db: &Db, live: &mut Live, op: &Op, xid: Xid) {
             let (heap, tid, _) = live[key].clone();
             let h = &db.heaps[heap];
             let mut judge = db.txns.judge(&db.pager, db.txns.horizon_now(h.id().0));
-            let u = h
+            let (u, _) = h
                 .update_pruning(&db.pager, tid, xid, row, &[0], &mut judge)
                 .expect("update");
             if !u.heap_only {
@@ -274,7 +274,10 @@ fn perform(db: &Db, live: &mut Live, op: &Op, xid: Xid) {
         }
         Op::Delete { key } => {
             let (heap, tid, _) = live.remove(key).unwrap();
-            db.heaps[heap].delete(&db.pager, tid, xid).expect("delete");
+            db.heaps[heap]
+                .delete(&db.pager, tid, xid)
+                .expect("delete")
+                .unchecked(crate::heap::Unchecked::Test);
         }
         Op::Retag { key, to, row } => {
             let (heap, tid, _) = live[key].clone();

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::key::{Tid, Value};
 use crate::mvcc::{Fate, StatusError, Writers, Xid};
 use crate::runtime::Runtime;
+use crate::steps::Change;
 use crate::storage::{self, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Undecoded};
 
 use super::blame::unchanged;
@@ -15,7 +16,7 @@ use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
 use super::write::{HeapWrite, Rank, Took, release_each};
-use super::{Error, Refused, WriteTarget, fixed, slotted};
+use super::{Error, Refused, Superseded, WriteTarget, fixed, slotted};
 use super::{chain, prune};
 
 mod decode;
@@ -1154,7 +1155,8 @@ impl Heap {
     }
 
     /// Write `row` as the successor `xid` makes of the version at `at`, and point that version at
-    /// it, pruning by `judge` a page found without room before looking further.
+    /// it, pruning by `judge` a page found without room before looking further. Returns the
+    /// successor and the old version.
     ///
     /// The successor is heap-only when it fits on the old version's page and no field listed in
     /// `indexed`, the key fields of every index over this heap's constructor, changes.
@@ -1166,7 +1168,7 @@ impl Heap {
         row: &[Value],
         indexed: &[usize],
         judge: &mut Judge<'_>,
-    ) -> Result<Updated, Error> {
+    ) -> Result<(Updated, Superseded), Error> {
         self.put_successor(pager, at.into(), xid, row, indexed, Some(judge))
     }
 
@@ -1178,7 +1180,7 @@ impl Heap {
         row: &[Value],
         indexed: &[usize],
         mut judge: Option<&mut Judge<'_>>,
-    ) -> Result<Updated, Error> {
+    ) -> Result<(Updated, Superseded), Error> {
         let at = target.tid;
         let (format, old_row, pointers) = loop {
             let raw = self.raw(pager, at)?;
@@ -1214,10 +1216,12 @@ impl Heap {
                     )?;
                     let retain = [&held[..], &c.gained].concat();
                     write.commit(Some(Took::HeapOnly(self, o)), &retain, &c.dropped)?;
-                    return Ok(Updated {
+                    let updated = Updated {
                         tid: t,
                         heap_only: true,
-                    });
+                    };
+                    let change = Change::Update { heap_only: true };
+                    return Ok((updated, self.superseded(at, change)));
                 }
                 Put::Stale => continue,
                 Put::Full => tries += 1,
@@ -1244,10 +1248,12 @@ impl Heap {
                     )?;
                     let retain = [&held[..], &c.gained].concat();
                     write.commit(Some(Took::Found(self, n)), &retain, &c.dropped)?;
-                    return Ok(Updated {
+                    let updated = Updated {
                         tid: t,
                         heap_only: false,
-                    });
+                    };
+                    let change = Change::Update { heap_only: false };
+                    return Ok((updated, self.superseded(at, change)));
                 }
                 Put::Stale => continue,
                 Put::Full => {}
@@ -1260,13 +1266,21 @@ impl Heap {
         }
     }
 
+    fn superseded(&self, tid: Tid, change: Change) -> Superseded {
+        Superseded {
+            heap: self.id(),
+            tid,
+            change,
+        }
+    }
+
     /// Mark the version at `at` deleted by `xid`.
     pub fn delete<R: Runtime>(
         &self,
         pager: &Pager<R>,
         at: impl Into<WriteTarget>,
         xid: Xid,
-    ) -> Result<(), Error> {
+    ) -> Result<Superseded, Error> {
         let target = at.into();
         let mut write = HeapWrite::new(pager);
         write.latch(&[(self, Pid(target.tid.page()))])?;
@@ -1279,7 +1293,7 @@ impl Heap {
             Flags::NONE,
         )?;
         write.commit(None, &[], &[])?;
-        Ok(())
+        Ok(self.superseded(target.tid, Change::Delete))
     }
 
     /// Clear the deleter of the version at `at`, its `next` and its successor flags.
@@ -1308,7 +1322,7 @@ impl Heap {
 
     /// Move the row whose version is at `at` into heap `to` as `row`, written by `xid`, pruning a
     /// page of `to` found without room by `judge`, a judge of `to`'s versions, before looking
-    /// further. Returns the new version's TID.
+    /// further. Returns the new version's TID and the old version.
     ///
     /// The new version has the retagged-in flag; the old one gets `xid` as its deleter, the moved
     /// flag and `next` naming the new one. Out-of-line values `row` shares with the old version
@@ -1324,7 +1338,7 @@ impl Heap {
         to: &Heap,
         row: &[Value],
         judge: &mut Judge<'_>,
-    ) -> Result<Tid, Error> {
+    ) -> Result<(Tid, Superseded), Error> {
         self.put_moved(pager, at.into(), xid, to, row, Some(judge))
     }
 
@@ -1336,7 +1350,7 @@ impl Heap {
         to: &Heap,
         row: &[Value],
         mut judge: Option<&mut Judge<'_>>,
-    ) -> Result<Tid, Error> {
+    ) -> Result<(Tid, Superseded), Error> {
         assert_ne!(self.id, to.id, "a retag moves a row to another heap");
         assert_eq!(self.large, to.large, "a retag stays within one sum");
         let at = target.tid;
@@ -1372,7 +1386,7 @@ impl Heap {
                     )?;
                     let retain = [&held[..], &c.gained].concat();
                     write.commit(Some(Took::Found(to, n)), &retain, &c.dropped)?;
-                    return Ok(t);
+                    return Ok((t, self.superseded(at, Change::Retag)));
                 }
                 Put::Stale => continue,
                 Put::Full => {}

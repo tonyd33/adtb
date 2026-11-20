@@ -103,6 +103,11 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.set_phase_hook(Arc::new(hook));
     }
 
+    /// Call `hook` with each later step of the engine's work, on the thread that reaches it.
+    pub fn on_step(self, hook: impl Fn(super::Step) + Send + Sync + 'static) {
+        self.db.tested_db().set_step_hook(Arc::new(hook));
+    }
+
     /// Run `hook` once on the calling thread, at its next refusal of a read through an index
     /// entry, before that looks at the slot the entry names.
     pub fn before_next_refusal(self, hook: impl FnOnce() + 'static) {

@@ -106,7 +106,9 @@ impl Heap {
         row: &[Value],
         indexed: &[usize],
     ) -> Result<Updated, Error> {
-        self.put_successor(pager, at.into(), xid, row, indexed, None)
+        Ok(self
+            .put_successor(pager, at.into(), xid, row, indexed, None)?
+            .0)
     }
 
     /// Copy `v` as [`Heap::copy_version_pruning`] does, pruning nothing.
@@ -139,7 +141,7 @@ impl Heap {
         to: &Heap,
         row: &[Value],
     ) -> Result<Tid, Error> {
-        self.put_moved(pager, at.into(), xid, to, row, None)
+        Ok(self.put_moved(pager, at.into(), xid, to, row, None)?.0)
     }
 
     /// Returns what is wrong with the heap's pages, directory and visibility map, directory

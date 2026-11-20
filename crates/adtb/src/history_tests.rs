@@ -206,7 +206,10 @@ impl Db {
         let x = begun.xid();
         for &(k, v) in ops {
             if let Some(tid) = self.live.remove(&k) {
-                self.heap().delete(&self.pager, tid, x).expect("delete");
+                self.heap()
+                    .delete(&self.pager, tid, x)
+                    .expect("delete")
+                    .unchecked(crate::heap::Unchecked::Test);
             }
             if let Some(v) = v {
                 let row = vec![Value::I64(k), Value::I64(v)];
@@ -1214,7 +1217,10 @@ fn fetch_beside_vacuum(
         let begun = db.txns.begin(&db.pager).expect("begin");
         let x = begun.xid();
         if let Some(tid) = live {
-            db.heap().delete(&db.pager, tid, x).expect("delete");
+            db.heap()
+                .delete(&db.pager, tid, x)
+                .expect("delete")
+                .unchecked(crate::heap::Unchecked::Test);
         }
         let tid = db.heap().insert(&db.pager, x, &row).expect("insert");
         let entry = Entry {
@@ -1364,7 +1370,10 @@ fn insert_then_delete(db: &Db, keys: std::ops::Range<i64>) {
     let begun = db.txns.begin(&db.pager).expect("begin");
     let x = begun.xid();
     for tid in tids {
-        db.heap().delete(&db.pager, tid, x).expect("delete");
+        db.heap()
+            .delete(&db.pager, tid, x)
+            .expect("delete")
+            .unchecked(crate::heap::Unchecked::Test);
     }
     db.pager
         .wait_durable(db.txns.commit(&db.pager, begun).expect("commit").lsn());

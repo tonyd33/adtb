@@ -472,7 +472,7 @@ fn an_open_scan_leaves_tuple_reads_their_own_locks() {
     let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
     s.read_tuple(r, HEAP, tid(9, 1)).unwrap();
     s.end_scan(r, HEAP, scan, Some(&[5]));
-    s.write_tuple(w, HEAP, tid(9, 1)).unwrap();
+    s.write_at(w, HEAP, tid(9, 1)).unwrap();
     assert_eq!(BTreeSet::from([w]), s.writers_after(r));
 }
 
@@ -589,14 +589,14 @@ fn the_total_budget_promotes_the_largest_holders_locks() {
     assert_eq!(4, s.held());
     s.read_tuple(big, HEAP, tid(6, 0)).unwrap();
     assert_eq!((2, 1), (s.locks(big), s.locks(small)));
-    s.write_tuple(w, HEAP, tid(5, 7)).unwrap();
+    s.write_at(w, HEAP, tid(5, 7)).unwrap();
     assert_eq!(BTreeSet::from([big]), s.readers_before(w));
     for k in 0..4 {
         read_key(&mut s, big, k, &[G]);
     }
     assert!(s.held() <= 4, "{} locks held", s.held());
     s.insert_entry(w, INDEX, &key(200), G).unwrap();
-    s.write_tuple(w, HEAP, tid(6, 9)).unwrap();
+    s.write_at(w, HEAP, tid(6, 9)).unwrap();
     assert_eq!(BTreeSet::from([big]), s.readers_before(w));
 }
 

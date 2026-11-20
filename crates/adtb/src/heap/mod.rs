@@ -59,6 +59,7 @@ pub use version::HEADER_LEN;
 pub use version::{Flags, Header};
 
 use crate::key::Tid;
+use crate::steps::Change;
 use crate::storage::PageError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +106,44 @@ impl From<Refused> for Error {
             Refused::Page(e) => Error::Page(e),
             Refused::Gone => Error::Changed { current: None },
         }
+    }
+}
+
+/// A version a delete, update or retag gave its deleter, the change in its page.
+#[must_use = "check the write against the SIREAD locks, or say why not with `unchecked`"]
+#[derive(Debug, PartialEq, Eq)]
+pub struct Superseded {
+    heap: HeapNo,
+    tid: Tid,
+    change: Change,
+}
+
+/// Why a write of a version takes no SIREAD check.
+#[derive(Clone, Copy, Debug)]
+pub enum Unchecked {
+    /// The version is one the writer's statement inserted.
+    OwnInsert,
+    /// The version is a catalog row, which no serializable read locks.
+    Catalog,
+    /// The writer is a test of a heap, outside the serializer.
+    #[cfg(test)]
+    Test,
+}
+
+impl Superseded {
+    pub fn change(&self) -> Change {
+        self.change
+    }
+
+    /// Drop the token without a SIREAD check, for `why`.
+    pub fn unchecked(self, _: Unchecked) {}
+
+    pub fn heap(&self) -> HeapNo {
+        self.heap
+    }
+
+    pub fn tid(&self) -> Tid {
+        self.tid
     }
 }
 

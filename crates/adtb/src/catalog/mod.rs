@@ -1443,7 +1443,8 @@ fn delete_keyed<R: Runtime>(
                 continue 'scan;
             };
             if seen.visible() {
-                heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?;
+                heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?
+                    .unchecked(heap::Unchecked::Catalog);
                 keys.swap_remove(at);
             }
         }

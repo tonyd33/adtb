@@ -112,7 +112,9 @@ fn rollback_cannot_clear_another_writer_header() {
             let large = LargeStore::create(&pager, 40).unwrap();
             let heap = Heap::create(&pager, 41, fields(), large).unwrap();
             let old = heap.insert(&pager, Xid(1), &[Value::I64(1)]).unwrap();
-            heap.delete(&pager, old, Xid(2)).unwrap();
+            heap.delete(&pager, old, Xid(2))
+                .unwrap()
+                .unchecked(crate::heap::Unchecked::Test);
             let restore =
                 WriteTarget::checked(old, heap.read(&pager, old).unwrap().unwrap().header);
             let new = heap
@@ -184,7 +186,7 @@ fn foreign_target(write: Write) -> (Result<(), Error>, bool) {
 #[test]
 fn a_checked_delete_or_restore_of_a_version_whose_page_another_heap_now_owns_is_changed() {
     let writes: [(&str, Write); 2] = [
-        ("delete", |h, p, t, _| h.delete(p, t, Xid(3))),
+        ("delete", |h, p, t, _| h.delete(p, t, Xid(3)).map(drop)),
         ("restore", |h, p, t, _| h.restore(p, t)),
     ];
     for (what, write) in writes {

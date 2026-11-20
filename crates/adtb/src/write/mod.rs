@@ -401,6 +401,7 @@ struct Session<R: Runtime> {
     readers: Ranked<BTreeMap<SerialId, (Taken, Snapshot)>>,
     waits: Waits<R>,
     dead: Ranked<vacuums::Dead>,
+    steps: Arc<crate::steps::Steps>,
     /// How many transactions ended by being dropped.
     #[cfg(any(test, feature = "testing"))]
     dropped: std::sync::atomic::AtomicUsize,
@@ -1318,6 +1319,11 @@ impl<R: Runtime> Database<R> {
         self.session.dropped.swap(0, Ordering::Relaxed)
     }
 
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn set_step_hook(&self, hook: crate::steps::StepHook) {
+        self.session.steps.set(hook);
+    }
+
     /// Abort `tx` and release what it holds.
     ///
     /// Fail if the database is quarantined, the commit log still saying `tx`'s id is in
@@ -1419,6 +1425,7 @@ impl<R: Runtime> Database<R> {
         Arc::new(exec::Store::serializable(
             self.session.txns.reader(&self.pager, tx.hold(), tx.xid),
             (self.session.ser.clone(), tx.sid),
+            self.session.steps.clone(),
             self.bindings.clone(),
             self.pasts(self.pager.position(upto)),
         ))

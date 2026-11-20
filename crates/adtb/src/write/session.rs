@@ -44,6 +44,7 @@ impl<R: Runtime> Session<R> {
             ser: Arc::new(Ranked::new(ranks::SERIALIZER, Serializer::new(limits))),
             readers: Ranked::new(ranks::READERS, BTreeMap::new()),
             dead: Ranked::new(ranks::DEAD, vacuums::Dead::default()),
+            steps: Arc::default(),
             #[cfg(any(test, feature = "testing"))]
             dropped: std::sync::atomic::AtomicUsize::new(0),
         })
