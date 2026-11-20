@@ -10,8 +10,8 @@ use adtb_lang::types::Ty;
 use adtb_sim::SimRuntime;
 
 use super::role::{Sent, collected};
-use super::session::{Differs, compare, refused};
-use super::{Head, Step};
+use super::session::{Differs, compare, listed, refused};
+use super::{Class, Head, Step};
 
 /// The transactions a script holds open, by name.
 pub(super) type Txns<'a> = BTreeMap<String, AdHocTransaction<'a, SimRuntime>>;
@@ -84,11 +84,13 @@ pub(super) fn ended<'a>(
             name,
             read_only,
             deferrable,
+            id,
             error,
         } => {
             if txns.contains_key(name) {
                 return Err(Differs::at(step, format!("transaction `{name}` is open")));
             }
+            bindable(step, positions, id.as_ref())?;
             let opts = TxnOptions {
                 read_only: *read_only,
                 deferrable: *deferrable,
@@ -96,6 +98,9 @@ pub(super) fn ended<'a>(
                 ..TxnOptions::default()
             };
             let got = db.begin(&opts).map(|t| {
+                if let Some(id) = id {
+                    positions.insert(id.clone(), t.id().0.to_string());
+                }
                 txns.insert(name.clone(), t);
             });
             (got, error)
@@ -104,13 +109,9 @@ pub(super) fn ended<'a>(
             name,
             position,
             error,
+            ..
         } => {
-            if let Some(at) = position.as_ref().filter(|at| positions.contains_key(*at)) {
-                return Err(Differs::at(
-                    step,
-                    format!("position `{at}` is bound already"),
-                ));
-            }
+            bindable(step, positions, position.as_ref())?;
             let got = taken(txns, step, name)?.commit(None).map(|p| {
                 if let Some(at) = position {
                     let shown = format!("{{ epoch: {}, lsn: {} }}", p.epoch, p.lsn);
@@ -122,11 +123,32 @@ pub(super) fn ended<'a>(
         Head::Rollback(name) => (taken(txns, step, name)?.rollback(), &None),
         _ => unreachable!("only begin, commit and rollback end"),
     };
-    compare(
-        step,
-        want.as_deref(),
-        got.map(|()| Vec::new()).map_err(|e| refused(&e)),
-    )
+    let got = got.map(|()| Vec::new()).map_err(|e| refused(&e));
+    let class = match &step.head {
+        Head::Commit { class, .. } => *class,
+        _ => Class::Rejected,
+    };
+    match (want, class) {
+        (Some(reason), Class::Retry | Class::Fatal) => {
+            let want = format!("{class:?} {{ reason: {reason} }}");
+            if got.as_ref().err() == Some(&want) {
+                return Ok(());
+            }
+            Err(Differs::at(step, "the outcome differs").values(want, listed(got)))
+        }
+        _ => compare(step, want.as_deref(), got),
+    }
+}
+
+fn bindable(
+    step: &Step,
+    positions: &BTreeMap<String, String>,
+    name: Option<&String>,
+) -> Result<(), Differs> {
+    match name.filter(|n| positions.contains_key(*n)) {
+        Some(n) => Err(Differs::at(step, format!("`${n}` is bound already"))),
+        None => Ok(()),
+    }
 }
 
 fn taken<'a>(

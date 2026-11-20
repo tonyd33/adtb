@@ -1,9 +1,15 @@
-use adtb_lang::schema::{ModuleDef, Schema, ValueDef};
+use std::collections::BTreeSet;
 
+use adtb_lang::schema::{ModuleDef, Schema, ValueDef};
+use adtb_lang::types::RelId;
+
+use crate::key::CtorId;
+use crate::mvcc::Lock;
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager};
+use crate::storage::{PageError, Pager, Pid};
 
 use super::Catalog;
+use super::ids::{ctor_id, stored};
 use super::root::{Changing, Root};
 
 impl Catalog {
@@ -104,5 +110,63 @@ impl Catalog {
             let names: Vec<&str> = ordered.into_iter().map(|(_, n)| n).collect();
             out.push(format!("{}::{name} order {}", m.name, names.join(" < ")));
         }
+    }
+
+    /// Returns `lock` named by relation and constructor: `tuple REL.CTOR`, `page REL.CTOR`,
+    /// `heap REL.CTOR` or `scan REL.CTOR`, or `range REL CLAUSE over CTOR | ...` or `index REL
+    /// CLAUSE over CTOR | ...` naming the constructors it covers in declaration order. A heap or
+    /// index no relation of the catalog holds is `another heap` or `another index`.
+    pub(crate) fn lock_named(&self, lock: &Lock) -> String {
+        match lock {
+            Lock::Tuple(h) => format!("tuple {}", self.heap_named(*h)),
+            Lock::Page(h) => format!("page {}", self.heap_named(*h)),
+            Lock::Heap(h) => format!("heap {}", self.heap_named(*h)),
+            Lock::Scan(h) => format!("scan {}", self.heap_named(*h)),
+            Lock::Range(i, ctors) => format!("range {}", self.index_named(*i, ctors)),
+            Lock::Index(i, ctors) => format!("index {}", self.index_named(*i, ctors)),
+            #[cfg(test)]
+            Lock::Schema(version) => format!("schema {version}"),
+        }
+    }
+
+    fn qualified(&self, r: RelId) -> String {
+        let relation = self.schema.relation(r);
+        format!(
+            "{}::{}",
+            self.schema.module(relation.module).name,
+            relation.name
+        )
+    }
+
+    fn heap_named(&self, id: u32) -> String {
+        let schema: &Schema = &self.schema;
+        let found = self.heaps.iter().find(|(_, h)| h.id().0 == id);
+        found.map_or_else(
+            || "another heap".to_owned(),
+            |(&(r, c), _)| {
+                let ctors = schema.ty(schema.relation(r).elem_def).ctors();
+                format!("{}.{}", self.qualified(r), ctors[c as usize].name)
+            },
+        )
+    }
+
+    fn index_named(&self, root: Pid, ctors: &BTreeSet<CtorId>) -> String {
+        let schema: &Schema = &self.schema;
+        let found = self
+            .indexes
+            .values()
+            .find(|(_, i, _)| i.tree().root() == root);
+        let Some((spec, _, _)) = found else {
+            return "another index".to_owned();
+        };
+        let names = schema.ty(schema.relation(spec.relation).elem_def).ctors();
+        let over: Vec<&str> = spec
+            .ctors
+            .iter()
+            .filter(|&&c| ctors.contains(&stored(ctor_id(schema, spec.relation, c))))
+            .map(|&c| names[c as usize].name.as_str())
+            .collect();
+        let relation = self.qualified(spec.relation);
+        format!("{relation} {} over {}", spec.clause, over.join(" | "))
     }
 }

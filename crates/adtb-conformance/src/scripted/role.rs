@@ -266,9 +266,13 @@ pub(super) fn sent_step(step: &Step, got: Sent) -> Result<(), Differs> {
         }
         (Head::Plan, Sent::Done(results)) => plan::compare(step, results),
         (Head::ProbePlan, Sent::Done(results)) => plan::text(step, results),
-        (Head::Error(reason) | Head::Adhoc(reason) | Head::Fatal(reason), got) => {
+        (
+            Head::Error(reason) | Head::Adhoc(reason) | Head::Fatal(reason) | Head::Retry(reason),
+            got,
+        ) => {
             let want = match &step.head {
                 Head::Fatal(_) => format!("Fatal {{ reason: {reason} }}"),
+                Head::Retry(_) => format!("Retry {{ reason: {reason} }}"),
                 _ => rejected(reason),
             };
             match got {

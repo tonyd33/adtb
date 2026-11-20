@@ -26,6 +26,8 @@ pub use fate::{Fate, Horizon, Rule};
 pub use past::{Marker, Past};
 pub use reader::{Logged, Reader};
 pub use snapshot::Snapshot;
+#[cfg(any(test, feature = "testing"))]
+pub use ssi::Lock;
 pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer};
 #[cfg(test)]
 pub(crate) use tests::writers;

@@ -9,6 +9,11 @@
 //!   `option fix_rounds N`: the threads of each later open, and the rows of a morsel, the heap
 //!   pages of one task of a parallel scan, the bytes of a statement's spill file and the rounds
 //!   of a fixpoint of each statement in it; `default` restores 4 threads, or the engine's size.
+//! - `option lock_tuples N`, `option lock_pages N`, `option lock_ranges N`, `option lock_total N`:
+//!   for each later open, the read locks of one transaction on the versions of one page, on the
+//!   pages of one heap and on the ranges of one index beyond which they promote to the coarser
+//!   lock, and those of every transaction together beyond which the largest holders' promote a
+//!   level; `default` restores the engine's.
 //! - `option export_roots PATH...`: the directories a session confined to them may write in, for
 //!   each later open; none, with no PATH.
 //! - `migrate [at V] [refused VALUE]`: the body's migrations, each starting at a `module` line,
@@ -63,17 +68,20 @@
 //!   `error` takes only a refusal at the submit.
 //! - `drop role NAME [error VALUE]`: the role dropped.
 //! - `loose NAME`: the body, registration NAME with no bundle file, registered at the next open.
-//! - `begin [read only] [deferrable] NAME [error VALUE]`, `commit NAME [position P] [error
-//!   VALUE]`, `rollback NAME`: interactive transaction NAME; one open at the next open differs.
-//!   `$P` in a later body or compared value stands for the position the commit took, in textual
-//!   syntax; a second binding of P differs.
-//! - `in NAME` before `run`, `query`, `error`, `plan`, `probe plan` or a `call` with an ordinal:
+//! - `begin [read only] [deferrable] NAME [id I] [error VALUE]`, `commit NAME [position P]
+//!   [error VALUE | retry VALUE | fatal VALUE]`, `rollback NAME`: interactive transaction NAME;
+//!   one open at the next open differs. A commit's `retry` or `fatal` fails with exactly `Retry {
+//!   reason: VALUE }` or `Fatal { reason: VALUE }`. `$P` in a later body or compared value stands
+//!   for the position the commit took, in textual syntax, and `$I` for the transaction's id; a
+//!   second binding of P or I differs.
+//! - `in NAME` before `run`, `query`, `error`, `fatal`, `retry`, `plan`, `probe plan` or a `call`
+//!   with an ordinal:
 //!   one call of transaction NAME; `committed` states a registered transaction committing with
 //!   it.
 //! - `assert VALUE` before `run`, `query`, `error`, `call` or `begin`, after any `as`: the call
 //!   or transaction runs for principal VALUE. With `in` or `assert` a body is one call.
-//! - `fatal VALUE`: the body, one ad hoc call in process, failing with exactly `Fatal { reason:
-//!   VALUE }`.
+//! - `fatal VALUE`, `retry VALUE`: the body, one ad hoc call in process, failing with exactly
+//!   `Fatal { reason: VALUE }` or `Retry { reason: VALUE }`.
 //! - `restore SOURCE to FILE [at POINT] [error VALUE | fatal VALUE]`: the dump or backup at
 //!   SOURCE restored to the new file FILE, refused with `Rejected { reason: VALUE }` or `Fatal {
 //!   reason: VALUE }` when stated. POINT is `version N` or `$P`; with none, the latest. With no
@@ -154,6 +162,12 @@
 //!   catalog stores them. A heap id counts from 0 at one past the highest id a structure of a
 //!   relation the engine declares holds, its history included, and is negative below it; the
 //!   heaps of those relations show `heap` alone.
+//! - `probe locks NAME`: the rows are the read locks transaction NAME holds, sorted, each `tuple
+//!   REL.CTOR`, `page REL.CTOR`, `heap REL.CTOR` or `scan REL.CTOR` for a lock on a version, a
+//!   page or the whole of the heap of CTOR, or `range REL CLAUSE over CTOR | ...` or `index REL
+//!   CLAUSE over CTOR | ...` for a lock on a key range or the whole of the index of CLAUSE, over
+//!   the constructors it covers. A heap or index the catalog does not name is `another heap` or
+//!   `another index`.
 //! - `probe files [PREFIX]`: the database closes first, as before an open, and the rows are the
 //!   path of each file on the device beginning with PREFIX, sorted.
 //!
@@ -196,6 +210,18 @@ enum Knob {
     RangePages,
     SpillBytes,
     FixRounds,
+    LockTuples,
+    LockPages,
+    LockRanges,
+    LockTotal,
+}
+
+/// The failure an expected reason is of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    Rejected,
+    Retry,
+    Fatal,
 }
 
 #[derive(Clone, Debug)]
@@ -246,11 +272,14 @@ enum Head {
         name: String,
         read_only: bool,
         deferrable: bool,
+        id: Option<String>,
         error: Option<String>,
     },
     Commit {
         name: String,
         position: Option<String>,
+        /// The failure `error` is the reason of.
+        class: Class,
         error: Option<String>,
     },
     Rollback(String),
@@ -264,10 +293,12 @@ enum Head {
     Plan,
     ProbePlan,
     ProbeChecks(String),
+    ProbeLocks(String),
     Error(String),
     Adhoc(String),
     Failed(String),
     Fatal(String),
+    Retry(String),
     Mark(fault::Marked),
     Fault {
         fault: fault::Fault,

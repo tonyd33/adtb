@@ -1287,6 +1287,12 @@ impl<R: Runtime> Database<R> {
         self.session.ser.lock(&self.rt).tracked()
     }
 
+    /// Returns the SIREAD locks `tx` holds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn locks(&self, tx: &Txn) -> Vec<crate::mvcc::Lock> {
+        self.session.ser.lock(&self.rt).held_by(tx.sid)
+    }
+
     /// Returns how many read-only transactions keep a snapshot for their safe snapshot marker.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn readers_held(&self) -> usize {

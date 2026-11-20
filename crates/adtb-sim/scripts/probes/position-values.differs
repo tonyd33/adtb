@@ -1,5 +1,5 @@
-scripts/probes/position-values.test:3: `$nope` names no position
-scripts/probes/position-values.test:7: `$nope` names no position
+scripts/probes/position-values.test:3: `$nope` names no position or id
+scripts/probes/position-values.test:7: `$nope` names no position or id
 scripts/probes/position-values.test:10: `pins 5` is past the log's 1 migrations
 scripts/probes/position-values.test:16: the outcome differs
   expected: Rejected { reason: Invalid { detail: "x" } }
@@ -10,7 +10,7 @@ scripts/probes/position-values.test:27: the rows differ
   expected: ["bo"]
   actual:   []
 scripts/probes/position-values.test:32: a query holds one statement
-scripts/probes/position-values.test:39: `$nope` names no position
+scripts/probes/position-values.test:39: `$nope` names no position or id
 scripts/probes/position-values.test:41: succeeds
   expected: Rejected { reason: Invalid { detail: "x" } }
   actual:   success

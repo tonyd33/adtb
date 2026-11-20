@@ -142,7 +142,8 @@ impl Knobs {
         self.segment_size
     }
 
-    pub(crate) fn limits(&self) -> Limits {
+    /// Returns the thresholds at which the serializer's read locks promote.
+    pub fn limits(&self) -> Limits {
         self.limits.unwrap_or_default()
     }
 }
@@ -273,6 +274,21 @@ impl<'a, R: Runtime> Testing<'a, R> {
             .db
             .tested_catalog()
             .probed(self.db.tested_pager(), engine)?)
+    }
+
+    /// Returns the SIREAD locks `txn` holds, each named by relation and constructor, sorted;
+    /// none once it has ended.
+    ///
+    /// Precondition: `txn` is a transaction of this database.
+    pub fn locks(self, txn: &crate::AdHocTransaction<'_, R>) -> Vec<String> {
+        let Some(tx) = txn.tested_txn() else {
+            return Vec::new();
+        };
+        let catalog = self.db.tested_catalog();
+        let held = self.db.tested_db().locks(tx);
+        let mut out: Vec<String> = held.iter().map(|l| catalog.lock_named(l)).collect();
+        out.sort();
+        out
     }
 
     /// Returns the transactions a waiter may wait on, started and not yet ended.

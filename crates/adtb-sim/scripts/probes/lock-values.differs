@@ -1,0 +1,14 @@
+scripts/probes/lock-values.test:3: no transaction `nobody` is open
+scripts/probes/lock-values.test:12: the outcome differs
+  expected: []
+  actual:   [heap stock::items.Closed, heap stock::items.Open]
+scripts/probes/lock-values.test:15: succeeds
+  expected: Retry { reason: Serialization { txn: 0, on: "" } }
+  actual:   success
+scripts/probes/lock-values.test:18: `$R` is bound already
+scripts/probes/lock-values.test:22: the outcome differs
+  expected: Retry { reason: Serialization { txn: 0, on: "" } }
+  actual:   []
+scripts/probes/lock-values.test:24: the outcome differs
+  expected: Fatal { reason: Quarantined { what: "the database" } }
+  actual:   []

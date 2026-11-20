@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
-use adtb::testing::Knobs;
+use adtb::testing::{Knobs, Limits};
 use adtb::version_hash;
 use adtb::{
     CallOptions, Database, Error, HostFns, Log, OpenError, OpenOptions, Registration, Value,
@@ -169,7 +169,7 @@ fn pinned(text: &str, log: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
-/// Returns `text` with the position each `$NAME` names, in textual syntax.
+/// Returns `text` with the position or id each `$NAME` names, in textual syntax.
 fn placed(text: &str, positions: &BTreeMap<String, String>) -> Result<String, String> {
     let mut parts = text.split('$');
     let mut out = parts.next().unwrap_or_default().to_owned();
@@ -177,7 +177,7 @@ fn placed(text: &str, positions: &BTreeMap<String, String>) -> Result<String, St
         let end = part.find(|c: char| !c.is_alphanumeric() && c != '_');
         let (name, rest) = part.split_at(end.unwrap_or(part.len()));
         let p = positions.get(name);
-        out.push_str(p.ok_or_else(|| format!("`${name}` names no position"))?);
+        out.push_str(p.ok_or_else(|| format!("`${name}` names no position or id"))?);
         out.push_str(rest);
     }
     Ok(out)
@@ -308,7 +308,8 @@ struct Script {
     options: OpenOptions,
     bundles: Vec<Step>,
     handles: Handles,
-    /// The position each `commit NAME position P` took, by P, in textual syntax.
+    /// The position each `commit NAME position P` took, by P, and the id of each `begin NAME id
+    /// I`, by I, in textual syntax.
     positions: BTreeMap<String, String>,
     clock: clock::Clock,
     faults: fault::State,
@@ -610,6 +611,7 @@ impl Script {
             Head::Command { .. }
             | Head::Adhoc(_)
             | Head::Fatal(_)
+            | Head::Retry(_)
             | Head::Plan
             | Head::ProbePlan => role::sent_step(step, txn::texted(db, txns, step)?),
             Head::Mark(_) | Head::Fault { .. } | Head::Crash(_) | Head::Probe(_) => {
@@ -617,6 +619,12 @@ impl Script {
             }
             Head::Restore(restore) => self.faults.restore(rt, &self.options, step, restore),
             Head::ProbeChecks(name) => plan::checks(db, step, name),
+            Head::ProbeLocks(name) => {
+                let txn = txns
+                    .get(name)
+                    .ok_or_else(|| Differs::at(step, format!("no transaction `{name}` is open")))?;
+                compare(step, None, Ok(db.testing().locks(txn)))
+            }
             Head::Failed(_) => unreachable!("read gives `failed` an `as` prefix"),
             Head::DropRole { name, error } => {
                 let got = db.role_authority().drop_role(name);
@@ -703,6 +711,7 @@ fn compared(head: &mut Head) -> Option<&mut String> {
         | Head::Adhoc(v)
         | Head::Failed(v)
         | Head::Fatal(v)
+        | Head::Retry(v)
         | Head::Call { error: Some(v), .. }
         | Head::Commit { error: Some(v), .. } => Some(v),
         Head::Restore(r) => r.want_mut(),
@@ -724,6 +733,18 @@ fn set(options: &mut OpenOptions, knob: Knob, size: Option<usize>) {
         Knob::FixRounds => {
             options.fix_rounds = size;
             testing
+        }
+        Knob::LockTuples | Knob::LockPages | Knob::LockRanges | Knob::LockTotal => {
+            let engine = Limits::default();
+            let mut limits = testing.limits();
+            let (at, default) = match knob {
+                Knob::LockTuples => (&mut limits.tuples_per_page, engine.tuples_per_page),
+                Knob::LockPages => (&mut limits.pages_per_heap, engine.pages_per_heap),
+                Knob::LockRanges => (&mut limits.ranges_per_index, engine.ranges_per_index),
+                _ => (&mut limits.total, engine.total),
+            };
+            *at = size.unwrap_or(default);
+            testing.with_limits(limits)
         }
     };
 }

@@ -1,0 +1,24 @@
+use stock
+
+probe locks nobody
+----
+
+begin r id R
+
+in r query
+  from i in items select i.name
+----
+
+probe locks r
+----
+
+in r retry Serialization { txn: 0, on: "" }
+  from i in items select i.name
+
+begin w id R
+
+begin v
+
+commit r retry Serialization { txn: 0, on: "" }
+
+commit v fatal Quarantined { what: "the database" }

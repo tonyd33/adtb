@@ -37,6 +37,22 @@ pub enum Safety {
     Pending(Vec<Xid>),
 }
 
+/// A SIREAD lock as a test reads it: of a version, a page or the whole of a heap, of an open
+/// scan of a heap, of a key range of an index or of the whole of an index, each over its
+/// constructors.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Lock {
+    Tuple(u32),
+    Page(u32),
+    Heap(u32),
+    Scan(u32),
+    Range(Pid, BTreeSet<CtorId>),
+    Index(Pid, BTreeSet<CtorId>),
+    #[cfg(test)]
+    Schema(u64),
+}
+
 /// The thresholds at which a transaction's SIREAD locks promote to coarser ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -1007,5 +1023,29 @@ impl Serializer {
             .filter(|l| l.contains_key(&id))
             .count();
         self.get(id).points.len() + ranges + indexes
+    }
+
+    /// Returns the SIREAD locks `id` holds, none once the serializer has forgotten it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn held_by(&self, id: SerialId) -> Vec<Lock> {
+        let points = self.sxacts.get(&id).into_iter().flat_map(|s| &s.points);
+        let points = points.map(|p| match *p {
+            Point::Tuple(h, _) => Lock::Tuple(h),
+            Point::Page(h, _) => Lock::Page(h),
+            Point::Heap(h) => Lock::Heap(h),
+            Point::Scan(h, _) => Lock::Scan(h),
+            #[cfg(test)]
+            Point::Schema(v) => Lock::Schema(v),
+        });
+        let ranges = self.ranges.iter().flat_map(|(&index, rs)| {
+            rs.iter()
+                .filter(|r| r.holder == id)
+                .map(move |r| Lock::Range(index, r.ctors.clone()))
+        });
+        let indexes = self
+            .indexes
+            .iter()
+            .filter_map(|(&index, l)| Some(Lock::Index(index, l.get(&id)?.clone())));
+        points.chain(ranges).chain(indexes).collect()
     }
 }

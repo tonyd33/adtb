@@ -252,6 +252,9 @@ pub(super) fn head(word: &str, rest: &str) -> Option<Head> {
                 ("checks", name) if !name.is_empty() => {
                     return Some(Head::ProbeChecks(name.to_owned()));
                 }
+                ("locks", name) if !name.is_empty() && !name.contains(' ') => {
+                    return Some(Head::ProbeLocks(name.to_owned()));
+                }
                 _ => return None,
             },
         )),

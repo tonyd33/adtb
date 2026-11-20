@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::blocks;
 
-use super::{Head, Knob, Step, fault, shown};
+use super::{Class, Head, Knob, Step, fault, shown};
 
 const HEADS: [&str; 41] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
@@ -33,6 +33,10 @@ fn option(rest: &str) -> Option<Head> {
         ("range_pages", n) => Head::Knob(Knob::RangePages, size(n)?),
         ("spill_bytes", n) => Head::Knob(Knob::SpillBytes, size(n)?),
         ("fix_rounds", n) => Head::Knob(Knob::FixRounds, size(n)?),
+        ("lock_tuples", n) => Head::Knob(Knob::LockTuples, size(n)?),
+        ("lock_pages", n) => Head::Knob(Knob::LockPages, size(n)?),
+        ("lock_ranges", n) => Head::Knob(Knob::LockRanges, size(n)?),
+        ("lock_total", n) => Head::Knob(Knob::LockTotal, size(n)?),
         ("export_roots", paths) => {
             Head::ExportRoots(paths.split_whitespace().map(str::to_owned).collect())
         }
@@ -95,17 +99,7 @@ fn head(line: &str) -> Option<Head> {
         }
         "host" if !rest.is_empty() => host(rest),
         "loose" if !rest.is_empty() && !rest.contains(' ') => Head::Loose(rest.to_owned()),
-        "begin" => {
-            let (rest, error) = split(rest, " error ");
-            let (read_only, rest) = flag(rest, "read only ");
-            let (deferrable, name) = flag(rest, "deferrable ");
-            Head::Begin {
-                name: named(name)?,
-                read_only,
-                deferrable,
-                error,
-            }
-        }
+        "begin" => begin(rest)?,
         "commit" => commit(rest)?,
         "rollback" => Head::Rollback(named(rest)?),
         "run" if rest.is_empty() => Head::Run,
@@ -119,6 +113,7 @@ fn head(line: &str) -> Option<Head> {
         "error" if !rest.is_empty() => Head::Error(rest.to_owned()),
         "adhoc" => Head::Adhoc(rest.strip_prefix("error ")?.to_owned()),
         "failed" if !rest.is_empty() => Head::Failed(rest.to_owned()),
+        "retry" if !rest.is_empty() => Head::Retry(rest.to_owned()),
         _ => return fault::head(word, rest),
     })
 }
@@ -159,15 +154,41 @@ fn bundle(rest: &str) -> Option<Head> {
     })
 }
 
+fn begin(rest: &str) -> Option<Head> {
+    let (rest, error) = split(rest, " error ");
+    let (read_only, rest) = flag(rest, "read only ");
+    let (deferrable, rest) = flag(rest, "deferrable ");
+    let (name, id) = split(rest, " id ");
+    Some(Head::Begin {
+        name: named(name)?,
+        read_only,
+        deferrable,
+        id: match id {
+            Some(i) => Some(named(&i)?),
+            None => None,
+        },
+        error,
+    })
+}
+
 fn commit(rest: &str) -> Option<Head> {
     let (rest, error) = split(rest, " error ");
+    let (rest, retry) = split(rest, " retry ");
+    let (rest, fatal) = split(rest, " fatal ");
     let (name, position) = split(rest, " position ");
+    let (class, error) = match (error, retry, fatal) {
+        (e, None, None) => (Class::Rejected, e),
+        (None, Some(r), None) => (Class::Retry, Some(r)),
+        (None, None, Some(f)) => (Class::Fatal, Some(f)),
+        _ => return None,
+    };
     Some(Head::Commit {
         name: named(name)?,
         position: match position {
             Some(p) => Some(named(&p)?),
             None => None,
         },
+        class,
         error,
     })
 }
@@ -334,7 +355,12 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 );
             let txn = prefix.role.is_none()
                 && prefix.assert.is_none()
-                && (sent(h) || call(h) || matches!(h, Head::Plan | Head::ProbePlan));
+                && (sent(h)
+                    || call(h)
+                    || matches!(
+                        h,
+                        Head::Plan | Head::ProbePlan | Head::Fatal(_) | Head::Retry(_)
+                    ));
             let assert = sent(h) || call(h) || matches!(h, Head::Begin { .. });
             let failed = !matches!(h, Head::Failed(_)) || prefix.role.is_some();
             failed
@@ -358,6 +384,7 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 | Head::Adhoc(_)
                 | Head::Failed(_)
                 | Head::Fatal(_)
+                | Head::Retry(_)
                 | Head::Grant { .. }
                 | Head::Loose(_)
                 | Head::Fault {
