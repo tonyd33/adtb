@@ -104,7 +104,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIES_UNDER_MARK,
         seed: 3,
-        at: 639,
+        at: 638,
         then: None,
     },
     Known {
@@ -115,7 +115,7 @@ const KNOWN: &[Known] = &[
         what: "verify reports nothing of a mark",
         ticket: UNDER_RELATION_MARK,
         seed: 114,
-        at: 653,
+        at: 652,
         then: None,
     },
     Known {
@@ -126,7 +126,7 @@ const KNOWN: &[Known] = &[
         what: "verify reports nothing of a mark",
         ticket: UNDER_RELATION_MARK,
         seed: 3,
-        at: 651,
+        at: 650,
         then: None,
     },
     Known {
@@ -137,7 +137,7 @@ const KNOWN: &[Known] = &[
         what: "verify reports nothing of a mark",
         ticket: UNDER_RELATION_MARK,
         seed: 3,
-        at: 640,
+        at: 639,
         then: None,
     },
     Known {
@@ -148,7 +148,7 @@ const KNOWN: &[Known] = &[
         what: "verify reports nothing of a mark",
         ticket: UNDER_RELATION_MARK,
         seed: 3,
-        at: 647,
+        at: 646,
         then: None,
     },
     Known {
@@ -159,7 +159,7 @@ const KNOWN: &[Known] = &[
         what: "verify reports nothing of a mark",
         ticket: UNDER_RELATION_MARK,
         seed: 3,
-        at: 647,
+        at: 646,
         then: None,
     },
     Known {
@@ -170,7 +170,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIES_UNDER_MARK,
         seed: 6,
-        at: 607,
+        at: 606,
         then: None,
     },
     Known {
@@ -181,7 +181,7 @@ const KNOWN: &[Known] = &[
         what: "verify reports nothing of a mark",
         ticket: UNDER_RELATION_MARK,
         seed: 3,
-        at: 651,
+        at: 650,
         then: None,
     },
     Known {
@@ -192,7 +192,7 @@ const KNOWN: &[Known] = &[
         what: "verify reports nothing of a mark",
         ticket: UNDER_RELATION_MARK,
         seed: 3,
-        at: 640,
+        at: 639,
         then: None,
     },
     Known {
@@ -203,7 +203,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIES_UNDER_MARK,
         seed: 6,
-        at: 675,
+        at: 677,
         then: None,
     },
     Known {
@@ -214,7 +214,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 648,
+        at: 647,
         then: None,
     },
     Known {
@@ -225,7 +225,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 6,
-        at: 689,
+        at: 688,
         then: None,
     },
     Known {
@@ -236,7 +236,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 648,
+        at: 647,
         then: None,
     },
     Known {
@@ -247,10 +247,10 @@ const KNOWN: &[Known] = &[
         what: "verify names an intact page",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 648,
+        at: 647,
         then: Some((
             Point {
-                at: 652,
+                at: 651,
                 injection: Injection::Torn,
             },
             Kind::Engine,
@@ -1115,19 +1115,19 @@ const PINNED: &[Pinned] = {
     use Phase::{Opening, Running};
     &[
         (LostCurrent, Kind::Heap, 5, 641, (Damaged, Relation, Opening)),
-        (LostCurrent, Kind::Index, 5, 621, (Damaged, Relation, Opening)),
-        (LostCurrent, Kind::Engine, 5, 607, (Damaged, CatalogRoot, Opening)),
-        (LostCurrent, Kind::Engine, 5, 616, (Damaged, Counters, Opening)),
+        (LostCurrent, Kind::Index, 5, 619, (Damaged, Relation, Opening)),
+        (LostCurrent, Kind::Engine, 5, 605, (Damaged, CatalogRoot, Opening)),
+        (LostCurrent, Kind::Engine, 5, 614, (Damaged, Counters, Opening)),
         (LostCurrent, Kind::Engine, 5, 657, (Damaged, CommitTimes, Opening)),
-        (LostCurrent, Kind::CommitLog, 1001, 640, (Damaged, CommitLog, Opening)),
+        (LostCurrent, Kind::CommitLog, 1001, 639, (Damaged, CommitLog, Opening)),
         (LostCurrent, Kind::CommitLog, 5, 658, (Settled, CommitLog, Opening)),
         (LostCurrent, Kind::LsnMap, 5, 660, (Damaged, LsnMap, Opening)),
         (LostCurrent, Kind::Bitmap, 5, 648, (Damaged, Bitmap, Opening)),
         (LostCurrent, Kind::Marks, 5, 655, (Damaged, MarksPage, Opening)),
         (LostCurrent, Kind::Heap, 1001, 641, (Damaged, Relation, Running)),
-        (Recycled, Kind::Heap, 1001, 625, (Damaged, Relation, Running)),
-        (Flipped, Kind::Heap, 3, 621, (Damaged, Relation, Opening)),
-        (Flipped, Kind::CommitLog, 5, 610, (Damaged, CommitLog, Opening)),
+        (Recycled, Kind::Heap, 1001, 624, (Damaged, Relation, Running)),
+        (Flipped, Kind::Heap, 3, 620, (Damaged, Relation, Opening)),
+        (Flipped, Kind::CommitLog, 5, 608, (Damaged, CommitLog, Opening)),
         (UnreadableLasting, Kind::LsnMap, 5, 660, (Unarmed, LsnMap, Opening)),
     ]
 };
@@ -1218,7 +1218,7 @@ fn a_pinned_known_failure_still_shows() {
                 && k.fault == Fault::LostEarlier
                 && k.kind == Kind::Heap
                 && k.consumer == Consumer::Settle
-                && (k.seed, k.at) == (6, 689)
+                && (k.seed, k.at) == (6, 688)
         })
         .expect("the failed open's entry is known");
     rerun(pinned);

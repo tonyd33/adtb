@@ -11,6 +11,7 @@ mod grants;
 mod history;
 mod hosts;
 mod ids;
+mod insert;
 mod kept;
 mod keying;
 pub mod layout;
@@ -58,7 +59,7 @@ mod tests;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use adtb_lang::check::Program;
 use adtb_lang::evolve::{Refusal, Source};
@@ -72,7 +73,7 @@ use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
 use crate::faults;
 use crate::heap::{self, FieldType, Heap, LargeStore};
-use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Tid, Value};
+use crate::key::{CtorId, Dir, KeySchema, OrderKey, Tid, Value};
 use crate::mvcc::{self, DurableCommit, Hold, Scope, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
@@ -219,7 +220,9 @@ impl std::fmt::Debug for Catalog {
 
 /// Returns the schema of the engine's own declarations: the prelude, `catalog` and `sys`.
 pub fn engine_schema() -> Committed {
-    schema::build(&[]).expect("the engine's declarations build")
+    static SCHEMA: LazyLock<Committed> =
+        LazyLock::new(|| schema::build(&[]).expect("the engine's declarations build"));
+    SCHEMA.clone()
 }
 
 /// Returns `schema`, the schema of a settled source.
@@ -618,10 +621,7 @@ impl Catalog {
         let roots = Heap::create(pager, ROOTS, roots::row_type(), large)?;
         let kept = Kept::create(pager, FIRST_HEAP, FIRST_HEAP + 1)?;
         let named = (roots.id().0, roots.root());
-        let (schema, program) = Source::default()
-            .check()
-            .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
-        let next = Checked::new(Source::default(), schema, program)?;
+        let next = Checked::engine()?;
         let empty = Catalog {
             source: Source::default(),
             hash: VersionHash::default(),
@@ -1229,48 +1229,6 @@ impl Catalog {
             &heaps,
         )
     }
-
-    /// Insert `row` of constructor `c` into relation `r` as `m.x`, with an entry in every index
-    /// over `c`.
-    fn insert<R: Runtime>(
-        &self,
-        m: &Migrating<'_, R>,
-        r: RelId,
-        c: u32,
-        row: &[Value],
-    ) -> Result<(), Error> {
-        let pager = m.pager;
-        let ctor = stored(ctor_id(&self.schema, r, c));
-        let mut entries = Vec::new();
-        for (spec, index, keys) in self.indexes.values() {
-            if spec.relation != r {
-                continue;
-            }
-            let Some(key) = row_key(keys, index.schema(), c, row)? else {
-                continue;
-            };
-            index.check_key(pager.page_size(), &key, ctor).map_err(|e| match e {
-                btree::Error::TooLong { len, max } => {
-                    let rel = self.schema.relation(r);
-                    let module = &self.schema.module(rel.module).name;
-                    let size = index.schema().encode(&key).len();
-                    let limit = max - (len - size);
-                    Error::Refused(vec![format!(
-                        "index `{module}::{}.{}` needs a key payload of {size} bytes; the limit is {limit} bytes",
-                        rel.name, spec.clause
-                    )])
-                }
-                e => e.into(),
-            })?;
-            entries.push((index, key));
-        }
-        let tid = m.insert(self.heap(r, c), row)?;
-        for (index, key) in entries {
-            let fresh = index.insert(pager, &Entry { key, ctor, tid })?;
-            assert!(fresh, "a new row's entry is not in its index yet");
-        }
-        Ok(())
-    }
 }
 
 /// What [`Catalog::build`] makes a catalog of.
@@ -1287,12 +1245,13 @@ struct Built<'a> {
 }
 
 /// A source, the schema it builds and its checked program.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Checked {
     source: Source,
     schema: Committed,
     program: Arc<Program>,
     texts: ElementTexts,
+    objects: Arc<OnceLock<Rows>>,
 }
 
 impl Checked {
@@ -1323,7 +1282,27 @@ impl Checked {
             schema: committed(schema)?,
             program: Arc::new(program),
             texts,
+            objects: Arc::default(),
         })
+    }
+
+    /// Returns the engine's own declarations, checked once per process.
+    fn engine() -> Result<Checked, Error> {
+        static ENGINE: OnceLock<Checked> = OnceLock::new();
+        if let Some(checked) = ENGINE.get() {
+            return Ok(checked.clone());
+        }
+        let (schema, program) = Source::default()
+            .check()
+            .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
+        let checked = Checked::new(Source::default(), schema, program)?;
+        Ok(ENGINE.get_or_init(|| checked).clone())
+    }
+
+    /// Returns the catalog rows of the objects of the version.
+    fn objects(&self) -> &Rows {
+        self.objects
+            .get_or_init(|| rows::objects(&self.schema, &self.source, &self.texts))
     }
 }
 
@@ -1351,6 +1330,18 @@ impl<R: Runtime> Migrating<'_, R> {
     /// Insert `row` into `heap` as `self.x`, as [`insert_row`] does.
     fn insert(&self, heap: &Heap, row: &[Value]) -> Result<Tid, Error> {
         insert_row(self.pager, self.txns, heap, self.x, row)
+    }
+
+    /// Insert the rows of `rows` into `heap` as `self.x`, in order, as
+    /// [`Heap::insert_all_pruning`] does, calling `placed` with each row and its TID.
+    fn insert_all<V: AsRef<[Value]>>(
+        &self,
+        heap: &Heap,
+        rows: impl IntoIterator<Item = Result<V, Error>>,
+        placed: impl FnMut(V, Tid) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let mut judge = self.txns.judge_now(self.pager, heap.id().0);
+        heap.insert_all_pruning(self.pager, self.x, rows, &mut judge, placed)
     }
 
     /// Create an empty heap with id `id` whose rows have fields `row`, out-of-line values in

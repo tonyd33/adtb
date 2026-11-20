@@ -615,16 +615,13 @@ impl Catalog {
         }
         let gone: Vec<Vec<Value>> = gone.iter().map(RootsRow::encode).collect();
         delete_rows(m, &self.roots, &gone)?;
-        for row in named {
-            m.insert(&self.roots, &row.encode())?;
-        }
+        let named: Vec<Vec<Value>> = named.iter().map(RootsRow::encode).collect();
+        m.insert_all(&self.roots, named.iter().map(Ok), |_, _| Ok(()))?;
         for (&rid, ctors) in b.data {
             let r = relation(&next.schema, rid).expect("data holds relations of the result");
             for (&cid, rows) in ctors {
                 let c = ctor_index(&next.schema, r, cid).expect("a constructor of the result");
-                for row in rows {
-                    next.insert(m, r, c, row)?;
-                }
+                next.insert_all(m, r, c, rows)?;
             }
         }
         self.write_rows(m, &next, b)?;
@@ -680,13 +677,14 @@ impl Catalog {
             .iter()
             .map(|(r, rows)| (rel_id(&self.schema, *r), (*r, rows.as_slice())))
             .collect();
-        for (r, rows) in rows::objects(&next.schema, &next.source, &next.texts) {
+        for (&r, rows) in b.next.objects() {
             let rid = rel_id(&next.schema, r);
             let (was, before) = old.get(&rid).copied().unwrap_or((r, &[]));
-            for (c, row) in &rows {
-                if !before.contains(&(*c, row.clone())) {
-                    next.insert(m, r, *c, row)?;
-                }
+            let fresh = rows
+                .iter()
+                .filter(|&(c, row)| !before.contains(&(*c, row.clone())));
+            for (c, rows) in by_ctor(fresh) {
+                next.insert_all(m, r, c, &rows)?;
             }
             let mut gone: BTreeMap<u32, Vec<Vec<Value>>> = BTreeMap::new();
             for (c, row) in before {
@@ -713,8 +711,8 @@ impl Catalog {
             hash,
             micros(pager.wall()),
         ) {
-            for (c, row) in rows {
-                next.insert(m, r, c, &row)?;
+            for (c, rows) in by_ctor(&rows) {
+                next.insert_all(m, r, c, &rows)?;
             }
         }
         Ok(())
@@ -733,6 +731,17 @@ impl Catalog {
         }
         Err(Rot::NoMigration(self.source.version).into())
     }
+}
+
+/// Returns `rows` by constructor, each constructor's in order.
+fn by_ctor<'a>(
+    rows: impl IntoIterator<Item = &'a (u32, Vec<Value>)>,
+) -> BTreeMap<u32, Vec<&'a Vec<Value>>> {
+    let mut out: BTreeMap<u32, Vec<&Vec<Value>>> = BTreeMap::new();
+    for (c, row) in rows {
+        out.entry(*c).or_default().push(row);
+    }
+    out
 }
 
 /// Refuse the rows `b.data` gives the relations `b.rewritten` names when two of them share a key

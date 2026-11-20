@@ -19,6 +19,7 @@ use super::{Error, Refused, WriteTarget, fixed, slotted};
 use super::{chain, prune};
 
 mod decode;
+mod put;
 
 use decode::Bad;
 #[cfg(test)]
@@ -1124,30 +1125,12 @@ impl Heap {
         pager: &Pager<R>,
         xid: Xid,
         row: &[Value],
-        mut judge: Option<&mut Judge<'_>>,
+        judge: Option<&mut Judge<'_>>,
     ) -> Result<Tid, Error> {
         let (body, held) = self.body(pager, xid, row, &[])?;
-        let version = version_bytes(Header::new(xid), &body);
-        loop {
-            let pid = self.candidate(pager, version.len())?;
-            let pre = self.preconvert(pager, pid, xid)?;
-            let mut write = HeapWrite::new(pager);
-            write.latch(&[(self, pid)])?;
-            match self.try_put(write.stage(), pager, pid, &version, Flags::NONE, pre)? {
-                Put::Done(t, c) => {
-                    let retain = [&held[..], &c.gained].concat();
-                    write.commit(Some(Took::Found(self, pid)), &retain, &c.dropped)?;
-                    return Ok(t);
-                }
-                Put::Stale => continue,
-                Put::Full => {}
-            }
-            drop(write);
-            if self.prune_full(pager, pid, judge.as_deref_mut())? {
-                continue;
-            }
-            self.refused(pager, pid)?;
-        }
+        let ready = (version_bytes(Header::new(xid), &body), held);
+        let tids = self.put_run(pager, xid, &ready, &[], judge)?;
+        Ok(tids[0])
     }
 
     /// Prune `pid` by `judge`, if there is one and the page is in the newest format. Returns

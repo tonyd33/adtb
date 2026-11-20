@@ -1462,7 +1462,7 @@ type Strikes = fn(&Struck) -> bool;
 const PINNED: [(u64, Strikes); 3] = [
     (63, reads_the_created_file),
     (74, reads_the_created_file),
-    (1171, lists_the_restored_log),
+    (1177, lists_the_restored_log),
 ];
 
 #[test]

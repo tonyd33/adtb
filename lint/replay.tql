@@ -10,7 +10,7 @@ owned f m = ((text f ~ r"[.:](record|steps)$") `and` (text m ~ r"^(apply|at)$"))
   `or` ((text f ~ r"[.:]migrate$") `and` (text m == "fold_from_empty"))
   `or` ((text f ~ r"[.:]migrate_keeping$") `and` (text m ~ r"^(enforcing|held)$"))
   `or` ((text f ~ r"[.:]record_steps$") `and` (text m == "enforcing"))
-  `or` ((text f ~ r"[.:]check$") `and` (text m ~ r"^(fold_from_empty|fill|unread|checked)$"));
+  `or` ((text f ~ r"[.:]check$") `and` (text m ~ r"^(fold_from_empty|engine|unread|checked)$"));
 
 main = do {
   d <- descendants_of_kind :function_item;
