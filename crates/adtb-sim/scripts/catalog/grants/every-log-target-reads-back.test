@@ -1,0 +1,49 @@
+# The target text of each kind of log grant, carried through a split and a rename, names its
+# grant again: a revoke of each row's printed text, a retag's without its except list, revokes it.
+use shop
+
+role web
+
+migrate
+  module shop
+  add set Late of payments = Invoice
+  define fn shout (s: Text) -> Text = s ++ s
+  grant read payments.Late to web
+  grant update payments.(Card | Invoice) (customer) to web
+  grant retag payments.Card -> payments.(Card | Invoice) to web
+  grant insert customers to web
+  grant delete payments.Invoice to web
+  grant call fn shout to web
+  grant read customers (name) to web
+  split constructor Payment.Card into Visa { last4: Text } | Other { last4: Text }
+    by match
+      | Card { last4: "0000" } -> Other { last4: "0000" }
+      | Card { last4 } -> Visa { last4: last4 }
+  rename relation customers to clients
+
+reopen
+
+query rowsort
+  from g in catalog::grants select g.privilege ++ " " ++ print(g.target)
+----
+"call Some { value: \"shop::shout\" }"
+"delete Some { value: \"shop::payments.Invoice\" }"
+"insert Some { value: \"shop::clients\" }"
+"read Some { value: \"shop::clients (name)\" }"
+"read Some { value: \"shop::payments.Late frozen (id, customer, Invoice.due)\" }"
+"retag Some { value: \"shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Visa -> Other, Other -> Visa)\" }"
+"update Some { value: \"shop::payments.(Invoice | Visa | Other) (customer)\" }"
+
+migrate
+  module shop
+  revoke call fn shop::shout from web
+  revoke delete shop::payments.Invoice from web
+  revoke insert shop::clients from web
+  revoke read shop::clients (name) from web
+  revoke read shop::payments.Late frozen (id, customer, Invoice.due) from web
+  revoke retag shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) from web
+  revoke update shop::payments.(Invoice | Visa | Other) (customer) from web
+
+query rowsort
+  catalog::grants
+----

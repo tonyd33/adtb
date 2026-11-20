@@ -1,0 +1,20 @@
+# A language function is hashed over its body in canonical form and a host function over its
+# declared version; a language function calling a nondeterministic one is not deterministic.
+use rows-first
+
+migrate
+  module app
+  define fn label (t: Text) -> Text = stamp(t)
+  define fn least [a: Ord] (x: a, y: a) -> a = if x < y then x else y
+
+query rowsort
+  from f in catalog::functions.Language select { module: f.module, name: f.name, signature: f.signature, deterministic: f.deterministic, hash: f.hash, body: f.body }
+----
+{ body: "if x < y then x else y", deterministic: True, hash: 0xd14cf96a841e3c6b54ed0e74efcdd2bfbb68fcbf6babd66976fc0fca971419ee, module: "app", name: "least", signature: "[a: Ord] (x: a, y: a) -> a" }
+{ body: "match x\n  | Circle c -> 3 * c.r * c.r\n  | Square q -> q.s * q.s", deterministic: True, hash: 0xc8a3473f79954d7efcd61bebcce57f3aefcdb1666694b1359ad2cc80687f56ad, module: "app", name: "area", signature: "(x: Shape) -> I64" }
+{ body: "stamp(t)", deterministic: False, hash: 0x6b58f3fe6bd9272b09e528b287b4ec9fc4e79022b6f02f01090aeaa636392f38, module: "app", name: "label", signature: "(t: Text) -> Text" }
+
+query rowsort
+  from f in catalog::functions.Host select { module: f.module, name: f.name, signature: f.signature, deterministic: f.deterministic, hash: f.hash, symbol: f.symbol, version: f.version }
+----
+{ deterministic: False, hash: 0x6730b9b1b5fcad96c7b6ac1156104d40e9c166362e5c936a3c6f0f97129d84e4, module: "app", name: "stamp", signature: "(t: Text) -> Text", symbol: "stamp", version: "1.2" }

@@ -394,44 +394,6 @@ fn a_changed_body_rebuilds_or_validates_each_dependent_reaching_it() {
     assert_eq!(pairs, reached);
 }
 
-#[test]
-fn an_unchanged_body_rewrites_no_relation_and_validates_nothing() {
-    let starved = OpenOptions {
-        query_memory_bytes: Some(1),
-        ..options(1)
-    };
-    for (seed, d) in Dependent::ALL.into_iter().enumerate() {
-        let seed = 2 * seed as u64;
-        match case(seed, d, Via::Direct, Body::Same, &starved) {
-            (before, Outcome::Applied { heaps, .. }) => assert_eq!(before, heaps, "{d:?}"),
-            (_, Outcome::Refused(e)) => panic!("{d:?} under Same is refused: {e}"),
-        }
-        let name = match d {
-            Dependent::Domain => "app::Small.domain",
-            _ => "app::bounded",
-        };
-        let starving = format!(
-            "constraint {name} is violated by its validation needs more than the query memory \
-             of 1 bytes"
-        );
-        match (d, case(seed + 1, d, Via::Direct, Body::Holds, &starved)) {
-            (Dependent::Unique | Dependent::Index, (before, Outcome::Applied { heaps, .. })) => {
-                assert_ne!(
-                    before.items, heaps.items,
-                    "setup: {d:?} under Holds rewrites"
-                );
-            }
-            (
-                Dependent::Check | Dependent::Constraint | Dependent::Domain,
-                (_, Outcome::Refused(e)),
-            ) => {
-                refused(e, &starving);
-            }
-            (_, (_, got)) => panic!("setup: {d:?} under Holds: {got:?}"),
-        }
-    }
-}
-
 /// Returns `source` migrated by `text`.
 fn migrated(source: &Source, text: &str) -> Source {
     let file = parse_migration(text, Options::default())

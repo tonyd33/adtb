@@ -1,0 +1,37 @@
+# A migrated catalog stores a heap per constructor and its key, declared and implied indexes over
+# their constructor sets, and reopens naming the same structures and order keys.
+use catalog-running
+
+probe catalog
+----
+change None
+next heap 10
+auth::identities.EmailPass heap 1
+auth::identities.Google heap 2
+auth::identities.Apple heap 3
+auth::identities index (user) over EmailPass | Google | Apple
+auth::identities key id over EmailPass | Google | Apple
+auth::identities unique (email) in EmailPass over EmailPass
+auth::identities unique (gid) in Google over Google
+auth::identities unique (sub) in Apple over Apple
+auth::users.User heap 0
+auth::users key id over User
+auth::Identity order EmailPass < Google < Apple
+
+reopen
+
+probe catalog
+----
+change None
+next heap 10
+auth::identities.EmailPass heap 1
+auth::identities.Google heap 2
+auth::identities.Apple heap 3
+auth::identities index (user) over EmailPass | Google | Apple
+auth::identities key id over EmailPass | Google | Apple
+auth::identities unique (email) in EmailPass over EmailPass
+auth::identities unique (gid) in Google over Google
+auth::identities unique (sub) in Apple over Apple
+auth::users.User heap 0
+auth::users key id over User
+auth::Identity order EmailPass < Google < Apple

@@ -1,0 +1,51 @@
+# A dropped field that makes two dormant grants name one target keeps the first, dormant.
+use shop
+use grants-dumper
+
+role ghost
+
+migrate
+  module shop
+  grant read customers to ghost
+
+migrate
+  module shop
+  add field Customer.email: Text fill ""
+  grant read customers to dumper
+
+migrate
+  module shop
+  grant read customers to ghost
+
+as dumper run
+  dump to "out/d"
+
+restore out/d to copy.adt
+----
+dormant { id: 1, grantee: "dumper", privilege: "read", target: "shop::customers frozen (id, name)" }
+dormant { id: 2, grantee: "dumper", privilege: "read", target: "shop::payments frozen (id, customer, Card.last4, Invoice.due)" }
+dormant { id: 129, grantee: "ghost", privilege: "read", target: "shop::customers frozen (id, name)" }
+dormant { id: 193, grantee: "dumper", privilege: "read", target: "shop::customers frozen (id, name, email)" }
+dormant { id: 257, grantee: "ghost", privilege: "read", target: "shop::customers frozen (id, name, email)" }
+
+reopen
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, first: exists c in customers where c.name == "first " ++ print(value(key g)) }
+----
+{ dormant: True, first: False, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" } }
+{ dormant: True, first: False, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name, email)" } }
+
+# The id of the grant of ghost on its first target, as a customer's name.
+run
+  insert customers from (from g in catalog::grants where g.grantee == "ghost" and g.target == Some { value: "shop::customers frozen (id, name)" } select { name: "first " ++ print(value(key g)), email: "" })
+
+migrate
+  module shop
+  drop field Customer.email
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, first: exists c in customers where c.name == "first " ++ print(value(key g)) }
+----
+{ dormant: True, first: True, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" } }
+

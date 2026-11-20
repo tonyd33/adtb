@@ -238,8 +238,8 @@
 "crates/adtb-sim/tests/storage/truncated_open.rs" = 4
 "crates/adtb/src/btree/btree_tests.rs" = 1
 "crates/adtb/src/btree/btree_threads_tests.rs" = 1
-"crates/adtb/src/catalog/catalog_tests.rs" = 5
-"crates/adtb/src/catalog/grant_rows_tests.rs" = 2
+"crates/adtb/src/catalog/catalog_tests.rs" = 4
+"crates/adtb/src/catalog/grant_rows_tests.rs" = 1
 "crates/adtb/src/catalog/oplog_tests.rs" = 2
 "crates/adtb/src/exec/host_fns_tests.rs" = 1
 "crates/adtb/src/heap/heap_tests.rs" = 1

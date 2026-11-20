@@ -1,0 +1,46 @@
+# A revoke operator acts as the schema owner, so a restore replays it with no revoking role, to
+# the rows the migrations left.
+use shop
+
+role web
+
+migrate
+  module shop
+  grant read payments.(Invoice | Card) (customer) to web
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant }
+----
+{ dormant: False, grant_option: False, grantee: "web", grantor: "owner", kind: Log, privilege: "read", target: Some { value: "shop::payments.(Card | Invoice) (customer)" } }
+
+migrate
+  module shop
+  revoke read shop::payments.(Card | Invoice) (customer) from web
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant }
+----
+
+query rowsort
+  from o in catalog::migration_ops where o.migration != catalog::migrations.key(1) select o
+----
+MigrationOp { migration: migrations.key(2), ordinal: 1, op: Grant { privilege: "read", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card ) ( customer )") }, grantee: "web", grant_option: False } }
+MigrationOp { migration: migrations.key(3), ordinal: 1, op: Revoke { privilege: "read", target: Some { value: Term("shop::payments . ( shop::Card | shop::Invoice ) ( customer )") }, grantee: "web" } }
+
+run
+  dump to "d"
+
+restore d to copy.adt
+----
+
+reopen
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant }
+----
+
+query rowsort
+  from o in catalog::migration_ops where o.migration != catalog::migrations.key(1) select o
+----
+MigrationOp { migration: migrations.key(2), ordinal: 1, op: Grant { privilege: "read", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card ) ( customer )") }, grantee: "web", grant_option: False } }
+MigrationOp { migration: migrations.key(3), ordinal: 1, op: Revoke { privilege: "read", target: Some { value: Term("shop::payments . ( shop::Card | shop::Invoice ) ( customer )") }, grantee: "web" } }

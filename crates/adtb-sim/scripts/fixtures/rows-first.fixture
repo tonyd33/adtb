@@ -1,0 +1,14 @@
+# Shapes of two constructors with a set, a unique, a language function and a host function.
+migrate
+  module app
+  add module app
+  add type Shape { id: Key shapes }
+    = Circle { r: I64 }
+    | Square { s: I64 }
+  add relation shapes : Shape key id generate sequence
+  add set Round of shapes = Circle
+  add unique (r) in shapes.Circle
+  define fn area (x: Shape) -> I64 = match x
+    | Circle c -> 3 * c.r * c.r
+    | Square q -> q.s * q.s
+  define fn stamp (t: Text) -> Text = host "stamp" version "1.2"

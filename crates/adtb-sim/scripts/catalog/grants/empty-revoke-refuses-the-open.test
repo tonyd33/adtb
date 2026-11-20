@@ -1,0 +1,6 @@
+# A revoke operator that matches no grant refuses the open of its log, naming the revoke.
+use shop
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`revoke read customers from web` matches no grant `web` holds" } } }
+  module shop
+  revoke read customers from web

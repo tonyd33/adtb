@@ -47,7 +47,7 @@ fn parts(area: &str) -> usize {
     match area {
         "bundles" => 5,
         "oplog" => 3,
-        "registration" | "roles" => 2,
+        "catalog" | "registration" | "roles" => 2,
         _ => 1,
     }
 }
@@ -161,6 +161,16 @@ fn plans() {
 #[test]
 fn longkey() {
     run(&root().join("longkey"));
+}
+
+#[test]
+fn catalog_0() {
+    run_part("catalog", 0);
+}
+
+#[test]
+fn catalog_1() {
+    run_part("catalog", 1);
 }
 
 #[test]

@@ -1,0 +1,83 @@
+# A grant or revoke operator of several privileges is logged as its first privilege with a
+# clause for each other, and reads back alike after a reopen and through a restore's replay.
+use shop
+
+role web
+
+migrate
+  module shop
+  grant read customers (name), insert payments.(Invoice | Card), retag payments.Card -> payments.Invoice to web with grant option
+  revoke read customers (name), insert payments.(Invoice | Card) from web
+
+query rowsort
+  from o in catalog::migration_ops where o.migration == catalog::migrations.key(2) select o
+----
+MigrationOp { migration: migrations.key(2), ordinal: 1, op: Grant { privilege: "read", target: Some { value: Term("shop::customers ( name )") }, grantee: "web", grant_option: True } }
+MigrationOp { migration: migrations.key(2), ordinal: 2, op: Revoke { privilege: "read", target: Some { value: Term("shop::customers ( name )") }, grantee: "web" } }
+
+query rowsort
+  from c in catalog::migration_clauses where c.migration == catalog::migrations.key(2) select c
+----
+OpClause { migration: migrations.key(2), ordinal: 1, clause: 1, body: Privilege { privilege: "insert", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card )") } } }
+OpClause { migration: migrations.key(2), ordinal: 1, clause: 2, body: Privilege { privilege: "retag", target: Some { value: Term("shop::payments . shop::Card -> shop::payments . shop::Invoice") } } }
+OpClause { migration: migrations.key(2), ordinal: 2, clause: 1, body: Privilege { privilege: "insert", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card )") } } }
+
+# The hash of version 2, as a customer's name.
+run
+  insert customers from (from m in catalog::migrations where m.version == catalog::migrations.key(2) select { name: print(m.hash) })
+
+reopen
+
+query rowsort
+  from o in catalog::migration_ops where o.migration == catalog::migrations.key(2) select o
+----
+MigrationOp { migration: migrations.key(2), ordinal: 1, op: Grant { privilege: "read", target: Some { value: Term("shop::customers ( name )") }, grantee: "web", grant_option: True } }
+MigrationOp { migration: migrations.key(2), ordinal: 2, op: Revoke { privilege: "read", target: Some { value: Term("shop::customers ( name )") }, grantee: "web" } }
+
+query rowsort
+  from c in catalog::migration_clauses where c.migration == catalog::migrations.key(2) select c
+----
+OpClause { migration: migrations.key(2), ordinal: 1, clause: 1, body: Privilege { privilege: "insert", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card )") } } }
+OpClause { migration: migrations.key(2), ordinal: 1, clause: 2, body: Privilege { privilege: "retag", target: Some { value: Term("shop::payments . shop::Card -> shop::payments . shop::Invoice") } } }
+OpClause { migration: migrations.key(2), ordinal: 2, clause: 1, body: Privilege { privilege: "insert", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card )") } } }
+
+query
+  from m in catalog::migrations where m.version == catalog::migrations.key(2) select exists c in customers where c.name == print(m.hash)
+----
+True
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant }
+----
+{ dormant: False, grant_option: True, grantee: "web", grantor: "owner", kind: Log, privilege: "retag", target: Some { value: "shop::payments.Card -> shop::payments.Invoice" } }
+
+run
+  dump to "d"
+
+restore d to copy.adt
+----
+
+reopen
+
+query rowsort
+  from o in catalog::migration_ops where o.migration == catalog::migrations.key(2) select o
+----
+MigrationOp { migration: migrations.key(2), ordinal: 1, op: Grant { privilege: "read", target: Some { value: Term("shop::customers ( name )") }, grantee: "web", grant_option: True } }
+MigrationOp { migration: migrations.key(2), ordinal: 2, op: Revoke { privilege: "read", target: Some { value: Term("shop::customers ( name )") }, grantee: "web" } }
+
+query rowsort
+  from c in catalog::migration_clauses where c.migration == catalog::migrations.key(2) select c
+----
+OpClause { migration: migrations.key(2), ordinal: 1, clause: 1, body: Privilege { privilege: "insert", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card )") } } }
+OpClause { migration: migrations.key(2), ordinal: 1, clause: 2, body: Privilege { privilege: "retag", target: Some { value: Term("shop::payments . shop::Card -> shop::payments . shop::Invoice") } } }
+OpClause { migration: migrations.key(2), ordinal: 2, clause: 1, body: Privilege { privilege: "insert", target: Some { value: Term("shop::payments . ( shop::Invoice | shop::Card )") } } }
+
+query
+  from m in catalog::migrations where m.version == catalog::migrations.key(2) select exists c in customers where c.name == print(m.hash)
+----
+True
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant }
+----
+{ dormant: False, grant_option: True, grantee: "web", grantor: "owner", kind: Log, privilege: "retag", target: Some { value: "shop::payments.Card -> shop::payments.Invoice" } }

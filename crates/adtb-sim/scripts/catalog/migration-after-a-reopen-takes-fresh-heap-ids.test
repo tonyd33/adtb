@@ -1,0 +1,44 @@
+# A migration after a reopen stores a new relation in heaps of ids no heap had, from the next
+# heap id the reopened catalog read.
+use catalog-running
+
+reopen
+
+probe catalog
+----
+change None
+next heap 10
+auth::identities.EmailPass heap 1
+auth::identities.Google heap 2
+auth::identities.Apple heap 3
+auth::identities index (user) over EmailPass | Google | Apple
+auth::identities key id over EmailPass | Google | Apple
+auth::identities unique (email) in EmailPass over EmailPass
+auth::identities unique (gid) in Google over Google
+auth::identities unique (sub) in Apple over Apple
+auth::users.User heap 0
+auth::users key id over User
+auth::Identity order EmailPass < Google < Apple
+
+migrate
+  module auth
+  add type Label = { id: Key tags, label: Text }
+  add relation tags : Label key id generate sequence
+
+probe catalog
+----
+change None
+next heap 13
+auth::identities.EmailPass heap 1
+auth::identities.Google heap 2
+auth::identities.Apple heap 3
+auth::identities index (user) over EmailPass | Google | Apple
+auth::identities key id over EmailPass | Google | Apple
+auth::identities unique (email) in EmailPass over EmailPass
+auth::identities unique (gid) in Google over Google
+auth::identities unique (sub) in Apple over Apple
+auth::tags.Label heap 10
+auth::tags key id over Label
+auth::users.User heap 0
+auth::users key id over User
+auth::Identity order EmailPass < Google < Apple

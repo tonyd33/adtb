@@ -1,0 +1,68 @@
+# The hash of a migration and of a function is of what they declare, not of their spelling: a
+# log respelled opens at the same version, and one declaring otherwise diverges.
+migrate
+  module app
+  add module app
+  add type Shape { id: Key shapes }
+    = Circle { r: I64 }
+    | Square { s: I64 }
+  add relation shapes : Shape   -- every shape
+    key id generate sequence
+  add set Round of shapes = Circle
+  add unique (r) in shapes.Circle
+  define fn area (x: Shape) -> I64 = -- by kind
+    match x | Circle c ->
+        3*c.r*c.r  -- pi, roughly
+    | Square q -> q.s * q.s
+  define fn stamp (t: Text) -> Text = host "stamp" version "1.2"
+
+query
+  from f in catalog::functions where f.name == "area" select f.hash
+----
+0xc8a3473f79954d7efcd61bebcce57f3aefcdb1666694b1359ad2cc80687f56ad
+
+migrate at 1
+  module app
+  add module app
+  add type Shape { id: Key shapes }
+    = Circle { r: I64 }
+    | Square { s: I64 }
+  add relation shapes : Shape key id generate sequence
+  add set Round of shapes = Circle
+  add unique (r) in shapes.Circle
+  define fn area (x: Shape) -> I64 = match x
+    | Circle c -> 3 * c.r * c.r
+    | Square q -> q.s * q.s
+  define fn stamp (t: Text) -> Text = host "stamp" version "1.2"
+
+query
+  count(m for m in catalog::migrations)
+----
+1
+
+migrate at 1 refused Diverged { version: 1 }
+  module app
+  add module app
+  add type Shape { id: Key shapes }
+    = Circle { r: I64 }
+    | Square { s: I64 }
+  add relation shapes : Shape key id generate sequence
+  add set Round of shapes = Circle
+  add unique (r) in shapes.Circle
+  define fn area (x: Shape) -> I64 = match x
+    | Circle c -> 4 * c.r * c.r
+    | Square q -> q.s * q.s
+  define fn stamp (t: Text) -> Text = host "stamp" version "1.2"
+
+reopen
+
+migrate
+  module app
+  redefine fn area (x: Shape) -> I64 = match x
+    | Circle c -> 4 * c.r * c.r
+    | Square q -> q.s * q.s
+
+query
+  from f in catalog::functions where f.name == "area" select f.hash
+----
+0x7cd283ed8e554aecb1e4d0912517124ade22c4c6b06fe8bbd0239c6bde874141

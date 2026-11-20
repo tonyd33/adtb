@@ -1,0 +1,35 @@
+# A database with no migration holds a catalog row for every type, constructor, field, relation
+# and index of the engine, each naming rows that exist, and no named set or migration.
+use empty
+
+query
+  { types: count(t for t in catalog::types), constructors: count(c for c in catalog::constructors), fields: count(f for f in catalog::fields), relations: count(r for r in catalog::relations), indexes: count(i for i in catalog::indexes), named_sets: count(s for s in catalog::named_sets), migrations: count(m for m in catalog::migrations) }
+----
+{ constructors: 319, fields: 575, indexes: 61, migrations: 0, named_sets: 0, relations: 54, types: 95 }
+
+query
+  { constructors: count(k for k in (from c in catalog::constructors, t in catalog::types where c.sum == key t select key c)), relations: count(k for k in (from r in catalog::relations, t in catalog::types where r.sum == key t select key r)), indexes: count(k for k in (from i in catalog::indexes, r in catalog::relations where i.relation == key r select key i)) }
+----
+{ constructors: 319, indexes: 61, relations: 54 }
+
+# The constructors relation names its own row.
+query
+  from c in catalog::constructors, t in catalog::types where c.name == "Constructor" and c.sum == key t select { name: c.name, sum: t.name, module: t.module, position: c.position }
+----
+{ module: "catalog", name: "Constructor", position: 1, sum: "Constructor" }
+
+query
+  { constructors: min(c.position for c in catalog::constructors), fields: min(f.position for f in catalog::fields) }
+----
+{ constructors: Some { value: 1 }, fields: Some { value: 1 } }
+
+query
+  from t in catalog::types where t.name == "Tag" select { module: t.module, name: t.name, params: t.params }
+----
+{ module: "prelude", name: "Tag", params: 1 }
+
+# Constructors order as they are declared.
+query
+  { bool: False < True, option: Some { value: 1 } > None }
+----
+{ bool: True, option: True }

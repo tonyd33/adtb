@@ -1,0 +1,36 @@
+# Role dumper, which lacks `schema` and may dump the shop schema under `out`: a restore of its
+# dump holds no role, so each grant of the log is dormant.
+option export_roots out
+
+role dumper
+
+migrate
+  module shop
+  grant read customers to dumper
+  grant read payments to dumper
+
+grant
+  grant write_files to dumper
+  grant adhoc to dumper
+  grant maintain to dumper
+  grant read catalog::types to dumper
+  grant read catalog::constructors to dumper
+  grant read catalog::ctor_states to dumper
+  grant read catalog::value_states to dumper
+  grant read catalog::fields to dumper
+  grant read catalog::relations to dumper
+  grant read catalog::named_sets to dumper
+  grant read catalog::set_members to dumper
+  grant read catalog::indexes to dumper
+  grant read catalog::index_ctors to dumper
+  grant read catalog::constraints to dumper
+  grant read catalog::functions to dumper
+  grant read catalog::defaults to dumper
+  grant read catalog::computed to dumper
+  grant read catalog::grants to dumper
+  grant read catalog::settings to dumper
+  grant read catalog::audit to dumper
+  grant read catalog::bundles to dumper
+  grant read catalog::registered to dumper
+  grant read catalog::feeds to dumper
+  grant read catalog::feed_members to dumper

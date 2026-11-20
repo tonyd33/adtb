@@ -1,0 +1,44 @@
+# A reference field with no declared index leading with it has an implied index over every
+# constructor holding the field, listed in the catalog; a declared index leading with the field
+# replaces it, and one over fewer constructors keeps it.
+use catalog-running
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "identities" and i.relation == r.id select { clause: i.clause, kind: i.kind }
+----
+{ clause: "index (user)", kind: Implied }
+{ clause: "key id", kind: PrimaryKey }
+{ clause: "unique (email) in EmailPass", kind: Unique }
+{ clause: "unique (gid) in Google", kind: Unique }
+{ clause: "unique (sub) in Apple", kind: Unique }
+
+migrate
+  module auth
+  add index (user, id) in identities
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "identities" and i.relation == r.id select { clause: i.clause, kind: i.kind }
+----
+{ clause: "index (user, id)", kind: Plain }
+{ clause: "key id", kind: PrimaryKey }
+{ clause: "unique (email) in EmailPass", kind: Unique }
+{ clause: "unique (gid) in Google", kind: Unique }
+{ clause: "unique (sub) in Apple", kind: Unique }
+
+migrate
+  module auth
+  drop index (user, id) in identities
+  add index (user) in identities.Google
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "identities" and i.relation == r.id select { clause: i.clause, kind: i.kind }
+----
+{ clause: "index (user) in Google", kind: Plain }
+{ clause: "index (user)", kind: Implied }
+{ clause: "key id", kind: PrimaryKey }
+{ clause: "unique (email) in EmailPass", kind: Unique }
+{ clause: "unique (gid) in Google", kind: Unique }
+{ clause: "unique (sub) in Apple", kind: Unique }

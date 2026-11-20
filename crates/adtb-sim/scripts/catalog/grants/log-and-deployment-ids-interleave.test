@@ -1,0 +1,196 @@
+# Log and deployment grant rows draw ids from one sequence: a new grant, a regrant included,
+# takes an id no grant before held, and a rename, an option change and a carry keep each row's
+# id. A refused migration publishes no row.
+#
+# After each listing every id is kept as a customer's name, alone and with its grant's privilege
+# and grantee: `seen` states that some grant before held the row's id, `same` that it was this
+# row's privilege and grantee.
+use shop
+
+role web
+
+role support
+
+grant
+  grant assert to web
+
+run
+  insert customers { name: "ann" }
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in customers where c.name == "id " ++ print(value(key g)), same: exists c in customers where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: False, seen: False, target: None }
+
+run
+  insert customers from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert customers from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+migrate
+  module shop
+  grant read customers to web
+  grant read payments.Card (last4) to support
+
+grant
+  grant monitor to support
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in customers where c.name == "id " ++ print(value(key g)), same: exists c in customers where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: False, seen: False, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: False, seen: False, target: Some { value: "shop::payments.Card (Card.last4)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "web", kind: Log, privilege: "read", same: False, seen: False, target: Some { value: "shop::customers frozen (id, name)" } }
+
+run
+  insert customers from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert customers from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+migrate
+  module shop
+  revoke read customers from web
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in customers where c.name == "id " ++ print(value(key g)), same: exists c in customers where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::payments.Card (Card.last4)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+
+run
+  insert customers from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert customers from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+migrate
+  module shop
+  grant read customers to web
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in customers where c.name == "id " ++ print(value(key g)), same: exists c in customers where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::payments.Card (Card.last4)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "web", kind: Log, privilege: "read", same: False, seen: False, target: Some { value: "shop::customers frozen (id, name)" } }
+
+run
+  insert customers from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert customers from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+migrate
+  module shop
+  rename relation customers to clients
+  rename field Payment.Card.last4 to digits
+
+migrate
+  module shop
+  grant read clients to web with grant option
+
+migrate
+  module shop
+  split constructor Payment.Card into Visa { digits: Text } | Other { digits: Text }
+    by match
+      | Card { digits } -> Visa { digits: digits }
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in clients where c.name == "id " ++ print(value(key g)), same: exists c in clients where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::payments.Visa (Visa.digits)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+{ grant_option: True, grantee: "web", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::clients frozen (id, name)" } }
+
+run
+  insert clients from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert clients from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+migrate refused MigrationRefused { version: 8, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::paid is violated by Customer { id: clients.key(1), name: \"ann\" }" } } }
+  module shop
+  grant delete clients to web
+  add constraint paid =
+    from c in clients
+    where c.name == "ann" and not exists p in payments where p.customer == key c
+    select c
+
+reopen
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in clients where c.name == "id " ++ print(value(key g)), same: exists c in clients where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::payments.Visa (Visa.digits)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+{ grant_option: True, grantee: "web", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::clients frozen (id, name)" } }
+
+run
+  insert clients from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert clients from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+grant
+  grant cancel to web
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in clients where c.name == "id " ++ print(value(key g)), same: exists c in clients where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::payments.Visa (Visa.digits)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "cancel", same: False, seen: False, target: None }
+{ grant_option: True, grantee: "web", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::clients frozen (id, name)" } }
+
+run
+  insert clients from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert clients from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+migrate
+  module shop
+  grant delete clients to web
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in clients where c.name == "id " ++ print(value(key g)), same: exists c in clients where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::payments.Visa (Visa.digits)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "cancel", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "web", kind: Log, privilege: "delete", same: False, seen: False, target: Some { value: "shop::clients" } }
+{ grant_option: True, grantee: "web", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::clients frozen (id, name)" } }
+
+run
+  insert clients from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert clients from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+
+reopen
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, grantee: g.grantee, target: g.target, grant_option: g.grant_option, seen: exists c in clients where c.name == "id " ++ print(value(key g)), same: exists c in clients where c.name == "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee }
+----
+{ grant_option: False, grantee: "support", kind: Deployment, privilege: "monitor", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "support", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::payments.Visa (Visa.digits)" } }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "assert", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "web", kind: Deployment, privilege: "cancel", same: True, seen: True, target: None }
+{ grant_option: False, grantee: "web", kind: Log, privilege: "delete", same: True, seen: True, target: Some { value: "shop::clients" } }
+{ grant_option: True, grantee: "web", kind: Log, privilege: "read", same: True, seen: True, target: Some { value: "shop::clients frozen (id, name)" } }
+
+run
+  insert clients from (from g in catalog::grants select { name: "id " ++ print(value(key g)) })
+
+run
+  insert clients from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
+

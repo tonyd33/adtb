@@ -1,0 +1,62 @@
+# A redefinition of a function to the body it has rewrites no relation that reaches it and
+# validates nothing, under a query memory any validation exceeds; a changed body rewrites the
+# relation.
+migrate
+  module app
+  add module app
+  define fn f (x: I64) -> I64 = x * 2
+  add type Small = new I64 where f(self) < 100
+  add type Item = { id: Key items, n: I64, s: Small }
+  add relation items : Item key id generate sequence
+  add unique (f(n)) in items
+  add index (f(n)) in items
+  add check bounded on items (f(n) < 100)
+  add constraint capped =
+    from i in items where f(i.n) >= 100 select i
+
+run
+  insert items { n: 10, s: Small(10) }
+  insert items { n: 15, s: Small(15) }
+
+probe catalog
+----
+change None
+next heap 3
+app::items.Item heap 0
+app::items index (app::f ( n )) over Item
+app::items key id over Item
+app::items unique (app::f ( n )) over Item
+
+option query_memory_bytes 1
+
+migrate
+  module app
+  redefine fn f (x: I64) -> I64 = x * 2
+
+probe catalog
+----
+change None
+next heap 3
+app::items.Item heap 0
+app::items index (app::f ( n )) over Item
+app::items key id over Item
+app::items unique (app::f ( n )) over Item
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::capped is violated by its validation needs more than the query memory of 1 bytes\nconstraint app::bounded is violated by its validation needs more than the query memory of 1 bytes\nconstraint app::Small.domain is violated by its validation needs more than the query memory of 1 bytes" } } }
+  module app
+  redefine fn f (x: I64) -> I64 = x + 10
+
+option query_memory_bytes default
+
+migrate
+  module app
+  redefine fn f (x: I64) -> I64 = x + 10
+
+probe catalog
+----
+change None
+next heap 9
+app::items.Item heap 6
+app::items index (app::f ( n )) over Item
+app::items key id over Item
+app::items unique (app::f ( n )) over Item

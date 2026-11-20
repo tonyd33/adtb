@@ -1,0 +1,36 @@
+# A dropped field that makes two active log grants name one target merges them into the row of
+# the earlier grant, which holds the grant option either held.
+use shop
+
+role ghost
+
+migrate
+  module shop
+  grant read customers (name) to ghost with grant option
+
+migrate
+  module shop
+  add field Customer.email: Text fill ""
+
+migrate
+  module shop
+  grant read customers (name, email) to ghost
+
+query rowsort
+  from g in catalog::grants select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, first: exists c in customers where c.name == "first " ++ print(value(key g)) }
+----
+{ dormant: False, first: False, grant_option: False, privilege: "read", target: Some { value: "shop::customers (name, email)" } }
+{ dormant: False, first: False, grant_option: True, privilege: "read", target: Some { value: "shop::customers (name)" } }
+
+# The id of the grant of ghost holding a grant option, as a customer's name.
+run
+  insert customers from (from g in catalog::grants where g.grant_option select { name: "first " ++ print(value(key g)), email: "" })
+
+migrate
+  module shop
+  drop field Customer.email
+
+query rowsort
+  from g in catalog::grants select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, first: exists c in customers where c.name == "first " ++ print(value(key g)) }
+----
+{ dormant: False, first: True, grant_option: True, privilege: "read", target: Some { value: "shop::customers (name)" } }

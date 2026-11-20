@@ -1,0 +1,27 @@
+# A migration's row holds its version, a hash of 32 bytes and its text; each operator has a row
+# by ordinal from one and each member clause a row naming its constructor.
+use rows-first
+
+query
+  from m in catalog::migrations select { version: m.version, text: m.text, applied: m.applied, hash_bytes: bytes_len(m.hash) }
+----
+{ applied: t1, hash_bytes: 32, text: "module app\nadd module app\nadd type Shape { id: Key shapes }\n  = Circle { r: I64 }\n  | Square { s: I64 }\nadd relation shapes : Shape key id generate sequence\nadd set Round of shapes = Circle\nadd unique (r) in shapes.Circle\ndefine fn area (x: Shape) -> I64 = match x\n  | Circle c -> 3 * c.r * c.r\n  | Square q -> q.s * q.s\ndefine fn stamp (t: Text) -> Text = host \"stamp\" version \"1.2\"\n", version: migrations.key(1) }
+
+query rowsort
+  from o in catalog::migration_ops select { migration: o.migration, ordinal: o.ordinal }
+----
+{ migration: migrations.key(1), ordinal: 1 }
+{ migration: migrations.key(1), ordinal: 2 }
+{ migration: migrations.key(1), ordinal: 3 }
+{ migration: migrations.key(1), ordinal: 4 }
+{ migration: migrations.key(1), ordinal: 5 }
+{ migration: migrations.key(1), ordinal: 6 }
+{ migration: migrations.key(1), ordinal: 7 }
+
+query rowsort
+  from k in catalog::migration_clauses, c in catalog::constructors
+    where (match k.body | Member b -> catalog::constructors.key(b.ctor) == c.id | _ -> false)
+    select { ordinal: k.ordinal, clause: k.clause, member: c.name }
+----
+{ clause: 1, member: "Circle", ordinal: 4 }
+{ clause: 1, member: "Circle", ordinal: 5 }

@@ -1,0 +1,24 @@
+# A default of a field several constructors hold has a catalog row for each constructor's field.
+migrate
+  module app
+  add module app
+  add type Shape { id: Key shapes }
+    = Circle { r: I64, label: Text }
+    | Square { s: I64, label: Text }
+  add relation shapes : Shape key id generate sequence default label = "none"
+
+query
+  count(d for d in catalog::defaults)
+----
+3
+
+query
+  from d in catalog::defaults, f in catalog::fields where d.field == key f and f.name == "id" select d.text
+----
+"generate sequence"
+
+query rowsort
+  from d in catalog::defaults, f in catalog::fields.Payload, c in catalog::constructors where d.field == key f and f.ctor == key c select { ctor: c.name, field: f.name, text: d.text }
+----
+{ ctor: "Circle", field: "label", text: "\"none\"" }
+{ ctor: "Square", field: "label", text: "\"none\"" }

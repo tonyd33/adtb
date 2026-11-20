@@ -1,0 +1,131 @@
+# An index element that is no scalar expression of the row is refused, with its canonical text.
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index `index (count ( x for x in app::items where x . n == 1 ))` is not admitted: an aggregate in a scalar expression" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (count(x for x in items where x.n == 1))
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index `index (exists x in [ n ] where x > 0)` is not admitted: an `exists` in a scalar expression" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (exists x in [n] where x > 0)
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index `index (exists t in id .< app::tags . item where t . n > 0)` is not admitted: an `exists` in a scalar expression" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (exists t in id.<tags.item where t.n > 0)
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index `index (exists x in ( from y in [ n ] select y ) where x == n)` is not admitted: an `exists` in a scalar expression" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (exists x in (from y in [n] select y) where x == n)
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index `index (exists x in ( fix a = [ n ] in a ) where x == n)` is not admitted: an `exists` in a scalar expression" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (exists x in (fix a = [n] in a) where x == n)
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`.C` selects constructors of a set; a single value is examined by `match`\nno `items` in scope\nno `items` in scope" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index ((if n > 0 then s else Draft).Sent)
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`top` needs a determinate order: include the row's key, or a field a key or unique covers\nno `items` in scope\nno `items` in scope" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (exists x in (top 1 by (y) (from y in [n] select y)) where x == n)
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "an `at` block reads a set, found I64\nno `items` in scope\nno `items` in scope" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (at instant when { n })
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`reject` is allowed only in the source query of an insert\nno `items` in scope\nno `items` in scope" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (if n > 0 then n else reject "no")
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a write appears only where a change set is expected: in a transact block, a script or ad hoc text\nno `items` in scope\nno `items` in scope" } } }
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index ((insert items { name: "a", n: 1, f: 1.0e0, d: 1.00, s: Draft, when: when }))

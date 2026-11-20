@@ -1,0 +1,28 @@
+# Users with identities of three constructors, each unique within its constructor, a named set,
+# a function and a constraint, as the first migration.
+migrate
+  module auth
+  add module auth
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google { gid: Text }
+    | Apple { sub: Text }
+  add relation identities : Identity
+    key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+    unique (sub) in Apple
+  add set OAuth of identities = Google | Apple
+  define fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g -> g.gid
+    | Apple a -> a.sub
+  add constraint login_present =
+    from i in identities
+    where match i
+      | EmailPass e -> scalar_len(e.email) == 0
+      | Google g -> scalar_len(g.gid) == 0
+      | Apple a -> scalar_len(a.sub) == 0
+    select i

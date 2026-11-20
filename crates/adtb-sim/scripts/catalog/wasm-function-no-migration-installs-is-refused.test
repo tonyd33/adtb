@@ -1,0 +1,15 @@
+# A function naming a Wasm module no migration installs refuses its migration, and the log keeps
+# no row of it.
+use empty
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "function `f` names Wasm module `m`, which no migration installs" } } }
+  module app
+  add module app
+  define fn f (x: I64) -> I64 = wasm "m" export "f"
+
+reopen
+
+query
+  count(m for m in catalog::migrations)
+----
+0

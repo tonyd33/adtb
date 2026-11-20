@@ -7,9 +7,8 @@ use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
 use adtb_lang::visit::each_expr;
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_testkit::search::Files;
 
-use crate::catalog::{Catalog, Error, Migrating, change, delete_rows, layout};
+use crate::catalog::{Catalog, Migrating, change, delete_rows, layout};
 use crate::key::Value;
 use crate::mvcc::{Scope, Transactions};
 use crate::storage::Pager;
@@ -119,168 +118,26 @@ fn forms_of(text: &str) -> BTreeSet<&'static str> {
     out
 }
 
-/// What a migration declaring an index over one element does.
-#[derive(Debug, PartialEq, Eq)]
-enum Declared {
-    /// The catalog stores the element as this text.
-    Stored(String),
-    /// The migration is refused; each reason.
-    Refused(Vec<String>),
-}
-
-use Declared::{Refused, Stored};
-
-fn stored(element: &str) -> Declared {
-    Stored(element.to_string())
-}
-
-fn refused(why: &[&str]) -> Declared {
-    Refused(why.iter().map(ToString::to_string).collect())
-}
-
-fn not_admitted(element: &str, why: &str) -> Declared {
-    refused(&[&format!("index `index ({element})` is not admitted: {why}")])
-}
-
-/// Returns each index element, another spelling of it, and what declaring it does: the
-/// canonical text of each element the catalog stores, by the token rules of canonical source text,
-/// and each refusal.
-fn elements() -> Vec<(&'static str, Option<&'static str>, Declared)> {
-    let unscoped = "no `items` in scope";
-    let checker = |why: &'static str| refused(&[why, unscoped, unscoped]);
-    vec![
-        ("n + 007", Some("n+7"), stored("n + 7")),
-        ("d + 01.50", Some("d+1.50"), stored("d + 1.50")),
-        ("f + 1.50e03", Some("f+1.50e3"), stored("f + 1.50e3")),
-        (
-            "name ++ \"a\\\"b\\\\c\\td\"",
-            Some("name++\"a\\\"b\\\\c\td\""),
-            stored("name ++ \"a\\\"b\\\\c\\td\""),
-        ),
-        ("when + 090s", Some("when+90s"), stored("when + 90s")),
-        (
-            "n > 0 or true",
-            Some("n>0 or true"),
-            stored("n > 0 or true"),
-        ),
-        (
-            "match s | Draft -> 0 | Sent t -> t.at",
-            Some("match s\n    | Draft->0\n    | Sent t->t . at"),
-            stored("match s | app::Draft -> 0 | app::Sent t -> t . at"),
-        ),
-        (
-            "app::twice(n)",
-            Some("twice( n )"),
-            stored("app::twice ( n )"),
-        ),
-        (
-            "apply(fn y -> y > 0, n)",
-            Some("app::apply(fn y->y>0,n)"),
-            stored("app::apply ( fn y -> y > 0 , n )"),
-        ),
-        (
-            "Instant.parse(name)",
-            Some("Instant . parse(name)"),
-            stored("Instant . parse ( name )"),
-        ),
-        (
-            "Sent { at: n }",
-            Some("Sent{at:n}"),
-            stored("app::Sent { at : n }"),
-        ),
-        ("Draft", Some("  Draft  "), stored("app::Draft")),
-        (
-            "{ a: name, b: n }",
-            Some("{a:name,b:n}"),
-            stored("{ a : name , b : n }"),
-        ),
-        (
-            "if () == () then n else 0",
-            Some("if ( ) == ( ) then n else 00"),
-            stored("if ( ) == ( ) then n else 0"),
-        ),
-        ("-n", Some("- n"), stored("- n")),
-        ("{ a: n }.a", Some("{a: n} . a"), stored("{ a : n } . a")),
-        (
-            "items.key(n)",
-            Some("items .key( n )"),
-            stored("app::items . key ( n )"),
-        ),
-        (
-            "if n > 0 then name else \"none\"",
-            Some("if n>0 then name else \"none\""),
-            stored("if n > 0 then name else \"none\""),
-        ),
-        (
-            "count(x for x in items where x.n == 1)",
-            None,
-            not_admitted(
-                "count ( x for x in app::items where x . n == 1 )",
-                "an aggregate in a scalar expression",
-            ),
-        ),
-        (
-            "exists x in [n] where x > 0",
-            None,
-            not_admitted(
-                "exists x in [ n ] where x > 0",
-                "an `exists` in a scalar expression",
-            ),
-        ),
-        (
-            "exists t in id.<tags.item where t.n > 0",
-            None,
-            not_admitted(
-                "exists t in id .< app::tags . item where t . n > 0",
-                "an `exists` in a scalar expression",
-            ),
-        ),
-        (
-            "exists x in (from y in [n] select y) where x == n",
-            None,
-            not_admitted(
-                "exists x in ( from y in [ n ] select y ) where x == n",
-                "an `exists` in a scalar expression",
-            ),
-        ),
-        (
-            "exists x in (fix a = [n] in a) where x == n",
-            None,
-            not_admitted(
-                "exists x in ( fix a = [ n ] in a ) where x == n",
-                "an `exists` in a scalar expression",
-            ),
-        ),
-        (
-            "(if n > 0 then s else Draft).Sent",
-            None,
-            checker("`.C` selects constructors of a set; a single value is examined by `match`"),
-        ),
-        (
-            "exists x in (top 1 by (y) (from y in [n] select y)) where x == n",
-            None,
-            checker(
-                "`top` needs a determinate order: include the row's key, or a field a key or unique covers",
-            ),
-        ),
-        (
-            "at instant when { n }",
-            None,
-            checker("an `at` block reads a set, found I64"),
-        ),
-        (
-            "if n > 0 then n else reject \"no\"",
-            None,
-            checker("`reject` is allowed only in the source query of an insert"),
-        ),
-        (
-            "(insert items { name: \"a\", n: 1, f: 1.0e0, d: 1.00, s: Draft, when: when })",
-            None,
-            checker(
-                "a write appears only where a change set is expected: in a transact block, a script or ad hoc text",
-            ),
-        ),
-    ]
+#[test]
+fn the_index_element_scripts_reach_every_expression_form() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../adtb-sim/scripts/catalog/rows");
+    let (mut forms, mut elements) = (BTreeSet::new(), 0);
+    for name in [
+        "index-elements-canonical.test",
+        "index-elements-refused.test",
+    ] {
+        let text = std::fs::read_to_string(dir.join(name)).expect("the script reads");
+        let declared = text
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("index (")?.strip_suffix(')'));
+        for element in declared {
+            forms.extend(forms_of(element));
+            elements += 1;
+        }
+    }
+    assert_eq!(28, elements);
+    assert_eq!(BTreeSet::from(FORMS), forms);
 }
 
 fn rel(catalog: &Catalog, module: &str, name: &str) -> RelId {
@@ -344,66 +201,6 @@ fn clauses(
             v => panic!("a clause is text: {v:?}"),
         })
         .collect()
-}
-
-/// Returns the files of a closed file holding a fresh catalog.
-fn created() -> Files {
-    let mut sim = Sim::new(0, Config::default());
-    finished(&mut sim, |rt| {
-        let pager = Pager::create(rt.clone(), &options(64)).expect("create");
-        Catalog::create(rt, &pager).expect("the catalog");
-        pager.close();
-    });
-    sim.files()
-}
-
-/// Returns what the fresh catalog of `files` does with a migration declaring an index over
-/// `element`.
-fn declare(files: &Files, seed: u64, element: &str) -> Declared {
-    let mut sim = Sim::with_files(seed, Config::default(), files.clone());
-    let mut out = None;
-    finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options(64)).expect("the file opens");
-        let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog");
-        out = Some(match catalog.migrate(&pager, &txns, &declaring(element)) {
-            Ok(()) => {
-                let declared = clauses(&pager, &catalog, &txns);
-                let [clause] = declared.as_slice() else {
-                    panic!("one declared index: {declared:?}");
-                };
-                let element = clause
-                    .strip_prefix("index (")
-                    .and_then(|c| c.strip_suffix(')'))
-                    .unwrap_or_else(|| panic!("`{clause}` is an index clause"));
-                stored(element)
-            }
-            Err(Error::Refused(why)) => Refused(why),
-            Err(e) => panic!("the migration applies or is refused: {e:?}"),
-        });
-    });
-    out.expect("the simulation ran")
-}
-
-#[test]
-fn every_index_element_form_is_stored_as_one_canonical_text_whatever_its_spelling() {
-    let mut forms = BTreeSet::new();
-    let mut respelled = 0;
-    let files = created();
-    for (seed, (element, other, want)) in elements().into_iter().enumerate() {
-        let seed = seed as u64;
-        forms.extend(forms_of(element));
-        assert_eq!(
-            want,
-            declare(&files, seed, element),
-            "`{element}`, seed {seed}"
-        );
-        if let Some(other) = other {
-            assert_eq!(want, declare(&files, seed, other), "`{other}`, seed {seed}");
-            respelled += 1;
-        }
-    }
-    assert_eq!(18, respelled);
-    assert_eq!(BTreeSet::from(FORMS), forms);
 }
 
 /// Replace the clause of the one declared index of `app::items` with `clause`, as an older

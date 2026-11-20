@@ -1,0 +1,48 @@
+# A grant operator naming a missing role is refused even when it merges into a dormant row or a
+# revoke in the same migration undoes it; a revoke may name the missing role.
+use shop
+use grants-dumper
+
+role ghost
+
+migrate
+  module shop
+  grant read customers to ghost
+
+as dumper run
+  dump to "out/d"
+
+restore out/d to copy.adt
+----
+dormant { id: 1, grantee: "dumper", privilege: "read", target: "shop::customers frozen (id, name)" }
+dormant { id: 2, grantee: "dumper", privilege: "read", target: "shop::payments frozen (id, customer, Card.last4, Invoice.due)" }
+dormant { id: 129, grantee: "ghost", privilege: "read", target: "shop::customers frozen (id, name)" }
+
+reopen
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a grant names role `ghost`, which does not exist" } } }
+  module shop
+  grant read customers to ghost with grant option
+
+reopen
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a grant names role `ghost`, which does not exist" } } }
+  module shop
+  grant insert customers to ghost
+  revoke insert customers from ghost
+
+reopen
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant }
+----
+{ dormant: True, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" } }
+
+migrate
+  module shop
+  revoke read customers from ghost
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant }
+----
+

@@ -1,0 +1,14 @@
+# The row of a migration survives a crash after the migration commits.
+use catalog-running
+
+crash after 0
+
+run
+  from m in catalog::migrations select m.version
+
+reopen
+
+query
+  from m in catalog::migrations select m.version
+----
+migrations.key(1)

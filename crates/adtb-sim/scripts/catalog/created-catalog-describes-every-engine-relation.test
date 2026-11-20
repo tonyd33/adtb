@@ -1,0 +1,201 @@
+# A created catalog stores a heap for each constructor of every relation the engine declares and
+# a key index over all of them.
+use empty
+
+probe catalog engine
+----
+change None
+next heap 0
+catalog::audit.Login heap
+catalog::audit.Grant heap
+catalog::audit.Register heap
+catalog::audit.Retire heap
+catalog::audit.SchemaOp heap
+catalog::audit.Call heap
+catalog::audit.Denied heap
+catalog::audit.Commit heap
+catalog::audit.Truncate heap
+catalog::audit key seq over Login | Grant | Register | Retire | SchemaOp | Call | Denied | Commit | Truncate
+catalog::bundles.Bundle heap
+catalog::bundles key id over Bundle
+catalog::computed.Computed heap
+catalog::computed key id over Computed
+catalog::constraints.Constraint heap
+catalog::constraints key id over Constraint
+catalog::constructors.Constructor heap
+catalog::constructors key id over Constructor
+catalog::credentials.Credential heap
+catalog::credentials key id over Credential
+catalog::credentials unique (role) over Credential
+catalog::ctor_states.CtorState heap
+catalog::ctor_states key (relation, ctor) over CtorState
+catalog::defaults.Default heap
+catalog::defaults key id over Default
+catalog::extensions.Extension heap
+catalog::extensions key id over Extension
+catalog::feed_members.FeedMember heap
+catalog::feed_members key (feed, relation, ctor) over FeedMember
+catalog::feeds.Feed heap
+catalog::feeds key id over Feed
+catalog::fields.Header heap
+catalog::fields.Payload heap
+catalog::fields key id over Header | Payload
+catalog::functions.Language heap
+catalog::functions.Wasm heap
+catalog::functions.Host heap
+catalog::functions.Aggregate heap
+catalog::functions key id over Language | Wasm | Host | Aggregate
+catalog::grants.RoleGrant heap
+catalog::grants key id over RoleGrant
+catalog::index_ctors.IndexCtor heap
+catalog::index_ctors key (index, ctor) over IndexCtor
+catalog::indexes.Index heap
+catalog::indexes key id over Index
+catalog::migration_clauses.OpClause heap
+catalog::migration_clauses key (migration, ordinal, clause) over OpClause
+catalog::migration_ops.MigrationOp heap
+catalog::migration_ops key (migration, ordinal) over MigrationOp
+catalog::migrations.Migration heap
+catalog::migrations key version over Migration
+catalog::named_sets.NamedSet heap
+catalog::named_sets key id over NamedSet
+catalog::peer_mappings.PeerMapping heap
+catalog::peer_mappings key (listener, ordinal) over PeerMapping
+catalog::plans.Plan heap
+catalog::plans key id over Plan
+catalog::registered.Query heap
+catalog::registered.Txn heap
+catalog::registered.ImportedFn heap
+catalog::registered key id over Query | Txn | ImportedFn
+catalog::relations.Relation heap
+catalog::relations key id over Relation
+catalog::roles.Role heap
+catalog::roles key id over Role
+catalog::roles unique (name) over Role
+catalog::set_members.SetMember heap
+catalog::set_members key (set, ctor) over SetMember
+catalog::settings.StatementLimit heap
+catalog::settings.TransactionLimit heap
+catalog::settings.IdleLimit heap
+catalog::settings.StreamIdleLimit heap
+catalog::settings.RequestWindow heap
+catalog::settings.SafePointDelay heap
+catalog::settings.ReplicaWait heap
+catalog::settings.DefaultLease heap
+catalog::settings.FeedRetention heap
+catalog::settings.StatsWindow heap
+catalog::settings.StatsRetention heap
+catalog::settings.WaitSampling heap
+catalog::settings.ConflictLog heap
+catalog::settings.VacuumBudget heap
+catalog::settings.ScrubInterval heap
+catalog::settings.LeaseGrace heap
+catalog::settings.BlockingNoticePeriod heap
+catalog::settings.ReplicaVacuumWait heap
+catalog::settings.RetryLimit heap
+catalog::settings.RetentionWindow heap
+catalog::settings key id over StatementLimit | TransactionLimit | IdleLimit | StreamIdleLimit | RequestWindow | SafePointDelay | ReplicaWait | DefaultLease | FeedRetention | StatsWindow | StatsRetention | WaitSampling | ConflictLog | VacuumBudget | ScrubInterval | LeaseGrace | BlockingNoticePeriod | ReplicaVacuumWait | RetryLimit | RetentionWindow
+catalog::types.SumType heap
+catalog::types.Newtype heap
+catalog::types key id over SumType | Newtype
+catalog::tz_releases.TzRelease heap
+catalog::tz_releases key id over TzRelease
+catalog::tz_releases unique (release) over TzRelease
+catalog::value_states.ValueState heap
+catalog::value_states key ctor over ValueState
+catalog::wasm_modules.WasmModule heap
+catalog::wasm_modules key hash over WasmModule
+catalog::zones.Zone heap
+catalog::zones key (release, name) over Zone
+catalog::ArmTarget order OfFn < OfConstraint < OfComputed
+catalog::AuditEvent order Login < Grant < Register < Retire < SchemaOp < Call < Denied < Commit < Truncate
+catalog::BundleState order Active < Superseded < Retired
+catalog::ClauseBody order Joins < Member < Arm < Replacement < Carry < Fill < Privilege
+catalog::CtorStage order Declared < Enabled < Deprecated
+catalog::CtorTarget order InRelation < OfType
+catalog::Field order Header < Payload
+catalog::Function order Language < Wasm < Host < Aggregate
+catalog::GrantKind order Log < Deployment
+catalog::IndexKind order PrimaryKey < Unique < Plain < Interval < Implied
+catalog::Operator order AddModule < DropModule < Install < Uninstall < AddType < DropType < AddRelation < DropRelation < AddSet < DropSet < AddConstructor < RemoveConstructor < Enable < Disable < Deprecate < RenameConstructor < RenameType < RenameRelation < RenameSet < RenameField < Split < Merge < Nest < Unnest < AddField < DropField < AlterField < MoveField < AddUnique < DropUnique < Rekey < AddIndex < DropIndex < AddDefault < DropDefault < DefineFn < RedefineFn < DropFn < DefineAggregate < DropAggregate < AddConstraint < DropConstraint < AddCheck < DropCheck < Store < Unstore < AddComputed < RedefineComputed < DropComputed < Grant < Revoke < AdoptTzdb < Script < Revert
+catalog::Place order Last < Before < After
+catalog::PlanState order Current < Pinned < Reverted < Superseded
+catalog::Priority order AdHoc < Background < Regular
+catalog::Registered order Query < Txn < ImportedFn
+catalog::RelKind order Base < Stored < Catalog < Volatile
+catalog::Setting order StatementLimit < TransactionLimit < IdleLimit < StreamIdleLimit < RequestWindow < SafePointDelay < ReplicaWait < DefaultLease < FeedRetention < StatsWindow < StatsRetention < WaitSampling < ConflictLog < VacuumBudget < ScrubInterval < LeaseGrace < BlockingNoticePeriod < ReplicaVacuumWait < RetryLimit < RetentionWindow
+catalog::TypeDef order SumType < Newtype
+prelude::Bool order False < True
+prelude::Error order Retry < Rejected < Fatal
+prelude::FatalReason order Malformed < Quarantined < MissingFunction < Storage
+prelude::Fault order DivisionByZero < ArithmeticOverflow < OutOfRange < NotFinite < NoSuchDate < UnknownZone < InvalidText < InvalidSpan < NegativeCount < NoSuchRow < FunctionFailed
+prelude::Limit order Time < Memory < Rounds
+prelude::Notice order LeaseExpiring < ShuttingDown < ConstructorEnabled < BundleRetired < BlockingMigration < UpgradeRequired
+prelude::Option order None < Some
+prelude::Origin order Registered < Function < AdHoc
+prelude::Outcome order Succeeded < Failed
+prelude::Overflow order Clamp < Reject
+prelude::Principal order EndUser < Service < Anonymous
+prelude::RejectReason order Violated < KeyViolation < KeyChanged < NotOpen < UserError < Faulted < Denied < Invalid < SchemaRefused < Untranslatable < BadInput < SchemaMismatch < Cancelled < Terminated < DeadlineExceeded < StatementLimit < TransactionExpired < TransactionBusy < MixedVersions < UnknownQuery < UnknownTransaction < UnknownBundle < VersionMismatch < CatalogMismatch < Retired < BundleExpired < BundleStale < BundleSuperseded < DowngradeRefused < TooOld < HistoryUnavailable < PositionNotOnHistory < WrongVersion < ReadOnlyReplica < RequestExpired < RequestReused < AuthFailed < UnsupportedProtocol < UnknownDatabase < EditionLocked < UnknownEdition < MigrationInProgress < DumpDamaged < BackupDamaged < RestorePointUnavailable < Internal < RowTooLarge < KeyTooLarge < Closed
+prelude::Result order Ok < Err
+prelude::RetryReason order Serialization < SafePointTimeout < Overloaded < StreamIdle < FileChanged < Fenced < ReplayConflict
+prelude::Rounding order HalfEven < HalfUp < HalfDown < Up < Down < Ceiling < Floor
+sys::calls.Call heap
+sys::calls key id over Call
+sys::collations.Collation heap
+sys::collations key id over Collation
+sys::collations unique (name) over Collation
+sys::commit_times.CommitTime heap
+sys::commit_times key position over CommitTime
+sys::conflicts.Conflict heap
+sys::conflicts key (aborted, at) over Conflict
+sys::ctor_stats.CtorStats heap
+sys::ctor_stats key (relation, ctor) over CtorStats
+sys::field_stats.FieldStats heap
+sys::field_stats key (relation, ctor, field) over FieldStats
+sys::field_values.FieldValue heap
+sys::field_values key (relation, ctor, field, value) over FieldValue
+sys::format.Format heap
+sys::format key id over Format
+sys::horizons.Horizon heap
+sys::horizons key (relation, ctor) over Horizon
+sys::jobs.Job heap
+sys::jobs key id over Job
+sys::pending_drops.PendingDrop heap
+sys::pending_drops key (object, blocking) over PendingDrop
+sys::process_options.ProcessOption heap
+sys::process_options key id over ProcessOption
+sys::process_options unique (name) over ProcessOption
+sys::query_ctor_stats.QueryCtorStats heap
+sys::query_ctor_stats key (query, fingerprint, plan, relation, ctor) over QueryCtorStats
+sys::query_stats.QueryStats heap
+sys::query_stats key (query, fingerprint, plan) over QueryStats
+sys::query_windows.QueryWindow heap
+sys::query_windows key (query, fingerprint, plan, start) over QueryWindow
+sys::request_marks.RequestMark heap
+sys::request_marks key id over RequestMark
+sys::request_marks unique (client) over RequestMark
+sys::safe_snapshots.SafeSnapshotMark heap
+sys::safe_snapshots key position over SafeSnapshotMark
+sys::sessions.Session heap
+sys::sessions key id over Session
+sys::vacuums.Vacuum heap
+sys::vacuums key id over Vacuum
+sys::vacuums unique (relation, ctor) over Vacuum
+sys::verify_findings.Checksum heap
+sys::verify_findings.StalePage heap
+sys::verify_findings.Order heap
+sys::verify_findings.Orphan heap
+sys::verify_findings.Missing heap
+sys::verify_findings.Violation heap
+sys::verify_findings.Structure heap
+sys::verify_findings key id over Checksum | StalePage | Order | Orphan | Missing | Violation | Structure
+sys::wait_samples.WaitSample heap
+sys::wait_samples key (at, call) over WaitSample
+sys::wait_totals.WaitTotal heap
+sys::wait_totals key (reason, query, fingerprint) over WaitTotal
+sys::CallState order Queued < Running < Waiting
+sys::Finding order Checksum < StalePage < Order < Orphan < Missing < Violation < Structure
+sys::JobKind order Reindex < Compact < SchemaStage < Verify
+sys::SessionState order Idle < Busy < InTransaction
+sys::WaitReason order StorageRead < FileRead < LogFlush < Internal < SafeSnapshot < Inserter < Admission

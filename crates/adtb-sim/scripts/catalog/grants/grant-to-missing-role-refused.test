@@ -1,0 +1,34 @@
+# A grant operator naming a role that does not exist refuses its migration, which publishes no
+# grant, audit or migrations row.
+use shop
+
+role web
+
+query rowsort
+  catalog::grants
+----
+
+query rowsort
+  catalog::audit
+----
+Grant { seq: audit.key(1), at: t1, role: "owner", principal: "Service { name: \"owner\" }", statement: "create role web" }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a grant names role `ghost`, which does not exist" } } }
+  module shop
+  grant read customers to ghost
+
+reopen
+
+query rowsort
+  catalog::grants
+----
+
+query rowsort
+  catalog::audit
+----
+Grant { seq: audit.key(1), at: t1, role: "owner", principal: "Service { name: \"owner\" }", statement: "create role web" }
+
+query
+  count(m for m in catalog::migrations)
+----
+1

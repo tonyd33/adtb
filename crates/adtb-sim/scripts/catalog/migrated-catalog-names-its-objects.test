@@ -1,0 +1,63 @@
+# A migrated catalog reopens with a row naming each object its migration declared.
+use catalog-running
+
+reopen
+
+query rowsort
+  from t in catalog::types where t.module == "auth" select t.name
+----
+"Identity"
+"User"
+
+query rowsort
+  from t in catalog::types, c in catalog::constructors where t.module == "auth" and c.sum == t.id select c.name
+----
+"Apple"
+"EmailPass"
+"Google"
+"User"
+
+query rowsort
+  from t in catalog::types, c in catalog::constructors, f in catalog::fields
+    where t.module == "auth" and c.sum == t.id
+    and (match f | Payload p -> p.ctor == c.id | Header h -> false)
+    select f.name
+----
+"email"
+"gid"
+"hash"
+"id"
+"name"
+"sub"
+
+query rowsort
+  from r in catalog::relations where r.module == "auth" select r.name
+----
+"identities"
+"users"
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.module == "auth" and i.relation == r.id select i.clause
+----
+"index (user)"
+"key id"
+"unique (email) in EmailPass"
+"unique (gid) in Google"
+"unique (sub) in Apple"
+
+query rowsort
+  from s in catalog::named_sets select s.name
+----
+"OAuth"
+
+query rowsort
+  from c in catalog::constraints select c.name
+----
+"login_present"
+
+query rowsort
+  from d in catalog::defaults select d.text
+----
+"generate sequence"
+"generate uuidv7"

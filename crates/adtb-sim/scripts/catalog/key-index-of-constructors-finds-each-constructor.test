@@ -1,0 +1,25 @@
+# The key index of catalog::constructors finds a constructor by its id, and holds an entry for
+# each constructor.
+use empty
+
+probe plan
+  explain from c in catalog::constructors where c.id == catalog::constructors.key(121) select c
+----
+Set total
+  reads constructors.Constructor, constructors (id)
+  Pipeline
+    One row
+    Probe constructors (id)
+      Constructor ->
+        Chain
+          Emit
+
+query
+  from c in catalog::constructors where c.id == catalog::constructors.key(121) select c
+----
+Constructor { id: constructors.key(121), sum: types.key(120), name: "Constructor", position: 1, dropped: None }
+
+query
+  count(c for c in catalog::constructors)
+----
+319

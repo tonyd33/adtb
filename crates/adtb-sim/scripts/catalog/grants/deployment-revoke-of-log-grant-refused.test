@@ -1,0 +1,17 @@
+# A deployment revoke of the text a log grant's row prints is refused and leaves the row.
+use shop
+
+role web
+
+migrate
+  module shop
+  define fn shown (n: Text) -> Text = n
+  grant call fn shown to web
+
+revoke error Invalid { detail: "`revoke call shop::shown from web` matches no grant `owner` may revoke" }
+  revoke call shop::shown from web
+
+query rowsort
+  from g in catalog::grants select { kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant }
+----
+{ dormant: False, grant_option: False, grantee: "web", grantor: "owner", kind: Log, privilege: "call", target: Some { value: "shop::shown" } }

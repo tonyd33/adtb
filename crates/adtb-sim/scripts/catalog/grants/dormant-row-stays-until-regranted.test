@@ -1,0 +1,73 @@
+# A restore keeps a log grant to a missing role as a dormant row. A grant operator naming the
+# role is refused until the role exists; creating the role, another privilege's grant and a
+# reopen leave the row dormant; a regrant of its privilege activates it, keeping its id.
+use shop
+use grants-dumper
+
+role ghost
+
+migrate
+  module shop
+  grant read customers to ghost
+
+as dumper run
+  dump to "out/d"
+
+restore out/d to copy.adt
+----
+dormant { id: 1, grantee: "dumper", privilege: "read", target: "shop::customers frozen (id, name)" }
+dormant { id: 2, grantee: "dumper", privilege: "read", target: "shop::payments frozen (id, customer, Card.last4, Invoice.due)" }
+dormant { id: 129, grantee: "ghost", privilege: "read", target: "shop::customers frozen (id, name)" }
+
+reopen
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, was_dormant: exists c in customers where c.name == "was_dormant " ++ print(value(key g)) }
+----
+{ dormant: True, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" }, was_dormant: False }
+
+# The id of each grant of ghost the restore left, as a customer's name.
+run
+  insert customers from (from g in catalog::grants where g.grantee == "ghost" select { name: "was_dormant " ++ print(value(key g)) })
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a grant names role `ghost`, which does not exist" } } }
+  module shop
+  grant insert customers to ghost
+
+reopen
+
+role ghost
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, was_dormant: exists c in customers where c.name == "was_dormant " ++ print(value(key g)) }
+----
+{ dormant: True, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" }, was_dormant: True }
+
+migrate
+  module shop
+  grant insert customers to ghost
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, was_dormant: exists c in customers where c.name == "was_dormant " ++ print(value(key g)) }
+----
+{ dormant: False, grant_option: False, privilege: "insert", target: Some { value: "shop::customers" }, was_dormant: False }
+{ dormant: True, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" }, was_dormant: True }
+
+reopen
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, was_dormant: exists c in customers where c.name == "was_dormant " ++ print(value(key g)) }
+----
+{ dormant: False, grant_option: False, privilege: "insert", target: Some { value: "shop::customers" }, was_dormant: False }
+{ dormant: True, grant_option: False, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" }, was_dormant: True }
+
+migrate
+  module shop
+  grant read customers to ghost with grant option
+
+query rowsort
+  from g in catalog::grants where g.grantee == "ghost" select { privilege: g.privilege, target: g.target, grant_option: g.grant_option, dormant: g.dormant, was_dormant: exists c in customers where c.name == "was_dormant " ++ print(value(key g)) }
+----
+{ dormant: False, grant_option: False, privilege: "insert", target: Some { value: "shop::customers" }, was_dormant: False }
+{ dormant: False, grant_option: True, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" }, was_dormant: True }
+

@@ -1193,12 +1193,6 @@ impl Catalog {
         exec::Bindings::new(Arc::new(heaps), Arc::new(indexes))
     }
 
-    /// Returns the order key of each constructor of every declared sum.
-    #[cfg(test)]
-    pub fn order_keys(&self) -> &OrderKeys {
-        &self.keys
-    }
-
     /// Returns the rows of relation `r` visible at the snapshot of `hold`, each with its
     /// constructor index, by constructor and then in heap order.
     fn rows<R: Runtime>(

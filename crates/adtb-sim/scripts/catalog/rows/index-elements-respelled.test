@@ -1,0 +1,54 @@
+# Each index element spelled otherwise is stored as the same canonical source text.
+migrate
+  module app
+  add module app
+  add type Status = Draft | Sent { at: I64 }
+  add type Label = { id: Key tags, item: Key items, n: I64 }
+  add type Item = { id: Key items, name: Text, n: I64, f: F64, d: Decimal 2, s: Status,
+    when: Instant }
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn apply (g: I64 -> Bool, x: I64) -> Bool = g(x)
+  add relation tags : Label key id generate sequence
+  add relation items : Item key id generate sequence
+    index (n+7)
+    index (d+1.50)
+    index (f+1.50e3)
+    index (name++"a\"b\\c	d")
+    index (when+90s)
+    index (n>0 or true)
+    index (match s
+      | Draft->0
+      | Sent t->t . at)
+    index (twice( n ))
+    index (app::apply(fn y->y>0,n))
+    index (Instant . parse(name))
+    index (Sent{at:n})
+    index (  Draft  )
+    index ({a:name,b:n})
+    index (if ( ) == ( ) then n else 00)
+    index (- n)
+    index ({a: n} . a)
+    index (items .key( n ))
+    index (if n>0 then name else "none")
+
+query rowsort
+  from i in catalog::indexes, r in catalog::relations where i.relation == key r and r.name == "items" and i.clause != "key id" select i.clause
+----
+"index (- n)"
+"index (Instant . parse ( name ))"
+"index (app::Draft)"
+"index (app::Sent { at : n })"
+"index (app::apply ( fn y -> y > 0 , n ))"
+"index (app::items . key ( n ))"
+"index (app::twice ( n ))"
+"index (d + 1.50)"
+"index (f + 1.50e3)"
+"index (if ( ) == ( ) then n else 0)"
+"index (if n > 0 then name else \"none\")"
+"index (match s | app::Draft -> 0 | app::Sent t -> t . at)"
+"index (n + 7)"
+"index (n > 0 or true)"
+"index (name ++ \"a\\\"b\\\\c\\td\")"
+"index (when + 90s)"
+"index ({ a : n } . a)"
+"index ({ a : name , b : n })"

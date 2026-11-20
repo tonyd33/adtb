@@ -1,0 +1,28 @@
+# A migrated catalog reopens with the row of its migration, and a row for each of its operators,
+# member clauses and functions.
+use catalog-running
+
+reopen
+
+query
+  from m in catalog::migrations select m.version
+----
+migrations.key(1)
+
+query
+  count(o for o in catalog::migration_ops)
+----
+8
+
+query rowsort
+  from k in catalog::migration_clauses, c in catalog::constructors
+    where (match k.body | Member b -> catalog::constructors.key(b.ctor) == c.id | _ -> false)
+    select { ordinal: k.ordinal, clause: k.clause, member: c.name }
+----
+{ clause: 1, member: "Google", ordinal: 6 }
+{ clause: 2, member: "Apple", ordinal: 6 }
+
+query rowsort
+  from f in catalog::functions select f.name
+----
+"display_name"

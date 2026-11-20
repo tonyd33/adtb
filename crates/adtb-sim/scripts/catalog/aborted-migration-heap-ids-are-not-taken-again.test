@@ -1,0 +1,37 @@
+# A migration refused after it rewrote a relation leaves the next heap id past the ids it took:
+# the next migration's heap takes an id past them.
+migrate
+  module app
+  add module app
+  add type Note = { id: Key notes, title: Text, body: Text }
+  add relation notes : Note key id generate sequence
+  add index (title) in notes
+
+run
+  insert notes { title: "t0", body: "b0" }
+  insert notes { title: "t1", body: "b1" }
+
+probe catalog
+----
+change None
+next heap 3
+app::notes.Note heap 0
+app::notes index (title) over Note
+app::notes key id over Note
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::unranked is violated by \"t0\", \"t1\"" } } }
+  module app
+  add field Note.rank: I64 fill 7
+  add constraint unranked = from n in notes where n.rank == 7 select n.title
+
+migrate
+  module app
+  drop index (title) in notes
+  add field Note.rank: I64 fill 7
+
+probe catalog
+----
+change None
+next heap 9
+app::notes.Note heap 6
+app::notes key id over Note

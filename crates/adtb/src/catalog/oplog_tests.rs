@@ -8,8 +8,8 @@ use adtb_testkit::process::{finished, run};
 
 use std::collections::BTreeSet;
 
-use crate::catalog::{self, Catalog, Error as CatalogError};
-use crate::mvcc::{Scope, Transactions};
+use crate::catalog::Catalog;
+use crate::mvcc::Transactions;
 use crate::storage::Pager;
 use crate::verify::{self, Depth};
 use crate::{CallOptions, Database, Log, OpenError};
@@ -66,8 +66,6 @@ fn after(seed: u64, later: &[&str], body: impl FnOnce(Result<Database<SimRuntime
         ));
     });
 }
-
-const TAGS: &str = "module shop\nadd type Label = { id: Key labels, name: Text }\nadd relation labels : Label key id generate sequence\n";
 
 const FRAMES: usize = 64;
 
@@ -162,68 +160,6 @@ fn a_crash_between_flushes_of_a_second_migration_reopens_to_all_or_none_of_it() 
         versions.insert(reopened(seed + at as u64, files));
     }
     assert_eq!(BTreeSet::from([1, 2]), versions);
-}
-
-#[test]
-fn the_migrations_rows_hold_the_chained_version_hash_of_each_version() {
-    let mut sim = Sim::new(32, Config::default());
-    finished(&mut sim, |rt| {
-        let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
-        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
-        let mut hashes = Vec::new();
-        for text in [SHOP, TAGS, "module shop\nrename relation labels to tags\n"] {
-            catalog
-                .migrate(&pager, &txns, text)
-                .expect("the migration applies");
-            hashes.push(catalog::version_hash(catalog.schema(), catalog.source()));
-        }
-        let distinct: BTreeSet<_> = hashes.iter().collect();
-        assert_eq!(3, distinct.len());
-        let hold = txns.take(Scope::Every).expect("a snapshot");
-        let m = catalog
-            .schema()
-            .module_named("catalog")
-            .expect("the catalog module");
-        let Some(&adtb_lang::schema::ValueDef::Relation(r)) =
-            catalog.schema().module(m).values.get("migrations")
-        else {
-            panic!("catalog::migrations")
-        };
-        let rows = catalog.rows(&pager, &txns, &hold, r).expect("the rows");
-        drop(hold);
-        let stored: BTreeSet<Vec<u8>> = rows
-            .iter()
-            .filter_map(|(_, row)| {
-                row.iter().find_map(|v| match v {
-                    crate::key::Value::Bytes(b) if b.len() == 32 => Some(b.clone()),
-                    _ => None,
-                })
-            })
-            .collect();
-        let expected: BTreeSet<Vec<u8>> = hashes.iter().map(|h| h.to_vec()).collect();
-        assert_eq!(expected, stored);
-    });
-}
-
-#[test]
-fn a_migration_refused_by_its_data_changes_nothing_and_the_next_applies() {
-    let mut sim = Sim::new(33, Config::default());
-    finished(&mut sim, |rt| {
-        let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
-        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
-        catalog
-            .migrate(&pager, &txns, SHOP)
-            .expect("the first migration");
-        let got = catalog.migrate(&pager, &txns, "module shop\ndrop relation nothing\n");
-        assert!(matches!(got, Err(CatalogError::Refused(_))), "{got:?}");
-        assert_eq!(1, catalog.source().version);
-        assert_clean(&pager, &catalog, &txns);
-        catalog
-            .migrate(&pager, &txns, TAGS)
-            .expect("the next migration applies");
-        assert_eq!(2, catalog.source().version);
-        assert_clean(&pager, &catalog, &txns);
-    });
 }
 
 #[test]

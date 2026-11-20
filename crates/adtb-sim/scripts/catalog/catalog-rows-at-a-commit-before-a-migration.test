@@ -1,0 +1,26 @@
+# A read at a commit before a migration sees the catalog rows of the version before it.
+use empty
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  set setting RetentionWindow = { length: 2h }
+
+commit w position before
+
+use catalog-running
+
+query rowsort
+  at commit $before { from r in catalog::relations where r.module == "auth" or r.name == "roles" select r.name }
+----
+"roles"
+
+query rowsort
+  from r in catalog::relations where r.module == "auth" or r.name == "roles" select r.name
+----
+"identities"
+"roles"
+"users"

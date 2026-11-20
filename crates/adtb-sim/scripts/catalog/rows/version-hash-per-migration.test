@@ -1,0 +1,16 @@
+# Each migration's row holds a version hash of its own, distinct from every other version's.
+use shop
+
+migrate
+  module shop
+  add type Label = { id: Key labels, name: Text }
+  add relation labels : Label key id generate sequence
+
+migrate
+  module shop
+  rename relation labels to tags
+
+query
+  { rows: count(m for m in catalog::migrations), hashes: count(h for h in (from m in catalog::migrations select m.hash)) }
+----
+{ hashes: 3, rows: 3 }

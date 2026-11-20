@@ -1,0 +1,64 @@
+# The rows of each applied migration, its hash and its operators, stay as they were across a
+# reopen, a refused migration and a revert, which appends its own of a hash no other has.
+migrate
+  module app
+  add module app
+  add type Row = { id: I64 }
+  add relation rows : Row key id
+  module app
+  add field Row.x: I64 fill 7
+  module app
+  rename field Row.x to value
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  set setting RetentionWindow = { length: 2h }
+
+commit w position applied
+
+query
+  { versions: count(m for m in catalog::migrations),
+    hashes: count(h for h in (from m in catalog::migrations select m.hash)) }
+----
+{ hashes: 3, versions: 3 }
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `app` declares no relation `missing`" } } }
+  module app
+  drop relation missing
+
+reopen
+
+migrate
+  module app
+  revert 0003
+
+query
+  at commit $applied {
+    from m in catalog::migrations select { version: m.version, hash: m.hash }
+  } == (from m in catalog::migrations where m.version != catalog::migrations.key(4)
+    select { version: m.version, hash: m.hash })
+----
+True
+
+query
+  at commit $applied {
+    from o in catalog::migration_ops select { migration: o.migration, ordinal: o.ordinal, op: o.op }
+  } == (from o in catalog::migration_ops where o.migration != catalog::migrations.key(4)
+    select { migration: o.migration, ordinal: o.ordinal, op: o.op })
+----
+True
+
+query
+  { versions: count(m for m in catalog::migrations),
+    hashes: count(h for h in (from m in catalog::migrations select m.hash)) }
+----
+{ hashes: 4, versions: 4 }
+
+query rowsort
+  from o in catalog::migration_ops where o.migration == catalog::migrations.key(4) select o.op
+----
+Revert { migration: 3 }
