@@ -1,15 +1,84 @@
 use std::ffi::OsString;
+use std::fs::File;
 use std::path::PathBuf;
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::step::{self, say};
 use crate::workspace::Workspace;
-use crate::{grammar, lint, size, test};
+use crate::{grammar, lint, scope, size, test};
 
 /// The variable naming the directory of a nightly toolchain with Miri.
 const NIGHTLY: &str = "ADTB_NIGHTLY_BIN";
 
-/// Run every check of `workspace` in order, stopping at the first that fails. With `revset`, also
-/// check the lint allowlist against that of its base.
+/// A stage of the check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Fmt,
+    Lint,
+    Deny,
+    Size,
+    Docs,
+    TreeSitter,
+    Loom,
+    Miri,
+    Clippy,
+    Tests,
+    Damage,
+}
+
+/// The stages that build nothing in the workspace's target directory, each run at once.
+const FREE: [Stage; 8] = [
+    Stage::Fmt,
+    Stage::Lint,
+    Stage::Deny,
+    Stage::Size,
+    Stage::Docs,
+    Stage::TreeSitter,
+    Stage::Loom,
+    Stage::Miri,
+];
+
+/// The stages that build in the workspace's target directory and run once clippy passes, beside
+/// the free ones.
+const AFTER_CLIPPY: [Stage; 2] = [Stage::Tests, Stage::Damage];
+
+/// The nextest slots each damage search test holds.
+const DAMAGE_SLOTS: usize = 4;
+
+impl Stage {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Fmt => "fmt",
+            Self::Lint => lint::STEP,
+            Self::Deny => "deny",
+            Self::Size => size::STEP,
+            Self::Docs => "docs",
+            Self::TreeSitter => grammar::STEP,
+            Self::Loom => "loom",
+            Self::Miri => "miri",
+            Self::Clippy => "clippy",
+            Self::Tests => test::STEP,
+            Self::Damage => "damage",
+        }
+    }
+
+    /// Returns the stage named `name`.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        FREE.into_iter()
+            .chain([Self::Clippy])
+            .chain(AFTER_CLIPPY)
+            .find(|stage| stage.name() == name)
+            .ok_or_else(|| format!("no stage {name}"))
+    }
+}
+
+/// Run every stage of the check, each a process of this program with its output in
+/// `check/STAGE.log` under the target directory, and print each stage's result as it ends with the
+/// whole output of one that failed. With `revset`, also check the lint allowlist against that of
+/// its base. Fails when any stage fails.
 pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     let base = match revset {
         Some(revset) => {
@@ -23,8 +92,98 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
         }
         None => None,
     };
-    stage("clippy", |name| {
-        step::run(
+    let logs = workspace.target.join("check");
+    std::fs::create_dir_all(&logs)
+        .map_err(|e| format!("xtask check: creating {}: {e}", logs.display()))?;
+    let program =
+        std::env::current_exe().map_err(|e| format!("xtask check: no path to xtask: {e}"))?;
+    let launch = Launch {
+        program,
+        logs,
+        base,
+    };
+    let (sender, ended) = mpsc::channel();
+    let failed = thread::scope(|s| {
+        for stage in FREE {
+            let sender = sender.clone();
+            let launch = &launch;
+            s.spawn(move || sender.send(launch.run(stage, None)));
+        }
+        let launch = &launch;
+        s.spawn(move || {
+            let clippy = launch.run(Stage::Clippy, None);
+            let passed = clippy.passed();
+            if sender.send(clippy).is_err() || !passed {
+                return;
+            }
+            match overlap() {
+                Some((suite, damage)) => {
+                    for (stage, threads) in AFTER_CLIPPY.into_iter().zip([suite, damage]) {
+                        let sender = sender.clone();
+                        s.spawn(move || sender.send(launch.run(stage, Some(threads))));
+                    }
+                }
+                None => {
+                    for stage in AFTER_CLIPPY {
+                        if sender.send(launch.run(stage, None)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        let mut ended_stages = Vec::new();
+        let mut failed = Vec::new();
+        for ran in ended {
+            ran.report()?;
+            if !ran.passed() {
+                failed.push(ran.stage.name());
+            }
+            ended_stages.push(ran.stage);
+        }
+        for stage in AFTER_CLIPPY
+            .into_iter()
+            .filter(|s| !ended_stages.contains(s))
+        {
+            say(format_args!("xtask check: {} did not run", stage.name()))?;
+        }
+        Ok::<_, String>(failed)
+    })?;
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("check failed in {}", failed.join(", ")))
+    }
+}
+
+/// Returns the test threads of the suite and of the damage search when they run at once: in a
+/// scope `cargo xtask` made, on at least twice the damage search's slots of cores. The damage
+/// search gets a quarter of the cores and at least its slots, the suite the rest. Returns `None`
+/// otherwise, and the damage search runs after the suite.
+fn overlap() -> Option<(usize, usize)> {
+    scope::own_scope()?;
+    let cores = thread::available_parallelism().ok()?.get();
+    (cores >= 2 * DAMAGE_SLOTS).then(|| {
+        let damage = (cores / 4).max(DAMAGE_SLOTS);
+        (cores - damage, damage)
+    })
+}
+
+/// Run `stage` of `workspace` with the standard streams of this process. With `base`, the lint
+/// stage also checks the allowlist against the one at that revision. With `threads`, the tests
+/// and the damage search run that many test threads.
+pub fn stage(
+    workspace: &Workspace,
+    stage: Stage,
+    base: Option<&str>,
+    threads: Option<usize>,
+) -> Result<(), String> {
+    let name = stage.name();
+    let threads: Vec<OsString> = threads
+        .map(|n| vec!["--test-threads".into(), n.to_string().into()])
+        .unwrap_or_default();
+    match stage {
+        Stage::Clippy => step::run(
             name,
             workspace.cargo(&["clippy"]).args([
                 "--workspace",
@@ -33,43 +192,103 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
                 "-D",
                 "warnings",
             ]),
-        )
-    })?;
-    stage("fmt", |name| {
-        step::run(name, workspace.cargo(&["fmt"]).args(["--all", "--check"]))
-    })?;
-    stage(lint::STEP, |_| {
-        lint::run(&workspace.root, base.as_deref(), false)
-    })?;
-    stage(test::STEP, |_| test::run(workspace, &[]))?;
-    stage("loom", |name| loom(workspace, name))?;
-    stage("miri", |name| miri(workspace, name))?;
-    stage("deny", |name| {
-        step::run(name, workspace.cargo(&["deny"]).arg("check"))
-    })?;
-    stage("damage", |name| {
-        step::run(
+        ),
+        Stage::Fmt => step::run(name, workspace.cargo(&["fmt"]).args(["--all", "--check"])),
+        Stage::Lint => lint::run(&workspace.root, base, false),
+        Stage::Tests => test::run(workspace, &threads),
+        Stage::Loom => loom(workspace, name),
+        Stage::Miri => miri(workspace, name),
+        Stage::Deny => step::run(name, workspace.cargo(&["deny"]).arg("check")),
+        Stage::Damage => step::run(
             name,
-            workspace.cargo(&["nextest", "run"]).args([
-                "-p",
-                "adtb-sim",
-                "--test",
-                "storage",
-                "--profile",
-                "damage",
-            ]),
-        )
-    })?;
-    stage(size::STEP, |_| size::run(&workspace.root))?;
-    stage("docs", |name| docs(workspace, name))?;
-    stage(grammar::STEP, |_| grammar::run(workspace))?;
-    Ok(())
+            workspace
+                .cargo(&["nextest", "run"])
+                .args(["--workspace", "--profile", "damage"])
+                .args(&threads),
+        ),
+        Stage::Size => size::run(&workspace.root),
+        Stage::Docs => docs(workspace, name),
+        Stage::TreeSitter => grammar::run(workspace),
+    }
 }
 
-/// Announce the step `name`, then run `body` with it.
-fn stage(name: &str, body: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
-    say(format_args!("xtask check: {name}"))?;
-    body(name)
+/// How a stage starts: this program, the directory of the stages' logs and the allowlist base.
+struct Launch {
+    program: PathBuf,
+    logs: PathBuf,
+    base: Option<String>,
+}
+
+/// A stage that ended: its name, its log, its wall time and its exit or why it did not start.
+struct Ran {
+    stage: Stage,
+    log: PathBuf,
+    took: Duration,
+    status: Result<ExitStatus, String>,
+}
+
+impl Launch {
+    /// Run `stage` in a process of its own, its output in its log, with `threads` test threads.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "goes if the check stops reporting each stage's wall time"
+    )]
+    fn run(&self, stage: Stage, threads: Option<usize>) -> Ran {
+        let name = stage.name();
+        let log = self.logs.join(format!("{name}.log"));
+        let started = Instant::now();
+        let status = File::create(&log)
+            .and_then(|file| Ok((file.try_clone()?, file)))
+            .map_err(|e| format!("creating {}: {e}", log.display()))
+            .and_then(|(out, err)| {
+                let mut command = Command::new(&self.program);
+                command.args(["stage", name]);
+                if let Some(base) = &self.base {
+                    command.args(["--base", base]);
+                }
+                if let Some(threads) = threads {
+                    command.args(["--test-threads", &threads.to_string()]);
+                }
+                command
+                    .stdin(Stdio::null())
+                    .stdout(out)
+                    .stderr(err)
+                    .status()
+                    .map_err(|e| format!("{} did not start: {e}", step::shown(&command)))
+            });
+        Ran {
+            stage,
+            log,
+            took: started.elapsed(),
+            status,
+        }
+    }
+}
+
+impl Ran {
+    fn passed(&self) -> bool {
+        self.status.as_ref().is_ok_and(ExitStatus::success)
+    }
+
+    /// Print the stage's result and wall time, after its whole output when it failed.
+    fn report(&self) -> Result<(), String> {
+        let (name, secs) = (self.stage.name(), self.took.as_secs_f64());
+        let why = match &self.status {
+            Ok(status) if status.success() => {
+                return say(format_args!("xtask check: {name} passed in {secs:.1} s"));
+            }
+            Ok(status) => status.to_string(),
+            Err(e) => e.clone(),
+        };
+        let output = std::fs::read(&self.log).map_or_else(
+            |e| format!("reading {}: {e}\n", self.log.display()),
+            |bytes| String::from_utf8_lossy(&bytes).into_owned(),
+        );
+        say(format_args!(
+            "xtask check: {name} failed in {secs:.1} s: {why}; its output:\n{}",
+            output.trim_end()
+        ))
+    }
 }
 
 /// Lint adtb-sys under `--cfg adtb_loom`, then run the Loom models of the page state word, each

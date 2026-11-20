@@ -54,15 +54,30 @@ enum Task {
     },
     /// Run every check of the workspace in one memory-limited scope, as `test` does.
     ///
-    /// Run, in order: clippy, rustfmt, the TQL rules, the tests, the Loom models, Miri,
-    /// cargo-deny, the damage profile, the source-size limit, the documentation build and its link
-    /// check, and the editor grammar's generated sources and its corpus and highlight tests. Stops
-    /// at the first failure and names its step and command. Miri needs `ADTB_NIGHTLY_BIN`, which
-    /// the dev shell sets.
+    /// Run clippy, then, once it passes, the tests and the damage profile. In a scope of its own
+    /// on at least 8 cores they run at once, a quarter of the test threads to the damage profile;
+    /// otherwise the damage profile runs after the tests. Beside them run rustfmt, the TQL rules,
+    /// cargo-deny, the source-size limit, the documentation build and its link check, the editor
+    /// grammar's generated sources and its corpus and highlight tests, the Loom models and Miri.
+    /// Each stage's output goes to `check/STAGE.log` under the target directory. Print each
+    /// stage's wall time as it ends, with the whole output of one that failed, and fail when any
+    /// stage fails. Miri needs `ADTB_NIGHTLY_BIN`, which the dev shell sets.
     Check {
         /// Also check the lint allowlist against that of the parent of the revset's root.
         #[arg(value_name = "REVSET")]
         revset: Option<String>,
+    },
+    /// Run one stage of `check` in this process.
+    #[command(hide = true)]
+    Stage {
+        #[arg(value_parser = check::Stage::parse)]
+        stage: check::Stage,
+        /// Check the lint allowlist against the one at this revision.
+        #[arg(long, value_name = "REV")]
+        base: Option<String>,
+        /// Run the tests or the damage search on this many test threads.
+        #[arg(long, value_name = "N")]
+        test_threads: Option<usize>,
     },
     /// Run the TQL rules `lint/rules.toml` declares, with `tql` from PATH.
     ///
@@ -90,6 +105,16 @@ fn main() -> ExitCode {
         }
         Task::Check { revset } => scope::enter("check")
             .and_then(|()| check::run(&workspace::Workspace::find()?, revset.as_deref())),
+        Task::Stage {
+            stage,
+            base,
+            test_threads,
+        } => check::stage(
+            &workspace::Workspace::find()?,
+            stage,
+            base.as_deref(),
+            test_threads,
+        ),
         Task::Lint { against, counts } => lint::run(
             &workspace::Workspace::find()?.root,
             against.as_deref(),

@@ -40,6 +40,12 @@ For a fresh clone, host prerequisites and optional editor setup, read
   Miri, dependency policy, source-size limits, the documentation build with
   its link check, `cargo xtask lint` and the editor grammar's generated sources and tests. With REVSET it
   also checks the lint and structure allowlists against those of the parent of REVSET's root.
+  Clippy runs first; once it passes, the suite and the damage profile run, and every other
+  stage runs beside them from the start. In the memory scope on 8 or more cores the suite and
+  the damage profile run at once, the damage profile on a quarter of the test threads and the
+  suite on the rest; otherwise, as in CI, the damage profile runs after the suite. Each stage's output goes to
+  `target/check/STAGE.log`; the check prints each stage's wall time as it ends and the whole
+  log of each that failed, and fails when any stage fails.
 - `cargo xtask lint [--against REV] [--counts]`: run the TQL rules under `lint/` with `tql`,
   which the dev shell puts on PATH. `lint/rules.toml` declares each query's file set and rows; a
   zero row prints each site as `FILE:LINE: ROW`, and a ratchet row fails when a file's count
@@ -89,6 +95,10 @@ The `xtask` crate's commands and the conformance runner:
   sets; the stable one stays the default. The two take about 35 s together from cold and 11 s
   warm.
 - `cargo xtask check` fails when a non-test source under `crates/` passes 1500 lines.
+- `cargo xtask check` runs the damage search under `--profile damage`: one case of each page
+  kind and fault, unsteered, with its pairs and its concurrent tier. `--profile deep` runs 32
+  cases of each, steers write-outs toward rows still unasked, and alone fails on a row of the
+  stated table no case asked and on a lasting unreadable page that no restart read again.
 - `mdbook build`, `mdbook serve` and `lychee --offline --include-fragments` build, serve and
   link-check the documentation site. A new page under `docs/manual`, `docs/spec` or `docs/design`
   goes in `docs/SUMMARY.md`; the suite fails otherwise.

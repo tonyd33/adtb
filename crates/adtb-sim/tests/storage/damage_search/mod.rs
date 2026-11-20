@@ -14,7 +14,7 @@ mod world;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-use adtb_testkit::profile::{self, assert_reached, every_case};
+use adtb_testkit::profile::{assert_reached, every_case};
 use case::{FAULTS, FOLDS, Fault, Fold, Injection, Point};
 use consumers::{CONSUMERS, Consumer};
 use judge::{Row, Violation};
@@ -27,21 +27,31 @@ struct Tier {
     sequences: u64,
     /// The cases of each kind a shard runs.
     per_kind: usize,
+    /// The most write-outs a shard steers to the pages of each holder of a row still to ask.
+    steers: usize,
+    /// Whether a shard runs sequences while a row of the stated table its fault can ask is unasked
+    /// or a kind no consumer reaches has fewer cases than `per_kind`, and fails on a row none
+    /// asked or, for a lasting unreadable page, when no restart failed its reads again.
+    every_row: bool,
 }
 
-/// Returns the tier the nextest profile asks: the per-change tier's eight cases of each kind, 32
-/// under `deep`, or one in a run of another profile.
+/// Returns the tier the nextest profile asks: 32 cases of each kind and every row of the stated
+/// table under `deep`, else the per-change tier's one case of each kind.
 fn tier() -> Tier {
-    let (sequences, per_kind) = if every_case() {
-        (160, 32)
-    } else if profile::is("damage") {
-        (60, 8)
+    if every_case() {
+        Tier {
+            sequences: 160,
+            per_kind: 32,
+            steers: 32,
+            every_row: true,
+        }
     } else {
-        (40, 1)
-    };
-    Tier {
-        sequences,
-        per_kind,
+        Tier {
+            sequences: 60,
+            per_kind: 1,
+            steers: 0,
+            every_row: false,
+        }
     }
 }
 
@@ -455,15 +465,17 @@ fn rows_due(fault: Fault, s: &Searched) -> Vec<Row> {
         .collect()
 }
 
-/// Fail unless the cases of `fault` asked every row of the stated table for its classes but
-/// those [`unasked`] lists, and none it lists as never asked.
-fn assert_rows_asked(fault: Fault, s: &Searched, text: &str) {
-    let missed = rows_due(fault, s);
-    assert_eq!(
-        Vec::<Row>::new(),
-        missed,
-        "{fault:?}: rows of the stated table no case asked\n{text}"
-    );
+/// Fail if the cases of `fault` asked a row [`unasked`] lists as never asked, or with `every_row`,
+/// unless they asked every row of the stated table for its classes but those it lists.
+fn assert_rows_asked(fault: Fault, s: &Searched, every_row: bool, text: &str) {
+    if every_row {
+        let missed = rows_due(fault, s);
+        assert_eq!(
+            Vec::<Row>::new(),
+            missed,
+            "{fault:?}: rows of the stated table no case asked\n{text}"
+        );
+    }
     let came: Vec<Row> = rows_of(fault)
         .filter(|r| matches!(unasked(fault, *r), Some(Unasked::Never(_))))
         .filter(|r| s.rows.contains_key(r))
@@ -482,6 +494,13 @@ fn unreached(fault: Fault, kind: Kind, consumer: Consumer) -> Option<&'static st
         .iter()
         .find(|(f, k, c, _)| *f == fault && *k == kind && c.is_none_or(|c| c == consumer))
         .map(|(_, _, _, why)| *why)
+}
+
+/// Returns whether no consumer of a page of `kind` is ever reached under `fault`.
+fn never_reached(fault: Fault, kind: Kind) -> bool {
+    UNREACHED
+        .iter()
+        .any(|(f, k, c, _)| *f == fault && *k == kind && c.is_none())
 }
 
 /// Returns the rule a cell of `fault` and `kind` ends at the open by, `None` for a cell its
@@ -541,14 +560,14 @@ fn shard(fault: Fault) -> String {
             found.tearable
         );
     }
-    if fault == Fault::UnreadableLasting {
+    if fault == Fault::UnreadableLasting && tier.every_row {
         assert_reached(
             "a lasting unreadable page failing reads after a restart",
             found.failed_after_restart,
             1,
         );
     }
-    let text = report(fault, &found, tier.per_kind);
+    let text = report(fault, &found, &tier);
     if fault == Fault::Torn {
         return format!(
             "{text}Torn: write-outs and those a tear splits {:?}\n",
@@ -898,7 +917,8 @@ fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Sear
     };
     for &seed in &seeds {
         let late = seed > tier.sequences;
-        if kinds.iter().all(|k| done(*k, &s)) && (late || rows_due(fault, &s).is_empty()) {
+        let walked = |k: &Kind| done(*k, &s) || (!tier.every_row && never_reached(fault, *k));
+        if kinds.iter().all(walked) && (late || !tier.every_row || rows_due(fault, &s).is_empty()) {
             break;
         }
         if w.planned.is_empty() {
@@ -937,9 +957,9 @@ fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Sear
             }
             w.step(&s, k, &done, &[]);
         }
-        if !concurrent && !late {
+        if !concurrent && !late && tier.steers > 0 {
             let q = w.first();
-            let steered = steer(fault, &q.plan, &s, tier.per_kind);
+            let steered = steer(fault, &q.plan, &s, tier.steers);
             let ats: Vec<usize> = steered.iter().map(|(_, _, at)| *at).collect();
             let k = kinds.len();
             let outcomes = w.step(&s, k, &done, &ats);
@@ -963,7 +983,8 @@ type Shape = (Kind, Option<world::Rel>, Consumer, String);
 /// Returns what `s` found, failing on any kind with fewer than `per_kind` cases, any cell its
 /// consumer never reached, any cell that ends at the open by its rule but had a case whose open
 /// did not fail, or any violation no known failure names.
-fn report(fault: Fault, s: &Searched, per_kind: usize) -> String {
+fn report(fault: Fault, s: &Searched, tier: &Tier) -> String {
+    let per_kind = tier.per_kind;
     let mut shapes: BTreeMap<Shape, (usize, &Found)> = BTreeMap::new();
     for f in &s.found {
         let key = (
@@ -1002,15 +1023,10 @@ fn report(fault: Fault, s: &Searched, per_kind: usize) -> String {
             f.owner, f.seed, f.at, f.ops, f.violation.detail, f.failed
         );
     }
-    let whole = |k: Kind| {
-        UNREACHED
-            .iter()
-            .any(|(f, kind, c, _)| *f == fault && *kind == k && c.is_none())
-    };
     let short: Vec<(Kind, usize)> = s
         .kinds
         .iter()
-        .filter(|k| !whole(**k))
+        .filter(|k| !never_reached(fault, **k))
         .map(|k| (*k, s.cases.get(k).copied().unwrap_or(0)))
         .filter(|(_, n)| *n < per_kind)
         .collect();
@@ -1051,7 +1067,7 @@ fn report(fault: Fault, s: &Searched, per_kind: usize) -> String {
             at_open(fault, *k).unwrap_or_default()
         );
     }
-    assert_rows_asked(fault, s, &text);
+    assert_rows_asked(fault, s, tier.every_row, &text);
     let unknown: Vec<_> = shapes
         .keys()
         .filter(|(kind, owner, consumer, what)| {
@@ -1264,6 +1280,8 @@ fn vacuum(of: impl Fn(Fault) -> bool) -> String {
     let tier = Tier {
         sequences: sequences * 4,
         per_kind,
+        steers: per_kind,
+        every_row: every_case(),
     };
     let mut unknown = Vec::new();
     let mut overlapped = BTreeMap::new();

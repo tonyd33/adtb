@@ -49,9 +49,10 @@ threads-required = 3
 [profile.quick]
 default-filter = "not test(/crash/) and not (binary(=differential) and (test(=every_schema_walk_keeps_engine_equal_to_reference) or test(=every_operator_keeps_its_laws))) and not (binary(=storage) and test(/^damage_search::/) and not test(=damage_search::a_pinned_known_failure_still_shows) and not test(=damage_search::a_pinned_case_of_each_row_asks_it_and_breaks_no_rule))"
 
-# The damage search's per-change tier: eight cases of each page kind and fault.
+# The damage search's per-change tier: one case of each page kind and fault. The default profile
+# runs its pinned cases.
 [profile.damage]
-default-filter = "binary(=storage) and test(/^damage_search::/)"
+default-filter = "binary(=storage) and test(/^damage_search::/) and not test(=damage_search::a_pinned_known_failure_still_shows) and not test(=damage_search::a_pinned_case_of_each_row_asks_it_and_breaks_no_rule)"
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # The damage search tests start longest first.
@@ -93,7 +94,8 @@ threads-required = 4
 default-filter = "all()"
 slow-timeout = { period = "120s", terminate-after = 10 }
 
-# The damage search at 32 cases of each page kind and fault, with its pairs and its concurrent tier.
+# The damage search at 32 cases of each page kind and fault, asking every row of the stated table,
+# with its pairs and its concurrent tier.
 [[profile.deep.overrides]]
 filter = "binary(=storage) and test(/^damage_search::/)"
 slow-timeout = { period = "300s", terminate-after = 12 }
