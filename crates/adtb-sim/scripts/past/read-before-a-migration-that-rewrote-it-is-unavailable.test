@@ -1,0 +1,25 @@
+# A read at a commit before a migration that rewrote the relation it reads is unavailable; a
+# relation the migration left reads as it was.
+seed 15
+use history
+
+migrate
+  module stock
+  rename field Item.Open.qty to count
+
+begin w
+
+in w run
+  insert orders { id: orders.key(1), item: items.key(1) }
+
+commit w position after
+
+run
+  from i in items select key i
+
+error HistoryUnavailable { oldest: $after }
+  at commit $first { from i in items select i.name }
+
+query
+  at commit $first { from o in orders select o }
+----

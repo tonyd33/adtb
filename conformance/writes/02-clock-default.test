@@ -6,6 +6,13 @@ schema
 run
   insert events from (from n in ["a", "b", "c"] select { label: n })
   insert events { id: events.key(9), label: "d" }
+query rowsort
+  from x in events select { id: x.id, label: x.label }
+----
+{ id: events.key(1), label: "a" }
+{ id: events.key(2), label: "b" }
+{ id: events.key(3), label: "c" }
+{ id: events.key(9), label: "d" }
 query
   count(t for t in (from e in events where e.label != "d" select e.at))
 ----
@@ -16,6 +23,15 @@ query
 4
 run
   (insert events { id: events.key(20), label: "e" }, insert events { id: events.key(21), label: "f" })
+query rowsort
+  from x in events select { id: x.id, label: x.label }
+----
+{ id: events.key(1), label: "a" }
+{ id: events.key(2), label: "b" }
+{ id: events.key(20), label: "e" }
+{ id: events.key(21), label: "f" }
+{ id: events.key(3), label: "c" }
+{ id: events.key(9), label: "d" }
 query
   count(t for t in (from e in events where value(key e) >= 20 select e.at))
 ----

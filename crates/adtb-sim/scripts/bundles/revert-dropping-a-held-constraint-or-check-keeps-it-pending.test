@@ -1,0 +1,50 @@
+# A revert that drops a constraint or a check a live bundle holds keeps it in force and refuses an
+# operator that leaves it no image until the bundle is released.
+seed 113
+use states
+log
+  module auth
+  add constraint no_blank = from u in users where u.name == "" select u
+  module auth
+  add check named on users (name != "x")
+bundle web-3.0 pins 3 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+bundle web-3.0 pins 3 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  revert 0003
+
+bundle web-3.0 pins 3 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  revert 0002
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "" }
+
+error Violated { constraint: "auth::named", report: 1 rows, redacted: 0 }
+  insert users { name: "x" }
+
+bundle web-3.0 pins 3 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate refused MigrationRefused { version: 6, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::named, auth::no_blank has no image: no `name` in scope" } } }
+  module auth
+  drop field User.name
+
+reopen
+
+run
+  insert users { name: "" }
+  insert users { name: "x" }
+
+migrate
+  module auth
+  drop field User.name

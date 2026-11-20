@@ -8,10 +8,37 @@ schema
   relation scores : Score key id generate sequence
 run
   insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in scores select x
+----
 error Violated
   insert users from (from n in ["ok", "toolong"] select { name: n })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in scores select x
+----
 error Violated
   update u in users set User { u with name: if key u == users.key(2) then "toolong" else "x" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in scores select x
+----
 query
   from u in users select u.name
 ----
@@ -20,8 +47,32 @@ query
 "u3"
 run
   insert scores from (from u in users select { id: scores.key(value(key u)), user: key u, n: value(key u) * 10 })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in scores select x
+----
+Score { id: scores.key(1), user: users.key(1), n: 10 }
+Score { id: scores.key(2), user: users.key(2), n: 20 }
+Score { id: scores.key(3), user: users.key(3), n: 30 }
 run
   update s in scores set Score { s with n: s.n + 1 }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in scores select x
+----
+Score { id: scores.key(1), user: users.key(1), n: 11 }
+Score { id: scores.key(2), user: users.key(2), n: 21 }
+Score { id: scores.key(3), user: users.key(3), n: 31 }
 query
   from s in scores select s.n
 ----
@@ -30,6 +81,18 @@ query
 31
 error Violated
   delete u in users where key u != users.key(9)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in scores select x
+----
+Score { id: scores.key(1), user: users.key(1), n: 11 }
+Score { id: scores.key(2), user: users.key(2), n: 21 }
+Score { id: scores.key(3), user: users.key(3), n: 31 }
 query
   count(u for u in users)
 ----

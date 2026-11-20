@@ -1,0 +1,39 @@
+# An upsert on a unique over a path into a value-level sum takes the else branch only for a row whose field holds that constructor and conflicts.
+schema
+  module test
+  type Status = Draft | Paid { ref: Text }
+  type Invoice = { id: Key invoices, status: Status, n: I64 }
+  relation invoices : Invoice key id generate sequence unique (status.Paid.ref)
+run
+  insert invoices { id: invoices.key(1), status: Paid { ref: "r1" }, n: 1 }
+  insert invoices { id: invoices.key(2), status: Draft, n: 3 }
+query rowsort
+  from x in invoices select x
+----
+Invoice { id: invoices.key(1), status: Paid { ref: "r1" }, n: 1 }
+Invoice { id: invoices.key(2), status: Draft, n: 3 }
+run
+  insert invoices { id: invoices.key(3), status: Paid { ref: "r1" }, n: 2 }
+  unless conflict on (status.Paid.ref)
+  else update old set Invoice { old with n: old.n + 10 }
+query rowsort
+  from x in invoices select x
+----
+Invoice { id: invoices.key(1), status: Paid { ref: "r1" }, n: 11 }
+Invoice { id: invoices.key(2), status: Draft, n: 3 }
+run
+  insert invoices { id: invoices.key(4), status: Draft, n: 5 }
+  unless conflict on (status.Paid.ref)
+  else update old set Invoice { old with n: 0 }
+query rowsort
+  from x in invoices select x
+----
+Invoice { id: invoices.key(1), status: Paid { ref: "r1" }, n: 11 }
+Invoice { id: invoices.key(2), status: Draft, n: 3 }
+Invoice { id: invoices.key(4), status: Draft, n: 5 }
+query
+  from i in invoices select i
+----
+Invoice { id: invoices.key(1), status: Paid { ref: "r1" }, n: 11 }
+Invoice { id: invoices.key(2), status: Draft, n: 3 }
+Invoice { id: invoices.key(4), status: Draft, n: 5 }

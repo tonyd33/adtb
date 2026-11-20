@@ -91,8 +91,6 @@ use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 use memo::Memo;
 pub use oplog::{Hash, VersionHash, try_version_hash, version_hash};
-#[cfg(test)]
-pub use readers::PendingDrop;
 pub use readers::{Read, Reader, source_at, stale};
 pub(crate) use root::Begun;
 pub(crate) use root::Changing;

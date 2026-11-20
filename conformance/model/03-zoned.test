@@ -1,6 +1,7 @@
 # A zoned date-time is its civil date-time and zone name: equal only when both are equal, and not ordered.
 schema
   module test
+  fn at (t: Text) -> Set Instant = match Instant.parse(t) | Some s -> [s.value] | None -> []
   fn dt (t: Text) -> Set DateTime = match DateTime.parse(t) | Some s -> [s.value] | None -> []
   fn z (t: Text, zone: Text) -> Set ZonedDateTime = from d in dt(t) select zoned(d, zone, Clamp)
 query
@@ -25,3 +26,24 @@ query
   from a in z("2026-07-01T12:00:00", "Europe/Lisbon"), b in z("2026-07-01T13:00:00", "Europe/Lisbon") select to_instant(a) < to_instant(b)
 ----
 true
+# Zone rules hold past the years they are tabled for, repeating every 400 years, and an unknown zone name faults.
+query
+  from i in at("2026-07-01T00:00:00Z") select in_zone(i, "Europe/Lisbon")
+----
+2026-07-01T01:00:00.000000[Europe/Lisbon]
+query
+  from i in at("2026-07-01T00:00:00Z") select in_zone(i + 3652425d, "Europe/Lisbon")
+----
++12026-07-01T01:00:00.000000[Europe/Lisbon]
+query
+  from i in at("2026-07-01T00:00:00Z") select in_zone(i + 3652605d, "Europe/Lisbon")
+----
++12026-12-28T00:00:00.000000[Europe/Lisbon]
+query rowsort
+  from i in at("2026-07-01T00:00:00Z") select { early: in_zone(i - 4629629d, "Europe/Lisbon"), later: in_zone(i - 4629629d + 146097d, "Europe/Lisbon") }
+----
+{ early: -10649-01-01T23:23:15.000000[Europe/Lisbon], later: -10249-01-01T23:23:15.000000[Europe/Lisbon] }
+query
+  from i in at("2026-07-01T00:00:00Z") select try in_zone(i, "europe/lisbon")
+----
+Err { error: UnknownZone }

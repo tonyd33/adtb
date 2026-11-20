@@ -1,0 +1,23 @@
+# A join whose build exceeds its grant spills: it runs with no spill bound, and is refused for
+# its grant with no spill space or past a spill bound of 4096 bytes.
+use stocked
+option query_memory_bytes 32768
+option morsel_rows 16
+reopen
+
+query
+  count(x for x in (from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }))
+----
+150
+
+option spill_bytes 0
+reopen
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }
+
+option spill_bytes 4096
+reopen
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }

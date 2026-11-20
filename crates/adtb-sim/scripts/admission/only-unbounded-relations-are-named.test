@@ -1,0 +1,22 @@
+# Of the relations a constraint reads, only those whose changes no index bounds are named.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::both is not admitted: changes to app::users: index (user) in app::identities is missing\nconstraint app::both is not admitted: changes to app::identities: index (user) in app::identities is missing\nconstraint app::both is not admitted: changes to app::memberships: index (user) in app::identities is missing" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User
+    key id generate sequence
+    index (name)
+  add type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  add relation identities : Identity key id generate uuidv7
+  add type Membership = { id: Key memberships, user: Text, org: Text }
+  add relation memberships : Membership
+    key id generate sequence
+    unique (user, org)
+  add constraint both =
+    from u in users
+    where not exists i in identities where i.user == u.name
+      and not exists m in memberships where m.user == u.name and m.org == u.name
+    select u

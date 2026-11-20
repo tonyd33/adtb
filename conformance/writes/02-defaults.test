@@ -17,6 +17,22 @@ run
   insert shapes.Square { id: shapes.key(2) }
   insert shapes.Square { id: shapes.key(3), side: 4, label: "big" }
   insert shapes from (from k in [4] select Circle { id: shapes.key(k), r: 9 })
+query rowsort
+  from x in counters select x
+----
+Counter { id: counters.key(1), name: "a", n: 0 }
+Counter { id: counters.key(2), name: "b", n: 5 }
+Counter { id: counters.key(3), name: "c", n: 0 }
+query rowsort
+  from x in others select x
+----
+query rowsort
+  from x in shapes select x
+----
+Circle { id: shapes.key(1), r: 2, label: "plain" }
+Circle { id: shapes.key(4), r: 9, label: "plain" }
+Square { id: shapes.key(2), side: 1, label: "plain" }
+Square { id: shapes.key(3), side: 4, label: "big" }
 query
   from c in counters select c
 ----
@@ -32,22 +48,104 @@ Square { id: shapes.key(2), side: 1, label: "plain" }
 Square { id: shapes.key(3), side: 4, label: "big" }
 error Invalid
   insert shapes.Circle { id: shapes.key(5) }
+query rowsort
+  from x in counters select x
+----
+Counter { id: counters.key(1), name: "a", n: 0 }
+Counter { id: counters.key(2), name: "b", n: 5 }
+Counter { id: counters.key(3), name: "c", n: 0 }
+query rowsort
+  from x in others select x
+----
+query rowsort
+  from x in shapes select x
+----
+Circle { id: shapes.key(1), r: 2, label: "plain" }
+Circle { id: shapes.key(4), r: 9, label: "plain" }
+Square { id: shapes.key(2), side: 1, label: "plain" }
+Square { id: shapes.key(3), side: 4, label: "big" }
 error Invalid
   insert others { id: others.key(1), name: "x" }
+query rowsort
+  from x in counters select x
+----
+Counter { id: counters.key(1), name: "a", n: 0 }
+Counter { id: counters.key(2), name: "b", n: 5 }
+Counter { id: counters.key(3), name: "c", n: 0 }
+query rowsort
+  from x in others select x
+----
+query rowsort
+  from x in shapes select x
+----
+Circle { id: shapes.key(1), r: 2, label: "plain" }
+Circle { id: shapes.key(4), r: 9, label: "plain" }
+Square { id: shapes.key(2), side: 1, label: "plain" }
+Square { id: shapes.key(3), side: 4, label: "big" }
 error Invalid
   from c in [Counter { id: counters.key(9), name: "z" }] select c
+query rowsort
+  from x in counters select x
+----
+Counter { id: counters.key(1), name: "a", n: 0 }
+Counter { id: counters.key(2), name: "b", n: 5 }
+Counter { id: counters.key(3), name: "c", n: 0 }
+query rowsort
+  from x in others select x
+----
+query rowsort
+  from x in shapes select x
+----
+Circle { id: shapes.key(1), r: 2, label: "plain" }
+Circle { id: shapes.key(4), r: 9, label: "plain" }
+Square { id: shapes.key(2), side: 1, label: "plain" }
+Square { id: shapes.key(3), side: 4, label: "big" }
 query
   count(s for s in shapes)
 ----
 4
 error Invalid
   insert counters from ([{ id: counters.key(9), name: "lit" }])
+query rowsort
+  from x in counters select x
+----
+Counter { id: counters.key(1), name: "a", n: 0 }
+Counter { id: counters.key(2), name: "b", n: 5 }
+Counter { id: counters.key(3), name: "c", n: 0 }
+query rowsort
+  from x in others select x
+----
+query rowsort
+  from x in shapes select x
+----
+Circle { id: shapes.key(1), r: 2, label: "plain" }
+Circle { id: shapes.key(4), r: 9, label: "plain" }
+Square { id: shapes.key(2), side: 1, label: "plain" }
+Square { id: shapes.key(3), side: 4, label: "big" }
 run
   insert shapes from (
     from k in [5, 6]
     select match k
       | 5 -> Circle { id: shapes.key(k), r: 1 }
       | _ -> Square { id: shapes.key(k), label: "six" })
+query rowsort
+  from x in counters select x
+----
+Counter { id: counters.key(1), name: "a", n: 0 }
+Counter { id: counters.key(2), name: "b", n: 5 }
+Counter { id: counters.key(3), name: "c", n: 0 }
+query rowsort
+  from x in others select x
+----
+query rowsort
+  from x in shapes select x
+----
+Circle { id: shapes.key(1), r: 2, label: "plain" }
+Circle { id: shapes.key(4), r: 9, label: "plain" }
+Circle { id: shapes.key(5), r: 1, label: "plain" }
+Square { id: shapes.key(2), side: 1, label: "plain" }
+Square { id: shapes.key(3), side: 4, label: "big" }
+Square { id: shapes.key(6), side: 1, label: "six" }
 query
   from s in shapes where value(key s) > 4 select s
 ----

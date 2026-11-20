@@ -1,0 +1,62 @@
+# A value constructor's enable is refused while a live bundle pinned before it reads a field whose
+# type reaches the type, directly, through an option, or hiding new constructors; bundles reading
+# other fields, counting the keys of the rows or pinned after the constructor do not block it.
+seed 60
+use states
+log
+  module auth
+  add constructor Provider.Okta
+bundle provider-1.0 pins 1 edition "2026-10"
+  import auth
+  query providers () -> Set Provider = from a in accounts select a.provider
+bundle option-1.0 pins 1 edition "2026-10"
+  import auth
+  query backups () -> Set (Option Provider) = from p in profiles select p.backup
+bundle hiding-1.0 pins 1 edition "2026-10" hide new constructors
+  import auth
+  query providers () -> Set Provider = from a in accounts select a.provider
+bundle notes-1.0 pins 1 edition "2026-10"
+  import auth
+  query notes () -> Set Text = from a in accounts select a.note
+bundle ranges-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key a for a in accounts)
+bundle after-1.0 pins 2 edition "2026-10"
+  import auth
+  query providers () -> Set Provider = from a in accounts select a.provider
+reopen
+
+bundle provider-1.0 pins 1 edition "2026-10"
+  import auth
+  query providers () -> Set Provider = from a in accounts select a.provider
+bundle option-1.0 pins 1 edition "2026-10"
+  import auth
+  query backups () -> Set (Option Provider) = from p in profiles select p.backup
+bundle hiding-1.0 pins 1 edition "2026-10" hide new constructors
+  import auth
+  query providers () -> Set Provider = from a in accounts select a.provider
+bundle notes-1.0 pins 1 edition "2026-10"
+  import auth
+  query notes () -> Set Text = from a in accounts select a.note
+bundle ranges-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key a for a in accounts)
+bundle after-1.0 pins 2 edition "2026-10"
+  import auth
+  query providers () -> Set Provider = from a in accounts select a.provider
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable Provider.Okta` is refused: bundle hiding-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released\n`enable Provider.Okta` is refused: bundle option-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released\n`enable Provider.Okta` is refused: bundle provider-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released" } } }
+  module auth
+  enable Provider.Okta
+
+bundle notes-1.0 pins 1 edition "2026-10"
+  import auth
+  query notes () -> Set Text = from a in accounts select a.note
+bundle ranges-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key a for a in accounts)
+bundle after-1.0 pins 2 edition "2026-10"
+  import auth
+  query providers () -> Set Provider = from a in accounts select a.provider
+migrate
+  module auth
+  enable Provider.Okta

@@ -1,0 +1,28 @@
+# A commit with no read of history after it survives a crash at the next device op, readable at
+# its position and listed among the commit times.
+seed 27
+use stock
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position committed
+
+crash after 0
+
+reopen
+
+query
+  at commit $committed { from i in items select i.name }
+----
+"ann"
+
+query
+  from c in sys::commit_times select c.position == $committed
+----
+True

@@ -7,11 +7,21 @@ schema
 run
   insert customers from ([{ id: customers.key(1), name: "c", address: US { zip: "10001", street: "s" } },
                           { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }])
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: US { zip: "10001", street: "s" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 run
   update c in customers
   set Customer { c with address: match c.address
                                    | US a   -> US { a with zip: "02139" }
                                    | Intl i -> i }
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: US { zip: "02139", street: "s" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 query
   from c in customers select c
 ----
@@ -19,22 +29,57 @@ Customer { id: customers.key(1), name: "c", address: US { zip: "02139", street: 
 Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 run
   update c in customers where c.id == customers.key(1) set Customer { c with address: Intl { country: "us", postcode: "x" } }
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: Intl { country: "us", postcode: "x" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 query
   from c in customers where c.id == customers.key(1) select c.address
 ----
 Intl { country: "us", postcode: "x" }
 error Invalid
   update c in customers set Customer { c with address.zip: "1" }
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: Intl { country: "us", postcode: "x" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 error Invalid
   update c in customers set { name: "z" }
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: Intl { country: "us", postcode: "x" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 error Invalid
   update c in customers set 1
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: Intl { country: "us", postcode: "x" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 error Invalid
   update c in customers set Customer { c with address: "x" }
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: Intl { country: "us", postcode: "x" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 error Invalid
   update c in customers set US { zip: "1", street: "2" }
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: Intl { country: "us", postcode: "x" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 error Invalid
   update c in (from c in customers select { name: c.name }) set Customer { c with name: "z" }
+query rowsort
+  from x in customers select x
+----
+Customer { id: customers.key(1), name: "c", address: Intl { country: "us", postcode: "x" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
 query
   from c in customers select c.name
 ----

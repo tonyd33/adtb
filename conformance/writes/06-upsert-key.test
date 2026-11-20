@@ -12,6 +12,15 @@ run
   insert users { id: users.key(1), name: "a" }
   insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "e", hash: "h" },
                            Google { id: identities.key(2), user: users.key(1), gid: "g" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "e", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "g" }
 run
   insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g-new" }
   unless conflict on key
@@ -19,6 +28,15 @@ run
     | Google o    -> update o set Google { o with gid: "g-new" }
     | EmailPass e -> fail "identity is email"
     | Apple a     -> fail "identity is apple"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "e", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "g-new" }
 query
   from g in identities.Google select g
 ----
@@ -30,6 +48,15 @@ error UserError
     | Google o    -> update o set Google { o with gid: "g-x" }
     | EmailPass e -> fail "identity is email"
     | Apple a     -> fail "identity is apple"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "e", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "g-new" }
 query
   from i in identities select i
 ----
@@ -42,6 +69,16 @@ run
     | Google o    -> update o set Google { o with gid: "never" }
     | EmailPass e -> fail "identity is email"
     | Apple a     -> fail "identity is apple"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "e", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "g-new" }
+Google { id: identities.key(3), user: users.key(1), gid: "g3" }
 query
   from g in identities.Google select g
 ----
@@ -54,6 +91,16 @@ run
     | Google o    -> update o set o
     | EmailPass e -> update e set Google { gid: new.gid }
     | Apple a     -> update a set a
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "from-email" }
+Google { id: identities.key(2), user: users.key(1), gid: "g-new" }
+Google { id: identities.key(3), user: users.key(1), gid: "g3" }
 query
   from i in identities select i
 ----
@@ -65,3 +112,13 @@ error Invalid
   unless conflict on key
   else match old
     | Google o -> update o set o
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "from-email" }
+Google { id: identities.key(2), user: users.key(1), gid: "g-new" }
+Google { id: identities.key(3), user: users.key(1), gid: "g3" }

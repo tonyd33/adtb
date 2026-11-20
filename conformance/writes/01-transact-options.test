@@ -6,15 +6,37 @@ schema
 run
   transact retry 3
     insert users { id: users.key(1), name: "a" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 run
   transact durability quorum
     insert users { id: users.key(2), name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
 run
   transact durability local
     insert users { id: users.key(3), name: "c" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
 run
   transact retry 2 durability local
     insert users { id: users.key(4), name: "d" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(4), name: "d" }
 query
   from u in users select u.name
 ----
@@ -35,15 +57,43 @@ query
 error Invalid
   transact read_only
     insert users { id: users.key(5), name: "e" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(4), name: "d" }
 error Invalid
   transact read_only
     let x = delete u in users where key u == users.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(4), name: "d" }
 error Invalid
   transact read_only durability local
     return 1
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(4), name: "d" }
 error Invalid
   transact durability quorum read_only
     return 1
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(4), name: "d" }
 query
   count(u for u in users)
 ----

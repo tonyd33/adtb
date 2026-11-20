@@ -18,8 +18,45 @@ run
   insert logins.Active { id: logins.key(1), user: users.key(1), identity: identities.key(1) }
   insert logins.Active { id: logins.key(2), user: users.key(2), identity: identities.key(2) }
   insert tickets.Open { id: tickets.key(1), owner: users.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Identity { id: identities.key(1), user: users.key(1), gid: "g1" }
+Identity { id: identities.key(2), user: users.key(2), gid: "g2" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), user: users.key(1), identity: identities.key(1) }
+Active { id: logins.key(2), user: users.key(2), identity: identities.key(2) }
+query rowsort
+  from x in tickets select x
+----
+Open { id: tickets.key(1), owner: users.key(1) }
 run
   delete i in identities where key i == identities.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Identity { id: identities.key(2), user: users.key(2), gid: "g2" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(2), user: users.key(2), identity: identities.key(2) }
+Revoked { id: logins.key(1), user: users.key(1), reason: "identity gone", note: "auto" }
+query rowsort
+  from x in tickets select x
+----
+Open { id: tickets.key(1), owner: users.key(1) }
 query
   from s in logins select s
 ----
@@ -28,12 +65,42 @@ Revoked { id: logins.key(1), user: users.key(1), reason: "identity gone", note: 
 run
   (delete i in identities where key i == identities.key(2),
    delete s in logins where key s == logins.key(1))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+query rowsort
+  from x in logins select x
+----
+Revoked { id: logins.key(2), user: users.key(2), reason: "identity gone", note: "auto" }
+query rowsort
+  from x in tickets select x
+----
+Open { id: tickets.key(1), owner: users.key(1) }
 query
   from s in logins select s
 ----
 Revoked { id: logins.key(2), user: users.key(2), reason: "identity gone", note: "auto" }
 run
   (delete s in logins, delete x in users where key x == users.key(1))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+query rowsort
+  from x in logins select x
+----
+query rowsort
+  from x in tickets select x
+----
+Closed { id: tickets.key(1), why: "owner gone" }
 query
   from t in tickets select t
 ----

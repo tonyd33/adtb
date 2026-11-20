@@ -8,18 +8,53 @@ run
   insert left Row { id: 1, public: "left one", secret: "left secret" }
   insert left Row { id: 2, public: "left two", secret: "left secret" }
   insert right Row { id: 1, public: "right one", secret: "right secret" }
+query rowsort
+  from x in left select x
+----
+Row { id: 1, public: "left one", secret: "left secret" }
+Row { id: 2, public: "left two", secret: "left secret" }
+query rowsort
+  from x in right select x
+----
+Row { id: 1, public: "right one", secret: "right secret" }
 run
   update x in (fix rows = left union rows in rows) set x
+query rowsort
+  from x in left select x
+----
+Row { id: 1, public: "left one", secret: "left secret" }
+Row { id: 2, public: "left two", secret: "left secret" }
+query rowsort
+  from x in right select x
+----
+Row { id: 1, public: "right one", secret: "right secret" }
 run
   update x in (
       fix a = b, b = (from seed in left where seed.id == 1 select seed) union a
       in from x in a where key x == left.key(1) select x)
     set Row { x with public: "changed" }
+query rowsort
+  from x in left select x
+----
+Row { id: 1, public: "changed", secret: "left secret" }
+Row { id: 2, public: "left two", secret: "left secret" }
+query rowsort
+  from x in right select x
+----
+Row { id: 1, public: "right one", secret: "right secret" }
 run
   delete x in (
       fix rows = (from seed in left where seed.id == 2 select seed)
                  union (from x in rows select x)
       in rows union [])
+query rowsort
+  from x in left select x
+----
+Row { id: 1, public: "changed", secret: "left secret" }
+query rowsort
+  from x in right select x
+----
+Row { id: 1, public: "right one", secret: "right secret" }
 query
   left
 ----

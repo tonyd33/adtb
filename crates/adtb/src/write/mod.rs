@@ -26,11 +26,7 @@ mod writing;
 #[cfg(test)]
 mod calls_tests;
 #[cfg(test)]
-mod constraints_tests;
-#[cfg(test)]
 mod past_tests;
-#[cfg(test)]
-mod prune_on_access_tests;
 #[cfg(test)]
 mod session_tests;
 #[cfg(test)]
@@ -775,13 +771,6 @@ impl<R: Runtime> Database<R> {
 
     pub(crate) fn structures(&self) -> &Structures {
         &self.structures
-    }
-
-    /// Returns the history heap the database keeps the past versions of `heap` in, `None` when
-    /// it keeps none.
-    #[cfg(test)]
-    pub(crate) fn history_heap(&self, heap: HeapId) -> Option<&exec::StoredHeap> {
-        self.retained.as_ref()?.heaps.get(&heap)
     }
 
     /// Returns the planner's description of the relations the database runs.

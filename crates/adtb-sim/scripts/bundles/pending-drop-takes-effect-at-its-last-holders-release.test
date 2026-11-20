@@ -1,0 +1,59 @@
+# A pending drop held by two bundles carries across opens, stays while one holder is live, takes
+# effect once the last is released, and a released hold does not return when its bundle is
+# presented again.
+seed 102
+use states
+log
+  module auth
+  add constraint no_blank = from u in users where u.name == "" select u
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+bundle api-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+bundle api-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  drop constraint no_blank
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+bundle api-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "" }
+
+bundle api-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "" }
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+run
+  insert users { name: "" }
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  drop field User.name

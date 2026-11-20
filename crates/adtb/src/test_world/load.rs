@@ -61,20 +61,6 @@ pub fn open_with(rt: &SimRuntime, decls: &str, options: &OpenOptions) -> Databas
     opened(rt, FILE, &Log::new([migration(decls)]), options)
 }
 
-/// Load `rows`, the rows of a reference database over `schema`, into `db` by relation name,
-/// as [`committed_noise`] does, then begin the transaction [`running_noise`] returns, holding the
-/// read-only transaction until its writes are done. Returns that transaction.
-///
-/// Postconditions: those of [`committed_noise`] and [`running_noise`], every committed noise
-/// version present.
-pub fn rows_with_noise<'a, R: Runtime>(
-    db: &'a Database<R>,
-    schema: &Schema,
-    rows: &adtb_reference::Database,
-) -> AdHocTransaction<'a, R> {
-    load::load(&Api(db), schema, rows, Running::Left).expect("the running transaction is returned")
-}
-
 /// Load `rows`, the rows of a reference database over `schema`, into `db` by relation name, as
 /// [`adtb_testkit::load::load`] does.
 pub fn committed_noise<R: Runtime>(

@@ -17,6 +17,21 @@ run
   insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g1" }
   insert imports.Oauth { id: imports.key(1), user: users.key(2), sub: "s2" }
   insert imports.Email { id: imports.key(2), user: users.key(3), addr: "c@x", h: "h3" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g1" }
+query rowsort
+  from x in imports select x
+----
+Email { id: imports.key(2), user: users.key(3), addr: "c@x", h: "h3" }
+Oauth { id: imports.key(1), user: users.key(2), sub: "s2" }
 query
   from u in users select u
 ----
@@ -26,6 +41,22 @@ User { id: users.key(3), name: "c" }
 run
   insert identities.Google from (
     from x in imports.Oauth select { id: identities.key(10 + value(key x)), user: x.user, gid: x.sub })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g1" }
+Google { id: identities.key(11), user: users.key(2), gid: "s2" }
+query rowsort
+  from x in imports select x
+----
+Email { id: imports.key(2), user: users.key(3), addr: "c@x", h: "h3" }
+Oauth { id: imports.key(1), user: users.key(2), sub: "s2" }
 query
   from g in identities.Google select g
 ----
@@ -37,6 +68,24 @@ run
     select match x
       | Email e -> EmailPass { id: identities.key(20 + value(key e)), user: e.user, email: e.addr, hash: e.h }
       | Oauth o -> Apple { id: identities.key(20 + value(key o)), user: o.user, sub: o.sub })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(21), user: users.key(2), sub: "s2" }
+EmailPass { id: identities.key(22), user: users.key(3), email: "c@x", hash: "h3" }
+Google { id: identities.key(1), user: users.key(1), gid: "g1" }
+Google { id: identities.key(11), user: users.key(2), gid: "s2" }
+query rowsort
+  from x in imports select x
+----
+Email { id: imports.key(2), user: users.key(3), addr: "c@x", h: "h3" }
+Oauth { id: imports.key(1), user: users.key(2), sub: "s2" }
 query
   from i in identities select i
 ----
@@ -46,6 +95,25 @@ Google { id: identities.key(11), user: users.key(2), gid: "s2" }
 Apple { id: identities.key(21), user: users.key(2), sub: "s2" }
 run
   insert users from (from u in users where u.name == "a" select User { id: users.key(4), name: "d" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(4), name: "d" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(21), user: users.key(2), sub: "s2" }
+EmailPass { id: identities.key(22), user: users.key(3), email: "c@x", hash: "h3" }
+Google { id: identities.key(1), user: users.key(1), gid: "g1" }
+Google { id: identities.key(11), user: users.key(2), gid: "s2" }
+query rowsort
+  from x in imports select x
+----
+Email { id: imports.key(2), user: users.key(3), addr: "c@x", h: "h3" }
+Oauth { id: imports.key(1), user: users.key(2), sub: "s2" }
 query
   from u in users where key u == users.key(4) select u.name
 ----

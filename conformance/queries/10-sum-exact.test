@@ -3,6 +3,8 @@ schema
   module test
   type Big = { id: Key bigs, n: I64, m: I32, grp: I64 }
   relation bigs : Big key id generate sequence
+  type Dec = { id: Key decs, d: Decimal 0, grp: I64 }
+  relation decs : Dec key id generate sequence
 run
   insert bigs from [Big { id: bigs.key(1), n: 9223372036854775807, m: 2147483647, grp: 1 },
                     Big { id: bigs.key(2), n: 1, m: 1, grp: 1 },
@@ -34,3 +36,31 @@ query
   try sum(b.m for b in bigs where b.n > 0)
 ----
 Err { error: ArithmeticOverflow }
+# A Decimal sum is exact whatever the order of its 38-digit terms, and faults only past 38 digits.
+run
+  insert decs from [Dec { id: decs.key(1), d: 99999999999999999999999999999999999999, grp: 1 },
+                    Dec { id: decs.key(2), d: 99999999999999999999999999999999999999, grp: 1 },
+                    Dec { id: decs.key(3), d: -99999999999999999999999999999999999999, grp: 1 },
+                    Dec { id: decs.key(4), d: 99999999999999999999999999999999999999, grp: 2 },
+                    Dec { id: decs.key(5), d: -99999999999999999999999999999999999999, grp: 2 },
+                    Dec { id: decs.key(6), d: 99999999999999999999999999999999999999, grp: 2 },
+                    Dec { id: decs.key(7), d: -99999999999999999999999999999999999999, grp: 3 },
+                    Dec { id: decs.key(8), d: 99999999999999999999999999999999999999, grp: 3 },
+                    Dec { id: decs.key(9), d: 99999999999999999999999999999999999999, grp: 3 },
+                    Dec { id: decs.key(10), d: 99999999999999999999999999999999999999, grp: 4 },
+                    Dec { id: decs.key(11), d: 1, grp: 4 },
+                    Dec { id: decs.key(12), d: -99999999999999999999999999999999999999, grp: 5 }]
+query rowsort
+  from g in [1, 2, 3] select { grp: g, sum: sum(x.d for x in decs where x.grp == g) }
+----
+{ grp: 1, sum: 99999999999999999999999999999999999999 }
+{ grp: 2, sum: 99999999999999999999999999999999999999 }
+{ grp: 3, sum: 99999999999999999999999999999999999999 }
+query
+  try sum(x.d for x in decs where x.grp == 4)
+----
+Err { error: ArithmeticOverflow }
+query
+  sum(x.d for x in decs where x.grp == 5)
+----
+-99999999999999999999999999999999999999

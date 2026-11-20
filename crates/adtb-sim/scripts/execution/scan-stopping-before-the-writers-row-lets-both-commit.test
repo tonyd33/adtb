@@ -1,0 +1,35 @@
+# An existence test that stops at item 2 does not read item 250, so a writer of item 250 whose
+# read of item 1 the reader then writes commits beside it.
+use stocked
+option morsel_rows 16
+reopen
+
+begin r
+
+begin w
+
+in r query
+  exists s in stock where s.name == "item2"
+----
+True
+
+in w query
+  from s in stock where key s == stock.key(1) select s.v
+----
+37
+
+in r run
+  update s in stock where key s == stock.key(1) set { s with v: s.v + 1 }
+
+in w run
+  update s in stock where key s == stock.key(250) set { s with v: s.v + 1 }
+
+commit r
+
+commit w
+
+query
+  from s in stock where key s == stock.key(1) or key s == stock.key(250) select s.v
+----
+38
+60

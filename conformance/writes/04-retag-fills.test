@@ -15,8 +15,36 @@ run
   insert logins.Active { id: logins.key(2), user: users.key(1), device: "laptop" }
   insert logins.Revoked { id: logins.key(3), user: users.key(1), reason: "old" }
   insert tags.A { id: tags.key(1), n: 1, label: "a1" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), user: users.key(1), device: "phone" }
+Active { id: logins.key(2), user: users.key(1), device: "laptop" }
+Revoked { id: logins.key(3), user: users.key(1), reason: "old" }
+query rowsort
+  from x in tags select x
+----
+A { id: tags.key(1), n: 1, label: "a1" }
 run
   update s in logins where s.user == users.key(1) and key s != logins.key(2) set Revoked { }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(2), user: users.key(1), device: "laptop" }
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(3), user: users.key(1), reason: "manual" }
+query rowsort
+  from x in tags select x
+----
+A { id: tags.key(1), n: 1, label: "a1" }
 query
   from s in logins select s
 ----
@@ -25,31 +53,129 @@ Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
 Revoked { id: logins.key(3), user: users.key(1), reason: "manual" }
 run
   update s in logins.Active set Revoked { reason: "lost" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+Revoked { id: logins.key(3), user: users.key(1), reason: "manual" }
+query rowsort
+  from x in tags select x
+----
+A { id: tags.key(1), n: 1, label: "a1" }
 query
   from s in logins where key s == logins.key(2) select s
 ----
 Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
 run
   update s in logins where key s == logins.key(3) set Revoked { s with user: users.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+Revoked { id: logins.key(3), user: users.key(1), reason: "manual" }
+query rowsort
+  from x in tags select x
+----
+A { id: tags.key(1), n: 1, label: "a1" }
 query
   from s in logins.Revoked where key s == logins.key(3) select s.reason
 ----
 "manual"
 run
   update s in logins where key s == logins.key(3) set Active { device: "tablet" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(3), user: users.key(1), device: "tablet" }
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+query rowsort
+  from x in tags select x
+----
+A { id: tags.key(1), n: 1, label: "a1" }
 query
   from s in logins where key s == logins.key(3) select s
 ----
 Active { id: logins.key(3), user: users.key(1), device: "tablet" }
 error Invalid
   update s in logins where key s == logins.key(3) set Active { }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(3), user: users.key(1), device: "tablet" }
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+query rowsort
+  from x in tags select x
+----
+A { id: tags.key(1), n: 1, label: "a1" }
 error Invalid
   update t in tags.A set B { t with n: 2 }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(3), user: users.key(1), device: "tablet" }
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+query rowsort
+  from x in tags select x
+----
+A { id: tags.key(1), n: 1, label: "a1" }
 run
   update t in tags.A set C { t with n: 3 }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(3), user: users.key(1), device: "tablet" }
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+query rowsort
+  from x in tags select x
+----
+C { id: tags.key(1), n: 3, label: "dflt" }
 query
   from t in tags select t
 ----
 C { id: tags.key(1), n: 3, label: "dflt" }
 error Invalid
   from s in logins select Revoked { }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(3), user: users.key(1), device: "tablet" }
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+query rowsort
+  from x in tags select x
+----
+C { id: tags.key(1), n: 3, label: "dflt" }

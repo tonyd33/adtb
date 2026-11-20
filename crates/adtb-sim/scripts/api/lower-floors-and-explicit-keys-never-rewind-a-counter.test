@@ -1,0 +1,48 @@
+# Explicit keys below a counter's next value never rewind it, and after a crash the counter
+# draws past every key it gave or saw.
+seed 5
+use stock
+
+run
+  insert items.Closed { id: items.key(-10), name: "minus ten" }
+
+run
+  insert items.Closed { name: "first" }
+
+run
+  insert items.Closed { id: items.key(-100), name: "minus hundred" }
+
+run
+  insert items.Closed { name: "second" }
+
+run
+  insert items.Closed { id: items.key(100), name: "hundred" }
+
+run
+  insert items.Closed { id: items.key(7), name: "seven" }
+
+run
+  insert items.Closed { name: "third" }
+
+query rowsort
+  from i in items select { k: value(key i), name: i.name }
+----
+{ k: -100, name: "minus hundred" }
+{ k: -10, name: "minus ten" }
+{ k: 1, name: "first" }
+{ k: 2, name: "second" }
+{ k: 7, name: "seven" }
+{ k: 100, name: "hundred" }
+{ k: 101, name: "third" }
+
+crash after 0
+
+reopen
+
+run
+  insert items.Closed { name: "after" }
+
+query
+  from i in items where value(key i) > 101 select i.name
+----
+"after"

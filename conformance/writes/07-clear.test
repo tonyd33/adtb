@@ -10,8 +10,29 @@ run
   insert notes from ([{ id: notes.key(1), author: Some { value: users.key(1) }, editor: Some { value: users.key(1) }, body: "a" },
                       { id: notes.key(2), author: Some { value: users.key(2) }, editor: Some { value: users.key(1) }, body: "b" },
                       { id: notes.key(3), author: None, editor: None, body: "c" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: Some { value: users.key(1) }, editor: Some { value: users.key(1) }, body: "a" }
+Note { id: notes.key(2), author: Some { value: users.key(2) }, editor: Some { value: users.key(1) }, body: "b" }
+Note { id: notes.key(3), author: None, editor: None, body: "c" }
 run
   delete x in users where key x == users.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: None, editor: None, body: "a" }
+Note { id: notes.key(2), author: Some { value: users.key(2) }, editor: None, body: "b" }
+Note { id: notes.key(3), author: None, editor: None, body: "c" }
 query
   from n in notes select n
 ----

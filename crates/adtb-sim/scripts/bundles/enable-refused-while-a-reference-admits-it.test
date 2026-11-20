@@ -1,0 +1,25 @@
+# An enable is refused while a live bundle pinned before it follows a reference that admits the
+# new constructor, whether the reference names the whole relation or a set that joins it.
+seed 50
+use states
+log
+  module auth
+  add constructor Identity.Apple { sub: Text }
+    joins identities.OAuth
+bundle any-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from s in sessions select s.identity.user
+bundle oauth-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from l in links select l.oauth.user
+reopen
+
+bundle any-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from s in sessions select s.identity.user
+bundle oauth-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from l in links select l.oauth.user
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable identities.Apple` is refused: bundle any-1.0, pinned at version 1, follows a reference that admits identities.Apple; a bundle stops blocking only when it is released\n`enable identities.Apple` is refused: bundle oauth-1.0, pinned at version 1, follows a reference that admits identities.Apple; a bundle stops blocking only when it is released" } } }
+  module auth
+  enable identities.Apple

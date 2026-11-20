@@ -1,0 +1,12 @@
+# A constraint holding a fixpoint is refused.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::no_cycle is not admitted: changes to app::follows: `fix` is outside the bound" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Follow = { src: Key users, dst: Key users }
+  add relation follows : Follow key (src, dst)
+  add constraint no_cycle =
+    fix reach = (from f in follows select { a: f.src, b: f.dst })
+              union (from r in reach, f in follows where f.src == r.b select { a: r.a, b: f.dst })
+    in from r in reach where r.a == r.b select r

@@ -5,18 +5,52 @@ schema
   relation users : User key id generate sequence
 run
   insert users from (from k in [1, 2, 3, 4] select { id: users.key(k), name: "u" ++ print(k) })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
 run
   match users.key(1)
     | User u -> update u where u.name == "nope" set User { u with name: "one" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
 run
   match users.key(2)
     | User u -> update u where u.name == "u2" set User { u with name: "two" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "two" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
 run
   match users.key(3)
     | User u -> delete u where u.name == "nope"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "two" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
 run
   match users.key(4)
     | User u -> delete u where u.name == "u4"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "two" }
+User { id: users.key(3), name: "u3" }
 query
   from u in users select u
 ----
@@ -30,6 +64,12 @@ run
   insert users { id: users.key(2), name: "again" }
   unless conflict on key
   else update old where old.name == "u1" set User { name: "not-taken" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "via-old" }
+User { id: users.key(2), name: "two" }
+User { id: users.key(3), name: "u3" }
 query
   from u in users select u
 ----

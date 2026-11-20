@@ -1,0 +1,26 @@
+# Dropping the declared index leading a reference field applies, and the constraint reading
+# through that field is still enforced.
+migrate
+  module auth
+  add module auth
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+  add relation identities : Identity
+    key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+    index (user)
+  add constraint has_identity =
+    from u in users
+    where not exists i in identities where i.user == key u
+    select u
+
+migrate
+  module auth
+  drop index (user) in identities
+
+error Violated { constraint: "auth::has_identity", report: 1 rows, redacted: 0 }
+  insert users { name: "ann" }

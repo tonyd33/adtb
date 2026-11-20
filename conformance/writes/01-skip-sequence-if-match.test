@@ -5,12 +5,20 @@ schema
   relation users : User key id generate sequence
 run
   skip
+query rowsort
+  from x in users select x
+----
 query
   from u in users select u
 ----
 
 run
   (insert users { id: users.key(1), name: "a" }, insert users { id: users.key(2), name: "b" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
 query
   from u in users select u.name
 ----
@@ -18,8 +26,20 @@ query
 "b"
 run
   if true then insert users { id: users.key(3), name: "c" } else insert users { id: users.key(4), name: "d" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
 run
   if 1 > 2 then insert users { id: users.key(5), name: "e" } else skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
 query
   from u in users select u.name
 ----
@@ -30,9 +50,23 @@ run
   match true
     | True -> (insert users { id: users.key(6), name: "f" }, skip)
     | False -> insert users { id: users.key(7), name: "g" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(6), name: "f" }
 run
   match users.key(1)
     | User u -> update u set User { u with name: "a2" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a2" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(6), name: "f" }
 query
   from u in users select u.name
 ----
@@ -45,6 +79,14 @@ run
     (insert users { id: users.key(8), name: "h" },
      if true then skip else fail "no")
     skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a2" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(3), name: "c" }
+User { id: users.key(6), name: "f" }
+User { id: users.key(8), name: "h" }
 query
   count(u for u in users)
 ----

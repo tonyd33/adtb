@@ -1,0 +1,28 @@
+# A revert that disables a constructor is refused while a live bundle can write into it.
+seed 112
+use states
+log
+  module auth
+  add constructor Identity.Apple { sub: Text }
+    joins identities.OAuth
+  module auth
+  enable identities.Apple
+bundle app-3.0 pins 3 edition "2026-10"
+  import auth
+  txn sign (n: Text, s: Text) -> Key identities =
+    transact
+      let u = insert users { name: n }
+      let i = insert identities.Apple { user: key u, sub: s }
+      return key i
+reopen
+
+bundle app-3.0 pins 3 edition "2026-10"
+  import auth
+  txn sign (n: Text, s: Text) -> Key identities =
+    transact
+      let u = insert users { name: n }
+      let i = insert identities.Apple { user: key u, sub: s }
+      return key i
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "revert 0003", detail: "bundle app-3.0 pins 3: `sign` has no translation: it writes `Identity.Apple`, which is declared now" } } }
+  module auth
+  revert 0003

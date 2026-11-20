@@ -42,20 +42,6 @@ fn at(seed: u64, body: impl Fn(&Database<SimRuntime>)) {
     assert_eq!(Outcome::Finished, outcome, "seed {seed}");
 }
 
-#[test]
-fn a_commit_and_an_abort_end_their_transactions_by_hand() {
-    at(5, |db| {
-        let tx = db.begin().expect("a writer begins");
-        db.commit(tx).expect("the writer commits");
-        let tx = db.begin().expect("a writer begins");
-        db.abort(tx).expect("the writer aborts");
-        let tx = db.begin_read(false).expect("a reader begins");
-        db.commit(tx).expect("the reader commits");
-        assert_eq!(nothing(), holding(db));
-        assert_eq!(0, db.take_ends_by_drop());
-    });
-}
-
 /// Drop `tx` on a thread panicking with the injected failure.
 fn drop_panicking<T: Send>(tx: T) {
     let ran = catch_unwind(AssertUnwindSafe(move || {

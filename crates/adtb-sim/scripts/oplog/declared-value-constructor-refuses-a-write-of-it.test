@@ -1,0 +1,33 @@
+# A value constructor added by a migration is declared: a statement writing it is refused NotOpen
+# and leaves nothing, and its transaction goes on.
+migrate
+  module app
+  add module app
+  add type Address = US { zip: Text, street: Text }
+  add type Customer = { id: Key customers, name: Text, address: Address }
+  add relation customers : Customer key id generate sequence
+
+run
+  insert customers { id: customers.key(1), name: "c", address: US { zip: "10001", street: "s" } }
+  insert customers { id: customers.key(2), name: "d", address: US { zip: "20002", street: "t" } }
+
+migrate
+  module app
+  add constructor Address.Intl { country: Text, postcode: Text }
+
+begin t
+
+in t error NotOpen { ctor: "Address.Intl", stage: "Declared" }
+  update c in customers where c.id == customers.key(1)
+  set Customer { c with address: Intl { country: "de", postcode: "1" } }
+
+in t run
+  update c in customers where c.id == customers.key(2) set Customer { c with name: "e" }
+
+commit t
+
+query
+  from c in customers select c
+----
+Customer { id: customers.key(1), name: "c", address: US { zip: "10001", street: "s" } }
+Customer { id: customers.key(2), name: "e", address: US { zip: "20002", street: "t" } }

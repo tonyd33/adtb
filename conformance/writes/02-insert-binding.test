@@ -17,6 +17,22 @@ run
     let i = insert identities.Google { user: key u, gid: "g-eve" }
     insert copies { id: copies.key(1), text: i.gid }
     insert copies { id: copies.key(2), text: u.name }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "eve" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-eve" }
+query rowsort
+  from x in copies select x
+----
+Copy { id: copies.key(1), text: "g-eve" }
+Copy { id: copies.key(2), text: "eve" }
+query rowsort
+  from x in flags select x
+----
 query
   from g in identities.Google select g.user.name
 ----
@@ -30,6 +46,24 @@ run
   transact
     let f = insert flags { id: flags.key(1) }
     insert copies { id: copies.key(3), text: f.label }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "eve" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-eve" }
+query rowsort
+  from x in copies select x
+----
+Copy { id: copies.key(1), text: "g-eve" }
+Copy { id: copies.key(2), text: "eve" }
+Copy { id: copies.key(3), text: "none" }
+query rowsort
+  from x in flags select x
+----
+Flag { id: flags.key(1), label: "none" }
 query
   from c in copies where key c == copies.key(3) select c.text
 ----
@@ -41,6 +75,28 @@ run
     insert copies from (
       from x in s
       select { id: copies.key(100 + value(key x)), text: match x | EmailPass e -> e.email | Google g -> g.gid })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "eve" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(50), user: users.key(1), email: "e", hash: "h" }
+Google { id: identities.key(1), user: users.key(1), gid: "g-eve" }
+Google { id: identities.key(51), user: users.key(1), gid: "g" }
+query rowsort
+  from x in copies select x
+----
+Copy { id: copies.key(1), text: "g-eve" }
+Copy { id: copies.key(150), text: "e" }
+Copy { id: copies.key(151), text: "g" }
+Copy { id: copies.key(2), text: "eve" }
+Copy { id: copies.key(3), text: "none" }
+query rowsort
+  from x in flags select x
+----
+Flag { id: flags.key(1), label: "none" }
 query
   from c in copies where value(key c) > 100 select c
 ----

@@ -8,6 +8,14 @@ schema
 run
   (insert badges { id: badges.key(1), owner: users.key(1), label: "b1" },
    insert users { id: users.key(1), name: "a" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
 query
   from b in badges select b.owner.name
 ----
@@ -16,6 +24,16 @@ run
   transact
     insert badges { id: badges.key(2), owner: users.key(2), label: "b2" }
     insert users { id: users.key(2), name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
+Badge { id: badges.key(2), owner: users.key(2), label: "b2" }
 query
   from b in badges select b.label
 ----
@@ -24,12 +42,28 @@ query
 run
   (delete u in users where key u == users.key(2),
    delete b in badges where b.owner == users.key(2))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
 query
   from u in users select u
 ----
 User { id: users.key(1), name: "a" }
 error Violated
   insert badges { id: badges.key(3), owner: users.key(3), label: "b3" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
 query
   from b in badges select b.label
 ----

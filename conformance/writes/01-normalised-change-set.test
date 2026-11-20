@@ -7,15 +7,40 @@ schema
 run
   insert users { id: users.key(1), name: "frozen" }
   insert users { id: users.key(2), name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "b" }
 run
   update u in users set u
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "b" }
 run
   update u in users where key u == users.key(1) set User { u with name: "frozen" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "b" }
 run
   (delete u in users where key u == users.key(1),
    insert users { id: users.key(1), name: "frozen" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "b" }
 run
   update u in users where key u == users.key(2) set User { u with name: "c" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "c" }
 query
   from u in users select u
 ----
@@ -23,11 +48,26 @@ User { id: users.key(1), name: "frozen" }
 User { id: users.key(2), name: "c" }
 error Violated
   update u in users where key u == users.key(1) set User { u with name: "thawed" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "c" }
 error Violated
   delete u in users where key u == users.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "c" }
 error Violated
   (delete u in users where key u == users.key(1),
    insert users { id: users.key(1), name: "other" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "c" }
 query
   from u in users select u
 ----

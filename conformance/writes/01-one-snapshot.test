@@ -6,9 +6,20 @@ schema
 run
   insert users { id: users.key(1), name: "a" }
   insert users { id: users.key(2), name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
 run
   (insert users { id: users.key(3), name: "c" },
    update u in users set User { u with name: u.name ++ "!" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a!" }
+User { id: users.key(2), name: "b!" }
+User { id: users.key(3), name: "c" }
 query
   from u in users select u.name
 ----
@@ -18,6 +29,13 @@ query
 run
   (update u in users set User { u with name: u.name ++ "?" },
    insert users { id: users.key(4), name: "d" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a!?" }
+User { id: users.key(2), name: "b!?" }
+User { id: users.key(3), name: "c?" }
+User { id: users.key(4), name: "d" }
 query
   from u in users select u.name
 ----
@@ -28,6 +46,14 @@ query
 run
   (delete u in users where u.name == "e",
    insert users { id: users.key(5), name: "e" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a!?" }
+User { id: users.key(2), name: "b!?" }
+User { id: users.key(3), name: "c?" }
+User { id: users.key(4), name: "d" }
+User { id: users.key(5), name: "e" }
 query
   from u in users where u.name == "e" select key u
 ----
@@ -37,6 +63,15 @@ run
     insert users { id: users.key(6), name: "f" }
     insert users from (from u in users where u.name == "f" select { id: users.key(7), name: "g" })
     delete u in users where key u == users.key(6)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a!?" }
+User { id: users.key(2), name: "b!?" }
+User { id: users.key(3), name: "c?" }
+User { id: users.key(4), name: "d" }
+User { id: users.key(5), name: "e" }
+User { id: users.key(6), name: "f" }
 query
   from u in users where u.name == "f" or u.name == "g" select u.name
 ----

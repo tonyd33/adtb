@@ -1,25 +1,15 @@
 //! The textual syntax over the engine's values: they read back as printed, and print exactly as
-//! the reference prints the same values, whether built directly or read back from the engine.
+//! the reference prints the same values when built directly.
 
 use crate::plan::fixture;
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
-use crate::exec::{self, Budget, Call, Options as XOptions, Val};
-use crate::plan::{Options as PlanOptions, Rewrites, plan};
+use crate::exec::Val;
 use adtb_lang::textual::{self, Form};
-use adtb_lang::types::Ty;
 use adtb_reference::Value;
-use adtb_sim::{Config, Outcome, Sim};
 use adtb_testkit::Rng;
 use adtb_testkit::draw::draw;
 
-use crate::test_world::load;
-use adtb_lang::schema::Committed;
 use fixture::Fixture;
-
-use super::exec_tests::{options, planner, read_only};
 
 const SCHEMA: &str = r"
 type Money = { amount: Decimal 2, currency: Text }
@@ -86,8 +76,6 @@ const TYPES: &[&str] = &[
     "Okay | Bad { why: Text, at: Date }",
 ];
 
-const DAY: i64 = 86_400_000_000;
-
 #[test]
 fn engine_values_read_back_as_printed_for_every_type() {
     let f = Fixture::new(SCHEMA);
@@ -129,130 +117,5 @@ fn a_value_built_both_ways_prints_as_the_reference_prints_it() {
                 "draw {i} at {name}"
             );
         }
-    }
-}
-
-/// Returns the value the engine computes for ad hoc `text` over the rows of `f`, with its type
-/// and the engine's schema.
-fn engine(f: &Fixture, text: &str) -> (Ty, Val, Committed) {
-    let mut out = None;
-    let mut sim = Sim::new(1, Config::default());
-    let result = sim.run(|rt| {
-        let db = load::open_with(&rt, SCHEMA, &options());
-        let _running = load::rows_with_noise(&db, &f.schema, &f.db);
-        let e = planner(&db, f);
-        let (n, t) = e.normal(text, &[]);
-        let p = plan(
-            &e.schema,
-            &e.normal,
-            &e.catalog,
-            &n.terms,
-            t,
-            PlanOptions {
-                rewrites: Rewrites::ALL,
-                hiding: false,
-            },
-        )
-        .unwrap_or_else(|e| panic!("`{text}` has no plan: {e}"));
-        let program = Arc::new(
-            exec::compile(&e.schema, &e.catalog, &p, None)
-                .unwrap_or_else(|e| panic!("`{text}` does not compile: {e:?}")),
-        );
-        let reader = db.begin(&read_only()).expect("a transaction");
-        let store = db
-            .testing()
-            .store(&reader)
-            .expect("the transaction is open");
-        let budget = Budget::new(1 << 30);
-        let call = Call {
-            store,
-            grant: budget.admit(64 << 20).expect("a grant fits"),
-            pool: None,
-            options: XOptions::default(),
-            cancel: Arc::new(AtomicBool::new(false)),
-            deadline: None,
-        };
-        let v = exec::execute(
-            rt,
-            program.bind(|_| None).expect("the text has no parameter"),
-            call,
-        )
-        .unwrap_or_else(|e| panic!("`{text}` fails in the engine: {e:?}"));
-        out = Some((n.terms.ty(t).clone(), v, e.schema));
-    });
-    assert_eq!(Outcome::Finished, result);
-    out.expect("the run finished")
-}
-
-fn stored() -> Fixture {
-    let mut f = Fixture::new(SCHEMA);
-    let at = Value::Instant(20_000 * DAY + 3_723_000_456);
-    let since = Value::Date(-800_000);
-    let zone = Value::Zoned(-5 * DAY + 1, "Europe/Paris".into());
-    let every = Value::Period {
-        months: 13,
-        days: -2,
-    };
-    let day = Value::Time(DAY - 1);
-    f.rows(
-        "docs",
-        r#"[Note { id: docs.key(1), body: "a \"q\"\n\u{7}é", blob: bytes("h1"),
-                   price: { amount: 12.50, currency: "EUR" }, status: Active,
-                   at: at, ratio: 0.25, note: None },
-            Note { id: docs.key(2), body: "", blob: bytes(""),
-                   price: { amount: -0.05, currency: "" }, status: Paused { since: since, why: "x" },
-                   at: at, ratio: -1e300, note: Some { value: "n" } },
-            Link { id: docs.key(3), target: docs.key(1), wait: 90s, zone: zone,
-                   every: every, day: day }]"#,
-        &[
-            ("at", "Instant", at),
-            ("since", "Date", since),
-            ("zone", "ZonedDateTime", zone),
-            ("every", "Period", every),
-            ("day", "Time", day),
-        ],
-    );
-    f.rows(
-        "taggings",
-        r#"[Tagging { doc: docs.key(1), tag: "b", weight: -3 },
-            Tagging { doc: docs.key(1), tag: "a", weight: 32767 },
-            Tagging { doc: docs.key(3), tag: "a", weight: 0 }]"#,
-        &[],
-    );
-    let session = Value::DateTime(-DAY * 400_000);
-    f.rows(
-        "tokens",
-        r#"[Api { id: tokens.key(uuid("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")), secret: bytes("s") },
-            Session { id: tokens.key(uuid("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c")), at: session, small: 0.1 }]"#,
-        &[("session", "DateTime", session)],
-    );
-    f
-}
-
-#[test]
-fn rows_read_back_from_the_engine_print_as_the_reference_prints_them() {
-    let f = stored();
-    for text in [
-        "docs",
-        "taggings",
-        "tokens",
-        "from t in taggings select t.doc",
-        "from t in taggings select { doc: t.doc, w: { tag: t.tag, weight: t.weight } }",
-        "from d in docs select d.id",
-    ] {
-        let (ty, v, schema) = engine(&f, text);
-        let want = f
-            .reference(text, &[])
-            .unwrap_or_else(|e| panic!("`{text}` fails in the reference: {e:?}"));
-        let form = Form::of(&schema, &ty);
-        let printed = textual::print(&v, &form).unwrap_or_else(|e| panic!("`{text}`: {e}"));
-        assert_eq!(
-            adtb_reference::textual::print(&schema, &want, &ty),
-            Ok(printed.clone()),
-            "`{text}`"
-        );
-        let back: Val = textual::parse(&printed, &form)
-            .unwrap_or_else(|e| panic!("`{printed}` does not read back: {e}"));
-        assert_eq!(v, back, "`{text}`");
     }
 }

@@ -789,12 +789,6 @@ trait Holds: Runtime {
     fn write_path(&self, rows: &'static str) -> WritePath<Self>;
 }
 
-impl Holds for OsRuntime {
-    fn write_path(&self, rows: &'static str) -> WritePath<OsRuntime> {
-        WritePath::of(self, &items_fixture(rows), None)
-    }
-}
-
 impl Holds for SimRuntime {
     /// Preconditions: the simulator is the one [`sim_seeds_in`] made for `rows`.
     fn write_path(&self, rows: &'static str) -> WritePath<SimRuntime> {
@@ -1346,12 +1340,6 @@ fn an_alarm_wakes_a_waiting_call_sim() {
     sim_seeds("alarm", an_alarm_wakes_a_waiting_call);
 }
 
-#[test]
-fn an_alarm_wakes_a_waiting_call_real() {
-    let (_dir, rt) = real();
-    an_alarm_wakes_a_waiting_call(&rt);
-}
-
 /// Of two transactions each holding the item the other next writes, the second to wait fails
 /// with a deadlock and the first goes on, whether the waits suspend or block.
 fn a_deadlock_fails_the_second_waiter<R: Holds>(rt: &R, suspend: bool, settle: Duration) {
@@ -1559,44 +1547,4 @@ fn a_synchronous_call_still_blocks_on_a_transaction_sim() {
         assert_eq!(vec![Value::Int(2)], counter_value(&db));
         db.close().unwrap();
     });
-}
-
-#[test]
-fn a_synchronous_call_still_blocks_on_a_transaction_real() {
-    let scratch = Scratch::new("calls", "synchronous");
-    let dir = scratch.path();
-    let db = crate::open(
-        dir.join("counter.adt"),
-        &SchemaLog::new([COUNTERS]),
-        &counter_options(),
-    )
-    .unwrap();
-    db.query_text("insert counters { value: 0 }", &[], &CallOptions::default())
-        .unwrap();
-    let calls = db.registered("counter").unwrap();
-    let mut txn = db.begin(&TxnOptions::default()).unwrap();
-    txn.query_text(UPDATE, &[], &TxnCallOptions::default())
-        .unwrap();
-    let xid = txn
-        .tested_txn()
-        .and_then(Txn::xid)
-        .expect("the update gives the transaction an xid");
-    let done = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        let caller = scope.spawn(|| {
-            calls.call(2, &[], &CallOptions::default()).unwrap();
-            done.store(true, Ordering::Release);
-        });
-        while !db.testing().waited_on().contains(&xid) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            !done.load(Ordering::Acquire),
-            "the call waits for the transaction"
-        );
-        txn.commit(None).unwrap();
-        caller.join().unwrap();
-    });
-    assert_eq!(vec![Value::Int(2)], counter_value(&db));
-    db.close().unwrap();
 }

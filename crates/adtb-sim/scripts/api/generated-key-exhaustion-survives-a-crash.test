@@ -1,0 +1,42 @@
+# A counter exhausted by a generated key or by an explicit maximum key stays exhausted after a
+# crash and recovery, and an explicit maximum key is still accepted.
+seed 4
+use stock
+
+run
+  insert items.Closed { id: items.key(9223372036854775805), name: "explicit" }
+
+run
+  insert items.Closed { name: "generated" }
+
+run
+  insert orders { id: orders.key(9223372036854775807), item: items.key(9223372036854775805) }
+
+query rowsort
+  from i in items select { k: value(key i), name: i.name }
+----
+{ k: 9223372036854775805, name: "explicit" }
+{ k: 9223372036854775806, name: "generated" }
+
+crash after 0
+
+reopen
+
+adhoc error Invalid { detail: "the generated counter exhausted its integer range" }
+  insert items.Closed { name: "again" }
+
+adhoc error Invalid { detail: "the generated counter exhausted its integer range" }
+  insert orders { item: items.key(9223372036854775805) }
+
+run
+  insert items.Closed { id: items.key(9223372036854775807), name: "maximum" }
+
+adhoc error Invalid { detail: "the generated counter exhausted its integer range" }
+  insert items.Closed { name: "again" }
+
+query rowsort
+  from i in items select value(key i)
+----
+9223372036854775805
+9223372036854775806
+9223372036854775807

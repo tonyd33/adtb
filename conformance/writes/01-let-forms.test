@@ -8,23 +8,71 @@ schema
 run
   insert users { id: users.key(1), name: "a" }
   insert users { id: users.key(2), name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in copies select x
+----
 error Invalid
   transact
     let x = skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in copies select x
+----
 error Invalid
   transact
     let x = (insert users { id: users.key(3), name: "c" }, skip)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in copies select x
+----
 error Invalid
   transact
     let x = if true then insert users { id: users.key(3), name: "c" } else skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in copies select x
+----
 error Invalid
   transact
     let x = match true
       | True -> insert users { id: users.key(3), name: "c" }
       | False -> skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in copies select x
+----
 error Invalid
   transact
     let x = fail "no"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in copies select x
+----
 query
   from u in users select u.name
 ----
@@ -38,6 +86,17 @@ run
     insert copies { id: copies.key(1), name: i.name }
     insert copies from (from x in u select { id: copies.key(2), name: x.name })
     insert copies from (from x in d select { id: copies.key(3), name: x.name })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a2" }
+User { id: users.key(3), name: "c" }
+query rowsort
+  from x in copies select x
+----
+Copy { id: copies.key(1), name: "c" }
+Copy { id: copies.key(2), name: "a2" }
+Copy { id: copies.key(3), name: "b" }
 query
   from c in copies select c
 ----

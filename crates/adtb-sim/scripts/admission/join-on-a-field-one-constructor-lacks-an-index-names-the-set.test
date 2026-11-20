@@ -1,0 +1,17 @@
+# A constraint joining a constructor set on a field one of its constructors has no index on is
+# refused, naming the set and the missing index.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::parent_in_zone is not admitted: changes to app::spots.(Region | Town): index (parent) in app::spots.(Region | Town) is missing" } } }
+  module app
+  add module app
+  add type Spot { id: Key spots, zone: Text }
+    = Region { parent: Option Text }
+    | Town   { parent: Option Text }
+    | Mark   { label: Text }
+  add relation spots : Spot
+    key id generate sequence
+    index (zone)
+    index (parent) in Region
+  add constraint parent_in_zone =
+    from l in spots.(Region | Town), p in spots.(Region | Town)
+    where l.parent == Some { value: p.zone } and key p != key l
+    select l

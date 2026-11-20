@@ -1,0 +1,23 @@
+# A deprecate applies while every live bundle that writes the relation writes only other
+# constructors.
+seed 92
+use auth
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  txn link (n: Text, g: Text) -> Key identities =
+    transact
+      let u = insert users { name: n, tier: Free }
+      let i = insert identities.Google { user: key u, gid: g }
+      return key i
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  txn link (n: Text, g: Text) -> Key identities =
+    transact
+      let u = insert users { name: n, tier: Free }
+      let i = insert identities.Google { user: key u, gid: g }
+      return key i
+migrate
+  module auth
+  deprecate identities.EmailPass

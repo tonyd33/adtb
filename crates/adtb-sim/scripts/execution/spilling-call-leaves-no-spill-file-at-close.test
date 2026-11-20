@@ -1,0 +1,20 @@
+# A call that spills leaves no spill file once it and the database have ended.
+use stocked
+option query_memory_bytes 32768
+option morsel_rows 16
+option spill_bytes 0
+reopen
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  count(s for s in stock)
+
+option spill_bytes default
+reopen
+
+query
+  count(s for s in stock)
+----
+300
+
+probe files spill
+----

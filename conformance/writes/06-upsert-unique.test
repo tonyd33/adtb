@@ -11,10 +11,28 @@ schema
 run
   insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
   insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g-ann" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-ann" }
 run
   insert identities.Google { id: identities.key(5), user: users.key(2), gid: "g-ann" }
   unless conflict on (gid) in Google
   else update old set Google { old with user: users.key(2) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
 query
   from g in identities.Google select g
 ----
@@ -23,6 +41,16 @@ run
   insert identities.Google { id: identities.key(6), user: users.key(2), gid: "fresh" }
   unless conflict on (gid) in Google
   else update old set Google { old with user: users.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
+Google { id: identities.key(6), user: users.key(2), gid: "fresh" }
 query
   from g in identities.Google select g
 ----
@@ -32,6 +60,16 @@ run
   insert identities.Google { id: identities.key(7), user: users.key(1), gid: "fresh" }
   unless conflict on (gid) in Google
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
+Google { id: identities.key(6), user: users.key(2), gid: "fresh" }
 query
   from g in identities.Google select g
 ----
@@ -41,6 +79,15 @@ run
   insert identities.Google { id: identities.key(8), user: users.key(1), gid: "fresh" }
   unless conflict on (gid) in Google
   else delete old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
 query
   from g in identities.Google select key g
 ----
@@ -49,6 +96,16 @@ run
   insert identities.Google { id: identities.key(9), user: users.key(1), gid: "g-ann" }
   unless conflict on (gid) in Google
   else (update old set Google { old with gid: "renamed" }, insert users { id: users.key(3), name: "side" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "side" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(2), gid: "renamed" }
 query
   from g in identities.Google select g.gid
 ----

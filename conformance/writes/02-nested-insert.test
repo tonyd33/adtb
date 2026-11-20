@@ -9,6 +9,14 @@ schema
   relation identities : Identity key id generate sequence
 run
   insert identities.Google { user: key (insert users { name: "nest" }), gid: "g-n" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
 query
   from g in identities.Google select g.user.name
 ----
@@ -20,32 +28,122 @@ query
 run
   transact
     insert identities.Google { id: identities.key(7), user: key (insert users { id: users.key(7), name: "seven" }), gid: "g7" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 query
   from g in identities.Google where key g == identities.key(7) select g.user
 ----
 users.key(7)
 error Invalid
   if true then insert identities.Google { user: key (insert users { name: "a" }), gid: "ga" } else skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 error Invalid
   insert identities.Google from (
     from u in users select { user: key (insert users { name: "b" }), gid: u.name })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 error Invalid
   update g in identities.Google set Google { g with user: key (insert users { name: "c" }) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 error Invalid
   insert identities.Google { user: users.key(7), gid: "g8" }
   unless conflict on key
   else update old set Google { old with user: key (insert users { name: "d" }) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 error Invalid
   match true
     | True -> insert identities.Google { user: key (insert users { name: "e" }), gid: "ge" }
     | False -> skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 error Invalid
   if true and key (insert users { name: "f" }) == users.key(7) then skip else skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 error Invalid
   if false or key (insert users { name: "g" }) == users.key(7) then skip else skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 error Invalid
   match users.key(7)
     | User u -> insert identities.Google { user: key (insert users { name: u.name }), gid: "gu" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "nest" }
+User { id: users.key(7), name: "seven" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-n" }
+Google { id: identities.key(7), user: users.key(7), gid: "g7" }
 query
   from u in users select u.name
 ----

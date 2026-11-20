@@ -1,0 +1,43 @@
+# Rounding a Decimal to a smaller scale, and div's exact quotient, follow each Rounding mode.
+schema
+  module test
+  fn d0 (x: Decimal 0) -> Decimal 0 = x
+  fn modes (x: Decimal 1) -> { half_even: Decimal 0, half_up: Decimal 0, half_down: Decimal 0, up: Decimal 0, down: Decimal 0, ceiling: Decimal 0, floor: Decimal 0 } =
+    { half_even: round(x, 0, HalfEven), half_up: round(x, 0, HalfUp), half_down: round(x, 0, HalfDown),
+      up: round(x, 0, Up), down: round(x, 0, Down), ceiling: round(x, 0, Ceiling), floor: round(x, 0, Floor) }
+query
+  modes(2.5)
+----
+{ half_even: 2, half_up: 3, half_down: 2, up: 3, down: 2, ceiling: 3, floor: 2 }
+query
+  modes(-2.5)
+----
+{ half_even: -2, half_up: -3, half_down: -2, up: -3, down: -2, ceiling: -2, floor: -3 }
+query
+  modes(3.5)
+----
+{ half_even: 4, half_up: 4, half_down: 3, up: 4, down: 3, ceiling: 4, floor: 3 }
+query
+  modes(2.1)
+----
+{ half_even: 2, half_up: 2, half_down: 2, up: 3, down: 2, ceiling: 3, floor: 2 }
+query
+  div(d0(2), d0(3), 38, HalfUp)
+----
+0.66666666666666666666666666666666666667
+query
+  div(d0(2), d0(3), 38, Down)
+----
+0.66666666666666666666666666666666666666
+query
+  try div(d0(1), d0(1), 38, HalfEven)
+----
+Err { error: ArithmeticOverflow }
+query
+  try div(0.01, 0.0, 2, HalfEven)
+----
+Err { error: DivisionByZero }
+query
+  div(-2.500000, d0(1), 0, Floor)
+----
+-3

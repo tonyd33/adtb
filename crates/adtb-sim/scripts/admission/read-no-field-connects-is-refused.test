@@ -1,0 +1,14 @@
+# A read that no field connects to the changed relation is refused, since every row of it is read.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::quiet is not admitted: changes to app::events: no field connects them to app::users, so every row of it is read" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Event = { id: Key events, at: Instant, body: Text }
+  add relation events : Event
+    key id generate sequence
+    index (body)
+  add constraint quiet =
+    from u in users
+    where exists e in events where e.body == "stop"
+    select u

@@ -9,6 +9,16 @@ schema
   relation tallies : Tally key id generate sequence
 run
   insert users { id: users.key(1), name: "a" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in notes select x
+----
+query rowsort
+  from x in tallies select x
+----
 run
   transact
     let u = insert users { name: "fresh" }
@@ -16,6 +26,20 @@ run
     insert notes { id: notes.key(2), author: key u, body: "two" }
     let c = count(x for x in users)
     insert tallies { id: tallies.key(1), n: c }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "fresh" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: users.key(2), body: "one" }
+Note { id: notes.key(2), author: users.key(2), body: "two" }
+query rowsort
+  from x in tallies select x
+----
+Tally { id: tallies.key(1), n: 1 }
 query
   from n in notes select n.author.name
 ----
@@ -37,6 +61,22 @@ run
     insert users { id: users.key(5), name: "e" }
     let found = from x in users where key x == users.key(5) select x
     insert tallies { id: tallies.key(2), n: count(x for x in found) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "fresh" }
+User { id: users.key(5), name: "e" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: users.key(2), body: "one" }
+Note { id: notes.key(2), author: users.key(2), body: "two" }
+query rowsort
+  from x in tallies select x
+----
+Tally { id: tallies.key(1), n: 1 }
+Tally { id: tallies.key(2), n: 0 }
 query
   from t in tallies where key t == tallies.key(2) select t.n
 ----
@@ -45,6 +85,22 @@ error Violated
   transact
     insert notes { id: notes.key(3), author: users.key(9), body: "dangling" }
     insert users { id: users.key(6), name: "f" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "fresh" }
+User { id: users.key(5), name: "e" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: users.key(2), body: "one" }
+Note { id: notes.key(2), author: users.key(2), body: "two" }
+query rowsort
+  from x in tallies select x
+----
+Tally { id: tallies.key(1), n: 1 }
+Tally { id: tallies.key(2), n: 0 }
 query
   from u in users where key u == users.key(6) select u
 ----
@@ -54,6 +110,22 @@ error UserError
     let u = insert users { id: users.key(7), name: "g" }
     insert notes { id: notes.key(4), author: key u, body: "x" }
     fail "stop"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "fresh" }
+User { id: users.key(5), name: "e" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: users.key(2), body: "one" }
+Note { id: notes.key(2), author: users.key(2), body: "two" }
+query rowsort
+  from x in tallies select x
+----
+Tally { id: tallies.key(1), n: 1 }
+Tally { id: tallies.key(2), n: 0 }
 query
   count(x for x in users)
 ----

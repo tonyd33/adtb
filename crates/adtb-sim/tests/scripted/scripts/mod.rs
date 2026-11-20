@@ -183,6 +183,16 @@ fn faults() {
     run(&root().join("faults"));
 }
 
+#[test]
+fn admission() {
+    run(&root().join("admission"));
+}
+
+#[test]
+fn execution() {
+    run(&root().join("execution"));
+}
+
 /// Returns the override blocks of the nextest configuration.
 fn overrides() -> Vec<String> {
     let config = crate_dir().join("../../.config/nextest.toml");

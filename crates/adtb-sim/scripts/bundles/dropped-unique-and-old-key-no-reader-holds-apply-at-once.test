@@ -1,0 +1,39 @@
+# A dropped unique and the old key of a relaxing rekey that no live bundle holds take effect at
+# once: their indexes leave the catalog, the rows they refused are written, and the file verifies
+# clean.
+seed 125
+log
+  module auth
+  add module auth
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Label = { name: Text, lang: Text }
+  add relation labels : Label key name
+  module auth
+  add unique (name) in users
+reopen
+
+run
+  insert users { name: "ann" }
+  insert labels { name: "hi", lang: "en" }
+
+migrate
+  module auth
+  drop unique (name) in users
+  rekey relation labels key (name, lang)
+
+probe catalog
+----
+change None
+next heap 15
+auth::labels.Label heap 10
+auth::labels key (name, lang) over Label
+auth::users.User heap 9
+auth::users key id over User
+
+run
+  insert users { name: "ann" }
+  insert labels { name: "hi", lang: "fr" }
+
+probe holding verify
+----

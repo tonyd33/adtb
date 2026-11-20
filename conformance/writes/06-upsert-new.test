@@ -15,11 +15,42 @@ run
   insert identities.Google { id: identities.key(1), user: users.key(1), note: "orig", gid: "s-bo" }
   insert imports from ([{ id: imports.key(1), user: users.key(2), sub: "s-bo" },
                         { id: imports.key(2), user: users.key(3), sub: "s-cy" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), note: "orig", gid: "s-bo" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(2), sub: "s-bo" }
+Import { id: imports.key(2), user: users.key(3), sub: "s-cy" }
 run
   insert identities.Google from (
     from x in imports select { id: identities.key(10 + value(key x)), user: x.user, gid: x.sub })
   unless conflict on (gid) in Google
   else update old set Google { old with user: new.user, note: new.note }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(2), note: "dflt", gid: "s-bo" }
+Google { id: identities.key(12), user: users.key(3), note: "dflt", gid: "s-cy" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(2), sub: "s-bo" }
+Import { id: imports.key(2), user: users.key(3), sub: "s-cy" }
 query
   from g in identities.Google select g
 ----

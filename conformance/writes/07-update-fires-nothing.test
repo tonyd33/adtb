@@ -16,10 +16,58 @@ run
   insert identities.Google { id: identities.key(1), gid: "g" }
   insert logins.Active { id: logins.key(1), identity: identities.key(1) }
   insert posts { id: posts.key(1), author: users.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), gid: "g" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(1) }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1) }
 run
   update i in identities.Google set Apple { sub: "a" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), sub: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(1) }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1) }
 run
   update u in users set User { u with name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "b" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), sub: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(1) }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1) }
 query
   from s in logins select s
 ----
@@ -30,6 +78,22 @@ query
 Post { id: posts.key(1), author: users.key(1) }
 run
   (delete u in users, insert users { id: users.key(1), name: "c" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "c" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), sub: "a" }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(1) }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1) }
 query
   from p in posts select p
 ----

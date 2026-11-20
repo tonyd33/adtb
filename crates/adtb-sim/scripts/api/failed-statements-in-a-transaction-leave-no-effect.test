@@ -1,0 +1,80 @@
+# A statement of a transaction refused for any reason leaves none of its writes, and the transaction
+# goes on to commit the writes of its other statements.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Login { id: Key logins, user: Key users }
+    = Active  { device: Text }
+    | Revoked { reason: Text }
+  add relation logins : Login key id generate sequence
+  add type Reset = { id: Key resets, login: Key logins.Active, token: Text }
+  add relation resets : Reset key id generate sequence
+  add type Email = new Text where scalar_len(self) > 3
+  add type Contact = { id: Key contacts, email: Email }
+  add relation contacts : Contact key id generate sequence
+  add type Note = { id: Key notes, body: Text }
+  add relation notes : Note key id generate sequence
+  add constraint aa_names = from u in users where u.name == "aa" select u
+  add constraint frozen_notes = from n in deleted(notes) where n.body == "frozen" select n
+
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert logins.Active { id: logins.key(1), user: users.key(1), device: "phone" }
+  insert resets from (from s in logins.Active select { id: resets.key(1), login: key s, token: "t" })
+  insert users { id: users.key(9), name: "zed" }
+  insert notes { id: notes.key(1), body: "frozen" }
+  insert notes { id: notes.key(2), body: "plain" }
+
+begin t
+
+in t error Faulted { fault: DivisionByZero }
+  (insert users { id: users.key(2), name: "fault" }, if 1 / 0 > 0 then skip else skip)
+
+in t error UserError { message: "no" }
+  (insert users { id: users.key(3), name: "fail" }, fail "no")
+
+in t error Violated { constraint: "app::resets.Reset.login", report: 1 rows, redacted: 0 }
+  (insert users { id: users.key(4), name: "retag" },
+   update s in logins.Active where key s == logins.key(1) set Revoked { reason: "r" })
+
+in t error Violated { constraint: "app::aa_names", report: 1 rows, redacted: 0 }
+  insert users { id: users.key(5), name: "aa" }
+
+in t error Violated { constraint: "app::frozen_notes", report: 1 rows, redacted: 0 }
+  (insert users { id: users.key(6), name: "frozen" }, delete n in notes where n.body == "frozen")
+
+in t error Violated { constraint: "app::Email.domain", report: 1 rows, redacted: 0 }
+  (insert users { id: users.key(7), name: "domain" }, insert contacts { email: Email("ab") })
+
+in t error KeyChanged { relation: "app::users" }
+  (insert users { id: users.key(8), name: "key" },
+   match users.key(9) | User v -> update u in users where key u == users.key(1) set v)
+
+in t run
+  delete n in notes where n.body == "plain"
+  insert contacts { id: contacts.key(1), email: Email("abcd") }
+
+in t query
+  from u in users select u.name
+----
+"ann"
+"zed"
+
+commit t
+
+query
+  from n in notes select n.body
+----
+"frozen"
+
+query
+  from c in contacts select c.email
+----
+Email("abcd")
+
+query
+  from s in logins select s
+----
+Active { id: logins.key(1), user: users.key(1), device: "phone" }

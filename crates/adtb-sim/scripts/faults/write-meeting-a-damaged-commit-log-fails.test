@@ -1,0 +1,28 @@
+# A write that meets a row of a transaction whose commit log status page is damaged fails its
+# statement, the database quarantined, the status page's damage recorded.
+migrate
+  module app
+  add module app
+  add type Counter = { id: Key counters, n: I64 }
+  add relation counters : Counter key id generate sequence
+  add type Label = { id: Key tags, name: Text }
+  add relation tags : Label key id generate sequence unique (name)
+
+run
+  insert counters { id: counters.key(1), n: 0 }
+
+begin b
+
+in b run
+  update c in counters where key c == counters.key(1) set Counter { c with n: c.n + 1 }
+
+commit b
+
+damage status
+
+fatal Quarantined { what: "the database" }
+  update c in counters where key c == counters.key(1) set Counter { c with n: c.n + 1 }
+
+probe damage
+----
+status: Checksum

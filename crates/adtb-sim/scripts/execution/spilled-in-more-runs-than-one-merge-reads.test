@@ -1,0 +1,25 @@
+# A set spilled in more than 64 pages of runs, more than one merge reads, still agrees: it is
+# refused under a spill bound of 64 pages and runs without one.
+use stocked
+option query_memory_bytes 4096
+option morsel_rows 2
+reopen
+
+query
+  count(s for s in stock)
+----
+300
+
+query
+  max(s.name for s in stock)
+----
+Some { value: "item99" }
+
+option spill_bytes 262144
+reopen
+
+error StatementLimit { limit: Memory { bytes: 4096 } }
+  count(s for s in stock)
+
+error StatementLimit { limit: Memory { bytes: 4096 } }
+  max(s.name for s in stock)

@@ -1,0 +1,30 @@
+# A pending-dropped constraint is checked against later operators: adding a constructor its match
+# does not name is refused while a live bundle holds the drop.
+seed 108
+use states
+log
+  module auth
+  add constraint no_blank_login = from i in identities
+    where match i
+      | EmailPass e -> e.email == ""
+      | Google g    -> g.gid == ""
+    select i
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key i for i in identities)
+reopen
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key i for i in identities)
+migrate
+  module auth
+  drop constraint no_blank_login
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key i for i in identities)
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::no_blank_login has no image: match does not cover `Apple _`" } } }
+  module auth
+  add constructor Identity.Apple { sub: Text }
+    joins identities.OAuth

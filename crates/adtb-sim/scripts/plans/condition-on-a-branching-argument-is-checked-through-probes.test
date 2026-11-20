@@ -1,0 +1,120 @@
+# A constraint whose condition calls a function on an argument that branches is admitted with
+# checks that probe memberships by org and assignments by user, never scan.
+migrate
+  module app
+  add module app
+  add type Membership = { id: Key memberships, user: Text, org: Text }
+  add relation memberships : Membership key id generate sequence index (org)
+  add type Assignment = { id: Key assignments, mine: Bool, user: Text, org: Text, alt: Text }
+  add relation assignments : Assignment key id generate sequence index (user)
+  define fn same (a: Text, b: Text) -> Bool = a == b
+  define fn same2 (a: Text, b: Text) -> Bool = a == b and b == a
+  add constraint assigned_member =
+    from a in assignments
+    where not exists m in memberships
+      where m.user == a.user and same(m.org, if a.mine then a.org else a.alt)
+    select a
+  add constraint assigned_member2 =
+    from a in assignments
+    where not exists m in memberships
+      where m.user == a.user and same2(m.org, if a.mine then a.org else a.alt)
+    select a
+
+probe checks app::assigned_member
+----
+on insert into app::assignments
+Set total
+  reads memberships.Membership, memberships (org)
+  Pipeline
+    One row
+    Unnest
+    Bind
+      Let
+        Exists total
+          Pipeline
+            One row
+            Probe memberships (org)
+              Membership ->
+                Chain
+                  Filter
+                  Emit
+        If
+          Compute
+          Compute
+    Filter
+    Emit
+on change to app::memberships
+Set total
+  reads memberships.Membership, assignments.Assignment, memberships (org), assignments (user)
+  Pipeline
+    One row
+    Unnest
+    Probe assignments (user)
+      Assignment ->
+        Chain
+          Filter
+          Bind
+            Let
+              Exists total
+                Pipeline
+                  One row
+                  Probe memberships (org)
+                    Membership ->
+                      Chain
+                        Filter
+                        Emit
+              If
+                Compute
+                Compute
+          Filter
+          Emit
+
+probe checks app::assigned_member2
+----
+on insert into app::assignments
+Set total
+  reads memberships.Membership, memberships (org)
+  Pipeline
+    One row
+    Unnest
+    Bind
+      Let
+        Exists total
+          Pipeline
+            One row
+            Probe memberships (org)
+              Membership ->
+                Chain
+                  Filter
+                  Emit
+        If
+          Compute
+          Compute
+    Filter
+    Emit
+on change to app::memberships
+Set total
+  reads memberships.Membership, assignments.Assignment, memberships (org), assignments (user)
+  Pipeline
+    One row
+    Unnest
+    Probe assignments (user)
+      Assignment ->
+        Chain
+          Filter
+          Filter
+          Bind
+            Let
+              Exists total
+                Pipeline
+                  One row
+                  Probe memberships (org)
+                    Membership ->
+                      Chain
+                        Filter
+                        Emit
+              If
+                Compute
+                Compute
+          Filter
+          Emit

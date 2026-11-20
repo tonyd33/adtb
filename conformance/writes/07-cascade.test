@@ -17,8 +17,44 @@ run
   insert comments from ([{ id: comments.key(1), post: posts.key(1), body: "c1" },
                          { id: comments.key(2), post: posts.key(3), body: "c3" }])
   insert likes { id: likes.key(1), comment: comments.key(2) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1), body: "p1" }
+Post { id: posts.key(2), author: users.key(1), body: "p2" }
+Post { id: posts.key(3), author: users.key(2), body: "p3" }
+query rowsort
+  from x in comments select x
+----
+Comment { id: comments.key(1), post: posts.key(1), body: "c1" }
+Comment { id: comments.key(2), post: posts.key(3), body: "c3" }
+query rowsort
+  from x in likes select x
+----
+Like { id: likes.key(1), comment: comments.key(2) }
 run
   (delete x in users where key x == users.key(1), delete p in posts where key p == posts.key(1))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(3), author: users.key(2), body: "p3" }
+query rowsort
+  from x in comments select x
+----
+Comment { id: comments.key(2), post: posts.key(3), body: "c3" }
+query rowsort
+  from x in likes select x
+----
+Like { id: likes.key(1), comment: comments.key(2) }
 query
   from p in posts select key p
 ----
@@ -29,12 +65,40 @@ query
 comments.key(2)
 error Violated
   delete x in users where key x == users.key(2)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(3), author: users.key(2), body: "p3" }
+query rowsort
+  from x in comments select x
+----
+Comment { id: comments.key(2), post: posts.key(3), body: "c3" }
+query rowsort
+  from x in likes select x
+----
+Like { id: likes.key(1), comment: comments.key(2) }
 query
   from p in posts select key p
 ----
 posts.key(3)
 run
   (delete l in likes, delete x in users where key x == users.key(2))
+query rowsort
+  from x in users select x
+----
+query rowsort
+  from x in posts select x
+----
+query rowsort
+  from x in comments select x
+----
+query rowsort
+  from x in likes select x
+----
 query
   count(p for p in posts)
 ----

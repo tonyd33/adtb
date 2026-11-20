@@ -1,0 +1,42 @@
+# A migration declaring a constraint outside the index bound is refused naming the missing index,
+# and applies once the index is declared.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint auth::by_email is not admitted: changes to auth::identities.EmailPass: index (name) in auth::users is missing" } } }
+  module auth
+  add module auth
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+  add relation identities : Identity
+    key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+  add constraint by_email =
+    from u in users
+    where not exists i in identities.EmailPass where i.email == u.name
+    select u
+
+migrate
+  module auth
+  add module auth
+  add type User = { id: Key users, name: Text }
+  add relation users : User
+    key id generate sequence
+    index (name)
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+  add relation identities : Identity
+    key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+  add constraint by_email =
+    from u in users
+    where not exists i in identities.EmailPass where i.email == u.name
+    select u
+
+query
+  from c in catalog::constraints select c.name
+----
+"by_email"

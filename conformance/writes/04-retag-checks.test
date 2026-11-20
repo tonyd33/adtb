@@ -16,10 +16,49 @@ run
   insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" },
                            Google { id: identities.key(2), user: users.key(1), gid: "taken" }])
   insert sessions { id: sessions.key(1), identity: identities.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "taken" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 error Violated
   update i in identities.EmailPass set Google { gid: "taken" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "taken" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 error Violated
   update i in identities.EmailPass set Linked { gid: "x", via: users.key(9) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "taken" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 query
   from i in identities select i
 ----
@@ -27,12 +66,38 @@ EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" }
 Google { id: identities.key(2), user: users.key(1), gid: "taken" }
 run
   update i in identities.EmailPass set Linked { gid: "x", via: users.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(2), user: users.key(1), gid: "taken" }
+Linked { id: identities.key(1), user: users.key(1), gid: "x", via: users.key(1) }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 query
   from s in sessions select s.identity
 ----
 identities.key(1)
 run
   update i in identities.Linked set Google { gid: "free" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "free" }
+Google { id: identities.key(2), user: users.key(1), gid: "taken" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 query
   from i in identities.Google select i.gid
 ----

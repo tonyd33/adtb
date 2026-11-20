@@ -2,6 +2,7 @@
 schema
   module test
   fn d0 (x: Decimal 0) -> Decimal 0 = x
+  fn d38 (x: Decimal 38) -> Decimal 38 = x
 query
   1.5 + 1.25
 ----
@@ -42,3 +43,20 @@ query
   1.5 + 1
 ----
 2.5
+# Each operand is brought to the larger scale exactly, even where the rescaled operand needs more than 38 digits.
+query
+  1.5 + 0.025
+----
+1.525
+query
+  d0(17500000000000000000000000000000000000) - 9000000000000000000000000000000000000.0
+----
+8500000000000000000000000000000000000.0
+query
+  try (d0(90000000000000000000000000000000000000) + d0(90000000000000000000000000000000000000))
+----
+Err { error: ArithmeticOverflow }
+query
+  d0(-90000000000000000000000000000000000000) < d38(0.00000000000000000000000000000000000001)
+----
+true

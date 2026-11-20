@@ -5,6 +5,10 @@ schema
   relation users : User key id generate sequence
 run
   insert users { id: users.key(1), name: "a" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 query
   transact
     return 1 + 1
@@ -31,6 +35,10 @@ error Invalid
   transact
     return 1
     return 2
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 query
   from u in users select u
 ----

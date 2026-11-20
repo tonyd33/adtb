@@ -7,6 +7,13 @@ schema
   relation logs : Log key id generate sequence
 run
   insert users { id: users.key(1), name: "ann" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "ann" }
+query rowsort
+  from x in logs select x
+----
 query
   from u in users select u.name
 ----
@@ -17,13 +24,41 @@ query
 1
 error Invalid
   from u in users select (insert users { id: users.key(2), name: "bo" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "ann" }
+query rowsort
+  from x in logs select x
+----
 error Invalid
   from u in users where (delete v in users where key v == users.key(1)) select u
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "ann" }
+query rowsort
+  from x in logs select x
+----
 error Invalid
   count(x for x in (insert users { id: users.key(2), name: "bo" }))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "ann" }
+query rowsort
+  from x in logs select x
+----
 error Invalid
   transact
     return (insert users { id: users.key(2), name: "bo" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "ann" }
+query rowsort
+  from x in logs select x
+----
 query
   from u in users select u
 ----

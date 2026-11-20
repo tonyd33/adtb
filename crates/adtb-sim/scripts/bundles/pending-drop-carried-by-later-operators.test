@@ -1,0 +1,47 @@
+# A pending-dropped constraint is carried by the operators of later migrations and of its own,
+# stays in force under its new field names, and refuses an operator that leaves it no image.
+seed 101
+use states
+log
+  module auth
+  add constraint no_blank = from u in users where u.name == "" select u
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  drop constraint no_blank
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  rename field User.name to full_name
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { full_name: "" }
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::no_blank has no image: User has no field `full_name`" } } }
+  module auth
+  drop field User.full_name
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::no_blank has no image: User has no field `full_name`" } } }
+  module auth
+  drop field User.full_name

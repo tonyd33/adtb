@@ -30,3 +30,28 @@ query
   i16_of(300) * 100
 ----
 30000
+# Division truncates toward zero, the remainder takes the dividend's sign, and each fault is named.
+query
+  try (i8_of(100) + 28)
+----
+Err { error: ArithmeticOverflow }
+query
+  -7 / 3
+----
+-2
+query
+  -7 % 3
+----
+-1
+query
+  try (1 / 0)
+----
+Err { error: DivisionByZero }
+query
+  try ((-9223372036854775807 - 1) / -1)
+----
+Err { error: ArithmeticOverflow }
+query
+  try (-i16_of(-32768))
+----
+Err { error: ArithmeticOverflow }

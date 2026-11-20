@@ -1,0 +1,38 @@
+# A `max` within a group needs an index on the group's field then the aggregated field; with it
+# the constraint is admitted.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::capped is not admitted: changes to app::entries: `max` of amount needs index (entry, amount) in app::lines\nconstraint app::capped is not admitted: changes to app::lines: `max` of amount needs index (entry, amount) in app::lines" } } }
+  module app
+  add module app
+  add type Entry = { id: Key entries, posted: Instant }
+  add relation entries : Entry key id generate sequence
+  add type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64 }
+  add relation lines : Line
+    key id generate sequence
+    index (entry)
+  add constraint capped =
+    from e in entries
+    where match max(l.amount for l in lines where l.entry == key e)
+      | None -> false
+      | Some m -> m.value > 100
+    select e
+
+migrate
+  module app
+  add module app
+  add type Entry = { id: Key entries, posted: Instant }
+  add relation entries : Entry key id generate sequence
+  add type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64 }
+  add relation lines : Line
+    key id generate sequence
+    index (entry, amount)
+  add constraint capped =
+    from e in entries
+    where match max(l.amount for l in lines where l.entry == key e)
+      | None -> false
+      | Some m -> m.value > 100
+    select e
+
+query
+  from c in catalog::constraints select c.name
+----
+"capped"

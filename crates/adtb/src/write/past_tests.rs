@@ -1,27 +1,14 @@
-//! The reads of the past in process over the simulator: the retention window setting, `at commit`
-//! and `at instant` blocks, their refusals, vacuum moving versions to history, and a crash and
-//! reopen with history kept.
+//! The reads of the past in process over the simulator: a registered `at` block pinned past the
+//! database's version.
 
-use crate::test_world::api;
-use crate::test_world::load as open;
 use adtb_testkit::process;
-use adtb_testkit::process::run;
-
-use std::time::SystemTime;
 
 use crate::catalog::version_hash;
-use crate::runtime::Clock;
-use crate::{
-    CallOptions, Database, Error, Log, OpenError, OpenOptions, Position, Registration,
-    RejectReason, TxnCallOptions, TxnOptions, Value,
-};
+use crate::{Database, Log, OpenError, OpenOptions, Registration};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::types::{Base, Ty};
-use adtb_sim::{Config, Sim, SimRuntime};
 
 use crate::test_world::load::options;
-use api::sorted;
 
 const STOCK: &str = r"module stock
 add module stock
@@ -40,52 +27,6 @@ rename field Item.Open.qty to count
 
 const NAMES: &str = "from i in items select i.name";
 
-/// Returns each row of the one result of `text`, sorted, or the rejection.
-fn read(db: &Database<SimRuntime>, text: &str) -> Result<Vec<String>, Error> {
-    let mut out = db.query_text(text, &[], &CallOptions::default())?;
-    assert_eq!(1, out.len(), "`{text}` has one result");
-    Ok(sorted(out.remove(0)))
-}
-
-fn rows(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    read(db, text).unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"))
-}
-
-fn run_text(db: &Database<SimRuntime>, text: &str) {
-    db.query_text(text, &[], &CallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-}
-
-/// Commit `text` as one transaction. Returns its commit position.
-fn commit(db: &Database<SimRuntime>, text: &str) -> Position {
-    let mut t = db
-        .begin(&TxnOptions::default())
-        .expect("a transaction begins");
-    t.query_text(text, &[], &TxnCallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-    t.commit(None).expect("the transaction commits")
-}
-
-/// Run a read-only query, whose safe snapshot is kept for reads of the past.
-fn mark(db: &Database<SimRuntime>) {
-    rows(db, "from i in items select key i");
-}
-
-fn keep(db: &Database<SimRuntime>, window: &str) {
-    run_text(
-        db,
-        &format!("set setting RetentionWindow = {{ length: {window} }}"),
-    );
-}
-
-fn at(p: Position) -> String {
-    format!("Position {{ epoch: {}, lsn: {} }}", p.epoch, p.lsn)
-}
-
-fn past_names(p: Position) -> String {
-    format!("at commit {} {{ {NAMES} }}", at(p))
-}
-
 /// Returns `pins` naming the version `migrations` make, with its hash.
 fn pins(migrations: &[&str]) -> String {
     let mut source = Source::default();
@@ -103,162 +44,6 @@ fn pins(migrations: &[&str]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect();
     format!("pins {} ({hash})", migrations.len())
-}
-
-fn names(ns: &[&str]) -> Vec<String> {
-    ns.iter().map(|n| format!("{n:?}")).collect()
-}
-
-fn rejection(e: &Error) -> &RejectReason {
-    match e {
-        Error::Rejected { reason } => reason,
-        other => panic!("not a rejection: {other:?}"),
-    }
-}
-
-/// Returns the oldest position a `HistoryUnavailable` rejection names.
-fn unavailable(e: &Error) -> Position {
-    match rejection(e) {
-        RejectReason::HistoryUnavailable { oldest } => *oldest,
-        other => panic!("not HistoryUnavailable: {other:?}"),
-    }
-}
-
-/// Open the stock database keeping an hour of history, with `ann` and `bo` committed at the
-/// first position returned and `ann` renamed `cy` and `bo` closed at the second, a safe snapshot
-/// kept after each.
-fn history(rt: &SimRuntime) -> (Database<SimRuntime>, Position, Position) {
-    let db = open::opened(rt, "stock.adt", &Log::new([STOCK]), &options(2));
-    keep(&db, "1h");
-    let first = commit(
-        &db,
-        r#"insert items.Open { id: items.key(1), name: "ann", qty: 3 }
-           insert items.Open { id: items.key(2), name: "bo", qty: 5 }"#,
-    );
-    mark(&db);
-    let second = commit(
-        &db,
-        r#"update i in items.Open where key i == items.key(1) set Open { i with name: "cy" }
-           delete i in items where key i == items.key(2)
-           insert items.Closed { id: items.key(2), name: "bo" }"#,
-    );
-    mark(&db);
-    (db, first, second)
-}
-
-fn with_history<T>(
-    seed: u64,
-    body: impl FnOnce(&SimRuntime, &Database<SimRuntime>, Position, Position) -> T,
-) -> T {
-    process::once(seed, |rt| {
-        let (db, first, second) = history(&rt);
-        body(&rt, &db, first, second)
-    })
-}
-
-#[test]
-fn a_quiescent_commit_survives_a_crash_before_any_history_read() {
-    let mut sim = Sim::new(27, Config::default());
-    let committed = run(&mut sim, |rt| {
-        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK]), &options(2));
-        keep(&db, "1h");
-        let committed = commit(
-            &db,
-            r#"insert items.Closed { id: items.key(1), name: "ann" }"#,
-        );
-        std::mem::forget(db);
-        committed
-    });
-    run(&mut sim, |rt| {
-        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK]), &options(2));
-        assert_eq!(names(&["ann"]), rows(&db, &past_names(committed)));
-        assert_eq!(
-            vec![format!("{{ lsn: {} }}", committed.lsn)],
-            rows(
-                &db,
-                "from c in sys::commit_times select { lsn: c.position.lsn }"
-            )
-        );
-    });
-}
-
-#[test]
-fn a_read_at_an_instant_reads_the_latest_commit_by_then() {
-    with_history(7, |rt, db, _, _| {
-        let between = rt.wall();
-        commit(
-            db,
-            r#"insert items.Open { id: items.key(3), name: "eve", qty: 1 }"#,
-        );
-        mark(db);
-        let micros = between
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("after the epoch")
-            .as_micros();
-        let t = Value::Instant(i64::try_from(micros).expect("micros fit"));
-        let mut out = db
-            .query_text(
-                &format!("at instant t {{ {NAMES} }}"),
-                &[("t", Ty::Base(Base::Instant), t)],
-                &CallOptions::default(),
-            )
-            .expect("the read runs");
-        assert_eq!(names(&["bo", "cy"]), sorted(out.remove(0)));
-    });
-}
-
-#[test]
-fn a_read_before_a_migration_that_rewrote_what_it_reads_is_unavailable() {
-    let mut sim = Sim::new(15, Config::default());
-    let first = run(&mut sim, |rt| {
-        let (db, first, _) = history(&rt);
-        db.close().expect("close");
-        first
-    });
-    run(&mut sim, |rt| {
-        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK, RENAME]), &options(2));
-        mark(&db);
-        let e = read(&db, &past_names(first)).expect_err("the items heaps are new");
-        unavailable(&e);
-        let orders = format!("at commit {} {{ from o in orders select o }}", at(first));
-        assert!(rows(&db, &orders).is_empty());
-    });
-}
-
-#[test]
-fn history_survives_a_crash_and_reopen() {
-    let mut sim = Sim::new(20, Config::default());
-    let (first, second) = run(&mut sim, |rt| {
-        let (db, first, second) = history(&rt);
-        run_text(&db, "vacuum items");
-        commit(
-            &db,
-            "insert orders { id: orders.key(1), item: items.key(2) }",
-        );
-        std::mem::forget(db);
-        (first, second)
-    });
-    run(&mut sim, |rt| {
-        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK]), &options(2));
-        assert_eq!(names(&["ann", "bo"]), rows(&db, &past_names(first)));
-        assert_eq!(names(&["bo", "cy"]), rows(&db, &past_names(second)));
-        commit(&db, "delete i in items where key i == items.key(1)");
-        mark(&db);
-        run_text(&db, "vacuum items");
-        assert_eq!(names(&["ann", "bo"]), rows(&db, &past_names(first)));
-        db.close().expect("close");
-    });
-    let report = run(&mut sim, |rt| {
-        let options = crate::storage::Options {
-            page_size: 8192,
-            threads: 4,
-            ..crate::storage::Options::new("stock.adt")
-        };
-        let (pager, _) = crate::storage::Pager::open(rt.clone(), &options).expect("the pager");
-        let (catalog, txns) = crate::catalog::Catalog::open(rt, &pager).expect("the catalog");
-        crate::verify::verify(&pager, &catalog.structures().inventory(&txns.commit_log()))
-    });
-    assert!(report.is_clean() && report.complete, "{report:#?}");
 }
 
 /// Returns bundle `reports-1.0`, pinned at the version `migrations` make, whose query

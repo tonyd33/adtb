@@ -1,0 +1,17 @@
+# The batch a scan fills is held within the statement's grant: a morsel of 1000 rows does not
+# fit a grant of 8192 bytes, and a morsel of 16 rows does.
+use stocked
+option query_memory_bytes 8192
+option morsel_rows 1000
+reopen
+
+error StatementLimit { limit: Memory { bytes: 8192 } }
+  count(s for s in stock)
+
+option morsel_rows 16
+reopen
+
+query
+  count(s for s in stock)
+----
+300

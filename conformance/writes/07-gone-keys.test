@@ -18,8 +18,44 @@ run
   insert pins from ([{ id: pins.key(1), post: Some { value: posts.key(1) }, label: "a" },
                      { id: pins.key(2), post: Some { value: posts.key(2) }, label: "b" }])
   insert drafts.Linked { id: drafts.key(1), post: posts.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1), body: "p1" }
+Post { id: posts.key(2), author: users.key(2), body: "p2" }
+query rowsort
+  from x in pins select x
+----
+Pin { id: pins.key(1), post: Some { value: posts.key(1) }, label: "a" }
+Pin { id: pins.key(2), post: Some { value: posts.key(2) }, label: "b" }
+query rowsort
+  from x in drafts select x
+----
+Linked { id: drafts.key(1), post: posts.key(1) }
 run
   delete x in users where key x == users.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(2), author: users.key(2), body: "p2" }
+query rowsort
+  from x in pins select x
+----
+Pin { id: pins.key(1), post: None, label: "a" }
+Pin { id: pins.key(2), post: Some { value: posts.key(2) }, label: "b" }
+query rowsort
+  from x in drafts select x
+----
+Orphan { id: drafts.key(1) }
 query
   from p in posts select key p
 ----
@@ -35,6 +71,23 @@ query
 Orphan { id: drafts.key(1) }
 run
   (delete x in users where key x == users.key(2), insert users { id: users.key(2), name: "back" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "back" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(2), author: users.key(2), body: "p2" }
+query rowsort
+  from x in pins select x
+----
+Pin { id: pins.key(1), post: None, label: "a" }
+Pin { id: pins.key(2), post: Some { value: posts.key(2) }, label: "b" }
+query rowsort
+  from x in drafts select x
+----
+Orphan { id: drafts.key(1) }
 query
   from p in posts select key p
 ----

@@ -1,0 +1,41 @@
+# An enable applies beside live bundles that cannot reach the new constructor: a whole read of
+# another relation, a whole read pinned after the constructor, a reference typed by a set that
+# leaves it out, and a field of the rows of a set that leaves it out.
+seed 41
+use states
+log
+  module auth
+  add constructor Identity.Apple { sub: Text }
+    joins identities.OAuth
+bundle users-1.0 pins 1 edition "2026-10"
+  import auth
+  query names () -> Set Text = from u in users select u.name
+bundle after-1.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(i for i in identities)
+bundle mail-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from l in logins select l.mail.user
+bundle fields-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from i in identities.Mail select i.user
+reopen
+
+run
+  insert users { name: "ann" }
+
+bundle users-1.0 pins 1 edition "2026-10"
+  import auth
+  query names () -> Set Text = from u in users select u.name
+bundle after-1.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(i for i in identities)
+bundle mail-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from l in logins select l.mail.user
+bundle fields-1.0 pins 1 edition "2026-10"
+  import auth
+  query owners () -> Set (Key users) = from i in identities.Mail select i.user
+migrate
+  module auth
+  enable identities.Apple

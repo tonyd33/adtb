@@ -1,0 +1,60 @@
+# Each incremental check of a constraint names the constructor relation and the part of the
+# change set that runs it, and reads through index probes, never a scan.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users }
+  add relation users : User key id generate sequence
+  add type Login { id: Key logins, user: Key users } = Email { email: Text } | Phone { phone: Text }
+  add relation logins : Login key id generate sequence index (user)
+  add constraint reachable =
+    from p in logins.Phone where not exists e in logins.Email where e.user == p.user select p
+
+probe checks app::reachable
+----
+on insert into app::logins.Phone
+Set total
+  reads logins.Email, logins.Phone, logins (user)
+  Pipeline
+    One row
+    Unnest
+    Bind
+      Let
+        Exists total
+          Pipeline
+            One row
+            Probe logins (user)
+              pruned Phone at compile
+              Email ->
+                Chain
+                  Emit
+        If
+          Compute
+          Compute
+    Filter
+    Emit
+on change to app::logins.Email
+Set total
+  reads logins.Email, logins.Phone, logins (user)
+  Pipeline
+    One row
+    Unnest
+    Probe logins (user)
+      pruned Email at compile
+      Phone ->
+        Chain
+          Bind
+            Let
+              Exists total
+                Pipeline
+                  One row
+                  Probe logins (user)
+                    pruned Phone at compile
+                    Email ->
+                      Chain
+                        Emit
+              If
+                Compute
+                Compute
+          Filter
+          Emit

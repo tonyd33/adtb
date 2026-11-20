@@ -8,9 +8,27 @@ schema
 run
   insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
   insert badges { id: badges.key(1), owner: users.key(1), label: "b1" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
 error Violated
   (update d in badges set Badge { d with label: "renamed" },
    delete x in users where key x == users.key(1))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
 query
   from b in badges select b
 ----
@@ -18,6 +36,14 @@ Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
 run
   (update d in badges set Badge { d with owner: users.key(2) },
    delete x in users where key x == users.key(1))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(2), label: "b1" }
 query
   from b in badges select b
 ----

@@ -2,9 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::catalog::layout::{is_record, key_value_ty, repr};
+use crate::catalog::layout::{key_value_ty, repr};
 use crate::exec::{self, Val};
-use crate::key::{F32, F64, Value as KValue};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
 use adtb_reference::Value;
@@ -34,65 +33,6 @@ fn ctors_of(schema: &Schema, ty: &Ty) -> Vec<(String, Vec<(String, Ty)>)> {
             .map(|(n, _)| (n, Vec::new()))
             .collect(),
         t => panic!("{t:?} is not a sum"),
-    }
-}
-
-/// Returns reference value `v` of type `ty` as a heap stores it.
-pub fn stored(schema: &Schema, ty: &Ty, v: &Value) -> KValue {
-    let t = repr(schema, ty);
-    match (&t, v) {
-        (Ty::Key { rel, .. }, Value::Key(inner)) => {
-            stored(schema, &key_value_ty(schema, *rel), inner)
-        }
-        (Ty::Base(b), v) => match (b, v) {
-            (Base::I8, Value::Int(x)) => KValue::I8(*x as i8),
-            (Base::I16, Value::Int(x)) => KValue::I16(*x as i16),
-            (Base::I32, Value::Int(x)) => KValue::I32(*x as i32),
-            (Base::I64, Value::Int(x)) => KValue::I64(*x),
-            (Base::Decimal(_), Value::Decimal(d, _)) => KValue::Decimal(*d),
-            (Base::F32, Value::F32(x)) => KValue::F32(F32::new(*x)),
-            (Base::F64, Value::F64(x)) => KValue::F64(F64::new(*x)),
-            (Base::Text, Value::Text(x)) => KValue::Text(x.clone()),
-            (Base::Bytes, Value::Bytes(x)) => KValue::Bytes(x.clone()),
-            (Base::SortKey, Value::SortKey(x)) => KValue::SortKey(x.clone()),
-            (Base::Instant, Value::Instant(x)) => KValue::Instant(*x),
-            (Base::Date, Value::Date(x)) => KValue::Date(*x as i32),
-            (Base::Time, Value::Time(x)) => KValue::Time(*x),
-            (Base::DateTime, Value::DateTime(x)) => KValue::DateTime(*x),
-            (Base::Duration, Value::Duration(x)) => KValue::Duration(*x),
-            (Base::ZonedDateTime, Value::Zoned(l, z)) => KValue::ZonedDateTime {
-                local: *l,
-                zone: z.clone(),
-            },
-            (Base::Period, Value::Period { months, days }) => KValue::Period {
-                months: *months,
-                days: *days,
-            },
-            (b, v) => panic!("{v:?} is not a {b:?}"),
-        },
-        (Ty::Record(fs), Value::Record(vs)) => KValue::Record(
-            fs.iter()
-                .zip(vs)
-                .map(|((_, t), (_, v))| stored(schema, t, v))
-                .collect(),
-        ),
-        (_, Value::Ctor(c, vs)) => {
-            let cs = ctors_of(schema, &t);
-            let fields: Vec<KValue> = cs[*c as usize]
-                .1
-                .iter()
-                .map(|(n, f)| {
-                    let x = &vs.iter().find(|(m, _)| m == n).unwrap().1;
-                    stored(schema, f, x)
-                })
-                .collect();
-            if is_record(schema, &t) {
-                KValue::Record(fields)
-            } else {
-                KValue::Sum { ctor: *c, fields }
-            }
-        }
-        (t, v) => panic!("{v:?} is not a {t:?}"),
     }
 }
 

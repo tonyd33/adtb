@@ -1,0 +1,66 @@
+# A pending unique and a pending old key keep their indexes while one holder is live, and take
+# effect and leave the catalog once their last holder is released, the file verifying clean.
+seed 126
+log
+  module auth
+  add module auth
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Label = { name: Text, lang: Text }
+  add relation labels : Label key name
+  module auth
+  add unique (name) in users
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+bundle api-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+bundle api-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  drop unique (name) in users
+  rekey relation labels key (name, lang)
+
+bundle api-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+probe catalog
+----
+change None
+next heap 12
+auth::labels.Label heap 9
+auth::labels key (name, lang) over Label
+auth::labels key name over Label
+auth::users.User heap 6
+auth::users key id over User
+auth::users unique (name) over User
+
+reopen
+
+probe catalog
+----
+change None
+next heap 12
+auth::labels.Label heap 9
+auth::labels key (name, lang) over Label
+auth::users.User heap 6
+auth::users key id over User
+
+probe holding verify
+----
+
+run
+  insert users { name: "ann" }
+  insert users { name: "ann" }
+  insert labels { name: "hi", lang: "en" }
+  insert labels { name: "hi", lang: "fr" }

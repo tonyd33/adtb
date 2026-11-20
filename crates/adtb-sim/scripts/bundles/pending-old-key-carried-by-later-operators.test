@@ -1,0 +1,44 @@
+# A pending old key of a relaxing rekey is carried by later operators, stays in force under the
+# field's new name, verifies clean, and refuses an operator that leaves it no image, naming its
+# holder.
+seed 133
+use states
+log
+  module auth
+  add type Label = { name: Text, lang: Text }
+  add relation labels : Label key name
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+reopen
+
+run
+  insert labels { name: "hi", lang: "en" }
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+migrate
+  module auth
+  rekey relation labels key (name, lang)
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+migrate
+  module auth
+  rename field Label.name to title
+
+error Violated { constraint: "auth::labels.key title", report: 2 rows, redacted: 0 }
+  insert labels { title: "hi", lang: "fr" }
+
+probe holding verify
+----
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::labels key name, held by web-2.0, has no image: the migration drops its relation or a field of it" } } }
+  module auth
+  rekey relation labels key lang
+  drop field Label.title

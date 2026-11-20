@@ -1,0 +1,25 @@
+# The auth schema of the write-state scripts: users, identities by email or Google in the sets
+# Mail and OAuth, logins and links referring to Mail and OAuth identities, and accounts and
+# profiles of a provider.
+log
+  module auth
+  add module auth
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google { gid: Text }
+  add relation identities : Identity key id generate sequence
+  add set OAuth of identities = Google
+  add set Mail of identities = EmailPass
+  add type Login = { id: Key logins, mail: Key identities.Mail }
+  add relation logins : Login key id generate sequence
+  add type Link = { id: Key links, oauth: Key identities.OAuth }
+  add relation links : Link key id generate sequence
+  add type Session = { id: Key sessions, identity: Key identities }
+  add relation sessions : Session key id generate sequence
+  add type Provider = Local | Remote
+  add type Account = { id: Key accounts, provider: Provider, note: Text }
+  add relation accounts : Account key id generate sequence
+  add type Profile = { id: Key profiles, backup: Option Provider, bio: Text }
+  add relation profiles : Profile key id generate sequence

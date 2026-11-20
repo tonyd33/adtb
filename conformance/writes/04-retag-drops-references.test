@@ -22,23 +22,107 @@ run
   insert tokens from (from g in identities.Google where key g == identities.key(1)
                       select { id: tokens.key(1), identity: key g })
   insert logins.Active { id: logins.key(1), identity: identities.key(2) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g1" }
+Google { id: identities.key(2), user: users.key(1), gid: "g2" }
+query rowsort
+  from x in tokens select x
+----
+Token { id: tokens.key(1), identity: identities.key(1) }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(2) }
 run
   update i in identities.Google where key i == identities.key(1) set Apple { sub: "a1" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(1), sub: "a1" }
+Google { id: identities.key(2), user: users.key(1), gid: "g2" }
+query rowsort
+  from x in tokens select x
+----
+Token { id: tokens.key(1), identity: identities.key(1) }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(2) }
 query
   from t in tokens select match t.identity | Google g -> g.gid | Apple a -> a.sub
 ----
 "a1"
 error Violated
   update i in identities.Apple where key i == identities.key(1) set EmailPass { email: "e", hash: "h" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(1), sub: "a1" }
+Google { id: identities.key(2), user: users.key(1), gid: "g2" }
+query rowsort
+  from x in tokens select x
+----
+Token { id: tokens.key(1), identity: identities.key(1) }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(2) }
 query
   from i in identities.Apple select key i
 ----
 identities.key(1)
 error Violated
   delete i in identities where key i == identities.key(2)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(1), sub: "a1" }
+Google { id: identities.key(2), user: users.key(1), gid: "g2" }
+query rowsort
+  from x in tokens select x
+----
+Token { id: tokens.key(1), identity: identities.key(1) }
+query rowsort
+  from x in logins select x
+----
+Active { id: logins.key(1), identity: identities.key(2) }
 run
   (update s in logins.Active set Revoked { },
    delete i in identities where key i == identities.key(2))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(1), sub: "a1" }
+query rowsort
+  from x in tokens select x
+----
+Token { id: tokens.key(1), identity: identities.key(1) }
+query rowsort
+  from x in logins select x
+----
+Revoked { id: logins.key(1) }
 query
   from s in logins select s
 ----

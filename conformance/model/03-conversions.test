@@ -1,6 +1,7 @@
 # No numeric type converts to another implicitly; every conversion is a written call.
 schema
   module test
+  fn f (x: F64) -> F64 = x
   type Sale = { id: Key sales, qty: I32, unit_cents: I64, rate: Decimal 2, w: F64 }
   relation sales : Sale key id generate sequence
 run
@@ -33,3 +34,28 @@ query
   checked_i8(300)
 ----
 None
+# A float converts to an integer or a Decimal by rounding its exact value, and faults when it is not finite or out of range.
+query
+  { half_even: i64(f(2.5), HalfEven), neg_half_even: i64(f(-2.5), HalfEven), neg_half_up: i64(f(-2.5), HalfUp), half_down: i64(f(2.5), HalfDown), neg_up: i64(f(-2.1), Up) }
+----
+{ half_even: 2, neg_half_even: -2, neg_half_up: -3, half_down: 2, neg_up: -3 }
+query
+  try i64(f(0.0) / f(0.0), HalfEven)
+----
+Err { error: NotFinite }
+query
+  try i64(f(9.3e18), HalfEven)
+----
+Err { error: OutOfRange }
+query
+  { half_even: decimal(f(0.1), 20, HalfEven), up: decimal(f(0.1), 20, Up) }
+----
+{ half_even: 0.10000000000000000555, up: 0.10000000000000000556 }
+query
+  { floor: decimal(f(-1e-300), 2, Floor), ceiling: decimal(f(-1e-300), 2, Ceiling) }
+----
+{ floor: -0.01, ceiling: 0.00 }
+query
+  try decimal(f(1e39), 0, HalfEven)
+----
+Err { error: OutOfRange }

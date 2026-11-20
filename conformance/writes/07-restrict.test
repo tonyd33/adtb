@@ -12,14 +12,74 @@ run
   insert badges from ([{ id: badges.key(1), owner: users.key(1), label: "b1" },
                        { id: badges.key(2), owner: users.key(1), label: "b2" }])
   insert posts { id: posts.key(1), author: users.key(2), body: "p" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
+Badge { id: badges.key(2), owner: users.key(1), label: "b2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(2), body: "p" }
 error Violated
   delete x in users where key x == users.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
+Badge { id: badges.key(2), owner: users.key(1), label: "b2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(2), body: "p" }
 error Violated
   delete x in users where key x == users.key(2)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
+Badge { id: badges.key(2), owner: users.key(1), label: "b2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(2), body: "p" }
 error Violated
   transact
     delete d in badges where key d == badges.key(1)
     delete x in users where key x == users.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
+Badge { id: badges.key(2), owner: users.key(1), label: "b2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(2), body: "p" }
 query
   from u in users select key u
 ----
@@ -32,12 +92,46 @@ query
 2
 run
   delete x in users where key x == users.key(3)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
+Badge { id: badges.key(2), owner: users.key(1), label: "b2" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(2), body: "p" }
 run
   transact
     delete d in badges where d.owner == users.key(1)
     delete x in users where key x == users.key(1)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in badges select x
+----
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(2), body: "p" }
 run
   (delete x in users where key x == users.key(2), delete p in posts where p.author == users.key(2))
+query rowsort
+  from x in users select x
+----
+query rowsort
+  from x in badges select x
+----
+query rowsort
+  from x in posts select x
+----
 query
   count(u for u in users)
 ----

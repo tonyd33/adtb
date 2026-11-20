@@ -149,40 +149,6 @@ fn a_refused_advance_cannot_report_an_unpersisted_reservation_on_retry() {
 }
 
 #[test]
-fn drawing_at_the_integer_limit_refuses_without_overflow() {
-    let mut f = Fixture::full("draw-overflow");
-    let before = f.seqs.counters.clone();
-    let bytes = f.bytes();
-    for id in [0, u32::MAX] {
-        assert_eq!(
-            Err(Error::SequenceExhausted),
-            f.seqs.draw(&f.pager, id, i64::MAX)
-        );
-        assert_eq!(before, f.seqs.counters);
-        assert_eq!(bytes, f.bytes());
-    }
-    assert_eq!(1, f.seqs.draw(&f.pager, 0, 1).unwrap());
-    f.pager.close();
-}
-
-#[test]
-fn exhaustion_survives_recovery_and_accepts_explicit_maximum_keys() {
-    let mut f = Fixture::new("exhaustion");
-    assert_eq!(
-        i64::MAX - 1,
-        f.seqs.draw(&f.pager, 0, i64::MAX - 1).unwrap()
-    );
-    f.seqs.advance(&f.pager, 1, i64::MAX).unwrap();
-    f = f.crash();
-    for id in [0, 1] {
-        assert_eq!(Err(Error::SequenceExhausted), f.seqs.draw(&f.pager, id, 1));
-        f.seqs.advance(&f.pager, id, i64::MAX).unwrap();
-        assert_eq!(Err(Error::SequenceExhausted), f.seqs.draw(&f.pager, id, 1));
-    }
-    f.pager.close();
-}
-
-#[test]
 fn drawing_within_a_reservation_does_not_force_another_log_record() {
     let mut f = Fixture::new("reservation");
     assert_eq!(1, f.seqs.draw(&f.pager, 0, 1).unwrap());
@@ -236,22 +202,5 @@ fn damaged_counter_page_refuses_retries_without_advancing_cached_reservations() 
             assert_eq!(before, f.seqs.counters);
         }
     }
-    f.pager.close();
-}
-
-#[test]
-fn lower_floors_and_explicit_keys_never_rewind_a_counter() {
-    let mut f = Fixture::new("lower-bounds");
-    f.seqs.advance(&f.pager, 0, -10).unwrap();
-    assert_eq!(1, f.seqs.draw(&f.pager, 0, -10).unwrap());
-    let durable = f.pager.durable();
-    f.seqs.advance(&f.pager, 0, -100).unwrap();
-    assert_eq!(2, f.seqs.draw(&f.pager, 0, -100).unwrap());
-    assert_eq!(durable, f.pager.durable());
-    f.seqs.advance(&f.pager, 0, 100).unwrap();
-    f.seqs.advance(&f.pager, 0, 7).unwrap();
-    assert_eq!(101, f.seqs.draw(&f.pager, 0, 1).unwrap());
-    f = f.crash();
-    assert!(f.seqs.draw(&f.pager, 0, 1).unwrap() > 101);
     f.pager.close();
 }

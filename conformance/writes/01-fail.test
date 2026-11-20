@@ -5,32 +5,69 @@ schema
   relation users : User key id generate sequence
 run
   insert users { id: users.key(1), name: "a" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 error UserError
   (insert users { id: users.key(2), name: "b" }, fail "no")
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 error UserError
   transact
     insert users { id: users.key(2), name: "b" }
     fail "no" ++ " way"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 error UserError
   transact fail "x"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 error UserError
   transact
     let x = try(1)
     fail "stop"
     return x
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 error UserError
   if true then fail "yes" else skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 error UserError
   match users.key(1)
     | User u -> (update u set User { u with name: "z" }, fail "no")
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 error Invalid
   fail 1
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
 query
   from u in users select u
 ----
 User { id: users.key(1), name: "a" }
 run
   if false then fail "no" else insert users { id: users.key(2), name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
 query
   from u in users select u.name
 ----

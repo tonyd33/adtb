@@ -1,0 +1,14 @@
+# An exclusion under `overlaps` needs an interval index after its equality fields.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::no_double_booking is not admitted: changes to app::bookings: an exclusion under `overlaps` on during needs interval index (resource, during) in app::bookings" } } }
+  module app
+  add module app
+  add type Booking { id: Key bookings, resource: Text, during: Span Instant }
+    = Room { seats: I64 }
+    | Desk
+  add relation bookings : Booking
+    key id generate sequence
+    index (resource) in (Room | Desk)
+  add constraint no_double_booking =
+    from a in bookings.(Room | Desk), b in bookings.(Room | Desk)
+    where a.resource == b.resource and overlaps(a.during, b.during) and key a != key b
+    select { a: key a, b: key b }

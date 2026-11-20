@@ -1,0 +1,44 @@
+# History moved by vacuum survives a crash and reopen, reads of it agree before and after a later
+# vacuum, and the file verifies clean.
+seed 20
+use history
+
+run
+  vacuum items
+
+run
+  insert orders { id: orders.key(1), item: items.key(2) }
+
+crash after 0
+
+reopen
+
+query rowsort
+  at commit $first { from i in items select i.name }
+----
+"ann"
+"bo"
+
+query rowsort
+  at commit $second { from i in items select i.name }
+----
+"bo"
+"cy"
+
+run
+  delete i in items where key i == items.key(1)
+
+run
+  from i in items select key i
+
+run
+  vacuum items
+
+query rowsort
+  at commit $first { from i in items select i.name }
+----
+"ann"
+"bo"
+
+probe holding verify
+----

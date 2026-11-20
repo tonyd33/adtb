@@ -1,0 +1,14 @@
+# A bundle naming a relation its pinned version lacks is not registered, and the open is refused.
+seed 105
+use states
+bundle bad-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key x for x in nothing)
+reopen refused RegistrationRefused { bundle: "bad-1.0", reason: Rejected { reason: Invalid { detail: "query `count`: no `nothing` in scope" } } }
+
+reopen
+
+query
+  count(b for b in catalog::bundles)
+----
+0

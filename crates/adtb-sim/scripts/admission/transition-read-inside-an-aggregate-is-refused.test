@@ -1,0 +1,16 @@
+# A transition read inside an aggregate is refused naming the read.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::burst is not admitted: `inserted(app::accounts)` is read inside an aggregate" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Account { id: Key accounts, owner: Key users, opened: Instant }
+    = Open
+    | Closed { closed: Instant }
+  add relation accounts : Account key id generate sequence
+  add type Event = { id: Key events, at: Instant, body: Text }
+  add relation events : Event key id generate sequence
+  add constraint burst =
+    from u in users
+    where count(a for a in inserted(accounts) where a.owner == key u) > 1
+    select u

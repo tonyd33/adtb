@@ -11,10 +11,28 @@ schema
 run
   insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
   insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h1" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h1" }
 run
   insert identities.EmailPass { id: identities.key(2), user: users.key(2), email: "ANN@x", hash: "h2" }
   unless conflict on (lower(email)) in EmailPass
   else update old set EmailPass { old with hash: new.hash }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h2" }
 query
   from e in identities.EmailPass select e
 ----
@@ -23,6 +41,16 @@ run
   insert identities.EmailPass { id: identities.key(3), user: users.key(2), email: "bo@x", hash: "h3" }
   unless conflict on (lower(email)) in EmailPass
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h2" }
+EmailPass { id: identities.key(3), user: users.key(2), email: "bo@x", hash: "h3" }
 query
   from e in identities.EmailPass select key e
 ----
@@ -30,3 +58,13 @@ identities.key(1)
 identities.key(3)
 error Violated
   insert identities.EmailPass { id: identities.key(4), user: users.key(2), email: "BO@X", hash: "h4" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h2" }
+EmailPass { id: identities.key(3), user: users.key(2), email: "bo@x", hash: "h3" }

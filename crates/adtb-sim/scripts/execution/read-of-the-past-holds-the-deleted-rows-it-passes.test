@@ -1,0 +1,56 @@
+# A read of the past holds within its grant the versions deleted since the position it reads:
+# with no spill space it fits the grant before the rows are rewritten and deleted, not after,
+# and runs under the default grant.
+use stocked
+option morsel_rows 16
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin f
+
+in f run
+  update s in stock where key s == stock.key(1) set { s with name: "y" }
+
+commit f position first
+
+option query_memory_bytes 32768
+option spill_bytes 0
+reopen
+
+query
+  count(v for v in (at commit $first { from s in stock select s.v }))
+----
+101
+
+option query_memory_bytes default
+option spill_bytes default
+reopen
+
+run
+  update s in stock set { s with name: "x" }
+
+run
+  delete n in notes
+  delete s in stock
+
+option query_memory_bytes 32768
+option spill_bytes 0
+reopen
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  count(v for v in (at commit $first { from s in stock select s.v }))
+
+option query_memory_bytes default
+option spill_bytes default
+reopen
+
+query
+  count(v for v in (at commit $first { from s in stock select s.v }))
+----
+101
+
+query
+  count(s for s in stock)
+----
+0

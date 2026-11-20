@@ -1,0 +1,16 @@
+# A transition read in the condition of an `if` is refused as read under negation.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::quiet is not admitted: `inserted(app::events)` is read under negation" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Account { id: Key accounts, owner: Key users, opened: Instant }
+    = Open
+    | Closed { closed: Instant }
+  add relation accounts : Account key id generate sequence
+  add type Event = { id: Key events, at: Instant, body: Text }
+  add relation events : Event key id generate sequence
+  add constraint quiet =
+    from u in users
+    where if exists e in inserted(events) where e.body == u.name then false else true
+    select u

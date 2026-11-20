@@ -11,28 +11,112 @@ schema
   set OAuth of identities = Google | Apple
 run
   insert users { id: users.key(1), name: "a" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert users { id: users.key(2) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert users { id: users.key(2), name: "b", age: 3 }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google { user: users.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google { user: users.key(1), gid: "g", sub: "s" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities { user: users.key(1), gid: "g" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities from ([{ user: users.key(1), gid: "g" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.(Google | Apple) from ([EmailPass { user: users.key(1), email: "e", hash: "h" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.OAuth from ([EmailPass { user: users.key(1), email: "e", hash: "h" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google from ([Apple { user: users.key(1), sub: "s" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert users { id: users.key(2), name: 3 }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert users { id: 2, name: "b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 query
   from i in identities select i
 ----
@@ -41,6 +125,16 @@ run
   insert identities.(Google | Apple) from ([Google { id: identities.key(1), user: users.key(1), gid: "g" },
                                             Apple { id: identities.key(2), user: users.key(1), sub: "s" }])
   insert identities.OAuth from ([Apple { id: identities.key(3), user: users.key(1), sub: "t" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(2), user: users.key(1), sub: "s" }
+Apple { id: identities.key(3), user: users.key(1), sub: "t" }
+Google { id: identities.key(1), user: users.key(1), gid: "g" }
 query
   from i in identities select i
 ----

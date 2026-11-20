@@ -1,0 +1,15 @@
+# A scan of a heap whose rows exceed the memory grant runs within the grant, a morsel at a time.
+use stocked-2000
+option query_memory_bytes 32768
+option morsel_rows 16
+reopen
+
+query
+  count(s for s in stock)
+----
+2000
+
+query
+  exists s in stock where s.v > 500
+----
+False

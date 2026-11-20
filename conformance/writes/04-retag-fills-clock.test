@@ -1,0 +1,42 @@
+# A retag fills an omitted Instant field whose default is generate clock with one value for every row of the statement.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Login { id: Key logins, user: Key users }
+    = Active  { device: Text }
+    | Revoked { at: Instant }
+  relation logins : Login key id generate sequence default Revoked.at = generate clock
+run
+  insert users { id: users.key(1), name: "a" }
+  insert logins.Active { id: logins.key(1), user: users.key(1), device: "phone" }
+  insert logins.Active { id: logins.key(2), user: users.key(1), device: "laptop" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select match x | Active a -> { id: a.id, user: a.user, state: "Active" } | Revoked r -> { id: r.id, user: r.user, state: "Revoked" }
+----
+{ id: logins.key(1), state: "Active", user: users.key(1) }
+{ id: logins.key(2), state: "Active", user: users.key(1) }
+run
+  update s in logins where s.user == users.key(1) set Revoked { }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in logins select match x | Active a -> { id: a.id, user: a.user, state: "Active" } | Revoked r -> { id: r.id, user: r.user, state: "Revoked" }
+----
+{ id: logins.key(1), state: "Revoked", user: users.key(1) }
+{ id: logins.key(2), state: "Revoked", user: users.key(1) }
+query
+  from s in logins.Revoked select key s
+----
+logins.key(1)
+logins.key(2)
+query
+  count(t for t in (from s in logins.Revoked select s.at))
+----
+1

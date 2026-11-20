@@ -1,6 +1,7 @@
 # Duration is exact microseconds and Period is calendar months and days; they are distinct types with no implicit conversion.
 schema
   module test
+  fn day (t: Text) -> Set Date = match Date.parse(t) | Some s -> [s.value] | None -> []
   fn at (t: Text) -> Set Instant = match Instant.parse(t) | Some s -> [s.value] | None -> []
   fn p (t: Text) -> Set Period = match Period.parse(t) | Some s -> [s.value] | None -> []
 query
@@ -55,3 +56,28 @@ query
 2026-10-26T00:00:00.000000Z
 error Invalid
   1d == 86400
+# add_period adds the months, clamping or rejecting a day past the month's end, then the days.
+query
+  from d in day("2024-01-31") select add_period(d, months(1), Clamp)
+----
+2024-02-29
+query
+  from d in day("2024-01-31") select add_period(d, months(1), Reject)
+----
+None
+query
+  from d in day("2024-01-31") select add_period(d, months(2), Reject)
+----
+Some { value: 2024-03-31 }
+query
+  from d in day("2024-01-31"), q in p("P1M1D") select add_period(d, q, Clamp)
+----
+2024-03-01
+query
+  from d in day("2024-01-31") select add_period(d, months(-13), Clamp)
+----
+2022-12-31
+query
+  from d in day("2024-01-31") select try add_period(d, months(2147483647), Clamp)
+----
+Err { error: ArithmeticOverflow }

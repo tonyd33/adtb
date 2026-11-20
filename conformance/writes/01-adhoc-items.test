@@ -7,6 +7,11 @@ run
   insert users { id: users.key(1), name: "a" }
   update u in users set User { u with name: u.name ++ "!" }
   insert users from (from u in users select { id: users.key(2), name: u.name ++ "?" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a!" }
+User { id: users.key(2), name: "a!?" }
 query
   from u in users select u.name
 ----
@@ -15,6 +20,11 @@ query
 error UserError
   insert users { id: users.key(3), name: "c" }
   fail "stop"
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a!" }
+User { id: users.key(2), name: "a!?" }
 query
   from u in users select u.name
 ----
@@ -23,6 +33,11 @@ query
 error KeyViolation
   delete u in users where key u == users.key(1)
   insert users { id: users.key(2), name: "dup" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a!" }
+User { id: users.key(2), name: "a!?" }
 query
   from u in users select u.name
 ----

@@ -11,16 +11,60 @@ run
   insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
   insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1" },
                            Google { id: identities.key(2), user: users.key(2), gid: "g2" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
 run
   match users.key(1)
     | User u -> update u set User { u with name: "one" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
 run
   match identities.key(1)
     | EmailPass e -> update e set EmailPass { e with hash: "h1b" }
     | Google g -> skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1b" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
 run
   match users.key(3)
     | User u -> update u set User { u with name: "three" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "three" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1b" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
 query
   from u in users select u.name
 ----
@@ -37,6 +81,18 @@ run
   else match old
     | Google o -> update o set Google { o with gid: "g2b" }
     | EmailPass e -> skip
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "three" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1b" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
+Google { id: identities.key(3), user: users.key(3), gid: "old" }
 query
   from g in identities.Google select g
 ----
@@ -46,18 +102,66 @@ error Invalid
   transact
     let u = insert users { id: users.key(9), name: "n" }
     update u set User { u with name: "m" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "three" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1b" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
+Google { id: identities.key(3), user: users.key(3), gid: "old" }
 error Invalid
   transact
     let u = insert users { id: users.key(9), name: "n" }
     update u where true set User { u with name: "m" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "three" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1b" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
+Google { id: identities.key(3), user: users.key(3), gid: "old" }
 error Invalid
   transact
     let u = insert users { id: users.key(9), name: "n" }
     delete u
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "three" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1b" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
+Google { id: identities.key(3), user: users.key(3), gid: "old" }
 error Invalid
   transact
     let s = update u in users where key u == users.key(1) set User { u with name: "x" }
     update s set User { s with name: "y" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "one" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "three" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1b" }
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
+Google { id: identities.key(3), user: users.key(3), gid: "old" }
 query
   from u in users select u.name
 ----

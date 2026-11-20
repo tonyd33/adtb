@@ -11,10 +11,34 @@ run
   insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
   insert badges from ([{ id: badges.key(1), owner: users.key(1), label: "b1" },
                        { id: badges.key(2), owner: users.key(1), label: "b2" }])
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in badges select x
+----
+Badge { id: badges.key(1), owner: users.key(1), label: "b1" }
+Badge { id: badges.key(2), owner: users.key(1), label: "b2" }
+query rowsort
+  from x in copies select x
+----
 run
   transact
     let d = delete u in users where key u == users.key(1)
     insert copies { id: copies.key(1), text: print(count(x for x in d)) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in badges select x
+----
+query rowsort
+  from x in copies select x
+----
+Copy { id: copies.key(1), text: "1" }
 query
   from c in copies select c.text
 ----

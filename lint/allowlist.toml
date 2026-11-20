@@ -260,4 +260,4 @@
 "crates/adtb/src/test_world/mod.rs" = 1
 "crates/adtb/src/test_world/write_path.rs" = 1
 "crates/adtb/src/verify/verify_tests.rs" = 1
-"crates/adtb/src/write/write_states_tests.rs" = 4
+"crates/adtb/src/write/write_states_tests.rs" = 3

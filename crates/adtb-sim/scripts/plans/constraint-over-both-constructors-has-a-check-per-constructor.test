@@ -1,0 +1,35 @@
+# A constraint joining two constructors of one relation has a check run by an insert into each.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users }
+  add relation users : User key id generate sequence
+  add type Login { id: Key logins, user: Key users } = Email { email: Text } | Phone { phone: Text }
+  add relation logins : Login key id generate sequence index (user)
+  add constraint single =
+    from e in logins.Email, p in logins.Phone where e.user == p.user select e
+
+probe checks app::single
+----
+on insert into app::logins.Email
+Set total
+  reads logins.Email, logins.Phone, logins (user)
+  Pipeline
+    One row
+    Unnest
+    Probe logins (user)
+      pruned Email at compile
+      Phone ->
+        Chain
+          Emit
+on insert into app::logins.Phone
+Set total
+  reads logins.Email, logins.Phone, logins (user)
+  Pipeline
+    One row
+    Unnest
+    Probe logins (user)
+      pruned Phone at compile
+      Email ->
+        Chain
+          Emit

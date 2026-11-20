@@ -1,0 +1,30 @@
+# A read at an instant between two commits reads the state of the earlier one.
+seed 7
+use history
+
+advance 1s
+
+begin w
+
+in w run
+  insert items.Open { id: items.key(3), name: "eve", qty: 1 }
+
+commit w position third
+
+run
+  from i in items select key i
+
+query rowsort
+  from c in (from c in sys::commit_times where c.position == $third select c), n in (at instant c.at - 500ms { from i in items select i.name })
+  select n
+----
+"bo"
+"cy"
+
+query rowsort
+  from c in (from c in sys::commit_times where c.position == $third select c), n in (at instant c.at { from i in items select i.name })
+  select n
+----
+"bo"
+"cy"
+"eve"

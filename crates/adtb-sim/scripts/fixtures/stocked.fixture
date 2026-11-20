@@ -1,0 +1,21 @@
+# Stock of 300 items over many heap pages, grouped by g, and 150 notes on them.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key stock, g: I64, v: I64, name: Text }
+  add relation stock : Item key id generate sequence
+    index (g)
+  add type Note = { id: Key notes, item: Key stock, label: Text }
+  add relation notes : Note key id generate sequence
+    index (item)
+
+run
+  insert stock from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: stock.key(a * 100 + b * 10 + c + 1), g: (a * 100 + b * 10 + c + 1) % 7,
+             v: ((a * 100 + b * 10 + c + 1) * 37) % 101, name: "item" ++ print(a * 100 + b * 10 + c + 1) })
+  insert notes from (
+    from a in [0, 1], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    where a * 100 + b * 10 + c < 150
+    select { id: notes.key(a * 100 + b * 10 + c + 1), item: stock.key(((a * 100 + b * 10 + c + 1) * 3) % 300 + 1),
+             label: "n" ++ print(a * 100 + b * 10 + c + 1) })

@@ -12,33 +12,89 @@ schema
     unique (email) in EmailPass
 run
   insert users { id: users.key(1), name: "a" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google { user: users.key(1), gid: "g" }
   unless conflict on (user) in Google
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.EmailPass { user: users.key(1), email: "e", hash: "h" }
   unless conflict on (gid) in Google
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google { user: users.key(1), gid: "g" }
   unless conflict on (gid) in Apple
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google { user: users.key(1), gid: "g" }
   unless conflict on (gid) in Google
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google { user: users.key(1), gid: "g" }
   unless conflict on (gid) in Google
   else update old set Google { old with gid: old.sub }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert users { id: users.key(1), name: "b" }
   unless conflict on (name)
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 error Invalid
   insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g" }
   unless conflict on key
   else update old set EmailPass { old with email: "x" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+query rowsort
+  from x in identities select x
+----
 query
   count(i for i in identities)
 ----

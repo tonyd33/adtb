@@ -1,0 +1,31 @@
+# A retag into a heap whose only page is full of dead versions prunes that page and writes there,
+# taking no new page.
+use pages
+
+run
+  insert docs.Draft { id: 1, text: long::x1000() }
+
+run
+  insert docs from (from i in [2, 3, 4, 5, 6, 7, 8] select Final { id: i, text: long::x1000() })
+
+probe heap app::docs Final pages
+----
+0: HeapSlotted format 1, 7 slots
+
+run
+  delete d in docs.Final
+
+run
+  update d in docs.Draft where d.id == 1 set Final { d with text: d.text }
+
+probe heap app::docs Final
+----
+0: HeapSlotted format 1, 8 slots
+0.0: Dead
+0.1: Dead
+0.2: Dead
+0.3: Dead
+0.4: Dead
+0.5: Dead
+0.6: Dead
+0.7: Normal RETAGGED_IN, x0

@@ -1,0 +1,26 @@
+# A fixpoint that takes more rounds than the open allows is refused for its rounds.
+use planner
+
+run
+  insert users from [{ id: users.key(1), name: "ann" }, { id: users.key(2), name: "bo" }, { id: users.key(3), name: "cy" }]
+  insert follows from [{ src: users.key(1), dst: users.key(2) }, { src: users.key(2), dst: users.key(3) },
+                       { src: users.key(3), dst: users.key(2) }]
+
+option fix_rounds 1
+reopen
+
+error StatementLimit { limit: Rounds { rounds: 1 } }
+  fix reach = (from f in follows where f.src == users.key(1) select f.dst)
+    union (from r in reach, f in follows where f.src == r select f.dst)
+  in reach
+
+option fix_rounds default
+reopen
+
+query rowsort
+  fix reach = (from f in follows where f.src == users.key(1) select f.dst)
+    union (from r in reach, f in follows where f.src == r select f.dst)
+  in reach
+----
+users.key(2)
+users.key(3)

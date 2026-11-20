@@ -1,0 +1,271 @@
+# Queries past their memory grant spill and give the rows the reference gives: each runs with no
+# spill bound, and is refused for its grant with no spill space.
+use stocked
+option query_memory_bytes 32768
+option morsel_rows 16
+reopen
+
+query rowsort
+  from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }
+----
+{ n: notes.key(1), s: stock.key(4) }
+{ n: notes.key(2), s: stock.key(7) }
+{ n: notes.key(3), s: stock.key(10) }
+{ n: notes.key(4), s: stock.key(13) }
+{ n: notes.key(5), s: stock.key(16) }
+{ n: notes.key(6), s: stock.key(19) }
+{ n: notes.key(7), s: stock.key(22) }
+{ n: notes.key(8), s: stock.key(25) }
+{ n: notes.key(9), s: stock.key(28) }
+{ n: notes.key(10), s: stock.key(31) }
+{ n: notes.key(11), s: stock.key(34) }
+{ n: notes.key(12), s: stock.key(37) }
+{ n: notes.key(13), s: stock.key(40) }
+{ n: notes.key(14), s: stock.key(43) }
+{ n: notes.key(15), s: stock.key(46) }
+{ n: notes.key(16), s: stock.key(49) }
+{ n: notes.key(17), s: stock.key(52) }
+{ n: notes.key(18), s: stock.key(55) }
+{ n: notes.key(19), s: stock.key(58) }
+{ n: notes.key(20), s: stock.key(61) }
+{ n: notes.key(21), s: stock.key(64) }
+{ n: notes.key(22), s: stock.key(67) }
+{ n: notes.key(23), s: stock.key(70) }
+{ n: notes.key(24), s: stock.key(73) }
+{ n: notes.key(25), s: stock.key(76) }
+{ n: notes.key(26), s: stock.key(79) }
+{ n: notes.key(27), s: stock.key(82) }
+{ n: notes.key(28), s: stock.key(85) }
+{ n: notes.key(29), s: stock.key(88) }
+{ n: notes.key(30), s: stock.key(91) }
+{ n: notes.key(31), s: stock.key(94) }
+{ n: notes.key(32), s: stock.key(97) }
+{ n: notes.key(33), s: stock.key(100) }
+{ n: notes.key(34), s: stock.key(103) }
+{ n: notes.key(35), s: stock.key(106) }
+{ n: notes.key(36), s: stock.key(109) }
+{ n: notes.key(37), s: stock.key(112) }
+{ n: notes.key(38), s: stock.key(115) }
+{ n: notes.key(39), s: stock.key(118) }
+{ n: notes.key(40), s: stock.key(121) }
+{ n: notes.key(41), s: stock.key(124) }
+{ n: notes.key(42), s: stock.key(127) }
+{ n: notes.key(43), s: stock.key(130) }
+{ n: notes.key(44), s: stock.key(133) }
+{ n: notes.key(45), s: stock.key(136) }
+{ n: notes.key(46), s: stock.key(139) }
+{ n: notes.key(47), s: stock.key(142) }
+{ n: notes.key(48), s: stock.key(145) }
+{ n: notes.key(49), s: stock.key(148) }
+{ n: notes.key(50), s: stock.key(151) }
+{ n: notes.key(51), s: stock.key(154) }
+{ n: notes.key(52), s: stock.key(157) }
+{ n: notes.key(53), s: stock.key(160) }
+{ n: notes.key(54), s: stock.key(163) }
+{ n: notes.key(55), s: stock.key(166) }
+{ n: notes.key(56), s: stock.key(169) }
+{ n: notes.key(57), s: stock.key(172) }
+{ n: notes.key(58), s: stock.key(175) }
+{ n: notes.key(59), s: stock.key(178) }
+{ n: notes.key(60), s: stock.key(181) }
+{ n: notes.key(61), s: stock.key(184) }
+{ n: notes.key(62), s: stock.key(187) }
+{ n: notes.key(63), s: stock.key(190) }
+{ n: notes.key(64), s: stock.key(193) }
+{ n: notes.key(65), s: stock.key(196) }
+{ n: notes.key(66), s: stock.key(199) }
+{ n: notes.key(67), s: stock.key(202) }
+{ n: notes.key(68), s: stock.key(205) }
+{ n: notes.key(69), s: stock.key(208) }
+{ n: notes.key(70), s: stock.key(211) }
+{ n: notes.key(71), s: stock.key(214) }
+{ n: notes.key(72), s: stock.key(217) }
+{ n: notes.key(73), s: stock.key(220) }
+{ n: notes.key(74), s: stock.key(223) }
+{ n: notes.key(75), s: stock.key(226) }
+{ n: notes.key(76), s: stock.key(229) }
+{ n: notes.key(77), s: stock.key(232) }
+{ n: notes.key(78), s: stock.key(235) }
+{ n: notes.key(79), s: stock.key(238) }
+{ n: notes.key(80), s: stock.key(241) }
+{ n: notes.key(81), s: stock.key(244) }
+{ n: notes.key(82), s: stock.key(247) }
+{ n: notes.key(83), s: stock.key(250) }
+{ n: notes.key(84), s: stock.key(253) }
+{ n: notes.key(85), s: stock.key(256) }
+{ n: notes.key(86), s: stock.key(259) }
+{ n: notes.key(87), s: stock.key(262) }
+{ n: notes.key(88), s: stock.key(265) }
+{ n: notes.key(89), s: stock.key(268) }
+{ n: notes.key(90), s: stock.key(271) }
+{ n: notes.key(91), s: stock.key(274) }
+{ n: notes.key(92), s: stock.key(277) }
+{ n: notes.key(93), s: stock.key(280) }
+{ n: notes.key(94), s: stock.key(283) }
+{ n: notes.key(95), s: stock.key(286) }
+{ n: notes.key(96), s: stock.key(289) }
+{ n: notes.key(97), s: stock.key(292) }
+{ n: notes.key(98), s: stock.key(295) }
+{ n: notes.key(99), s: stock.key(298) }
+{ n: notes.key(100), s: stock.key(1) }
+{ n: notes.key(101), s: stock.key(4) }
+{ n: notes.key(102), s: stock.key(7) }
+{ n: notes.key(103), s: stock.key(10) }
+{ n: notes.key(104), s: stock.key(13) }
+{ n: notes.key(105), s: stock.key(16) }
+{ n: notes.key(106), s: stock.key(19) }
+{ n: notes.key(107), s: stock.key(22) }
+{ n: notes.key(108), s: stock.key(25) }
+{ n: notes.key(109), s: stock.key(28) }
+{ n: notes.key(110), s: stock.key(31) }
+{ n: notes.key(111), s: stock.key(34) }
+{ n: notes.key(112), s: stock.key(37) }
+{ n: notes.key(113), s: stock.key(40) }
+{ n: notes.key(114), s: stock.key(43) }
+{ n: notes.key(115), s: stock.key(46) }
+{ n: notes.key(116), s: stock.key(49) }
+{ n: notes.key(117), s: stock.key(52) }
+{ n: notes.key(118), s: stock.key(55) }
+{ n: notes.key(119), s: stock.key(58) }
+{ n: notes.key(120), s: stock.key(61) }
+{ n: notes.key(121), s: stock.key(64) }
+{ n: notes.key(122), s: stock.key(67) }
+{ n: notes.key(123), s: stock.key(70) }
+{ n: notes.key(124), s: stock.key(73) }
+{ n: notes.key(125), s: stock.key(76) }
+{ n: notes.key(126), s: stock.key(79) }
+{ n: notes.key(127), s: stock.key(82) }
+{ n: notes.key(128), s: stock.key(85) }
+{ n: notes.key(129), s: stock.key(88) }
+{ n: notes.key(130), s: stock.key(91) }
+{ n: notes.key(131), s: stock.key(94) }
+{ n: notes.key(132), s: stock.key(97) }
+{ n: notes.key(133), s: stock.key(100) }
+{ n: notes.key(134), s: stock.key(103) }
+{ n: notes.key(135), s: stock.key(106) }
+{ n: notes.key(136), s: stock.key(109) }
+{ n: notes.key(137), s: stock.key(112) }
+{ n: notes.key(138), s: stock.key(115) }
+{ n: notes.key(139), s: stock.key(118) }
+{ n: notes.key(140), s: stock.key(121) }
+{ n: notes.key(141), s: stock.key(124) }
+{ n: notes.key(142), s: stock.key(127) }
+{ n: notes.key(143), s: stock.key(130) }
+{ n: notes.key(144), s: stock.key(133) }
+{ n: notes.key(145), s: stock.key(136) }
+{ n: notes.key(146), s: stock.key(139) }
+{ n: notes.key(147), s: stock.key(142) }
+{ n: notes.key(148), s: stock.key(145) }
+{ n: notes.key(149), s: stock.key(148) }
+{ n: notes.key(150), s: stock.key(151) }
+
+query
+  count(x for x in (from s in stock, n in notes where n.item == key s select { s: s, n: n }))
+----
+150
+
+query
+  count(s for s in stock)
+----
+300
+
+query
+  max(s.name for s in stock)
+----
+Some { value: "item99" }
+
+query
+  sum(s.v for s in stock)
+----
+15059
+
+query
+  from s in stock select s order by (s.v desc, key s) take 5
+----
+Item { id: stock.key(30), g: 2, v: 100, name: "item30" }
+Item { id: stock.key(131), g: 5, v: 100, name: "item131" }
+Item { id: stock.key(232), g: 1, v: 100, name: "item232" }
+Item { id: stock.key(60), g: 4, v: 99, name: "item60" }
+Item { id: stock.key(161), g: 0, v: 99, name: "item161" }
+
+query
+  from s in stock select s order by (s.v, key s) take 40
+----
+Item { id: stock.key(101), g: 3, v: 0, name: "item101" }
+Item { id: stock.key(202), g: 6, v: 0, name: "item202" }
+Item { id: stock.key(71), g: 1, v: 1, name: "item71" }
+Item { id: stock.key(172), g: 4, v: 1, name: "item172" }
+Item { id: stock.key(273), g: 0, v: 1, name: "item273" }
+Item { id: stock.key(41), g: 6, v: 2, name: "item41" }
+Item { id: stock.key(142), g: 2, v: 2, name: "item142" }
+Item { id: stock.key(243), g: 5, v: 2, name: "item243" }
+Item { id: stock.key(11), g: 4, v: 3, name: "item11" }
+Item { id: stock.key(112), g: 0, v: 3, name: "item112" }
+Item { id: stock.key(213), g: 3, v: 3, name: "item213" }
+Item { id: stock.key(82), g: 5, v: 4, name: "item82" }
+Item { id: stock.key(183), g: 1, v: 4, name: "item183" }
+Item { id: stock.key(284), g: 4, v: 4, name: "item284" }
+Item { id: stock.key(52), g: 3, v: 5, name: "item52" }
+Item { id: stock.key(153), g: 6, v: 5, name: "item153" }
+Item { id: stock.key(254), g: 2, v: 5, name: "item254" }
+Item { id: stock.key(22), g: 1, v: 6, name: "item22" }
+Item { id: stock.key(123), g: 4, v: 6, name: "item123" }
+Item { id: stock.key(224), g: 0, v: 6, name: "item224" }
+Item { id: stock.key(93), g: 2, v: 7, name: "item93" }
+Item { id: stock.key(194), g: 5, v: 7, name: "item194" }
+Item { id: stock.key(295), g: 1, v: 7, name: "item295" }
+Item { id: stock.key(63), g: 0, v: 8, name: "item63" }
+Item { id: stock.key(164), g: 3, v: 8, name: "item164" }
+Item { id: stock.key(265), g: 6, v: 8, name: "item265" }
+Item { id: stock.key(33), g: 5, v: 9, name: "item33" }
+Item { id: stock.key(134), g: 1, v: 9, name: "item134" }
+Item { id: stock.key(235), g: 4, v: 9, name: "item235" }
+Item { id: stock.key(3), g: 3, v: 10, name: "item3" }
+Item { id: stock.key(104), g: 6, v: 10, name: "item104" }
+Item { id: stock.key(205), g: 2, v: 10, name: "item205" }
+Item { id: stock.key(74), g: 4, v: 11, name: "item74" }
+Item { id: stock.key(175), g: 0, v: 11, name: "item175" }
+Item { id: stock.key(276), g: 3, v: 11, name: "item276" }
+Item { id: stock.key(44), g: 2, v: 12, name: "item44" }
+Item { id: stock.key(145), g: 5, v: 12, name: "item145" }
+Item { id: stock.key(246), g: 1, v: 12, name: "item246" }
+Item { id: stock.key(14), g: 0, v: 13, name: "item14" }
+Item { id: stock.key(115), g: 3, v: 13, name: "item115" }
+
+query rowsort
+  from s in stock group s by s.g into g select { g: g.key, n: count(x for x in g), t: sum(x.v for x in g) }
+----
+{ g: 0, n: 42, t: 2082 }
+{ g: 1, n: 43, t: 2158 }
+{ g: 2, n: 43, t: 2234 }
+{ g: 3, n: 43, t: 2108 }
+{ g: 4, n: 43, t: 2083 }
+{ g: 5, n: 43, t: 2260 }
+{ g: 6, n: 43, t: 2134 }
+
+option spill_bytes 0
+reopen
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  count(x for x in (from s in stock, n in notes where n.item == key s select { s: s, n: n }))
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  count(s for s in stock)
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  max(s.name for s in stock)
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  sum(s.v for s in stock)
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  from s in stock select s order by (s.v desc, key s) take 5
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  from s in stock select s order by (s.v, key s) take 40
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  from s in stock group s by s.g into g select { g: g.key, n: count(x for x in g), t: sum(x.v for x in g) }

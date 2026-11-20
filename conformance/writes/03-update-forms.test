@@ -15,8 +15,40 @@ run
                            Google { id: identities.key(2), user: users.key(1), gid: "g1" },
                            Google { id: identities.key(3), user: users.key(2), gid: "g2" }])
   insert imports { id: imports.key(1), user: users.key(3), sub: "g2" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1" }
+Google { id: identities.key(2), user: users.key(1), gid: "g1" }
+Google { id: identities.key(3), user: users.key(2), gid: "g2" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(3), sub: "g2" }
 run
   update g in identities.Google where g.user == users.key(1) set Google { g with gid: "g1b" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1" }
+Google { id: identities.key(2), user: users.key(1), gid: "g1b" }
+Google { id: identities.key(3), user: users.key(2), gid: "g2" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(3), sub: "g2" }
 query
   from g in identities.Google select g
 ----
@@ -27,6 +59,22 @@ run
   set match i
     | EmailPass e -> EmailPass { e with hash: e.hash ++ "!" }
     | Google g    -> g
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1!" }
+Google { id: identities.key(2), user: users.key(1), gid: "g1b" }
+Google { id: identities.key(3), user: users.key(2), gid: "g2" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(3), sub: "g2" }
 query
   from i in identities select i
 ----
@@ -36,6 +84,22 @@ Google { id: identities.key(3), user: users.key(2), gid: "g2" }
 run
   update g in (from g in identities.Google, x in imports where g.gid == x.sub select g)
   set Google { g with user: users.key(3) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1!" }
+Google { id: identities.key(2), user: users.key(1), gid: "g1b" }
+Google { id: identities.key(3), user: users.key(3), gid: "g2" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(3), sub: "g2" }
 query
   from g in identities.Google select g.user
 ----
@@ -43,6 +107,22 @@ users.key(1)
 users.key(3)
 run
   update u in users set User { u with name: u.name ++ "!" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1!" }
+User { id: users.key(2), name: "u2!" }
+User { id: users.key(3), name: "u3!" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1!" }
+Google { id: identities.key(2), user: users.key(1), gid: "g1b" }
+Google { id: identities.key(3), user: users.key(3), gid: "g2" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(3), sub: "g2" }
 query
   from u in users select u.name
 ----
@@ -51,6 +131,22 @@ query
 "u3!"
 run
   update u in users where u.name == "nobody" set User { u with name: "x" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1!" }
+User { id: users.key(2), name: "u2!" }
+User { id: users.key(3), name: "u3!" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1!" }
+Google { id: identities.key(2), user: users.key(1), gid: "g1b" }
+Google { id: identities.key(3), user: users.key(3), gid: "g2" }
+query rowsort
+  from x in imports select x
+----
+Import { id: imports.key(1), user: users.key(3), sub: "g2" }
 query
   from u in users select u.name
 ----

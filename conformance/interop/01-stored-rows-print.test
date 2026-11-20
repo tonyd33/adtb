@@ -1,0 +1,70 @@
+# Rows read back from storage print in the textual syntax and read back as the values stored, for each field form.
+schema
+  module test
+  type Money = { amount: Decimal 2, currency: Text }
+  type Status = Active | Paused { since: Date, why: Text }
+  type Doc { id: Key docs }
+    = Note { body: Text, blob: Bytes, price: Money, status: Status, at: Instant, ratio: F64, note: Option Text }
+    | Link { target: Key docs, wait: Duration, zone: ZonedDateTime, every: Period, day: Time }
+  relation docs : Doc key id generate sequence
+  type Tagging = { doc: Key docs, tag: Text, weight: I16 }
+  relation taggings : Tagging key (doc, tag)
+  type Token { id: Key tokens } = Api { secret: Bytes } | Session { at: DateTime, small: F32 }
+  relation tokens : Token key id generate uuidv7
+  fn at (t: Text) -> Set Instant = match Instant.parse(t) | Some s -> [s.value] | None -> []
+  fn day (t: Text) -> Set Date = match Date.parse(t) | Some s -> [s.value] | None -> []
+  fn dt (t: Text) -> Set DateTime = match DateTime.parse(t) | Some s -> [s.value] | None -> []
+  fn tm (t: Text) -> Set Time = match Time.parse(t) | Some s -> [s.value] | None -> []
+  fn per (t: Text) -> Set Period = match Period.parse(t) | Some s -> [s.value] | None -> []
+run
+  insert docs from (from a in at("2024-10-04T01:02:03.000456Z")
+    select Note { id: docs.key(1), body: "a \"q\"\n\u{7}é", blob: bytes("h1"),
+                  price: { amount: 12.50, currency: "EUR" }, status: Active,
+                  at: a, ratio: 0.25, note: None })
+  insert docs from (from a in at("2024-10-04T01:02:03.000456Z"), e in day("1970-01-01"), back in per("P0M-800000D")
+    select Note { id: docs.key(2), body: "", blob: bytes(""),
+                  price: { amount: -0.05, currency: "" }, status: Paused { since: add_period(e, back, Clamp), why: "x" },
+                  at: a, ratio: -1e300, note: Some { value: "n" } })
+  insert docs from (from z in dt("1969-12-27T00:00:00.000001"), every in per("P13M-2D"), d in tm("23:59:59.999999")
+    select Link { id: docs.key(3), target: docs.key(1), wait: 90s, zone: zoned(z, "Europe/Paris", Clamp),
+                  every: every, day: d })
+  insert taggings from [Tagging { doc: docs.key(1), tag: "b", weight: -3 },
+                        Tagging { doc: docs.key(1), tag: "a", weight: 32767 },
+                        Tagging { doc: docs.key(3), tag: "a", weight: 0 }]
+  insert tokens.Api { id: tokens.key(uuid("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")), secret: bytes("s") }
+  insert tokens from (from s in dt("1970-01-01T00:00:00"), back in per("P0M-400000D")
+    select Session { id: tokens.key(uuid("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c")), at: add_period(s, back, Clamp), small: f32(0.1) })
+query
+  docs
+----
+Note { id: docs.key(1), body: "a \"q\"\n\u{7}é", blob: 0x6831, price: Money { amount: 12.50, currency: "EUR" }, status: Active, at: 2024-10-04T01:02:03.000456Z, ratio: 0.25, note: None }
+Note { id: docs.key(2), body: "", blob: 0x, price: Money { amount: -0.05, currency: "" }, status: Paused { since: -00221-09-04, why: "x" }, at: 2024-10-04T01:02:03.000456Z, ratio: -1e300, note: Some { value: "n" } }
+Link { id: docs.key(3), target: docs.key(1), wait: 90s, zone: 1969-12-27T00:00:00.000001[Europe/Paris], every: P13M-2D, day: 23:59:59.999999 }
+query
+  taggings
+----
+Tagging { doc: docs.key(1), tag: "a", weight: 32767 }
+Tagging { doc: docs.key(1), tag: "b", weight: -3 }
+Tagging { doc: docs.key(3), tag: "a", weight: 0 }
+query
+  tokens
+----
+Api { id: tokens.key(uuid("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")), secret: 0x73 }
+Session { id: tokens.key(uuid("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c")), at: 0874-11-02T00:00:00.000000, small: 0.1 }
+query
+  from t in taggings select t.doc
+----
+docs.key(1)
+docs.key(3)
+query
+  from t in taggings select { doc: t.doc, w: { tag: t.tag, weight: t.weight } }
+----
+{ doc: docs.key(1), w: { tag: "a", weight: 32767 } }
+{ doc: docs.key(1), w: { tag: "b", weight: -3 } }
+{ doc: docs.key(3), w: { tag: "a", weight: 0 } }
+query
+  from d in docs select d.id
+----
+docs.key(1)
+docs.key(2)
+docs.key(3)

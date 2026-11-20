@@ -9,25 +9,65 @@ schema
     unique (gid) in Google
 run
   insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
 error Violated
   (insert identities.Google { id: identities.key(1), user: users.key(1), gid: "z" },
    insert identities.Google { id: identities.key(2), user: users.key(2), gid: "z" }
    unless conflict on (gid) in Google
    else update old set old)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
 error KeyViolation
   (insert users { id: users.key(9), name: "a" },
    insert users { id: users.key(9), name: "b" }
    unless conflict on key
    else update old set old)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
 error Violated
   insert identities.Google from (
     from p in [1, 2] select { id: identities.key(p), user: users.key(p), gid: "dup" })
   unless conflict on (gid) in Google
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
 error KeyViolation
   insert users from (from p in ["x", "y"] select { id: users.key(7), name: p })
   unless conflict on key
   else update old set old
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
 query
   count(i for i in identities)
 ----

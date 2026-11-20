@@ -1,0 +1,25 @@
+# A relaxing rekey that drops its old key's field is refused while a live bundle pinned before it
+# holds the old key, and applies once the bundle is released.
+seed 106
+use states
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::users key id, held by web-1.0, has no image: the migration drops its relation or a field of it" } } }
+  module auth
+  rekey relation users key name
+    carry Identity.user
+  drop field User.id
+
+reopen
+
+migrate
+  module auth
+  rekey relation users key name
+    carry Identity.user
+  drop field User.id

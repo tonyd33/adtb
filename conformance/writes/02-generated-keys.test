@@ -9,12 +9,47 @@ run
   insert users { id: users.key(1), name: "a" }
   insert users { id: users.key(2), name: "b" }
   insert users { id: users.key(42), name: "imported" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(42), name: "imported" }
+query rowsort
+  from x in tokens select x.label
+----
 run
   delete u in users where key u == users.key(42)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+query rowsort
+  from x in tokens select x.label
+----
 run
   insert users from (from n in ["c", "d", "e"] select { name: n })
   insert users { name: "f" }
   insert users from (from u in users select { name: u.name ++ "2" })
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(43), name: "c" }
+User { id: users.key(44), name: "d" }
+User { id: users.key(45), name: "e" }
+User { id: users.key(46), name: "f" }
+User { id: users.key(47), name: "a2" }
+User { id: users.key(48), name: "b2" }
+User { id: users.key(49), name: "c2" }
+User { id: users.key(50), name: "d2" }
+User { id: users.key(51), name: "e2" }
+User { id: users.key(52), name: "f2" }
+query rowsort
+  from x in tokens select x.label
+----
 query
   count(u for u in users)
 ----
@@ -31,11 +66,74 @@ query
 run
   insert tokens from (from n in ["x", "y"] select { label: n })
   insert tokens { label: "z" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(43), name: "c" }
+User { id: users.key(44), name: "d" }
+User { id: users.key(45), name: "e" }
+User { id: users.key(46), name: "f" }
+User { id: users.key(47), name: "a2" }
+User { id: users.key(48), name: "b2" }
+User { id: users.key(49), name: "c2" }
+User { id: users.key(50), name: "d2" }
+User { id: users.key(51), name: "e2" }
+User { id: users.key(52), name: "f2" }
+query rowsort
+  from x in tokens select x.label
+----
+"x"
+"y"
+"z"
 query
   count(k for k in (from t in tokens select key t))
 ----
 3
 error Invalid
   insert users { id: 7, name: "lit" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(43), name: "c" }
+User { id: users.key(44), name: "d" }
+User { id: users.key(45), name: "e" }
+User { id: users.key(46), name: "f" }
+User { id: users.key(47), name: "a2" }
+User { id: users.key(48), name: "b2" }
+User { id: users.key(49), name: "c2" }
+User { id: users.key(50), name: "d2" }
+User { id: users.key(51), name: "e2" }
+User { id: users.key(52), name: "f2" }
+query rowsort
+  from x in tokens select x.label
+----
+"x"
+"y"
+"z"
 error Invalid
   from u in users where key u == 1 select u
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "a" }
+User { id: users.key(2), name: "b" }
+User { id: users.key(43), name: "c" }
+User { id: users.key(44), name: "d" }
+User { id: users.key(45), name: "e" }
+User { id: users.key(46), name: "f" }
+User { id: users.key(47), name: "a2" }
+User { id: users.key(48), name: "b2" }
+User { id: users.key(49), name: "c2" }
+User { id: users.key(50), name: "d2" }
+User { id: users.key(51), name: "e2" }
+User { id: users.key(52), name: "f2" }
+query rowsort
+  from x in tokens select x.label
+----
+"x"
+"y"
+"z"

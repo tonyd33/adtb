@@ -1,0 +1,35 @@
+# A dropped constraint stays in force while a live bundle pinned to a version holding it is live;
+# a bundle pinned before the constraint was added does not hold it.
+seed 100
+use states
+log
+  module auth
+  add constraint no_blank = from u in users where u.name == "" select u
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+migrate
+  module auth
+  drop constraint no_blank
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "" }
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key u for u in users)
+reopen
+
+run
+  insert users { name: "" }

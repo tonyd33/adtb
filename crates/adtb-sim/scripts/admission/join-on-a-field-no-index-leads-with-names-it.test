@@ -1,0 +1,17 @@
+# A constraint joining on a field no index leads with is refused, naming the missing index.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::has_identity is not admitted: changes to app::identities: index (name) in app::users is missing" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  add relation identities : Identity
+    key id generate uuidv7
+    index (user)
+  add constraint has_identity =
+    from u in users
+    where not exists i in identities where i.user == u.name
+    select u

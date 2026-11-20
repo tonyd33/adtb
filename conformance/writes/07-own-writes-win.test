@@ -11,19 +11,94 @@ run
   insert users from (from k in [1, 2, 3, 4] select { id: users.key(k), name: "u" ++ print(k) })
   insert notes { id: notes.key(1), author: Some { value: users.key(1) }, body: "n1" }
   insert posts { id: posts.key(1), author: users.key(1), body: "p1" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: Some { value: users.key(1) }, body: "n1" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1), body: "p1" }
 error Violated
   (insert notes { id: notes.key(2), author: Some { value: users.key(2) }, body: "new" },
    delete x in users where key x == users.key(2))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: Some { value: users.key(1) }, body: "n1" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1), body: "p1" }
 error Violated
   (insert posts { id: posts.key(2), author: users.key(2), body: "new" },
    delete x in users where key x == users.key(2))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: Some { value: users.key(1) }, body: "n1" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1), body: "p1" }
 error Violated
   (update n in notes set Note { n with body: "edited" },
    delete x in users where key x == users.key(1),
    delete p in posts)
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: Some { value: users.key(1) }, body: "n1" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1), body: "p1" }
 error Violated
   (update p in posts set Post { p with body: "edited" },
    delete x in users where key x == users.key(1))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: Some { value: users.key(1) }, body: "n1" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(1), body: "p1" }
 query
   from u in users select key u
 ----
@@ -35,6 +110,20 @@ run
   (update n in notes set Note { n with author: Some { value: users.key(3) } },
    update p in posts set Post { p with author: users.key(3) },
    delete x in users where key x == users.key(1))
+query rowsort
+  from x in users select x
+----
+User { id: users.key(2), name: "u2" }
+User { id: users.key(3), name: "u3" }
+User { id: users.key(4), name: "u4" }
+query rowsort
+  from x in notes select x
+----
+Note { id: notes.key(1), author: Some { value: users.key(3) }, body: "n1" }
+query rowsort
+  from x in posts select x
+----
+Post { id: posts.key(1), author: users.key(3), body: "p1" }
 query
   from n in notes select n
 ----

@@ -16,12 +16,40 @@ run
   insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h1" },
                            EmailPass { id: identities.key(2), user: users.key(2), email: "Bo@X", hash: "h2" }])
   insert sessions { id: sessions.key(1), identity: identities.key(1) }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h1" }
+EmailPass { id: identities.key(2), user: users.key(2), email: "Bo@X", hash: "h2" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 run
   update i in identities where i.id == identities.key(1)
   set match i
     | EmailPass e -> Google { gid: lookup(e.email) }
     | Google g    -> g
     | Apple a     -> a
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+EmailPass { id: identities.key(2), user: users.key(2), email: "Bo@X", hash: "h2" }
+Google { id: identities.key(1), user: users.key(1), gid: "ann@x" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 query
   from i in identities select i
 ----
@@ -37,6 +65,20 @@ query
 "ann@x"
 run
   update i in identities.EmailPass set Apple { i with sub: i.email }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
+Google { id: identities.key(1), user: users.key(1), gid: "ann@x" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 query
   from i in identities select i
 ----
@@ -44,6 +86,20 @@ Google { id: identities.key(1), user: users.key(1), gid: "ann@x" }
 Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
 run
   update i in identities.Google set Apple { user: users.key(2), sub: "moved" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(2), sub: "moved" }
+Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 query
   from i in identities.Apple select i
 ----
@@ -51,10 +107,52 @@ Apple { id: identities.key(1), user: users.key(2), sub: "moved" }
 Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
 error Invalid
   update i in identities.Apple set Google { }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(2), sub: "moved" }
+Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 error Invalid
   update i in identities.Apple set Google { i with }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(2), sub: "moved" }
+Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 error Invalid
   update i in identities.Apple set EmailPass { email: "e" }
+query rowsort
+  from x in users select x
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+query rowsort
+  from x in identities select x
+----
+Apple { id: identities.key(1), user: users.key(2), sub: "moved" }
+Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
+query rowsort
+  from x in sessions select x
+----
+Session { id: sessions.key(1), identity: identities.key(1) }
 query
   count(i for i in identities.Apple)
 ----

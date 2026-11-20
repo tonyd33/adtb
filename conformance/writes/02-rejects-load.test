@@ -8,10 +8,40 @@ schema
   relation out_rejects : RejectedRow key (load, line)
 run
   insert raws from (from k in [1, 2, 3, 4] select { id: raws.key(k), n: if k % 2 == 0 then -1 else k })
+query rowsort
+  from x in raws select x
+----
+Raw { id: raws.key(1), n: 1 }
+Raw { id: raws.key(2), n: -1 }
+Raw { id: raws.key(3), n: 3 }
+Raw { id: raws.key(4), n: -1 }
+query rowsort
+  from x in outs select x
+----
+query rowsort
+  from x in out_rejects select x
+----
 run
   insert outs from (
     from r in raws select { id: outs.key(value(key r)), n: if r.n > 0 then r.n else reject "negative" })
   rejects into out_rejects
+query rowsort
+  from x in raws select x
+----
+Raw { id: raws.key(1), n: 1 }
+Raw { id: raws.key(2), n: -1 }
+Raw { id: raws.key(3), n: 3 }
+Raw { id: raws.key(4), n: -1 }
+query rowsort
+  from x in outs select x
+----
+Out { id: outs.key(1), n: 1 }
+Out { id: outs.key(3), n: 3 }
+query rowsort
+  from x in out_rejects select x
+----
+RejectedRow { load: 1, line: 2, source: "raws", raw: "Raw { id: raws.key(2), n: -1 }", reason: "negative" }
+RejectedRow { load: 1, line: 4, source: "raws", raw: "Raw { id: raws.key(4), n: -1 }", reason: "negative" }
 query
   from j in out_rejects select j.line
 ----
@@ -27,6 +57,28 @@ run
       from r in raws select { id: outs.key(10 + value(key r)), n: if r.n > 0 then r.n else reject "neg" })
       rejects into out_rejects
     insert outs { id: outs.key(100), n: count(o for o in x) }
+query rowsort
+  from x in raws select x
+----
+Raw { id: raws.key(1), n: 1 }
+Raw { id: raws.key(2), n: -1 }
+Raw { id: raws.key(3), n: 3 }
+Raw { id: raws.key(4), n: -1 }
+query rowsort
+  from x in outs select x
+----
+Out { id: outs.key(1), n: 1 }
+Out { id: outs.key(100), n: 2 }
+Out { id: outs.key(11), n: 1 }
+Out { id: outs.key(13), n: 3 }
+Out { id: outs.key(3), n: 3 }
+query rowsort
+  from x in out_rejects select x
+----
+RejectedRow { load: 1, line: 2, source: "raws", raw: "Raw { id: raws.key(2), n: -1 }", reason: "negative" }
+RejectedRow { load: 1, line: 4, source: "raws", raw: "Raw { id: raws.key(4), n: -1 }", reason: "negative" }
+RejectedRow { load: 2, line: 2, source: "raws", raw: "Raw { id: raws.key(2), n: -1 }", reason: "neg" }
+RejectedRow { load: 2, line: 4, source: "raws", raw: "Raw { id: raws.key(4), n: -1 }", reason: "neg" }
 query
   from o in outs where key o == outs.key(100) select o.n
 ----
