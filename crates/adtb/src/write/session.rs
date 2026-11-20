@@ -41,8 +41,6 @@ impl<R: Runtime> Session<R> {
             dead: Ranked::new(ranks::DEAD, vacuums::Dead::default()),
             #[cfg(any(test, feature = "testing"))]
             dropped: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
-            fail_log: adtb_sys::lock::Lock::default(),
         })
     }
 
@@ -95,10 +93,6 @@ impl<R: Runtime> Session<R> {
     /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
     pub(super) fn log_safe(&self, ser: &mut Serializer) {
         let readers = self.readers.lock(&self.rt);
-        #[cfg(test)]
-        if let Some(message) = self.fail_log.lock(&self.rt).take() {
-            panic!("{message}");
-        }
         for sid in ser.take_safe() {
             let (taken, snapshot) = &readers[&sid];
             self.txns.log_safe_snapshot(&self.pager, *taken, snapshot);

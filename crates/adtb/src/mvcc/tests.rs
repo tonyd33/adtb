@@ -938,3 +938,13 @@ fn the_serializer_reports_each_snapshot_it_finds_safe_once() {
     assert_eq!(vec![pending], s.take_safe());
     assert!(s.take_safe().is_empty());
 }
+
+#[test]
+fn a_snapshot_found_safe_is_not_reported_once_its_reader_ends() {
+    let mut s = Serializer::default();
+    let t = rw(&mut s, 1);
+    let r = s.begin(Access::ReadOnly);
+    s.aborted(t);
+    s.aborted(r);
+    assert_eq!(Vec::<SerialId>::new(), s.take_safe());
+}

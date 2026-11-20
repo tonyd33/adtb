@@ -427,9 +427,6 @@ struct Session<R: Runtime> {
     /// How many transactions ended by being dropped.
     #[cfg(any(test, feature = "testing"))]
     dropped: std::sync::atomic::AtomicUsize,
-    /// The message the next safe snapshot logging panics with.
-    #[cfg(test)]
-    fail_log: Lock<Option<&'static str>>,
 }
 
 impl std::fmt::Debug for Txn {
@@ -1346,12 +1343,6 @@ impl<R: Runtime> Database<R> {
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn take_ends_by_drop(&self) -> usize {
         self.session.dropped.swap(0, Ordering::Relaxed)
-    }
-
-    /// Panic with `message` as the next end or reader logs its safe snapshot markers.
-    #[cfg(test)]
-    pub(crate) fn fail_next_log_safe(&self, message: &'static str) {
-        *self.session.fail_log.lock(&self.rt) = Some(message);
     }
 
     /// Abort `tx` and release what it holds.
