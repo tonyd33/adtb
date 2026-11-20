@@ -265,7 +265,6 @@ fn a_read_of_the_past_breaking_its_shape_is_refused() {
         point,
         pins: None,
         body: probe.root.clone(),
-        reads: probe.reads.clone(),
     }));
     let key_index = f.catalog.relation(f.rel("identities")).key_index;
     assert_eq!(Err(Broken::PastIndex(key_index)), check(&f, &probe));

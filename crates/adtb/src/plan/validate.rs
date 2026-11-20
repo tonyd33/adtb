@@ -7,15 +7,15 @@ use adtb_lang::types::Ty;
 use super::catalog::{Catalog, Element, IndexDesc, RelationDesc};
 use super::terms::Facts;
 use super::{
-    Broken, Build, Chain, End, Eval, Fix, HeapId, IndexId, Pipeline, Plan, Query, Reads, Route,
-    Sink, Source, Spine, Step,
+    Broken, Build, Chain, End, Eval, Fix, HeapId, IndexId, Pipeline, Plan, Query, Route, Sink,
+    Source, Spine, Step,
 };
 
 /// Refuse `plan` when it breaks an invariant of every plan that a walk of its structure decides:
 /// every variable bound where it is read, every case naming each constructor its scrutinee may
 /// hold once, every scan and route reading its constructor's heap, every range probing an
-/// ordered index on a field, every read listed, and every read of the past holding no index
-/// probe and no other read of the past.
+/// ordered index on a field, and every read of the past holding no index probe and no other
+/// read of the past.
 pub(super) fn validate(
     schema: &Schema,
     catalog: &Catalog,
@@ -32,8 +32,7 @@ pub(super) fn validate(
         terms: &plan.terms,
         facts,
         bound,
-        reads: &plan.reads,
-        past: None,
+        past: false,
         seen: Seen::default(),
         exprs: Vec::new(),
     };
@@ -52,7 +51,6 @@ struct Seen {
     scans: bool,
     routes: bool,
     ranges: bool,
-    listed: bool,
     past: bool,
 }
 
@@ -63,9 +61,8 @@ struct Walk<'a> {
     facts: &'a mut Facts,
     /// How many binders in scope bind each variable.
     bound: Vec<u32>,
-    reads: &'a Reads,
-    /// The reads of the read of the past being walked.
-    past: Option<&'a Reads>,
+    /// Set while walking the body of a read of the past.
+    past: bool,
     seen: Seen,
     exprs: Vec<Tm>,
 }
@@ -132,13 +129,13 @@ impl<'a> Walk<'a> {
             Eval::GroupRows { groups, key } => self.exprs(&[*groups, *key]),
             Eval::At(a) => {
                 self.seen.past = true;
-                if self.past.is_some() {
+                if self.past {
                     return Err(Broken::NestedPast);
                 }
                 self.expr(a.point)?;
-                self.past = Some(&a.reads);
+                self.past = true;
                 let out = self.eval(&a.body);
-                self.past = None;
+                self.past = false;
                 out
             }
         }
@@ -235,7 +232,6 @@ impl<'a> Walk<'a> {
                     Some((_, c)) if c == *ctor => {}
                     _ => return Err(Broken::ScanHeap(*heap)),
                 }
-                self.listed_heap(*heap)?;
                 self.under(&[*var], |w| w.chain(&p.chain))
             }
         }
@@ -322,7 +318,7 @@ impl<'a> Walk<'a> {
         routes: &'a [Route],
         range: bool,
     ) -> R {
-        if self.past.is_some() {
+        if self.past {
             return Err(Broken::PastIndex(index));
         }
         self.exprs(key)?;
@@ -349,8 +345,7 @@ impl<'a> Walk<'a> {
     }
 
     /// Check that the routes `ctors` of a probe of `index`, of relation `rel`, name distinct
-    /// constructors the index `covers`, each with its heap, and that the reads list the index
-    /// and the heap of every constructor of `rel`.
+    /// constructors the index `covers`, each with its heap.
     fn routes(
         &mut self,
         index: IndexId,
@@ -372,30 +367,7 @@ impl<'a> Walk<'a> {
                 return Err(Broken::RouteHeap { ctor, heap });
             }
         }
-        self.listed_index(index)?;
-        rel.heaps.values().try_for_each(|h| self.listed_heap(*h))
-    }
-
-    fn listed_heap(&mut self, h: HeapId) -> R {
-        self.seen.listed = true;
-        if !self.reads.heaps.contains(&h) {
-            return Err(Broken::UnlistedHeap(h));
-        }
-        match self.past {
-            Some(p) if !p.heaps.contains(&h) => Err(Broken::PastUnlistedHeap(h)),
-            _ => Ok(()),
-        }
-    }
-
-    fn listed_index(&mut self, i: IndexId) -> R {
-        self.seen.listed = true;
-        if !self.reads.indexes.contains(&i) {
-            return Err(Broken::UnlistedIndex(i));
-        }
-        match self.past {
-            Some(p) if !p.indexes.contains(&i) => Err(Broken::PastUnlistedIndex(i)),
-            _ => Ok(()),
-        }
+        Ok(())
     }
 
     /// Check that the constructors `arms` names are the constructors a value of `s`'s type may
@@ -480,26 +452,24 @@ pub mod counts {
         Scans,
         Routes,
         Ranges,
-        Listed,
         Past,
     }
 
     impl Check {
         /// The checks, without `Plans` and `Refused`.
-        pub const CHECKS: [Check; 7] = [
+        pub const CHECKS: [Check; 6] = [
             Check::Bound,
             Check::Arms,
             Check::Scans,
             Check::Routes,
             Check::Ranges,
-            Check::Listed,
             Check::Past,
         ];
     }
 
     /// The counts of this process's validations, by [`Check`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Checked([u64; 9]);
+    pub struct Checked([u64; 8]);
 
     impl Checked {
         pub fn get(&self, c: Check) -> u64 {
@@ -507,11 +477,11 @@ pub mod counts {
         }
     }
 
-    static COUNTS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+    static COUNTS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 
     pub(super) fn add(s: &Seen, refused: bool) {
         let ran = [
-            true, refused, s.bound, s.arms, s.scans, s.routes, s.ranges, s.listed, s.past,
+            true, refused, s.bound, s.arms, s.scans, s.routes, s.ranges, s.past,
         ];
         for (c, r) in COUNTS.iter().zip(ran) {
             c.fetch_add(u64::from(r), Ordering::Relaxed);

@@ -28,10 +28,6 @@ pub enum Broken {
     RouteHeap { ctor: u32, heap: HeapId },
     RangeNotOrdered(IndexId),
     RangeNotField(IndexId),
-    UnlistedHeap(HeapId),
-    UnlistedIndex(IndexId),
-    PastUnlistedHeap(HeapId),
-    PastUnlistedIndex(IndexId),
     PastIndex(IndexId),
     NestedPast,
 }
@@ -104,14 +100,6 @@ impl fmt::Display for Broken {
                 "a range of index {} bounds a field after its key prefix",
                 i.0
             ),
-            Broken::UnlistedHeap(h) => write!(f, "a plan's reads list heap {}", h.0),
-            Broken::UnlistedIndex(i) => write!(f, "a plan's reads list index {}", i.0),
-            Broken::PastUnlistedHeap(h) => {
-                write!(f, "a read of the past lists heap {}", h.0)
-            }
-            Broken::PastUnlistedIndex(i) => {
-                write!(f, "a read of the past lists index {}", i.0)
-            }
             Broken::PastIndex(i) => write!(
                 f,
                 "a read of the past probes no index but by key lookups, not index {}",

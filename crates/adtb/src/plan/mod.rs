@@ -9,6 +9,7 @@ pub mod explain;
 #[cfg(test)]
 pub mod fixture;
 mod lower;
+mod reads;
 mod terms;
 mod validate;
 
@@ -35,13 +36,19 @@ pub struct Plan {
     pub terms: Terms,
     params: BTreeSet<Var>,
     pub root: Eval,
-    pub reads: Reads,
 }
 
 impl Plan {
     /// Returns the variables `root` reads that the caller binds.
     pub fn params(&self) -> &BTreeSet<Var> {
         &self.params
+    }
+
+    /// Returns the heaps and indexes `root` reads, its relations described by `catalog`.
+    pub fn reads(&self, catalog: &Catalog) -> Reads {
+        let mut out = Reads::default();
+        reads::collect_eval(catalog, &self.root, &mut out);
+        out
     }
 }
 
@@ -87,8 +94,15 @@ pub struct AtRead {
     pub pins: Option<u64>,
     /// Read every relation by a scan of its heaps or by a key lookup, never by another index.
     pub body: Eval,
-    /// The heaps and indexes `body` reads.
-    pub reads: Reads,
+}
+
+impl AtRead {
+    /// Returns the heaps and indexes `body` reads, its relations described by `catalog`.
+    pub fn reads(&self, catalog: &Catalog) -> Reads {
+        let mut out = Reads::default();
+        reads::collect_eval(catalog, &self.body, &mut out);
+        out
+    }
 }
 
 /// The row whose key index entry has the key values, fetched from the heap of its constructor.

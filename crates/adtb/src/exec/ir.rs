@@ -296,6 +296,7 @@ impl Bound {
 
 struct Lower<'a> {
     c: Compiler<'a>,
+    catalog: &'a Catalog,
     heaps: BTreeMap<HeapId, (RelId, u32)>,
     indexes: BTreeMap<IndexId, (RelId, Vec<Element>)>,
 }
@@ -323,12 +324,14 @@ pub fn compile(
     }
     let mut l = Lower {
         c: Compiler::new(schema, &plan.terms),
+        catalog,
         heaps,
         indexes,
     };
     let root = l.eval(&plan.root)?;
+    let reads = plan.reads(catalog);
     let mut infos = BTreeMap::new();
-    for h in &plan.reads.heaps {
+    for h in &reads.heaps {
         let (rel, ctor) = l.heaps[h];
         let row = l.row_type(rel, ctor);
         let cs = ctors(schema, &row).expect("a row type is a sum");
@@ -347,7 +350,7 @@ pub fn compile(
             grant: None,
             hosts: Arc::default(),
         },
-        reads: Arc::new(plan.reads.clone()),
+        reads: Arc::new(reads),
         params: plan
             .params()
             .iter()
@@ -427,7 +430,7 @@ impl Lower<'_> {
                 point: self.expr(a.point)?,
                 pins: a.pins,
                 body: self.eval(&a.body)?,
-                reads: Arc::new(a.reads.clone()),
+                reads: Arc::new(a.reads(self.catalog)),
             })),
             plan::Eval::Fix(f) => Eval::Fix(Box::new(Fix {
                 binds: f

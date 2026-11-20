@@ -12,11 +12,9 @@ use super::catalog::{Catalog, IndexDesc};
 use super::terms::Facts;
 use super::validate::validate;
 use super::*;
-use reads::collect_eval;
 
 mod group;
 mod probe;
-mod reads;
 mod split;
 
 /// The rows the fixed cost model assumes in every heap.
@@ -110,14 +108,11 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         outer: Vec::new(),
     };
     let root = p.eval(root)?;
-    let mut reads = Reads::default();
-    collect_eval(catalog, &root, &mut reads);
     let params = (*p.facts.free(&p.t, input.root)).clone();
     let plan = Plan {
         terms: p.t,
         params,
         root,
-        reads,
     };
     validate(schema, catalog, &mut p.facts, &plan)?;
     Ok(plan)
@@ -774,14 +769,11 @@ impl Planner<'_> {
         self.past = false;
         self.outer = outer;
         let body = body?;
-        let mut reads = Reads::default();
-        collect_eval(self.catalog, &body, &mut reads);
         let at = AtRead {
             instant,
             point,
             pins,
             body,
-            reads,
         };
         Ok(wrap_eval(lets, Eval::At(Box::new(at))))
     }

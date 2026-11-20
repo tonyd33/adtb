@@ -284,7 +284,7 @@ impl<'a> Describe<'a> {
     /// Returns the operators of `plan`.
     pub fn plan(&self, plan: &Plan) -> Node {
         let mut root = self.eval(plan, &plan.root);
-        root.reads = self.reads(&plan.reads);
+        root.reads = self.reads(&plan.reads(self.catalog));
         root
     }
 
@@ -378,7 +378,7 @@ impl<'a> Describe<'a> {
                     None => point.to_string(),
                 };
                 let mut n = Node::new("Read the past", detail, vec![self.eval(plan, &a.body)]);
-                n.reads = self.reads(&a.reads);
+                n.reads = self.reads(&a.reads(self.catalog));
                 n
             }
             Eval::Fix(f) => {
