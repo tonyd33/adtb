@@ -84,8 +84,8 @@ pub struct Options {
     /// Stop at the first case that fails, running one case at a time.
     fail_fast: bool,
     color: bool,
-    /// The program that runs one conformance file on the engine in a process of its own, as
-    /// `PROGRAM engine-case ROOT FILE`; `None` runs it in this process.
+    /// The program that runs one case on the engine in a process of its own, as `PROGRAM
+    /// engine-case [--script] ROOT FILE`; `None` runs it in this process.
     isolate: Option<PathBuf>,
 }
 
@@ -104,8 +104,7 @@ impl Options {
         }
     }
 
-    /// Returns the options that run each conformance file on the engine in a process of
-    /// `program`.
+    /// Returns the options that run each case on the engine in a process of `program`.
     pub fn isolated(self, program: PathBuf) -> Options {
         Options {
             isolate: Some(program),
@@ -406,29 +405,19 @@ fn writes(found: &[(Found, bool)]) -> Option<Vec<(usize, Vec<String>)>> {
 
 /// Returns each difference of `case`, with whether an update writes its rows.
 fn differences(case: &Case, options: &Options) -> Vec<(Found, bool)> {
+    let engine = || match &options.isolate {
+        Some(program) => child::on_engine(program, case),
+        None => on_engine(case),
+    };
     match case.format {
-        #[cfg(feature = "scripts")]
-        Format::Scripts => crate::scripted::run_file(&case.root, &case.path)
-            .into_iter()
-            .map(|f| (f, true))
-            .collect(),
-        #[cfg(not(feature = "scripts"))]
-        Format::Scripts => {
-            let at = shown(&case.root, &case.path);
-            let message = format!("{at}: the runner is built without the `scripts` feature");
-            vec![(Found::at(None, message), false)]
-        }
+        Format::Scripts => engine().into_iter().map(|f| (f, true)).collect(),
         Format::Conformance => {
             let mut out = Vec::new();
             if options.sides.reference() {
                 out.extend(on_reference(case).into_iter().map(|f| (f, true)));
             }
             if options.sides.engine() {
-                let found = match &options.isolate {
-                    Some(program) => child::on_engine(program, case),
-                    None => on_engine(case),
-                };
-                out.extend(found.into_iter().map(|f| (f, false)));
+                out.extend(engine().into_iter().map(|f| (f, false)));
             }
             out
         }
@@ -440,10 +429,19 @@ pub fn on_reference(case: &Case) -> Vec<Found> {
     conformance(case, "reference", crate::on_reference)
 }
 
-/// Returns each difference of the conformance file `case` on the engine over the simulator, in
-/// this process.
+/// Returns each difference of `case` on the engine over the simulator, in this process.
 pub fn on_engine(case: &Case) -> Vec<Found> {
-    conformance(case, "engine", crate::on_engine)
+    match case.format {
+        Format::Conformance => conformance(case, "engine", crate::on_engine),
+        #[cfg(feature = "scripts")]
+        Format::Scripts => crate::scripted::run_file(&case.root, &case.path),
+        #[cfg(not(feature = "scripts"))]
+        Format::Scripts => {
+            let at = shown(&case.root, &case.path);
+            let message = format!("{at}: the runner is built without the `scripts` feature");
+            vec![Found::at(None, message)]
+        }
+    }
 }
 
 /// Returns each difference `run` finds in the conformance file `case`, its head naming `side`.

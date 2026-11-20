@@ -49,7 +49,7 @@ struct Run {
         short,
         long,
         value_name = "N",
-        help = "run N cases at a time (default: half the logical CPUs)"
+        help = "run N cases at a time (default: the logical CPUs)"
     )]
     jobs: Option<usize>,
     #[arg(
@@ -88,9 +88,15 @@ enum Command {
         args_override_self = true
     )]
     Probe(probe::Args),
-    /// Run one conformance file on the engine and print its differences as one JSON line.
+    /// Run one conformance file, or with `--script` one engine script, on the engine and print
+    /// its differences as one JSON line.
     #[command(hide = true)]
-    EngineCase { root: PathBuf, file: PathBuf },
+    EngineCase {
+        #[arg(long)]
+        script: bool,
+        root: PathBuf,
+        file: PathBuf,
+    },
 }
 
 /// Run the command `std::env::args` names.
@@ -115,11 +121,13 @@ pub fn main() -> ExitCode {
                 }
             }
         }
-        Some(Command::EngineCase { root, file }) => {
-            let corpus = Corpus {
-                format: Format::Conformance,
-                root,
+        Some(Command::EngineCase { script, root, file }) => {
+            let format = if script {
+                Format::Scripts
+            } else {
+                Format::Conformance
             };
+            let corpus = Corpus { format, root };
             let selection = runner::select(&corpus, &file);
             match (selection.cases.as_slice(), selection.problems.as_slice()) {
                 ([case], []) => {
@@ -227,7 +235,7 @@ fn corpora(run: &Run) -> Result<ExitCode, String> {
         include: run.include.clone(),
         jobs: run
             .jobs
-            .unwrap_or_else(|| thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1))),
+            .unwrap_or_else(|| thread::available_parallelism().map_or(1, usize::from)),
         fail_fast: run.fail_fast,
         color: !run.no_color
             && io::stdout().is_terminal()

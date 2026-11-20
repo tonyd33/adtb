@@ -1,5 +1,5 @@
-//! Run one conformance file on the engine in a child process, so a file that overflows the
-//! stack, aborts or does not finish fails alone.
+//! Run one case on the engine in a child process, so a case that overflows the stack, aborts or
+//! does not finish fails alone, and each case has a heap cap of its own.
 
 use std::io::Read;
 use std::path::Path;
@@ -11,7 +11,7 @@ use serde_json::{Value as Json, json};
 
 use crate::Found;
 
-use super::{Case, shown};
+use super::{Case, Format, shown};
 
 const DEADLINE: Duration = Duration::from_secs(180);
 const POLL: Duration = Duration::from_millis(20);
@@ -72,13 +72,16 @@ pub fn decode(text: &str) -> Result<Vec<Found>, String> {
         .collect()
 }
 
-/// Returns each difference of the conformance file `case` on the engine, run by `program` in a
-/// child process.
+/// Returns each difference of `case` on the engine, run by `program` in a child process.
 pub(super) fn on_engine(program: &Path, case: &Case) -> Vec<Found> {
     let at = shown(&case.root, &case.path);
     let failed = |message: String| vec![Found::at(None, format!("{at}:0: engine: {message}"))];
-    let spawned = Command::new(program)
-        .arg("engine-case")
+    let mut command = Command::new(program);
+    command.arg("engine-case");
+    if case.format == Format::Scripts {
+        command.arg("--script");
+    }
+    let spawned = command
         .arg(&case.root)
         .arg(&case.path)
         .stdin(Stdio::null())
