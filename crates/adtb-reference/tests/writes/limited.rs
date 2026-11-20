@@ -67,8 +67,8 @@ impl Step {
         );
         measured.set(0);
         let normalized = fixture.interp().with_row_limit(&measure).run(
-            &normal.terms,
-            normal.items[0],
+            normal.terms(),
+            normal.items()[0],
             &[],
             &mut fixture.supply.clone(),
         );

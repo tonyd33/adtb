@@ -35,8 +35,8 @@ fn printed(text: &str) -> (String, String) {
     let checked = sexp(&p.terms, body_of(&s, &p, "f"));
     let n = crate::norm::program(&s, &p).expect("normalises");
     let i = s.functions.iter().position(|f| f.name == "f").unwrap();
-    let (_, body) = n.functions[i].clone().expect("a normal form");
-    (checked, sexp(&n.terms, body))
+    let (_, body) = n.functions()[i].clone().expect("a normal form");
+    (checked, sexp(n.terms(), body))
 }
 
 #[test]
@@ -157,8 +157,8 @@ fn sizes(alts: usize, uses: usize, apart: bool) -> (usize, usize) {
     let checked = p.terms.tree_size(body_of(&s, &p, "f"), limit);
     let n = crate::norm::program(&s, &p).expect("normalises");
     let i = s.functions.iter().position(|f| f.name == "f").unwrap();
-    let (_, body) = n.functions[i].clone().expect("a normal form");
-    let normal = n.terms.tree_size(body, limit);
+    let (_, body) = n.functions()[i].clone().expect("a normal form");
+    let normal = n.terms().tree_size(body, limit);
     (
         checked.expect("the checked term is under the limit"),
         normal.expect("the normal form is under the limit"),

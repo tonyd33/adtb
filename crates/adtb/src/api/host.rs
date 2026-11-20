@@ -187,19 +187,19 @@ fn reached(schema: &Schema, normal: &NormalProgram) -> BTreeSet<FnId> {
     let mut roots: Vec<Tm> = Vec::new();
     roots.extend(normal.constraints().map(|(_, t)| t));
     roots.extend(normal.checks().map(|(_, t)| t));
-    roots.extend(normal.domains.values().map(|(_, t)| *t));
-    roots.extend(normal.retags.values().map(|(_, t)| *t));
-    roots.extend(normal.defaults.values());
-    roots.extend(normal.computed.values().map(|(_, t)| *t));
-    roots.extend(normal.index_fields.values().map(|(_, f)| f.value));
-    for (f, body) in normal.functions.iter().enumerate() {
+    roots.extend(normal.domains().values().map(|(_, t)| *t));
+    roots.extend(normal.retags().values().map(|(_, t)| *t));
+    roots.extend(normal.defaults().values());
+    roots.extend(normal.computed().values().map(|(_, t)| *t));
+    roots.extend(normal.index_fields().values().map(|(_, f)| f.value));
+    for (f, body) in normal.functions().iter().enumerate() {
         if let Some((_, t)) = body
             && schema.functions[f].stored.is_some()
         {
             roots.push(*t);
         }
     }
-    calls(&normal.terms, roots)
+    calls(normal.terms(), roots)
 }
 
 /// Returns every function a `Call` reachable from `roots` names.

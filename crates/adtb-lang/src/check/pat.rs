@@ -1346,10 +1346,14 @@ impl Checker<'_> {
     fn let_binder(&mut self, cx: &Cx, n: &str, y: Tm, k: Tm) -> Tm {
         match cx.binds {
             Binding::Lets(binds) => match binds.get(n) {
-                Some(v) => self.b().let_(*v, y, k, cx.res.clone()),
+                Some(v) => {
+                    let joined = self.terms.var_info(*v).ty.clone();
+                    let y = self.renumber(y, &joined);
+                    self.b().let_(*v, y, k, cx.res.clone())
+                }
                 None => k,
             },
-            Binding::Value(s) if s == n => y,
+            Binding::Value(s) if s == n => self.renumber(y, cx.res),
             Binding::Value(_) | Binding::None => k,
         }
     }
@@ -1410,7 +1414,11 @@ impl Checker<'_> {
         };
         let cols = self.ctor_cols(y_ty, c);
         let selects = matches!((cx.binds, binder), (Binding::Value(s), Some(n)) if s == n);
-        let mut out = if selects { y } else { cont.k };
+        let mut out = if selects {
+            self.renumber(y, cx.res)
+        } else {
+            cont.k
+        };
         for (name, sub) in fields.iter().rev() {
             let fty = cols
                 .iter()

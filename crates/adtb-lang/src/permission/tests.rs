@@ -1235,7 +1235,7 @@ fn constraint(s: &Committed) -> Requirements {
     let program = check_schema(s).expect("schema checks");
     let normal = crate::norm::program(s, &program).expect("program normalizes");
     let (_, t) = normal.constraints().next().expect("a constraint");
-    analyze(s, &normal, &normal.terms, t, &[]).expect("requirements analyze")
+    analyze(s, &normal, normal.terms(), t, &[]).expect("requirements analyze")
 }
 
 #[test]

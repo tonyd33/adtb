@@ -817,7 +817,8 @@ impl Checker<'_> {
         )
     }
 
-    fn renumber(&mut self, t: Tm, to: &Ty) -> Tm {
+    /// Returns `t` at `to`, a join of its type, with its anonymous constructors numbered in `to`.
+    pub(super) fn renumber(&mut self, t: Tm, to: &Ty) -> Tm {
         let from = self.terms.ty(t).clone();
         if !renumbers(&from, to) {
             return t;

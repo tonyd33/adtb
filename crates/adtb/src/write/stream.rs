@@ -75,7 +75,10 @@ impl<R: Runtime> Database<R> {
         {
             return Ok(None);
         }
-        let program = self.program(text.schema, &terms, root, text.caller.cloned())?;
+        let free = text.params.iter().map(|(v, _)| *v).collect();
+        let terms = adtb_lang::kernel::ValidTerms::new(text.schema, terms, &[(root, free)])
+            .map_err(super::Broken::IllTyped)?;
+        let program = self.program(text.schema, terms.valid(), root, text.caller.cloned())?;
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options

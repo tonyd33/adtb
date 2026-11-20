@@ -91,26 +91,26 @@ pub(crate) fn program_roots(p: &Program) -> Vec<Tm> {
 fn one_binding_site(s: &Schema, p: &Program) {
     let n = crate::norm::program(s, p).unwrap_or_else(|e| panic!("normalises: {e:?}"));
     let roots: Vec<Tm> = n
-        .functions
+        .functions()
         .iter()
         .flatten()
         .map(|(_, t)| t)
-        .chain(n.domains.values().map(|(_, t)| t))
-        .chain(n.retags.values().map(|(_, t)| t))
-        .chain(n.defaults.values())
-        .chain(n.computed.values().map(|(_, t)| t))
-        .chain(n.index_fields.values().map(|(_, f)| &f.value))
+        .chain(n.domains().values().map(|(_, t)| t))
+        .chain(n.retags().values().map(|(_, t)| t))
+        .chain(n.defaults().values())
+        .chain(n.computed().values().map(|(_, t)| t))
+        .chain(n.index_fields().values().map(|(_, f)| &f.value))
         .copied()
         .chain(n.constraints().map(|(_, t)| t))
         .chain(n.checks().map(|(_, t)| t))
         .chain(
-            n.aggregates
+            n.aggregates()
                 .iter()
                 .flatten()
-                .flat_map(|a| [a.init, a.step.1, a.merge.1, a.finish.1]),
+                .flat_map(|a| [a.init(), a.step().1, a.merge().1, a.finish().1]),
         )
         .collect();
-    assert_one_binding_site("normalised", &n.terms, &roots);
+    assert_one_binding_site("normalised", n.terms(), &roots);
 }
 
 /// Returns the items and command terms of ad hoc text.
@@ -126,7 +126,11 @@ pub(crate) fn adhoc_roots(items: &[Tm], commands: &[AdhocCommand]) -> Vec<Tm> {
 fn adhoc_one_binding_site(s: &Committed, p: &Program, a: &Adhoc) {
     assert_one_binding_site("checked", &a.terms, &adhoc_roots(&a.items, &a.commands));
     let n = crate::norm::adhoc(a.schema(s), p, a).unwrap_or_else(|e| panic!("normalises: {e:?}"));
-    assert_one_binding_site("normalised", &n.terms, &adhoc_roots(&n.items, &n.commands));
+    assert_one_binding_site(
+        "normalised",
+        n.terms(),
+        &adhoc_roots(n.items(), n.commands()),
+    );
 }
 
 fn accepts(extra: &str) {
@@ -265,7 +269,7 @@ fn query(extra: &str, text: &str) -> Result<(), String> {
     assert_one_binding_site("checked", &checked.terms, &[checked.term]);
     let n =
         crate::norm::query(&s, &program, &checked).unwrap_or_else(|e| panic!("normalises: {e:?}"));
-    assert_one_binding_site("normalised", &n.terms, &[n.body]);
+    assert_one_binding_site("normalised", n.terms(), &[n.body()]);
     Ok(())
 }
 
@@ -285,7 +289,7 @@ fn txn_over(extra: &str, text: &str) -> Result<(Committed, Txn), String> {
             assert_one_binding_site("checked", &t.terms, &[t.term]);
             let n =
                 crate::norm::txn(&s, &program, &t).unwrap_or_else(|e| panic!("normalises: {e:?}"));
-            assert_one_binding_site("normalised", &n.terms, &[n.body]);
+            assert_one_binding_site("normalised", n.terms(), &[n.body()]);
             Ok((s, t))
         }
         Err(d) => Err(d.message),
@@ -718,14 +722,14 @@ fn an_aggregate_over_a_group_has_a_nonempty_source() {
             );
             if fixture.number::<bool>("normalize") {
                 let n = crate::norm::program(&s, &p).expect("normalises");
-                let (_, body) = n.functions[s
+                let (_, body) = n.functions()[s
                     .functions
                     .iter()
                     .position(|f| f.name == fixture.text("body"))
                     .unwrap()]
                 .clone()
                 .expect("a normal form");
-                assert_eq!(agg_sources(&n.terms, body), expected);
+                assert_eq!(agg_sources(n.terms(), body), expected);
             }
         },
     );

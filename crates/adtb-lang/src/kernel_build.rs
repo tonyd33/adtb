@@ -8,8 +8,10 @@ use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty};
 /// fields and `Case` arms.
 ///
 /// Postconditions:
-/// - Under debug assertions or the `testing` feature, every node built satisfies its kind's typing
-///   rule, or the build panics naming the node and the rule.
+/// - A node whose children give it no type under its kind's rule is built at `Unit`, and the
+///   arena records it as broken unless it records an earlier node.
+/// - Under debug assertions or the `testing` feature, so is every other node that breaks its
+///   kind's typing rule.
 #[derive(Debug)]
 pub struct Build<'a> {
     schema: &'a Schema,
@@ -40,31 +42,24 @@ impl<'a> Build<'a> {
         if cfg!(any(debug_assertions, feature = "testing"))
             && let Err(reason) = super::valid::node(self.schema, self.terms, t)
         {
-            panic!(
-                "kernel node {t:?} breaks its kind's typing rule: {reason} ({:?} : {})",
-                self.terms.kind(t),
-                self.schema.show_ty(self.terms.ty(t))
-            );
+            self.terms.break_at(t, reason);
         }
         t
     }
 
     fn typed(&mut self, kind: Kind) -> Tm {
-        let ty = match self.computed(&kind) {
-            Ok(Some(ty)) => ty,
+        match self.computed(&kind) {
+            Ok(Some(ty)) => self.put(kind, ty),
             Ok(None) => panic!("{kind:?} takes its type as an argument"),
-            Err(reason) => self.untypable(&kind, &reason),
-        };
-        self.put(kind, ty)
+            Err(reason) => self.untypable(kind, reason),
+        }
     }
 
-    /// Panic naming `kind` and `reason` under debug assertions or the `testing` feature. Returns
-    /// `Unit` otherwise.
-    fn untypable(&self, kind: &Kind, reason: &str) -> Ty {
-        if cfg!(any(debug_assertions, feature = "testing")) {
-            panic!("kernel node {kind:?} breaks its kind's typing rule: {reason}");
-        }
-        Ty::Unit
+    /// Returns `kind` built at `Unit`, the arena recording it as broken for `reason`.
+    fn untypable(&mut self, kind: Kind, reason: String) -> Tm {
+        let t = self.terms.add(kind, Ty::Unit);
+        self.terms.break_at(t, reason);
+        t
     }
 
     /// Returns `kind` built with the type its children give, or at `given` when its typing rule
@@ -73,11 +68,10 @@ impl<'a> Build<'a> {
     /// Preconditions:
     /// - The children of `kind` are terms of this arena.
     pub(crate) fn rebuilt(&mut self, kind: Kind, given: &Ty) -> Tm {
-        let ty = match self.computed(&kind) {
-            Ok(ty) => ty.unwrap_or_else(|| given.clone()),
-            Err(reason) => self.untypable(&kind, &reason),
-        };
-        self.put(kind, ty)
+        match self.computed(&kind) {
+            Ok(ty) => self.put(kind, ty.unwrap_or_else(|| given.clone())),
+            Err(reason) => self.untypable(kind, reason),
+        }
     }
 
     /// Returns `kind` at `checked`, except that a `Var`, `Rel` or `Transition` takes the type its
@@ -402,17 +396,19 @@ impl<'a> Build<'a> {
     }
 
     pub fn key(&mut self, e: Tm, r: RelId) -> Tm {
-        let ty = match self.terms.ty(e) {
-            Ty::Data { ctors, .. } => Ty::Key {
-                rel: RelRef::Declared(r),
-                ctors: KeyCtors::of_row(ctors.clone()),
-            },
+        match self.terms.ty(e) {
+            Ty::Data { ctors, .. } => {
+                let ty = Ty::Key {
+                    rel: RelRef::Declared(r),
+                    ctors: KeyCtors::of_row(ctors.clone()),
+                };
+                self.put(Kind::Key(e), ty)
+            }
             other => {
                 let reason = format!("`key` of `{}`", self.schema.show_ty(other));
-                self.untypable(&Kind::Key(e), &reason)
+                self.untypable(Kind::Key(e), reason)
             }
-        };
-        self.put(Kind::Key(e), ty)
+        }
     }
 
     pub fn key_of(&mut self, r: RelId, e: Tm) -> Tm {

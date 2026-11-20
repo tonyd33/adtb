@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use adtb_file::Record;
-use adtb_lang::kernel::{Build, Conflict, Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Valid, ValidTerms, Var};
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Committed, Generator, OnDelete, Schema, Stage};
 use adtb_lang::textual::key_names;
@@ -160,7 +160,7 @@ pub struct Stmt<'a, R: Runtime> {
     pub tx: &'a Txn,
     /// The database's schema, or one extending it with the transaction's temp relations.
     schema: &'a Committed,
-    terms: Terms,
+    terms: ValidTerms,
     /// What each variable standing for a temp relation's rows or a file scan stands for.
     inputs: BTreeMap<Var, Input>,
     /// The records of each file scan.
@@ -190,7 +190,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         root: Tm,
         options: exec::Options,
         stop: super::Stop,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let schema = text.schema;
         let mut terms = text.terms.clone();
         let mut fresh = Occurrences::new();
@@ -202,8 +202,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .map(|(v, _)| *v)
             .chain(inputs.keys().copied())
             .collect();
-        adtb_lang::kernel::assert_valid(schema, &terms, &[(root, free)]);
-        Stmt {
+        let terms = ValidTerms::new(schema, terms, &[(root, free)]).map_err(Broken::IllTyped)?;
+        Ok(Stmt {
             db,
             tx,
             schema,
@@ -223,13 +223,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             load: Cell::default(),
             undo: RefCell::default(),
             plans: RefCell::default(),
-        }
+        })
     }
 
     /// Returns a statement that only reads.
     pub fn reader(db: &'a Database<R>, tx: &'a Txn) -> Self {
-        let mut terms = Terms::default();
-        let root = Build::new(&db.schema, &mut terms).unit();
+        let (terms, root) = ValidTerms::unit(&db.schema);
         Stmt {
             db,
             tx,
@@ -260,10 +259,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .unwrap_or_else(|| panic!("the catalog describes relation {r:?}"))
     }
 
-    fn arena(&self, a: Arena) -> &Terms {
+    fn arena(&self, a: Arena) -> Valid<'_> {
         match a {
-            Arena::Statement => &self.terms,
-            Arena::Program => &self.db.program,
+            Arena::Statement => self.terms.valid(),
+            Arena::Program => self.db.program.valid(),
         }
     }
 
@@ -1451,7 +1450,7 @@ impl<R: Runtime> Database<R> {
     pub(super) fn plan(
         &self,
         schema: &Schema,
-        terms: &Terms,
+        terms: Valid<'_>,
         t: Tm,
     ) -> Result<crate::plan::Plan, Error> {
         let usable = self.usable_catalog();
@@ -1473,7 +1472,7 @@ impl<R: Runtime> Database<R> {
     pub(super) fn program(
         &self,
         schema: &Schema,
-        terms: &Terms,
+        terms: Valid<'_>,
         t: Tm,
         caller: Option<Val>,
     ) -> Result<exec::Program, Error> {

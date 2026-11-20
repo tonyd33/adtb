@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::ast::FnBody;
-use adtb_lang::kernel::{self, Agg, Kind, PathStep, Prim, Terms, Tm, Var};
+use adtb_lang::kernel::{self, Agg, Kind, PathStep, Prim, Terms, Tm, Valid, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, KeyCtors, RelId, Ty};
@@ -29,14 +29,15 @@ const SET_ROWS: f64 = 10.0;
 /// Returns the plan of `root`, a normal form in `terms`.
 ///
 /// Preconditions:
-/// - `root` is a normal form `adtb_lang::norm` returned for `schema`, in the arena `terms`.
+/// - `root` is a normal form `adtb_lang::norm` returned for `schema`, or a term rewritten from
+///   one, reachable from the roots `terms` was validated at.
 /// - `normal` is the normal program of `schema`.
 /// - `catalog` describes every relation variable `root` reads.
 pub fn plan(
     schema: &Schema,
     normal: &NormalProgram,
     catalog: &Catalog,
-    terms: &Terms,
+    terms: Valid<'_>,
     root: Tm,
     options: Options,
 ) -> Result<Plan, Error> {
@@ -44,7 +45,7 @@ pub fn plan(
         schema,
         normal,
         catalog,
-        terms,
+        terms: terms.terms(),
         root,
     };
     plan_in(&input, options, false)
@@ -60,14 +61,14 @@ pub fn plan_bounded(
     schema: &Schema,
     normal: &NormalProgram,
     catalog: &Catalog,
-    terms: &Terms,
+    terms: Valid<'_>,
     root: Tm,
 ) -> Result<Plan, Error> {
     let input = Input {
         schema,
         normal,
         catalog,
-        terms,
+        terms: terms.terms(),
         root,
     };
     plan_in(&input, Options::default(), true)
@@ -103,7 +104,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         past: false,
         t: terms.clone(),
         total: Totality::new(schema, options.hiding)
-            .with_aggregates(&normal.terms, normal.aggregate_parts()),
+            .with_aggregates(normal.terms(), normal.aggregate_parts()),
         facts: Facts::default(),
         vars: HashMap::new(),
         outer: Vec::new(),
@@ -822,17 +823,19 @@ impl Planner<'_> {
         let (schema, normal) = (self.schema, self.normal);
         let def = &schema.aggregates[a as usize];
         let refused = || Error::UserCode(def.name.clone());
-        let parts = normal.aggregates[a as usize].as_ref().ok_or_else(refused)?;
-        let (&[st, x], &[fin]) = (parts.step.0.as_slice(), parts.finish.0.as_slice()) else {
+        let parts = normal.aggregates()[a as usize]
+            .as_ref()
+            .ok_or_else(refused)?;
+        let (&[st, x], &[fin]) = (parts.step().0.as_slice(), parts.finish().0.as_slice()) else {
             return Err(Broken::AggregateArity.into());
         };
         let state = self.import_var(st);
         let value = self.import_var(x);
         let mut vars = HashMap::from([(st, state), (x, value), (fin, state)]);
         let mut memo = HashMap::new();
-        let init = self.import(parts.init, &mut vars, &mut memo);
-        let step = self.import(parts.step.1, &mut vars, &mut memo);
-        let finish = self.import(parts.finish.1, &mut vars, &mut memo);
+        let init = self.import(parts.init(), &mut vars, &mut memo);
+        let step = self.import(parts.step().1, &mut vars, &mut memo);
+        let finish = self.import(parts.finish().1, &mut vars, &mut memo);
         if ![init, step, finish].into_iter().all(|t| self.scalar(t)) {
             return Err(refused());
         }
@@ -848,7 +851,7 @@ impl Planner<'_> {
 
     fn import_var(&mut self, v: Var) -> Var {
         let normal = self.normal;
-        let info = normal.terms.var_info(v);
+        let info = normal.terms().var_info(v);
         self.t.var(&info.name, info.ty.clone())
     }
 
@@ -858,7 +861,7 @@ impl Planner<'_> {
             return *n;
         }
         let normal = self.normal;
-        let from = &normal.terms;
+        let from = normal.terms();
         let cs: Vec<Tm> = from
             .children(t)
             .into_iter()

@@ -196,7 +196,7 @@ impl<R: Runtime> Stmt<'_, R> {
         match ty {
             Ty::Data { def, args, .. } => match &schema.ty(*def).kind {
                 TypeDefKind::Newtype { base, .. } => {
-                    if let Some((var, body)) = self.db.normal.domains.get(def) {
+                    if let Some((var, body)) = self.db.normal.domains().get(def) {
                         let env: Env = [(*var, v.clone())].into();
                         if !self.eval(Arena::Program, *body, &env)?.truth()? {
                             let name = domain_name(schema, *def);

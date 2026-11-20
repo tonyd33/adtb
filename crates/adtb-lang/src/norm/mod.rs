@@ -1,176 +1,20 @@
 //! Normalise checked programs to the terms planners and the reference interpreter run.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::analysis::Totality;
 use crate::check::{Adhoc, AdhocCommand, Program, Query, Txn};
-use crate::kernel::{Agg, Build, Frees, IndexField, Kind, Node, Terms, Tm, Var};
+use crate::kernel::{Agg, Build, Frees, Invalid, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
 
 mod limit;
+mod normal;
 
 pub use limit::expands_within_bound;
 use limit::{Budget, TOO_LARGE, planned_within_bound};
-
-/// The normal forms of a schema's bodies, in one arena.
-#[derive(Debug)]
-pub struct NormalProgram {
-    pub terms: Terms,
-    /// Each function's parameters and normalised body; `None` for Wasm and host functions and for a function that takes or returns a function.
-    pub functions: Vec<Option<(Vec<Var>, Tm)>>,
-    constraints: BTreeMap<ConstraintIdx, Tm>,
-    checks: BTreeMap<CheckIdx, Tm>,
-    pub domains: BTreeMap<TypeId, (Var, Tm)>,
-    /// Each `on delete retag` new value over the referrer's row.
-    pub retags: BTreeMap<RelId, (Var, Tm)>,
-    pub defaults: BTreeMap<(RelId, usize), Tm>,
-    pub computed: BTreeMap<(RelId, usize), (Var, Tm)>,
-    /// Each index field, its value a body over the row's variable.
-    pub index_fields: BTreeMap<(RelId, usize, usize), (Var, IndexField)>,
-    /// Each user-defined aggregate's parts; `None` for one that did not check or whose parts are not first-order.
-    pub aggregates: Vec<Option<NormalAggregate>>,
-}
-
-impl NormalProgram {
-    /// Returns the normal form of constraint `c`; `None` when it has none.
-    pub fn constraint(&self, c: ConstraintIdx) -> Option<Tm> {
-        self.constraints.get(&c).copied()
-    }
-
-    /// Returns the normal form of row check `c`; `None` when it has none.
-    pub fn check(&self, c: CheckIdx) -> Option<Tm> {
-        self.checks.get(&c).copied()
-    }
-
-    pub fn constraints(&self) -> impl Iterator<Item = (ConstraintIdx, Tm)> + '_ {
-        self.constraints.iter().map(|(&c, &t)| (c, t))
-    }
-
-    pub fn checks(&self) -> impl Iterator<Item = (CheckIdx, Tm)> + '_ {
-        self.checks.iter().map(|(&c, &t)| (c, t))
-    }
-
-    /// Returns each user-defined aggregate's init, step, merge and finish bodies; `None` for one
-    /// with none.
-    pub fn aggregate_parts(&self) -> impl Iterator<Item = Option<[Tm; 4]>> + '_ {
-        self.aggregates.iter().map(|a| {
-            a.as_ref()
-                .map(|a| [a.init, a.step.1, a.merge.1, a.finish.1])
-        })
-    }
-
-    /// Returns every body of the program with the variables free in it.
-    pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
-        self.bodies()
-            .into_iter()
-            .map(|(_, t, free)| (t, free))
-            .collect()
-    }
-
-    /// Returns every body of the program with the object it belongs to and the variables free in it.
-    pub fn bodies(&self) -> Vec<(Root, Tm, Vec<Var>)> {
-        let NormalProgram {
-            terms: _,
-            functions,
-            constraints,
-            checks,
-            domains,
-            retags,
-            defaults,
-            computed,
-            index_fields,
-            aggregates,
-        } = self;
-        let mut out: Vec<(Root, Tm, Vec<Var>)> = Vec::new();
-        for (i, f) in functions.iter().enumerate() {
-            if let Some((ps, t)) = f {
-                out.push((Root::Function(FnId(i as u32)), *t, ps.clone()));
-            }
-        }
-        out.extend(
-            constraints
-                .iter()
-                .map(|(&c, &t)| (Root::Constraint(c), t, vec![])),
-        );
-        out.extend(checks.iter().map(|(&c, &t)| (Root::Check(c), t, vec![])));
-        out.extend(
-            domains
-                .iter()
-                .map(|(&d, (v, t))| (Root::Domain(d), *t, vec![*v])),
-        );
-        out.extend(
-            retags
-                .iter()
-                .map(|(&r, (v, t))| (Root::Retag(r), *t, vec![*v])),
-        );
-        out.extend(
-            defaults
-                .iter()
-                .map(|(&(r, i), &t)| (Root::Default(r, i), t, vec![])),
-        );
-        out.extend(
-            computed
-                .iter()
-                .map(|(&(r, i), (v, t))| (Root::Computed(r, i), *t, vec![*v])),
-        );
-        out.extend(
-            index_fields
-                .iter()
-                .map(|(&(r, i, j), (v, f))| (Root::IndexField(r, i, j), f.value, vec![*v])),
-        );
-        for (i, a) in aggregates.iter().enumerate() {
-            if let Some(a) = a {
-                out.push((Root::Aggregate(i), a.init, vec![]));
-                for (vs, t) in [&a.step, &a.merge, &a.finish] {
-                    out.push((Root::Aggregate(i), *t, vs.clone()));
-                }
-            }
-        }
-        out
-    }
-}
-
-/// The normal forms of a user-defined aggregate's parts, each over its variables.
-#[derive(Debug)]
-pub struct NormalAggregate {
-    pub init: Tm,
-    pub step: (Vec<Var>, Tm),
-    pub merge: (Vec<Var>, Tm),
-    pub finish: (Vec<Var>, Tm),
-}
-
-/// The normal forms of the items of ad hoc text.
-#[derive(Debug)]
-pub struct NormalAdhoc {
-    pub terms: Terms,
-    pub items: Vec<Tm>,
-    /// Each command, its terms normalised.
-    pub commands: Vec<AdhocCommand>,
-    pub params: BTreeMap<String, Var>,
-}
-
-impl NormalAdhoc {
-    /// Returns each item and each term of a command, its parameters free in it.
-    pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
-        let free: Vec<Var> = self.params.values().copied().collect();
-        self.items
-            .iter()
-            .copied()
-            .chain(self.commands.iter().flat_map(|c| c.command.terms()))
-            .map(|t| (t, free.clone()))
-            .collect()
-    }
-}
-
-/// The normal form of a registered query's or transaction's body over its parameters.
-#[derive(Debug)]
-pub struct NormalQuery {
-    pub terms: Terms,
-    pub params: Vec<Var>,
-    pub body: Tm,
-}
+pub use normal::{AdhocParts, NormalAdhoc, NormalAggregate, NormalProgram, NormalQuery};
 
 /// A body of a program or of ad hoc text, by the object it belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -194,9 +38,30 @@ pub enum Root {
 pub struct Error {
     pub root: Root,
     pub message: String,
+    invalid: Option<Invalid>,
 }
 
 impl Error {
+    /// Returns the error of a term of `terms` that breaks an invariant of the kernel.
+    fn invalid(schema: &Schema, root: Root, terms: &Terms, e: Invalid) -> Error {
+        Error {
+            root,
+            message: format!(
+                "kernel term {:?} breaks the invariant that the checker guarantees: {} ({:?} : {})",
+                e.at(),
+                e.reason(),
+                terms.kind(e.at()),
+                schema.show_ty(terms.ty(e.at()))
+            ),
+            invalid: Some(e),
+        }
+    }
+
+    /// Returns the kernel term that breaks an invariant of the kernel, when this is the error.
+    pub fn broken(&self) -> Option<&Invalid> {
+        self.invalid.as_ref()
+    }
+
     /// Returns whether the root was refused for passing a limit on what is normalised.
     pub fn past_limit(&self) -> bool {
         self.message == TOO_LARGE
@@ -222,91 +87,17 @@ fn reads_unchecked(root: Root) -> bool {
 }
 
 fn at<T>(root: Root, r: Result<T, String>) -> Result<T, Error> {
-    r.map_err(|message| Error { root, message })
+    r.map_err(|message| Error {
+        root,
+        message,
+        invalid: None,
+    })
 }
 
 /// Normalise every body of a checked schema.
 pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
-    let mut n = Normaliser::new(schema, [&p.terms, &p.terms], p);
-    let mut functions = Vec::with_capacity(p.functions.len());
-    for (i, (f, def)) in p.functions.iter().zip(&schema.functions).enumerate() {
-        functions.push(match f {
-            Some(t) => n.function(
-                Root::Function(FnId(i as u32)),
-                FNS,
-                *t,
-                def.params.len().max(1),
-            )?,
-            None => None,
-        });
-    }
-    let mut constraints = BTreeMap::new();
-    for (c, t) in p.constraints() {
-        constraints.insert(c, n.root(Root::Constraint(c), t)?);
-    }
-    let mut checks = BTreeMap::new();
-    for (c, t) in p.checks() {
-        checks.insert(c, n.root(Root::Check(c), t)?);
-    }
-    let mut domains = BTreeMap::new();
-    for (id, (v, t)) in &p.domains {
-        let x = n.free_var(MAIN, *v);
-        domains.insert(*id, (x, n.root(Root::Domain(*id), *t)?));
-    }
-    let mut retags = BTreeMap::new();
-    for (r, t) in &p.retags {
-        retags.insert(*r, n.row_function(Root::Retag(*r), *t)?);
-    }
-    let mut defaults = BTreeMap::new();
-    for (&(r, i), t) in &p.defaults {
-        defaults.insert((r, i), n.root(Root::Default(r, i), *t)?);
-    }
-    let mut computed = BTreeMap::new();
-    for (&(r, i), (v, t)) in &p.computed {
-        let x = n.free_var(MAIN, *v);
-        computed.insert((r, i), (x, n.root(Root::Computed(r, i), *t)?));
-    }
-    let mut index_fields = BTreeMap::new();
-    for (&(r, i, j), f) in &p.index_fields {
-        let (x, value) = n.row_function(Root::IndexField(r, i, j), f.value)?;
-        let path = f.path.clone();
-        index_fields.insert((r, i, j), (x, IndexField { value, path }));
-    }
-    let mut aggregates = Vec::with_capacity(p.aggregates.len());
-    for (i, a) in p.aggregates.iter().enumerate() {
-        let Some(a) = a else {
-            aggregates.push(None);
-            continue;
-        };
-        let root = Root::Aggregate(i);
-        let init = n.root(root, a.init)?;
-        let step = n.function(root, MAIN, a.step, 2)?;
-        let merge = n.function(root, MAIN, a.merge, 2)?;
-        let finish = n.function(root, MAIN, a.finish, 1)?;
-        aggregates.push(match (step, merge, finish) {
-            (Some(step), Some(merge), Some(finish)) => Some(NormalAggregate {
-                init,
-                step,
-                merge,
-                finish,
-            }),
-            _ => None,
-        });
-    }
-    let program = NormalProgram {
-        terms: n.out,
-        functions,
-        constraints,
-        checks,
-        domains,
-        retags,
-        defaults,
-        computed,
-        index_fields,
-        aggregates,
-    };
+    let program = NormalProgram::normalised(schema, p)?;
     planned_within_bound(&program)?;
-    crate::kernel::assert_normal(schema, &program.terms, &program.roots());
     Ok(program)
 }
 
@@ -335,14 +126,11 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
             ..c.clone()
         });
     }
-    let adhoc = NormalAdhoc {
-        terms: n.out,
-        items,
-        commands,
-        params,
-    };
-    crate::kernel::assert_normal(schema, &adhoc.terms, &adhoc.roots());
-    Ok(adhoc)
+    NormalAdhoc::validated(
+        schema,
+        &[&a.terms, &p.terms],
+        (n.out, items, commands, params),
+    )
 }
 
 /// Normalise a checked registered query, inlining the functions of `p`.
@@ -360,11 +148,10 @@ fn registered(schema: &Schema, p: &Program, terms: &Terms, term: Tm) -> Result<N
     let (params, body) = n.under_lams(MAIN, term, usize::MAX);
     let params: Vec<Var> = params.into_iter().map(|v| n.free_var(MAIN, v)).collect();
     let body = n.root(Root::Query, body)?;
-    Ok(NormalQuery {
-        terms: n.out,
-        params,
-        body,
-    })
+    if let Some(e) = terms.broken() {
+        return Err(Error::invalid(schema, Root::Query, terms, e.clone()));
+    }
+    NormalQuery::validated(schema, n.out, params, body)
 }
 
 const MAIN: usize = 0;

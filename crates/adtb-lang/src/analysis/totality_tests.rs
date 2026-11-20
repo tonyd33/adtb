@@ -269,18 +269,18 @@ fn judge(case: &Case, text: &str) -> Result<(bool, Vec<Prim>), String> {
     let (s, a) = adhoc(&case.schema, &params, text).map_err(|e| format!("refused: {e:?}"))?;
     let p = check_schema(&s).expect("the schema checks");
     let n = norm::adhoc(&s, &p, &a).map_err(|e| format!("not normalised: {e:?}"))?;
-    let item = n.items[0];
-    let prims = reachable(&n.terms, item)
+    let item = n.items()[0];
+    let prims = reachable(n.terms(), item)
         .into_iter()
-        .filter_map(|t| match n.terms.kind(t) {
+        .filter_map(|t| match n.terms().kind(t) {
             Kind::Prim(p, _) => Some(*p),
             _ => None,
         })
         .collect();
     let normal = norm::program(&s, &p).map_err(|e| format!("schema not normalised: {e:?}"))?;
     let mut totality =
-        Totality::new(&s, case.hiding).with_aggregates(&normal.terms, normal.aggregate_parts());
-    Ok((totality.total(&n.terms, item), prims))
+        Totality::new(&s, case.hiding).with_aggregates(normal.terms(), normal.aggregate_parts());
+    Ok((totality.total(n.terms(), item), prims))
 }
 
 #[test]
@@ -408,20 +408,21 @@ fn every_operator_and_partial_form_the_spec_lists_is_judged_as_listed_alone_and_
 
 #[test]
 fn an_unreachable_is_partial_and_a_case_is_judged_on_the_arms_it_reaches() {
-    let (s, mut n) = adhoc_normal(
+    let (s, n) = adhoc_normal(
         "",
         &[("x", "Shape")],
         "match x | Circle c -> c.r | Square q -> q.side",
     );
-    let item = n.items[0];
-    let Kind::Case { scrutinee, arms } = n.terms.kind(item).clone() else {
+    let item = n.items()[0];
+    let Kind::Case { scrutinee, arms } = n.terms().kind(item).clone() else {
         panic!("a match of a parameter normalises to a `Case`");
     };
-    let ty = n.terms.ty(item).clone();
-    let mut b = Build::new(&s, &mut n.terms);
+    let ty = n.terms().ty(item).clone();
+    let mut terms = n.terms().clone();
+    let mut b = Build::new(&s, &mut terms);
     let never = b.unreachable(ty.clone());
     let narrowed = b.case(scrutinee, vec![arms[0], (arms[1].0, arms[1].1, never)], ty);
     let mut totality = Totality::new(&s, false);
-    assert!(!totality.total(&n.terms, never));
-    assert!(totality.total(&n.terms, narrowed));
+    assert!(!totality.total(&terms, never));
+    assert!(totality.total(&terms, narrowed));
 }

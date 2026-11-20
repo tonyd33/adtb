@@ -4,7 +4,7 @@ use std::rc::Rc;
 use super::{Agg, Const, Kind, Prim, Terms, Tm, Var};
 use crate::ast::FnBody;
 use crate::check::rel::key_value_ty;
-use crate::check::ty::{ctor_fields, ctor_names, elem, fields, restrict, subtype};
+use crate::check::ty::{ctor_fields, ctor_names, elem, fields, join_adhoc, restrict, subtype};
 use crate::schema::{Generator, Schema};
 use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty, TypeId};
 
@@ -16,6 +16,10 @@ pub struct Invalid {
 }
 
 impl Invalid {
+    pub(super) fn new(at: Tm, reason: String) -> Invalid {
+        Invalid { at, reason }
+    }
+
     pub fn at(&self) -> Tm {
         self.at
     }
@@ -27,9 +31,71 @@ impl Invalid {
 
 type Checked = Result<(), String>;
 
+/// An arena whose terms reachable from the roots it was validated at hold the kernel's typing
+/// invariants and are closed over their roots' parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct Valid<'a> {
+    terms: &'a Terms,
+}
+
+impl<'a> Valid<'a> {
+    /// Returns `terms` as valid.
+    ///
+    /// Preconditions: [`validate`] accepted `terms` at roots that reach every term planned or
+    /// compiled from it, and nothing was added to `terms` since.
+    pub(crate) fn trusted(terms: &'a Terms) -> Valid<'a> {
+        Valid { terms }
+    }
+
+    pub fn terms(self) -> &'a Terms {
+        self.terms
+    }
+}
+
+/// An arena that [`validate`] accepted, owned.
+#[derive(Clone, Debug)]
+pub struct ValidTerms {
+    terms: Terms,
+}
+
+impl ValidTerms {
+    /// Returns `terms`, refused as [`validate`] refuses it at `roots`.
+    pub fn new(schema: &Schema, terms: Terms, roots: &[(Tm, Vec<Var>)]) -> Result<Self, Invalid> {
+        validate(schema, &terms, roots)?;
+        Ok(ValidTerms { terms })
+    }
+
+    /// Returns an arena holding only `()`, and that term.
+    pub fn unit(schema: &Schema) -> (ValidTerms, Tm) {
+        let mut terms = Terms::default();
+        let unit = super::Build::new(schema, &mut terms).unit();
+        (ValidTerms { terms }, unit)
+    }
+
+    pub fn valid(&self) -> Valid<'_> {
+        Valid::trusted(&self.terms)
+    }
+}
+
+impl std::ops::Deref for ValidTerms {
+    type Target = Terms;
+
+    fn deref(&self) -> &Terms {
+        &self.terms
+    }
+}
+
 /// Check every term reachable from `roots` against the typing invariants of its kind, and that
 /// every variable it reads is bound by an enclosing term or is one of the root's parameters.
-pub fn validate(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) -> Result<(), Invalid> {
+/// Fail at the node a builder recorded as broken, when `terms` records one.
+pub fn validate<'a>(
+    schema: &Schema,
+    terms: &'a Terms,
+    roots: &[(Tm, Vec<Var>)],
+) -> Result<Valid<'a>, Invalid> {
+    if let Some(e) = terms.broken() {
+        return Err(e.clone());
+    }
     typed(schema, terms, roots.iter().map(|(t, _)| *t))?;
     let mut frees = HashMap::new();
     for (root, params) in roots {
@@ -46,7 +112,7 @@ pub fn validate(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) -> Res
             });
         }
     }
-    Ok(())
+    Ok(Valid { terms })
 }
 
 /// Check that every term reachable from `roots` is in normal form: no `Lam` but the new-value
@@ -134,6 +200,73 @@ pub fn validate_normal(
     Ok(())
 }
 
+/// The body the roots of [`validate_placed`] are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Body {
+    /// A constraint's, where a `Transition` may be read.
+    Constraint,
+    /// A body whose types may name its own type parameters, those below the count.
+    Generic(u32),
+    Plain,
+}
+
+/// Check that every term reachable from `roots` sits where its kind may: a `Transition` only in
+/// a constraint's body, a `Present` only as the final result of a root, and no type naming a
+/// type parameter the body does not have.
+pub fn validate_placed(terms: &Terms, roots: &[Tm], at: Body) -> Result<(), Invalid> {
+    let mut seen = HashSet::new();
+    let mut todo: Vec<(Tm, bool)> = roots.iter().map(|t| (*t, true)).collect();
+    while let Some((t, last)) = todo.pop() {
+        if !seen.insert((t, last)) {
+            continue;
+        }
+        let refused = match terms.kind(t) {
+            Kind::Transition(..) if at != Body::Constraint => {
+                Some("a `Transition` outside the body of a constraint")
+            }
+            Kind::Present { .. } if !last => Some("a `Present` nested in another term"),
+            _ if terms.ty(t).params_named() > at.params() => {
+                Some("a type names a type parameter its body does not have")
+            }
+            _ => None,
+        };
+        if let Some(reason) = refused {
+            return Err(Invalid {
+                at: t,
+                reason: reason.to_string(),
+            });
+        }
+        let tails = tails(terms.kind(t));
+        todo.extend(
+            terms
+                .children(t)
+                .into_iter()
+                .map(|c| (c, last && tails.contains(&c))),
+        );
+    }
+    Ok(())
+}
+
+impl Body {
+    fn params(self) -> u32 {
+        match self {
+            Body::Generic(n) => n,
+            Body::Constraint | Body::Plain => 0,
+        }
+    }
+}
+
+/// Returns the children of a node of `kind` whose value is its own.
+fn tails(kind: &Kind) -> Vec<Tm> {
+    match kind {
+        Kind::Let(_, _, b) | Kind::Transact(b, _) | Kind::At { body: b, .. } => vec![*b],
+        Kind::Block(_, k) | Kind::LetBang(_, _, k) => vec![*k],
+        Kind::If(_, a, b) => vec![*a, *b],
+        Kind::Case { arms, .. } => arms.iter().map(|(_, _, b)| *b).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Panic naming the first term reachable from `roots` that fails [`validate`], when built with
 /// debug assertions or the `testing` feature.
 pub fn assert_valid(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) {
@@ -151,15 +284,13 @@ pub fn assert_normal(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) {
     }
 }
 
-/// Panic naming the first term reachable from `roots` that breaks the typing invariants of its
-/// kind, when built with debug assertions or the `testing` feature.
-pub fn assert_typed(schema: &Schema, terms: &Terms, roots: &[Tm]) {
-    if cfg!(any(debug_assertions, feature = "testing")) {
-        refused(schema, terms, typed(schema, terms, roots.iter().copied()));
-    }
+/// Check every term reachable from `roots` against the typing invariants of its kind, its
+/// variables bound by whatever runs it.
+pub fn validate_typed(schema: &Schema, terms: &Terms, roots: &[Tm]) -> Result<(), Invalid> {
+    typed(schema, terms, roots.iter().copied())
 }
 
-fn refused(schema: &Schema, terms: &Terms, r: Result<(), Invalid>) {
+fn refused<T>(schema: &Schema, terms: &Terms, r: Result<T, Invalid>) {
     if let Err(e) = r {
         panic!(
             "kernel term {:?} breaks the invariant that the checker guarantees: {} ({:?} : {})",
@@ -444,11 +575,23 @@ impl Validator<'_> {
                 body,
             } => self.aggregate(*op, *var, *source, *body, ty),
             Kind::Group { var, source, by } => self.group(*var, *source, *by, ty),
-            Kind::Top { count, source, .. } => {
+            Kind::Top {
+                count,
+                keys,
+                source,
+                ..
+            } => {
                 self.same("the count", self.ty(*count), &Ty::Base(Base::I64))?;
+                self.ordered(keys)?;
                 self.within("the top's source", self.ty(*source), ty)
             }
-            Kind::Present { source, .. } => self.within("the result", self.ty(*source), ty),
+            Kind::Present {
+                source,
+                keys,
+                take,
+                after,
+                ..
+            } => self.present(*source, keys, *take, *after, ty),
             Kind::Fix(binds, b) => self.fixpoint(binds, *b, ty),
             Kind::At {
                 instant,
@@ -490,6 +633,49 @@ impl Validator<'_> {
             Kind::LetBang(_, w, k) => self.let_bang(*w, *k, ty),
             Kind::Transact(b, _) => self.within("the transaction's block", self.ty(*b), ty),
         }
+    }
+
+    fn ordered(&self, keys: &[(Tm, bool)]) -> Checked {
+        for (k, _) in keys {
+            let kt = self.ty(*k);
+            expect(self.schema.is_ordered(kt) == Ok(true), || {
+                format!("a key is `{}`, not ordered", self.schema.show_ty(kt))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn present(
+        &self,
+        source: Tm,
+        keys: &[(Tm, bool)],
+        take: Option<Tm>,
+        after: Option<Tm>,
+        ty: &Ty,
+    ) -> Checked {
+        self.ordered(keys)?;
+        if let Some(n) = take {
+            self.same("the take", self.ty(n), &Ty::Base(Base::I64))?;
+        }
+        if let Some(a) = after {
+            let at = self.ty(a);
+            let Ty::Data { def, args, .. } = at else {
+                return Err("the position after is not an `Option`".into());
+            };
+            expect(*def == self.schema.prelude().option(), || {
+                "the position after is not an `Option`".into()
+            })?;
+            match (keys, &args[0]) {
+                ([(k, _)], kt) => self.within("the key after", self.ty(*k), kt)?,
+                (_, Ty::Record(fs)) if fs.len() == keys.len() => {
+                    for ((k, _), (n, ft)) in keys.iter().zip(fs) {
+                        self.within(&format!("key `{n}` after"), self.ty(*k), ft)?;
+                    }
+                }
+                _ => return Err("the position after is not a record of the keys".into()),
+            }
+        }
+        self.within("the result", self.ty(source), ty)
     }
 
     fn conditional(&self, c: Tm, a: Tm, b: Tm, ty: &Ty) -> Checked {
@@ -713,6 +899,18 @@ impl Validator<'_> {
         match p {
             Prim::Eq | Prim::Ne | Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge => {
                 arity(2)?;
+                let (a, b) = (self.ty(args[0]), self.ty(args[1]));
+                let decimals = matches!(
+                    (a, b),
+                    (Ty::Base(Base::Decimal(_)), Ty::Base(Base::Decimal(_)))
+                );
+                expect(decimals || join_adhoc(self.schema, a, b).is_some(), || {
+                    format!(
+                        "`{p:?}` compares `{}` and `{}`, which do not join",
+                        self.schema.show_ty(a),
+                        self.schema.show_ty(b)
+                    )
+                })?;
                 expect(self.is_bool(ty), || "a comparison is not `Bool`".into())
             }
             Prim::StartsWith
@@ -754,16 +952,7 @@ impl Validator<'_> {
                     "`CheckedNeg` is not an `Option`".into()
                 })
             }
-            Prim::DecimalDiv | Prim::Round | Prim::Rescale => {
-                arity(match p {
-                    Prim::DecimalDiv => 4,
-                    Prim::Round => 3,
-                    _ => 2,
-                })?;
-                expect(matches!(ty, Ty::Base(Base::Decimal(_))), || {
-                    format!("`{p:?}` is not a decimal")
-                })
-            }
+            Prim::DecimalDiv | Prim::Round | Prim::Rescale => self.rescaled(p, args, ty),
             Prim::ToText | Prim::Print | Prim::Lower | Prim::Upper | Prim::Fold => {
                 self.same(&format!("`{p:?}`"), ty, &text)
             }
@@ -784,6 +973,7 @@ impl Validator<'_> {
             | Prim::Months
             | Prim::Years => {
                 arity(1)?;
+                self.same("the operand", self.ty(args[0]), &Ty::Base(Base::I64))?;
                 expect(
                     matches!(ty, Ty::Base(Base::Duration | Base::Period)),
                     || format!("`{p:?}` is not a duration or a period"),
@@ -811,6 +1001,30 @@ impl Validator<'_> {
             | Prim::Start
             | Prim::End => Ok(()),
         }
+    }
+
+    /// Check a decimal division, round or rescale: decimal operands, then a scale that is an
+    /// `I64` constant giving the result's scale.
+    fn rescaled(&self, p: Prim, args: &[Tm], ty: &Ty) -> Checked {
+        let operands = if p == Prim::DecimalDiv { 2 } else { 1 };
+        let n = if p == Prim::Rescale { 2 } else { operands + 2 };
+        expect(args.len() == n, || {
+            format!("`{p:?}` takes {n} arguments, given {}", args.len())
+        })?;
+        for a in &args[..operands] {
+            expect(matches!(self.ty(*a), Ty::Base(Base::Decimal(_))), || {
+                format!("an operand of `{p:?}` is not a decimal")
+            })?;
+        }
+        let scale = args[operands];
+        self.same("the scale", self.ty(scale), &Ty::Base(Base::I64))?;
+        let Ty::Base(Base::Decimal(s)) = ty else {
+            return Err(format!("`{p:?}` is not a decimal"));
+        };
+        expect(
+            matches!(self.terms.kind(scale), Kind::Const(Const::Int(u)) if *u == i128::from(*s)),
+            || format!("the scale of `{p:?}` is not the constant {s}"),
+        )
     }
 
     fn record(&self, fs: &[(String, Tm)], ty: &Ty) -> Checked {
@@ -922,11 +1136,16 @@ impl Validator<'_> {
                     .map(|(n, t, _)| (n, t))
                     .collect()
             }
-            Ty::Sum { ctors, .. } => ctors
-                .get(ctor as usize)
-                .ok_or_else(|| format!("the sum has no constructor {ctor}"))?
-                .1
-                .clone(),
+            Ty::Sum { ctors, sel } => {
+                expect(sel.as_ref().is_none_or(|s| s.contains(&ctor)), || {
+                    format!("constructor {ctor} is not one of the node's type")
+                })?;
+                ctors
+                    .get(ctor as usize)
+                    .ok_or_else(|| format!("the sum has no constructor {ctor}"))?
+                    .1
+                    .clone()
+            }
             Ty::Tag(inner) => {
                 let Ty::Data { def, .. } = inner.as_ref() else {
                     return Err("a tag constructor is not of a declared sum".into());
@@ -993,8 +1212,12 @@ impl Validator<'_> {
         let Some(el) = elem(self.ty(e)) else {
             return Err("a restriction of a term that is not a set".into());
         };
-        if let Ty::Data { def, .. } = el {
-            self.ctor_set(s, self.schema.ty(*def).ctors().len())?;
+        match el {
+            Ty::Data { def, .. } if !self.schema.ty(*def).ctors().is_empty() => {
+                self.ctor_set(s, self.schema.ty(*def).ctors().len())?;
+            }
+            Ty::Sum { ctors, .. } => self.ctor_set(s, ctors.len())?,
+            _ => return Err("a restriction of a set of other than a sum".into()),
         }
         let want = restrict(self.schema, el, s.clone());
         expect(self.sub(&Ty::Set(Box::new(want.clone())), ty), || {
@@ -1023,7 +1246,14 @@ impl Validator<'_> {
             Agg::Count => self.same("`count`", ty, &Ty::Base(Base::I64)),
             Agg::Sum => self.within("`sum`", self.ty(body), ty),
             Agg::Min | Agg::Max | Agg::Avg => partial(self.ty(body)),
-            Agg::User(a) => partial(&self.schema.aggregates[a as usize].result),
+            Agg::User(a) => {
+                let def = &self.schema.aggregates[a as usize];
+                let [(_, param)] = def.params.as_slice() else {
+                    return Err(format!("`{}` takes other than one parameter", def.name));
+                };
+                self.within("the aggregated value", self.ty(body), param)?;
+                partial(&def.result)
+            }
         }
     }
 }

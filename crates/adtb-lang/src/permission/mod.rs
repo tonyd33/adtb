@@ -107,14 +107,26 @@ pub enum Error {
 pub fn query(schema: &Committed, program: &Program, query: &Query) -> Result<Requirements, Error> {
     let normal = crate::norm::query(schema, program, query).map_err(Error::Normalization)?;
     let program = normal_program(schema, program)?;
-    analyze(schema, &program, &normal.terms, normal.body, &normal.params)
+    analyze(
+        schema,
+        &program,
+        normal.terms(),
+        normal.body(),
+        normal.params(),
+    )
 }
 
 /// Returns the requirements of a checked registered transaction.
 pub fn txn(schema: &Committed, program: &Program, txn: &Txn) -> Result<Requirements, Error> {
     let normal = crate::norm::txn(schema, program, txn).map_err(Error::Normalization)?;
     let program = normal_program(schema, program)?;
-    analyze(schema, &program, &normal.terms, normal.body, &normal.params)
+    analyze(
+        schema,
+        &program,
+        normal.terms(),
+        normal.body(),
+        normal.params(),
+    )
 }
 
 /// Returns the requirements of `root`, a normal term of `terms` over `params`, with the
@@ -137,12 +149,12 @@ pub fn adhoc(
 ) -> Result<Vec<Requirements>, Error> {
     let schema = adhoc.schema(schema);
     let normal = crate::norm::adhoc(schema, program, adhoc).map_err(Error::Normalization)?;
-    let params: Vec<Var> = normal.params.values().copied().collect();
+    let params: Vec<Var> = normal.params().values().copied().collect();
     let program = normal_program(schema, program)?;
     normal
-        .items
+        .items()
         .iter()
-        .map(|&root| analyze(schema, &program, &normal.terms, root, &params))
+        .map(|&root| analyze(schema, &program, normal.terms(), root, &params))
         .collect()
 }
 
@@ -159,8 +171,8 @@ fn analyze(
 ) -> Result<Requirements, Error> {
     let mut analyzer = Analyzer {
         schema,
-        arenas: [terms, &program.terms],
-        aggregates: &program.aggregates,
+        arenas: [terms, program.terms()],
+        aggregates: program.aggregates(),
         requirements: Requirements::default(),
         next_id: 0,
         snapshot: 0,

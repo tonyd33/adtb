@@ -31,10 +31,15 @@ pub(super) enum Broken {
     NoRequirements(permission::Error),
     AdhocNotNormal(norm::Error),
     CallNotNormal(norm::Error),
+    /// A registered call's translation to a later version breaks the kernel's invariants.
+    TranslationNotNormal(norm::Error),
     CallNotOneItem,
     RegistrationNotNormal(norm::Error),
     /// A term of a checked registered call breaks the kernel's invariants.
     CallIllTyped(Invalid),
+    /// The checker refuses a text for a guarantee of its own or of the normaliser that does
+    /// not hold.
+    Diagnosed(String),
     NotASet(Val),
     UnresolvedGrant {
         privilege: String,
@@ -71,6 +76,12 @@ impl fmt::Display for Broken {
             Broken::CallNotNormal(e) => {
                 write!(f, "a checked registered call has no normal form: {e:?}")
             }
+            Broken::TranslationNotNormal(e) => {
+                write!(
+                    f,
+                    "a registered call's translation has no normal form: {e:?}"
+                )
+            }
             Broken::CallNotOneItem => {
                 f.write_str("a checked registered call has no normal form: a call is one item")
             }
@@ -86,6 +97,7 @@ impl fmt::Display for Broken {
                 e.at(),
                 e.reason()
             ),
+            Broken::Diagnosed(m) => write!(f, "the checker keeps its own guarantees: {m}"),
             Broken::NotASet(v) => write!(f, "a set-valued item evaluates to a set, not {v:?}"),
             Broken::UnresolvedGrant { privilege } => {
                 write!(f, "a resolved `{privilege}` names an object of the schema")

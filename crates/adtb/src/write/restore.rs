@@ -147,7 +147,7 @@ impl<R: Runtime> Restoring<'_, R> {
             stmt.check_rows(&rows, viol)?;
         }
         let schema = &*db.schema;
-        let mut terms = db.normal.terms.clone();
+        let mut terms = db.normal.terms().clone();
         let mut unchanged = |terms: &mut Terms, t: Tm, _: &[Tm]| {
             let Kind::Transition(x, r, s) = terms.kind(t).clone() else {
                 return None;
@@ -175,7 +175,7 @@ impl<R: Runtime> Restoring<'_, R> {
                 clock: 0,
                 caller: None,
             };
-            let denial = Stmt::new(db, stmt.tx, text, t, db.options, Stop::default());
+            let denial = Stmt::new(db, stmt.tx, text, t, db.options, Stop::default())?;
             match denial.run(&[], &mut Local::default())?.result {
                 Val::Set(report) => violate(viol, of, &name, report.iter().cloned()),
                 other => return Err(Broken::DenialNotSet(other).into()),

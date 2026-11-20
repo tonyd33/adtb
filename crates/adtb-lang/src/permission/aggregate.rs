@@ -127,10 +127,10 @@ impl Analyzer<'_> {
             .ok_or(Error::InvalidKernel(
                 "a reachable aggregate has normalized parts",
             ))?;
-        let init = parts.init;
-        let (step_vars, step) = parts.step.clone();
-        let (merge_vars, merge) = parts.merge.clone();
-        let (finish_vars, finish) = parts.finish.clone();
+        let init = parts.init();
+        let (step_vars, step) = parts.step().clone();
+        let (merge_vars, merge) = parts.merge().clone();
+        let (finish_vars, finish) = parts.finish().clone();
         let empty = Env::new();
         let mut state = self.eval(Arena::Program, init, &empty)?;
         loop {

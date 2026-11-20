@@ -189,7 +189,8 @@ pub fn walk_of(seed: u64, steps: usize, queries: usize, skip: &[Operator]) -> Wa
 
 fn cased(rng: &mut Rng, world: &World, queries: usize) -> Case {
     let world = Arc::new(world.clone());
-    let qs = (0..queries).map(|_| query(rng, &world)).collect();
+    let mut drawn = Rng::new(rng.next_u64());
+    let qs = (0..queries).map(|_| query(&mut drawn, &world)).collect();
     Case::drawn(world.clone(), world.inserts(), qs)
 }
 

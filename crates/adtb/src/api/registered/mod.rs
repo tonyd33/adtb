@@ -14,7 +14,7 @@ use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirement, Requiremen
 use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::schema::Schema;
 use adtb_lang::signature;
-use adtb_lang::translate::{Pinned, Untranslatable, held_other_code, host_conflict};
+use adtb_lang::translate::{Pinned, Refused, Untranslatable, held_other_code, host_conflict};
 use adtb_lang::types::Ty;
 
 use crate::catalog::{self, Catalog, VersionHash};
@@ -578,6 +578,7 @@ pub(super) fn registration(
             return Err(untranslatable(stored, h, now, s, &c.name, first, &u));
         }
         let served = translations(&c, &pin.source, over.schema, over.source, over.program)
+            .map_err(|b| Error::internal(*b))?
             .map_err(|(query, u)| untranslatable(stored, h, now, s, &c.name, &query, &u))?;
         for (e, s) in c.entries.iter_mut().zip(served) {
             e.served = Some(s);
@@ -849,17 +850,18 @@ pub(super) fn recheck(
             ));
             continue;
         }
-        let served = match translations(c, &l.source, &schema, &next, &program) {
-            Ok(served) => served,
-            Err((query, u)) => {
-                operator.get_or_insert_with(|| u.operator.clone().unwrap_or_default());
-                lines.push(format!(
-                    "bundle {} pins {pins}: `{query}` has no translation: {}",
-                    c.name, u.reason
-                ));
-                continue;
-            }
-        };
+        let served =
+            match translations(c, &l.source, &schema, &next, &program).map_err(|b| internal(*b))? {
+                Ok(served) => served,
+                Err((query, u)) => {
+                    operator.get_or_insert_with(|| u.operator.clone().unwrap_or_default());
+                    lines.push(format!(
+                        "bundle {} pins {pins}: `{query}` has no translation: {}",
+                        c.name, u.reason
+                    ));
+                    continue;
+                }
+            };
         let Some(owner) = &l.definer else {
             continue;
         };
@@ -884,44 +886,55 @@ pub(super) fn recheck(
     })
 }
 
+/// The translation of each callable, or the name of the first that has none and why.
+type Translated = Result<Vec<Served>, (String, Untranslatable)>;
+
 /// Returns the translation of each callable of `c`, checked at the version of `pin`, to `now`,
-/// the schema of `now_source` checked as `program`. Fail with the name of the first callable
-/// that has none, and why.
+/// the schema of `now_source` checked as `program`, or the name of the first callable that has
+/// none, and why. Fail when a stored body or a translation breaks an invariant of the kernel.
 fn translations(
     c: &Checked,
     pin: &Source,
     now: &Arc<CommittedSchema>,
     now_source: &Source,
     program: &Arc<Program>,
-) -> Result<Vec<Served>, (String, Untranslatable)> {
+) -> Result<Translated, Box<Broken>> {
     let Some(first) = c.entries.first() else {
-        return Ok(Vec::new());
+        return Ok(Ok(Vec::new()));
     };
     let hides = c.header.as_ref().is_some_and(|h| h.hides_new);
-    let p = Pinned::new(&c.schema, pin, now, now_source, program, hides)
-        .map_err(|u| (first.name.clone(), u))?;
+    let p = match Pinned::new(&c.schema, pin, now, now_source, program, hides) {
+        Ok(p) => p,
+        Err(u) => return Ok(Err((first.name.clone(), u))),
+    };
     let mut out = Vec::with_capacity(c.entries.len());
     for e in &c.entries {
-        let q = NormalQuery {
-            terms: (*e.terms).clone(),
-            params: e.params.iter().flatten().copied().chain(e.unit).collect(),
-            body: e.body,
+        let q = NormalQuery::validated(
+            &c.schema,
+            (*e.terms).clone(),
+            e.params.iter().flatten().copied().chain(e.unit).collect(),
+            e.body,
+        )
+        .map_err(|n| Box::new(Broken::CallNotNormal(n)))?;
+        let (terms, params, body) = match p.query(&q) {
+            Ok(q) => q.into_parts(),
+            Err(Refused::Untranslatable(u)) => return Ok(Err((e.name.clone(), u))),
+            Err(Refused::Broken(n)) => return Err(Box::new(Broken::TranslationNotNormal(n))),
         };
-        let t = p.query(&q).map_err(|u| (e.name.clone(), u))?;
-        let mut vars = t.params.into_iter();
+        let mut vars = params.into_iter();
         let mut next = || vars.next().expect("a translation keeps every parameter");
         let params = e.params.iter().map(|x| x.map(|_| next())).collect();
         let unit = e.unit.map(|_| next());
         out.push(Served {
             schema: now.clone(),
             program: program.clone(),
-            terms: Arc::new(t.terms),
-            body: t.body,
+            terms: Arc::new(terms),
+            body,
             params,
             unit,
         });
     }
-    Ok(out)
+    Ok(Ok(out))
 }
 
 /// Returns the bundle file `text` checked at the version it pins, whatever its state.

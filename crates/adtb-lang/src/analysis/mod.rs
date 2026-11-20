@@ -104,13 +104,19 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
     };
     let n = match norm::program(schema, p) {
         Ok(n) => n,
-        Err(e) => return vec![site(e.root, e.message)],
+        Err(e) => {
+            let (file, span) = root_site(schema, e.root);
+            return vec![FileDiag {
+                file,
+                diag: diag(span, e),
+            }];
+        }
     };
     n.bodies()
         .into_iter()
         .filter_map(|(root, t, _)| {
-            accept(&n.terms, &[t])
-                .and_then(|()| volatile_free(schema, &n.terms, root, t))
+            accept(n.terms(), &[t])
+                .and_then(|()| volatile_free(schema, n.terms(), root, t))
                 .err()
                 .map(|m| site(root, m))
         })
@@ -168,21 +174,21 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
                 Root::Command(i) => a.commands[i].span,
                 _ => unreachable!("ad hoc errors are at items or commands"),
             };
-            return vec![Diag::new(span, e.message)];
+            return vec![diag(span, e)];
         }
     };
     let accepted = |t: Tm| {
-        accept(&n.terms, &[t]).and_then(|()| {
-            if write_depends_on_volatile(schema, &n.terms, t) {
+        accept(n.terms(), &[t]).and_then(|()| {
+            if write_depends_on_volatile(schema, n.terms(), t) {
                 Err(VOLATILE_WRITE.to_string())
             } else {
                 Ok(())
             }
         })
     };
-    let items = n.items.iter().zip(spans).map(|(t, span)| (*t, *span));
+    let items = n.items().iter().zip(spans).map(|(t, span)| (*t, *span));
     let commands = n
-        .commands
+        .commands()
         .iter()
         .flat_map(|c| c.command.terms().into_iter().map(|t| (t, c.span)));
     items
@@ -191,19 +197,28 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
         .collect()
 }
 
+/// Returns the diagnostic at `span` of normalisation failing with `e`.
+fn diag(span: Span, e: norm::Error) -> Diag {
+    if e.broken().is_some() {
+        Diag::internal(span, e.message)
+    } else {
+        Diag::new(span, e.message)
+    }
+}
+
 /// Normalise a checked registered query and apply the acceptance rules over its normal form.
 pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) -> Result<(), Diag> {
     system::program(schema, p, &q.terms, [q.term], span)?;
-    let n = norm::query(schema, p, q).map_err(|e| Diag::new(span, e.message))?;
-    accept(&n.terms, &[n.body]).map_err(|m| Diag::new(span, m))
+    let n = norm::query(schema, p, q).map_err(|e| diag(span, e))?;
+    accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }
 
 /// Normalise a checked registered transaction and apply the acceptance rules over its normal form.
 pub(crate) fn txn_diag(schema: &Schema, p: &Program, t: &Txn, span: Span) -> Result<(), Diag> {
     system::program(schema, p, &t.terms, [t.term], span)?;
-    let n = norm::txn(schema, p, t).map_err(|e| Diag::new(span, e.message))?;
-    accept(&n.terms, &[n.body]).map_err(|m| Diag::new(span, m))?;
-    if write_depends_on_volatile(schema, &n.terms, n.body) {
+    let n = norm::txn(schema, p, t).map_err(|e| diag(span, e))?;
+    accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))?;
+    if write_depends_on_volatile(schema, n.terms(), n.body()) {
         return Err(Diag::new(span, VOLATILE_WRITE));
     }
     Ok(())

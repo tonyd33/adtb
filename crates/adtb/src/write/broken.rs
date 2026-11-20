@@ -40,7 +40,8 @@ pub enum Broken {
         relation: String,
         field: String,
     },
-    /// A constraint's normal form breaks a kernel typing rule.
+    /// A constraint's normal form, or a statement's term as the write path rewrites it, breaks a
+    /// kernel typing rule or reads a variable nothing binds.
     IllTyped(Invalid),
     Unprintable(PrintError),
     NoValueOutcome,

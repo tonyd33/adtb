@@ -269,11 +269,14 @@ impl Error {
             DiagKind::Denied => Self::rejected(RejectReason::Denied {
                 detail: diag.message,
             }),
+            DiagKind::Internal => Self::internal(Broken::Diagnosed(diag.message)),
         }
     }
 
     pub(super) fn diagnostics(diags: Vec<Diag>) -> Error {
-        let kind = if diags.iter().any(|diag| diag.kind == DiagKind::Denied) {
+        let kind = if diags.iter().any(|diag| diag.kind == DiagKind::Internal) {
+            DiagKind::Internal
+        } else if diags.iter().any(|diag| diag.kind == DiagKind::Denied) {
             DiagKind::Denied
         } else {
             DiagKind::Invalid

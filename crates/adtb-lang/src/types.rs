@@ -511,6 +511,23 @@ impl Ty {
         }
     }
 
+    /// Returns one past the greatest type parameter the type names, 0 when it names none.
+    pub fn params_named(&self) -> u32 {
+        match self {
+            Ty::Param(i) => i + 1,
+            Ty::Base(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => 0,
+            Ty::Data { args, .. } => args.iter().map(Ty::params_named).max().unwrap_or(0),
+            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => t.params_named(),
+            Ty::Group(k, t) | Ty::Fn(k, t) => k.params_named().max(t.params_named()),
+            Ty::Record(fs) => fs.iter().map(|(_, t)| t.params_named()).max().unwrap_or(0),
+            Ty::Sum { ctors, .. } => ctors
+                .iter()
+                .flat_map(|(_, fs)| fs.iter().map(|(_, t)| t.params_named()))
+                .max()
+                .unwrap_or(0),
+        }
+    }
+
     pub fn mentions_fn(&self) -> bool {
         match self {
             Ty::Fn(..) => true,

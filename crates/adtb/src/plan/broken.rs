@@ -1,6 +1,6 @@
 use std::fmt;
 
-use adtb_lang::kernel::Var;
+use adtb_lang::kernel::{Invalid, Var};
 use adtb_lang::types::Ty;
 
 use super::{Error, HeapId, IndexId};
@@ -23,13 +23,24 @@ pub enum Broken {
     ScanHeap(HeapId),
     UnknownIndex(IndexId),
     LookupNotKey(IndexId),
-    RouteNotOfIndex { index: IndexId, ctor: u32 },
-    RouteTwice { index: IndexId, ctor: u32 },
-    RouteHeap { ctor: u32, heap: HeapId },
+    RouteNotOfIndex {
+        index: IndexId,
+        ctor: u32,
+    },
+    RouteTwice {
+        index: IndexId,
+        ctor: u32,
+    },
+    RouteHeap {
+        ctor: u32,
+        heap: HeapId,
+    },
     RangeNotOrdered(IndexId),
     RangeNotField(IndexId),
     PastIndex(IndexId),
     NestedPast,
+    /// A term of the plan breaks its kind's typing rule.
+    IllTyped(Invalid),
 }
 
 impl From<Broken> for Error {
@@ -106,6 +117,12 @@ impl fmt::Display for Broken {
                 i.0
             ),
             Broken::NestedPast => f.write_str("a read of the past holds no other read of the past"),
+            Broken::IllTyped(e) => write!(
+                f,
+                "term {:?} of a plan is typed under its kind's rule: {}",
+                e.at(),
+                e.reason()
+            ),
         }
     }
 }

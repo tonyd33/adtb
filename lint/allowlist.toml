@@ -93,7 +93,7 @@
 "crates/adtb-lang/src/evolve/rowmap.rs" = 5
 "crates/adtb-lang/src/kernel.rs" = 12
 "crates/adtb-lang/src/lex.rs" = 3
-"crates/adtb-lang/src/norm/mod.rs" = 21
+"crates/adtb-lang/src/norm/mod.rs" = 2
 "crates/adtb-lang/src/parse/mod.rs" = 3
 "crates/adtb-lang/src/permission/coverage.rs" = 4
 "crates/adtb-lang/src/permission/mod.rs" = 2

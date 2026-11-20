@@ -231,7 +231,7 @@ impl Planner<'_> {
                 matches!(fixed.path.as_deref(), Some([PathStep::Field(g)]) if g == f)
             }
             Element::Derived { index, element } => {
-                let (x0, f) = &self.normal.index_fields[&(rel, *index, *element)];
+                let (x0, f) = &self.normal.index_fields()[&(rel, *index, *element)];
                 if !f.path.is_empty() {
                     return fixed.path.as_ref() == Some(&f.path);
                 }
@@ -244,7 +244,7 @@ impl Planner<'_> {
     /// Returns whether term `a` of the plan's arena is term `b` of the normal program's, each
     /// variable of `b` renamed by `vars` or bound alike in both.
     fn same_term(&self, a: Tm, b: Tm, vars: &mut HashMap<Var, Var>) -> bool {
-        let from = &self.normal.terms;
+        let from = self.normal.terms();
         let (ca, cb) = (self.t.children(a), from.children(b));
         if ca.len() != cb.len() || erase(self.t.ty(a)) != erase(from.ty(b)) {
             return false;

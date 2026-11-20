@@ -159,8 +159,10 @@ impl Holds {
                 e.schema.module(module).name
             )));
         };
-        Ok(permission::normal(&e.schema, normal, &normal.terms, t, &[])
-            .is_ok_and(|needs| self.lacking(&e.schema, &needs).is_empty()))
+        Ok(
+            permission::normal(&e.schema, normal, normal.terms(), t, &[])
+                .is_ok_and(|needs| self.lacking(&e.schema, &needs).is_empty()),
+        )
     }
 
     /// Returns `err` with what the role may not read taken out of a violation's report.

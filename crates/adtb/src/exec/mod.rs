@@ -57,7 +57,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use adtb_lang::kernel::{Terms, Tm, Var};
+use adtb_lang::kernel::{Tm, Valid, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::textual::PrintError;
@@ -222,7 +222,11 @@ impl From<PrintError> for Error {
 /// Returns whether the compiled scalar term `t` of `terms` routes rows among several arms by
 /// their constructor.
 #[cfg(test)]
-pub(crate) fn routes_by_tag(schema: &Schema, terms: &Terms, t: Tm) -> Result<bool, Error> {
+pub(crate) fn routes_by_tag(
+    schema: &Schema,
+    terms: &adtb_lang::kernel::Terms,
+    t: Tm,
+) -> Result<bool, Error> {
     Ok(code::Compiler::new(schema, terms).code(t)?.routes_by_tag())
 }
 
@@ -238,7 +242,8 @@ pub struct Scalar {
 impl Scalar {
     /// Compile `body`, a scalar normal form in `terms` for `schema` whose one free variable is
     /// `var`.
-    pub fn new(schema: &Schema, terms: &Terms, var: Var, body: Tm) -> Result<Scalar, Error> {
+    pub fn new(schema: &Schema, terms: Valid<'_>, var: Var, body: Tm) -> Result<Scalar, Error> {
+        let terms = terms.terms();
         Ok(Scalar {
             code: code::Compiler::new(schema, terms).code(body)?,
             var,

@@ -39,6 +39,8 @@ impl fmt::Debug for Span {
 pub enum DiagKind {
     Invalid,
     Denied,
+    /// A guarantee of the checker or the normaliser does not hold.
+    Internal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +56,14 @@ impl Diag {
             span,
             message: message.into(),
             kind: DiagKind::Invalid,
+        }
+    }
+
+    pub(crate) fn internal(span: Span, message: impl Into<String>) -> Diag {
+        Diag {
+            span,
+            message: message.into(),
+            kind: DiagKind::Internal,
         }
     }
 

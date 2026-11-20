@@ -5,7 +5,7 @@ use adtb_lang::kernel::{Kind, Terms, Tm};
 use super::fixture::{Fixture, running, variants};
 use super::*;
 
-fn plan_with(f: &Fixture, terms: &Terms, t: Tm, rewrites: Rewrites) -> Plan {
+fn plan_with(f: &Fixture, terms: adtb_lang::kernel::Valid<'_>, t: Tm, rewrites: Rewrites) -> Plan {
     let options = Options {
         rewrites,
         hiding: false,
@@ -16,7 +16,7 @@ fn plan_with(f: &Fixture, terms: &Terms, t: Tm, rewrites: Rewrites) -> Plan {
 
 fn adhoc_plan(f: &Fixture, text: &str, params: &[(&str, &str)], rw: Rewrites) -> Plan {
     let (n, t) = f.normal(text, params);
-    plan_with(f, &n.terms, t, rw)
+    plan_with(f, n.valid(), t, rw)
 }
 
 fn heap(f: &Fixture, rel: &str, ctor: u32) -> HeapId {
@@ -160,14 +160,14 @@ fn no_field_of_a_fused_group_plan_reads_a_label_its_record_lacks() {
 fn an_option_parameter_chooses_the_pipelines_at_start() {
     let f = running();
     let q = f.query(SEARCH);
-    let p = plan_with(&f, &q.terms, q.body, Rewrites::ALL);
+    let p = plan_with(&f, q.valid(), q.body(), Rewrites::ALL);
     let spine = &query_of(&p.root).spine;
     assert!(matches!(spine, Spine::Case(..)), "{spine:?}");
     assert_eq!(4, pipelines(spine).len());
     let p = plan_with(
         &f,
-        &q.terms,
-        q.body,
+        q.valid(),
+        q.body(),
         Rewrites {
             unswitch: false,
             ..Rewrites::ALL
@@ -184,7 +184,7 @@ fn a_write_is_refused() {
         &f.schema,
         &f.normal,
         &f.catalog,
-        &n.terms,
+        n.valid(),
         t,
         Options::default(),
     )
@@ -195,7 +195,7 @@ fn a_write_is_refused() {
 /// Returns the bounded plan of `text` over the set parameter `xs` of type `ty`.
 fn bounded(f: &Fixture, text: &str, ty: &str) -> Result<Plan, Error> {
     let (normal, t) = f.normal(text, &[("xs", ty)]);
-    plan_bounded(&f.schema, &f.normal, &f.catalog, &normal.terms, t)
+    plan_bounded(&f.schema, &f.normal, &f.catalog, normal.valid(), t)
 }
 
 fn probes_only(text: &str, ty: &str) {

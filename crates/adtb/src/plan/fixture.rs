@@ -101,7 +101,7 @@ impl Fixture {
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
         let normal = norm::adhoc(&self.schema, &self.program, &adhoc)
             .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
-        let [item] = normal.items.as_slice() else {
+        let [item] = normal.items() else {
             panic!("`{text}` holds one statement")
         };
         let item = *item;
@@ -129,9 +129,9 @@ impl Fixture {
         let (n, t) = self.normal(text, &types);
         let bound: Vec<_> = params
             .iter()
-            .map(|(name, _, v)| (n.params[*name], v.clone()))
+            .map(|(name, _, v)| (n.params()[*name], v.clone()))
             .collect();
-        Interpreter::new(&self.schema, &self.program, &self.db).eval(&n.terms, t, &bound)
+        Interpreter::new(&self.schema, &self.program, &self.db).eval(n.terms(), t, &bound)
     }
 
     /// Add to relation `rel` the rows the set expression `rows` denotes over `params`.

@@ -17,7 +17,8 @@ mod valid;
 pub use build::Build;
 
 pub use valid::{
-    Invalid, assert_normal, assert_typed, assert_valid, validate, validate_node, validate_normal,
+    Body, Invalid, Valid, ValidTerms, assert_normal, assert_valid, validate, validate_node,
+    validate_normal, validate_placed, validate_typed,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -369,6 +370,7 @@ pub struct Terms {
     nodes: Vec<Node>,
     vars: Vec<VarInfo>,
     pub(crate) transport_fields: BTreeSet<Tm>,
+    broken: Option<Invalid>,
 }
 
 impl Terms {
@@ -420,6 +422,15 @@ impl Terms {
     #[must_use]
     pub fn is_transport(&self, t: Tm) -> bool {
         self.transport_fields.contains(&t)
+    }
+
+    /// Returns the first node built here that breaks its kind's typing rule, with the rule.
+    pub fn broken(&self) -> Option<&Invalid> {
+        self.broken.as_ref()
+    }
+
+    fn break_at(&mut self, at: Tm, reason: String) {
+        self.broken.get_or_insert(Invalid::new(at, reason));
     }
 
     fn add(&mut self, kind: Kind, ty: Ty) -> Tm {

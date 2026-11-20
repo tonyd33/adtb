@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::kernel::{Build, Kind, Terms, Tm};
+use adtb_lang::kernel::{self, Build, Kind, Terms, Tm, Valid, Var};
 use adtb_lang::norm::{self, NormalProgram, Root};
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
@@ -65,7 +65,7 @@ impl Catalog {
             bindings,
         ));
         let budget = Budget::new(self.query_memory);
-        let terms = &normal.terms;
+        let terms = normal.terms();
         let mut why = Vec::new();
         for Held { name, id, t } in held(schema, &normal)? {
             let mut reads = BTreeSet::new();
@@ -89,17 +89,20 @@ impl Catalog {
                 ));
             }
         }
-        let mut terms = normal.terms.clone();
+        let mut terms = normal.terms().clone();
         let rels: Vec<Tm> = schema
             .ids()
             .relation_ids()
             .map(|(r, _)| Build::new(schema, &mut terms).rel(r, None))
             .collect();
+        let roots: Vec<(Tm, Vec<Var>)> = rels.iter().map(|t| (*t, Vec::new())).collect();
+        let terms = kernel::ValidTerms::new(schema, terms, &roots)
+            .map_err(|e| Error::from(Broken::IllTyped(e)))?;
         let q = Query {
             schema,
             catalog: &catalog,
             normal: &normal,
-            terms: &terms,
+            terms: terms.valid(),
             store: &store,
             budget: &budget,
             hosts: &self.hosts,
@@ -126,7 +129,7 @@ impl Catalog {
         for Held { id, t, .. } in held(schema, &normal)? {
             let id = id.raw();
             let mut reads = BTreeSet::new();
-            if transitions(&normal.terms, t, &mut reads) || !keep(&reads) {
+            if transitions(normal.terms(), t, &mut reads) || !keep(&reads) {
                 continue;
             }
             let found = run_denial(schema, &catalog, &normal, t, store, &budget, &self.hosts);
@@ -274,7 +277,7 @@ fn run_denial<R: Runtime>(
         schema,
         catalog,
         normal,
-        terms: &normal.terms,
+        terms: normal.valid(),
         store,
         budget,
         hosts,
@@ -298,7 +301,7 @@ struct Query<'a, R: Runtime> {
     schema: &'a Schema,
     catalog: &'a plan::Catalog,
     normal: &'a NormalProgram,
-    terms: &'a Terms,
+    terms: Valid<'a>,
     store: &'a Arc<Store<R>>,
     budget: &'a Arc<Budget>,
     hosts: &'a Arc<exec::Hosts>,
@@ -354,7 +357,7 @@ impl<R: Runtime> Query<'_, R> {
         let Val::Set(rows) = &v else {
             return Err(Error::from(Broken::NotASet(v)));
         };
-        let elem = match terms.ty(t) {
+        let elem = match terms.terms().ty(t) {
             Ty::Set(e) => e.as_ref().clone(),
             other => {
                 return Err(Error::from(Broken::NotSetTyped(other.clone())));
@@ -369,9 +372,9 @@ impl<R: Runtime> Query<'_, R> {
         let schema = self.schema;
         let mut checks = BTreeMap::new();
         for t in domains {
-            if let Some((v, body)) = self.normal.domains.get(t) {
+            if let Some((v, body)) = self.normal.domains().get(t) {
                 let mut scalar =
-                    exec::Scalar::new(schema, &self.normal.terms, *v, *body).map_err(failed)?;
+                    exec::Scalar::new(schema, self.normal.valid(), *v, *body).map_err(failed)?;
                 scalar.set_hosts(self.hosts.clone());
                 checks.insert(*t, scalar);
             }
@@ -383,7 +386,7 @@ impl<R: Runtime> Query<'_, R> {
         let mut found: BTreeMap<TypeId, Vec<String>> = BTreeMap::new();
         let mut why = Vec::new();
         for &t in rels {
-            let Ty::Set(e) = self.terms.ty(t) else {
+            let Ty::Set(e) = self.terms.terms().ty(t) else {
                 continue;
             };
             let held: Vec<TypeId> = checks

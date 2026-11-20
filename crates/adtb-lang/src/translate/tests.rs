@@ -110,7 +110,11 @@ fn translated_to(
     let p = Pinned::new(from, from_source, to, to_source, to_program, hide_new);
     queries
         .iter()
-        .map(|q| p.as_ref().map_err(Clone::clone)?.query(q))
+        .map(|q| match p.as_ref().map_err(Clone::clone)?.query(q) {
+            Ok(n) => Ok(n),
+            Err(Refused::Untranslatable(u)) => Err(u),
+            Err(Refused::Broken(e)) => panic!("the translation of a query is broken: {e:?}"),
+        })
         .collect()
 }
 
@@ -150,7 +154,7 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
             let q = translated_with_hiding(&log, 2, body, hide_new)
                 .unwrap_or_else(|e| panic!("{name}: the upsert translates: {e:?}"));
             let scopes: Vec<_> = q
-                .terms
+                .terms()
                 .iter()
                 .filter_map(|n| match n.kind {
                     Kind::Upsert {
@@ -159,7 +163,7 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
                         old,
                         ..
                     } => {
-                        let Ty::Data { ctors, .. } = &q.terms.var_info(old).ty else {
+                        let Ty::Data { ctors, .. } = &q.terms().var_info(old).ty else {
                             panic!("an upsert's old binding is a declared row");
                         };
                         Some((
@@ -327,7 +331,7 @@ const ADD_APPLE_ENABLED: &str =
 
 /// Returns each node of `q` whose kind `pick` keeps, with its type.
 fn nodes<T>(q: &NormalQuery, mut pick: impl FnMut(&Kind) -> Option<T>) -> Vec<(T, Ty)> {
-    q.terms
+    q.terms()
         .iter()
         .filter_map(|n| pick(&n.kind).map(|x| (x, n.ty.clone())))
         .collect()
@@ -366,15 +370,15 @@ fn a_hiding_pin_dereferences_a_whole_key_admitting_the_pinned_constructors_only(
         };
         assert_eq!(
             (&whole_key, &admits, &row),
-            (q.terms.ty(*key), got, ty),
+            (q.terms().ty(*key), got, ty),
             "hide_new {hide_new}"
         );
         let t = q
-            .terms
+            .terms()
             .iter()
             .position(|n| matches!(n.kind, Kind::Deref { .. }))
             .expect("the dereference");
-        let total = crate::analysis::Totality::new(&to, false).total(&q.terms, Tm(t as u32));
+        let total = crate::analysis::Totality::new(&to, false).total(q.terms(), Tm(t as u32));
         assert_eq!(!hide_new, total, "hide_new {hide_new}");
     }
 }
@@ -389,7 +393,7 @@ fn a_hiding_pin_dereference_requires_reading_the_pinned_constructors_only() {
     let q = translated_with_hiding(&log, 2, body, true).expect("it translates");
     let program = norm::program(&to, &to_program).expect("the program normalises");
     let got: BTreeSet<Requirement> =
-        crate::permission::normal(&to, &program, &q.terms, q.body, &q.params)
+        crate::permission::normal(&to, &program, q.terms(), q.body(), q.params())
             .expect("requirements analyze")
             .iter()
             .cloned()
@@ -446,7 +450,7 @@ fn a_field_of_a_sum_that_gained_a_constructor_keeps_its_declared_type_and_matche
     let arms = nodes(&q, |k| match k {
         Kind::Case { arms, .. } => Some(
             arms.iter()
-                .map(|(c, _, b)| (*c, matches!(q.terms.kind(*b), Kind::Unreachable)))
+                .map(|(c, _, b)| (*c, matches!(&q.terms().kind(*b), Kind::Unreachable)))
                 .collect::<Vec<_>>(),
         ),
         _ => None,
@@ -494,15 +498,15 @@ fn an_arm_over_a_conflicting_row_binds_its_constructor_only() {
     let q = translated(&log, 2, body).expect("it translates");
     let note = named(&to, "Note");
     let bound: Vec<Ty> = q
-        .terms
+        .terms()
         .iter()
         .filter_map(|n| match &n.kind {
             Kind::Case { arms, .. } => Some(arms.clone()),
             _ => None,
         })
         .flatten()
-        .filter(|(_, _, b)| !matches!(q.terms.kind(*b), Kind::Unreachable))
-        .map(|(_, y, _)| q.terms.var_info(y).ty.clone())
+        .filter(|(_, _, b)| !matches!(q.terms().kind(*b), Kind::Unreachable))
+        .map(|(_, y, _)| q.terms().var_info(y).ty.clone())
         .collect();
     let plain = Ty::Data {
         def: note,
@@ -1031,7 +1035,7 @@ fn an_insert_takes_a_fill_whose_type_holds_a_key_of_a_relation_a_later_operator_
         .map(|i| RelRef::Declared(RelId(i as u32)))
         .expect("`later` is declared");
     let keys: BTreeSet<RelRef> = q
-        .terms
+        .terms()
         .iter()
         .filter_map(|n| match &n.ty {
             Ty::Data { args, .. } => args.iter().find_map(|a| match a {
@@ -1226,7 +1230,7 @@ fn inserted(
         .map(|r| {
             r.map(|q| {
                 let inserted: Vec<RelId> = q
-                    .terms
+                    .terms()
                     .iter()
                     .filter_map(|n| match n.kind {
                         Kind::Insert(rel, _) => Some(rel),

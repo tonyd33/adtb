@@ -932,6 +932,167 @@ fn write_refusals() -> Vec<(&'static str, Build)> {
     ]
 }
 
+/// Returns the refusals of keys, results, restrictions, anonymous constructors and primitive
+/// operands.
+fn operand_refusals() -> Vec<(&'static str, Build)> {
+    vec![
+        ("a key is `Set I64`, not ordered", |fx, terms| {
+            let rows = terms.add(Kind::Rel(fx.ts, None), set(fx.row(None)));
+            let r = terms.var("r", fx.row(None));
+            let key = terms.add(Kind::EmptySet, set(int()));
+            let count = one(terms);
+            let top = Kind::Top {
+                count,
+                keys: vec![(key, false)],
+                var: r,
+                source: rows,
+            };
+            let t = terms.add(top, set(fx.row(None)));
+            (t, Vec::new(), t)
+        }),
+        ("the take is `Text`, not `I64`", |fx, terms| {
+            let rows = terms.add(Kind::Rel(fx.ts, None), set(fx.row(None)));
+            let r = terms.var("r", fx.row(None));
+            let take = Some(word(terms));
+            let present = Kind::Present {
+                var: r,
+                source: rows,
+                keys: Vec::new(),
+                take,
+                after: None,
+            };
+            let t = terms.add(present, set(fx.row(None)));
+            (t, Vec::new(), t)
+        }),
+        ("the position after is not an `Option`", |fx, terms| {
+            let rows = terms.add(Kind::Rel(fx.ts, None), set(fx.row(None)));
+            let r = terms.var("r", fx.row(None));
+            let read = terms.add(Kind::Var(r), fx.row(None));
+            let key = terms.add(Kind::Field(read, "x".into()), int());
+            let after = Some(one(terms));
+            let present = Kind::Present {
+                var: r,
+                source: rows,
+                keys: vec![(key, false)],
+                take: None,
+                after,
+            };
+            let t = terms.add(present, set(fx.row(None)));
+            (t, Vec::new(), t)
+        }),
+        ("a restriction of a set of other than a sum", |_, terms| {
+            let e = terms.add(Kind::EmptySet, set(int()));
+            let t = terms.add(Kind::Restrict(e, vec![0]), set(int()));
+            (t, Vec::new(), t)
+        }),
+        ("constructor 0 is not one of the node's type", |_, terms| {
+            let sum = Ty::Sum {
+                ctors: vec![("A".into(), Vec::new()), ("B".into(), Vec::new())],
+                sel: Some(vec![1]),
+            };
+            let ctor = Kind::Ctor {
+                ctor: 0,
+                fields: Vec::new(),
+            };
+            let t = terms.add(ctor, sum);
+            (t, Vec::new(), t)
+        }),
+        (
+            "`Eq` compares `I64` and `Text`, which do not join",
+            |fx, terms| {
+                let (a, b) = (one(terms), word(terms));
+                let t = terms.add(Kind::Prim(Prim::Eq, vec![a, b]), fx.bool());
+                (t, Vec::new(), t)
+            },
+        ),
+        ("the operand is `Text`, not `I64`", |_, terms| {
+            let w = word(terms);
+            let t = terms.add(Kind::Prim(Prim::Micros, vec![w]), Ty::Base(Base::Duration));
+            (t, Vec::new(), t)
+        }),
+        (
+            "the scale of `Rescale` is not the constant 2",
+            |_, terms| {
+                let d = terms.add(Kind::Const(Const::Int(5)), Ty::Base(Base::Decimal(0)));
+                let scale = one(terms);
+                let t = terms.add(
+                    Kind::Prim(Prim::Rescale, vec![d, scale]),
+                    Ty::Base(Base::Decimal(2)),
+                );
+                (t, Vec::new(), t)
+            },
+        ),
+    ]
+}
+
+#[test]
+fn a_node_its_children_do_not_type_is_built_at_unit_and_marks_the_arena_broken() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let mut b = super::Build::new(&fx.schema, &mut terms);
+    let c = b.constant(Const::Int(1), int());
+    let k = b.key(c, fx.ts);
+    b.unit();
+    assert_eq!(&Ty::Unit, terms.ty(k));
+    assert_eq!(
+        Some((k, "`key` of `I64`".to_string())),
+        terms.broken().map(|e| (e.at(), e.reason().to_string()))
+    );
+}
+
+#[test]
+fn validate_placed_refuses_each_term_out_of_place() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let inserted = Kind::Transition(Transition::Inserted, fx.ts, None);
+    let transition = terms.add(inserted, set(fx.row(None)));
+    let rows = terms.add(Kind::Rel(fx.ts, None), set(fx.row(None)));
+    let r = terms.var("r", fx.row(None));
+    let present = Kind::Present {
+        var: r,
+        source: rows,
+        keys: Vec::new(),
+        take: None,
+        after: None,
+    };
+    let present = terms.add(present, set(fx.row(None)));
+    let nested = terms.add(Kind::IsEmpty(present), fx.bool());
+    let x = terms.var("x", Ty::Param(0));
+    let param = terms.add(Kind::Var(x), Ty::Param(0));
+    let got = |root: Tm, at: Body| {
+        validate_placed(&terms, &[root], at).map_err(|e| (e.at(), e.reason().to_string()))
+    };
+    let refused = |at: Tm, reason: &str| Err((at, reason.to_string()));
+    assert_eq!(
+        refused(
+            transition,
+            "a `Transition` outside the body of a constraint"
+        ),
+        got(transition, Body::Plain)
+    );
+    assert_eq!(
+        refused(present, "a `Present` nested in another term"),
+        got(nested, Body::Plain)
+    );
+    assert_eq!(
+        refused(
+            param,
+            "a type names a type parameter its body does not have"
+        ),
+        got(param, Body::Plain)
+    );
+    assert_eq!(Ok(()), got(transition, Body::Constraint));
+    assert_eq!(Ok(()), got(present, Body::Plain));
+    assert_eq!(
+        refused(
+            param,
+            "a type names a type parameter its body does not have"
+        ),
+        got(param, Body::Generic(0))
+    );
+    assert_eq!(Ok(()), got(param, Body::Generic(1)));
+}
+
 #[test]
 fn validate_refuses_a_broken_child_at_the_child_under_a_parent_that_holds() {
     let fx = Fixture::new();
@@ -939,6 +1100,7 @@ fn validate_refuses_a_broken_child_at_the_child_under_a_parent_that_holds() {
     let child = terms.add(Kind::Const(Const::Text("w".into())), int());
     let parent = terms.add(Kind::Singleton(child), set(int()));
     let got = validate(&fx.schema, &terms, &[(parent, Vec::new())])
+        .map(drop)
         .map_err(|e| (e.at(), e.reason().to_string()));
     assert_eq!(Err((child, "the constant is typed `I64`".to_string())), got);
 }
@@ -949,7 +1111,10 @@ fn validate_accepts_a_self_key_field_at_the_key_of_the_rows_constructor_set() {
     let mut terms = Terms::default();
     let (r, read) = row_var(&fx, &mut terms, Some(vec![0]));
     let field = terms.add(Kind::Field(read, "id".into()), key(fx.ts, Some(vec![0])));
-    assert_eq!(Ok(()), validate(&fx.schema, &terms, &[(field, vec![r])]));
+    assert_eq!(
+        Ok(()),
+        validate(&fx.schema, &terms, &[(field, vec![r])]).map(drop)
+    );
 }
 
 #[test]
@@ -985,7 +1150,9 @@ fn a_dereference_admitting_fewer_constructors_than_its_key_is_typed_at_their_row
     );
     assert_eq!(
         Ok(()),
-        validate(&fx.schema, &terms, &[(narrowed, vec![k])]).map_err(|e| e.reason().to_string())
+        validate(&fx.schema, &terms, &[(narrowed, vec![k])])
+            .map(drop)
+            .map_err(|e| e.reason().to_string())
     );
 }
 
@@ -1001,6 +1168,7 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         group_refusals(),
         shape_refusals(),
         write_refusals(),
+        operand_refusals(),
     ]
     .concat();
     let mut differ = Vec::new();
@@ -1009,13 +1177,14 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         let (root, params, at) = build(&fx, &mut terms);
         let want = Err((at, reason.to_string()));
         let got = validate(&fx.schema, &terms, &[(root, params)])
+            .map(drop)
             .map_err(|e| (e.at(), e.reason().to_string()));
         if got != want {
             differ.push(format!("{reason}: {got:?}"));
         }
     }
     assert_eq!(Vec::<String>::new(), differ);
-    assert_eq!(78, cases.len());
+    assert_eq!(86, cases.len());
 }
 
 #[test]
@@ -1029,7 +1198,7 @@ fn validate_accepts_a_parameter_read_at_its_type_and_a_lambda_at_a_wider_one() {
     let y = terms.var("y", int());
     let param = terms.add(Kind::Var(y), int());
     let roots = [(lam, Vec::new()), (param, vec![y])];
-    assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots));
+    assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots).map(drop));
 }
 
 #[test]
@@ -1046,7 +1215,10 @@ fn validate_accepts_a_grouping_at_a_wider_key_than_its_by() {
         ("rows".into(), Ty::NonEmpty(Box::new(int()))),
     ]));
     let t = terms.add(group, ty);
-    assert_eq!(Ok(()), validate(&fx.schema, &terms, &[(t, vec![r])]));
+    assert_eq!(
+        Ok(()),
+        validate(&fx.schema, &terms, &[(t, vec![r])]).map(drop)
+    );
 }
 
 #[test]
@@ -1072,7 +1244,7 @@ fn validate_accepts_a_min_over_a_nonempty_source_at_its_body_type_or_an_option_o
         };
         roots.push((terms.add(agg, ty), vec![r]));
     }
-    assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots));
+    assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots).map(drop));
 }
 
 #[test]
@@ -1148,7 +1320,7 @@ fn validate_normal_accepts_the_new_value_function_of_a_replace() {
     let t = terms.add(Kind::Replace(fx.ts, rows, lam), Ty::Change);
     let roots = [(t, Vec::new())];
     assert_eq!(Ok(()), validate_normal(&fx.schema, &terms, &roots));
-    assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots));
+    assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots).map(drop));
 }
 
 #[test]

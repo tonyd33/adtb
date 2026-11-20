@@ -41,6 +41,20 @@ impl fmt::Display for Untranslatable {
     }
 }
 
+/// Why a callable's translation was not returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refused {
+    Untranslatable(Untranslatable),
+    /// The translation breaks an invariant of the kernel.
+    Broken(norm::Error),
+}
+
+impl From<Untranslatable> for Refused {
+    fn from(u: Untranslatable) -> Refused {
+        Refused::Untranslatable(u)
+    }
+}
+
 /// One operator logged after the pin, or applied by a revert logged after it.
 #[derive(Debug)]
 struct Op {
@@ -184,30 +198,26 @@ impl<'a> Pinned<'a> {
     /// Fail when it reads a field or constructor the later version lost, or when a value it
     /// returns, takes, compares, orders or passes to a function does not carry whole; when a
     /// constructor it writes is enabled at the pin and not later; when an operator it meets is
-    /// one this translation does not cross.
-    pub fn query(&self, q: &NormalQuery) -> R<NormalQuery> {
-        self.uncrossed(&q.terms)?;
+    /// one this translation does not cross. Fail with [`Refused::Broken`] when the translation
+    /// breaks an invariant of the kernel.
+    pub fn query(&self, q: &NormalQuery) -> Result<NormalQuery, Refused> {
+        self.uncrossed(q.terms())?;
         let mut out = Terms::default();
-        let mut w = walk::Walk::new(self, &q.terms);
+        let mut w = walk::Walk::new(self, q.terms());
         w.mark()?;
-        let mut params = Vec::with_capacity(q.params.len());
-        for &p in &q.params {
-            let ty = &q.terms.var_info(p).ty;
+        let mut params = Vec::with_capacity(q.params().len());
+        for &p in q.params() {
+            let ty = &q.terms().var_info(p).ty;
             self.map
                 .whole(ty, true, false)
                 .map_err(|l| self.lost(&l, "takes a parameter of"))?;
             params.push(w.var(&mut out, p)?);
         }
         self.map
-            .whole(q.terms.ty(q.body), false, false)
+            .whole(q.terms().ty(q.body()), false, false)
             .map_err(|l| self.lost(&l, "returns"))?;
-        let body = w.tm(&mut out, q.body, None)?;
-        crate::kernel::assert_valid(self.map.to, &out, &[(body, params.clone())]);
-        Ok(NormalQuery {
-            terms: out,
-            params,
-            body,
-        })
+        let body = w.tm(&mut out, q.body(), None)?;
+        NormalQuery::validated(self.map.to, out, params, body).map_err(Refused::Broken)
     }
 
     /// Returns the refusal of a value that `what` a type that does not carry whole.

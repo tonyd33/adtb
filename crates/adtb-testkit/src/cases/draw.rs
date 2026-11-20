@@ -1,4 +1,4 @@
-use super::expr::{Binding, Comp, E, Step};
+use super::expr::{Binding, Comp, E, Join, Step};
 use super::world::{Field, T, World, value};
 use crate::Rng;
 
@@ -334,7 +334,7 @@ impl Gen<'_> {
     }
 
     fn int(&mut self, rng: &mut Rng, d: u32) -> E {
-        match rng.below(16) {
+        match rng.below(17) {
             0..=2 => self.bin(rng, "+", &T::Int, d),
             3 | 4 => self.bin(rng, "-", &T::Int, d),
             5 => self.bin(rng, "*", &T::Int, d),
@@ -348,8 +348,24 @@ impl Gen<'_> {
                 E::Agg("count", Box::new(self.comp(rng, &sel, d, 1)))
             }
             11 | 12 => E::Agg("sum", Box::new(self.comp(rng, &T::Int, d, 1))),
+            13 | 14 => self.joined(rng, d),
             _ => self.leaf(rng, &T::Int),
         }
+    }
+
+    /// Returns an integer that passes through a join of two anonymous sums.
+    fn joined(&mut self, rng: &mut Rng, d: u32) -> E {
+        let join = *rng.pick(&[
+            Join::Binder,
+            Join::Binder,
+            Join::If,
+            Join::Union,
+            Join::List,
+        ]);
+        let names = [self.fresh("j"), self.fresh("j"), self.fresh("j")];
+        let c = self.expr(rng, &T::Bool, d);
+        let (a, b) = (self.expr(rng, &T::Int, d), self.expr(rng, &T::Int, d));
+        E::Joined(join, names, Box::new(c), Box::new(a), Box::new(b))
     }
 
     fn float(&mut self, rng: &mut Rng, d: u32) -> E {

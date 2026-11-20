@@ -17,6 +17,7 @@ use adtb::{
 };
 use adtb_lang::schema::Committed;
 use adtb_lang::textual;
+use adtb_lang::translate::Refused;
 use adtb_reference::Limit as ReferenceLimit;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
@@ -237,7 +238,11 @@ fn engine_eval(db: &Database<SimRuntime>, text: &str) -> Got {
     if results.len() != 1 {
         return Got::Refused(format!("{} results of one query", results.len()));
     }
-    let got = results.remove(0);
+    got_of(results.remove(0))
+}
+
+/// Returns how a result the engine returns as `got` ends, each row read back from its text.
+fn got_of(got: adtb::DynRows) -> Got {
     let form = got.form().clone();
     let mut rows = Vec::new();
     for row in got {
@@ -663,6 +668,180 @@ fn engine_equals_reference() {
     sweep("differential", differential);
 }
 
+/// Returns `items`, the ad hoc text `body`, checked, `None` when it is refused; fail when the
+/// refusal states a broken guarantee of the checker.
+fn adhoc_checked(
+    schema: &Committed,
+    program: &adtb_lang::check::Program,
+    body: &str,
+    items: &[adtb_lang::ast::AdhocItem],
+) -> Result<Option<adtb_lang::check::Adhoc>, String> {
+    match adtb_lang::check::check_adhoc(schema, program, items, &Default::default()) {
+        Ok(adhoc) => Ok(Some(adhoc)),
+        Err(ds)
+            if ds
+                .iter()
+                .any(|d| d.kind == adtb_lang::span::DiagKind::Internal) =>
+        {
+            Err(format!(
+                "`{body}` breaks a guarantee of the checker: {ds:?}"
+            ))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// Returns the normal form `normal` ends in for `item`, `None` when it is refused; panic when the
+/// refusal names a kernel term that breaks the kernel's invariants.
+fn sound(
+    item: &str,
+    normal: Result<adtb_lang::norm::NormalQuery, adtb_lang::norm::Error>,
+) -> Option<adtb_lang::norm::NormalQuery> {
+    match normal {
+        Ok(q) => Some(q),
+        Err(e) if e.broken().is_some() => panic!("`{item}` normalises to a broken term: {e:?}"),
+        Err(_) => None,
+    }
+}
+
+/// Returns a bundle of each query of `case` that checks as ad hoc text of one item over the
+/// version of `log`, the query its one registered query, with the query's index.
+fn query_bundles(log: &[String], case: &Case) -> Result<Vec<(usize, Registration)>, String> {
+    use adtb_lang::parse::{Options, parse_adhoc};
+    let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
+        .map_err(|e| format!("the log does not replay: {e:?}"))?;
+    let (schema, program) = source
+        .check()
+        .map_err(|e| format!("the version does not check: {e:?}"))?;
+    let hash: String = adtb::version_hash(&schema, &source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let committed = Committed::new(schema.clone()).expect("a replayed log settles");
+    let mut out = Vec::new();
+    for (i, q) in case.queries.iter().enumerate() {
+        let body = q.text();
+        let Ok(items) = parse_adhoc(&body, Options::default()).ok() else {
+            continue;
+        };
+        let Some(adhoc) = adhoc_checked(&committed, &program, &body, &items)? else {
+            continue;
+        };
+        let [item] = adhoc.items.as_slice() else {
+            continue;
+        };
+        let ty = schema.show_ty(adhoc.terms.ty(*item));
+        let text = format!(
+            "bundle q{i}-1.0 pins {} ({hash}) edition \"2026-10\"\nimport app\nquery q () -> {ty} =\n  {}\n",
+            log.len(),
+            body.replace('\n', "\n  ")
+        );
+        let registration = Registration::bundle(&text)
+            .map_err(|e| format!("`{text}` is no bundle file: {e:?}"))?;
+        out.push((i, registration));
+    }
+    Ok(out)
+}
+
+/// Returns how each query of `bundles` ends called on the engine holding `case`, by its index,
+/// and whether it was called registered: a query whose bundle the engine refuses other than as
+/// internal runs as ad hoc text.
+fn registered_got(
+    seed: u64,
+    case: &Case,
+    mut bundles: Vec<(usize, Registration)>,
+) -> Result<Vec<(usize, Got, bool)>, String> {
+    let all: Vec<usize> = bundles.iter().map(|(i, _)| *i).collect();
+    process(&mut Sim::new(seed, Config::default()), |rt| {
+        let log = Log::new(vec![case.migration.clone()]);
+        let db = loop {
+            let options = OpenOptions {
+                create: Some(CreateOptions::default()),
+                registrations: bundles.iter().map(|(_, r)| r.clone()).collect(),
+                ..OpenOptions::default()
+            };
+            match Database::open_in(rt.clone(), "differential.adt", &log, &options) {
+                Ok(db) => break db,
+                Err(OpenError::RegistrationRefused { reason, .. })
+                    if matches!(
+                        &reason,
+                        Error::Rejected {
+                            reason: RejectReason::Internal { .. }
+                        }
+                    ) =>
+                {
+                    return Err(format!("a registered query is refused: {reason}"));
+                }
+                Err(OpenError::RegistrationRefused { bundle, .. }) => {
+                    bundles.retain(|(i, _)| bundle != format!("q{i}-1.0"));
+                }
+                Err(e) => return Err(format!("the engine does not open: {e:?}")),
+            }
+        };
+        write(&db, &case.load);
+        let mut out = Vec::new();
+        for i in all {
+            if !bundles.iter().any(|(j, _)| *j == i) {
+                out.push((i, engine_eval(&db, &case.queries[i].text()), false));
+                continue;
+            }
+            let name = format!("q{i}-1.0");
+            let bound = db
+                .registered(&name)
+                .map_err(|e| format!("{name} does not bind: {e:?}"))?;
+            let got = match bound.call(1, &[], &CallOptions::default()) {
+                Ok(Called::Rows(rows)) => got_of(rows),
+                Ok(Called::Committed(c)) => got_of(c.value),
+                Err(e) => engine_failed(e),
+            };
+            out.push((i, got, true));
+        }
+        close(db);
+        Ok(out)
+    })
+}
+
+/// Cases of the registered differential per default run, [`profile::deep`] sized.
+const REGISTERED_CASES: u64 = 3;
+
+#[test]
+fn registered_queries_equal_reference() {
+    let seeds = seeds_of(REGISTERED_CASES);
+    let mut called = 0;
+    let mut found = Vec::new();
+    for seed in seeds.clone() {
+        let c = case(seed, QUERIES);
+        let fx = reference(&c);
+        let got = query_bundles(std::slice::from_ref(&c.migration), &c)
+            .and_then(|bundles| registered_got(seed, &c, bundles));
+        let got = match got {
+            Ok(got) => got,
+            Err(why) => {
+                found.push(format!("seed {seed}: {why}\n{}", c.program()));
+                continue;
+            }
+        };
+        for (i, got, registered) in got {
+            called += usize::from(registered);
+            let text = c.queries[i].text();
+            let want = reference_eval(&fx, &text);
+            if !got.agrees(&want, c.tolerance) {
+                let how = if registered { "registered" } else { "ad hoc" };
+                found.push(format!(
+                    "seed {seed}: `{text}` {how} gives {got:?}, the reference {want:?}\n{}",
+                    c.program()
+                ));
+            }
+        }
+    }
+    assert!(found.is_empty(), "{}", found.join("\n---\n"));
+    let cases = (seeds.end - seeds.start) as usize;
+    assert!(
+        called >= QUERIES * cases / 2,
+        "seeds {seeds:?}: {called} registered queries called"
+    );
+}
+
 /// The scripts of the conformance suite a case can be made of.
 fn scripts() -> &'static [Script] {
     static SCRIPTS: OnceLock<Vec<Script>> = OnceLock::new();
@@ -1014,7 +1193,6 @@ struct Pinned {
 /// constructor relation of module `app` whose transaction writes each of its rows again, by
 /// upsert, as a value stating its every field.
 fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>, String> {
-    use adtb_lang::check::check_adhoc;
     use adtb_lang::parse::{Options, parse_adhoc};
     let replayed = |log: &[String]| {
         let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
@@ -1030,7 +1208,13 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
         let p = adtb_lang::translate::Pinned::new(
             &schema, &source, &later.1, &later.0, &later.2, false,
         );
-        p.is_ok_and(|p| normal(&schema, &program, body).is_some_and(|q| p.query(&q).is_ok()))
+        p.is_ok_and(|p| {
+            normal(&schema, &program, body).is_some_and(|q| match p.query(&q) {
+                Ok(_) => true,
+                Err(Refused::Untranslatable(_)) => false,
+                Err(Refused::Broken(e)) => panic!("`{body}` translates to a broken term: {e:?}"),
+            })
+        })
     };
     let hash: String = adtb::version_hash(&schema, &source)
         .iter()
@@ -1049,7 +1233,7 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
         let Ok(items) = parse_adhoc(&body, Options::default()).ok() else {
             continue;
         };
-        let Ok(adhoc) = check_adhoc(&committed, &program, &items, &Default::default()) else {
+        let Some(adhoc) = adhoc_checked(&committed, &program, &body, &items)? else {
             continue;
         };
         let [item] = adhoc.items.as_slice() else {
@@ -1103,8 +1287,8 @@ fn normal(
     let vis = signature::visible(schema, &imports).ok()?;
     let calls = signature::calls(schema, program, &vis, &imports, &items).ok()?;
     match &calls.first()?.item {
-        Item::Query(_, q) => adtb_lang::norm::query(schema, program, q).ok(),
-        Item::Txn(_, t) => adtb_lang::norm::txn(schema, program, t).ok(),
+        Item::Query(_, q) => sound(item, adtb_lang::norm::query(schema, program, q)),
+        Item::Txn(_, t) => sound(item, adtb_lang::norm::txn(schema, program, t)),
         Item::Fn(..) => None,
     }
 }

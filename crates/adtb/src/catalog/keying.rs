@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::kernel::{Kind, PathStep, Terms, Tm, Var};
+use adtb_lang::kernel::{Kind, PathStep, Terms, Tm, Valid, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
@@ -69,7 +69,7 @@ impl IndexKeys {
                         parts.push(Part::At(steps));
                     }
                     Derived::Expr(terms, x, body) => {
-                        match fields_read(terms, body, x) {
+                        match fields_read(terms.terms(), body, x) {
                             Some(names) => reads.extend(
                                 row.iter()
                                     .enumerate()
@@ -168,14 +168,14 @@ pub fn element_types(
         .iter()
         .map(|e| match derived(normal, rel, e)? {
             Derived::Path(path) => Ok(path_steps(schema, rel, c, &path)?.1),
-            Derived::Expr(terms, _, body) => Ok(terms.ty(body).clone()),
+            Derived::Expr(terms, _, body) => Ok(terms.terms().ty(body).clone()),
         })
         .collect()
 }
 
 enum Derived<'n> {
     Path(Vec<PathStep>),
-    Expr(&'n Terms, Var, Tm),
+    Expr(Valid<'n>, Var, Tm),
 }
 
 fn derived<'n>(
@@ -192,11 +192,11 @@ fn derived<'n>(
             };
             let normal = normal.ok_or_else(missing)?;
             let (x, f) = normal
-                .index_fields
+                .index_fields()
                 .get(&(rel, *index, *element))
                 .ok_or_else(missing)?;
             Ok(if f.path.is_empty() {
-                Derived::Expr(&normal.terms, *x, f.value)
+                Derived::Expr(normal.valid(), *x, f.value)
             } else {
                 Derived::Path(f.path.clone())
             })

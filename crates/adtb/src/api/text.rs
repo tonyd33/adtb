@@ -191,34 +191,34 @@ impl Prepared {
             })
         })?;
         let roots: Vec<Tm> = normal
-            .items
+            .items()
             .iter()
             .copied()
-            .chain(normal.commands.iter().flat_map(|c| c.command.terms()))
+            .chain(normal.commands().iter().flat_map(|c| c.command.terms()))
             .collect();
-        if !norm::expands_within_bound(&normal.terms, &roots) {
+        if !norm::expands_within_bound(normal.terms(), &roots) {
             return Err(TextError::Other(Error::invalid(TEXT_TOO_LARGE)));
         }
         let bound = params
             .iter()
-            .filter_map(|(n, _, v)| normal.params.get(*n).map(|x| (*x, v.clone())))
+            .filter_map(|(n, _, v)| normal.params().get(*n).map(|x| (*x, v.clone())))
             .collect();
         let mut writes = false;
         let mut retry: Option<u64> = None;
         let mut deferrable = false;
-        for c in &normal.commands {
+        for c in normal.commands() {
             command::runs(&c.command).map_err(TextError::Other)?;
             if let Command::Explain {
                 analyze: true,
                 target: Explained::Statement(t),
             } = &c.command
             {
-                writes |= normal.terms.writes(*t);
+                writes |= normal.terms().writes(*t);
             }
         }
-        for t in &normal.items {
-            writes |= normal.terms.writes(*t);
-            if let Kind::Transact(_, o) = normal.terms.kind(*t) {
+        for t in normal.items() {
+            writes |= normal.terms().writes(*t);
+            if let Kind::Transact(_, o) = normal.terms().kind(*t) {
                 if let Some(n) = o.retry {
                     retry = Some(retry.map_or(n, |r| r.min(n)));
                 }
@@ -226,15 +226,16 @@ impl Prepared {
             }
         }
         if writes {
-            for c in &normal.commands {
+            for c in normal.commands() {
                 command::outside_transaction(&c.command).map_err(TextError::Other)?;
             }
         }
+        let (terms, items, commands, _) = normal.into_parts();
         Ok(Prepared {
             schema: adhoc.temps.map_or_else(|| schema.clone(), Arc::new),
-            terms: Arc::new(normal.terms),
-            items: normal.items,
-            commands: normal.commands,
+            terms: Arc::new(terms),
+            items,
+            commands,
             params: bound,
             functions,
             caller,

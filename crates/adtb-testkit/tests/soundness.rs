@@ -209,10 +209,10 @@ fn statements(
             .collect();
         let mut supply = fx.supply.clone();
         run.items(
-            &normal.terms,
-            &normal.items,
+            normal.terms(),
+            normal.items(),
             &names,
-            &bind(&normal.params),
+            &bind(normal.params()),
             &mut supply,
             out,
         );

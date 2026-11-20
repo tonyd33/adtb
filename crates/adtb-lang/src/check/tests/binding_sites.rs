@@ -14,7 +14,7 @@ fn checked_once(extra: &str) -> (Committed, Program) {
 /// Returns the normal form of function `name` of `p`.
 fn normal_body(s: &Schema, n: &crate::norm::NormalProgram, name: &str) -> Tm {
     let i = s.functions.iter().position(|f| f.name == name).unwrap();
-    n.functions[i].clone().expect("a normal form").1
+    n.functions()[i].clone().expect("a normal form").1
 }
 
 /// Returns the variable the `For` that `t` ranges over binds, below any `Let`s and `If`s.
@@ -125,7 +125,7 @@ fn a_for_over_a_generator_binds_it_afresh_in_one_root() {
     );
     let (s, p) = checked_once(&text);
     let n = crate::norm::program(&s, &p).expect("normalises");
-    assert_one_binding_site("normalised", &n.terms, &[normal_body(&s, &n, "g")]);
+    assert_one_binding_site("normalised", n.terms(), &[normal_body(&s, &n, "g")]);
 }
 
 #[test]
@@ -138,11 +138,11 @@ fn a_for_over_a_generator_binds_it_afresh_across_roots() {
     let (s, p) = checked_once(&text);
     let n = crate::norm::program(&s, &p).expect("normalises");
     for name in ["a", "b"] {
-        assert_one_binding_site("normalised", &n.terms, &[normal_body(&s, &n, name)]);
+        assert_one_binding_site("normalised", n.terms(), &[normal_body(&s, &n, name)]);
     }
     assert_one_binding_site(
         "normalised",
-        &n.terms,
+        n.terms(),
         &[normal_body(&s, &n, "a"), normal_body(&s, &n, "b")],
     );
 }
@@ -180,7 +180,7 @@ fn a_closed_group_value_is_shared_by_each_use_of_its_group() {
         let n = crate::norm::program(&s, &p).expect("normalises");
         (
             reachable(&p.terms, body_of(&s, &p, "f")).len(),
-            reachable(&n.terms, normal_body(&s, &n, "f")).len(),
+            reachable(n.terms(), normal_body(&s, &n, "f")).len(),
         )
     });
     let [(checked4, normal4), (checked8, normal8)] = sizes;
@@ -227,7 +227,7 @@ fn sizes_by_depth(at: impl Fn(u32) -> String) -> [(usize, usize); 3] {
         let n = crate::norm::program(&s, &p).expect("normalises");
         (
             reachable(&p.terms, body_of(&s, &p, "f")).len(),
-            reachable(&n.terms, normal_body(&s, &n, "f")).len(),
+            reachable(n.terms(), normal_body(&s, &n, "f")).len(),
         )
     })
 }

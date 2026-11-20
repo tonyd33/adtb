@@ -1156,14 +1156,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                 DefaultValue::Generate(g) => Ok(self.b(out).fresh(*g, rel)),
                 DefaultValue::Expr(_) => {
                     let normal = self.p.normal()?;
-                    let Some(&t) = normal.defaults.get(&(rel, i)) else {
+                    let Some(&t) = normal.defaults().get(&(rel, i)) else {
                         return Err(refused(
                             None,
                             format!("the default of `{name}` has no term"),
                         ));
                     };
                     let same = self.p.over(self.map.to, None, Vec::new());
-                    Walk::new(&same, &normal.terms).tm(out, t, None)
+                    Walk::new(&same, normal.terms()).tm(out, t, None)
                 }
             };
         }
@@ -1185,8 +1185,8 @@ impl<'p, 'a> Walk<'p, 'a> {
             ..u
         };
         let at = self.p.over(&fun.schema, Some(&written), ahead);
-        let mut w = Walk::new(&at, &fun.query.terms);
-        let [row] = fun.query.params.as_slice() else {
+        let mut w = Walk::new(&at, fun.query.terms());
+        let [row] = fun.query.params() else {
             return Err(refused(Some(op.clone()), "a fill is a function of one row"));
         };
         w.rows.insert(
@@ -1196,7 +1196,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 fields: given.clone(),
             }),
         );
-        w.tm(out, fun.query.body, None).map_err(blamed)
+        w.tm(out, fun.query.body(), None).map_err(blamed)
     }
 
     /// Returns `x`, the value at the later version of `t`, a value or set of values of `ty`

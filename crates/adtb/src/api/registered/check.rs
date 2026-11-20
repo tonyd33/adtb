@@ -167,14 +167,17 @@ fn declared(
     n: NormalQuery,
 ) -> Result<Entry, Error> {
     let (params, unit) = if declared.params.is_empty() {
-        (Vec::new(), n.params.first().copied())
+        (Vec::new(), n.params().first().copied())
     } else {
-        (n.params.iter().copied().map(Some).collect::<Vec<_>>(), None)
+        (
+            n.params().iter().copied().map(Some).collect::<Vec<_>>(),
+            None,
+        )
     };
     let types = params
         .iter()
         .flatten()
-        .map(|&v| n.terms.var_info(v).ty.clone())
+        .map(|&v| n.terms().var_info(v).ty.clone())
         .collect();
     let binding = Binding {
         params,
@@ -183,7 +186,8 @@ fn declared(
         result: declared.result.clone(),
         unit,
     };
-    entry(name, kind, n.terms, n.body, binding)
+    let (terms, _, body) = n.into_parts();
+    entry(name, kind, terms, body, binding)
 }
 
 /// Returns whether `t` writes and the `retry n` of the `transact` block it is.
@@ -222,7 +226,7 @@ fn imported(
         Error::diagnostics(ds)
     })?;
     let normal = norm::adhoc(schema, program, &adhoc).map_err(not_normal)?;
-    let [body] = normal.items.as_slice() else {
+    let [body] = normal.items() else {
         return Err(Error::internal(Broken::CallNotOneItem));
     };
     let body = *body;
@@ -241,11 +245,12 @@ fn imported(
         result: def.result.clone(),
         params: names
             .iter()
-            .map(|n| normal.params.get(n).copied())
+            .map(|n| normal.params().get(n).copied())
             .collect(),
         unit: None,
     };
-    let mut e = entry(&f.name.text, Callable::Fn, normal.terms, body, binding)?;
+    let (terms, ..) = normal.into_parts();
+    let mut e = entry(&f.name.text, Callable::Fn, terms, body, binding)?;
     e.row.signature = format!("({}) -> {}", shown.join(", "), schema.show_ty(&def.result));
     e.row.text = format!("import fn {written}");
     e.function = schema.ids().function_id(id).map(CatFunctionId::raw);
@@ -257,6 +262,7 @@ fn imported(
 /// kernel's invariants, as a broken checker guarantee.
 fn registered_valid(schema: &Schema, terms: &Terms, term: Tm) -> Result<(), Error> {
     kernel::validate(schema, terms, &[(term, Vec::new())])
+        .map(drop)
         .map_err(|e| Error::internal(Broken::CallIllTyped(e)))
 }
 

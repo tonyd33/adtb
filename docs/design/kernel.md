@@ -26,8 +26,10 @@ terms and share nothing else.
 `program` is the result of `check_schema(schema)`.
 
 Checking diagnostics carry `DiagKind::Invalid` for invalid syntax, types or
-acceptance rules, and `DiagKind::Denied` for a program write targeting an
-engine-defined relation. Ad hoc, query and transaction checks classify those
+acceptance rules, `DiagKind::Denied` for a program write targeting an
+engine-defined relation, and `DiagKind::Internal` for a text whose normal form
+breaks an invariant of §3, §5 or §7, a defect of `adtb-lang` and never of
+the text. Ad hoc, query and transaction checks classify those
 writes before normalisation or volatile-read analysis, including writes in
 unreached branches and reachable function bodies. `signature::calls` preserves
 the category; `signature::bundle` retains its textual error interface.
@@ -555,7 +557,26 @@ registered query's or transaction's body over its parameter variables;
 one with no parameters has one variable of type `()`. `NormalAdhoc`
 holds the normal form of each item and, in `commands`, each command of
 `Adhoc.commands` at the same place, its terms replaced by their normal
-forms. `Error` is never returned for a body the checker accepted.
+forms. `Error` is never returned for a body the checker accepted, except
+one whose `broken()` names a term of the arena, or of a checked arena
+it was built from, that breaks an invariant of §3, §5 or this section.
+
+Each `norm::*` validates its result in every build before returning it,
+and `NormalQuery::validated` validates a translated or stored body the
+same way: every term reachable from a body is typed under its kind's
+row, closed over the body's variables, and holds the postconditions
+below; a `Transition` occurs only in a constraint's body; a `Present`
+only as the final result of a body; and no type names a type parameter
+its body does not have: a function's or a domain's own, an aggregate's
+those its parameters, result and state name, and a registered query's
+or fill's those its parameters' types name. A `NormalProgram`,
+`NormalAdhoc` or `NormalQuery` exists only as that validation returns
+it.
+
+A consumer plans or compiles a term only from a `kernel::Valid`, the
+arena of a normal form (`valid()`) or one `kernel::validate` accepted at
+roots that reach the term; it validates a term it rewrites again before
+planning it.
 
 Postconditions on a normal form, beyond those of §1:
 

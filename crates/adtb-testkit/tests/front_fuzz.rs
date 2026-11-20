@@ -77,6 +77,12 @@ fn most_drawn_programs_reach_the_normaliser() {
             reached.entry(c.kind).or_default().push(r);
         }
     }
+    assert!(
+        front.registered_normalised() * 10 >= reached[&Kind::Adhoc].len() as u64 * 3,
+        "{} of {} unmutated ad hoc cases normalise as a registered body",
+        front.registered_normalised(),
+        reached[&Kind::Adhoc].len()
+    );
     for kind in [Kind::Adhoc, Kind::Schema] {
         let rs = reached.get(&kind).map_or(&[][..], Vec::as_slice);
         assert!(!rs.is_empty(), "{kind:?}: no unmutated case");

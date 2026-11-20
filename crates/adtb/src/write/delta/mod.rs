@@ -178,7 +178,7 @@ pub fn compile(
         terms,
         facts: Facts::default(),
         total: Totality::new(schema, false)
-            .with_aggregates(&normal.terms, normal.aggregate_parts()),
+            .with_aggregates(normal.terms(), normal.aggregate_parts()),
         transitions: transitions
             .into_iter()
             .map(|(v, x, r, s)| (v, (x, r, s)))
@@ -574,7 +574,10 @@ impl Compiler<'_> {
                 }
             }
             let inputs = self.inputs_of(t);
-            match plan::plan_bounded(self.schema, self.normal, self.catalog, self.terms, t) {
+            let free = inputs.iter().map(|i| i.var).chain(trigger).collect();
+            let valid = adtb_lang::kernel::validate(self.schema, self.terms, &[(t, free)])
+                .map_err(|e| Outside::Internal(Broken::IllTyped(e)))?;
+            match plan::plan_bounded(self.schema, self.normal, self.catalog, valid, t) {
                 Ok(plan) => deltas.push(Delta {
                     inputs,
                     trigger,

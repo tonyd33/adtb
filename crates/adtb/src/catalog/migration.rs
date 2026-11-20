@@ -214,8 +214,8 @@ impl Catalog {
         let normal = norm::program(schema, program)
             .map_err(|e| Error::Refused(vec![format!("the schema does not normalise: {e:?}")]))?;
         kernel::validate(schema, &program.terms, &program.roots())
-            .and_then(|()| kernel::validate(schema, &normal.terms, &normal.roots()))
-            .and_then(|()| kernel::validate_normal(schema, &normal.terms, &normal.roots()))
+            .and_then(|_| kernel::validate(schema, normal.terms(), &normal.roots()))
+            .and_then(|_| kernel::validate_normal(schema, normal.terms(), &normal.roots()))
             .map_err(|e| Error::from(Broken::IllTyped(e)))?;
         let (ids, _) = self.heap_ids(schema, rewritten)?;
         let heaps: BTreeMap<(RelId, u32), HeapId> = ids

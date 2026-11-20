@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use adtb_file::Disk;
 use adtb_lang::ids::held_id;
-use adtb_lang::kernel::{Terms, Tm, Var};
+use adtb_lang::kernel::{Terms, Tm, ValidTerms, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Committed;
 use adtb_lang::types::{DenialIdx, RelId};
@@ -283,7 +283,7 @@ pub fn refusals(
     normal: &NormalProgram,
     catalog: &Catalog,
 ) -> Result<Vec<(String, String)>, Broken> {
-    let mut terms = normal.terms.clone();
+    let mut terms = normal.terms().clone();
     match delta::compile(schema, normal, &mut terms, catalog) {
         Ok(_) => Ok(Vec::new()),
         Err(delta::Unadmitted::Refused(why)) => {
@@ -576,7 +576,7 @@ pub struct Database<R: Runtime> {
     schema: Arc<Committed>,
     normal: Arc<NormalProgram>,
     /// The normal program's arena with every `Fresh` replaced by its placeholder.
-    program: Terms,
+    program: ValidTerms,
     program_fresh: fresh::Occurrences,
     /// Each `on delete retag` new value over the referrer's row, in `program`.
     retags: BTreeMap<RelId, (Var, Tm)>,
@@ -657,11 +657,11 @@ impl<R: Runtime> Database<R> {
         setup: Setup<R>,
         declared: &BTreeMap<u64, IndexSpec>,
     ) -> Result<Database<R>, Error> {
-        let mut program = setup.normal.terms.clone();
+        let mut program = setup.normal.terms().clone();
         let mut program_fresh = fresh::Occurrences::new();
-        let retags = setup
+        let retags: BTreeMap<RelId, (Var, Tm)> = setup
             .normal
-            .retags
+            .retags()
             .iter()
             .map(|(r, (var, body))| {
                 let body = fresh::rewrite(
@@ -675,6 +675,13 @@ impl<R: Runtime> Database<R> {
             })
             .collect();
         let denials = check::denials(&setup.schema, &setup.normal, &setup.catalog, &mut program)?;
+        let roots = setup
+            .normal
+            .roots()
+            .into_iter()
+            .chain(retags.values().map(|(var, body)| (*body, vec![*var])));
+        let program = ValidTerms::new(&setup.schema, program, &roots.collect::<Vec<_>>())
+            .map_err(Broken::IllTyped)?;
         let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog, declared)?;
         let sequences = match setup.structures.counters() {
             None => Sequences::none(),
@@ -959,7 +966,7 @@ impl<R: Runtime> Database<R> {
         for item in 0..=text.items.len() {
             let done = between(item, local).and_then(|()| match text.items.get(item) {
                 Some(t) => {
-                    let s = self.stmt(tx, text, *t, item, &bounds, started);
+                    let s = self.stmt(tx, text, *t, item, &bounds, started)?;
                     let o = s.run(text.params, local);
                     ran.push(s);
                     o.map(|o| out.push(o))
@@ -1004,9 +1011,13 @@ impl<R: Runtime> Database<R> {
         let mut out = Vec::with_capacity(text.items.len());
         let started = self.rt.now();
         for (item, t) in text.items.iter().enumerate() {
-            let s = self.stmt(tx, text, *t, item, &bounds, started);
-            let o = s.run(text.params, local);
-            ran.push(s);
+            let o = self
+                .stmt(tx, text, *t, item, &bounds, started)
+                .and_then(|s| {
+                    let o = s.run(text.params, local);
+                    ran.push(s);
+                    o
+                });
             match o {
                 Ok(o) => out.push(o),
                 Err(error) => {
@@ -1025,7 +1036,7 @@ impl<R: Runtime> Database<R> {
     /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
     pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
         let explained = self
-            .stmt(tx, text, t, 0, &Bounds::default(), self.rt.now())
+            .stmt(tx, text, t, 0, &Bounds::default(), self.rt.now())?
             .explain();
         tx.noted(explained)
     }
@@ -1119,7 +1130,7 @@ impl<R: Runtime> Database<R> {
         item: usize,
         bounds: &Bounds,
         started: Instant,
-    ) -> eval::Stmt<'a, R> {
+    ) -> Result<eval::Stmt<'a, R>, Error> {
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options

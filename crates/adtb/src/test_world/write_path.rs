@@ -206,14 +206,15 @@ impl<R: Runtime> WritePath<R> {
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
         let normal = norm::adhoc(&self.schema, &self.program, &adhoc)
             .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
-        let [item] = normal.items.as_slice() else {
+        let [item] = normal.items() else {
             panic!("`{text}` holds one statement")
         };
         let params = params
             .iter()
-            .map(|(n, t)| (normal.params[*n], t.clone()))
+            .map(|(n, t)| (normal.params()[*n], t.clone()))
             .collect();
-        (normal.terms, *item, params)
+        let item = *item;
+        (normal.into_parts().0, item, params)
     }
 }
 

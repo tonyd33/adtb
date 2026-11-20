@@ -453,7 +453,7 @@ fn valid_normal_form(text: &str) -> (Committed, crate::norm::NormalAdhoc) {
     let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{text} does not check: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
     let n = crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{text}: {e:?}"));
-    let got = crate::kernel::validate_normal(&s, &n.terms, &n.roots())
+    let got = crate::kernel::validate_normal(&s, n.terms(), &n.roots())
         .map_err(|e| e.reason().to_string());
     assert_eq!(Ok(()), got, "{text}");
     (s, n)
@@ -479,9 +479,9 @@ fn a_grouping_by_a_key_a_reduction_narrows_keeps_its_checked_type() {
          group i by (if true then key i else key e) into g
          select { key: g.key, n: count(x for x in g) }",
     );
-    let groups = shown_types(&s, &n.terms, |kind, ty| match (kind, ty) {
+    let groups = shown_types(&s, n.terms(), |kind, ty| match (kind, ty) {
         (Kind::Group { by, .. }, Ty::Set(el)) => match el.as_ref() {
-            Ty::Record(fs) => Some((n.terms.ty(*by).clone(), fs[0].1.clone())),
+            Ty::Record(fs) => Some((n.terms().ty(*by).clone(), fs[0].1.clone())),
             _ => None,
         },
         _ => None,
@@ -500,8 +500,8 @@ fn a_match_on_a_key_a_reduction_narrows_keeps_its_checked_type() {
          select (match (if true then key i else key e)
                  | EmailPass x -> 1 | Google x -> 2 | Apple x -> 3)",
     );
-    let derefs = shown_types(&s, &n.terms, |kind, ty| match kind {
-        Kind::Deref { key, .. } => Some((n.terms.ty(*key).clone(), ty.clone())),
+    let derefs = shown_types(&s, n.terms(), |kind, ty| match kind {
+        Kind::Deref { key, .. } => Some((n.terms().ty(*key).clone(), ty.clone())),
         _ => None,
     });
     let want = (
@@ -847,8 +847,8 @@ fn match_kernel_terms_grow_linearly_in_multi_test_arms() {
             tree_size(&la.terms, la.items[0], CAP),
         );
         let normal = (
-            distinct(&sn.terms, sn.items[0]),
-            distinct(&ln.terms, ln.items[0]),
+            distinct(sn.terms(), sn.items()[0]),
+            distinct(ln.terms(), ln.items()[0]),
         );
         assert!(
             checked.1 < 3 * checked.0,
@@ -1341,20 +1341,20 @@ explain web-2.4::login_key(u)",
     .expect("checks");
     let program = check_schema(&s).expect("the schema checks");
     let n = crate::norm::adhoc(&s, &program, &a).expect("normalises");
-    assert_eq!(1, n.items.len());
-    assert_eq!(2, n.commands.len());
-    for (c, d) in a.commands.iter().zip(&n.commands) {
+    assert_eq!(1, n.items().len());
+    assert_eq!(2, n.commands().len());
+    for (c, d) in a.commands.iter().zip(n.commands()) {
         assert_eq!(c.at, d.at);
         assert_eq!(c.command.terms().len(), d.command.terms().len());
         for (t, u) in c.command.terms().into_iter().zip(d.command.terms()) {
-            assert_eq!(a.terms.ty(t), n.terms.ty(u));
+            assert_eq!(a.terms.ty(t), n.terms().ty(u));
         }
     }
-    let Command::Export { source, .. } = n.commands[0].command else {
-        panic!("an export: {:?}", n.commands[0]);
+    let Command::Export { source, .. } = n.commands()[0].command else {
+        panic!("an export: {:?}", n.commands()[0]);
     };
     assert!(
-        !n.terms.any(source, |k| matches!(k, Kind::Call { .. })),
+        !n.terms().any(source, |k| matches!(k, Kind::Call { .. })),
         "a normal export source inlines its calls"
     );
 }

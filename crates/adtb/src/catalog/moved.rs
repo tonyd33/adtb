@@ -136,10 +136,11 @@ fn field_named<'f>(fs: &'f [Field], name: &str) -> Result<&'f Field, Failed> {
 }
 
 fn compiled(f: &RowFn, hosts: &Arc<exec::Hosts>) -> Result<Scalar, Failed> {
-    let [var] = f.query.params.as_slice() else {
-        return Err(Failed::from(Broken::RowParams(f.query.params.len())));
+    let [var] = f.query.params() else {
+        return Err(Failed::from(Broken::RowParams(f.query.params().len())));
     };
-    let mut scalar = Scalar::new(&f.schema, &f.query.terms, *var, f.query.body).map_err(shown)?;
+    let mut scalar =
+        Scalar::new(&f.schema, f.query.valid(), *var, f.query.body()).map_err(shown)?;
     scalar.set_hosts(hosts.clone());
     Ok(scalar)
 }
@@ -188,10 +189,10 @@ fn b_ctor(b: &Schema, def: TypeId, name: &str) -> Option<CatCtorId> {
 /// when an end of its body gives another or is no constructor.
 fn sole_product(query: &NormalQuery, c: u32) -> Option<u32> {
     let mut out = BTreeSet::new();
-    let [row] = query.params.as_slice() else {
+    let [row] = query.params() else {
         return None;
     };
-    ends(&query.terms, query.body, *row, c, &mut out).then_some(())?;
+    ends(query.terms(), query.body(), *row, c, &mut out).then_some(())?;
     match out.into_iter().collect::<Vec<_>>().as_slice() {
         [p] => Some(*p),
         _ => None,

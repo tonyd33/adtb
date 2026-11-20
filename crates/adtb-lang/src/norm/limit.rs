@@ -137,7 +137,7 @@ impl Budget {
 /// Fail on the first body of `p` that the engine plans and that passes the run bound. A function
 /// is planned only inlined into its caller, which passes the bound itself.
 pub(super) fn planned_within_bound(p: &NormalProgram) -> Result<(), Error> {
-    let bound = RunBound::of(&p.terms);
+    let bound = RunBound::of(p.terms());
     let holds = |root: Root, t: Tm| {
         if bound.holds(t) {
             Ok(())
@@ -145,6 +145,7 @@ pub(super) fn planned_within_bound(p: &NormalProgram) -> Result<(), Error> {
             Err(Error {
                 root,
                 message: PAST_RUN_BOUND.to_owned(),
+                invalid: None,
             })
         }
     };
@@ -154,24 +155,24 @@ pub(super) fn planned_within_bound(p: &NormalProgram) -> Result<(), Error> {
     for (c, t) in p.checks() {
         holds(Root::Check(c), t)?;
     }
-    for (id, (_, t)) in &p.domains {
+    for (id, (_, t)) in p.domains() {
         holds(Root::Domain(*id), *t)?;
     }
-    for (r, (_, t)) in &p.retags {
+    for (r, (_, t)) in p.retags() {
         holds(Root::Retag(*r), *t)?;
     }
-    for (&(r, i), t) in &p.defaults {
+    for (&(r, i), t) in p.defaults() {
         holds(Root::Default(r, i), *t)?;
     }
-    for (&(r, i), (_, t)) in &p.computed {
+    for (&(r, i), (_, t)) in p.computed() {
         holds(Root::Computed(r, i), *t)?;
     }
-    for (&(r, i, j), (_, f)) in &p.index_fields {
+    for (&(r, i, j), (_, f)) in p.index_fields() {
         holds(Root::IndexField(r, i, j), f.value)?;
     }
-    for (i, a) in p.aggregates.iter().enumerate() {
+    for (i, a) in p.aggregates().iter().enumerate() {
         let Some(a) = a else { continue };
-        for t in [a.init, a.step.1, a.merge.1, a.finish.1] {
+        for t in [a.init(), a.step().1, a.merge().1, a.finish().1] {
             holds(Root::Aggregate(i), t)?;
         }
     }

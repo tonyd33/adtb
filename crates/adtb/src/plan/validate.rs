@@ -14,8 +14,8 @@ use super::{
 /// Refuse `plan` when it breaks an invariant of every plan that a walk of its structure decides:
 /// every variable bound where it is read, every case naming each constructor its scrutinee may
 /// hold once, every scan and route reading its constructor's heap, every range probing an
-/// ordered index on a field, and every read of the past holding no index probe and no other
-/// read of the past.
+/// ordered index on a field, every read of the past holding no index probe and no other read of
+/// the past, and every term the plan evaluates typed under its kind's rule.
 pub(super) fn validate(
     schema: &Schema,
     catalog: &Catalog,
@@ -37,7 +37,9 @@ pub(super) fn validate(
         exprs: Vec::new(),
     };
     let out = w.eval(&plan.root);
-    adtb_lang::kernel::assert_typed(schema, &plan.terms, &w.exprs);
+    let out = out.and_then(|()| {
+        adtb_lang::kernel::validate_typed(schema, &plan.terms, &w.exprs).map_err(Broken::IllTyped)
+    });
     #[cfg(any(test, feature = "testing"))]
     counts::add(&w.seen, out.is_err());
     out

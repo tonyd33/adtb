@@ -760,10 +760,8 @@ fn prepare<R: Runtime>(w: &WritePath<R>, text: &str) -> Prepared {
         .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
     let normal = norm::adhoc(w.schema(), w.program(), &adhoc)
         .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
-    Prepared {
-        items: normal.items,
-        terms: normal.terms,
-    }
+    let (terms, items, ..) = normal.into_parts();
+    Prepared { items, terms }
 }
 
 /// A database of the items `rows`, with each of [`TEXTS`] prepared over it.

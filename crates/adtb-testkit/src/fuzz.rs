@@ -4,15 +4,18 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use adtb_lang::check::{Program, check_adhoc, check_schema};
+use adtb_lang::kernel::{Terms, Tm};
 use adtb_lang::norm;
 use adtb_lang::parse::{
-    Options, parse_adhoc, parse_bundle, parse_example, parse_expr, parse_migration, parse_schema,
-    parse_type,
+    Options, parse_adhoc, parse_bundle, parse_bundle_body, parse_example, parse_expr,
+    parse_migration, parse_schema, parse_type,
 };
 use adtb_lang::schema::{Committed, build};
-use adtb_lang::span::FileId;
+use adtb_lang::signature::{self, Item};
+use adtb_lang::span::{Diag, DiagKind, FileId};
 
 use crate::Rng;
 
@@ -63,6 +66,7 @@ pub enum Reached {
 pub struct Front {
     schema: Committed,
     program: Program,
+    registered: AtomicU64,
 }
 
 impl Default for Front {
@@ -80,7 +84,11 @@ impl Front {
             .unwrap_or_else(|ds| panic!("the fuzz schema does not build: {ds:?}"));
         let program = check_schema(&schema)
             .unwrap_or_else(|ds| panic!("the fuzz schema does not check: {ds:?}"));
-        Front { schema, program }
+        Front {
+            schema,
+            program,
+            registered: AtomicU64::new(0),
+        }
     }
 
     /// Run `case` through parse, check and normalise as far as it is accepted.
@@ -114,13 +122,75 @@ impl Front {
         let Ok(items) = parse_adhoc(text, Options::default()).ok() else {
             return Reached::Refused;
         };
-        let Ok(adhoc) = check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new()) else {
-            return Reached::Parsed;
+        let adhoc = match check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new()) {
+            Ok(adhoc) => adhoc,
+            Err(ds) => {
+                sound(ds.iter());
+                return Reached::Parsed;
+            }
         };
-        match norm::adhoc(&self.schema, &self.program, &adhoc) {
-            Ok(_) => Reached::Normalised,
-            Err(_) => Reached::Checked,
+        let reached = reached(norm::adhoc(&self.schema, &self.program, &adhoc).map(|_| ()));
+        if let [item] = adhoc.items.as_slice()
+            && adhoc.commands.is_empty()
+            && adhoc.temps.is_none()
+        {
+            self.registered(text, &adhoc.terms, *item);
         }
+        reached
+    }
+
+    /// Normalise ad hoc `text`, whose one item is `item` of `terms`, as the body of a registered
+    /// query, or of a registered transaction when it writes, when that checks.
+    fn registered(&self, text: &str, terms: &Terms, item: Tm) {
+        let body = text.trim().replace('\n', "\n  ");
+        let ty = self.schema.show_ty(terms.ty(item));
+        let decl = if terms.writes(item) {
+            format!("txn t () -> {ty} =\n  {body}\n")
+        } else {
+            format!("query q () -> {ty} =\n  {body}\n")
+        };
+        let text = format!("import app\n{decl}");
+        let Ok((imports, items)) = parse_bundle_body(&text, Options::default()).ok() else {
+            return;
+        };
+        let Ok(vis) = signature::visible(&self.schema, &imports) else {
+            return;
+        };
+        let calls = match signature::calls(&self.schema, &self.program, &vis, &imports, &items) {
+            Ok(calls) => calls,
+            Err(d) => return sound([&d]),
+        };
+        let normal = match &calls.first().map(|c| &c.item) {
+            Some(Item::Query(_, q)) => norm::query(&self.schema, &self.program, q).map(|_| ()),
+            Some(Item::Txn(_, t)) => norm::txn(&self.schema, &self.program, t).map(|_| ()),
+            Some(Item::Fn(..)) | None => return,
+        };
+        if reached(normal) == Reached::Normalised {
+            self.registered.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns how many ad hoc texts normalised as the body of a registered query or
+    /// transaction.
+    pub fn registered_normalised(&self) -> u64 {
+        self.registered.load(Ordering::Relaxed)
+    }
+}
+
+/// Panic naming the first of `diags` that states a broken guarantee of the checker.
+fn sound<'d>(diags: impl IntoIterator<Item = &'d Diag>) {
+    if let Some(d) = diags.into_iter().find(|d| d.kind == DiagKind::Internal) {
+        panic!("{}", d.message);
+    }
+}
+
+/// Returns how far a text whose normalisation ends in `normal` got; panic naming the kernel term
+/// when the normal form breaks a kernel invariant.
+fn reached(normal: Result<(), norm::Error>) -> Reached {
+    match normal {
+        Ok(()) => Reached::Normalised,
+        Err(e) if e.broken().is_some() => panic!("{:?}: {}", e.root, e.message),
+        Err(_) => Reached::Checked,
     }
 }
 
@@ -131,13 +201,14 @@ fn schema(text: &str) -> Reached {
     let Ok(schema) = build(&[(FileId(0), file)]) else {
         return Reached::Parsed;
     };
-    let Ok(program) = check_schema(&schema) else {
-        return Reached::Parsed;
+    let program = match check_schema(&schema) {
+        Ok(program) => program,
+        Err(ds) => {
+            sound(ds.iter().map(|d| &d.diag));
+            return Reached::Parsed;
+        }
     };
-    match norm::program(&schema, &program) {
-        Ok(_) => Reached::Normalised,
-        Err(_) => Reached::Checked,
-    }
+    reached(norm::program(&schema, &program).map(|_| ()))
 }
 
 /// Returns the text of every `adt` block in the markdown files of `dir`, in file name order.
@@ -242,6 +313,8 @@ struct Gen<'w> {
     world: &'w World,
     env: Vec<(String, G)>,
     next: usize,
+    /// Whether the expression is ad hoc text, where anonymous sums may be written.
+    adhoc: bool,
 }
 
 impl Gen<'_> {
@@ -394,8 +467,21 @@ impl Gen<'_> {
                 format!("(match {o} | None -> {a} | Some {v} -> {v}.value)")
             }
             9 => format!("scalar_len({})", self.expr(rng, &G::Text, d)),
+            10 if self.adhoc => self.joined_binder(rng, d),
             _ => self.conditional(rng, &G::Int, d),
         }
+    }
+
+    /// Returns an integer read through a binder of an or-pattern whose alternatives bind values
+    /// of two anonymous sums.
+    fn joined_binder(&mut self, rng: &mut Rng, d: u32) -> String {
+        let c = self.expr(rng, &G::Bool, d);
+        let (a, b) = (self.expr(rng, &G::Int, d), self.expr(rng, &G::Int, d));
+        let (x, n, m) = (self.fresh(), self.fresh(), self.fresh());
+        let joined = format!(
+            "match (if {c} then A {{ x: P {{ n: {a} }} }} else B {{ x: Q {{ m: {b} }} }}) | A {{ x: {x} }} | B {{ x: {x} }} -> {x}"
+        );
+        format!("(match ({joined}) | P {{ n: {n} }} -> {n} | Q {{ m: {m} }} -> {m})")
     }
 
     fn text(&mut self, rng: &mut Rng, d: u32) -> String {
@@ -577,6 +663,7 @@ pub fn long_case(seed: u64) -> Case {
         world: &world,
         env: Vec::new(),
         next: 0,
+        adhoc: true,
     };
     Case {
         kind: Kind::Adhoc,
@@ -592,6 +679,7 @@ fn adhoc(rng: &mut Rng) -> String {
         world: &world,
         env: Vec::new(),
         next: 0,
+        adhoc: true,
     };
     let depth = 1 + rng.below(4) as u32;
     match rng.below(12) {
@@ -707,6 +795,7 @@ fn schema_text(rng: &mut Rng) -> String {
         world: &world,
         env: Vec::new(),
         next: 0,
+        adhoc: false,
     };
     for k in 0..rng.below(3) {
         let ret = scalar(rng);

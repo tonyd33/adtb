@@ -13,6 +13,16 @@ pub(super) enum Tried {
 /// The operators whose operands have the type of their result.
 const CLOSED: [&str; 8] = ["+", "-", "*", "/", "%", "++", "and", "or"];
 
+/// Where an integer joins two anonymous sums on its way: through an or-pattern binder, the arms
+/// of an `if`, the operands of a `union` or the elements of a set literal.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Join {
+    Binder,
+    If,
+    Union,
+    List,
+}
+
 /// A step of a fixpoint: the rows `var` of a relation, or of one of its constructors, from whose
 /// field `into` equal to the element the step reaches field `out`.
 #[derive(Clone, Debug)]
@@ -52,6 +62,9 @@ pub(super) enum E {
     /// `fix x = base union (from y in x, v in r where v.into == y select v.out) in x`, as the
     /// names `x`, `y`, `v`, the step and the base.
     Fix([String; 3], Step, Box<Comp>),
+    /// The integer `a` or `b` as `Pj { n: a }` or `Qj { m: b }`, under the condition, joined
+    /// where the join says and matched back to `a` or `b + 1`, as the names its matches bind.
+    Joined(Join, [String; 3], Box<E>, Box<E>, Box<E>),
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +95,7 @@ impl E {
             | E::Fix(..) => Vec::new(),
             E::Bin(_, a, b) | E::Union(a, b) => vec![a, b],
             E::Not(a) | E::Call(_, a) | E::Tried(a, _) => vec![a],
-            E::If(c, a, b) => vec![c, a, b],
+            E::If(c, a, b) | E::Joined(_, _, c, a, b) => vec![c, a, b],
             E::Row(_, _, arms) => arms.iter().map(|(_, _, e)| e).collect(),
             E::Shade(s, r, g, _, b) => vec![s, r, g, b],
             E::Opt(o, n, _, s) => vec![o, n, s],
@@ -102,7 +115,7 @@ impl E {
             | E::Fix(..) => Vec::new(),
             E::Bin(_, a, b) | E::Union(a, b) => vec![a, b],
             E::Not(a) | E::Call(_, a) | E::Tried(a, _) => vec![a],
-            E::If(c, a, b) => vec![c, a, b],
+            E::If(c, a, b) | E::Joined(_, _, c, a, b) => vec![c, a, b],
             E::Row(_, _, arms) => arms.iter_mut().map(|(_, _, e)| e).collect(),
             E::Shade(s, r, g, _, b) => vec![s, r, g, b],
             E::Opt(o, n, _, s) => vec![o, n, s],
@@ -207,7 +220,9 @@ impl E {
         match self {
             E::Bin(op, a, b) if CLOSED.contains(op) => vec![a.as_ref().clone(), b.as_ref().clone()],
             E::Bin(..) | E::Exists(_) => lits(),
-            E::If(_, a, b) | E::Union(a, b) => vec![a.as_ref().clone(), b.as_ref().clone()],
+            E::If(_, a, b) | E::Union(a, b) | E::Joined(_, _, _, a, b) => {
+                vec![a.as_ref().clone(), b.as_ref().clone()]
+            }
             E::Not(a) => vec![a.as_ref().clone()],
             E::Row(_, _, arms) => arms.iter().filter_map(|(_, x, e)| unbound(x, e)).collect(),
             E::Shade(_, red, green, x, blue) => {
@@ -404,6 +419,10 @@ impl<'w> Render<'w> {
                     step.out
                 )
             }
+            E::Joined(join, names, c, a, b) => {
+                let (c, a, b) = (self.expr(c), self.expr(a), self.expr(b));
+                joined(*join, names, &c, &a, &b)
+            }
             E::Tried(p, t) => {
                 let (ok, err) = match t {
                     Tried::True => ("tried.value", "false"),
@@ -428,5 +447,27 @@ impl<'w> Render<'w> {
         }
         out.push(')');
         out
+    }
+}
+
+/// Returns `a`, or `b` plus one, under `c` through `join`, each matched back out of its
+/// constructor.
+fn joined(join: Join, [x, y, z]: &[String; 3], c: &str, a: &str, b: &str) -> String {
+    let (p, q) = (format!("Pj {{ n: {a} }}"), format!("Qj {{ m: {b} }}"));
+    let back =
+        |s: &str| format!("(match {s} | Pj {{ n: {x} }} -> {x} | Qj {{ m: {y} }} -> ({y} + 1))");
+    match join {
+        Join::Binder => back(&format!(
+            "(match (if {c} then Lj {{ v: {p} }} else Rj {{ v: {q} }}) | Lj {{ v: {z} }} | Rj {{ v: {z} }} -> {z})"
+        )),
+        Join::If => back(&format!("(if {c} then {p} else {q})")),
+        Join::Union => format!(
+            "(if {c} then sum({} for {z} in ([{p}] union [{q}])) else 0)",
+            back(z)
+        ),
+        Join::List => format!(
+            "(if {c} then sum({} for {z} in [{p}, {q}]) else 1)",
+            back(z)
+        ),
     }
 }

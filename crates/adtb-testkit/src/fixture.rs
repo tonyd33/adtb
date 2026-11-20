@@ -232,12 +232,12 @@ impl Fixture {
             .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
         let normal_bound: Vec<_> = params
             .iter()
-            .map(|(n, _, v)| (normal.params[*n], v.clone()))
+            .map(|(n, _, v)| (normal.params()[*n], v.clone()))
             .collect();
         let mut normal_supply = self.supply.clone();
         let normal_out = self.interp().run(
-            &normal.terms,
-            normal.items[0],
+            normal.terms(),
+            normal.items()[0],
             &normal_bound,
             &mut normal_supply,
         );
@@ -281,7 +281,7 @@ impl Fixture {
         let mut normal_supply = self.supply.clone();
         let mut out = Vec::new();
         let mut failed = None;
-        for (i, (&item, &normal_item)) in adhoc.items.iter().zip(&normal.items).enumerate() {
+        for (i, (&item, &normal_item)) in adhoc.items.iter().zip(normal.items()).enumerate() {
             let run = |db: &Database, terms, item, supply: &mut Supply| {
                 Interpreter::new(schema, &self.program, db)
                     .with_closed(self.closed.clone())
@@ -289,7 +289,7 @@ impl Fixture {
                     .run(terms, item, &[], supply)
             };
             let got = run(&db, &adhoc.terms, item, &mut self.supply);
-            let normal_got = run(&normal_db, &normal.terms, normal_item, &mut normal_supply);
+            let normal_got = run(&normal_db, normal.terms(), normal_item, &mut normal_supply);
             assert_eq!(
                 got,
                 normal_got,
@@ -354,20 +354,24 @@ impl Fixture {
             .unwrap_or_else(|d| panic!("`{decl}` does not check: {}", d.message));
         let normal = adtb_lang::norm::txn(&self.schema, &self.program, &txn)
             .unwrap_or_else(|e| panic!("`{decl}` has no normal form: {e:?}"));
-        let normal_bound: Vec<_> = if normal.params.len() == args.len() {
+        let normal_bound: Vec<_> = if normal.params().len() == args.len() {
             normal
-                .params
+                .params()
                 .iter()
                 .copied()
                 .zip(args.iter().cloned())
                 .collect()
         } else {
-            normal.params.iter().map(|p| (*p, Value::unit())).collect()
+            normal
+                .params()
+                .iter()
+                .map(|p| (*p, Value::unit()))
+                .collect()
         };
         let mut normal_supply = self.supply.clone();
         let normal_out = self.interp().run(
-            &normal.terms,
-            normal.body,
+            normal.terms(),
+            normal.body(),
             &normal_bound,
             &mut normal_supply,
         );

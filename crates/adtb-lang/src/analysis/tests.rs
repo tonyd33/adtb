@@ -91,7 +91,7 @@ fn body(s: &Schema, n: &NormalProgram, name: &str) -> Tm {
         .iter()
         .position(|f| f.name == name)
         .expect("a function of that name");
-    n.functions[i].as_ref().expect("first-order").1
+    n.functions()[i].as_ref().expect("first-order").1
 }
 
 pub(super) fn adhoc(
@@ -154,17 +154,17 @@ pub(super) fn adhoc_normal(
 
 fn is_total(params: &[(&str, &str)], text: &str) -> bool {
     let (s, n) = adhoc_normal("", params, text);
-    Totality::new(&s, false).total(&n.terms, n.items[0])
+    Totality::new(&s, false).total(n.terms(), n.items()[0])
 }
 
 /// Returns whether the outermost `fix` in the normal form of ad hoc `text` is bounded.
 fn fix_bounded(params: &[(&str, &str)], text: &str) -> bool {
     let (_, n) = adhoc_normal("", params, text);
-    let fix = reachable(&n.terms, n.items[0])
+    let fix = reachable(n.terms(), n.items()[0])
         .into_iter()
-        .find(|t| matches!(n.terms.kind(*t), Kind::Fix(..)))
+        .find(|t| matches!(n.terms().kind(*t), Kind::Fix(..)))
         .expect("a fix");
-    bounded(&n.terms, fix)
+    bounded(n.terms(), fix)
 }
 
 fn query(extra: &str, text: &str) -> Result<(), String> {
@@ -274,10 +274,10 @@ fn normal_forms_have_no_lambda_application_or_schema_call() {
         "chosen",
         "generic_use",
     ] {
-        assert_normal(&s, &n.terms, body(&s, &n, f));
+        assert_normal(&s, n.terms(), body(&s, &n, f));
     }
     for (_, c) in n.constraints() {
-        assert_normal(&s, &n.terms, c);
+        assert_normal(&s, n.terms(), c);
     }
 }
 
@@ -286,7 +286,7 @@ fn functions_taking_functions_have_no_standalone_normal_form() {
     let (s, n) = normal(HIGHER_ORDER);
     for f in ["ap", "having"] {
         let i = s.functions.iter().position(|d| d.name == f).unwrap();
-        assert!(n.functions[i].is_none(), "`{f}` takes a function");
+        assert!(n.functions()[i].is_none(), "`{f}` takes a function");
     }
 }
 
@@ -294,55 +294,55 @@ fn functions_taking_functions_have_no_standalone_normal_form() {
 fn a_total_argument_is_substituted_and_shared() {
     let (s, n) = normal(HIGHER_ORDER);
     let t = body(&s, &n, "via_twice");
-    let Kind::Prim(Prim::Add, xs) = n.terms.kind(t) else {
-        panic!("expected `y + y`, found {:?}", n.terms.node(t));
+    let Kind::Prim(Prim::Add, xs) = n.terms().kind(t) else {
+        panic!("expected `y + y`, found {:?}", n.terms().node(t));
     };
     assert_eq!(xs[0], xs[1], "the argument is one shared term");
-    assert!(matches!(n.terms.kind(xs[0]), Kind::Var(_)));
+    assert!(matches!(n.terms().kind(xs[0]), Kind::Var(_)));
 }
 
 #[test]
 fn a_partial_argument_is_bound_once_before_the_body() {
     let (s, n) = normal(HIGHER_ORDER);
     let t = body(&s, &n, "partial_arg");
-    let Kind::Let(_, bound, rest) = n.terms.kind(t) else {
-        panic!("expected a `let`, found {:?}", n.terms.node(t));
+    let Kind::Let(_, bound, rest) = n.terms().kind(t) else {
+        panic!("expected a `let`, found {:?}", n.terms().node(t));
     };
-    assert!(matches!(n.terms.kind(*bound), Kind::Prim(Prim::Div, _)));
-    assert!(matches!(n.terms.kind(*rest), Kind::Const(Const::Int(1))));
+    assert!(matches!(n.terms().kind(*bound), Kind::Prim(Prim::Div, _)));
+    assert!(matches!(n.terms().kind(*rest), Kind::Const(Const::Int(1))));
 }
 
 #[test]
 fn a_lambda_applied_to_literals_reduces() {
     let (s, n) = normal(HIGHER_ORDER);
     let t = body(&s, &n, "curried");
-    let Kind::Prim(Prim::Mul, xs) = n.terms.kind(t) else {
-        panic!("expected `7 * 3`, found {:?}", n.terms.node(t));
+    let Kind::Prim(Prim::Mul, xs) = n.terms().kind(t) else {
+        panic!("expected `7 * 3`, found {:?}", n.terms().node(t));
     };
-    assert!(matches!(n.terms.kind(xs[0]), Kind::Const(Const::Int(7))));
-    assert!(matches!(n.terms.kind(xs[1]), Kind::Const(Const::Int(3))));
+    assert!(matches!(n.terms().kind(xs[0]), Kind::Const(Const::Int(7))));
+    assert!(matches!(n.terms().kind(xs[1]), Kind::Const(Const::Int(3))));
 }
 
 #[test]
 fn a_function_chosen_by_a_condition_is_applied_in_each_branch() {
     let (s, n) = normal(HIGHER_ORDER);
     let t = body(&s, &n, "chosen");
-    let Kind::If(_, a, b) = n.terms.kind(t) else {
-        panic!("expected an `if`, found {:?}", n.terms.node(t));
+    let Kind::If(_, a, b) = n.terms().kind(t) else {
+        panic!("expected an `if`, found {:?}", n.terms().node(t));
     };
-    assert!(matches!(n.terms.kind(*a), Kind::Var(_)));
-    assert!(matches!(n.terms.kind(*b), Kind::Prim(Prim::Add, _)));
+    assert!(matches!(n.terms().kind(*a), Kind::Var(_)));
+    assert!(matches!(n.terms().kind(*b), Kind::Prim(Prim::Add, _)));
 }
 
 #[test]
 fn a_generic_call_is_inlined_at_its_type_arguments() {
     let (s, n) = normal(HIGHER_ORDER);
     let t = body(&s, &n, "generic_use");
-    for u in reachable(&n.terms, t) {
+    for u in reachable(n.terms(), t) {
         assert!(
-            !mentions_param(n.terms.ty(u)),
+            !mentions_param(n.terms().ty(u)),
             "a type parameter remains: {:?}",
-            n.terms.node(u)
+            n.terms().node(u)
         );
     }
 }
@@ -351,14 +351,14 @@ fn a_generic_call_is_inlined_at_its_type_arguments() {
 fn a_predicate_parameter_is_inlined_into_the_comprehension() {
     let (s, n) = normal(HIGHER_ORDER);
     let t = body(&s, &n, "big");
-    let Kind::For(_, src, inner) = n.terms.kind(t) else {
-        panic!("expected a comprehension, found {:?}", n.terms.node(t));
+    let Kind::For(_, src, inner) = n.terms().kind(t) else {
+        panic!("expected a comprehension, found {:?}", n.terms().node(t));
     };
-    assert!(matches!(n.terms.kind(*src), Kind::Rel(..)));
-    let Kind::If(c, _, _) = n.terms.kind(*inner) else {
-        panic!("expected a `where`, found {:?}", n.terms.node(*inner));
+    assert!(matches!(n.terms().kind(*src), Kind::Rel(..)));
+    let Kind::If(c, _, _) = n.terms().kind(*inner) else {
+        panic!("expected a `where`, found {:?}", n.terms().node(*inner));
     };
-    assert!(matches!(n.terms.kind(*c), Kind::Prim(Prim::Gt, _)));
+    assert!(matches!(n.terms().kind(*c), Kind::Prim(Prim::Gt, _)));
 }
 
 #[test]
@@ -368,26 +368,26 @@ fn a_generator_over_a_comprehension_flattens() {
         &[],
         "from x in (from o in orders select o.total) select x",
     );
-    let t = n.items[0];
-    let Kind::For(_, src, inner) = n.terms.kind(t) else {
-        panic!("expected a comprehension, found {:?}", n.terms.node(t));
+    let t = n.items()[0];
+    let Kind::For(_, src, inner) = n.terms().kind(t) else {
+        panic!("expected a comprehension, found {:?}", n.terms().node(t));
     };
-    assert!(matches!(n.terms.kind(*src), Kind::Rel(..)));
-    let Kind::Singleton(e) = n.terms.kind(*inner) else {
-        panic!("expected `{{o.total}}`, found {:?}", n.terms.node(*inner));
+    assert!(matches!(n.terms().kind(*src), Kind::Rel(..)));
+    let Kind::Singleton(e) = n.terms().kind(*inner) else {
+        panic!("expected `{{o.total}}`, found {:?}", n.terms().node(*inner));
     };
-    assert!(matches!(n.terms.kind(*e), Kind::Field(_, f) if f == "total"));
+    assert!(matches!(n.terms().kind(*e), Kind::Field(_, f) if f == "total"));
 }
 
 #[test]
 fn a_generator_over_a_union_splits() {
     let (_, n) = adhoc_normal("", &[], "from x in [1, 2] select x + 1");
     let mut sums = 0;
-    for t in reachable(&n.terms, n.items[0]) {
-        match n.terms.kind(t) {
-            Kind::For(..) => panic!("a generator remains: {:?}", n.terms.node(t)),
+    for t in reachable(n.terms(), n.items()[0]) {
+        match n.terms().kind(t) {
+            Kind::For(..) => panic!("a generator remains: {:?}", n.terms().node(t)),
             Kind::Singleton(e) => {
-                assert!(matches!(n.terms.kind(*e), Kind::Prim(Prim::Add, _)));
+                assert!(matches!(n.terms().kind(*e), Kind::Prim(Prim::Add, _)));
                 sums += 1;
             }
             _ => {}
@@ -400,14 +400,14 @@ fn a_generator_over_a_union_splits() {
 fn a_field_of_a_record_reduces_when_the_other_fields_are_total() {
     let (_, n) = adhoc_normal("", &[("n", "I64")], "{ a: 1, b: n }.a");
     assert!(matches!(
-        n.terms.kind(n.items[0]),
+        n.terms().kind(n.items()[0]),
         Kind::Const(Const::Int(1))
     ));
     let (_, n) = adhoc_normal("", &[("n", "I64")], "{ a: 1, b: 10 / n }.a");
     assert!(
-        matches!(n.terms.kind(n.items[0]), Kind::Field(..)),
+        matches!(n.terms().kind(n.items()[0]), Kind::Field(..)),
         "a partial field is still evaluated: {:?}",
-        n.terms.node(n.items[0])
+        n.terms().node(n.items()[0])
     );
 }
 
@@ -419,17 +419,20 @@ fn a_case_of_a_constructor_selects_its_arm() {
         "match wrap(1) | None -> 0 | Some s -> s.value",
     );
     assert!(
-        matches!(n.terms.kind(n.items[0]), Kind::Const(Const::Int(1))),
+        matches!(n.terms().kind(n.items()[0]), Kind::Const(Const::Int(1))),
         "{:?}",
-        n.terms.node(n.items[0])
+        n.terms().node(n.items()[0])
     );
 }
 
 #[test]
 fn ad_hoc_text_inlines_schema_functions() {
     let (s, n) = adhoc_normal(HIGHER_ORDER, &[("y", "I64")], "via_twice(y)");
-    assert_normal(&s, &n.terms, n.items[0]);
-    assert!(matches!(n.terms.kind(n.items[0]), Kind::Prim(Prim::Add, _)));
+    assert_normal(&s, n.terms(), n.items()[0]);
+    assert!(matches!(
+        n.terms().kind(n.items()[0]),
+        Kind::Prim(Prim::Add, _)
+    ));
 }
 
 #[test]
@@ -445,20 +448,20 @@ fn a_registered_query_inlines_schema_functions() {
     let p = check_schema(&s).unwrap();
     let checked = check_query(&s, &p, module, &q).expect("checks");
     let n = norm::query(&s, &p, &checked).expect("normalises");
-    assert_eq!(1, n.params.len());
-    assert_normal(&s, &n.terms, n.body);
-    let Kind::Prim(Prim::Add, xs) = n.terms.kind(n.body) else {
+    assert_eq!(1, n.params().len());
+    assert_normal(&s, n.terms(), n.body());
+    let Kind::Prim(Prim::Add, xs) = n.terms().kind(n.body()) else {
         panic!("expected `y + y`");
     };
-    assert!(matches!(n.terms.kind(xs[0]), Kind::Var(v) if *v == n.params[0]));
+    assert!(matches!(n.terms().kind(xs[0]), Kind::Var(v) if *v == n.params()[0]));
 }
 
 #[test]
 fn normalisation_preserves_types() {
     let (s, n) = normal(HIGHER_ORDER);
     for (f, def) in s.functions.iter().enumerate() {
-        if let Some((_, b)) = &n.functions[f] {
-            let ty = n.terms.ty(*b);
+        if let Some((_, b)) = &n.functions()[f] {
+            let ty = n.terms().ty(*b);
             assert!(
                 crate::check::subtype(&s, ty, &def.result),
                 "`{}` normalises to {}, declared {}",
@@ -722,12 +725,12 @@ fn try_of_a_reject_is_partial() {
         &[],
         "insert posts from (from u in users select { author: key u, title: print(try (lower(reject \"x\"))) })",
     );
-    let tries: Vec<Tm> = reachable(&n.terms, n.items[0])
+    let tries: Vec<Tm> = reachable(n.terms(), n.items()[0])
         .into_iter()
-        .filter(|t| matches!(n.terms.kind(*t), Kind::Try(_)))
+        .filter(|t| matches!(n.terms().kind(*t), Kind::Try(_)))
         .collect();
     assert_eq!(1, tries.len());
-    assert!(!Totality::new(&s, false).total(&n.terms, tries[0]));
+    assert!(!Totality::new(&s, false).total(n.terms(), tries[0]));
 }
 
 #[test]
@@ -838,21 +841,24 @@ fn an_update_through_a_function_normalises_its_row_function() {
         &[],
         "update o in orders where o.qty > 0 set zeroed(o)",
     );
-    assert_normal(&s, &n.terms, n.items[0]);
-    let Kind::Replace(_, _, f) = n.terms.kind(n.items[0]) else {
-        panic!("expected a replace, found {:?}", n.terms.node(n.items[0]));
+    assert_normal(&s, n.terms(), n.items()[0]);
+    let Kind::Replace(_, _, f) = n.terms().kind(n.items()[0]) else {
+        panic!(
+            "expected a replace, found {:?}",
+            n.terms().node(n.items()[0])
+        );
     };
-    let Kind::Lam(x, body) = n.terms.kind(*f) else {
-        panic!("expected a row function, found {:?}", n.terms.node(*f));
+    let Kind::Lam(x, body) = n.terms().kind(*f) else {
+        panic!("expected a row function, found {:?}", n.terms().node(*f));
     };
-    let Kind::Ctor { fields, .. } = n.terms.kind(*body) else {
-        panic!("expected the new row, found {:?}", n.terms.node(*body));
+    let Kind::Ctor { fields, .. } = n.terms().kind(*body) else {
+        panic!("expected the new row, found {:?}", n.terms().node(*body));
     };
     let qty = fields.iter().find(|(l, _)| l == "qty").unwrap().1;
-    assert!(matches!(n.terms.kind(qty), Kind::Const(Const::Int(0))));
+    assert!(matches!(n.terms().kind(qty), Kind::Const(Const::Int(0))));
     let id = fields.iter().find(|(l, _)| l == "id").unwrap().1;
     assert!(
-        matches!(n.terms.kind(id), Kind::Field(r, _) if matches!(n.terms.kind(*r), Kind::Var(v) if v == x))
+        matches!(n.terms().kind(id), Kind::Field(r, _) if matches!(n.terms().kind(*r), Kind::Var(v) if v == x))
     );
 }
 
@@ -875,7 +881,7 @@ fn a_registered_transaction_inlines_and_is_stratified() {
              return via_twice(y)",
     )
     .unwrap_or_else(|e| panic!("refused: {e}"));
-    assert_normal(&s, &n.terms, n.body);
+    assert_normal(&s, n.terms(), n.body());
     let e = txn(
         "",
         "txn t (me: Key users) -> Set (Key users) =
@@ -906,18 +912,18 @@ fn computed_fields_and_index_fields_are_normalised() {
         .iter()
         .position(|r| r.name == "discs")
         .expect("discs");
-    assert_eq!(1, n.computed.len());
+    assert_eq!(1, n.computed().len());
     let index_fields: Vec<_> = n
-        .index_fields
+        .index_fields()
         .iter()
         .filter(|((rel, ..), _)| rel.0 as usize == discs)
         .map(|(_, (_, f))| f.value)
         .collect();
     assert_eq!(1, index_fields.len());
-    let computed = n.computed.values().map(|(_, t)| *t);
+    let computed = n.computed().values().map(|(_, t)| *t);
     for t in computed.chain(index_fields) {
-        assert_normal(&s, &n.terms, t);
-        assert!(matches!(n.terms.kind(t), Kind::Prim(Prim::Add, _)));
+        assert_normal(&s, n.terms(), t);
+        assert!(matches!(n.terms().kind(t), Kind::Prim(Prim::Add, _)));
     }
 }
 
@@ -931,13 +937,13 @@ fn retags_and_defaults_are_normalised() {
            key id generate sequence
            default n = 0",
     );
-    assert_eq!(1, n.retags.len());
-    assert_eq!(1, n.defaults.len());
-    for (_, t) in n.retags.values() {
-        assert_normal(&s, &n.terms, *t);
+    assert_eq!(1, n.retags().len());
+    assert_eq!(1, n.defaults().len());
+    for (_, t) in n.retags().values() {
+        assert_normal(&s, n.terms(), *t);
     }
-    for t in n.defaults.values() {
-        assert!(matches!(n.terms.kind(*t), Kind::Const(Const::Int(0))));
+    for t in n.defaults().values() {
+        assert!(matches!(n.terms().kind(*t), Kind::Const(Const::Int(0))));
     }
 }
 
@@ -977,13 +983,13 @@ fn a_let_bound_to_an_inserted_row_draws_its_key_once() {
              insert follows { src: key u, dst: key u }
              return key u"#,
     );
-    assert_normal(&s, &n.terms, n.items[0]);
-    assert_eq!(1, fresh_draws(&n.terms, n.items[0]));
-    let lets = reachable(&n.terms, n.items[0])
+    assert_normal(&s, n.terms(), n.items()[0]);
+    assert_eq!(1, fresh_draws(n.terms(), n.items()[0]));
+    let lets = reachable(n.terms(), n.items()[0])
         .into_iter()
         .filter(|t| {
-            matches!(n.terms.kind(*t), Kind::Let(_, b, _)
-                if fresh_draws(&n.terms, *b) == 1)
+            matches!(n.terms().kind(*t), Kind::Let(_, b, _)
+                if fresh_draws(n.terms(), *b) == 1)
         })
         .count();
     assert_eq!(1, lets, "the inserted row stays bound by one `let`");
@@ -996,8 +1002,8 @@ fn a_nested_insert_draws_its_key_once() {
         &[],
         r#"insert follows { src: key (insert users { name: "nest" }), dst: key (insert users { name: "other" }) }"#,
     );
-    assert_normal(&s, &n.terms, n.items[0]);
-    assert_eq!(2, fresh_draws(&n.terms, n.items[0]));
+    assert_normal(&s, n.terms(), n.items()[0]);
+    assert_eq!(2, fresh_draws(n.terms(), n.items()[0]));
 }
 
 /// Returns the number of distinct calls of host function `name` reachable from `root`.
@@ -1027,7 +1033,11 @@ fn two_call_sites_of_a_volatile_host_function_with_the_same_text_stay_two_calls(
     ];
     for text in cases {
         let (s, n) = adhoc_normal(STAMPS, &[], text);
-        assert_eq!(2, host_calls(&s, &n.terms, n.items[0], "stamp"), "`{text}`");
+        assert_eq!(
+            2,
+            host_calls(&s, n.terms(), n.items()[0], "stamp"),
+            "`{text}`"
+        );
     }
 }
 
@@ -1038,7 +1048,7 @@ fn one_call_site_of_a_volatile_host_function_bound_by_let_stays_one_call() {
         &[],
         "from u in users, s in [stamp(u.name)] select s == s",
     );
-    assert_eq!(1, host_calls(&s, &n.terms, n.items[0], "stamp"));
+    assert_eq!(1, host_calls(&s, n.terms(), n.items()[0], "stamp"));
 }
 
 /// The depth of the `if`s over a shared term.
@@ -1134,14 +1144,14 @@ fn ad_hoc_text_over_a_doubling_chain_of_functions_checks() {
 #[test]
 fn a_fresh_draw_is_total_and_not_copyable() {
     let (s, n) = adhoc_normal("", &[], r#"insert users { name: "eve" }"#);
-    let fresh = reachable(&n.terms, n.items[0])
+    let fresh = reachable(n.terms(), n.items()[0])
         .into_iter()
-        .find(|t| matches!(n.terms.kind(*t), Kind::Fresh(..)))
+        .find(|t| matches!(n.terms().kind(*t), Kind::Fresh(..)))
         .expect("a fresh draw");
     let mut tot = Totality::new(&s, false);
-    assert!(tot.total(&n.terms, fresh));
-    assert!(tot.draws(&n.terms, fresh));
-    assert!(!tot.copyable(&n.terms, fresh));
+    assert!(tot.total(n.terms(), fresh));
+    assert!(tot.draws(n.terms(), fresh));
+    assert!(!tot.copyable(n.terms(), fresh));
 }
 
 #[test]
@@ -1154,21 +1164,21 @@ fn a_call_of_a_host_function_draws_only_when_volatile() {
     );
     let mut tot = Totality::new(&s, false);
     let call = |name: &str| {
-        reachable(&n.terms, n.items[0])
+        reachable(n.terms(), n.items()[0])
             .into_iter()
-            .find(|t| matches!(n.terms.kind(*t), Kind::Call { func, .. } if s.function(*func).name == name))
+            .find(|t| matches!(n.terms().kind(*t), Kind::Call { func, .. } if s.function(*func).name == name))
             .expect("a call")
     };
-    assert!(tot.draws(&n.terms, call("stamp")));
-    assert!(!tot.draws(&n.terms, call("pure")));
+    assert!(tot.draws(n.terms(), call("stamp")));
+    assert!(!tot.draws(n.terms(), call("pure")));
 }
 
 #[test]
 fn a_constant_is_copyable() {
     let (s, n) = adhoc_normal("", &[], "[1]");
-    let constant = reachable(&n.terms, n.items[0])
+    let constant = reachable(n.terms(), n.items()[0])
         .into_iter()
-        .find(|t| matches!(n.terms.kind(*t), Kind::Const(_)))
+        .find(|t| matches!(n.terms().kind(*t), Kind::Const(_)))
         .expect("a constant");
-    assert!(Totality::new(&s, false).copyable(&n.terms, constant));
+    assert!(Totality::new(&s, false).copyable(n.terms(), constant));
 }

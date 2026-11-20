@@ -32,8 +32,8 @@ fn first_pipeline(s: &mut Spine) -> &mut Pipeline {
 /// parameters, after checking that the plan passes.
 fn valid(f: &Fixture, text: &str, params: &[(&str, &str)]) -> (Plan, Vec<Var>) {
     let (n, t) = f.normal(text, params);
-    let vars: Vec<Var> = params.iter().map(|(name, _)| n.params[*name]).collect();
-    let p = plan_with(f, &n.terms, t, Rewrites::ALL);
+    let vars: Vec<Var> = params.iter().map(|(name, _)| n.params()[*name]).collect();
+    let p = plan_with(f, n.valid(), t, Rewrites::ALL);
     assert_eq!(Ok(()), check(f, &p), "`{text}`");
     (p, vars)
 }
@@ -106,7 +106,7 @@ fn a_parameter_is_bound_only_when_the_plan_takes_it() {
 fn a_case_missing_repeating_or_inventing_an_arm_is_refused() {
     let f = running();
     let q = f.query(SEARCH);
-    let p = plan_with(&f, &q.terms, q.body, Rewrites::ALL);
+    let p = plan_with(&f, q.valid(), q.body(), Rewrites::ALL);
     assert_eq!(Ok(()), check(&f, &p));
     let broken = |edit: &dyn Fn(&mut Vec<SpineArm>)| {
         let mut p = p.clone();
@@ -318,7 +318,7 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
                 &f.schema,
                 &f.normal,
                 &f.catalog,
-                &n.terms,
+                n.valid(),
                 t,
                 Options {
                     rewrites: rw,
@@ -336,8 +336,8 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
             &f.schema,
             &f.normal,
             &f.catalog,
-            &q.terms,
-            q.body,
+            q.valid(),
+            q.body(),
             Options {
                 rewrites: rw,
                 hiding: false,

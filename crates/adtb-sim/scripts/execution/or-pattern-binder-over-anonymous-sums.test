@@ -1,0 +1,13 @@
+# An or-pattern binder joins the anonymous sums of its alternatives, each value read under its own
+# constructor.
+use planner
+
+run
+  insert users from [{ id: users.key(1), name: "ann" }, { id: users.key(2), name: "bob" }]
+
+query rowsort
+  from v in (from u in users select match u.name | "ann" -> A { x: P { n: 1 } } | _ -> B { x: Q { m: 2 } })
+  select match v | A { x } | B { x } -> x
+----
+  P { n: 1 }
+  Q { m: 2 }
