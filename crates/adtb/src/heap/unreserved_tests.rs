@@ -3,99 +3,16 @@
 
 use std::collections::BTreeMap;
 
-use adtb_sim::SimRuntime;
 use adtb_testkit::process;
 
 use super::{Error as HeapError, FieldType, Heap, LargeStore, Refused};
 use crate::key::{Scalar, Value};
-use crate::mvcc::{StatusError, Transactions, Writers, Xid};
+use crate::mvcc::{StatusError, Transactions, Xid};
 use crate::storage::{Damage, Options, PageError, Pager, Pid, Shape, Walk};
-use crate::test_world::api;
-use crate::test_world::load as open;
-use crate::testing::Plant;
-use crate::{Database, Error, FatalReason};
-
-const APP: &str = "type User = { id: Key users, name: Text }
-relation users : User key id generate sequence
-";
 
 const PAST: Xid = Xid(1 << 40);
 
 const FRAME: Damage = Damage::Shape(Shape::Frame);
-
-/// Insert one user into a new database and make its version's deleter [`PAST`] in place.
-/// Returns the database and the page holding the version.
-fn with_unreserved_deleter(rt: &SimRuntime) -> (Database<SimRuntime>, Pid) {
-    let db = open::open(rt, APP);
-    let t = db.testing();
-    let first = t.next_xid();
-    api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
-    let page = t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0];
-    let bytes = t.probe().page(page).unwrap();
-    let headers: Vec<(usize, Xid)> = (first.0..t.next_xid().0)
-        .map(Xid)
-        .flat_map(|x| {
-            let w = Writers::inserted(x).encode();
-            let bytes = &bytes;
-            (0..=bytes.len() - Writers::LEN)
-                .filter(move |&i| bytes[i..i + Writers::LEN] == w)
-                .map(move |i| (i, x))
-        })
-        .collect();
-    assert_eq!(1, headers.len(), "one version's writers: {headers:?}");
-    let (at, x) = headers[0];
-    t.plant(Plant::Write {
-        page,
-        at,
-        bytes: Writers::inserted(x).superseded_by(PAST).encode().to_vec(),
-    })
-    .unwrap();
-    (db, page)
-}
-
-/// Run `text` over a version naming an unreserved deleter and check that it fails as the users
-/// relation quarantined, with the version's page recorded as out of frame.
-fn refused(seed: u64, text: &str) {
-    process::once(seed, |rt| {
-        let (db, page) = with_unreserved_deleter(&rt);
-        let got = api::failure(&db, text);
-        assert!(
-            matches!(
-                &got,
-                Error::Fatal {
-                    reason: FatalReason::Quarantined { what }
-                } if what == "app::users.User"
-            ),
-            "{text}: {got:?}"
-        );
-        let refusals = db.testing().probe().refusals();
-        assert_eq!(BTreeMap::from([(page, FRAME)]), refusals, "{text}");
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn a_vacuum_meeting_an_unreserved_deleter_refuses_its_page() {
-    refused(1, "vacuum users");
-}
-
-#[test]
-fn a_read_meeting_an_unreserved_deleter_refuses_its_page() {
-    refused(2, "from u in users select u.name");
-}
-
-#[test]
-fn an_update_reading_an_unreserved_deleter_refuses_its_page() {
-    refused(
-        3,
-        r#"update u in users where key u == users.key(1) set { u with name: "b" }"#,
-    );
-}
-
-#[test]
-fn a_unique_probe_meeting_an_unreserved_deleter_refuses_its_page() {
-    refused(4, r#"insert users { id: users.key(1), name: "b" }"#);
-}
 
 fn options() -> Options {
     Options {

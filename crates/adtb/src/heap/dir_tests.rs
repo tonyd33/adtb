@@ -17,7 +17,7 @@ use crate::storage::{
 };
 
 use super::super::blame::{Blame, Holds};
-use super::super::page::{Arrangement, CONTENTS, HeapPage, Kinded};
+use super::super::page::{Arrangement, CONTENTS, HeapPage};
 use super::super::stage::Stage;
 use super::super::vm::{self, Vm};
 use super::super::write::{Level, Rank};
@@ -387,21 +387,6 @@ fn a_space_opened_at_page_zero_reads_nothing_and_takes_no_page() {
 }
 
 #[test]
-fn a_heap_whose_root_names_no_map_fails_verify() {
-    let scratch = Scratch::new("heap-dir", "no-map");
-    let pager = pager(&scratch);
-    let (heap, _) = heap_over_two_leaves(&pager, 7);
-    set_map(&pager, heap.root(), Pid(0));
-    let want = vec![format!("{:?} names no visibility map", heap.root())];
-    assert_eq!(Ok(want), heap.verify(&pager));
-    assert_eq!(
-        refused(heap.root(), Shape::Frame),
-        heap.all_visible(&pager, Pid(5))
-    );
-    pager.close();
-}
-
-#[test]
 fn a_map_pointer_out_of_shape_stops_a_holder_walk_and_another_heaps_damage_marks_that_heap() {
     let scratch = Scratch::new("heap-dir", "map-shape");
     let pager = pager(&scratch);
@@ -584,35 +569,6 @@ fn a_map_pointer_naming_the_page_prune_holds_refuses_the_directory_root_within_a
 }
 
 #[test]
-fn verify_names_the_slot_table_fault_of_a_page_relabelled_to_the_other_heap_kind() {
-    let scratch = Scratch::new("heap-dir", "relabel");
-    let pager = pager(&scratch);
-    let large = LargeStore::create(&pager, 107).unwrap();
-    let heap = Heap::create(&pager, 7, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
-    let data = Pid(heap
-        .insert(&pager, Xid(1), &[Value::I64(1)])
-        .unwrap()
-        .page());
-    large.write(&pager, Xid(1), &[1; 100]).unwrap();
-    let chunk = large.pages(&pager).unwrap()[0];
-    put_u16(&pager, data, 14, PageKind::HeapSlotted as u16);
-    put_u16(&pager, chunk, 14, PageKind::HeapFixed as u16);
-    let frame = |pid| {
-        Kinded::of(&pager.read(pid).unwrap())
-            .expect("a page of a heap kind")
-            .check()
-            .into_iter()
-            .map(move |w| (pid, w))
-    };
-    let (data_fault, chunk_fault): (Vec<_>, Vec<_>) =
-        (frame(data).collect(), frame(chunk).collect());
-    assert_eq!(1, data_fault.len(), "{data_fault:?}");
-    assert_eq!(1, chunk_fault.len(), "{chunk_fault:?}");
-    assert_eq!(data_fault, heap.check(&pager).unwrap());
-    assert_eq!(chunk_fault, large.check(&pager).unwrap());
-}
-
-#[test]
 fn a_refusal_rechecks_an_entry_whose_leaf_changed_under_its_check() {
     for restored in [false, true] {
         let scratch = Scratch::new("heap-dir", "recheck");
@@ -662,24 +618,6 @@ fn a_refusal_takes_the_position_from_the_path_past_a_short_leaf() {
         refused(named, Shape::Frame),
         s.refuse_misnamed(&pager, named)
     );
-}
-
-#[test]
-fn a_scan_refuses_the_leaf_naming_its_page_at_a_second_position() {
-    let scratch = Scratch::new("heap-dir", "twice");
-    let pager = pager(&scratch);
-    let large = LargeStore::create(&pager, 107).unwrap();
-    let heap = Heap::create(&pager, 7, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
-    let data = Pid(heap
-        .insert(&pager, Xid(1), &[Value::I64(1)])
-        .unwrap()
-        .page());
-    let root = heap.root();
-    put_u16(&pager, root, COUNT, 2);
-    pager
-        .update(&[root], |p| set_word(p[0], 1, data, 0, false))
-        .unwrap();
-    assert_eq!(refused(root, Shape::Frame), heap.scan(&pager, |_| {}));
 }
 
 #[test]

@@ -1,0 +1,32 @@
+# An update changing no indexed field writes a heap-only version on its page and flags the version
+# it supersedes hot-updated, naming it; an update of an indexed field writes a version indexes
+# name, and a delete names no successor.
+use pages
+
+run
+  update n in notes where n.id == 1 set { n with text: "b" }
+
+probe heap app::notes Note
+----
+0: HeapSlotted format 1, 3 slots
+0.0: Normal HOT_UPDATED, x0 to x1, next 0.2
+0.1: Normal NONE, x0
+0.2: Normal HEAP_ONLY, x1
+
+run
+  update n in notes where n.id == 1 set { n with tag: 3 }
+
+run
+  update n in notes where n.id == 1 set { n with text: "c" }
+
+run
+  delete n in notes where n.id == 1
+
+probe heap app::notes Note
+----
+0: HeapSlotted format 1, 5 slots
+0.0: Normal HOT_UPDATED, x0 to x1, next 0.2
+0.1: Normal NONE, x0
+0.2: Normal HEAP_ONLY, x1 to x2, next 0.3
+0.3: Normal HOT_UPDATED, x2 to x3, next 0.4
+0.4: Normal HEAP_ONLY, x3 to x4

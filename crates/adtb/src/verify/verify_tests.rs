@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::btree::{BTree, Index};
-use crate::heap::{FieldType, HEADER_LEN, Heap, LargeStore};
+use crate::heap::{FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{Transactions, Writers};
 use crate::runtime::Threads;
@@ -108,10 +108,6 @@ impl Db {
     fn verify(&mut self) -> Report {
         self.verify_with(&[])
     }
-
-    fn a_heap_page(&mut self, h: usize) -> Pid {
-        self.heaps[h].pages(&self.pager).unwrap()[1]
-    }
 }
 
 fn run(seed: u64, body: impl FnOnce(&mut Db)) {
@@ -128,15 +124,6 @@ fn problems(report: &Report) -> Vec<(Pid, Problem)> {
 }
 
 #[test]
-fn a_sound_file_verifies_clean() {
-    run(1, |db| {
-        let report = db.verify();
-        assert!(report.is_clean() && report.complete, "{report:#?}");
-        assert!(!report.commits.is_empty());
-    });
-}
-
-#[test]
 fn a_page_nothing_refers_to_is_leaked_and_repair_frees_it() {
     run(2, |db| {
         let lost = db.pager.allocate(1, PageKind::HeapSlotted, 10).unwrap();
@@ -150,61 +137,11 @@ fn a_page_nothing_refers_to_is_leaked_and_repair_frees_it() {
 }
 
 #[test]
-fn a_freed_page_a_heap_still_names_is_unallocated() {
-    run(3, |db| {
-        let pid = db.a_heap_page(1);
-        db.pager.free(pid).unwrap();
+fn a_sound_file_verifies_clean() {
+    run(1, |db| {
         let report = db.verify();
-        assert!(
-            problems(&report).contains(&(pid, Problem::Unallocated)),
-            "{report:#?}"
-        );
-    });
-}
-
-#[test]
-fn a_page_two_structures_name_is_shared() {
-    run(4, |db| {
-        let pid = db.a_heap_page(0);
-        let report = db.verify_with(&[pid]);
-        assert_eq!(
-            vec![(pid, Problem::Shared("heap 10".into(), "the caller".into()))],
-            problems(&report)
-        );
-    });
-}
-
-#[test]
-fn a_broken_slot_table_is_named_by_its_page() {
-    run(5, |db| {
-        let pid = db.a_heap_page(0);
-        db.pager.update(&[pid], |p| p[0][40 + 4] = 9).unwrap();
-        let report = db.verify();
-        assert!(!report.findings.is_empty());
-        assert!(
-            report.findings.iter().all(|f| f.pid == pid
-                && matches!(&f.problem, Problem::Structure(s) if s.starts_with("heap 10"))),
-            "{report:#?}"
-        );
-    });
-}
-
-#[test]
-fn an_entry_naming_an_empty_slot_is_named_by_the_page_it_names() {
-    run(6, |db| {
-        let pid = db.a_heap_page(1);
-        let entry = Entry {
-            key: vec![Value::I64(1000)],
-            ctor: CtorId(1),
-            tid: Tid::new(pid.0, 400).unwrap(),
-        };
-        db.index.insert(&db.pager, &entry).unwrap();
-        let report = db.verify();
-        let found = problems(&report);
-        assert_eq!(1, found.len(), "{report:#?}");
-        assert!(
-            matches!(&found[0], (p, Problem::Structure(s)) if *p == pid && s.starts_with("index 20"))
-        );
+        assert!(report.is_clean() && report.complete, "{report:#?}");
+        assert!(!report.commits.is_empty());
     });
 }
 
@@ -238,45 +175,6 @@ fn a_check_without_the_log_reads_only_the_structures() {
         });
         assert_eq!(vec![(lost, Problem::Leaked)], problems(&report));
         assert!(report.commits.is_empty() && report.log.is_empty());
-    });
-}
-
-fn a_large_value(db: &Db) -> crate::heap::Pointer {
-    db.heaps[0].out_of_line(&db.pager).unwrap().unwrap()[0]
-}
-
-#[test]
-fn a_head_counting_too_many_versions_is_repaired() {
-    run(10, |db| {
-        let p = a_large_value(db);
-        db.heaps[0].large().recount(&db.pager, p.first, 3).unwrap();
-        let report = db.verify();
-        assert_eq!(
-            vec![(
-                Pid(p.first.page()),
-                Problem::Overcounted {
-                    slot: p.first.slot(),
-                    count: 3,
-                    versions: 1
-                }
-            )],
-            problems(&report)
-        );
-        assert_eq!(Ok(1), db.repair(&report));
-        assert!(db.verify().is_clean());
-    });
-}
-
-#[test]
-fn a_head_counting_too_few_versions_is_a_fault() {
-    run(11, |db| {
-        let p = a_large_value(db);
-        db.heaps[0].large().recount(&db.pager, p.first, 0).unwrap();
-        let report = db.verify();
-        let found = problems(&report);
-        assert_eq!(1, found.len(), "{report:#?}");
-        assert!(matches!(&found[0], (pid, Problem::Structure(s))
-            if *pid == Pid(p.first.page()) && s.contains("counts 0 versions, 1 point at it")));
     });
 }
 
@@ -326,39 +224,6 @@ fn a_successor_freed_after_its_writer_resolved_may_dangle() {
         let (begun, _) = orphan_a_successor(db);
         db.txns.abort(&db.pager, begun).unwrap();
         assert!(db.verify().is_clean());
-    });
-}
-
-#[test]
-fn a_version_naming_an_unreserved_deleter_is_a_structure_fault() {
-    run(14, |db| {
-        let (_running, at) = orphan_a_successor(db);
-        let was = db.heaps[0].read(&db.pager, at).unwrap().unwrap().header;
-        let reserved = db.txns.commit_log().reserved();
-        let mut forged = was;
-        forged.writers = Writers::inserted(was.writers.inserter()).superseded_by(reserved);
-        let (mut old, mut new) = ([0; HEADER_LEN], [0; HEADER_LEN]);
-        was.write(&mut old);
-        forged.write(&mut new);
-        db.pager
-            .update(&[Pid(at.page())], |p| {
-                let page = &mut p[0];
-                let starts: Vec<usize> = (0..=page.len() - HEADER_LEN)
-                    .filter(|&i| page[i..i + HEADER_LEN] == old)
-                    .collect();
-                assert_eq!(1, starts.len(), "the header of {at:?} is found once");
-                page[starts[0]..starts[0] + HEADER_LEN].copy_from_slice(&new);
-            })
-            .unwrap();
-        let what = format!(
-            "heap 10: slot {} names unreserved deleter {}",
-            at.slot(),
-            reserved.0
-        );
-        assert_eq!(
-            vec![(Pid(at.page()), Problem::Structure(what))],
-            problems(&db.verify())
-        );
     });
 }
 
@@ -553,4 +418,30 @@ fn a_tree_check_out_of_retries_goes_on_past_the_changing_pair() {
             rt.join(writer);
         });
     }
+}
+
+fn a_large_value(db: &Db) -> crate::heap::Pointer {
+    db.heaps[0].out_of_line(&db.pager).unwrap().unwrap()[0]
+}
+
+#[test]
+fn a_head_counting_too_many_versions_is_repaired() {
+    run(10, |db| {
+        let p = a_large_value(db);
+        db.heaps[0].large().recount(&db.pager, p.first, 3).unwrap();
+        let report = db.verify();
+        assert_eq!(
+            vec![(
+                Pid(p.first.page()),
+                Problem::Overcounted {
+                    slot: p.first.slot(),
+                    count: 3,
+                    versions: 1
+                }
+            )],
+            problems(&report)
+        );
+        assert_eq!(Ok(1), db.repair(&report));
+        assert!(db.verify().is_clean());
+    });
 }

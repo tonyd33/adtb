@@ -1,0 +1,23 @@
+# Notes indexed by tag, one with a text out of line; counts, of fixed-width rows; shapes, a sum of circles and
+# squares; and docs, a sum of drafts and finals with no row yet. A page edit names their pages.
+use long
+
+migrate
+  module app
+  add module app
+  add type Note = { id: I64, tag: I64, text: Text }
+  add relation notes : Note key id
+    index (tag)
+  add type Count = { id: I64, n: I64 }
+  add relation counts : Count key id
+  add type Shape { name: Text } = Circle { r: I64 } | Square { side: I64 }
+  add relation shapes : Shape key name
+  add type Doc { id: I64 } = Draft { text: Text } | Final { text: Text }
+  add relation docs : Doc key id
+
+run
+  insert notes { id: 1, tag: 1, text: "a" }
+  insert notes { id: 2, tag: 2, text: long::x1000() ++ long::x1000() ++ long::x1000() }
+  insert counts { id: 1, n: 1 }
+  insert shapes.Circle { name: "c", r: 2 }
+  insert shapes.Square { name: "s", side: 3 }

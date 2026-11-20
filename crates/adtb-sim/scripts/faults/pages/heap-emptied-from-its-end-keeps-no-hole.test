@@ -1,0 +1,49 @@
+# Under a retention window, a vacuum emptying a heap from its end leaves no hole past its last
+# page, and one emptying it whole leaves no page; an insert then takes position 0.
+use pages
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+run
+  insert docs.Draft { id: 1, text: long::x1000() }
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 1, text: d.text })
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 2, text: d.text })
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 4, text: d.text })
+
+run
+  delete d in docs where d.id > 4
+
+run
+  vacuum docs
+
+probe heap app::docs Draft
+----
+0: HeapSlotted format 1, 4 slots, flagged all visible, mapped all visible
+0.0: Normal NONE, x0
+0.1: Normal NONE, x1
+0.2: Normal NONE, x2
+0.3: Normal NONE, x2
+
+run
+  delete d in docs
+
+run
+  vacuum docs
+
+probe heap app::docs Draft
+----
+
+run
+  insert docs.Draft { id: 1, text: "a" }
+
+probe heap app::docs Draft
+----
+0: HeapSlotted format 1, 1 slots
+0.0: Normal NONE, x0

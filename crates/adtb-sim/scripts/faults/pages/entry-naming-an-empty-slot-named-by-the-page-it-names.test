@@ -1,0 +1,15 @@
+# An index entry naming a slot that holds nothing is a fault of the index, found on the heap page
+# it names.
+use pages
+
+scribble index app::notes key id
+  entry 0 again at slot 9
+
+probe holding verify
+----
+Orphan { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "the page entry 0 of index app::notes key id names slot 9: holds no version of the entry's key" }
+
+command rowsort
+  verify
+----
+Orphan { id: verify_findings.key(2), run: RunId(2), at: 2026-01-01T00:00:00.229375Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "page 571 slot 9: holds no version of the entry's key" }

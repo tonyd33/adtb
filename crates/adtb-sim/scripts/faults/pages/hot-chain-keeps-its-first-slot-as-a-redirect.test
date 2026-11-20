@@ -1,0 +1,32 @@
+# A vacuum of a chain of heap-only versions frees the old versions, keeps the first slot as a
+# redirect to the newest, and sets the page all-visible.
+use pages
+
+run
+  update n in notes where n.id == 1 set { n with text: "b" }
+
+run
+  update n in notes where n.id == 1 set { n with text: "c" }
+
+run
+  update n in notes where n.id == 1 set { n with text: "d" }
+
+run
+  vacuum notes
+
+probe heap app::notes Note
+----
+0: HeapSlotted format 1, 5 slots, flagged all visible, mapped all visible
+0.0: Redirect 0.4
+0.1: Normal NONE, x0
+0.2: Unused
+0.3: Unused
+0.4: Normal HEAP_ONLY, x1
+
+query
+  from n in notes where n.id == 1 select n.text
+----
+"d"
+
+probe holding verify
+----

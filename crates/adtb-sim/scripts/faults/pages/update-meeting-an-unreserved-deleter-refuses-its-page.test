@@ -1,0 +1,13 @@
+# An update reading a version whose deleter is past the reservation refuses its page as out of
+# frame, and the relation is quarantined.
+use pages
+
+scribble heap app::notes Note
+  slot 0 deleter unreserved
+
+fatal Quarantined { what: "app::notes.Note" }
+  update n in notes where n.id == 1 set { n with text: "b" }
+
+probe damage
+----
+heap app::notes Note: Shape(Frame)

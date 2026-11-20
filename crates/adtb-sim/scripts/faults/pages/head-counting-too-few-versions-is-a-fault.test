@@ -1,0 +1,9 @@
+# A large value's head counting fewer versions than point at it is a fault of the store.
+use pages
+
+scribble large app::notes Note
+  slot 0 count 0
+
+probe holding verify
+----
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, where: "large app::notes Note: Structure(\"large-value store 1: head 0 counts 0 versions, 1 point at it\")" }

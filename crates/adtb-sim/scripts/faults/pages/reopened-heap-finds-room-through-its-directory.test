@@ -1,0 +1,42 @@
+# After a reopen an insert too large for the first pages walks the heap's directory to the page
+# with room and takes no new page.
+use pages
+
+run
+  insert docs.Draft { id: 1, text: long::x1000() }
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 1, text: d.text })
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 2, text: d.text })
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 4, text: d.text })
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 8, text: d.text })
+
+run
+  insert docs from (from d in docs.Draft select Draft { id: d.id + 16, text: d.text })
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 7 slots
+1: HeapSlotted format 1, 7 slots
+2: HeapSlotted format 1, 7 slots
+3: HeapSlotted format 1, 7 slots
+4: HeapSlotted format 1, 4 slots
+
+reopen
+
+run
+  insert docs.Draft { id: 100, text: long::x1000() ++ long::x1000() }
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 7 slots
+1: HeapSlotted format 1, 7 slots
+2: HeapSlotted format 1, 7 slots
+3: HeapSlotted format 1, 7 slots
+4: HeapSlotted format 1, 5 slots

@@ -1,0 +1,9 @@
+# A version whose deleter is past the commit log's reservation is a fault of its heap.
+use pages
+
+scribble heap app::notes Note
+  slot 0 deleter unreserved
+
+probe holding verify
+----
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, where: "heap app::notes Note: Structure(\"heap 247: slot 0 names unreserved deleter 1025\")" }

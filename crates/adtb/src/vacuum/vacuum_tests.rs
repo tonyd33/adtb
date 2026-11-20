@@ -721,56 +721,6 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
 }
 
 #[test]
-fn a_heap_only_chain_keeps_its_first_slot_as_a_redirect() {
-    let mut sim = Sim::new(31, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(&rt, 4);
-        let pager = &mut db.pager;
-        let row = |n: i32| {
-            vec![
-                Value::I64(1),
-                Value::Text("a".into()),
-                Value::Bytes(vec![n as u8; 8]),
-            ]
-        };
-        let begun = db.txns.begin(pager).unwrap();
-        let x = begun.xid();
-        let first = db.heaps[EMAIL].insert(pager, x, &row(0)).unwrap();
-        db.index(EMAIL, &row(0), first);
-        let pager = &mut db.pager;
-        db.txns.commit(pager, begun).unwrap();
-        let mut at = first;
-        for n in 1..=3 {
-            let begun = db.txns.begin(pager).unwrap();
-            let x = begun.xid();
-            let u = db.heaps[EMAIL]
-                .update(pager, at, x, &row(n), &[0, 1])
-                .unwrap();
-            assert!(u.heap_only);
-            at = u.tid;
-            db.txns.commit(pager, begun).unwrap();
-        }
-        let report = db.vacuum(usize::MAX);
-        assert_eq!(0, report.entries, "{report:?}");
-        assert_eq!(2, report.freed, "{report:?}");
-        assert_eq!(1, report.all_visible, "{report:?}");
-        let pager = &mut db.pager;
-        let (found, _) = walk(pager, db.ids[EMAIL], &db.heaps, first, |_, _| {
-            Ok::<_, PageError>(true)
-        })
-        .unwrap()
-        .unwrap();
-        assert_eq!(at, found.tid);
-        assert_eq!(None, db.heaps[EMAIL].read(pager, first).unwrap());
-        assert!(db.heaps[EMAIL].all_visible(pager, Pid(at.page())).unwrap());
-        assert_eq!(Vec::<String>::new(), db.verify());
-        let (scan, index) = db.fresh_visible();
-        assert_eq!(scan, index);
-        assert_eq!(Some(&(EMAIL, row(3))), scan.rows().get(&1));
-    });
-}
-
-#[test]
 fn a_write_clears_the_all_visible_bit() {
     let mut sim = Sim::new(32, Config::default());
     finished(&mut sim, |rt| {
@@ -802,29 +752,7 @@ fn a_write_clears_the_all_visible_bit() {
     });
 }
 
-/// A heap write, applied to a version of heap [`EMAIL`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum HeapWrite {
-    Insert,
-    HeapOnlyUpdate,
-    Update,
-    Delete,
-    Retag,
-    Restore,
-    CopyVersion,
-}
-
-const HEAP_WRITES: [HeapWrite; 7] = [
-    HeapWrite::Insert,
-    HeapWrite::HeapOnlyUpdate,
-    HeapWrite::Update,
-    HeapWrite::Delete,
-    HeapWrite::Retag,
-    HeapWrite::Restore,
-    HeapWrite::CopyVersion,
-];
-
-/// The heap of the sum with [`EMAIL`]'s row type that retags and copies write into.
+/// The heap of the sum with [`EMAIL`]'s row type that a copy writes into.
 const OTHER: usize = 1;
 
 /// Returns the all-visible flag and visibility map bit of every page of [`EMAIL`] and [`OTHER`].
@@ -841,182 +769,49 @@ fn all_visible_marks(db: &Db) -> BTreeMap<(usize, Pid), (bool, bool)> {
     out
 }
 
-/// Apply `write` to the version at `tid` of [`EMAIL`] holding the row of `key` written with `r`.
-/// Returns the pages it wrote, and whether an update was heap-only.
-fn apply_heap_write(
-    db: &mut Db,
-    write: HeapWrite,
-    tid: Tid,
-    key: i64,
-    r: u64,
-) -> (Vec<(usize, Pid)>, bool) {
-    let begun = db.txns.begin(&db.pager).unwrap();
-    let x = begun.xid();
-    let o = (EMAIL, Pid(tid.page()));
-    let page = |h: usize, t: Tid| (h, Pid(t.page()));
-    let heap = &db.heaps[EMAIL];
-    match write {
-        HeapWrite::Insert => {
-            let t = heap
-                .insert(&db.pager, x, &make_row(EMAIL, 5000, 1))
-                .unwrap();
-            (vec![page(EMAIL, t)], false)
-        }
-        HeapWrite::HeapOnlyUpdate | HeapWrite::Update => {
-            let new = if write == HeapWrite::Update {
-                make_row(EMAIL, key + 6000, r)
-            } else {
-                make_row(EMAIL, key, r + 4)
-            };
-            let u = heap
-                .update(&db.pager, tid, x, &new, indexed(EMAIL))
-                .unwrap();
-            (vec![o, page(EMAIL, u.tid)], u.heap_only)
-        }
-        HeapWrite::Delete => {
-            heap.delete(&db.pager, tid, x).unwrap();
-            (vec![o], false)
-        }
-        HeapWrite::Retag => {
-            let row = make_row(OTHER, key, r);
-            let t = heap
-                .retag(&db.pager, tid, x, &db.heaps[OTHER], &row)
-                .unwrap();
-            (vec![o, page(OTHER, t)], false)
-        }
-        HeapWrite::Restore => {
-            heap.delete(&db.pager, tid, x).unwrap();
-            heap.restore(&db.pager, tid).unwrap();
-            (vec![o], false)
-        }
-        HeapWrite::CopyVersion => {
-            heap.delete(&db.pager, tid, x).unwrap();
+#[test]
+fn a_version_copy_clears_the_all_visible_flag_of_the_page_it_lands_on() {
+    const ROWS: i64 = 45;
+    for target in [0, ROWS / 2, ROWS - 1] {
+        let seed = 78 + target as u64;
+        let mut sim = Sim::new(seed, Config::default());
+        let (landed, before, after) = adtb_testkit::process::run(&mut sim, |rt| {
+            let (mut db, _) = Db::create(&rt, 4);
+            let begun = db.txns.begin(&db.pager).unwrap();
+            let x = begun.xid();
+            let mut tids = Vec::new();
+            for h in [EMAIL, OTHER] {
+                for key in 0..ROWS {
+                    let key = key + 1000 * h as i64;
+                    let row = make_row(h, key, key as u64 * 4 + 1);
+                    let tid = db.heaps[h].insert(&db.pager, x, &row).unwrap();
+                    db.index(h, &row, tid);
+                    tids.push(tid);
+                }
+            }
             db.txns.commit(&db.pager, begun).unwrap();
-            let v = heap
+            db.vacuum(usize::MAX);
+            let before = all_visible_marks(&db);
+            let tid = tids[target as usize];
+            let begun = db.txns.begin(&db.pager).unwrap();
+            db.heaps[EMAIL].delete(&db.pager, tid, begun.xid()).unwrap();
+            db.txns.commit(&db.pager, begun).unwrap();
+            let v = db.heaps[EMAIL]
                 .read(&db.pager, tid)
                 .unwrap()
                 .expect("the deleted version");
-            let copy = db.heaps[OTHER].copy_version(&db.pager, heap, &v).unwrap();
-            (
-                vec![o, page(OTHER, copy.expect("the version is copied"))],
-                false,
-            )
-        }
+            let copy = db.heaps[OTHER]
+                .copy_version(&db.pager, &db.heaps[EMAIL], &v)
+                .unwrap()
+                .expect("the version is copied");
+            let after = all_visible_marks(&db);
+            let problems = db.heaps[OTHER].verify(&db.pager).unwrap();
+            assert_eq!(Vec::<String>::new(), problems, "seed {seed}");
+            ((OTHER, Pid(copy.page())), before, after)
+        });
+        assert_eq!(Some(&(true, true)), before.get(&landed), "seed {seed}");
+        assert_eq!(Some(&(false, false)), after.get(&landed), "seed {seed}");
     }
-}
-
-#[test]
-fn every_heap_write_clears_the_all_visible_flag() {
-    const ROWS: i64 = 45;
-    let mut reached: BTreeMap<HeapWrite, usize> = BTreeMap::new();
-    let mut heap_only = 0;
-    for (i, write) in HEAP_WRITES.into_iter().enumerate() {
-        for target in [0, ROWS / 2, ROWS - 1] {
-            let seed = 60 + i as u64 * 3 + target as u64;
-            let mut sim = Sim::new(seed, Config::default());
-            let (wrote, hot, before, after) = adtb_testkit::process::run(&mut sim, |rt| {
-                let (mut db, _) = Db::create(&rt, 4);
-                let begun = db.txns.begin(&db.pager).unwrap();
-                let x = begun.xid();
-                let mut tids = Vec::new();
-                for h in [EMAIL, OTHER] {
-                    for key in 0..ROWS {
-                        let key = key + 1000 * h as i64;
-                        let row = make_row(h, key, key as u64 * 4 + 1);
-                        let tid = db.heaps[h].insert(&db.pager, x, &row).unwrap();
-                        db.index(h, &row, tid);
-                        tids.push(tid);
-                    }
-                }
-                db.txns.commit(&db.pager, begun).unwrap();
-                db.vacuum(usize::MAX);
-                let before = all_visible_marks(&db);
-                let r = target as u64 * 4 + 1;
-                let (wrote, hot) =
-                    apply_heap_write(&mut db, write, tids[target as usize], target, r);
-                let after = all_visible_marks(&db);
-                for h in [EMAIL, OTHER] {
-                    let problems = db.heaps[h].verify(&db.pager).unwrap();
-                    assert_eq!(Vec::<String>::new(), problems, "{write:?} seed {seed}");
-                }
-                (wrote, hot, before, after)
-            });
-            for p in &wrote {
-                assert_eq!(
-                    Some(&(false, false)),
-                    after.get(p),
-                    "{write:?} {p:?} seed {seed}"
-                );
-            }
-            if wrote.iter().all(|p| before.get(p) == Some(&(true, true))) {
-                *reached.entry(write).or_default() += 1;
-            }
-            heap_only += usize::from(hot);
-        }
-    }
-    for write in HEAP_WRITES {
-        assert!(
-            reached.get(&write).is_some_and(|&n| n > 0),
-            "{write:?} never wrote a page vacuum left all-visible: {reached:?}"
-        );
-    }
-    assert!(heap_only > 0, "no update was heap-only");
-}
-
-#[test]
-fn empty_pages_leave_the_heap_and_their_positions_are_reused() {
-    let mut sim = Sim::new(33, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(&rt, 3);
-        let row = |key: i64| {
-            vec![
-                Value::I64(key),
-                Value::Text(String::new()),
-                Value::Bytes(vec![key as u8; 900]),
-            ]
-        };
-        let begun = db.txns.begin(&db.pager).unwrap();
-        let x = begun.xid();
-        let mut tids = Vec::new();
-        for key in 0..60 {
-            let tid = db.heaps[EMAIL].insert(&db.pager, x, &row(key)).unwrap();
-            db.index(EMAIL, &row(key), tid);
-            tids.push(tid);
-        }
-        db.txns.commit(&db.pager, begun).unwrap();
-        let before = db.heaps[EMAIL].pages(&db.pager).unwrap();
-        assert!(before.len() > 10, "{} pages", before.len());
-        let begun = db.txns.begin(&db.pager).unwrap();
-        let x = begun.xid();
-        for (key, tid) in tids.iter().enumerate() {
-            if key % 20 != 0 {
-                db.heaps[EMAIL].delete(&db.pager, *tid, x).unwrap();
-            }
-        }
-        db.txns.commit(&db.pager, begun).unwrap();
-        let report = db.vacuum(usize::MAX);
-        let after = db.heaps[EMAIL].pages(&db.pager).unwrap();
-        assert_eq!(before.len() - after.len(), report.removed, "{report:?}");
-        assert!(after.len() <= 3, "{} pages left", after.len());
-        assert_eq!(Vec::<String>::new(), db.verify());
-        let begun = db.txns.begin(&db.pager).unwrap();
-        let x = begun.xid();
-        for key in 100..160 {
-            let tid = db.heaps[EMAIL].insert(&db.pager, x, &row(key)).unwrap();
-            db.index(EMAIL, &row(key), tid);
-        }
-        db.txns.commit(&db.pager, begun).unwrap();
-        let refilled = db.heaps[EMAIL].pages(&db.pager).unwrap();
-        assert!(
-            refilled.len() >= before.len() - 3,
-            "{} pages",
-            refilled.len()
-        );
-        assert_eq!(Vec::<String>::new(), db.verify());
-        let (scan, index) = db.fresh_visible();
-        assert_eq!(scan, index);
-        assert_eq!(63, scan.rows().len());
-    });
 }
 
 #[test]

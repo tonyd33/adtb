@@ -1,0 +1,13 @@
+# A scan meeting a directory page that names one page at a second position refuses the
+# directory page as out of frame, and the relation is quarantined.
+use pages
+
+scribble directory app::notes Note
+  entry 1 names heap app::notes Note
+
+fatal Quarantined { what: "app::notes.Note" }
+  from n in notes select n.id
+
+probe damage
+----
+directory app::notes Note: Shape(Frame)

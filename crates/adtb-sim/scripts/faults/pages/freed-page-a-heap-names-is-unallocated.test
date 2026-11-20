@@ -1,0 +1,8 @@
+# A page freed while its heap's directory still names it is unallocated.
+use pages
+
+free heap app::notes Note
+
+probe holding verify
+----
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, where: "heap app::notes Note: Unallocated" }

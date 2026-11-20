@@ -1,0 +1,31 @@
+# A version whose successor's writer rolled back names the successor the next writer writes, and
+# a delete after names none.
+use pages
+
+run
+  insert docs.Draft { id: 1, text: "a" }
+
+begin t
+
+in t run
+  update d in docs.Draft where d.id == 1 set Final { text: "f" }
+
+rollback t
+
+run
+  update d in docs.Draft where d.id == 1 set Draft { d with text: "b" }
+
+probe heap app::docs Draft
+----
+0: HeapSlotted format 1, 2 slots
+0.0: Normal HOT_UPDATED, x0 to x1, next 0.1
+0.1: Normal HEAP_ONLY, x1
+
+run
+  delete d in docs where d.id == 1
+
+probe heap app::docs Draft
+----
+0: HeapSlotted format 1, 2 slots
+0.0: Normal HOT_UPDATED, x0 to x1, next 0.1
+0.1: Normal HEAP_ONLY, x1 to x2

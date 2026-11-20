@@ -1,0 +1,103 @@
+# Each heap write to a page a vacuum left all-visible clears its flag and its map bit and leaves
+# the file verifying clean: an insert, a heap-only update, an update of an indexed field, a
+# delete, and a retag on both heaps.
+use pages
+
+run
+  insert docs.Draft { id: 1, text: "a" }
+
+run
+  insert docs.Final { id: 2, text: "b" }
+
+run
+  vacuum docs
+
+run
+  vacuum notes
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 1 slots, flagged all visible, mapped all visible
+
+probe heap app::notes Note pages
+----
+0: HeapSlotted format 1, 2 slots, flagged all visible, mapped all visible
+
+run
+  insert docs.Draft { id: 3, text: "c" }
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 2 slots
+
+probe holding verify
+----
+
+run
+  vacuum docs
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 2 slots, flagged all visible, mapped all visible
+
+run
+  update d in docs.Draft where d.id == 1 set Draft { d with text: "a2" }
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 3 slots
+
+probe holding verify
+----
+
+run
+  update n in notes where n.id == 1 set { n with tag: 7 }
+
+probe heap app::notes Note pages
+----
+0: HeapSlotted format 1, 3 slots
+
+probe holding verify
+----
+
+run
+  vacuum docs
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 3 slots, flagged all visible, mapped all visible
+
+run
+  delete d in docs where d.id == 3
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 3 slots
+
+probe holding verify
+----
+
+run
+  vacuum docs
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 3 slots, flagged all visible, mapped all visible
+
+probe heap app::docs Final pages
+----
+0: HeapSlotted format 1, 1 slots, flagged all visible, mapped all visible
+
+run
+  update d in docs.Draft where d.id == 1 set Final { text: "f" }
+
+probe heap app::docs Draft pages
+----
+0: HeapSlotted format 1, 3 slots
+
+probe heap app::docs Final pages
+----
+0: HeapSlotted format 1, 2 slots
+
+probe holding verify
+----

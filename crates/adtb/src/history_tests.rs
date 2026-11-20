@@ -999,43 +999,6 @@ fn a_crash_at_every_flush_while_a_removed_constructors_heap_drops_keeps_its_past
 }
 
 #[test]
-fn a_heap_emptied_from_its_end_leaves_no_hole_behind_its_last_page() {
-    let mut sim = Sim::new(13, Config::default());
-    finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, Duration::ZERO);
-        let ops: Vec<(i64, Option<i64>)> = (0..2000).map(|k| (k, Some(k))).collect();
-        for chunk in ops.chunks(200) {
-            db.write(chunk);
-        }
-        let pages = db.heap().pages(&db.pager).expect("pages").len();
-        assert!(pages > 4, "{pages} pages");
-        let tail: Vec<(i64, Option<i64>)> = (1000..2000).map(|k| (k, None)).collect();
-        db.write(&tail);
-        db.vacuum_keeping();
-        let check = db.heap().check(&db.pager).expect("check");
-        assert!(check.is_empty(), "{check:?}");
-        let left = db.heap().pages(&db.pager).expect("pages").len();
-        assert!(left < pages, "{left} of {pages} pages left");
-        assert_eq!(0, db.heap().holes(&db.pager).expect("holes"));
-        db.write(&(0..1000).map(|k| (k, None)).collect::<Vec<_>>());
-        db.vacuum_keeping();
-        assert!(db.heap().is_empty(&db.pager).expect("pages"));
-        assert_eq!(0, db.heap().holes(&db.pager).expect("holes"));
-        let begun = db.txns.begin(&db.pager).expect("begin");
-        let x = begun.xid();
-        let mut judge = db
-            .txns
-            .judge(&db.pager, db.txns.horizon_now(db.heap().id().0));
-        let tid = db
-            .heap()
-            .insert_pruning(&db.pager, x, &[Value::I64(1), Value::I64(1)], &mut judge)
-            .expect("insert");
-        let pages = db.heap().pages(&db.pager).expect("pages");
-        assert_eq!(vec![Pid(tid.page())], pages);
-    });
-}
-
-#[test]
 fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
     let mut sim = Sim::new(14, Config::default());
     finished(&mut sim, |rt| {

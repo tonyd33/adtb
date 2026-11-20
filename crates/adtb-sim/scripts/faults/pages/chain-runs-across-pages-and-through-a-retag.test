@@ -1,0 +1,58 @@
+# A row's versions chain across the pages of its heap and through a retag to another
+# constructor's heap and back; a read finds the newest. A reader's snapshot keeps every version.
+use pages
+
+run
+  insert docs.Draft { id: 1, text: "a" }
+
+begin read only r
+
+in r query
+  from d in docs select d.id
+----
+1
+
+run
+  update d in docs.Draft where d.id == 1 set Draft { d with text: long::x1000() ++ long::x1000() ++ "1" }
+
+run
+  update d in docs.Draft where d.id == 1 set Draft { d with text: long::x1000() ++ long::x1000() ++ "2" }
+
+run
+  update d in docs.Draft where d.id == 1 set Draft { d with text: long::x1000() ++ long::x1000() ++ "3" }
+
+run
+  update d in docs.Draft where d.id == 1 set Draft { d with text: long::x1000() ++ long::x1000() ++ "4" }
+
+run
+  update d in docs.Draft where d.id == 1 set Draft { d with text: long::x1000() ++ long::x1000() ++ "5" }
+
+run
+  update d in docs.Draft where d.id == 1 set Final { text: "f" }
+
+run
+  update d in docs.Final where d.id == 1 set Draft { text: "g" }
+
+probe heap app::docs Draft
+----
+0: HeapSlotted format 1, 4 slots
+0.0: Normal HOT_UPDATED, x0 to x1, next 0.1
+0.1: Normal HOT_UPDATED|HEAP_ONLY, x1 to x2, next 0.2
+0.2: Normal HOT_UPDATED|HEAP_ONLY, x2 to x3, next 0.3
+0.3: Normal HEAP_ONLY, x3 to x4, next 1.0
+1: HeapSlotted format 1, 3 slots
+1.0: Normal HOT_UPDATED, x4 to x5, next 1.1
+1.1: Normal MOVED|HEAP_ONLY, x5 to x6, next elsewhere
+1.2: Normal RETAGGED_IN, x7
+
+probe heap app::docs Final
+----
+0: HeapSlotted format 1, 1 slots
+0.0: Normal MOVED|RETAGGED_IN, x0 to x1, next elsewhere
+
+query
+  from d in docs select d
+----
+Draft { id: 1, text: "g" }
+
+rollback r

@@ -1,0 +1,18 @@
+# A heap's directory root naming no visibility map is a fault of the heap, and a vacuum that
+# reads the map refuses the root as out of frame.
+use pages
+
+scribble directory app::notes Note
+  no map
+
+probe holding verify
+----
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, where: "a page no fault names: Leaked" }
+Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, where: "directory app::notes Note: Structure(\"heap 247: names no visibility map\")" }
+
+fatal Quarantined { what: "app::notes.Note" }
+  vacuum notes
+
+probe damage
+----
+directory app::notes Note: Shape(Frame)
