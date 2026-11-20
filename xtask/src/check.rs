@@ -1,12 +1,14 @@
 use std::ffi::OsString;
 use std::fs::File;
-use std::path::PathBuf;
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::step::{self, say};
+use crate::tree::{self, Pidfd};
 use crate::workspace::Workspace;
 use crate::{grammar, lint, scope, size, test};
 
@@ -29,7 +31,7 @@ pub enum Stage {
     Damage,
 }
 
-/// The stages that build nothing in the workspace's target directory, each run at once.
+/// The stages that share no build with the tests, each run at once.
 const FREE: [Stage; 8] = [
     Stage::Fmt,
     Stage::Lint,
@@ -41,9 +43,12 @@ const FREE: [Stage; 8] = [
     Stage::Miri,
 ];
 
-/// The stages that build in the workspace's target directory and run once clippy passes, beside
-/// the free ones.
-const AFTER_CLIPPY: [Stage; 2] = [Stage::Tests, Stage::Damage];
+/// The stages that build in the workspace's target directory. When they run at once they run
+/// beside clippy and stop when it fails; otherwise they run after it passes.
+const TESTS: [Stage; 2] = [Stage::Tests, Stage::Damage];
+
+/// The flag of `xtask stage clippy` that builds into `clippy` under the target directory.
+const OWN_TARGET: &str = "--own-target";
 
 /// The nextest slots each damage search test holds.
 const DAMAGE_SLOTS: usize = 4;
@@ -69,7 +74,7 @@ impl Stage {
     pub fn parse(name: &str) -> Result<Self, String> {
         FREE.into_iter()
             .chain([Self::Clippy])
-            .chain(AFTER_CLIPPY)
+            .chain(TESTS)
             .find(|stage| stage.name() == name)
             .ok_or_else(|| format!("no stage {name}"))
     }
@@ -77,8 +82,7 @@ impl Stage {
 
 /// Run every stage of the check, each a process of this program with its output in
 /// `check/STAGE.log` under the target directory, and print each stage's result as it ends with the
-/// whole output of one that failed. With `revset`, also check the lint allowlist against that of
-/// its base. Fails when any stage fails.
+/// whole output of one that failed. With `revset`, also check the lint allowlist against that of its base. Fails when any stage fails.
 pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     let base = match revset {
         Some(revset) => {
@@ -97,54 +101,66 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("xtask check: creating {}: {e}", logs.display()))?;
     let program =
         std::env::current_exe().map_err(|e| format!("xtask check: no path to xtask: {e}"))?;
+    tree::adopt_orphans().map_err(|e| format!("xtask check: {e}"))?;
     let launch = Launch {
         program,
         logs,
         base,
+        children: Mutex::default(),
     };
     let (sender, ended) = mpsc::channel();
     let failed = thread::scope(|s| {
+        let launch = &launch;
         for stage in FREE {
             let sender = sender.clone();
-            let launch = &launch;
-            s.spawn(move || sender.send(launch.run(stage, None)));
+            s.spawn(move || launch.run(stage, &[]).map(|ran| sender.send(ran)));
         }
-        let launch = &launch;
-        s.spawn(move || {
-            let clippy = launch.run(Stage::Clippy, None);
-            let passed = clippy.passed();
-            if sender.send(clippy).is_err() || !passed {
-                return;
-            }
-            match overlap() {
-                Some((suite, damage)) => {
-                    for (stage, threads) in AFTER_CLIPPY.into_iter().zip([suite, damage]) {
-                        let sender = sender.clone();
-                        s.spawn(move || sender.send(launch.run(stage, Some(threads))));
-                    }
+        match overlap() {
+            Some((suite, damage)) => {
+                let sender_clippy = sender.clone();
+                s.spawn(move || {
+                    launch
+                        .run(Stage::Clippy, &[OWN_TARGET.to_owned()])
+                        .map(|ran| sender_clippy.send(ran))
+                });
+                for (stage, threads) in TESTS.into_iter().zip([suite, damage]) {
+                    let sender = sender.clone();
+                    let threads = ["--test-threads".to_owned(), threads.to_string()];
+                    s.spawn(move || launch.run(stage, &threads).map(|ran| sender.send(ran)));
                 }
-                None => {
-                    for stage in AFTER_CLIPPY {
-                        if sender.send(launch.run(stage, None)).is_err() {
-                            return;
+            }
+            None => {
+                let sender = sender.clone();
+                s.spawn(move || {
+                    let clippy = launch.run(Stage::Clippy, &[])?;
+                    let passed = clippy.passed();
+                    sender.send(clippy).ok()?;
+                    if passed {
+                        for stage in TESTS {
+                            sender.send(launch.run(stage, &[])?).ok()?;
                         }
                     }
-                }
+                    Some(())
+                });
             }
-        });
+        }
+        drop(sender);
         let mut ended_stages = Vec::new();
         let mut failed = Vec::new();
         for ran in ended {
             ran.report()?;
-            if !ran.passed() {
+            if ran.stage == Stage::Clippy && !ran.passed() {
+                launch.stop()?;
+            }
+            if ran.stage == Stage::Tests && matches!(ran.outcome, Outcome::Stopped) {
+                mark_stopped(&workspace.target.join("test.txt"))?;
+            }
+            if ran.failed() {
                 failed.push(ran.stage.name());
             }
             ended_stages.push(ran.stage);
         }
-        for stage in AFTER_CLIPPY
-            .into_iter()
-            .filter(|s| !ended_stages.contains(s))
-        {
+        for stage in TESTS.into_iter().filter(|s| !ended_stages.contains(s)) {
             say(format_args!("xtask check: {} did not run", stage.name()))?;
         }
         Ok::<_, String>(failed)
@@ -171,28 +187,28 @@ fn overlap() -> Option<(usize, usize)> {
 
 /// Run `stage` of `workspace` with the standard streams of this process. With `base`, the lint
 /// stage also checks the allowlist against the one at that revision. With `threads`, the tests
-/// and the damage search run that many test threads.
+/// and the damage search run that many test threads. With `own_target`, clippy builds into
+/// `clippy` under the target directory.
 pub fn stage(
     workspace: &Workspace,
     stage: Stage,
     base: Option<&str>,
     threads: Option<usize>,
+    own_target: bool,
 ) -> Result<(), String> {
     let name = stage.name();
     let threads: Vec<OsString> = threads
         .map(|n| vec!["--test-threads".into(), n.to_string().into()])
         .unwrap_or_default();
     match stage {
-        Stage::Clippy => step::run(
-            name,
-            workspace.cargo(&["clippy"]).args([
-                "--workspace",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ]),
-        ),
+        Stage::Clippy => {
+            let mut clippy = workspace.cargo(&["clippy"]);
+            clippy.args(["--workspace", "--all-targets", "--", "-D", "warnings"]);
+            if own_target {
+                clippy.env("CARGO_TARGET_DIR", workspace.target.join("clippy"));
+            }
+            step::run(name, &mut clippy)
+        }
         Stage::Fmt => step::run(name, workspace.cargo(&["fmt"]).args(["--all", "--check"])),
         Stage::Lint => lint::run(&workspace.root, base, false),
         Stage::Tests => test::run(workspace, &threads),
@@ -212,73 +228,190 @@ pub fn stage(
     }
 }
 
-/// How a stage starts: this program, the directory of the stages' logs and the allowlist base.
+/// How a stage starts: this program, the directory of the stages' logs, the allowlist base and the
+/// stages running.
 struct Launch {
     program: PathBuf,
     logs: PathBuf,
     base: Option<String>,
+    children: Mutex<Children>,
 }
 
-/// A stage that ended: its name, its log, its wall time and its exit or why it did not start.
+/// The stages running, each a child of this process not yet reaped, and what `stop` did.
+#[derive(Default)]
+struct Children {
+    running: Vec<(Stage, Pidfd)>,
+    stopped: bool,
+    killed: Vec<Stage>,
+}
+
+/// A stage that ended: its name, its log, its wall time and how it ended.
 struct Ran {
     stage: Stage,
     log: PathBuf,
     took: Duration,
-    status: Result<ExitStatus, String>,
+    outcome: Outcome,
+}
+
+enum Outcome {
+    Exited(ExitStatus),
+    /// Killed after clippy failed.
+    Stopped,
+    /// Did not start, or could not be waited for.
+    Lost(String),
 }
 
 impl Launch {
-    /// Run `stage` in a process of its own, its output in its log, with `threads` test threads.
+    /// Run `stage` in a process of its own with `args`, its output in its log. Returns `None` for
+    /// the tests or the damage search after clippy failed.
     #[expect(
         clippy::disallowed_methods,
         reason = "goes if the check stops reporting each stage's wall time"
     )]
-    fn run(&self, stage: Stage, threads: Option<usize>) -> Ran {
-        let name = stage.name();
-        let log = self.logs.join(format!("{name}.log"));
+    fn run(&self, stage: Stage, args: &[String]) -> Option<Ran> {
+        let log = self.logs.join(format!("{}.log", stage.name()));
         let started = Instant::now();
-        let status = File::create(&log)
-            .and_then(|file| Ok((file.try_clone()?, file)))
-            .map_err(|e| format!("creating {}: {e}", log.display()))
-            .and_then(|(out, err)| {
-                let mut command = Command::new(&self.program);
-                command.args(["stage", name]);
-                if let Some(base) = &self.base {
-                    command.args(["--base", base]);
-                }
-                if let Some(threads) = threads {
-                    command.args(["--test-threads", &threads.to_string()]);
-                }
-                command
-                    .stdin(Stdio::null())
-                    .stdout(out)
-                    .stderr(err)
-                    .status()
-                    .map_err(|e| format!("{} did not start: {e}", step::shown(&command)))
-            });
-        Ran {
+        let outcome = match self.start(stage, args, &log) {
+            Ok(Some((child, exit))) => self.wait(stage, child, &exit),
+            Ok(None) => return None,
+            Err(e) => Outcome::Lost(e),
+        };
+        Some(Ran {
             stage,
             log,
             took: started.elapsed(),
-            status,
+            outcome,
+        })
+    }
+
+    /// Start `stage`, and return it with a second handle on it to wait for its exit.
+    fn start(
+        &self,
+        stage: Stage,
+        args: &[String],
+        log: &Path,
+    ) -> Result<Option<(Child, Pidfd)>, String> {
+        let out = File::create(log).map_err(|e| format!("creating {}: {e}", log.display()))?;
+        let err = out
+            .try_clone()
+            .map_err(|e| format!("sharing {}: {e}", log.display()))?;
+        let mut command = Command::new(&self.program);
+        command.args(["stage", stage.name()]);
+        if let Some(base) = &self.base {
+            command.args(["--base", base]);
+        }
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err);
+        let mut children = self.children();
+        if TESTS.contains(&stage) && children.stopped {
+            return Ok(None);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("{} did not start: {e}", step::shown(&command)))?;
+        match Pidfd::open(child.id()).and_then(|held| Ok((held, Pidfd::open(child.id())?))) {
+            Ok((held, exit)) => {
+                children.running.push((stage, held));
+                Ok(Some((child, exit)))
+            }
+            Err(e) => {
+                drop(children);
+                let waited = child.wait();
+                Err(format!("{e}; the stage then ended: {waited:?}"))
+            }
         }
     }
+
+    /// Wait for `stage` to exit, take it from the running stages, then reap it. A stage is reaped
+    /// only once taken, so `stop` signals no reaped pid.
+    fn wait(&self, stage: Stage, mut child: Child, exit: &Pidfd) -> Outcome {
+        let exited = exit.exited(-1);
+        let killed = {
+            let mut children = self.children();
+            children.running.retain(|(running, _)| *running != stage);
+            children.killed.contains(&stage)
+        };
+        match (exited, child.wait()) {
+            (_, Ok(status)) if killed && !status.success() => Outcome::Stopped,
+            (Ok(_), Ok(status)) => Outcome::Exited(status),
+            (Err(e), Ok(status)) => Outcome::Lost(format!("{e}; it then ended: {status}")),
+            (_, Err(e)) => Outcome::Lost(format!("waiting for it: {e}")),
+        }
+    }
+
+    /// Kill the tests and the damage search with every process under them and start neither,
+    /// then print any process under the check that is still running and is no stage.
+    fn stop(&self) -> Result<(), String> {
+        let mut children = self.children();
+        children.stopped = true;
+        let mut killed = Vec::new();
+        for (stage, held) in children.running.iter().filter(|(s, _)| TESTS.contains(s)) {
+            killed.push(*stage);
+            let left = tree::kill(held).map_err(|e| format!("xtask check: stopping: {e}"))?;
+            for pid in left {
+                say(format_args!(
+                    "xtask check: process {pid} under {} survived the kill",
+                    stage.name()
+                ))?;
+            }
+        }
+        children.killed.extend(killed);
+        let stages: Vec<u32> = children.running.iter().map(|(_, held)| held.pid).collect();
+        for (pid, name) in tree::adopted().map_err(|e| format!("xtask check: {e}"))? {
+            if !stages.contains(&pid) {
+                say(format_args!(
+                    "xtask check: process {pid} ({name}) runs under the check outside any stage"
+                ))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn children(&self) -> MutexGuard<'_, Children> {
+        self.children.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Append to the tests' output in `out` that the run was stopped.
+fn mark_stopped(out: &Path) -> Result<(), String> {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(out)
+        .and_then(|mut file| {
+            writeln!(
+                file,
+                "xtask test: stopped, since clippy failed; this output is partial"
+            )
+        })
+        .map_err(|e| format!("xtask check: marking {}: {e}", out.display()))
 }
 
 impl Ran {
     fn passed(&self) -> bool {
-        self.status.as_ref().is_ok_and(ExitStatus::success)
+        matches!(&self.outcome, Outcome::Exited(status) if status.success())
+    }
+
+    fn failed(&self) -> bool {
+        !self.passed() && !matches!(self.outcome, Outcome::Stopped)
     }
 
     /// Print the stage's result and wall time, after its whole output when it failed.
     fn report(&self) -> Result<(), String> {
         let (name, secs) = (self.stage.name(), self.took.as_secs_f64());
-        let why = match &self.status {
-            Ok(status) if status.success() => {
+        let why = match &self.outcome {
+            Outcome::Exited(status) if status.success() => {
                 return say(format_args!("xtask check: {name} passed in {secs:.1} s"));
             }
-            Ok(status) => status.to_string(),
-            Err(e) => e.clone(),
+            Outcome::Stopped => {
+                return say(format_args!(
+                    "xtask check: {name} stopped after {secs:.1} s, since clippy failed"
+                ));
+            }
+            Outcome::Exited(status) => status.to_string(),
+            Outcome::Lost(e) => e.clone(),
         };
         let output = std::fs::read(&self.log).map_or_else(
             |e| format!("reading {}: {e}\n", self.log.display()),

@@ -11,6 +11,7 @@ mod scope;
 mod size;
 mod step;
 mod test;
+mod tree;
 mod workspace;
 
 use std::ffi::OsString;
@@ -54,11 +55,13 @@ enum Task {
     },
     /// Run every check of the workspace in one memory-limited scope, as `test` does.
     ///
-    /// Run clippy, then, once it passes, the tests and the damage profile. In a scope of its own
-    /// on at least 8 cores they run at once, a quarter of the test threads to the damage profile;
-    /// otherwise the damage profile runs after the tests. Beside them run rustfmt, the TQL rules,
-    /// cargo-deny, the source-size limit, the documentation build and its link check, the editor
-    /// grammar's generated sources and its corpus and highlight tests, the Loom models and Miri.
+    /// In a scope of its own on at least 8 cores, run the tests and the damage profile at once, a
+    /// quarter of the test threads to the damage profile, and beside them clippy, building into
+    /// `clippy` under the target directory; when clippy fails, kill the tests and the damage
+    /// profile and report them stopped. Otherwise run clippy, then, once it passes, the tests, then
+    /// the damage profile. Beside them run rustfmt, the TQL rules, cargo-deny, the source-size
+    /// limit, the documentation build and its link check, the editor grammar's generated sources
+    /// and its corpus and highlight tests, the Loom models and Miri.
     /// Each stage's output goes to `check/STAGE.log` under the target directory. Print each
     /// stage's wall time as it ends, with the whole output of one that failed, and fail when any
     /// stage fails. Miri needs `ADTB_NIGHTLY_BIN`, which the dev shell sets.
@@ -78,6 +81,9 @@ enum Task {
         /// Run the tests or the damage search on this many test threads.
         #[arg(long, value_name = "N")]
         test_threads: Option<usize>,
+        /// Build clippy into `clippy` under the target directory.
+        #[arg(long)]
+        own_target: bool,
     },
     /// Run the TQL rules `lint/rules.toml` declares, with `tql` from PATH.
     ///
@@ -109,11 +115,13 @@ fn main() -> ExitCode {
             stage,
             base,
             test_threads,
+            own_target,
         } => check::stage(
             &workspace::Workspace::find()?,
             stage,
             base.as_deref(),
             test_threads,
+            own_target,
         ),
         Task::Lint { against, counts } => lint::run(
             &workspace::Workspace::find()?.root,
