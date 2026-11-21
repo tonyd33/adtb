@@ -6,12 +6,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{LogGrant, Source, State};
 use crate::ids::{FIRST_LOG_ID, ObjectKey, Space};
 
+mod admin;
 mod apply;
+mod clause;
 mod compare;
+mod ctor;
 mod field;
 mod lift;
+mod moved;
 mod op;
 mod print;
+mod reselect;
 mod slots;
 mod term;
 #[cfg(test)]
@@ -52,6 +57,8 @@ pub(super) struct Model {
     grants: Vec<LogGrant>,
     next: BTreeMap<Space, u64>,
     version: u64,
+    /// The packages and release data an `install` or `adopt tzdb` may name, by file.
+    packages: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -5,7 +5,7 @@ use crate::schema::ScopePart;
 use crate::schema::prelude::PRINCIPAL;
 
 #[path = "derived.rs"]
-mod derived;
+pub(super) mod derived;
 #[path = "functions.rs"]
 mod functions;
 #[cfg(test)]

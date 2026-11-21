@@ -1,7 +1,7 @@
 use super::*;
 
 mod merge;
-mod remove;
+pub(in crate::evolve) mod remove;
 mod split;
 
 impl Cx<'_> {
@@ -170,7 +170,7 @@ impl Cx<'_> {
     }
 
     /// Returns the key fields of the relations over type `def`.
-    fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {
+    pub(in crate::evolve) fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {
         Self::relations_of(schema, def)
             .into_iter()
             .flat_map(|(r, _, _)| schema.relation(r).key.clone())

@@ -28,18 +28,36 @@ impl Model {
     }
 
     /// Returns the field of `ctor` of type `t`, the header when `None`, named `name`.
-    fn field_of(&self, t: u64, ctor: Option<u64>, name: &str) -> Option<u64> {
+    pub(super) fn field_of(&self, t: u64, ctor: Option<u64>, name: &str) -> Option<u64> {
         self.own_fields(t, ctor)
             .into_iter()
             .find(|f| self.fields[f].name == name)
     }
 
+    /// Returns the schema the model builds now and its program, refusing the operator as one
+    /// that checks against a schema that does not check when they do not build or check.
+    pub(super) fn checked(&self, run: &Run) -> Res<(Schema, check::Program)> {
+        let unchecked = |why: &str| {
+            refuse(format!(
+                "the operator checks against the schema the operators before it produce, which does not check: {why}"
+            ))
+        };
+        let schema = match self.schema(&run.ahead(self)) {
+            Ok(s) => s,
+            Err(ds) => return unchecked(&ds[0].diag.message),
+        };
+        match check::check_schema(&schema) {
+            Ok(p) => Ok((schema, p)),
+            Err(ds) => unchecked(&ds[0].diag.message),
+        }
+    }
+
     /// Returns the type `t` is in `schema`.
-    fn def_in(&self, schema: &Schema, t: u64) -> Option<TypeId> {
+    pub(super) fn def_in(&self, schema: &Schema, t: u64) -> Option<TypeId> {
         schema.ids().type_of(crate::ids::CatTypeId::from_raw(t))
     }
 
-    fn ctor_index(&self, schema: &Schema, c: u64) -> Option<u32> {
+    pub(super) fn ctor_index(&self, schema: &Schema, c: u64) -> Option<u32> {
         schema
             .ids()
             .ctor_of(crate::ids::CatCtorId::from_raw(c))
@@ -113,7 +131,7 @@ impl Model {
 
     /// Check fill `fill` of field `field_ty` over the rows of constructors `ctors` of `t` in the
     /// declarations now, the whole sum when `None`. Returns its row function and canonical form.
-    fn fill(
+    pub(super) fn fill(
         &self,
         run: &Run,
         t: u64,
@@ -121,10 +139,7 @@ impl Model {
         field_ty: &Ty,
         fill: &Fill,
     ) -> Res<(RowFn, String)> {
-        let built = self.schema_now(run)?;
-        let schema = built.into_schema();
-        let program =
-            check::check_schema(&schema).or_else(|ds| refuse(ds[0].diag.message.clone()))?;
+        let (schema, program) = self.checked(run)?;
         let def = self.def_in(&schema, t).expect("a type the model holds");
         let module = schema
             .module_named(self.module_of((Space::Shared, t)).expect("a declared type"))
@@ -261,7 +276,7 @@ impl Model {
 
     /// Returns the map that gives field `name` of the rows of constructors `at` of `t`, the
     /// whole sum when `None`, their fill, over the declarations now.
-    fn fill_map(
+    pub(super) fn fill_map(
         &self,
         run: &Run,
         t: u64,
@@ -376,7 +391,7 @@ impl Model {
 
     /// Returns the type and constructor a field path names, refusing a newtype and a type whose
     /// kind has no fields.
-    fn part_of(&self, run: &Run, path: &ast::FieldPath) -> Res<(u64, Option<u64>)> {
+    pub(super) fn part_of(&self, run: &Run, path: &ast::FieldPath) -> Res<(u64, Option<u64>)> {
         let r = op::Resolving::new(self, run.module());
         let (t, c) = r.part(path)?;
         if let Ok(b) = self.schema_now(run)

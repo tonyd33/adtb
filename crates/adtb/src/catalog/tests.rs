@@ -333,7 +333,7 @@ fn only_key_names_sorts_the_fields_of_a_key() {
     );
     let membership = [
         "crates/adtb-lang/src/evolve/ctor/mod.rs: \
-         fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {",
+         pub(in crate::evolve) fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {",
         "crates/adtb-lang/src/evolve/ids.rs: let keys: BTreeSet<&String> = schema",
     ];
     let rule = "crates/adtb-lang/src/textual/form.rs: names.sort();";

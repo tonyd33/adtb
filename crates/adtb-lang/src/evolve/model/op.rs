@@ -221,7 +221,7 @@ impl<'a> Resolving<'a> {
             .map_or_else(|| self.module.to_string(), |m| m.text.clone())
     }
 
-    fn ty(&self, q: &QName) -> Res<u64> {
+    pub(super) fn ty(&self, q: &QName) -> Res<u64> {
         let m = self.module_of(q);
         match self.model.type_named(&m, &q.name.text) {
             Some(t) => Ok(t),
@@ -229,7 +229,7 @@ impl<'a> Resolving<'a> {
         }
     }
 
-    fn relation(&self, q: &QName) -> Res<u64> {
+    pub(super) fn relation(&self, q: &QName) -> Res<u64> {
         let m = self.module_of(q);
         match self.model.relation_named(&m, &q.name.text) {
             Some(r) => Ok(r),
@@ -252,7 +252,7 @@ impl<'a> Resolving<'a> {
         }
     }
 
-    fn set(&self, name: &ast::Ident, rel: &QName) -> Res<u64> {
+    pub(super) fn set(&self, name: &ast::Ident, rel: &QName) -> Res<u64> {
         let m = self.module_of(rel);
         match self
             .model

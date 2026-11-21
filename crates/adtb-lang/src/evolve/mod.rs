@@ -330,60 +330,77 @@ fn sel_text(names: &[String]) -> String {
     }
 }
 
-/// Call `f` on every type expression of a declaration.
-fn each_type<'a>(d: &'a Decl, f: &mut dyn FnMut(&'a ast::Type)) {
-    fn walk<'a>(t: &'a ast::Type, f: &mut dyn FnMut(&'a ast::Type)) {
-        f(t);
-        match &t.kind {
-            ast::TypeKind::Named { args, .. } => {
-                for a in args {
-                    if let ast::TypeArg::Type(t) = a {
-                        walk(t, f);
-                    }
+/// Call `f` on every type expression of a declaration and of the expressions it holds: lambda
+/// parameters and type calls.
+fn each_written_type<'a>(d: &'a Decl, f: &mut dyn FnMut(&'a ast::Type)) {
+    each_type(d, f);
+    for e in decl_exprs(d) {
+        crate::visit::each_expr(e, &mut |x| match &x.kind {
+            ast::ExprKind::TypeCall { ty, .. } => walk_type(ty, f),
+            ast::ExprKind::Lambda(ast::LambdaParams::List(ps), _) => {
+                ps.iter().for_each(|p| walk_type(&p.ty, f));
+            }
+            _ => {}
+        });
+    }
+}
+
+/// Call `f` on `t` and every type expression nested in it.
+fn walk_type<'a>(t: &'a ast::Type, f: &mut dyn FnMut(&'a ast::Type)) {
+    f(t);
+    match &t.kind {
+        ast::TypeKind::Named { args, .. } => {
+            for a in args {
+                if let ast::TypeArg::Type(t) = a {
+                    walk_type(t, f);
                 }
             }
-            ast::TypeKind::Record(fs) => fs.iter().for_each(|x| walk(&x.ty, f)),
-            ast::TypeKind::Sum(cs) => cs
-                .iter()
-                .flat_map(|c| c.record.iter().flatten())
-                .for_each(|x| walk(&x.ty, f)),
-            ast::TypeKind::Fn(a, b) => {
-                walk(a, f);
-                walk(b, f);
-            }
-            ast::TypeKind::Var(_) | ast::TypeKind::Key(..) | ast::TypeKind::Unit => {}
         }
+        ast::TypeKind::Record(fs) => fs.iter().for_each(|x| walk_type(&x.ty, f)),
+        ast::TypeKind::Sum(cs) => cs
+            .iter()
+            .flat_map(|c| c.record.iter().flatten())
+            .for_each(|x| walk_type(&x.ty, f)),
+        ast::TypeKind::Fn(a, b) => {
+            walk_type(a, f);
+            walk_type(b, f);
+        }
+        ast::TypeKind::Var(_) | ast::TypeKind::Key(..) | ast::TypeKind::Unit => {}
     }
+}
+
+/// Call `f` on every type expression of a declaration.
+fn each_type<'a>(d: &'a Decl, f: &mut dyn FnMut(&'a ast::Type)) {
     match d {
         Decl::Type(t) => {
             for x in t.header.iter().flatten() {
-                walk(&x.ty, f);
+                walk_type(&x.ty, f);
             }
             match &t.body {
-                ast::TypeBody::New(base, _) => walk(base, f),
-                ast::TypeBody::Record(fs) => fs.iter().for_each(|x| walk(&x.ty, f)),
+                ast::TypeBody::New(base, _) => walk_type(base, f),
+                ast::TypeBody::Record(fs) => fs.iter().for_each(|x| walk_type(&x.ty, f)),
                 ast::TypeBody::Ctors(cs) => cs
                     .iter()
                     .flat_map(|c| c.record.iter().flatten())
-                    .for_each(|x| walk(&x.ty, f)),
+                    .for_each(|x| walk_type(&x.ty, f)),
             }
         }
         Decl::Relation(r) => {
-            walk(&r.ty, f);
+            walk_type(&r.ty, f);
             for c in &r.clauses {
                 if let RelationClause::Computed(_, t, _) = c {
-                    walk(t, f);
+                    walk_type(t, f);
                 }
             }
         }
         Decl::Fn(fd) => {
-            fd.params.iter().for_each(|p| walk(&p.ty, f));
-            walk(&fd.result, f);
+            fd.params.iter().for_each(|p| walk_type(&p.ty, f));
+            walk_type(&fd.result, f);
         }
         Decl::Aggregate(a) => {
-            a.params.iter().for_each(|p| walk(&p.ty, f));
-            walk(&a.result, f);
-            a.state.iter().for_each(|x| walk(&x.ty, f));
+            a.params.iter().for_each(|p| walk_type(&p.ty, f));
+            walk_type(&a.result, f);
+            a.state.iter().for_each(|x| walk_type(&x.ty, f));
         }
         Decl::Set(_) | Decl::Constraint(_) | Decl::Check(_) | Decl::Store(_) => {}
     }

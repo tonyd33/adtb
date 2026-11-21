@@ -562,43 +562,53 @@ impl Source {
         relation: &QName,
         span: Span,
     ) -> Result<(), Diag> {
-        let Ok(schema) = self.schema() else {
-            return Ok(());
-        };
-        let m = relation.module.as_ref().map_or(module, |m| m.text.as_str());
-        let Some(mid) = schema.module_named(m) else {
-            return Ok(());
-        };
-        let Some(&ValueDef::Relation(rel)) = schema.module(mid).values.get(&relation.name.text)
-        else {
-            return Ok(());
-        };
-        let r = schema.relation(rel);
-        let t = schema.ty(r.elem_def);
-        for (c, f) in t
-            .ctors()
-            .iter()
-            .flat_map(|c| c.fields.iter().map(move |f| (Some(&c.name), f)))
-            .chain(t.header().iter().map(|f| (None, f)))
-        {
-            if matches!(f.ty, Ty::Key { rel: own, .. } if own == RelRef::Declared(rel))
-                && !r.key.contains(&f.name)
-            {
-                let path = match c {
-                    Some(c) if t.ctors().len() > 1 => format!("{}.{c}.{}", t.name, f.name),
-                    _ => format!("{}.{}", t.name, f.name),
-                };
-                return Err(Diag::new(
-                    span,
-                    format!(
-                        "field `{path}` of `{}`'s own type is typed `Key {}` and is outside the new key; drop it in the same migration",
-                        r.name, r.name
-                    ),
-                ));
-            }
+        match self.schema() {
+            Ok(schema) => rekey_leaves_no_old_reference(&schema, module, relation, span),
+            Err(_) => Ok(()),
         }
-        Ok(())
     }
+}
+
+/// Refuse a rekey of `relation` whose relation's own type keeps a field typed by its key outside
+/// the new key.
+pub(super) fn rekey_leaves_no_old_reference(
+    schema: &Schema,
+    module: &str,
+    relation: &QName,
+    span: Span,
+) -> Result<(), Diag> {
+    let m = relation.module.as_ref().map_or(module, |m| m.text.as_str());
+    let Some(mid) = schema.module_named(m) else {
+        return Ok(());
+    };
+    let Some(&ValueDef::Relation(rel)) = schema.module(mid).values.get(&relation.name.text) else {
+        return Ok(());
+    };
+    let r = schema.relation(rel);
+    let t = schema.ty(r.elem_def);
+    for (c, f) in t
+        .ctors()
+        .iter()
+        .flat_map(|c| c.fields.iter().map(move |f| (Some(&c.name), f)))
+        .chain(t.header().iter().map(|f| (None, f)))
+    {
+        if matches!(f.ty, Ty::Key { rel: own, .. } if own == RelRef::Declared(rel))
+            && !r.key.contains(&f.name)
+        {
+            let path = match c {
+                Some(c) if t.ctors().len() > 1 => format!("{}.{c}.{}", t.name, f.name),
+                _ => format!("{}.{}", t.name, f.name),
+            };
+            return Err(Diag::new(
+                span,
+                format!(
+                    "field `{path}` of `{}`'s own type is typed `Key {}` and is outside the new key; drop it in the same migration",
+                    r.name, r.name
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Returns the constructors of `t` that hold write states: none of a newtype.

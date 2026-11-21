@@ -1,7 +1,7 @@
 use super::*;
 
 /// The relations over a type, each as its id, module and name.
-type Rels = [(RelId, String, String)];
+pub(in crate::evolve) type Rels = [(RelId, String, String)];
 
 impl Cx<'_> {
     pub(in crate::evolve) fn remove_constructor(&mut self, path: &ast::CtorPath) -> R<()> {
@@ -138,7 +138,7 @@ impl Cx<'_> {
 }
 
 /// Returns why removing constructor `c` of type `def` would break the schema.
-fn removal_blocked(
+pub(in crate::evolve) fn removal_blocked(
     schema: &Schema,
     t: &ast::TypeDecl,
     name: &str,

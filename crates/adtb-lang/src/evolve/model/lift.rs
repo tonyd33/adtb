@@ -36,6 +36,7 @@ pub(super) fn source(src: &Source) -> Result<Model, String> {
         grants: src.grants.clone(),
         next: src.next.clone(),
         version: src.version,
+        packages: src.packages.clone(),
         ..Model::default()
     };
     for (file, sf) in &files {

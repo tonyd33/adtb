@@ -769,30 +769,8 @@ impl Cx<'_> {
     ) -> R<()> {
         let schema = self.schema()?;
         let rel = self.rel_id(&schema, relation)?;
-        let own = schema.relation(rel).elem_def;
         let rname = schema.relation(rel).name.clone();
-        let mut needed: Vec<(TypeId, Option<String>, String)> = Vec::new();
-        for (j, t) in schema.types.iter().enumerate() {
-            let def = TypeId(j as u32);
-            if schema.module(t.module).engine {
-                continue;
-            }
-            let carried = |ty: &Ty| refers(&schema, ty, rel) && !(def == own && keys(ty, rel));
-            for f in t.header() {
-                if carried(&f.ty) {
-                    needed.push((def, None, f.name.clone()));
-                }
-            }
-            for c in t.ctors() {
-                for f in &c.fields {
-                    if carried(&f.ty) {
-                        let ctor =
-                            (t.ctors().len() > 1 || c.name != t.name).then(|| c.name.clone());
-                        needed.push((def, ctor, f.name.clone()));
-                    }
-                }
-            }
-        }
+        let needed = carried_fields(&schema, rel);
         let mut listed = Vec::new();
         let mut errs = Vec::new();
         for p in carry {
@@ -851,6 +829,35 @@ impl Cx<'_> {
         self.src.edit(i, vec![(ranges[k].clone(), clause)]);
         Ok(())
     }
+}
+
+/// Returns the fields a rekey of `rel` carries: each field of a user type whose value holds a
+/// value of `Key rel`, but a field of `rel`'s own type typed by its key, as its type, its
+/// constructor when its type has more than the one of its name, and its name.
+pub(super) fn carried_fields(schema: &Schema, rel: RelId) -> Vec<(TypeId, Option<String>, String)> {
+    let own = schema.relation(rel).elem_def;
+    let mut needed: Vec<(TypeId, Option<String>, String)> = Vec::new();
+    for (j, t) in schema.types.iter().enumerate() {
+        let def = TypeId(j as u32);
+        if schema.module(t.module).engine {
+            continue;
+        }
+        let carried = |ty: &Ty| refers(schema, ty, rel) && !(def == own && keys(ty, rel));
+        for f in t.header() {
+            if carried(&f.ty) {
+                needed.push((def, None, f.name.clone()));
+            }
+        }
+        for c in t.ctors() {
+            for f in &c.fields {
+                if carried(&f.ty) {
+                    let ctor = (t.ctors().len() > 1 || c.name != t.name).then(|| c.name.clone());
+                    needed.push((def, ctor, f.name.clone()));
+                }
+            }
+        }
+    }
+    needed
 }
 
 /// Returns whether a value of `t` holds a value of `Key rel`, directly or through the key of a

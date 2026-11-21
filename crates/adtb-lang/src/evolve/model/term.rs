@@ -34,6 +34,28 @@ enum Piece {
     },
 }
 
+impl Piece {
+    fn print(&self, model: &Model) -> String {
+        match self {
+            Piece::Text(s)
+            | Piece::Ahead { written: s, .. }
+            | Piece::Dropped { written: s, .. } => s.clone(),
+            Piece::Name { ids, written, pun } => {
+                let now = match ids.iter().find_map(|&o| model.name(o)) {
+                    Some(now) => now,
+                    None if ids.iter().all(|o| o.1 < FIRST_LOG_ID) => written,
+                    None => panic!("a printed term names a gone object: {ids:?}"),
+                };
+                match (*pun, now != written) {
+                    (true, true) => format!("{now}: {written}"),
+                    (true, false) => written.clone(),
+                    (false, _) => now.to_string(),
+                }
+            }
+        }
+    }
+}
+
 impl Term {
     /// Returns the text at `range` of `text`, each name `names` resolves there held by its ids,
     /// and each name `ahead` holds by the operator that adds its relation variable.
@@ -111,29 +133,65 @@ impl Term {
     /// Returns the term as `model` spells it: each name as its object is named now, a pun of a
     /// renamed field as `new: written`, and a name of dropped objects as written.
     pub(super) fn print(&self, model: &Model) -> String {
-        let mut out = String::new();
-        for p in &self.0 {
-            match p {
-                Piece::Text(s)
-                | Piece::Ahead { written: s, .. }
-                | Piece::Dropped { written: s, .. } => {
-                    out.push_str(s);
+        self.0.iter().map(|p| p.print(model)).collect()
+    }
+
+    /// Insert `s` at byte `at` of the term as `model` prints it.
+    ///
+    /// Fail when `at` falls inside a name.
+    pub(super) fn splice(&mut self, model: &Model, at: usize, s: &str) -> Result<(), String> {
+        self.replace(model, at..at, Term::text(s))
+    }
+
+    /// Replace bytes `range` of the term as `model` prints it by `with`.
+    ///
+    /// Fail when an end of `range` falls inside a name.
+    pub(super) fn replace(
+        &mut self,
+        model: &Model,
+        range: Range<usize>,
+        with: Term,
+    ) -> Result<(), String> {
+        let mut out = Vec::new();
+        let mut with = Some(with.0);
+        let mut start = 0;
+        for p in std::mem::take(&mut self.0) {
+            let text = p.print(model);
+            let end = start + text.len();
+            if end <= range.start {
+                out.push(p);
+            } else if start >= range.end {
+                out.extend(with.take().into_iter().flatten());
+                out.push(p);
+            } else {
+                let head = range.start > start;
+                let tail = range.end < end;
+                if (head || tail) && !matches!(p, Piece::Text(_)) {
+                    return Err("a replacement inside a name".into());
                 }
-                Piece::Name { ids, written, pun } => {
-                    let now = match ids.iter().find_map(|&o| model.name(o)) {
-                        Some(now) => now,
-                        None if ids.iter().all(|o| o.1 < FIRST_LOG_ID) => written,
-                        None => panic!("a printed term names a gone object: {ids:?}"),
-                    };
-                    if *pun && now != written {
-                        out.push_str(now);
-                        out.push_str(": ");
-                    }
-                    out.push_str(if *pun { written } else { now });
+                if head {
+                    out.push(Piece::Text(text[..range.start - start].to_string()));
+                }
+                out.extend(with.take().into_iter().flatten());
+                if tail {
+                    out.push(Piece::Text(text[range.end - start..].to_string()));
                 }
             }
+            start = end;
         }
-        out
+        if let Some(rest) = with {
+            if start < range.start {
+                return Err("a replacement past the end of a term".into());
+            }
+            out.extend(rest);
+        }
+        self.0 = out;
+        Ok(())
+    }
+
+    /// Returns a term of the pieces of each of `terms` in order.
+    pub(super) fn concat(terms: impl IntoIterator<Item = Term>) -> Term {
+        Term(terms.into_iter().flat_map(|t| t.0).collect())
     }
 
     /// Returns whether the term holds a name of dropped objects.

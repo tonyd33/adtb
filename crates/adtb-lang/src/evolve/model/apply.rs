@@ -9,7 +9,10 @@ use crate::ast::{self, MigrationFile, OperatorKind};
 use crate::canon::{self, Names, canonical_term};
 use crate::check;
 use crate::evolve::grant::IdKind;
-use crate::evolve::{Clause, Resolved, ResolvedOp, SourceDecl, Target, mentions_def, mentions_rel};
+use crate::evolve::source::rekey_leaves_no_old_reference;
+use crate::evolve::{
+    Clause, Resolved, ResolvedOp, SourceDecl, Target, each_written_type, mentions_def, mentions_rel,
+};
 use crate::ids::{CatalogIds, objects};
 use crate::lex::{Tok, lex};
 use crate::schema::{self, Adder, Ahead, AheadState, PRELUDE, Schema, Stage};
@@ -99,6 +102,8 @@ pub(super) enum Late {
     Decl(Item),
     /// A field it added, or whose delete action it altered when `action_only`.
     Field { field: u64, action_only: bool },
+    /// A clause it added or changed, whose resolved form the model does not give late.
+    Unresolved,
 }
 
 impl<'a> Run<'a> {
@@ -125,7 +130,7 @@ impl<'a> Run<'a> {
     }
 
     /// Returns the relation variables the builder takes as ones a later operator adds.
-    fn ahead(&self, m: &Model) -> Vec<Ahead> {
+    pub(super) fn ahead(&self, m: &Model) -> Vec<Ahead> {
         self.expected
             .iter()
             .filter_map(|e| {
@@ -182,54 +187,45 @@ impl Built {
         &self.texts[file.0 as usize]
     }
 
-    /// Returns the span of each relation variable name after `Key` in file `file` that names one
-    /// a later operator adds, with the module of that relation variable and the operator.
+    /// Returns the span of the relation variable name of each `Key` type of file `file` that
+    /// names one a later operator adds, with the module of that relation variable and the
+    /// operator.
     fn ahead(&self, file: FileId) -> Vec<(Span, ModuleId, usize)> {
-        let text = self.text(file);
-        let Some(module) = self
-            .files
-            .iter()
-            .find(|(f, _)| *f == file)
-            .and_then(|(_, sf)| self.schema.module_named(&sf.module.text))
-        else {
+        let (Some(d), Some(module)) = (
+            self.decl(file),
+            self.files
+                .iter()
+                .find(|(f, _)| *f == file)
+                .and_then(|(_, sf)| self.schema.module_named(&sf.module.text)),
+        ) else {
             return Vec::new();
         };
-        let toks: Vec<_> = lex(text)
-            .0
-            .into_iter()
-            .filter(|t| t.tok != Tok::Eof)
-            .collect();
         let mut out = Vec::new();
-        for (i, t) in toks.iter().enumerate() {
-            if t.tok != Tok::Upper || &text[t.span.range()] != "Key" {
-                continue;
-            }
-            let (m, name) = match (toks.get(i + 1), toks.get(i + 2), toks.get(i + 3)) {
-                (Some(q), Some(c), Some(n))
-                    if q.tok == Tok::Lower && c.tok == Tok::ColonColon && n.tok == Tok::Lower =>
-                {
-                    (self.schema.module_named(&text[q.span.range()]), n)
-                }
-                (Some(n), _, _) if n.tok == Tok::Lower => (Some(module), n),
-                _ => continue,
+        each_written_type(d, &mut |t| {
+            let ast::TypeKind::Key(_, r) = &t.kind else {
+                return;
             };
-            let Some(m) = m else { continue };
-            let written = &text[name.span.range()];
+            let m = match &r.relation.module {
+                Some(q) => self.schema.module_named(&q.text),
+                None => Some(module),
+            };
+            let Some(m) = m else { return };
+            let name = &r.relation.name;
             let found = self
                 .schema
                 .ahead
                 .iter()
-                .find(|(am, n, _)| *am == m && n == written);
+                .find(|(am, n, _)| *am == m && *n == name.text);
             if let Some((_, _, Adder::Operator(k))) = found
                 && !self
                     .schema
                     .relations
                     .iter()
-                    .any(|r| r.module == m && r.name == written)
+                    .any(|x| x.module == m && x.name == name.text)
             {
                 out.push((name.span, m, *k));
             }
-        }
+        });
         out
     }
 
@@ -368,7 +364,7 @@ impl Model {
 
     /// Build as `built` does, the objects no declaration holds an id for taking theirs, and
     /// give every clause of the model the id the schema gives it.
-    fn build_adopting(
+    pub(super) fn build_adopting(
         &mut self,
         more: &[SourceDecl],
         ahead: &[Ahead],
@@ -506,6 +502,7 @@ impl Model {
         let mut maps = Vec::new();
         let mut afters = Vec::new();
         let mut stopped = None;
+        let mut rekeyed = Vec::new();
         for (k, op) in m.operators.iter().enumerate() {
             run.mark(k, Added::Applying);
             run.at = k;
@@ -513,6 +510,9 @@ impl Model {
             let mut next = model.clone();
             match next.operator(&run, &op.kind) {
                 Ok((r, m)) => {
+                    if let OperatorKind::Rekey { relation, .. } = &op.kind {
+                        rekeyed.push((k, relation.clone(), op.span));
+                    }
                     maps.push(m);
                     if let Resolved::AddRelation { relation, .. } = r.op {
                         run.mark(k, Added::As(relation));
@@ -541,6 +541,30 @@ impl Model {
         if stopped.is_none() {
             checks =
                 (late.is_empty() || model.resolve_late(&late, &mut ops)?) && model.checks(&[])?;
+            if checks && !rekeyed.is_empty() {
+                match model.built(&[], &[]) {
+                    Ok((built, _)) => {
+                        let module = m.module.text.as_str();
+                        for (k, relation, span) in &rekeyed {
+                            if let Err(d) = rekey_leaves_no_old_reference(
+                                &built.schema,
+                                module,
+                                relation,
+                                *span,
+                            ) {
+                                ops[*k] = Err(d.message);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        stopped =
+                            Some("a rekey's end check over declarations that do not build".into());
+                    }
+                }
+            }
+            if checks && late.iter().any(|(_, l)| matches!(l, Late::Unresolved)) {
+                stopped = Some("a clause naming what only the migration's end resolves".into());
+            }
         }
         Ok(Migrated {
             model,
@@ -605,6 +629,7 @@ impl Model {
                     )
                     .map_err(broken)?
                 }
+                Late::Unresolved => continue,
             };
             let Some(canonical) = canonical else {
                 return Ok(false);
@@ -635,6 +660,84 @@ impl Model {
             OperatorKind::AlterField { path, span, .. } => {
                 Some(self.alter_field(run, path, *span)?)
             }
+            OperatorKind::AddUnique(fields, on) => {
+                Some(self.add_index(run, IndexKind::Unique, fields, on)?)
+            }
+            OperatorKind::AddIndex {
+                interval,
+                fields,
+                on,
+            } => Some(self.add_index(run, index_kind(*interval), fields, on)?),
+            OperatorKind::DropUnique(fields, on) => {
+                Some(self.drop_index(run, IndexKind::Unique, fields, on)?)
+            }
+            OperatorKind::DropIndex {
+                interval,
+                fields,
+                on,
+            } => Some(self.drop_index(run, index_kind(*interval), fields, on)?),
+            OperatorKind::AddDefault {
+                relation,
+                ctor,
+                field,
+                value,
+            } => Some(self.add_default(run, relation, ctor.as_ref(), field, value)?),
+            OperatorKind::DropDefault {
+                relation,
+                ctor,
+                field,
+            } => Some(self.drop_default(run, relation, ctor.as_ref(), field)?),
+            OperatorKind::AddComputed {
+                relation,
+                field,
+                ty,
+                expr,
+            } => Some(self.add_computed(run, relation, field, ty, expr)?),
+            OperatorKind::RedefineComputed {
+                relation,
+                field,
+                ty,
+                expr,
+            } => Some(self.redefine_computed(run, relation, field, ty, expr)?),
+            OperatorKind::DropComputed(relation, field) => {
+                Some(self.drop_computed(run, relation, field)?)
+            }
+            OperatorKind::AddConstructor {
+                path,
+                record,
+                place,
+                joins,
+                arms,
+            } => Some(self.add_constructor(
+                run,
+                path,
+                record.as_deref(),
+                place.as_ref(),
+                joins,
+                arms,
+            )?),
+            OperatorKind::MoveField {
+                path,
+                to,
+                sel,
+                fill,
+            } => Some(self.move_field(run, path, to, sel.as_ref(), fill.as_ref())?),
+            OperatorKind::Rekey {
+                relation,
+                key,
+                carry,
+            } => Some(self.rekey(run, relation, key, carry)?),
+            OperatorKind::RemoveConstructor(p) => Some(self.remove_constructor(run, p)?),
+            OperatorKind::Grant(g) => Some(self.grant(run, g)?),
+            OperatorKind::Revoke(r) => Some(self.revoke(run, r)?),
+            OperatorKind::Script(w) => Some(self.script(run, w)?),
+            OperatorKind::Install {
+                name,
+                version,
+                from,
+            } => Some(self.install(run, name, version, from)?),
+            OperatorKind::Uninstall(m) => Some(self.uninstall(&m.text)?),
+            OperatorKind::AdoptTzdb { release, from } => Some(self.adopt_tzdb(release, from)?),
             _ => None,
         };
         if let Some((op, clauses, maps)) = structural {
@@ -695,7 +798,8 @@ impl Model {
         self.grants = crate::evolve::carry::pruned(&self.grants, &live);
     }
 
-    fn add_module(&mut self, m: String) -> Res<(Resolved, Vec<Clause>)> {
+    /// Refuse a module named `m` added: a built-in module's name, or one taken.
+    pub(super) fn reserved(&self, m: &str) -> Res<()> {
         let Ok(schema) = schema::build(&[]) else {
             return broken("the built-in modules do not build");
         };
@@ -707,9 +811,15 @@ impl Model {
         if built_in {
             return refuse(format!("no module may be named `{m}`"));
         }
-        if !self.modules.insert(m.clone()) {
+        if self.modules.contains(m) {
             return refuse(format!("module `{m}` already exists"));
         }
+        Ok(())
+    }
+
+    fn add_module(&mut self, m: String) -> Res<(Resolved, Vec<Clause>)> {
+        self.reserved(&m)?;
+        self.modules.insert(m.clone());
         Ok((Resolved::AddModule { module: m }, Vec::new()))
     }
 
@@ -979,7 +1089,7 @@ impl Model {
     }
 
     /// Remove declaration `item` and every object it declares.
-    fn remove(&mut self, item: Item) {
+    pub(super) fn remove(&mut self, item: Item) {
         self.decls.retain(|d| d.item != item);
         match item {
             Item::Type(t) => {
@@ -1295,6 +1405,14 @@ impl Model {
             _ => Resolved::Deprecate { target },
         };
         Ok((resolved, Vec::new()))
+    }
+}
+
+fn index_kind(interval: bool) -> IndexKind {
+    if interval {
+        IndexKind::Interval
+    } else {
+        IndexKind::Plain
     }
 }
 

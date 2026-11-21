@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use super::apply::Migrated;
 use super::*;
-use crate::ast::{MigrationFile, OperatorKind};
+use crate::ast::{self, MigrationFile, OperatorKind};
 use crate::evolve::{Recorded, Refusal, ResolvedOp, RowMap, SourceDecl};
 use crate::ids::{KeyKind, ObjectKey, Owner, is_named};
 use crate::lex::{Tok, lex};
@@ -82,11 +82,16 @@ pub(in crate::evolve) fn compare(
         .migrate(m, text)
         .unwrap_or_else(|why| panic!("the migration model fails on migration\n{text}\n{why}"));
     if let Some(kind) = migrated.stopped() {
-        log(&format!("skipped\t{kind}"));
+        let outcome = if migrated.ops().len() == m.operators.len() {
+            "partial"
+        } else {
+            "skipped"
+        };
+        log(&format!("{outcome}\t{kind}"));
         return;
     }
     let diffs = differences(m, &migrated, after);
-    report(m, text, &migrated, diffs, after.ok(), "agreed");
+    report(m, text, &migrated, diffs, after, "agreed");
 }
 
 /// Log a migration the model and the layer agree on as `agreed`, and one whose `diffs` a
@@ -96,14 +101,14 @@ fn report(
     text: &str,
     got: &Migrated,
     diffs: Vec<Diff>,
-    layer: Option<&Source>,
+    after: Result<&Source, &Refusal>,
     agreed: &str,
 ) {
     if diffs.is_empty() {
         log(agreed);
         return;
     }
-    match known(m, got, &diffs, layer) {
+    match known(m, got, &diffs, after) {
         Some(finding) => log(&format!("known\t{finding}")),
         None => panic!(
             "the migration model and the operator layer differ on migration\n{text}\n{}",
@@ -616,7 +621,7 @@ pub(in crate::evolve) fn compare_recorded(
         Some(kind) => format!("partial\t{kind}"),
         None => "agreed steps".to_string(),
     };
-    report(m, text, &got, diffs, Some(after), &agreed);
+    report(m, text, &got, diffs, Ok(after), &agreed);
 }
 
 /// Returns the finding of the operator layer that explains `diffs`, when one does; `layer` is
@@ -625,9 +630,16 @@ fn known(
     m: &MigrationFile,
     got: &Migrated,
     diffs: &[Diff],
-    layer: Option<&Source>,
+    after: Result<&Source, &Refusal>,
 ) -> Option<&'static str> {
+    let layer = after.ok();
+    if let Some(finding) = shared_field_refused(m, got, diffs, after.err()) {
+        return Some(finding);
+    }
     if let Some(finding) = respelled_constructor(m, got, diffs, layer) {
+        return Some(finding);
+    }
+    if let Some(finding) = moved_without_action(m, got, diffs, layer) {
         return Some(finding);
     }
     let renamed: BTreeSet<&str> = m
@@ -693,4 +705,118 @@ fn respelled_constructor(
     }
     (respelled && same(&model, layer).is_empty())
         .then_some("E-2: rename type also renames a constructor of a sum spelled like the type")
+}
+
+/// Returns the finding when `diffs` are only in declarations, and dropping the delete action of
+/// each field a `move field` of `m` moved gives the model's result as `layer`.
+fn moved_without_action(
+    m: &MigrationFile,
+    got: &Migrated,
+    diffs: &[Diff],
+    layer: Option<&Source>,
+) -> Option<&'static str> {
+    let layer = layer?;
+    if !diffs
+        .iter()
+        .all(|d| matches!(d.aspect, Aspect::Declarations(_)))
+    {
+        return None;
+    }
+    let mut model = got.model().clone();
+    let mut dropped = false;
+    for op in &m.operators {
+        let OperatorKind::MoveField { path, sel, .. } = &op.kind else {
+            continue;
+        };
+        let module = path.ty.module.as_ref().map_or(&m.module.text, |x| &x.text);
+        let Some(t) = model.type_named(module, &path.ty.name.text) else {
+            continue;
+        };
+        let parts: Vec<Option<u64>> = match sel {
+            None => vec![None],
+            Some(ast::CtorSel::One(c)) => vec![model.ctor_named(t, &c.text)],
+            Some(ast::CtorSel::Many(cs)) => {
+                cs.iter().map(|c| model.ctor_named(t, &c.text)).collect()
+            }
+        };
+        for part in parts {
+            if let Some(f) = model.field_of(t, part, &path.field.text)
+                && let Some(held) = model.fields.get_mut(&f)
+            {
+                dropped |= held.action.take().is_some();
+            }
+        }
+    }
+    (dropped && same(&model, layer).is_empty())
+        .then_some("F7: move field leaves the moved field `on delete restrict`")
+}
+
+/// Returns the finding when the layer refuses only at its recheck, each reason `no `f` in
+/// scope` for a field `f` of an `add unique` or `add index` of `m` over a constructor set every
+/// member of which declares `f` at one type, and the model applies the migration.
+fn shared_field_refused(
+    m: &MigrationFile,
+    got: &Migrated,
+    diffs: &[Diff],
+    refusal: Option<&Refusal>,
+) -> Option<&'static str> {
+    let refusal = refusal?;
+    if !refusal.operators.is_empty()
+        || refusal.recheck.is_empty()
+        || !diffs
+            .iter()
+            .all(|d| matches!(d.aspect, Aspect::Refusals { recheck_only: true }))
+    {
+        return None;
+    }
+    let model = got.model();
+    let mut shared = BTreeSet::new();
+    for op in &m.operators {
+        let (OperatorKind::AddUnique(fields, on) | OperatorKind::AddIndex { fields, on, .. }) =
+            &op.kind
+        else {
+            continue;
+        };
+        let module = on
+            .relation
+            .module
+            .as_ref()
+            .map_or(&m.module.text, |x| &x.text);
+        let Some(t) = model
+            .relation_named(module, &on.relation.name.text)
+            .and_then(|r| model.relation_type(r))
+        else {
+            continue;
+        };
+        let members: Vec<u64> = match &on.sel {
+            None => continue,
+            Some(ast::CtorSel::One(c)) => vec![c],
+            Some(ast::CtorSel::Many(cs)) => cs.iter().collect(),
+        }
+        .into_iter()
+        .filter_map(|c| model.ctor_named(t, &c.text))
+        .collect();
+        for f in fields {
+            let ast::ExprKind::Name(q) = &f.kind else {
+                continue;
+            };
+            let types: BTreeSet<String> = members
+                .iter()
+                .filter_map(|&c| model.field_of(t, Some(c), &q.name.text))
+                .map(|x| model.fields[&x].ty.print(model))
+                .collect();
+            let held = members
+                .iter()
+                .all(|&c| model.field_of(t, Some(c), &q.name.text).is_some());
+            if members.len() > 1 && held && types.len() == 1 {
+                shared.insert(format!("no `{}` in scope", q.name.text));
+            }
+        }
+    }
+    (!shared.is_empty()
+        && refusal
+            .recheck
+            .iter()
+            .all(|d| shared.contains(&d.diag.message)))
+    .then_some("F6: a unique or index over a field every member of its set declares is refused")
 }

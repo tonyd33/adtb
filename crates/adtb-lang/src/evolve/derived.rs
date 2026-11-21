@@ -230,7 +230,7 @@ impl Resolver<'_> {
 
 /// Returns the name of a privilege of a log grant or revoke and the span of its target; `None`
 /// for a privilege a log operator cannot hold.
-fn privilege_term(p: &ast::Privilege) -> Option<(&'static str, Span)> {
+pub(in crate::evolve) fn privilege_term(p: &ast::Privilege) -> Option<(&'static str, Span)> {
     let listed = |r: &ast::RelationRef, fs: &Option<ast::GrantFieldList>| {
         fs.as_ref().map_or(r.span, |fs| r.span.to(fs.span))
     };

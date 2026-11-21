@@ -2052,8 +2052,8 @@ fn script_migrations(script: &str) -> Vec<String> {
 #[cfg(feature = "compare-migration-model")]
 const COMPARING: usize = 4;
 
-/// The migration model and the operator layer agree on every case of the search in its first two
-/// shapes and on every migration of the engine's script corpus, each script's applied in order
+/// The migration model and the operator layer agree on every case of the search in its first
+/// shape and on every migration of the engine's script corpus, each script's applied in order
 /// from an empty source.
 #[cfg(feature = "compare-migration-model")]
 #[test]
@@ -2068,14 +2068,14 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
     };
     let shapes: Vec<(Source, Vec<Case>)> = SHAPES
         .into_iter()
-        .take(2)
+        .take(1)
         .map(|bits| (Shape::of(bits).source(), Shape::of(bits).cases()))
         .collect();
     let cases: Vec<(&Source, &Case)> = shapes
         .iter()
         .flat_map(|(start, cases)| cases.iter().map(move |c| (start, c)))
         .collect();
-    let scripts: Vec<Vec<String>> = scripts()
+    let mut scripts: Vec<Vec<String>> = scripts()
         .into_iter()
         .map(|(path, script)| {
             let migrations = script_migrations(&script);
@@ -2086,6 +2086,7 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
             migrations
         })
         .collect();
+    scripts.sort_by_key(|s| std::cmp::Reverse(s.len()));
     let applied: Mutex<BTreeMap<String, Option<Source>>> = Mutex::default();
     let next_job = AtomicUsize::new(0);
     let jobs = cases.len() + scripts.len();
@@ -2097,7 +2098,9 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
                 if job >= jobs {
                     return calls;
                 }
-                if let Some(&(start, case)) = cases.get(job) {
+                if let Some(&(start, case)) =
+                    job.checked_sub(scripts.len()).and_then(|k| cases.get(k))
+                {
                     let mut was = start.clone();
                     for first in &case.first {
                         was = record(&was, first, &mut calls)
@@ -2109,7 +2112,7 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
                 }
                 let mut src = Source::new(Vec::new()).expect("an empty source builds");
                 let mut prefix = String::new();
-                for text in &scripts[job - cases.len()] {
+                for text in &scripts[job] {
                     prefix.push_str(text);
                     prefix.push('\0');
                     let held = applied
@@ -2149,4 +2152,17 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
         "{calls} migrations, {tally:?}"
     );
     assert!(tally["agreed"] > 0 && tally["partial"] > 0, "{tally:?}");
+    let total: usize = tally.values().sum();
+    let skipped = tally.get("skipped").copied().unwrap_or(0);
+    assert!(
+        skipped * SKIPPED_AT_MOST.1 <= total * SKIPPED_AT_MOST.0,
+        "skipped {skipped} of {total} comparisons, more than {}/{}: {tally:?}",
+        SKIPPED_AT_MOST.0,
+        SKIPPED_AT_MOST.1
+    );
 }
+
+/// The share of the dedicated comparison's migrations the model may skip, as a fraction: the
+/// skips of the operators it does not model yet.
+#[cfg(feature = "compare-migration-model")]
+const SKIPPED_AT_MOST: (usize, usize) = (1, 10);

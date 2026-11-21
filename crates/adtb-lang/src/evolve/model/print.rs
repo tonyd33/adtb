@@ -5,117 +5,240 @@ use crate::parse::{Options, parse_schema};
 use crate::schema;
 use crate::span::{FileDiag, FileId, Span};
 
+/// A declaration being printed, with the range each term of it takes.
+#[derive(Default)]
+pub(super) struct Printed {
+    text: String,
+    /// The range of the text each term takes, in the order [`Model::decl_terms_mut`] gives
+    /// the terms.
+    terms: Vec<std::ops::Range<usize>>,
+}
+
+impl Printed {
+    /// Returns the range of the text each term takes, in the order [`Model::decl_terms_mut`]
+    /// gives the terms.
+    pub(super) fn terms(&self) -> &[std::ops::Range<usize>] {
+        &self.terms
+    }
+
+    fn push(&mut self, s: &str) {
+        self.text.push_str(s);
+    }
+
+    fn term(&mut self, t: &Term, model: &Model) {
+        let start = self.text.len();
+        self.text.push_str(&t.print(model));
+        self.terms.push(start..self.text.len());
+    }
+
+    fn list(&mut self, ts: &[Term], model: &Model, sep: &str) {
+        for (k, t) in ts.iter().enumerate() {
+            if k > 0 {
+                self.push(sep);
+            }
+            self.term(t, model);
+        }
+    }
+}
+
 impl Model {
     /// Returns the text of declaration `i`, without its module header.
     pub(super) fn print(&self, i: usize) -> String {
+        self.print_mapped(i).text
+    }
+
+    /// Returns the text of declaration `i`, without its module header, with the range each of
+    /// its terms takes.
+    pub(super) fn print_mapped(&self, i: usize) -> Printed {
+        let mut out = Printed::default();
         match self.decls[i].item {
-            Item::Type(t) => self.print_type(t),
-            Item::Relation(r) => self.print_relation(r),
+            Item::Type(t) => self.print_type(t, &mut out),
+            Item::Relation(r) => self.print_relation(r, &mut out),
             Item::Set(s) => {
                 let set = &self.sets[&s];
-                let members: Vec<String> = set.members.iter().map(|c| c.print(self)).collect();
-                format!(
-                    "set {} of {} = {}",
-                    set.name,
-                    self.relations[&set.relation].name,
-                    members.join(" | ")
-                )
+                out.push(&format!(
+                    "set {} of {} = ",
+                    set.name, self.relations[&set.relation].name
+                ));
+                out.list(&set.members, self, " | ");
             }
-            Item::Fn(f) => self.print_body("fn", &self.functions[&f]),
-            Item::Aggregate(f) => self.print_body("aggregate", &self.functions[&f]),
-            Item::Constraint(c) => self.print_body("constraint", &self.denials[&c]),
-            Item::Check(c) => self.print_body("check", &self.denials[&c]),
+            Item::Fn(f) => self.print_body("fn", &self.functions[&f], &mut out),
+            Item::Aggregate(f) => self.print_body("aggregate", &self.functions[&f], &mut out),
+            Item::Constraint(c) => self.print_body("constraint", &self.denials[&c], &mut out),
+            Item::Check(c) => self.print_body("check", &self.denials[&c], &mut out),
             Item::Store(v) => {
-                let st = &self.stores[&v];
-                format!("store {}{}", self.store_name(v), st.rest.print(self))
+                out.push(&format!("store {}", self.store_name(v)));
+                out.term(&self.stores[&v].rest, self);
             }
-        }
-    }
-
-    fn print_body(&self, kw: &str, b: &Body) -> String {
-        format!("{kw} {}{}", b.name, b.rest.print(self))
-    }
-
-    fn print_field(&self, f: u64) -> String {
-        let f = &self.fields[&f];
-        let mut out = format!("{}: {}", f.name, f.ty.print(self));
-        if let Some(a) = &f.action {
-            out.push_str(" on delete ");
-            out.push_str(&a.print(self));
         }
         out
     }
 
-    fn print_record(&self, fields: &[u64]) -> String {
-        if fields.is_empty() {
-            return "{}".to_string();
+    /// Returns the terms of declaration `i`, in the order [`Model::print_mapped`] prints them.
+    pub(super) fn decl_terms_mut(&mut self, i: usize) -> Vec<&mut Term> {
+        let mut out: Vec<&mut Term> = Vec::new();
+        match self.decls[i].item {
+            Item::Type(t) => {
+                let ty = &self.types[&t];
+                let header: Vec<u64> = ty.header.clone().unwrap_or_default();
+                let ctors = match &ty.body {
+                    TypeBody::Record { ctor } => vec![*ctor],
+                    TypeBody::Ctors(cs) => cs.clone(),
+                    TypeBody::New { .. } => Vec::new(),
+                };
+                let own: Vec<u64> = ctors
+                    .iter()
+                    .flat_map(|c| self.ctors[c].fields.iter().flatten().copied())
+                    .collect();
+                let mut held: BTreeMap<u64, &mut FieldM> = self
+                    .fields
+                    .iter_mut()
+                    .filter(|(f, _)| header.contains(f) || own.contains(f))
+                    .map(|(&f, x)| (f, x))
+                    .collect();
+                let mut new_terms: Vec<&mut Term> = Vec::new();
+                if let TypeBody::New { base, domain, .. } =
+                    &mut self.types.get_mut(&t).expect("the type").body
+                {
+                    new_terms.push(base);
+                    new_terms.extend(domain.iter_mut());
+                }
+                for (k, f) in header.iter().chain(&own).enumerate() {
+                    if k == header.len() {
+                        out.append(&mut new_terms);
+                    }
+                    let x = held.remove(f).expect("a printed field");
+                    out.push(&mut x.ty);
+                    if let Some(a) = &mut x.action {
+                        out.push(a);
+                    }
+                }
+                out.append(&mut new_terms);
+            }
+            Item::Relation(r) => {
+                let rel = self.relations.get_mut(&r).expect("the relation variable");
+                out.push(&mut rel.ty);
+                for c in &mut rel.clauses {
+                    match c {
+                        ClauseM::Key { fields, .. } => out.extend(fields.iter_mut()),
+                        ClauseM::Index { elems, scope, .. } => {
+                            out.extend(elems.iter_mut());
+                            if let Some(s) = scope {
+                                out.extend(s.parts.iter_mut());
+                            }
+                        }
+                        ClauseM::Default {
+                            ctor, field, value, ..
+                        } => {
+                            out.extend(ctor.iter_mut());
+                            out.push(field);
+                            out.push(value);
+                        }
+                        ClauseM::Computed { ty, expr, .. } => {
+                            out.push(ty);
+                            out.push(expr);
+                        }
+                        ClauseM::Volatile => {}
+                    }
+                }
+            }
+            Item::Set(s) => out.extend(self.sets.get_mut(&s).expect("the set").members.iter_mut()),
+            Item::Fn(f) | Item::Aggregate(f) => {
+                out.push(&mut self.functions.get_mut(&f).expect("the function").rest);
+            }
+            Item::Constraint(c) | Item::Check(c) => {
+                out.push(&mut self.denials.get_mut(&c).expect("the constraint").rest);
+            }
+            Item::Store(v) => out.push(&mut self.stores.get_mut(&v).expect("the view").rest),
         }
-        let fs: Vec<String> = fields.iter().map(|&f| self.print_field(f)).collect();
-        format!("{{ {} }}", fs.join(", "))
+        out
     }
 
-    fn print_type(&self, t: u64) -> String {
+    fn print_body(&self, kw: &str, b: &Body, out: &mut Printed) {
+        out.push(&format!("{kw} {}", b.name));
+        out.term(&b.rest, self);
+    }
+
+    fn print_field(&self, f: u64, out: &mut Printed) {
+        let f = &self.fields[&f];
+        out.push(&format!("{}: ", f.name));
+        out.term(&f.ty, self);
+        if let Some(a) = &f.action {
+            out.push(" on delete ");
+            out.term(a, self);
+        }
+    }
+
+    fn print_record(&self, fields: &[u64], out: &mut Printed) {
+        if fields.is_empty() {
+            out.push("{}");
+            return;
+        }
+        out.push("{ ");
+        for (k, &f) in fields.iter().enumerate() {
+            if k > 0 {
+                out.push(", ");
+            }
+            self.print_field(f, out);
+        }
+        out.push(" }");
+    }
+
+    fn print_type(&self, t: u64, out: &mut Printed) {
         let ty = &self.types[&t];
-        let mut out = format!("type {}", ty.name);
+        out.push(&format!("type {}", ty.name));
         for p in &ty.params {
-            out.push(' ');
-            out.push_str(p);
+            out.push(" ");
+            out.push(p);
         }
         if ty.ordered {
-            out.push_str(" ordered");
+            out.push(" ordered");
         }
         if let Some(h) = &ty.header {
-            out.push(' ');
-            out.push_str(&self.print_record(h));
+            out.push(" ");
+            self.print_record(h, out);
         }
-        out.push_str(" = ");
+        out.push(" = ");
         match &ty.body {
             TypeBody::New { base, domain, .. } => {
-                out.push_str("new ");
-                out.push_str(&base.print(self));
+                out.push("new ");
+                out.term(base, self);
                 if let Some(d) = domain {
-                    out.push_str(" where ");
-                    out.push_str(&d.print(self));
+                    out.push(" where ");
+                    out.term(d, self);
                 }
             }
             TypeBody::Record { ctor } => {
                 let fs = self.ctors[ctor].fields.clone().unwrap_or_default();
-                out.push_str(&self.print_record(&fs));
+                self.print_record(&fs, out);
             }
             TypeBody::Ctors(cs) => {
-                let cs: Vec<String> = cs
-                    .iter()
-                    .map(|c| {
-                        let c = &self.ctors[c];
-                        match &c.fields {
-                            Some(fs) => format!("{} {}", c.name, self.print_record(fs)),
-                            None => c.name.clone(),
-                        }
-                    })
-                    .collect();
-                out.push_str(&cs.join(" | "));
+                for (k, c) in cs.iter().enumerate() {
+                    if k > 0 {
+                        out.push(" | ");
+                    }
+                    let c = &self.ctors[c];
+                    out.push(&c.name);
+                    if let Some(fs) = &c.fields {
+                        out.push(" ");
+                        self.print_record(fs, out);
+                    }
+                }
             }
         }
-        out
     }
 
-    fn print_relation(&self, r: u64) -> String {
+    fn print_relation(&self, r: u64, out: &mut Printed) {
         let rel = &self.relations[&r];
-        let mut out = format!("relation {}: {}", rel.name, rel.ty.print(self));
+        out.push(&format!("relation {}: ", rel.name));
+        out.term(&rel.ty, self);
         for c in &rel.clauses {
-            out.push_str("\n  ");
-            out.push_str(&self.print_clause(c));
+            out.push("\n  ");
+            self.print_clause(c, out);
         }
-        out
     }
 
-    fn print_clause(&self, c: &ClauseM) -> String {
-        let list = |ts: &[Term]| {
-            ts.iter()
-                .map(|t| t.print(self))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+    fn print_clause(&self, c: &ClauseM, out: &mut Printed) {
         match c {
             ClauseM::Key {
                 fields,
@@ -123,56 +246,52 @@ impl Model {
                 generate,
                 ..
             } => {
-                let mut out = if *listed {
-                    format!("key ({})", list(fields))
-                } else {
-                    format!("key {}", list(fields))
-                };
-                if let Some((g, _)) = generate {
-                    out.push_str(" generate ");
-                    out.push_str(g);
+                out.push(if *listed { "key (" } else { "key " });
+                out.list(fields, self, ", ");
+                if *listed {
+                    out.push(")");
                 }
-                out
+                if let Some((g, _)) = generate {
+                    out.push(" generate ");
+                    out.push(g);
+                }
             }
-            ClauseM::Volatile => "volatile".to_string(),
+            ClauseM::Volatile => out.push("volatile"),
             ClauseM::Index {
                 kind, elems, scope, ..
             } => {
-                let kw = match kind {
-                    IndexKind::Unique => "unique",
-                    IndexKind::Plain => "index",
-                    IndexKind::Interval => "interval index",
-                };
-                let mut out = format!("{kw} ({})", list(elems));
+                out.push(match kind {
+                    IndexKind::Unique => "unique (",
+                    IndexKind::Plain => "index (",
+                    IndexKind::Interval => "interval index (",
+                });
+                out.list(elems, self, ", ");
+                out.push(")");
                 if let Some(s) = scope {
-                    out.push_str(" in ");
-                    out.push_str(&self.print_scope(s));
+                    out.push(" in ");
+                    out.push(if s.listed { "(" } else { "" });
+                    out.list(&s.parts, self, " | ");
+                    out.push(if s.listed { ")" } else { "" });
                 }
-                out
             }
             ClauseM::Default {
                 ctor, field, value, ..
-            } => match ctor {
-                Some(c) => format!(
-                    "default {}.{} = {}",
-                    c.print(self),
-                    field.print(self),
-                    value.print(self)
-                ),
-                None => format!("default {} = {}", field.print(self), value.print(self)),
-            },
-            ClauseM::Computed { name, ty, expr, .. } => {
-                format!("computed {name}: {} = {}", ty.print(self), expr.print(self))
+            } => {
+                out.push("default ");
+                if let Some(c) = ctor {
+                    out.term(c, self);
+                    out.push(".");
+                }
+                out.term(field, self);
+                out.push(" = ");
+                out.term(value, self);
             }
-        }
-    }
-
-    fn print_scope(&self, s: &Scope) -> String {
-        let parts: Vec<String> = s.parts.iter().map(|p| p.print(self)).collect();
-        if s.listed {
-            format!("({})", parts.join(" | "))
-        } else {
-            parts.join(" | ")
+            ClauseM::Computed { name, ty, expr, .. } => {
+                out.push(&format!("computed {name}: "));
+                out.term(ty, self);
+                out.push(" = ");
+                out.term(expr, self);
+            }
         }
     }
 

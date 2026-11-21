@@ -281,28 +281,43 @@ impl Cx<'_> {
     /// Resolve the privileges of a log grant or revoke to the catalog ids of what they name.
     fn granted(&self, privileges: &[ast::Privilege], statement: Statement) -> R<Vec<Stated>> {
         let schema = self.schema()?;
-        let vis = crate::resolve::Visible::module(
-            schema.module_named(&self.module).unwrap_or(schema::PRELUDE),
-        );
-        let mut r = Resolving {
-            schema: &schema,
-            names: Checker::of_adhoc(&schema, vis),
-            statement,
-            system: false,
-            span: self.span,
-        };
-        let out = privileges
-            .iter()
-            .map(|p| r.privilege(p))
-            .collect::<R<Vec<_>>>()?;
-        self.note(&schema, &r.names.resolved());
+        let (out, refs) = log_privileges(&schema, &self.module, privileges, statement, self.span)?;
+        self.note(&schema, &refs);
         Ok(out)
     }
 }
 
+/// The privileges a grant or revoke states, and the names its targets resolve.
+pub(super) type StatedRefs = (Vec<Stated>, Vec<(Span, Ref)>);
+
+/// Resolve the privileges of a log grant or revoke of a migration of `module`, written at `span`,
+/// to the catalog ids `schema` gives what they name. Returns them and every name they write.
+pub(super) fn log_privileges(
+    schema: &Schema,
+    module: &str,
+    privileges: &[ast::Privilege],
+    statement: Statement,
+    span: Span,
+) -> R<StatedRefs> {
+    let vis =
+        crate::resolve::Visible::module(schema.module_named(module).unwrap_or(schema::PRELUDE));
+    let mut r = Resolving {
+        schema,
+        names: Checker::of_adhoc(schema, vis),
+        statement,
+        system: false,
+        span,
+    };
+    let out = privileges
+        .iter()
+        .map(|p| r.privilege(p))
+        .collect::<R<Vec<_>>>()?;
+    Ok((out, r.names.resolved()))
+}
+
 /// Which statement a privilege is written in.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Statement {
+pub(super) enum Statement {
     Grant,
     Revoke,
 }
@@ -318,6 +333,11 @@ pub struct Stated {
 }
 
 impl Stated {
+    /// Returns the privilege it states.
+    pub(super) fn into_privilege(self) -> Granted {
+        self.privilege
+    }
+
     /// Returns the name of the privilege, as `catalog::grants` writes it.
     pub fn privilege_name(&self) -> &'static str {
         self.privilege.privilege_name()
