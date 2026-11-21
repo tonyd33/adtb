@@ -11,7 +11,8 @@ use crate::check;
 use crate::evolve::grant::IdKind;
 use crate::evolve::source::rekey_leaves_no_old_reference;
 use crate::evolve::{
-    Clause, Resolved, ResolvedOp, SourceDecl, Target, each_written_type, mentions_def, mentions_rel,
+    Clause, Resolved, ResolvedOp, SourceDecl, Target, decl_exprs, each_type, mentions_def,
+    mentions_rel, walk_type,
 };
 use crate::ids::{CatalogIds, objects};
 use crate::lex::{Tok, lex};
@@ -1450,4 +1451,19 @@ fn action_span(text: &str, ty: Span, decl: Span) -> Span {
 /// Refuse an operator that reads declarations failing with `ds`, by the first failure.
 fn unbuilt<T>(ds: &[FileDiag]) -> Res<T> {
     refuse(ds[0].diag.message.clone())
+}
+
+/// Call `f` on every type expression of a declaration and of the expressions it holds: lambda
+/// parameters and type calls.
+fn each_written_type<'a>(d: &'a ast::Decl, f: &mut dyn FnMut(&'a ast::Type)) {
+    each_type(d, f);
+    for e in decl_exprs(d) {
+        crate::visit::each_expr(e, &mut |x| match &x.kind {
+            ast::ExprKind::TypeCall { ty, .. } => walk_type(ty, f),
+            ast::ExprKind::Lambda(ast::LambdaParams::List(ps), _) => {
+                ps.iter().for_each(|p| walk_type(&p.ty, f));
+            }
+            _ => {}
+        });
+    }
 }

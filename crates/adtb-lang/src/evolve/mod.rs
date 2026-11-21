@@ -330,21 +330,6 @@ fn sel_text(names: &[String]) -> String {
     }
 }
 
-/// Call `f` on every type expression of a declaration and of the expressions it holds: lambda
-/// parameters and type calls.
-fn each_written_type<'a>(d: &'a Decl, f: &mut dyn FnMut(&'a ast::Type)) {
-    each_type(d, f);
-    for e in decl_exprs(d) {
-        crate::visit::each_expr(e, &mut |x| match &x.kind {
-            ast::ExprKind::TypeCall { ty, .. } => walk_type(ty, f),
-            ast::ExprKind::Lambda(ast::LambdaParams::List(ps), _) => {
-                ps.iter().for_each(|p| walk_type(&p.ty, f));
-            }
-            _ => {}
-        });
-    }
-}
-
 /// Call `f` on `t` and every type expression nested in it.
 fn walk_type<'a>(t: &'a ast::Type, f: &mut dyn FnMut(&'a ast::Type)) {
     f(t);

@@ -11,3 +11,6 @@ libc = "0.2.186"
 
 [lints]
 workspace = true
+
+[package.metadata.adtb]
+test-support = true

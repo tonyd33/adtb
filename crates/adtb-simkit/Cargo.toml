@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-adtb.workspace = true
+adtb = { workspace = true, features = ["testing"] }
 adtb-lang.workspace = true
 adtb-reference.workspace = true
 adtb-sim.workspace = true
@@ -19,3 +19,6 @@ adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 
 [lints]
 workspace = true
+
+[package.metadata.adtb]
+test-support = true

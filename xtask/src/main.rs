@@ -58,6 +58,8 @@ enum Task {
     },
     /// Run every check of the workspace in one memory-limited scope, as `test` does.
     ///
+    /// Clippy lints the workspace with every target, then the members not marked
+    /// `test-support = true` under `[package.metadata.adtb]` without test targets or test features.
     /// Build the test binaries in one build stage; the tests and the damage profile run them and
     /// build nothing. In a scope of its own on at least 8 cores, run the build beside clippy,
     /// building into `clippy` under the target directory, and once the build passes run the tests

@@ -20,3 +20,6 @@ adtb-testkit = { workspace = true, features = ["sim"] }
 
 [lints]
 workspace = true
+
+[package.metadata.adtb]
+test-support = true

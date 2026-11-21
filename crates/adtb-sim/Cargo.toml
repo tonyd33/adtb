@@ -28,3 +28,6 @@ arrow-data = "=60.1.0"
 
 [lints]
 workspace = true
+
+[package.metadata.adtb]
+test-support = true

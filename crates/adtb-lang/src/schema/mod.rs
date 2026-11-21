@@ -28,7 +28,7 @@ mod ahead;
 pub use ahead::{Adder, AheadState};
 mod build;
 mod built_in;
-use built_in::{BUILT_IN, built_in};
+use built_in::BUILT_IN;
 mod committed;
 pub use committed::Committed;
 mod engine;
@@ -1321,14 +1321,14 @@ pub fn build_ahead(
 /// in place of the ones the engine holds.
 #[cfg(feature = "testing")]
 pub fn build_engine_from(engine: &str) -> Result<Schema, Vec<FileDiag>> {
-    build_over(&built_in(PRELUDE_SRC, engine), &[], &[])
+    build_over(&built_in::built_in(PRELUDE_SRC, engine), &[], &[])
 }
 
 /// Returns the schema `build` returns for no files, the prelude read from `prelude` in place of
 /// the one the engine holds.
 #[cfg(feature = "testing")]
 pub fn build_prelude_from(prelude: &str) -> Result<Schema, Vec<FileDiag>> {
-    build_over(&built_in(prelude, ENGINE_SRC), &[], &[])
+    build_over(&built_in::built_in(prelude, ENGINE_SRC), &[], &[])
 }
 
 fn build_over(

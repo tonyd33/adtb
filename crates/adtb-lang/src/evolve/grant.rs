@@ -334,6 +334,7 @@ pub struct Stated {
 
 impl Stated {
     /// Returns the privilege it states.
+    #[cfg(feature = "compare-migration-model")]
     pub(super) fn into_privilege(self) -> Granted {
         self.privilege
     }

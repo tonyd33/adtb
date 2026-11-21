@@ -40,7 +40,10 @@ For a fresh clone, host prerequisites and optional editor setup, read
   Miri, dependency policy, source-size limits, the documentation build with
   its link check, `cargo xtask lint` and the editor grammar's generated sources and tests. With REVSET it
   also checks the lint and structure allowlists against those of the parent of REVSET's root.
-  Every stage starts at once. One build stage builds the test binaries; the suite and the damage
+  Every stage starts at once. Clippy lints the workspace with every target, then, with `-p`, every
+  member whose manifest lacks `test-support = true` under `[package.metadata.adtb]`, without test
+  targets, so a shipped crate that compiles or lints clean only with test features fails it; mark
+  a new test-support crate so. One build stage builds the test binaries; the suite and the damage
   profile run those binaries and build nothing, so no build runs in the target while a test runs.
   In the memory scope on 8 or more cores the build runs beside clippy, which builds into
   `target/clippy`, and once it passes the suite and the damage profile run at once, the damage

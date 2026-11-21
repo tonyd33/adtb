@@ -221,12 +221,21 @@ pub fn stage(
         .unwrap_or_default();
     match stage {
         Stage::Clippy => {
-            let mut clippy = workspace.cargo(&["clippy"]);
-            clippy.args(["--workspace", "--all-targets", "--", "-D", "warnings"]);
-            if own_target {
-                clippy.env("CARGO_TARGET_DIR", workspace.target.join("clippy"));
-            }
-            step::run(name, &mut clippy)
+            let clippy = |args: &[String]| {
+                let mut clippy = workspace.cargo(&["clippy"]);
+                clippy.args(args).args(["--", "-D", "warnings"]);
+                if own_target {
+                    clippy.env("CARGO_TARGET_DIR", workspace.target.join("clippy"));
+                }
+                clippy
+            };
+            let all = ["--workspace", "--all-targets"].map(str::to_owned);
+            step::run(name, &mut clippy(&all))?;
+            let shipped: Vec<String> = shipped(workspace)?
+                .into_iter()
+                .flat_map(|package| ["-p".to_owned(), package])
+                .collect();
+            step::run(name, &mut clippy(&shipped))
         }
         Stage::Fmt => step::run(name, workspace.cargo(&["fmt"]).args(["--all", "--check"])),
         Stage::Lint => lint::run(&workspace.root, base, false),
@@ -519,6 +528,33 @@ fn docs(workspace: &Workspace, name: &str) -> Result<(), String> {
             .arg(&site)
             .arg(&site),
     )
+}
+
+/// Returns the workspace members whose manifest has no `test-support = true` under
+/// `[package.metadata.adtb]`.
+fn shipped(workspace: &Workspace) -> Result<Vec<String>, String> {
+    let name = "shipped crates";
+    let metadata = step::output(
+        name,
+        workspace
+            .cargo(&["metadata"])
+            .args(["--format-version", "1", "--no-deps"]),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata)
+        .map_err(|e| format!("{name}: cargo metadata printed no JSON: {e}"))?;
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or_else(|| format!("{name}: cargo metadata printed no `packages`"))?;
+    packages
+        .iter()
+        .filter(|package| package["metadata"]["adtb"]["test-support"] != true)
+        .map(|package| {
+            package["name"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("{name}: a package with no name"))
+        })
+        .collect()
 }
 
 /// Returns the parent of `revset`'s root.
