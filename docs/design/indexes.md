@@ -121,7 +121,7 @@ prefix-free encoding reverses its order and keeps it prefix-free.
 A decoder refuses every byte string the encoding does not produce: a
 truncated value, an escape other than `00 FF` or `00 01`, text that is
 not UTF-8, a float that is not canonical, a decimal of more than 38
-digits, a `Time` outside a day, a `Date` whose midnight is not an
+digits, a `Time` outside a day, a `Date` no microsecond of which is an
 `Instant`, an order key the sum does not have, a constructor index an
 anonymous sum does not have, and trailing bytes. A
 decoder does not check that text is in NFC.

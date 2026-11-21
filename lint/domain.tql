@@ -1,0 +1,38 @@
+-- domain_copies: a bound of a scalar's domain written outside its definition: a power of ten to
+-- 38, a day of `i64::MIN` or `i64::MAX` microseconds, a range ending at `MICROS_PER_DAY`, or a
+-- day count checked by multiplying it out to microseconds. Call `date_in_range`,
+-- `time_in_range`, `decimal_in_range` or `Base::fit_int`. The reference and the test kit state
+-- their own bounds and are not read.
+
+powers = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"\.pow$";
+  a <- pure c | #arguments;
+  guard $ text a ~ r"^\(\s*38\s*\)$";
+  return c;
+};
+
+days = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"(MIN|MAX)\s*\.\s*div_euclid$";
+  a <- pure c | #arguments;
+  guard $ text a ~ r"MICROS_PER_DAY";
+  return c;
+};
+
+ranges = do {
+  r <- descendants_of_kind :range_expression;
+  guard $ text r ~ r"\.\.=?\s*\(?\s*MICROS_PER_DAY\b";
+  return r;
+};
+
+multiplied = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"checked_mul\(\s*MICROS_PER_DAY\s*\)\s*\.\s*is_(none|some)$";
+  return c;
+};
+
+main = powers `alt` days `alt` ranges `alt` multiplied | arr range;

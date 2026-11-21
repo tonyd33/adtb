@@ -137,6 +137,19 @@ impl Base {
             _ => return None,
         })
     }
+
+    /// Returns `v` when it is a value of this integer type.
+    pub fn fit_int(self, v: i128) -> Option<i64> {
+        let (lo, hi) = self.int_range()?;
+        i64::try_from(v).ok().filter(|v| (lo..=hi).contains(v))
+    }
+}
+
+const DECIMAL_LIMIT: u128 = 10u128.pow(38);
+
+/// Returns whether an unscaled coefficient names a `Decimal`.
+pub fn decimal_in_range(coefficient: i128) -> bool {
+    coefficient.unsigned_abs() < DECIMAL_LIMIT
 }
 
 /// Built-in type and bound names; no type or type parameter may take one.

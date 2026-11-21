@@ -31,11 +31,11 @@ mod textual_tests;
 
 pub use broken::Broken;
 pub use class::Class;
-pub(crate) use host::canonical;
+pub(crate) use host::admit;
 pub use host::{HostBody, HostError, Hosts};
 pub use ir::{Bound, Program, compile};
 pub use memory::{Arena, Budget, Grant};
-pub(crate) use prim::print;
+pub(crate) use prim::{print, zone_exists};
 pub use rot::{Rot, detail};
 #[cfg(test)]
 pub use sched::{Admission, Task};
@@ -51,7 +51,6 @@ pub use stream::{Produced, Production, produce};
 #[cfg(test)]
 pub use value::F32;
 pub use value::{F64, Val};
-pub(crate) use wide::decimal_fits;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

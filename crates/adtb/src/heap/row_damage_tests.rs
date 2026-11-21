@@ -120,7 +120,44 @@ fn cases() -> Vec<Case> {
     let mut cases = row_cases();
     cases.extend(frame_cases());
     cases.extend(chunk_cases());
+    cases.extend(domain_cases());
     cases
+}
+
+/// Returns one case of each fixed-width scalar with a bounded domain, its value moved outside it.
+fn domain_cases() -> Vec<Case> {
+    vec![
+        Case {
+            kind: "date past the last day",
+            row: vec![scalar(Scalar::Date)],
+            value: vec![Value::Date(0x0A0B_0C0D)],
+            marker: 0x0A0B_0C0Di32.to_le_bytes().to_vec(),
+            edit: |page, m| page[m.at..m.at + 4].copy_from_slice(&i32::MAX.to_le_bytes()),
+            marked: On::Row,
+            blamed: On::Row,
+            expect: Expect::Row(Undecoded::Domain),
+        },
+        Case {
+            kind: "time before midnight",
+            row: vec![scalar(Scalar::Time)],
+            value: vec![Value::Time(0x11_2233_4455)],
+            marker: 0x11_2233_4455i64.to_le_bytes().to_vec(),
+            edit: |page, m| page[m.at..m.at + 8].copy_from_slice(&(-1i64).to_le_bytes()),
+            marked: On::Row,
+            blamed: On::Row,
+            expect: Expect::Row(Undecoded::Domain),
+        },
+        Case {
+            kind: "decimal of 39 digits",
+            row: vec![scalar(Scalar::Decimal(0))],
+            value: vec![Value::Decimal(0x0A0B_0C0D_0E0F_1011)],
+            marker: 0x0A0B_0C0D_0E0F_1011i128.to_le_bytes().to_vec(),
+            edit: |page, m| page[m.at..m.at + 16].copy_from_slice(&10i128.pow(38).to_le_bytes()),
+            marked: On::Row,
+            blamed: On::Row,
+            expect: Expect::Row(Undecoded::Domain),
+        },
+    ]
 }
 
 /// Returns one case for each stored kind. A row of one variable-width field holds a two-byte end
@@ -595,7 +632,8 @@ fn next_cause(c: Undecoded) -> Option<Undecoded> {
         Undecoded::Cut => Some(Undecoded::Trailing),
         Undecoded::Trailing => Some(Undecoded::Text),
         Undecoded::Text => Some(Undecoded::Pointer),
-        Undecoded::Pointer => None,
+        Undecoded::Pointer => Some(Undecoded::Domain),
+        Undecoded::Domain => None,
     }
 }
 

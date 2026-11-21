@@ -1,3 +1,6 @@
+use adtb_lang::calendar::{date_in_range, time_in_range};
+use adtb_lang::types::decimal_in_range;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scalar {
     I8,
@@ -240,9 +243,9 @@ impl std::hash::Hash for F64 {
 /// A value of a `KeyType`.
 ///
 /// Preconditions:
-/// - `Text` and a zone name are in NFC.
+/// - `Text` is in NFC, and a zone name is one the zone rules name.
 /// - A `Decimal` coefficient has at most 38 digits.
-/// - A `Date` counts days since 1970-01-01 and its midnight is an `Instant`.
+/// - A `Date` counts days since 1970-01-01, a day some microsecond of which is an `Instant`.
 /// - A `Time` counts microseconds since midnight, below 86 400 000 000.
 /// - `Instant`, `DateTime` and `Duration` count microseconds; `DateTime`
 ///   from 1970-01-01T00:00:00 civil.
@@ -274,16 +277,31 @@ pub enum Value {
 }
 
 impl Value {
+    /// Returns the value with every text normalized to NFC.
+    pub fn normalized(self) -> Value {
+        match self {
+            Value::Text(t) if !unicode_normalization::is_nfc(&t) => {
+                Value::Text(unicode_normalization::UnicodeNormalization::nfc(t.as_str()).collect())
+            }
+            Value::Record(fs) => Value::Record(fs.into_iter().map(Value::normalized).collect()),
+            Value::Sum { ctor, fields } => Value::Sum {
+                ctor,
+                fields: fields.into_iter().map(Value::normalized).collect(),
+            },
+            other => other,
+        }
+    }
+
     /// Returns whether the value keeps the preconditions of [`Value`] that its own bits can
-    /// break: NFC text and zone names, a coefficient of at most 38 digits, a `Date` within the
+    /// break: NFC text, a zone the zone rules name, a coefficient of at most 38 digits, a `Date` within the
     /// range of `Instant` and a `Time` below a day.
     pub fn in_domain(&self) -> bool {
         match self {
             Value::Text(t) => unicode_normalization::is_nfc(t),
-            Value::ZonedDateTime { zone, .. } => unicode_normalization::is_nfc(zone),
-            Value::Decimal(c) => c.unsigned_abs() < 10u128.pow(38),
-            Value::Date(d) => adtb_lang::calendar::date_in_range(i64::from(*d)),
-            Value::Time(t) => (0..adtb_lang::calendar::MICROS_PER_DAY).contains(t),
+            Value::ZonedDateTime { zone, .. } => crate::exec::zone_exists(zone),
+            Value::Decimal(c) => decimal_in_range(*c),
+            Value::Date(d) => date_in_range(i64::from(*d)),
+            Value::Time(t) => time_in_range(*t),
             Value::Record(fs) | Value::Sum { fields: fs, .. } => fs.iter().all(Value::in_domain),
             Value::I8(_)
             | Value::I16(_)

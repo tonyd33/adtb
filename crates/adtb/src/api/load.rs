@@ -169,7 +169,7 @@ impl Appender<'_> {
     ///
     /// Fail with `SchemaMismatch`, staging nothing, unless the batch holds the fields of
     /// [`schema`](Appender::schema), in order and at their types, less any a key generator or
-    /// a default fills.
+    /// a default fills, and every value lies in its type's domain.
     pub fn push(&mut self, batch: &RecordBatch) -> Result<(), Error> {
         let s = &mut *self.staged;
         let fields = matched(&s.columns, &s.schema.fields, &batch.schema().fields)
@@ -181,12 +181,12 @@ impl Appender<'_> {
                     .iter()
                     .enumerate()
                     .map(|(j, &f)| {
-                        let conv = &s.columns[f].conv;
-                        exec::canonical(exec::from_stored(conv, &b.value(j, i)))
+                        exec::admit(&s.columns[f].conv, b.value(j, i))
+                            .ok_or_else(|| outside(&s.target, &batch.schema().fields[j], i))
                     })
                     .collect()
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         match s.rows.iter_mut().find(|(f, _)| *f == fields) {
             Some((_, staged)) => staged.extend(rows),
             None => s.rows.push((fields, rows)),
@@ -275,6 +275,15 @@ fn matched(columns: &[Column], full: &[Field], given: &[Field]) -> Option<Vec<us
         }
     }
     next.peek().is_none().then_some(out)
+}
+
+fn outside(target: &str, field: &Field, row: usize) -> Error {
+    Error::rejected(RejectReason::SchemaMismatch {
+        detail: format!(
+            "row {row} of field {} holds a value outside its type's domain in a batch for {target}",
+            field.name
+        ),
+    })
 }
 
 fn mismatch(target: &str, given: &[Field]) -> Error {

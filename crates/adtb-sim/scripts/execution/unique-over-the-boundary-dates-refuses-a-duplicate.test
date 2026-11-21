@@ -1,0 +1,24 @@
+# The first and last Dates are stored, indexed and probed: a second row of either under a unique is
+# refused as a violation of the unique.
+migrate
+  module app
+  add module app
+  add type E = { id: Key es, d: Date }
+  add relation es : E key id generate sequence unique (d)
+  define fn day (t: Text) -> Set Date = match Date.parse(t) | Some s -> [s.value] | None -> []
+
+run
+  insert es from (from d in app::day("-290308-12-21") select { d: d })
+  insert es from (from d in app::day("+294247-01-10") select { d: d })
+
+error Violated { constraint: "app::es.unique(d)", report: 2 rows, redacted: 0 }
+  insert es from (from d in app::day("-290308-12-21") select { d: d })
+
+error Violated { constraint: "app::es.unique(d)", report: 2 rows, redacted: 0 }
+  insert es from (from d in app::day("+294247-01-10") select { d: d })
+
+query rowsort
+  from e in es select e.d
+----
+-290308-12-21
++294247-01-10

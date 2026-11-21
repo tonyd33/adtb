@@ -3,7 +3,6 @@ use std::sync::Arc;
 use adtb_lang::textual::{Elems, Scalar, Textual};
 use adtb_lang::types::Base;
 
-use super::time::zone;
 use super::{F32, F64, Val};
 
 impl Textual for Val {
@@ -99,6 +98,6 @@ impl Textual for Val {
     }
 
     fn zone_exists(name: &str) -> bool {
-        zone(name).is_ok()
+        super::zone_exists(name)
     }
 }

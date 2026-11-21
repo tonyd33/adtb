@@ -41,11 +41,17 @@ pub fn at_day(days: i64, tod: i64) -> Option<i64> {
     i64::try_from(i128::from(days) * i128::from(MICROS_PER_DAY) + i128::from(tod)).ok()
 }
 
-/// Returns whether a count of days names a date within the range of `Instant`.
+/// Returns whether a count of days names a `Date`: a day some microsecond of which is an
+/// `Instant`.
 pub fn date_in_range(days: i64) -> bool {
     let lo = i64::MIN.div_euclid(MICROS_PER_DAY);
     let hi = i64::MAX.div_euclid(MICROS_PER_DAY);
     lo <= days && days <= hi
+}
+
+/// Returns whether a count of microseconds since midnight names a `Time`.
+pub fn time_in_range(micros: i64) -> bool {
+    (0..MICROS_PER_DAY).contains(&micros)
 }
 
 #[cfg(test)]

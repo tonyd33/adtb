@@ -5,7 +5,7 @@ use adtb_lang::kernel::Prim;
 use adtb_lang::pattern::Pattern;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{self, Form};
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::types::{Base, Ty, decimal_in_range};
 
 use super::types::{base, option_arg};
 use super::value::{F32, F64, Val};
@@ -28,6 +28,7 @@ fn form(schema: &Schema, ty: &Ty) -> Result<Form, Error> {
     Ok(f)
 }
 mod time;
+pub(crate) use time::zone_exists;
 pub(super) mod unicode;
 
 use num::Rounding;
@@ -54,13 +55,13 @@ impl Width {
     }
 
     fn fit(self, v: i128) -> Option<i64> {
-        let (lo, hi) = match self {
-            Width::I8 => (i8::MIN.into(), i8::MAX.into()),
-            Width::I16 => (i16::MIN.into(), i16::MAX.into()),
-            Width::I32 => (i32::MIN.into(), i32::MAX.into()),
-            Width::I64 => (i64::MIN.into(), i64::MAX.into()),
+        let b = match self {
+            Width::I8 => Base::I8,
+            Width::I16 => Base::I16,
+            Width::I32 => Base::I32,
+            Width::I64 => Base::I64,
         };
-        (lo..=hi).contains(&v).then_some(v as i64)
+        b.fit_int(v)
     }
 }
 
@@ -583,7 +584,7 @@ fn float_like(like: &Val, x: f64) -> Val {
 }
 
 fn digits38(v: i128) -> Option<i128> {
-    (v.unsigned_abs() < 10u128.pow(38)).then_some(v)
+    decimal_in_range(v).then_some(v)
 }
 
 /// Returns `op` of `xs`, or the fault it raises. Fails with `Unsupported` for values it cannot

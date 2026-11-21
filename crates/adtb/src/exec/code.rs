@@ -6,7 +6,7 @@ use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{self, Const, Kind, Terms, Tm};
 use adtb_lang::schema::Schema;
 use adtb_lang::schema::prelude::ctor;
-use adtb_lang::types::{Base, FnId, RelRef, Ty};
+use adtb_lang::types::{Base, FnId, RelRef, Ty, decimal_in_range};
 
 use crate::catalog::layout::batch_type;
 
@@ -683,7 +683,7 @@ impl<'a> Compiler<'a> {
         Ok(match (c, b) {
             (Const::Int(i), Some(Base::Decimal(s))) => Val::Decimal(
                 i.checked_mul(10i128.pow(u32::from(s)))
-                    .filter(|d| d.unsigned_abs() < 10u128.pow(38))
+                    .filter(|d| decimal_in_range(*d))
                     .ok_or(Fault::ArithmeticOverflow)?,
             ),
             (Const::Int(i), Some(Base::F32)) => Val::F32(F32::new(*i as f32)),

@@ -3,7 +3,7 @@ use std::fmt;
 use super::{Ctor, Form, KeyForm, Scalar, Textual};
 use crate::calendar::{MICROS_PER_DAY, at_day, date_in_range, days_from_civil, days_in_month};
 use crate::lex;
-use crate::types::Base;
+use crate::types::{Base, decimal_in_range};
 
 /// Why text does not read as a value: the byte offset where reading stopped, and what it
 /// expected there.
@@ -233,10 +233,14 @@ impl<'s> Reader<'s> {
         }
         let digits = format!("{whole}{frac:0<width$}", width = s as usize);
         let digits = digits.trim_start_matches('0');
-        if digits.len() > 38 {
-            return self.fail("a decimal of more than 38 digits");
-        }
-        let v = digits.parse::<i128>().unwrap_or(0);
+        let v = if digits.is_empty() {
+            0
+        } else {
+            match digits.parse::<i128>().ok().filter(|v| decimal_in_range(*v)) {
+                Some(v) => v,
+                None => return self.fail("a decimal of more than 38 digits"),
+            }
+        };
         Ok(if neg { -v } else { v })
     }
 

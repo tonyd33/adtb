@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 use super::codec::Reader;
 use super::*;
@@ -65,9 +66,71 @@ const TEXT_CHARS: [char; 12] = [
 
 const BYTES: [u8; 7] = [0x00, 0x01, 0x02, 0x7F, 0x80, 0xFE, 0xFF];
 
-const MAX_DECIMAL: i128 = 10_i128.pow(38) - 1;
-const MAX_DATE: i32 = 106_751_991;
-const MICROS_PER_DAY: i64 = 86_400_000_000;
+/// The least and greatest integers whose values of `scalar` are `in_domain`.
+struct Ends {
+    scalar: Scalar,
+    value: fn(i128) -> Value,
+    lo: i128,
+    hi: i128,
+}
+
+/// Returns the ends of the domain of the values `value` gives over `[min, max]`.
+///
+/// Preconditions:
+/// - The values in their domain are an interval holding `value(0)`.
+fn ends(scalar: Scalar, value: fn(i128) -> Value, min: i128, max: i128) -> Ends {
+    let inside = |n: i128| value(n).in_domain();
+    let (mut out, mut lo) = (min, 0);
+    while out + 1 < lo {
+        let mid = out.midpoint(lo);
+        if inside(mid) {
+            lo = mid;
+        } else {
+            out = mid;
+        }
+    }
+    let (mut hi, mut out) = (0, max);
+    while hi + 1 < out {
+        let mid = hi.midpoint(out);
+        if inside(mid) {
+            hi = mid;
+        } else {
+            out = mid;
+        }
+    }
+    Ends {
+        scalar,
+        value,
+        lo,
+        hi,
+    }
+}
+
+static ENDS: LazyLock<[Ends; 3]> = LazyLock::new(|| {
+    [
+        ends(Scalar::Decimal(0), Value::Decimal, i128::MIN, i128::MAX),
+        ends(
+            Scalar::Date,
+            |n| Value::Date(i32::try_from(n).expect("a drawn day is an i32")),
+            i32::MIN.into(),
+            i32::MAX.into(),
+        ),
+        ends(
+            Scalar::Time,
+            |n| Value::Time(i64::try_from(n).expect("a drawn time is an i64")),
+            i64::MIN.into(),
+            i64::MAX.into(),
+        ),
+    ]
+});
+
+fn gen_in_domain(rng: &mut Rng, s: Scalar) -> Value {
+    let e = ENDS
+        .iter()
+        .find(|e| std::mem::discriminant(&e.scalar) == std::mem::discriminant(&s))
+        .expect("every integer-valued scalar with a bounded domain has its ends");
+    (e.value)(gen_int(rng, e.lo, e.hi))
+}
 
 fn order_key(bytes: &[u8]) -> OrderKey {
     OrderKey::new(bytes.to_vec()).unwrap()
@@ -283,13 +346,11 @@ fn gen_scalar(rng: &mut Rng, s: Scalar) -> Value {
         Scalar::I64 => Value::I64(gen_i64(rng)),
         Scalar::F32 => Value::F32(F32::new(gen_f32(rng))),
         Scalar::F64 => Value::F64(F64::new(gen_f64(rng))),
-        Scalar::Decimal(_) => Value::Decimal(gen_int(rng, -MAX_DECIMAL, MAX_DECIMAL)),
+        Scalar::Decimal(_) | Scalar::Date | Scalar::Time => gen_in_domain(rng, s),
         Scalar::Text => Value::Text(gen_text(rng)),
         Scalar::Bytes => Value::Bytes(gen_bytes(rng)),
         Scalar::SortKey => Value::SortKey(gen_bytes(rng)),
         Scalar::Instant => Value::Instant(gen_i64(rng)),
-        Scalar::Date => Value::Date(gen_int(rng, (-MAX_DATE).into(), MAX_DATE.into()) as i32),
-        Scalar::Time => Value::Time(gen_int(rng, 0, (MICROS_PER_DAY - 1).into()) as i64),
         Scalar::DateTime => Value::DateTime(gen_i64(rng)),
         Scalar::Duration => Value::Duration(gen_i64(rng)),
         Scalar::ZonedDateTime => Value::ZonedDateTime {
@@ -456,6 +517,33 @@ fn generated_keys_preserve_order() {
 
 #[test]
 fn decoding_accepts_only_encodings() {
+    let spec = [
+        (-(10_i128.pow(38) - 1), 10_i128.pow(38) - 1),
+        (-106_751_992, 106_751_991),
+        (0, 86_399_999_999),
+    ];
+    for (e, (lo, hi)) in ENDS.iter().zip(spec) {
+        assert_eq!((e.lo, e.hi), (lo, hi), "{:?}", e.scalar);
+        let schema = asc(vec![scalar(e.scalar)]);
+        for n in [e.lo - 1, e.lo, e.hi, e.hi + 1] {
+            let v = (e.value)(n);
+            let want = if (e.lo..=e.hi).contains(&n) {
+                Ok(vec![v.clone()])
+            } else {
+                Err(match e.scalar {
+                    Scalar::Decimal(_) => DecodeError::DecimalOutOfRange,
+                    Scalar::Date => DecodeError::DateOutOfRange,
+                    _ => DecodeError::TimeOutOfRange,
+                })
+            };
+            assert_eq!(
+                schema.decode(&schema.encode(&[v])),
+                want,
+                "{:?} {n}",
+                e.scalar
+            );
+        }
+    }
     let mut rng = Rng(3);
     for _ in 0..20000 {
         let schema = gen_schema(&mut rng, false);
@@ -869,8 +957,6 @@ fn decoding_refuses_each_form_the_encoding_does_not_produce() {
         b[0] ^= 0x80;
         b.to_vec()
     };
-    let time = |t: i64| (t as u64 ^ 1 << 63).to_be_bytes().to_vec();
-    let date = |d: i32| (d as u32 ^ 1 << 31).to_be_bytes().to_vec();
     let one = |s: Scalar| vec![scalar(s)];
     let opt = || vec![option(scalar(Scalar::I8))];
     let rows: Vec<(Vec<KeyType>, Vec<u8>, Decoded)> = vec![
@@ -923,48 +1009,9 @@ fn decoding_refuses_each_form_the_encoding_does_not_produce() {
         ),
         (
             one(Scalar::Decimal(0)),
-            decimal(MAX_DECIMAL),
-            Ok(vec![Value::Decimal(MAX_DECIMAL)]),
-        ),
-        (
-            one(Scalar::Decimal(0)),
-            decimal(-MAX_DECIMAL),
-            Ok(vec![Value::Decimal(-MAX_DECIMAL)]),
-        ),
-        (
-            one(Scalar::Decimal(0)),
-            decimal(MAX_DECIMAL + 1),
-            Err(DecimalOutOfRange),
-        ),
-        (
-            one(Scalar::Decimal(0)),
-            decimal(-MAX_DECIMAL - 1),
-            Err(DecimalOutOfRange),
-        ),
-        (
-            one(Scalar::Decimal(0)),
             decimal(i128::MIN),
             Err(DecimalOutOfRange),
         ),
-        (
-            one(Scalar::Time),
-            time(MICROS_PER_DAY - 1),
-            Ok(vec![Value::Time(MICROS_PER_DAY - 1)]),
-        ),
-        (one(Scalar::Time), time(MICROS_PER_DAY), Err(TimeOutOfRange)),
-        (one(Scalar::Time), time(-1), Err(TimeOutOfRange)),
-        (
-            one(Scalar::Date),
-            date(MAX_DATE),
-            Ok(vec![Value::Date(MAX_DATE)]),
-        ),
-        (
-            one(Scalar::Date),
-            date(-MAX_DATE),
-            Ok(vec![Value::Date(-MAX_DATE)]),
-        ),
-        (one(Scalar::Date), date(MAX_DATE + 1), Err(DateOutOfRange)),
-        (one(Scalar::Date), date(-MAX_DATE - 1), Err(DateOutOfRange)),
         (opt(), vec![0x60, 0x00], Err(UnknownOrderKey)),
         (opt(), vec![0x40], Err(UnexpectedEnd)),
         (opt(), vec![0x80, 0x00], Err(UnexpectedEnd)),

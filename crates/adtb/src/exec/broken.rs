@@ -44,6 +44,10 @@ pub enum Broken {
         value: Val,
         scalar: Scalar,
     },
+    OutsideDomain {
+        value: Val,
+        scalar: Scalar,
+    },
     NotBatchTyped {
         value: Val,
         ty: batch::Type,
@@ -131,6 +135,9 @@ impl fmt::Display for Broken {
             Broken::NotKeyed { value, ty } => write!(f, "{value:?} is not a value of {ty:?}"),
             Broken::NotScalar { value, scalar } => {
                 write!(f, "{value:?} is not a value of {scalar:?}")
+            }
+            Broken::OutsideDomain { value, scalar } => {
+                write!(f, "{value:?} lies outside the domain of {scalar:?}")
             }
             Broken::NotBatchTyped { value, ty } => {
                 write!(f, "expected a value of batch type {ty:?}, found {value:?}")

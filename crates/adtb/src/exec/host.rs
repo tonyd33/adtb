@@ -6,6 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 
 use crate::batch::{self, Batch, BatchBuilder};
+use crate::key::Value;
 
 use super::store::{Conv, from_stored};
 use super::{Error, Fault, Val, datum};
@@ -57,7 +58,7 @@ pub struct HostCall {
 impl HostCall {
     /// Call the body bound for this function once with `rows`, the arguments of each row.
     /// Returns the result of each row, or the fault of every row when the body fails, panics, or
-    /// returns a batch of another type or length.
+    /// returns a batch of another type or length or a value outside its type's domain.
     ///
     /// Fail with `MissingFunction` when no body is bound, and with `OtherVersion` when the body
     /// bound is supplied at another version than the declaration names.
@@ -89,9 +90,10 @@ impl HostCall {
             let fits = out.len() == rows.len() && out.schema().fields() == [self.result.clone()];
             fits.then(|| {
                 (0..out.len())
-                    .map(|i| canonical(from_stored(&self.conv, &out.value(0, i))))
-                    .collect()
+                    .map(|i| admit(&self.conv, out.value(0, i)))
+                    .collect::<Option<Vec<_>>>()
             })
+            .flatten()
         }));
         let out = match ran {
             Err(payload) if payload.is::<crate::runtime::FatalIo>() => resume_unwind(payload),
@@ -101,12 +103,9 @@ impl HostCall {
     }
 }
 
-/// Returns `v` with every text normalized to NFC, as construction normalizes it.
-pub(crate) fn canonical(v: Val) -> Val {
-    match v {
-        Val::Text(t) => Val::text(&t),
-        Val::Ctor(c, fs) => Val::ctor(c, fs.iter().cloned().map(canonical).collect()),
-        Val::Record(fs) => Val::record(fs.iter().cloned().map(canonical).collect()),
-        other => other,
-    }
+/// Returns the value of stored value `v` at `conv` with every text normalized to NFC, as
+/// construction normalizes it, or `None` when it lies outside its type's domain.
+pub(crate) fn admit(conv: &Conv, v: Value) -> Option<Val> {
+    let v = v.normalized();
+    v.in_domain().then(|| from_stored(conv, &v))
 }

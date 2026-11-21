@@ -4,11 +4,8 @@ use jiff::tz::{AmbiguousOffset, TimeZone};
 
 use super::super::Fault;
 
-pub const MICROS_PER_DAY: i64 = 86_400_000_000;
-
-/// The first and last days of `Date`: the days some microsecond of which is an `Instant`.
-pub const DAY_MIN: i64 = i64::MIN.div_euclid(MICROS_PER_DAY);
-pub const DAY_MAX: i64 = i64::MAX.div_euclid(MICROS_PER_DAY);
+pub use adtb_lang::calendar::MICROS_PER_DAY;
+use adtb_lang::calendar::date_in_range;
 
 /// Microseconds in 400 Gregorian years, after which the calendar and its weekdays repeat.
 const CYCLE: i64 = 146_097 * MICROS_PER_DAY;
@@ -63,7 +60,7 @@ fn add_to_date(date: i64, months: i32, days: i32, reject: bool) -> Result<Option
         d
     };
     let out = days_from_civil(y, m, d) + i64::from(days);
-    if !(DAY_MIN..=DAY_MAX).contains(&out) {
+    if !date_in_range(out) {
         return Err(Fault::ArithmeticOverflow);
     }
     Ok(Some(out))
@@ -106,6 +103,11 @@ pub fn zone(name: &str) -> Result<TimeZone, Fault> {
         .ok()
         .filter(|tz| tz.iana_name() == Some(name))
         .ok_or(Fault::UnknownZone)
+}
+
+/// Returns whether the zone rules name a zone `name`.
+pub fn zone_exists(name: &str) -> bool {
+    zone(name).is_ok()
 }
 
 /// Returns `t` moved by whole 400-year cycles into the range the zone rules are computed over.

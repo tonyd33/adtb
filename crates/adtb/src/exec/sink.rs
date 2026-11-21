@@ -17,13 +17,12 @@ use super::wide::Wide;
 use super::{Broken, Error, Fault};
 
 fn fits(b: Base, v: i128) -> Option<i64> {
-    let (lo, hi): (i128, i128) = match b {
-        Base::I8 => (i8::MIN.into(), i8::MAX.into()),
-        Base::I16 => (i16::MIN.into(), i16::MAX.into()),
-        Base::I32 => (i32::MIN.into(), i32::MAX.into()),
-        _ => (i64::MIN.into(), i64::MAX.into()),
+    let b = if b.int_range().is_some() {
+        b
+    } else {
+        Base::I64
     };
-    (lo..=hi).contains(&v).then_some(v as i64)
+    b.fit_int(v)
 }
 
 fn mistyped(want: &'static str, v: &Val) -> Error {

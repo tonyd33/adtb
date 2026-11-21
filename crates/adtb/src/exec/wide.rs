@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 
+use adtb_lang::types::decimal_in_range;
+
 /// A signed integer of up to 256 bits of magnitude, enough to rescale and add 38-digit decimals
 /// exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7,13 +9,6 @@ pub struct Wide {
     neg: bool,
     /// Little-endian limbs.
     mag: [u64; 4],
-}
-
-const DIGITS38: u128 = 10u128.pow(38);
-
-/// Returns whether an unscaled decimal has at most 38 digits.
-pub(crate) fn decimal_fits(value: i128) -> bool {
-    value.unsigned_abs() < DIGITS38
 }
 
 impl Wide {
@@ -131,7 +126,7 @@ impl Wide {
     /// Returns the value when it has at most 38 decimal digits.
     pub fn digits38(self) -> Option<i128> {
         let v = self.to_i128()?;
-        decimal_fits(v).then_some(v)
+        decimal_in_range(v).then_some(v)
     }
 }
 

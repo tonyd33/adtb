@@ -32,6 +32,8 @@ add relation payments : Payment
 add type Note = { id: Key notes, body: Text, tag: Text }
 add relation notes : Note key id generate sequence
   default tag = "none"
+add type Stamp = { id: Key stamps, at: ZonedDateTime, day: Date }
+add relation stamps : Stamp key id generate sequence
 add constraint paid =
   from c in customers
   where not exists p in payments where p.customer == key c
@@ -351,6 +353,44 @@ fn a_batch_of_another_schema_is_refused_at_push_and_stages_nothing() {
         }
         assert_eq!(0, load.commit().expect("an empty load commits").rows);
         assert!(query(&db, "from n in notes select n.body").is_empty());
+    });
+}
+
+#[test]
+fn a_value_outside_its_types_domain_is_refused_at_push_and_its_bounds_load() {
+    once(10, |rt| {
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
+        let mut load = db.load(&LoadOptions::default()).expect("a load");
+        let zoned = |zone: &str| Stored::ZonedDateTime {
+            local: 0,
+            zone: zone.into(),
+        };
+        let outside = [
+            (zoned("Nowhere/Zone"), Stored::Date(0), "at"),
+            (zoned("UTC"), Stored::Date(-106_751_993), "day"),
+            (zoned("UTC"), Stored::Date(106_751_992), "day"),
+        ];
+        for (at, day, field) in outside {
+            let got = push(&mut load, "stamps", &["at", "day"], &[vec![at, day]]);
+            let detail = format!(
+                "row 0 of field {field} holds a value outside its type's domain in a batch for shop::stamps"
+            );
+            assert_eq!(
+                Err(Error::Rejected {
+                    reason: RejectReason::SchemaMismatch { detail }
+                }),
+                got
+            );
+        }
+        let inside = [
+            vec![zoned("UTC"), Stored::Date(-106_751_992)],
+            vec![zoned("Europe/Lisbon"), Stored::Date(106_751_991)],
+        ];
+        push(&mut load, "stamps", &["at", "day"], &inside).expect("the bounds load");
+        assert_eq!(2, load.commit().expect("commit").rows);
+        let mut days = query(&db, "from s in stamps select s.day");
+        days.sort();
+        assert_eq!(vec!["+294247-01-10", "-290308-12-21"], days);
     });
 }
 

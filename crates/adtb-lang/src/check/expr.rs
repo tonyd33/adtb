@@ -1,6 +1,7 @@
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind, Lit, UnOp};
 use crate::kernel::{Const, Prim};
+use crate::types::decimal_in_range;
 
 pub(super) fn is_literal(e: &Expr) -> bool {
     match &e.kind {
@@ -69,18 +70,8 @@ const SCALES: [i128; 39] = {
     t
 };
 
-fn int_range(b: Base) -> Option<(i128, i128)> {
-    Some(match b {
-        Base::I8 => (i128::from(i8::MIN), i128::from(i8::MAX)),
-        Base::I16 => (i128::from(i16::MIN), i128::from(i16::MAX)),
-        Base::I32 => (i128::from(i32::MIN), i128::from(i32::MAX)),
-        Base::I64 => (i128::from(i64::MIN), i128::from(i64::MAX)),
-        _ => return None,
-    })
-}
-
 fn is_int(ty: &Ty) -> bool {
-    matches!(ty, Ty::Base(b) if int_range(*b).is_some())
+    matches!(ty, Ty::Base(b) if b.int_range().is_some())
 }
 
 /// The most nodes the type of an expression may have.
@@ -365,8 +356,7 @@ impl Checker<'_> {
     fn number(&mut self, value: i128, scale: u8, ty: &Ty, span: Span) -> R<Out> {
         let range_err = || diag(span, format!("literal out of range of {}", self.show(ty)));
         match ty {
-            Ty::Base(b) if int_range(*b).is_some() => {
-                let (lo, hi) = int_range(*b).expect("an integer type");
+            Ty::Base(b) if b.int_range().is_some() => {
                 if scale != 0 {
                     return Err(diag(
                         span,
@@ -376,7 +366,7 @@ impl Checker<'_> {
                         ),
                     ));
                 }
-                if value < lo || value > hi {
+                if b.fit_int(value).is_none() {
                     return Err(range_err());
                 }
                 Ok(self.constant(Const::Int(value), ty.clone()))
@@ -393,7 +383,7 @@ impl Checker<'_> {
                 }
                 let unscaled = value
                     .checked_mul(SCALES[(*s - scale) as usize])
-                    .filter(|v| v.abs() < SCALES[38])
+                    .filter(|v| decimal_in_range(*v))
                     .ok_or_else(range_err)?;
                 Ok(self.constant(Const::Decimal(unscaled), ty.clone()))
             }

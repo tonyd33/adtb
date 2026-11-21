@@ -97,3 +97,17 @@ include = [
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb-lang/src/check/adhoc.rs"]
 rows = { schema_labels = "zero" }
+
+[[rule]]
+query = "domain.tql"
+include = ["crates/**/*.rs", "xtask/**/*.rs"]
+exclude = [
+  "**/tests.rs",
+  "**/*_tests.rs",
+  "**/tests/**",
+  "crates/adtb-lang/src/calendar.rs",
+  "crates/adtb-lang/src/types.rs",
+  "crates/adtb-reference/**",
+  "crates/adtb-testkit/**",
+]
+rows = { domain_copies = "zero" }

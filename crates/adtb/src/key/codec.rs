@@ -1,3 +1,6 @@
+use adtb_lang::calendar::{date_in_range, time_in_range};
+use adtb_lang::types::decimal_in_range;
+
 use super::ovarint;
 use super::value::{AnonSumType, F32, F64, KeyType, Scalar, SumType, Value};
 
@@ -27,9 +30,6 @@ pub enum DecodeError {
     UnknownConstructor,
     BadVarint,
 }
-
-const MICROS_PER_DAY: i64 = 86_400_000_000;
-const DECIMAL_LIMIT: u128 = 10_u128.pow(38);
 
 impl KeySchema {
     pub fn new(components: Vec<(KeyType, Dir)>) -> KeySchema {
@@ -364,7 +364,7 @@ fn decode_scalar(r: &mut Reader, s: Scalar) -> Result<Value, DecodeError> {
         Scalar::F64 => Value::F64(f64_from_order_bits(u64::from_be_bytes(r.array()?))?),
         Scalar::Decimal(_) => {
             let n = i128::from_be_bytes(r.signed()?);
-            if n.unsigned_abs() >= DECIMAL_LIMIT {
+            if !decimal_in_range(n) {
                 return Err(DecodeError::DecimalOutOfRange);
             }
             Value::Decimal(n)
@@ -375,14 +375,14 @@ fn decode_scalar(r: &mut Reader, s: Scalar) -> Result<Value, DecodeError> {
         Scalar::Instant => Value::Instant(r.i64()?),
         Scalar::Date => {
             let days = r.i32()?;
-            if i64::from(days).checked_mul(MICROS_PER_DAY).is_none() {
+            if !date_in_range(i64::from(days)) {
                 return Err(DecodeError::DateOutOfRange);
             }
             Value::Date(days)
         }
         Scalar::Time => {
             let t = r.i64()?;
-            if !(0..MICROS_PER_DAY).contains(&t) {
+            if !time_in_range(t) {
                 return Err(DecodeError::TimeOutOfRange);
             }
             Value::Time(t)

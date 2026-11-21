@@ -1355,10 +1355,17 @@ pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
 }
 
 fn scalar_key(s: Scalar, v: &Val) -> Result<Value, Error> {
-    Ok(match (s, v) {
-        (Scalar::I8, Val::Int(x)) => Value::I8(*x as i8),
-        (Scalar::I16, Val::Int(x)) => Value::I16(*x as i16),
-        (Scalar::I32, Val::Int(x)) => Value::I32(*x as i32),
+    let outside = || -> Error {
+        Broken::OutsideDomain {
+            value: v.clone(),
+            scalar: s,
+        }
+        .into()
+    };
+    let value = match (s, v) {
+        (Scalar::I8, Val::Int(x)) => Value::I8(i8::try_from(*x).map_err(|_| outside())?),
+        (Scalar::I16, Val::Int(x)) => Value::I16(i16::try_from(*x).map_err(|_| outside())?),
+        (Scalar::I32, Val::Int(x)) => Value::I32(i32::try_from(*x).map_err(|_| outside())?),
         (Scalar::I64, Val::Int(x)) => Value::I64(*x),
         (Scalar::F32, Val::F32(x)) => Value::F32(crate::key::F32::new(x.get())),
         (Scalar::F64, Val::F64(x)) => Value::F64(crate::key::F64::new(x.get())),
@@ -1386,5 +1393,9 @@ fn scalar_key(s: Scalar, v: &Val) -> Result<Value, Error> {
             }
             .into());
         }
-    })
+    };
+    if !value.in_domain() {
+        return Err(outside());
+    }
+    Ok(value)
 }

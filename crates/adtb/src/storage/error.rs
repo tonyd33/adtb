@@ -58,6 +58,8 @@ pub enum Undecoded {
     Text,
     /// An out-of-line value's pointer is not 16 bytes or names no chunk.
     Pointer,
+    /// A stored `Date`, `Time` or `Decimal` lies outside its type's domain.
+    Domain,
 }
 
 impl Damage {

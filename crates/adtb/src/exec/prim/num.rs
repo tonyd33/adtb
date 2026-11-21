@@ -1,11 +1,10 @@
 use std::cmp::Ordering;
 
 use adtb_lang::schema::prelude::ctor;
+use adtb_lang::types::decimal_in_range;
 
 use super::super::{Error, Fault};
 use super::{Val, Width, mistyped};
-
-const DIGITS38: u128 = 10u128.pow(38);
 
 /// A rounding mode of the prelude's `Rounding`, by constructor position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,7 +193,8 @@ pub fn decimal_div(a: i128, s: u8, b: i128, t: u8, u: u8, r: Rounding) -> Result
     let (q, rem) = n.divmod(&d);
     let mut q = q
         .to_u128()
-        .filter(|q| *q < DIGITS38)
+        .and_then(|q| i128::try_from(q).ok())
+        .filter(|q| decimal_in_range(*q))
         .ok_or(Fault::ArithmeticOverflow)?;
     let neg = (a < 0) != (b < 0);
     if !rem.0.is_empty() {
@@ -204,10 +204,9 @@ pub fn decimal_div(a: i128, s: u8, b: i128, t: u8, u: u8, r: Rounding) -> Result
             q += 1;
         }
     }
-    if q >= DIGITS38 {
+    if !decimal_in_range(q) {
         return Err(Fault::ArithmeticOverflow);
     }
-    let q = q as i128;
     Ok(if neg { -q } else { q })
 }
 
@@ -235,13 +234,14 @@ pub fn float_to_decimal(x: f64, s: u8, r: Rounding) -> Result<i128, Fault> {
     let (kept, rest) = frac.split_at(usize::from(s));
     let digits = format!("{int}{kept}");
     let digits = digits.trim_start_matches('0');
-    if digits.len() > 38 {
-        return Err(Fault::OutOfRange);
-    }
-    let mut q: u128 = if digits.is_empty() {
+    let mut q: i128 = if digits.is_empty() {
         0
     } else {
-        digits.parse().expect("at most 38 digits")
+        digits
+            .parse()
+            .ok()
+            .filter(|q| decimal_in_range(*q))
+            .ok_or(Fault::OutOfRange)?
     };
     let rest = rest.trim_end_matches('0');
     if !rest.is_empty() {
@@ -253,10 +253,9 @@ pub fn float_to_decimal(x: f64, s: u8, r: Rounding) -> Result<i128, Fault> {
             q += 1;
         }
     }
-    if q >= DIGITS38 {
+    if !decimal_in_range(q) {
         return Err(Fault::OutOfRange);
     }
-    let q = q as i128;
     Ok(if x < 0.0 { -q } else { q })
 }
 

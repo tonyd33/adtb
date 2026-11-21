@@ -2,15 +2,15 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use adtb_lang::calendar::{MICROS_PER_DAY, date_in_range};
+use adtb_lang::calendar::{date_in_range, time_in_range};
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::Textual;
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::types::{Base, Ty, decimal_in_range};
 use unicode_normalization::is_nfc;
 
 use crate::catalog::layout;
+use crate::exec::Val;
 use crate::exec::types::{ctor_set, ctors};
-use crate::exec::{self, Val};
 
 type Node = (*const Val, Ty);
 
@@ -195,10 +195,10 @@ fn scalar(base: Base, value: &Val) -> bool {
         (Base::I8 | Base::I16 | Base::I32 | Base::I64, Val::Int(n)) => base
             .int_range()
             .is_some_and(|(lo, hi)| (lo..=hi).contains(n)),
-        (Base::Decimal(scale), Val::Decimal(n)) => scale <= 38 && exec::decimal_fits(*n),
+        (Base::Decimal(scale), Val::Decimal(n)) => scale <= 38 && decimal_in_range(*n),
         (Base::Text, Val::Text(text)) => is_nfc(text),
         (Base::Date, Val::Date(day)) => date_in_range(i64::from(*day)),
-        (Base::Time, Val::Time(time)) => (0..MICROS_PER_DAY).contains(time),
+        (Base::Time, Val::Time(time)) => time_in_range(*time),
         (Base::ZonedDateTime, Val::Zoned { zone, .. }) => Val::zone_exists(zone),
         (Base::F32, Val::F32(_))
         | (Base::F64, Val::F64(_))

@@ -213,7 +213,7 @@ fn bytes_at<const N: usize>(b: &[u8], at: usize) -> Result<[u8; N], Undecoded> {
 fn get_scalar(s: Scalar, b: &[u8]) -> Result<Value, Undecoded> {
     let i32_at = |at| bytes_at(b, at).map(i32::from_le_bytes);
     let i64_at = || bytes_at(b, 0).map(i64::from_le_bytes);
-    Ok(match s {
+    let v = match s {
         Scalar::I8 => Value::I8(i8::from_le_bytes(bytes_at(b, 0)?)),
         Scalar::I16 => Value::I16(i16::from_le_bytes(bytes_at(b, 0)?)),
         Scalar::I32 => Value::I32(i32_at(0)?),
@@ -233,7 +233,11 @@ fn get_scalar(s: Scalar, b: &[u8]) -> Result<Value, Undecoded> {
         Scalar::Text | Scalar::Bytes | Scalar::SortKey | Scalar::ZonedDateTime => {
             unreachable!("{s:?} has no fixed width")
         }
-    })
+    };
+    if !v.in_domain() {
+        return Err(Undecoded::Domain);
+    }
+    Ok(v)
 }
 
 fn sum_parts<'v>(t: &FieldType, ctors: &[CtorType], v: &'v Value) -> (usize, &'v [Value]) {

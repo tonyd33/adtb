@@ -87,7 +87,7 @@ const SETTLED: u8 = 4;
 const SHAPE: u8 = 5;
 
 /// Each shape a damage record can hold, with its stored code, at the position of its code.
-const SHAPES: [(u64, Shape); 11] = [
+const SHAPES: [(u64, Shape); 12] = [
     (0, Shape::Blank),
     (1, Shape::Kind),
     (2, Shape::Owner),
@@ -99,6 +99,7 @@ const SHAPES: [(u64, Shape); 11] = [
     (8, Shape::Row(Undecoded::Text)),
     (9, Shape::Row(Undecoded::Pointer)),
     (10, Shape::Stray),
+    (11, Shape::Row(Undecoded::Domain)),
 ];
 
 const _: () = {

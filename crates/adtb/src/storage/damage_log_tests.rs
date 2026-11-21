@@ -124,7 +124,7 @@ fn refused_past_the_end(pager: &Pager<SimRuntime>, _: &SimRuntime, pid: Pid) -> 
     pager.damage(pid, Damage::Checksum).damage
 }
 
-const SHAPES: [Shape; 11] = [
+const SHAPES: [Shape; 12] = [
     Shape::Blank,
     Shape::Kind,
     Shape::Owner,
@@ -136,6 +136,7 @@ const SHAPES: [Shape; 11] = [
     Shape::Row(Undecoded::Text),
     Shape::Row(Undecoded::Pointer),
     Shape::Stray,
+    Shape::Row(Undecoded::Domain),
 ];
 
 fn sites() -> Vec<Site> {
@@ -328,7 +329,7 @@ fn each_detection_leaves_a_record_a_crash_and_a_close_keep_but_an_unreadable_pag
             reached.insert(name);
         }
     }
-    assert_eq!(2 * 22, reached.len(), "{reached:?}");
+    assert_eq!(2 * 23, reached.len(), "{reached:?}");
 }
 
 /// Write `p`, write it to the file, rot it there, evict it and read it. Returns the damage the
