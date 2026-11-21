@@ -873,36 +873,39 @@ impl Source {
                     .map(move |k| (k.key_kind(), id))
             })
             .collect();
-        let mut kept: Vec<LogGrant> = Vec::new();
-        for g in &self.grants {
-            let Some(privilege) = g
-                .privilege
-                .mapped(&mut |k, x| live.contains(&(k.key_kind(), x)).then_some(x))
-            else {
-                continue;
-            };
-            match kept
-                .iter_mut()
-                .find(|x| x.role == g.role && x.privilege == privilege)
-            {
-                Some(x) => match (x.dormant, g.dormant) {
-                    (true, false) => {
-                        x.grant_option = g.grant_option;
-                        x.row = g.row;
-                        x.dormant = false;
-                    }
-                    (false, true) => {}
-                    _ => x.grant_option |= g.grant_option,
-                },
-                None => kept.push(LogGrant {
-                    role: g.role.clone(),
-                    privilege,
-                    grant_option: g.grant_option,
-                    row: g.row,
-                    dormant: g.dormant,
-                }),
-            }
-        }
-        self.grants = kept;
+        self.grants = pruned(&self.grants, &|k, x| live.contains(&(k.key_kind(), x)));
     }
+}
+
+/// Returns `grants` without each id `live` refuses, each grant left naming no relation, set or
+/// function, or no constructor of a list, gone, and grants of one role and privilege joined.
+pub(super) fn pruned(grants: &[LogGrant], live: &dyn Fn(IdKind, u64) -> bool) -> Vec<LogGrant> {
+    let mut kept: Vec<LogGrant> = Vec::new();
+    for g in grants {
+        let Some(privilege) = g.privilege.mapped(&mut |k, x| live(k, x).then_some(x)) else {
+            continue;
+        };
+        match kept
+            .iter_mut()
+            .find(|x| x.role == g.role && x.privilege == privilege)
+        {
+            Some(x) => match (x.dormant, g.dormant) {
+                (true, false) => {
+                    x.grant_option = g.grant_option;
+                    x.row = g.row;
+                    x.dormant = false;
+                }
+                (false, true) => {}
+                _ => x.grant_option |= g.grant_option,
+            },
+            None => kept.push(LogGrant {
+                role: g.role.clone(),
+                privilege,
+                grant_option: g.grant_option,
+                row: g.row,
+                dormant: g.dormant,
+            }),
+        }
+    }
+    kept
 }

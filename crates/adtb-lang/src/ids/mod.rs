@@ -295,6 +295,11 @@ impl CatalogIds {
         self.view_keys.get(&f).copied()
     }
 
+    /// Returns the id of the unique or index at position `at` among stored view `f`'s.
+    pub fn view_index_id(&self, f: FnId, at: usize) -> Option<CatIndexId> {
+        self.view_indexes.get(&(f, at)).copied()
+    }
+
     /// Returns the id of the one constructor of the row type of stored view `f`.
     pub fn view_ctor_id(&self, f: FnId) -> Option<CatCtorId> {
         self.view_ctors.get(&f).copied()

@@ -360,6 +360,8 @@ impl Source {
         accepting: bool,
         recorder: Option<&mut Recorder>,
     ) -> Result<(Source, (Schema, Program)), Refusal> {
+        #[cfg(feature = "compare-migration-model")]
+        let recording = recorder.is_some();
         let (mut next, mut refusal, applied) = self.applying(m, text, kept, accepting, recorder);
         let checked = next.check().map_err(|ds| {
             let reported: BTreeSet<String> = refusal
@@ -373,7 +375,7 @@ impl Source {
                 .collect();
             refusal.recheck_from = self.copied_from(m, text, &applied, &refusal.recheck);
         });
-        match checked {
+        let result = match checked {
             Ok(checked) if refusal.operators.is_empty() => {
                 next.log.push(Logged {
                     number: next.version,
@@ -388,7 +390,18 @@ impl Source {
                 refusal.result = Some(Box::new(next));
                 Err(refusal)
             }
+        };
+        #[cfg(feature = "compare-migration-model")]
+        if model::enabled() && !(recording && result.is_ok()) {
+            model::compare(
+                self,
+                m,
+                text,
+                !kept.is_empty(),
+                result.as_ref().map(|(s, _)| s),
+            );
         }
+        result
     }
 
     /// Apply the operators of migration `m` one at a time to a copy of this source, as

@@ -31,6 +31,8 @@ mod grant_text;
 mod ids;
 mod keep;
 mod memo;
+#[cfg(feature = "compare-migration-model")]
+mod model;
 mod names;
 mod operands;
 mod recorded;

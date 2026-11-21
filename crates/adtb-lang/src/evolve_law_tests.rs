@@ -1997,3 +1997,156 @@ fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
         "the search applies every invertible kind in every shape"
     );
 }
+
+/// Returns each script under the engine's script corpus, as its path and text.
+#[cfg(feature = "compare-migration-model")]
+fn scripts() -> Vec<(std::path::PathBuf, String)> {
+    let mut out = Vec::new();
+    let mut dirs = vec![std::path::PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../adtb-sim/scripts"
+    ))];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the script directory reads") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "test") {
+                let text = std::fs::read_to_string(&path).expect("a script reads");
+                out.push((path, text));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Returns the migrations of the `migrate` directives of `script` that apply to the version
+/// before them, in order, each starting at its `module` line.
+#[cfg(feature = "compare-migration-model")]
+fn script_migrations(script: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut inside = false;
+    for line in script.lines() {
+        if line == "migrate" || (line.starts_with("migrate ") && !line.starts_with("migrate at ")) {
+            inside = true;
+            continue;
+        }
+        match line.strip_prefix("  ") {
+            Some(body) if inside => {
+                if body.starts_with("module ") {
+                    out.push(String::new());
+                }
+                if let Some(m) = out.last_mut() {
+                    m.push_str(body);
+                    m.push('\n');
+                }
+            }
+            _ => inside = false,
+        }
+    }
+    out
+}
+
+/// How many threads the comparison over the cases and the script corpus runs on.
+#[cfg(feature = "compare-migration-model")]
+const COMPARING: usize = 4;
+
+/// The migration model and the operator layer agree on every case of the search in its first two
+/// shapes and on every migration of the engine's script corpus, each script's applied in order
+/// from an empty source.
+#[cfg(feature = "compare-migration-model")]
+#[test]
+fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let record = |src: &Source, text: &str, calls: &mut usize| -> Option<Source> {
+        let m = parse_migration(text, Options::default()).ok().ok()?;
+        *calls += 1;
+        src.record(&m, text, false).ok().map(|(next, _, _)| next)
+    };
+    let shapes: Vec<(Source, Vec<Case>)> = SHAPES
+        .into_iter()
+        .take(2)
+        .map(|bits| (Shape::of(bits).source(), Shape::of(bits).cases()))
+        .collect();
+    let cases: Vec<(&Source, &Case)> = shapes
+        .iter()
+        .flat_map(|(start, cases)| cases.iter().map(move |c| (start, c)))
+        .collect();
+    let scripts: Vec<Vec<String>> = scripts()
+        .into_iter()
+        .map(|(path, script)| {
+            let migrations = script_migrations(&script);
+            assert!(
+                !script.contains("\nmigrate\n") || !migrations.is_empty(),
+                "{path:?} reads as no migration"
+            );
+            migrations
+        })
+        .collect();
+    let applied: Mutex<BTreeMap<String, Option<Source>>> = Mutex::default();
+    let next_job = AtomicUsize::new(0);
+    let jobs = cases.len() + scripts.len();
+    let work = || {
+        model::forced(|| {
+            let mut calls = 0;
+            loop {
+                let job = next_job.fetch_add(1, Ordering::Relaxed);
+                if job >= jobs {
+                    return calls;
+                }
+                if let Some(&(start, case)) = cases.get(job) {
+                    let mut was = start.clone();
+                    for first in &case.first {
+                        was = record(&was, first, &mut calls)
+                            .expect("a case's first migration applies");
+                    }
+                    let before = format!("{:04}", was.log.last().map_or(0, |l| l.number));
+                    record(&was, &case.text.replace("{first}", &before), &mut calls);
+                    continue;
+                }
+                let mut src = Source::new(Vec::new()).expect("an empty source builds");
+                let mut prefix = String::new();
+                for text in &scripts[job - cases.len()] {
+                    prefix.push_str(text);
+                    prefix.push('\0');
+                    let held = applied
+                        .lock()
+                        .expect("the applied prefixes")
+                        .get(&prefix)
+                        .cloned();
+                    src = match held {
+                        Some(next) => next.unwrap_or(src),
+                        None => {
+                            let next = record(&src, text, &mut calls);
+                            applied
+                                .lock()
+                                .expect("the applied prefixes")
+                                .insert(prefix.clone(), next.clone());
+                            next.unwrap_or(src)
+                        }
+                    };
+                }
+            }
+        })
+    };
+    let mut calls = 0;
+    let mut tally: BTreeMap<String, usize> = BTreeMap::new();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..COMPARING).map(|_| scope.spawn(work)).collect();
+        for w in workers {
+            let (n, t) = w.join().expect("a comparing thread");
+            calls += n;
+            for (outcome, k) in t {
+                *tally.entry(outcome).or_default() += k;
+            }
+        }
+    });
+    assert!(
+        calls <= tally.values().sum::<usize>(),
+        "{calls} migrations, {tally:?}"
+    );
+    assert!(tally["agreed"] > 0 && tally["partial"] > 0, "{tally:?}");
+}

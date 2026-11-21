@@ -50,7 +50,12 @@ impl Source {
         } = recorder;
         let named = naming.map(|n| (n.into_names(), sources));
         let resolved = next.resolving(next.version, |_| named).map(|(ops, _)| ops);
-        Ok((next, checked, Recorded { steps, resolved }))
+        let recorded = Recorded { steps, resolved };
+        #[cfg(feature = "compare-migration-model")]
+        if model::enabled() {
+            model::compare_recorded(self, m, text, &next, &recorded);
+        }
+        Ok((next, checked, recorded))
     }
 
     /// Apply the operators of migration `m` as [`Source::migrate`] does, each once, without
