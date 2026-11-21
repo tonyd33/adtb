@@ -58,7 +58,8 @@ pub fn open(rt: &SimRuntime, decls: &str) -> Database<SimRuntime> {
 
 /// Open the database as [`open`] does, with `options`.
 pub fn open_with(rt: &SimRuntime, decls: &str, options: &OpenOptions) -> Database<SimRuntime> {
-    opened(rt, FILE, &Log::new([migration(decls)]), options)
+    let m = migration(decls).expect("the declarations check");
+    opened(rt, FILE, &Log::new([m]), options)
 }
 
 /// Load `rows`, the rows of a reference database over `schema`, into `db` by relation name, as

@@ -59,7 +59,11 @@ fn create_loaded<R: Runtime>(rt: &R, f: &Fixture) {
     let pager = Pager::create(rt.clone(), &super::options(256)).expect("the file is created");
     let (mut catalog, txns) = Catalog::create(rt.clone(), &pager).expect("the catalog");
     catalog
-        .migrate(&pager, &txns, &migration(decls))
+        .migrate(
+            &pager,
+            &txns,
+            &migration(decls).expect("the declarations check"),
+        )
         .unwrap_or_else(|e| panic!("the declarations migrate: {e:?}"));
     catalog.counters(&pager).expect("the page of counters");
     pager.close();

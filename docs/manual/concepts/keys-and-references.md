@@ -152,14 +152,10 @@ relation members : Member key card
 <!-- exit 1 -->
 ```console
 $ adtb --create --schema library-bad.adt bad.db
-bad.db: migration 1 is refused:
-  a field never holds a set; a many-valued fact is a relation
-  no type `Member`
+library-bad.adt: 3:47: a field never holds a set; a many-valued fact is a relation
 ```
 
-The second line follows from the first: the refused type is not
-declared, so the relation that names it fails too. Fix the first
-error and the second goes.
+`3:47` is the line and column of the refused field's type.
 
 The rules are in [keys](../../spec/model.md#7-keys) and
 [references](../../spec/model.md#8-references).

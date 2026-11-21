@@ -212,7 +212,7 @@ fn species (p: Pet) -> Text = match p
 <!-- exit 1 -->
 ```console
 $ adtb --create --schema wild.adt wild.db
-wild.db: migration 1 is refused: `_` and a binder do not match a value of a sum; name the constructors of Pet
+wild.adt: 8:5: `_` and a binder do not match a value of a sum; name the constructors of Pet
 ```
 
 When the schema is refused the shell creates no database. Over a

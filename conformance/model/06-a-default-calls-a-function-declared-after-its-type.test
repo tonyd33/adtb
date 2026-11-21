@@ -1,0 +1,16 @@
+# A relation's default may call a function declared after the relation's type and before the relation.
+schema
+  module test
+  type P = { id: I64, n: I64 }
+  fn f () -> I64 = 1
+  relation ps : P key id default n = f()
+query
+  count(1 for p in ps)
+----
+0
+run
+  insert ps { id: 1 }
+query
+  from p in ps select p.n
+----
+1

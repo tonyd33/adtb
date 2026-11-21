@@ -72,6 +72,8 @@ impl Builder<'_> {
         r.sets.push(NamedSet {
             name: s.name.text.clone(),
             ctors: ctors.into_iter().collect(),
+            file,
+            span: s.span,
         });
     }
 

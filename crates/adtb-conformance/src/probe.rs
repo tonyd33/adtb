@@ -324,7 +324,7 @@ fn checks<R: Runtime>(rt: R, schema: &str, dir: &Path, name: &str) -> Result<Str
         file_root: Some(dir.to_path_buf()),
         ..OpenOptions::default()
     };
-    let log = Log::new(migrations(schema));
+    let log = Log::new(migrations(schema).map_err(|e| format!("the schema is refused: {e}"))?);
     let db = Database::open_in(rt, "probe.adt", &log, &options)
         .map_err(|e| format!("the database does not open: {e:?}"))?;
     let plans = db.explain_checks(name).map_err(|e| e.to_string());

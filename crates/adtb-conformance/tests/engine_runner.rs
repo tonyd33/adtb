@@ -158,12 +158,10 @@ fn a_failing_run_differs() {
 }
 
 #[test]
-fn a_schema_the_engine_refuses_differs() {
-    let found = engine("schema\n  module test\n  type T = { id: Key nowhere }\n");
-    assert_eq!(1, found.len());
-    assert!(
-        found[0].starts_with("the database does not open"),
-        "{found:?}"
+fn a_schema_that_does_not_check_differs() {
+    assert_eq!(
+        vec!["the schema is refused: module test: no `nowhere` in scope".to_string()],
+        engine("schema\n  module test\n  type T = { id: Key nowhere }\n")
     );
 }
 

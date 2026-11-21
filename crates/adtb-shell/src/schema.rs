@@ -1,16 +1,13 @@
 //! Turn a schema file of declarations into its first migration.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use adtb_lang::ast::{Decl, SchemaFile};
-use adtb_lang::lex::{Tok, lex};
+use adtb_lang::check::schema_migration;
 use adtb_lang::parse::{Options, parse_migration, parse_schema};
-use adtb_lang::span::{Diag, Span};
+use adtb_lang::span::Diag;
 
 /// Returns the first migration `text` gives: `text` itself when it is a migration, or the
-/// migration a schema file replays as, each declaration after those it names and prefixed by
-/// its verb. Returns the parse errors of whichever form `text` reads further as when it is
-/// neither.
+/// migration [`schema_migration`] replays a schema file as. Returns the errors of building and
+/// checking a schema file that does not check, and the parse errors of whichever form `text`
+/// reads further as when it is neither.
 pub fn first_migration(text: &str) -> Result<String, String> {
     let migration = parse_migration(text, Options::default());
     if migration.diags.is_empty() {
@@ -18,7 +15,10 @@ pub fn first_migration(text: &str) -> Result<String, String> {
     }
     let schema = parse_schema(text, Options::default());
     let diags = match schema.value {
-        Some(file) if schema.diags.is_empty() => return Ok(replay(text, &file)),
+        Some(file) if schema.diags.is_empty() => match schema_migration(text, &file, &[]) {
+            Ok(m) => return Ok(m),
+            Err(ds) => ds.into_iter().map(|d| d.diag).collect(),
+        },
         _ if reach(&schema.diags) > reach(&migration.diags) => schema.diags,
         _ => migration.diags,
     };
@@ -28,95 +28,6 @@ pub fn first_migration(text: &str) -> Result<String, String> {
 
 fn reach(diags: &[Diag]) -> u32 {
     diags.iter().map(|d| d.span.start).min().unwrap_or(0)
-}
-
-fn replay(text: &str, file: &SchemaFile) -> String {
-    let module = &file.module.text;
-    let mut out = format!("module {module}\nadd module {module}\n");
-    for i in order(text, &file.decls) {
-        let d = &file.decls[i];
-        let verb = match d {
-            Decl::Fn(_) | Decl::Aggregate(_) => "define ",
-            Decl::Store(_) => "",
-            _ => "add ",
-        };
-        out.push_str(verb);
-        out.push_str(&text[span(d).range()]);
-        out.push('\n');
-    }
-    out
-}
-
-/// Returns the indexes of `decls` in file order, except that each declaration follows every
-/// declaration whose name it mentions. A type follows only the types it mentions, since a
-/// reference may name a relation variable added later.
-fn order(text: &str, decls: &[Decl]) -> Vec<usize> {
-    let declared: BTreeMap<&str, usize> = decls
-        .iter()
-        .enumerate()
-        .filter_map(|(i, d)| Some((name(d)?, i)))
-        .collect();
-    let needs: Vec<BTreeSet<usize>> = decls
-        .iter()
-        .enumerate()
-        .map(|(i, d)| {
-            let src = &text[span(d).range()];
-            lex(src)
-                .0
-                .iter()
-                .filter(|t| matches!(t.tok, Tok::Lower | Tok::Upper))
-                .filter_map(|t| declared.get(&src[t.span.range()]))
-                .copied()
-                .filter(|&j| j != i && (!is_type(d) || is_type(&decls[j])))
-                .collect()
-        })
-        .collect();
-    let mut placed = vec![false; decls.len()];
-    let mut out = Vec::with_capacity(decls.len());
-    for i in 0..decls.len() {
-        place(i, &needs, &mut placed, &mut out);
-    }
-    out
-}
-
-/// Append `i` to `out` after what it needs. A cycle places its members in visiting order.
-fn place(i: usize, needs: &[BTreeSet<usize>], placed: &mut [bool], out: &mut Vec<usize>) {
-    if placed[i] {
-        return;
-    }
-    placed[i] = true;
-    for &j in &needs[i] {
-        place(j, needs, placed, out);
-    }
-    out.push(i);
-}
-
-fn name(d: &Decl) -> Option<&str> {
-    Some(match d {
-        Decl::Type(t) => &t.name.text,
-        Decl::Relation(r) => &r.name.name.text,
-        Decl::Set(s) => &s.name.text,
-        Decl::Fn(f) => &f.name.text,
-        Decl::Aggregate(a) => &a.name.text,
-        Decl::Constraint(_) | Decl::Check(_) | Decl::Store(_) => return None,
-    })
-}
-
-fn is_type(d: &Decl) -> bool {
-    matches!(d, Decl::Type(_))
-}
-
-fn span(d: &Decl) -> Span {
-    match d {
-        Decl::Type(t) => t.span,
-        Decl::Relation(r) => r.span,
-        Decl::Set(s) => s.span,
-        Decl::Fn(f) => f.span,
-        Decl::Constraint(c) => c.span,
-        Decl::Check(c) => c.span,
-        Decl::Store(s) => s.span,
-        Decl::Aggregate(a) => a.span,
-    }
 }
 
 #[cfg(test)]
@@ -161,6 +72,19 @@ set Settled of regions = Town
             .map(|l| l.split(' ').nth(1).unwrap_or(""))
             .collect();
         assert_eq!(vec!["world", "module", "type", "relation", "set"], lines);
+    }
+
+    #[test]
+    fn a_schema_file_whose_relation_and_fn_need_each_other_is_refused() {
+        let s = "module demo
+relation ps : P key id default n = f()
+type P = { id: I64, n: I64 }
+fn f () -> I64 = count(1 for p in ps)
+";
+        assert_eq!(
+            Err("2:1: the declaration needs itself through the declarations it names".to_owned()),
+            first_migration(s)
+        );
     }
 
     #[test]

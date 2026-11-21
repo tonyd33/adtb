@@ -286,6 +286,15 @@ pub struct ComputedDef {
 pub struct NamedSet {
     pub name: String,
     pub ctors: CtorSet,
+    file: FileId,
+    span: Span,
+}
+
+impl NamedSet {
+    /// Returns the file and span of the set's declaration.
+    pub fn declared_at(&self) -> (FileId, Span) {
+        (self.file, self.span)
+    }
 }
 
 #[derive(Clone, Debug)]

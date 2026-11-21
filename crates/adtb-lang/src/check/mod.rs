@@ -18,6 +18,7 @@ mod adhoc;
 mod call;
 mod expr;
 mod names;
+mod order;
 mod pat;
 mod prelude;
 mod query;
@@ -35,6 +36,7 @@ pub(crate) mod tests;
 use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
+pub use order::{declaration_order, schema_migration};
 pub use row_body::{RowBody, check_row, row_query};
 pub use txn::{Txn, check_txn, check_txn_in};
 use ty::admits_late_key;

@@ -12,7 +12,6 @@
 use std::collections::BTreeSet;
 
 use adtb::{CreateOptions, Database, Error, Log, OpenError, OpenOptions, RejectReason};
-use adtb_conformance::engine::migrations;
 use adtb_conformance::{Script, parse, run_engine, run_reference};
 use adtb_lang::check::check_schema;
 use adtb_lang::parse::{Options, parse_schema};
@@ -140,10 +139,25 @@ fn stored(case: &Case, k: usize) -> String {
     )
 }
 
-/// Returns the detail of the engine's refusal of the migrations of `text`.
+/// Returns the migration adding the module of the schema `body`, each declaration in its order,
+/// so the engine judges declarations the checker refuses.
+fn migration(body: &str) -> String {
+    let mut out = String::new();
+    for line in body.lines() {
+        match line.split_whitespace().next() {
+            Some("module") => out.push_str(&format!("{line}\nadd module {}\n", &line[7..])),
+            Some("fn") => out.push_str(&format!("define {line}\n")),
+            _ if line.starts_with(' ') => out.push_str(&format!("{line}\n")),
+            _ => out.push_str(&format!("add {line}\n")),
+        }
+    }
+    out
+}
+
+/// Returns the detail of the engine's refusal of the migration of `text`.
 fn engine_refusal(text: &str) -> Result<String, String> {
     let body: String = text.lines().map(|l| format!("{}\n", &l[2..])).collect();
-    let log = Log::new(migrations(&body));
+    let log = Log::new([migration(&body)]);
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
         ..OpenOptions::default()

@@ -442,14 +442,41 @@ fn relation_ref_refs(
 /// The names inside bodies (function bodies, constraints, checks, domains, defaults, computed and index
 /// fields, retag records and aggregate parts) are the checker's, as [`crate::check::schema_refs`] reports them.
 pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names) {
+    let mut own = |span: Span| names.qualify(schema, span, module);
+    match d {
+        Decl::Type(t) => {
+            own(t.name.span);
+            if let TypeBody::Ctors(cs) = &t.body {
+                cs.iter().for_each(|c| own(c.name.span));
+            }
+        }
+        Decl::Relation(r) => own(r.name.name.span),
+        Decl::Set(s) => own(s.name.span),
+        Decl::Fn(f) => {
+            own(f.name.span);
+            for b in f.type_params.iter().flat_map(|p| &p.bounds) {
+                names.qualify(schema, b.span, PRELUDE);
+            }
+        }
+        Decl::Constraint(c) => own(c.name.span),
+        Decl::Check(c) => own(c.name.span),
+        Decl::Store(_) => {}
+        Decl::Aggregate(a) => own(a.name.span),
+    }
+    for (span, r) in decl_refs(schema, module, d) {
+        names.note(schema, span, &r);
+    }
+}
+
+/// Returns the schema objects a declaration of `module` names outside its bodies, by the span
+/// that names each.
+pub fn decl_refs(schema: &Schema, module: ModuleId, d: &Decl) -> Vec<(Span, Ref)> {
     let mut refs = Vec::new();
-    let own = |names: &mut Names, span: Span| names.qualify(schema, span, module);
     let tys = |ts: &mut dyn Iterator<Item = &ast::Type>, refs: &mut Vec<(Span, Ref)>| {
         ts.for_each(|t| type_refs(schema, module, t, refs));
     };
     match d {
         Decl::Type(t) => {
-            own(names, t.name.span);
             let def = schema.module(module).types.get(&t.name.text).copied();
             let mut fields: Vec<&ast::FieldType> = t.header.iter().flatten().collect();
             match &t.body {
@@ -457,7 +484,6 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
                 TypeBody::Record(fs) => fields.extend(fs),
                 TypeBody::Ctors(cs) => {
                     for c in cs {
-                        own(names, c.name.span);
                         fields.extend(c.record.iter().flatten());
                     }
                 }
@@ -473,14 +499,12 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
             }
         }
         Decl::Relation(r) => {
-            own(names, r.name.name.span);
             tys(&mut std::iter::once(&r.ty), &mut refs);
             if let Ok(rel) = schema.lookup_relation(module, &r.name) {
                 clause_refs(schema, module, rel, &r.clauses, &mut refs);
             }
         }
         Decl::Set(s) => {
-            own(names, s.name.span);
             let q = ast::QName {
                 module: None,
                 name: s.relation.clone(),
@@ -490,19 +514,12 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
                 rel_sel_refs(schema, rel, &s.members, &mut refs);
             }
         }
-        Decl::Fn(f) => {
-            own(names, f.name.span);
-            for b in f.type_params.iter().flat_map(|p| &p.bounds) {
-                names.qualify(schema, b.span, PRELUDE);
-            }
-            tys(
-                &mut f.params.iter().map(|p| &p.ty).chain([&f.result]),
-                &mut refs,
-            );
-        }
-        Decl::Constraint(c) => own(names, c.name.span),
+        Decl::Fn(f) => tys(
+            &mut f.params.iter().map(|p| &p.ty).chain([&f.result]),
+            &mut refs,
+        ),
+        Decl::Constraint(_) => {}
         Decl::Check(c) => {
-            own(names, c.name.span);
             relation_ref_refs(schema, module, &c.on, &mut refs);
         }
         Decl::Store(s) => {
@@ -523,22 +540,17 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
                 }
             }
         }
-        Decl::Aggregate(a) => {
-            own(names, a.name.span);
-            tys(
-                &mut a
-                    .params
-                    .iter()
-                    .map(|p| &p.ty)
-                    .chain([&a.result])
-                    .chain(a.state.iter().map(|f| &f.ty)),
-                &mut refs,
-            );
-        }
+        Decl::Aggregate(a) => tys(
+            &mut a
+                .params
+                .iter()
+                .map(|p| &p.ty)
+                .chain([&a.result])
+                .chain(a.state.iter().map(|f| &f.ty)),
+            &mut refs,
+        ),
     }
-    for (span, r) in &refs {
-        names.note(schema, *span, r);
-    }
+    refs
 }
 
 fn clause_scope(c: &RelationClause) -> Option<&CtorScope> {

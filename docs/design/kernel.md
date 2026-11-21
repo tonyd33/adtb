@@ -525,6 +525,29 @@ A term names declarations by id; a consumer reads them from the
   relation `r`, and `Schema::value_stage(t, c)` that of `c` as a value
   of `t` stored in a field; both are `Enabled` in a schema
   `schema::build` returns.
+- `check::declaration_order(file, others)` returns the indexes of the
+  declarations of the schema file `file` in an order in which one
+  migration adding them one at a time accepts them, `others` being the
+  files of the other modules. Precondition: `file` is its module's only
+  file. Postconditions:
+  - On `Ok`, every index appears once. A declaration follows each
+    declaration of `file` whose object it names, as `schema::build` and
+    the checker resolve its names, except that a type need not follow
+    the relation variable or the named sets and constructors a `Key r`
+    field type of it names when they in turn need the type. Each
+    declaration in `file` order is placed after those it needs that are
+    not placed yet.
+  - On `Err`, the diagnostics are those of `schema::build` over `file`
+    and `others`, else those of `check::check_schema` over that schema,
+    else one at a declaration of `file` that needs itself through the
+    declarations it names.
+- `check::schema_migration(text, file, others)` returns the migration
+  that adds the module of `file`, whose text is `text`, then its
+  declarations in the order `declaration_order` gives, each after its
+  verb; on `Err`, the diagnostics `declaration_order` returns.
+
+  A consumer that replays a schema file as a migration does so only
+  through `schema_migration`.
 
 ## 7. Normal forms
 

@@ -254,9 +254,19 @@ fn statements(
 /// the schema or a panic.
 fn run(seed: u64, case: &schemas::Case, reached: &mut Reached) -> Option<Finding> {
     let decls = case.decls();
+    let migration = match corpus::migration(&decls) {
+        Ok(m) => m,
+        Err(why) => {
+            return Some(Finding {
+                at: None,
+                sig: "the checker refuses the schema".into(),
+                text: why,
+            });
+        }
+    };
     let c = Case::of_text(
         format!("module app\n{decls}"),
-        corpus::migration(&decls),
+        migration,
         Vec::new(),
         Vec::new(),
     );

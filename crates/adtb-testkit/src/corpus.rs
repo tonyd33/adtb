@@ -6,7 +6,8 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 
 use adtb_lang::ast::AdhocItem;
-use adtb_lang::parse::{Options, parse_adhoc};
+use adtb_lang::check::schema_migration;
+use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
 
 use crate::Rng;
 use crate::cases::Case;
@@ -158,7 +159,8 @@ impl Script {
             }
         }
         let schema = format!("module app\n{}", self.decls);
-        Case::of_text(schema, migration(&self.decls), self.load.clone(), out)
+        let m = migration(&self.decls).expect("a corpus schema checks");
+        Case::of_text(schema, m, self.load.clone(), out)
     }
 }
 
@@ -211,48 +213,14 @@ fn statements(body: &str) -> Option<Vec<String>> {
     )
 }
 
-/// Returns the migration adding module `app` with `decls`, each declaration in order, each
-/// relation of a type the module declares moved up to follow its type.
-pub fn migration(decls: &str) -> String {
-    let mut items: Vec<String> = Vec::new();
-    for line in decls.lines() {
-        let indented = line.starts_with(' ') || line.starts_with("--") || line.trim().is_empty();
-        match items.last_mut() {
-            Some(d) if indented => {
-                d.push_str(line);
-                d.push('\n');
-            }
-            _ if indented => {}
-            _ => items.push(format!("{line}\n")),
-        }
-    }
-    let word = |d: &str, i: usize| d.split_whitespace().nth(i).unwrap_or_default().to_owned();
-    let declared = |d: &str| {
-        (word(d, 0) == "type").then(|| {
-            word(d, 1)
-                .split(['[', '=', '{'])
-                .next()
-                .unwrap_or_default()
-                .to_owned()
-        })
-    };
-    let types: Vec<String> = items.iter().filter_map(|d| declared(d)).collect();
-    let moved = |d: &str| word(d, 0) == "relation" && types.contains(&word(d, 3));
-    let mut out = String::from("module app\nadd module app\n");
-    for d in items.iter().filter(|d| !moved(d)) {
-        out.push_str(match word(d, 0).as_str() {
-            "fn" | "aggregate" => "define ",
-            _ => "add ",
-        });
-        out.push_str(d);
-        if let Some(ty) = declared(d) {
-            for r in items.iter().filter(|r| moved(r) && word(r, 3) == ty) {
-                out.push_str("add ");
-                out.push_str(r);
-            }
-        }
-    }
-    out
+/// Returns the migration adding module `app` with `decls`, as [`schema_migration`] replays it,
+/// or the errors of parsing or checking it.
+pub fn migration(decls: &str) -> Result<String, String> {
+    let text = format!("module app\n{decls}");
+    let file = parse_schema(&text, Options::default())
+        .ok()
+        .map_err(|ds| format!("{ds:?}"))?;
+    schema_migration(&text, &file, &[]).map_err(|ds| format!("{ds:?}"))
 }
 
 /// A token of a query and the whitespace before it.

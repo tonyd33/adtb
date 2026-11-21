@@ -7,8 +7,9 @@ use adtb::{
     AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, Log, OpenOptions,
     TxnCallOptions, TxnOptions, Value,
 };
-use adtb_lang::ast::{AdhocItem, TxnOption};
-use adtb_lang::parse::{Options, parse_adhoc};
+use adtb_lang::ast::{AdhocItem, SchemaFile, TxnOption};
+use adtb_lang::check::schema_migration;
+use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
 use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Ty;
 
@@ -32,7 +33,10 @@ pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Diff
     if let [first, rest @ ..] = directives
         && first.kind == Kind::Schema
     {
-        log = Log::new(migrations(&first.body));
+        match migrations(&first.body) {
+            Ok(ms) => log = Log::new(ms),
+            Err(e) => return vec![differ(first.line, format!("the schema is refused: {e}"))],
+        }
         directives = rest;
     }
     let options = OpenOptions {
@@ -67,53 +71,34 @@ pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Diff
     out
 }
 
-/// Returns the migration of each module file of the schema `body`: the module added, then each
-/// declaration in order, each relation of a type the module declares moved up to follow its type.
-pub fn migrations(body: &str) -> Vec<String> {
-    modules(body).iter().map(|m| migration(m)).collect()
-}
-
-fn migration(module: &str) -> String {
-    let mut header = String::new();
-    let mut decls: Vec<String> = Vec::new();
-    for line in module.lines() {
-        if let Some(name) = line.strip_prefix("module ") {
-            header = format!("{line}\nadd module {name}\n");
-        } else if line.starts_with(' ') || line.starts_with("--") || line.trim().is_empty() {
-            let into = decls.last_mut().unwrap_or(&mut header);
-            into.push_str(line);
-            into.push('\n');
-        } else {
-            decls.push(format!("{line}\n"));
-        }
+/// Returns the migration of each module file of the schema `body`, each as
+/// [`schema_migration`] replays it over the other module files, or the errors of the first that
+/// does not parse or check.
+pub fn migrations(body: &str) -> Result<Vec<String>, String> {
+    let texts = modules(body);
+    let mut files = Vec::with_capacity(texts.len());
+    for t in &texts {
+        let parsed = parse_schema(t, Options::default()).ok().map_err(|ds| {
+            let rendered: Vec<String> = ds.iter().map(|d| d.render(t)).collect();
+            rendered.join("\n")
+        })?;
+        files.push(parsed);
     }
-    let word = |d: &str, i: usize| d.split_whitespace().nth(i).unwrap_or_default().to_owned();
-    let declared = |d: &str| {
-        (word(d, 0) == "type").then(|| {
-            let name = word(d, 1);
-            name.split(['[', '=', '{'])
-                .next()
-                .unwrap_or_default()
-                .to_owned()
-        })
-    };
-    let types: Vec<String> = decls.iter().filter_map(|d| declared(d)).collect();
-    let moved = |d: &str| word(d, 0) == "relation" && types.contains(&word(d, 3));
-    let mut out = header;
-    for d in decls.iter().filter(|d| !moved(d)) {
-        out.push_str(match word(d, 0).as_str() {
-            "fn" | "aggregate" => "define ",
-            _ => "add ",
-        });
-        out.push_str(d);
-        if let Some(ty) = declared(d) {
-            for r in decls.iter().filter(|r| moved(r) && word(r, 3) == ty) {
-                out.push_str("add ");
-                out.push_str(r);
-            }
-        }
+    let mut out = Vec::with_capacity(files.len());
+    for (i, file) in files.iter().enumerate() {
+        let others: Vec<SchemaFile> = files
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != i)
+            .map(|(_, f)| f.clone())
+            .collect();
+        let m = schema_migration(&texts[i], file, &others).map_err(|ds| {
+            let rendered: Vec<String> = ds.iter().map(|d| d.diag.message.clone()).collect();
+            format!("module {}: {}", file.module.text, rendered.join("; "))
+        })?;
+        out.push(m);
     }
-    out
+    Ok(out)
 }
 
 /// Run directive `d` on `db`. Returns how its outcome differs from what it states.

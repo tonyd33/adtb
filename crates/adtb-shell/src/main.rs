@@ -341,7 +341,10 @@ fn log(paths: &[PathBuf]) -> Result<Log, String> {
         let in_file = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
         let text = std::fs::read_to_string(path).map_err(|e| in_file(&e))?;
         texts.push(match i {
-            0 => schema::first_migration(&text).map_err(|e| in_file(&e))?,
+            0 => schema::first_migration(&text).map_err(|e| {
+                let lines: Vec<String> = e.lines().map(|l| in_file(&l)).collect();
+                lines.join("\n")
+            })?,
             _ => text,
         });
     }

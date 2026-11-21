@@ -190,6 +190,36 @@ fn a_text_that_does_not_check_is_rejected_as_invalid() {
 }
 
 #[test]
+fn a_schema_file_declaring_a_fn_named_like_a_field_before_its_relation_creates_the_database() {
+    let dir = Scratch::new("shell", "named-like-a-field");
+    let schema = dir.join("s.adt");
+    std::fs::write(
+        &schema,
+        "module demo
+relation pets : Pet key name
+type Pet = { name: Text }
+fn name () -> I64 = count(1 for p in pets)
+",
+    )
+    .unwrap();
+    let db = dir.join("db.adt");
+    let out = adtb(
+        &[
+            "--create",
+            "--schema",
+            schema.to_str().unwrap(),
+            db.to_str().unwrap(),
+            "-c",
+            "from p in pets select p",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(Vec::<String>::new(), stdout(&out));
+    assert_eq!("", stderr(&out));
+}
+
+#[test]
 fn a_script_on_stdin_runs_each_text_in_turn() {
     let (_dir, schema, db) = scratch("script");
     create(&schema, &db);
@@ -484,7 +514,7 @@ fn a_refused_create_leaves_nothing_at_the_path() {
 
 #[test]
 fn a_refused_migration_prints_one_line_per_message() {
-    let bad = "module demo\ntype P = { id: Key ps, n: Int, m: Float }\nrelation ps : P key id generate sequence\n";
+    let bad = "module demo\nadd module demo\nadd type P = { id: Key ps, n: Int, m: Float }\nadd relation ps : P key id generate sequence\n";
     let (dir, db) = scratch_with("messages", &[("bad", bad)]);
     let out = adtb(
         &[
@@ -500,6 +530,31 @@ fn a_refused_migration_prints_one_line_per_message() {
         "DIR/db.adt: migration 1 is refused:\n  no type `Int`; did you mean `I64`?\n  no type `Float`; did you mean `F64`?\n  no type `P`\n",
         stderr(&out).replace(dir.to_str().unwrap(), "DIR")
     );
+}
+
+#[test]
+fn a_schema_file_that_does_not_check_reports_where_each_error_is() {
+    let bad = "module demo\ntype P = { id: Key ps, n: Int, m: Float }\nrelation ps : P key id generate sequence\n";
+    let (dir, db) = scratch_with("check", &[("bad", bad)]);
+    let path = dir.join("bad.adt");
+    let out = adtb(
+        &[
+            "--create",
+            "--schema",
+            path.to_str().unwrap(),
+            db.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(Some(1), out.status.code(), "{out:?}");
+    let at = path.display();
+    assert_eq!(
+        format!(
+            "{at}: 2:27: no type `Int`; did you mean `I64`?\n{at}: 2:35: no type `Float`; did you mean `F64`?\n"
+        ),
+        stderr(&out)
+    );
+    assert!(!db.exists(), "{db:?}");
 }
 
 #[test]
