@@ -75,6 +75,7 @@ pub use past::Retained;
 pub(crate) use past::position;
 pub use quarantine::{By, Mapped};
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
+pub(crate) use restore::Restoring;
 pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;

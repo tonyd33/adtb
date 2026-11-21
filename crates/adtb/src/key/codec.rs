@@ -1,6 +1,3 @@
-use adtb_lang::calendar::{date_in_range, time_in_range};
-use adtb_lang::types::decimal_in_range;
-
 use super::ovarint;
 use super::value::{AnonSumType, F32, F64, KeyType, Scalar, SumType, Value};
 
@@ -23,9 +20,7 @@ pub enum DecodeError {
     BadEscape,
     InvalidUtf8,
     NonCanonicalFloat,
-    DecimalOutOfRange,
-    DateOutOfRange,
-    TimeOutOfRange,
+    OutOfDomain,
     UnknownOrderKey,
     UnknownConstructor,
     BadVarint,
@@ -355,38 +350,20 @@ fn decode_sum(r: &mut Reader, sum: &SumType) -> Result<Value, DecodeError> {
 }
 
 fn decode_scalar(r: &mut Reader, s: Scalar) -> Result<Value, DecodeError> {
-    Ok(match s {
+    let v = match s {
         Scalar::I8 => Value::I8(i8::from_be_bytes(r.signed()?)),
         Scalar::I16 => Value::I16(i16::from_be_bytes(r.signed()?)),
         Scalar::I32 => Value::I32(r.i32()?),
         Scalar::I64 => Value::I64(r.i64()?),
         Scalar::F32 => Value::F32(f32_from_order_bits(u32::from_be_bytes(r.array()?))?),
         Scalar::F64 => Value::F64(f64_from_order_bits(u64::from_be_bytes(r.array()?))?),
-        Scalar::Decimal(_) => {
-            let n = i128::from_be_bytes(r.signed()?);
-            if !decimal_in_range(n) {
-                return Err(DecodeError::DecimalOutOfRange);
-            }
-            Value::Decimal(n)
-        }
+        Scalar::Decimal(_) => Value::Decimal(i128::from_be_bytes(r.signed()?)),
         Scalar::Text => Value::Text(r.text()?),
         Scalar::Bytes => Value::Bytes(r.escaped()?),
         Scalar::SortKey => Value::SortKey(r.escaped()?),
         Scalar::Instant => Value::Instant(r.i64()?),
-        Scalar::Date => {
-            let days = r.i32()?;
-            if !date_in_range(i64::from(days)) {
-                return Err(DecodeError::DateOutOfRange);
-            }
-            Value::Date(days)
-        }
-        Scalar::Time => {
-            let t = r.i64()?;
-            if !time_in_range(t) {
-                return Err(DecodeError::TimeOutOfRange);
-            }
-            Value::Time(t)
-        }
+        Scalar::Date => Value::Date(r.i32()?),
+        Scalar::Time => Value::Time(r.i64()?),
         Scalar::DateTime => Value::DateTime(r.i64()?),
         Scalar::ZonedDateTime => {
             let local = r.i64()?;
@@ -399,5 +376,9 @@ fn decode_scalar(r: &mut Reader, s: Scalar) -> Result<Value, DecodeError> {
             let days = r.i32()?;
             Value::Period { months, days }
         }
-    })
+    };
+    if !v.in_domain() {
+        return Err(DecodeError::OutOfDomain);
+    }
+    Ok(v)
 }

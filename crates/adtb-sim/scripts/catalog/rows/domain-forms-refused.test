@@ -1,0 +1,7 @@
+# A domain predicate the engine cannot compile is refused with the domain's name. The aggregate case is a known gap (ticket engine-scalar-aggregates): this pins the engine's answer, not the contract.
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::Pos.domain is not admitted: an aggregate in a scalar expression" } } }
+  module app
+  add module app
+  define aggregate total (x: I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n + 0
+  add type Pos = new I64 where (match total(x for x in [self, 1]) | None -> false | Some v -> v.value > 0)

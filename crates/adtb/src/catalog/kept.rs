@@ -183,7 +183,7 @@ impl Catalog {
             self.roots
                 .delete(pager, WriteTarget::checked(tid, header), x)
                 .kept(&super::Abandoning(()))?
-                .unchecked(Unchecked::Catalog);
+                .unchecked(Unchecked::Catalog(super::Abandoning(())));
         }
         for r in rows {
             let row = roots::kept(r);

@@ -355,7 +355,9 @@ fn gen_scalar(rng: &mut Rng, s: Scalar) -> Value {
         Scalar::Duration => Value::Duration(gen_i64(rng)),
         Scalar::ZonedDateTime => Value::ZonedDateTime {
             local: gen_i64(rng),
-            zone: rng.pick(&["UTC", "Europe/Lisbon", "\0"]).to_string(),
+            zone: rng
+                .pick(&["UTC", "Europe/Lisbon", "Asia/Tokyo", "Etc/GMT", "Etc/GMT+1"])
+                .to_string(),
         },
         Scalar::Period => Value::Period {
             months: gen_i32(rng),
@@ -530,11 +532,7 @@ fn decoding_accepts_only_encodings() {
             let want = if (e.lo..=e.hi).contains(&n) {
                 Ok(vec![v.clone()])
             } else {
-                Err(match e.scalar {
-                    Scalar::Decimal(_) => DecodeError::DecimalOutOfRange,
-                    Scalar::Date => DecodeError::DateOutOfRange,
-                    _ => DecodeError::TimeOutOfRange,
-                })
+                Err(DecodeError::OutOfDomain)
             };
             assert_eq!(
                 schema.decode(&schema.encode(&[v])),
@@ -543,6 +541,29 @@ fn decoding_accepts_only_encodings() {
                 e.scalar
             );
         }
+    }
+    let zoned = |zone: &str| Value::ZonedDateTime {
+        local: 0,
+        zone: zone.into(),
+    };
+    let unbounded = [
+        (Scalar::Text, Value::Text("\u{e9}".into()), true),
+        (Scalar::Text, Value::Text("e\u{301}".into()), false),
+        (Scalar::ZonedDateTime, zoned("Europe/Lisbon"), true),
+        (Scalar::ZonedDateTime, zoned("Nowhere/Never"), false),
+    ];
+    for (s, v, admitted) in unbounded {
+        let schema = asc(vec![scalar(s)]);
+        let want = if admitted {
+            Ok(vec![v.clone()])
+        } else {
+            Err(DecodeError::OutOfDomain)
+        };
+        assert_eq!(
+            schema.decode(&schema.encode(std::slice::from_ref(&v))),
+            want,
+            "{v:?}"
+        );
     }
     let mut rng = Rng(3);
     for _ in 0..20000 {
@@ -1010,7 +1031,7 @@ fn decoding_refuses_each_form_the_encoding_does_not_produce() {
         (
             one(Scalar::Decimal(0)),
             decimal(i128::MIN),
-            Err(DecimalOutOfRange),
+            Err(OutOfDomain),
         ),
         (opt(), vec![0x60, 0x00], Err(UnknownOrderKey)),
         (opt(), vec![0x40], Err(UnexpectedEnd)),

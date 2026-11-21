@@ -370,19 +370,25 @@ impl<R: Runtime> Query<'_, R> {
     /// newtype of `domains` violate the newtype's domain, one reason per newtype.
     fn domains(&self, rels: &[Tm], domains: &BTreeSet<TypeId>) -> Result<Vec<String>, Error> {
         let schema = self.schema;
-        let mut checks = BTreeMap::new();
-        for t in domains {
-            if let Some((v, body)) = self.normal.domains().get(t) {
-                let mut scalar =
-                    exec::Scalar::new(schema, self.normal.valid(), *v, *body).map_err(failed)?;
-                scalar.set_hosts(self.hosts.clone());
-                checks.insert(*t, scalar);
-            }
-        }
         let name = |d: TypeId| {
             let def = schema.ty(d);
             format!("{}::{}.domain", schema.module(def.module).name, def.name)
         };
+        let mut checks = BTreeMap::new();
+        for t in domains {
+            if let Some((v, body)) = self.normal.domains().get(t) {
+                let compiled = exec::Scalar::new(schema, self.normal.valid(), *v, *body);
+                let mut scalar = compiled.map_err(|e| match e {
+                    exec::Error::Unsupported(why) => Error::Refused(vec![format!(
+                        "constraint {} is not admitted: {why}",
+                        name(*t)
+                    )]),
+                    e => failed(e),
+                })?;
+                scalar.set_hosts(self.hosts.clone());
+                checks.insert(*t, scalar);
+            }
+        }
         let mut found: BTreeMap<TypeId, Vec<String>> = BTreeMap::new();
         let mut why = Vec::new();
         for &t in rels {

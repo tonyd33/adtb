@@ -3,12 +3,12 @@ use crate::mvcc::Xid;
 use crate::runtime::Runtime;
 use crate::storage::{Pager, Pid};
 
-use super::super::Error;
 use super::super::page::HeapPageMut;
 use super::super::row::Pointer;
 use super::super::stage::Stage;
 use super::super::version::{Flags, Header};
 use super::super::write::{Failed, HeapWrite, Rank, Took};
+use super::super::{Abandons, Error};
 use super::{Heap, Judge, Put, tid, version_bytes};
 
 /// A version ready to put, and the pointers of its out-of-line values.
@@ -17,7 +17,8 @@ type Ready = (Vec<u8>, Vec<Pointer>);
 impl Heap {
     /// Insert the rows of `rows` as `xid`, in order, each as [`Heap::insert_pruning`] inserts one,
     /// writing the versions one page takes in turn in one update, and call `placed` with each row
-    /// and its TID once its page is written. Stop at the first error `rows` or `placed` gives.
+    /// and its TID once its page is written. Stop at the first error `rows` or `placed` gives,
+    /// taking nothing back, as `_writer` does.
     ///
     /// Postcondition: a row is taken from `rows` only once every row before it is encoded, and at
     /// most a page of encoded versions waits to be put.
@@ -28,6 +29,7 @@ impl Heap {
         rows: impl IntoIterator<Item = Result<V, E>>,
         judge: &mut Judge<'_>,
         mut placed: impl FnMut(V, Tid) -> Result<(), E>,
+        _writer: &impl Abandons,
     ) -> Result<(), E> {
         let mut rows = rows.into_iter();
         let mut ready: Vec<Ready> = Vec::new();

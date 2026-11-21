@@ -329,8 +329,8 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         if removed {
             heap.forget_hint(pid);
         }
-        release_each(pager, &heap.large(), released)?;
-        settle(pager, above)?;
+        let released = release_each(pager, &heap.large(), released);
+        released.and(settle(pager, above))?;
         Ok(removed)
     }
 

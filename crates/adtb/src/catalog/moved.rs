@@ -152,6 +152,7 @@ fn shown(e: exec::Error) -> Failed {
     match e {
         exec::Error::Fault(f) => Failed::Refused(format!("the map faults with {}", f.name())),
         exec::Error::Rejected(why) => Failed::Refused(format!("the map rejects: {why}")),
+        exec::Error::Unsupported(why) => Failed::Refused(format!("the map is not admitted: {why}")),
         other => Failed::from(Broken::Map(other)),
     }
 }

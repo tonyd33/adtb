@@ -63,7 +63,7 @@ fn float32(f: f32) -> String {
 
 fn duration(d: i64) -> String {
     let units = [
-        (86_400_000_000, "d"),
+        (MICROS_PER_DAY, "d"),
         (3_600_000_000, "h"),
         (60_000_000, "min"),
         (1_000_000, "s"),

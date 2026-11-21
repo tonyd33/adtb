@@ -1,3 +1,4 @@
+use crate::consumed::Consumed;
 use crate::key::Tid;
 use crate::mvcc::Xid;
 
@@ -30,11 +31,26 @@ pub struct Undoable<T> {
     old: Option<Undo>,
     /// The version the write inserted.
     new: Option<Undo>,
+    /// The guard a drop panics on in a debug build unless `record` or `kept` consumed the write.
+    unrecorded: Consumed,
 }
 
 /// A writer whose failure abandons its whole transaction, so that it takes none of its heap
-/// writes back.
-pub trait Abandons {}
+/// writes back. Only the catalog's writer, a restore's and a heap test's are.
+pub trait Abandons: sealed::Sealed {}
+
+mod sealed {
+    use crate::runtime::Runtime;
+
+    pub trait Sealed {}
+
+    impl Sealed for crate::catalog::Abandoning {}
+
+    impl<R: Runtime> Sealed for crate::write::Restoring<'_, R> {}
+
+    #[cfg(any(test, feature = "testing"))]
+    impl Sealed for super::Tested {}
+}
 
 /// The writer of a test of a heap, outside any statement.
 #[cfg(any(test, feature = "testing"))]
@@ -50,6 +66,7 @@ impl<T> Undoable<T> {
             done: Err(e),
             old: None,
             new: None,
+            unrecorded: Consumed::armed(),
         }
     }
 
@@ -67,13 +84,19 @@ impl<T> Undoable<T> {
             Err(f) if f.written() => Err(f.into()),
             Err(f) => return Err(f.into()),
         };
-        Ok(Undoable { done, old, new })
+        Ok(Undoable {
+            done,
+            old,
+            new,
+            unrecorded: Consumed::armed(),
+        })
     }
 
     /// Push the changes that take the write back onto `list`, oldest first, the superseded
     /// version's with heap `old` and the inserted version's with heap `new`. Returns the write's
     /// result.
     pub fn record<K: Copy>(self, list: &mut Vec<(K, Undo)>, old: K, new: K) -> Result<T, Error> {
+        self.unrecorded.consume();
         list.extend(self.old.map(|u| (old, u)));
         list.extend(self.new.map(|u| (new, u)));
         self.done
@@ -81,6 +104,7 @@ impl<T> Undoable<T> {
 
     /// Returns the write's result, taking none of its changes back, as `writer` does.
     pub fn kept(self, _writer: &impl Abandons) -> Result<T, Error> {
+        self.unrecorded.consume();
         self.done
     }
 }

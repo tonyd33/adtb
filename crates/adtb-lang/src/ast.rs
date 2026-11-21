@@ -1,5 +1,6 @@
 //! Define the syntax tree of schemas, queries and writes.
 
+use crate::calendar::MICROS_PER_DAY;
 use crate::span::Span;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +168,7 @@ pub fn duration_unit(unit: &str) -> Option<i64> {
         "s" => Some(1_000_000),
         "min" => Some(60_000_000),
         "h" => Some(3_600_000_000),
-        "d" => Some(86_400_000_000),
+        "d" => Some(MICROS_PER_DAY),
         _ => None,
     }
 }

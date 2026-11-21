@@ -25,7 +25,7 @@ const ROW_ONLY: &[Reach] = &[
     Reach::Generate,
 ];
 
-/// Each kind of root with the reaches the spec and the lead's rulings refuse it, and their source.
+/// Each kind of root with the reaches the spec refuses it, and the sections that do.
 const REFUSED: [(RootKind, &[Reach], &str); 17] = [
     (
         RootKind::Constraint,
@@ -41,7 +41,7 @@ const REFUSED: [(RootKind, &[Reach], &str); 17] = [
     (
         RootKind::Check,
         ALL_REFUSED,
-        "constraints.md 2.2: the constraint over one row; ruling 3",
+        "constraints.md 2.2: the constraint over one row; security.md 1.2",
     ),
     (
         RootKind::Domain,
@@ -60,7 +60,7 @@ const REFUSED: [(RootKind, &[Reach], &str); 17] = [
     (
         RootKind::DeleteAction,
         ALL_REFUSED,
-        "catalog.md 1.3; ruling 3",
+        "catalog.md 1.3; security.md 1.2",
     ),
     (
         RootKind::Default,
@@ -74,7 +74,7 @@ const REFUSED: [(RootKind, &[Reach], &str); 17] = [
             Reach::Deref,
             Reach::Relation,
         ],
-        "ruling 4: closed and deterministic, calls allowed (conformance model/06)",
+        "derived.md 4.1: closed and deterministic, calls allowed",
     ),
     (
         RootKind::Computed,
@@ -92,7 +92,7 @@ const REFUSED: [(RootKind, &[Reach], &str); 17] = [
             Reach::Write,
             Reach::Deref,
         ],
-        "derived.md 5.2: an expression of the row; catalog.md 1.3; security.md 1.2; ruling 7",
+        "derived.md 5.2: an expression of the row; catalog.md 1.3; security.md 1.2",
     ),
     (
         RootKind::StoredView,
@@ -107,7 +107,7 @@ const REFUSED: [(RootKind, &[Reach], &str); 17] = [
     (
         RootKind::Aggregate,
         &[Reach::File, Reach::Transition, Reach::Write],
-        "ruling 1: as a function",
+        "interop.md 10: as a function",
     ),
     (
         RootKind::Query,
@@ -127,7 +127,7 @@ const REFUSED: [(RootKind, &[Reach], &str); 17] = [
     (
         RootKind::Script,
         &[Reach::Caller, Reach::Transition],
-        "evolution.md: a script is a write; ruling 6",
+        "evolution.md 4.14: a script is a write; security.md 1.2",
     ),
     (RootKind::AtBody, &[Reach::Write], "derived.md 6.2"),
     (RootKind::Fill, ROW_ONLY, "a fill reads only its row"),
@@ -156,7 +156,7 @@ fn refused(kind: RootKind) -> &'static [Reach] {
 }
 
 #[test]
-fn every_entry_refuses_exactly_the_reaches_the_rulings_refuse() {
+fn every_entry_refuses_exactly_the_reaches_the_spec_refuses() {
     let mut failures = Vec::new();
     for (kind, forbids, source) in REFUSED {
         for reach in REACHES {

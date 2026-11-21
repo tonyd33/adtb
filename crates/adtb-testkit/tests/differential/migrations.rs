@@ -507,7 +507,7 @@ fn unrestored(was: &Source, mid: &Source, now: &Source) -> Vec<String> {
         }
     }
     let all_kept = was.ids.iter().all(|(k, id)| kept(k, *id));
-    if all_kept && format!("{:?}", was.grants) != format!("{:?}", now.grants) {
+    if all_kept && was.grants != now.grants {
         out.push(format!("grants {:?} -> {:?}", was.grants, now.grants));
     }
     out

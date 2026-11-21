@@ -1,15 +1,18 @@
 -- domain_copies: a bound of a scalar's domain written outside its definition: a power of ten to
--- 38, a day of `i64::MIN` or `i64::MAX` microseconds, a range ending at `MICROS_PER_DAY`, or a
--- day count checked by multiplying it out to microseconds. Call `date_in_range`,
--- `time_in_range`, `decimal_in_range` or `Base::fit_int`. The reference and the test kit state
--- their own bounds and are not read.
+-- 38, a day of `i64::MIN` or `i64::MAX` microseconds, a microsecond count of a day, a comparison
+-- or a range ending at `MICROS_PER_DAY`, or a day count checked by multiplying it out to
+-- microseconds. Call `date_in_range`, `time_in_range`, `decimal_in_range` or `Base::fit_int`, and
+-- name a day `MICROS_PER_DAY`. The reference and the test kit state their own bounds and are not
+-- read.
+
+day = r"^(MICROS_PER_DAY|86_?400_?000_?000(i64|u64)?)$";
 
 powers = do {
   c <- descendants_of_kind :call_expression;
   f <- pure c | #function;
-  guard $ text f ~ r"\.pow$";
+  guard $ text f ~ r"(\.|::)(checked_)?pow$";
   a <- pure c | #arguments;
-  guard $ text a ~ r"^\(\s*38\s*\)$";
+  guard $ text a ~ r"^\((.*,)?\s*38\s*\)$";
   return c;
 };
 
@@ -18,8 +21,34 @@ days = do {
   f <- pure c | #function;
   guard $ text f ~ r"(MIN|MAX)\s*\.\s*div_euclid$";
   a <- pure c | #arguments;
-  guard $ text a ~ r"MICROS_PER_DAY";
+  guard $ text a ~ r"MICROS_PER_DAY|86_?400_?000_?000";
   return c;
+};
+
+divided = do {
+  b <- descendants_of_kind :binary_expression;
+  o <- pure b | #operator;
+  guard $ text o == "/";
+  l <- pure b | #left;
+  guard $ text l ~ r"(MIN|MAX)$";
+  r <- pure b | #right;
+  guard $ text r ~ day;
+  return b;
+};
+
+literals = do {
+  n <- descendants_of_kind :integer_literal;
+  guard $ text n ~ r"^86_?400_?000_?000(i64|u64)?$";
+  return n;
+};
+
+compared = do {
+  b <- descendants_of_kind :binary_expression;
+  o <- pure b | #operator;
+  guard $ text o ~ r"^(<|<=|>|>=)$";
+  r <- pure b | #right;
+  guard $ text r ~ day;
+  return b;
 };
 
 ranges = do {
@@ -35,4 +64,4 @@ multiplied = do {
   return c;
 };
 
-main = powers `alt` days `alt` ranges `alt` multiplied | arr range;
+main = powers `alt` days `alt` divided `alt` literals `alt` compared `alt` ranges `alt` multiplied | arr range;

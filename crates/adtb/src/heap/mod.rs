@@ -125,8 +125,8 @@ pub struct Superseded {
 /// Why a write of a version takes no SIREAD check.
 #[derive(Clone, Copy, Debug)]
 pub enum Unchecked {
-    /// The version is a catalog row, which no serializable read locks.
-    Catalog,
+    /// The version is a catalog row, which no serializable read locks, written by the catalog.
+    Catalog(crate::catalog::Abandoning),
     /// The writer is a test of a heap, outside the serializer.
     #[cfg(test)]
     Test,

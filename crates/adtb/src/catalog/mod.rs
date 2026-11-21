@@ -612,6 +612,10 @@ impl Catalog {
 
     /// Create the engine's structures and rows in a file whose root page `pid` names the commit
     /// log of `txns` and nothing else, and name them in the root page.
+    ///
+    /// Commit the transaction that writes the rows, then name the roots heap in the root page. A
+    /// failure of either fails the call; an open that finds no roots heap named frees what this
+    /// made and fills the file again.
     fn fill<R: Runtime>(
         pager: &Pager<R>,
         txns: &Transactions<R>,
@@ -672,7 +676,13 @@ impl Catalog {
             },
         );
         drop(hold);
-        let catalog = built?;
+        let catalog = match built {
+            Ok(catalog) => catalog,
+            Err(e) => {
+                txns.abandon_failed(pager, begun)?;
+                return Err(e);
+            }
+        };
         txns.commit(pager, begun)?;
         let lsn = update_root(pager, pid, |r| {
             r.large = (large.id(), large.root());
@@ -1350,7 +1360,14 @@ impl<R: Runtime> Migrating<'_, R> {
         placed: impl FnMut(V, Tid) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let mut judge = self.txns.judge_now(self.pager, heap.id().0);
-        heap.insert_all_pruning(self.pager, self.x, rows, &mut judge, placed)
+        heap.insert_all_pruning(
+            self.pager,
+            self.x,
+            rows,
+            &mut judge,
+            placed,
+            &Abandoning(()),
+        )
     }
 
     /// Create an empty heap with id `id` whose rows have fields `row`, out-of-line values in
@@ -1380,7 +1397,8 @@ impl<R: Runtime> Migrating<'_, R> {
 }
 
 /// The writer of a catalog transaction, which abandons it whole on failure.
-struct Abandoning(());
+#[derive(Clone, Copy, Debug)]
+pub struct Abandoning(());
 
 impl heap::Abandons for Abandoning {}
 
@@ -1451,7 +1469,7 @@ fn delete_keyed<R: Runtime>(
             if seen.visible() {
                 heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)
                     .kept(&Abandoning(()))?
-                    .unchecked(heap::Unchecked::Catalog);
+                    .unchecked(heap::Unchecked::Catalog(Abandoning(())));
                 keys.swap_remove(at);
             }
         }

@@ -14,10 +14,16 @@ use super::root::{Changing, Root};
 use super::{Catalog, Read, Reader, Transactions};
 use crate::faults::Step;
 use crate::faults::armed::{self, Run, Site};
+use crate::heap::{self, Heap, Tested, Unchecked, Undo};
+use crate::key::{CtorId, Tid, Value};
+use crate::mvcc::{Fate, Writers, Xid};
 use crate::storage::{self, Pager};
+use crate::test_world;
 use crate::test_world::api::{printed, query};
+use crate::test_world::fixture::Storage;
 use crate::test_world::load::{FILE, opened, options};
-use crate::verify::{self, Depth, Problem};
+use crate::test_world::rows::{EMAIL, key_of, row_type};
+use crate::verify::{self, Depth, Finding, Inventory, Problem, Sum};
 use crate::{CallOptions, Database, Error, Log};
 
 const SEED: u64 = 71;
@@ -121,10 +127,17 @@ fn changing(pager: &Pager<SimRuntime>) -> bool {
     Root::read(&root).changing() != Changing::None
 }
 
-/// Returns the overcounted heads verify finds on the closed file once an open ended any change
-/// on the catalog root, failing unless it read every structure and found nothing else but
-/// unsettled directory entries.
-fn overcounted(rt: &SimRuntime, what: &str) -> usize {
+/// What verify finds on the closed file once an open ended any change on the catalog root.
+#[derive(Debug, PartialEq, Eq)]
+struct Findings {
+    overcounted: usize,
+    unsettled: usize,
+}
+
+/// Returns the overcounted heads and unsettled directory entries verify finds on the closed file
+/// once an open ended any change on the catalog root, failing unless it read every structure and
+/// found nothing else.
+fn findings(rt: &SimRuntime, what: &str) -> Findings {
     let (pager, catalog, txns) = catalog_at(rt);
     assert!(!changing(&pager), "{what}: the open ends the change");
     let clog = txns.commit_log();
@@ -135,15 +148,24 @@ fn overcounted(rt: &SimRuntime, what: &str) -> usize {
     let report = verify::verify_with(&pager, &catalog.structures().inventory(&clog), depth);
     pager.close();
     assert!(report.complete, "{what}: {:?}", report.findings);
-    let mut over = 0;
-    for f in &report.findings {
+    counted(&report.findings, what)
+}
+
+/// Returns the overcounted heads and unsettled directory entries among `findings`, failing on
+/// any other.
+fn counted(findings: &[Finding], what: &str) -> Findings {
+    let mut found = Findings {
+        overcounted: 0,
+        unsettled: 0,
+    };
+    for f in findings {
         match f.problem {
-            Problem::Overcounted { .. } => over += 1,
-            Problem::Unsettled(_) => {}
+            Problem::Overcounted { .. } => found.overcounted += 1,
+            Problem::Unsettled(_) => found.unsettled += 1,
             ref other => panic!("{what}: {other:?}"),
         }
     }
-    over
+    found
 }
 
 /// Fail unless an open at [`RANKED`] answers no row from verify and reads `rows` notes ranked 7.
@@ -160,11 +182,11 @@ fn reads(rt: &SimRuntime, rows: usize, what: &str) {
 }
 
 /// What one run of a change did: the runs of steps it reached, whether the call succeeded, and
-/// the overcounted heads verify found after a reopen.
+/// what verify found after a reopen.
 struct Ran {
     runs: Vec<Run>,
     ok: bool,
-    overcounted: usize,
+    found: Findings,
 }
 
 /// Open the file at [`NOTES`] with [`ROWS`] rows, then at [`RANKED`], failing `fail`. Fail
@@ -186,15 +208,15 @@ fn migrated(fail: Option<(Site, usize)>) -> Ran {
         db.close().expect("the database closes");
         runs
     });
-    let overcounted = run(&mut sim, |rt| {
+    let found = run(&mut sim, |rt| {
         reads(&rt, ROWS, &what);
-        overcounted(&rt, &what)
+        findings(&rt, &what)
     });
     assert_eq!(held, run(&mut sim, |rt| swept(&rt)), "{what}");
     Ran {
         runs,
         ok: true,
-        overcounted,
+        found,
     }
 }
 
@@ -230,16 +252,16 @@ fn settled(fail: Option<(Site, usize)>) -> Ran {
         pager.close();
         runs
     });
-    let overcounted = run(&mut sim, |rt| {
+    let found = run(&mut sim, |rt| {
         let (pager, catalog, _) = catalog_at(&rt);
         assert!(catalog.pending_drops().is_empty(), "{what}");
         pager.close();
-        overcounted(&rt, &what)
+        findings(&rt, &what)
     });
     Ran {
         runs,
         ok: true,
-        overcounted,
+        found,
     }
 }
 
@@ -255,15 +277,11 @@ fn inserted(fail: Option<(Site, usize)>) -> Ran {
         db.close().expect("the database closes");
         (runs, ok)
     });
-    let overcounted = run(&mut sim, |rt| {
+    let found = run(&mut sim, |rt| {
         reads(&rt, if ok { ROWS } else { 0 }, &what);
-        overcounted(&rt, &what)
+        findings(&rt, &what)
     });
-    Ran {
-        runs,
-        ok,
-        overcounted,
-    }
+    Ran { runs, ok, found }
 }
 
 /// Insert [`ROWS`] rows into a file at [`RANKED`], vacuum, then update each keeping its body,
@@ -281,15 +299,11 @@ fn updated(fail: Option<(Site, usize)>) -> Ran {
         db.close().expect("the database closes");
         (runs, ok)
     });
-    let overcounted = run(&mut sim, |rt| {
+    let found = run(&mut sim, |rt| {
         reads(&rt, if ok { 0 } else { ROWS }, &what);
-        overcounted(&rt, &what)
+        findings(&rt, &what)
     });
-    Ran {
-        runs,
-        ok,
-        overcounted,
-    }
+    Ran { runs, ok, found }
 }
 
 /// Insert [`ROWS`] rows of four large values each into `wides`, failing `fail`.
@@ -320,7 +334,7 @@ fn widened(fail: Option<(Site, usize)>) -> Ran {
         db.close().expect("the database closes");
         (runs, ok)
     });
-    let overcounted = run(&mut sim, |rt| {
+    let found = run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[WIDE]), &options(1));
         let rows = query(&db, "from w in wides select w.id");
         assert_eq!(if ok { ROWS } else { 0 }, rows.len(), "{what}");
@@ -330,13 +344,9 @@ fn widened(fail: Option<(Site, usize)>) -> Ran {
             "{what}"
         );
         db.close().expect("the database closes");
-        overcounted(&rt, &what)
+        findings(&rt, &what)
     });
-    Ran {
-        runs,
-        ok,
-        overcounted,
-    }
+    Ran { runs, ok, found }
 }
 
 /// Delete every row of a file at [`RANKED`], then vacuum, failing `fail`.
@@ -353,15 +363,95 @@ fn vacuumed(fail: Option<(Site, usize)>) -> Ran {
         db.close().expect("the database closes");
         (runs, ok)
     });
-    let overcounted = run(&mut sim, |rt| {
+    let found = run(&mut sim, |rt| {
         reads(&rt, 0, &what);
-        overcounted(&rt, &what)
+        findings(&rt, &what)
     });
-    Ran {
-        runs,
-        ok,
-        overcounted,
-    }
+    Ran { runs, ok, found }
+}
+
+/// The rows [`wide_heap`] inserts, and one in how many of them [`pruned`] keeps.
+const WIDE_ROWS: i64 = 48;
+const PRUNE_KEPT: i64 = 4;
+
+/// The transaction of the heap writes the tests make after [`wide_heap`].
+const WRITER: Xid = Xid(2);
+
+/// Returns the row of key `key`: a wide text and a large value.
+fn wide_row(key: i64) -> Vec<Value> {
+    vec![
+        Value::I64(key),
+        Value::Text("w".repeat(600)),
+        Value::Bytes(vec![key as u8; 5000]),
+    ]
+}
+
+/// Returns a heap whose directory nodes hold two entries, filled with [`WIDE_ROWS`] rows of
+/// [`wide_row`] over several pages, and the TID of each row.
+fn wide_heap(rt: &SimRuntime) -> (Pager<SimRuntime>, Heap, Vec<Tid>) {
+    let mut s = Storage::create(rt, &test_world::options(64));
+    let large = s.large();
+    s.heap(row_type(EMAIL), large, 2);
+    let (pager, _, heaps, _) = s.split();
+    let heap = heaps.into_iter().next().expect("the heap just made");
+    let tids = (0..WIDE_ROWS)
+        .map(|key| {
+            heap.insert(&pager, Xid(1), &wide_row(key))
+                .expect("the row inserts")
+        })
+        .collect();
+    let pages = heap.pages(&pager).expect("the heap reads").len();
+    assert!(pages > 4, "the rows fill {pages} pages");
+    (pager, heap, tids)
+}
+
+/// Returns what verify finds of `heap` that [`counted`] counts.
+fn heap_findings(pager: &Pager<SimRuntime>, heap: &Heap, what: &str) -> Findings {
+    let inventory = Inventory {
+        sums: vec![Sum {
+            heaps: vec![(CtorId(0), heap)],
+            indexes: Vec::new(),
+        }],
+        ..Inventory::default()
+    };
+    counted(&verify::verify(pager, &inventory).findings, what)
+}
+
+/// Fill a [`wide_heap`], delete all but one row in [`PRUNE_KEPT`], then prune each page,
+/// failing `fail`. Each prune leaves its page roomier than the entries above it say.
+fn pruned(fail: Option<(Site, usize)>) -> Ran {
+    let what = format!("prune {fail:?}");
+    let mut sim = Sim::new(SEED, Config::default());
+    run(&mut sim, |rt| {
+        let (pager, heap, tids) = wide_heap(&rt);
+        for (key, tid) in (0..).zip(tids) {
+            if key % PRUNE_KEPT != 0 {
+                heap.delete(&pager, tid, WRITER)
+                    .kept(&Tested)
+                    .expect("the row deletes")
+                    .unchecked(Unchecked::Test);
+            }
+        }
+        let judge = |w: &Writers| {
+            Ok(if w.deleted_by(WRITER) {
+                Fate::Remove
+            } else {
+                Fate::Keep
+            })
+        };
+        let pages = heap.pages(&pager).expect("the heap reads");
+        arm(fail);
+        let ok = pages
+            .iter()
+            .try_for_each(|&pid| heap.prune(&pager, pid, judge, &[], false).map(drop))
+            .is_ok();
+        let runs = armed::reached();
+        Ran {
+            runs,
+            ok,
+            found: heap_findings(&pager, &heap, &what),
+        }
+    })
 }
 
 type Case = (
@@ -381,6 +471,7 @@ const CASES: &[Case] = &[
     ("pending drop", settled, AFTER_COMMIT),
     ("insert", inserted, BEFORE_COMMIT),
     ("vacuum", vacuumed, BEFORE_COMMIT),
+    ("prune", pruned, BEFORE_COMMIT),
     ("update", updated, BEFORE_UPDATE),
     ("wide insert", widened, BEFORE_UPDATE_WIDE),
 ];
@@ -402,7 +493,11 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
     for (case, run_case, steps) in CASES {
         let clean = run_case(None);
         assert!(clean.ok, "{case} fails with nothing failed");
-        assert_eq!(0, clean.overcounted, "{case} with nothing failed");
+        let settled = Findings {
+            overcounted: 0,
+            unsettled: 0,
+        };
+        assert_eq!(settled, clean.found, "{case} with nothing failed");
         let after = steps.contains(&Step::FreeLeaked);
         for (site, n) in ends(&clean.runs, steps) {
             let got = run_case(Some((site, n)));
@@ -414,10 +509,12 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
             assert_eq!(after, got.ok, "{case}: run {n} of {site:?}");
             let skipped = usize::from(!after && site.step() == Step::Release);
             assert_eq!(
-                clean.overcounted + skipped,
-                got.overcounted,
+                skipped, got.found.overcounted,
                 "{case}: run {n} of {site:?}"
             );
+            if site.step() != Step::Settle {
+                assert_eq!(0, got.found.unsettled, "{case}: run {n} of {site:?}");
+            }
             struck.insert(site);
         }
     }
@@ -566,10 +663,92 @@ fn a_change_freeing_a_heap_counts_its_versions_off_every_value_they_point_at() {
             }
             pager.close();
         });
-        let over = run(&mut sim, |rt| overcounted(&rt, what));
+        let over = run(&mut sim, |rt| findings(&rt, what).overcounted);
         let left = run(&mut sim, |rt| swept(&rt));
         found.push((what, over, left));
         expected.push((what, 0, if f.kept { held } else { 0 }));
     }
     assert_eq!(expected, found);
+}
+
+/// A write a statement makes to a heap, as `WRITER`, of the version at the TID given, its
+/// take-back recorded on the list given.
+type HeapWrite =
+    fn(&Heap, &Pager<SimRuntime>, Tid, &mut Vec<((), Undo)>) -> Result<(), heap::Error>;
+
+/// Returns the rows of the versions of `heap` no transaction deleted, by key.
+fn live(pager: &Pager<SimRuntime>, heap: &Heap) -> Vec<Vec<Value>> {
+    let mut rows = Vec::new();
+    heap.scan(pager, |v| {
+        if !v.header.writers.deleted() {
+            rows.push(v.row);
+        }
+    })
+    .expect("the heap reads");
+    rows.sort_by_key(|r| key_of(r));
+    rows
+}
+
+const HEAP_WRITES: &[(&str, HeapWrite)] = &[
+    ("insert", |heap, pager, _, list| {
+        let put = heap.insert_pruning(pager, WRITER, &wide_row(WIDE_ROWS), &mut |_| Ok(Fate::Keep));
+        put.record(list, (), ()).map(drop)
+    }),
+    ("update", |heap, pager, tid, list| {
+        let put = heap.update_pruning(pager, tid, WRITER, &wide_row(WIDE_ROWS), &[0], &mut |_| {
+            Ok(Fate::Keep)
+        });
+        let (_, old) = put.record(list, (), ())?;
+        old.unchecked(Unchecked::Test);
+        Ok(())
+    }),
+    ("delete", |heap, pager, tid, list| {
+        let old = heap.delete(pager, tid, WRITER).record(list, (), ())?;
+        old.unchecked(Unchecked::Test);
+        Ok(())
+    }),
+];
+
+/// Write `write` over a [`wide_heap`], failing `fail`. Returns the runs of steps it reached and
+/// its result; when it fails, takes back what it recorded and fails unless the heap's live rows
+/// are those it found.
+fn heap_written(write: HeapWrite, fail: Option<(Site, usize)>) -> (Vec<Run>, bool) {
+    let what = format!("{fail:?}");
+    let mut sim = Sim::new(SEED, Config::default());
+    run(&mut sim, |rt| {
+        let (pager, heap, tids) = wide_heap(&rt);
+        let found = live(&pager, &heap);
+        let mut list = Vec::new();
+        arm(fail);
+        let ok = write(&heap, &pager, tids[tids.len() / 2], &mut list).is_ok();
+        let runs = armed::reached();
+        if !ok {
+            for ((), u) in list.into_iter().rev() {
+                heap.take_back(&pager, u).expect("the write is taken back");
+            }
+            assert_eq!(found, live(&pager, &heap), "{what}");
+        }
+        (runs, ok)
+    })
+}
+
+#[test]
+fn a_heap_write_failing_after_its_update_returns_a_take_back_restoring_the_rows_it_found() {
+    for (kind, write) in HEAP_WRITES {
+        let (clean, ok) = heap_written(*write, None);
+        assert!(ok, "{kind} fails with nothing failed");
+        let sites = ends(&clean, BEFORE_COMMIT);
+        assert!(
+            sites.iter().any(|(s, _)| s.step() == Step::Settle),
+            "{kind} reaches no settle: {clean:?}"
+        );
+        for (site, n) in sites {
+            let (runs, ok) = heap_written(*write, Some((site, n)));
+            assert!(
+                runs.contains(&(site, n, true)),
+                "{kind}: run {n} of {site:?} armed and not failed: {runs:?}"
+            );
+            assert!(!ok, "{kind}: run {n} of {site:?}");
+        }
+    }
 }

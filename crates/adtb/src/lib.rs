@@ -5,6 +5,7 @@ mod api;
 pub mod batch;
 mod btree;
 mod catalog;
+mod consumed;
 mod exec;
 mod faults;
 mod heap;
