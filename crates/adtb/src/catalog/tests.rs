@@ -363,8 +363,11 @@ fn the_fields_of_one_constructor_are_written_in_name_order() {
         .index();
     let declared_fields = layout::row(&schema, fields, payload);
     let at = |name: &str| declared_fields.iter().position(|(n, _)| n == name).unwrap();
-    let names: Vec<Value> = declared(&schema, &source, &ElementTexts::of(&source, &schema))
-        [&fields]
+    let names: Vec<Value> = declared(
+        &schema,
+        &source,
+        &ElementTexts::of(&source, &schema).unwrap(),
+    )[&fields]
         .iter()
         .filter(|(c, row)| *c == payload && row[at("ctor")] == Value::I64(ctor.raw() as i64))
         .map(|(_, row)| row[at("name")].clone())

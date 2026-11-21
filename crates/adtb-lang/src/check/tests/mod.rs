@@ -188,7 +188,7 @@ fn adhoc_in(
     let mut tys = BTreeMap::new();
     let mut known = Bundles::default();
     {
-        let c = Checker::new(&s, Visible::all(&s), Context::Adhoc);
+        let c = Checker::of_adhoc(&s, Visible::all(&s));
         let resolve = |t: &str| {
             let parsed = parse_type(t, Options::default()).ok().expect("a type");
             c.resolve_type(&parsed).expect("a known type")

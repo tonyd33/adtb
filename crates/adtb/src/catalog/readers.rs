@@ -257,12 +257,18 @@ impl Changes {
 
     /// Record each unique the step from `a`, the schema of `source`, to `b` of operator `op`, a
     /// `drop unique`, drops.
-    fn drop_uniques(&mut self, op: usize, source: &Source, a: &Schema, b: &Schema) {
+    fn drop_uniques(
+        &mut self,
+        op: usize,
+        source: &Source,
+        a: &Schema,
+        b: &Schema,
+    ) -> Result<(), Error> {
         let kept = unique_ids(b);
         if unique_ids(a).is_subset(&kept) {
-            return;
+            return Ok(());
         }
-        for (id, (r, clause)) in uniques(a, &ElementTexts::of(source, a)) {
+        for (id, (r, clause)) in uniques(a, &ElementTexts::of(source, a)?) {
             if kept.contains(&id) {
                 continue;
             }
@@ -274,12 +280,18 @@ impl Changes {
                 name: format!("{} {clause}", rel.name),
             });
         }
+        Ok(())
     }
 }
 
 /// Returns what `stepped`, the steps of the operators of `file` applied to `source`, whose schema
 /// is `schema`, do to write states, constraints and uniques.
-fn changes(source: &Source, schema: &Schema, file: &MigrationFile, stepped: &Stepped) -> Changes {
+fn changes(
+    source: &Source,
+    schema: &Schema,
+    file: &MigrationFile,
+    stepped: &Stepped,
+) -> Result<Changes, Error> {
     let mut before = schema;
     let mut before_source = source;
     let mut changes = Changes::default();
@@ -287,13 +299,13 @@ fn changes(source: &Source, schema: &Schema, file: &MigrationFile, stepped: &Ste
         for (step, schema) in steps {
             changes.add(before, schema);
             if matches!(op.kind, OperatorKind::DropUnique(..)) {
-                changes.drop_uniques(i, before_source, before, schema);
+                changes.drop_uniques(i, before_source, before, schema)?;
             }
             before = schema;
             before_source = &step.after;
         }
     }
-    changes
+    Ok(changes)
 }
 
 /// Returns `file` without the operators `skipped` names by position.
@@ -351,7 +363,7 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
                 .record_steps(&file, &l.text)
                 .map_err(|r| Error::Refused(super::reasons(r)))?;
             let stepped = super::steps::stepped(&steps, &file, &l.text)?;
-            let drops = changes(&l.before, &before, &file, &stepped).uniques;
+            let drops = changes(&l.before, &before, &file, &stepped)?.uniques;
             let skipped: BTreeSet<usize> = drops
                 .iter()
                 .filter(|u| held.contains(&u.id))
@@ -469,7 +481,7 @@ impl Catalog {
         next: &Checked,
         stepped: &Stepped,
     ) -> Result<Readers, Error> {
-        let changes = changes(&self.source, &self.schema, file, stepped);
+        let changes = changes(&self.source, &self.schema, file, stepped)?;
         let now = &next.schema;
         let mut refused = Vec::new();
         for &(rid, cid) in &changes.enabled {

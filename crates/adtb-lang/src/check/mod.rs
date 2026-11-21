@@ -17,6 +17,7 @@ use crate::types::*;
 mod adhoc;
 mod call;
 mod expr;
+mod names;
 mod pat;
 mod prelude;
 mod query;
@@ -242,8 +243,8 @@ pub struct Checker<'a> {
     empty_row_terms: BTreeSet<Tm>,
     empty_row_vars: BTreeSet<Var>,
     read_only: bool,
-    /// The names this checker resolves, when recording.
-    refs: Option<RefCell<Vec<(Span, Ref)>>>,
+    /// The names this checker resolves.
+    refs: names::Refs,
     /// Whether a match that misses a constructor is refused.
     coverage: bool,
     /// A row whose header fields a constructor of its type built here takes when it omits them.
@@ -272,8 +273,14 @@ fn diag(span: Span, msg: impl Into<String>) -> Diag {
 }
 
 impl<'a> Checker<'a> {
-    pub fn new(schema: &'a Schema, vis: Visible, ctx: Context) -> Self {
-        Checker::with_rows(schema, vis, ctx, vec![None; schema.functions.len()])
+    /// Returns a checker of ad hoc text against `schema`.
+    pub fn of_adhoc(schema: &'a Schema, vis: Visible) -> Self {
+        Checker::with_rows(
+            schema,
+            vis,
+            Context::Adhoc,
+            vec![None; schema.functions.len()],
+        )
     }
 
     /// Returns a checker that knows `fn_rows`, the relation whose rows each function returns.
@@ -301,7 +308,7 @@ impl<'a> Checker<'a> {
             empty_row_terms: BTreeSet::new(),
             empty_row_vars: BTreeSet::new(),
             read_only: false,
-            refs: None,
+            refs: names::Refs::default(),
             coverage: true,
             carry: None,
             row_fields: BTreeMap::new(),
@@ -419,28 +426,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub fn resolve_type(&self, t: &ast::Type) -> R<Ty> {
-        let names: Vec<String> = self.tparams.iter().map(|(n, _)| n.clone()).collect();
-        let scope =
-            TypeScope::new(self.module(), &names, TypeMode::Signature).naming(self.vis.scope());
-        let mut ordered = Vec::new();
-        let ty = crate::schema::resolve_type(self.schema, &scope, t, &mut ordered, FileId(0))
-            .map_err(|(span, msg)| diag(span, msg))?;
-        if let Some(refs) = &self.refs {
-            crate::canon::type_refs(self.schema, self.module(), t, &mut refs.borrow_mut());
-        }
-        for (arg, _, span) in ordered {
-            if !self.ordered(&arg, span)? {
-                return Err(diag(span, "`Span a` needs an ordered `a`"));
-            }
-        }
-        Ok(ty)
-    }
-
-    fn lookup_type(&self, name: &ast::QName) -> Result<TypeName, String> {
-        crate::resolve::lookup_type(self.schema, &self.vis, name)
-    }
-
     /// Returns whether more than one visible module declares a value named `name`.
     fn ambiguous(&self, name: &str) -> bool {
         let declaring = self.vis.modules.iter();
@@ -448,85 +433,6 @@ impl<'a> Checker<'a> {
             .filter(|&&m| self.vis.value_in(self.schema, m, name).is_some())
             .count()
             > 1
-    }
-
-    fn lookup_value(&self, name: &ast::QName) -> Result<ValueDef, String> {
-        let v = crate::resolve::lookup_value(self.schema, &self.vis, name);
-        if let Ok(ValueDef::Relation(r)) = v
-            && self.hidden.contains(&r)
-        {
-            return Err(format!("no `{}` in scope", name.name.text));
-        }
-        match v {
-            Ok(ValueDef::Relation(r)) => self.note(name.name.span, Ref::Relation(r)),
-            Ok(ValueDef::Function(f)) => self.note(name.name.span, Ref::Function(f)),
-            Ok(ValueDef::Aggregate(a)) => self.note(name.name.span, Ref::Aggregate(a)),
-            _ => {}
-        }
-        v
-    }
-
-    fn note(&self, span: Span, r: Ref) {
-        if let Some(refs) = &self.refs {
-            refs.borrow_mut().push((span, r));
-        }
-    }
-
-    /// Note each constructor or named set a selection names, of type `def` and, for a relation's selection, of `rel`.
-    fn note_sel(&self, def: TypeId, rel: Option<RelId>, sel: &ast::CtorSel) {
-        if self.refs.is_none() {
-            return;
-        }
-        let names: Vec<&ast::Ident> = match sel {
-            ast::CtorSel::One(c) => vec![c],
-            ast::CtorSel::Many(cs) => cs.iter().collect(),
-        };
-        for n in names {
-            match (self.schema.ty(def).ctor_index(&n.text), rel) {
-                (Some(i), _) => self.note(n.span, Ref::Ctor(def, i)),
-                (None, Some(r)) => self.note(n.span, Ref::Set(r, n.text.clone())),
-                (None, None) => {}
-            }
-        }
-    }
-
-    /// Note field `name` of the rows of `def` in `ctors`, every constructor when `None`.
-    fn note_field(&self, span: Span, def: TypeId, ctors: Option<&[u32]>, name: &str, pun: bool) {
-        if self.refs.is_none() {
-            return;
-        }
-        let t = self.schema.ty(def);
-        if t.field(None, name).is_some() {
-            return self.note(
-                span,
-                Ref::Field {
-                    def,
-                    ctor: None,
-                    name: name.to_string(),
-                    pun,
-                },
-            );
-        }
-        let all: Vec<u32> = (0..t.ctors().len() as u32).collect();
-        for &c in ctors.unwrap_or(&all) {
-            if t.ctors()[c as usize].fields.iter().any(|f| f.name == name) {
-                self.note(
-                    span,
-                    Ref::Field {
-                        def,
-                        ctor: Some(c),
-                        name: name.to_string(),
-                        pun,
-                    },
-                );
-            }
-        }
-    }
-
-    /// Resolve a relation's constructor selection, noting what it names.
-    fn relation_sel(&self, rel: RelId, sel: &ast::CtorSel) -> Result<CtorSet, String> {
-        self.note_sel(self.schema.relation(rel).elem_def, Some(rel), sel);
-        self.schema.relation_sel(rel, sel)
     }
 
     /// Every declared sum in scope with a constructor of this name, with its index.
@@ -693,13 +599,13 @@ struct Bodies<'s, 'r> {
 }
 
 impl Bodies<'_, '_> {
-    fn run(
+    fn run<T>(
         &mut self,
         module: ModuleId,
         ctx: Context,
         file: FileId,
-        f: &mut dyn FnMut(&mut Checker) -> R<Tm>,
-    ) -> Option<Tm> {
+        f: &mut dyn FnMut(&mut Checker) -> R<T>,
+    ) -> Option<T> {
         let mut c = Checker::with_rows(
             self.schema,
             Visible::module(module),
@@ -708,13 +614,12 @@ impl Bodies<'_, '_> {
         );
         c.terms = std::mem::take(&mut self.terms);
         if self.record.is_some() {
-            c.refs = Some(RefCell::new(Vec::new()));
             c.coverage = false;
         }
         let r = f(&mut c);
         self.terms = std::mem::take(&mut c.terms);
-        if let (Some(out), Some(refs)) = (self.record.as_deref_mut(), c.refs.take()) {
-            out.extend(refs.into_inner().into_iter().map(|(s, r)| (file, s, r)));
+        if let Some(out) = self.record.as_deref_mut() {
+            out.extend(c.refs.take().into_iter().map(|(s, r)| (file, s, r)));
         }
         match r {
             Ok(t) => Some(t),
@@ -843,7 +748,7 @@ impl Bodies<'_, '_> {
     }
 
     fn finish(mut self) -> (Program, Vec<FileDiag>) {
-        self.program.retags = write::delete_actions(self.schema, &mut self.terms, &mut self.diags);
+        self.program.retags = write::delete_actions(&mut self);
         self.program.terms = self.terms;
         self.program.fn_rows = self.fn_rows;
         (self.program, self.diags)
@@ -998,9 +903,6 @@ fn checked_items(
         late_writer,
         hidden,
     );
-    if record.is_some() {
-        c.refs = Some(RefCell::new(Vec::new()));
-    }
     for (name, ty) in params {
         let v = c.terms.var(name, ty.clone());
         c.params.insert(name.clone(), (v, ty.clone()));
@@ -1026,8 +928,8 @@ fn checked_items(
             Err(d) => diags.push(d),
         }
     }
-    if let (Some(out), Some(refs)) = (record, c.refs.take()) {
-        out.extend(refs.into_inner());
+    if let Some(out) = record {
+        out.extend(c.refs.take());
     }
     if !diags.is_empty() {
         return Err(diags);
@@ -1408,7 +1310,7 @@ impl Checker<'_> {
                         )
                     })?;
                 if let Ty::Data { def, ctors, .. } = &o.ty {
-                    self.note_field(f.span, *def, ctors.as_deref(), &f.text, false);
+                    self.field_named(f.span, *def, ctors.as_deref(), &f.text, false);
                 }
                 path.push(PathStep::Field(f.text.clone()));
                 let next = Out::of(self.b().field(o.tm, f.text.clone()), fty);
@@ -1430,7 +1332,7 @@ impl Checker<'_> {
                     ));
                 };
                 if let Ty::Data { def, .. } = &o.ty {
-                    self.note(c.span, Ref::Ctor(*def, want));
+                    self.declared_ctor(c.span, *def, &c.text);
                 }
                 path.push(PathStep::Ctor(want));
                 let row = ty::restrict(self.schema, &o.ty, vec![want]);

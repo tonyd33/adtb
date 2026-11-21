@@ -170,7 +170,10 @@ pub struct ElementTexts(BTreeMap<(RelId, usize, usize), String>);
 
 impl ElementTexts {
     /// Returns the texts of the index elements of `schema`, the schema `source` builds.
-    pub fn of(source: &Source, schema: &Schema) -> ElementTexts {
+    ///
+    /// Fail with [`super::Broken::Unnamed`] when an element writes a name the source does not
+    /// resolve.
+    pub fn of(source: &Source, schema: &Schema) -> Result<ElementTexts, super::Error> {
         let mut names = None;
         let mut texts = BTreeMap::new();
         let mut files = BTreeMap::new();
@@ -191,10 +194,12 @@ impl ElementTexts {
                 let text = files
                     .entry(rel.file)
                     .or_insert_with(|| source.file_text(rel.file));
-                texts.insert((r, i, j), canonical_term(text, e.span, names));
+                let canonical = canonical_term(text, e.span, names)
+                    .map_err(|u| super::Error::from(super::Broken::Unnamed(u)))?;
+                texts.insert((r, i, j), canonical);
             }
         }
-        ElementTexts(texts)
+        Ok(ElementTexts(texts))
     }
 
     /// Returns the text of element `j` of declared index `i` of `r`.

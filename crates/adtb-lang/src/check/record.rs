@@ -135,7 +135,6 @@ impl Checker<'_> {
                 }
                 Err(e) => return Err(diag(path.span(), e)),
             };
-            self.note(path.name.span, Ref::Type(def));
             let c = self.schema.ty(def).ctor_index(name).ok_or_else(|| {
                 diag(
                     span,
@@ -192,7 +191,7 @@ impl Checker<'_> {
                     match found.as_slice() {
                         [(def, c)] => (Target::Decl(*def, known_args(*def)), *c),
                         [] if self.adhoc() && path.module.is_none() => {
-                            self.note(path.name.span, Ref::Anonymous);
+                            self.anonymous_ctor(path.name.span);
                             return self.anon_ctor(name, record, span);
                         }
                         [] => {
@@ -226,10 +225,10 @@ impl Checker<'_> {
         };
         let at = ctor.map_or(path.name.span, |c| c.span);
         if let Target::Known(_) = &target {
-            self.note(at, Ref::Anonymous);
+            self.anonymous_ctor(at);
         }
         if let Target::Decl(def, _) = &target {
-            self.note(at, Ref::Ctor(*def, c));
+            self.declared_ctor(at, *def, name);
             let t = self.schema.ty(*def);
             if *def == self.schema.prelude().span() {
                 return Err(diag(span, "a span is built only by `span(start, end)`"));
@@ -293,24 +292,7 @@ impl Checker<'_> {
             Target::Decl(def, args) => (def, args),
         };
         let site = site.filter(|s| self.schema.relation(s.rel).elem_def == def);
-        let t = self.schema.ty(def).clone();
-        let raw: Vec<(String, Ty, bool)> = ty::ctor_fields(
-            self.schema,
-            def,
-            &(0..t.params.len() as u32)
-                .map(Ty::Param)
-                .collect::<Vec<_>>(),
-            c,
-        );
-        let shape = CtorShape {
-            def,
-            c,
-            ctor_name: t.ctors()[c as usize].name.clone(),
-            t,
-            raw,
-            span,
-            site,
-        };
+        let shape = self.shape(def, c, span, site);
         let (named, base) = self.given_fields(&shape, record)?;
         let (mut given, args_out) = self.ctor_args(&shape, &named, args, base.as_ref())?;
         self.fill_elided(&shape, base.as_ref(), &args_out, &mut given)?;
@@ -321,6 +303,41 @@ impl Checker<'_> {
         };
         let tm = self.b().ctor(c, given, ty);
         Ok(self.out(tm))
+    }
+
+    fn shape<'s>(&self, def: TypeId, c: u32, span: Span, site: Option<&'s Site>) -> CtorShape<'s> {
+        let t = self.schema.ty(def).clone();
+        let raw: Vec<(String, Ty, bool)> = ty::ctor_fields(
+            self.schema,
+            def,
+            &(0..t.params.len() as u32)
+                .map(Ty::Param)
+                .collect::<Vec<_>>(),
+            c,
+        );
+        CtorShape {
+            def,
+            c,
+            ctor_name: t.ctors()[c as usize].name.clone(),
+            t,
+            raw,
+            span,
+            site,
+        }
+    }
+
+    /// Check each field `record` gives constructor `c` of `def`, without the fields it omits.
+    pub(super) fn given_ctor_fields(
+        &mut self,
+        def: TypeId,
+        c: u32,
+        record: &RecordExpr,
+        span: Span,
+    ) -> R<()> {
+        let shape = self.shape(def, c, span, None);
+        let (named, base) = self.given_fields(&shape, Some(record))?;
+        self.ctor_args(&shape, &named, None, base.as_ref())?;
+        Ok(())
     }
 
     /// Returns the fields `record` gives, by name, and the value a `with` record copies from.
@@ -374,7 +391,7 @@ impl Checker<'_> {
                             ),
                         ));
                     }
-                    self.note_field(
+                    self.field_named(
                         name.span,
                         shape.def,
                         Some(&[shape.c]),

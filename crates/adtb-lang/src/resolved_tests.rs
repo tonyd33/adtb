@@ -722,6 +722,7 @@ add field Device.label: Text fill \"\"
     assert_eq!(
         "type app::Device = { id : Key app::devices , owner : Key app::owners }",
         canonical_term(text, Span::new(at, at + decl.len()), &names)
+            .unwrap_or_else(|u| panic!("{u}"))
     );
 }
 

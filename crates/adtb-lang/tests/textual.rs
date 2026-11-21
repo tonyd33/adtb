@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
-use adtb_lang::check::{Checker, Context, check_schema};
+use adtb_lang::check::{Checker, check_schema};
 use adtb_lang::parse::{Options, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Committed, Schema, ValueDef, build};
@@ -219,7 +219,7 @@ fn ty(schema: &Schema, text: &str) -> Ty {
     let parsed = parse_type(text, Options::default())
         .ok()
         .unwrap_or_else(|_| panic!("`{text}` is not a type"));
-    Checker::new(schema, Visible::all(schema), Context::Adhoc)
+    Checker::of_adhoc(schema, Visible::all(schema))
         .resolve_type(&parsed)
         .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
 }

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::ast::{BundleItem, ExampleItem};
 use crate::check::tests::{adhoc_roots, assert_one_binding_site, program_roots};
-use crate::check::{Checker, Context, check_adhoc, check_query, check_schema, check_txn};
+use crate::check::{Checker, check_adhoc, check_query, check_schema, check_txn};
 use crate::kernel::{Agg, Const, Prim, Var};
 use crate::norm::{NormalAdhoc, NormalProgram, NormalQuery};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
@@ -102,7 +102,7 @@ pub(super) fn adhoc(
     let s = schema(extra);
     let mut tys = BTreeMap::new();
     {
-        let c = Checker::new(&s, Visible::all(&s), Context::Adhoc);
+        let c = Checker::of_adhoc(&s, Visible::all(&s));
         for (name, t) in params {
             let parsed = parse_type(t, Options::default()).ok().expect("a type");
             tys.insert(

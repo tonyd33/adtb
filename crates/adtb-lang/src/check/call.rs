@@ -216,7 +216,6 @@ impl Checker<'_> {
             }
             Err(e) => return Err(diag(callee.span(), e)),
         };
-        self.note(callee.name.span, Ref::Type(def));
         let TypeDefKind::Newtype { base, .. } = &self.schema.ty(def).kind else {
             return Err(diag(
                 callee.span(),

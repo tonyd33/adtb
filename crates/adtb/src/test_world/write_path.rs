@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use adtb_lang::check::{Checker, Context, Program, check_adhoc};
+use adtb_lang::check::{Checker, Program, check_adhoc};
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc, parse_type};
@@ -182,7 +182,7 @@ impl<R: Runtime> WritePath<R> {
         let parsed = parse_type(text, Options::default())
             .ok()
             .unwrap_or_else(|_| panic!("`{text}` is not a type"));
-        Checker::new(&self.schema, Visible::all(&self.schema), Context::Adhoc)
+        Checker::of_adhoc(&self.schema, Visible::all(&self.schema))
             .resolve_type(&parsed)
             .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
     }

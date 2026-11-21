@@ -5,6 +5,7 @@ use crate::span::FileId;
 
 fn literal(text: &str) -> String {
     canonical_term(text, Span::new(0, text.len()), &Names::default())
+        .unwrap_or_else(|u| panic!("{u}"))
 }
 
 fn source(decls: &[(&str, &str)]) -> Source {
@@ -28,6 +29,7 @@ fn term(src: &Source, i: usize, from: &str) -> String {
         .unwrap_or_else(|| panic!("no {from:?} in {text:?}"));
     let names = src.names().unwrap_or_else(|e| panic!("names: {e:?}"));
     canonical_term(&text, Span::new(start, text.trim_end().len()), &names[i])
+        .unwrap_or_else(|u| panic!("{u}"))
 }
 
 /// The canonical token form of the migration text from the first `from` through the first `to` after it.
@@ -46,7 +48,7 @@ fn migration_term(src: &Source, text: &str, from: &str, to: &str) -> String {
         .unwrap_or_else(|e| panic!("names: {e:?}"));
     let start = text.find(from).expect("the operand is in the text");
     let end = start + text[start..].find(to).expect("the operand ends") + to.len();
-    canonical_term(text, Span::new(start, end), &names)
+    canonical_term(text, Span::new(start, end), &names).unwrap_or_else(|u| panic!("{u}"))
 }
 
 const AUTH: [(&str, &str); 3] = [

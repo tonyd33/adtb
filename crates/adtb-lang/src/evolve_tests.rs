@@ -3428,6 +3428,7 @@ fn logged_term(src: &Source, operand: &str) -> String {
         .find(operand)
         .unwrap_or_else(|| panic!("no {operand:?} in {:?}", logged.text));
     crate::canon::canonical_term(&logged.text, Span::new(at, at + operand.len()), &names)
+        .unwrap_or_else(|u| panic!("{u}"))
 }
 
 #[test]

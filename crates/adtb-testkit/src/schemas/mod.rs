@@ -24,10 +24,6 @@ const CTORS: [&str; 4] = ["A", "B", "C", "D"];
 /// The name of the one named set a relation may declare.
 const SET: &str = "Pair";
 
-/// Whether a retag payload may give a field whose literal is a constructor, in place of a
-/// default for it.
-const SEARCH_RETAG_PAYLOAD_NULLARY_PANICS: bool = false;
-
 /// The constructor sets a reference, unique, index or check names within one relation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Scope {
@@ -382,9 +378,6 @@ impl Schema {
                 }
                 let action = match retag_to(rel, c, &rel.ctors[c].fields[k].name) {
                     Some(d) if rng.below(3) != 0 => {
-                        if rel.retag.is_none() && !SEARCH_RETAG_PAYLOAD_NULLARY_PANICS {
-                            default_sums(rel, d);
-                        }
                         rel.retag = Some(d);
                         Action::Retag
                     }
@@ -654,16 +647,6 @@ fn retag_to(rel: &Rel, c: usize, f: &str) -> Option<usize> {
     match rel.retag {
         Some(d) => fits(d).then_some(d),
         None => (0..rel.ctors.len()).find(|d| fits(*d)),
-    }
-}
-
-/// Give each field of constructor `d` whose literal is a constructor a default.
-fn default_sums(rel: &mut Rel, d: usize) {
-    for f in &rel.ctors[d].fields {
-        if matches!(f.ty, Ty::Sum(_) | Ty::OptInt | Ty::OptRef(..)) {
-            rel.defaults
-                .push((d, f.name.clone(), literal(&f.ty, false)));
-        }
     }
 }
 

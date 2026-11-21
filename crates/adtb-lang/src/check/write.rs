@@ -1248,23 +1248,21 @@ impl Checker<'_> {
 }
 
 /// Check the `on delete` actions of every declared type and elaborate each relation's `retag` action.
-pub(super) fn delete_actions(
-    schema: &Schema,
-    terms: &mut Terms,
-    diags: &mut Vec<FileDiag>,
-) -> BTreeMap<RelId, Tm> {
+pub(super) fn delete_actions(b: &mut Bodies) -> BTreeMap<RelId, Tm> {
+    let schema = b.schema;
     let mut out = BTreeMap::new();
     for (i, t) in schema.types.iter().enumerate() {
         let TypeDefKind::Sum { header, ctors, .. } = &t.kind else {
             continue;
         };
         let mut err = |span: Span, msg: String| {
-            diags.push(FileDiag {
+            b.diags.push(FileDiag {
                 file: t.file,
                 diag: diag(span, msg),
             });
         };
-        let mut first: Option<(u32, Payload, Option<RecordExpr>)> = None;
+        let mut first: Option<(u32, Payload)> = None;
+        let mut payloads: Vec<Option<RecordExpr>> = Vec::new();
         let fields = header.iter().map(|f| (None, f)).chain(
             ctors
                 .iter()
@@ -1307,9 +1305,10 @@ pub(super) fn delete_actions(
                 ok = false;
                 continue;
             };
+            payloads.push(rec.clone());
             match &first {
-                None => first = Some((*c, lits, rec.clone())),
-                Some((c0, l0, _)) if *c0 == *c && *l0 == lits => {}
+                None => first = Some((*c, lits)),
+                Some((c0, l0)) if *c0 == *c && *l0 == lits => {}
                 Some(_) => {
                     err(
                         f.span,
@@ -1322,31 +1321,38 @@ pub(super) fn delete_actions(
                 }
             }
         }
-        let Some((c, _, rec)) = first.filter(|_| ok) else {
+        let Some((c, _)) = first.filter(|_| ok) else {
             continue;
         };
+        let def = TypeId(i as u32);
+        if !schema.relations.iter().any(|r| r.elem_def == def) {
+            for rec in payloads.iter().flatten() {
+                let span = record_span(rec);
+                b.run(t.module, Context::Schema, t.file, &mut |ch| {
+                    ch.given_ctor_fields(def, c, rec, span)
+                });
+            }
+        }
         for (ri, r) in schema.relations.iter().enumerate() {
-            if r.elem_def != TypeId(i as u32) {
+            if r.elem_def != def {
                 continue;
             }
             let rel = RelId(ri as u32);
-            let mut ch = Checker::new(schema, Visible::module(r.module), Context::Schema);
-            ch.terms = std::mem::take(terms);
-            let span = rec.as_ref().map_or(t.span, |r| match r {
-                RecordExpr::Fields(_, s) | RecordExpr::With(_, _, s) | RecordExpr::Elided(s) => *s,
-            });
-            let res = ch.retag_action(rel, c, rec.as_ref(), span);
-            *terms = std::mem::take(&mut ch.terms);
-            match res {
-                Ok(tm) => {
-                    out.insert(rel, tm);
+            for rec in &payloads {
+                let span = rec.as_ref().map_or(t.span, record_span);
+                if let Some(tm) = b.run(r.module, Context::Schema, t.file, &mut |ch| {
+                    ch.retag_action(rel, c, rec.as_ref(), span)
+                }) {
+                    out.entry(rel).or_insert(tm);
                 }
-                Err(d) => diags.push(FileDiag {
-                    file: t.file,
-                    diag: d,
-                }),
             }
         }
     }
     out
+}
+
+fn record_span(r: &RecordExpr) -> Span {
+    match r {
+        RecordExpr::Fields(_, s) | RecordExpr::With(_, _, s) | RecordExpr::Elided(s) => *s,
+    }
 }

@@ -34,9 +34,8 @@ pub fn check_row(
         Some(writer),
         BTreeSet::new(),
     );
-    c.refs = Some(RefCell::new(Vec::new()));
     row_body(&mut c, program, row, body, expected)?;
-    Ok(c.refs.take().map(RefCell::into_inner).unwrap_or_default())
+    Ok(c.refs.take())
 }
 
 /// Type checks `body` as [`check_row`] does, as a query whose one parameter is the row.

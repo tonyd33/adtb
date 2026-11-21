@@ -1,4 +1,5 @@
 use super::*;
+use crate::check::Checker;
 use crate::ids::KeyKind;
 use crate::signature::Ids;
 
@@ -285,17 +286,16 @@ impl Cx<'_> {
         );
         let mut r = Resolving {
             schema: &schema,
-            vis: &vis,
+            names: Checker::of_adhoc(&schema, vis),
             statement,
             system: false,
             span: self.span,
-            refs: Vec::new(),
         };
         let out = privileges
             .iter()
             .map(|p| r.privilege(p))
             .collect::<R<Vec<_>>>()?;
-        self.note(&schema, &r.refs);
+        self.note(&schema, &r.names.resolved());
         Ok(out)
     }
 }
@@ -362,27 +362,20 @@ impl Stated {
 
 struct Resolving<'a> {
     schema: &'a Schema,
-    vis: &'a crate::resolve::Visible,
+    /// The checker whose resolvers resolve and record every name the statement writes.
+    names: Checker<'a>,
     statement: Statement,
     /// Whether the statement is a deployment statement on system relations.
     system: bool,
     span: Span,
-    refs: Vec<(Span, Ref)>,
-}
-
-fn field_ref(def: TypeId, ctor: Option<u32>, name: &str) -> Ref {
-    Ref::Field {
-        def,
-        ctor,
-        name: name.to_string(),
-        pun: false,
-    }
 }
 
 impl Resolving<'_> {
     fn target(&mut self, r: &ast::RelationRef) -> R<(RelId, GrantTarget, CtorSet)> {
         let schema = self.schema;
-        let rel = crate::resolve::lookup_relation(schema, self.vis, &r.relation)
+        let rel = self
+            .names
+            .lookup_relation(&r.relation)
             .map_err(|e| vec![Diag::new(r.span, e)])?;
         let rd = schema.relation(rel);
         if schema.module(rd.module).engine != self.system {
@@ -395,19 +388,18 @@ impl Resolving<'_> {
         }
         let def = rd.elem_def;
         let ids = &schema.ids();
-        self.refs.push((r.relation.name.span, Ref::Relation(rel)));
         let (sel, ctors) = match &r.sel {
             None => (
                 GrantSel::Whole,
                 (0..schema.ty(def).ctors().len() as u32).collect(),
             ),
             Some(sel) => {
-                let ctors = schema
+                let ctors = self
+                    .names
                     .relation_sel(rel, sel)
                     .map_err(|e| vec![Diag::new(r.span, e)])?;
                 let sel = match sel {
                     CtorSel::One(x) if schema.ty(def).ctor_index(&x.text).is_none() => {
-                        self.refs.push((x.span, Ref::Set(rel, x.text.clone())));
                         GrantSel::Set(ids.set_id(rel, &x.text).expect(USER_IDS).raw())
                     }
                     _ => {
@@ -474,19 +466,21 @@ impl Resolving<'_> {
                         c.text, name, rd.name
                     ));
                 };
-                self.refs.push((f.name.span, field_ref(def, Some(k), name)));
+                self.names
+                    .field_named(f.name.span, def, Some(&[k]), name, false);
                 out.push(id.raw());
             } else if let Some(id) = td.field(None, name).and_then(|f| ids.field_id(f)) {
-                self.refs.push((f.name.span, field_ref(def, None, name)));
+                self.names.field_named(f.name.span, def, None, name, false);
                 out.push(id.raw());
             } else {
                 let mut found = Vec::new();
                 for &c in ctors {
                     if let Some(id) = own(c, name) {
                         found.push(id.raw());
-                        self.refs.push((f.name.span, field_ref(def, Some(c), name)));
                     }
                 }
+                self.names
+                    .field_named(f.name.span, def, Some(ctors), name, false);
                 if found.is_empty() {
                     return refuse(format!("`{}` has no field `{name}`", rd.name));
                 }
@@ -524,14 +518,14 @@ impl Resolving<'_> {
     /// Record the name `c` and return the index of the constructor it names in the type of `rel`.
     fn ctor(&mut self, rel: RelId, c: &ast::Ident) -> R<u32> {
         let rd = self.schema.relation(rel);
-        let Some(k) = self.schema.ty(rd.elem_def).ctor_index(&c.text) else {
-            return Err(vec![Diag::new(
-                c.span,
-                format!("`{}` has no constructor `{}`", rd.name, c.text),
-            )]);
-        };
-        self.refs.push((c.span, Ref::Ctor(rd.elem_def, k)));
-        Ok(k)
+        self.names
+            .declared_ctor(c.span, rd.elem_def, &c.text)
+            .ok_or_else(|| {
+                vec![Diag::new(
+                    c.span,
+                    format!("`{}` has no constructor `{}`", rd.name, c.text),
+                )]
+            })
     }
 
     /// Record the name `c` and return the catalog id of the constructor it names in the type of
@@ -583,7 +577,7 @@ impl Resolving<'_> {
                 covering(to, &ctors, &mut covered);
                 Granted::Retag(x, y, self.excepted(from, to, except.as_ref())?)
             }
-            ast::Privilege::CallFn(f) => match crate::resolve::lookup_value(schema, self.vis, f) {
+            ast::Privilege::CallFn(f) => match self.names.lookup_value(f) {
                 Ok(ValueDef::Function(g)) => {
                     let Some(id) = ids.function_id(g).map(CatFunctionId::raw) else {
                         return Err(vec![Diag::new(
@@ -591,7 +585,6 @@ impl Resolving<'_> {
                             format!("`{}` is not a schema function", f.name.text),
                         )]);
                     };
-                    self.refs.push((f.name.span, Ref::Function(g)));
                     Granted::CallFn(id)
                 }
                 Ok(_) => {
@@ -720,11 +713,10 @@ fn system_privilege(
     let vis = crate::resolve::Visible::all(schema);
     let mut r = Resolving {
         schema,
-        vis: &vis,
+        names: Checker::of_adhoc(schema, vis),
         statement,
         system: true,
         span: Span::new(0, text.len()),
-        refs: Vec::new(),
     };
     r.privilege(p)
 }

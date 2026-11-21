@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BundleItem, ExampleItem};
-use crate::check::{Checker, Context, check_adhoc, check_query, check_schema, check_txn};
+use crate::check::{Checker, check_adhoc, check_query, check_schema, check_txn};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::resolve::Visible;
 use crate::schema::Committed;
@@ -34,7 +34,7 @@ fn schema(extra: &str) -> Committed {
 
 fn requirements(s: &Committed, params: &[(&str, &str)], text: &str) -> Requirements {
     let program = check_schema(s).expect("schema checks");
-    let checker = Checker::new(s, Visible::all(s), Context::Adhoc);
+    let checker = Checker::of_adhoc(s, Visible::all(s));
     let params = params
         .iter()
         .map(|(name, ty)| {

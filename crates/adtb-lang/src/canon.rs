@@ -1,6 +1,7 @@
 //! Print terms in their canonical form, with names qualified.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::ops::Range;
 
 use crate::ast::{self, CtorScope, CtorSel, Decl, RelationClause, TypeBody};
@@ -8,7 +9,7 @@ use crate::check::Ref;
 use crate::ids::Space;
 use crate::lex::{Tok, decode_text, lex};
 use crate::schema::{PRELUDE, Schema, TypeName, ValueDef};
-use crate::span::Span;
+use crate::span::{Diag, Span};
 use crate::types::{ModuleId, RelId, Ty, TypeId};
 
 #[cfg(test)]
@@ -172,10 +173,33 @@ fn catalog_id(schema: &Schema, r: &Ref) -> Option<(Space, u64)> {
     })
 }
 
+/// A name of a type, constructor or named set, or a qualified name, that a term writes and the
+/// names it is spelled by do not resolve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unnamed {
+    at: Span,
+    written: String,
+}
+
+impl fmt::Display for Unnamed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}` resolves to no schema object", self.written)
+    }
+}
+
+impl From<Unnamed> for Diag {
+    fn from(u: Unnamed) -> Diag {
+        Diag::new(u.at, format!("internal error: {u}"))
+    }
+}
+
 /// Returns the canonical token form of the term at `span` of `text`, its names spelled as `names` resolves them.
 ///
-/// Preconditions: `span` lies on token boundaries of `text`, and `names` holds every schema object name in it.
-pub fn canonical_term(text: &str, span: Span, names: &Names) -> String {
+/// Fail with the first name of a type, constructor or named set, or qualified name, that `names`
+/// does not hold.
+///
+/// Preconditions: `span` lies on token boundaries of `text`.
+pub fn canonical_term(text: &str, span: Span, names: &Names) -> Result<String, Unnamed> {
     let base = span.start;
     let (tokens, _) = lex(&text[span.range()]);
     let tokens: Vec<(Tok, Span, &str)> = tokens
@@ -205,16 +229,12 @@ pub fn canonical_term(text: &str, span: Span, names: &Names) -> String {
             i += 3;
             continue;
         }
-        debug_assert!(
-            tok != Tok::ColonColon,
-            "every name a term writes qualified resolves, and the one at {at:?} of {:?} does not",
-            &text[span.range()]
-        );
-        debug_assert!(
-            tok != Tok::Upper || names.get(at).is_some(),
-            "every type, constructor and named set a term names resolves, and `{written}` at {at:?} of {:?} does not",
-            &text[span.range()]
-        );
+        if tok == Tok::ColonColon || (tok == Tok::Upper && names.get(at).is_none()) {
+            return Err(Unnamed {
+                at,
+                written: written.to_string(),
+            });
+        }
         out.push(match tok {
             Tok::Lower | Tok::Upper => spelled(names, at, written),
             Tok::Int => digits(written).to_string(),
@@ -231,7 +251,7 @@ pub fn canonical_term(text: &str, span: Span, names: &Names) -> String {
         });
         i += 1;
     }
-    out.join(" ")
+    Ok(out.join(" "))
 }
 
 fn spelled(names: &Names, at: Span, written: &str) -> String {

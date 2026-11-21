@@ -1,0 +1,7 @@
+# The `on delete retag` payload of a type no relation holds is checked when the type is declared.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "expected I64, found Text" } } }
+  module app
+  add module app
+  add type U = { id: Key us }
+  add relation us : U key id generate sequence
+  add type T { k: I64 } = C { c: Key us on delete retag D { n: "x" } } | D { n: I64 }

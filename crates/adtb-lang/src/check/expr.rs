@@ -407,7 +407,7 @@ impl Checker<'_> {
                     return Ok(self.group_as_set(local.var, g));
                 }
                 if let Some((def, ctors, field)) = self.row_fields.get(&local.var).cloned() {
-                    self.note_field(q.name.span, def, ctors.as_deref(), &field, false);
+                    self.field_named(q.name.span, def, ctors.as_deref(), &field, false);
                 }
                 let tm = self.var_tm(local.var);
                 return Ok(Out {
@@ -952,7 +952,7 @@ impl Checker<'_> {
             .find(|(n, _)| *n == f.text)
         {
             if let Ty::Data { def, ctors, .. } = &o.ty {
-                self.note_field(f.span, *def, ctors.as_deref(), &f.text, false);
+                self.field_named(f.span, *def, ctors.as_deref(), &f.text, false);
             }
             let provenance = match o.provenance {
                 Provenance::Snapshot
@@ -1060,8 +1060,9 @@ impl Checker<'_> {
         };
         let set = match &elem {
             Ty::Data { def, ctors, .. } => {
-                self.note_sel(*def, o.rows, sel);
-                let s = self.schema.type_sel(*def, sel).map_err(|e| diag(span, e))?;
+                let s = self
+                    .type_sel(*def, o.rows, sel)
+                    .map_err(|e| diag(span, e))?;
                 if let Some(have) = ctors
                     && let Some(c) = s.iter().find(|c| !have.contains(c))
                 {
@@ -1145,7 +1146,7 @@ impl Checker<'_> {
                 format!("no row of `{}` has a field `{}`", r.name, f.text),
             ));
         };
-        self.note_field(f.span, r.elem_def, Some(&with_field), &f.text, false);
+        self.field_named(f.span, r.elem_def, Some(&with_field), &f.text, false);
         let fty = def
             .field_named(first, &f.text)
             .expect("filtered")

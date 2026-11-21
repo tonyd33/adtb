@@ -41,7 +41,7 @@ fn run(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<St
     let s = wschema();
     let mut tys = BTreeMap::new();
     {
-        let c = Checker::new(&s, Visible::all(&s), Context::Adhoc);
+        let c = Checker::of_adhoc(&s, Visible::all(&s));
         for (name, t) in params {
             let parsed = parse_type(t, Options::default()).ok().expect("a type");
             tys.insert(

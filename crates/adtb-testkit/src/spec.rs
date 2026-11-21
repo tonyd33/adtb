@@ -8,7 +8,7 @@ use adtb_lang::ast::{
     AdhocItem, BundleItem, Decl, ExampleItem, FeedDecl, Import, MigrationFile, Operator,
     OperatorKind, QueryDecl, TxnDecl,
 };
-use adtb_lang::check::{Bundles, Checker, Context, Program, check_feed};
+use adtb_lang::check::{Bundles, Checker, Program, check_feed};
 use adtb_lang::evolve::{Source, SourceDecl};
 use adtb_lang::parse::{Options, parse_example, parse_type};
 use adtb_lang::resolve::Visible;
@@ -436,7 +436,7 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
 pub fn given_types(b: &Block, schema: &Schema) -> (BTreeMap<String, Ty>, Vec<String>) {
     let mut params = BTreeMap::new();
     let mut errs = Vec::new();
-    let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
+    let c = Checker::of_adhoc(schema, Visible::all(schema));
     for (name, ty) in given(b) {
         let Ok(parsed) = parse_type(&ty, Options::default()).ok() else {
             errs.push(format!("{}:{}: `{ty}` is not a type", b.file, b.line));
@@ -458,7 +458,7 @@ pub fn given_types(b: &Block, schema: &Schema) -> (BTreeMap<String, Ty>, Vec<Str
 /// Returns the bundles of the `registered` queries, their parameter types resolved in `schema`,
 /// and an error for each query whose parameter type does not resolve.
 pub fn bundles(schema: &Schema, registered: &[Registered]) -> (Bundles, Vec<String>) {
-    let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
+    let c = Checker::of_adhoc(schema, Visible::all(schema));
     let mut bundles = Bundles::default();
     let mut errs = Vec::new();
     for (family, version, q) in registered {

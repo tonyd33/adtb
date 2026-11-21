@@ -1,10 +1,12 @@
 use super::*;
-use crate::canon::canonical_term;
+use crate::canon::{Unnamed, canonical_term};
 use crate::ids::Space;
 use crate::schema::prelude::PRINCIPAL;
 
 #[path = "derived.rs"]
 mod derived;
+#[path = "functions.rs"]
+mod functions;
 #[cfg(test)]
 #[path = "../resolved_tests.rs"]
 mod tests;
@@ -531,6 +533,7 @@ impl Source {
         schemas.push(Some(after.schema().map_err(unbuilt)?));
         let mut ops = Vec::new();
         let mut start = 0;
+        let unnamed = RefCell::default();
         for end in 1..schemas.len() {
             let (Some(before), Some(schema)) = (&schemas[start], &schemas[end]) else {
                 continue;
@@ -541,6 +544,7 @@ impl Source {
                 before,
                 sources: (&sources[start], after),
                 names: Some(&names),
+                unnamed: &unnamed,
                 indexes: BTreeMap::new(),
             };
             for k in start..end {
@@ -551,135 +555,23 @@ impl Source {
         }
         Ok((ops, names))
     }
-
-    /// Returns every function and aggregate of the user modules, in declaration order.
-    pub fn functions(&self) -> Result<Vec<Function>, Vec<FileDiag>> {
-        let schema = self.schema()?;
-        let names = self.names()?;
-        let deterministic = deterministic_functions(&schema);
-        let mut out = Vec::new();
-        for (file, f) in self.files()? {
-            let Some(module) = schema.module_named(&f.module.text) else {
-                continue;
-            };
-            let text = self.file_text(file);
-            let names = &names[file.0 as usize];
-            let term = |span: Span| {
-                (
-                    text[span.range()].to_string(),
-                    canonical_term(&text, span, names),
-                )
-            };
-            let values = &schema.module(module).values;
-            for d in &f.decls {
-                let (id, name, result, det, code) = match d {
-                    Decl::Fn(fd) => {
-                        let Some(&ValueDef::Function(fid)) = values.get(&fd.name.text) else {
-                            continue;
-                        };
-                        let code = match &fd.body {
-                            ast::FnBody::Expr(e) => {
-                                let (body, canonical) = term(e.span);
-                                Code::Language { body, canonical }
-                            }
-                            ast::FnBody::Wasm { module, export } => Code::Wasm {
-                                module: module.clone(),
-                                export: export.clone(),
-                            },
-                            ast::FnBody::Host { name, version, .. } => Code::Host {
-                                symbol: name.clone(),
-                                version: version.clone(),
-                            },
-                        };
-                        (
-                            schema.ids().function_id(fid),
-                            &fd.name,
-                            fd.result.span,
-                            deterministic[fid.0 as usize],
-                            code,
-                        )
-                    }
-                    Decl::Aggregate(a) => {
-                        let Some(&ValueDef::Aggregate(i)) = values.get(&a.name.text) else {
-                            continue;
-                        };
-                        let (body, canonical) =
-                            term(after_eq(&text, a.result.span.end, a.span.end));
-                        let id = schema.ids().aggregate_id(i as usize);
-                        (
-                            id,
-                            &a.name,
-                            a.result.span,
-                            crate::resolve::aggregate_refs(&schema, i as usize)
-                                .iter()
-                                .all(|g| deterministic[g.0 as usize]),
-                            Code::Aggregate { body, canonical },
-                        )
-                    }
-                    _ => continue,
-                };
-                let Some(id) = id else { continue };
-                out.push(Function {
-                    id: id.raw(),
-                    module: f.module.text.clone(),
-                    name: name.text.clone(),
-                    signature: text[name.span.end as usize..result.end as usize]
-                        .trim()
-                        .to_string(),
-                    deterministic: det,
-                    code,
-                });
-            }
-        }
-        Ok(out)
-    }
 }
 
-/// Returns, for each function of `schema`, whether every function it calls, transitively, is
-/// deterministic.
-fn deterministic_functions(schema: &Schema) -> Vec<bool> {
-    let calls: Vec<BTreeSet<FnId>> = (0..schema.functions.len() as u32)
-        .map(|i| crate::resolve::function_refs(schema, FnId(i)))
-        .collect();
-    let mut det: Vec<bool> = schema
-        .functions
-        .iter()
-        .map(|f| {
-            !matches!(
-                f.body,
-                ast::FnBody::Host {
-                    deterministic: false,
-                    ..
-                }
-            )
-        })
-        .collect();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (i, gs) in calls.iter().enumerate() {
-            if det[i] && gs.iter().any(|g| !det[g.0 as usize]) {
-                det[i] = false;
-                changed = true;
-            }
-        }
-    }
-    det
-}
-
-fn term_in(text: &str, names: Option<&Names>, span: Span) -> String {
-    names.map_or_else(String::new, |n| canonical_term(text, span, n))
-}
-
-/// Returns the span from the first token after the first `=` at or after `from` to `end`.
-fn after_eq(text: &str, from: u32, end: u32) -> Span {
-    let toks = tokens(&text[from as usize..end as usize]);
-    let at = toks
-        .iter()
-        .position(|(t, _)| *t == Tok::Eq)
-        .and_then(|i| toks.get(i + 1))
-        .map_or(end as usize, |(_, r)| from as usize + r.start);
-    Span::new(at, end as usize)
+/// Returns the canonical form of the term at `span` of `text`, empty without `names`; record in
+/// `unnamed` the first name `names` lacks, the term then empty.
+fn term_in(
+    text: &str,
+    names: Option<&Names>,
+    span: Span,
+    unnamed: &RefCell<Option<Unnamed>>,
+) -> String {
+    let Some(names) = names else {
+        return String::new();
+    };
+    canonical_term(text, span, names).unwrap_or_else(|u| {
+        unnamed.borrow_mut().get_or_insert(u);
+        String::new()
+    })
 }
 
 struct Resolver<'a> {
@@ -692,6 +584,8 @@ struct Resolver<'a> {
     sources: (&'a Source, &'a Source),
     /// `None` when resolving by id only.
     names: Option<&'a Names>,
+    /// The first name a term of the operator being resolved writes that `names` lacks.
+    unnamed: &'a RefCell<Option<Unnamed>>,
     /// The position among the relation's uniques and indexes the next one added takes.
     indexes: BTreeMap<RelId, usize>,
 }
@@ -718,6 +612,7 @@ impl Applied {
             before: &before.schema().map_err(unbuilt)?,
             sources: (before, after),
             names: None,
+            unnamed: &RefCell::default(),
             indexes: BTreeMap::new(),
         }
         .operator(&self.op)
@@ -726,10 +621,18 @@ impl Applied {
 
 impl Resolver<'_> {
     fn term(&self, span: Span) -> String {
-        term_in(&self.logged.text, self.names, span)
+        term_in(&self.logged.text, self.names, span, self.unnamed)
     }
 
     fn operator(&mut self, op: &Operator) -> Result<ResolvedOp, Vec<Diag>> {
+        let resolved = self.operator_terms(op);
+        match self.unnamed.take() {
+            Some(u) => Err(vec![u.into()]),
+            None => resolved,
+        }
+    }
+
+    fn operator_terms(&mut self, op: &Operator) -> Result<ResolvedOp, Vec<Diag>> {
         let gone = || {
             let shown = self.logged.text[op.span.range()]
                 .lines()
@@ -743,8 +646,8 @@ impl Resolver<'_> {
                 ),
             )]
         };
-        let (text, names) = (&self.logged.text, self.names);
-        let term = |span: Span| term_in(text, names, span);
+        let (text, names, unnamed) = (&self.logged.text, self.names, self.unnamed);
+        let term = |span: Span| term_in(text, names, span, unnamed);
         let own = |name: &ast::Ident| QName {
             module: None,
             name: name.clone(),
@@ -1486,4 +1389,15 @@ fn fill_span(fill: &Fill) -> Option<Span> {
         Fill::Expr(e) => Some(e.span),
         Fill::Match(arms) => arms_term(arms),
     }
+}
+
+/// Returns the span from the first token after the first `=` at or after `from` to `end`.
+fn after_eq(text: &str, from: u32, end: u32) -> Span {
+    let toks = tokens(&text[from as usize..end as usize]);
+    let at = toks
+        .iter()
+        .position(|(t, _)| *t == Tok::Eq)
+        .and_then(|i| toks.get(i + 1))
+        .map_or(end as usize, |(_, r)| from as usize + r.start);
+    Span::new(at, end as usize)
 }

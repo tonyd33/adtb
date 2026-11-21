@@ -275,7 +275,7 @@ impl Checker<'_> {
             }
             _ => (s, false),
         };
-        self.note(span, Ref::Match(matched));
+        self.matching(span, matched);
         let sty = s.ty.clone();
         let is_sum = self.signature(&sty).is_some();
         let mut irs = Vec::new();
@@ -559,15 +559,11 @@ impl Checker<'_> {
                     _ => None,
                 };
                 if let Some(d) = def {
-                    if ctor.is_some() {
-                        self.note(path.name.span, Ref::Type(d));
-                    }
-                    match self.schema.ty(d).ctor_index(&name.text) {
-                        Some(i) => self.note(name.span, Ref::Ctor(d, i)),
-                        None => self.note_sel(d, origin.relation(), &CtorSel::One(name.clone())),
+                    if self.declared_ctor(name.span, d, &name.text).is_none() {
+                        self.set_named(origin.relation(), name);
                     }
                 } else {
-                    self.note(name.span, Ref::Anonymous);
+                    self.anonymous_ctor(name.span);
                 }
                 let row = ty::restrict(self.schema, ty, set.clone());
                 let cols: Vec<(String, Ty)> = if set.len() == 1 {
@@ -611,7 +607,7 @@ impl Checker<'_> {
                             }
                             if let Some(d) = def {
                                 let pun = f.pattern.is_none();
-                                self.note_field(f.field.span, d, Some(&set), &f.field.text, pun);
+                                self.field_named(f.field.span, d, Some(&set), &f.field.text, pun);
                             }
                             let sub = match &f.pattern {
                                 None => {

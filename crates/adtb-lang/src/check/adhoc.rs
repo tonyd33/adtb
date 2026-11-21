@@ -933,7 +933,7 @@ pub(super) fn temp_relations(
     let mut temps = Vec::new();
     let mut checked = Vec::new();
     for t in decls {
-        let c = Checker::new(schema, vis.clone(), Context::Adhoc);
+        let c = Checker::of_adhoc(schema, vis.clone());
         let (row, key) = match c.temp_decl(t, &taken) {
             Ok(x) => x,
             Err(d) => {

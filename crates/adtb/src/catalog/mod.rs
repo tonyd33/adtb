@@ -778,7 +778,7 @@ impl Catalog {
             let heap = Heap::open(pager, id, at, row_type(&schema, r, c), large)?;
             heaps.insert((r, c), Arc::new(heap));
         }
-        let texts = ElementTexts::of(&source, &schema);
+        let texts = ElementTexts::of(&source, &schema)?;
         let (held, held_program, held_texts) = readers
             .enforced()
             .map_or((&schema, &*program, &texts), |e| {
@@ -842,7 +842,7 @@ impl Catalog {
             .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
         let large = LargeStore::open(0, Pid(0));
         Ok(Catalog {
-            texts: ElementTexts::of(&Source::default(), &schema),
+            texts: ElementTexts::of(&Source::default(), &schema)?,
             source: Source::default(),
             hash: VersionHash::default(),
             schema: committed(schema)?,
@@ -1268,7 +1268,7 @@ impl Checked {
     /// schema takes a relation as added later, and with [`Error::Refused`] when an index element
     /// is a set.
     fn new(source: Source, schema: Schema, program: Program) -> Result<Checked, Error> {
-        let texts = ElementTexts::of(&source, &schema);
+        let texts = ElementTexts::of(&source, &schema)?;
         let sets: Vec<String> = program
             .index_fields
             .iter()

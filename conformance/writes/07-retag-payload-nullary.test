@@ -1,0 +1,23 @@
+# A retag payload may give a nullary constructor, of the prelude or of a user type, in a type that names its relation or one that does not.
+schema
+  module app
+  type U = { id: Key us }
+  relation us : U key id generate sequence
+  type S = Z | Y { n: I64 }
+  type T0 { id: Key r0 } = A { a: Option I64, s: S } | B { b: Key us on delete retag A { a: None, s: Z } }
+  relation r0 : T0 key id generate sequence
+  type T1 { k: I64 } = C { c: Option (Key us) on delete retag D { d: Z, e: None } } | D { d: S, e: Option I64 }
+  relation r1 : T1 key k
+run
+  insert us { id: us.key(1) }
+  insert r0.B { id: r0.key(1), b: us.key(1) }
+  insert r1.C { k: 7, c: Some { value: us.key(1) } }
+  delete x in us
+query
+  from x in r0 select x
+----
+A { id: r0.key(1), a: None, s: Z }
+query
+  from x in r1 select x
+----
+D { k: 7, d: Z, e: None }
