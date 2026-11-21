@@ -57,15 +57,15 @@ impl Ended {
 
 /// A disagreement: the statement it shows at, a signature a shrink keeps, and its text.
 #[derive(Clone, Debug)]
-struct Finding {
+pub(super) struct Finding {
     at: Option<usize>,
-    sig: String,
-    text: String,
+    pub(super) sig: String,
+    pub(super) text: String,
 }
 
 /// The shapes the committed and refused statements of a sweep reached.
 #[derive(Debug, Default)]
-struct Reached {
+pub(super) struct Reached {
     cascade: usize,
     clear: usize,
     retag_action: usize,
@@ -200,7 +200,7 @@ fn differs(at: usize, text: &str, want: &Ended, got: &Ended) -> Finding {
 
 /// Run the statements of `case` on the reference `fx` and the engine `db`, each write followed by
 /// the contents of every relation. Returns the first disagreement.
-fn statements(
+pub(super) fn statements(
     fx: &mut Fixture,
     db: &Database<SimRuntime>,
     case: &schemas::Case,

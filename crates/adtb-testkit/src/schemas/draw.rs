@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Action, Field, Mark, Schema, Scope, Stmt, Ty};
+use super::{Action, Field, Mark, Schema, Scope, Stage, Stmt, Ty};
 use crate::Rng;
 
 /// The binders of an insert's query, each with the condition naming its one row, and the key
@@ -13,8 +13,42 @@ struct Bound {
     keys: BTreeMap<usize, String>,
 }
 
-/// A drawer of statements, holding the keys each relation's inserts have issued and the keys
-/// of rows the inserts into a relation of a composite key give.
+/// The keys each relation's inserts have issued, and the keys of rows the inserts into a
+/// relation of a composite key give, by relation.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Keys {
+    issued: Vec<u64>,
+    given: Vec<Vec<String>>,
+}
+
+impl Keys {
+    /// Count a relation added after the others, none of its keys issued.
+    pub(super) fn add(&mut self) {
+        self.issued.push(0);
+        self.given.push(Vec::new());
+    }
+
+    /// Forget relation `j`, the relations after it moving down one.
+    pub(super) fn remove(&mut self, j: usize) {
+        self.issued.remove(j);
+        self.given.remove(j);
+    }
+
+    /// Name relation `from` as `to` in the keys a key of another relation holds.
+    pub(super) fn renamed(&mut self, from: &str, to: &str) {
+        let (from, to) = (format!(" {from}.key("), format!(" {to}.key("));
+        for k in self.given.iter_mut().flatten() {
+            *k = k.replace(&from, &to);
+        }
+    }
+
+    /// Forget the keys of the rows inserts into relation `j` gave.
+    pub(super) fn rekeyed(&mut self, j: usize) {
+        self.given[j].clear();
+    }
+}
+
+/// A drawer of statements, holding the keys its inserts have issued.
 pub(super) struct Draw<'s> {
     s: &'s Schema,
     issued: Vec<u64>,
@@ -23,10 +57,28 @@ pub(super) struct Draw<'s> {
 
 impl<'s> Draw<'s> {
     pub(super) fn new(s: &'s Schema) -> Draw<'s> {
+        Draw::resume(
+            s,
+            Keys {
+                issued: vec![0; s.rels.len()],
+                given: vec![Vec::new(); s.rels.len()],
+            },
+        )
+    }
+
+    /// Returns a drawer of statements over `s` following those that issued `keys`.
+    pub(super) fn resume(s: &'s Schema, keys: Keys) -> Draw<'s> {
         Draw {
             s,
-            issued: vec![0; s.rels.len()],
-            given: vec![Vec::new(); s.rels.len()],
+            issued: keys.issued,
+            given: keys.given,
+        }
+    }
+
+    pub(super) fn keys(self) -> Keys {
+        Keys {
+            issued: self.issued,
+            given: self.given,
         }
     }
 
@@ -90,6 +142,11 @@ impl<'s> Draw<'s> {
         }
     }
 
+    /// Returns the expression of a key of relation `j`, of a row that may not exist.
+    pub(super) fn some_key(&self, rng: &mut Rng, j: usize) -> String {
+        self.key(rng, j)
+    }
+
     /// Returns the key fields of a row of relation `j` of a composite key, each `f: v`.
     fn key_fields(&self, rng: &mut Rng, j: usize) -> Vec<String> {
         let r = &self.s.rels[j];
@@ -150,6 +207,7 @@ impl<'s> Draw<'s> {
             Ty::Bool => rng.pick(&["true", "false"]).to_string(),
             Ty::OptInt => Self::opt_int(rng),
             Ty::Sum(k) => Self::sum(rng, *k),
+            Ty::Tag(_, cs) => rng.pick(cs).clone(),
             Ty::Ref(j, _) => self.key(rng, *j),
             Ty::OptRef(j, _) => match rng.below(4) {
                 0 => "None".into(),
@@ -160,7 +218,10 @@ impl<'s> Draw<'s> {
 
     pub(super) fn insert(&mut self, rng: &mut Rng, i: usize) -> Stmt {
         let r = &self.s.rels[i];
-        let acting: Vec<usize> = (0..r.ctors.len())
+        let open = r.enabled();
+        let acting: Vec<usize> = open
+            .iter()
+            .copied()
             .filter(|c| {
                 r.ctors[*c]
                     .fields
@@ -170,7 +231,10 @@ impl<'s> Draw<'s> {
             .collect();
         let c = match rng.pick_some(&acting) {
             Some(c) if rng.below(2) == 0 => *c,
-            _ => rng.below(r.ctors.len() as u64) as usize,
+            _ => match rng.pick_some(&open) {
+                Some(c) => *c,
+                None => return self.query(rng, i),
+            },
         };
         self.insert_into(rng, i, c, None)
     }
@@ -293,8 +357,9 @@ impl<'s> Draw<'s> {
 
     fn delete(&mut self, rng: &mut Rng, i: usize) -> Stmt {
         let r = &self.s.rels[i];
-        let text = if r.sum && rng.below(4) == 0 {
-            let c = rng.below(r.ctors.len() as u64) as usize;
+        let open = r.enabled();
+        let text = if r.sum && !open.is_empty() && rng.below(4) == 0 {
+            let c = *rng.pick(&open);
             format!("delete x in {}", r.target(Some(&vec![c])))
         } else {
             format!("delete x in {} where key x == {}", r.name, self.key(rng, i))
@@ -387,7 +452,7 @@ impl<'s> Draw<'s> {
         };
         let moves: Vec<(usize, usize)> = (0..r.ctors.len())
             .flat_map(|c| (0..r.ctors.len()).map(move |d| (c, d)))
-            .filter(|(c, d)| r.sum && copied(*c, *d))
+            .filter(|(c, d)| r.sum && r.states[*d] == Stage::Enabled && copied(*c, *d))
             .collect();
         let Some(&(c, d)) = rng.pick_some(&moves) else {
             return self.update(rng, i);
@@ -423,7 +488,9 @@ impl<'s> Draw<'s> {
 
     fn update(&mut self, rng: &mut Rng, i: usize) -> Stmt {
         let r = &self.s.rels[i];
-        let c = rng.below(r.ctors.len() as u64) as usize;
+        let Some(&c) = rng.pick_some(&r.enabled()) else {
+            return self.query(rng, i);
+        };
         let fields: Vec<&Field> = r
             .plain_header()
             .iter()
@@ -484,7 +551,7 @@ impl<'s> Draw<'s> {
                     f.name
                 )),
             },
-            _ if r.sum => {
+            _ if r.sum && r.ctors.len() >= 2 => {
                 let cs = match &r.set {
                     Some(set) if rng.below(2) == 0 => set.clone(),
                     _ => r.pair(rng),

@@ -26,6 +26,8 @@ use adtb_testkit::corpus::{self, Script};
 use adtb_testkit::fixture::Fixture;
 use adtb_testkit::{Rng, profile};
 
+#[path = "differential/migrations.rs"]
+mod migrations;
 #[path = "differential/schemas.rs"]
 mod schemas;
 

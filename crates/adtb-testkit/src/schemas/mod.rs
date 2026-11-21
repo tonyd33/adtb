@@ -4,8 +4,10 @@
 //! seed alone.
 
 mod draw;
+mod migrate;
 
 use draw::Draw;
+pub use migrate::{Kind, Migration, Op, ROLE, Rows};
 
 use crate::Rng;
 
@@ -21,8 +23,52 @@ const NAMES: [&str; 4] = ["a", "b", "n", "u"];
 /// The constructor names of every relation-level sum.
 const CTORS: [&str; 4] = ["A", "B", "C", "D"];
 
-/// The name of the one named set a relation may declare.
+/// The name a relation's one named set takes when drawn.
 const SET: &str = "Pair";
+
+/// Whether a migration drops an index over constructors listing them in the reverse of the
+/// order its clause writes them.
+const SEARCH_DROP_INDEX_REVERSED_SCOPE: bool = true;
+
+/// Whether a migration adds a unique or an index clause its relation already holds. Its revert
+/// is refused: the inverse drop names neither clause alone.
+const SEARCH_DUPLICATE_CLAUSE: bool = false;
+
+/// Whether a migration removes a constructor a default names. Its revert does not restore the
+/// default.
+const SEARCH_REVERTED_REMOVE_OF_DEFAULTED: bool = false;
+
+/// Whether a merge or nest replaces two constructors with others declared between them. Its
+/// revert puts them back side by side, not each at its place.
+const SEARCH_REVERTED_MERGE_APART: bool = false;
+
+/// Whether a migration adds a unique or an index over a field several constructors declare, not
+/// the header. The checker refuses it with "no `f` in scope".
+const SEARCH_CLAUSE_OVER_SHARED_FIELD: bool = false;
+
+/// Whether a `move field` down moves a reference field whose delete action is not `restrict`.
+/// The moved fields come out `restrict`.
+const SEARCH_MOVED_DOWN_ACTION: bool = false;
+
+/// Whether a migration drops a unique or an index clause its relation holds twice. The checker
+/// refuses the drop: it names neither clause alone.
+const SEARCH_DROP_OF_DUPLICATE_CLAUSE: bool = false;
+
+/// Whether a split constructor has a field typed by a reference to a constructor set holding
+/// it. The engine refuses the split with an internal error.
+const SEARCH_SPLIT_OF_SELF_REFERENCE: bool = false;
+
+/// Whether a merge or nest takes a declared and an enabled constructor. The product is declared
+/// and holds the enabled one's rows, so a later `enable` of it cannot be reverted.
+const SEARCH_MERGE_ACROSS_STAGES: bool = false;
+
+/// Whether a migration holding a `revoke` is reverted and the revert reverted. The second
+/// revert is refused: the `revoke` it applies again matches no grant.
+const SEARCH_REVERT_OF_REVERTED_REVOKE: bool = false;
+
+/// Whether a migration holding a rename before another operator is reverted and the revert
+/// reverted. The second revert is refused: the later operator names the object by its old name.
+const SEARCH_REVERT_OF_REVERTED_RENAME: bool = false;
 
 /// The constructor sets a reference, unique, index or check names within one relation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +87,8 @@ enum Ty {
     Sum(usize),
     Ref(usize, Scope),
     OptRef(usize, Scope),
+    /// A value-level sum of nullary constructors a migration adds: its name and constructors.
+    Tag(String, Vec<String>),
 }
 
 impl Ty {
@@ -120,11 +168,30 @@ impl Ctor {
 }
 
 /// A unique, an index or a check: its field and the constructors it ranges over, every one
-/// when `None`.
+/// when `None`, and a check's name.
 #[derive(Clone, Debug)]
 struct Clause {
     field: String,
     ctors: Option<Vec<usize>>,
+    name: String,
+}
+
+/// The write state of a constructor relation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    Enabled,
+    Declared,
+    /// Deprecated by the migration of this version.
+    Deprecated(u64),
+}
+
+/// A constraint: its relation, constructor and integer field, whose rows may not hold 3.
+#[derive(Clone, Debug)]
+struct Constraint {
+    rel: usize,
+    ctor: usize,
+    field: String,
+    name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -138,8 +205,11 @@ struct Rel {
     ctors: Vec<Ctor>,
     /// The constructor every `retag` action of the type names.
     retag: Option<usize>,
-    /// The constructors of the named set [`SET`], when the relation declares it.
+    /// The constructors of the named set `set_name`, when the relation declares it.
     set: Option<Vec<usize>>,
+    set_name: String,
+    /// The write state of each constructor relation.
+    states: Vec<Stage>,
     uniques: Vec<Clause>,
     indexes: Vec<Clause>,
     checks: Vec<Clause>,
@@ -148,6 +218,13 @@ struct Rel {
 }
 
 impl Rel {
+    /// Returns the constructors a write may name: those enabled.
+    fn enabled(&self) -> Vec<usize> {
+        (0..self.ctors.len())
+            .filter(|c| self.states[*c] == Stage::Enabled)
+            .collect()
+    }
+
     fn shape(rng: &mut Rng, i: usize) -> Rel {
         let sum = rng.below(4) != 0;
         let ty = format!("T{i}");
@@ -174,6 +251,8 @@ impl Rel {
             ctors,
             retag: None,
             set: None,
+            set_name: SET.to_owned(),
+            states: Vec::new(),
             uniques: Vec::new(),
             indexes: Vec::new(),
             checks: Vec::new(),
@@ -182,6 +261,7 @@ impl Rel {
         if rel.ctors.len() >= 3 && rng.below(2) == 0 {
             rel.set = Some(rel.pair(rng));
         }
+        rel.states = vec![Stage::Enabled; rel.ctors.len()];
         rel
     }
 
@@ -205,7 +285,7 @@ impl Rel {
     fn scope(&self, ctors: Option<&Vec<usize>>) -> Option<String> {
         let cs = ctors?;
         Some(if self.set.as_ref() == Some(cs) {
-            SET.to_owned()
+            self.set_name.clone()
         } else {
             self.ctor_set(cs)
         })
@@ -245,12 +325,12 @@ impl Rel {
     }
 }
 
-/// A schema of relations over the sums [`SUMS`], with its constraints.
+/// A schema of relations over the sums [`SUMS`], with its constraints and what migrations add.
 #[derive(Clone, Debug)]
 struct Schema {
     rels: Vec<Rel>,
-    /// Each constraint: its relation, constructor and integer field, whose rows may not hold 3.
-    constraints: Vec<(usize, usize, String)>,
+    constraints: Vec<Constraint>,
+    extra: migrate::Extra,
 }
 
 impl Schema {
@@ -259,6 +339,7 @@ impl Schema {
         let mut s = Schema {
             rels: (0..n).map(|i| Rel::shape(rng, i)).collect(),
             constraints: Vec::new(),
+            extra: migrate::Extra::default(),
         };
         for i in 0..n {
             s.fields(rng, i);
@@ -399,6 +480,7 @@ impl Schema {
             let whole = Clause {
                 field: f.name.clone(),
                 ctors: None,
+                name: format!("chk{i}x{}", rel.checks.len()),
             };
             match rng.below(4) {
                 0 => rel.uniques.push(whole),
@@ -426,6 +508,7 @@ impl Schema {
             rel.uniques.push(Clause {
                 field: name.clone(),
                 ctors: Some(rel.holding(name, ty)),
+                name: String::new(),
             });
         }
         for (name, ty) in fields {
@@ -445,13 +528,19 @@ impl Schema {
             let clause = Clause {
                 field: name.clone(),
                 ctors: rel.sum.then_some(holding.clone()),
+                name: format!("chk{i}x{}", rel.checks.len()),
             };
             match rng.below(5) {
                 0 | 1 => rel.uniques.push(clause),
                 _ if holding.len() > 1 && rng.below(2) == 0 => rel.uniques.push(clause),
                 2 => rel.indexes.push(clause),
                 3 if ty == Ty::Int => rel.checks.push(clause),
-                4 if ty == Ty::Int => constraints.push((i, holding[0], name)),
+                4 if ty == Ty::Int => constraints.push(Constraint {
+                    rel: i,
+                    ctor: holding[0],
+                    field: name,
+                    name: String::new(),
+                }),
                 _ => {}
             }
         }
@@ -463,7 +552,10 @@ impl Schema {
                 }
             }
         }
-        self.constraints.extend(constraints);
+        for mut c in constraints {
+            c.name = format!("con{}", self.constraints.len());
+            self.constraints.push(c);
+        }
     }
 
     fn ty_name(&self, ty: &Ty) -> String {
@@ -475,6 +567,7 @@ impl Schema {
             Ty::Sum(k) => format!("V{k}"),
             Ty::Ref(j, s) => self.key_ty(*j, s),
             Ty::OptRef(j, s) => format!("Option ({})", self.key_ty(*j, s)),
+            Ty::Tag(name, _) => name.clone(),
         }
     }
 
@@ -483,7 +576,7 @@ impl Schema {
         match scope {
             Scope::All => format!("Key {}", r.name),
             Scope::Ctors(cs) => format!("Key {}.{}", r.name, r.ctor_set(cs)),
-            Scope::Named => format!("Key {}.{SET}", r.name),
+            Scope::Named => format!("Key {}.{}", r.name, r.set_name),
         }
     }
 
@@ -560,35 +653,48 @@ impl Schema {
         out
     }
 
+    fn constraint_decl(&self, c: &Constraint) -> String {
+        format!(
+            "constraint {} = from x in {} where x.{} == 3 select x",
+            c.name,
+            self.rels[c.rel].target(Some(&vec![c.ctor])),
+            c.field
+        )
+    }
+
     /// Returns the declarations of module `app`, without its `module` line.
     fn decls(&self) -> String {
         let mut out: Vec<String> = SUMS.iter().map(|s| (*s).to_owned()).collect();
-        for rel in &self.rels {
+        out.extend(self.added(None));
+        for (i, rel) in self.rels.iter().enumerate() {
             out.push(self.type_decl(rel));
-            out.push(Self::relation_decl(rel));
+            let mut decl = Self::relation_decl(rel);
+            for clause in self.added(Some(i)) {
+                decl.push_str("\n  ");
+                decl.push_str(&clause);
+            }
+            out.push(decl);
             if let Some(cs) = &rel.set {
                 out.push(format!(
-                    "set {SET} of {} = {}",
+                    "set {} of {} = {}",
+                    rel.set_name,
                     rel.name,
                     rel.ctor_set(cs).trim_matches(['(', ')'])
                 ));
             }
         }
-        for (i, rel) in self.rels.iter().enumerate() {
-            for (k, c) in rel.checks.iter().enumerate() {
+        for rel in &self.rels {
+            for c in &rel.checks {
                 out.push(format!(
-                    "check chk{i}x{k} on {} ({} >= (-2))",
+                    "check {} on {} ({} >= (-2))",
+                    c.name,
                     rel.target(c.ctors.as_ref()),
                     c.field
                 ));
             }
         }
-        for (k, (i, c, f)) in self.constraints.iter().enumerate() {
-            let rel = &self.rels[*i];
-            out.push(format!(
-                "constraint con{k} = from x in {} where x.{f} == 3 select x",
-                rel.target(Some(&vec![*c]))
-            ));
+        for c in &self.constraints {
+            out.push(self.constraint_decl(c));
         }
         let mut text = out.join("\n");
         text.push('\n');
@@ -696,6 +802,7 @@ fn literal(ty: &Ty, other: bool) -> String {
         (Ty::Sum(0), _) => "Z".into(),
         (Ty::Sum(_), _) => "M".into(),
         (Ty::OptInt | Ty::OptRef(..), _) => "None".into(),
+        (Ty::Tag(_, cs), _) => cs[0].clone(),
         (Ty::Ref(..), _) => unreachable!("a payload gives no reference"),
     }
 }
@@ -760,6 +867,7 @@ impl Stmt {
 pub struct Case {
     schema: Schema,
     stmts: Vec<Stmt>,
+    keys: draw::Keys,
 }
 
 impl Case {
@@ -921,9 +1029,9 @@ impl Case {
                 }
             }
         }
-        c.schema.constraints.retain(|(i, _, _)| *i != k);
-        for (i, _, _) in &mut c.schema.constraints {
-            lower(i);
+        c.schema.constraints.retain(|x| x.rel != k);
+        for x in &mut c.schema.constraints {
+            lower(&mut x.rel);
         }
         c.stmts.retain(|s| !mentions(&s.text, &name));
         Some(c)
@@ -948,7 +1056,7 @@ impl Case {
         }
         rel.defaults.retain(|(_, g, _)| g != f);
         let name = rel.name.clone();
-        c.schema.constraints.retain(|(j, _, g)| *j != i || g != f);
+        c.schema.constraints.retain(|x| x.rel != i || x.field != f);
         for s in &mut c.stmts {
             if mentions(&s.text, &name) {
                 s.text = without_entry(&s.text, f);
@@ -1020,5 +1128,10 @@ pub fn case(seed: u64, n: usize) -> Case {
             _ => d.stmt(&mut rng),
         })
         .collect();
-    Case { schema, stmts }
+    let keys = d.keys();
+    Case {
+        schema,
+        stmts,
+        keys,
+    }
 }

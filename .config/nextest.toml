@@ -100,3 +100,8 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 filter = "binary(=storage) and test(/^damage_search::/)"
 slow-timeout = { period = "300s", terminate-after = 12 }
 threads-required = 4
+
+# The generated migrations search runs four cases at once under the deep profile.
+[[profile.deep.overrides]]
+filter = "binary(=differential) and test(=migrations::generated_migrations_keep_their_invariants)"
+threads-required = 4
