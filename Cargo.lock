@@ -55,6 +55,7 @@ dependencies = [
  "adtb-heap-cap",
  "adtb-lang",
  "adtb-reference",
+ "adtb-script",
  "adtb-sim",
  "adtb-simkit",
  "adtb-testkit",
@@ -102,6 +103,13 @@ dependencies = [
  "icu_segmenter",
  "jiff",
  "unicode-normalization",
+]
+
+[[package]]
+name = "adtb-script"
+version = "0.1.0"
+dependencies = [
+ "adtb-lang",
 ]
 
 [[package]]
@@ -175,6 +183,7 @@ dependencies = [
  "adtb-conformance",
  "adtb-lang",
  "adtb-reference",
+ "adtb-script",
  "adtb-sim",
  "adtb-sys",
  "adtb-testkit",
@@ -186,6 +195,7 @@ name = "adtb-tree-sitter"
 version = "0.1.0"
 dependencies = [
  "adtb-lang",
+ "adtb-script",
  "adtb-testkit",
  "cc",
  "serde_json",

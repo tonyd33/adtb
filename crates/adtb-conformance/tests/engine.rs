@@ -200,9 +200,12 @@ fn conformance_bodies(dir: &Path, out: &mut Vec<(String, String)>) {
             let Ok(script) = adtb_conformance::parse(&text) else {
                 continue;
             };
-            for d in script.directives {
-                if d.kind == adtb_conformance::Kind::Schema {
-                    out.push((format!("{}:{}", path.display(), d.line), d.body));
+            for d in script.directives() {
+                if *d.kind() == adtb_conformance::Kind::Schema {
+                    out.push((
+                        format!("{}:{}", path.display(), d.line()),
+                        d.body().to_owned(),
+                    ));
                 }
             }
         }

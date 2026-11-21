@@ -12,6 +12,7 @@ sim = ["dep:adtb-sim", "dep:adtb-sys"]
 [dependencies]
 adtb-lang.workspace = true
 adtb-reference.workspace = true
+adtb-script.workspace = true
 adtb-sim = { workspace = true, optional = true }
 adtb-sys = { workspace = true, optional = true }
 unicode-normalization = { version = "0.1.26", default-features = false }

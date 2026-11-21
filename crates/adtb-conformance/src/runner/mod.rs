@@ -18,7 +18,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
-use crate::{Difference, Found, Got, Kind, parse};
+use adtb_script::{Entry, case_name};
+
+use crate::{Difference, Found, Got, Kind, Script, parse};
+
+pub use adtb_script::shown;
 
 pub use child::{decode, encode};
 
@@ -104,6 +108,13 @@ impl Options {
         }
     }
 
+    /// Returns whether `--include` selects `case`.
+    fn includes(&self, case: &Case) -> bool {
+        self.include
+            .as_ref()
+            .is_none_or(|include| case.name.contains(include.as_str()))
+    }
+
     /// Returns the options that run each case on the engine in a process of `program`.
     pub fn isolated(self, program: PathBuf) -> Options {
         Options {
@@ -184,59 +195,36 @@ pub fn select(corpus: &Corpus, under: &Path) -> Selection {
 }
 
 fn case(corpus: &Corpus, path: PathBuf) -> Case {
-    let under = path.strip_prefix(&corpus.root).unwrap_or(&path);
-    let name = under.with_extension("").display().to_string();
     Case {
         format: corpus.format,
         root: corpus.root.clone(),
+        name: case_name(&corpus.root, &path),
         path,
-        name,
     }
 }
 
 fn walk(corpus: &Corpus, dir: &Path, files: &mut Vec<PathBuf>, problems: &mut Vec<Found>) {
-    let shown = |p: &Path| shown(&corpus.root, p);
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) => return problems.push(Found::at(None, format!("{}: {e}", shown(dir)))),
+    let scripts = corpus.format == Format::Scripts;
+    let skip = |path: &Path| {
+        scripts
+            && path.parent() == Some(corpus.root.as_path())
+            && path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| NOT_AREAS.contains(&n))
     };
-    for entry in entries {
-        let path = match entry {
-            Ok(entry) => entry.path(),
-            Err(e) => {
-                problems.push(Found::at(None, format!("{}: {e}", shown(dir))));
-                continue;
-            }
-        };
-        let scripts = corpus.format == Format::Scripts;
-        if path.is_dir() {
-            let skipped = scripts
-                && dir == corpus.root
-                && path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| NOT_AREAS.contains(&n));
-            if !skipped {
-                walk(corpus, &path, files, problems);
-            }
-        } else if path.extension().is_some_and(|x| x == "test") {
-            files.push(path);
-        } else if scripts {
-            problems.push(Found::at(
-                None,
-                format!("{}: not a `.test` script", shown(&path)),
-            ));
-        }
-    }
-}
-
-/// Returns `path` relative to the directory that holds the corpus `root`, when it lies under it.
-pub fn shown(root: &Path, path: &Path) -> String {
-    let base = root.parent().unwrap_or(root);
-    path.strip_prefix(base)
-        .unwrap_or(path)
-        .display()
-        .to_string()
+    adtb_script::walk(dir, &skip, &mut |entry| match entry {
+        Entry::Case(path) => files.push(path),
+        Entry::Other(path) if scripts => problems.push(Found::at(
+            None,
+            format!("{}: not a `.test` script", shown(&corpus.root, &path)),
+        )),
+        Entry::Other(_) => {}
+        Entry::Unread(dir, e) => problems.push(Found::at(
+            None,
+            format!("{}: {e}", shown(&corpus.root, &dir)),
+        )),
+    });
 }
 
 /// How one case ended.
@@ -355,9 +343,7 @@ pub fn run(
 /// Run `case` and return its verdict, writing the rows of its differences when `options` asks
 /// for an update.
 fn verdict(case: &Case, options: &Options) -> Verdict {
-    if let Some(include) = &options.include
-        && !case.name.contains(include.as_str())
-    {
+    if !options.includes(case) {
         return Verdict::Skipped;
     }
     let found = differences(case, options);
@@ -448,7 +434,7 @@ pub fn on_engine(case: &Case) -> Vec<Found> {
 fn conformance(
     case: &Case,
     side: &str,
-    run: impl FnOnce(&crate::Script, &Path) -> Vec<Difference>,
+    run: impl FnOnce(&Script, &Path) -> Vec<Difference>,
 ) -> Vec<Found> {
     let at = shown(&case.root, &case.path);
     let text = match fs::read_to_string(&case.path) {
@@ -463,8 +449,8 @@ fn conformance(
     run(&script, dir)
         .into_iter()
         .map(|d| {
-            let expected = script.directives.iter().find_map(|x| match &x.kind {
-                Kind::Query { rows, rowsort, .. } if x.line == d.line => {
+            let expected = script.directives().iter().find_map(|x| match x.kind() {
+                Kind::Query { rows, rowsort, .. } if x.line() == d.line => {
                     Some((rows.clone(), *rowsort))
                 }
                 _ => None,

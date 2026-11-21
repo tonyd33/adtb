@@ -1,4 +1,4 @@
-use adtb_conformance::{Difference, Got, Kind, parse, run_reference};
+use adtb_conformance::{Difference, Directive, Got, Kind, directive_words, parse, run_reference};
 use adtb_lang::span::{Diag, FileDiag, FileId, Span};
 
 const SCHEMA: &str = "schema
@@ -24,7 +24,7 @@ fn a_script_reads_into_its_directives() {
         "{SCHEMA}# a comment\nquery rowsort\n  from t in ts\n    select t.n\n----\n1\n2\nerror Invalid\n  from t in ts select t.m\n"
     ))
     .unwrap();
-    let kinds: Vec<&Kind> = s.directives.iter().map(|d| &d.kind).collect();
+    let kinds: Vec<&Kind> = s.directives().iter().map(Directive::kind).collect();
     assert_eq!(4, kinds.len());
     assert_eq!(
         &Kind::Query {
@@ -34,8 +34,8 @@ fn a_script_reads_into_its_directives() {
         },
         kinds[2]
     );
-    assert_eq!("from t in ts\n  select t.n\n", s.directives[2].body);
-    assert_eq!(15, s.directives[3].line);
+    assert_eq!("from t in ts\n  select t.n\n", s.directives()[2].body());
+    assert_eq!(15, s.directives()[3].line());
 }
 
 #[test]
@@ -166,6 +166,20 @@ fn an_unknown_directive_does_not_read() {
 }
 
 #[test]
+fn every_directive_with_a_stray_word_does_not_read() {
+    let mut words = 0;
+    for word in directive_words() {
+        assert_eq!(
+            (1, format!("`{word} ~` is not a directive")),
+            refused(&format!("{word} ~\n  1\n")),
+            "{word}"
+        );
+        words += 1;
+    }
+    assert!(words > 0, "the directive table holds no directive");
+}
+
+#[test]
 fn a_query_without_its_rule_does_not_read() {
     assert_eq!(
         (1, "`query` takes its rows after `----`".to_string()),
@@ -188,12 +202,12 @@ fn a_directive_with_no_body_does_not_read() {
 #[test]
 fn a_body_holds_blank_lines_and_rows_end_at_a_comment() {
     let s = parse("run\n  insert ts { id: 1, n: 2 }\n\n  insert ts { id: 2, n: 3 }\nquery\n  1\n----\n1\n# a comment\nquery\n  2\n----\n\nquery\n  3\n----\n3\n").expect("the script reads");
-    assert_eq!(4, s.directives.len());
+    assert_eq!(4, s.directives().len());
     assert_eq!(
         "insert ts { id: 1, n: 2 }\n\ninsert ts { id: 2, n: 3 }\n",
-        s.directives[0].body
+        s.directives()[0].body()
     );
-    let rows = |i: usize| match &s.directives[i].kind {
+    let rows = |i: usize| match s.directives()[i].kind() {
         Kind::Query { rows, .. } => rows.clone(),
         k => panic!("directive {i} is {k:?}"),
     };

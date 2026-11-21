@@ -1,0 +1,5 @@
+use stock
+
+restore a to b error Invalid
+----
+x

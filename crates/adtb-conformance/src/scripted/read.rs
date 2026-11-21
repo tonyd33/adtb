@@ -4,17 +4,10 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::blocks;
+use adtb_script::blocks;
 
-use super::{Class, Head, Knob, Step, fault, shown};
-
-const HEADS: [&str; 41] = [
-    "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
-    "run", "query", "error", "as", "grant", "revoke", "register", "host", "loose", "begin",
-    "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc", "plan", "fatal",
-    "mark", "damage", "flip", "lose", "tear", "scribble", "leak", "free", "crash", "restore",
-    "probe",
-];
+use super::fault::{self, Edit, Fault};
+use super::{Class, Head, Knob, Step, shown};
 
 /// Returns the size `n` states, `Some(None)` for `default`, or `None` when it states none.
 fn size(n: &str) -> Option<Option<usize>> {
@@ -44,77 +37,138 @@ fn option(rest: &str) -> Option<Head> {
     })
 }
 
-fn head(line: &str) -> Option<Head> {
+/// A reader of the rest of a directive's line after its first word.
+type Reader = fn(&str) -> Option<Head>;
+
+/// The directives, each by its first word.
+const DIRECTIVES: [(&str, Reader); 39] = [
+    ("seed", |rest| Some(Head::Seed(rest.parse().ok()?))),
+    ("use", |rest| valued(rest).map(Head::Use)),
+    ("option", option),
+    ("migrate", migrate),
+    ("reopen", |rest| {
+        Some(Head::Reopen {
+            refused: refused(rest)?,
+        })
+    }),
+    ("role", |rest| valued(rest).map(Head::Role)),
+    ("drop", drop_role),
+    ("log", |rest| rest.is_empty().then_some(Head::Log)),
+    ("bundle", bundle),
+    ("call", call),
+    ("advance", |rest| Some(Head::Advance(duration(rest)?))),
+    ("grant", |rest| grant(false, rest)),
+    ("revoke", |rest| grant(true, rest)),
+    ("register", register),
+    ("host", |rest| (!rest.is_empty()).then(|| host(rest))),
+    ("loose", |rest| named(rest).map(Head::Loose)),
+    ("begin", begin),
+    ("commit", commit),
+    ("rollback", |rest| named(rest).map(Head::Rollback)),
+    ("run", |rest| rest.is_empty().then_some(Head::Run)),
+    ("query", |rest| {
+        rowsort(rest).map(|rowsort| Head::Query { rowsort })
+    }),
+    ("command", |rest| {
+        rowsort(rest).map(|rowsort| Head::Command { rowsort })
+    }),
+    ("plan", |rest| rest.is_empty().then_some(Head::Plan)),
+    ("error", |rest| valued(rest).map(Head::Error)),
+    ("adhoc", |rest| {
+        Some(Head::Adhoc(rest.strip_prefix("error ")?.to_owned()))
+    }),
+    ("failed", |rest| valued(rest).map(Head::Failed)),
+    ("fatal", |rest| valued(rest).map(Head::Fatal)),
+    ("retry", |rest| valued(rest).map(Head::Retry)),
+    ("mark", fault::mark),
+    ("damage", |rest| fault::fault(Fault::Damage, rest)),
+    ("flip", |rest| fault::fault(Fault::Flip, rest)),
+    ("lose", |rest| fault::fault(Fault::Lose, rest)),
+    ("tear", |rest| fault::fault(Fault::Tear, rest)),
+    ("free", |rest| fault::fault(Fault::Free, rest)),
+    ("scribble", |rest| fault::edit(Edit::Scribble, rest)),
+    ("leak", |rest| fault::edit(Edit::Leak, rest)),
+    ("crash", |rest| Some(Head::Crash(fault::crash_at(rest)?))),
+    ("restore", fault::restore),
+    ("probe", fault::probe),
+];
+
+/// Returns the first word of each directive.
+pub fn directive_words() -> impl Iterator<Item = &'static str> {
+    DIRECTIVES.iter().map(|(word, _)| *word)
+}
+
+/// Returns the prefixes and head of the directive `line` states, or `None` when it states none.
+fn directive(line: &str) -> Option<(Prefix<'_>, Head)> {
+    let (prefix, line) = prefixed(line);
     let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
-    let refused = |rest: &str| match rest.strip_prefix("refused ") {
+    let (_, read) = DIRECTIVES.iter().find(|(w, _)| *w == word)?;
+    let head = read(rest)?;
+    prefix.admits(&head).then_some((prefix, head))
+}
+
+/// Returns `rest` when it states something.
+fn valued(rest: &str) -> Option<String> {
+    (!rest.is_empty()).then(|| rest.to_owned())
+}
+
+/// Returns whether `rest` states `rowsort`, or `None` when it states anything else.
+fn rowsort(rest: &str) -> Option<bool> {
+    match rest {
+        "" => Some(false),
+        "rowsort" => Some(true),
+        _ => None,
+    }
+}
+
+/// Returns the refusal `rest` states as `refused VALUE`, `Some(None)` when it is empty.
+fn refused(rest: &str) -> Option<Option<String>> {
+    match rest.strip_prefix("refused ") {
         Some(v) => Some(Some(v.to_owned())),
         None => rest.is_empty().then_some(None),
-    };
-    Some(match word {
-        "seed" => Head::Seed(rest.parse().ok()?),
-        "use" if !rest.is_empty() => Head::Use(rest.to_owned()),
-        "option" => option(rest)?,
-        "migrate" => match rest.strip_prefix("at ") {
-            Some(at) => {
-                let (v, rest) = at.split_once(' ').unwrap_or((at, ""));
-                Head::Migrate {
-                    at: Some(v.parse().ok().filter(|&v| v > 0)?),
-                    refused: refused(rest)?,
-                }
-            }
-            None => Head::Migrate {
-                at: None,
+    }
+}
+
+fn migrate(rest: &str) -> Option<Head> {
+    Some(match rest.strip_prefix("at ") {
+        Some(at) => {
+            let (v, rest) = at.split_once(' ').unwrap_or((at, ""));
+            Head::Migrate {
+                at: Some(v.parse().ok().filter(|&v| v > 0)?),
                 refused: refused(rest)?,
-            },
-        },
-        "reopen" => Head::Reopen {
+            }
+        }
+        None => Head::Migrate {
+            at: None,
             refused: refused(rest)?,
         },
-        "role" if !rest.is_empty() => Head::Role(rest.to_owned()),
-        "drop" => {
-            let (name, error) = split(rest.strip_prefix("role ")?, " error ");
-            Head::DropRole {
-                name: named(name)?,
-                error,
-            }
-        }
-        "log" if rest.is_empty() => Head::Log,
-        "bundle" => bundle(rest)?,
-        "call" => call(rest)?,
-        "advance" => Head::Advance(duration(rest)?),
-        "grant" | "revoke" => Head::Grant {
-            revoke: word == "revoke",
-            error: match rest {
-                "" => None,
-                rest => Some(rest.strip_prefix("error ")?.to_owned()),
-            },
+    })
+}
+
+fn drop_role(rest: &str) -> Option<Head> {
+    let (name, error) = split(rest.strip_prefix("role ")?, " error ");
+    Some(Head::DropRole {
+        name: named(name)?,
+        error,
+    })
+}
+
+fn grant(revoke: bool, rest: &str) -> Option<Head> {
+    Some(Head::Grant {
+        revoke,
+        error: match rest {
+            "" => None,
+            rest => Some(rest.strip_prefix("error ")?.to_owned()),
         },
-        "register" => {
-            let (header, fixture, error) = bundled(rest, " error ")?;
-            Head::Register {
-                header,
-                fixture,
-                error,
-            }
-        }
-        "host" if !rest.is_empty() => host(rest),
-        "loose" if !rest.is_empty() && !rest.contains(' ') => Head::Loose(rest.to_owned()),
-        "begin" => begin(rest)?,
-        "commit" => commit(rest)?,
-        "rollback" => Head::Rollback(named(rest)?),
-        "run" if rest.is_empty() => Head::Run,
-        "query" if rest.is_empty() || rest == "rowsort" => Head::Query {
-            rowsort: !rest.is_empty(),
-        },
-        "command" if rest.is_empty() || rest == "rowsort" => Head::Command {
-            rowsort: !rest.is_empty(),
-        },
-        "plan" if rest.is_empty() => Head::Plan,
-        "error" if !rest.is_empty() => Head::Error(rest.to_owned()),
-        "adhoc" => Head::Adhoc(rest.strip_prefix("error ")?.to_owned()),
-        "failed" if !rest.is_empty() => Head::Failed(rest.to_owned()),
-        "retry" if !rest.is_empty() => Head::Retry(rest.to_owned()),
-        _ => return fault::head(word, rest),
+    })
+}
+
+fn register(rest: &str) -> Option<Head> {
+    let (header, fixture, error) = bundled(rest, " error ")?;
+    Some(Head::Register {
+        header,
+        fixture,
+        error,
     })
 }
 
@@ -282,27 +336,72 @@ fn value_end(text: &str) -> usize {
     text.len()
 }
 
-/// Returns whether the directive `line` begins is followed by expected rows.
-pub(super) fn takes_rows(line: &str) -> bool {
-    let line = prefixed(line).1;
-    let call = line.strip_prefix("call ").and_then(call);
-    let restore = line
-        .strip_prefix("restore ")
-        .and_then(|r| fault::head("restore", r));
-    ["query", "command", "plan", "probe"].contains(&line.split(' ').next().unwrap_or_default())
-        || matches!(restore, Some(Head::Restore(r)) if !r.refused())
-        || matches!(
-            call,
-            Some(Head::Call {
+impl Prefix<'_> {
+    /// Returns whether these prefixes may stand before `head`.
+    fn admits(&self, head: &Head) -> bool {
+        let sent = matches!(
+            head,
+            Head::Run | Head::Query { .. } | Head::Error(_) | Head::Failed(_)
+        );
+        let call = matches!(
+            head,
+            Head::Call {
+                ordinal: Some(_),
+                ..
+            }
+        );
+        let role = sent
+            || matches!(
+                head,
+                Head::Call { .. } | Head::Grant { .. } | Head::Register { .. }
+            );
+        let txn = self.role.is_none()
+            && self.assert.is_none()
+            && (sent
+                || call
+                || matches!(
+                    head,
+                    Head::Plan | Head::ProbePlan | Head::Fatal(_) | Head::Retry(_)
+                ));
+        let assert = sent || call || matches!(head, Head::Begin { .. });
+        let failed = !matches!(head, Head::Failed(_)) || self.role.is_some();
+        failed
+            && (self.role.is_none() || role)
+            && (self.txn.is_none() || txn)
+            && (self.assert.is_none() || assert)
+    }
+}
+
+impl Head {
+    /// Returns whether expected rows follow the directive.
+    fn takes_rows(&self) -> bool {
+        match self {
+            Head::Query { .. }
+            | Head::Command { .. }
+            | Head::Plan
+            | Head::ProbePlan
+            | Head::ProbeChecks(_)
+            | Head::ProbeLocks(_)
+            | Head::Probe(_)
+            | Head::Call {
                 ordinal: Some(_),
                 error: None,
                 ..
-            })
-        )
+            } => true,
+            Head::Restore(r) => !r.refused(),
+            _ => false,
+        }
+    }
 }
 
+/// Returns whether the directive `line` states is followed by expected rows.
+pub(super) fn takes_rows(line: &str) -> bool {
+    directive(line).is_some_and(|(_, head)| head.takes_rows())
+}
+
+/// Returns whether `line` states a directive.
 pub(super) fn starts(line: &str) -> bool {
-    HEADS.contains(&line.split_whitespace().next().unwrap_or_default())
+    directive(line).is_some()
 }
 
 /// Returns the steps of the script at `path`, its fixtures under `root`.
@@ -327,49 +426,16 @@ pub(super) fn script(root: &Path, path: &Path) -> Result<Vec<Step>, String> {
 fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
     let at = shown(root, path);
     let text = fs::read_to_string(path).map_err(|e| format!("{at}: {e}"))?;
-    let found =
-        blocks(&text, starts, takes_rows).map_err(|d| format!("{at}:{}: {}", d.line, d.message))?;
+    let found = blocks(&text, starts, takes_rows)
+        .map_err(|u| format!("{at}:{}: {}", u.line(), u.message()))?;
     let mut out = Vec::new();
     for b in found {
-        let (prefix, line) = prefixed(&b.head);
-        let sent = |h: &Head| {
-            matches!(
-                h,
-                Head::Run | Head::Query { .. } | Head::Error(_) | Head::Failed(_)
-            )
-        };
-        let call = |h: &Head| {
-            matches!(
-                h,
-                Head::Call {
-                    ordinal: Some(_),
-                    ..
-                }
-            )
-        };
-        let allowed = |h: &Head| {
-            let role = sent(h)
-                || matches!(
-                    h,
-                    Head::Call { .. } | Head::Grant { .. } | Head::Register { .. }
-                );
-            let txn = prefix.role.is_none()
-                && prefix.assert.is_none()
-                && (sent(h)
-                    || call(h)
-                    || matches!(
-                        h,
-                        Head::Plan | Head::ProbePlan | Head::Fatal(_) | Head::Retry(_)
-                    ));
-            let assert = sent(h) || call(h) || matches!(h, Head::Begin { .. });
-            let failed = !matches!(h, Head::Failed(_)) || prefix.role.is_some();
-            failed
-                && (prefix.role.is_none() || role)
-                && (prefix.txn.is_none() || txn)
-                && (prefix.assert.is_none() || assert)
-        };
-        let Some(head) = head(line).filter(allowed) else {
-            return Err(format!("{at}:{}: `{}` is not a directive", b.line, b.head));
+        let Some((prefix, head)) = directive(b.head()) else {
+            return Err(format!(
+                "{at}:{}: `{}` is not a directive",
+                b.line(),
+                b.head()
+            ));
         };
         let bodied = matches!(
             head,
@@ -387,8 +453,8 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 | Head::Retry(_)
                 | Head::Grant { .. }
                 | Head::Loose(_)
-                | Head::Fault {
-                    fault: fault::Fault::Scribble,
+                | Head::Edit {
+                    edit: Edit::Scribble,
                     ..
                 }
         ) || matches!(
@@ -402,11 +468,12 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
                 ..
             } | Head::Migrate { at: Some(_), .. }
         );
-        if !free && bodied == b.body.trim().is_empty() {
+        if !free && bodied == b.body().trim().is_empty() {
             let needs = if bodied { "a body" } else { "no body" };
-            return Err(format!("{at}:{}: `{}` takes {needs}", b.line, b.head));
+            return Err(format!("{at}:{}: `{}` takes {needs}", b.line(), b.head()));
         }
-        let mut body = b.body;
+        let line = b.line();
+        let mut body = b.body().to_owned();
         if let Head::Bundle {
             fixture: Some(name),
             ..
@@ -418,41 +485,41 @@ fn read(root: &Path, path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, S
         {
             let fixture = root.join("fixtures").join(format!("{name}.bundle"));
             body = fs::read_to_string(&fixture)
-                .map_err(|e| format!("{at}:{}: {}: {e}", b.line, shown(root, &fixture)))?;
+                .map_err(|e| format!("{at}:{line}: {}: {e}", shown(root, &fixture)))?;
         }
         if let Head::Use(name) = &head {
             if uses.contains(name) {
                 return Err(format!(
                     "{at}:{}: `use` cycle: {} -> {name}",
-                    b.line,
+                    line,
                     uses.join(" -> ")
                 ));
             }
             uses.push(name.clone());
             let fixture = root.join("fixtures").join(format!("{name}.fixture"));
-            let steps = read(root, &fixture, uses).map_err(|e| format!("{at}:{}: {e}", b.line))?;
+            let steps = read(root, &fixture, uses).map_err(|e| format!("{at}:{line}: {e}"))?;
             uses.pop();
             out.extend(steps.into_iter().map(|s| Step {
                 via: s.via.or(Some((s.at, s.line))),
                 at: at.clone(),
-                line: b.line,
+                line,
                 ..s
             }));
             continue;
         }
         if matches!(head, Head::Seed(_)) && !out.is_empty() {
-            return Err(format!("{at}:{}: `seed` is the first directive", b.line));
+            return Err(format!("{at}:{line}: `seed` is the first directive"));
         }
         out.push(Step {
             at: at.clone(),
-            line: b.line,
+            line,
             via: None,
             role: prefix.role.map(str::to_owned),
             txn: prefix.txn.map(str::to_owned),
             assert: prefix.assert.map(str::to_owned),
             head,
             body,
-            rows: b.rows,
+            rows: b.rows().to_vec(),
         });
     }
     Ok(out)

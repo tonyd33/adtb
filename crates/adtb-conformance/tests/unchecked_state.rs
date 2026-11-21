@@ -57,7 +57,7 @@ fn differences(declaration: &str, dangling: &str, named: &str) -> (Vec<Got>, Vec
         indented(named)
     );
     let script = parse(&text).unwrap_or_else(|d| panic!("{d}"));
-    let at = script.directives[2].line;
+    let at = script.directives()[2].line();
     let mut engine = Vec::new();
     let outcome = Sim::new(0, Config::default()).run(|rt| engine = run_engine(rt, &script));
     assert_eq!(Outcome::Finished, outcome);

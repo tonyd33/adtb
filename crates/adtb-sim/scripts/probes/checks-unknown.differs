@@ -1,0 +1,1 @@
+scripts/probes/checks-unknown.test:3: the checks are not read: Rejected { reason: Invalid { detail: "the schema has no constraint or check `stock::nothing`" } }

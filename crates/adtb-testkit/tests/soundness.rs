@@ -526,10 +526,10 @@ fn conformance_results_inhabit_their_types() {
         };
         let files = Disk::new(path.parent().expect("a script is in a directory"));
         let mut fx = None;
-        for d in &script.directives {
+        for d in script.directives() {
             let before = out.failures.len();
-            if d.kind == conformance::Kind::Schema {
-                fx = conformance_schema(&d.body);
+            if *d.kind() == conformance::Kind::Schema {
+                fx = conformance_schema(d.body());
                 if fx.is_none() {
                     break;
                 }
@@ -539,11 +539,11 @@ fn conformance_results_inhabit_their_types() {
                 Some(f) => f,
                 None => fx.insert(conformance_schema("").expect("the prelude checks")),
             };
-            let keep = d.kind == conformance::Kind::Run;
-            if let Ok(items) = parse_adhoc(&d.body, Options::default()).ok() {
+            let keep = *d.kind() == conformance::Kind::Run;
+            if let Ok(items) = parse_adhoc(d.body(), Options::default()).ok() {
                 statements(
                     fx,
-                    &d.body,
+                    d.body(),
                     &items,
                     &Given::default(),
                     &files,
@@ -552,7 +552,7 @@ fn conformance_results_inhabit_their_types() {
                 );
             }
             for f in &mut out.failures[before..] {
-                *f = format!("{}:{}: {f}", path.display(), d.line);
+                *f = format!("{}:{}: {f}", path.display(), d.line());
             }
         }
     }

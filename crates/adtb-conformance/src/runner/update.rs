@@ -2,21 +2,18 @@
 
 use std::fs;
 
-use crate::{Block, Difference};
+use adtb_script::{Block, Unread};
 
 use super::{Case, Format, shown};
 
-fn blocks(format: Format, text: &str) -> Result<Vec<Block>, Difference> {
+fn blocks(format: Format, text: &str) -> Result<Vec<Block>, String> {
+    let unread = |u: Unread| format!("{}: {}", u.line(), u.message());
     match format {
-        Format::Conformance => crate::conformance_blocks(text),
+        Format::Conformance => adtb_script::conformance_blocks(text).map_err(unread),
         #[cfg(feature = "scripts")]
-        Format::Scripts => crate::scripted::blocks(text),
+        Format::Scripts => crate::scripted::blocks(text).map_err(unread),
         #[cfg(not(feature = "scripts"))]
-        Format::Scripts => Err(Difference {
-            line: 0,
-            message: "the runner is built without the `scripts` feature".into(),
-            got: None,
-        }),
+        Format::Scripts => Err("0: the runner is built without the `scripts` feature".into()),
     }
 }
 
@@ -28,19 +25,19 @@ fn blocks(format: Format, text: &str) -> Result<Vec<Block>, Difference> {
 pub(super) fn write(case: &Case, rows: &[(usize, Vec<String>)]) -> Result<(), String> {
     let at = shown(&case.root, &case.path);
     let text = fs::read_to_string(&case.path).map_err(|e| format!("{at}: {e}"))?;
-    let unread = |d: Difference| format!("{at}:{}: {}", d.line, d.message);
+    let unread = |e: String| format!("{at}:{e}");
     let found = blocks(case.format, &text).map_err(unread)?;
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let mut spans = Vec::new();
     for (line, got) in rows {
         let k = found
             .iter()
-            .position(|b| b.line == *line)
+            .position(|b| b.line() == *line)
             .ok_or_else(|| format!("{at}:{line}: no directive starts here"))?;
         let dashes = found[k]
-            .dashes
+            .dashes()
             .ok_or_else(|| format!("{at}:{line}: the directive takes no rows"))?;
-        spans.push((k, dashes, found[k].rows.len(), got));
+        spans.push((k, dashes, found[k].rows().len(), got));
     }
     spans.sort_by_key(|(_, dashes, _, _)| std::cmp::Reverse(*dashes));
     for (_, dashes, before, got) in &spans {
@@ -52,8 +49,8 @@ pub(super) fn write(case: &Case, rows: &[(usize, Vec<String>)]) -> Result<(), St
     }
     let reread = blocks(case.format, &written).map_err(unread)?;
     for (k, _, _, got) in &spans {
-        if reread.len() != found.len() || reread[*k].rows != **got {
-            let line = found[*k].line;
+        if reread.len() != found.len() || reread[*k].rows() != got.as_slice() {
+            let line = found[*k].line();
             return Err(format!(
                 "{at}:{line}: the rows it got do not read back as its rows"
             ));

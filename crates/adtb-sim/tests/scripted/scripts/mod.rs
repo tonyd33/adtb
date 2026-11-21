@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use adtb_conformance::Found;
 use adtb_conformance::runner::{self, Corpus, Format, Options, Sides};
-use adtb_conformance::scripted::run_file;
+use adtb_conformance::scripted::{directive_words, run_file};
 
 /// How many scripts run at once: the slots each area test holds.
 const WORKERS: usize = 3;
@@ -306,6 +306,26 @@ fn each_probe_differs_as_it_states() {
         ran += 1;
     }
     assert!(ran > 0, "no probes under {}", probes.display());
+}
+
+#[test]
+fn every_directive_has_a_malformed_form_probe() {
+    let refused = expected(&root().join("probes/forms"));
+    let mut words = 0;
+    for word in directive_words() {
+        let probe = format!("scripts/probes/forms/{word}-");
+        let named = format!("`{word}");
+        let refuses = |d: &String| {
+            d.split_once(": ")
+                .is_some_and(|(at, why)| at.starts_with(&probe) && why.starts_with(&named))
+        };
+        assert!(
+            refused.iter().any(refuses),
+            "no probe under probes/forms refuses a malformed `{word}` naming it"
+        );
+        words += 1;
+    }
+    assert!(words > 0, "the directive table holds no directive");
 }
 
 #[test]

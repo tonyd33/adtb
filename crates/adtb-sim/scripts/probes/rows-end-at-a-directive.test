@@ -1,0 +1,7 @@
+use stock
+
+query
+  from i in items select i.name
+----
+retry Serialization { txn: 0, on: "" }
+  from i in items select i.name

@@ -538,11 +538,7 @@ impl Script {
         txns: &mut Txns<'a>,
         step: &Step,
     ) -> Result<(), Differs> {
-        let conformance = |kind| Directive {
-            line: step.line,
-            kind,
-            body: step.body.clone(),
-        };
+        let conformance = |kind| Directive::new(step.line, kind, step.body.clone());
         match &step.head {
             Head::Seed(_) | Head::Use(_) | Head::Migrate { .. } | Head::Reopen { .. } => {
                 unreachable!("read takes seeds and uses, and session takes opens")
@@ -617,9 +613,11 @@ impl Script {
             | Head::Retry(_)
             | Head::Plan
             | Head::ProbePlan => role::sent_step(step, txn::texted(db, txns, step)?),
-            Head::Mark(_) | Head::Fault { .. } | Head::Crash(_) | Head::Probe(_) => {
-                self.faults.step(rt, db, step)
-            }
+            Head::Mark(_)
+            | Head::Fault { .. }
+            | Head::Edit { .. }
+            | Head::Crash(_)
+            | Head::Probe(_) => self.faults.step(rt, db, step),
             Head::Restore(restore) => self.faults.restore(rt, &self.options, step, restore),
             Head::ProbeChecks(name) => plan::checks(db, step, name),
             Head::ProbeLocks(name) => {

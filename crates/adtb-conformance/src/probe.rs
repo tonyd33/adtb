@@ -187,7 +187,7 @@ fn directive(line: usize, kind: Kind, body: &str) -> Directive {
     if !body.ends_with('\n') {
         body.push('\n');
     }
-    Directive { line, kind, body }
+    Directive::new(line, kind, body)
 }
 
 fn query() -> Kind {
@@ -215,7 +215,7 @@ fn script(schema: &str, data: Option<&str>, text: &str, items: &[AdhocItem]) -> 
         }
         None => directives.push(directive(TEXT, Kind::Run, text)),
     }
-    Script { directives }
+    Script::new(directives)
 }
 
 /// How a side's text ended, as two sides compare it: rows as a multiset, a refusal by its reason.
@@ -281,9 +281,9 @@ fn plan(found: &[Difference]) -> String {
 }
 
 fn ran(script: &Script, found: &[Difference]) -> Ran {
-    let at = |line| script.directives.iter().find(|d| d.line == line);
+    let at = |line| script.directives().iter().find(|d| d.line() == line);
     let text = at(TEXT).expect("a probe's script runs its text");
-    let (ended, shown) = outcome(found, TEXT, &text.kind);
+    let (ended, shown) = outcome(found, TEXT, text.kind());
     Ran {
         setup: found
             .iter()
@@ -391,9 +391,9 @@ fn run(
     let mut explained = script.clone();
     if args.explain {
         let text = format!("explain {text}");
-        explained
-            .directives
-            .push(directive(EXPLAIN, query(), &text));
+        let mut directives = script.directives().to_vec();
+        directives.push(directive(EXPLAIN, query(), &text));
+        explained = Script::new(directives);
     }
     let mut sides = Vec::new();
     if args.reference {

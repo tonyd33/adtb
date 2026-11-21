@@ -1,0 +1,4 @@
+use stock
+
+fatal
+  from i in items select i

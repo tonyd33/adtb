@@ -1,0 +1,20 @@
+# A commit log root that fails its checksum at the open is recorded as the root's damage.
+migrate
+  module app
+  add module app
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id generate sequence
+
+run
+  insert items { value: 100 }
+
+flip commit log
+
+reopen
+
+fatal Quarantined { what: "the database" }
+  from i in items select i.value
+
+probe damage
+----
+commit log: Checksum

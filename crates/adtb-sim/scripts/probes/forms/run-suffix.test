@@ -1,0 +1,4 @@
+use stock
+
+run x
+  from i in items select i

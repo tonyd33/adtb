@@ -153,6 +153,14 @@ fn include_skips_each_case_whose_name_lacks_the_pattern() {
 }
 
 #[test]
+fn an_include_that_selects_no_case_is_a_usage_error() {
+    let ws = workspace("include-none", &[("conformance/one/kept.test", ROWS)]);
+    let (code, out) = runner(&ws, &["--reference", "--include", "two/"]);
+    assert_eq!("adtb-conformance: `--include two/` selects no case\n", out);
+    assert_eq!(2, code);
+}
+
+#[test]
 fn a_file_name_runs_only_that_case() {
     let ws = workspace(
         "file-name",
@@ -209,6 +217,20 @@ fn a_stray_file_among_the_engine_scripts_fails() {
 fn update_with_only_the_engine_is_refused_for_conformance_files() {
     let ws = workspace("update-engine", &[("conformance/q.test", ROWS)]);
     let (code, out) = runner(&ws, &["--engine", "--update", "--file-name", "conformance"]);
+    assert_eq!(
+        "adtb-conformance: `--update` takes the reference's rows; the engine never writes the \
+         expected rows of a conformance file\n",
+        out
+    );
+    assert_eq!(2, code);
+    let kept = fs::read_to_string(ws.join("conformance/q.test")).expect("the case reads");
+    assert_eq!(ROWS, kept);
+}
+
+#[test]
+fn update_with_only_the_engine_and_no_file_name_is_refused() {
+    let ws = workspace("update-engine-all", &[("conformance/q.test", ROWS)]);
+    let (code, out) = runner(&ws, &["--engine", "--update"]);
     assert_eq!(
         "adtb-conformance: `--update` takes the reference's rows; the engine never writes the \
          expected rows of a conformance file\n",

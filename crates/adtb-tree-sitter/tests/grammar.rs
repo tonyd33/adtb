@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use adtb_lang::parse::{MAX_DEPTH, Options, parse_example};
+use adtb_script::conformance_scripts;
 use adtb_testkit::fuzz::{case, spec_corpus};
 use adtb_testkit::profile::{assert_reached, sweep};
 use adtb_testkit::spec::{Block, blocks};
@@ -194,32 +195,6 @@ fn the_grammar_agrees_with_adtb_lang_on_its_corpus() {
     agree("corpus", &texts, 40);
 }
 
-/// Returns the bodies of a conformance script's directives with the line of each directive,
-/// skipping the rows of a query.
-fn script_bodies(text: &str) -> Vec<(usize, String)> {
-    let mut bodies = Vec::new();
-    let mut body: Option<(usize, String)> = None;
-    for (i, line) in text.lines().enumerate() {
-        if let Some(rest) = line.strip_prefix("  ") {
-            if let Some((_, b)) = &mut body {
-                b.push_str(rest);
-                b.push('\n');
-            }
-            continue;
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
-        bodies.extend(body.take());
-        let head = line.split_whitespace().next().unwrap_or_default();
-        if matches!(head, "schema" | "run" | "query" | "error") {
-            body = Some((i + 1, String::new()));
-        }
-    }
-    bodies.extend(body);
-    bodies
-}
-
 /// Returns the files under `dir`, outside any `target` directory, sorted.
 fn files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -241,18 +216,14 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn the_grammar_agrees_with_adtb_lang_on_the_conformance_scripts() {
+    let scripts =
+        conformance_scripts(&root().join("conformance")).unwrap_or_else(|e| panic!("{e}"));
     let mut texts = Vec::new();
-    for path in files(&root().join("conformance")) {
-        let is_script = path
-            .to_str()
-            .is_some_and(|s| s.ends_with(".test") || s.ends_with(".test.in"));
-        if !is_script {
-            continue;
-        }
-        for (line, text) in script_bodies(&read(&path)) {
+    for (name, script) in scripts {
+        for d in script.directives() {
             texts.push(Text {
-                name: format!("{}:{line}", path.display()),
-                text,
+                name: format!("{name}:{}", d.line()),
+                text: d.body().to_owned(),
             });
         }
     }

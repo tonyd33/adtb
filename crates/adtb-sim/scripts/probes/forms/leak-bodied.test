@@ -1,0 +1,4 @@
+use stock
+
+leak heap items Open
+  kind HeapFixed

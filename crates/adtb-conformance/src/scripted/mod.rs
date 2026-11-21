@@ -202,7 +202,7 @@ mod txn;
 use std::time::Duration;
 
 use crate::runner::shown;
-use crate::{Block, Difference};
+use adtb_script::{Block, Unread};
 
 /// A size of an open that `option` sets.
 #[derive(Clone, Copy, Debug)]
@@ -306,6 +306,10 @@ enum Head {
         fault: fault::Fault,
         page: fault::Page,
     },
+    Edit {
+        edit: fault::Edit,
+        page: fault::Page,
+    },
     Crash(fault::CrashAt),
     Restore(fault::Restore),
     Probe(fault::Probed),
@@ -330,8 +334,9 @@ struct Step {
 }
 
 /// Returns the blocks of the engine script `text`.
-pub(crate) fn blocks(text: &str) -> Result<Vec<Block>, Difference> {
-    crate::blocks(text, read::starts, read::takes_rows)
+pub(crate) fn blocks(text: &str) -> Result<Vec<Block>, Unread> {
+    adtb_script::blocks(text, read::starts, read::takes_rows)
 }
 
+pub use read::directive_words;
 pub use session::run_file;

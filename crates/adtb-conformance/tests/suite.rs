@@ -79,8 +79,8 @@ fn reference_queries() {
             if let Some(case) = line.strip_prefix("# ") {
                 name = Some(case);
             }
-            if script.directives.iter().any(|d| {
-                d.line == index + 1 && matches!(d.kind, adtb_conformance::Kind::Query { .. })
+            if script.directives().iter().any(|d| {
+                d.line() == index + 1 && matches!(d.kind(), adtb_conformance::Kind::Query { .. })
             }) {
                 queries += 1;
                 if let Some(case) = name {

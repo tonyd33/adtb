@@ -28,35 +28,10 @@ use adtb_lang::schema::{Committed, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Database, Disk, Interpreter, Rejection, Supply, Value, textual};
+use adtb_script::Unread;
 
+pub use adtb_script::{Directive, Kind, Script, directive_words};
 pub use engine::{migrations, run_engine, run_engine_in};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Schema,
-    Run,
-    Query {
-        rowsort: bool,
-        list: bool,
-        rows: Vec<String>,
-    },
-    Error {
-        reason: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Directive {
-    /// The 1-based line of the directive in its script.
-    pub line: usize,
-    pub kind: Kind,
-    pub body: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Script {
-    pub directives: Vec<Directive>,
-}
 
 /// A directive whose outcome differs from its script, or a script the runner cannot read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,143 +117,14 @@ fn refused(line: usize, message: String, reason: &str, detail: &str) -> Differen
     differ_got(line, message, got)
 }
 
-/// A directive as the reader finds it, its first line not yet read.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Block {
-    /// The 1-based line of the directive in its script.
-    pub line: usize,
-    pub head: String,
-    pub body: String,
-    /// The rows after `----`, read only for a head `takes_rows` accepts.
-    pub rows: Vec<String>,
-    /// The 1-based line of the `----` before the rows, for a head `takes_rows` accepts.
-    dashes: Option<usize>,
-}
-
-/// Returns the blocks of a script: each directive line, its indented body and, for a head
-/// `takes_rows` accepts, the rows after `----`. Rows end at a blank line, a comment or a line
-/// `starts` accepts as a directive.
-pub fn blocks(
-    text: &str,
-    starts: impl Fn(&str) -> bool,
-    takes_rows: impl Fn(&str) -> bool,
-) -> Result<Vec<Block>, Difference> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        let n = i + 1;
-        i += 1;
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with(' ') {
-            return Err(differ(n, "an indented line outside a directive's body"));
-        }
-        let mut body = String::new();
-        while i < lines.len() && (lines[i].starts_with("  ") || lines[i].trim().is_empty()) {
-            if !lines[i].trim().is_empty() || next_is_body(&lines[i..]) {
-                body.push_str(lines[i].get(2..).unwrap_or_default());
-                body.push('\n');
-            }
-            i += 1;
-        }
-        let mut rows = Vec::new();
-        let mut dashes = None;
-        if takes_rows(line) {
-            if lines.get(i) != Some(&"----") {
-                let word = line.split(' ').next().unwrap_or_default();
-                return Err(differ(n, format!("`{word}` takes its rows after `----`")));
-            }
-            i += 1;
-            dashes = Some(i);
-            while i < lines.len()
-                && !lines[i].trim().is_empty()
-                && !lines[i].starts_with('#')
-                && !starts(lines[i])
-            {
-                rows.push(lines[i].to_string());
-                i += 1;
-            }
-        }
-        out.push(Block {
-            line: n,
-            head: line.to_owned(),
-            body,
-            rows,
-            dashes,
-        });
-    }
-    Ok(out)
-}
-
-/// Returns the blocks of the conformance script `text`.
-pub(crate) fn conformance_blocks(text: &str) -> Result<Vec<Block>, Difference> {
-    let takes_rows = |line: &str| matches!(kind(line), Some(Kind::Query { .. }));
-    blocks(text, starts_directive, takes_rows)
-}
-
-/// Returns the script `text` holds.
+/// Returns the script the conformance file `text` holds.
 pub fn parse(text: &str) -> Result<Script, Difference> {
-    let mut directives = Vec::new();
-    for b in conformance_blocks(text)? {
-        let kind = match kind(&b.head) {
-            Some(Kind::Query { rowsort, list, .. }) => Kind::Query {
-                rowsort,
-                list,
-                rows: b.rows,
-            },
-            Some(k) => k,
-            None => return Err(differ(b.line, format!("`{}` is not a directive", b.head))),
-        };
-        if b.body.trim().is_empty() {
-            return Err(differ(b.line, "a directive with no body"));
-        }
-        directives.push(Directive {
-            line: b.line,
-            kind,
-            body: b.body,
-        });
-    }
-    Ok(Script { directives })
+    adtb_script::parse(text).map_err(unread)
 }
 
-/// Returns the directive `line` starts, its rows not yet read.
-fn kind(line: &str) -> Option<Kind> {
-    let words: Vec<&str> = line.split_whitespace().collect();
-    let query = |rowsort, list| Kind::Query {
-        rowsort,
-        list,
-        rows: Vec::new(),
-    };
-    Some(match words.as_slice() {
-        ["schema"] => Kind::Schema,
-        ["run"] => Kind::Run,
-        ["query"] => query(false, false),
-        ["query", "rowsort"] => query(true, false),
-        ["query", "list"] => query(false, true),
-        ["error", reason] => Kind::Error {
-            reason: (*reason).to_owned(),
-        },
-        _ => return None,
-    })
-}
-
-fn starts_directive(line: &str) -> bool {
-    let words: Vec<&str> = line.split_whitespace().collect();
-    matches!(
-        words.as_slice(),
-        ["schema" | "run" | "query"] | ["query", "rowsort" | "list"]
-    ) || matches!(words.as_slice(), ["error", c] if c.chars().all(char::is_alphanumeric))
-}
-
-/// Returns whether the blank line at the head of `lines` lies inside a body.
-fn next_is_body(lines: &[&str]) -> bool {
-    lines
-        .iter()
-        .find(|l| !l.trim().is_empty())
-        .is_some_and(|l| l.starts_with("  "))
+/// Returns the difference of a script the reader cannot read.
+fn unread(u: Unread) -> Difference {
+    differ(u.line(), u.message())
 }
 
 /// The fixpoint round limit of a statement. The step at which a statement exceeds its limits is
@@ -304,16 +150,16 @@ pub fn run_reference(script: &Script) -> Vec<Difference> {
 pub fn run_reference_in(script: &Script, dir: &Path) -> Vec<Difference> {
     let mut out = Vec::new();
     let mut state: Option<Run> = None;
-    for (k, d) in script.directives.iter().enumerate() {
-        if let Kind::Schema = d.kind {
+    for (k, d) in script.directives().iter().enumerate() {
+        if let Kind::Schema = d.kind() {
             if k != 0 {
-                out.push(differ(d.line, "`schema` is the first directive"));
+                out.push(differ(d.line(), "`schema` is the first directive"));
                 return out;
             }
-            match schema(&d.body, dir) {
+            match schema(d.body(), dir) {
                 Ok(s) => state = Some(s),
                 Err(e) => {
-                    out.push(differ(d.line, format!("the schema is refused: {e}")));
+                    out.push(differ(d.line(), format!("the schema is refused: {e}")));
                     return out;
                 }
             }
@@ -324,7 +170,7 @@ pub fn run_reference_in(script: &Script, dir: &Path) -> Vec<Difference> {
             None => match schema("", dir) {
                 Ok(s) => state.insert(s),
                 Err(e) => {
-                    out.push(differ(d.line, format!("the prelude is refused: {e}")));
+                    out.push(differ(d.line(), format!("the prelude is refused: {e}")));
                     return out;
                 }
             },
@@ -394,21 +240,21 @@ impl Run {
     }
 
     fn directive(&mut self, d: &Directive) -> Result<(), Difference> {
-        match &d.kind {
+        match d.kind() {
             Kind::Schema => unreachable!("handled by the caller"),
             Kind::Run => {
-                for (i, ended) in self.statements(&d.body, true)?.0.into_iter().enumerate() {
+                for (i, ended) in self.statements(d.body(), true)?.0.into_iter().enumerate() {
                     if let Ended::Refused(reason, detail) = ended {
                         let message =
                             format!("statement {} is refused with {reason}: {detail}", i + 1);
-                        return Err(refused(d.line, message, &reason, &detail));
+                        return Err(refused(d.line(), message, &reason, &detail));
                     }
                 }
                 Ok(())
             }
             Kind::Error { reason } => {
                 let before = self.db.clone();
-                let outcome = self.statements(&d.body, true);
+                let outcome = self.statements(d.body(), true);
                 self.db = before;
                 let (ended, total) = outcome?;
                 if ended.len() < total {
@@ -416,7 +262,7 @@ impl Run {
                         unreachable!("a run stops early only at a refusal")
                     };
                     return Err(differ(
-                        d.line,
+                        d.line(),
                         format!(
                             "statement {} of {total} is refused with {r}: {detail}",
                             ended.len()
@@ -426,17 +272,17 @@ impl Run {
                 match ended.last() {
                     Some(Ended::Refused(r, _)) if r == reason => Ok(()),
                     Some(Ended::Refused(r, detail)) => Err(differ(
-                        d.line,
+                        d.line(),
                         format!("refused with {r}, not {reason}: {detail}"),
                     )),
                     Some(Ended::Ok(v, ty)) => Err(differ(
-                        d.line,
+                        d.line(),
                         format!(
                             "succeeds with {}, not refused with {reason}",
                             self.show(v, ty)
                         ),
                     )),
-                    None => Err(differ(d.line, "no statement")),
+                    None => Err(differ(d.line(), "no statement")),
                 }
             }
             Kind::Query {
@@ -445,22 +291,22 @@ impl Run {
                 rows,
             } => {
                 let (ended, _) = self
-                    .statements(&d.body, false)
-                    .map_err(|e| differ(d.line, e.message))?;
+                    .statements(d.body(), false)
+                    .map_err(|e| differ(d.line(), e.message))?;
                 let [one] = ended.as_slice() else {
-                    return Err(differ(d.line, "a query holds one statement"));
+                    return Err(differ(d.line(), "a query holds one statement"));
                 };
                 match one {
                     Ended::Refused(r, detail) => Err(refused(
-                        d.line,
+                        d.line(),
                         format!("refused with {r}: {detail}"),
                         r,
                         detail,
                     )),
                     Ended::Ok(v, _) if *list && !matches!(v, Value::List(_)) => {
-                        Err(differ(d.line, "expected a List result"))
+                        Err(differ(d.line(), "expected a List result"))
                     }
-                    Ended::Ok(v, ty) => self.compare(d.line, v, ty, *rowsort, rows),
+                    Ended::Ok(v, ty) => self.compare(d.line(), v, ty, *rowsort, rows),
                 }
             }
         }

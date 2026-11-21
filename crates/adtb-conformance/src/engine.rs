@@ -28,14 +28,14 @@ pub fn run_engine<R: Runtime>(rt: R, script: &Script) -> Vec<Difference> {
 
 /// Run `script` as [`run_engine`] does, a file scan reading a relative path against `dir`.
 pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Difference> {
-    let mut directives = script.directives.as_slice();
+    let mut directives = script.directives();
     let mut log = Log::default();
     if let [first, rest @ ..] = directives
-        && first.kind == Kind::Schema
+        && *first.kind() == Kind::Schema
     {
-        match migrations(&first.body) {
+        match migrations(first.body()) {
             Ok(ms) => log = Log::new(ms),
-            Err(e) => return vec![differ(first.line, format!("the schema is refused: {e}"))],
+            Err(e) => return vec![differ(first.line(), format!("the schema is refused: {e}"))],
         }
         directives = rest;
     }
@@ -48,14 +48,14 @@ pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Diff
     let db = match Database::open_in(rt, FILE, &log, &options) {
         Ok(db) => db,
         Err(e) => {
-            let line = script.directives.first().map_or(0, |d| d.line);
+            let line = script.directives().first().map_or(0, Directive::line);
             return vec![differ(line, format!("the database does not open: {e:?}"))];
         }
     };
     let mut out = Vec::new();
     for d in directives {
-        if d.kind == Kind::Schema {
-            out.push(differ(d.line, "`schema` is the first directive"));
+        if *d.kind() == Kind::Schema {
+            out.push(differ(d.line(), "`schema` is the first directive"));
             break;
         }
         if let Err(e) = directive(&db, d) {
@@ -103,24 +103,24 @@ pub fn migrations(body: &str) -> Result<Vec<String>, String> {
 
 /// Run directive `d` on `db`. Returns how its outcome differs from what it states.
 pub fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Difference> {
-    match &d.kind {
+    match d.kind() {
         Kind::Schema => unreachable!("handled by the caller"),
         Kind::Run => db
-            .query_text(&d.body, &[], &CallOptions::default())
+            .query_text(d.body(), &[], &CallOptions::default())
             .map(drop)
-            .map_err(|e| refusal_of(d.line, &e)),
-        Kind::Error { reason } => match ended(db, d.line, &d.body)? {
+            .map_err(|e| refusal_of(d.line(), &e)),
+        Kind::Error { reason } => match ended(db, d.line(), d.body())? {
             Ended::Succeeded => Err(differ(
-                d.line,
+                d.line(),
                 format!("succeeds, not refused with {reason}"),
             )),
             Ended::Early(e) => Err(differ(
-                d.line,
+                d.line(),
                 format!("a statement before the last is refused with {}", shown(&e)),
             )),
             Ended::Refused(e) if name(&e) == *reason => Ok(()),
             Ended::Refused(e) => Err(differ(
-                d.line,
+                d.line(),
                 format!("refused with {}, not {reason}", shown(&e)),
             )),
         },
@@ -131,11 +131,11 @@ pub fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Diff
         } => {
             if *list {
                 return Err(differ(
-                    d.line,
+                    d.line(),
                     "the engine runner cannot observe List result shape",
                 ));
             }
-            if parse_adhoc(&d.body, Options::default())
+            if parse_adhoc(d.body(), Options::default())
                 .ok()
                 .is_ok_and(|items| {
                     items
@@ -145,25 +145,25 @@ pub fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Diff
                         != 1
                 })
             {
-                return Err(differ(d.line, "a query holds one statement"));
+                return Err(differ(d.line(), "a query holds one statement"));
             }
-            let got = if deferrable(&d.body) {
-                db.query_text(&d.body, &[], &CallOptions::default())
+            let got = if deferrable(d.body()) {
+                db.query_text(d.body(), &[], &CallOptions::default())
             } else {
                 let read_only = TxnOptions {
                     read_only: true,
                     ..TxnOptions::default()
                 };
-                let mut t = begin(db, d.line, &read_only)?;
-                let got = t.query_text(&d.body, &[], &TxnCallOptions::default());
+                let mut t = begin(db, d.line(), &read_only)?;
+                let got = t.query_text(d.body(), &[], &TxnCallOptions::default());
                 t.rollback()
-                    .map_err(|e| differ(d.line, format!("the rollback fails: {}", shown(&e))))?;
+                    .map_err(|e| differ(d.line(), format!("the rollback fails: {}", shown(&e))))?;
                 got
             };
-            let mut results = got.map_err(|e| refusal_of(d.line, &e))?;
+            let mut results = got.map_err(|e| refusal_of(d.line(), &e))?;
             match results.len() {
                 0 => compare(
-                    d.line,
+                    d.line(),
                     &Form::of(db.schema(), &Ty::Unit),
                     vec![Value::record(Vec::new())],
                     *rowsort,
@@ -173,10 +173,10 @@ pub fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Diff
                     let got = results.remove(0);
                     let form = got.form().clone();
                     let vals = values(got)
-                        .map_err(|e| differ(d.line, format!("a row fails: {}", shown(&e))))?;
-                    compare(d.line, &form, vals, *rowsort, rows)
+                        .map_err(|e| differ(d.line(), format!("a row fails: {}", shown(&e))))?;
+                    compare(d.line(), &form, vals, *rowsort, rows)
                 }
-                _ => Err(differ(d.line, "a query holds one statement")),
+                _ => Err(differ(d.line(), "a query holds one statement")),
             }
         }
     }

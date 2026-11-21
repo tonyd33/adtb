@@ -8,6 +8,8 @@ scripts/probes/forms/as-migrate.test:3: `as bob migrate` is not a directive
 scripts/probes/forms/assert-bind.test:3: `assert Anonymous call app` is not a directive
 scripts/probes/forms/assert-grant.test:3: `assert Anonymous grant` is not a directive
 scripts/probes/forms/assert-in.test:3: `in t assert Anonymous query` is not a directive
+scripts/probes/forms/begin-id-bare.test:3: `begin r id` is not a directive
+scripts/probes/forms/begin-id-two.test:3: `begin r id A B` is not a directive
 scripts/probes/forms/begin-two-names.test:3: `begin t u` is not a directive
 scripts/probes/forms/bundle-bodiless.test:2: `bundle web-1.0 pins 1 edition "2026-10"` takes a body
 scripts/probes/forms/bundle-fixture-missing.test:2: scripts/fixtures/absent.bundle: No such file or directory (os error 2)
@@ -26,21 +28,54 @@ scripts/probes/forms/command-rows.test:3: `command` takes its rows after `----`
 scripts/probes/forms/command-suffix.test:3: `command sorted` is not a directive
 scripts/probes/forms/commit-position-bare.test:3: `commit t position` is not a directive
 scripts/probes/forms/commit-position-two.test:3: `commit t position p q` is not a directive
+scripts/probes/forms/commit-retry-bare.test:3: `commit r retry` is not a directive
+scripts/probes/forms/commit-two-classes.test:3: `commit r retry B error A` is not a directive
+scripts/probes/forms/crash-after-word.test:3: `crash after x` is not a directive
+scripts/probes/forms/crash-at-bogus.test:3: `crash at bogus p` is not a directive
+scripts/probes/forms/crash-at-two-paths.test:3: `crash at write a b` is not a directive
+scripts/probes/forms/crash-bodied.test:3: `crash after 1` takes no body
+scripts/probes/forms/damage-extra.test:3: `damage heap items Open extra` is not a directive
 scripts/probes/forms/drop-bare.test:3: `drop idle` is not a directive
+scripts/probes/forms/error-bare.test:3: `error` is not a directive
 scripts/probes/forms/failed-bare.test:3: `failed Invalid { detail: "x" }` is not a directive
+scripts/probes/forms/fatal-bare.test:3: `fatal` is not a directive
+scripts/probes/forms/flip-nothing.test:3: `flip nothing` is not a directive
+scripts/probes/forms/free-bare.test:3: `free` is not a directive
 scripts/probes/forms/grant-bodiless.test:3: `grant` takes a body
 scripts/probes/forms/host-bare.test:1: `host` is not a directive
 scripts/probes/forms/in-as.test:3: `in t as bob run` is not a directive
 scripts/probes/forms/in-begin.test:3: `in t begin u` is not a directive
 scripts/probes/forms/in-unbound-call.test:3: `in t call app` is not a directive
+scripts/probes/forms/leak-bodied.test:3: `leak heap items Open` takes no body
 scripts/probes/forms/log-bodiless.test:2: `log` takes a body
 scripts/probes/forms/loose-bodiless.test:2: `loose app` takes a body
 scripts/probes/forms/loose-two-names.test:2: `loose app web` is not a directive
+scripts/probes/forms/lose-bare.test:3: `lose` is not a directive
+scripts/probes/forms/mark-catalog.test:3: `mark catalog` is not a directive
+scripts/probes/forms/migrate-at-zero.test:3: `migrate at 0` is not a directive
+scripts/probes/forms/option-bare.test:3: `option lock_total` is not a directive
+scripts/probes/forms/option-negative.test:3: `option morsel_rows -1` is not a directive
+scripts/probes/forms/option-size.test:3: `option workers x` is not a directive
 scripts/probes/forms/plan-as.test:3: `as owner plan` is not a directive
 scripts/probes/forms/plan-bodiless.test:3: `plan` takes a body
 scripts/probes/forms/plan-rows.test:3: `plan` takes its rows after `----`
 scripts/probes/forms/plan-suffix.test:3: `plan rowsort` is not a directive
+scripts/probes/forms/probe-catalog-word.test:3: `probe catalog x` is not a directive
+scripts/probes/forms/probe-checks-bare.test:3: `probe checks` is not a directive
+scripts/probes/forms/probe-locks-two.test:3: `probe locks a b` is not a directive
+scripts/probes/forms/probe-nothing.test:3: `probe nothing` is not a directive
 scripts/probes/forms/probe-plan-bodiless.test:3: `probe plan` takes a body
+scripts/probes/forms/query-suffix.test:3: `query sorted` is not a directive
 scripts/probes/forms/register-bodiless.test:3: `register web-1.0 pins 1 edition "2026-10" error` takes a body
+scripts/probes/forms/reopen-suffix.test:3: `reopen x` is not a directive
+scripts/probes/forms/restore-bare.test:3: `restore x` is not a directive
+scripts/probes/forms/restore-refused-rows.test:4: `----` is not a directive
+scripts/probes/forms/retry-bare.test:3: `retry` is not a directive
 scripts/probes/forms/revoke-suffix.test:3: `revoke refused Invalid` is not a directive
+scripts/probes/forms/role-bare.test:3: `role` is not a directive
 scripts/probes/forms/rollback-error.test:3: `rollback t error Invalid { detail: "x" }` is not a directive
+scripts/probes/forms/run-suffix.test:3: `run x` is not a directive
+scripts/probes/forms/scribble-bodiless.test:3: `scribble heap items Open` takes a body
+scripts/probes/forms/seed-word.test:3: `seed x` is not a directive
+scripts/probes/forms/tear-bare.test:3: `tear` is not a directive
+scripts/probes/forms/use-bare.test:3: `use` is not a directive

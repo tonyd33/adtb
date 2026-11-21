@@ -1,0 +1,5 @@
+use stock
+
+query sorted
+  from i in items select i
+----

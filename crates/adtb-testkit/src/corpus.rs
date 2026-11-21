@@ -8,6 +8,7 @@ use std::path::Path;
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::check::schema_migration;
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
+use adtb_script::{Kind, conformance_scripts};
 
 use crate::Rng;
 use crate::cases::Case;
@@ -46,49 +47,30 @@ const UNCOMPARED: [&str; 2] = ["generate clock", "generate uuid"];
 /// The attempts at a mutant a case may make per query it asks for.
 const ATTEMPTS: usize = 12;
 
-/// Returns the scripts under `dir` and its subdirectories that a case can be made of, by name.
+/// Returns the scripts of the conformance files under `dir` that a case can be made of.
 pub fn scripts(dir: &Path) -> Vec<Script> {
-    let mut paths = Vec::new();
-    let mut dirs = vec![dir.to_path_buf()];
-    while let Some(d) = dirs.pop() {
-        let entries = std::fs::read_dir(&d).unwrap_or_else(|e| panic!("{}: {e}", d.display()));
-        for entry in entries {
-            let path = entry
-                .unwrap_or_else(|e| panic!("{}: {e}", d.display()))
-                .path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if path.extension().is_some_and(|x| x == "test") {
-                paths.push(path);
-            }
-        }
-    }
-    paths.sort();
-    paths
-        .iter()
-        .filter_map(|p| {
-            let text =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-            let name = p.strip_prefix(dir).unwrap_or(p).display().to_string();
-            Script::read(name, &text)
-        })
+    conformance_scripts(dir)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_iter()
+        .filter_map(|(name, script)| Script::read(name, &script))
         .collect()
 }
 
 impl Script {
-    /// Read a script, or return `None` when its schema is not one module or generates values
-    /// other than sequences, it holds no query a case can ask, or the reference refuses its
-    /// schema or a write.
-    fn read(name: String, text: &str) -> Option<Script> {
+    /// Returns the case script `name` of the conformance file `script`, or `None` when its
+    /// schema is not one module or generates values other than sequences, it holds no query a
+    /// case can ask, or the reference refuses its schema or a write.
+    fn read(name: String, script: &adtb_script::Script) -> Option<Script> {
         let mut schema = None;
         let mut load = Vec::new();
         let mut queries = Vec::new();
-        for (head, body) in directives(text) {
-            match head.split_whitespace().next() {
-                Some("schema") => schema = Some(body),
-                Some("run") => load.extend(statements(&body)?),
-                Some("query") if allowed(&body) => queries.push(body.trim().to_owned()),
-                _ => {}
+        for d in script.directives() {
+            let body = d.body();
+            match d.kind() {
+                Kind::Schema => schema = Some(body.to_owned()),
+                Kind::Run => load.extend(statements(body)?),
+                Kind::Query { .. } if allowed(body) => queries.push(body.trim().to_owned()),
+                Kind::Query { .. } | Kind::Error { .. } => {}
             }
         }
         let schema = schema?;
@@ -168,26 +150,6 @@ impl Script {
 fn allowed(body: &str) -> bool {
     let mut words = body.split(|c: char| !c.is_alphanumeric() && c != '_');
     !body.contains('$') && !words.any(|w| EXCLUDED.contains(&w))
-}
-
-/// Returns each directive of a script, its head line and its body with the indentation of its
-/// first line removed.
-fn directives(text: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut open = false;
-    for line in text.lines() {
-        let word = line.split_whitespace().next().unwrap_or_default();
-        if !line.starts_with(' ') && ["schema", "run", "query", "error"].contains(&word) {
-            out.push((line.to_owned(), String::new()));
-            open = true;
-        } else if line == "----" || (!line.starts_with(' ') && !line.is_empty()) {
-            open = false;
-        } else if open && let Some((_, body)) = out.last_mut() {
-            body.push_str(line.strip_prefix("  ").unwrap_or(line));
-            body.push('\n');
-        }
-    }
-    out
 }
 
 /// Returns the statements of a body, or `None` when it does not parse as writes, expressions

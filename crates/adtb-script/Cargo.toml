@@ -1,0 +1,17 @@
+[package]
+name = "adtb-script"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+test = false
+doctest = false
+
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+
+[lints]
+workspace = true

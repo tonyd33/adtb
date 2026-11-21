@@ -17,6 +17,7 @@ clap.workspace = true
 adtb.workspace = true
 adtb-lang.workspace = true
 adtb-reference.workspace = true
+adtb-script.workspace = true
 adtb-sim.workspace = true
 adtb-simkit = { workspace = true, optional = true }
 serde_json = "=1.0.154"

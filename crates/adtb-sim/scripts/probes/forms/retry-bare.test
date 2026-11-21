@@ -1,0 +1,4 @@
+use stock
+
+retry
+  from i in items select i

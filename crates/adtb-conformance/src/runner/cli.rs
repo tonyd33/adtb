@@ -61,7 +61,7 @@ struct Run {
         short,
         long,
         help = "write the rows each differing directive got in place of its expected rows: the \
-                reference's for a conformance file, unless only the engine runs"
+                reference's for a conformance file, never the engine's"
     )]
     update: bool,
     #[arg(
@@ -176,14 +176,15 @@ fn selections(run: &Run, sides: Sides) -> Result<Vec<Selection>, String> {
     let wanted = |c: &Corpus| {
         c.format == Format::Conformance || (sides != Sides::Reference && cfg!(feature = "scripts"))
     };
-    if run.file_name.is_empty() {
-        return Ok(corpora
-            .iter()
-            .filter(|c| wanted(c))
-            .map(|c| runner::select(c, &c.root))
-            .collect());
-    }
     let mut out = Vec::new();
+    if run.file_name.is_empty() {
+        out.extend(
+            corpora
+                .iter()
+                .filter(|c| wanted(c))
+                .map(|c| runner::select(c, &c.root)),
+        );
+    }
     for path in &run.file_name {
         let full = path
             .canonicalize()
@@ -207,10 +208,9 @@ fn selections(run: &Run, sides: Sides) -> Result<Vec<Selection>, String> {
             out.push(runner::select(corpus, &full));
         }
     }
-    let conformance = run.file_name.is_empty()
-        || out
-            .iter()
-            .any(|s| s.cases.iter().any(|c| c.format == Format::Conformance));
+    let conformance = out
+        .iter()
+        .any(|s| s.cases.iter().any(|c| c.format == Format::Conformance));
     if run.update && sides == Sides::Engine && conformance {
         return Err(
             "`--update` takes the reference's rows; the engine never writes the expected rows \
@@ -246,6 +246,11 @@ fn corpora(run: &Run) -> Result<ExitCode, String> {
     for s in selections {
         all.cases.extend(s.cases);
         all.problems.extend(s.problems);
+    }
+    if let Some(include) = &run.include
+        && !all.cases.iter().any(|c| options.includes(c))
+    {
+        return Err(format!("`--include {include}` selects no case"));
     }
     let mut out = io::stdout();
     let report = runner::run(all, &options, &mut out).map_err(|e| format!("stdout: {e}"))?;

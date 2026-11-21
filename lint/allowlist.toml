@@ -79,7 +79,7 @@
 
 [pub_fields]
 "crates/adtb-codegen/src/lib.rs" = 3
-"crates/adtb-conformance/src/lib.rs" = 11
+"crates/adtb-conformance/src/lib.rs" = 3
 "crates/adtb-file/src/lib.rs" = 4
 "crates/adtb-lang/src/ast.rs" = 164
 "crates/adtb-lang/src/check/adhoc.rs" = 3

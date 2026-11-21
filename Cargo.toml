@@ -17,6 +17,7 @@ adtb-heap-cap = { path = "crates/adtb-heap-cap" }
 adtb-file = { path = "crates/adtb-file" }
 adtb-lang = { path = "crates/adtb-lang" }
 adtb-reference = { path = "crates/adtb-reference" }
+adtb-script = { path = "crates/adtb-script" }
 adtb-sim = { path = "crates/adtb-sim" }
 adtb-simkit = { path = "crates/adtb-simkit" }
 adtb-sys = { path = "crates/adtb-sys" }

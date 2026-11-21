@@ -134,12 +134,17 @@ pub(super) enum Fault {
     Lose,
     /// Tear the next write that covers the page.
     Tear,
+    /// Free the page in the allocation bitmap, whatever still names it.
+    Free,
+}
+
+/// What an edit does to the pages of the file, given its page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Edit {
     /// Edit the page as the step's body states, keeping its checksum valid.
     Scribble,
     /// Allocate a page of the page's kind and owner that no structure names.
     Leak,
-    /// Free the page in the allocation bitmap, whatever still names it.
-    Free,
 }
 
 /// An object a mark names.
@@ -208,58 +213,59 @@ impl Restore {
     }
 }
 
-/// Returns the head of the fault, restore or probe directive `word` begins.
-pub(super) fn head(word: &str, rest: &str) -> Option<Head> {
-    let fault = |fault| {
-        Some(Head::Fault {
-            fault,
-            page: Page::parse(rest)?,
-        })
-    };
-    match word {
-        "mark" => Some(Head::Mark(marked(rest)?)),
-        "damage" => fault(Fault::Damage),
-        "flip" => fault(Fault::Flip),
-        "lose" => fault(Fault::Lose),
-        "tear" => fault(Fault::Tear),
-        "scribble" => fault(Fault::Scribble),
-        "leak" => fault(Fault::Leak),
-        "free" => fault(Fault::Free),
-        "crash" => Some(Head::Crash(crash_at(rest)?)),
-        "restore" => Some(Head::Restore(restore(rest)?)),
-        "fatal" if !rest.is_empty() => Some(Head::Fatal(rest.to_owned())),
-        "probe" => Some(Head::Probe(
-            match rest.split_once(' ').unwrap_or((rest, "")) {
-                ("marks", "") => Probed::Marks,
-                ("damage", "") => Probed::Damage,
-                ("holding", "verify") => Probed::Holding,
-                ("heap", rest) => {
-                    let (rest, pages) = match rest.strip_suffix(" pages") {
-                        Some(rest) => (rest, true),
-                        None => (rest, false),
-                    };
-                    let (relation, ctor) = heap_words(rest)?;
-                    Probed::Heap {
-                        relation,
-                        ctor,
-                        pages,
-                    }
+pub(super) fn mark(rest: &str) -> Option<Head> {
+    Some(Head::Mark(marked(rest)?))
+}
+
+pub(super) fn fault(fault: Fault, rest: &str) -> Option<Head> {
+    Some(Head::Fault {
+        fault,
+        page: Page::parse(rest)?,
+    })
+}
+
+pub(super) fn edit(edit: Edit, rest: &str) -> Option<Head> {
+    Some(Head::Edit {
+        edit,
+        page: Page::parse(rest)?,
+    })
+}
+
+pub(super) fn restore(rest: &str) -> Option<Head> {
+    Some(Head::Restore(restored(rest)?))
+}
+
+pub(super) fn probe(rest: &str) -> Option<Head> {
+    Some(Head::Probe(
+        match rest.split_once(' ').unwrap_or((rest, "")) {
+            ("marks", "") => Probed::Marks,
+            ("damage", "") => Probed::Damage,
+            ("holding", "verify") => Probed::Holding,
+            ("heap", rest) => {
+                let (rest, pages) = match rest.strip_suffix(" pages") {
+                    Some(rest) => (rest, true),
+                    None => (rest, false),
+                };
+                let (relation, ctor) = heap_words(rest)?;
+                Probed::Heap {
+                    relation,
+                    ctor,
+                    pages,
                 }
-                ("files", prefix) => Probed::Files(prefix.to_owned()),
-                ("catalog", "") => Probed::Catalog(false),
-                ("catalog", "engine") => Probed::Catalog(true),
-                ("plan", "") => return Some(Head::ProbePlan),
-                ("checks", name) if !name.is_empty() => {
-                    return Some(Head::ProbeChecks(name.to_owned()));
-                }
-                ("locks", name) if !name.is_empty() && !name.contains(' ') => {
-                    return Some(Head::ProbeLocks(name.to_owned()));
-                }
-                _ => return None,
-            },
-        )),
-        _ => None,
-    }
+            }
+            ("files", prefix) => Probed::Files(prefix.to_owned()),
+            ("catalog", "") => Probed::Catalog(false),
+            ("catalog", "engine") => Probed::Catalog(true),
+            ("plan", "") => return Some(Head::ProbePlan),
+            ("checks", name) if !name.is_empty() => {
+                return Some(Head::ProbeChecks(name.to_owned()));
+            }
+            ("locks", name) if !name.is_empty() && !name.contains(' ') => {
+                return Some(Head::ProbeLocks(name.to_owned()));
+            }
+            _ => return None,
+        },
+    ))
 }
 
 fn marked(rest: &str) -> Option<Marked> {
@@ -271,7 +277,7 @@ fn marked(rest: &str) -> Option<Marked> {
     })
 }
 
-fn crash_at(rest: &str) -> Option<CrashAt> {
+pub(super) fn crash_at(rest: &str) -> Option<CrashAt> {
     if let Some(n) = rest.strip_prefix("after ") {
         return Some(CrashAt::After(n.parse().ok()?));
     }
@@ -292,7 +298,7 @@ fn crash_at(rest: &str) -> Option<CrashAt> {
     (!path.contains(' ')).then(|| CrashAt::Op(kind, path.to_owned()))
 }
 
-fn restore(rest: &str) -> Option<Restore> {
+fn restored(rest: &str) -> Option<Restore> {
     let (rest, want) = match rest.split_once(" error ") {
         Some((rest, v)) => (rest, Some(format!("Rejected {{ reason: {v} }}"))),
         None => match rest.split_once(" fatal ") {
@@ -372,7 +378,7 @@ impl State {
         self.crashing.take()
     }
 
-    /// Run a mark, fault, crash or probe step.
+    /// Run a mark, fault, edit, crash or probe step.
     pub(super) fn step(
         &mut self,
         rt: &SimRuntime,
@@ -391,25 +397,27 @@ impl State {
             Head::Fault { fault, page } => {
                 let pid = page.pid(t).map_err(|e| Differs::at(step, e))?;
                 self.roles.insert(pid, page.to_string());
-                match fault {
-                    Fault::Scribble => {
+                self.fault(rt, t, step, *fault, pid)
+                    .map_err(|e| failed("the fault is not planted", &e))
+            }
+            Head::Edit { edit, page } => {
+                let pid = page.pid(t).map_err(|e| Differs::at(step, e))?;
+                self.roles.insert(pid, page.to_string());
+                match edit {
+                    Edit::Scribble => {
                         let named = pages::scribble(t, page, pid, &step.body)
                             .map_err(|e| Differs::at(step, e))?;
                         self.roles.extend(named);
-                        Ok(())
                     }
-                    Fault::Leak => {
+                    Edit::Leak => {
                         let leaked = t
                             .leak(pid)
                             .map_err(|e| failed("no page is allocated", &e))?;
                         self.roles
                             .insert(leaked, format!("a page leaked beside {page}"));
-                        Ok(())
                     }
-                    fault => self
-                        .fault(rt, t, step, *fault, pid)
-                        .map_err(|e| failed("the fault is not planted", &e)),
                 }
+                Ok(())
             }
             Head::Crash(at) => {
                 if self.crashing.is_some() {
@@ -420,7 +428,7 @@ impl State {
                 Ok(())
             }
             Head::Probe(probed) => probe_rows(step, self.probe(rt, t, probed)),
-            _ => unreachable!("state runs only marks, faults, crashes and probes"),
+            _ => unreachable!("state runs only marks, faults, edits, crashes and probes"),
         }
     }
 
@@ -456,7 +464,6 @@ impl State {
                 rt.extend(Plan::new().first(writes(), torn));
             }
             Fault::Free => drop(t.plant(Plant::Free(pid))?),
-            Fault::Scribble | Fault::Leak => unreachable!("an edit or a leak is no device fault"),
         }
         Ok(())
     }

@@ -1,0 +1,3 @@
+scripts/probes/rows-end-at-a-directive.test:6: succeeds
+  expected: Retry { reason: Serialization { txn: 0, on: "" } }
+  actual:   success
