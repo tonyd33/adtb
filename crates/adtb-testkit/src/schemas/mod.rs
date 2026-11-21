@@ -28,10 +28,6 @@ const SET: &str = "Pair";
 /// default for it.
 const SEARCH_RETAG_PAYLOAD_NULLARY_PANICS: bool = false;
 
-/// Whether a reference to its own relation may name a constructor set narrower than the
-/// relation.
-const SEARCH_KEY_VIOLATION_NAMED_AS_REFERENCE: bool = false;
-
 /// The constructor sets a reference, unique, index or check names within one relation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Scope {
@@ -280,9 +276,7 @@ impl Schema {
         s
     }
 
-    /// Returns a field type of relation `i`, a reference to relation `i` itself over every
-    /// constructor unless [`SEARCH_KEY_VIOLATION_NAMED_AS_REFERENCE`].
-    fn ty(&self, rng: &mut Rng, i: usize) -> Ty {
+    fn ty(&self, rng: &mut Rng) -> Ty {
         match rng.below(10) {
             0 | 1 => Ty::Int,
             2 => Ty::Text,
@@ -291,10 +285,7 @@ impl Schema {
             5 => Ty::Sum(rng.below(2) as usize),
             k => {
                 let j = rng.below(self.rels.len() as u64) as usize;
-                let scope = match self.ref_scope(rng, j) {
-                    _ if j == i && !SEARCH_KEY_VIOLATION_NAMED_AS_REFERENCE => Scope::All,
-                    s => s,
-                };
+                let scope = self.ref_scope(rng, j);
                 if k < 8 {
                     Ty::Ref(j, scope)
                 } else {
@@ -337,7 +328,7 @@ impl Schema {
             header.push(k2);
         }
         for h in 0..rng.below(2) {
-            header.push(Field::new(&format!("h{h}"), self.ty(rng, i)));
+            header.push(Field::new(&format!("h{h}"), self.ty(rng)));
         }
         let sum = self.rels[i].sum;
         let mut own: Vec<Vec<Field>> = Vec::new();
@@ -354,7 +345,7 @@ impl Schema {
                     .find_map(|fs| fs.iter().find(|f| f.name == name).map(|f| f.ty.clone()));
                 let ty = match shared {
                     Some(ty) if rng.below(3) != 0 => ty,
-                    _ => self.ty(rng, i),
+                    _ => self.ty(rng),
                 };
                 fields.push(Field::new(name, ty));
             }

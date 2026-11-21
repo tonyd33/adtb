@@ -1,0 +1,19 @@
+# A statement that gives a key two rows is refused with the violation of least name: the key `app::a1.key` sorts below the violated reference `app::z0.h0`, and the constraint `app::a0`, which only the two rows together violate, sorts below the key.
+schema
+  module app
+  type T1 { id: Key a1 } = A { n: I64 } | B | C
+  relation a1 : T1 key id generate sequence
+  type T0 { id: Key z0, h0: Key a1.(B | C) } = D
+  relation z0 : T0 key id generate sequence
+  constraint a0 = from x in a1.A, y in a1.C where key x == key y select x
+run
+  insert a1.B { id: a1.key(1) }
+  insert z0 from (from y in a1.(B | C) where key y == a1.key(1) select { id: z0.key(2), h0: key y })
+error KeyViolation
+  (update x in a1 where key x == a1.key(1) set A { n: 1 }, update x in a1 where key x == a1.key(1) set A { n: 2 })
+error Violated
+  (update x in a1 where key x == a1.key(1) set A { n: 1 }, update x in a1 where key x == a1.key(1) set C { })
+query rowsort
+  from x in a1 select x
+----
+B { id: a1.key(1) }

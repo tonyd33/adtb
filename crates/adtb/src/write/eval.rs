@@ -8,12 +8,10 @@ use adtb_file::Record;
 use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Valid, ValidTerms, Var};
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{Committed, Generator, OnDelete, Schema, Stage};
-use adtb_lang::textual::key_names;
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
 use crate::exec::{self, Val, from_stored, to_key};
-use crate::key::Tid;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
@@ -932,40 +930,6 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         })
     }
 
-    /// Returns the row of `rel` with key `key` the statement's reads see, with its constructor
-    /// and the TID of its version.
-    pub fn by_key(&self, rel: RelId, key: &Val) -> Result<Option<(u32, Tid, Val)>, Error> {
-        let r = self.rel(rel);
-        let parts: Vec<Val> = if r.single_key {
-            vec![key.clone()]
-        } else {
-            let names = key_names(self.schema, rel);
-            let fs = key.fields()?;
-            r.key_fields
-                .iter()
-                .map(|n| fs[names.iter().position(|m| m == n).expect("a key field")].clone())
-                .collect()
-        };
-        let types = self.store.key_types(r.key_index)?;
-        let prefix: Vec<crate::key::Value> = types
-            .iter()
-            .zip(&parts)
-            .map(|(t, v)| to_key(t, v))
-            .collect::<Result<_, _>>()?;
-        let all = r.routes(r.all_ctors());
-        for n in self.probe(r.key_index, &prefix, &all)? {
-            let c = n.ctor;
-            let Some((at, stored)) = self.store.fetch(r.ctors[c as usize].heap, &n)? else {
-                continue;
-            };
-            let v = self.row(rel, c, &stored);
-            if self.key_of(rel, &v)? == *key {
-                return Ok(Some((c, at, v)));
-            }
-        }
-        Ok(None)
-    }
-
     /// Returns stored row `stored` of constructor `c` of `rel`.
     pub fn row(&self, rel: RelId, c: u32, stored: &[crate::key::Value]) -> Val {
         let ctor = &self.rel(rel).ctors[c as usize];
@@ -995,7 +959,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     }
 
     /// Returns the entries of index `id` as [`exec::Store::probe`] does, bounded by the statement.
-    fn probe(
+    pub(super) fn probe(
         &self,
         id: IndexId,
         prefix: &[crate::key::Value],

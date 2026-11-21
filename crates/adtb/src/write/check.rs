@@ -81,8 +81,9 @@ impl<R: Runtime> Stmt<'_, R> {
     /// with key `k`.
     fn reaches(&self, f: &RefField, k: &Val) -> Result<bool, Error> {
         Ok(self
-            .by_key(f.target, k)?
-            .is_some_and(|(c, _, _)| f.ctors.as_ref().is_none_or(|s| s.contains(&c))))
+            .all_by_key(f.target, k)?
+            .iter()
+            .any(|(c, _, _)| f.ctors.as_ref().is_none_or(|s| s.contains(c))))
     }
 
     /// Check, after the change set is applied, every constraint it can violate: references,
@@ -93,8 +94,7 @@ impl<R: Runtime> Stmt<'_, R> {
         for ((r, c), rows) in minus {
             for v in rows {
                 let k = self.key_of(*r, v)?;
-                let now = self.by_key(*r, &k)?;
-                if now.is_none_or(|(d, _, _)| d != *c) {
+                if !self.all_by_key(*r, &k)?.iter().any(|(d, _, _)| d == c) {
                     moved.entry(*r).or_default().insert(k);
                 }
             }

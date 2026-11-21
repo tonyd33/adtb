@@ -1,0 +1,13 @@
+# An insert of a held key is a key violation, even when its reference names the held row, which the statement keeps.
+schema
+  module app
+  type T { id: Key ts } = A | B { u: Key ts.D } | D
+  relation ts : T key id generate sequence
+run
+  insert ts.D { id: ts.key(1) }
+error KeyViolation
+  insert ts.B from (from y in ts.D where key y == ts.key(1) select { id: ts.key(1), u: key y })
+query rowsort
+  from x in ts select x
+----
+D { id: ts.key(1) }

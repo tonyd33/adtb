@@ -1,0 +1,18 @@
+# Two updates giving one key two new values are judged on both rows: a reference that one of them satisfies holds, and the key violation is the outcome; a reference that neither satisfies is violated, and its name, `app::r0.h0`, is less than `app::r1.key`.
+schema
+  module app
+  type T1 { id: Key r1 } = A { n: I64 } | B | C
+  relation r1 : T1 key id generate sequence
+  type T0 { id: Key r0, h0: Key r1.(B | C) } = D
+  relation r0 : T0 key id generate sequence
+run
+  insert r1.B { id: r1.key(1) }
+  insert r0 from (from y in r1.(B | C) where key y == r1.key(1) select { id: r0.key(2), h0: key y })
+error KeyViolation
+  (update x in r1 where key x == r1.key(1) set A { n: 1 }, update x in r1 where key x == r1.key(1) set C { })
+error Violated
+  (update x in r1 where key x == r1.key(1) set A { n: 1 }, update x in r1 where key x == r1.key(1) set A { n: 2 })
+query rowsort
+  from x in r1 select x
+----
+B { id: r1.key(1) }

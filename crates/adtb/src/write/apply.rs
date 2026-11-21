@@ -225,6 +225,9 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Apply the normalised change set to the heaps and indexes, recording the key and unique
     /// conflicts its new versions meet.
+    ///
+    /// Postconditions: the statement's reads see every row of `plus`, two rows of one key
+    /// included, and no row of `minus`.
     pub fn apply(&self, plus: &Rows, minus: &Rows, viol: &mut Violations) -> Result<(), Error> {
         type Pair = (Option<(u32, Val)>, Vec<(u32, Val)>);
         let mut ops: BTreeMap<(RelId, Val), Pair> = BTreeMap::new();
@@ -319,24 +322,10 @@ impl<R: Runtime> Stmt<'_, R> {
                         stored: row,
                     });
                 }
-                (None, Some((d, n))) => {
-                    let heap = r.ctors[*d as usize].heap;
-                    let row = self.stored(heap, n)?;
-                    let h = self.heap(heap);
-                    let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
-                    let tid = h
-                        .insert_pruning(pager, xid, &row, &mut judge)
-                        .map_err(too_large(*rel, *d))?;
-                    self.undo.borrow_mut().push(Undo::Kill(heap, tid, xid));
-                    self.inserted_into(heap)?;
-                    written.push(Written {
-                        rel: *rel,
-                        ctor: *d,
-                        tid,
-                        row: n.clone(),
-                        stored: row,
-                    });
-                }
+                (None, Some((d, n))) => written.push(self.insert(*rel, *d, n, xid)?),
+            }
+            for (d, n) in news.iter().skip(1) {
+                written.push(self.insert(*rel, *d, n, xid)?);
             }
         }
         for ((r, _), rows) in plus {
@@ -363,6 +352,26 @@ impl<R: Runtime> Stmt<'_, R> {
             }
         }
         Ok(())
+    }
+
+    /// Insert row `n` of constructor `d` of `rel` as a new version written by `xid`.
+    fn insert(&self, rel: RelId, d: u32, n: &Val, xid: Xid) -> Result<Written, Error> {
+        let heap = self.rel(rel).ctors[d as usize].heap;
+        let row = self.stored(heap, n)?;
+        let h = self.heap(heap);
+        let mut judge = self.db.session.txns.judge_now(&self.db.pager, h.id().0);
+        let tid = h
+            .insert_pruning(&self.db.pager, xid, &row, &mut judge)
+            .map_err(too_large(rel, d))?;
+        self.undo.borrow_mut().push(Undo::Kill(heap, tid, xid));
+        self.inserted_into(heap)?;
+        Ok(Written {
+            rel,
+            ctor: d,
+            tid,
+            row: n.clone(),
+            stored: row,
+        })
     }
 
     /// Take back every heap change the statement made, newest first. Its index entries stay,

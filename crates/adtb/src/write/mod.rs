@@ -9,6 +9,7 @@ mod eval;
 mod explain;
 mod fresh;
 mod input;
+mod keyed;
 mod past;
 mod polarity;
 mod quarantine;
