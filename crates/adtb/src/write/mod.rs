@@ -74,7 +74,7 @@ pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
 pub use quarantine::{By, Mapped};
-pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
+pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, Vacuuming, panic_text};
 pub(crate) use restore::Restoring;
 pub use rot::Rot;
 pub use stream::{Produced, Production};
@@ -759,7 +759,8 @@ impl<R: Runtime> Database<R> {
     /// Fail if the record of the window is damaged.
     pub fn with_history(mut self, retained: Retained, window: Duration) -> Result<Self, Error> {
         self.retained = Some(Arc::new(retained));
-        self.set_retention(window, &self.hold_vacuum(HoldWait::unbounded())?)?;
+        self.hold_vacuum(HoldWait::unbounded())?
+            .set_retention(window)?;
         Ok(self)
     }
 
@@ -1052,7 +1053,7 @@ impl<R: Runtime> Database<R> {
     pub fn vacuum(&self, rel: RelId, waiting: HoldWait<'_>) -> Result<Vacuumed, Error> {
         let stop = waiting.stop(self.rt.now());
         let one = self.hold_vacuum_until(&stop)?;
-        self.vacuum_held(rel, &stop, &one)
+        one.vacuum(rel, &stop)
     }
 
     /// Vacuum `rel` as the background worker, if no one holds the vacuum lock, stopping with
@@ -1062,64 +1063,7 @@ impl<R: Runtime> Database<R> {
         let Some(one) = self.try_hold_yielding(stop.cancel.clone()) else {
             return Ok(None);
         };
-        self.vacuum_held(rel, &stop, &one).map(Some)
-    }
-
-    fn vacuum_held(
-        &self,
-        rel: RelId,
-        stop: &Stop,
-        one: &VacuumHold<'_, R>,
-    ) -> Result<Vacuumed, Error> {
-        let r = (self.rels.get(&rel))
-            .unwrap_or_else(|| panic!("a relation a vacuum names has heaps: {rel:?} has none"));
-        self.admit_vacuum(r)?;
-        let horizon = self.horizon(r);
-        let started = self.rt.now();
-        let ids: BTreeMap<u32, CtorId> = self.bindings.indexes()[&r.key_index]
-            .ctors
-            .iter()
-            .map(|(id, c)| (*c, *id))
-            .collect();
-        let sum = vacuum::Sum {
-            heaps: (r.ctors.iter().enumerate())
-                .map(|(c, ctor)| (ids[&(c as u32)], &*self.bindings.heaps()[&ctor.heap].heap))
-                .collect(),
-            indexes: (r.indexes.iter())
-                .map(|(i, _)| &self.bindings.indexes()[i].index)
-                .collect(),
-        };
-        let shown: Vec<(CtorId, u32)> = sum.heaps.iter().map(|(id, h)| (*id, h.id().0)).collect();
-        let _shown = self.show_vacuum(
-            held_id(self.schema.ids().relation_id(rel)).raw(),
-            &shown,
-            one,
-        );
-        let mut began = self.rt.now();
-        let mut io = None;
-        let halted = Cell::new(None);
-        let ran = self.vacuum_sum(r, &sum, &mut || {
-            let paced = self.pace(stop, &mut began, &mut io);
-            paced.map_err(|e| halted.set(Some(e))).is_ok()
-        });
-        self.pacer.charge(&self.rt, began);
-        let (report, kept) = ran.map_err(|e| match e {
-            vacuum::Error::Stopped => halted.take().unwrap_or(Error::Exec(exec::Error::Cancelled)),
-            e => e.into(),
-        })?;
-        let freed: BTreeMap<HeapId, u64> = (r.ctors.iter())
-            .map(|c| {
-                let heap = self.bindings.heaps()[&c.heap].heap.id().0;
-                let freed = report.heaps.get(&heap).map_or(0, |f| f.freed);
-                (c.heap, freed as u64)
-            })
-            .collect();
-        let pages = (report.scanned - report.removed) as u64;
-        self.vacuumed(rel, started, horizon, &freed, pages, kept);
-        let ctors = (shown.iter())
-            .map(|(id, heap)| (*id, report.heaps.get(heap).copied().unwrap_or_default()))
-            .collect();
-        Ok(Vacuumed { ctors, report })
+        one.vacuum(rel, &stop).map(Some)
     }
 
     /// Returns term `t`, item `item` of `text`, as a statement of `tx` bounded by `bounds`, in
@@ -1260,7 +1204,7 @@ impl<R: Runtime> Database<R> {
             upto,
             |ser| {
                 self.map_committing(ser.ordered());
-                self.admit_commit(&ser.ordered(), written)?;
+                self.admit_commit(ser, written)?;
                 ser.precommit(sid).map_err(Error::from)
             },
             |ser| {
@@ -1455,4 +1399,57 @@ impl<R: Runtime> Database<R> {
 /// Returns the value either arm of `r` holds.
 pub fn either<E>(r: Result<E, E>) -> E {
     r.unwrap_or_else(|e| e)
+}
+
+impl<R: Runtime> VacuumHold<'_, R> {
+    /// Vacuum the constructor relations of `rel` together under this lock, stopping as `stop`
+    /// says. Returns what [`Database::vacuum`] returns.
+    fn vacuum(&self, rel: RelId, stop: &Stop) -> Result<Vacuumed, Error> {
+        let db = self.db();
+        let r = (db.rels.get(&rel))
+            .unwrap_or_else(|| panic!("a relation a vacuum names has heaps: {rel:?} has none"));
+        db.admit_vacuum(r)?;
+        let horizon = db.horizon(r);
+        let started = db.rt.now();
+        let ids: BTreeMap<u32, CtorId> = db.bindings.indexes()[&r.key_index]
+            .ctors
+            .iter()
+            .map(|(id, c)| (*c, *id))
+            .collect();
+        let sum = vacuum::Sum {
+            heaps: (r.ctors.iter().enumerate())
+                .map(|(c, ctor)| (ids[&(c as u32)], &*db.bindings.heaps()[&ctor.heap].heap))
+                .collect(),
+            indexes: (r.indexes.iter())
+                .map(|(i, _)| &db.bindings.indexes()[i].index)
+                .collect(),
+        };
+        let shown: Vec<(CtorId, u32)> = sum.heaps.iter().map(|(id, h)| (*id, h.id().0)).collect();
+        let _shown = self.show_vacuum(held_id(db.schema.ids().relation_id(rel)).raw(), &shown);
+        let mut began = db.rt.now();
+        let mut io = None;
+        let halted = Cell::new(None);
+        let ran = self.vacuum_sum(r, &sum, &mut || {
+            let paced = db.pace(stop, &mut began, &mut io);
+            paced.map_err(|e| halted.set(Some(e))).is_ok()
+        });
+        db.pacer.charge(&db.rt, began);
+        let (report, kept) = ran.map_err(|e| match e {
+            vacuum::Error::Stopped => halted.take().unwrap_or(Error::Exec(exec::Error::Cancelled)),
+            e => e.into(),
+        })?;
+        let freed: BTreeMap<HeapId, u64> = (r.ctors.iter())
+            .map(|c| {
+                let heap = db.bindings.heaps()[&c.heap].heap.id().0;
+                let freed = report.heaps.get(&heap).map_or(0, |f| f.freed);
+                (c.heap, freed as u64)
+            })
+            .collect();
+        let pages = (report.scanned - report.removed) as u64;
+        db.vacuumed(rel, started, horizon, &freed, pages, kept);
+        let ctors = (shown.iter())
+            .map(|(id, heap)| (*id, report.heaps.get(heap).copied().unwrap_or_default()))
+            .collect();
+        Ok(Vacuumed { ctors, report })
+    }
 }

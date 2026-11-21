@@ -776,7 +776,8 @@ fn a_sweep_refuses_a_touched_page_out_of_frame() {
     for (what, edit, shape) in breaks {
         let mut sim = Sim::new(1, Config::default());
         finished(&mut sim, |rt| {
-            let pager = Pager::create(rt, &options(FRAMES)).unwrap();
+            let pager = Pager::create(rt.clone(), &options(FRAMES)).unwrap();
+            let txns = Transactions::create(rt, &pager).unwrap();
             let large = LargeStore::create(&pager, 9).unwrap();
             let pointer = large.write(&pager, Xid(1), b"sweepmark").unwrap();
             let pid = Pid(pointer.first.page());
@@ -787,7 +788,11 @@ fn a_sweep_refuses_a_touched_page_out_of_frame() {
                 pid
             };
             let damage = Damage::Shape(shape);
-            let got = large.sweep(&pager, |_| Ok(true), &mut || true);
+            let got = large.sweep(
+                &crate::write::Vacuuming::unheld(&pager, &txns),
+                |_| Ok(true),
+                &mut || true,
+            );
             assert_eq!(
                 Err::<Walk, _>(Refused::Page(PageError {
                     pid: blamed,

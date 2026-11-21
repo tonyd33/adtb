@@ -715,7 +715,7 @@ fn family_grant_over_forged_mark(seed: u64, forge: impl Fn(&mut Stored, i64)) ->
             .unwrap();
         let e = authority.engine.upgrade().unwrap();
         e.registered.lock(&e.rt).clear();
-        e.deployed.write(&e.rt).change(&e.rt, |stored| {
+        e.bundle_writer().change(|stored| {
             let id = stored.bundles["web-1.0"].id;
             forge(stored, id);
         });
@@ -770,7 +770,7 @@ fn bundle_of_ann<T>(seed: u64, body: impl FnOnce(&Db) -> T) -> T {
 
 fn forge(db: &Db, change: impl Fn(&mut Stored, i64)) {
     let e = &db.engine;
-    e.deployed.write(&e.rt).change(&e.rt, |stored| {
+    e.bundle_writer().change(|stored| {
         let id = stored.bundles["cat-1.0"].id;
         change(stored, id);
     });

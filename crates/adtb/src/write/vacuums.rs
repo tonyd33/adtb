@@ -131,14 +131,7 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Show a vacuum of the constructor relations `ctors`, each its id with its heap, of the
-    /// relation whose catalog key is `relation`, under `_held`, until the guard returned drops.
-    pub(super) fn show_vacuum(
-        &self,
-        relation: u64,
-        ctors: &[(CtorId, u32)],
-        _held: &VacuumHold<'_, R>,
-    ) -> ShownVacuum<'_, R> {
+    fn show_vacuum(&self, relation: u64, ctors: &[(CtorId, u32)]) -> ShownVacuum<'_, R> {
         let started = self
             .pager
             .wall()
@@ -351,5 +344,13 @@ impl<R: Runtime> Database<R> {
         } else {
             d.kept.remove(&rel);
         }
+    }
+}
+
+impl<'d, R: Runtime> VacuumHold<'d, R> {
+    /// Show a vacuum of the constructor relations `ctors`, each its id with its heap, of the
+    /// relation whose catalog key is `relation`, under this lock, until the guard returned drops.
+    pub(super) fn show_vacuum(&self, relation: u64, ctors: &[(CtorId, u32)]) -> ShownVacuum<'d, R> {
+        self.db().show_vacuum(relation, ctors)
     }
 }

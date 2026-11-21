@@ -5,5 +5,6 @@ mod reindex;
 mod reindex_review;
 mod scrub;
 mod vacuum_budget;
+mod vacuum_exclusion;
 mod vacuum_progress;
 mod verify;

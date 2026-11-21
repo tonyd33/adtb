@@ -346,18 +346,19 @@ impl<R: Runtime> Engine<R> {
         self.audit_seeded.store(true, Ordering::Release);
         Ok(seq)
     }
+}
 
+impl<R: Runtime> BundleWriter<'_, R> {
     /// Replace `old` of the relation `bundles` by `new` and record that `who` retired `bundle`, in
     /// a transaction of its own.
     pub(in super::super) fn retire_row(
         &self,
-        _writer: &BundleWriter<'_>,
         bundles: RelId,
         (old, new): (Val, Val),
         who: (&str, &Val),
         bundle: &str,
     ) -> Result<(), Error> {
-        store::run(self, true, &mut |e, _, id, changes| {
+        store::run(self.engine(), true, &mut |e, _, id, changes| {
             changes.delete(bundles, old.clone());
             changes.insert(bundles, new.clone());
             Tables::new(&e.schema, id).audit_retire(e, changes, who, bundle)

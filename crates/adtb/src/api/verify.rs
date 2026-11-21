@@ -844,7 +844,7 @@ impl<R: Runtime> Engine<R> {
         job.phase("indexes", 0.4);
         let mut indexed = Vec::new();
         let checked = match held {
-            Some(held) => self.db.check_indexes_held(tx, scope, held, &mut indexed),
+            Some(held) => held.check_indexes(tx, scope, &mut indexed),
             None => self.db.check_indexes(tx, scope, waiting, &mut indexed),
         };
         found.extend(indexed);

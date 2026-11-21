@@ -6,6 +6,7 @@ use crate::mvcc::{Fate, StatusError, Writers, Xid};
 use crate::runtime::Runtime;
 use crate::steps::Change;
 use crate::storage::{self, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Undecoded};
+use crate::write::Vacuuming;
 
 use super::blame::unchanged;
 use super::dir::{Space, max_fanout, need_category, page_category};
@@ -1057,21 +1058,22 @@ impl Heap {
     /// Panic if `from` is this heap or `v.row` is not a row of the newest format.
     pub fn copy_version_pruning<R: Runtime>(
         &self,
-        pager: &Pager<R>,
+        held: &Vacuuming<'_, R>,
         from: &Heap,
         v: &Version,
         judge: &mut Judge<'_>,
     ) -> Result<Option<Tid>, Error> {
-        self.put_copy(pager, from, v, Some(judge))
+        self.put_copy(held, from, v, Some(judge))
     }
 
     fn put_copy<R: Runtime>(
         &self,
-        pager: &Pager<R>,
+        held: &Vacuuming<'_, R>,
         from: &Heap,
         v: &Version,
         mut judge: Option<&mut Judge<'_>>,
     ) -> Result<Option<Tid>, Error> {
+        let pager = held.pager();
         assert_ne!(self.id, from.id, "a version is copied to another heap");
         let mut header = v.header;
         header.next = None;

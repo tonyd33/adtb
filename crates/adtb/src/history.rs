@@ -5,9 +5,10 @@ use std::collections::BTreeSet;
 use crate::btree::{self, Index};
 use crate::heap::{self, Flags, Header, Heap};
 use crate::key::{CtorId, Entry, Value};
-use crate::mvcc::{Horizon, Transactions};
+use crate::mvcc::Horizon;
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager};
+use crate::write::Vacuuming;
 
 /// Why versions could not be kept in history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,14 +73,14 @@ impl History<'_> {
 /// A version flagged kept whose copy is left is not copied again: the copy gets the index entry
 /// it lacks. Returns the number of versions copied.
 pub(crate) fn keep<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
+    vacuuming: &Vacuuming<'_, R>,
     heap: &Heap,
     ctor: CtorId,
     into: &History,
     horizon: &Horizon,
     pid: crate::storage::Pid,
 ) -> Result<usize, Error> {
+    let (pager, txns) = (vacuuming.pager(), vacuuming.txns());
     let past = into.heap(ctor);
     let mut judge = txns.judge(pager, horizon.past());
     let mut copied = 0;
@@ -108,7 +109,7 @@ pub(crate) fn keep<R: Runtime>(
             let tid = match earlier {
                 Held::Indexed => continue,
                 Held::Unindexed(tid) => tid,
-                Held::Not => match past.copy_version_pruning(pager, heap, &v, &mut judge)? {
+                Held::Not => match past.copy_version_pruning(vacuuming, heap, &v, &mut judge)? {
                     Some(tid) => {
                         copied += 1;
                         tid

@@ -276,18 +276,6 @@ impl<R: Runtime> Database<R> {
         self.index_checks(tx, scope, || self.hold_vacuum(waiting).map(Some), out)
     }
 
-    /// Check each index of `scope` as [`Database::check_indexes`] does, under `_held`, the vacuum
-    /// lock the caller holds.
-    pub fn check_indexes_held(
-        &self,
-        tx: &Txn,
-        scope: VerifyScope,
-        _held: &VacuumHold<'_, R>,
-        out: &mut Vec<Found>,
-    ) -> Result<(), Error> {
-        self.index_checks(tx, scope, || Ok(None), out)
-    }
-
     fn index_checks<'a>(
         &'a self,
         tx: &Txn,
@@ -616,6 +604,18 @@ impl<R: Runtime> Database<R> {
     /// Returns the heap of the catalog's rows.
     pub(crate) fn kept_store(&self) -> Option<Arc<Heap>> {
         self.structures.rows()
+    }
+}
+
+impl<R: Runtime> VacuumHold<'_, R> {
+    /// Check each index of `scope` as [`Database::check_indexes`] does, under this lock.
+    pub fn check_indexes(
+        &self,
+        tx: &Txn,
+        scope: VerifyScope,
+        out: &mut Vec<Found>,
+    ) -> Result<(), Error> {
+        self.db().index_checks(tx, scope, || Ok(None), out)
     }
 }
 

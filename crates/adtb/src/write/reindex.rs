@@ -10,7 +10,9 @@
 //! SIREAD locks on an index are key ranges on its root page, whose id the swap keeps.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -23,11 +25,11 @@ use crate::btree::{self, BTree};
 use crate::exec;
 use crate::heap::Heap;
 use crate::key::{CtorId, Entry};
-use crate::mvcc::Xid;
+use crate::mvcc::{Transactions, Xid};
 use crate::plan::IndexId;
 use crate::ranks;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
-use crate::storage::{self, Damage, Lsn, Pid, Quarantine};
+use crate::storage::{self, Damage, Lsn, Pager, Pid, Quarantine};
 
 use super::past::Retained;
 use super::schema::{Indexed, Rel};
@@ -132,6 +134,7 @@ pub(super) enum Holder {
 /// every other rebuild, and every other holder.
 pub struct VacuumHold<'d, R: Runtime> {
     db: &'d Database<R>,
+    vacuuming: Vacuuming<'d, R>,
     _rank: HeldRank,
 }
 
@@ -139,6 +142,61 @@ impl<R: Runtime> Drop for VacuumHold<'_, R> {
     fn drop(&mut self) {
         *self.db.vacuuming.lock(&self.db.rt) = None;
         self.db.session.waits.ended(VACUUM_HOLDER);
+    }
+}
+
+impl<'d, R: Runtime> VacuumHold<'d, R> {
+    /// Returns the database whose lock this is.
+    pub(super) fn db(&self) -> &'d Database<R> {
+        self.db
+    }
+
+    /// Returns the lock as the vacuum, the sweep of a large-value store and a copy to a history
+    /// heap take it.
+    pub(super) fn vacuuming(&self) -> &Vacuuming<'d, R> {
+        &self.vacuuming
+    }
+
+    /// Rebuild one index under this lock and swap it in, clearing its mark in the same atomic
+    /// step. Returns whether every old page was freed.
+    pub fn rebuild(&self, job: &Rebuild<'_>) -> Result<bool, Failure> {
+        self.db.rebuild(job)
+    }
+}
+
+/// The vacuum lock of one database, held on one thread, as the vacuum, the sweep of a large-value
+/// store and a copy to a history heap take it. Built only by a [`VacuumHold`], and by tests.
+pub struct Vacuuming<'d, R: Runtime> {
+    pager: &'d Pager<R>,
+    txns: &'d Transactions<R>,
+    _one_thread: PhantomData<Cell<()>>,
+}
+
+impl<'d, R: Runtime> Vacuuming<'d, R> {
+    /// Returns a lock over `pager` and `txns` that holds nothing off.
+    #[cfg(test)]
+    pub(crate) fn unheld(pager: &'d Pager<R>, txns: &'d Transactions<R>) -> Vacuuming<'d, R> {
+        Vacuuming {
+            pager,
+            txns,
+            _one_thread: PhantomData,
+        }
+    }
+
+    /// Returns the pager of the database whose lock this is.
+    pub(crate) fn pager(&self) -> &'d Pager<R> {
+        self.pager
+    }
+
+    /// Returns the transactions of the database whose lock this is.
+    pub(crate) fn txns(&self) -> &'d Transactions<R> {
+        self.txns
+    }
+}
+
+impl<R: Runtime> std::fmt::Debug for Vacuuming<'_, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Vacuuming")
     }
 }
 
@@ -364,6 +422,11 @@ impl<R: Runtime> Database<R> {
                 self.session.waits.started(VACUUM_HOLDER);
                 Some(VacuumHold {
                     db: self,
+                    vacuuming: Vacuuming {
+                        pager: &self.pager,
+                        txns: &self.session.txns,
+                        _one_thread: PhantomData,
+                    },
                     _rank: ranks::VACUUM.hold(),
                 })
             }
@@ -462,9 +525,7 @@ impl<R: Runtime> Database<R> {
         )
     }
 
-    /// Rebuild one index under `_held`, the vacuum lock the caller holds, and swap it in,
-    /// clearing its mark in the same atomic step. Returns whether every old page was freed.
-    pub fn rebuild(&self, job: &Rebuild<'_>, _held: &VacuumHold<'_, R>) -> Result<bool, Failure> {
+    fn rebuild(&self, job: &Rebuild<'_>) -> Result<bool, Failure> {
         let mut pages = Pages {
             built: Vec::new(),
             built_past: Vec::new(),

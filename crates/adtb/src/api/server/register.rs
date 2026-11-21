@@ -33,7 +33,7 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<DynRows, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _open = e.enter()?;
-        let writer = e.deployed.write(&e.rt);
+        let writer = e.bundle_writer();
         let stored = e.deployed.read(&e.rt);
         let (checked, claim) = decide(&e, session, bundle, &stored)?;
         let family = &claim.row.header.family;
@@ -67,7 +67,7 @@ impl<R: Runtime> RoleAuthority<R> {
                     return Err(denied(lacks.join("\n")));
                 }
             }
-            claim.rows(&writer, &e.schema, &mut |relation, insert, row| {
+            claim.rows(&e.schema, &mut |relation, insert, row| {
                 if insert {
                     changes.insert(relation, row);
                 } else {
@@ -81,7 +81,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 .insert(&e.pager, e.db.txns(), x, &claim.facts)
                 .map_err(|err| e.catalog_error(err))
         })?;
-        serve(&e, &writer, checked, &claim);
+        serve(&writer, checked, &claim);
         Ok(e.bundle_rows(&claim.row))
     }
 }
@@ -139,8 +139,9 @@ impl<R: Runtime> Engine<R> {
 }
 
 /// Serve `checked`, whose claim has committed.
-fn serve<R: Runtime>(e: &Engine<R>, writer: &BundleWriter<'_>, checked: Checked, claim: &Claim) {
-    writer.change(&e.rt, |s| claim.record(s));
+fn serve<R: Runtime>(writer: &BundleWriter<'_, R>, checked: Checked, claim: &Claim) {
+    let e = writer.engine();
+    writer.change(|s| claim.record(s));
     let mut explained = (*e.explained()).clone();
     checked.explained(&mut explained);
     *e.bundles.lock(&e.rt) = Arc::new(explained);

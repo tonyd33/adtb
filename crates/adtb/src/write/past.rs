@@ -227,34 +227,59 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Vacuum the heaps of `sum`, of constructors of `rel`, moving each version the retention
-    /// window keeps to its history heap when history is kept, and then expire the history heaps
-    /// of the same constructors. Returns what the vacuum of the current heaps did, and whether
-    /// the history heaps keep a page.
+    /// Returns the reads of the past of a statement reading commits up to `upto`, when the
+    /// database keeps history structures.
+    pub(super) fn pasts(&self, upto: Position) -> Option<Arc<dyn PastReads<R>>> {
+        let retained = self.retained.clone()?;
+        Some(Arc::new(Pasts {
+            pager: self.pager.clone(),
+            txns: self.session.txns.clone(),
+            retained,
+            bindings: self.bindings.clone(),
+            upto,
+        }))
+    }
+
+    fn set_retention(&self, window: Duration) -> Result<(), Error> {
+        if self.session.txns.history().is_some() {
+            self.session.txns.set_window(window);
+            return Ok(());
+        }
+        match &self.retained {
+            Some(r) if !window.is_zero() => {
+                self.session
+                    .txns
+                    .keep_history(&self.pager, r.record, window)?;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl<R: Runtime> VacuumHold<'_, R> {
+    /// Vacuum the heaps of `sum`, of constructors of `rel`, under this lock, moving each version the
+    /// retention window keeps to its history heap when history is kept, and then expire the
+    /// history heaps of the same constructors. Returns what the vacuum of the current heaps did,
+    /// and whether the history heaps keep a page.
     pub(super) fn vacuum_sum(
         &self,
         rel: &Rel,
         sum: &vacuum::Sum,
         pace: &mut dyn FnMut() -> bool,
     ) -> Result<(vacuum::Report, bool), vacuum::Error> {
-        let progress = &self.vacuums.progress;
-        let kept = self
+        let (db, held) = (self.db(), self.vacuuming());
+        let progress = &db.vacuums.progress;
+        let kept = db
             .retained
             .as_ref()
-            .filter(|_| self.session.txns.history().is_some());
+            .filter(|_| db.session.txns.history().is_some());
         let Some(retained) = kept else {
-            let report = vacuum::vacuum(
-                &self.pager,
-                &self.session.txns,
-                sum,
-                self.grant,
-                progress,
-                pace,
-            )?;
+            let report = vacuum::vacuum(held, sum, db.grant, progress, pace)?;
             return Ok((report, false));
         };
         let key_index = rel.key_index;
-        let ctors = &self.bindings.indexes()[&key_index].ctors;
+        let ctors = &db.bindings.indexes()[&key_index].ctors;
         let keyed = &rel
             .indexes
             .iter()
@@ -262,7 +287,7 @@ impl<R: Runtime> Database<R> {
             .expect("a relation's key index is among its indexes")
             .1
             .keys;
-        let types: Vec<_> = self.bindings.indexes()[&key_index]
+        let types: Vec<_> = db.bindings.indexes()[&key_index]
             .index
             .schema()
             .components()
@@ -286,61 +311,21 @@ impl<R: Runtime> Database<R> {
             index,
             key: &key,
         };
-        let report = vacuum::vacuum_keeping(
-            &self.pager,
-            &self.session.txns,
-            sum,
-            &into,
-            self.grant,
-            progress,
-            pace,
-        )?;
+        let report = vacuum::vacuum_keeping(held, sum, &into, db.grant, progress, pace)?;
         let past = vacuum::Sum {
             heaps: pasts,
             indexes: vec![index],
         };
-        let left = vacuum::expire(
-            &self.pager,
-            &self.session.txns,
-            &past,
-            self.grant,
-            progress,
-            pace,
-        )?;
+        let left = vacuum::expire(held, &past, db.grant, progress, pace)?;
         Ok((report, left.scanned + left.skipped > left.removed))
-    }
-
-    /// Returns the reads of the past of a statement reading commits up to `upto`, when the
-    /// database keeps history structures.
-    pub(super) fn pasts(&self, upto: Position) -> Option<Arc<dyn PastReads<R>>> {
-        let retained = self.retained.clone()?;
-        Some(Arc::new(Pasts {
-            pager: self.pager.clone(),
-            txns: self.session.txns.clone(),
-            retained,
-            bindings: self.bindings.clone(),
-            upto,
-        }))
     }
 
     /// Keep history for a retention window of `window` from now on: begin keeping it when it is
     /// not kept and `window` is not zero.
     ///
     /// Fail if the record of the window is damaged.
-    pub fn set_retention(&self, window: Duration, _held: &VacuumHold<'_, R>) -> Result<(), Error> {
-        if self.session.txns.history().is_some() {
-            self.session.txns.set_window(window);
-            return Ok(());
-        }
-        match &self.retained {
-            Some(r) if !window.is_zero() => {
-                self.session
-                    .txns
-                    .keep_history(&self.pager, r.record, window)?;
-                Ok(())
-            }
-            _ => Ok(()),
-        }
+    pub fn set_retention(&self, window: Duration) -> Result<(), Error> {
+        self.db().set_retention(window)
     }
 }
 

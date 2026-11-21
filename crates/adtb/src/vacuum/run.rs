@@ -7,7 +7,11 @@ use crate::history::{self, History};
 use crate::key::CtorId;
 use crate::mvcc::{Horizon, Rule, Transactions, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Walk};
+use crate::steps::{self, Vacuum};
+#[cfg(test)]
+use crate::storage::Pager;
+use crate::storage::{PageError, Walk};
+use crate::write::Vacuuming;
 
 use super::dead::DeadSet;
 
@@ -206,41 +210,37 @@ impl Progress {
 /// large-value store is then swept of the values left unreferenced. `progress` shows each heap's
 /// phase, and `Done` once the closing prune of its pages ends. `pace` is called before each heap
 /// page scanned, moved to history or pruned, and after each index leaf, store chunk and store
-/// page, holding no latch. Once it returns false the vacuum fails with `Stopped` and frees
-/// nothing more. An index entry of a constructor outside its index's set fails the vacuum with
-/// the refusal of the leaf holding it, once that index's pass ends.
-///
-/// Precondition: no other vacuum of the sum, or of a sum sharing its large-value store, runs.
+/// page, holding no latch, each a step of the step hook. Once it returns false the vacuum fails
+/// with `Stopped` and frees nothing more. An index entry of a constructor outside its index's
+/// set fails the vacuum with the refusal of the leaf holding it, once that index's pass ends.
 ///
 /// Versions the retention window keeps stay where they are.
 ///
 /// Panics:
 /// - The heaps do not share one large-value store.
 pub fn vacuum<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
+    held: &Vacuuming<'_, R>,
     sum: &Sum,
     budget: usize,
     progress: &Progress,
     pace: &mut dyn FnMut() -> bool,
 ) -> Result<Report, Error> {
     let mut pass = Pass {
+        held,
         progress,
         pace,
         last: false,
     };
-    let marks = Watermarks::new(Mode::Current(None), txns.cutoff());
-    run(pager, txns, sum, marks, budget, &mut pass)
+    let marks = Watermarks::new(Mode::Current(None), held.txns().cutoff());
+    run(sum, marks, budget, &mut pass)
 }
 
 /// Vacuum `sum` as [`vacuum`] does, moving each version the retention window keeps to the
 /// history heap of its constructor in `into` before freeing it.
 ///
-/// Preconditions: `into` has a history heap for every constructor of `sum`, and no
-/// [`expire`] of those heaps runs.
+/// Precondition: `into` has a history heap for every constructor of `sum`.
 pub fn vacuum_keeping<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
+    held: &Vacuuming<'_, R>,
     sum: &Sum,
     into: &History,
     budget: usize,
@@ -248,54 +248,67 @@ pub fn vacuum_keeping<R: Runtime>(
     pace: &mut dyn FnMut() -> bool,
 ) -> Result<Report, Error> {
     let mut pass = Pass {
+        held,
         progress,
         pace,
         last: false,
     };
-    let marks = Watermarks::new(Mode::Current(Some(into)), txns.cutoff());
-    run(pager, txns, sum, marks, budget, &mut pass)
+    let marks = Watermarks::new(Mode::Current(Some(into)), held.txns().cutoff());
+    run(sum, marks, budget, &mut pass)
 }
 
 /// Vacuum `past`, the history heaps of a sum and the history key index over them, of every
 /// version the retention window no longer keeps, as [`vacuum`] does, and then forget the commit
 /// times and markers before the window.
 pub fn expire<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
+    held: &Vacuuming<'_, R>,
     past: &Sum,
     budget: usize,
     progress: &Progress,
     pace: &mut dyn FnMut() -> bool,
 ) -> Result<Report, Error> {
+    let txns = held.txns();
     let cutoff = txns.cutoff();
     let mut pass = Pass {
+        held,
         progress,
         pace,
         last: false,
     };
     let marks = Watermarks::new(Mode::Past, cutoff);
-    let report = run(pager, txns, past, marks, budget, &mut pass)?;
+    let report = run(past, marks, budget, &mut pass)?;
     if let (Some(record), Some(cutoff)) = (txns.history(), cutoff) {
-        finished(record.expire(pager, cutoff, pass.pace)?)?;
+        finished(record.expire(held.pager(), cutoff, &mut pass.paced(Vacuum::Expire))?)?;
     }
     Ok(report)
 }
 
 /// What one run reports its progress to, and what paces it.
-struct Pass<'p> {
+struct Pass<'p, R: Runtime> {
+    held: &'p Vacuuming<'p, R>,
     progress: &'p Progress,
     pace: &'p mut dyn FnMut() -> bool,
     /// Whether the clean running is the one after the scan ends.
     last: bool,
 }
 
-impl Pass<'_> {
-    /// Pace the run, or fail it once the pace stops it.
-    fn step(&mut self) -> Result<(), Error> {
-        if (self.pace)() {
+impl<R: Runtime> Pass<'_, R> {
+    /// Pace the run at `at`, or fail it once the pace stops it.
+    fn step(&mut self, at: Vacuum) -> Result<(), Error> {
+        if self.paced(at)() {
             Ok(())
         } else {
             Err(Error::Stopped)
+        }
+    }
+
+    /// Returns the pace of the run at `at`.
+    fn paced(&mut self, at: Vacuum) -> impl FnMut() -> bool + '_ {
+        let hook = self.held.pager().steps();
+        let pace = &mut self.pace;
+        move || {
+            hook.at(steps::Step::Vacuum(at));
+            pace()
         }
     }
 }
@@ -309,14 +322,13 @@ fn finished(walk: Walk) -> Result<usize, Error> {
 }
 
 fn run<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
     sum: &Sum,
     mut marks: Watermarks,
     budget: usize,
-    pass: &mut Pass,
+    pass: &mut Pass<R>,
 ) -> Result<Report, Error> {
-    let progress = pass.progress;
+    let (held, progress) = (pass.held, pass.progress);
+    let (pager, txns) = (held.pager(), held.txns());
     let large = shared_store(sum);
     let mut report = Report {
         scanned: 0,
@@ -341,7 +353,7 @@ fn run<R: Runtime>(
         let id = heap.id().0;
         let pages = heap.pages(pager)?;
         for (n, pid) in pages.iter().enumerate() {
-            pass.step()?;
+            pass.step(Vacuum::Scan)?;
             report.scanned += 1;
             progress.set(id, |s| {
                 s.phase = Phase::Scan;
@@ -357,14 +369,15 @@ fn run<R: Runtime>(
             progress.set(id, |s| s.dead_versions += slots.len());
             dead.add(id, *pid, &slots);
             if dead.bytes() >= budget {
-                clean(pager, txns, sum, &mut dead, &mut marks, &mut report, pass)?;
+                clean(sum, &mut dead, &mut marks, &mut report, pass)?;
             }
         }
         progress.set(id, |s| s.done = 1.0);
     }
     pass.last = true;
-    clean(pager, txns, sum, &mut dead, &mut marks, &mut report, pass)?;
-    report.chunks = finished(large.sweep(pager, |x| txns.resolved(pager, x), pass.pace)?)?;
+    clean(sum, &mut dead, &mut marks, &mut report, pass)?;
+    let resolved = |x| txns.resolved(pager, x);
+    report.chunks = finished(large.sweep(held, resolved, &mut pass.paced(Vacuum::Sweep))?)?;
     Ok(report)
 }
 
@@ -431,15 +444,14 @@ fn shared_store(sum: &Sum) -> LargeStore {
 /// freeing those TIDs, and empty `dead`. On the pass's last clean, finish each heap's progress
 /// once its pages are pruned.
 fn clean<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
     sum: &Sum,
     dead: &mut DeadSet,
     marks: &mut Watermarks,
     report: &mut Report,
-    pass: &mut Pass,
+    pass: &mut Pass<R>,
 ) -> Result<(), Error> {
-    let (progress, last) = (pass.progress, pass.last);
+    let (held, progress, last) = (pass.held, pass.progress, pass.last);
+    let (pager, txns) = (held.pager(), held.txns());
     if dead.is_empty() {
         for (_, heap) in sum.heaps.iter().filter(|_| last) {
             progress.finish(heap.id().0);
@@ -454,8 +466,8 @@ fn clean<R: Runtime>(
         for &(ctor, heap) in &sum.heaps {
             let w = marks.of(txns, heap.id().0);
             for (pid, _) in dead.pages(heap.id().0) {
-                pass.step()?;
-                report.moved += history::keep(pager, txns, heap, ctor, into, &w, pid)?;
+                pass.step(Vacuum::Keep)?;
+                report.moved += history::keep(held, heap, ctor, into, &w, pid)?;
             }
         }
     }
@@ -471,7 +483,7 @@ fn clean<R: Runtime>(
                 .get(&e.ctor)
                 .is_some_and(|&heap| dead.contains(heap, e.tid))
         };
-        let walk = index.retain(pager, keep, pass.pace)?;
+        let walk = index.retain(pager, keep, &mut pass.paced(Vacuum::Leaf))?;
         if let Some(e) = stray {
             return Err(index.refuse_stray(pager, &e).into());
         }
@@ -482,7 +494,7 @@ fn clean<R: Runtime>(
         progress.set(id, |s| s.phase = Phase::Prune);
         let w = marks.of(txns, id);
         for (pid, slots) in dead.pages(id) {
-            pass.step()?;
+            pass.step(Vacuum::Prune)?;
             let done = heap.prune(pager, pid, txns.judge(pager, w), &slots, true)?;
             report.freed += done.freed;
             report.cleared += done.cleared;

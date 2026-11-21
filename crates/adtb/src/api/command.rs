@@ -793,12 +793,12 @@ impl<R: Runtime> Engine<R> {
         let decoded = codec
             .decode_val(schema, &row)
             .map_err(|r| write::Broken::CatalogError(r.into()))?;
-        let writer = self.deployed.write(&self.rt);
+        let writer = self.bundle_writer();
         if matches!(
             decoded,
             SettingRow::DefaultLease(_) | SettingRow::LeaseGrace(_)
         ) {
-            self.latch_expired(&writer)?;
+            writer.latch_expired()?;
         }
         self.swap_row(schema, settings, Old::Ctor(setting), row.clone())?;
         let window = {
@@ -807,7 +807,7 @@ impl<R: Runtime> Engine<R> {
             self.background.configure(&settings);
             settings.window
         };
-        self.db.set_retention(window, held)?;
+        held.set_retention(window)?;
         let elem = Ty::Data {
             def,
             args: Vec::new(),

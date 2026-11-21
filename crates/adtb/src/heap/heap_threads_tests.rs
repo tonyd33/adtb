@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::heap::{FieldType, Heap, HeapNo, LargeStore, walk};
 use crate::key::{Scalar, Tid, Value};
-use crate::mvcc::{Fate, StatusError, Writers, Xid};
+use crate::mvcc::{Fate, StatusError, Transactions, Writers, Xid};
 use crate::runtime::{Clock, Threads};
 use crate::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -415,6 +415,7 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
             let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
             let heap =
                 Heap::create_with_fanout(&pager, HEAP_ID, row_type(), large, FANOUT).unwrap();
+            let txns = Transactions::create(rt.clone(), &pager).unwrap();
             let db = Arc::new(Db { pager, heap });
             let stop = Arc::new(AtomicBool::new(false));
             let freed = Arc::new(AtomicUsize::new(0));
@@ -433,7 +434,11 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
                             .prune(&db.pager, Pid(tid.page()), dead_once_deleted, &[], false)
                             .unwrap();
                         let n = large
-                            .sweep(&db.pager, |x| Ok(!x.0.is_multiple_of(2)), &mut || true)
+                            .sweep(
+                                &crate::write::Vacuuming::unheld(&db.pager, &txns),
+                                |x| Ok(!x.0.is_multiple_of(2)),
+                                &mut || true,
+                            )
                             .unwrap()
                             .count();
                         freed.fetch_add(n, Ordering::Relaxed);

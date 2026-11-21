@@ -8,6 +8,7 @@ use crate::storage::{
     LATCHES_PER_THREAD, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Undecoded, Walk,
     kind_fault,
 };
+use crate::write::Vacuuming;
 
 use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
@@ -590,14 +591,13 @@ impl LargeStore {
     ///
     /// Each step frees one chunk and makes the next one a head of count 0, in one update, so a
     /// crash leaves the rest of the value for the next sweep.
-    ///
-    /// Precondition: no other sweep of this store runs.
     pub fn sweep<R: Runtime>(
         &self,
-        pager: &Pager<R>,
+        held: &Vacuuming<'_, R>,
         mut resolved: impl FnMut(Xid) -> Result<bool, StatusError>,
         between: &mut dyn FnMut() -> bool,
     ) -> Result<Walk, Refused> {
+        let pager = held.pager();
         self.space.settle(pager)?;
         let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {

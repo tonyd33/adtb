@@ -161,7 +161,8 @@ impl Db {
                 .collect(),
             indexes: indexes.iter().collect(),
         };
-        vacuum::vacuum(pager, txns, &sum, budget, progress, pace)
+        let held = crate::write::Vacuuming::unheld(pager, txns);
+        vacuum::vacuum(&held, &sum, budget, progress, pace)
     }
 
     fn prune(&mut self, heap: usize, pid: Pid) {
@@ -783,7 +784,11 @@ fn a_version_copy_clears_the_all_visible_flag_of_the_page_it_lands_on() {
                 .unwrap()
                 .expect("the deleted version");
             let copy = db.heaps[OTHER]
-                .copy_version(&db.pager, &db.heaps[EMAIL], &v)
+                .copy_version(
+                    &crate::write::Vacuuming::unheld(&db.pager, &db.txns),
+                    &db.heaps[EMAIL],
+                    &v,
+                )
                 .unwrap()
                 .expect("the version is copied");
             let after = all_visible_marks(&db);

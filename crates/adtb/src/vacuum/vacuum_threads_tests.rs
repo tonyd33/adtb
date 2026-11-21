@@ -109,8 +109,7 @@ impl Db {
 
     fn vacuum(&self, budget: usize, progress: &Progress) {
         vacuum::vacuum(
-            &self.pager,
-            &self.txns,
+            &crate::write::Vacuuming::unheld(&self.pager, &self.txns),
             &self.sum(),
             budget,
             progress,

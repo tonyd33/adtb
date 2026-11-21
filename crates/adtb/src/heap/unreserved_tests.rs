@@ -106,7 +106,11 @@ fn a_sweep_meeting_a_chunk_of_an_unreserved_writer_refuses_its_page() {
         large.recount(&pager, head, 0).unwrap();
         let page = Pid(head.page());
         let resolved = |x| txns.resolved(&pager, x);
-        let got = large.sweep(&pager, resolved, &mut || true);
+        let got = large.sweep(
+            &crate::write::Vacuuming::unheld(&pager, &txns),
+            resolved,
+            &mut || true,
+        );
         assert_eq!(Err::<Walk, _>(Refused::Page(refused_page(page))), got);
         assert_eq!(BTreeMap::from([(page, FRAME)]), pager.damaged());
         pager.close();

@@ -154,7 +154,7 @@ impl<R: Runtime> Engine<R> {
                 online: work.online,
                 phase: &phase,
             };
-            match self.db.rebuild(&rebuild, &no_vacuum) {
+            match no_vacuum.rebuild(&rebuild) {
                 Ok(all_freed) => {
                     reclaimed &= all_freed;
                     self.keep_outcome(schema, index, work.run, None);

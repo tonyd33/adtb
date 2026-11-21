@@ -114,11 +114,11 @@ impl Heap {
     /// Copy `v` as [`Heap::copy_version_pruning`] does, pruning nothing.
     pub fn copy_version<R: Runtime>(
         &self,
-        pager: &Pager<R>,
+        held: &Vacuuming<'_, R>,
         from: &Heap,
         v: &Version,
     ) -> Result<Option<Tid>, Error> {
-        self.put_copy(pager, from, v, None)
+        self.put_copy(held, from, v, None)
     }
 
     /// Insert `row` as [`Heap::insert_pruning`] does, pruning nothing.

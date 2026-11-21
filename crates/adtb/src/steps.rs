@@ -26,6 +26,8 @@ pub enum Step {
     CommitMap(Map),
     /// A checkpoint reached a point of its work.
     Checkpoint(Checkpoint),
+    /// A vacuum reached one of its pace points, holding the vacuum lock.
+    Vacuum(Vacuum),
 }
 
 /// A point of the damage mapper's work.
@@ -50,6 +52,23 @@ pub enum Checkpoint {
     Forced,
 }
 
+/// A pace point of a vacuum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vacuum {
+    /// It is to scan a heap page for dead versions.
+    Scan,
+    /// It is to copy the versions of a heap page the retention window keeps to history.
+    Keep,
+    /// It is to prune a heap page.
+    Prune,
+    /// It cleaned an index leaf.
+    Leaf,
+    /// It swept a store chunk or page.
+    Sweep,
+    /// It forgot commit times or markers before the retention window.
+    Expire,
+}
+
 /// A step function of the engine, by the boundaries it names.
 #[cfg(any(test, feature = "testing"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +79,7 @@ pub enum StepFn {
     Map,
     CommitMap,
     Checkpoint,
+    Vacuum,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -73,6 +93,7 @@ impl Step {
             Step::Map(_) => StepFn::Map,
             Step::CommitMap(_) => StepFn::CommitMap,
             Step::Checkpoint(_) => StepFn::Checkpoint,
+            Step::Vacuum(_) => StepFn::Vacuum,
         }
     }
 }

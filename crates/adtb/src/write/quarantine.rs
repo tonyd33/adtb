@@ -10,6 +10,7 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::index_holder;
 use crate::exec::Class;
+use crate::mvcc::Serializer;
 use crate::plan::{Catalog, IndexId};
 use crate::ranks;
 use crate::runtime::Runtime;
@@ -394,12 +395,8 @@ impl<R: Runtime> Database<R> {
     /// [`Database::admit_touched`] refuses. What the transaction only read plays no part.
     ///
     /// Precondition: the commit record of the transaction is written before the calling thread
-    /// lets go of the serialization lock that `_ordered` witnesses.
-    pub(super) fn admit_commit(
-        &self,
-        _ordered: &Ordered<'_>,
-        written: Touched,
-    ) -> Result<(), Error> {
+    /// lets go of the serialization lock that `_ser` witnesses.
+    pub(super) fn admit_commit(&self, _ser: &Serializer, written: Touched) -> Result<(), Error> {
         if written.writes.is_empty() || !self.pager.any_quarantined() {
             return Ok(());
         }

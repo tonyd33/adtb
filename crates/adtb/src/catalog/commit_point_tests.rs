@@ -560,7 +560,11 @@ fn swept(rt: &SimRuntime) -> usize {
     let (pager, catalog, txns) = catalog_at(rt);
     catalog
         .large
-        .sweep(&pager, |x| txns.resolved(&pager, x), &mut || true)
+        .sweep(
+            &crate::write::Vacuuming::unheld(&pager, &txns),
+            |x| txns.resolved(&pager, x),
+            &mut || true,
+        )
         .expect("the sweep runs");
     let pages = catalog.large.pages(&pager).expect("the store reads").len();
     pager.close();

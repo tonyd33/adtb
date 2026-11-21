@@ -977,12 +977,7 @@ impl Claim {
 
     /// Pass each row the claim deletes, with `false`, and inserts, with `true`, to `write` with
     /// its relation, over the engine's `schema`.
-    pub(super) fn rows(
-        &self,
-        _writer: &BundleWriter<'_>,
-        schema: &Schema,
-        write: &mut impl FnMut(RelId, bool, Val),
-    ) {
+    pub(super) fn rows(&self, schema: &Schema, write: &mut impl FnMut(RelId, bool, Val)) {
         let t = Tables::of(schema);
         if self.changed() {
             if let Some(old) = &self.old {
@@ -1040,7 +1035,7 @@ impl<R: Runtime> Engine<R> {
     /// Renew the lease of bundle `name` when a renewal is due and no other write of a bundle's
     /// row is under way.
     pub(super) fn renew(&self, name: &str) {
-        let Some(writer) = self.deployed.try_write() else {
+        let Some(writer) = self.try_bundle_writer() else {
             return;
         };
         let now = self.clock();
@@ -1054,8 +1049,8 @@ impl<R: Runtime> Engine<R> {
         let mut next = row.clone();
         next.renewed = now;
         // A renewal that fails leaves the lease as it was, for a later call to renew.
-        if self.replace_bundle(&writer, &row, &next).is_ok() {
-            self.put(&writer, next);
+        if writer.replace_bundle(&row, &next).is_ok() {
+            writer.put(next);
         }
     }
 
@@ -1078,7 +1073,7 @@ impl<R: Runtime> Engine<R> {
     /// Retire bundle `name` for the issuer of `p`, the row and its `Retire` audit row committing
     /// together. Returns its row.
     pub(super) fn retire(&self, name: &str, p: &Prepared) -> Result<DynRows, Error> {
-        let writer = self.deployed.write(&self.rt);
+        let writer = self.bundle_writer();
         let now = self.clock();
         let row = known(&self.deployed.read(&self.rt).bundles, name)?.clone();
         let mut next = row.clone();
@@ -1086,8 +1081,7 @@ impl<R: Runtime> Engine<R> {
             next.state = State::Retired(now);
             let t = Tables::of(&self.schema);
             let role = p.issuer.as_ref().map_or(OWNER_ROLE, |i| &i.role);
-            self.retire_row(
-                &writer,
+            writer.retire_row(
                 t.bundles,
                 (t.bundle_value(&row), t.bundle_value(&next)),
                 (role, p.caller()),
@@ -1095,13 +1089,13 @@ impl<R: Runtime> Engine<R> {
             )?;
         }
         let out = self.bundle_rows(&next);
-        self.put(&writer, next);
+        writer.put(next);
         Ok(out)
     }
 
     /// Supersede bundle `name` by `by`, a live bundle of its family. Returns the row of `name`.
     pub(super) fn supersede(&self, name: &str, by: &str) -> Result<DynRows, Error> {
-        let writer = self.deployed.write(&self.rt);
+        let writer = self.bundle_writer();
         let now = self.clock();
         let settings = *self.settings.lock(&self.rt);
         let (row, successor) = {
@@ -1126,71 +1120,11 @@ impl<R: Runtime> Engine<R> {
         let mut next = row.clone();
         if row.state == State::Active {
             next.state = State::Superseded(now);
-            self.replace_bundle(&writer, &row, &next)?;
+            writer.replace_bundle(&row, &next)?;
         }
         let out = self.bundle_rows(&next);
-        self.put(&writer, next);
+        writer.put(next);
         Ok(out)
-    }
-
-    /// Latch each active bundle expired under the current settings, in a transaction of its own,
-    /// before a lease setting changes.
-    pub(super) fn latch_expired(&self, writer: &BundleWriter<'_>) -> Result<(), write::Error> {
-        let now = self.clock();
-        let s = *self.settings.lock(&self.rt);
-        let due: Vec<Row> = self
-            .deployed
-            .read(&self.rt)
-            .bundles
-            .values()
-            .filter(|r| r.state == State::Active && !r.latched && r.expired(now, &s))
-            .cloned()
-            .collect();
-        if due.is_empty() {
-            return Ok(());
-        }
-        let facts: Vec<Fact> = due.iter().map(|r| Fact::Expired(r.id, r.renewed)).collect();
-        let tx = self.db.begin()?;
-        let x = tx
-            .xid()
-            .expect("a write transaction of the write path has an id");
-        if let Err(e) = self
-            .deployment
-            .insert(&self.pager, self.db.txns(), x, &facts)
-        {
-            return Err(self.db.abandoned(tx, e.into()));
-        }
-        self.db.commit(tx)?;
-        writer.change(&self.rt, |s| s.deployed.record(&facts));
-        for mut row in due {
-            row.latched = true;
-            self.put(writer, row);
-        }
-        Ok(())
-    }
-
-    /// Hold `row`, once it commits, as its bundle's row.
-    fn put(&self, writer: &BundleWriter<'_>, row: Row) {
-        writer.change(&self.rt, |s| {
-            s.bundles.insert(row.header.name.clone(), row);
-        });
-    }
-
-    /// Replace the row `old` of `catalog::bundles` by `new`, in a transaction of its own.
-    fn replace_bundle(
-        &self,
-        _writer: &BundleWriter<'_>,
-        old: &Row,
-        new: &Row,
-    ) -> Result<(), Error> {
-        let t = Tables::of(&self.schema);
-        self.swap_row(
-            &self.schema,
-            t.bundles,
-            super::command::Old::Row(t.bundle_value(old)),
-            t.bundle_value(new),
-        )
-        .map_err(|e| self.write_error(super::TxnId(0), e))
     }
 
     pub(super) fn bundle_rows(&self, row: &Row) -> DynRows {
@@ -1212,9 +1146,10 @@ pub(super) struct StoredLock {
     writer: Ranked<()>,
 }
 
-/// A holder of the writer lock of a [`StoredLock`], the one way to change what it stores.
-pub(super) struct BundleWriter<'a> {
-    stored: &'a Lock<Arc<Stored>>,
+/// A holder of the writer lock of an engine's [`StoredLock`], the one way to change what it
+/// stores.
+pub(super) struct BundleWriter<'a, R: Runtime> {
+    engine: &'a Engine<R>,
     _held: RankedGuard<'a, ()>,
 }
 
@@ -1232,27 +1167,93 @@ impl StoredLock {
     }
 
     /// Returns the writer lock, waiting while another holds it.
-    pub(super) fn write<R: Runtime>(&self, rt: &R) -> BundleWriter<'_> {
+    pub(super) fn write<R: Runtime>(&self, rt: &R) -> RankedGuard<'_, ()> {
+        self.writer.lock(rt)
+    }
+}
+
+impl<R: Runtime> Engine<R> {
+    /// Returns the writer of the deployed bundles, waiting while another holds its lock.
+    pub(super) fn bundle_writer(&self) -> BundleWriter<'_, R> {
         BundleWriter {
-            stored: &self.stored,
-            _held: self.writer.lock(rt),
+            engine: self,
+            _held: self.deployed.write(&self.rt),
         }
     }
 
-    /// Returns the writer lock unless another holds it.
-    pub(super) fn try_write(&self) -> Option<BundleWriter<'_>> {
-        let held = self.writer.try_lock()?;
+    /// Returns the writer of the deployed bundles unless another holds its lock.
+    pub(super) fn try_bundle_writer(&self) -> Option<BundleWriter<'_, R>> {
         Some(BundleWriter {
-            stored: &self.stored,
-            _held: held,
+            engine: self,
+            _held: self.deployed.writer.try_lock()?,
         })
     }
 }
 
-impl BundleWriter<'_> {
+impl<'a, R: Runtime> BundleWriter<'a, R> {
+    /// Returns the engine whose bundles this writes.
+    pub(super) fn engine(&self) -> &'a Engine<R> {
+        self.engine
+    }
+
     /// Apply `f` to the stored rows, once the write it mirrors has committed.
-    pub(super) fn change<R: Runtime>(&self, rt: &R, f: impl FnOnce(&mut Stored)) {
-        f(Arc::make_mut(&mut self.stored.lock(rt)));
+    pub(super) fn change(&self, f: impl FnOnce(&mut Stored)) {
+        let e = self.engine;
+        f(Arc::make_mut(&mut e.deployed.stored.lock(&e.rt)));
+    }
+
+    /// Latch each active bundle expired under the current settings, in a transaction of its own,
+    /// before a lease setting changes.
+    pub(super) fn latch_expired(&self) -> Result<(), write::Error> {
+        let e = self.engine;
+        let now = e.clock();
+        let s = *e.settings.lock(&e.rt);
+        let due: Vec<Row> = e
+            .deployed
+            .read(&e.rt)
+            .bundles
+            .values()
+            .filter(|r| r.state == State::Active && !r.latched && r.expired(now, &s))
+            .cloned()
+            .collect();
+        if due.is_empty() {
+            return Ok(());
+        }
+        let facts: Vec<Fact> = due.iter().map(|r| Fact::Expired(r.id, r.renewed)).collect();
+        let tx = e.db.begin()?;
+        let x = tx
+            .xid()
+            .expect("a write transaction of the write path has an id");
+        if let Err(err) = e.deployment.insert(&e.pager, e.db.txns(), x, &facts) {
+            return Err(e.db.abandoned(tx, err.into()));
+        }
+        e.db.commit(tx)?;
+        self.change(|s| s.deployed.record(&facts));
+        for mut row in due {
+            row.latched = true;
+            self.put(row);
+        }
+        Ok(())
+    }
+
+    /// Hold `row`, once it commits, as its bundle's row.
+    fn put(&self, row: Row) {
+        self.change(|s| {
+            s.bundles.insert(row.header.name.clone(), row);
+        });
+    }
+
+    /// Replace the row `old` of `catalog::bundles` by `new`, in a transaction of its own.
+    fn replace_bundle(&self, old: &Row, new: &Row) -> Result<(), Error> {
+        let e = self.engine;
+        let t = Tables::of(&e.schema);
+        e.swap_row(
+            &e.schema,
+            t.bundles,
+            super::command::Old::Row(t.bundle_value(old)),
+            t.bundle_value(new),
+        )
+        .map_err(|err| e.write_error(super::TxnId(0), err))
     }
 }
 
