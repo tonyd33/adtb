@@ -6,6 +6,9 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[path = "../../../xtask/src/listing.rs"]
+mod listing;
+
 const MODE: &str = "ADTB_HEAP_CAP_TEST_MODE";
 const CAP: &str = "ADTB_TEST_HEAP_CAP";
 const SMALL_BOX_CAP: usize = 268_435_456;
@@ -172,32 +175,51 @@ fn a_test_binary_started_with_core_dumps_on_zeroes_its_core_limit() {
 }
 
 /// Returns the paths of the test binaries of the workspace of `manifest` that do not abort at a
-/// one byte cap, building them first.
+/// one byte cap, building them first unless `ADTB_TEST_BINARIES` names their listing, a path to a
+/// line.
 ///
 /// # Panics
 ///
-/// When `cargo nextest list` fails or lists no binary.
+/// When `cargo nextest list` fails, the named listing does not read, no binary is listed, or
+/// `cargo xtask` started the test and named no listing.
 fn uncapped_test_binaries(manifest: &Path) -> Vec<String> {
-    let listed = list_command(manifest).output().expect("cargo nextest runs");
-    let stdout = String::from_utf8_lossy(&listed.stdout);
-    assert!(
-        listed.status.success(),
-        "cargo nextest list fails: {}",
-        String::from_utf8_lossy(&listed.stderr)
-    );
-    let binaries: Vec<&str> = stdout
-        .split("\"binary-path\":\"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
-        .collect();
-    assert!(
-        !binaries.is_empty(),
-        "cargo nextest lists no binary: {stdout}"
-    );
+    let binaries: Vec<String> = match std::env::var_os(listing::TEST_BINARIES) {
+        Some(path) => fs::read_to_string(&path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{} names {}: {e}",
+                    listing::TEST_BINARIES,
+                    Path::new(&path).display()
+                )
+            })
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+        None => {
+            assert_eq!(
+                std::env::var_os(listing::UNDER_XTASK),
+                None,
+                "cargo xtask started this test and set no {}",
+                listing::TEST_BINARIES
+            );
+            let listed = list_command(manifest).output().expect("cargo nextest runs");
+            assert!(
+                listed.status.success(),
+                "cargo nextest list fails: {}",
+                String::from_utf8_lossy(&listed.stderr)
+            );
+            String::from_utf8_lossy(&listed.stdout)
+                .split("\"binary-path\":\"")
+                .skip(1)
+                .filter_map(|rest| rest.split('"').next())
+                .map(str::to_owned)
+                .collect()
+        }
+    };
+    assert!(!binaries.is_empty(), "no test binary is listed");
     binaries
         .into_iter()
         .filter(|binary| !aborts_at_one_byte(binary))
-        .map(str::to_owned)
         .collect()
 }
 

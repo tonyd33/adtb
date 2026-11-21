@@ -7,6 +7,7 @@ extern crate adtb_heap_cap as _;
 mod check;
 mod grammar;
 mod lint;
+mod listing;
 mod scope;
 mod size;
 mod step;
@@ -35,7 +36,9 @@ struct Args {
 enum Task {
     /// Run `cargo nextest run --no-fail-fast ARGS` over the workspace in a memory-limited scope.
     ///
-    /// The full output goes to `target/test.txt`. Prints the build errors, the summary with every
+    /// First build the test binaries ARGS select with `cargo nextest run --no-run ARGS` and write
+    /// their listing, which the test of every test binary's heap cap reads in place of building. The full output goes to
+    /// `target/test.txt`, the build's when it fails. Prints the build errors, the summary with every
     /// failed, killed and timed out test, the scope's peak memory and that path, and fails when
     /// nextest does.
     ///
@@ -55,11 +58,14 @@ enum Task {
     },
     /// Run every check of the workspace in one memory-limited scope, as `test` does.
     ///
-    /// In a scope of its own on at least 8 cores, run the tests and the damage profile at once, the
-    /// damage profile on a quarter of the cores' test threads and the tests on a thread for every
-    /// core, and beside them clippy, building into `clippy` under the target directory; when
-    /// clippy fails, kill the tests and the damage profile and report them stopped. Otherwise run
-    /// clippy, then, once it passes, the tests, then the damage profile. Beside them run rustfmt,
+    /// Build the test binaries in one build stage; the tests and the damage profile run them and
+    /// build nothing. In a scope of its own on at least 8 cores, run the build beside clippy,
+    /// building into `clippy` under the target directory, and once the build passes run the tests
+    /// and the damage profile at once, the damage profile on a quarter of the cores' test threads
+    /// and the tests on a thread for every core; when clippy fails, kill whichever of the build,
+    /// the tests and the damage profile run and report them stopped, and the others as did not
+    /// run. Otherwise run clippy, then, once it passes, the build, then, once it passes, the
+    /// tests, then the damage profile. Beside them run rustfmt,
     /// the TQL rules, cargo-deny, the source-size limit, the documentation build and its link
     /// check, the editor grammar's generated sources and its corpus and highlight tests, the Loom
     /// models and Miri.

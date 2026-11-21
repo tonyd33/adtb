@@ -27,6 +27,7 @@ pub enum Stage {
     Loom,
     Miri,
     Clippy,
+    Build,
     Tests,
     Damage,
 }
@@ -43,9 +44,12 @@ const FREE: [Stage; 8] = [
     Stage::Miri,
 ];
 
-/// The stages that build in the workspace's target directory. When they run at once they run
-/// beside clippy and stop when it fails; otherwise they run after it passes.
+/// The stages that run the build stage's test binaries once it passes.
 const TESTS: [Stage; 2] = [Stage::Tests, Stage::Damage];
+
+/// The stages that build in or run from the workspace's target directory. When they run beside
+/// clippy they stop when it fails; otherwise they run after it passes.
+const BUILT: [Stage; 3] = [Stage::Build, Stage::Tests, Stage::Damage];
 
 /// The flag of `xtask stage clippy` that builds into `clippy` under the target directory.
 const OWN_TARGET: &str = "--own-target";
@@ -65,6 +69,7 @@ impl Stage {
             Self::Loom => "loom",
             Self::Miri => "miri",
             Self::Clippy => "clippy",
+            Self::Build => "build",
             Self::Tests => test::STEP,
             Self::Damage => "damage",
         }
@@ -74,7 +79,7 @@ impl Stage {
     pub fn parse(name: &str) -> Result<Self, String> {
         FREE.into_iter()
             .chain([Self::Clippy])
-            .chain(TESTS)
+            .chain(BUILT)
             .find(|stage| stage.name() == name)
             .ok_or_else(|| format!("no stage {name}"))
     }
@@ -99,6 +104,9 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
     let logs = workspace.target.join("check");
     std::fs::create_dir_all(&logs)
         .map_err(|e| format!("xtask check: creating {}: {e}", logs.display()))?;
+    let suite = workspace.target.join("test.txt");
+    std::fs::write(&suite, "xtask check: the suite did not run\n")
+        .map_err(|e| format!("xtask check: writing {}: {e}", suite.display()))?;
     let program =
         std::env::current_exe().map_err(|e| format!("xtask check: no path to xtask: {e}"))?;
     tree::adopt_orphans().map_err(|e| format!("xtask check: {e}"))?;
@@ -123,22 +131,36 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
                         .run(Stage::Clippy, &[OWN_TARGET.to_owned()])
                         .map(|ran| sender_clippy.send(ran))
                 });
-                let damage = vec!["--test-threads".to_owned(), damage.to_string()];
-                for (stage, threads) in TESTS.into_iter().zip([Vec::new(), damage]) {
-                    let sender = sender.clone();
-                    s.spawn(move || launch.run(stage, &threads).map(|ran| sender.send(ran)));
-                }
+                let sender = sender.clone();
+                s.spawn(move || {
+                    let build = launch.run(Stage::Build, &[])?;
+                    let passed = build.passed();
+                    sender.send(build).ok()?;
+                    if passed {
+                        let damage = vec!["--test-threads".to_owned(), damage.to_string()];
+                        for (stage, threads) in TESTS.into_iter().zip([Vec::new(), damage]) {
+                            let sender = sender.clone();
+                            s.spawn(move || {
+                                launch.run(stage, &threads).map(|ran| sender.send(ran))
+                            });
+                        }
+                    }
+                    Some(())
+                });
             }
             None => {
                 let sender = sender.clone();
                 s.spawn(move || {
-                    let clippy = launch.run(Stage::Clippy, &[])?;
-                    let passed = clippy.passed();
-                    sender.send(clippy).ok()?;
-                    if passed {
-                        for stage in TESTS {
-                            sender.send(launch.run(stage, &[])?).ok()?;
+                    for stage in [Stage::Clippy, Stage::Build] {
+                        let ran = launch.run(stage, &[])?;
+                        let passed = ran.passed();
+                        sender.send(ran).ok()?;
+                        if !passed {
+                            return Some(());
                         }
+                    }
+                    for stage in TESTS {
+                        sender.send(launch.run(stage, &[])?).ok()?;
                     }
                     Some(())
                 });
@@ -160,7 +182,7 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
             }
             ended_stages.push(ran.stage);
         }
-        for stage in TESTS.into_iter().filter(|s| !ended_stages.contains(s)) {
+        for stage in BUILT.into_iter().filter(|s| !ended_stages.contains(s)) {
             say(format_args!("xtask check: {} did not run", stage.name()))?;
         }
         Ok::<_, String>(failed)
@@ -208,15 +230,19 @@ pub fn stage(
         }
         Stage::Fmt => step::run(name, workspace.cargo(&["fmt"]).args(["--all", "--check"])),
         Stage::Lint => lint::run(&workspace.root, base, false),
-        Stage::Tests => test::run(workspace, &threads),
+        Stage::Build => test::build(workspace).and_then(|output| {
+            std::io::stderr()
+                .write_all(&output)
+                .map_err(|e| format!("{name}: writing cargo's output: {e}"))
+        }),
+        Stage::Tests => test::run_built(workspace, &threads),
         Stage::Loom => loom(workspace, name),
         Stage::Miri => miri(workspace, name),
         Stage::Deny => step::run(name, workspace.cargo(&["deny"]).arg("check")),
         Stage::Damage => step::run(
             name,
-            workspace
-                .cargo(&["nextest", "run"])
-                .args(["--workspace", "--profile", "damage"])
+            test::reuse(workspace)
+                .args(["--profile", "damage"])
                 .args(&threads),
         ),
         Stage::Size => size::run(&workspace.root),
@@ -260,7 +286,7 @@ enum Outcome {
 
 impl Launch {
     /// Run `stage` in a process of its own with `args`, its output in its log. Returns `None` for
-    /// the tests or the damage search after clippy failed.
+    /// the build, the tests or the damage search after clippy failed.
     #[expect(
         clippy::disallowed_methods,
         reason = "goes if the check stops reporting each stage's wall time"
@@ -303,7 +329,7 @@ impl Launch {
             .stdout(out)
             .stderr(err);
         let mut children = self.children();
-        if TESTS.contains(&stage) && children.stopped {
+        if BUILT.contains(&stage) && children.stopped {
             return Ok(None);
         }
         let mut child = command
@@ -339,13 +365,13 @@ impl Launch {
         }
     }
 
-    /// Kill the tests and the damage search with every process under them and start neither,
+    /// Kill the build, the tests and the damage search with every process under them and start none,
     /// then print any process under the check that is still running and is no stage.
     fn stop(&self) -> Result<(), String> {
         let mut children = self.children();
         children.stopped = true;
         let mut killed = Vec::new();
-        for (stage, held) in children.running.iter().filter(|(s, _)| TESTS.contains(s)) {
+        for (stage, held) in children.running.iter().filter(|(s, _)| BUILT.contains(s)) {
             killed.push(*stage);
             let left = tree::kill(held).map_err(|e| format!("xtask check: stopping: {e}"))?;
             for pid in left {

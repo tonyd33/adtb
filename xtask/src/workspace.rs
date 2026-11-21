@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::step;
+use crate::{listing, step};
 
 /// The cargo workspace `cargo xtask` runs in, as `cargo metadata` reports it.
 #[derive(Debug)]
@@ -47,7 +47,9 @@ impl Workspace {
     /// Returns a command of `program` that builds into this workspace's target directory.
     pub fn command(&self, program: impl AsRef<Path>) -> Command {
         let mut command = Command::new(program.as_ref());
-        command.env("CARGO_TARGET_DIR", &self.target);
+        command
+            .env("CARGO_TARGET_DIR", &self.target)
+            .env(listing::UNDER_XTASK, "1");
         command
     }
 }

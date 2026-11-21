@@ -40,12 +40,17 @@ For a fresh clone, host prerequisites and optional editor setup, read
   Miri, dependency policy, source-size limits, the documentation build with
   its link check, `cargo xtask lint` and the editor grammar's generated sources and tests. With REVSET it
   also checks the lint and structure allowlists against those of the parent of REVSET's root.
-  Every stage starts at once. In the memory scope on 8 or more cores the suite and the damage
-  profile run at once, the damage profile on a quarter of the cores' test threads and the suite on
-  a thread for every core, and clippy builds into `target/clippy` beside them; when clippy fails,
-  the check kills the suite and the damage profile, reports them stopped and marks `target/test.txt` partial.
-  Otherwise, as in CI, clippy runs first in the shared target, then the suite, then the damage
-  profile. Each stage's output goes to
+  Every stage starts at once. One build stage builds the test binaries; the suite and the damage
+  profile run those binaries and build nothing, so no build runs in the target while a test runs.
+  In the memory scope on 8 or more cores the build runs beside clippy, which builds into
+  `target/clippy`, and once it passes the suite and the damage profile run at once, the damage
+  profile on a quarter of the cores' test threads and the suite on a thread for every core; when
+  clippy fails, the check kills whichever of the build, the suite and the damage profile run,
+  reports them stopped and the others as did not run, and marks `target/test.txt` partial when
+  the suite was stopped. Otherwise, as in CI, clippy runs first in the shared target, then the
+  build, then the suite, then the damage profile; a failed stage of clippy or the build leaves
+  those after it as did not run. `target/test.txt` holds the suite's output, or the build's
+  output marked as a build failure, or a line that the suite did not run. Each stage's output goes to
   `target/check/STAGE.log`; the check prints each stage's wall time as it ends and the whole
   log of each that failed, and fails when any stage fails.
 - `cargo xtask lint [--against REV] [--counts]`: run the TQL rules under `lint/` with `tql`,
@@ -67,7 +72,9 @@ change before reporting completion.
 The `xtask` crate's commands and the conformance runner:
 
 - `cargo xtask test [ARGS]`: the full nextest run, output in `target/test.txt`; prints failures,
-  the summary and the run's peak memory. `cargo xtask test` and `cargo xtask check` each run in a
+  the summary and the run's peak memory. It first builds the test binaries ARGS select with
+  `cargo nextest run --no-run ARGS` and writes their listing, which the heap cap test reads in place
+  of building, so no build runs beside a test; a build failure's output goes to `target/test.txt`. `cargo xtask test` and `cargo xtask check` each run in a
   systemd user scope of at most 14G, inside `adtb.slice`, which every run shares, throttled past
   60% of the machine's memory and capped at 75%, no swap. Past a limit the kernel kills a process,
   which nextest reports as SIGKILL, and the run goes on. A typed
