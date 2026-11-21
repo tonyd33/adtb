@@ -167,6 +167,7 @@ revoke read us from support",
     "module law\nscript\n  insert us { label: \"one\" }",
     "module law\ndrop field T.m",
     "module law\nrevert 0036\n  fill T.m = \"m\"",
+    "module law\nadd set Named of us = U\nadd unique (label) in us.Named",
 ];
 
 /// The hex of the version hash after each migration of `SAMPLE_LOG`, then of `BASE` and
@@ -209,6 +210,7 @@ const HASHES: &[&str] = &[
     "479a90e50ba23127d034a42162b51ed68743985d0be14deb0f864dd4e6a695f4",
     "23142a66a8e7b01400bec2cf6c8dd36a8845adf54cf9d6b4529992cb4229b92c",
     "b054526b7798d88d639688f18c39b24142b1b5ff3ada655714ca6bc82025db45",
+    "14f5945adb2b15b9517780cc35e19e711af87aabe18fc5d98734d044edd863b5",
 ];
 
 fn migrated(from: &Source, text: &str) -> Source {
@@ -311,4 +313,17 @@ fn every_version_of_a_log_holding_each_operator_keeps_its_stored_hash() {
     let missed: Vec<_> = want.difference(&reached).collect();
     assert!(missed.is_empty(), "the corpus logs no {missed:?}");
     assert_eq!(HASHES, got);
+}
+
+#[test]
+fn a_scope_naming_a_set_hashes_otherwise_than_one_listing_its_constructors() {
+    let base = migrated(
+        &migrated(&Source::default(), BASE),
+        "module law\nadd set Only of ts = A",
+    );
+    let hash = |scope: &str| {
+        let src = migrated(&base, &format!("module law\nadd unique (z) in ts.{scope}"));
+        oplog::version_hash(&src.schema().expect("it builds"), &src).expect("the log resolves")
+    };
+    assert_ne!(hash("Only"), hash("(A)"));
 }

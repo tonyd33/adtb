@@ -251,6 +251,7 @@ payloads! {
         PRIVILEGE_PRIVILEGE "privilege": TEXT,
         PRIVILEGE_TARGET "target": OPTION_TERM,
     ];
+    SCOPE = k::CLAUSE_SCOPE [SCOPE_SET "set": I64];
 }
 
 /// A row of `catalog::migration_ops`.

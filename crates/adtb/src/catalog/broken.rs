@@ -4,7 +4,7 @@ use adtb_lang::canon::Unnamed;
 use adtb_lang::evolve::LogGrant;
 use adtb_lang::kernel::Invalid;
 use adtb_lang::norm;
-use adtb_lang::span::FileDiag;
+use adtb_lang::span::{Diag, FileDiag};
 use adtb_lang::types::Ty;
 
 use crate::exec::{self, Val};
@@ -22,6 +22,8 @@ use super::root::{Changing, Unended};
 pub enum Broken {
     /// The engine's own declarations do not check; each diagnostic.
     Declarations(Vec<FileDiag>),
+    /// A migration of the log does not resolve; each diagnostic.
+    Unresolved(Vec<Diag>),
     /// A term of a built schema writes a name its source does not resolve.
     Unnamed(Unnamed),
     /// A settled source's schema takes a relation as added later.
@@ -133,6 +135,7 @@ impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Broken::Declarations(ds) => write!(f, "the engine's declarations check: {ds:?}"),
+            Broken::Unresolved(ds) => write!(f, "every logged migration resolves: {ds:?}"),
             Broken::Unnamed(u) => write!(
                 f,
                 "a term of a built schema writes a name its source does not resolve: {u}"

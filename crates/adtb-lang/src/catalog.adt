@@ -144,6 +144,7 @@ type ClauseBody = Joins       { set: I64 }
                 | Carry       { field: I64 }
                 | Fill        { field: I64, fill: Term }
                 | Privilege   { privilege: Text, target: Option Term }
+                | Scope       { set: I64 }
 type OpClause = { migration: Key migrations, ordinal: I32, clause: I32, body: ClauseBody }
 relation migration_clauses : OpClause key (migration, ordinal, clause)
 

@@ -512,6 +512,7 @@ type ClauseBody = Joins       { set: I64 }
                 | Carry       { field: I64 }
                 | Fill        { field: I64, fill: Term }
                 | Privilege   { privilege: Text, target: Option Term }
+                | Scope       { set: I64 }
 type OpClause = { migration: Key migrations, ordinal: I32, clause: I32, body: ClauseBody }
 relation migration_clauses : OpClause key (migration, ordinal, clause)
 
@@ -583,8 +584,9 @@ The clauses an operator takes any number of are rows of
 `migration_clauses`, `clause` their position from 1: `Joins` for a
 `joins` set, `Member` for each constructor a merge or nest replaces, a
 named set lists, a moved field goes to, an `add default` or `drop
-default` fills or the written `in r.C` scope of an index or unique
-names, `Arm` for an `arm` clause, `Replacement`
+default` fills or the written `in` scope of an index or unique
+names, `Scope` for each named set that scope names, both in written
+order, `Arm` for an `arm` clause, `Replacement`
 for the `unique` and
 `index` clauses of a split, `Carry` for a field after `carry`,
 `Fill` for a revert's `fill`, and `Privilege` for each privilege of a
@@ -1142,7 +1144,7 @@ Module `catalog`, types:
 | 380 | `Operator` | 381 `AddModule`, 382 `DropModule`, 383 `Install`, 384 `Uninstall`, 385 `AddType`, 386 `DropType`, 387 `AddRelation`, 388 `DropRelation`, 389 `AddSet`, 390 `DropSet`, 391 `AddConstructor`, 392 `RemoveConstructor`, 393 `Enable`, 394 `Disable`, 395 `Deprecate`, 396 `RenameConstructor`, 397 `RenameType`, 398 `RenameRelation`, 399 `RenameSet`, 400 `RenameField`, 401 `Split`, 402 `Merge`, 403 `Nest`, 404 `Unnest`, 405 `AddField`, 406 `DropField`, 407 `MoveField`, 408 `AddUnique`, 409 `DropUnique`, 410 `Rekey`, 411 `AddIndex`, 412 `DropIndex`, 413 `AddDefault`, 414 `DropDefault`, 415 `DefineFn`, 416 `RedefineFn`, 417 `DropFn`, 418 `DefineAggregate`, 419 `DropAggregate`, 420 `AddConstraint`, 421 `DropConstraint`, 422 `AddCheck`, 423 `DropCheck`, 424 `Store`, 425 `Unstore`, 426 `AddComputed`, 427 `RedefineComputed`, 428 `DropComputed`, 429 `Grant`, 430 `Revoke`, 431 `AdoptTzdb`, 432 `Script`, 433 `Revert`, 468 `AlterField` |
 | 434 | `MigrationOp` | 435 (one constructor) |
 | 436 | `ArmTarget` | 437 `OfFn`, 438 `OfConstraint`, 439 `OfComputed` |
-| 440 | `ClauseBody` | 441 `Joins`, 442 `Member`, 443 `Arm`, 444 `Replacement`, 445 `Carry`, 446 `Fill`, 472 `Privilege` |
+| 440 | `ClauseBody` | 441 `Joins`, 442 `Member`, 443 `Arm`, 444 `Replacement`, 445 `Carry`, 446 `Fill`, 472 `Privilege`, 476 `Scope` |
 | 447 | `OpClause` | 448 (one constructor) |
 | 452 | `Default` | 453 (one constructor) |
 | 454 | `Computed` | 455 (one constructor) |
@@ -1246,11 +1248,11 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 475 are listed in the rows of the types they belong
+Ids from 341 to 476 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 476 to 1023 are unassigned.
+to 309 and from 477 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's original fields take ids from 0:
@@ -1268,7 +1270,7 @@ from 471. They take ids 0 to 563:
 and 570, `Finding.Structure` its field `where` at id 571,
 `RejectReason.BackupDamaged` its field `part` at id 572, and
 `RejectReason.RestorePointUnavailable` its fields `oldest` and `newest` at
-ids 573 and 574.
+ids 573 and 574, and `ClauseBody.Scope` its field `set` at id 575.
 The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;

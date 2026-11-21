@@ -78,6 +78,7 @@ fn hashed(migrations: &[&str]) -> String {
     }
     let schema = source.schema().expect("the source builds");
     version_hash(&schema, &source)
+        .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

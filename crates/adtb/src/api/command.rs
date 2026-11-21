@@ -421,7 +421,7 @@ impl<R: Runtime> Engine<R> {
             Command::CancelCall(key) => self.cancel_call(tx, p, *key, local, bounds),
             Command::PrintSchema => {
                 let ty = Ty::Record(vec![("text".into(), Ty::Base(Base::Text))]);
-                let row = Val::record(vec![Val::text(&self.printed_schema())]);
+                let row = Val::record(vec![Val::text(&self.printed_schema()?)]);
                 Ok(rows(schema, ty, vec![row]))
             }
             Command::Export {
@@ -436,8 +436,8 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Returns the folded schema: its version and hash, then each module's declarations.
-    fn printed_schema(&self) -> String {
-        let hash = self.hash.get(&self.schema, &self.source);
+    fn printed_schema(&self) -> Result<String, write::Error> {
+        let hash = self.hash.get(&self.schema, &self.source)?;
         let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
         let mut out = format!("-- version {} hash {hash}\n", self.source.version);
         let mut module = None;
@@ -449,7 +449,7 @@ impl<R: Runtime> Engine<R> {
             out.push_str(&d.text);
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     /// Returns the value of `t`, a term of `p` reading no relation.

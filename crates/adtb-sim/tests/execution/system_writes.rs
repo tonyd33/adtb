@@ -231,6 +231,7 @@ fn bundled(name: &str, body: &str) -> Registration {
     let source = adtb_lang::signature::replay([SCHEMA]).expect("replay fixture");
     let schema = source.schema().expect("build fixture schema");
     let hash: String = adtb::version_hash(&schema, &source)
+        .expect("the log resolves")
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();

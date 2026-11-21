@@ -546,7 +546,14 @@ fn an_engine_shows_its_archive_and_archives_into_it() {
         0 < through && through < last,
         "the worker archived some, the close the rest: {through} {last}"
     );
-    assert_eq!(NO_PARENT, assert_one(&files, log, (0, last)));
+    let logged = process::run(&mut sim, |rt| {
+        let (pager, opening) = Pager::open(rt, &Options::new("db.adt")).unwrap();
+        let logged = opening.recovery().expect("the open reads the log").end.0;
+        pager.close();
+        logged
+    });
+    let end = logged - logged % SEGMENT;
+    assert_eq!(NO_PARENT, assert_one(&files, log, (0, end)));
 }
 
 const ROWS: i64 = 8;

@@ -126,17 +126,23 @@ impl Builder<'_> {
         let mut defaults = Vec::new();
         let mut computed = Vec::new();
         let mut volatile = false;
-        let scope_of = |b: &mut Self, s: &Option<ast::CtorScope>| -> Option<CtorSet> {
-            let s = s.as_ref()?;
+        type Scoped = (Option<CtorSet>, Option<Vec<ScopePart>>);
+        let scope_of = |b: &mut Self, s: &Option<ast::CtorScope>| -> Scoped {
+            let Some(s) = s.as_ref() else {
+                return (None, None);
+            };
             let sel = match s {
                 ast::CtorScope::One(c) => ast::CtorSel::One(c.clone()),
                 ast::CtorScope::Many(cs) => ast::CtorSel::Many(cs.clone()),
             };
-            match b.schema.relation_sel(id, &sel) {
-                Ok(cs) => Some(cs),
-                Err(e) => {
+            match (
+                b.schema.relation_sel(id, &sel),
+                b.schema.written_scope(id, Some(&sel)),
+            ) {
+                (Ok(cs), Ok(written)) => (Some(cs), written),
+                (Err(e), _) | (_, Err(e)) => {
                     b.err(file, r.span, e);
-                    None
+                    (None, None)
                 }
             }
         };
@@ -163,11 +169,12 @@ impl Builder<'_> {
                     }
                 }
                 ast::RelationClause::Unique(fields, s, texts) => {
-                    let scope = scope_of(self, s);
+                    let (scope, written) = scope_of(self, s);
                     indexes.push(IndexDef {
                         fields: fields.clone(),
                         texts: texts.clone(),
                         scope,
+                        written,
                         interval: false,
                         unique: true,
                     });
@@ -178,11 +185,12 @@ impl Builder<'_> {
                     texts,
                     scope: s,
                 } => {
-                    let scope = scope_of(self, s);
+                    let (scope, written) = scope_of(self, s);
                     indexes.push(IndexDef {
                         fields: fields.clone(),
                         texts: texts.clone(),
                         scope,
+                        written,
                         interval: *interval,
                         unique: false,
                     });
@@ -377,5 +385,59 @@ impl Builder<'_> {
             field: field.text.clone(),
             value,
         })
+    }
+}
+
+impl Schema {
+    /// Returns what the `in` scope `sel` of relation `rel` names, sorted; `None` without `in`.
+    pub fn written_scope(
+        &self,
+        rel: RelId,
+        sel: Option<&ast::CtorSel>,
+    ) -> Result<Option<Vec<ScopePart>>, String> {
+        let Some(sel) = sel else {
+            return Ok(None);
+        };
+        let mut parts = self.relation_scope(rel, sel)?;
+        parts.sort_unstable();
+        Ok(Some(parts))
+    }
+
+    /// Returns what the constructor selection `sel` after relation `rel` names, in written order.
+    pub fn relation_scope(&self, rel: RelId, sel: &ast::CtorSel) -> Result<Vec<ScopePart>, String> {
+        let r = self.relation(rel);
+        let def = self.ty(r.elem_def);
+        match sel {
+            ast::CtorSel::One(c) => {
+                if let Some(i) = def.ctor_index(&c.text) {
+                    return Ok(vec![ScopePart::Ctor(i)]);
+                }
+                match r.sets.iter().position(|s| s.name == c.text) {
+                    Some(s) => Ok(vec![ScopePart::Set(s)]),
+                    None => Err(format!(
+                        "`{}` is neither a constructor of `{}` nor a named set of `{}`",
+                        c.text, def.name, r.name
+                    )),
+                }
+            }
+            ast::CtorSel::Many(cs) => {
+                let mut out = Vec::new();
+                for c in cs {
+                    match def.ctor_index(&c.text) {
+                        Some(i) if out.contains(&ScopePart::Ctor(i)) => {
+                            return Err(format!("`{}` is listed twice", c.text));
+                        }
+                        Some(i) => out.push(ScopePart::Ctor(i)),
+                        None => {
+                            return Err(format!(
+                                "`{}` is not a constructor of `{}`",
+                                c.text, def.name
+                            ));
+                        }
+                    }
+                }
+                Ok(out)
+            }
+        }
     }
 }

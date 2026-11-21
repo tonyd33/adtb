@@ -44,7 +44,7 @@ type Badge = { id: I64, name: Text }
 ";
         let relations = "relation us : U
   key id generate sequence
-  unique (label)
+  unique (label) in Named
 relation ts : T
   key id generate sequence
   unique (x) in A
@@ -68,6 +68,7 @@ relation badges : Badge
             "module auth
 {first}{second}set S of ts = A | B
 set R of ts = A | B | C
+set Named of us = U
 fn f (t: T) -> Text = match t
   | A a -> a.x
   | B b -> b.x
@@ -1639,96 +1640,8 @@ struct Known {
     differences: &'static [&'static str],
 }
 
-/// The operators scoping an index by a named set do not resolve.
-const ADD_R: &str = "Unresolved: an object `add index (z) in ts.R2` creates or names is in neither the source before it nor the one after it";
-const DROP_R: &str = "Unresolved: an object `drop index (z) in ts.R2` creates or names is in neither the source before it nor the one after it";
-const DROP_S: &str = "Unresolved: an object `drop index (z) in ts.S` creates or names is in neither the source before it nor the one after it";
-const DROP_S3: &str = "Unresolved: an object `drop index (z) in ts.S3` creates or names is in neither the source before it nor the one after it";
-
-/// The row of case `case`, of kind `kind`, whose only differences are operators scoping an index
-/// by a named set.
-const fn set_scoped(
-    kind: &'static str,
-    case: &'static str,
-    differences: &'static [&'static str],
-) -> Known {
-    Known {
-        kind,
-        case,
-        differences,
-    }
-}
-
 /// The disagreements main shows.
 const KNOWN: &[Known] = &[
-    set_scoped(
-        "DropIndex",
-        "drop index (z) in ts.R2 [field re-added through a source that builds]",
-        &[ADD_R, DROP_R],
-    ),
-    set_scoped(
-        "DropIndex",
-        "drop index (z) in ts.R2 [field re-added through a source that does not build]",
-        &[ADD_R, DROP_R],
-    ),
-    set_scoped("DropIndex", "drop index (z) in ts.S", &[DROP_S]),
-    set_scoped(
-        "DropIndex",
-        "drop index (z) in ts.S [named object renamed]",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "DropIndex",
-        "drop index (z) in ts.S [named objects renamed apart]",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "DropIndex",
-        "drop index (z) in ts.S [object dropped]",
-        &[DROP_S],
-    ),
-    set_scoped("DropSet", "drop set S of ts", &[DROP_S]),
-    set_scoped(
-        "Nest",
-        "nest constructor T.(A | B) into N { inner: Inner }",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "Nest",
-        "nest constructor T.(A | B) into N { inner: Inner } [named object renamed]",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "Nest",
-        "nest constructor T.(A | B) into N { inner: Inner } [named object's name reused]",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "Nest",
-        "nest constructor T.(A | B) into N { inner: Inner } [product renamed]",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "Nest",
-        "nest constructor T.(A | B) into N { inner: Inner } [products swapped]",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "RenameSet",
-        "rename set S of ts to S3 [object dropped]",
-        &[DROP_S3],
-    ),
-    set_scoped("Unnest", "unnest constructor T.N", &[DROP_S]),
-    set_scoped(
-        "Unnest",
-        "unnest constructor T.N [named object renamed]",
-        &[DROP_S],
-    ),
-    set_scoped(
-        "Unnest",
-        "unnest constructor T.N [named object's name reused]",
-        &[DROP_S],
-    ),
     // The operator refuses a default or check naming a constructor it replaces.
     Known {
         kind: "Merge",
@@ -1745,7 +1658,6 @@ const KNOWN: &[Known] = &[
         differences: &[
             "Unapplied: `N` is neither a constructor of `T` nor a named set of `ts`",
             "Unapplied: the nest is refused: `ts.A` names some but not all of its constructors",
-            DROP_S,
         ],
     },
     // The operator refuses a default or check naming a constructor it replaces.
@@ -1755,7 +1667,6 @@ const KNOWN: &[Known] = &[
         differences: &[
             "Unapplied: `A` is not a constructor of `T`",
             "Unapplied: the nest of `A`, `B` into `N` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.N` to `support` in the same migration",
-            DROP_S,
         ],
     },
     // The operator refuses a default or check naming a constructor it replaces.

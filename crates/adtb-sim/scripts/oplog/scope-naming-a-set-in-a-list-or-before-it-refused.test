@@ -1,0 +1,19 @@
+# A parenthesised scope lists constructors only, so one naming a named set is refused, and a scope
+# naming a set its migration adds only later is refused.
+seed 63
+
+migrate
+  module notes
+  add module notes
+  add type Note { id: Key notes, slug: Text } = Plain | Other | Draft
+  add relation notes : Note key id generate sequence
+  add set Shared of notes = Draft | Plain
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`Shared` is not a constructor of `Note`" } } }
+  module notes
+  add unique (slug) in notes.(Other | Shared)
+
+migrate at 2 refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`Late` is neither a constructor of `Note` nor a named set of `notes`" } } }
+  module notes
+  add index (slug) in notes.Late
+  add set Late of notes = Other

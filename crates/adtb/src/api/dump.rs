@@ -554,7 +554,7 @@ impl<R: Runtime> Engine<R> {
     ) -> Result<DumpManifest, Refusal> {
         let target = self.target(path).map_err(Refusal::own)?;
         self.admit_dump().map_err(Refusal::own)?;
-        let envelope = self.envelope();
+        let envelope = self.envelope().map_err(Refusal::own)?;
         let failed = |e| self.met(id, e);
         let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
         let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
@@ -856,7 +856,7 @@ fn fill<R: Runtime>(
 ) -> Result<Vec<Dormant>, Error> {
     let engine = &*db.engine;
     let e = &manifest.envelope;
-    if header(&engine.envelope()) != header(e) {
+    if header(&engine.envelope()?) != header(e) {
         return Err(damaged(LOG));
     }
     let schema = &*engine.schema;

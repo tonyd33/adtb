@@ -1,0 +1,57 @@
+# An index scoped by a named set its own migration adds logs a scope clause naming the set, and a
+# later migration drops it by the same scope.
+seed 62
+
+migrate
+  module notes
+  add module notes
+  add type Note { id: Key notes, slug: Text } = Plain | Other | Draft
+  add relation notes : Note key id generate sequence
+  add set Shared of notes = Draft | Plain
+  add index (slug) in notes.Shared
+
+run
+  insert notes.Plain { slug: "a" }
+  insert notes.Other { slug: "a" }
+  insert notes.Draft { slug: "a" }
+
+query rowsort
+  from n in notes.Shared where n.slug == "a" select n
+----
+Draft { id: notes.key(3), slug: "a" }
+Plain { id: notes.key(1), slug: "a" }
+
+query rowsort
+  from k in catalog::migration_clauses, c in catalog::constructors
+    where k.migration == catalog::migrations.key(1)
+      and (match k.body | Member b -> catalog::constructors.key(b.ctor) == c.id | _ -> false)
+    select { ordinal: k.ordinal, clause: k.clause, member: c.name }
+----
+{ clause: 1, member: "Draft", ordinal: 4 }
+{ clause: 2, member: "Plain", ordinal: 4 }
+
+query rowsort
+  from k in catalog::migration_clauses, s in catalog::named_sets
+    where k.migration == catalog::migrations.key(1)
+      and (match k.body | Scope b -> catalog::named_sets.key(b.set) == s.id | _ -> false)
+    select { ordinal: k.ordinal, clause: k.clause, set: s.name }
+----
+{ clause: 1, ordinal: 5, set: "Shared" }
+
+migrate
+  module notes
+  drop index (slug) in notes.Shared
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "notes" and i.relation == r.id select i.clause
+----
+"key id"
+
+reopen
+
+query rowsort
+  from n in notes.Shared where n.slug == "a" select n
+----
+Draft { id: notes.key(3), slug: "a" }
+Plain { id: notes.key(1), slug: "a" }

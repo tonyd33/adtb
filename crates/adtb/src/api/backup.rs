@@ -11,6 +11,7 @@ use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphrase, Proved};
 use crate::write::{self, Bounds, Local, Stop, Txn};
 
+use super::cause::Broken;
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::text::{DynRows, Prepared, rows};
@@ -500,21 +501,24 @@ impl<R: Runtime> Engine<R> {
         })
     }
 
-    pub(super) fn envelope(&self) -> Envelope {
+    pub(super) fn envelope(&self) -> Result<Envelope, Error> {
         let version = self
             .catalog
             .source()
             .log
             .last()
             .map_or(0, |migration| migration.number);
-        let hash = self.hash.get(&self.schema, self.catalog.source());
-        Envelope {
+        let hash = self
+            .hash
+            .get(&self.schema, self.catalog.source())
+            .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
+        Ok(Envelope {
             release: env!("CARGO_PKG_VERSION").to_owned(),
             edition: super::bundle::EDITION.to_owned(),
             schema_version: version,
             schema_hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
             catalog_version: CATALOG_VERSION,
-        }
+        })
     }
 
     /// Refuse `path` of a call confined to the export roots unless its directory resolves inside
@@ -549,7 +553,7 @@ impl<R: Runtime> Engine<R> {
         let name = |q| self.db.quarantined_name(q);
         let mut run = BackupRun {
             target: &target,
-            envelope: self.envelope(),
+            envelope: self.envelope()?,
             visit: &mut visit,
             name: &name,
         };

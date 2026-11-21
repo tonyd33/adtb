@@ -232,16 +232,30 @@ pub enum Generator {
     Clock,
 }
 
+/// A constructor or named set an `in` scope names: a constructor by its index in the element
+/// type, a set by its position among the relation's sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScopePart {
+    Ctor(u32),
+    Set(usize),
+}
+
 #[derive(Clone, Debug)]
 pub struct IndexDef {
     pub fields: Vec<ast::Expr>,
     texts: Vec<String>,
     pub scope: Option<CtorSet>,
+    written: Option<Vec<ScopePart>>,
     pub interval: bool,
     pub unique: bool,
 }
 
 impl IndexDef {
+    /// Returns what the `in` scope names, sorted; `None` without `in`.
+    pub fn written(&self) -> Option<&[ScopePart]> {
+        self.written.as_deref()
+    }
+
     /// Returns the tokens of field `k`, joined by spaces.
     pub fn text(&self, k: usize) -> &str {
         &self.texts[k]
@@ -676,41 +690,16 @@ impl Schema {
     /// Resolve the constructor selection after a relation: constructors of its element type or one named set.
     pub fn relation_sel(&self, rel: RelId, sel: &ast::CtorSel) -> Result<CtorSet, String> {
         let r = self.relation(rel);
-        let def = self.ty(r.elem_def);
-        let one = |name: &str| -> Result<CtorSet, String> {
-            if let Some(i) = def.ctor_index(name) {
-                return Ok(vec![i]);
-            }
-            if let Some(s) = r.sets.iter().find(|s| s.name == name) {
-                return Ok(s.ctors.clone());
-            }
-            Err(format!(
-                "`{name}` is neither a constructor of `{}` nor a named set of `{}`",
-                def.name, r.name
-            ))
-        };
-        match sel {
-            ast::CtorSel::One(c) => one(&c.text),
-            ast::CtorSel::Many(cs) => {
-                let mut out = BTreeSet::new();
-                for c in cs {
-                    match def.ctor_index(&c.text) {
-                        Some(i) => {
-                            if !out.insert(i) {
-                                return Err(format!("`{}` is listed twice", c.text));
-                            }
-                        }
-                        None => {
-                            return Err(format!(
-                                "`{}` is not a constructor of `{}`",
-                                c.text, def.name
-                            ));
-                        }
-                    }
-                }
-                Ok(out.into_iter().collect())
-            }
-        }
+        let mut set: CtorSet = self
+            .relation_scope(rel, sel)?
+            .into_iter()
+            .flat_map(|part| match part {
+                ScopePart::Ctor(c) => vec![c],
+                ScopePart::Set(s) => r.sets[s].ctors.clone(),
+            })
+            .collect();
+        set.sort_unstable();
+        Ok(set)
     }
 
     /// Resolve a constructor selection at the type level, where a named set is any relation's set of that name.

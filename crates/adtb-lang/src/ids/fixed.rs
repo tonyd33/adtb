@@ -419,6 +419,7 @@ pub const TYPES: &[FixedType] = &[
             ("Carry", 445),
             ("Fill", 446),
             ("Privilege", 472),
+            ("Scope", 476),
         ],
     ),
     ("catalog", "OpClause", 447, &[("OpClause", 448)]),
@@ -874,6 +875,7 @@ pub mod engine_ctor {
             CLAUSE_CARRY "Carry",
             CLAUSE_FILL "Fill",
             CLAUSE_PRIVILEGE "Privilege",
+            CLAUSE_SCOPE "Scope",
         }
         "catalog" "OpClause" { OP_CLAUSE "OpClause" }
         "prelude" "Bool" { BOOL_FALSE "False", BOOL_TRUE "True" }

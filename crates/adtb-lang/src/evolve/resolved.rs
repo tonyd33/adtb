@@ -1,6 +1,7 @@
 use super::*;
 use crate::canon::{Unnamed, canonical_term};
 use crate::ids::Space;
+use crate::schema::ScopePart;
 use crate::schema::prelude::PRINCIPAL;
 
 #[path = "derived.rs"]
@@ -254,10 +255,12 @@ pub enum Place {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Clause {
     /// A constructor a named set lists, a merge or nest replaces, a moved field goes to, or a
-    /// unique or index written with `in` ranges over.
+    /// unique or index written with `in` names.
     Member { ctor: u64 },
     /// A named set an added constructor joins.
     Joins { set: u64 },
+    /// A named set the `in` scope of a unique or index names.
+    Scope { set: u64 },
     /// An `arm` clause: what its arm ends the match of, and the arm.
     Arm { target: ArmTarget, arm: String },
     /// A `unique` or `index` clause of a split: the index it adds, its kind and its fields.
@@ -405,7 +408,9 @@ impl ResolvedOp {
         for c in &self.clauses {
             match c {
                 Clause::Member { ctor } => out.push(shared(ctor)),
-                Clause::Joins { set } => out.push(Object(Space::Set, *set)),
+                Clause::Joins { set } | Clause::Scope { set } => {
+                    out.push(Object(Space::Set, *set));
+                }
                 Clause::Arm { target, .. } => out.push(match target {
                     ArmTarget::OfFn { function } => Object(Space::Function, *function),
                     ArmTarget::OfConstraint { constraint } => {
@@ -698,10 +703,8 @@ impl Resolver<'_> {
             OperatorKind::AddUnique(fields, on) | OperatorKind::AddIndex { fields, on, .. } => {
                 let rel = self.relation(&on.relation).ok_or_else(gone)?;
                 let index = self.next_index(rel).ok_or_else(gone)?;
-                for c in on.sel.iter().flat_map(sel_idents) {
-                    clauses.push(Clause::Member {
-                        ctor: self.ctor(rel, &c.text).ok_or_else(gone)?,
-                    });
+                if let Some(sel) = &on.sel {
+                    clauses.extend(self.scope(rel, sel).ok_or_else(gone)?);
                 }
                 let relation = held_id(self.schema.ids().relation_id(rel)).raw();
                 let fields = match (fields.first(), fields.last()) {
@@ -779,6 +782,30 @@ impl Resolver<'_> {
         let def = self.schema.relation(rel).elem_def;
         let c = self.schema.ty(def).ctor_named(name)?;
         self.schema.ids().ctor_id(c).map(CatCtorId::raw)
+    }
+
+    /// Returns the clauses of the `in` scope `sel` of `rel` in written order: a `Scope` for a
+    /// named set, a `Member` for a constructor.
+    fn scope(&self, rel: RelId, sel: &CtorSel) -> Option<Vec<Clause>> {
+        let ids = self.schema.ids();
+        let def = self.schema.ty(self.schema.relation(rel).elem_def);
+        self.schema
+            .relation_scope(rel, sel)
+            .ok()?
+            .into_iter()
+            .map(|part| {
+                Some(match part {
+                    ScopePart::Ctor(c) => Clause::Member {
+                        ctor: ids.ctor_id(def.ctor_at(c)?)?.raw(),
+                    },
+                    ScopePart::Set(s) => Clause::Scope {
+                        set: ids
+                            .set_id(rel, &self.schema.relation(rel).sets[s].name)?
+                            .raw(),
+                    },
+                })
+            })
+            .collect()
     }
 
     /// Returns the id of the unique or index an operator appends to `rel`.
@@ -1309,7 +1336,6 @@ impl Resolver<'_> {
         unique: bool,
     ) -> Option<u64> {
         let rel = self.relation_in(schema, &on.relation)?;
-        let def = schema.relation(rel).elem_def;
         let names = |es: &[Expr]| -> Option<Vec<String>> {
             es.iter()
                 .map(|e| match &e.kind {
@@ -1319,21 +1345,22 @@ impl Resolver<'_> {
                 .collect()
         };
         let wanted = names(fields)?;
-        let scope: Option<Vec<u32>> = match &on.sel {
-            None => None,
-            Some(sel) => Some(
-                sel_idents(sel)
-                    .iter()
-                    .map(|c| schema.ty(def).ctor_index(&c.text))
-                    .collect::<Option<_>>()?,
-            ),
-        };
-        let at = schema.relation(rel).indexes.iter().position(|d| {
-            d.unique == unique
-                && names(&d.fields).as_ref() == Some(&wanted)
-                && d.scope.as_ref().map(|s| s.to_vec()) == scope
-        })?;
-        schema.ids().index_id(rel, at).map(CatIndexId::raw)
+        let scope = schema.written_scope(rel, on.sel.as_ref()).ok()?;
+        let mut at = schema
+            .relation(rel)
+            .indexes
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| {
+                d.unique == unique
+                    && names(&d.fields).as_ref() == Some(&wanted)
+                    && d.written() == scope.as_deref()
+            });
+        let (k, _) = at.next()?;
+        if at.next().is_some() {
+            return None;
+        }
+        schema.ids().index_id(rel, k).map(CatIndexId::raw)
     }
 
     fn function_in(&self, schema: &Schema, q: &QName) -> Option<u64> {

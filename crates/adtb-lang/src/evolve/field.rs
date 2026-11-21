@@ -521,6 +521,13 @@ impl Cx<'_> {
         fields: &[Expr],
         on: &ast::RelationRef,
     ) -> R<()> {
+        if let Some(sel) = &on.sel {
+            let schema = self.schema()?;
+            let rel = self.rel_id(&schema, &on.relation)?;
+            if let Err(e) = schema.relation_sel(rel, sel) {
+                return self.err_at(on.span, e);
+            }
+        }
         let clause = Written::concat([
             format!("{kind} (").into(),
             self.fields_text(fields),
@@ -558,17 +565,9 @@ impl Cx<'_> {
         let schema = self.schema()?;
         let rel = self.rel_id(&schema, &on.relation)?;
         let (i, rd, ranges) = self.clauses(&on.relation)?;
-        let all = |s: Option<CtorSet>| {
-            s.and_then(|cs| schema.normalize_ctors(schema.relation(rel).elem_def, cs))
-        };
-        let want_scope = match &on.sel {
-            None => None,
-            Some(sel) => all(Some(
-                schema
-                    .relation_sel(rel, sel)
-                    .map_err(|e| vec![Diag::new(on.span, e)])?,
-            )),
-        };
+        let want_scope = schema
+            .written_scope(rel, on.sel.as_ref())
+            .map_err(|e| vec![Diag::new(on.span, e)])?;
         let want: Vec<String> = fields
             .iter()
             .map(|e| self.slice(e.span).to_string())
@@ -595,6 +594,7 @@ impl Cx<'_> {
                             .collect::<Vec<_>>()
                 })
         };
+        let mut found = Vec::new();
         for (k, cl) in rd.clauses.iter().enumerate() {
             let (fs, scope) = match cl {
                 RelationClause::Unique(fs, s, _) if unique => (fs, s),
@@ -606,12 +606,28 @@ impl Cx<'_> {
                 } if !unique && *iv == interval => (fs, s),
                 _ => continue,
             };
-            let scope = match scope {
-                None => None,
-                Some(s) => all(schema.relation_sel(rel, &scope_sel(s)).ok()),
-            };
-            if scope == want_scope && same(&field_texts(fs), &want) {
-                for (e, f) in fields.iter().zip(fs) {
+            let scope = schema.written_scope(rel, scope.as_ref().map(scope_sel).as_ref());
+            if scope.as_ref() == Ok(&want_scope) && same(&field_texts(fs), &want) {
+                found.push((k, fs));
+            }
+        }
+        let kind = if unique {
+            "unique"
+        } else if interval {
+            "interval index"
+        } else {
+            "index"
+        };
+        match found.as_slice() {
+            [] => self.err(format!(
+                "`{}` has no {kind} ({}){}",
+                rd.name.name.text,
+                want.join(", "),
+                self.scope_text(on)
+            )),
+            [(k, fs)] => {
+                let k = *k;
+                for (e, f) in fields.iter().zip(*fs) {
                     let (from, at) = (e.span.start as usize, f.span.start as usize - h);
                     let theirs = lex(&text[at..f.span.end as usize - h]).0;
                     for (a, b) in lex(self.slice(e.span)).0.iter().zip(&theirs) {
@@ -624,22 +640,16 @@ impl Cx<'_> {
                     }
                 }
                 self.drop_clause(i, &ranges, k);
-                return Ok(());
+                Ok(())
             }
+            many => self.err(format!(
+                "`{}` has {} clauses {kind} ({}){}, so the drop names none of them alone",
+                rd.name.name.text,
+                many.len(),
+                want.join(", "),
+                self.scope_text(on)
+            )),
         }
-        let kind = if unique {
-            "unique"
-        } else if interval {
-            "interval index"
-        } else {
-            "index"
-        };
-        self.err(format!(
-            "`{}` has no {kind} ({}){}",
-            rd.name.name.text,
-            want.join(", "),
-            self.scope_text(on)
-        ))
     }
 
     pub(super) fn add_default(

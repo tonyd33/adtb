@@ -61,6 +61,7 @@ use adtb_lang::ids::engine_rel;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::{Committed as CommittedSchema, Schema};
+use adtb_lang::span::Diag;
 use adtb_lang::types::Ty;
 use adtb_sys::lock::{Lock, RwLock};
 
@@ -1454,25 +1455,34 @@ fn commanded(
 /// Refuse a log whose migrations at or below the file's version differ from the file's by
 /// hash, naming the first that does.
 fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
-    let stored = &catalog.source().log;
-    match stored
-        .iter()
-        .zip(&log.migrations)
-        .find(|(m, shipped)| &m.text != *shipped && !same_hash(m, shipped))
-    {
-        Some((m, _)) => Err(OpenError::Diverged { version: m.number }),
-        None => Ok(()),
+    for (m, shipped) in catalog.source().log.iter().zip(&log.migrations) {
+        if &m.text != shipped && !same_hash(m, shipped)? {
+            return Err(OpenError::Diverged { version: m.number });
+        }
     }
+    Ok(())
 }
 
 /// Returns whether `text`, applied where migration `m` of the log was, gives the version hash
-/// `m` gives.
-fn same_hash(m: &Logged, text: &str) -> bool {
-    let hash = |text: &str| {
+/// `m` gives; not when `text` does not parse, apply, build or resolve.
+///
+/// Fail when the log up to `m` does not resolve.
+fn same_hash(m: &Logged, text: &str) -> Result<bool, OpenError> {
+    let hash = |text: &str| -> Option<Result<catalog::Hash, Vec<Diag>>> {
         let file = parse_migration(text, ParseOptions::default()).ok().ok()?;
         let source = m.before.migrate(&file, text).ok()?;
         let schema = source.schema().ok()?;
-        catalog::try_version_hash(&schema, &source).ok()
+        Some(catalog::version_hash(&schema, &source))
     };
-    hash(text).is_some_and(|h| Some(h) == hash(&m.text))
+    let Some(Ok(shipped)) = hash(text) else {
+        return Ok(false);
+    };
+    match hash(&m.text) {
+        Some(Ok(h)) => Ok(h == shipped),
+        Some(Err(ds)) => Err(OpenError::MigrationRefused {
+            version: m.number,
+            reason: Error::internal(Broken::Catalog(catalog::Broken::Unresolved(ds))),
+        }),
+        None => Ok(false),
+    }
 }

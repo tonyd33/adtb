@@ -110,7 +110,7 @@ catalog::zones key (release, name) over Zone
 catalog::ArmTarget order OfFn < OfConstraint < OfComputed
 catalog::AuditEvent order Login < Grant < Register < Retire < SchemaOp < Call < Denied < Commit < Truncate
 catalog::BundleState order Active < Superseded < Retired
-catalog::ClauseBody order Joins < Member < Arm < Replacement < Carry < Fill < Privilege
+catalog::ClauseBody order Joins < Member < Arm < Replacement < Carry < Fill < Privilege < Scope
 catalog::CtorStage order Declared < Enabled < Deprecated
 catalog::CtorTarget order InRelation < OfType
 catalog::Field order Header < Payload

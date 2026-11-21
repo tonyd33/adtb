@@ -1695,6 +1695,7 @@ fn value_bundle(name: &str) -> Registration {
         .expect("the schema applies");
     let schema = source.schema().expect("the source builds");
     let pins: String = version_hash(&schema, &source)
+        .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();

@@ -90,7 +90,8 @@ pub(super) fn objects(schema: &Schema, source: &Source, texts: &ElementTexts) ->
 /// `applied` microseconds since 1970-01-01T00:00:00Z, or no row if the log is empty.
 #[cfg(test)]
 pub fn applied(schema: &Schema, source: &Source, applied: i64) -> Rows {
-    applied_hash(schema, source, oplog::version_hash(schema, source), applied)
+    let hash = oplog::version_hash(schema, source).expect("the log resolves");
+    applied_hash(schema, source, hash, applied)
 }
 
 fn applied_hash(schema: &Schema, source: &Source, hash: oplog::Hash, applied: i64) -> Rows {

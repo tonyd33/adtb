@@ -1161,7 +1161,7 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
     let limit = s.prelude().limit();
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(Some(563), field(limit, Some(rounds), "rounds"));
-    assert_eq!(Some(574), s.ids.field_ids().map(|(_, id)| id.raw()).max());
+    assert_eq!(Some(575), s.ids.field_ids().map(|(_, id)| id.raw()).max());
     assert_eq!(
         Some(60),
         s.ids
@@ -1282,6 +1282,24 @@ relation ms : M key u",
         (keyed[0].field.as_str(), keyed[0].index)
     );
     assert!(s.reference_fields(us).is_empty());
+}
+
+#[test]
+fn a_scope_clause_takes_its_fixed_ids() {
+    let s = build_src(&[]).unwrap();
+    let catalog = s.module_named("catalog").unwrap();
+    let clause = s.module(catalog).types["ClauseBody"];
+    let scope = s.ty(clause).ctor_index("Scope").unwrap();
+    assert_eq!(
+        Some(476),
+        s.ids.ctor_id(ctor_ref(&s, clause, scope)).map(u64::from)
+    );
+    assert_eq!(
+        Some(575),
+        field_ref(&s, clause, Some(scope), "set")
+            .and_then(|f| s.ids.field_id(f))
+            .map(u64::from)
+    );
 }
 
 #[test]

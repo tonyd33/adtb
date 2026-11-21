@@ -14,6 +14,7 @@ use super::codec::{Codec, Field, Nested, Payload, nullary};
 use super::operators::{
     self as o, MIGRATION_OP_OP, MigrationOpRow, OP_CLAUSE_BODY, OpClauseRow, flag, optional,
 };
+use super::{Broken, Error};
 
 /// A BLAKE3-256 hash.
 pub type Hash = [u8; 32];
@@ -24,12 +25,16 @@ pub struct VersionHash(Arc<OnceLock<Hash>>);
 
 impl VersionHash {
     /// Returns the hash of the version `source` is at, as [`version_hash`] gives it, made on the
-    /// first call.
+    /// first call that succeeds.
     ///
     /// Preconditions:
     /// - `schema` and `source` are those of the version this hash is of.
-    pub fn get(&self, schema: &Schema, source: &Source) -> Hash {
-        *self.0.get_or_init(|| version_hash(schema, source))
+    pub fn get(&self, schema: &Schema, source: &Source) -> Result<Hash, Error> {
+        if let Some(h) = self.0.get() {
+            return Ok(*h);
+        }
+        let h = version_hash(schema, source).map_err(Broken::Unresolved)?;
+        Ok(*self.0.get_or_init(|| h))
     }
 
     /// Hold `hash` as the version's when no hash is held yet.
@@ -45,20 +50,12 @@ pub type OperatorRow = (Value, Vec<Value>);
 /// Returns the hash of the version `source` is at: `h(0)` is 32 zero bytes, and `h(n)` the hash
 /// of `h(n - 1)` followed by the encoding of migration `n`'s resolved operators.
 ///
-/// Panics:
-/// - A migration of the log does not resolve.
-pub fn version_hash(schema: &Schema, source: &Source) -> Hash {
-    try_version_hash(schema, source)
-        .unwrap_or_else(|ds| panic!("every logged migration resolves: {ds:?}"))
-}
-
-/// Returns the hash `version_hash` returns, or the diagnostics of the first migration of the
-/// log that does not resolve.
-pub fn try_version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Diag>> {
+/// Fail with the diagnostics of the first migration of the log that does not resolve.
+pub fn version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Diag>> {
     chain(schema, source, |_, _| {})
 }
 
-/// Returns the hash [`try_version_hash`] returns, giving `each` the operators of each migration
+/// Returns the hash [`version_hash`] returns, giving `each` the operators of each migration
 /// of the log in order with the hash of the version it leaves.
 pub fn chain(
     schema: &Schema,
@@ -535,6 +532,7 @@ fn clause(c: &Clause) -> Nested {
     match c {
         Clause::Member { ctor } => one(o::MEMBER, o::MEMBER_CTOR, *ctor),
         Clause::Joins { set } => one(o::JOINS, o::JOINS_SET, *set),
+        Clause::Scope { set } => one(o::SCOPE, o::SCOPE_SET, *set),
         Clause::Arm { target, arm } => {
             let target = match target {
                 ArmTarget::OfFn { function } => one(o::OF_FN, o::OF_FN_FUNCTION, *function),

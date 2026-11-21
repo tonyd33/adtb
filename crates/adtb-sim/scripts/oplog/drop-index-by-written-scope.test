@@ -1,0 +1,31 @@
+# A drop names an index by the scope it was written with: a named set, an explicit list of the same
+# constructors and no scope at all are three indexes, and a drop naming two alike is refused. The
+# two lists print alike, so the query's set holds one row for both.
+seed 64
+
+migrate
+  module notes
+  add module notes
+  add type Note { id: Key notes, slug: Text } = Plain | Other
+  add relation notes : Note key id generate sequence
+  add set Both of notes = Plain | Other
+  add index (slug) in notes
+  add index (slug) in notes.Both
+  add index (slug) in notes.(Other | Plain)
+  add index (slug) in notes.(Plain | Other)
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`notes` has 2 clauses index (slug) in (Plain | Other), so the drop names none of them alone" } } }
+  module notes
+  drop index (slug) in notes.(Plain | Other)
+
+migrate at 2
+  module notes
+  drop index (slug) in notes.Both
+  drop index (slug) in notes
+
+query rowsort
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "notes" and i.relation == r.id select i.clause
+----
+"index (slug) in (Plain | Other)"
+"key id"

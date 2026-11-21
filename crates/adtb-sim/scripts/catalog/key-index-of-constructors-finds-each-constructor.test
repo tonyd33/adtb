@@ -22,4 +22,4 @@ Constructor { id: constructors.key(121), sum: types.key(120), name: "Constructor
 query
   count(c for c in catalog::constructors)
 ----
-319
+320

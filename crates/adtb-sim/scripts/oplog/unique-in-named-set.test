@@ -1,0 +1,71 @@
+# A unique scoped by a named set an earlier migration adds ranges over the set's members and gains a
+# constructor that joins the set, where one scoped by an explicit list of the same constructors
+# does not, on apply and after a reopen. The log names the set by a scope clause and the list's
+# constructor by a member clause, and the version hashes for a bundle pinning it, which reads the
+# set's members at that version.
+seed 61
+
+migrate
+  module notes
+  add module notes
+  add type Note { id: Key notes, slug: Text, tag: Text } = Plain | Other
+  add relation notes : Note key id generate sequence
+  add set Shared of notes = Plain
+  module notes
+  add unique (slug) in notes.Shared
+  add unique (tag) in notes.(Plain)
+
+run
+  insert notes.Plain { slug: "a", tag: "t" }
+  insert notes.Other { slug: "a", tag: "t" }
+  insert notes.Other { slug: "a", tag: "t" }
+
+error Violated { constraint: "notes::notes.unique(slug) in Plain", report: 2 rows, redacted: 0 }
+  insert notes.Plain { slug: "a", tag: "u" }
+
+query rowsort
+  from k in catalog::migration_clauses, s in catalog::named_sets
+    where k.migration == catalog::migrations.key(2)
+      and (match k.body | Scope b -> catalog::named_sets.key(b.set) == s.id | _ -> false)
+    select { ordinal: k.ordinal, clause: k.clause, set: s.name }
+----
+{ clause: 1, ordinal: 1, set: "Shared" }
+
+query rowsort
+  from k in catalog::migration_clauses, c in catalog::constructors
+    where k.migration == catalog::migrations.key(2)
+      and (match k.body | Member b -> catalog::constructors.key(b.ctor) == c.id | _ -> false)
+    select { ordinal: k.ordinal, clause: k.clause, member: c.name }
+----
+{ clause: 1, member: "Plain", ordinal: 2 }
+
+bundle web-1.0 pins 2 edition "2026-10"
+  import notes
+  query slugs () -> Set Text = from n in notes.Shared select n.slug
+
+migrate
+  module notes
+  add constructor Note.Pinned
+    joins notes.Shared
+  enable notes.Pinned
+
+run
+  insert notes.Pinned { slug: "b", tag: "t" }
+
+error Violated { constraint: "notes::notes.unique(slug) in (Pinned | Plain)", report: 2 rows, redacted: 0 }
+  insert notes.Pinned { slug: "a", tag: "v" }
+
+call web-1.0 1
+----
+"a"
+
+reopen
+
+run
+  insert notes.Pinned { slug: "c", tag: "t" }
+
+error Violated { constraint: "notes::notes.unique(slug) in (Pinned | Plain)", report: 2 rows, redacted: 0 }
+  insert notes.Plain { slug: "b", tag: "w" }
+
+error Violated { constraint: "notes::notes.unique(tag) in Plain", report: 2 rows, redacted: 0 }
+  insert notes.Plain { slug: "d", tag: "t" }

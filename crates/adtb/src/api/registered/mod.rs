@@ -698,6 +698,7 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
         let hash: String = over
             .hash
             .get(over.schema, over.source)
+            .map_err(|e| Error::internal(Broken::CatalogError(e)))?
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();

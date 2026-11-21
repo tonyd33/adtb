@@ -141,6 +141,7 @@ fn hash(migrations: &[String]) -> Result<String, String> {
         .schema()
         .map_err(|_| "the pinned schema does not build")?;
     Ok(version_hash(&schema, &source)
+        .map_err(|ds| format!("the pinned log does not resolve: {ds:?}"))?
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect())
