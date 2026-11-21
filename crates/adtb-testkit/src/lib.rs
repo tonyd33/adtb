@@ -27,6 +27,7 @@ pub mod marks;
 pub mod process;
 pub mod profile;
 pub mod running;
+pub mod schemas;
 pub mod scratch;
 #[cfg(feature = "sim")]
 pub mod search;

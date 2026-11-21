@@ -1240,9 +1240,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     let (var, body) = self.db.retags[&r];
                     let env: Env = [(var, u.clone())].into();
                     let v = self.eval(Arena::Program, body, &env)?;
-                    self.cleared(r, v, &clears)
+                    cleared(v, c, &clears)
                 } else if !clears.is_empty() {
-                    self.cleared(r, u.clone(), &clears)
+                    cleared(u.clone(), c, &clears)
                 } else {
                     continue;
                 };
@@ -1305,22 +1305,6 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             inserted: plus,
             deleted: minus,
         })
-    }
-
-    /// Returns `v`, a row of `rel`, with each field of `clears` it has set to `None`.
-    fn cleared(&self, rel: RelId, v: Val, clears: &[&RefField]) -> Val {
-        let r = self.rel(rel);
-        let Val::Ctor(c, fs) = v else {
-            panic!("a row is a constructor value")
-        };
-        let names = &r.ctors[c as usize].fields;
-        let mut fs = fs.to_vec();
-        for f in clears {
-            if let Some(i) = names.iter().position(|(n, _)| *n == f.name) {
-                fs[i] = Val::none();
-            }
-        }
-        Val::ctor(c, fs)
     }
 
     /// Refuse an inserted or retagged row in a constructor not open for writes, and a stored
@@ -1481,4 +1465,18 @@ impl<R: Runtime> Database<R> {
         program.shared.hosts = self.hosts.clone();
         Ok(program)
     }
+}
+
+/// Returns `v`, the new value of a row of constructor `from`, with each field of `clears`, the
+/// fields of `from`, set to `None` that `v` still has: every one when `v` is of `from`, else
+/// only the header fields.
+fn cleared(v: Val, from: u32, clears: &[&RefField]) -> Val {
+    let Val::Ctor(c, fs) = v else {
+        panic!("a row is a constructor value")
+    };
+    let mut fs = fs.to_vec();
+    for f in clears.iter().filter(|f| c == from || f.header) {
+        fs[f.at] = Val::none();
+    }
+    Val::ctor(c, fs)
 }

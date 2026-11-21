@@ -411,7 +411,9 @@ impl Run<'_, '_> {
                     let lam = it.program.retags[r];
                     let f = self.eval(&self.here(Arena::Program), lam, &Env::default())?;
                     let retagged = self.apply(f, u.clone())?;
-                    clears.fold(retagged, |v, g| with_field(v, &g.name, Value::none()))
+                    clears
+                        .filter(|g| g.header)
+                        .fold(retagged, |v, g| with_field(v, &g.name, Value::none()))
                 } else if reach.iter().any(|f| f.action == OnDelete::Clear) {
                     clears.fold(u.clone(), |v, g| with_field(v, &g.name, Value::none()))
                 } else {

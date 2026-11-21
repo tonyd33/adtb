@@ -205,7 +205,7 @@
 "crates/adtb/src/write/mod.rs" = 39
 "crates/adtb/src/write/past.rs" = 6
 "crates/adtb/src/write/reindex.rs" = 6
-"crates/adtb/src/write/schema.rs" = 33
+"crates/adtb/src/write/schema.rs" = 32
 
 [sim_test_opens]
 "crates/adtb-sim/tests/execution/checked_registration.rs" = 2

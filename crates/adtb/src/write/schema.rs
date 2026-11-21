@@ -33,8 +33,6 @@ pub struct RefField {
 #[derive(Debug)]
 pub struct Ctor {
     pub name: String,
-    /// The header fields, then the constructor's own, with their types.
-    pub fields: Vec<(String, Ty)>,
     pub heap: HeapId,
     pub convs: Vec<Conv>,
     pub refs: Vec<RefField>,
@@ -160,7 +158,6 @@ pub fn rels(
                         .iter()
                         .map(|n| pos(n).expect("every constructor has the key fields"))
                         .collect(),
-                    fields: fields.clone(),
                 }
             })
             .collect::<Vec<_>>();

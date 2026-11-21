@@ -26,6 +26,9 @@ use adtb_testkit::corpus::{self, Script};
 use adtb_testkit::fixture::Fixture;
 use adtb_testkit::{Rng, profile};
 
+#[path = "differential/schemas.rs"]
+mod schemas;
+
 /// Cases per default run, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says otherwise.
 const CASES: u64 = 12;
 
@@ -88,11 +91,19 @@ enum Reason {
 }
 
 impl Reason {
+    /// Returns the reason the engine gives as `r`, a relation named without its module as the
+    /// reference names it.
     fn of_engine(r: RejectReason) -> Option<Reason> {
+        let unqualified = |r: String| r.rsplit_once("::").map_or(r.clone(), |(_, n)| n.to_owned());
         Some(match r {
             RejectReason::Violated { constraint, .. } => Reason::Violated { constraint },
-            RejectReason::KeyViolation { relation, key } => Reason::KeyViolation { relation, key },
-            RejectReason::KeyChanged { relation } => Reason::KeyChanged { relation },
+            RejectReason::KeyViolation { relation, key } => Reason::KeyViolation {
+                relation: unqualified(relation),
+                key,
+            },
+            RejectReason::KeyChanged { relation } => Reason::KeyChanged {
+                relation: unqualified(relation),
+            },
             RejectReason::NotOpen { ctor, .. } => Reason::NotOpen { ctor },
             RejectReason::UserError { message } => Reason::UserError { message },
             RejectReason::BadInput { source, line, .. } => Reason::BadInput { source, line },
@@ -204,15 +215,20 @@ fn reference_eval(fx: &Fixture, text: &str) -> Got {
     match fx.eval(text) {
         Ok(Value::Set(s)) => Got::Rows(s.into_iter().collect()),
         Ok(v) => Got::Rows(vec![v]),
-        Err(Abort::Fault(_)) => Got::Faulted,
-        Err(Abort::Limit(ReferenceLimit::Rounds { rounds })) => {
-            Got::Rejected(Reason::Rounds { rounds })
-        }
-        Err(Abort::Reject(r)) => match Reason::of_reference(r.clone()) {
+        Err(a) => reference_aborted(a),
+    }
+}
+
+/// Returns how a statement ends that the reference aborts with `a`.
+fn reference_aborted(a: Abort) -> Got {
+    match a {
+        Abort::Fault(_) => Got::Faulted,
+        Abort::Limit(ReferenceLimit::Rounds { rounds }) => Got::Rejected(Reason::Rounds { rounds }),
+        Abort::Reject(r) => match Reason::of_reference(r.clone()) {
             Some(reason) => Got::Rejected(reason),
             None => Got::Refused(format!("{:?}", Abort::Reject(r))),
         },
-        Err(a) => Got::Refused(format!("{a:?}")),
+        a => Got::Refused(format!("{a:?}")),
     }
 }
 
