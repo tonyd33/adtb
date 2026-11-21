@@ -6,9 +6,10 @@ use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime, fatal};
 
 use super::alloc::edits_by;
 use super::block::{LogImage, LogSource, Slot, blank_prefix, data_lsn, frame};
+use super::create::parent;
 use super::driver::{Driver, Failed};
 use super::page::blank;
-use super::pager::{ArchiveHook, PageError, Pager, parent};
+use super::pager::{ArchiveHook, PageError, Pager};
 use super::record::Record;
 use super::{Lsn, Pid, Position};
 

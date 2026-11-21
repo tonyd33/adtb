@@ -140,7 +140,7 @@ fn a_checkpoint_names_the_map_root_at_its_last_change_in_session_or_replayed() {
 
 #[test]
 fn the_parent_of_a_path_keeps_the_root() {
-    use super::pager::parent;
+    use super::create::parent;
     assert_eq!("/", parent("/a"));
     assert_eq!("/a", parent("/a/b"));
     assert_eq!("a", parent("a/b"));

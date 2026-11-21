@@ -40,13 +40,13 @@ impl<R: Runtime> Session<R> {
         ser.lock(&rt).limit(limits);
         Arc::new(Session {
             waits: Waits::new(rt.clone()),
+            steps: pager.steps().clone(),
             rt,
             pager,
             txns,
             ser,
             readers: Ranked::new(ranks::READERS, BTreeMap::new()),
             dead: Ranked::new(ranks::DEAD, vacuums::Dead::default()),
-            steps: Arc::default(),
             #[cfg(any(test, feature = "testing"))]
             dropped: std::sync::atomic::AtomicUsize::new(0),
         })

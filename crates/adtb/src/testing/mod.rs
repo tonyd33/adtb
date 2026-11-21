@@ -30,7 +30,7 @@ pub use crate::mvcc::{Limits, Snapshot, Xid};
 pub use crate::plan::{
     Check as PlanCheck, Checked as PlansChecked, Rewrites, checked as plans_checked, with_rewrites,
 };
-pub use crate::steps::{Change, Step};
+pub use crate::steps::{Change, Checkpoint, Map, Step, StepFn};
 use crate::storage::Position;
 pub use crate::storage::policy::Holder;
 pub use crate::storage::{

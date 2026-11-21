@@ -14,6 +14,7 @@
 use std::sync::Weak;
 
 use crate::runtime::{Runtime, ThreadId};
+use crate::steps::{Checkpoint, Step};
 
 use super::Lsn;
 use super::log::{LogPin, Pinned};
@@ -69,29 +70,35 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Log a fuzzy checkpoint of the dirty page table, force it, and point the file header at it.
+    ///
+    /// Precondition: the calling thread holds no page latch and no lock of the pager.
     pub fn checkpoint(&self) {
-        self.log_checkpoint();
+        self.checkpoint_pinning(false, |c| self.steps().at(Step::Checkpoint(c)));
     }
 
-    /// Take a checkpoint as [`Pager::checkpoint`] does. Returns its LSN, its redo LSN and the
-    /// bitmap groups it captured.
+    /// Take a checkpoint as [`Pager::checkpoint`] does, reporting no boundary. Returns its LSN,
+    /// its redo LSN and the bitmap groups it captured.
     pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
-        let (at, redo, groups, _) = self.checkpoint_pinning(false);
+        let (at, redo, groups, _) = self.checkpoint_pinning(false, |_| {});
         (at, redo, groups)
     }
 
     /// Take a checkpoint as [`Pager::checkpoint`] does, holding the log from its redo LSN while
     /// the returned pin lives. Returns the pin, its LSN and the bitmap groups it captured.
     pub(super) fn pinned_checkpoint(&self) -> (LogPin<'_, R>, Lsn, u64) {
-        let (at, _, groups, pinned) = self.checkpoint_pinning(true);
+        let (at, _, groups, pinned) = self.checkpoint_pinning(true, |_| {});
         let pinned = pinned.expect("a pinning checkpoint pins its redo LSN");
         (LogPin::new(self, pinned), at, groups)
     }
 
     /// Take a checkpoint, pinning its redo LSN when `pin`, in the hold of the log lock that logs
-    /// the checkpoint record. Returns its LSN, its redo LSN, the bitmap groups it captured and
-    /// the pin.
-    fn checkpoint_pinning(&self, pin: bool) -> (Lsn, Lsn, u64, Option<Pinned>) {
+    /// the checkpoint record, reporting each boundary to `step`. Returns its LSN, its redo LSN,
+    /// the bitmap groups it captured and the pin.
+    fn checkpoint_pinning(
+        &self,
+        pin: bool,
+        step: impl Fn(Checkpoint),
+    ) -> (Lsn, Lsn, u64, Option<Pinned>) {
         let (mut list, (at, redo, groups, folded, pinned)) = loop {
             let list = self.list_to_fold();
             let mut append = self.append();
@@ -108,7 +115,9 @@ impl<R: Runtime> Pager<R> {
             self.evidence().fold_logged();
         }
         drop(list);
+        step(Checkpoint::Folded);
         self.flush_log();
+        step(Checkpoint::Forced);
         if folded.is_some() {
             self.header().clear_log_findings(self.rt());
         }
@@ -147,7 +156,7 @@ impl<R: Runtime> Pager<R> {
         img.bases.retain(|&b| b <= floor);
         let last = folded(&mut img, floor)?;
         let end = self.fold(&last).ok()?;
-        self.checkpoint();
+        self.log_checkpoint();
         self.absorb_folded(&last, end);
         let mut segments = self.segments().lock(self.rt());
         let needed = self.log().needed();

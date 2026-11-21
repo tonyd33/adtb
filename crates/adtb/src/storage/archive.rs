@@ -18,11 +18,12 @@ use crate::runtime::{Done, FileId, Io as _, IoError, Op, Runtime, ThreadId};
 
 use super::Lsn;
 use super::backup::{BackupError, Fs, IO_CHUNK, Io, PARTIAL, inside, io_error};
+use super::create::parent;
 use super::digest::hex;
 use super::driver::Failed;
 use super::header::REGION;
 use super::log::{parse_segment, segment_name};
-use super::pager::{Pager, parent};
+use super::pager::Pager;
 use super::quarantine::Quarantine;
 
 const EPOCH: &str = "epoch";

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mvcc::Settling;
 use crate::runtime::Runtime;
+use crate::steps::{Map, Step};
 
 use super::block::{LogFinding, LogProblem};
 use super::error::{Damage, Shape};
@@ -166,7 +167,8 @@ impl<R: Runtime> Pager<R> {
             return BTreeMap::new();
         }
         let begun = self.evidence().begin_mapping(true);
-        self.map_records(begun, self.phase(), holders, order)
+        let step = |m| self.steps().at(Step::Map(m));
+        self.map_records(begun, self.phase(), holders, order, step)
     }
 
     /// Returns whether a damage record of a page is not mapped this open, leaving out a full list.
@@ -190,7 +192,8 @@ impl<R: Runtime> Pager<R> {
             return BTreeMap::new();
         }
         let begun = self.evidence().begin_mapping(false);
-        self.map_records(begun, Phase::Running, holders, &ordered)
+        let step = |m| self.steps().at(Step::CommitMap(m));
+        self.map_records(begun, Phase::Running, holders, &ordered, step)
     }
 
     /// Set what a finding on a page of `holder` marks in the phase the pager is in, in the commit
@@ -245,21 +248,34 @@ impl<R: Runtime> Pager<R> {
     /// during `phase`; when `full`, map every page as a full list does. Leave unmapped a record
     /// whose page marks the database for an open only, or one of whose marks failed, and a full
     /// list whose mark failed. Set the marks of each record still current since `begun` when they
-    /// are set, in the order `order` gives. Returns each object whose mark failed, with why.
+    /// are set, in the order `order` gives. Report each boundary of the mapping to `step`.
+    /// Returns each object whose mark failed, with why.
     fn map_records(
         &self,
         (pages, full, begun): Begun,
         phase: Phase,
         mut holders: impl FnMut(Pid) -> Option<BTreeSet<Holder>>,
         order: &impl Orders,
+        step: impl Fn(Map),
     ) -> BTreeMap<Quarantine, MarkFailure> {
+        step(Map::Begun);
         let list = BTreeSet::from([Holder::DamageList]);
         let overflow = policy::marks(Cause::Full.fault(), list.clone(), phase);
         let mut mapped: Vec<Mapping> = Vec::new();
         let mut causes: Vec<(Cause, BTreeSet<Holder>)> = Vec::new();
         for p in pages {
             let cause = Cause::Record(p, begun);
-            let held = if full { None } else { holders(p.pid()) };
+            let held = if full {
+                None
+            } else {
+                let held = holders(p.pid());
+                step(if held.is_some() {
+                    Map::Walked
+                } else {
+                    Map::Incomplete
+                });
+                held
+            };
             let found = match &held {
                 _ if full => Some(overflow.clone()),
                 Some(held) => Some(policy::marks(cause.fault(), held.clone(), phase)),
@@ -277,6 +293,7 @@ impl<R: Runtime> Pager<R> {
             causes.push((Cause::Full, list));
         }
         let (_, objects, marked) = self.set_standing(order, phase, causes, None);
+        step(Map::Marked);
         let failed: BTreeMap<Quarantine, MarkFailure> = match marked {
             Ok(()) => BTreeMap::new(),
             Err(e) => objects.into_iter().map(|o| (o, e)).collect(),

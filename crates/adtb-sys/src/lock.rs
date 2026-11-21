@@ -203,7 +203,7 @@ impl<T> Lock<T> {
             match self.0.try_lock() {
                 Ok(g) => return g,
                 Err(TryLockError::Poisoned(e)) => return e.into_inner(),
-                Err(TryLockError::WouldBlock) => threads.yield_now(),
+                Err(TryLockError::WouldBlock) => threads.yield_waiting(),
             }
         }
     }
@@ -242,7 +242,7 @@ impl<T> RwLock<T> {
             match self.0.try_read() {
                 Ok(g) => return g,
                 Err(TryLockError::Poisoned(e)) => return e.into_inner(),
-                Err(TryLockError::WouldBlock) => threads.yield_now(),
+                Err(TryLockError::WouldBlock) => threads.yield_waiting(),
             }
         }
     }
@@ -253,7 +253,7 @@ impl<T> RwLock<T> {
             match self.0.try_write() {
                 Ok(g) => return g,
                 Err(TryLockError::Poisoned(e)) => return e.into_inner(),
-                Err(TryLockError::WouldBlock) => threads.yield_now(),
+                Err(TryLockError::WouldBlock) => threads.yield_waiting(),
             }
         }
     }

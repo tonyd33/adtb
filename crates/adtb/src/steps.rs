@@ -20,6 +20,61 @@ pub enum Step {
     WriteInserted,
     /// A failed statement's take-back is to undo its next change.
     TakeBack,
+    /// The damage mapper, outside a commit, reached a point of its mapping.
+    Map(Map),
+    /// A commit's damage mapper reached a point of its mapping, holding the serialization lock.
+    CommitMap(Map),
+    /// A checkpoint reached a point of its work.
+    Checkpoint(Checkpoint),
+}
+
+/// A point of the damage mapper's work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Map {
+    /// It took the records to map and has yet to walk their holders.
+    Begun,
+    /// It walked the holders of one record's page and found them.
+    Walked,
+    /// Its walk of the holders of one record's page was incomplete and found none.
+    Incomplete,
+    /// It set the marks and has yet to record the records mapped.
+    Marked,
+}
+
+/// A point of a checkpoint's work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Checkpoint {
+    /// It logged its record and folded the damage records, and has yet to force the log.
+    Folded,
+    /// It forced the log and has yet to point the file header at its record.
+    Forced,
+}
+
+/// A step function of the engine, by the boundaries it names.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepFn {
+    Read,
+    Write,
+    TakeBack,
+    Map,
+    CommitMap,
+    Checkpoint,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Step {
+    /// Returns the step function that names this boundary.
+    pub fn function(self) -> StepFn {
+        match self {
+            Step::VersionRead | Step::ScanRead | Step::ScanStopped => StepFn::Read,
+            Step::WriteChanged(_) | Step::WriteChecked | Step::WriteInserted => StepFn::Write,
+            Step::TakeBack => StepFn::TakeBack,
+            Step::Map(_) => StepFn::Map,
+            Step::CommitMap(_) => StepFn::CommitMap,
+            Step::Checkpoint(_) => StepFn::Checkpoint,
+        }
+    }
 }
 
 /// What a statement's write did to a version it superseded.
@@ -33,7 +88,8 @@ pub enum Change {
     Retag,
 }
 
-/// Called with each step on the thread that reaches it, holding no latch or engine lock.
+/// Called with each step on the thread that reaches it, holding no latch, and no engine lock but
+/// the one its step names.
 #[cfg(any(test, feature = "testing"))]
 pub type StepHook = std::sync::Arc<dyn Fn(Step) + Send + Sync>;
 
@@ -54,7 +110,8 @@ impl std::fmt::Debug for Steps {
 impl Steps {
     /// Call the hook with `step`.
     ///
-    /// Precondition: the calling thread holds no latch or engine lock.
+    /// Precondition: the calling thread holds no latch, and no engine lock but the one `step`
+    /// names.
     pub(crate) fn at(&self, step: Step) {
         let hook = self
             .hook

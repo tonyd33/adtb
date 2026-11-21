@@ -3,6 +3,7 @@ mod damage_search;
 mod directory_damage;
 mod faults;
 mod heap_kind;
+mod interleavings;
 mod io_contract;
 mod latches;
 mod replay;

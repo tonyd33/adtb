@@ -421,6 +421,7 @@ pub struct Shared<R: Runtime> {
     checkpointer: Lock<super::checkpoint::Worker>,
     /// Set once [`Pager::close`] begins.
     closed: std::sync::atomic::AtomicBool,
+    steps: std::sync::Arc<crate::steps::Steps>,
 }
 
 /// Returns the LSN below which the log's archive holds every segment, `None` while it holds none.
@@ -438,14 +439,6 @@ impl<R: Runtime> std::fmt::Debug for Shared<R> {
             .field("name", &self.name)
             .field("page_size", &self.page_size)
             .finish_non_exhaustive()
-    }
-}
-
-pub(super) fn parent(path: &str) -> &str {
-    match path.rsplit_once('/') {
-        Some(("", _)) => "/",
-        Some((dir, _)) => dir,
-        None => "",
     }
 }
 
@@ -905,6 +898,7 @@ impl<R: Runtime> Pager<R> {
             recycling: Lock::new(()),
             checkpointer: Lock::new(super::checkpoint::Worker::new(o.checkpoint_every)),
             closed: std::sync::atomic::AtomicBool::new(false),
+            steps: std::sync::Arc::default(),
             rt,
         }))
     }
@@ -1003,6 +997,11 @@ impl<R: Runtime> Pager<R> {
 
     pub(super) fn recycling(&self) -> &Lock<()> {
         &self.recycling
+    }
+
+    /// Returns the step hook every step function of this database reports to.
+    pub(crate) fn steps(&self) -> &std::sync::Arc<crate::steps::Steps> {
+        &self.steps
     }
 
     pub(super) fn checkpointer(&self) -> &Lock<super::checkpoint::Worker> {

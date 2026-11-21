@@ -12,7 +12,7 @@ use super::error::OpenError;
 use super::log::parse_segment;
 use super::order::Opening;
 use super::page::{blank, valid_page_size};
-use super::pager::{LATCHES_PER_THREAD, Options, Pager, parent};
+use super::pager::{LATCHES_PER_THREAD, Options, Pager};
 
 impl Options {
     pub fn new(name: &str) -> Options {
@@ -532,4 +532,12 @@ pub(super) fn check_options(o: &Options) -> Result<(), OpenError> {
         o.threads
     );
     Ok(())
+}
+
+pub(super) fn parent(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some(("", _)) => "/",
+        Some((dir, _)) => dir,
+        None => "",
+    }
 }

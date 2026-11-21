@@ -11,11 +11,11 @@ use super::backup::{
     BackupError, Envelope, FIRST_LINE, Fs, Io, KIND as BACKUP, MANIFEST, MAX_EPOCH, Part,
     final_name, inside, io_error, make_parent, name_taken, occupied, publish_restored,
 };
+use super::create::parent;
 use super::digest::{hex, sealed, unhex, unhex_all, unsealed};
 use super::driver::Failed;
 use super::dump_crypt::{DumpKey, Kdf, Passphrase, SALT};
 use super::header::REGION;
-use super::pager::parent;
 use super::{Lsn, Position};
 
 /// The layout of a dump directory this engine reads and writes.

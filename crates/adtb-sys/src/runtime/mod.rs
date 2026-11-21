@@ -94,6 +94,11 @@ pub trait Threads {
     /// Offer the processor to another thread.
     fn yield_now(&self);
 
+    /// Offer the processor to another thread while waiting for a lock another thread holds.
+    fn yield_waiting(&self) {
+        self.yield_now();
+    }
+
     /// Block until `thread` has returned.
     fn join(&self, thread: ThreadId);
 }

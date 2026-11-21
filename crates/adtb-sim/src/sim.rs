@@ -89,6 +89,8 @@ struct SimThread {
     name: String,
     daemon: bool,
     status: Status,
+    /// Set while the thread last yielded waiting for a lock, until it next enters the runtime.
+    waiting: bool,
     token: bool,
     turn: Arc<Condvar>,
 }
@@ -313,6 +315,7 @@ impl Sim {
                 name: "main".into(),
                 daemon: false,
                 status: Status::Runnable,
+                waiting: false,
                 token: false,
                 turn: Arc::new(Condvar::new()),
             }];
@@ -790,10 +793,12 @@ impl SimRuntime {
         if thread::panicking() {
             return None;
         }
-        let st = lock(&self.shared.state);
+        let mut st = lock(&self.shared.state);
         if !matches!(st.phase, Phase::Running) || st.process != self.process {
             return None;
         }
+        let me = st.current;
+        st.threads[me].waiting = false;
         Some(st)
     }
 
@@ -836,6 +841,41 @@ impl SimRuntime {
     /// Panic if `faults` changes the device's sector or atomic unit.
     pub fn set_faults(&self, faults: Faults) {
         lock(&self.shared.state).set_faults(faults);
+    }
+
+    /// Returns whether no thread but the calling one can make progress, now or once an event
+    /// other than a daemon's timer is delivered: every other thread is parked, joining, done, or
+    /// last yielded waiting for a lock.
+    pub fn stalled(&self) -> bool {
+        let st = lock(&self.shared.state);
+        let me = st.current;
+        let runnable = (0..st.threads.len()).any(|i| {
+            let t = &st.threads[i];
+            i != me && t.status == Status::Runnable && !t.waiting
+        });
+        !runnable && st.events.values().all(|e| st.is_daemon_timer(e))
+    }
+
+    /// Offer the processor to another thread, first moving the clock to the next event other than
+    /// a daemon's timer when no other thread can make progress before it.
+    pub fn yield_to_event(&self) {
+        let Some(mut st) = self.enter() else { return };
+        let me = st.current;
+        let runnable = (0..st.threads.len()).any(|i| {
+            let t = &st.threads[i];
+            i != me && t.status == Status::Runnable && !t.waiting
+        });
+        let pending = st.events.values().any(|e| !st.is_daemon_timer(e));
+        if !runnable
+            && pending
+            && let Some((&(due, _), _)) = st.events.first_key_value()
+            && !st.advance(due)
+        {
+            wake_all(&self.shared, &st);
+            drop(st);
+            panic::resume_unwind(Box::new(Halt));
+        }
+        drop(self.reschedule(st));
     }
 
     /// Returns the number of I/O queues opened since the simulation began.
@@ -929,6 +969,7 @@ impl SimRuntime {
             name: name.to_owned(),
             daemon,
             status: Status::Runnable,
+            waiting: false,
             token: false,
             turn: Arc::new(Condvar::new()),
         });
@@ -993,6 +1034,13 @@ impl Threads for SimRuntime {
 
     fn yield_now(&self) {
         let Some(st) = self.enter() else { return };
+        drop(self.reschedule(st));
+    }
+
+    fn yield_waiting(&self) {
+        let Some(mut st) = self.enter() else { return };
+        let me = st.current;
+        st.threads[me].waiting = true;
         drop(self.reschedule(st));
     }
 
