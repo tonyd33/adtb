@@ -1,0 +1,33 @@
+use dump-app
+
+reopen
+
+damage heap app::shapes Circle
+
+flip heap app::shapes Square
+
+crash after 0
+
+run
+  insert users { name: "cy" }
+
+reopen
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+
+reopen
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+
+query rowsort
+  from s in shapes.Square select s.name
+----
+"s"

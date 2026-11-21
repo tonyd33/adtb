@@ -102,7 +102,8 @@
 //! - `damage PAGE`: every later read of the page in this open refused as failing its checksum,
 //!   and the damage recorded.
 //! - `flip PAGE`: a byte of the page's body inverted on the device once this process closes the
-//!   database, so that the next open reads it failing its checksum.
+//!   database, so that the next open reads it failing its checksum. No `lose`, `tear` or crash
+//!   meets the device ops that invert it.
 //! - `lose PAGE`: every later write of this process covering the page completes and changes
 //!   nothing.
 //! - `tear PAGE`: of the next write covering the page, a crash before its force lands only the
@@ -110,7 +111,8 @@
 //!
 //!   A `damage` that no read or latch of its page meets before the close differs, as does a
 //!   `flip` that no read of its page meets by the end of the script, and a `lose` or `tear`
-//!   whose process ends with no write it acts on.
+//!   whose process ends with no write it acts on. A `damage` or `flip` of a process that crashes
+//!   differs, and the flip is not done.
 //! - `scribble PAGE`: the page edited as the body's one line states, as one logged change that
 //!   keeps its checksum valid: `kind KIND`, its header relabelled to page kind KIND, by name as
 //!   `HeapFixed`; `entry N names PAGE`, entry N of a directory page naming that page, its count

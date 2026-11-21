@@ -1,0 +1,26 @@
+# A call after a crash binds its name in the reopened database: no handle the crashed process
+# bound is kept.
+use auth
+reopen
+
+register web-1.0 pins 1 edition "2026-10" use names
+
+run
+  insert users { name: "ann", tier: Free }
+
+call web-1.0
+
+crash after 0
+
+run
+  insert users { name: "cy", tier: Free }
+
+reopen
+
+run
+  insert users { name: "dee", tier: Free }
+
+call web-1.0 1 rowsort
+----
+"ann"
+"dee"

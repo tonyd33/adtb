@@ -1,0 +1,12 @@
+use dump-app
+
+reopen
+
+crash at open app.adt
+
+flip heap app::shapes Circle
+
+reopen
+
+fatal Quarantined { what: "app::shapes.Circle" }
+  from s in shapes select s.name

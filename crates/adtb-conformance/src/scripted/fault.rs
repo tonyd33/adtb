@@ -461,9 +461,8 @@ impl State {
         Ok(())
     }
 
-    /// Returns a difference for each `lose` or `tear` of the process that ended that met no write.
+    /// Returns a difference for each `lose` or `tear` of this process that met no write.
     pub(super) fn unmet(&mut self) -> Vec<Differs> {
-        self.planted.clear();
         let met = |(_, log, planned): &(Step, OpLog, Planned)| {
             log.entries().iter().any(|e| e.planned() == Some(*planned))
         };
@@ -481,6 +480,19 @@ impl State {
             .into_iter()
             .filter(|(_, pid)| !t.probe().refusal_met(*pid))
             .map(|(step, _)| Differs::at(&step, "no read meets the fault"))
+            .collect()
+    }
+
+    /// Returns a difference for each `damage` and `flip` of the process that crashed, none
+    /// judged or done.
+    pub(super) fn crashed(&mut self) -> Vec<Differs> {
+        let damages = std::mem::take(&mut self.planted)
+            .into_iter()
+            .map(|(s, _)| s);
+        let flips = std::mem::take(&mut self.flips).into_iter().map(|(s, ..)| s);
+        damages
+            .chain(flips)
+            .map(|step| Differs::at(&step, "the process crashes with the fault pending"))
             .collect()
     }
 
@@ -552,9 +564,13 @@ impl State {
         }
     }
 
-    /// Invert a byte of the body of each page a `flip` named, on the device. Returns why one
-    /// could not be flipped.
+    /// Drop the plan, then invert a byte of the body of each page a `flip` named, on the device.
+    /// Returns why one could not be flipped.
+    ///
+    /// Preconditions: the database is closed, and `unmet` has judged this process's faults.
     pub(super) fn flip(&mut self, rt: &SimRuntime) -> Result<(), String> {
+        rt.plan(Plan::new());
+        rt.disarm();
         let flips = std::mem::take(&mut self.flips);
         if flips.is_empty() {
             return Ok(());

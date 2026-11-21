@@ -24,6 +24,8 @@ pub(crate) struct Injector {
     bad: BTreeSet<(String, u64)>,
     /// The creations and removals no completed `SyncDir` covers, in completion order.
     entries: Vec<Entry>,
+    /// The path of each write the faults lost or misdirected, in admission order.
+    dropped: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -187,7 +189,12 @@ impl Injector {
             pending: BTreeMap::new(),
             bad: BTreeSet::new(),
             entries: Vec::new(),
+            dropped: Vec::new(),
         }
+    }
+
+    pub(crate) fn dropped_writes(&self) -> Vec<String> {
+        self.dropped.clone()
     }
 
     /// Inject `faults` from now on, keeping what earlier faults left and the generator's state.
@@ -462,9 +469,15 @@ impl Injector {
                 }
                 return Err((Some(buf), Err(IoError::Failed)));
             }
-            WriteFate::Lost => return Err((Some(buf), Ok(Done::Written))),
+            WriteFate::Lost => {
+                self.dropped.push(path);
+                return Err((Some(buf), Ok(Done::Written)));
+            }
             WriteFate::At(target) => target,
         };
+        if target != offset {
+            self.dropped.push(path.clone());
+        }
         if self.record(&fd, &path, target, &buf).is_err() {
             return Err((Some(buf), Err(IoError::Failed)));
         }

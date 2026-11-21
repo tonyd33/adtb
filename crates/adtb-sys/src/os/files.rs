@@ -107,6 +107,10 @@ impl Files {
         self.injector().crash(self)
     }
 
+    pub(crate) fn dropped_writes(&self) -> Vec<String> {
+        self.injector().dropped_writes()
+    }
+
     pub(crate) fn set_faults(&self, faults: Faults) {
         self.injector().set(faults);
     }

@@ -142,6 +142,15 @@ impl OsRuntime {
         self.backend.files.crash()
     }
 
+    /// Returns the path of each write the faults lost or landed at another offset, in admission
+    /// order.
+    ///
+    /// Panics:
+    /// - The runtime was not made by [`OsRuntime::with_faults`].
+    pub fn dropped_writes(&self) -> Vec<String> {
+        self.backend.files.dropped_writes()
+    }
+
     /// Inject `faults` from now on, keeping what earlier faults left.
     ///
     /// Panic unless the runtime was made by [`OsRuntime::with_faults`], or if `faults` changes

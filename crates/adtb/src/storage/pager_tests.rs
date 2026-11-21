@@ -389,6 +389,9 @@ struct Report {
     damage_allowed: bool,
     /// Whether the log was found damaged or lost a write.
     log_trouble: bool,
+    /// The commits acknowledged by the end of an earlier round whose faults lost or misdirected a
+    /// write to the log, each allowed lost.
+    exempt: BTreeSet<u64>,
     /// Each way the pages disagree with what the client wrote.
     problems: Vec<String>,
     /// Every transaction a page shows.
@@ -418,7 +421,9 @@ impl Recovered for Report {
 impl Reopened for Report {
     fn allows(&self, v: &Violation) -> bool {
         match v {
-            Violation::Lost(_) => self.log_trouble || self.open.is_some(),
+            Violation::Lost(x) => {
+                self.log_trouble || self.open.is_some() || self.exempt.contains(x)
+            }
             Violation::Found(f) => self.damage_allowed && f.kind == FindingKind::Structure,
             Violation::Phantom(_) => false,
         }
@@ -527,7 +532,8 @@ fn judge(report: &mut Report, ledger: &Ledger, world: &World, lost_log_write: bo
             .visible
             .extend(shown.iter().copied().filter(|&x| x != 0));
         for (s, &x) in shown.iter().enumerate() {
-            if x != 0 && !report.log_trouble && !report.commits.contains(&x) {
+            let exempt = report.log_trouble || report.exempt.contains(&x);
+            if x != 0 && !exempt && !report.commits.contains(&x) {
                 problems.push(format!("{pid:?} slot {s} shows {x}, which never committed"));
             }
             if x != 0 && ledger.fate(x) == Some(Fate::Aborted) {
@@ -536,6 +542,7 @@ fn judge(report: &mut Report, ledger: &Ledger, world: &World, lost_log_write: bo
             let newer_acked = world.writes.iter().find(|(w, ws)| {
                 **w > x
                     && report.commits.contains(w)
+                    && !report.exempt.contains(w)
                     && ledger.fate(**w) == Some(Fate::Acknowledged)
                     && ws.iter().any(|(p, ss)| p == pid && ss.contains(&s))
             });
@@ -575,6 +582,8 @@ struct Floors {
     crashes: usize,
     acked: usize,
     reopened: usize,
+    served: usize,
+    refused: usize,
     pages: Rate,
     logs: Rate,
 }
@@ -588,14 +597,16 @@ struct Rate {
 
 const NO_KIND: Rate = Rate { found: 0, per: 1 };
 
-/// Returns floors of one strike and of `crashes`, `acked` and `reopened`, with no kind of
-/// finding.
+/// Returns floors of one strike and of `crashes`, `acked` and `reopened`, with no page served or
+/// refused and no kind of finding.
 const fn floors(crashes: usize, acked: usize, reopened: usize) -> Floors {
     Floors {
         struck: 1,
         crashes,
         acked,
         reopened,
+        served: 0,
+        refused: 0,
         pages: NO_KIND,
         logs: NO_KIND,
     }
@@ -616,6 +627,18 @@ const THREADED_PAGES: Rate = Rate { found: 1, per: 2 };
 /// Log findings of threads under every fault: one, as 25 of 256 measured seeds reach any and 64
 /// seeds then all miss with chance under 0.2%.
 const THREADED_LOGS: Rate = Rate { found: 1, per: 64 };
+
+/// Pages served by a real device under every fault: under half the measured 208 over 2 seeds.
+const REAL_EVERY_SERVED: usize = 100;
+/// Pages refused by a real device under every fault: half the measured 8 over 2 seeds.
+const REAL_EVERY_REFUSED: usize = 4;
+/// Pages served by a real device in one cell: under half the least measured, 420 over 8 seeds in
+/// 20 runs.
+const REAL_CELL_SERVED: usize = 200;
+/// Pages refused per seed by a real device over all its cells: under half the least sum of each
+/// cell's least measured, 168 over 8 seeds in 20 runs, where one cell alone reaches none in some
+/// thread orders.
+const REAL_REFUSED_PER_SEED: usize = 10;
 
 /// The layouts of the crash table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -737,6 +760,10 @@ struct Tally {
     logs: usize,
     reopened: usize,
     unopenable: usize,
+    /// Pages a reopen with no log trouble served, each checked against every acknowledged commit.
+    served: usize,
+    /// Pages a reopen refused.
+    refused: usize,
     /// Unforced writes a crash tore.
     torn: usize,
     /// The writes, forces and allocations the faults failed.
@@ -750,8 +777,12 @@ struct Tally {
 impl Tally {
     /// Count what `report`, reopened after a crash, found and whether it opened.
     fn count(&mut self, report: &Report) {
-        self.damage +=
-            report.findings.len() + report.pages.values().filter(|p| p.is_none()).count();
+        let refused = report.pages.values().filter(|p| p.is_none()).count();
+        self.damage += report.findings.len() + refused;
+        self.refused += refused;
+        if report.open.is_none() && !report.log_trouble {
+            self.served += report.pages.len() - refused;
+        }
         for f in &report.findings {
             match f {
                 Finding::Page { .. } => self.pages += 1,
@@ -786,7 +817,13 @@ fn kind_floor(seeds: usize, rate: &Rate) -> usize {
 
 /// Run `seeds` of `fault` under `shape` on `device`, failing unless the fault struck, the row
 /// reached `floors` and it lost an acknowledged write only to faults that damage the file.
-fn crash_row(device: Device, fault: Fault, shape: Shape, seeds: Range<u64>, floors: Floors) {
+fn crash_row(
+    device: Device,
+    fault: Fault,
+    shape: Shape,
+    seeds: Range<u64>,
+    floors: Floors,
+) -> Tally {
     let row = (device, fault, shape, seeds.clone());
     let mut t = Tally::default();
     for seed in sweep(seeds.clone()) {
@@ -812,7 +849,9 @@ fn crash_row(device: Device, fault: Fault, shape: Shape, seeds: Range<u64>, floo
         t.acked,
         share(seeds.clone(), f.acked),
     );
-    reach("reopens", t.reopened, share(seeds, f.reopened));
+    reach("reopens", t.reopened, share(seeds.clone(), f.reopened));
+    reach("pages served", t.served, share(seeds.clone(), f.served));
+    reach("pages refused", t.refused, share(seeds, f.refused));
     if fault.damages() {
         assert!(
             t.unopenable <= t.crashes.div_ceil(CRASHES_PER_REFUSAL),
@@ -831,6 +870,7 @@ fn crash_row(device: Device, fault: Fault, shape: Shape, seeds: Range<u64>, floo
         reach("page findings", t.pages, kind_floor(t.seeds, &f.pages));
         reach("log findings", t.logs, kind_floor(t.seeds, &f.logs));
     }
+    t
 }
 
 /// Crash a random workload four times under `fault`, reopening and checking after each.
@@ -906,7 +946,8 @@ const SECTOR: u64 = 4096;
 
 /// Run six rounds of a random workload under `fault` and `shape` on real files, each ending in a
 /// crash of the device and a reopen with no faults that is checked as [`crash_rounds`] checks it,
-/// allowing the loss of an acknowledged commit under lost writes.
+/// allowing the loss of an acknowledged commit only in a round whose faults lost or misdirected a
+/// write to the log, or of one acknowledged by the end of such a round.
 fn os_rounds(tally: &mut Tally, backend: Backend, fault: Fault, shape: Shape, seed: u64) {
     const ROUNDS: u64 = 6;
     silence_fatal_panics();
@@ -919,6 +960,8 @@ fn os_rounds(tally: &mut Tally, backend: Backend, fault: Fault, shape: Shape, se
     let dir = held.path();
     let client = Client::new();
     create(OsRuntime::new(dir, backend), &client, layout);
+    let log = format!("{}/", options(layout).log_dir());
+    let mut exempt = BTreeSet::new();
     for round in 0..ROUNDS {
         let rt = OsRuntime::with_faults(
             dir,
@@ -948,14 +991,16 @@ fn os_rounds(tally: &mut Tally, backend: Backend, fault: Fault, shape: Shape, se
         }
         tally.torn += rt.crash().torn;
         tally.crashes += 1;
+        let dropped_log_write = rt.dropped_writes().iter().any(|p| p.starts_with(&log));
         let pages = client.world.lock().unwrap().pages.clone();
         let mut report = inspect(OsRuntime::new(dir, backend), &pages, layout);
         report.damage_allowed = fault.damages();
+        report.exempt.clone_from(&exempt);
         judge(
             &mut report,
             &client.ledger,
             &client.world.lock().unwrap(),
-            faults.lost_write_p > 0.0,
+            dropped_log_write,
         );
         let (allowed, violations): (Vec<Violation>, Vec<Violation>) =
             check(&client.ledger, &report)
@@ -972,6 +1017,14 @@ fn os_rounds(tally: &mut Tally, backend: Backend, fault: Fault, shape: Shape, se
             }
         }
         report.settle(&client.ledger);
+        if dropped_log_write {
+            let world = client.world.lock().unwrap();
+            let acked = world
+                .writes
+                .keys()
+                .filter(|&&x| client.ledger.fate(x) == Some(Fate::Acknowledged));
+            exempt.extend(acked);
+        }
         tally.count(&report);
         if report.last() {
             break;
@@ -991,9 +1044,10 @@ fn every_cell(device: Device) {
         Simulated => (4, &Shape::ALL[..]),
         Pool | Uring => (6, &[Plain, Atomic, Threaded][..]),
     };
+    let real = device != Simulated;
+    let mut refused = 0;
     for &shape in shapes {
         for fault in Fault::ALL {
-            let real = device != Simulated;
             let tears = matches!(fault, Torn | TornAll);
             if real && shape.layout().threads > 0 && fault.faults().fail_p > 0.0
                 || tears && (real || shape.layout().atomic)
@@ -1002,9 +1056,19 @@ fn every_cell(device: Device) {
             }
             let start = 10_000 + 1000 * device as u64 + 100 * shape as u64 + 10 * fault as u64;
             let whole = usize::from(!fault.damages());
-            let floors = floors(1.max(whole * rounds), 15, whole * rounds);
-            crash_row(device, fault, shape, start..start + 1, floors);
+            let mut floors = floors(1.max(whole * rounds), 15, whole * rounds);
+            if real {
+                floors.served = REAL_CELL_SERVED;
+            }
+            refused += crash_row(device, fault, shape, start..start + 1, floors).refused;
         }
+    }
+    if real {
+        assert_reached(
+            &format!("{device:?}: pages refused"),
+            refused,
+            REAL_REFUSED_PER_SEED * sweep(0..1).count(),
+        );
     }
 }
 
@@ -1118,7 +1182,12 @@ fn a_failed_write_or_force_on_io_uring_crashes_and_recovery_keeps_every_commit()
 
 #[test]
 fn rot_latent_errors_and_misdirected_and_lost_writes_on_real_files_are_refused_never_returned() {
-    crash_row(Pool, Every, Plain, 0..2, floors(1, 0, 0));
+    let floors = Floors {
+        served: REAL_EVERY_SERVED,
+        refused: REAL_EVERY_REFUSED,
+        ..floors(1, 0, 0)
+    };
+    crash_row(Pool, Every, Plain, 0..2, floors);
 }
 
 /// Crash at every flush, two images of each and one layout unless the profile is `deep`, which

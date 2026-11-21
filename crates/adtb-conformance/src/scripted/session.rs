@@ -324,6 +324,7 @@ impl Script {
         let first = self.steps[self.next].clone();
         self.next += 1;
         rt.disarm();
+        self.handles = Handles::default();
         let (log, refused) = match &first.head {
             Head::Migrate { at, refused } => {
                 let mut log = self.log.clone();
@@ -426,13 +427,14 @@ impl Script {
             let open = format!("transaction `{name}` is open at the next open");
             self.out.push(Differs::at(&first, open));
         }
-        self.handles = Handles::default();
         let unmet = self.faults.unmet_damage(db.testing());
         self.out.extend(unmet);
         if let Err(e) = db.close() {
             let closed = format!("the database does not close: {}", e.value());
             self.out.push(Differs::at(&first, closed));
         }
+        let unmet = self.faults.unmet();
+        self.out.extend(unmet);
         if let Err(e) = self.faults.flip(rt) {
             self.out
                 .push(Differs::at(&first, format!("the flip fails: {e}")));
@@ -784,7 +786,11 @@ fn run_steps(root: &Path, path: &Path, steps: Vec<Step>, clock: clock::Clock) ->
                     let differs = Differs::at(&step, "the process does not crash");
                     script.out.push(differs);
                 }
-                (Outcome::Crashed, Some(step)) => script.crashed(&step),
+                (Outcome::Crashed, Some(step)) => {
+                    let pending = script.faults.crashed();
+                    script.out.extend(pending);
+                    script.crashed(&step);
+                }
                 (Outcome::Crashed, None) => {
                     return Some(format!(
                         "{}: the simulated process crashes",
