@@ -19,6 +19,7 @@ use crate::storage::{Pager, Pid, Quarantine};
 use adtb_sys::lock::Ranked;
 
 use super::memory::{Arena, Grant};
+use super::run::StopsEarly;
 use super::types::{ctors, repr};
 use super::value::{F32, F64, Val};
 use super::{Broken, Error, Rot};
@@ -47,11 +48,8 @@ pub trait Reads: Send + Sync {
     fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure>;
 
     /// Record that `scan`, a scan of heap `heap`, ended having read every version of the heap,
-    /// or only those on the pages of `read` when it is given.
-    ///
-    /// Preconditions: when `read` is given, what the scan was read for depends on no version on
-    /// another page of the heap.
-    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<&[Pid]>);
+    /// or, when it stopped early, only those on the pages it read.
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<(StopsEarly, &[Pid])>);
 
     /// Record that the encoded keys of the index rooted at `index` between `lo` and `hi` were
     /// read, for rows of `ctors`.
@@ -112,11 +110,11 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
         }
     }
 
-    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<&[Pid]>) {
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<(StopsEarly, &[Pid])>) {
         if let Some((s, id)) = &self.serial {
-            let pages: Option<Vec<u64>> = read.map(|r| r.iter().map(|p| p.0).collect());
-            s.lock(&self.rt)
-                .end_scan(*id, heap.0, scan, pages.as_deref());
+            let read = read.map(|(early, r)| (early, r.iter().map(|p| p.0).collect::<Vec<_>>()));
+            let read = read.as_ref().map(|(early, r)| (early, r.as_slice()));
+            s.lock(&self.rt).end_scan(*id, heap.0, scan, read);
         }
     }
 
@@ -169,7 +167,7 @@ impl<R: Runtime> Reads for AtMarker<R> {
         Ok(None)
     }
 
-    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<&[Pid]>) {}
+    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<(StopsEarly, &[Pid])>) {}
 
     fn probed(
         &self,
@@ -491,14 +489,11 @@ pub struct Listing {
 }
 
 impl Listing {
-    /// Record that the scan read only the versions on the pages of `read`.
-    ///
-    /// Preconditions: what the scan was read for depends on no version on another page of the
-    /// heap.
-    pub fn stopped(mut self, read: &[Pid]) {
+    /// Record that the scan, stopped early, read only the versions on the pages of `read`.
+    pub fn stopped(mut self, early: StopsEarly, read: &[Pid]) {
         if let Some(scan) = self.scan.take() {
-            self.reads.reached(Step::ScanRead);
-            self.reads.scanned(self.heap, scan, Some(read));
+            self.reads.reached(Step::ScanStopped);
+            self.reads.scanned(self.heap, scan, Some((early, read)));
         }
     }
 }
@@ -657,23 +652,24 @@ impl<R: Runtime> Store<R> {
         Ok((self.bindings.indexes.get(&id)).ok_or(Broken::UnboundIndex(id))?)
     }
 
-    /// Pass the visible rows of heap `id` to `each` as batches of at most `rows` rows each, as
-    /// [`Store::scan_pages`] does, and then those of its history heap when the store reads the
-    /// past.
+    /// Pass the visible rows on the pages of `listing`, a listing of heap `id`, to `each` as
+    /// batches of at most `rows` rows each, as [`Store::scan_pages`] does, and then those of its
+    /// history heap when the store reads the past.
     pub fn scan(
         &self,
         id: HeapId,
+        listing: Listing,
         rows: usize,
         grant: &Arc<Grant>,
-        each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
+        each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
     ) -> Result<(), Error> {
-        let listing = self.pages(id)?;
         if let Some(past) = self.past_heap(id)? {
             return self.scan_past(id, &listing.pages, past, rows, grant, each);
         }
-        if let ControlFlow::Break(n) = self.scan_pages(id, &listing.pages, rows, grant, each)? {
+        let flow = self.scan_pages(id, &listing.pages, rows, grant, each)?;
+        if let ControlFlow::Break((early, n)) = flow {
             let read = listing.pages[..n].to_vec();
-            listing.stopped(&read);
+            listing.stopped(early, &read);
         }
         Ok(())
     }
@@ -689,7 +685,7 @@ impl<R: Runtime> Store<R> {
         past: &StoredHeap,
         rows: usize,
         grant: &Arc<Grant>,
-        mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
+        mut each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
     ) -> Result<(), Error> {
         let h = self.heap(id)?;
         let mut b = Filling::new(&h.row, rows, grant);
@@ -850,7 +846,8 @@ impl<R: Runtime> Store<R> {
     /// Pass the visible rows on `pages`, a range of what [`Store::pages`] returned for heap `id`,
     /// to `each` as batches of at most `rows` rows each, reading a page only once the batches
     /// before it are passed, each batch held in `grant` from its first row until `each` returns.
-    /// Stop when `each` breaks. Returns the number of pages read when `each` breaks.
+    /// Stop when `each` breaks. Returns the judgement `each` broke with and the number of pages
+    /// read.
     ///
     /// Postconditions: the versions recorded with [`Reads::saw`] are those read before the last
     /// batch passed, and every version on `pages` when `each` never breaks.
@@ -860,8 +857,8 @@ impl<R: Runtime> Store<R> {
         pages: &[Pid],
         rows: usize,
         grant: &Arc<Grant>,
-        mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
-    ) -> Result<ControlFlow<usize>, Error> {
+        mut each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
+    ) -> Result<ControlFlow<(StopsEarly, usize)>, Error> {
         let h = self.heap(id)?;
         let mut b = Filling::new(&h.row, rows, grant);
         for (read, pid) in (1..).zip(pages) {
@@ -876,9 +873,9 @@ impl<R: Runtime> Store<R> {
                     continue;
                 }
                 if let Some((full, _held)) = b.push(&v.row)?
-                    && each(full)?.is_break()
+                    && let ControlFlow::Break(early) = each(full)?
                 {
-                    return Ok(ControlFlow::Break(read));
+                    return Ok(ControlFlow::Break((early, read)));
                 }
             }
         }
@@ -886,7 +883,7 @@ impl<R: Runtime> Store<R> {
             Some((last, _held)) => each(last)?,
             None => ControlFlow::Continue(()),
         };
-        Ok(flow.map_break(|()| pages.len()))
+        Ok(flow.map_break(|early| (early, pages.len())))
     }
 
     /// Returns the version of heap `id` visible from the chain starting at the TID `at` names,

@@ -22,7 +22,7 @@ use super::join::{Deferred, Probed, Table};
 use super::memory::Grant;
 use super::sched::Scheduler;
 use super::spill::{Distinct, Spill};
-use super::store::{Named, ProbeBounds, Routes, Store, from_stored, to_key};
+use super::store::{Listing, Named, ProbeBounds, Routes, Store, from_stored, to_key};
 use super::value::Val;
 use super::{Broken, Error, Exceeded, Fault, Options};
 
@@ -39,6 +39,19 @@ pub struct Ctx<R: Runtime> {
     pub cancel: Arc<AtomicBool>,
     pub deadline: Option<super::Deadline>,
     pub spill: Spill<R>,
+}
+
+/// The judgement that one value decided a query's sink and no remaining row could abort it, so
+/// what a scan of the query read it for depends on no version it did not read.
+#[derive(Debug)]
+pub struct StopsEarly(());
+
+impl StopsEarly {
+    /// Returns the judgement for a test of a scan's stop, outside any query.
+    #[cfg(test)]
+    pub fn tested() -> StopsEarly {
+        StopsEarly(())
+    }
 }
 
 /// One evaluation of a query.
@@ -82,6 +95,11 @@ impl Run {
         self.stopped
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Acquire))
+    }
+
+    /// Returns the judgement that the query stops early, once one value decided its sink.
+    pub(super) fn stops_early(&self) -> Option<StopsEarly> {
+        self.stopped().then_some(StopsEarly(()))
     }
 
     /// Merge what a task emitted into the query's values.
@@ -521,7 +539,7 @@ impl<R: Runtime> Ctx<R> {
             _ => {
                 let mut out = run.out(&self.grant);
                 for (p, e) in &chosen {
-                    self.pipeline(&run, p, e, &mut out)?;
+                    self.pipeline(&run, p, e, None, &mut out)?;
                 }
                 run.emit(&self.rt, &self.spill, out)?;
             }
@@ -547,13 +565,12 @@ impl<R: Runtime> Ctx<R> {
         let mut scans = Vec::new();
         for (p, env) in chosen {
             let Source::Scan { heap, .. } = &p.source else {
-                small.push((p, env));
+                small.push((p, env, None));
                 continue;
             };
             let listing = self.store.pages(*heap)?;
             if listing.pages.len() <= self.options.pack_pages {
-                listing.stopped(&[]);
-                small.push((p, env));
+                small.push((p, env, Some(listing)));
                 continue;
             }
             let read = Arc::new(Lock::new(Vec::new()));
@@ -565,11 +582,14 @@ impl<R: Runtime> Ctx<R> {
             }
             scans.push((listing, read));
         }
-        if !small.is_empty() {
+        let small = Arc::new(Lock::new(small));
+        if !small.lock(&self.rt).is_empty() {
+            let small = small.clone();
             self.spawn(pool, run, move |cx, run| {
                 let mut out = run.out(&cx.grant);
-                for (p, env) in &small {
-                    cx.pipeline(run, p, env, &mut out)?;
+                let taken = std::mem::take(&mut *small.lock(&cx.rt));
+                for (p, env, listing) in taken {
+                    cx.pipeline(run, &p, &env, listing, &mut out)?;
                 }
                 run.emit(&cx.rt, &cx.spill, out)?;
                 Ok(())
@@ -580,10 +600,17 @@ impl<R: Runtime> Ctx<R> {
                 self.rt.yield_now();
             }
         }
-        if run.stopped() {
-            for (listing, read) in scans {
+        // A task the run skipped left its listings unread.
+        let skipped = std::mem::take(&mut *small.lock(&self.rt));
+        for (_, _, listing) in skipped {
+            if let (Some(listing), Some(early)) = (listing, run.stops_early()) {
+                listing.stopped(early, &[]);
+            }
+        }
+        for (listing, read) in scans {
+            if let Some(early) = run.stops_early() {
                 let read = std::mem::take(&mut *read.lock(&self.rt));
-                listing.stopped(&read);
+                listing.stopped(early, &read);
             }
         }
         match run.error.lock(&self.rt).take() {
@@ -632,21 +659,27 @@ impl<R: Runtime> Ctx<R> {
                     self.morsel(run, p, env, &b, &mut out)
                 })?;
         let n = match flow {
-            ControlFlow::Break(n) => n,
+            ControlFlow::Break((_, n)) => n,
             ControlFlow::Continue(()) => pages.len(),
         };
         read.lock(&self.rt).extend_from_slice(&pages[..n]);
         run.emit(&self.rt, &self.spill, out)
     }
 
+    /// Run `p` in `env`, its scan, when it has one, over the pages of `listing` when it is
+    /// given.
     pub(super) fn pipeline(
         self: &Arc<Self>,
         run: &Run,
         p: &Pipeline,
         env: &Frame,
+        listing: Option<Listing>,
         out: &mut Distinct,
     ) -> Result<(), Error> {
-        if run.stopped() {
+        if let Some(early) = run.stops_early() {
+            if let Some(listing) = listing {
+                listing.stopped(early, &[]);
+            }
             return Ok(());
         }
         match &p.source {
@@ -655,8 +688,12 @@ impl<R: Runtime> Ctx<R> {
                 self.chain(run, &p.chain, 0, env.clone(), vec![0], out)
             }
             Source::Scan { heap, .. } => {
+                let listing = match listing {
+                    Some(listing) => listing,
+                    None => self.store.pages(*heap)?,
+                };
                 self.store
-                    .scan(*heap, self.options.morsel_rows, &self.grant, |b| {
+                    .scan(*heap, listing, self.options.morsel_rows, &self.grant, |b| {
                         self.morsel(run, p, env, &b, out)
                     })
             }
@@ -670,10 +707,10 @@ impl<R: Runtime> Ctx<R> {
         env: &Frame,
         b: &Batch,
         out: &mut Distinct,
-    ) -> Result<ControlFlow<()>, Error> {
+    ) -> Result<ControlFlow<StopsEarly>, Error> {
         self.check_cancel()?;
-        if run.stopped() {
-            return Ok(ControlFlow::Break(()));
+        if let Some(early) = run.stops_early() {
+            return Ok(ControlFlow::Break(early));
         }
         let Source::Scan { heap, var } = &p.source else {
             unreachable!("a morsel is of a scan")
@@ -684,10 +721,9 @@ impl<R: Runtime> Ctx<R> {
         f.bind_all(*var, rows);
         let sel = f.all();
         self.chain(run, &p.chain, 0, f, sel, out)?;
-        Ok(if run.stopped() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
+        Ok(match run.stops_early() {
+            Some(early) => ControlFlow::Break(early),
+            None => ControlFlow::Continue(()),
         })
     }
 

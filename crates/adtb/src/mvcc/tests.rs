@@ -9,6 +9,7 @@ use super::{
     Access, Cause, Holds, Limits, Probe, RESERVATION, Reader, Safety, Scope, SerialId,
     SerializationFailure, Serializer, Snapshot, Status, Write, Writers, Xid,
 };
+use crate::exec::StopsEarly;
 use crate::key::{CtorId, Tid};
 use crate::storage::{HEADER_LEN, Pid};
 
@@ -471,7 +472,7 @@ fn an_open_scan_leaves_tuple_reads_their_own_locks() {
     let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
     let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
     s.read_tuple(r, HEAP, tid(9, 1)).unwrap();
-    s.end_scan(r, HEAP, scan, Some(&[5]));
+    s.end_scan(r, HEAP, scan, Some((&StopsEarly::tested(), &[5])));
     s.write_at(w, HEAP, tid(9, 1)).unwrap();
     assert_eq!(BTreeSet::from([w]), s.writers_after(r));
 }
@@ -568,7 +569,7 @@ fn a_scan_ended_early_keeps_a_heap_lock_another_read_took() {
     let early = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
     let whole = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
     s.end_scan(r, HEAP, whole, None);
-    s.end_scan(r, HEAP, early, Some(&[5]));
+    s.end_scan(r, HEAP, early, Some((&StopsEarly::tested(), &[5])));
     assert_eq!(1, s.locks(r));
     s.insert_heap(w, HEAP).unwrap();
     assert_eq!(BTreeSet::from([w]), s.writers_after(r));

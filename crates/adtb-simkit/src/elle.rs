@@ -17,14 +17,15 @@ use crate::api;
 use crate::open::{self, FILE};
 
 /// The workload's schema: the elements of each key's list, one row per element at its position,
-/// counters keyed by id, and cells keyed by id of two constructors and indexed by `m`.
+/// counters keyed by id, and cells keyed by id of two constructors and indexed by `m`, padded to
+/// spread them over pages.
 pub const SCHEMA: &str = "module elle
 add module elle
 add type Elem = { id: Key elems, k: I64, pos: I64, e: I64 }
 add relation elems : Elem key id generate sequence unique (k, e) unique (k, pos)
 add type Counter = { id: I64, n: I64 }
 add relation counters : Counter key id
-add type Cell { id: I64, n: I64, m: I64 } = Even | Odd
+add type Cell { id: I64, n: I64, m: I64, pad: Text } = Even | Odd
 add relation cells : Cell key id index (m)
 ";
 

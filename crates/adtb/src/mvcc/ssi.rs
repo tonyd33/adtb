@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, RangeBounds};
 
+use crate::exec::StopsEarly;
 use crate::heap::Superseded;
 use crate::key::{CtorId, Tid};
 use crate::storage::Pid;
@@ -371,12 +372,15 @@ impl Serializer {
         Ok(Some(scan))
     }
 
-    /// End `scan`, a scan of `heap` by `id`, leaving a heap lock in its place, or page locks on
-    /// the pages of `read` alone when it is given.
-    ///
-    /// Preconditions: when `read` is given, what the scan was read for depends on no version on
-    /// another page of the heap.
-    pub fn end_scan(&mut self, id: SerialId, heap: u32, scan: ScanId, read: Option<&[u64]>) {
+    /// End `scan`, a scan of `heap` by `id`, leaving a heap lock in its place, or, when it
+    /// stopped early, page locks on the pages it read alone.
+    pub fn end_scan(
+        &mut self,
+        id: SerialId,
+        heap: u32,
+        scan: ScanId,
+        read: Option<(&StopsEarly, &[u64])>,
+    ) {
         let point = Point::Scan(heap, scan);
         if !self
             .sxacts
@@ -388,7 +392,7 @@ impl Serializer {
         self.unlock(id, point);
         match read {
             None => self.lock_heap(id, heap),
-            Some(pages) => {
+            Some((_, pages)) => {
                 for &page in pages {
                     if !self.get(id).points.contains(&Point::Heap(heap)) {
                         self.lock_page(id, heap, page);

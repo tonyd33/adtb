@@ -984,13 +984,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             if of.is_some_and(|s| !s.contains(&c)) {
                 continue;
             }
-            self.store
-                .scan(ctor.heap, self.db.options.morsel_rows, &grant, |b| {
-                    for i in 0..b.len() {
-                        out.push((c, self.row(rel, c, &b.row(i))));
-                    }
-                    Ok(ControlFlow::Continue(()))
-                })?;
+            let listing = self.store.pages(ctor.heap)?;
+            let morsel = self.db.options.morsel_rows;
+            self.store.scan(ctor.heap, listing, morsel, &grant, |b| {
+                for i in 0..b.len() {
+                    out.push((c, self.row(rel, c, &b.row(i))));
+                }
+                Ok(ControlFlow::Continue(()))
+            })?;
         }
         Ok(out)
     }

@@ -6,8 +6,12 @@
 pub enum Step {
     /// A serializable read of a version through its TID read it and has yet to lock it.
     VersionRead,
-    /// A serializable scan of a heap read its pages and has yet to end its scan.
+    /// A serializable scan of a heap that did not stop early read its pages and has yet to end
+    /// its scan.
     ScanRead,
+    /// A serializable scan of a heap that stopped early read its pages and has yet to end its
+    /// scan.
+    ScanStopped,
     /// A statement's update, delete or retag of a version changed its page.
     WriteChanged(Change),
     /// A statement's update, delete or retag of a version checked the SIREAD locks on it.

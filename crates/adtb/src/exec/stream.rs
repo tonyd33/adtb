@@ -93,7 +93,7 @@ impl<R: Runtime> Production<R> {
         cx.check_cancel()?;
         let mut set = run.out(&cx.grant);
         match unit {
-            Unit::Pipeline(p, env) => cx.pipeline(run, &p, &env, &mut set)?,
+            Unit::Pipeline(p, env) => cx.pipeline(run, &p, &env, None, &mut set)?,
             Unit::Pages(p, env, pages) => {
                 let Source::Scan { heap, .. } = &p.source else {
                     unreachable!("a unit of pages scans")

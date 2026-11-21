@@ -91,7 +91,7 @@ impl<R: Runtime> Ctx<R> {
         let build: &Build = &run.query.builds[i];
         let mut out = Distinct::new(&self.grant);
         for p in &build.pipelines {
-            self.pipeline(run, p, &run.env, &mut out)?;
+            self.pipeline(run, p, &run.env, None, &mut out)?;
         }
         let t = Arc::new(self.hash(build, &run.env, out)?);
         *slot = Some(t.clone());

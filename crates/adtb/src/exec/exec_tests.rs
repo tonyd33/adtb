@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::batch;
 use crate::exec::{
     self, Broken, Budget, Call, Error, Exceeded, Options as XOptions, ProbeBounds, Program, Reads,
-    Routes, Rows, Scheduler, Store, Val,
+    Routes, Rows, Scheduler, StopsEarly, Store, Val,
 };
 use crate::heap::{FieldType, HeapNo};
 use crate::key::{CtorId, Tid};
@@ -541,7 +541,7 @@ impl Reads for Counted {
         self.inner.scanning(heap)
     }
 
-    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<&[Pid]>) {
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<(StopsEarly, &[Pid])>) {
         self.inner.scanned(heap, scan, read);
     }
 
@@ -589,8 +589,11 @@ fn rereading(store: &Store<SimRuntime>, reads: Arc<dyn Reads>) -> Store<SimRunti
 /// Returns how many versions a scan of `heap` reads.
 fn versions(store: &Store<SimRuntime>, count: &Counted, heap: HeapId) -> usize {
     count.take();
+    let listing = store.pages(heap).expect("a listing");
     store
-        .scan(heap, 1000, &roomy(), |_| Ok(ControlFlow::Continue(())))
+        .scan(heap, listing, 1000, &roomy(), |_| {
+            Ok(ControlFlow::Continue(()))
+        })
         .expect("a scan");
     count.take()
 }
@@ -603,15 +606,19 @@ fn a_scan_passes_its_first_batch_before_it_reads_the_heap_s_last_page() {
         let (store, count) = counted(store);
         let total = versions(&store, &count, heap);
         let mut first = None;
+        let listing = store.pages(heap).expect("a listing");
         store
-            .scan(heap, 7, &roomy(), |_| {
+            .scan(heap, listing, 7, &roomy(), |_| {
                 first.get_or_insert(count.take());
                 Ok(ControlFlow::Continue(()))
             })
             .expect("a scan");
+        let listing = store.pages(heap).expect("a listing");
         count.take();
         store
-            .scan(heap, 7, &roomy(), |_| Ok(ControlFlow::Break(())))
+            .scan(heap, listing, 7, &roomy(), |_| {
+                Ok(ControlFlow::Break(StopsEarly::tested()))
+            })
             .expect("a stopped scan");
         (total, first.expect("a batch"), count.take())
     });
@@ -667,9 +674,12 @@ fn a_store_reads_the_heaps_of_its_reader_s_scope_and_refuses_another() {
             let rows = |heap: HeapId| {
                 let mut n = 0;
                 scoped
-                    .scan(heap, 1000, &roomy(), |b| {
-                        n += b.len();
-                        Ok(ControlFlow::Continue(()))
+                    .pages(heap)
+                    .and_then(|listing| {
+                        scoped.scan(heap, listing, 1000, &roomy(), |b| {
+                            n += b.len();
+                            Ok(ControlFlow::Continue(()))
+                        })
                     })
                     .map(|()| n)
             };
@@ -761,9 +771,12 @@ fn a_store_narrowed_to_a_plan_s_reads_refuses_a_heap_or_index_they_do_not_list()
             let rows = |heap: HeapId| {
                 let mut n = 0;
                 narrowed
-                    .scan(heap, 1000, &roomy(), |b| {
-                        n += b.len();
-                        Ok(ControlFlow::Continue(()))
+                    .pages(heap)
+                    .and_then(|listing| {
+                        narrowed.scan(heap, listing, 1000, &roomy(), |b| {
+                            n += b.len();
+                            Ok(ControlFlow::Continue(()))
+                        })
                     })
                     .map(|()| n)
             };

@@ -37,6 +37,7 @@ pub use ir::{Bound, Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::{print, zone_exists};
 pub use rot::{Rot, detail};
+pub use run::StopsEarly;
 #[cfg(test)]
 pub use sched::{Admission, Task};
 pub use sched::{Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped};

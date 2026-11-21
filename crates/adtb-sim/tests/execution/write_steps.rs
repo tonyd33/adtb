@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use adtb::runtime::Threads;
 use adtb::testing::{Change, Step};
+use adtb::{OpenOptions, TxnCallOptions};
 use adtb_sim::SimRuntime;
-use adtb_simkit::elle::{self, Elems, Kind, Reply, Req, Worker, simulate};
+use adtb_simkit::elle::{self, Elems, Kind, Reply, Req, Worker, simulate_with};
 use adtb_simkit::steps::Stop;
 use adtb_testkit::isolation::{self as iso, Outcome};
 use adtb_testkit::seeds::{assert_reached, sweep};
 
-/// A write of an existing version of `cells`.
+/// A write of a row of `cells`: of its existing version, or an insert of a row it lacks.
 #[derive(Clone, Copy, Debug)]
 enum Write {
     Delete,
@@ -18,35 +19,59 @@ enum Write {
     /// An update of an indexed field.
     ColdUpdate,
     Retag,
+    Insert,
 }
 
-const WRITES: [Write; 4] = [
+const WRITES: [Write; 5] = [
     Write::Delete,
     Write::HotUpdate,
     Write::ColdUpdate,
     Write::Retag,
+    Write::Insert,
 ];
 
-/// A read of one row of `cells`: by its key, or by a scan of the whole heap.
+/// A read of one row of `cells`: by its key, by a scan of the whole heap, or by a scan that stops
+/// at the row while it has its first value.
 #[derive(Clone, Copy, Debug)]
 enum Read {
     Key,
     Scan,
+    Early,
 }
 
-const READS: [Read; 2] = [Read::Key, Read::Scan];
+const READS: [Read; 3] = [Read::Key, Read::Scan, Read::Early];
 
 /// The value a read gives a row: 0 before any write, more after any write but a delete.
 const VALUE: &str = "c.n + c.m + (match c | Even e -> 0 | Odd o -> 1)";
 
 impl Write {
-    /// Returns what the write does to the version it supersedes.
-    fn change(self) -> Change {
-        match self {
+    /// Returns the step after which the write has changed its page and is to check the SIREAD
+    /// locks it meets, and the step it reaches next when it has one.
+    fn changed(self) -> (Step, Option<Step>) {
+        let change = match self {
             Write::Delete => Change::Delete,
             Write::HotUpdate => Change::Update { heap_only: true },
             Write::ColdUpdate => Change::Update { heap_only: false },
             Write::Retag => Change::Retag,
+            Write::Insert => return (Step::WriteInserted, None),
+        };
+        (Step::WriteChanged(change), Some(Step::WriteChecked))
+    }
+
+    /// Returns the values a read gives a row before the write.
+    fn first(self) -> &'static [i64] {
+        match self {
+            Write::Insert => &[],
+            _ => &[0],
+        }
+    }
+
+    /// Returns the reads that meet the write: a read by key or by an early scan of a row it
+    /// lacks reaches no step of its own.
+    fn reads(self) -> &'static [Read] {
+        match self {
+            Write::Insert => &[Read::Scan],
+            _ => &READS,
         }
     }
 
@@ -60,6 +85,7 @@ impl Write {
                 format!("update c in cells.Even where c.id == {id} set Even {{ c with m: 1 }}")
             }
             Write::Retag => format!("update c in cells.Even where c.id == {id} set Odd {{}}"),
+            Write::Insert => format!("insert cells.Even {{ id: {id}, n: 1, m: 0, pad: \"\" }}"),
         })
     }
 }
@@ -70,13 +96,21 @@ impl Read {
         Req::Text(match self {
             Read::Key => format!("from c in cells where c.id == {id} select {VALUE}"),
             Read::Scan => format!("from c in cells select c.id * 10 + {VALUE}"),
+            Read::Early => {
+                let other = A + B - id;
+                format!(
+                    "if (exists c in cells where c.id != {other} \
+                     and (match c | Even e -> e.n == 0 and e.m == 0 | Odd o -> false)) \
+                     then 0 else 1"
+                )
+            }
         })
     }
 
     /// Returns the values of row `id` in `reply`, the rows the request of [`Read::row`] gave.
     fn values(self, id: i64, reply: Vec<i64>) -> Vec<i64> {
         match self {
-            Read::Key => reply,
+            Read::Key | Read::Early => reply,
             Read::Scan => reply
                 .into_iter()
                 .filter(|v| v / 10 == id)
@@ -90,14 +124,48 @@ impl Read {
 const A: i64 = 1;
 const B: i64 = 2;
 
-/// Returns the list a read of a row of `cells` written at most once, by the append of `elem`,
-/// stands for: empty while the read gives the row's first value.
-fn list(values: &[i64], elem: i64) -> Vec<i64> {
+/// Returns the workload's options with a scan passing one row at a time, so that a scan that
+/// stops early stops on the page of the row that decides it.
+fn options() -> OpenOptions {
+    let mut options = elle::options();
+    options.testing = std::mem::take(&mut options.testing).with_morsel_rows(Some(1));
+    options
+}
+
+/// The rows of `cells` that stand between A and B in its heap, so that each is on a page of its
+/// own, and that no read of A or B gives.
+const FILLER: Range<i64> = 100..110;
+
+/// Returns the list a read of a row of `cells` written at most once by `write`, the append of
+/// `elem`, stands for: empty while the read gives the row's first values.
+fn list(values: &[i64], write: Write, elem: i64) -> Vec<i64> {
     match values {
-        [0] => vec![],
+        v if v == write.first() => vec![],
         [] | [_] => vec![elem],
         v => panic!("a read of one row gives at most one value: {v:?}"),
     }
+}
+
+/// Insert and commit the rows `write` finds: A, then the filler, then B, A and B only when the
+/// write is not an insert.
+fn fill(rt: &SimRuntime, e: &Arc<Elems>, write: Write) {
+    let setup = Worker::start(rt, e, Kind::ReadWrite);
+    let row = |id, n, pad: &str| format!("{{ id: {id}, n: {n}, m: 0, pad: \"{pad}\" }}");
+    let pad = "x".repeat(1500);
+    let filler: Vec<String> = FILLER.map(|id| row(id, 5, &pad)).collect();
+    let mut rows = vec![format!("[{}]", filler.join(", "))];
+    if write.first() == [0] {
+        rows.insert(0, format!("[{}]", row(A, 0, "")));
+        rows.push(format!("[{}]", row(B, 0, "")));
+    }
+    for rows in rows {
+        let text = format!("insert cells.Even from ({rows})");
+        setup
+            .call(rt, Req::Text(text))
+            .expect("rows of cells insert");
+    }
+    setup.call(rt, Req::Commit).expect("the rows commit");
+    rt.join(setup.thread());
 }
 
 /// One side of the write skew: a transaction that reads one row and writes the other, writing
@@ -105,15 +173,17 @@ fn list(values: &[i64], elem: i64) -> Vec<i64> {
 struct Side {
     worker: Worker,
     id: u64,
+    write: Write,
     ops: Vec<iso::Op>,
     aborted: bool,
 }
 
 impl Side {
-    fn start(rt: &SimRuntime, e: &Arc<Elems>, id: u64) -> Side {
+    fn start(rt: &SimRuntime, e: &Arc<Elems>, id: u64, write: Write) -> Side {
         Side {
             worker: Worker::start(rt, e, Kind::ReadWrite),
             id,
+            write,
             ops: Vec::new(),
             aborted: false,
         }
@@ -141,7 +211,7 @@ impl Side {
     /// Record the reply of a read of row `key` by `read`, the other side writing `elem` to it.
     fn was_read(&mut self, reply: Reply, read: Read, key: i64, elem: i64) {
         if let Some(v) = self.failed(reply) {
-            let list = list(&read.values(key, v), elem);
+            let list = list(&read.values(key, v), self.write, elem);
             self.ops.push(iso::Op::Read { key, list });
         }
     }
@@ -197,7 +267,10 @@ struct Steps {
 }
 
 fn of_a_write(step: Step) -> bool {
-    matches!(step, Step::WriteChanged(_) | Step::WriteChecked)
+    matches!(
+        step,
+        Step::WriteChanged(_) | Step::WriteChecked | Step::WriteInserted
+    )
 }
 
 /// Returns side 2's write of A with `at`'s stop set on it, and what it showed.
@@ -239,17 +312,9 @@ fn stopped_write(
 /// before side 1 writes. Returns the history with a final read of both rows, and the steps of the
 /// side `at` stops.
 fn skew(write: Write, read: Read, at: At, seed: u64) -> (Vec<iso::Txn>, Steps) {
-    simulate(seed, |rt, e| {
-        let setup = Worker::start(rt, e, Kind::ReadWrite);
-        for id in [A, B] {
-            let row = format!("insert cells.Even {{ id: {id}, n: 0, m: 0 }}");
-            setup
-                .call(rt, Req::Text(row))
-                .expect("a row of cells inserts");
-        }
-        setup.call(rt, Req::Commit).expect("the rows commit");
-        rt.join(setup.thread());
-        let (mut one, mut two) = (Side::start(rt, e, 1), Side::start(rt, e, 2));
+    simulate_with(seed, &options(), |rt, e| {
+        fill(rt, e, write);
+        let (mut one, mut two) = (Side::start(rt, e, 1, write), Side::start(rt, e, 2, write));
         two.read(rt, read, B, 1);
         let none = || Steps {
             stopped: None,
@@ -293,7 +358,7 @@ fn skew(write: Write, read: Read, at: At, seed: u64) -> (Vec<iso::Txn>, Steps) {
                 let v = last.call(rt, Read::Key.row(key)).expect("a read-only read");
                 iso::Op::Read {
                     key,
-                    list: list(&v, elem),
+                    list: list(&v, write, elem),
                 }
             })
             .into();
@@ -301,6 +366,25 @@ fn skew(write: Write, read: Read, at: At, seed: u64) -> (Vec<iso::Txn>, Steps) {
         rt.join(last.thread());
         let history = vec![iso::Txn::new(0, Outcome::Committed, ops), one, two];
         (history, steps)
+    })
+}
+
+/// Returns the page locks an early read of A and one of B leave, each in a transaction of its own,
+/// over the rows a write of an existing version finds.
+fn early_pages(seed: u64) -> [usize; 2] {
+    simulate_with(seed, &options(), |rt, e| {
+        fill(rt, e, Write::Delete);
+        [A, B].map(|id| {
+            let Req::Text(text) = Read::Early.row(id) else {
+                unreachable!("a read is text")
+            };
+            let mut tx = e.begin(Kind::ReadWrite).expect("a transaction");
+            tx.query_text(&text, &[], &TxnCallOptions::default())
+                .expect("an early read");
+            let locks = e.database().testing().locks(&tx);
+            tx.rollback().expect("a rollback");
+            locks.iter().filter(|l| l.starts_with("page ")).count()
+        })
     })
 }
 
@@ -351,23 +435,30 @@ fn every_step(
 #[test]
 fn a_read_and_a_write_of_a_version_stopped_at_each_others_steps_leave_serializable_histories() {
     const SEEDS: Range<u64> = 0..1;
+    let [a, b] = early_pages(0);
+    assert!(
+        a == 1 && b > 1,
+        "an early read of A stops on its page, before B's: {a} and {b} page locks"
+    );
     let mut judged = Judged::default();
     let (mut between, mut read_stops) = (0, 0);
+    let mut cases = 0;
     for write in WRITES {
-        for read in READS {
+        for &read in write.reads() {
             for seed in sweep(SEEDS) {
+                cases += 1;
                 let (history, _) = skew(write, read, At::Before, seed);
                 let case = format!("{write:?} {read:?} seed {seed} before the write");
                 judged.judge(&history, case);
-                let changed = Step::WriteChanged(write.change());
                 let stops = every_step(write, read, seed, At::Writer, &mut judged);
-                if stops.contains(&(changed, Some(Step::WriteChecked))) {
+                if stops.contains(&write.changed()) {
                     between += 1;
                 }
                 let stops = every_step(write, read, seed, At::Reader, &mut judged);
                 let lock = match read {
                     Read::Key => Step::VersionRead,
                     Read::Scan => Step::ScanRead,
+                    Read::Early => Step::ScanStopped,
                 };
                 if stops.iter().any(|(s, _)| *s == lock) {
                     read_stops += 1;
@@ -381,7 +472,6 @@ fn a_read_and_a_write_of_a_version_stopped_at_each_others_steps_leave_serializab
         "of {} histories",
         judged.count
     );
-    let cases = WRITES.len() * READS.len() * sweep(SEEDS).count();
     assert_reached(
         "a read between a write's change, of the write's kind, and its check",
         between,

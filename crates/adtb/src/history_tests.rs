@@ -1029,8 +1029,9 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             .expect("a grant fits");
         let mut moved = false;
         let mut rows = Vec::new();
+        let listing = store.pages(id).expect("a listing");
         store
-            .scan(id, 1, &grant, |batch| {
+            .scan(id, listing, 1, &grant, |batch| {
                 rows.extend((0..batch.len()).map(|r| pair(&batch.row(r))));
                 if !moved {
                     for tid in [first, last] {
@@ -1064,10 +1065,13 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
         assert_eq!(rows.len(), 1000);
         assert_eq!(rows, (0..1000).map(|k| (k, k)).collect::<Vec<_>>());
         let mut calls = 0;
+        let listing = store.pages(id).expect("a listing");
         store
-            .scan(id, 1, &grant, |_| {
+            .scan(id, listing, 1, &grant, |_| {
                 calls += 1;
-                Ok(std::ops::ControlFlow::Break(()))
+                Ok(std::ops::ControlFlow::Break(
+                    crate::exec::StopsEarly::tested(),
+                ))
             })
             .expect("stopped scan");
         assert_eq!(calls, 1);
@@ -1183,7 +1187,13 @@ impl crate::exec::Reads for VacuumOnFetch {
         Ok(None)
     }
 
-    fn scanned(&self, _: HeapNo, _: crate::mvcc::ScanId, _: Option<&[Pid]>) {}
+    fn scanned(
+        &self,
+        _: HeapNo,
+        _: crate::mvcc::ScanId,
+        _: Option<(crate::exec::StopsEarly, &[Pid])>,
+    ) {
+    }
 
     fn probed(
         &self,
