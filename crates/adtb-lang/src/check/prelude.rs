@@ -742,12 +742,6 @@ impl Checker<'_> {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
-                if self.ctx != Context::Constraint {
-                    return Err(diag(
-                        span,
-                        format!("`{name}` reads the change of a statement, only in a constraint"),
-                    ));
-                }
                 let (rel, ctors) = self.relation_ref_expr(a)?;
                 let base = self.rel_out(rel, ctors.clone());
                 let t = match name {

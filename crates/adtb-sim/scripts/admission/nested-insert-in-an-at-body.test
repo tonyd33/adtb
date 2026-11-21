@@ -1,0 +1,10 @@
+# An `at` body writes nothing, so a nested insert in one is refused.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add type Phone = { id: Key phones, owner: Key users, seen: I64 }
+  add relation users : User key id generate sequence
+  add relation phones : Phone key id generate sequence
+error Invalid { detail: "an `at` body must not write" }
+  insert phones from (at commit Position { epoch: 0, lsn: 0 } { [Phone { id: phones.key(9), owner: key (insert users { name: "a" }), seen: 1 }] })

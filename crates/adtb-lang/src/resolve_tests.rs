@@ -69,10 +69,6 @@ fn parameters_and_caller() {
         "fn f (u: Key users) -> Set Text = from i in identities where i.user == u select display_name(i)",
     );
     accepts("fn me () -> Principal = caller");
-    refuses(
-        "constraint c = from u in users where caller == caller select u",
-        "`caller` is not in scope",
-    );
 }
 
 #[test]

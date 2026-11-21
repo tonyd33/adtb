@@ -1,11 +1,13 @@
 use super::*;
 use crate::ast::{BundleItem, ExampleItem};
+use crate::capability::RootKind;
 use crate::kernel::{Const, Prim};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::schema::{Committed, build};
 
 mod adhoc;
 mod binding_sites;
+mod capability;
 mod or_patterns;
 mod principal;
 mod row_provenance;
@@ -998,17 +1000,13 @@ fn an_index_field_through_a_value_level_constructor_names_its_path() {
 
 #[test]
 fn a_row_body_under_shared_branches_is_walked_once() {
-    let (_, p) = program("").expect("the running schema checks");
+    let (s, p) = program("").expect("the running schema checks");
     let mut terms = Terms::default();
     let c = terms.var("c", Ty::Unit);
     let test = terms.add_ill_typed(Kind::Var(c), Ty::Unit);
     let row = terms.var("row", Ty::Unit);
     let leaf = terms.add_ill_typed(Kind::Var(row), Ty::Unit);
     let body = terms.doubled(test, leaf, 64);
-    assert!(row_body::reads_only_row(
-        &terms,
-        body,
-        &p,
-        &mut BTreeSet::new()
-    ));
+    let judge = crate::capability::Judge::new(&s, &p);
+    assert_eq!(Ok(()), judge.judge(RootKind::Fill, &terms, body));
 }

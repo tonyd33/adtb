@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use crate::capability::{self, Judge, Reach, RootKind};
 use crate::check::{Adhoc, Program, Query, Txn};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, Root};
@@ -102,6 +103,17 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
             diag: Diag::new(span, message),
         }
     };
+    let judge = Judge::new(schema, p);
+    let refused: Vec<FileDiag> = crate::depends::bodies(p)
+        .into_iter()
+        .filter_map(|(root, t, _)| {
+            let r = judge.judge(capability::kind_of(schema, root), &p.terms, t);
+            r.err().map(|r| site(root, r.to_string()))
+        })
+        .collect();
+    if !refused.is_empty() {
+        return refused;
+    }
     let n = match norm::program(schema, p) {
         Ok(n) => n,
         Err(e) => {
@@ -114,39 +126,8 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
     };
     n.bodies()
         .into_iter()
-        .filter_map(|(root, t, _)| {
-            accept(n.terms(), &[t])
-                .and_then(|()| volatile_free(schema, n.terms(), root, t))
-                .err()
-                .map(|m| site(root, m))
-        })
+        .filter_map(|(root, t, _)| accept(n.terms(), &[t]).err().map(|m| site(root, m)))
         .collect()
-}
-
-/// Refuse a schema object that must not read a volatile relation but does.
-fn volatile_free(schema: &Schema, terms: &Terms, root: Root, t: Tm) -> Result<(), String> {
-    let what = match root {
-        Root::Function(f) if schema.function(f).stored.is_some() => "a stored view",
-        Root::Function(_)
-        | Root::Aggregate(_)
-        | Root::Domain(_)
-        | Root::Item(_)
-        | Root::Command(_)
-        | Root::Query => {
-            return Ok(());
-        }
-        Root::Constraint(_) => "a constraint",
-        Root::Check(_) => "a row check",
-        Root::Retag(_) => "a delete action",
-        Root::Default(..) => "a default",
-        Root::Computed(..) => "a computed field",
-        Root::IndexField(..) => "an index expression",
-    };
-    if reads_volatile(schema, terms, t) {
-        Err(format!("{what} must not read a volatile relation"))
-    } else {
-        Ok(())
-    }
 }
 
 const VOLATILE_WRITE: &str = "a write must not depend on a volatile relation: not in its target, its predicate, its values, or a value or condition it depends on";
@@ -166,6 +147,22 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
     if !denied.is_empty() {
         return denied;
     }
+    let judge = Judge::new(schema, p);
+    let items = a.items.iter().zip(spans).map(|(t, span)| (*t, *span));
+    let commands = a
+        .commands
+        .iter()
+        .flat_map(|c| c.command.terms().into_iter().map(|t| (t, c.span)));
+    let refused: Vec<Diag> = items
+        .chain(commands)
+        .filter_map(|(t, span)| {
+            let r = judged(schema, &judge, a.kind(), &a.terms, t);
+            r.err().map(|m| Diag::new(span, m))
+        })
+        .collect();
+    if !refused.is_empty() {
+        return refused;
+    }
     let n = match norm::adhoc(schema, p, a) {
         Ok(n) => n,
         Err(e) => {
@@ -177,15 +174,7 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
             return vec![diag(span, e)];
         }
     };
-    let accepted = |t: Tm| {
-        accept(n.terms(), &[t]).and_then(|()| {
-            if write_depends_on_volatile(schema, n.terms(), t) {
-                Err(VOLATILE_WRITE.to_string())
-            } else {
-                Ok(())
-            }
-        })
-    };
+    let accepted = |t: Tm| accept(n.terms(), &[t]);
     let items = n.items().iter().zip(spans).map(|(t, span)| (*t, *span));
     let commands = n
         .commands()
@@ -206,9 +195,34 @@ fn diag(span: Span, e: norm::Error) -> Diag {
     }
 }
 
+/// Refuse `t`, a checked body of kind `root`, when it reaches what the entry of `root` forbids or a
+/// write in it depends on a volatile read, dead terms included.
+fn judged(
+    schema: &Schema,
+    judge: &Judge,
+    root: RootKind,
+    terms: &Terms,
+    t: Tm,
+) -> Result<(), String> {
+    judge.judge(root, terms, t).map_err(|r| r.to_string())?;
+    let volatile = &mut |x| judge.reaches(terms, x).contains(&Reach::Volatile);
+    if write_depends_on_volatile(schema, terms, t, volatile) {
+        return Err(VOLATILE_WRITE.to_string());
+    }
+    Ok(())
+}
+
 /// Normalise a checked registered query and apply the acceptance rules over its normal form.
 pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) -> Result<(), Diag> {
     system::program(schema, p, &q.terms, [q.term], span)?;
+    judged(
+        schema,
+        &Judge::new(schema, p),
+        RootKind::Query,
+        &q.terms,
+        q.term,
+    )
+    .map_err(|m| Diag::new(span, m))?;
     let n = norm::query(schema, p, q).map_err(|e| diag(span, e))?;
     accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }
@@ -216,10 +230,14 @@ pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) ->
 /// Normalise a checked registered transaction and apply the acceptance rules over its normal form.
 pub(crate) fn txn_diag(schema: &Schema, p: &Program, t: &Txn, span: Span) -> Result<(), Diag> {
     system::program(schema, p, &t.terms, [t.term], span)?;
+    judged(
+        schema,
+        &Judge::new(schema, p),
+        RootKind::Query,
+        &t.terms,
+        t.term,
+    )
+    .map_err(|m| Diag::new(span, m))?;
     let n = norm::txn(schema, p, t).map_err(|e| diag(span, e))?;
-    accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))?;
-    if write_depends_on_volatile(schema, n.terms(), n.body()) {
-        return Err(Diag::new(span, VOLATILE_WRITE));
-    }
-    Ok(())
+    accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }

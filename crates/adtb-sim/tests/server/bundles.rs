@@ -1675,7 +1675,7 @@ fn a_sole_access_shape_blocks_enable_only_when_it_reads_the_field() {
                 let text = format!("import auth\n{body}\n");
                 let pin = [V1, READER_ADD];
                 assert_eq!(
-                    "query `run`: `inserted` reads the change of a statement, only in a constraint",
+                    "query `run`: a registered query or transaction must not read the change of a statement",
                     invalid(
                         open::open(
                             &rt,

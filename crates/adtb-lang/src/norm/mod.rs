@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::analysis::Totality;
+use crate::capability::{self, RootKind};
 use crate::check::{Adhoc, AdhocCommand, Program, Query, Txn};
 use crate::kernel::{Agg, Build, Frees, Invalid, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
@@ -68,24 +69,6 @@ impl Error {
     }
 }
 
-/// Returns whether `root` reads the state after a statement, before its checks pass, where no
-/// deref is total.
-fn reads_unchecked(root: Root) -> bool {
-    match root {
-        Root::Constraint(_) | Root::Check(_) => true,
-        Root::Function(_)
-        | Root::Domain(_)
-        | Root::Retag(_)
-        | Root::Default(..)
-        | Root::Computed(..)
-        | Root::IndexField(..)
-        | Root::Aggregate(_)
-        | Root::Item(_)
-        | Root::Command(_)
-        | Root::Query => false,
-    }
-}
-
 fn at<T>(root: Root, r: Result<T, String>) -> Result<T, Error> {
     r.map_err(|message| Error {
         root,
@@ -104,6 +87,7 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
 /// Normalise checked ad hoc text, inlining the functions of `p`.
 pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Error> {
     let mut n = Normaliser::new(schema, [&a.terms, &p.terms], p);
+    n.text = a.kind();
     let params = a
         .params
         .iter()
@@ -135,16 +119,38 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
 
 /// Normalise a checked registered query, inlining the functions of `p`.
 pub fn query(schema: &Schema, p: &Program, q: &Query) -> Result<NormalQuery, Error> {
-    registered(schema, p, &q.terms, q.term)
+    query_as(schema, p, q, RootKind::Query)
+}
+
+/// Normalise a checked registered query as [`query`] does, as a root of `kind`.
+pub fn query_as(
+    schema: &Schema,
+    p: &Program,
+    q: &Query,
+    kind: RootKind,
+) -> Result<NormalQuery, Error> {
+    registered(schema, p, &q.terms, q.term, kind)
 }
 
 /// Normalise a checked registered transaction, inlining the functions of `p`.
 pub fn txn(schema: &Schema, p: &Program, t: &Txn) -> Result<NormalQuery, Error> {
-    registered(schema, p, &t.terms, t.term)
+    txn_as(schema, p, t, RootKind::Query)
 }
 
-fn registered(schema: &Schema, p: &Program, terms: &Terms, term: Tm) -> Result<NormalQuery, Error> {
+/// Normalise a checked registered transaction as [`txn`] does, as a root of `kind`.
+pub fn txn_as(schema: &Schema, p: &Program, t: &Txn, kind: RootKind) -> Result<NormalQuery, Error> {
+    registered(schema, p, &t.terms, t.term, kind)
+}
+
+fn registered(
+    schema: &Schema,
+    p: &Program,
+    terms: &Terms,
+    term: Tm,
+    kind: RootKind,
+) -> Result<NormalQuery, Error> {
     let mut n = Normaliser::new(schema, [terms, &p.terms], p);
+    n.text = kind;
     let (params, body) = n.under_lams(MAIN, term, usize::MAX);
     let params: Vec<Var> = params.into_iter().map(|v| n.free_var(MAIN, v)).collect();
     let body = n.root(Root::Query, body)?;
@@ -264,6 +270,7 @@ struct Normaliser<'a> {
     schema: &'a Schema,
     src: [&'a Terms; 2],
     fns: &'a [Option<Tm>],
+    program: &'a Program,
     out: Terms,
     out_frees: Frees,
     tot: Totality<'a>,
@@ -271,8 +278,12 @@ struct Normaliser<'a> {
     fv: [HashMap<Tm, FreeVars>; 2],
     memo: HashMap<MemoKey, Tm>,
     budget: Budget,
-    /// Whether the root being normalised reads the state after a statement.
+    /// The kind of the text normalised: its ad hoc items and commands, or its registered body.
+    text: RootKind,
+    /// Whether every deref of the root being normalised is partial.
     unchecked: bool,
+    /// Whether the root being normalised reads through a pin hiding new constructors.
+    hiding: bool,
 }
 
 impl<'a> Normaliser<'a> {
@@ -282,6 +293,7 @@ impl<'a> Normaliser<'a> {
             schema,
             src,
             fns,
+            program: p,
             out: Terms::default(),
             out_frees: Frees::default(),
             tot: Totality::new(schema, false).with_aggregates(&p.terms, p.aggregate_parts()),
@@ -289,19 +301,47 @@ impl<'a> Normaliser<'a> {
             fv: [HashMap::new(), HashMap::new()],
             memo: HashMap::new(),
             budget: Budget::new(src[0].len() + src[1].len()),
+            text: RootKind::Adhoc,
             unchecked: false,
+            hiding: false,
         }
     }
 
-    /// Normalise what follows as the body of `root`. Clear the memo when the mode changes: a
-    /// nullary function's memo key is the same in every root.
+    /// Normalise what follows as the body of `root`.
     fn enter(&mut self, root: Root) {
-        let unchecked = reads_unchecked(root);
+        let kind = match root {
+            Root::Item(_) | Root::Command(_) | Root::Query => self.text,
+            _ => capability::kind_of(self.schema, root),
+        };
+        let entry = capability::entry(kind);
+        self.mode(entry.derefs_partial(), entry.hiding());
+        self.budget.start(&self.out);
+    }
+
+    /// Normalise what follows with every deref partial when `unchecked`, judging totality as
+    /// under a hiding pin when `hiding`. Clear the memo when the mode changes: a nullary
+    /// function's memo key is the same in every root.
+    fn mode(&mut self, unchecked: bool, hiding: bool) {
+        if hiding != self.hiding {
+            self.hiding = hiding;
+            self.tot = Totality::new(self.schema, hiding)
+                .with_aggregates(&self.program.terms, self.program.aggregate_parts());
+            self.memo.clear();
+        }
         if unchecked != self.unchecked {
             self.unchecked = unchecked;
             self.memo.clear();
         }
-        self.budget.start(&self.out);
+    }
+
+    /// Normalise an `at` block, its derefs as the entry of an `at` body states.
+    fn at_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let (unchecked, hiding) = (self.unchecked, self.hiding);
+        let body = capability::entry(RootKind::AtBody);
+        self.mode(unchecked || body.derefs_partial(), hiding);
+        let v = self.congruent(kind, ty, cx);
+        self.mode(unchecked, hiding);
+        v
     }
 
     fn node(&self, arena: usize, t: Tm) -> &'a Node {
@@ -639,6 +679,7 @@ impl<'a> Normaliser<'a> {
                 source,
             } => self.top_step(*count, keys, *var, *source, ty, cx),
             Kind::Present { .. } => self.present_step(&node.kind, ty, cx),
+            Kind::At { .. } => self.at_step(&node.kind, ty, cx),
             Kind::Fix(binds, body) => self.fix_step(binds, *body, ty, cx),
             Kind::Replace(r, rows, f) => self.replace_step(*r, *rows, *f, cx),
             Kind::Upsert { .. } => self.upsert_step(&node.kind, cx),
@@ -656,7 +697,6 @@ impl<'a> Normaliser<'a> {
             | Kind::IsEmpty(_)
             | Kind::Exists(_)
             | Kind::Only(_)
-            | Kind::At { .. }
             | Kind::Reject(_)
             | Kind::Insert(..)
             | Kind::Delete(..)

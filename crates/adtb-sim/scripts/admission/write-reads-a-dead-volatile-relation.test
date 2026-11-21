@@ -1,0 +1,8 @@
+# A volatile read in the values a write writes is refused, though the value it builds drops it.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+error Invalid { detail: "a write must not depend on a volatile relation: not in its target, its predicate, its values, or a value or condition it depends on" }
+  insert users { name: { a: count(s for s in sys::sessions), b: "x" }.b }

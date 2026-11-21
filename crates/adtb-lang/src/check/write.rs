@@ -3,6 +3,7 @@ use crate::ast::{
     BinOp, CallArgs, ConflictTarget, CtorScope, Expr, ExprKind, Pattern, RecordExpr, UnOp, Write,
     WriteArm, WriteKind,
 };
+use crate::capability::{self, Reach};
 use crate::kernel::{Conflict, Prim};
 use crate::schema::OnDelete;
 
@@ -664,6 +665,11 @@ impl Checker<'_> {
 
     /// `key (insert ...)`: the key of the row a nested single-row insert inserts beside its enclosing write.
     pub(super) fn nested_insert(&mut self, w: &Write) -> R<Out> {
+        if self.at_bodies > 0 {
+            let writes = BTreeSet::from([Reach::Write]);
+            capability::admit(RootKind::AtBody, &writes)
+                .map_err(|r| diag(w.span, r.to_string()))?;
+        }
         if self.hoist.is_empty() {
             return Err(diag(
                 w.span,

@@ -16,20 +16,26 @@ fn mentions(terms: &Terms, t: Tm, vars: &BTreeSet<Var>) -> bool {
 
 /// Returns whether a write in `t` depends on a volatile read: its target is a volatile relation, its
 /// target, predicate or values read one, or a condition, a source it ranges over or a `let` whose
-/// value reaches it does.
-///
-/// Preconditions:
-/// - `t` is a normal form.
-pub fn write_depends_on_volatile(schema: &Schema, terms: &Terms, t: Tm) -> bool {
+/// value reaches it does. `volatile` decides whether a term reads one.
+pub fn write_depends_on_volatile(
+    schema: &Schema,
+    terms: &Terms,
+    t: Tm,
+    volatile: &mut dyn FnMut(Tm) -> bool,
+) -> bool {
     let mut tainted = BTreeSet::new();
-    terms.search(t, |t| visit(schema, terms, t, &mut tainted))
+    terms.search(t, |t| visit(schema, terms, t, &mut tainted, volatile))
 }
 
 /// Visit `t` before the terms under it, tainting the variables a volatile read reaches.
-fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> Search {
-    let dirty = |x: Tm, tainted: &BTreeSet<Var>| {
-        reads_volatile(schema, terms, x) || mentions(terms, x, tainted)
-    };
+fn visit(
+    schema: &Schema,
+    terms: &Terms,
+    t: Tm,
+    tainted: &mut BTreeSet<Var>,
+    volatile: &mut dyn FnMut(Tm) -> bool,
+) -> Search {
+    let mut dirty = |x: Tm, tainted: &BTreeSet<Var>| volatile(x) || mentions(terms, x, tainted);
     let kind = terms.kind(t);
     if kind.is_write() {
         let target = match kind {

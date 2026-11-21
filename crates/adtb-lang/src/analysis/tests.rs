@@ -1085,7 +1085,8 @@ fn a_write_under_shared_branches_is_checked_for_volatile_reads_once() {
     let rows = terms.add_ill_typed(Kind::Var(row), Ty::Unit);
     let insert = terms.add_ill_typed(Kind::Insert(RelId(0), rows), Ty::Change);
     let t = terms.doubled(test, insert, SHARED_DEPTH);
-    assert!(!write_depends_on_volatile(&s, &terms, t));
+    let volatile = &mut |x| reads_volatile(&s, &terms, x);
+    assert!(!write_depends_on_volatile(&s, &terms, t, volatile));
 }
 
 #[test]

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::ast;
+use crate::capability::RootKind;
 use crate::kernel::{Build, Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
 use crate::schema::prelude::ctor;
@@ -188,12 +189,8 @@ pub enum Ref {
 /// What a body may refer to besides its locals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context {
-    /// A function or registered query: `caller` is in scope.
-    Function,
-    /// A constraint, check, default or other schema-level expression.
+    /// A body a schema declares or a bundle registers.
     Schema,
-    /// A transition constraint: also `inserted`, `deleted` and `prior`.
-    Constraint,
     /// Ad hoc text: `_` covers a sum's remaining constructors.
     Adhoc,
 }
@@ -262,6 +259,8 @@ pub struct Checker<'a> {
     /// The writer, `script`, `fill` or `routing`, that refuses a value given or matched where a key type
     /// with a late selection is expected.
     late_writer: Option<&'static str>,
+    /// The `at` bodies around the expression being checked.
+    at_bodies: u32,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -318,6 +317,7 @@ impl<'a> Checker<'a> {
             program: None,
             bundles: &adhoc::NO_BUNDLES,
             late_writer: None,
+            at_bodies: 0,
         }
     }
 
@@ -345,7 +345,7 @@ impl<'a> Checker<'a> {
             schema,
             program,
             vis,
-            Context::Function,
+            Context::Schema,
             &adhoc::NO_BUNDLES,
             None,
             BTreeSet::new(),
@@ -640,7 +640,7 @@ impl Bodies<'_, '_> {
                 continue;
             };
             let mut rows = None;
-            let tm = self.run(def.module, Context::Function, def.file, &mut |c| {
+            let tm = self.run(def.module, Context::Schema, def.file, &mut |c| {
                 let (tm, r) = c.function(def, body)?;
                 rows = r;
                 Ok(tm)
@@ -654,7 +654,7 @@ impl Bodies<'_, '_> {
         let schema = self.schema;
         for (i, def) in schema.aggregates.iter().enumerate() {
             let mut parts = None;
-            self.run(def.module, Context::Function, def.file, &mut |c| {
+            self.run(def.module, Context::Schema, def.file, &mut |c| {
                 let p = c.aggregate_decl(def)?;
                 parts = Some(p);
                 Ok(p.init)
@@ -666,7 +666,7 @@ impl Bodies<'_, '_> {
     fn constraints(&mut self) {
         let schema = self.schema;
         for (i, con) in schema.constraint_defs() {
-            if let Some(tm) = self.run(con.module, Context::Constraint, con.file, &mut |c| {
+            if let Some(tm) = self.run(con.module, Context::Schema, con.file, &mut |c| {
                 c.constraint(&con.query)
             }) {
                 self.program.constraints.insert(i, tm);
@@ -769,9 +769,15 @@ pub struct Adhoc {
     /// The schema the terms were checked against when the text declares temp relations: the given
     /// schema with each temp relation appended to its relations in module [`TEMP_MODULE`].
     pub temps: Option<Committed>,
+    kind: RootKind,
 }
 
 impl Adhoc {
+    /// Returns the kind of the text: ad hoc text or a migration script.
+    pub fn kind(&self) -> RootKind {
+        self.kind
+    }
+
     /// Returns each item and each term of a command, its parameters free in it.
     pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
         let free: Vec<Var> = self.params.values().copied().collect();
@@ -842,6 +848,7 @@ pub fn check_adhoc_in(
         params,
         bundles,
         late_writer: None,
+        kind: RootKind::Adhoc,
     };
     let mut adhoc = checked_items(checked, &text, declared, diags, record)?;
     adhoc.temps = temps.map(|(s, _)| s);
@@ -863,6 +870,7 @@ pub(crate) fn check_script(
         params: &BTreeMap::new(),
         bundles: &Bundles::default(),
         late_writer: Some("script"),
+        kind: RootKind::Script,
     };
     checked_items(schema, &text, Vec::new(), Vec::new(), record).map(drop)
 }
@@ -875,6 +883,7 @@ struct Text<'a> {
     params: &'a BTreeMap<String, Ty>,
     bundles: &'a Bundles,
     late_writer: Option<&'static str>,
+    kind: RootKind,
 }
 
 /// Returns `text` checked against `checked`, each relation of `declared` hidden until its
@@ -893,6 +902,7 @@ fn checked_items(
         params,
         bundles,
         late_writer,
+        kind,
     } = *text;
     let vis = Visible::all(checked).scoped(scope.cloned());
     let hidden = declared.iter().flatten().copied().collect();
@@ -942,6 +952,7 @@ fn checked_items(
         items: out,
         commands,
         temps: None,
+        kind,
     };
     let spans: Vec<Span> = items
         .iter()
@@ -1201,7 +1212,9 @@ impl Checker<'_> {
         self.scope.pop();
         let mut out = r?;
         for (v, ft) in lets.into_iter().rev() {
-            out.tm = self.b().let_(v, ft, out.tm, out.ty.clone());
+            if self.frees.of(&self.terms, out.tm).contains(&v) {
+                out.tm = self.b().let_(v, ft, out.tm, out.ty.clone());
+            }
         }
         Ok((x, out))
     }

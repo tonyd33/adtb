@@ -2059,7 +2059,7 @@ fn a_fill_is_typed_and_reads_only_its_row() {
     refuses(
         &running(),
         "module auth\nadd field Identity.EmailPass.n: I64 fill count(u for u in users)",
-        "a fill or a routing reads only its row",
+        "a fill must not read a relation",
     );
     applies(
         &running(),

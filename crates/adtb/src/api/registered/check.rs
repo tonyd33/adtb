@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::ast::{BundleItem, FnDecl, QName};
+use adtb_lang::capability::RootKind;
 use adtb_lang::check::{Program, check_adhoc};
 use adtb_lang::ids::CatFunctionId;
 use adtb_lang::kernel::{self, Kind, Terms, Tm, Var};
@@ -56,6 +57,10 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
     };
     let calls =
         signature::calls(schema, program, &vis, &imports, &items).map_err(Error::diagnostic)?;
+    let kind = match r.header() {
+        Some(h) if h.hides_new => RootKind::HidingQuery,
+        _ => RootKind::Query,
+    };
     let mut entries = Vec::new();
     let mut source_reads = Reads::default();
     for c in calls {
@@ -69,7 +74,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
             Item::Query(q, checked) => {
                 source_reads.add_source(schema, program, &checked.terms, checked.term);
                 registered_valid(schema, &checked.terms, checked.term)?;
-                let normal = norm::query(schema, program, &checked).map_err(not_normal)?;
+                let normal = norm::query_as(schema, program, &checked, kind).map_err(not_normal)?;
                 let (signature, text) = decl(q.span, &q.name, &q.result);
                 let mut e = declared(&q.name.text, Callable::Query, &c.signature, normal)?;
                 e.row.signature = signature;
@@ -79,7 +84,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
             Item::Txn(t, checked) => {
                 source_reads.add_source(schema, program, &checked.terms, checked.term);
                 registered_valid(schema, &checked.terms, checked.term)?;
-                let normal = norm::txn(schema, program, &checked).map_err(not_normal)?;
+                let normal = norm::txn_as(schema, program, &checked, kind).map_err(not_normal)?;
                 let (signature, text) = decl(t.span, &t.name, &t.result);
                 let mut e = declared(&t.name.text, Callable::Txn, &c.signature, normal)?;
                 e.row.signature = signature;

@@ -1576,27 +1576,3 @@ fn a_feed_names_no_volatile_relation() {
     assert_eq!(2, ctors.len());
     assert!(feed("feed nothing of nosuch").is_err_and(|e| e.contains("nosuch")));
 }
-
-#[test]
-fn schema_objects_never_read_a_volatile_relation() {
-    schema_no(
-        "constraint quiet = from s in sys::sessions where s.principal == \"\" select s",
-        "a constraint must not read a volatile relation",
-    );
-    schema_no(
-        "fn busy () -> Set Text = from s in sys::sessions select s.principal\nstore busy",
-        "a stored view must not read a volatile relation",
-    );
-    schema_no(
-        "type Tick = { id: Key ticks, n: I64 }\nrelation ticks : Tick key id generate sequence default n = count(s for s in sys::sessions)",
-        "a default must not read a volatile relation",
-    );
-    schema_no(
-        "type Tick = { id: Key ticks, n: I64 }\nrelation ticks : Tick key id generate sequence computed busy: I64 = count(s for s in sys::sessions)",
-        "a computed field must not read a volatile relation",
-    );
-    schema_no(
-        "fn sessions_now () -> I64 = count(s for s in sys::sessions)\nconstraint none = from u in users where sessions_now() > 100 select u",
-        "a constraint must not read a volatile relation",
-    );
-}

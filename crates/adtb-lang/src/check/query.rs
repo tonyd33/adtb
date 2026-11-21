@@ -39,7 +39,10 @@ impl Checker<'_> {
             }
         };
         let p = self.check(point, &pty)?;
-        let b = self.synth(body)?;
+        self.at_bodies += 1;
+        let b = self.synth(body);
+        self.at_bodies -= 1;
+        let b = b?;
         if self.elem_ty(&b.ty).is_none() {
             return Err(diag(
                 body.span,

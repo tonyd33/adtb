@@ -12,10 +12,9 @@ pub enum RowBody<'e> {
 ///
 /// A constructor of the row's type that a `match` body builds takes the row's header fields it omits.
 /// Returns the schema objects the body names, as [`schema_refs`] reports them.
-/// Refuse a body that reads anything but the row: a relation, a reference, a generated key,
-/// `caller`, or a function that reads one of them.
-/// Refuse, naming the body `writer`, a value it gives or matches where a key type with a late
-/// selection is expected.
+/// Refuse a body that reaches what the entry of `kind`, a fill or a routing, forbids.
+/// Refuse, naming the body, a value it gives or matches where a key type with a late selection
+/// is expected.
 pub fn check_row(
     schema: &Schema,
     program: &Program,
@@ -23,8 +22,12 @@ pub fn check_row(
     row: &Ty,
     body: RowBody,
     expected: Option<&Ty>,
-    writer: &'static str,
+    kind: RootKind,
 ) -> Result<Vec<(Span, Ref)>, Diag> {
+    let writer = match kind {
+        RootKind::Routing => "routing",
+        _ => "fill",
+    };
     let mut c = Checker::of_program(
         schema,
         program,
@@ -34,7 +37,7 @@ pub fn check_row(
         Some(writer),
         BTreeSet::new(),
     );
-    row_body(&mut c, program, row, body, expected)?;
+    row_body(&mut c, program, row, body, expected, kind)?;
     Ok(c.refs.take())
 }
 
@@ -46,6 +49,7 @@ pub fn row_query(
     row: &Ty,
     body: RowBody,
     expected: Option<&Ty>,
+    kind: RootKind,
 ) -> Result<Query, Diag> {
     let mut c = Checker::of_program(
         schema,
@@ -56,7 +60,7 @@ pub fn row_query(
         None,
         BTreeSet::new(),
     );
-    let (v, tm, ty) = row_body(&mut c, program, row, body, expected)?;
+    let (v, tm, ty) = row_body(&mut c, program, row, body, expected, kind)?;
     let term =
         Build::new(schema, &mut c.terms).lam(v, tm, Ty::Fn(Box::new(row.clone()), Box::new(ty)));
     Ok(Query {
@@ -71,6 +75,7 @@ fn row_body(
     row: &Ty,
     body: RowBody,
     expected: Option<&Ty>,
+    kind: RootKind,
 ) -> Result<(Var, Tm, Ty), Diag> {
     c.scope.push();
     let v = c.bind(ROW, row.clone(), None, Provenance::Built);
@@ -99,35 +104,11 @@ fn row_body(
             (out, e.span)
         }
     };
-    if !reads_only_row(&c.terms, out.tm, program, &mut BTreeSet::new()) {
-        return Err(diag(
-            span,
-            "a fill or a routing reads only its row; this reads a relation, a reference, a generated key, `caller` or a function that does",
-        ));
-    }
+    crate::capability::Judge::new(c.schema, program)
+        .judge(kind, &c.terms, out.tm)
+        .map_err(|r| diag(span, r.to_string()))?;
     Ok((v, out.tm, out.ty))
 }
 
 /// The name a row body binds its row to, which no source text can spell.
 const ROW: &str = "row·";
-
-pub(super) fn reads_only_row(
-    terms: &Terms,
-    t: Tm,
-    program: &Program,
-    seen: &mut BTreeSet<FnId>,
-) -> bool {
-    !terms.any(t, |k| match k {
-        Kind::Rel(..)
-        | Kind::Transition(..)
-        | Kind::Deref { .. }
-        | Kind::Fresh(..)
-        | Kind::Caller => true,
-        Kind::Call { func, .. } => {
-            seen.insert(*func)
-                && matches!(program.functions.get(func.0 as usize), Some(Some(body))
-                    if !reads_only_row(&program.terms, *body, program, seen))
-        }
-        _ => false,
-    })
-}

@@ -8,6 +8,7 @@ pub mod analysis;
 pub mod ast;
 pub mod calendar;
 pub mod canon;
+pub mod capability;
 pub mod check;
 pub mod collation;
 pub mod depends;

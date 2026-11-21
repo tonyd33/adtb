@@ -2,5 +2,5 @@ seed 659
 use adhoc
 as reader error Denied { detail: "role `reader` may not run this text" }
   from d in prior(docs) select d.owner
-as owner error Invalid { detail: "`prior` reads the change of a statement, only in a constraint" }
+as owner error Invalid { detail: "ad hoc text must not read the change of a statement" }
   from d in prior(docs) select d.owner

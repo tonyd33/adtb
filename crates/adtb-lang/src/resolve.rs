@@ -181,9 +181,7 @@ pub fn lookup_type(schema: &Schema, vis: &Visible, name: &QName) -> Result<TypeN
 /// What a lowercase name in an expression denotes, besides a local.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context {
-    /// A function body or a registered query: parameters are bound, `caller` is in scope.
-    Function,
-    /// A constraint, a default or another schema-level expression: no `caller`.
+    /// A body a schema declares or a bundle registers.
     Schema,
     /// Ad hoc text: a free name is a parameter.
     Adhoc,
@@ -205,7 +203,7 @@ pub fn function_refs(schema: &Schema, f: FnId) -> BTreeSet<FnId> {
     let FnBody::Expr(body) = &def.body else {
         return BTreeSet::new();
     };
-    let mut r = Resolver::new(schema, Visible::module(def.module), Context::Function);
+    let mut r = Resolver::new(schema, Visible::module(def.module), Context::Schema);
     for (name, _) in &def.params {
         r.scope.bind(name, ());
     }
@@ -227,7 +225,7 @@ pub fn aggregate_refs(schema: &Schema, a: usize) -> BTreeSet<FnId> {
         (vec![l, r], merge),
         (vec![f], finish),
     ] {
-        let mut res = Resolver::new(schema, Visible::module(def.module), Context::Function);
+        let mut res = Resolver::new(schema, Visible::module(def.module), Context::Schema);
         for name in params.iter().chain(&extra) {
             res.scope.bind(&name.text, ());
         }
@@ -268,7 +266,7 @@ pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
             run(
                 f.file,
                 Visible::module(f.module),
-                Context::Function,
+                Context::Schema,
                 &names,
                 e,
             );
@@ -327,19 +325,13 @@ pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
                 .chain(extra.iter().map(|i| i.text.clone()))
                 .collect()
         };
-        run(
-            a.file,
-            vis.clone(),
-            Context::Function,
-            &params,
-            &a.decl.init,
-        );
+        run(a.file, vis.clone(), Context::Schema, &params, &a.decl.init);
         let (s, x, e) = &a.decl.step;
-        run(a.file, vis.clone(), Context::Function, &with(&[s, x]), e);
+        run(a.file, vis.clone(), Context::Schema, &with(&[s, x]), e);
         let (l, r, e) = &a.decl.merge;
-        run(a.file, vis.clone(), Context::Function, &with(&[l, r]), e);
+        run(a.file, vis.clone(), Context::Schema, &with(&[l, r]), e);
         let (f, e) = &a.decl.finish;
-        run(a.file, vis, Context::Function, &with(&[f]), e);
+        run(a.file, vis, Context::Schema, &with(&[f]), e);
     }
     out
 }
@@ -423,9 +415,6 @@ impl<'a> Resolver<'a> {
                 return;
             }
             if text == "caller" {
-                if self.ctx == Context::Schema {
-                    self.err(q.name.span, "`caller` is not in scope here");
-                }
                 return;
             }
             if as_call && PRELUDE_FUNCTIONS.contains(&text) {

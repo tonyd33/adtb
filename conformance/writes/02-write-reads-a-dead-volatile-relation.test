@@ -1,0 +1,7 @@
+# A volatile read in the values a write writes is refused, though the value it builds drops it.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+error Invalid
+  insert users { name: { a: count(s for s in sys::sessions), b: "x" }.b }

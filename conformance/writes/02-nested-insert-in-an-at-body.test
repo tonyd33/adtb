@@ -1,0 +1,9 @@
+# An `at` body writes nothing, so a nested insert in one is refused.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Phone = { id: Key phones, owner: Key users, seen: I64 }
+  relation users : User key id generate sequence
+  relation phones : Phone key id generate sequence
+error Invalid
+  insert phones from (at commit Position { epoch: 0, lsn: 0 } { [Phone { id: phones.key(9), owner: key (insert users { name: "a" }), seen: 1 }] })

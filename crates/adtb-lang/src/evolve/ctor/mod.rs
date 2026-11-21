@@ -945,7 +945,7 @@ impl Cx<'_> {
             row,
             RowBody::Match(arms, self.span),
             Some(expected),
-            "routing",
+            crate::capability::RootKind::Routing,
         )
         .map_err(|d| vec![d])?;
         self.note(schema, &refs);

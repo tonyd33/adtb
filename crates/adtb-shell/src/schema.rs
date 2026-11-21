@@ -77,7 +77,7 @@ set Settled of regions = Town
     #[test]
     fn a_schema_file_whose_relation_and_fn_need_each_other_is_refused() {
         let s = "module demo
-relation ps : P key id default n = f()
+relation ps : P key id computed m: I64 = f()
 type P = { id: I64, n: I64 }
 fn f () -> I64 = count(1 for p in ps)
 ";

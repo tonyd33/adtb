@@ -418,9 +418,6 @@ impl Checker<'_> {
                 });
             }
             if text == "caller" {
-                if !matches!(self.ctx, Context::Function | Context::Adhoc) {
-                    return Err(diag(q.name.span, "`caller` is not in scope here"));
-                }
                 let tm = self.b().caller();
                 return Ok(self.out(tm));
             }

@@ -1,0 +1,8 @@
+# A constraint reaching `caller` through a function is refused.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a constraint must not read `caller`" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  define fn anon () -> Bool = match caller | Anonymous -> true | EndUser _ -> false | Service _ -> false
+  add constraint c = from u in users where anon() select u

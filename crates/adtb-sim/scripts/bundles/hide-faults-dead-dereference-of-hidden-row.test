@@ -1,0 +1,14 @@
+# A dereference whose value a hiding bundle's query drops still faults on a hidden row.
+seed 99
+use auth
+use auth-apple
+bundle web-1.0 pins 1 edition "2026-10" hide new constructors
+  import auth
+  query dead () -> Set I64 = from s in sessions select { a: s.who.user, b: 1 }.b
+reopen
+run
+  insert users { id: users.key(1), name: "ann", tier: Free }
+  insert identities.Apple { id: identities.key(2), user: users.key(1), sub: "a-ann" }
+  insert sessions { id: sessions.key(1), who: identities.key(2) }
+
+call web-1.0 1 error Faulted { fault: NoSuchRow }

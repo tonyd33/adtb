@@ -1,6 +1,7 @@
 use super::ctor::RowTypes;
 use super::revert::How;
 use super::*;
+use crate::capability::RootKind;
 use crate::norm::{self, NormalQuery};
 
 /// A function of one row, normalised against the schema it checks in.
@@ -183,7 +184,7 @@ impl Cx<'_> {
                 Ok(vec![RowMap::Route {
                     def,
                     from: vec![c],
-                    routing: self.row_fn(rt, RowBody::Match(arms, self.span))?,
+                    routing: self.row_fn(rt, RowBody::Match(arms, self.span), RootKind::Routing)?,
                 }])
             }
             OperatorKind::MergeConstructor {
@@ -209,7 +210,11 @@ impl Cx<'_> {
                         Ok(vec![RowMap::Route {
                             def,
                             from,
-                            routing: self.row_fn(rt, RowBody::Match(arms, self.span))?,
+                            routing: self.row_fn(
+                                rt,
+                                RowBody::Match(arms, self.span),
+                                RootKind::Routing,
+                            )?,
                         }])
                     }
                     None => {
@@ -301,7 +306,7 @@ impl Cx<'_> {
             def,
             ctors: ctors.unwrap_or(all),
             field: path.field.text.clone(),
-            fill: self.row_fn(rt, fill_body(fill, self.span))?,
+            fill: self.row_fn(rt, fill_body(fill, self.span), RootKind::Fill)?,
         }])
     }
 
@@ -372,7 +377,7 @@ impl Cx<'_> {
                 def,
                 ctors: others,
                 field,
-                fill: self.row_fn(rt, fill_body(fill, self.span))?,
+                fill: self.row_fn(rt, fill_body(fill, self.span), RootKind::Fill)?,
             });
         }
         Ok(maps)
@@ -413,7 +418,7 @@ impl Cx<'_> {
     }
 
     /// Returns `body`, checked at `rt` and normalised.
-    fn row_fn(&self, rt: RowTypes, body: RowBody) -> R<RowFn> {
+    fn row_fn(&self, rt: RowTypes, body: RowBody, kind: RootKind) -> R<RowFn> {
         let q = check::row_query(
             &rt.schema,
             &rt.program,
@@ -421,6 +426,7 @@ impl Cx<'_> {
             &rt.row,
             body,
             Some(&rt.result),
+            kind,
         )
         .map_err(|d| vec![d])?;
         let query = norm::query(&rt.schema, &rt.program, &q).map_err(|e| {

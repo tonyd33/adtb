@@ -108,7 +108,7 @@ impl Cx<'_> {
             &row,
             body,
             Some(field_ty),
-            "fill",
+            crate::capability::RootKind::Fill,
         )
         .map_err(|d| vec![d])?;
         self.note(&schema, &refs);
