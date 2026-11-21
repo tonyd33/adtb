@@ -802,3 +802,174 @@ fn an_append_under_a_held_log_guard_panics() {
     let _log = pager.log();
     drop(pager.append());
 }
+
+/// The kinds of block a scan reports past a blank run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Planted {
+    /// A block of the batch with sequence 1, a byte flipped.
+    Torn,
+    /// A whole block of the batch with sequence 1.
+    Stale,
+    /// A whole block of the next batch, written for another file.
+    Foreign,
+}
+
+/// Returns a segment of `len` bytes holding batches of one commit record, sequence 1 to
+/// `batches`, one block each from the start, then zeros, and `planted` as the block at `at`.
+fn tailed(len: usize, batches: u64, planted: Planted, at: u64) -> Vec<u8> {
+    let block = TAIL_BLOCK as u64;
+    let mut seg = vec![0; len];
+    for i in 0..batches {
+        let b = frame(Lsn(i * block), i + 1, 1, &[0; 16], &records(1), TAIL_BLOCK);
+        seg[(i * block) as usize..][..TAIL_BLOCK].copy_from_slice(&b);
+    }
+    let lsn = Lsn(at * block);
+    let mut b = match planted {
+        Planted::Torn | Planted::Stale => frame(lsn, 1, 1, &[0; 16], &records(1), TAIL_BLOCK),
+        Planted::Foreign => frame(lsn, batches + 1, 1, &[7; 16], &records(1), TAIL_BLOCK),
+    };
+    if let Planted::Torn = planted {
+        b[TAIL_BLOCK - 1] ^= 1;
+    }
+    seg[(at * block) as usize..][..TAIL_BLOCK].copy_from_slice(&b);
+    seg
+}
+
+/// Returns what a scan in `mode` of a log of `batches` one-block batches followed by blank blocks
+/// up to `planted` at block `at` finds, from the log format: a torn block is damage only to
+/// verify, a stale or foreign block is reported to both, and a foreign one stops recovery.
+fn tail_expected(mode: Mode, batches: u64, planted: Planted, at: u64) -> Scanned {
+    let block = TAIL_BLOCK as u64;
+    let lsn = Lsn(at * block);
+    let finding = match (planted, mode) {
+        (Planted::Torn, Mode::Recovery) => None,
+        (Planted::Torn, Mode::Verify) => Some(found(lsn, LogProblem::Damaged)),
+        (Planted::Stale, _) => Some(found(lsn, LogProblem::Stale)),
+        (Planted::Foreign, _) => Some(found(lsn, LogProblem::Foreign)),
+    };
+    let fatal = finding.filter(|f| mode == Mode::Recovery && f.problem == LogProblem::Foreign);
+    Scanned {
+        batches: (0..batches).map(|i| (Lsn(i * block), 1)).collect(),
+        resumed: Vec::new(),
+        end: Lsn(batches * block),
+        fatal,
+        findings: finding.into_iter().collect(),
+    }
+}
+
+/// Returns what a scan of `img` from its start in `mode` finds.
+fn tail_scanned<S: super::block::LogSource>(img: &mut LogImage<S>, mode: Mode) -> Scanned {
+    let mut batches = Vec::new();
+    let s = scan(img, Lsn(0), mode, |b, _| {
+        batches.push((b.start, b.records(TAIL_BLOCK).unwrap().len()));
+    });
+    Scanned {
+        batches,
+        resumed: Vec::new(),
+        end: s.end,
+        fatal: s.fatal,
+        findings: s.findings,
+    }
+}
+
+const TAIL_BLOCK: usize = 512;
+
+/// Space: each kind of block a scan reports, after a blank run of every length from one block to
+/// past a chunk's end, at a chunk's first, middle and last block and at the segment's last, read
+/// from memory and from segment files, scanned for recovery and verify; and the tail clear of
+/// each file, which leaves the log's batches and zeros every byte after them.
+#[test]
+fn a_block_after_a_blank_run_of_any_length_is_found_and_cleared() {
+    use super::driver::Driver;
+    use super::log::{CHUNK, FileSource, Segments};
+    use crate::runtime::AlignedBuf;
+
+    let block = TAIL_BLOCK as u64;
+    let chunk = (CHUNK / TAIL_BLOCK) as u64;
+    let segment = 3 * CHUNK as u64;
+    let last = segment / block - 1;
+    let ats = [chunk, chunk + chunk / 2, 2 * chunk - 1, last];
+    let kinds = [Planted::Torn, Planted::Stale, Planted::Foreign];
+    let mut cases = Vec::new();
+    for at in ats {
+        for run in 1..=(chunk + 2).min(at - 1) {
+            for planted in kinds {
+                cases.push((planted, at, at - run));
+            }
+        }
+    }
+    let crossing = cases
+        .iter()
+        .filter(|&&(_, at, batches)| batches / chunk != at / chunk)
+        .count();
+    assert!(crossing > 0, "a run crosses a chunk's end");
+
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for &(planted, at, batches) in &cases {
+        let seg = tailed(segment as usize, batches, planted, at);
+        let mut img = LogImage::in_memory(TAIL_BLOCK, segment, BTreeMap::from([(0, Some(seg))]));
+        for mode in [Mode::Recovery, Mode::Verify] {
+            got.push((planted, at, batches, mode, tail_scanned(&mut img, mode)));
+            want.push((
+                planted,
+                at,
+                batches,
+                mode,
+                tail_expected(mode, batches, planted, at),
+            ));
+        }
+    }
+
+    let mut sim = adtb_sim::Sim::new(1, adtb_sim::Config::default());
+    let mut cleared = 0;
+    let mut left = Vec::new();
+    crate::test_world::finished(&mut sim, |rt| {
+        let mut drv = Driver::new(rt.clone());
+        drv.create_dir("log");
+        let (file, _) = drv
+            .open("log/0000000000000000", true)
+            .unwrap_or_else(|f| f.fatal("open the segment"));
+        for &(planted, at, batches) in &cases {
+            let seg = tailed(segment as usize, batches, planted, at);
+            drv.write_all(vec![(file, 0, AlignedBuf::from_slice(&seg))]);
+            let image = || {
+                let files = BTreeMap::from([(0, file)]);
+                FileSource::image(rt.clone(), TAIL_BLOCK, segment, [0; 16], files)
+            };
+            for mode in [Mode::Recovery, Mode::Verify] {
+                got.push((planted, at, batches, mode, tail_scanned(&mut image(), mode)));
+                want.push((
+                    planted,
+                    at,
+                    batches,
+                    mode,
+                    tail_expected(mode, batches, planted, at),
+                ));
+            }
+            let mut segments = Segments::new("log".into(), TAIL_BLOCK, segment, [0; 16]);
+            segments.clear_tail(&mut drv, &mut image(), Lsn(batches * block));
+            segments.close(&mut drv);
+            let after = drv
+                .read(file, 0, segment as usize)
+                .unwrap_or_else(|f| f.fatal("read the segment"));
+            let mut kept = seg;
+            kept[(batches * block) as usize..].fill(0);
+            cleared += 1;
+            if *after != *kept {
+                left.push((planted, at, batches));
+            }
+        }
+        drv.close(file);
+    });
+
+    assert_eq!(cases.len(), 3 * (chunk - 1 + 3 * (chunk + 2)) as usize);
+    assert_eq!(4 * cases.len(), got.len());
+    assert_eq!(want, got);
+    assert_eq!(cases.len(), cleared);
+    assert_eq!(
+        Vec::<(Planted, u64, u64)>::new(),
+        left,
+        "clears that left a byte"
+    );
+}

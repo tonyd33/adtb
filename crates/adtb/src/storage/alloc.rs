@@ -625,7 +625,7 @@ mod gate {
         /// page nor blank in a group no batch has started.
         fn bitmap_fault(&self, page: &[u8], g: u64) -> Option<Shape> {
             let sound = page::kind(page) == PageKind::AllocationBitmap as u16
-                || g >= self.allocation().started() && page.iter().all(|&b| b == 0);
+                || g >= self.allocation().started() && page::blank(page);
             (!sound).then(|| page::kind_fault(page))
         }
 

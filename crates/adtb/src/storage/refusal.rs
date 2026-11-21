@@ -2,6 +2,7 @@ use crate::runtime::Runtime;
 
 use super::Pid;
 use super::error::{Damage, Shape};
+use super::page::blank;
 use super::pager::{PageError, PageExclusive, PageShared, Pager};
 
 impl<R: Runtime> Pager<R> {
@@ -73,8 +74,4 @@ impl<R: Runtime> Pager<R> {
     pub fn plant_damage(&self, pid: Pid, damage: Damage) -> PageError {
         self.damage(pid, damage)
     }
-}
-
-fn blank(page: &[u8]) -> bool {
-    page.iter().all(|&b| b == 0)
 }

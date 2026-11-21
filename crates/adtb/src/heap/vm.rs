@@ -97,11 +97,20 @@ pub(super) fn bit(leaf: &[u8], i: u64) -> bool {
 
 /// Returns the index of every set bit of a leaf, in order.
 pub(super) fn set_bits(leaf: &[u8]) -> impl Iterator<Item = u64> {
-    leaf[BODY..].iter().enumerate().flat_map(|(at, &byte)| {
-        std::iter::successors((byte != 0).then_some(byte), |rest| {
+    words(leaf).enumerate().flat_map(|(at, word)| {
+        std::iter::successors((word != 0).then_some(word), |rest| {
             Some(rest & (rest - 1)).filter(|&next| next != 0)
         })
-        .map(move |rest| at as u64 * 8 + u64::from(rest.trailing_zeros()))
+        .map(move |rest| at as u64 * 64 + u64::from(rest.trailing_zeros()))
+    })
+}
+
+/// Returns the bits of a leaf eight bytes at a time, the last word zero-filled past the page.
+fn words(leaf: &[u8]) -> impl Iterator<Item = u64> {
+    leaf[BODY..].chunks(8).map(|bytes| {
+        let mut word = [0; 8];
+        word[..bytes.len()].copy_from_slice(bytes);
+        u64::from_le_bytes(word)
     })
 }
 
@@ -388,7 +397,7 @@ impl Vm {
             };
             let l = level(&node);
             if l == 0 {
-                let set: u32 = node[BODY..].iter().map(|b| b.count_ones()).sum();
+                let set: u32 = words(&node).map(u64::count_ones).sum();
                 out.reserve(set as usize);
                 out.extend(set_bits(&node).map(|i| Pid(base + i)));
                 continue;

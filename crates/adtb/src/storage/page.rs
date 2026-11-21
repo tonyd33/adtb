@@ -14,6 +14,16 @@ const _: () = assert!(adtb_testkit::damage::HEADER_LEN == HEADER_LEN);
 /// The first byte a page change may write: the LSN and checksum are the pager's.
 pub const FIRST_EDITABLE: usize = 12;
 
+/// The zeros [`blank`] compares a run of bytes against.
+static ZEROS: [u8; 4096] = [0; 4096];
+
+/// Returns whether every byte of `bytes` is zero.
+pub(super) fn blank(bytes: &[u8]) -> bool {
+    bytes
+        .chunks(ZEROS.len())
+        .all(|run| run == &ZEROS[..run.len()])
+}
+
 const LSN: usize = 0;
 const CHECKSUM: usize = 8;
 const FORMAT: usize = 12;
@@ -90,7 +100,7 @@ pub fn kind(page: &[u8]) -> u16 {
 /// Returns how `page`, of another kind than expected, is out of shape: blank when every byte of
 /// it is zero.
 pub fn kind_fault(page: &[u8]) -> Shape {
-    if page.iter().all(|&b| b == 0) {
+    if blank(page) {
         Shape::Blank
     } else {
         Shape::Kind
@@ -154,7 +164,7 @@ pub fn verify(pid: Pid, page: &[u8]) -> Verdict {
     let stored = u32::from_le_bytes(page[CHECKSUM..CHECKSUM + 4].try_into().unwrap());
     if stored == checksum(pid, page) {
         Verdict::Valid
-    } else if page.iter().all(|&b| b == 0) {
+    } else if blank(page) {
         Verdict::Blank
     } else {
         Verdict::Corrupt

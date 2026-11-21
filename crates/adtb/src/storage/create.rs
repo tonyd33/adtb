@@ -11,7 +11,7 @@ use super::driver::{Driver, Failed};
 use super::error::OpenError;
 use super::log::parse_segment;
 use super::order::Opening;
-use super::page::valid_page_size;
+use super::page::{blank, valid_page_size};
 use super::pager::{LATCHES_PER_THREAD, Options, Pager, parent};
 
 impl Options {
@@ -102,7 +102,7 @@ enum Marked {
 /// Returns what a marker of `len` bytes holds, given its first block `bytes`.
 fn marked(len: u64, bytes: &[u8]) -> Marked {
     let (head, sum) = bytes[..MARKER].split_at(MARKER - 4);
-    if len == 0 || (len == bytes.len() as u64 && bytes.iter().all(|&b| b == 0)) {
+    if len == 0 || (len == bytes.len() as u64 && blank(bytes)) {
         Marked::Unwritten
     } else if head.starts_with(MAGIC) && crc32c(head).to_le_bytes() == sum {
         Marked::Whole(head[MAGIC.len()..].try_into().expect("an id is 16 bytes"))

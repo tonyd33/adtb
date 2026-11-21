@@ -5,8 +5,9 @@ use std::time::SystemTime;
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime, fatal};
 
 use super::alloc::edits_by;
-use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
+use super::block::{LogImage, LogSource, Slot, blank_prefix, data_lsn, frame};
 use super::driver::{Driver, Failed};
+use super::page::blank;
 use super::pager::{ArchiveHook, PageError, Pager, parent};
 use super::record::Record;
 use super::{Lsn, Pid, Position};
@@ -297,12 +298,9 @@ impl Segments {
         let Ok((file, len)) = drv.open(path, false) else {
             return false;
         };
-        let blank = len == 0
-            || drv
-                .read(file, 0, self.block)
-                .is_ok_and(|head| head.iter().all(|&b| b == 0));
+        let unwritten = len == 0 || drv.read(file, 0, self.block).is_ok_and(|head| blank(&head));
         drv.close(file);
-        blank
+        unwritten
     }
 
     /// Open the segment starting at `base`, creating and preallocating it if absent.
@@ -454,8 +452,13 @@ impl Segments {
             let mut last = None;
             let mut at = end.0;
             while at < base + self.segment {
+                let run = img.blank_run(Lsn(at));
+                if run > 0 {
+                    at += run;
+                    continue;
+                }
                 if let Slot::Bytes(b) = img.slot(Lsn(at))
-                    && b.iter().any(|&x| x != 0)
+                    && !blank(&b)
                 {
                     last = Some(at);
                 }
@@ -518,6 +521,22 @@ impl<R: Runtime> FileSource<R> {
             },
         }
     }
+
+    /// Returns the bytes from `at` to the end of the chunk of segment `file`, starting at `base`,
+    /// that holds `at`, reading the chunk unless it is the one held. `None` when its read failed.
+    fn read(&mut self, file: FileId, base: u64, at: Lsn) -> Option<&[u8]> {
+        let chunk = (CHUNK as u64).min(self.segment);
+        let start = base + (at.0 - base) / chunk * chunk;
+        if self.chunk.as_ref().is_none_or(|(s, _)| *s != start) {
+            let len = chunk.min(base + self.segment - start) as usize;
+            let bytes = self.drv.read(file, start - base, len).ok();
+            self.chunk = Some((start, bytes));
+        }
+        match &self.chunk {
+            Some((_, Some(bytes))) => Some(&bytes[(at.0 - start) as usize..]),
+            _ => None,
+        }
+    }
 }
 
 impl<R: Runtime> std::fmt::Debug for FileSource<R> {
@@ -533,20 +552,18 @@ impl<R: Runtime> LogSource for FileSource<R> {
         let Some(&file) = self.files.get(&base) else {
             return Slot::Missing;
         };
-        let chunk = (CHUNK as u64).min(self.segment);
-        let start = base + (at.0 - base) / chunk * chunk;
-        if self.chunk.as_ref().is_none_or(|(s, _)| *s != start) {
-            let len = chunk.min(base + self.segment - start) as usize;
-            let bytes = self.drv.read(file, start - base, len).ok();
-            self.chunk = Some((start, bytes));
+        match self.read(file, base, at) {
+            Some(bytes) => Slot::Bytes(bytes[..block].to_vec()),
+            None => Slot::Unreadable,
         }
-        match &self.chunk {
-            Some((_, Some(bytes))) => {
-                let off = (at.0 - start) as usize;
-                Slot::Bytes(bytes[off..off + block].to_vec())
-            }
-            _ => Slot::Unreadable,
-        }
+    }
+
+    fn blank_run(&mut self, base: u64, at: Lsn, block: usize) -> u64 {
+        let Some(&file) = self.files.get(&base) else {
+            return 0;
+        };
+        self.read(file, base, at)
+            .map_or(0, |bytes| blank_prefix(bytes, block))
     }
 }
 

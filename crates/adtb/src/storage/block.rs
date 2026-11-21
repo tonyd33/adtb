@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use super::crc::crc32c_skipping;
+#[cfg(test)]
+use super::log::CHUNK;
+use super::page::blank;
 use super::record::{Malformed, Record};
 use super::{Lsn, Pid};
 
@@ -77,7 +80,7 @@ pub fn read_block(at: Lsn, b: &[u8]) -> BlockState<'_> {
     let u32_at = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
     let u64_at = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
     if u32_at(CHECKSUM) != crc32c_skipping(None, b, CHECKSUM) {
-        return if b.iter().all(|&x| x == 0) {
+        return if blank(b) {
             BlockState::Zero
         } else {
             BlockState::Invalid
@@ -106,6 +109,17 @@ pub fn read_block(at: Lsn, b: &[u8]) -> BlockState<'_> {
 pub trait LogSource {
     /// Returns the block at `at` of the segment starting at `base`, `block` bytes.
     fn block(&mut self, base: u64, at: Lsn, block: usize) -> Slot;
+
+    /// Returns the length in bytes of the run of blank blocks, `block` bytes each, from `at` in
+    /// the segment starting at `base` to the first block that is not blank or the end of what the
+    /// read [`LogSource::block`] makes at `at` returns.
+    fn blank_run(&mut self, base: u64, at: Lsn, block: usize) -> u64;
+}
+
+/// Returns the length in bytes of the blank blocks, `block` bytes each, that `bytes` starts with.
+pub(crate) fn blank_prefix(bytes: &[u8], block: usize) -> u64 {
+    let blanks = bytes.chunks_exact(block).take_while(|b| blank(b)).count();
+    (blanks * block) as u64
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,7 +129,8 @@ pub enum Slot {
     Bytes(Vec<u8>),
 }
 
-/// Segments held in memory whole, zero-filled to the segment size; `None` where a read failed.
+/// Segments held in memory whole, zero-filled to the segment size; `None` where a read failed. A
+/// blank run ends at a chunk's end, as a run read from segment files does.
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub struct InMemory(pub BTreeMap<u64, Option<Vec<u8>>>);
@@ -130,6 +145,17 @@ impl LogSource for InMemory {
                 let off = (at.0 - base) as usize;
                 Slot::Bytes(bytes[off..off + block].to_vec())
             }
+        }
+    }
+
+    fn blank_run(&mut self, base: u64, at: Lsn, block: usize) -> u64 {
+        match self.0.get(&base) {
+            Some(Some(bytes)) => {
+                let from = (at.0 - base) as usize;
+                let to = bytes.len().min((from / CHUNK + 1) * CHUNK);
+                blank_prefix(&bytes[from..to], block)
+            }
+            _ => 0,
         }
     }
 }
@@ -166,6 +192,15 @@ impl<S: LogSource> LogImage<S> {
             return Slot::Missing;
         }
         self.source.block(base, at, self.block)
+    }
+
+    /// Returns what [`LogSource::blank_run`] returns at `at`: 0 in a segment not present.
+    pub fn blank_run(&mut self, at: Lsn) -> u64 {
+        let base = at.0 - at.0 % self.segment;
+        if self.bases.binary_search(&base).is_err() {
+            return 0;
+        }
+        self.source.blank_run(base, at, self.block)
     }
 
     /// Returns the first LSN of every block at or after `from`, in every segment present.
@@ -376,6 +411,7 @@ pub fn scan<S: LogSource>(
     let mut pos = from;
     let mut prev = None;
     let mut gapped = false;
+    let blank_is_zero = read_block(from, &vec![0; img.block]) == BlockState::Zero;
     loop {
         loop {
             match accept(img, pos, prev) {
@@ -407,7 +443,18 @@ pub fn scan<S: LogSource>(
             out.last_seq = prev;
         }
         let mut resume = None;
+        let mut blank_to = pos;
         for at in img.blocks_from(pos) {
+            if at < blank_to {
+                continue;
+            }
+            if blank_is_zero {
+                let run = img.blank_run(at);
+                if run > 0 {
+                    blank_to = Lsn(at.0 + run);
+                    continue;
+                }
+            }
             match img.slot(at) {
                 Slot::Missing => {}
                 Slot::Unreadable => out.findings.push(LogFinding {
