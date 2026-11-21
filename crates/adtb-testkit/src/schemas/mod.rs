@@ -70,6 +70,33 @@ const SEARCH_REVERT_OF_REVERTED_REVOKE: bool = false;
 /// reverted. The second revert is refused: the later operator names the object by its old name.
 const SEARCH_REVERT_OF_REVERTED_RENAME: bool = false;
 
+/// Whether a split into two products or more, a merge or a nest replaces a constructor a unique
+/// names alone, a split adding the unique and a `Bool` field to route by first when missing. The
+/// uniques after it cover other rows than the image of those it covered.
+const SEARCH_REPLACE_UNDER_UNIQUE: bool = false;
+
+/// Whether a split, merge, nest or unnest replaces a constructor a default names, a split, merge
+/// or nest adding the default first. The checker refuses it, naming the constructor as no
+/// constructor of its type.
+const SEARCH_REPLACE_UNDER_DEFAULT: bool = false;
+
+/// Whether a nest replaces a constructor a check names without the other, adding the check
+/// first. The checker refuses it: the check names some but not all of its constructors.
+const SEARCH_NEST_UNDER_CHECK: bool = false;
+
+/// Whether a merge or nest replaces a constructor a constraint selects without the other, adding
+/// the constraint first. The checker refuses it, naming the constructor as neither a constructor
+/// nor a named set.
+const SEARCH_MERGE_UNDER_CONSTRAINT: bool = false;
+
+/// Whether a `rename field` takes the name [`BOUND`]. A pattern binding it in a body that names
+/// the field then captures the renamed name.
+const SEARCH_RENAME_TO_BOUND: bool = false;
+
+/// The name a `rename field` takes under [`SEARCH_RENAME_TO_BOUND`]; no other drawn name is spelled
+/// so.
+pub const BOUND: &str = "wv";
+
 /// The constructor sets a reference, unique, index or check names within one relation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Scope {
@@ -185,11 +212,11 @@ enum Stage {
     Deprecated(u64),
 }
 
-/// A constraint: its relation, constructor and integer field, whose rows may not hold 3.
+/// A constraint: its relation, constructors and integer field, whose rows may not hold 3.
 #[derive(Clone, Debug)]
 struct Constraint {
     rel: usize,
-    ctor: usize,
+    ctors: Vec<usize>,
     field: String,
     name: String,
 }
@@ -537,7 +564,7 @@ impl Schema {
                 3 if ty == Ty::Int => rel.checks.push(clause),
                 4 if ty == Ty::Int => constraints.push(Constraint {
                     rel: i,
-                    ctor: holding[0],
+                    ctors: vec![holding[0]],
                     field: name,
                     name: String::new(),
                 }),
@@ -657,7 +684,7 @@ impl Schema {
         format!(
             "constraint {} = from x in {} where x.{} == 3 select x",
             c.name,
-            self.rels[c.rel].target(Some(&vec![c.ctor])),
+            self.rels[c.rel].target(Some(&c.ctors)),
             c.field
         )
     }

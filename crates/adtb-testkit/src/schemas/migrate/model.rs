@@ -66,17 +66,73 @@ impl Model {
                 .any(|k| k.ctors.is_some() && k.ctors == r.set)
     }
 
-    /// Returns whether a clause, constraint or default of relation `i` names constructor `c`.
-    pub(super) fn clause_names_ctor(&self, i: usize, c: usize) -> bool {
+    /// Returns whether an operator of `kind` may replace constructors `cs` of relation `i` by
+    /// `products` constructors under the clauses, constraints and defaults naming them: `None`
+    /// when not, `Some(true)` when only a switch on admits it.
+    pub(super) fn replaces_under(
+        &self,
+        i: usize,
+        cs: &[usize],
+        products: usize,
+        kind: Kind,
+    ) -> Option<bool> {
+        let off = self.blocked(i, cs, products, kind, false);
+        (!self.blocked(i, cs, products, kind, true)).then_some(off)
+    }
+
+    /// Returns whether a clause, constraint or default naming constructors `cs` of relation `i`
+    /// refuses an operator of `kind` replacing them by `products`, each switch read when `on`.
+    fn blocked(&self, i: usize, cs: &[usize], products: usize, kind: Kind, on: bool) -> bool {
         let r = self.rel(i);
-        let scoped = |k: &Clause| k.ctors.as_ref().is_some_and(|cs| cs.contains(&c));
-        r.uniques
-            .iter()
-            .chain(&r.indexes)
-            .chain(&r.checks)
-            .any(scoped)
-            || r.defaults.iter().any(|(d, _, _)| *d == c)
-            || self.s.constraints.iter().any(|k| k.rel == i && k.ctor == c)
+        let all: Vec<usize> = (0..r.ctors.len()).collect();
+        let scope = |k: &Clause| k.ctors.clone().unwrap_or_else(|| all.clone());
+        let meets = |s: &[usize]| s.iter().any(|c| cs.contains(c));
+        let within = |s: &[usize]| s.iter().all(|c| cs.contains(c));
+        let holds = |s: &[usize]| cs.iter().all(|c| s.contains(c));
+        let joining = cs.len() > 1;
+        let no_image = |s: &[usize]| joining && meets(s) && !holds(s) && !within(s);
+        let unique = |k: &Clause| {
+            let s = scope(k);
+            let alone = if joining {
+                meets(&s) && within(&s) && !holds(&s)
+            } else {
+                s == cs && products > 1
+            };
+            no_image(&s)
+                || (joining && within(&s) && holds(&s))
+                || (alone && !(on && super::super::SEARCH_REPLACE_UNDER_UNIQUE))
+        };
+        let index = |k: &Clause| no_image(&scope(k));
+        let check = |k: &Clause| {
+            let s = scope(k);
+            let partly = joining && meets(&s) && !holds(&s);
+            match kind {
+                Kind::Nest => partly && !(on && super::super::SEARCH_NEST_UNDER_CHECK),
+                _ => partly,
+            }
+        };
+        let constraint = |k: &super::super::Constraint| {
+            k.rel == i
+                && joining
+                && meets(&k.ctors)
+                && !holds(&k.ctors)
+                && !(on && super::super::SEARCH_MERGE_UNDER_CONSTRAINT)
+        };
+        let default = r.defaults.iter().any(|(d, _, _)| cs.contains(d));
+        r.uniques.iter().any(unique)
+            || r.indexes.iter().any(index)
+            || r.checks.iter().any(check)
+            || self.s.constraints.iter().any(constraint)
+            || (default && !(on && super::super::SEARCH_REPLACE_UNDER_DEFAULT))
+    }
+
+    /// Returns the candidates of `can` a switch on admits, or all of `can` when none.
+    pub(super) fn steered<T>(can: Vec<(T, bool)>) -> Vec<T> {
+        let switched = can.iter().any(|(_, s)| *s);
+        can.into_iter()
+            .filter(|(_, s)| *s || !switched)
+            .map(|(x, _)| x)
+            .collect()
     }
 
     /// Returns whether a clause, constraint or default of relation `i` names field `f` of
@@ -99,7 +155,7 @@ impl Model {
                 .s
                 .constraints
                 .iter()
-                .any(|k| k.rel == i && k.field == f && c.is_none_or(|c| c == k.ctor))
+                .any(|k| k.rel == i && k.field == f && c.is_none_or(|c| k.ctors.contains(&c)))
     }
 
     /// Returns whether constructor `c` of relation `i` is the constructor its delete actions
@@ -234,13 +290,8 @@ impl Model {
             if k.rel != i {
                 return true;
             }
-            match map[k.ctor].first() {
-                Some(d) => {
-                    k.ctor = *d;
-                    true
-                }
-                None => false,
-            }
+            k.ctors = remapped(&map, &k.ctors);
+            !k.ctors.is_empty()
         });
     }
 
@@ -682,8 +733,12 @@ impl Model {
                 let text = format!("remove constructor {}", self.ctor_path(i, c));
                 let target = self.rel(i).target(Some(&vec![c]));
                 let defaulted = self.rel(i).defaults.iter().any(|(d, _, _)| *d == c);
+                let effect = Effect::RemoveCtor {
+                    rel: self.rel(i).name.clone(),
+                    ctor: self.rel(i).ctors[c].name.clone(),
+                };
                 self.replace(i, &[c], Vec::new(), Vec::new());
-                let removed = emptying(kind, text, target);
+                let removed = emptying(kind, text, target).with(effect);
                 Some(vec![
                     if defaulted && !super::super::SEARCH_REVERTED_REMOVE_OF_DEFAULTED {
                         removed.inexact()

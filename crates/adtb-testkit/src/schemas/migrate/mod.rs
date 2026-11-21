@@ -3,6 +3,8 @@
 //! states, so that the model of the schema after it is known, or breaking one stated
 //! precondition, so that the migration is refused naming it.
 
+use std::collections::BTreeSet;
+
 use super::draw::{Draw, Keys};
 use super::{Action, Case, Field, Schema, Scope, Stage, Ty, literal};
 use crate::Rng;
@@ -286,6 +288,47 @@ impl Migration {
         Ok(out)
     }
 
+    /// Returns the relation and constructors the rows of constructors `ctors` of relation `rel`
+    /// go to, by the model of each operator's effect. Fails on an operator the model does not
+    /// follow.
+    pub fn ctors(
+        &self,
+        rel: &str,
+        ctors: &BTreeSet<String>,
+    ) -> Result<(String, BTreeSet<String>), String> {
+        let (mut rel, mut cs) = (rel.to_owned(), ctors.clone());
+        for o in &self.ops {
+            o.effect.ctors(&mut rel, &mut cs)?;
+        }
+        Ok((rel, cs))
+    }
+
+    /// Returns each split, merge, nest and unnest of the migration: its kind, relation, the
+    /// constructors it replaces and those it makes.
+    pub fn replaced(&self) -> Vec<(Kind, String, Vec<String>, Vec<String>)> {
+        self.ops
+            .iter()
+            .filter_map(|o| match &o.effect {
+                Effect::Split {
+                    rel,
+                    ctor,
+                    products,
+                    ..
+                } => Some((o.kind, rel.clone(), vec![ctor.clone()], products.clone())),
+                Effect::Merge {
+                    rel,
+                    sources,
+                    product,
+                    ..
+                } => Some((o.kind, rel.clone(), sources.clone(), vec![product.clone()])),
+                Effect::Unnest {
+                    rel, ctor, ctors, ..
+                } => Some((o.kind, rel.clone(), vec![ctor.clone()], ctors.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Returns the migration of its first `n` drawn steps, each an operator with those it
     /// needs before it, and the schema they leave; `None` past its steps.
     pub fn prefix(&self, n: usize) -> Option<Migration> {
@@ -319,6 +362,15 @@ impl Migration {
         self.exact()
             && (super::SEARCH_REVERT_OF_REVERTED_REVOKE || !revoked)
             && (super::SEARCH_REVERT_OF_REVERTED_RENAME || !renamed)
+    }
+
+    /// Returns the migration of the operators before `k`, and the migration of those from `k`
+    /// on, which leaves the schema this one does.
+    pub fn split_at(&self, k: usize) -> (Migration, Migration) {
+        let (mut a, mut b) = (self.clone(), self.clone());
+        a.ops.truncate(k);
+        b.ops.drain(..k);
+        (a, b)
     }
 
     /// Returns the migration without operator `k`, the operators after it drawn on the model

@@ -101,11 +101,55 @@ pub(super) enum Effect {
         field: String,
         to: Vec<String>,
     },
+    /// Rows of `ctor` are dropped.
+    RemoveCtor {
+        rel: String,
+        ctor: String,
+    },
     /// The model does not follow the operator's rows.
     Unknown(String),
 }
 
 impl Effect {
+    /// Take relation `rel` and constructors `cs` of it to the relation and constructors this
+    /// effect sends their rows to. Fails on an effect the model does not follow.
+    pub(super) fn ctors(&self, rel: &mut String, cs: &mut BTreeSet<String>) -> Result<(), String> {
+        let mut replace = |r: &str, from: &[String], to: &[String]| {
+            if *rel == r && from.iter().filter(|c| cs.remove(*c)).count() > 0 {
+                cs.extend(to.iter().cloned());
+            }
+        };
+        match self {
+            Effect::RenameRel(from, to) if rel == from => to.clone_into(rel),
+            Effect::DropRel(r) if rel == r => cs.clear(),
+            Effect::RenameCtor { rel: r, from, to } => {
+                replace(r, std::slice::from_ref(from), std::slice::from_ref(to));
+            }
+            Effect::Split {
+                rel: r,
+                ctor,
+                products,
+                ..
+            } => replace(r, std::slice::from_ref(ctor), products),
+            Effect::Merge {
+                rel: r,
+                sources,
+                product,
+                ..
+            } => replace(r, sources, std::slice::from_ref(product)),
+            Effect::Unnest {
+                rel: r,
+                ctor,
+                ctors,
+                ..
+            } => replace(r, std::slice::from_ref(ctor), ctors),
+            Effect::RemoveCtor { rel: r, ctor } => replace(r, std::slice::from_ref(ctor), &[]),
+            Effect::Unknown(why) => return Err(why.clone()),
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Apply the effect to `rows`. Fails on an effect the model does not follow.
     pub(super) fn apply(&self, rows: &mut Rows) -> Result<(), String> {
         match self {
@@ -122,6 +166,9 @@ impl Effect {
             }
             Effect::RenameCtor { rel, from, to } => {
                 rows.map(rel, |(c, fs)| (if c == *from { to.clone() } else { c }, fs))?;
+            }
+            Effect::RemoveCtor { rel, ctor } => {
+                rows.rel(rel)?.retain(|(c, _)| c != ctor);
             }
             Effect::RenameField {
                 rel,

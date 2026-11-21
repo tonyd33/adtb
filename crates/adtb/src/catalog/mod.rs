@@ -90,7 +90,7 @@ pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 use memo::Memo;
-pub use oplog::{Hash, VersionHash, version_hash};
+pub use oplog::{Hash, VersionHash, chained, version_hash};
 pub use readers::{Read, Reader, source_at, stale};
 pub(crate) use root::Begun;
 pub(crate) use root::Changing;

@@ -106,7 +106,7 @@ const SCRIPT_COMMITS: bool = false;
 
 /// A broken invariant: a signature a shrink keeps and what shows it.
 #[derive(Clone, Debug)]
-struct Finding {
+pub(super) struct Finding {
     sig: String,
     text: String,
 }
@@ -204,7 +204,7 @@ fn catalog_diff(a: &[Got], b: &[Got]) -> Vec<&'static str> {
 }
 
 /// Returns the hash the migrations relation holds for version `version`.
-fn stored_hash(db: &Database<SimRuntime>, version: usize) -> Option<Value> {
+pub(super) fn stored_hash(db: &Database<SimRuntime>, version: usize) -> Option<Value> {
     let q = format!(
         "from m in catalog::migrations where m.version == catalog::migrations.key({version}) select m.hash"
     );
@@ -587,7 +587,7 @@ fn checked(source: &Source, m: &Migration) -> Result<bool, Finding> {
 
 /// Run `body` against the database at `log` in a process of `sim`. Returns its result, or the
 /// open's failure.
-fn opened<T>(
+pub(super) fn opened<T>(
     sim: &mut Sim,
     log: &[String],
     body: impl FnOnce(&Database<SimRuntime>) -> T,
@@ -1035,7 +1035,7 @@ impl Run {
 
 /// Returns the reference over the schema `case`'s model declares, its constructors in the
 /// model's write states, holding `rows`.
-fn reference(case: &schemas::Case, rows: &Rows) -> Result<Fixture, Finding> {
+pub(super) fn reference(case: &schemas::Case, rows: &Rows) -> Result<Fixture, Finding> {
     let decls = case.decls();
     let mut fx = panic::catch_unwind(AssertUnwindSafe(|| Fixture::new(&decls)))
         .map_err(|p| found("the model's schema does not check", panic_message(&*p)))?;
@@ -1056,7 +1056,7 @@ fn reference(case: &schemas::Case, rows: &Rows) -> Result<Fixture, Finding> {
 }
 
 /// Returns the rows the reference `fx` holds of the relations of `case`.
-fn held(fx: &Fixture, case: &schemas::Case) -> Result<Rows, Finding> {
+pub(super) fn held(fx: &Fixture, case: &schemas::Case) -> Result<Rows, Finding> {
     let values: Vec<Vec<Value>> = case
         .relations()
         .iter()

@@ -72,6 +72,12 @@ pub fn chain(
     Ok(h)
 }
 
+/// Returns the hash of the version after one whose hash is `previous`, migrated by `ops`.
+pub fn chained(schema: &Schema, previous: Hash, ops: &[ResolvedOp]) -> Hash {
+    let log = Log::new(schema);
+    log.chained(previous, &log.rows(ops))
+}
+
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
 ///
 /// Panics:

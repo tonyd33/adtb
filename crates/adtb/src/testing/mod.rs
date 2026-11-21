@@ -24,6 +24,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write;
 
+pub use crate::catalog::chained as chained_hash;
 pub use crate::heap::{Edit, Error as HeapError, Flags, Header, Laid, Slot};
 pub use crate::mvcc::{Limits, Snapshot, Xid};
 pub use crate::plan::{

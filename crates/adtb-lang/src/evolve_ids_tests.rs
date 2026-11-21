@@ -1357,10 +1357,33 @@ fn ctors_of(s: &Source) -> BTreeSet<String> {
         .collect()
 }
 
-/// Returns, for operator `what` taking `before` to `after` and its rows by `rows`, each clause
-/// whose covered rows it does not take to those of the clause after: the clause of its id, or
-/// for a clause it re-scopes, some clause it creates.
-fn uncovered(what: &str, before: &Source, after: &Source, rows: &Rows) -> Vec<String> {
+/// Whether the search judges a unique or an index over one constructor that a split, merge or
+/// nest replaces. A split re-scopes it to each product apart, a merge or nest to the product,
+/// and no clause after covers the image of its rows.
+const SEARCH_ONE_CONSTRUCTOR_CLAUSE_REPLACED: bool = false;
+
+/// Returns whether the unique or index of catalog id `id` of relation `ts` of `s` is scoped to
+/// one constructor among `replaced`.
+fn over_one_of(s: &Source, id: u64, replaced: &[String]) -> bool {
+    let schema = ids_of(s);
+    let r = rel(&schema, "ts");
+    let rd = schema.relation(r);
+    let ctors = schema.ty(rd.elem_def).ctors();
+    rd.indexes.iter().enumerate().any(|(at, x)| {
+        schema.ids().index_id(r, at).map(u64::from) == Some(id)
+            && matches!(x.scope.as_deref(), Some([c]) if replaced.contains(&ctors[*c as usize].name))
+    })
+}
+
+/// Returns, for operator `what` taking `before` to `after`, replacing `replaced`, and its rows
+/// by `rows`, each clause whose covered rows it does not take to those of the clause after: the
+/// clause of its id, or for a clause it re-scopes, some clause it creates.
+fn uncovered(
+    what: &str,
+    (before, after): (&Source, &Source),
+    replaced: &[String],
+    rows: &Rows,
+) -> Vec<String> {
     let was = clause_ids(before);
     let now = clause_ids(after);
     let old: BTreeSet<u64> = was.iter().map(|(_, id)| *id).collect();
@@ -1371,6 +1394,9 @@ fn uncovered(what: &str, before: &Source, after: &Source, rows: &Rows) -> Vec<St
         .collect();
     let mut out = Vec::new();
     for (text, id) in &was {
+        if !SEARCH_ONE_CONSTRUCTOR_CLAUSE_REPLACED && over_one_of(before, *id, replaced) {
+            continue;
+        }
         let want = rows.mapped(&covered(before, text));
         match now.iter().find(|(_, i)| i == id) {
             Some((t, _)) => {
@@ -1677,14 +1703,14 @@ fn a_structural_operator_or_its_revert_keeps_the_id_of_every_object_it_does_not_
 }
 
 #[test]
-#[ignore = "split, merge and nest re-scope a unique over one constructor beyond or short of its rows, and reverting a remove leaves the constructor out of the sets that held it"]
 fn a_structural_operator_or_its_revert_takes_the_rows_a_clause_covers_to_those_of_the_clause_after()
 {
     let count = adtb_testkit::profile::count(8).min(32) as usize;
     let search = Search::of(count);
     let mut found = search.refused;
     for s in &search.steps {
-        found.extend(uncovered(&s.what, &s.before, &s.after, &s.rows));
+        let pair = (&s.before, &s.after);
+        found.extend(uncovered(&s.what, pair, &s.replaced, &s.rows));
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
     assert!(
