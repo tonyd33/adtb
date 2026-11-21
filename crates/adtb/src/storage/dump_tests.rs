@@ -21,7 +21,7 @@ use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime, Struck};
 use adtb_testkit::corpus;
 use adtb_testkit::process;
-use adtb_testkit::profile::{assert_reached, count, every_case};
+use adtb_testkit::profile::{assert_reached, count, every_case, spread};
 use adtb_testkit::search::{self, Files};
 
 const FILE: &str = "app.adt";
@@ -1087,124 +1087,312 @@ fn restored_as(files: &Files, log: &[String]) -> Restore {
 
 /// Returns whether the dump's contract fixes how a restore answers `edit` at line `i` of text part
 /// `part`: a `data/` text is for review and never read; a garbled line, any edit of a part's first
-/// line, which states its edition and schema version, a dropped row of `ids` and a changed field
-/// of a grant in `ids` damage the part; rows of `ids` swapped within one relation restore.
+/// line, which states its edition and schema version, a dropped row of `ids`, a rekeyed row of
+/// `ids` whose key the log determines, and a changed field of a row whose key it does not damage
+/// the part; rows of `ids` swapped within one relation restore, and a key the log does not
+/// determine is data the dump states, so its row restores holding the new key.
 fn stated(part: &str, lines: &[&str], i: usize, edit: LineEdit) -> bool {
     let row = |at: usize| at > 0 && at < lines.len() && !lines[at].starts_with("data ");
-    let grant = lines[i].contains("grants.key(");
     match (part, edit) {
         (p, _) if p.starts_with("data/") => true,
         (_, LineEdit::Garble) => true,
         _ if i == 0 => true,
         ("ids", LineEdit::SwapNext) => row(i) && row(i + 1),
-        ("ids", LineEdit::Drop) => row(i),
-        ("ids", LineEdit::Revalue | LineEdit::Copy) => grant,
+        ("ids", LineEdit::Drop | LineEdit::Rekey) => row(i),
+        ("ids", LineEdit::Revalue | LineEdit::Copy) => row(i) && !log_determines(lines, i),
         _ => false,
     }
 }
 
 /// The kinds of stated cell the default profile edits, each once per part; of a `data/` text only a
 /// duplicated row.
-const DEFAULT_CELLS: [&str; 7] = [
+const DEFAULT_CELLS: [&str; 9] = [
     "Drop first",
     "Garble row",
     "Duplicate row",
     "Drop row",
     "SwapNext row",
+    "Rekey determined",
+    "Rekey data",
     "Revalue row",
     "Copy row",
 ];
 
+/// Returns whether `got`, a restore of a dump whose text part `part` has `edit` made at line `i`
+/// of its `lines`, answers as the contract states a stated cell, or else is refused naming `part`
+/// or answers `unedited`.
+fn held(
+    got: &Restore,
+    (part, lines, i, edit): (&str, &[&str], usize, LineEdit),
+    unedited: &[String],
+) -> bool {
+    let refused = matches!(got, Restore::Refused(Answer::Damaged(p), _) if p == part);
+    let same = *got == Restore::Answers(unedited.to_vec());
+    let restores =
+        part.starts_with("data/") || (part == "ids" && edit == LineEdit::SwapNext && i > 0);
+    let data_key = part == "ids" && edit == LineEdit::Rekey && !log_determines(lines, i);
+    match (stated(part, lines, i, edit), restores, data_key) {
+        (false, _, _) => refused || same,
+        (true, true, _) => same,
+        (true, false, true) => *got == Restore::Answers(rekeyed_answers(unedited, lines[i])),
+        (true, false, false) => refused,
+    }
+}
+
+/// Returns the relation whose rows line `i` of a text part's `lines` is among, as its `data` line
+/// names it.
+fn section<'a>(lines: &[&'a str], i: usize) -> Option<&'a str> {
+    lines[..=i]
+        .iter()
+        .rev()
+        .find_map(|l| l.strip_prefix("data "))
+        .map(str::trim_end)
+}
+
+/// Returns whether replaying the log determines the key of line `i` of `ids`: a row of a relation
+/// of [`LOGGED`].
+fn log_determines(lines: &[&str], i: usize) -> bool {
+    section(lines, i)
+        .and_then(|s| s.strip_prefix("catalog::"))
+        .is_some_and(|r| LOGGED.contains(&r))
+}
+
+/// Returns the fields of `row`, a printed constructor value, as name and printed value.
+fn fields(row: &str) -> Vec<(&str, &str)> {
+    let row = row.trim_end();
+    let Some(body) = row
+        .find(" { ")
+        .and_then(|at| row[at + 3..].strip_suffix(" }"))
+    else {
+        return Vec::new();
+    };
+    let (mut out, mut start, mut depth) = (Vec::new(), 0, 0);
+    let (mut quoted, mut escaped) = (false, false);
+    for (at, c) in body.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '{' | '(' | '[' if !quoted => depth += 1,
+            '}' | ')' | ']' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                out.push(&body[start..at]);
+                start = at + 2;
+            }
+            _ => {}
+        }
+    }
+    out.push(&body[start..]);
+    out.into_iter().filter_map(|f| f.split_once(": ")).collect()
+}
+
+/// Returns the key fields of each catalog relation, by the name a `data` line gives it.
+fn catalog_keys() -> BTreeMap<String, Vec<String>> {
+    let schema = crate::catalog::engine_schema();
+    schema
+        .relations
+        .iter()
+        .filter(|r| schema.module(r.module).name == "catalog")
+        .map(|r| (format!("catalog::{}", r.name), r.key.clone()))
+        .collect()
+}
+
+/// Returns what line `i` of a text part's `lines` holds: a row of a relation of `keys` by its
+/// relation and every field of its key, any other line by its text up to a parenthesis and, past
+/// its first, which line of that text it is.
+fn row_name(lines: &[&str], i: usize, keys: &BTreeMap<String, Vec<String>>) -> String {
+    let text = |l: &str| {
+        let l = l.trim_end();
+        l.split(" (").next().unwrap_or(l).to_owned()
+    };
+    let line = lines[i].trim_end();
+    let keyed = || {
+        let relation = section(lines, i).filter(|_| !line.starts_with("data "))?;
+        let fields = fields(line);
+        let key: Option<Vec<String>> = keys
+            .get(relation)?
+            .iter()
+            .map(|k| {
+                let (name, value) = fields.iter().find(|(f, _)| f == k)?;
+                Some(format!("{name}: {value}"))
+            })
+            .collect();
+        Some(format!("{relation} {}", key?.join(", ")))
+    };
+    if i == 0 {
+        return "the first line".to_owned();
+    }
+    keyed().unwrap_or_else(|| {
+        let own = text(line);
+        match lines[..i].iter().filter(|l| text(l) == own).count() {
+            0 => format!("{own:?}"),
+            n => format!("{own:?} {}", n + 1),
+        }
+    })
+}
+
+/// How many rows of each relation the profile `deep` edits beside its first and last.
+const SPREAD: u64 = 1;
+
+/// Returns the lines of text part `part` of `lines` the profile `deep` edits: every line of `log`
+/// and `security`; of any other part its first line, of each relation, and of the lines before the
+/// first, the first and last and [`SPREAD`] more evenly spread, the first row of each constructor
+/// and, of `ids`, the first row of each module and every row whose key the log does not determine.
+fn deep_rows(part: &str, lines: &[&str]) -> BTreeSet<usize> {
+    if part == "log" || part == "security" {
+        return (0..lines.len()).collect();
+    }
+    let heads: Vec<usize> = [0]
+        .into_iter()
+        .chain((1..lines.len()).filter(|&i| lines[i].starts_with("data ")))
+        .chain([lines.len()])
+        .collect();
+    let mut out = BTreeSet::from([0]);
+    for w in heads.windows(2) {
+        let rows: Vec<usize> = (w[0] + 1..w[1]).collect();
+        out.extend(spread(&rows, SPREAD + 2));
+        let mut seen = BTreeSet::new();
+        for &i in &rows {
+            let ctor = lines[i].split(" {").next().unwrap_or_default();
+            let module = fields(lines[i])
+                .into_iter()
+                .find(|(f, _)| *f == "module")
+                .map(|(_, m)| m);
+            let firsts = [Some(("ctor", ctor)), module.map(|m| ("module", m))];
+            if firsts.into_iter().flatten().any(|first| seen.insert(first)) {
+                out.insert(i);
+            }
+        }
+    }
+    if part == "ids" {
+        out.extend(
+            (1..lines.len())
+                .filter(|&i| !lines[i].starts_with("data ") && !log_determines(lines, i)),
+        );
+    }
+    out
+}
+
+/// Returns `answers` with the row `line` prints in place of the row it printed before [`rekeyed`]
+/// raised its key, each answer's rows sorted again.
+fn rekeyed_answers(answers: &[String], line: &str) -> Vec<String> {
+    let edited = rekeyed(line).unwrap();
+    let (from, to) = (line.trim_end(), edited.trim_end());
+    let mut replaced = 0;
+    let out = answers
+        .iter()
+        .map(|a| {
+            let mut rows: Vec<String> = a
+                .split('\n')
+                .map(|r| {
+                    if r == from {
+                        replaced += 1;
+                        to.to_owned()
+                    } else {
+                        r.to_owned()
+                    }
+                })
+                .collect();
+            rows.sort();
+            rows.join("\n")
+        })
+        .collect();
+    assert_eq!(1, replaced, "the unedited restore answers `{from}` once");
+    out
+}
+
 /// The generated edits that restore to a state other than the unedited dump's, against the
-/// contract; each label is the fixture, then the cell.
+/// contract; each label is the fixture, then the edit, the line as [`row_name`] names it and the
+/// part.
 const KNOWN_FAILURES: &[&str] = &[
-    "dumped: Drop of line 2 of audit",
-    "dumped: Rekey of line 2 of audit",
-    "dumped: Revalue of line 2 of audit",
-    "dumped: Copy of line 2 of audit",
-    "dumped: Drop of line 3 of audit",
-    "dumped: Rekey of line 3 of audit",
-    "dumped: Revalue of line 3 of audit",
-    "dumped: Copy of line 3 of audit",
-    "dumped: Drop of line 4 of audit",
-    "dumped: Rekey of line 4 of audit",
-    "dumped: Revalue of line 4 of audit",
-    "dumped: Copy of line 4 of audit",
-    "dumped: Drop of line 5 of audit",
-    "dumped: Rekey of line 5 of audit",
-    "dumped: Revalue of line 5 of audit",
-    "dumped: Copy of line 5 of audit",
-    "dumped: Drop of line 6 of audit",
-    "dumped: Rekey of line 6 of audit",
-    "dumped: Revalue of line 6 of audit",
-    "dumped: Copy of line 6 of audit",
-    "dumped: Drop of line 9 of bundles/app-0.9",
-    "dumped: Rekey of line 9 of bundles/app-0.9",
-    "dumped: Revalue of line 9 of bundles/app-0.9",
-    "dumped: Copy of line 9 of bundles/app-0.9",
-    "dumped: SwapNext of line 2 of bundles/app-1.0",
-    "dumped: SwapNext of line 3 of bundles/app-1.0",
-    "dumped: Drop of line 9 of bundles/app-1.0",
-    "dumped: Rekey of line 9 of bundles/app-1.0",
-    "dumped: Revalue of line 9 of bundles/app-1.0",
-    "dumped: Copy of line 9 of bundles/app-1.0",
-    "dumped: Revalue of line 11 of bundles/app-1.0",
-    "dumped: Copy of line 11 of bundles/app-1.0",
-    "dumped: Drop of line 13 of bundles/app-1.0",
-    "dumped: Drop of line 8 of bundles/gui-1.0",
-    "dumped: Rekey of line 8 of bundles/gui-1.0",
-    "dumped: Revalue of line 8 of bundles/gui-1.0",
-    "dumped: Copy of line 8 of bundles/gui-1.0",
-    "dumped: Drop of line 1 of bundles/index",
-    "dumped: Drop of line 2 of bundles/index",
-    "dumped: Drop of line 3 of bundles/index",
-    "dumped: Drop of line 4 of bundles/index",
-    "dumped: Drop of line 6 of bundles/index",
-    "dumped: Drop of line 7 of bundles/index",
-    "dumped: Drop of line 9 of bundles/old-1.0",
-    "dumped: Rekey of line 9 of bundles/old-1.0",
-    "dumped: Revalue of line 9 of bundles/old-1.0",
-    "dumped: Copy of line 9 of bundles/old-1.0",
-    "dumped: Drop of line 9 of bundles/short-1.0",
-    "dumped: Rekey of line 9 of bundles/short-1.0",
-    "dumped: Revalue of line 9 of bundles/short-1.0",
-    "dumped: Copy of line 9 of bundles/short-1.0",
-    "dumped: SwapNext of line 2 of bundles/tool-1.0",
-    "dumped: Drop of line 8 of bundles/tool-1.0",
-    "dumped: Rekey of line 8 of bundles/tool-1.0",
-    "dumped: Revalue of line 8 of bundles/tool-1.0",
-    "dumped: Copy of line 8 of bundles/tool-1.0",
-    "dumped: Copy of line 2 of security",
-    "dumped: Drop of line 3 of security",
-    "dumped: Rekey of line 3 of security",
-    "dumped: Revalue of line 3 of security",
-    "dumped: Copy of line 3 of security",
-    "dumped: Drop of line 5 of security",
-    "dumped: Rekey of line 5 of security",
-    "dumped: Copy of line 5 of security",
-    "dumped: Drop of line 7 of security",
-    "dumped: Rekey of line 7 of security",
-    "dumped: Revalue of line 7 of security",
-    "dumped: Copy of line 7 of security",
-    "dumped: Drop of line 9 of security",
-    "dumped: Revalue of line 9 of security",
-    "dumped: Drop of line 2 of settings",
-    "dumped: Rekey of line 2 of settings",
-    "dumped: Copy of line 2 of settings",
-    "dumped: Drop of line 3 of settings",
-    "dumped: Rekey of line 3 of settings",
-    "dumped: Copy of line 3 of settings",
-    "granted: Rekey of line 808 of ids",
+    "dumped: Drop of catalog::audit seq: audit.key(1) of audit",
+    "dumped: Rekey of catalog::audit seq: audit.key(1) of audit",
+    "dumped: Revalue of catalog::audit seq: audit.key(1) of audit",
+    "dumped: Copy of catalog::audit seq: audit.key(1) of audit",
+    "dumped: Drop of catalog::audit seq: audit.key(2) of audit",
+    "dumped: Rekey of catalog::audit seq: audit.key(2) of audit",
+    "dumped: Revalue of catalog::audit seq: audit.key(2) of audit",
+    "dumped: Copy of catalog::audit seq: audit.key(2) of audit",
+    "dumped: Drop of catalog::audit seq: audit.key(3) of audit",
+    "dumped: Rekey of catalog::audit seq: audit.key(3) of audit",
+    "dumped: Revalue of catalog::audit seq: audit.key(3) of audit",
+    "dumped: Copy of catalog::audit seq: audit.key(3) of audit",
+    "dumped: Drop of catalog::audit seq: audit.key(4) of audit",
+    "dumped: Rekey of catalog::audit seq: audit.key(4) of audit",
+    "dumped: Revalue of catalog::audit seq: audit.key(4) of audit",
+    "dumped: Copy of catalog::audit seq: audit.key(4) of audit",
+    "dumped: Drop of catalog::audit seq: audit.key(65) of audit",
+    "dumped: Rekey of catalog::audit seq: audit.key(65) of audit",
+    "dumped: Revalue of catalog::audit seq: audit.key(65) of audit",
+    "dumped: Copy of catalog::audit seq: audit.key(65) of audit",
+    "dumped: Drop of catalog::registered id: registered.key(1) of bundles/app-0.9",
+    "dumped: Rekey of catalog::registered id: registered.key(1) of bundles/app-0.9",
+    "dumped: Revalue of catalog::registered id: registered.key(1) of bundles/app-0.9",
+    "dumped: Copy of catalog::registered id: registered.key(1) of bundles/app-0.9",
+    "dumped: SwapNext of \"bundle app-1.0 pins 2\" of bundles/app-1.0",
+    "dumped: SwapNext of \"import app\" of bundles/app-1.0",
+    "dumped: Drop of catalog::registered id: registered.key(2) of bundles/app-1.0",
+    "dumped: Rekey of catalog::registered id: registered.key(2) of bundles/app-1.0",
+    "dumped: Revalue of catalog::registered id: registered.key(2) of bundles/app-1.0",
+    "dumped: Copy of catalog::registered id: registered.key(2) of bundles/app-1.0",
+    "dumped: Revalue of catalog::feeds id: feeds.key(1) of bundles/app-1.0",
+    "dumped: Copy of catalog::feeds id: feeds.key(1) of bundles/app-1.0",
+    "dumped: Drop of catalog::feed_members feed: feeds.key(1), relation: relations.key(1026), ctor: constructors.key(1025) of bundles/app-1.0",
+    "dumped: Drop of catalog::registered id: registered.key(6) of bundles/gui-1.0",
+    "dumped: Rekey of catalog::registered id: registered.key(6) of bundles/gui-1.0",
+    "dumped: Revalue of catalog::registered id: registered.key(6) of bundles/gui-1.0",
+    "dumped: Copy of catalog::registered id: registered.key(6) of bundles/gui-1.0",
+    "dumped: Drop of \"bundle app-0.9\" of bundles/index",
+    "dumped: Drop of \"bundle app-1.0\" of bundles/index",
+    "dumped: Drop of \"bundle old-1.0\" of bundles/index",
+    "dumped: Drop of \"bundle short-1.0\" of bundles/index",
+    "dumped: Drop of \"bundle tool-1.0\" of bundles/index",
+    "dumped: Drop of \"bundle gui-1.0\" of bundles/index",
+    "dumped: Drop of catalog::registered id: registered.key(3) of bundles/old-1.0",
+    "dumped: Rekey of catalog::registered id: registered.key(3) of bundles/old-1.0",
+    "dumped: Revalue of catalog::registered id: registered.key(3) of bundles/old-1.0",
+    "dumped: Copy of catalog::registered id: registered.key(3) of bundles/old-1.0",
+    "dumped: Drop of catalog::registered id: registered.key(4) of bundles/short-1.0",
+    "dumped: Rekey of catalog::registered id: registered.key(4) of bundles/short-1.0",
+    "dumped: Revalue of catalog::registered id: registered.key(4) of bundles/short-1.0",
+    "dumped: Copy of catalog::registered id: registered.key(4) of bundles/short-1.0",
+    "dumped: SwapNext of \"bundle tool-1.0 pins 2\" of bundles/tool-1.0",
+    "dumped: Drop of catalog::registered id: registered.key(5) of bundles/tool-1.0",
+    "dumped: Rekey of catalog::registered id: registered.key(5) of bundles/tool-1.0",
+    "dumped: Revalue of catalog::registered id: registered.key(5) of bundles/tool-1.0",
+    "dumped: Copy of catalog::registered id: registered.key(5) of bundles/tool-1.0",
+    "dumped: Copy of catalog::roles id: roles.key(1) of security",
+    "dumped: Drop of catalog::roles id: roles.key(2) of security",
+    "dumped: Rekey of catalog::roles id: roles.key(2) of security",
+    "dumped: Revalue of catalog::roles id: roles.key(2) of security",
+    "dumped: Copy of catalog::roles id: roles.key(2) of security",
+    "dumped: Drop of catalog::credentials id: credentials.key(1) of security",
+    "dumped: Rekey of catalog::credentials id: credentials.key(1) of security",
+    "dumped: Copy of catalog::credentials id: credentials.key(1) of security",
+    "dumped: Drop of catalog::grants id: grants.key(1) of security",
+    "dumped: Rekey of catalog::grants id: grants.key(1) of security",
+    "dumped: Revalue of catalog::grants id: grants.key(1) of security",
+    "dumped: Copy of catalog::grants id: grants.key(1) of security",
+    "dumped: Drop of catalog::peer_mappings listener: \"local\", ordinal: 1 of security",
+    "dumped: Revalue of catalog::peer_mappings listener: \"local\", ordinal: 1 of security",
+    "dumped: Drop of catalog::settings id: settings.key(346) of settings",
+    "dumped: Rekey of catalog::settings id: settings.key(346) of settings",
+    "dumped: Copy of catalog::settings id: settings.key(346) of settings",
+    "dumped: Drop of catalog::settings id: settings.key(451) of settings",
+    "dumped: Rekey of catalog::settings id: settings.key(451) of settings",
+    "dumped: Copy of catalog::settings id: settings.key(451) of settings",
 ];
 
 /// Edit each text part of a dump, and `ids` of a dump whose log grants to a role, by dropping,
 /// duplicating, swapping with the next, garbling, rekeying, revaluing and copying rekeyed each line.
 /// The default profile edits each kind of `DEFAULT_CELLS` whose answer the contract states once per
-/// part, a grant row of `ids` among them; the profile `deep` edits every line, of `ids` every grant
-/// row and 64 rows spread over the rest. Plant parts the schema has
+/// part, a row of `ids` whose key the log does not determine among them; the profile `deep` edits
+/// the lines [`deep_rows`] returns, of the dump whose log grants only the rows of `ids` whose key the
+/// log does not determine, and every known failure. Plant parts the schema has
 /// no relation for and a part of another constructor's rows. Each restore is refused naming the
 /// edited part, writing nothing, or restores a file answering every relation as the unedited
-/// dump's restore does; a stated cell answers as the contract states.
+/// dump's restore does; a stated cell answers as the contract states, a rekeyed row of `ids` whose
+/// key the log determines refused naming `ids` and one whose key it does not restoring that key.
 #[test]
 fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
     let (files, _) = dump_only();
@@ -1226,6 +1414,8 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
     ];
     let mut reached: BTreeSet<(String, String)> = BTreeSet::new();
     let (mut failed, mut passed_known) = (Vec::new(), Vec::new());
+    let mut known_reached = BTreeSet::new();
+    let keys = catalog_keys();
     for (fixture, dump, log, only) in &fixtures {
         let Restore::Answers(unedited) = restored_as(dump, log) else {
             panic!("{fixture}: the unedited dump does not restore");
@@ -1236,23 +1426,31 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
             }
             let lines: Vec<&str> = text.split_inclusive('\n').collect();
             let mut kinds = BTreeSet::new();
-            let stride = if part == "ids" {
-                lines.len().div_ceil(64)
-            } else {
-                1
-            };
+            let rows = deep_rows(&part, &lines);
+            let mut edited = 0;
             for i in 0..lines.len() {
+                let determined = log_determines(&lines, i);
+                let deep = rows.contains(&i) && (only.is_none() || !determined);
                 for edit in LINE_EDITS {
                     let is_stated = stated(&part, &lines, i, edit);
-                    let kind = format!("{edit:?} {}", if i == 0 { "first" } else { "row" });
+                    let kind = match (i, part == "ids" && edit == LineEdit::Rekey, determined) {
+                        (0, _, _) => format!("{edit:?} first"),
+                        (_, true, true) => format!("{edit:?} determined"),
+                        (_, true, false) => format!("{edit:?} data"),
+                        _ => format!("{edit:?} row"),
+                    };
                     let sampled = if part.starts_with("data/") {
                         kind == "Duplicate row"
                     } else {
                         DEFAULT_CELLS.contains(&kind.as_str())
                     };
-                    let deep = i % stride == 0 || lines[i].contains("grants.key(");
+                    let label = format!(
+                        "{fixture}: {edit:?} of {} of {part}",
+                        row_name(&lines, i, &keys)
+                    );
+                    let known = KNOWN_FAILURES.contains(&label.as_str());
                     let first_of_kind = is_stated && sampled && kinds.insert(kind.clone());
-                    if !first_of_kind && !(every_case() && deep) {
+                    if !first_of_kind && !(every_case() && (deep || known)) {
                         continue;
                     }
                     let Some(changed) = edited_line(&text, i, edit) else {
@@ -1269,20 +1467,14 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
                             }
                         },
                     );
-                    let label = format!("{fixture}: {edit:?} of line {i} of {part}");
                     let got = restored_as(&bad, log);
-                    let refused =
-                        matches!(&got, Restore::Refused(Answer::Damaged(p), _) if *p == part);
-                    let same = got == Restore::Answers(unedited.clone());
-                    let held = if is_stated {
-                        let restores = part.starts_with("data/")
-                            || (part == "ids" && edit == LineEdit::SwapNext && i > 0);
-                        if restores { same } else { refused }
-                    } else {
-                        refused || same
-                    };
-                    match (held, KNOWN_FAILURES.contains(&label.as_str())) {
-                        (false, false) => failed.push(format!("{label}: {got:?}")),
+                    edited += 1;
+                    let held = held(&got, (&part, &lines, i, edit), &unedited);
+                    if known {
+                        known_reached.insert(label.clone());
+                    }
+                    match (held, known) {
+                        (false, false) => failed.push(format!("{label}, {kind}: {got:?}")),
                         (true, true) => passed_known.push(label),
                         _ => {}
                     }
@@ -1291,6 +1483,7 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
                     }
                 }
             }
+            assert_reached(&format!("{fixture}: an edit of {part}"), edited, 1);
         }
     }
     assert!(failed.is_empty(), "against the contract: {failed:#?}");
@@ -1298,11 +1491,27 @@ fn every_edit_of_a_dump_text_part_is_refused_naming_it_or_restores_the_same() {
         passed_known.is_empty(),
         "known failures now hold: {passed_known:#?}"
     );
-    for kind in ["Garble row", "Drop first", "Drop row", "SwapNext row"] {
+    if every_case() {
+        let unreached: Vec<&&str> = KNOWN_FAILURES
+            .iter()
+            .filter(|l| !known_reached.contains(**l))
+            .collect();
+        assert!(
+            unreached.is_empty(),
+            "known failures never edited: {unreached:#?}"
+        );
+    }
+    for kind in [
+        "Garble row",
+        "Drop first",
+        "Drop row",
+        "SwapNext row",
+        "Rekey determined",
+    ] {
         let cell = ("dumped".to_owned(), kind.to_owned());
         assert!(reached.contains(&cell), "never reached: {cell:?}");
     }
-    for kind in ["Revalue row", "Copy row"] {
+    for kind in ["Rekey determined", "Rekey data", "Revalue row", "Copy row"] {
         let cell = ("granted".to_owned(), kind.to_owned());
         assert!(reached.contains(&cell), "never reached: {cell:?}");
     }
@@ -1475,8 +1684,13 @@ fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
         got
     };
     let pinned = PINNED.map(|(at, _)| at);
-    search::each_fatal_failure(&base, 11, FAILURES, &pinned, workload, |failed| {
+    let mut struck = Vec::new();
+    search::each_fatal_failure_at_every_name(&base, 11, FAILURES, &pinned, workload, |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
+        struck.push((
+            failed.struck.kind(),
+            failed.struck.path().unwrap_or_default().to_owned(),
+        ));
         if let Some((_, strikes)) = PINNED.iter().find(|(at, _)| *at == failed.at) {
             assert!(strikes(&failed.struck), "{label}: the pinned op moved");
         }
@@ -1506,6 +1720,36 @@ fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
         }
         assert_restored_or_absent(&failed.files, 11, &label);
     });
+    assert_publish_failed(&struck);
+}
+
+/// Assert `struck`, the kind and path of each failed op of a restore in order, holds each step of
+/// the restored file's publish after the rename out of its reserved directory: the two directory
+/// forces, the marker's and the reserved directory's removal and the parent's force, then the
+/// renames of the log and the file to their own names.
+fn assert_publish_failed(struck: &[(OpKind, String)]) {
+    let reserved = |p: &str| p.starts_with(&format!("{COPY}.partial-")) && p.ends_with(".creating");
+    let at = |kind: OpKind, path: &dyn Fn(&str) -> bool| {
+        struck
+            .iter()
+            .position(|(k, p)| *k == kind && path(p))
+            .unwrap_or_else(|| panic!("no failed {kind:?} of the publish: {struck:#?}"))
+    };
+    let marker = at(OpKind::Remove, &|p| p.ends_with(".creating/id"));
+    let parent = |p: &str| p.is_empty();
+    let steps = [
+        (OpKind::SyncDir, &reserved as &dyn Fn(&str) -> bool),
+        (OpKind::SyncDir, &parent),
+        (OpKind::Remove, &|p: &str| p.ends_with(".creating/id")),
+        (OpKind::RemoveDir, &reserved),
+        (OpKind::SyncDir, &parent),
+    ];
+    for (i, (kind, path)) in steps.iter().enumerate() {
+        let (k, p) = &struck[marker + i - 2];
+        assert!(*k == *kind && path(p), "publish step {i}: {k:?} of {p:?}");
+    }
+    at(OpKind::Rename, &|p| p == format!("{COPY}-log"));
+    at(OpKind::Rename, &|p| p == COPY);
 }
 
 #[test]

@@ -39,13 +39,72 @@ fn around_renames(kinds: &[OpKind], most: u64) -> BTreeSet<u64> {
     out
 }
 
-/// Returns the op numbers to fail: all of them under the profile `deep`, else
-/// [`around_renames`]'s.
-fn chosen_ops(kinds: &[OpKind], most: u64) -> Vec<u64> {
-    if every_case() {
-        return numbered(kinds, |_| true);
+/// How many ops of each kind a failure search fails, as [`count`] sizes it.
+const PER_KIND: u64 = 1;
+
+/// Returns each kind of `kinds` once.
+fn distinct(kinds: &[OpKind]) -> BTreeSet<OpKind> {
+    kinds.iter().copied().collect()
+}
+
+/// Returns the number of the first rename of `kinds`, or their count when none is.
+fn first_rename(kinds: &[OpKind]) -> usize {
+    kinds
+        .iter()
+        .position(|&k| k == OpKind::Rename)
+        .unwrap_or(kinds.len())
+}
+
+/// Returns whether an op of `kind` makes, removes, renames or forces a name.
+fn names(kind: OpKind) -> bool {
+    matches!(
+        kind,
+        OpKind::CreateNew
+            | OpKind::CreateDir
+            | OpKind::Remove
+            | OpKind::RemoveDir
+            | OpKind::Rename
+            | OpKind::SyncDir
+    )
+}
+
+/// Returns the op numbers a search at every name fails: every op that [`names`], and every op from
+/// the first rename on.
+fn every_named(kinds: &[OpKind]) -> BTreeSet<u64> {
+    let mut out: BTreeSet<u64> = numbered(kinds, names).into_iter().collect();
+    out.extend(first_rename(kinds) as u64..kinds.len() as u64);
+    out
+}
+
+/// Which failure runs a search makes and how it judges them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The workload finishes after every failure; the profile `deep` fails at every name.
+    Finishing,
+    /// The process may crash on a failure; the profile `deep` fails at every name.
+    Fatal,
+    /// The process may crash on a failure, and every profile fails at every name.
+    FatalAtEveryName,
+}
+
+impl Mode {
+    fn at_every_name(self) -> bool {
+        self == Mode::FatalAtEveryName || every_case()
     }
-    around_renames(kinds, most).into_iter().collect()
+}
+
+/// Returns the op numbers to fail: [`around_renames`]'s, and when `mode` fails at every name
+/// [`every_named`]'s and [`PER_KIND`] of each kind, evenly spread.
+fn chosen_ops(kinds: &[OpKind], most: u64, mode: Mode) -> Vec<u64> {
+    let mut out = around_renames(kinds, most);
+    if !mode.at_every_name() {
+        return out.into_iter().collect();
+    }
+    for kind in distinct(kinds) {
+        out.extend(spread(&numbered(kinds, |k| k == kind), count(PER_KIND)));
+    }
+    out.extend(every_named(kinds));
+    out.into_iter().collect()
 }
 
 /// Returns the op numbers to start a second run at: [`around_renames`]'s, and under the profile
@@ -100,21 +159,28 @@ pub fn each_failure<T>(
     workload: impl Fn(&SimRuntime) -> T,
     mut check: impl FnMut(Failed<T>),
 ) {
-    failure_runs(files, seed, most, &[], workload, false, |failed| {
-        check(Failed {
-            at: failed.at,
-            struck: failed.struck,
-            out: failed.out.expect("the workload finishes"),
-            files: failed.files,
-            dirs: failed.dirs,
-        });
-    });
+    failure_runs(
+        files,
+        seed,
+        most,
+        &[],
+        workload,
+        Mode::Finishing,
+        |failed| {
+            check(Failed {
+                at: failed.at,
+                struck: failed.struck,
+                out: failed.out.expect("the workload finishes"),
+                files: failed.files,
+                dirs: failed.dirs,
+            });
+        },
+    );
 }
 
 /// Search failures as [`each_failure`] does, accepting typed fatal I/O after the simulator's
 /// crash lifecycle. Return `None` instead of a workload result when the process crashes.
-/// Sample positions in the default profile, always with `also`, and search every eligible position
-/// under `deep`.
+/// Fail the positions [`chosen_ops`] samples, with the first, the last and `also`.
 pub fn each_fatal_failure<T>(
     files: &Files,
     seed: u64,
@@ -123,7 +189,28 @@ pub fn each_fatal_failure<T>(
     workload: impl Fn(&SimRuntime) -> T,
     check: impl FnMut(Failed<Option<T>>),
 ) {
-    failure_runs(files, seed, most, also, workload, true, check);
+    failure_runs(files, seed, most, also, workload, Mode::Fatal, check);
+}
+
+/// Search failures as [`each_fatal_failure`] does, failing in every profile each op that makes,
+/// removes, renames or forces a name and each op from the first rename on.
+pub fn each_fatal_failure_at_every_name<T>(
+    files: &Files,
+    seed: u64,
+    most: u64,
+    also: &[u64],
+    workload: impl Fn(&SimRuntime) -> T,
+    check: impl FnMut(Failed<Option<T>>),
+) {
+    failure_runs(
+        files,
+        seed,
+        most,
+        also,
+        workload,
+        Mode::FatalAtEveryName,
+        check,
+    );
 }
 
 fn failure_runs<T>(
@@ -132,17 +219,19 @@ fn failure_runs<T>(
     most: u64,
     also: &[u64],
     workload: impl Fn(&SimRuntime) -> T,
-    fatal: bool,
+    mode: Mode,
     mut check: impl FnMut(Failed<Option<T>>),
 ) {
+    let fatal = mode != Mode::Finishing;
     let kinds = eligible_ops(files, seed, &workload);
     assert!(!kinds.is_empty(), "the workload arms the search");
     let total = kinds.len();
-    let mut positions: BTreeSet<_> = chosen_ops(&kinds, most).into_iter().collect();
+    let mut positions: BTreeSet<_> = chosen_ops(&kinds, most, mode).into_iter().collect();
     if fatal {
         positions.extend([0, (total - 1) as u64]);
         positions.extend(also);
     }
+    let mut struck_at: BTreeMap<u64, OpKind> = BTreeMap::new();
     for at in positions {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
         let error = failure(kinds[at as usize]);
@@ -166,18 +255,41 @@ fn failure_runs<T>(
                 out = None;
             }
         }
-        let struck = sim
+        let failed = sim
             .numbered()
             .struck()
             .cloned()
             .unwrap_or_else(|| panic!("op {at} of {total} came up in the workload"));
+        struck_at.insert(at, failed.kind());
         check(Failed {
             at,
-            struck,
+            struck: failed,
             out,
             files: sim.files(),
             dirs: sim.dirs(),
         });
+    }
+    if !mode.at_every_name() {
+        return;
+    }
+    for at in every_named(&kinds) {
+        assert_eq!(
+            Some(&kinds[at as usize]),
+            struck_at.get(&at),
+            "op {at} of {total}, which a search at every name fails, failed as numbered"
+        );
+    }
+    for kind in distinct(&kinds) {
+        let present = numbered(&kinds, |k| k == kind);
+        let reached = present
+            .iter()
+            .filter(|at| struck_at.get(at) == Some(&kind))
+            .count();
+        assert_reached(
+            &format!("a failed {kind:?}"),
+            reached,
+            present.len().min(count(PER_KIND) as usize),
+        );
     }
 }
 
