@@ -1,0 +1,7 @@
+# A domain predicate reads only its value, so it reads no relation.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a domain predicate must not read a relation" } } }
+  module app
+  add module app
+  add type Blocked = { id: Key blocked, n: I64 }
+  add relation blocked : Blocked key id generate sequence
+  add type Code = new I64 where count(1 for b in blocked) == 0

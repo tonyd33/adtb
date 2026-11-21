@@ -110,8 +110,8 @@ pub fn entry(kind: RootKind) -> Entry {
             &[Volatile, Caller, Nondeterministic, File, Write],
         ),
         RootKind::Check => (Reads::Unchecked, PURE),
-        RootKind::Domain | RootKind::DeleteAction => (Reads::Value, PURE),
-        RootKind::Default => (
+        RootKind::DeleteAction => (Reads::Value, PURE),
+        RootKind::Domain | RootKind::Default => (
             Reads::Value,
             &[
                 Volatile,

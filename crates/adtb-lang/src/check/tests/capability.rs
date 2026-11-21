@@ -45,8 +45,17 @@ const REFUSED: [(RootKind, &[Reach], &str); 17] = [
     ),
     (
         RootKind::Domain,
-        ALL_REFUSED,
-        "syntax.md: checked as a constraint; ruling 2",
+        &[
+            Reach::Volatile,
+            Reach::Caller,
+            Reach::Nondeterministic,
+            Reach::File,
+            Reach::Transition,
+            Reach::Write,
+            Reach::Deref,
+            Reach::Relation,
+        ],
+        "constraints.md 2.3: reads only its value",
     ),
     (
         RootKind::DeleteAction,
@@ -335,7 +344,7 @@ fn every_root_is_refused_exactly_the_reaches_its_entry_forbids() {
     assert_eq!(REFUSALS, refusals);
 }
 
-const REFUSALS: usize = 198;
+const REFUSALS: usize = 206;
 
 #[test]
 fn an_at_body_never_writes() {

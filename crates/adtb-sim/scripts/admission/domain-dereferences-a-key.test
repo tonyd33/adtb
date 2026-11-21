@@ -1,0 +1,7 @@
+# A domain predicate reads only its value, so it dereferences no key.
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a domain predicate must not dereference a key" } } }
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Code = new I64 where users.key(1).name == ""
