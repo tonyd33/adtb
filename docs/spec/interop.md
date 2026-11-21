@@ -1094,8 +1094,8 @@ the name and version the schema declares
 whether it is `deterministic`; the engine trusts the declaration.
 
 Only deterministic functions may appear in a key, an index
-expression, a constraint, a row check, a stored view, a default or a
-computed field. A nondeterministic host function may appear only in
+expression, a constraint, a row check, a domain, a stored view, a
+default or a computed field. A nondeterministic host function may appear only in
 queries and in the values of writes; each call in the query's meaning
 is evaluated exactly once.
 
@@ -1124,7 +1124,9 @@ fails with `Fatal { reason: MissingFunction {..} }`
 A Wasm or host function is called once per batch of rows, not once per
 row. Its arguments arrive as one Arrow array per parameter, all of one
 length, in the mapping of §2.2 (value-level sums as dense unions); it
-returns one array of the result type and the same length.
+returns one array of the result type and the same length. A call
+whose result holds a value outside the range of its type
+([model.md §3](model.md#3-base-types)) faults with `FunctionFailed`.
 
 A Wasm module must export:
 
@@ -1202,7 +1204,7 @@ Names it defines are qualified by its module, `geo::cell`. An
 extension adds nothing a schema could not define itself: no new base
 types, index kinds or native code.
 
-Rulings: interop/udf/wasm, interop/udf/host-fn, interop/udf/purity/wasm-det, interop/udf/purity/declared, interop/udf/abi/arrow, interop/udf/identity/content-hash, interop/ext-pkg/catalog-module
+Rulings: interop/udf/wasm, interop/udf/host-fn, interop/udf/purity/wasm-det, interop/udf/purity/declared, interop/udf/abi/arrow, interop/udf/identity/content-hash, interop/ext-pkg/catalog-module, spec/out-of-domain/nearest
 
 ## 10. User-defined aggregates
 
@@ -1249,7 +1251,13 @@ collection.
 call Wasm functions; an aggregate is deterministic when every function
 it calls is.
 
-Rulings: interop/uda/fold-decl, spec/agg-params/one
+An aggregate may be called wherever a function may. What its `init`,
+`step`, `merge` and `finish` reach is judged as a function's body is,
+through every function they call: where a function that reads a
+volatile relation or `caller`, or calls a nondeterministic function, is
+refused, so is an aggregate whose parts do.
+
+Rulings: interop/uda/fold-decl, spec/agg-params/one, spec/capabilities/aggregate/as-function
 
 ## 11. Scalars, indexes and search
 

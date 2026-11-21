@@ -787,6 +787,11 @@ sum(x.total for x in (from o in orders where o.qty > 1 select o))  -- accepted: 
 sum(t for t in (from o in orders select o.total))                   -- refused
 ```
 
+A `fix` expression's value is the value of its `in` body at the
+fixpoint, and a generator over a `fix` is judged by that body alone: a
+variable the `fix` binds is accepted as a `Set T` parameter is, and an
+aggregate over it ranges over the elements of the fixpoint.
+
 ### 10.2 The aggregates
 
 | Aggregate | Element type | Result over a nonempty range | Result over a possibly empty range |
@@ -833,7 +838,7 @@ count(x for x in (from i in identities
                   select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
 ```
 
-Rulings: syntax/aggregate/comprehension, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, spec/key-preserving/params-and-groups
+Rulings: syntax/aggregate/comprehension, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, spec/key-preserving/params-and-groups, spec/sum-fix-source/in-body
 
 ## 11. Recursion
 

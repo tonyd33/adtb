@@ -63,11 +63,13 @@ type `Principal`: the principal the call runs for. It is an implicit
 parameter: no client sets it, it appears in no generated signature,
 and no argument can supply or override it. Its value comes from the
 session as §1.3 states; a schema function sees the `caller` of the
-call that evaluates it. `caller` is not in scope in constraints,
-stored views, defaults, generated fields or computed fields, and a
-schema function that reads `caller` may not be reached by an index, a
-constraint, a stored view, a default, a generated field or a computed
-field.
+call that evaluates it. `caller` is not in scope in constraints, row
+checks, domains, stored views, defaults, generated fields, computed
+fields, delete actions or migration scripts, and a schema function or
+aggregate that reads `caller` may not be reached by an index, a
+constraint, a row check, a domain, a stored view, a default, a
+generated field, a computed field, a delete action or a migration
+script. A migration has no caller.
 
 ```adt
 query my_invoices () -> Set Invoice =
@@ -97,7 +99,7 @@ always the authenticated role. The engine trusts the asserting role
 for the asserted value; it does not verify it. Each asserted call is
 audited with both the role and the asserted principal (§8.1).
 
-Rulings: security/principal/sum, security/assert/connection, security/assert/asserted, security/rights/deputy/caller-bound
+Rulings: security/principal/sum, security/assert/connection, security/assert/asserted, security/rights/deputy/caller-bound, spec/capabilities/caller-check/refused, spec/capabilities/caller-action/refused, spec/capabilities/caller-script/refused
 
 ## 2. Authentication
 

@@ -989,7 +989,9 @@ The write after `script` is any write of
 state the operators before it in the migration produce, at the schema
 they produce (§3.1). Its changes are checked against every constraint
 of the final schema at the end of the migration, the migration's
-statement boundary. A script changes no schema object.
+statement boundary. A script changes no schema object. It may not read
+`caller`, directly or through a function it calls: a migration has no
+caller ([security.md §1.2](security.md#12-caller)).
 Data fixes outside a migration are ad hoc writes or registered
 transactions ([applications.md §7](applications.md#7-the-ad-hoc-role)).
 
@@ -999,7 +1001,7 @@ inverse: `revert` of a migration containing one is refused. A restore
 replays schema operators and skips scripts, since the restored data
 is the state after them ([interop.md](interop.md#6-dump-and-restore)).
 
-Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source, spec/late-relation-state/type-state, spec/record-add-ctor/allowed, spec/evolution/split-inverse/every-product, spec/evolution/split-self-ref/product-set, spec/evolution/field-action/field-type-and-alter
+Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source, spec/late-relation-state/type-state, spec/record-add-ctor/allowed, spec/evolution/split-inverse/every-product, spec/evolution/split-self-ref/product-set, spec/evolution/field-action/field-type-and-alter, spec/capabilities/caller-script/refused
 
 ## 5. Inverses and revert
 

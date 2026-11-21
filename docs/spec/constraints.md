@@ -188,6 +188,12 @@ constructing a value, `Email("a@b")`, never faults on its domain. It
 is not part of the type that queries see: the type checker never assumes it, and a query
 that needs it tests it.
 
+The predicate reads only its value: it may not read a relation, a
+volatile relation, a transition relation (§6), a file or `caller`,
+follow a key, or call a function that is not declared deterministic,
+directly or through a function it calls. Such a domain is refused when
+declared.
+
 ### 2.4 Functional dependencies
 
 ```adt
@@ -244,7 +250,7 @@ constraint balanced =
 `Option` ([queries.md](queries.md#10-aggregates)). Admission of
 aggregates is in §5.2.
 
-Rulings: constraint/row-check, constraint/domain, constraint/refine/write-only, constraint/fd, constraint/exclusion, constraint/inclusion, constraint/at-least-one, constraint/cardinality, constraint/assertion, constraint/overlap/range-index, constraint/overlap/equality-prefix, btree/sum-field/ctor-field, spec/tiers/three-tiers, constraint/admit/reference-index/implied
+Rulings: constraint/row-check, constraint/domain, constraint/refine/write-only, constraint/fd, constraint/exclusion, constraint/inclusion, constraint/at-least-one, constraint/cardinality, constraint/assertion, constraint/overlap/range-index, constraint/overlap/equality-prefix, btree/sum-field/ctor-field, spec/tiers/three-tiers, constraint/admit/reference-index/implied, spec/capabilities/domain/value-only
 
 ## 3. Scope
 

@@ -630,7 +630,10 @@ Rulings: types/fault/reorder/ordered-guards, spec/tiers/three-tiers
 
 ### 10.3 Handling a fault
 
-`try e`, for `e : T`, has type `Result T Fault` and is total. `Fault`
+`try e`, for `e : T`, has type `Result T Fault`. It is total when every
+partial form in `e`, and in the bodies of the functions `e` calls,
+directly or through other functions, is a fault; an abort, `fail`, a rejection and
+divergence pass through it. `Fault`
 is the prelude sum of faults ([prelude.md](prelude.md#25-fault)).
 `try` catches faults only, never `fail`
 ([queries.md](queries.md#154-try)).
@@ -641,4 +644,4 @@ relation raws : Raw key id generate sequence
 from r in raws select try i32(r.n)       -- : Set (Result I32 Fault)
 ```
 
-Rulings: types/fault-forms/try, types/fault-forms/checked
+Rulings: types/fault-forms/try, types/fault-forms/checked, spec/totality/try/faults-only

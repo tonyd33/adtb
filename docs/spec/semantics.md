@@ -391,14 +391,16 @@ pattern compilation of §10.2 produce such a `case`.
   declaring `hide new constructors` (§9.6);
 - an `at` block ([derived.md §6.2](derived.md#62-naming-a-past-state)),
   which is rejected with `HistoryUnavailable` when its position is not
-  retained;
+  retained, and every `deref` in its body, whatever its key;
 - an application of a function whose body is not total.
 
-`try e` is total whatever `e` is. A total expression terminates and
+`try e` is total when every partial form in `e`, and in the bodies of
+the functions `e` calls, directly or through other functions, is a
+fault; an abort, `fail`, a rejection and divergence pass through it. A total expression terminates and
 denotes a value in every environment that its type admits; it never
 faults. Limits (§1.1) are outside totality.
 
-Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, model/ref-subtyping/ctor-set-subsumption, query/compile-time, lang/wildcard/scalars-only, lang/empty-agg/nonempty, types/join/lub-exact-fields, types/sub-records/exact, types/eq-types/all-first-order, lang/collection/set-agg/over-binders, lang/recursion/negation/stratified, types/fault-forms/checked, spec/fix/typing/least, spec/totality/add-period/partial, spec/totality/at-block/partial
+Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, model/ref-subtyping/ctor-set-subsumption, query/compile-time, lang/wildcard/scalars-only, lang/empty-agg/nonempty, types/join/lub-exact-fields, types/sub-records/exact, types/eq-types/all-first-order, lang/collection/set-agg/over-binders, lang/recursion/negation/stratified, types/fault-forms/checked, spec/fix/typing/least, spec/totality/add-period/partial, spec/totality/at-block/partial, spec/totality/try/faults-only, spec/capabilities/at-deref/past
 
 ## 4. Values and states
 
@@ -642,7 +644,9 @@ values, so `count(a for a in (from p in posts select p.author))` counts
 distinct authors. `sum` and `avg` refuse a generator whose source,
 after normalisation (§5.11), is a `select` comprehension that is not
 key-preserving: one whose select is not exactly the binder of a
-generator over a relation or a keyed set. A parameter of type `Set T`
+generator over a relation or a keyed set. A source that is a `fix` is
+judged by its `in` body, and a variable the `fix` binds is accepted.
+A parameter of type `Set T`
 is accepted
 ([queries.md §10.1](queries.md#101-aggregates-range-over-bindings)).
 

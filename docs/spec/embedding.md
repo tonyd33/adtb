@@ -683,7 +683,9 @@ the constructor relation's row type, as the wire's Arrow format maps it
 with the same types, nullable only for `Option` fields. A field filled
 by a key generator or a relation default may be left out, and is then
 filled as an insert fills it. A batch with any other schema is refused
-at push with `SchemaMismatch` and adds nothing. Text is normalized to
+at push with `SchemaMismatch` and adds nothing, and so is a batch
+holding a value outside its type's range
+([model.md §3](model.md#3-base-types)). Text is normalized to
 NFC and floats canonicalized as construction does
 ([model.md](model.md#1-values-and-types)), in process and on the wire
 alike.
@@ -728,7 +730,7 @@ client begins an interactive transaction, appends into temp relations
 declared in it, moves the rows with one ad hoc `transact` block that
 inserts from them, and commits ([wire.md](wire.md#73-append)).
 
-Rulings: interop/load/append-api
+Rulings: interop/load/append-api, spec/out-of-domain/nearest
 
 ## 10. Host functions
 

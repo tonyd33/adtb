@@ -232,8 +232,12 @@ A default applies only to the constructors it named when it was
 added. A constructor added later with a field `f` is not filled by an
 existing `default f = e`; an `add default` covers it.
 
-The default expression `e` is a literal, a constructor of literals, or
-`generate g`; it reads no relation and no other field. The values the
+The default expression `e` is a closed deterministic expression:
+literals, constructors, calls of functions, and `generate g`. It reads
+no relation and no other field of the row, follows no key, and reaches
+no file, no volatile relation, no `caller` and no function that is not declared
+deterministic, directly or through a function it calls; a default that
+does is refused when declared. The values the
 generators give are defined in [model.md](model.md#73-generated-keys):
 `sequence` gives values distinct from every value issued and every key
 any committed row of the relation has held; `uuidv7` gives distinct values and
@@ -294,7 +298,7 @@ relation has no default for it
 `add default r.f = e`, `add default r.C.f = e` and `drop default r.f`
 are operators ([evolution.md §4](evolution.md#4-operators)).
 
-Rulings: derived/defaults/on-relation, derived/defaults/backfill/separate, spec/evolution/translated-fields/same-ctor
+Rulings: derived/defaults/on-relation, derived/defaults/backfill/separate, spec/evolution/translated-fields/same-ctor, spec/capabilities/default/closed-deterministic
 
 ## 5. Computed fields
 
@@ -335,7 +339,9 @@ add index (lower(email)) in identities.EmailPass
 ```
 
 The expression must be deterministic
-([interop.md](interop.md#9-user-defined-functions)). The index is
+([interop.md](interop.md#9-user-defined-functions)) and reads only its
+row: it may not follow a key to another row, by a path or by `match`
+on a key. The index is
 maintained like any index; a query whose predicate or order matches the
 expression may use it.
 
@@ -354,7 +360,7 @@ row. `()` is the empty record. An element of another type is refused
 when the schema is checked, naming the element, its relation and its
 type.
 
-Rulings: derived/computed/virtual, derived/computed/expr-index
+Rulings: derived/computed/virtual, derived/computed/expr-index, spec/capabilities/index-deref/refused
 
 ## 6. Reading the past
 
@@ -402,8 +408,12 @@ An `at` block is an expression of set type, usable anywhere a set is,
 including beside reads of the current state in one query. It is
 partial ([typing.md §10.1](typing.md#101-total-and-partial-expressions)):
 it is evaluated only where its guards hold, as a faulting expression
-is. It reads
-only past state and writes nothing. No read-write transaction can make
+is. Every read in its body, a path through a key included, reads the
+past state, and it writes nothing. Every path through a key in the
+body is partial, whatever row the key comes from, since the target's
+past may be unavailable: a key that names no row of the past state
+faults with `NoSuchRow`
+([queries.md §7.2](queries.md#72-paths)). No read-write transaction can make
 a safe snapshot unsafe, so a past read never takes part in a
 serialization conflict
 ([transactions.md](transactions.md#1-serializability)).
@@ -446,7 +456,7 @@ Retained versions do not change the cost of reading current state:
 a read of the current state costs the same however long the retention
 window is.
 
-Rulings: derived/time-travel/window, derived/time-travel/basis/both, derived/time-travel/past-schema/as-written, derived/time-travel/retention/history-heap, spec/tiers/three-tiers, spec/totality/at-block/partial
+Rulings: derived/time-travel/window, derived/time-travel/basis/both, derived/time-travel/past-schema/as-written, derived/time-travel/retention/history-heap, spec/tiers/three-tiers, spec/totality/at-block/partial, spec/capabilities/at-deref/past
 
 ## 7. Valid time
 

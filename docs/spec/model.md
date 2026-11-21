@@ -275,11 +275,19 @@ Rulings: sum/overlap/facets-1n, sum/overlap/facets-optional
 Every other type is a sum, a record or a newtype over these. An
 extension cannot add an opaque scalar type.
 
+A value outside its type's range never enters a relation. A Wasm or
+host function that returns one faults with `FunctionFailed`
+([interop.md §9.4](interop.md#94-the-calling-convention)), an appended
+batch that holds one is refused at push with `SchemaMismatch`
+([embedding.md §9.1](embedding.md#91-loads)), and a client argument
+that holds one is refused as the protocol's type error, Error
+`Malformed` ([wire.md §4.2](wire.md#42-base-types)).
+
 `Bool` is not a base type. It is the prelude sum `type Bool ordered =
 False | True` ([prelude.md](prelude.md#21-bool)); `where` takes a
 `Bool`.
 
-Rulings: model/int, model/decimal, model/float, model/text, model/bytes, model/time, model/prelude-bool, types/int-widths/i64, types/int-widths/sized, interop/scalar/newtype-only
+Rulings: model/int, model/decimal, model/float, model/text, model/bytes, model/time, model/prelude-bool, types/int-widths/i64, types/int-widths/sized, interop/scalar/newtype-only, spec/out-of-domain/nearest
 
 ### 3.2 Integers
 
@@ -385,7 +393,7 @@ leap second is not representable. Precision is one microsecond.
 | Type | Representation and range |
 | --- | --- |
 | `Instant` | microseconds since 1970-01-01T00:00:00Z in an `I64` |
-| `Date` | a proleptic Gregorian date within the range of `Instant` |
+| `Date` | a proleptic Gregorian date some microsecond of which is an `Instant` |
 | `Time` | 00:00:00 to 23:59:59.999999 |
 | `DateTime` | a `Date` and a `Time` |
 | `ZonedDateTime` | a `DateTime` and an IANA zone name |
@@ -422,7 +430,7 @@ query due (now: Instant) -> Set ({ task: Key tasks }) =
   from t in tasks where t.due < now select { task: key t }
 ```
 
-Rulings: model/time, types/time-precision/micros, types/time-scale/smeared, types/durations/split, types/calendar-overflow/explicit, types/zoned/zoned, types/tzdb/catalog, types/now/param-only
+Rulings: model/time, types/time-precision/micros, types/time-scale/smeared, types/durations/split, types/calendar-overflow/explicit, types/zoned/zoned, types/tzdb/catalog, types/now/param-only, spec/date-range/some-microsecond
 
 ### 3.7 Conversions
 

@@ -183,8 +183,8 @@ A read of a volatile relation:
 An expression is volatile if it reads a volatile relation or calls a
 function whose body is volatile. A volatile expression must not occur:
 
-- in a constraint, a row check, a stored view, a default, a generated
-  or computed field, an index expression or a delete action;
+- in a constraint, a row check, a domain, a stored view, a default, a
+  generated or computed field, an index expression or a delete action;
 - in a feed's constructor list ([interop.md](interop.md#52-change-streams));
 - in any part of a write: its target, its predicate, the values it
   writes, or a value or condition the write depends on, including a
@@ -935,7 +935,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `SchemaRefused` | a schema operator was refused | [evolution.md](evolution.md#32-checks-at-apply) |
 | `Untranslatable` | a versioned document (interop §1.2) is read through a lossy step of translation | [interop.md](interop.md#12-versioned-documents), [evolution.md](evolution.md#71-serving-a-pinned-version) |
 | `BadInput` | a row of an external source did not convert or route, with no rejects relation | [interop.md](interop.md#45-rejects) |
-| `SchemaMismatch` | an appended Arrow batch does not have the constructor's schema | [embedding.md](embedding.md#9-bulk-append) |
+| `SchemaMismatch` | an appended Arrow batch does not have the constructor's schema, or holds a value outside its type's range | [embedding.md](embedding.md#9-bulk-append) |
 | `Cancelled` | the call was cancelled | §8.4 |
 | `Terminated` | the call's session was terminated | §8.4 |
 | `DeadlineExceeded` | the call's deadline passed | §8.3 |
@@ -2099,7 +2099,12 @@ and checks:
 3. Logic: every admitted constraint, run once as its denial query over
    the whole database; every nonempty result is a finding.
 
-A free page holds nothing, and neither check reads it as damage. A
+A free page holds nothing, and neither check reads its contents as
+damage. A write the page lost before it was freed is still a lost
+write: when the retained log proves it, `verify` and the scrub report a
+`StalePage` finding for the page, which quarantines nothing. A lost
+write that a later rewrite of the page from the log has repaired is
+not reported, on a free page or any other. A
 background scrub reads every page of the file over each
 `ScrubInterval`, so a latent checksum failure is found before a call
 needs the page. Scrub findings go to the same relation.
@@ -2135,8 +2140,8 @@ so, and `verify r` fails with `Quarantined`.
 A corrupted page, detected by checksum or by its log position on any
 read, quarantines what holds it: one constructor relation, or one
 index, which holds entries of every constructor of its set. A page no
-relation holds, such as one of the commit log or the catalog,
-quarantines the database: every call fails with `Fatal { reason:
+relation holds, such as one of the commit log or the catalog, other
+than a free page, quarantines the database: every call fails with `Fatal { reason:
 Quarantined {..} }`, and the file opens for `verify` and `dump` only.
 An open given migrations beyond the file's log, when the file's log can
 be read, is refused as [embedding.md §2.1](embedding.md#21-open) states. An
@@ -2251,7 +2256,7 @@ runs within the `VacuumBudget` setting, which bounds vacuum and the
 background scrub together. Progress is in `sys::vacuums`
 (§6.5).
 
-Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, spec/quarantine/verify/yes, spec/quarantine/unowned/database, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only, repl/dump-quarantined/prove-then-dump
+Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, spec/quarantine/verify/yes, spec/quarantine/unowned/database, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only, repl/dump-quarantined/prove-then-dump, spec/free-page-chain/reported
 
 ## 12. Releases and compatibility
 

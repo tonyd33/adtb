@@ -134,7 +134,7 @@ Its type and constructor ids are listed in
 | `InvalidSpan` | a span whose start is after its end |
 | `NegativeCount` | `top n` or `take n` with `n < 0` |
 | `NoSuchRow` | following a key by a path when the key names no row of its constructor set |
-| `FunctionFailed` | a Wasm function that traps or exhausts its fuel or memory, or a host function that returns an error or panics |
+| `FunctionFailed` | a Wasm function that traps or exhausts its fuel or memory, a host function that returns an error or panics, or either returning a value outside its result type's range |
 
 `try e` catches a fault and gives it as the `Err` of a `Result T
 Fault`; it does not catch `fail` or any other error
@@ -523,11 +523,12 @@ key-preserving. A `select` is key-preserving when it is exactly the
 binder of a generator over a relation or a keyed set: a relation
 variable, a constructor relation, a constructor set, a backlink or
 another key-preserving comprehension. The rule is syntactic: a
-generator over a `Set T` parameter is accepted.
+generator over a `Set T` parameter is accepted, and a source that is a
+`fix` is judged by its `in` body, a variable the `fix` binds accepted.
 `count(a for a in (from p in posts select p.author))` counts distinct
 authors ([queries.md](queries.md#10-aggregates)).
 
-Rulings: lang/empty-agg/nonempty, lang/collection/set-agg/over-binders
+Rulings: lang/empty-agg/nonempty, lang/collection/set-agg/over-binders, spec/sum-fix-source/in-body
 
 ## 8. Built-in forms
 

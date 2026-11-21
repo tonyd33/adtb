@@ -959,12 +959,13 @@ change set, checked set-at-a-time like any change set, and the stream
 ends with End carrying the row count and the commit position. With
 `txn`, the rows are one statement of that interactive transaction and
 End carries no commit position. An Append fails with `SchemaMismatch`
-(the schema is not the target's), `Denied` (no `insert`),
+(the schema is not the target's, or a batch holds a value outside its
+type's range), `Denied` (no `insert`),
 `KeyViolation` (two appended rows with one key), `Violated` (a
 unique or another constraint), `Serialization`, `Cancelled`, `DeadlineExceeded` or
 `Overloaded`; on any of them nothing is inserted.
 
-Rulings: net/adhoc/principal, surface/adhoc/scoped, interop/load/append-api, spec/txn/one-version/one-pair
+Rulings: net/adhoc/principal, surface/adhoc/scoped, interop/load/append-api, spec/txn/one-version/one-pair, spec/out-of-domain/nearest
 
 ## 8. Admission and overload
 
