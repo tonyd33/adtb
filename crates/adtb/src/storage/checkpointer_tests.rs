@@ -172,11 +172,32 @@ fn log_bytes(files: &Files, lsn: Lsn, n: usize) -> Vec<u8> {
     out
 }
 
+/// Returns the redo LSN of the checkpoint record at `lsn` in `files`'s log: it follows the record's
+/// tag byte and length word.
+fn redo_of(files: &Files, lsn: Lsn) -> Lsn {
+    let record = log_bytes(files, lsn, 13);
+    Lsn(u64::from_le_bytes(record[5..13].try_into().unwrap()))
+}
+
+/// Fail unless the redo LSN of each checkpoint of `checkpoints`, in log order, is at or past the
+/// checkpoint before it.
+fn assert_redo_past_the_one_before(files: &Files, checkpoints: &[Lsn], what: &str) {
+    for w in checkpoints.windows(2) {
+        let redo = redo_of(files, w[1]);
+        assert!(
+            redo >= w[0],
+            "{what}: checkpoint {:?} has redo {redo:?}, before the checkpoint {:?} before it",
+            w[1],
+            w[0]
+        );
+    }
+}
+
 /// Returns the LSN and the redo LSN of the checkpoint record the file header of `files` names, as
 /// an open chooses its copy: the whole copy with the higher sequence number. A copy is whole when
 /// it starts with the magic and its crc32c, seeded by the copy's number and taken with the
 /// checksum word at byte 8 zeroed, matches. The header holds its sequence number at byte 16 and
-/// the record's LSN at byte 64; the record holds its redo LSN after a tag byte and a length word.
+/// the record's LSN at byte 64.
 fn header_checkpoint(files: &Files) -> (Lsn, Lsn) {
     let copy = |n: u64| {
         let region = &PAGER.page(files, Pid(n))[..4096];
@@ -191,9 +212,7 @@ fn header_checkpoint(files: &Files) -> (Lsn, Lsn) {
         whole.then(|| (word(16), word(64)))
     };
     let (_, checkpoint) = copy(0).max(copy(1)).expect("a whole header copy");
-    let record = log_bytes(files, Lsn(checkpoint), 13);
-    let redo = Lsn(u64::from_le_bytes(record[5..13].try_into().unwrap()));
-    (Lsn(checkpoint), redo)
+    (Lsn(checkpoint), redo_of(files, Lsn(checkpoint)))
 }
 
 /// What an open of a database found: how many records recovery applied, whether it, `verify`
@@ -272,6 +291,14 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
             // Recovery starts at or past the checkpoint before the one the header names, so it
             // reads the threshold, the span of the named checkpoint's cycle and the log after it.
             let (named, redo) = header_checkpoint(&image);
+            let mut taken: Vec<Lsn> = load.samples.iter().map(|(_, c, _)| *c).collect();
+            taken.dedup();
+            taken.retain(|&c| c <= named);
+            assert_redo_past_the_one_before(
+                &image,
+                &taken,
+                &format!("atomic {atomic}: crash after event {at}"),
+            );
             let before = previous(&load.samples, named).expect("a checkpoint before the named one");
             let end = log_end_by(&load.acked, at, *last);
             assert!(
@@ -333,6 +360,7 @@ fn a_write_load_keeps_what_recovery_reads_and_the_dirty_page_table_bounded() {
 fn crash_in_a_cycle_loses_nothing(atomic: bool) {
     let (files, pages) = created(atomic);
     let wrote: Arc<Mutex<BTreeMap<Pid, u64>>> = Arc::default();
+    let taken: Arc<Mutex<Vec<Lsn>>> = Arc::default();
     let start: Arc<Mutex<Option<Files>>> = Arc::default();
     let mut phases = [0; 3];
     each_crash_image(
@@ -348,13 +376,24 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
             rt.arm(Match::kinds([]));
             let mut io = rt.io();
             common::sleep(rt, &mut io, Duration::from_secs(1));
-            assert!(
-                Probe::of(&pager).checkpoint() > before,
-                "atomic {atomic}: the checkpointer ran"
-            );
+            let after = Probe::of(&pager).checkpoint();
+            assert!(after > before, "atomic {atomic}: the checkpointer ran");
+            let sampled = load.samples.iter().map(|(_, c, _)| *c);
+            let mut checkpoints: Vec<Lsn> = [before].into_iter().chain(sampled).collect();
+            checkpoints.push(after);
+            checkpoints.dedup();
+            *taken.lock().unwrap() = checkpoints;
             Vec::new()
         },
         |at, image| {
+            let (named, _) = header_checkpoint(&image);
+            let mut durable = taken.lock().unwrap().clone();
+            durable.retain(|&c| c <= named);
+            assert_redo_past_the_one_before(
+                &image,
+                &durable,
+                &format!("atomic {atomic}: crash after event {at}"),
+            );
             let first = start
                 .lock()
                 .unwrap()
