@@ -13,11 +13,11 @@ scribble large app::notes Note
 
 probe holding verify
 ----
-Orphan { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
-Orphan { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
-Orphan { id: verify_findings.key(3), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
-Orphan { id: verify_findings.key(4), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
-Orphan { id: verify_findings.key(5), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1026), ctor: constructors.key(1028), where: "heap app::counts Count slot 0: holds no version of the entry's key" }
-Structure { id: verify_findings.key(6), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, where: "heap app::notes Note: Structure(\"heap 247: has 0 fixed slots of width 8080\")" }
-Structure { id: verify_findings.key(7), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, where: "large app::notes Note: Structure(\"large-value store 1: has 0 fixed slots of width 5168\")" }
-Structure { id: verify_findings.key(8), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, where: "heap app::counts Count: Structure(\"heap 248: has 1 line pointers and tuples from 12648488\")" }
+Orphan { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
+Orphan { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
+Orphan { id: verify_findings.key(3), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
+Orphan { id: verify_findings.key(4), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
+Orphan { id: verify_findings.key(5), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, index: indexes.key(1026), ctor: constructors.key(1028), where: "heap app::counts Count slot 0: holds no version of the entry's key" }
+Structure { id: verify_findings.key(6), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "heap app::notes Note: Structure(\"heap 247: has 0 fixed slots of width 8080\")" }
+Structure { id: verify_findings.key(7), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "large app::notes Note: Structure(\"large-value store 1: has 0 fixed slots of width 5168\")" }
+Structure { id: verify_findings.key(8), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "heap app::counts Count: Structure(\"heap 248: has 1 line pointers and tuples from 12648488\")" }

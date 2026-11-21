@@ -613,9 +613,9 @@ impl Catalog {
     /// Create the engine's structures and rows in a file whose root page `pid` names the commit
     /// log of `txns` and nothing else, and name them in the root page.
     ///
-    /// Commit the transaction that writes the rows, then name the roots heap in the root page. A
-    /// failure of either fails the call; an open that finds no roots heap named frees what this
-    /// made and fills the file again.
+    /// Commit the transaction that writes the rows and name the roots heap in the root page in
+    /// the log batch of its commit record, the create's commit point. A failure fails the call; an
+    /// open that finds no roots heap named frees what this made and fills the file again.
     fn fill<R: Runtime>(
         pager: &Pager<R>,
         txns: &Transactions<R>,
@@ -683,14 +683,14 @@ impl Catalog {
                 return Err(e);
             }
         };
-        txns.commit(pager, begun)?;
-        let lsn = update_root(pager, pid, |r| {
-            r.large = (large.id(), large.root());
-            r.roots = named;
-            r.next_heap = catalog.next_heap;
-            catalog.kept.name(r);
+        txns.commit_changing(pager, begun, pid, |p| {
+            let mut root = Root::read(p);
+            root.large = (large.id(), large.root());
+            root.roots = named;
+            root.next_heap = catalog.next_heap;
+            catalog.kept.name(&mut root);
+            root.write(p);
         })?;
-        pager.wait_durable(lsn);
         Ok(catalog)
     }
 

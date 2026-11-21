@@ -275,7 +275,9 @@ record. A transaction, read-only included, is acknowledged only once
 the log is durable past its own commit record and past the commit
 record of every commit its snapshot reads; `Taken::upto` gives the
 last of those for a snapshot. Every commit, a catalog transaction's
-included, goes through `Transactions::commit_with`: under the
+included, goes through `Transactions::commit_with`, or
+`Transactions::commit_changing`, which logs a change of one more page
+in the batch of the commit record, on the same path: under the
 serializer lock it records the commit and publishes its position, and
 out of it waits for that durability before it returns the
 `DurableCommit` that acknowledges the commit, which nothing else makes.

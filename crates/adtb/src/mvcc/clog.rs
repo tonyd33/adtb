@@ -575,16 +575,20 @@ impl CommitLog {
     }
 
     /// Commit `x` as [`CommitLog::commit`] does, its commit record recording `time`, in
-    /// nanoseconds since the Unix epoch.
+    /// nanoseconds since the Unix epoch, and the pages `also` names changed through its function
+    /// in the same batch.
     pub fn commit_at<R: Runtime>(
         &self,
         pager: &Pager<R>,
         x: Xid,
         time: u64,
+        (pids, f): (&[Pid], impl FnOnce(&mut [&mut [u8]])),
     ) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
-        pager.commit_at(x.0, time, &[pid], |p| {
+        let pages: Vec<Pid> = std::iter::once(pid).chain(pids.iter().copied()).collect();
+        pager.commit_at(x.0, time, &pages, |p| {
             set_status(p[0], i, Status::Committed);
+            f(&mut p[1..]);
         })
     }
 

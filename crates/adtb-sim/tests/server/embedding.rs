@@ -4,13 +4,13 @@
 use adtb_simkit::api;
 use adtb_simkit::open;
 use adtb_testkit::process::{once, run};
-use adtb_testkit::seeds;
+use adtb_testkit::profile::every_case;
 
 use std::time::Duration;
 
 use adtb::batch::{Datum, Type};
 use adtb::key::{Scalar, Value as Stored};
-use adtb::runtime::{Clock, Done, Entropy, Io, Op, Runtime, Threads};
+use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::{
     CallOptions, Called, CancelToken, Database, Error, Field, LoadOptions, Log, OpenOptions,
     Registration, RejectReason, TxnCallOptions, TxnOptions, Value,
@@ -47,7 +47,11 @@ const CARDS: u32 = 3;
 const NAMES: u32 = 4;
 const SIGN_UP: u32 = 5;
 
-const SEEDS: std::ops::Range<u64> = 0..6;
+const RACE_SEED: u64 = 0;
+/// The turns between two cancellations of a race's sweep under the default profile.
+const RACE_STRIDE: u64 = 25;
+/// The turns within which a raced write commits.
+const RACE_TURNS: u64 = 20_000;
 
 fn log() -> Log {
     Log::new([SHOP])
@@ -222,18 +226,17 @@ fn a_transaction_whose_deadline_has_passed_refuses_its_calls() {
     });
 }
 
-/// Run `write` in a simulation seeded `seed` with a token another thread cancels after as many
-/// turns of the scheduler as the seed draws, and check that the write either commits, its row present then and after a
-/// reopen, or fails with `Cancelled` and has no effect. Returns whether it committed.
+/// Run `write` with a token another thread cancels after `turns` turns of the scheduler, and
+/// check that the write either commits, its row present then and after a reopen, or fails with
+/// `Cancelled` and has no effect. Returns whether it committed.
 fn racing(
-    seed: u64,
-    write: impl Fn(&Database<SimRuntime>, &CallOptions) -> Result<(), Error>,
+    turns: u64,
+    write: &impl Fn(&Database<SimRuntime>, &CallOptions) -> Result<(), Error>,
 ) -> bool {
-    let mut sim = Sim::new(seed, Config::default());
+    let mut sim = Sim::new(RACE_SEED, Config::default());
     let returned = run(&mut sim, |rt| {
         let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let tok = CancelToken::new();
-        let turns = rt.next_u64() % 4000;
         let canceller = {
             let (rt2, tok) = (rt.clone(), tok.clone());
             rt.spawn("canceller", move || {
@@ -247,10 +250,10 @@ fn racing(
         rt.join(canceller);
         let present = names(&db) == vec![r#""ann""#];
         match &got {
-            Ok(()) => assert!(present, "seed {seed}: a write that returned committed"),
+            Ok(()) => assert!(present, "turn {turns}: a write that returned committed"),
             Err(e) => {
-                assert_eq!(&RejectReason::Cancelled, reason(e), "seed {seed}");
-                assert!(!present, "seed {seed}: a cancelled write has no effect");
+                assert_eq!(&RejectReason::Cancelled, reason(e), "turn {turns}");
+                assert!(!present, "turn {turns}: a cancelled write has no effect");
             }
         }
         db.close().expect("close");
@@ -259,48 +262,43 @@ fn racing(
     let present = run(&mut sim, |rt| {
         names(&open::opened(&rt, open::FILE, &log(), &with_app())) == vec![r#""ann""#]
     });
-    assert_eq!(returned, present, "seed {seed}: the reopened file agrees");
+    assert_eq!(returned, present, "turn {turns}: the reopened file agrees");
     returned
 }
 
-/// Check that the sweep saw both outcomes of a race, `committed` of each seed's.
-fn both(committed: &[bool]) {
-    if committed.len() >= SEEDS.count() {
+/// Race `write` against a cancellation after 0 turns, then after each `RACE_STRIDE` more, every
+/// turn under the deep profile, until the write commits. Check that the cancellation before its
+/// first turn cancels it.
+fn swept(write: impl Fn(&Database<SimRuntime>, &CallOptions) -> Result<(), Error>) {
+    let stride = if every_case() { 1 } else { RACE_STRIDE };
+    let mut turns = 0;
+    while !racing(turns, &write) {
+        turns += stride;
         assert!(
-            committed.contains(&true),
-            "no write committed: {committed:?}"
-        );
-        assert!(
-            committed.contains(&false),
-            "no write was cancelled: {committed:?}"
+            turns <= RACE_TURNS,
+            "the write did not commit within {RACE_TURNS} turns"
         );
     }
+    assert_ne!(
+        0, turns,
+        "a write cancelled before its first turn committed"
+    );
 }
 
 #[test]
 fn a_cancellation_racing_a_commit_either_commits_or_has_no_effect() {
-    let committed: Vec<bool> = seeds::sweep(SEEDS)
-        .map(|seed| {
-            racing(seed, |db, opts| {
-                db.query_text(r#"insert customers { name: "ann" }"#, &[], opts)
-                    .map(drop)
-            })
-        })
-        .collect();
-    both(&committed);
+    swept(|db, opts| {
+        db.query_text(r#"insert customers { name: "ann" }"#, &[], opts)
+            .map(drop)
+    });
 }
 
 #[test]
 fn a_cancellation_racing_a_registered_transaction_either_commits_or_has_no_effect() {
-    let committed: Vec<bool> = seeds::sweep(SEEDS)
-        .map(|seed| {
-            racing(seed, |db, opts| {
-                let app = db.registered("app").expect("app binds");
-                app.call(SIGN_UP, &[Value::text("ann")], opts).map(drop)
-            })
-        })
-        .collect();
-    both(&committed);
+    swept(|db, opts| {
+        let app = db.registered("app").expect("app binds");
+        app.call(SIGN_UP, &[Value::text("ann")], opts).map(drop)
+    });
 }
 
 #[test]

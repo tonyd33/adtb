@@ -315,6 +315,29 @@ impl<R: Runtime> Transactions<R> {
         self.commit_with(pager, Some(begun), None, |_| Ok(()), |_| {})
     }
 
+    /// Commit the transaction of `begun` as [`Transactions::commit`] does, changing the page
+    /// `pid` through `also` in the log batch of its commit record: the change is durable exactly
+    /// when the commit is.
+    ///
+    /// Fail as [`Transactions::commit`] does, changing nothing. A damaged `pid` refuses the whole
+    /// database, as a damaged status page does, and fails the commit with [`Error::Corrupt`].
+    pub fn commit_changing(
+        &self,
+        pager: &Pager<R>,
+        begun: Begun,
+        pid: Pid,
+        also: impl FnOnce(&mut [u8]),
+    ) -> Result<DurableCommit, Error> {
+        self.commit_also(
+            pager,
+            Some(begun),
+            None,
+            |_| Ok(()),
+            |_| {},
+            (&[pid], |p: &mut [&mut [u8]]| also(&mut *p[0])),
+        )
+    }
+
     /// Commit a transaction: a writer by `begun`, a reader by `begun` of `None`, whose snapshot
     /// reads the commits up to `read`. Under the serializer's lock, run `check`, then record the
     /// writer's commit with its time when history is kept, publish its position, and run `then`.
@@ -334,11 +357,25 @@ impl<R: Runtime> Transactions<R> {
         check: impl FnOnce(&mut Serializer) -> Result<(), E>,
         then: impl FnOnce(&mut Serializer),
     ) -> Result<DurableCommit, E> {
+        self.commit_also(pager, begun, read, check, then, (&[], |_| {}))
+    }
+
+    /// Commit as [`Transactions::commit_with`] does, a writer's commit record logged in one batch
+    /// with the change `also` makes to its pages.
+    fn commit_also<E: From<Error>>(
+        &self,
+        pager: &Pager<R>,
+        begun: Option<Begun>,
+        read: Option<Lsn>,
+        check: impl FnOnce(&mut Serializer) -> Result<(), E>,
+        then: impl FnOnce(&mut Serializer),
+        also: (&[Pid], impl FnOnce(&mut [&mut [u8]])),
+    ) -> Result<DurableCommit, E> {
         let mut ser = self.ser.lock(&self.rt);
         let checked = check(&mut ser);
         let x = begun.map(|b| self.end(b));
         let recorded = checked.and_then(|()| {
-            x.map(|x| self.record(pager, x))
+            x.map(|x| self.record(pager, x, also))
                 .transpose()
                 .map_err(E::from)
         });
@@ -361,10 +398,15 @@ impl<R: Runtime> Transactions<R> {
 
     /// Record the commit of the running `x` and publish it. Returns the LSN of its commit
     /// record.
-    fn record(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
+    fn record(
+        &self,
+        pager: &Pager<R>,
+        x: Xid,
+        also: (&[Pid], impl FnOnce(&mut [&mut [u8]])),
+    ) -> Result<Lsn, Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
-        let lsn = self.commit_running(&mut st, pager, x)?;
+        let lsn = self.commit_running(&mut st, pager, x, also)?;
         self.publish(&st, pager, x, lsn);
         Ok(lsn)
     }
@@ -390,12 +432,18 @@ impl<R: Runtime> Transactions<R> {
         aborted.map(drop)
     }
 
-    fn commit_running(&self, st: &mut State, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
+    fn commit_running(
+        &self,
+        st: &mut State,
+        pager: &Pager<R>,
+        x: Xid,
+        also: (&[Pid], impl FnOnce(&mut [&mut [u8]])),
+    ) -> Result<Lsn, Error> {
         let time = (nanos(self.rt.wall()) / 1000 * 1000).max(st.last_time);
         if let Some(past) = self.history.get() {
             past.record_commit(pager, x, time).map_err(Error::History)?;
         }
-        let committed = self.clog.read(&self.rt).commit_at(pager, x, time);
+        let committed = self.clog.read(&self.rt).commit_at(pager, x, time, also);
         let lsn = self.checked(committed)?;
         st.running.remove(&x);
         st.last_commit = Some(lsn);

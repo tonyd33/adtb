@@ -55,12 +55,13 @@ Postconditions:
   every write state in `ctor_states` and `value_states`. Every other
   relation is empty.
 - `create` sets the file header's catalog root before its transaction
-  begins, and names the roots heap in the root page once that
-  transaction commits. `open` of a file whose header names no catalog
-  frees every page and creates the catalog again; `open` of one whose
-  root page names no roots heap frees every page but the commit log's
-  and the root page, and creates the catalog again with the same commit
-  log, so no transaction id is assigned twice.
+  begins, and names the roots heap in the root page in the log batch of
+  that transaction's commit record: the create's commit point. `open`
+  of a file whose header names no catalog frees every page and creates
+  the catalog again; `open` of one whose root page names no roots heap
+  frees every page but the commit log's and the root page, and creates
+  the catalog again with the same commit log, so no transaction id is
+  assigned twice.
 - `migrate` applies the migration numbered one past the source's
   version as one transaction. It maps the rows of every relation whose
   constructors, fields or indexes the migration changes through each

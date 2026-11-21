@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::catalog::root::Root;
 use crate::catalog::{Catalog, Error, KeptField, KeptRow, applied, declared};
 use crate::key::Value;
-use crate::mvcc::{Scope, Transactions};
+use crate::mvcc::{CommitLog, Scope, Transactions, Xid};
 use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid, Quarantine};
 use crate::verify::{self, Finding, Problem, Report};
 use adtb_lang::types::RelId;
@@ -201,7 +202,7 @@ fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
     let (sim, start) = created(seed);
     let recording = sim.recording();
     let whole = recording.images(recording.len(), 1, seed).swap_remove(0);
-    let (_, first) = reopened_commits(seed, whole);
+    let (_, _, first) = reopened_commits(seed, whole);
     let [first] = first[..] else {
         panic!("one commit creates the catalog: {first:?}")
     };
@@ -216,27 +217,39 @@ fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
     } else {
         spread(&flushes, CREATE_CRASHES)
     };
-    let mut found = BTreeSet::new();
-    let mut redone = Vec::new();
+    let mut sides = BTreeSet::new();
+    let mut assigned = 0;
     for at in flushes {
         let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
-        let (named, commits) = reopened_commits(seed + at as u64, files);
-        found.insert(named);
-        if named && commits != [first] {
-            redone.push((at, commits));
+        let (side, reserved, commits) = reopened_commits(seed + at as u64, files);
+        sides.insert(side);
+        if side == Side::Committed {
+            assert_eq!(vec![first], commits, "a crash at {at}");
+            continue;
+        }
+        let [x] = commits[..] else {
+            panic!("the create redone after a crash at {at}, {side:?}, commits {commits:?}")
+        };
+        assert!(
+            x >= reserved,
+            "the create redone after a crash at {at} commits {x}, below the reserved {reserved}"
+        );
+        if reserved > first {
+            assert!(
+                x > first,
+                "the create redone after a crash at {at} commits {x}"
+            );
+            assigned += 1;
         }
     }
-    assert_eq!(BTreeSet::from([false, true]), found);
-    assert!(
-        !redone.is_empty(),
-        "no crash point leaves a named catalog whose create commits under a new id"
+    assert_eq!(
+        BTreeSet::from([Side::Unnamed, Side::Uncommitted, Side::Committed]),
+        sides
     );
-    for (at, commits) in redone {
-        assert!(
-            commits.iter().all(|&x| x > first),
-            "the create redone after a crash at {at} commits {commits:?}, not after {first}"
-        );
-    }
+    assert!(
+        assigned > 0,
+        "no crash before the commit point follows the create's begin"
+    );
 }
 
 #[test]
@@ -441,17 +454,44 @@ fn an_unfinished_migration_over_a_damaged_page_is_freed_once_the_page_reads() {
     panic!("no crash point leaves a migration to free");
 }
 
-/// Returns whether the header of the file `files` named a catalog, and the transaction of every
-/// commit record its log holds once the catalog opens.
-fn reopened_commits(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Vec<u64>) {
+/// Where a crash during a create left the file, as its recovered header and root page say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Side {
+    /// The header names no catalog.
+    Unnamed,
+    /// The header names a root page that names no roots heap.
+    Uncommitted,
+    /// The root page names the roots heap.
+    Committed,
+}
+
+/// Returns where the file `files` recovers to, the first id its commit log had not reserved before
+/// the catalog opens, and the transaction of every commit record its log holds once it opens.
+fn reopened_commits(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (Side, u64, Vec<u64>) {
     let mut sim = Sim::with_files(seed, crash_config(), files);
-    let mut out = (false, Vec::new());
+    let mut out = (Side::Unnamed, Xid::FIRST.0, Vec::new());
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
-        let found = pager.catalog_root() != Pid(0);
+        let pid = pager.catalog_root();
+        let (side, reserved) = if pid == Pid(0) {
+            (Side::Unnamed, Xid::FIRST)
+        } else {
+            let root = Root::read(&pager.read(pid).expect("the root page"));
+            let clog = CommitLog::load(&pager, root.commit_log).expect("the commit log");
+            let side = if root.roots.1 == Pid(0) {
+                Side::Uncommitted
+            } else {
+                Side::Committed
+            };
+            (side, clog.reserved())
+        };
         let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
         check_whole(&pager, &catalog, &txns);
-        out = (found, verify_catalog(&pager, &catalog, &txns).commits);
+        out = (
+            side,
+            reserved.0,
+            verify_catalog(&pager, &catalog, &txns).commits,
+        );
     });
     out
 }
@@ -556,7 +596,7 @@ fn refused_catalog(
         let opened = Catalog::open(rt, &pager).map(drop);
         let root = pager.catalog_root();
         let changing = (root != Pid(0))
-            .then(|| super::root::Root::read(&pager.read(root).expect("the root page")).changing());
+            .then(|| Root::read(&pager.read(root).expect("the root page")).changing());
         out = Some((
             opened,
             changing,
@@ -659,9 +699,9 @@ fn naming_the_counters_over_a_crashed_naming_the_open_kept_leaves_its_page_to_th
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
         let (mut catalog, _txns) = Catalog::open(rt, &pager).expect("the catalog opens");
-        let before = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        let before = Root::read(&pager.read(catalog.root()).expect("the root"));
         let named = catalog.counters(&pager).expect("the counters are named");
-        let after = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        let after = Root::read(&pager.read(catalog.root()).expect("the root"));
         kept = Some((
             before.changing(),
             after.changing(),
@@ -680,7 +720,7 @@ fn naming_the_counters_over_a_crashed_naming_the_open_kept_leaves_its_page_to_th
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
         let (catalog, _txns) = Catalog::open(rt, &pager).expect("the catalog opens");
-        let root = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        let root = Root::read(&pager.read(catalog.root()).expect("the root"));
         let allocated = pager.allocated().expect("the bitmaps");
         freed = Some((
             root.changing(),
@@ -715,7 +755,7 @@ fn a_migration_over_a_kept_change_applies_and_frees_what_it_left() {
         drop(naming);
         let orphan = crate::write::full_counter_page(&pager, 0).expect("a page of counters");
         let migrated = catalog.migrate(&pager, &txns, RUNNING).map(drop);
-        let root = super::root::Root::read(&pager.read(catalog.root()).expect("the root"));
+        let root = Root::read(&pager.read(catalog.root()).expect("the root"));
         let allocated = pager.allocated().expect("the bitmaps");
         got = Some((
             migrated,
