@@ -580,7 +580,8 @@ fn the_total_budget_promotes_the_largest_holders_locks() {
         total: 4,
         ..Limits::default()
     };
-    let mut s = Serializer::new(limits);
+    let mut s = Serializer::default();
+    s.limit(limits);
     let (big, small, w) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3));
     s.read_tuple(small, HEAP, tid(9, 1)).unwrap();
     for slot in 0..3 {

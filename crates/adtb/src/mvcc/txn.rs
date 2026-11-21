@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLockReadGuard, Weak};
 use std::time::{Duration, SystemTime};
 
-use adtb_sys::lock::{Lock, RwLock};
+use adtb_sys::lock::{Lock, Ranked, RwLock};
 
 use crate::btree;
 use crate::faults::{self, Step};
@@ -11,7 +11,9 @@ use crate::runtime::Runtime;
 use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position};
 
 use super::past::{Commit, Marker, Past};
-use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, StatusError, Xid};
+use super::{
+    CommitLog, Error, Holds, Scope, Serializer, Snapshot, SnapshotId, Status, StatusError, Xid,
+};
 
 /// The number of ids one xid allocation record reserves.
 pub const RESERVATION: u64 = 1024;
@@ -137,6 +139,8 @@ pub struct Shared<R: Runtime> {
     rt: R,
     pager: Pager<R>,
     clog: RwLock<CommitLog>,
+    /// Taken by every commit, around its record and its publication.
+    ser: Arc<Ranked<Serializer>>,
     state: Lock<State>,
     history: OnceLock<Past>,
     /// The first damage found keeping a marker; every read of the past fails with it after.
@@ -234,6 +238,7 @@ impl<R: Runtime> Transactions<R> {
             rt,
             pager: pager.clone(),
             clog: RwLock::new(clog),
+            ser: Arc::new(Ranked::new(crate::ranks::SERIALIZER, Serializer::default())),
             state: Lock::new(state),
             history: OnceLock::new(),
             lost: OnceLock::new(),
@@ -250,6 +255,11 @@ impl<R: Runtime> Transactions<R> {
     /// Returns the commit log, held shared until the guard drops.
     pub fn commit_log(&self) -> RwLockReadGuard<'_, CommitLog> {
         self.clog.read(&self.rt)
+    }
+
+    /// Returns the serializer, whose lock every commit takes.
+    pub(crate) fn serializer(&self) -> &Arc<Ranked<Serializer>> {
+        &self.ser
     }
 
     /// Returns the id the next transaction gets.
@@ -299,23 +309,85 @@ impl<R: Runtime> Transactions<R> {
         })
     }
 
-    /// Commit the transaction of `begun` and record its time when history is kept. Returns its
-    /// commit, at the LSN of its commit record.
+    /// Commit the transaction of `begun` as [`Transactions::commit_with`] does, with nothing of
+    /// its own to check or end in the serializer.
+    pub fn commit(&self, pager: &Pager<R>, begun: Begun) -> Result<DurableCommit, Error> {
+        self.commit_with(pager, Some(begun), None, |_| Ok(()), |_| {})
+    }
+
+    /// Commit a transaction: a writer by `begun`, a reader by `begun` of `None`, whose snapshot
+    /// reads the commits up to `read`. Under the serializer's lock, run `check`, then record the
+    /// writer's commit with its time when history is kept, publish its position, and run `then`.
+    /// Out of the lock, return once the log is durable past the commit record and `read`, or,
+    /// for a reader that read no commit, past the log's durable end.
     ///
-    /// Fail if the database is quarantined or the record of the window is damaged. The
-    /// transaction is then aborted as a dropped guard aborts it, and the commit's failure
-    /// returned.
+    /// Fail with the failure of `check`, or with the commit's when the database is quarantined
+    /// or the record of the window is damaged. The writer is then aborted, and the failure of
+    /// its abort record returned in place of either when it fails.
     ///
     /// Panic if `begun` did not begin in these transactions.
-    pub fn commit(&self, pager: &Pager<R>, begun: Begun) -> Result<DurableCommit, Error> {
+    pub fn commit_with<E: From<Error>>(
+        &self,
+        pager: &Pager<R>,
+        begun: Option<Begun>,
+        read: Option<Lsn>,
+        check: impl FnOnce(&mut Serializer) -> Result<(), E>,
+        then: impl FnOnce(&mut Serializer),
+    ) -> Result<DurableCommit, E> {
+        let mut ser = self.ser.lock(&self.rt);
+        let checked = check(&mut ser);
+        let x = begun.map(|b| self.end(b));
+        let recorded = checked.and_then(|()| {
+            x.map(|x| self.record(pager, x))
+                .transpose()
+                .map_err(E::from)
+        });
+        let own = match recorded {
+            Ok(own) => own,
+            Err(e) => {
+                let aborted = x.map_or(Ok(()), |x| self.abandon_running(pager, x));
+                return Err(aborted.map_or_else(E::from, |()| e));
+            }
+        };
+        then(&mut ser);
+        drop(ser);
+        if own.is_some() && self.history.get().is_some() {
+            pager.flush_below(pager.appended());
+        }
+        let lsn = own.max(read).unwrap_or_else(|| pager.durable());
+        pager.wait_durable(lsn);
+        Ok(DurableCommit { lsn })
+    }
+
+    /// Record the commit of the running `x` and publish it. Returns the LSN of its commit
+    /// record.
+    fn record(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
+        self.admit()?;
+        let mut st = self.state.lock(&self.rt);
+        let lsn = self.commit_running(&mut st, pager, x)?;
+        self.publish(&st, pager, x, lsn);
+        Ok(lsn)
+    }
+
+    /// Abort the transaction of `begun` after its work failed, as a failed commit is aborted:
+    /// count a failed record. Returns the record's failure, for its caller to return in place of
+    /// the work's.
+    ///
+    /// Panic if `begun` did not begin in these transactions.
+    pub fn abandon_failed(&self, pager: &Pager<R>, begun: Begun) -> Result<(), Error> {
         let x = self.end(begun);
+        self.abandon_running(pager, x)
+    }
+
+    /// Abort the running `x`, counting a failed record. Returns the record's failure.
+    fn abandon_running(&self, pager: &Pager<R>, x: Xid) -> Result<(), Error> {
         let admitted = self.admit();
         let mut st = self.state.lock(&self.rt);
-        let committed = admitted.and_then(|()| self.commit_running(&mut st, pager, x));
-        if committed.is_err() {
-            self.abandon_locked(&mut st, pager, x);
+        let aborted = self.abort_locked(&mut st, pager, x, admitted);
+        if aborted.is_err() {
+            self.count_unrecorded();
         }
-        committed.map(|lsn| DurableCommit { lsn })
+        aborted.map(drop)
     }
 
     fn commit_running(&self, st: &mut State, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
@@ -452,19 +524,12 @@ impl<R: Runtime> Transactions<R> {
         lsn
     }
 
-    /// Publish a retained commit position and a safe snapshot when no writer is running.
-    ///
-    /// Precondition: `xid` committed at `lsn` and no later commit has run.
-    pub fn publish_commit(&self, pager: &Pager<R>, xid: Xid, lsn: Lsn) {
-        let st = self.state.lock(&self.rt);
+    /// Publish the retained commit position of `xid`, which `st` holds as its latest commit at
+    /// `lsn`, and a safe snapshot when no writer is running.
+    fn publish(&self, st: &State, pager: &Pager<R>, xid: Xid, lsn: Lsn) {
         let Some(past) = self.history.get() else {
             return;
         };
-        assert_eq!(
-            Some(lsn),
-            st.last_commit,
-            "the published commit is the latest commit"
-        );
         let at = pager.position(lsn);
         if let Err(e) = past.record_position(
             pager,
@@ -932,15 +997,16 @@ impl Drop for Pinning {
     }
 }
 
-/// A transaction's commit, logged: a crash from here on keeps it, and its caller is told it
-/// succeeded.
+/// A transaction's commit, durable: a crash from here on keeps it and every commit it read,
+/// and its caller is told it succeeded. Only [`Transactions::commit_with`] makes one.
 #[derive(Debug)]
 pub struct DurableCommit {
     lsn: Lsn,
 }
 
 impl DurableCommit {
-    /// Returns the LSN of the commit record.
+    /// Returns the LSN the log is durable past: a writer's commit record, else the latest commit
+    /// the reader read or the log's durable end.
     pub fn lsn(&self) -> Lsn {
         self.lsn
     }

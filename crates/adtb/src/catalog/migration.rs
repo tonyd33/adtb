@@ -147,7 +147,7 @@ impl Catalog {
         let marked = match root::begin_or_join(pager, self.root, Changing::Schema(x)) {
             Ok(marked) => marked,
             Err(e) => {
-                txns.abort(pager, begun)?;
+                txns.abandon_failed(pager, begun)?;
                 return Err(e.into());
             }
         };
@@ -181,11 +181,10 @@ impl Catalog {
                 *self = c;
                 dormant.extend(written);
                 self.end_committed(pager, txns, marked, &committed, &gone);
-                pager.wait_durable(committed.lsn());
                 Ok(dormant)
             }
             Err(e) => {
-                txns.abort(pager, begun)?;
+                txns.abandon_failed(pager, begun)?;
                 if top > self.next_heap {
                     update_root(pager, self.root, |r| r.next_heap = top)?;
                     self.next_heap = top;

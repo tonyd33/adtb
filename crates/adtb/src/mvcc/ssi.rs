@@ -177,11 +177,9 @@ pub struct Serializer {
 }
 
 impl Serializer {
-    pub(crate) fn new(limits: Limits) -> Serializer {
-        Serializer {
-            limits,
-            ..Serializer::default()
-        }
+    /// Bound its SIREAD locks by `limits` from now on.
+    pub(crate) fn limit(&mut self, limits: Limits) {
+        self.limits = limits;
     }
 
     /// Register a transaction whose snapshot is being taken now.

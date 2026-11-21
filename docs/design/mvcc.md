@@ -231,7 +231,8 @@ is running until `Transactions::commit` or `Transactions::abort` takes
 the guard, or the guard drops; each of the three takes it out of the
 running transactions on every path.
 
-- A commit that fails aborts the id and returns the commit's failure.
+- A commit that fails aborts the id and returns the commit's failure,
+  or the abort record's when that fails.
 - A dropped guard aborts the id best effort: a failure to record the
   abort is counted, not returned, and a guard dropped while its thread
   panics, or after its pager closes, records nothing.
@@ -272,8 +273,12 @@ commit record; an abort does the same with aborted and the abort
 record. A commit is durable once the log is durable past its commit
 record. A transaction, read-only included, is acknowledged only once
 the log is durable past its own commit record and past the commit
-record of every commit its snapshot reads; `Transactions::read_upto`
-gives the last of those for a snapshot.
+record of every commit its snapshot reads; `Taken::upto` gives the
+last of those for a snapshot. Every commit, a catalog transaction's
+included, goes through `Transactions::commit_with`: under the
+serializer lock it records the commit and publishes its position, and
+out of it waits for that durability before it returns the
+`DurableCommit` that acknowledges the commit, which nothing else makes.
 
 A commit checks what its transaction wrote against the quarantine marks
 before its commit record ([storage.md §8](storage.md#8-quarantine)).

@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use adtb_lang::check::{Checker, Program, check_adhoc};
 use adtb_lang::kernel::{Terms, Tm, Var};
@@ -27,6 +28,7 @@ use crate::write::{self, Setup, Txn};
 pub struct WritePath<R: Runtime> {
     /// `None` once [`WritePath::into_db`] has taken it.
     db: Option<write::Database<R>>,
+    catalog: Catalog,
     schema: Arc<Committed>,
     program: Arc<Program>,
 }
@@ -155,9 +157,26 @@ impl<R: Runtime> WritePath<R> {
         .expect("a write path over the catalog");
         Some(WritePath {
             db: Some(db),
+            catalog,
             schema,
             program,
         })
+    }
+
+    /// Returns the write path keeping history for a retention window of `window`.
+    pub fn keeping_history(mut self, window: Duration) -> WritePath<R> {
+        let db = self.take_db();
+        let retained = self
+            .catalog
+            .retained(db.pager(), db.txns())
+            .expect("the retained structures");
+        self.db = Some(db.with_history(retained, window).expect("history is kept"));
+        self
+    }
+
+    /// Returns the catalog the write path opened, over the transactions of its database.
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
     }
 
     pub fn db(&self) -> &write::Database<R> {
@@ -172,6 +191,10 @@ impl<R: Runtime> WritePath<R> {
 
     /// Returns the write path's database, ending the write path.
     pub fn into_db(mut self) -> write::Database<R> {
+        self.take_db()
+    }
+
+    fn take_db(&mut self) -> write::Database<R> {
         self.db
             .take()
             .expect("a write path holds its database until it is taken")

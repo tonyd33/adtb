@@ -3,6 +3,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::exec::{self, Val};
+use crate::mvcc::{Status, Xid};
+use crate::storage::Position;
 use crate::test_world::finished;
 use crate::test_world::support::{to_ref, to_val};
 use crate::test_world::write_path::{self, WritePath};
@@ -493,7 +495,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
 fn commit_updated(
     w: &WritePath<SimRuntime>,
     before: impl FnOnce(&Database<SimRuntime>),
-) -> (Result<crate::storage::Position, write::Error>, usize) {
+) -> (Result<Position, write::Error>, usize) {
     let s = prep(w, INC, false);
     let db = w.db();
     let tx = db.begin().expect("a transaction");
@@ -550,4 +552,296 @@ fn a_failed_commit_whose_abort_record_fails_returns_the_records_failure_and_coun
 
 fn field(r: &Val, i: usize) -> Val {
     r.fields().expect("a row has fields")[i].clone()
+}
+/// What the committers of the commit gate's crash search saw, outside the simulated process.
+#[derive(Default)]
+struct GateSeen {
+    /// The id of each user transaction begun, by its tag's name.
+    begun: BTreeMap<String, Xid>,
+    /// Each user commit acknowledged: its tag's name, its id, its position and the events it
+    /// spans.
+    users: Vec<(String, Xid, Position, Span)>,
+    /// The id of each role a catalog commit was begun for.
+    roles_begun: BTreeSet<i64>,
+    /// Each role a catalog commit acknowledged: its id, its position and the events it spans.
+    roles: Vec<(i64, Position, Span)>,
+}
+
+/// The event counts when a commit began and when it returned.
+type Span = (usize, usize);
+
+/// Where a crash at an event falls against a commit's span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fell {
+    Before,
+    Inside,
+    After,
+}
+
+fn fell(at: usize, (start, end): Span) -> Fell {
+    if end <= at {
+        Fell::After
+    } else if start < at {
+        Fell::Inside
+    } else {
+        Fell::Before
+    }
+}
+
+/// Run two clients committing tags and a thread committing roles through the catalog, history
+/// kept, all at once.
+fn gate_workload(rt: &SimRuntime, f: &Fixture, seen: &Arc<std::sync::Mutex<GateSeen>>) {
+    use crate::catalog::Rewrite;
+    use crate::catalog::codec::{Codec, ROLE_CREATED, ROLE_ID, ROLE_NAME, RoleRow};
+    use crate::key::Value as Field;
+    use crate::runtime::Threads;
+    use adtb_lang::ids::engine_ctor as k;
+
+    let w = Arc::new(WritePath::loaded(rt, f, None).keeping_history(GATE_WINDOW));
+    let tag = Arc::new(prep(&w, TAG, true));
+    rt.arm(adtb_sim::Match::any());
+    let clients: Vec<_> = (0..2)
+        .map(|c| {
+            let (w, tag, seen, rt2) = (w.clone(), tag.clone(), seen.clone(), rt.clone());
+            rt.spawn(&format!("client {c}"), move || {
+                for i in 0..GATE_COMMITS {
+                    let name = format!("c{c}-{i}");
+                    let db = w.db();
+                    let start = rt2.recorded();
+                    let tx = db.begin().expect("a transaction begins");
+                    let xid = tx.xid().expect("a writer has an id");
+                    seen.lock().unwrap().begun.insert(name.clone(), xid);
+                    let t = tag.t.expect("the statement takes a name");
+                    let inserted =
+                        db.statement(&tx, &tag.p.terms, tag.p.item, &[(t, Val::text(&name))], 0);
+                    if inserted.is_err() {
+                        db.abort(tx).expect("an abort");
+                        continue;
+                    }
+                    let Ok(at) = db.commit(tx) else {
+                        continue;
+                    };
+                    let span = (start, rt2.recorded());
+                    seen.lock().unwrap().users.push((name, xid, at, span));
+                }
+            })
+        })
+        .collect();
+    let (seen2, rt2) = (seen.clone(), rt.clone());
+    let catalog = rt.spawn("catalog", move || {
+        let db = w.db();
+        let codec = Codec::<RoleRow>::new(w.catalog().schema());
+        for id in 100..100 + GATE_COMMITS as i64 {
+            let row = codec.encode(
+                k::ROLE,
+                [
+                    (ROLE_ID, Field::I64(id)),
+                    (ROLE_NAME, Field::Text(format!("r{id}"))),
+                    (ROLE_CREATED, Field::Instant(0)),
+                ],
+            );
+            let start = rt2.recorded();
+            seen2.lock().unwrap().roles_begun.insert(id);
+            let at = w
+                .catalog()
+                .deploy(
+                    db.pager(),
+                    db.txns(),
+                    &[Rewrite {
+                        relation: codec.relation(),
+                        deleted: Vec::new(),
+                        inserted: vec![row],
+                    }],
+                )
+                .expect("the catalog commits");
+            let span = (start, rt2.recorded());
+            seen2.lock().unwrap().roles.push((id, at, span));
+        }
+    });
+    for c in clients {
+        rt.join(c);
+    }
+    rt.join(catalog);
+    rt.disarm();
+}
+
+const GATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+const GATE_COMMITS: usize = 2;
+
+/// What a crash search image counted.
+#[derive(Default)]
+struct GateCounts {
+    images: usize,
+    /// The crashes inside a catalog commit's span.
+    inside_catalog: usize,
+    /// The commits a crash inside their span kept whole, unacknowledged.
+    kept_unacknowledged: usize,
+    /// The commits a crash inside their span left absent.
+    absent: usize,
+}
+
+/// Every commit goes through one gate: a user or catalog commit acknowledged before a crash
+/// survives it at its own position in the record of the window, and one a crash interrupts is
+/// kept whole or not at all.
+#[test]
+fn a_crash_at_every_event_keeps_each_acknowledged_user_and_catalog_commit_at_its_position() {
+    let f = shop();
+    let files = write_path::write_files(&f);
+    let (mut counts, mut overlaps) = (GateCounts::default(), 0);
+    for seed in sweep(0..1) {
+        let seen = Arc::new(std::sync::Mutex::new(GateSeen::default()));
+        let mut sim = Sim::with_files(seed, Config::default(), files.clone());
+        sim.record();
+        adtb_testkit::process::run(&mut sim, |rt| gate_workload(&rt, &f, &seen));
+        let first = sim.numbered().armed_at();
+        let recording = sim.recording();
+        let s = seen.lock().unwrap();
+        assert_eq!(
+            2 * GATE_COMMITS,
+            s.users.len(),
+            "seed {seed}: every tag commits"
+        );
+        assert_eq!(
+            GATE_COMMITS,
+            s.roles.len(),
+            "seed {seed}: every role commits"
+        );
+        overlaps += s
+            .users
+            .iter()
+            .flat_map(|u| s.roles.iter().map(move |r| (u.3, r.2)))
+            .filter(|(u, r)| u.0 < r.1 && r.0 < u.1)
+            .count();
+        for at in first..=recording.len() {
+            for image in recording.images(at, 1, seed + at as u64) {
+                check_gate_image(&f, seed, at, image, &s, &mut counts);
+            }
+        }
+    }
+    use adtb_testkit::profile::assert_reached;
+    assert_reached("a user commit overlapping a catalog commit", overlaps, 1);
+    assert_reached("crash images", counts.images, 20);
+    assert_reached("a crash inside a catalog commit", counts.inside_catalog, 1);
+    assert_reached(
+        "a commit kept whole and unacknowledged",
+        counts.kept_unacknowledged,
+        1,
+    );
+    assert_reached("a commit a crash left absent", counts.absent, 1);
+}
+
+/// Reopen `image`, a crash at event `at`, and check what `s` saw survives it.
+fn check_gate_image(
+    f: &Fixture,
+    seed: u64,
+    at: usize,
+    image: adtb_testkit::load::Files,
+    s: &GateSeen,
+    counts: &mut GateCounts,
+) {
+    let why = format!("seed {seed}: crash at {at}");
+    counts.images += 1;
+    let mut sim = Sim::with_files(seed, Config::default(), image);
+    let (names, roles, commits, uncommitted) = adtb_testkit::process::run(&mut sim, |rt| {
+        let w = WritePath::reopen(&rt, None)
+            .unwrap_or_else(|| panic!("{why}: the file reopens"))
+            .keeping_history(GATE_WINDOW);
+        let db = w.db();
+        let tx = db.begin().expect("a transaction");
+        let rows = rekeyed(&db.rows(&tx).expect("the rows"), &f.schema, w.schema());
+        db.abort(tx).expect("an abort");
+        let names: BTreeSet<String> = rows
+            .get(&(f.rel("tags"), 0))
+            .into_iter()
+            .flatten()
+            .map(|r| match field(r, 1) {
+                Val::Text(n) => n.to_string(),
+                other => panic!("a name, not {other:?}"),
+            })
+            .collect();
+        let roles: BTreeSet<i64> = w
+            .catalog()
+            .committed_roles(db.pager(), db.txns())
+            .expect("the roles")
+            .into_keys()
+            .collect();
+        let commits = db
+            .txns()
+            .history()
+            .expect("history is kept")
+            .commits(db.pager())
+            .expect("the record of the window");
+        let uncommitted: Vec<Xid> = commits
+            .iter()
+            .filter(|c| db.txns().recorded(db.pager(), c.xid) != Ok(Status::Committed))
+            .map(|c| c.xid)
+            .collect();
+        let commits: Vec<_> = commits.into_iter().map(|c| (c.xid, c.at, c.time)).collect();
+        (names, roles, commits, uncommitted)
+    });
+    let users: BTreeSet<&Xid> = s.begun.values().collect();
+    let kept_user = |xid: Xid, at: Position| commits.iter().any(|c| c.0 == xid && c.1 == at);
+    let kept_catalog = |at: Position| commits.iter().any(|c| c.1 == at && !users.contains(&c.0));
+    for (name, xid, position, span) in &s.users {
+        let (row, kept) = (names.contains(name), kept_user(*xid, *position));
+        match fell(at, *span) {
+            Fell::After => {
+                assert!(
+                    row && kept,
+                    "{why}: acknowledged {name} survives at its position"
+                );
+            }
+            Fell::Inside => {
+                assert_eq!(row, kept, "{why}: {name} is kept whole or not at all");
+                count_inside(row, counts);
+            }
+            Fell::Before => assert!(!row && !kept, "{why}: {name} is not begun"),
+        }
+    }
+    for (id, position, span) in &s.roles {
+        let (row, kept) = (roles.contains(id), kept_catalog(*position));
+        match fell(at, *span) {
+            Fell::After => {
+                assert!(
+                    row && kept,
+                    "{why}: acknowledged role {id} survives at its position"
+                );
+            }
+            Fell::Inside => {
+                assert_eq!(row, kept, "{why}: role {id} is kept whole or not at all");
+                counts.inside_catalog += 1;
+                count_inside(row, counts);
+            }
+            Fell::Before => assert!(!row && !kept, "{why}: role {id} is not begun"),
+        }
+    }
+    for name in &names {
+        assert!(s.begun.contains_key(name), "{why}: {name} was never begun");
+    }
+    for id in &roles {
+        assert!(
+            s.roles_begun.contains(id),
+            "{why}: role {id} was never begun"
+        );
+    }
+    assert_eq!(
+        Vec::<Xid>::new(),
+        uncommitted,
+        "{why}: every kept commit committed"
+    );
+    for pair in commits.windows(2) {
+        assert!(
+            pair[0].1 < pair[1].1 && pair[0].2 <= pair[1].2,
+            "{why}: positions and times rise together: {pair:?}"
+        );
+    }
+}
+
+/// Count a commit a crash inside its span kept, `kept`, or left absent.
+fn count_inside(kept: bool, counts: &mut GateCounts) {
+    if kept {
+        counts.kept_unacknowledged += 1;
+    } else {
+        counts.absent += 1;
+    }
 }

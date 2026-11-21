@@ -481,6 +481,8 @@ struct Client {
     done: Vec<Xid>,
     /// Where each commit is recorded as submitted before it is made.
     ledger: Option<Ledger>,
+    /// Where each commit's operations and the next key are kept before it is made.
+    world: Option<Arc<Mutex<World>>>,
 }
 
 impl Client {
@@ -492,6 +494,7 @@ impl Client {
             long: None,
             done: Vec::new(),
             ledger: None,
+            world: None,
         }
     }
 }
@@ -530,6 +533,11 @@ impl Client {
         if commit {
             if let Some(ledger) = &self.ledger {
                 ledger.submit(run.xid.0);
+            }
+            if let Some(world) = &self.world {
+                let mut w = world.lock().unwrap();
+                w.next_key = self.next_key;
+                w.ops.insert(run.xid, run.ops.clone());
             }
             db.txns.commit(&db.pager, run.begun).expect("commit");
             self.done.push(run.xid);
@@ -1127,7 +1135,7 @@ struct World {
     acknowledged: bool,
 }
 
-fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize) {
+fn workload(rt: SimRuntime, world: &Arc<Mutex<World>>, ledger: &Ledger, steps: usize) {
     let roots = world.lock().unwrap().roots.clone();
     let Some(mut db) = Storage::reopen(&rt, &roots).ok().map(Db::of) else {
         return;
@@ -1140,6 +1148,7 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize)
         .collect();
     let mut client = Client::new(live, world.lock().unwrap().next_key);
     client.ledger = Some(ledger.clone());
+    client.world = Some(world.clone());
     let mut held: Vec<Held> = Vec::new();
     let mut next = || rt.next_u64();
     let mut unacked: Vec<Xid> = Vec::new();

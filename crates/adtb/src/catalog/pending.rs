@@ -303,7 +303,7 @@ impl Catalog {
             match root::begin_or_join(pager, self.root, Changing::Schema(x)) {
                 Ok(marked) => marked,
                 Err(e) => {
-                    txns.abort(pager, begun)?;
+                    txns.abandon_failed(pager, begun)?;
                     return Err(e.into());
                 }
             }
@@ -331,14 +331,13 @@ impl Catalog {
             .and_then(|()| delete_rows(&m, &self.roots, &roots));
         drop(hold);
         if let Err(e) = wrote {
-            txns.abort(pager, begun)?;
+            txns.abandon_failed(pager, begun)?;
             if let Some(marked) = marked {
                 root::end(pager, marked, |_| {})?;
             }
             return Err(e);
         }
         let committed = txns.commit(pager, begun)?;
-        pager.wait_durable(committed.lsn());
         self.readers.pending = pending;
         self.readers.enforced = enforced;
         if !freed.is_empty() {

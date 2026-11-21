@@ -42,5 +42,6 @@ pub(in crate::api) fn initialize<R: Runtime>(
                 inserted: vec![row],
             }],
         )
+        .map(drop)
         .map_err(corrupt)
 }

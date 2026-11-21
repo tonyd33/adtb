@@ -430,11 +430,11 @@ fn a_constraint_meeting_an_orphan_entry_is_a_structure_finding() {
             panic!("{key_index:?} is an index");
         };
         let orphan = format!(
-            r#"Orphan {{ id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.046559Z, index: indexes.key({}), ctor: constructors.key(1025), where: "page 557 slot 400: holds no version of the entry's key" }}"#,
+            r#"Orphan {{ id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.047170Z, index: indexes.key({}), ctor: constructors.key(1025), where: "page 557 slot 400: holds no version of the entry's key" }}"#,
             id.0
         );
         assert_eq!(orphan, got[0]);
-        let met = r#"Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.046559Z, where: "constraint 1025: an entry of index 1024 names no version" }"#;
+        let met = r#"Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.047170Z, where: "constraint 1025: an entry of index 1024 names no version" }"#;
         assert_eq!(met, got[1]);
         assert_eq!(
             BTreeSet::from([t.own_mark(key_index).unwrap()]),

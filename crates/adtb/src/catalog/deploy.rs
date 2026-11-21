@@ -7,7 +7,7 @@ use adtb_lang::types::RelId;
 use crate::key::Value;
 use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
-use crate::storage::Pager;
+use crate::storage::{Pager, Position};
 
 use super::codec::{Codec, Decode};
 use super::{Catalog, Error, Fact, Migrating, delete_rows};
@@ -48,7 +48,8 @@ impl Catalog {
             .collect()
     }
 
-    /// Delete and insert the rows of `writes` as one transaction, returning once it is durable.
+    /// Delete and insert the rows of `writes` as one transaction. Returns its commit position,
+    /// once it is durable.
     ///
     /// Preconditions:
     /// - Every relation `writes` names is a relation of deployment state, whose rows no
@@ -59,19 +60,20 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
         writes: &[Rewrite],
-    ) -> Result<(), Error> {
+    ) -> Result<Position, Error> {
         self.deploy_with(pager, txns, writes, &[])
     }
 
     /// Delete and insert the rows of `writes` and write the deployment facts `facts` as one
-    /// transaction, returning once it is durable, under the preconditions of [`Catalog::deploy`].
+    /// transaction, under the preconditions of [`Catalog::deploy`]. Returns its commit position,
+    /// once it is durable.
     pub fn deploy_with<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         writes: &[Rewrite],
         facts: &[Fact],
-    ) -> Result<(), Error> {
+    ) -> Result<Position, Error> {
         let begun = txns.begin(pager)?;
         let x = begun.xid();
         let hold = txns.take(Scope::Every)?;
@@ -101,12 +103,11 @@ impl Catalog {
         drop(hold);
         match done {
             Ok(()) => {
-                let lsn = txns.commit(pager, begun)?.lsn();
-                pager.wait_durable(lsn);
-                Ok(())
+                let committed = txns.commit(pager, begun)?;
+                Ok(pager.position(committed.lsn()))
             }
             Err(e) => {
-                txns.abort(pager, begun)?;
+                txns.abandon_failed(pager, begun)?;
                 Err(e)
             }
         }

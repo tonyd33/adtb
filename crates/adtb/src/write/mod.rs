@@ -1248,47 +1248,34 @@ impl<R: Runtime> Database<R> {
     /// the rule that stops a statement. On any failure, abandon `tx` as [`Database::abandon`]
     /// does: fail with the commit's failure, or with the abort record's when it fails.
     pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
-        let (sid, xid, upto) = (tx.sid, tx.xid, tx.taken.upto());
+        let (sid, upto) = (tx.sid, tx.taken.upto());
         let written = tx.written.take();
         let mut held = tx.end();
-        let done = {
-            let mut ser = self.session.ser.lock(&self.rt);
-            self.map_committing(ser.ordered());
-            let admitted = self.admit_commit(&ser.ordered(), written);
-            match admitted.and_then(|()| ser.precommit(sid).map_err(Error::from)) {
-                Err(e) => Err(e),
-                Ok(()) => match held
-                    .begun
-                    .take()
-                    .map(|b| self.session.txns.commit(&self.pager, b).map(|c| c.lsn()))
-                    .transpose()
-                {
-                    Err(e) => Err(e.into()),
-                    Ok(own) => {
-                        if let Some(sid) = held.serial.take() {
-                            ser.committed(sid);
-                        }
-                        if let (Some(xid), Some(lsn)) = (xid, own) {
-                            self.session.txns.publish_commit(&self.pager, xid, lsn);
-                        }
-                        self.session.log_safe(&mut ser);
-                        Ok(own.max(upto))
-                    }
-                },
-            }
-        };
-        match done {
-            Ok(wait) => {
-                drop(held.hold.take());
-                if xid.is_some() && self.session.txns.history().is_some() {
-                    self.pager.flush_below(self.pager.appended());
+        let begun = held.begun.take();
+        let (serial, hold) = (&mut held.serial, &mut held.hold);
+        let committed = self.session.txns.commit_with(
+            &self.pager,
+            begun,
+            upto,
+            |ser| {
+                self.map_committing(ser.ordered());
+                self.admit_commit(&ser.ordered(), written)?;
+                ser.precommit(sid).map_err(Error::from)
+            },
+            |ser| {
+                if let Some(sid) = serial.take() {
+                    ser.committed(sid);
                 }
-                let wait = wait.unwrap_or_else(|| self.pager.durable());
-                self.pager.wait_durable(wait);
+                self.session.log_safe(ser);
+                drop(hold.take());
+            },
+        );
+        match committed {
+            Ok(c) => {
                 let changed = held.changed.take();
                 drop(held);
                 self.add_dead(&changed, true);
-                Ok(self.pager.position(wait))
+                Ok(self.pager.position(c.lsn()))
             }
             Err(e) => Err(either(self.abandon_held(held, || e, |r| r))),
         }

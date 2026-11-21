@@ -36,12 +36,14 @@ impl<R: Runtime> Session<R> {
         txns: Arc<Transactions<R>>,
         limits: Limits,
     ) -> Arc<Session<R>> {
+        let ser = txns.serializer().clone();
+        ser.lock(&rt).limit(limits);
         Arc::new(Session {
             waits: Waits::new(rt.clone()),
             rt,
             pager,
             txns,
-            ser: Arc::new(Ranked::new(ranks::SERIALIZER, Serializer::new(limits))),
+            ser,
             readers: Ranked::new(ranks::READERS, BTreeMap::new()),
             dead: Ranked::new(ranks::DEAD, vacuums::Dead::default()),
             steps: Arc::default(),

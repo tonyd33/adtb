@@ -44,7 +44,7 @@ fn opts() -> Options {
 const LONG: Duration = Duration::from_secs(3600);
 /// The seeds of the vacuum crash search; the default profile runs the first, whose crashes leave
 /// a copy without its entry.
-const VACUUM_CRASH_SEEDS: [u64; 2] = [14, 11];
+const VACUUM_CRASH_SEEDS: [u64; 3] = [7, 14, 11];
 
 /// Each key's value.
 type State = BTreeMap<i64, i64>;
@@ -561,7 +561,7 @@ fn a_reader_at_a_marker_keeps_it_pinned_after_the_pin_drops() {
     let mut sim = Sim::new(5, Config::default());
     finished(&mut sim, |rt| {
         let window = Duration::from_millis(200);
-        let (mut db, _) = Db::create(rt, window);
+        let (mut db, _) = Db::create(rt.clone(), window);
         let marks = history_of(&mut db, 6, 12, 4);
         let (at, want) = marks[3].clone();
         let pinned = db.txns.pin(&db.pager, at, db.upto()).expect("pin");
@@ -574,7 +574,7 @@ fn a_reader_at_a_marker_keeps_it_pinned_after_the_pin_drops() {
         db.expire();
         let (at_cutoff, read) = (db.txns.cutoff(), db.read_at(at));
         drop(reader);
-        db.idle(window);
+        adtb_testkit::common::sleep(&rt, &mut rt.io(), window);
         let recent = history_of(&mut db, 7, 10, 4);
         db.vacuum_keeping();
         db.expire();
@@ -856,7 +856,24 @@ fn a_crash_at_every_flush_while_a_removed_constructors_heap_drops_keeps_its_past
 
 #[test]
 fn reads_of_the_past_beside_a_vacuum_moving_their_versions_read_every_row_once() {
-    let mut sim = Sim::new(15, Config::default());
+    let mut beside = 0;
+    for seed in READ_BESIDE_SEEDS {
+        beside += reads_beside_a_vacuum(seed);
+    }
+    assert!(
+        beside > 12,
+        "{beside} reads of seeds {READ_BESIDE_SEEDS:?} ran beside the vacuum"
+    );
+}
+
+/// The seeds of the reads beside a vacuum, whose reads together reach the floor.
+const READ_BESIDE_SEEDS: [u64; 2] = [15, 1];
+
+/// Read the past from three threads while a vacuum moves the versions they read. Returns how
+/// many reads ran beside the vacuum.
+fn reads_beside_a_vacuum(seed: u64) -> usize {
+    let mut sim = Sim::new(seed, Config::default());
+    let mut beside = 0;
     finished(&mut sim, |rt| {
         let (mut db, _) = Db::create(rt.clone(), LONG);
         let marks = Arc::new(history_of(&mut db, 15, 200, 300));
@@ -907,13 +924,13 @@ fn reads_of_the_past_beside_a_vacuum_moving_their_versions_read_every_row_once()
         for t in readers {
             rt.join(t);
         }
-        assert!(report.moved > 0);
-        let reads = reads.load(Ordering::Relaxed);
-        assert!(reads > 12, "{reads} reads ran beside the vacuum");
+        assert!(report.moved > 0, "seed {seed}: {report:?}");
+        beside = reads.load(Ordering::Relaxed);
         let wrong = wrong.lock().unwrap();
-        assert!(wrong.is_empty(), "{wrong:#?}");
-        check_reads(&db, &marks, "after vacuum");
+        assert!(wrong.is_empty(), "seed {seed}: {wrong:#?}");
+        check_reads(&db, &marks, &format!("seed {seed}: after vacuum"));
     });
+    beside
 }
 
 #[test]

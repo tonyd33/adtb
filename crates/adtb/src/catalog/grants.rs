@@ -314,13 +314,12 @@ impl Catalog {
         drop(hold);
         match done {
             Ok(dormant) => {
-                let lsn = txns.commit(pager, begun)?.lsn();
-                pager.wait_durable(lsn);
+                txns.commit(pager, begun)?;
                 self.source.grants = grants;
                 Ok(dormant)
             }
             Err(e) => {
-                txns.abort(pager, begun)?;
+                txns.abandon_failed(pager, begun)?;
                 Err(e)
             }
         }

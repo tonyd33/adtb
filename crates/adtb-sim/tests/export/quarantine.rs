@@ -2258,7 +2258,7 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
 #[test]
 fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its_index() {
     let mut during = 0;
-    for step in [0u64, 10, 20, 30, 40, 45, 50, 55, 57] {
+    for step in [0u64, 10, 20, 30, 40, 45, 50, 55, 56] {
         let mut sim = Sim::new(0, Config::default());
         process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());

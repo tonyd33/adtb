@@ -687,6 +687,7 @@ impl Writes {
         };
         catalog
             .deploy_with(pager, txns, &[bundles, calls], &self.facts)
+            .map(drop)
             .map_err(corrupt)
     }
 }

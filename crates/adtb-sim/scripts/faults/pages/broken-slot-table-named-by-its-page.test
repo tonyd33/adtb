@@ -6,8 +6,8 @@ scribble heap app::notes Note
 
 probe holding verify
 ----
-Orphan { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
-Orphan { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
-Orphan { id: verify_findings.key(3), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
-Orphan { id: verify_findings.key(4), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
-Structure { id: verify_findings.key(5), run: RunId(1), at: 2026-01-01T00:00:00.014638Z, where: "heap app::notes Note: Structure(\"heap 247: slot 0 has state 9\")" }
+Orphan { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
+Orphan { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1024), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
+Orphan { id: verify_findings.key(3), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 0: holds no version of the entry's key" }
+Orphan { id: verify_findings.key(4), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, index: indexes.key(1025), ctor: constructors.key(1025), where: "heap app::notes Note slot 1: holds no version of the entry's key" }
+Structure { id: verify_findings.key(5), run: RunId(1), at: 2026-01-01T00:00:00.015808Z, where: "heap app::notes Note: Structure(\"heap 247: slot 0 has state 9\")" }
