@@ -1,0 +1,28 @@
+heap_write = r"\.(insert_pruning|update_pruning|retag_pruning|delete|take_back)\s*\(";
+
+discarded = do {
+  l <- descendants_of_kind :let_declaration;
+  p <- pure l | #pattern;
+  guard $ text p ~ r"^_\w*$";
+  v <- pure l | #value;
+  guard $ text v ~ heap_write;
+  return l;
+};
+
+assigned = do {
+  a <- descendants_of_kind :assignment_expression;
+  l <- pure a | #left;
+  guard $ text l == "_";
+  guard $ text a ~ heap_write;
+  return a;
+};
+
+dropped = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ r"^(std::mem::|mem::)?drop$";
+  guard $ text c ~ heap_write;
+  return c;
+};
+
+main = discarded `alt` assigned `alt` dropped | arr range;

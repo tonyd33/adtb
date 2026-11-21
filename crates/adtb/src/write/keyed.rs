@@ -4,11 +4,12 @@ use adtb_lang::textual::key_names;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_key};
+use crate::heap::Refused;
 use crate::key::Tid;
 use crate::runtime::Runtime;
 
 use super::eval::Stmt;
-use super::{Broken, Error};
+use super::{Broken, Error, Rot};
 
 /// Rows of one key, each with its constructor and the TID of its version.
 pub type KeyRows = Vec<(u32, Tid, Val)>;
@@ -26,6 +27,38 @@ impl<R: Runtime> Stmt<'_, R> {
             return Err(Broken::DuplicateKey(index.schema().encode(&prefix)).into());
         }
         Ok(rows.pop())
+    }
+
+    /// Refuse the page of the version of `row`, a row of constructor `c` of `rel` with key `key`
+    /// that the statement read and its reads no longer see, while the version is still there as
+    /// read. Returns when the version changed before the refusal: the caller reads again.
+    ///
+    /// Errors:
+    /// - The refusal of the version's page.
+    /// - [`Rot::Unkeyed`] when the key index names no version of `row`.
+    pub fn refuse_unseen(&self, rel: RelId, key: &Val, c: u32, row: &Val) -> Result<(), Error> {
+        let r = self.rel(rel);
+        let (prefix, _) = self.keyed(rel, key)?;
+        let pager = &self.db.pager;
+        let heap = &self.db.bindings.heaps()[&r.ctors[c as usize].heap].heap;
+        for n in self.probe(r.key_index, &prefix, &r.routes(r.all_ctors()))? {
+            if n.ctor != c {
+                continue;
+            }
+            for link in heap.hot_run(pager, n.tid)? {
+                let Some(v) = heap.read(pager, link.tid)? else {
+                    continue;
+                };
+                if self.row(rel, c, &v.row) != *row {
+                    continue;
+                }
+                return match v.refuse_frame(pager) {
+                    Refused::Page(e) => Err(e.into()),
+                    Refused::Gone => Ok(()),
+                };
+            }
+        }
+        Err(Rot::Unkeyed(r.qualified.clone()).into())
     }
 
     /// Returns every row of `rel` with key `key` the statement's reads see, with its constructor

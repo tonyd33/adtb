@@ -133,7 +133,8 @@ fn perform(db: &mut Db, live: &mut Live, op: &Op, xid: u64) -> Result<Option<Upd
         Op::Delete { key } => {
             let (heap, tid, _) = live.remove(key).unwrap();
             db.heaps[heap]
-                .delete(pager, tid, Xid(xid))?
+                .delete(pager, tid, Xid(xid))
+                .kept(&crate::heap::Tested)?
                 .unchecked(crate::heap::Unchecked::Test);
             Ok(None)
         }
@@ -291,6 +292,7 @@ fn a_hot_link_to_a_heap_only_version_of_another_writer_ends_the_chain() {
             .unwrap();
         assert!(e.heap_only && e.tid.page() == t.page(), "{e:?}");
         heap.delete(pager, t, Xid(3))
+            .kept(&crate::heap::Tested)
             .unwrap()
             .unchecked(crate::heap::Unchecked::Test);
         heap.plant_next(pager, t, e.tid).unwrap();
@@ -462,6 +464,7 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
         for key in [1, 3, 5] {
             db.heaps[GOOGLE]
                 .delete(&db.pager, rows[&key].1, Xid(2))
+                .kept(&crate::heap::Tested)
                 .unwrap()
                 .unchecked(crate::heap::Unchecked::Test);
             rows.remove(&key);
@@ -484,6 +487,7 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
         rows.insert(2, (EMAIL, u.tid));
         db.heaps[EMAIL]
             .delete(&db.pager, rows[&4].1, Xid(3))
+            .kept(&crate::heap::Tested)
             .unwrap()
             .unchecked(crate::heap::Unchecked::Test);
         rows.remove(&4);
@@ -546,6 +550,7 @@ fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
         let upgraded = |k: i64| vec![Value::I64(k), Value::I32(-1), Value::Text("n/a".into())];
         assert_eq!(upgraded(3), heap.read(pager, old[3]).unwrap().unwrap().row);
         heap.delete(pager, old[4], Xid(2))
+            .kept(&crate::heap::Tested)
             .unwrap()
             .unchecked(crate::heap::Unchecked::Test);
         assert_eq!(1, storage::format(&pager.read(page).unwrap()));
@@ -800,6 +805,7 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
                 if key % 4 != 0 {
                     db.heaps[EMAIL]
                         .delete(&db.pager, t, Xid(2))
+                        .kept(&crate::heap::Tested)
                         .unwrap()
                         .unchecked(crate::heap::Unchecked::Test);
                 }
@@ -1072,6 +1078,7 @@ fn readers_with_a_stale_page_list_meet_a_freed_page_another_allocation_reserved_
             .collect();
         for &t in &gone {
             heap.delete(&db.pager, t, Xid(2))
+                .kept(&crate::heap::Tested)
                 .unwrap()
                 .unchecked(crate::heap::Unchecked::Test);
             rows.remove(&t);

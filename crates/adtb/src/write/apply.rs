@@ -4,7 +4,7 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_stored};
-use crate::heap::{self, Heap, Slots, Superseded, Unchecked, WriteTarget};
+use crate::heap::{self, Heap, Slots, Superseded, WriteTarget};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
@@ -38,14 +38,8 @@ fn undo_failure(e: heap::Error) -> Error {
     }
 }
 
-/// A heap change a failed statement takes back.
-#[derive(Clone, Copy, Debug)]
-pub enum Undo {
-    /// Delete the version the statement inserted, written under the transaction id it holds.
-    Kill(HeapId, Tid, Xid),
-    /// Clear the deleter the statement gave the version.
-    Restore(HeapId, WriteTarget),
-}
+/// A heap change a failed statement takes back, with the heap it changed.
+pub type Undo = (HeapId, heap::Undo);
 
 /// A version the statement wrote that needs entries in the indexes over its constructor.
 struct Written {
@@ -131,18 +125,31 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Returns the TID of the version of `rel`'s row with key `key` the statement read, once no
     /// other running transaction writes it.
-    fn writable(&self, rel: RelId, key: &Val) -> Result<(u32, WriteTarget), Error> {
+    ///
+    /// Errors:
+    /// - A refusal of the page of a version of `row`, a row of constructor `c` the statement read,
+    ///   when its reads no longer see it.
+    fn writable(
+        &self,
+        rel: RelId,
+        key: &Val,
+        c: u32,
+        row: &Val,
+    ) -> Result<(u32, WriteTarget), Error> {
         let xid = self.tx.writer()?;
         let reader = self.reader_as(xid);
         loop {
-            let (c, tid, _) = self
-                .by_key(rel, key)?
-                .expect("a row the statement deletes is in its snapshot");
-            let heap = self.rel(rel).ctors[c as usize].heap;
-            let version = self
-                .heap(heap)
-                .read(&self.db.pager, tid)?
-                .expect("a version the statement read is there");
+            let Some((c, tid, _)) = self.by_key(rel, key)? else {
+                self.refuse_unseen(rel, key, c, row)?;
+                continue;
+            };
+            let heap = self.heap(self.rel(rel).ctors[c as usize].heap);
+            let Some(version) = heap.read(&self.db.pager, tid)? else {
+                match heap.refuse_absent(&self.db.pager, tid) {
+                    Some(e) => return Err(e.into()),
+                    None => continue,
+                }
+            };
             let header = version.header;
             let checked = reader.check_write(xid, &header.writers);
             match checked.map_err(|e| version.refuse(&self.db.pager, e))? {
@@ -186,19 +193,6 @@ impl<R: Runtime> Stmt<'_, R> {
             self.db.pause_for_rebuild();
         }
         Ok(())
-    }
-
-    fn restorable(&self, heap: HeapId, tid: Tid, xid: Xid) -> Result<WriteTarget, Error> {
-        let header = self
-            .heap(heap)
-            .read(&self.db.pager, tid)?
-            .expect("a version the statement changed remains present")
-            .header;
-        assert!(
-            header.writers.deleted_by(xid),
-            "the statement owns the version it restores: {header:?}"
-        );
-        Ok(WriteTarget::checked(tid, header))
     }
 
     /// Record the statement's write of the version `old` names against the SIREAD locks on it.
@@ -253,20 +247,21 @@ impl<R: Runtime> Stmt<'_, R> {
         let mut written = Vec::new();
         for ((rel, key), (old, news)) in &ops {
             let r = self.rel(*rel);
+            let target = |(c, row): &(u32, Val)| self.writable(*rel, key, *c, row);
             match (old, news.first()) {
                 (None, None) => {}
-                (Some(_), None) => {
-                    let (c, tid) = self.writable(*rel, key)?;
+                (Some(old), None) => {
+                    let (c, tid) = target(old)?;
                     let heap = r.ctors[c as usize].heap;
-                    let old = self.heap(heap).delete(pager, tid, xid)?;
-                    let checked = self.superseded(old);
-                    self.undo
-                        .borrow_mut()
-                        .push(Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?));
-                    checked?;
+                    let old = (self.heap(heap).delete(pager, tid, xid)).record(
+                        &mut self.undo.borrow_mut(),
+                        heap,
+                        heap,
+                    )?;
+                    self.superseded(old)?;
                 }
-                (Some((c, _)), Some((d, n))) if c == d => {
-                    let (c, tid) = self.writable(*rel, key)?;
+                (Some(old @ (c, _)), Some((d, n))) if c == d => {
+                    let (c, tid) = target(old)?;
                     let heap = r.ctors[c as usize].heap;
                     let indexed: Vec<usize> = r
                         .indexes
@@ -278,13 +273,9 @@ impl<R: Runtime> Stmt<'_, R> {
                     let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
                     let (up, old) = h
                         .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
+                        .record(&mut self.undo.borrow_mut(), heap, heap)
                         .map_err(too_large(*rel, c))?;
-                    let checked = self.superseded(old);
-                    self.undo.borrow_mut().extend([
-                        Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?),
-                        Undo::Kill(heap, up.tid, xid),
-                    ]);
-                    checked?;
+                    self.superseded(old)?;
                     self.inserted_into(heap)?;
                     if !up.heap_only {
                         written.push(Written {
@@ -296,8 +287,8 @@ impl<R: Runtime> Stmt<'_, R> {
                         });
                     }
                 }
-                (Some(_), Some((d, n))) => {
-                    let (c, tid) = self.writable(*rel, key)?;
+                (Some(old), Some((d, n))) => {
+                    let (c, tid) = target(old)?;
                     let to = r.ctors[*d as usize].heap;
                     let row = self.stored(to, n)?;
                     let from = r.ctors[c as usize].heap;
@@ -306,13 +297,9 @@ impl<R: Runtime> Stmt<'_, R> {
                     let (at, old) = self
                         .heap(from)
                         .retag_pruning(pager, tid, xid, into, &row, &mut judge)
+                        .record(&mut self.undo.borrow_mut(), from, to)
                         .map_err(too_large(*rel, *d))?;
-                    let checked = self.superseded(old);
-                    self.undo.borrow_mut().extend([
-                        Undo::Restore(from, self.restorable(from, tid.tid, xid)?),
-                        Undo::Kill(to, at, xid),
-                    ]);
-                    checked?;
+                    self.superseded(old)?;
                     self.inserted_into(to)?;
                     written.push(Written {
                         rel: *rel,
@@ -362,8 +349,9 @@ impl<R: Runtime> Stmt<'_, R> {
         let mut judge = self.db.session.txns.judge_now(&self.db.pager, h.id().0);
         let tid = h
             .insert_pruning(&self.db.pager, xid, &row, &mut judge)
+            .record(&mut self.undo.borrow_mut(), heap, heap)
             .map_err(too_large(rel, d))?;
-        self.undo.borrow_mut().push(Undo::Kill(heap, tid, xid));
+        self.db.session.steps.at(Step::WriteInserted);
         self.inserted_into(heap)?;
         Ok(Written {
             rel,
@@ -376,29 +364,14 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Take back every heap change the statement made, newest first. Its index entries stay,
     /// naming versions no snapshot sees.
+    ///
+    /// Errors:
+    /// - A refusal of the page of a version the statement wrote that is not there as the
+    ///   statement's.
     pub fn undo(&self) -> Result<(), Error> {
-        let pager = &self.db.pager;
-        for u in self.undo.borrow_mut().drain(..).rev() {
-            match u {
-                Undo::Kill(heap, tid, xid) => {
-                    let header = self
-                        .heap(heap)
-                        .read(pager, tid)?
-                        .expect("a version the statement inserted remains present")
-                        .header;
-                    assert!(
-                        header.writers.inserted_by(xid),
-                        "the statement owns the version it removes: {header:?}"
-                    );
-                    self.heap(heap)
-                        .delete(pager, WriteTarget::checked(tid, header), xid)
-                        .map_err(undo_failure)?
-                        .unchecked(Unchecked::OwnInsert);
-                }
-                Undo::Restore(heap, tid) => {
-                    self.heap(heap).restore(pager, tid).map_err(undo_failure)?;
-                }
-            }
+        for (heap, u) in self.undo.borrow_mut().drain(..).rev() {
+            self.db.session.steps.at(Step::TakeBack);
+            (self.heap(heap).take_back(&self.db.pager, u)).map_err(undo_failure)?;
         }
         Ok(())
     }

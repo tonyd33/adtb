@@ -1,6 +1,7 @@
 //! The calls of a heap only tests and the test surface make.
 
 use super::*;
+use crate::heap::Tested;
 
 /// One position of a heap's directory, as a test prints it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,9 +107,8 @@ impl Heap {
         row: &[Value],
         indexed: &[usize],
     ) -> Result<Updated, Error> {
-        Ok(self
-            .put_successor(pager, at.into(), xid, row, indexed, None)?
-            .0)
+        let put = self.put_successor(pager, at.into(), xid, row, indexed, None)?;
+        Ok(put.kept(&Tested)?.0)
     }
 
     /// Copy `v` as [`Heap::copy_version_pruning`] does, pruning nothing.
@@ -128,7 +128,7 @@ impl Heap {
         xid: Xid,
         row: &[Value],
     ) -> Result<Tid, Error> {
-        self.put_version(pager, xid, row, None)
+        self.put_version(pager, xid, row, None)?.kept(&Tested)
     }
 
     /// Move the row whose version is at `at` into heap `to` as [`Heap::retag_pruning`] does,
@@ -141,7 +141,8 @@ impl Heap {
         to: &Heap,
         row: &[Value],
     ) -> Result<Tid, Error> {
-        Ok(self.put_moved(pager, at.into(), xid, to, row, None)?.0)
+        let put = self.put_moved(pager, at.into(), xid, to, row, None)?;
+        Ok(put.kept(&Tested)?.0)
     }
 
     /// Returns what is wrong with the heap's pages, directory and visibility map, directory

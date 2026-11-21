@@ -55,6 +55,7 @@ fn build(rt: SimRuntime, pool_frames: usize) -> (Db, Vec<(i64, Tid)>) {
             kept.push((key, tid));
         } else {
             heap.delete(&pager, tid, Xid(DELETER))
+                .kept(&crate::heap::Tested)
                 .expect("delete")
                 .unchecked(crate::heap::Unchecked::Test);
         }
@@ -268,6 +269,7 @@ fn clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole() {
                 for t in low {
                     let before = g.load(Ordering::Relaxed);
                     h.delete(&p, t, Xid(3))
+                        .kept(&crate::heap::Tested)
                         .expect("delete")
                         .unchecked(crate::heap::Unchecked::Test);
                     if before && g.load(Ordering::Relaxed) {
@@ -374,6 +376,7 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
                     .unwrap();
                 db.heap
                     .delete(&db.pager, filler, Xid(2 * r + 3))
+                    .kept(&crate::heap::Tested)
                     .unwrap()
                     .unchecked(crate::heap::Unchecked::Test);
                 rt.yield_now();
@@ -423,6 +426,7 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
                         let tid = db.heap.insert(&db.pager, Xid(xid), &large_row(-1)).unwrap();
                         db.heap
                             .delete(&db.pager, tid, Xid(xid))
+                            .kept(&crate::heap::Tested)
                             .unwrap()
                             .unchecked(crate::heap::Unchecked::Test);
                         db.heap
@@ -542,6 +546,7 @@ fn emptying_a_page_beside_a_settle_of_its_neighbours_entry_finishes() {
                 for &t in gone.iter().chain(&thinned[..1]) {
                     db.heap
                         .delete(&db.pager, t, Xid(DELETER))
+                        .kept(&crate::heap::Tested)
                         .unwrap()
                         .unchecked(crate::heap::Unchecked::Test);
                 }

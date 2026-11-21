@@ -181,7 +181,8 @@ impl Catalog {
         let gone = gone?;
         for (tid, header) in gone {
             self.roots
-                .delete(pager, WriteTarget::checked(tid, header), x)?
+                .delete(pager, WriteTarget::checked(tid, header), x)
+                .kept(&super::Abandoning(()))?
                 .unchecked(Unchecked::Catalog);
         }
         for r in rows {

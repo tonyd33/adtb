@@ -1,7 +1,7 @@
 //! Edits a test makes to the pages of heaps, their directories and large-value stores, beneath
 //! the writes that keep them sound.
 
-use crate::mvcc::Xid;
+use crate::mvcc::{Writers, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, FIRST_EDITABLE, HEADER_LEN, PageError, PageKind, Pager, Pid};
 
@@ -22,6 +22,10 @@ pub enum Edit {
     Broken(usize),
     /// Make the version in slot `slot` of a heap page deleted by `by`.
     Deleter { slot: usize, by: Xid },
+    /// Make the version in slot `slot` of a heap page inserted by `by`, keeping its deleter.
+    Inserter { slot: usize, by: Xid },
+    /// Empty the version in slot `slot` of a heap page, leaving the slot unused.
+    Vacate(usize),
     /// Make the chunk in slot `slot` of a large-value store page count `count` versions.
     Count { slot: usize, count: u32 },
 }
@@ -69,6 +73,24 @@ fn edited(copy: &mut PageCopy, edit: Edit) -> bool {
             let mut header = Header::read(&page.view()[at.clone()]);
             header.writers = header.writers.superseded_by(by);
             header.write(page.version_mut(at));
+        }
+        Edit::Inserter { slot, by } => {
+            let Some((mut page, at)) = version(copy, slot) else {
+                return false;
+            };
+            let mut header = Header::read(&page.view()[at.clone()]);
+            let inserted = Writers::inserted(by);
+            header.writers = match header.writers.deleter() {
+                Some(d) => inserted.superseded_by(d),
+                None => inserted,
+            };
+            header.write(page.version_mut(at));
+        }
+        Edit::Vacate(slot) => {
+            let Some((mut page, _)) = version(copy, slot) else {
+                return false;
+            };
+            page.release(slot, &Slot::Unused);
         }
         Edit::Count { slot, count } => {
             let Some((mut page, at)) = version(copy, slot) else {

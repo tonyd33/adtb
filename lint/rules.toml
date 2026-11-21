@@ -111,3 +111,9 @@ exclude = [
   "crates/adtb-testkit/**",
 ]
 rows = { domain_copies = "zero" }
+
+[[rule]]
+query = "undo.tql"
+include = ["crates/adtb/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
+rows = { discarded_heap_writes = "zero" }

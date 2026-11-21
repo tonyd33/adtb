@@ -12,6 +12,9 @@ pub enum Rot {
     Catalog(catalog::Rot),
     /// The stored catalog has no root for the structure named.
     NoRoot(String),
+    /// The relation of this qualified name holds no row of the key of a row the statement
+    /// targets.
+    Unkeyed(String),
 }
 
 impl From<Rot> for Error {
@@ -27,6 +30,10 @@ impl fmt::Display for Rot {
             Rot::NoKeyIndex(relation) => write!(f, "relation {relation} has no key index"),
             Rot::Catalog(r) => write!(f, "{r}"),
             Rot::NoRoot(what) => write!(f, "the stored catalog has no root for {what}"),
+            Rot::Unkeyed(relation) => write!(
+                f,
+                "relation {relation} holds no row of the key of a row the statement targets"
+            ),
         }
     }
 }

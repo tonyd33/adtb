@@ -256,6 +256,7 @@ fn perform(db: &Db, live: &mut Live, op: &Op, xid: Xid) {
             let mut judge = db.txns.judge(&db.pager, db.txns.horizon_now(h.id().0));
             let tid = h
                 .insert_pruning(&db.pager, xid, row, &mut judge)
+                .kept(&crate::heap::Tested)
                 .expect("insert");
             db.index(*heap, *key, tid);
             live.insert(*key, (*heap, tid, row.clone()));
@@ -266,6 +267,7 @@ fn perform(db: &Db, live: &mut Live, op: &Op, xid: Xid) {
             let mut judge = db.txns.judge(&db.pager, db.txns.horizon_now(h.id().0));
             let (u, _) = h
                 .update_pruning(&db.pager, tid, xid, row, &[0], &mut judge)
+                .kept(&crate::heap::Tested)
                 .expect("update");
             if !u.heap_only {
                 db.index(heap, *key, u.tid);
@@ -276,6 +278,7 @@ fn perform(db: &Db, live: &mut Live, op: &Op, xid: Xid) {
             let (heap, tid, _) = live.remove(key).unwrap();
             db.heaps[heap]
                 .delete(&db.pager, tid, xid)
+                .kept(&crate::heap::Tested)
                 .expect("delete")
                 .unchecked(crate::heap::Unchecked::Test);
         }

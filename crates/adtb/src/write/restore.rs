@@ -9,6 +9,7 @@ use adtb_lang::types::RelId;
 use crate::btree::BTree;
 use crate::btree::build::{BuildError, merge_runs};
 use crate::exec::Val;
+use crate::heap::Abandons;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
@@ -34,6 +35,8 @@ impl<R: Runtime> Database<R> {
     }
 }
 
+impl<R: Runtime> Abandons for Restoring<'_, R> {}
+
 impl<R: Runtime> Restoring<'_, R> {
     /// Write `rows` into their heaps as one committed transaction, checking only their sizes and
     /// entering no index entry.
@@ -58,6 +61,7 @@ impl<R: Runtime> Restoring<'_, R> {
                 let h = &db.bindings.heaps()[&heap].heap;
                 let mut judge = db.session.txns.judge_now(&db.pager, h.id().0);
                 h.insert_pruning(&db.pager, xid, &stored, &mut judge)
+                    .kept(self)
                     .map_err(too_large(*r, *c))?;
                 if let Val::Int(k) = stmt.key_of(*r, row)? {
                     most = most.max(Some(k));

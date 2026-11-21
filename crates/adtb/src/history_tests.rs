@@ -208,6 +208,7 @@ impl Db {
             if let Some(tid) = self.live.remove(&k) {
                 self.heap()
                     .delete(&self.pager, tid, x)
+                    .kept(&crate::heap::Tested)
                     .expect("delete")
                     .unchecked(crate::heap::Unchecked::Test);
             }
@@ -217,6 +218,7 @@ impl Db {
                 let mut judge = txns.judge(&self.pager, txns.horizon_now(heap.id().0));
                 let tid = heap
                     .insert_pruning(&self.pager, x, &row, &mut judge)
+                    .kept(&crate::heap::Tested)
                     .expect("insert");
                 let entry = Entry {
                     key: vec![Value::I64(k)],
@@ -1236,6 +1238,7 @@ fn fetch_beside_vacuum(
         if let Some(tid) = live {
             db.heap()
                 .delete(&db.pager, tid, x)
+                .kept(&crate::heap::Tested)
                 .expect("delete")
                 .unchecked(crate::heap::Unchecked::Test);
         }
@@ -1389,6 +1392,7 @@ fn insert_then_delete(db: &Db, keys: std::ops::Range<i64>) {
     for tid in tids {
         db.heap()
             .delete(&db.pager, tid, x)
+            .kept(&crate::heap::Tested)
             .expect("delete")
             .unchecked(crate::heap::Unchecked::Test);
     }

@@ -44,12 +44,14 @@ fn an_update_pruning_a_full_page_refuses_it_at_an_unreserved_deleter() {
         let page = Pid(dead.page());
         assert_eq!(page, Pid(target.page()), "both versions on the full page");
         heap.delete(&pager, dead, PAST)
+            .kept(&crate::heap::Tested)
             .unwrap()
             .unchecked(crate::heap::Unchecked::Test);
         let begun = txns.begin(&pager).unwrap();
         let y = begun.xid();
         let mut judge = txns.judge_now(&pager, heap.id().0);
         let got = heap.update_pruning(&pager, target, y, &[Value::I64(3)], &[], &mut judge);
+        let got = got.kept(&crate::heap::Tested);
         assert_eq!(Err(HeapError::Page(refused_page(page))), got);
         assert_eq!(BTreeMap::from([(page, FRAME)]), pager.damaged());
         assert_eq!(Err(refused_page(page)), pager.read(page).map(drop));
@@ -71,6 +73,7 @@ fn a_status_lookup_of_a_version_whose_header_changed_before_the_latch_reads_agai
             panic!("two versions: {versions:?}");
         };
         heap.delete(&pager, tid, PAST)
+            .kept(&crate::heap::Tested)
             .unwrap()
             .unchecked(crate::heap::Unchecked::Test);
         let unreserved = || Err::<(), _>(StatusError::Unreserved(PAST));

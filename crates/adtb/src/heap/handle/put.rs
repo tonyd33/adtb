@@ -8,7 +8,7 @@ use super::super::page::HeapPageMut;
 use super::super::row::Pointer;
 use super::super::stage::Stage;
 use super::super::version::{Flags, Header};
-use super::super::write::{HeapWrite, Rank, Took};
+use super::super::write::{Failed, HeapWrite, Rank, Took};
 use super::{Heap, Judge, Put, tid, version_bytes};
 
 /// A version ready to put, and the pointers of its out-of-line values.
@@ -46,7 +46,8 @@ impl Heap {
             let Some((first, rest)) = ready.split_first() else {
                 return Ok(());
             };
-            let tids = self.put_run(pager, xid, first, rest, Some(&mut *judge))?;
+            let (tids, committed) = self.put_run(pager, xid, first, rest, Some(&mut *judge))?;
+            committed.map_err(Error::from)?;
             ready.drain(..tids.len());
             for (row, t) in waiting.drain(..tids.len()).zip(tids) {
                 placed(row, t)?;
@@ -56,7 +57,8 @@ impl Heap {
 
     /// Put `first` on a page found for it, pruning by `judge` a page found without room before
     /// looking further, then each of `rest` in turn until one does not fit that page, all in one
-    /// write. Returns the TIDs of the versions put.
+    /// write. Returns the TIDs of the versions put and the commit's failure after its update wrote
+    /// them, if it failed.
     pub(super) fn put_run<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -64,7 +66,7 @@ impl Heap {
         (first, held): &Ready,
         rest: &[Ready],
         mut judge: Option<&mut Judge<'_>>,
-    ) -> Result<Vec<Tid>, Error> {
+    ) -> Result<(Vec<Tid>, Result<(), Failed>), Error> {
         loop {
             let pid = self.candidate(pager, first.len())?;
             let pre = self.preconvert(pager, pid, xid)?;
@@ -81,8 +83,10 @@ impl Heap {
                         tids.push(t);
                         retain.extend(held.iter().cloned());
                     }
-                    write.commit(Some(Took::Found(self, pid)), &retain, &c.dropped)?;
-                    return Ok(tids);
+                    return match write.commit(Some(Took::Found(self, pid)), &retain, &c.dropped) {
+                        Err(f) if !f.written() => Err(f.into()),
+                        committed => Ok((tids, committed)),
+                    };
                 }
                 Put::Stale => continue,
                 Put::Full => {}

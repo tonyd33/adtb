@@ -1177,7 +1177,7 @@ impl<R: Runtime> Database<R> {
         let mut changed = tx.held.changed.borrow_mut();
         for s in ran {
             for u in s.undo.borrow().iter() {
-                if let apply::Undo::Kill(heap, ..) = u {
+                if let (heap, crate::heap::Undo::Kill(..)) = u {
                     changed.entry(*heap).or_default().undone += 1;
                 }
             }

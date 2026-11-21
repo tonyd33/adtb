@@ -1,6 +1,6 @@
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use super::{Error, FieldType, Heap, LargeStore, WriteTarget};
+use super::{Error, FieldType, Heap, LargeStore, Undo, WriteTarget};
 use crate::key::{Scalar, Tid, Value};
 use crate::mvcc::Xid;
 use crate::runtime::Threads;
@@ -48,12 +48,14 @@ fn rejected_changes(cross_page: bool) {
                 heap.update(&pager, stale, Xid(3), &[Value::I64(3)], &[]),
                 Err(expected)
             );
-            assert_eq!(heap.delete(&pager, stale, Xid(3)), Err(expected));
+            assert_eq!(
+                heap.delete(&pager, stale, Xid(3)).kept(&super::Tested),
+                Err(expected)
+            );
             assert_eq!(
                 heap.retag(&pager, stale, Xid(3), &other, &[Value::I64(3)]),
                 Err(expected)
             );
-            assert_eq!(heap.restore(&pager, stale), Err(expected));
             assert_eq!(heap.headers(&pager).unwrap(), unchanged);
             assert!(other.headers(&pager).unwrap().is_empty());
             assert_eq!(
@@ -103,39 +105,6 @@ fn stale_claims_preserve_a_same_page_or_cross_page_successor_after_recovery() {
     }
 }
 
-#[test]
-fn rollback_cannot_clear_another_writer_header() {
-    let mut sim = Sim::new(0, Config::default());
-    assert_eq!(
-        sim.run(|rt| {
-            let pager = Pager::create(rt, &options()).unwrap();
-            let large = LargeStore::create(&pager, 40).unwrap();
-            let heap = Heap::create(&pager, 41, fields(), large).unwrap();
-            let old = heap.insert(&pager, Xid(1), &[Value::I64(1)]).unwrap();
-            heap.delete(&pager, old, Xid(2))
-                .unwrap()
-                .unchecked(crate::heap::Unchecked::Test);
-            let restore =
-                WriteTarget::checked(old, heap.read(&pager, old).unwrap().unwrap().header);
-            let new = heap
-                .update(&pager, old, Xid(3), &[Value::I64(3)], &[])
-                .unwrap();
-            let header = heap.read(&pager, old).unwrap().unwrap().header;
-            assert_eq!(
-                heap.restore(&pager, restore),
-                Err(Error::Changed {
-                    current: Some(header)
-                })
-            );
-            assert_eq!(
-                heap.read(&pager, old).unwrap().unwrap().header.next,
-                Some(new.tid)
-            );
-        }),
-        Outcome::Finished
-    );
-}
-
 /// Overwrite page `pid` with page `from` past the bytes the pager keeps, owner and kind included.
 fn plant(pager: &Pager<SimRuntime>, pid: Pid, from: Pid) {
     let bytes = pager.read(from).unwrap().to_vec();
@@ -157,8 +126,8 @@ type Write = fn(&Heap, &Pager<SimRuntime>, WriteTarget, &Heap) -> Result<(), Err
 
 /// Plant a page of another heap holding a version with the same header over the page of a
 /// version of a heap, then run `write` on a target checked against that version. Returns its
-/// answer and whether the planted page kept its bytes.
-fn foreign_target(write: Write) -> (Result<(), Error>, bool) {
+/// answer, whether the planted page kept its bytes or `None` when it is refused, and the page.
+fn foreign_target(write: Write) -> (Result<(), Error>, Option<bool>, Pid) {
     let mut out = None;
     in_sim(|rt| {
         let pager = Pager::create(rt, &options()).unwrap();
@@ -178,21 +147,31 @@ fn foreign_target(write: Write) -> (Result<(), Error>, bool) {
         plant(&pager, pid, Pid(theirs.page()));
         let planted = pager.read(pid).unwrap().to_vec();
         let answer = write(&heap, &pager, WriteTarget::checked(old, header), &other);
-        out = Some((answer, planted == pager.read(pid).unwrap().to_vec()));
+        let kept = pager.read(pid).ok().map(|p| p.to_vec() == planted);
+        out = Some((answer, kept, pid));
     });
     out.unwrap()
 }
 
 #[test]
-fn a_checked_delete_or_restore_of_a_version_whose_page_another_heap_now_owns_is_changed() {
-    let writes: [(&str, Write); 2] = [
-        ("delete", |h, p, t, _| h.delete(p, t, Xid(3)).map(drop)),
-        ("restore", |h, p, t, _| h.restore(p, t)),
-    ];
-    for (what, write) in writes {
-        let changed = Err(Error::Changed { current: None });
-        assert_eq!((changed, true), foreign_target(write), "{what}");
-    }
+fn a_checked_delete_of_a_version_whose_page_another_heap_now_owns_is_changed() {
+    let (answer, kept, _) =
+        foreign_target(|h, p, t, _| h.delete(p, t, Xid(3)).kept(&super::Tested).map(drop));
+    assert_eq!(
+        (Err(Error::Changed { current: None }), Some(true)),
+        (answer, kept)
+    );
+}
+
+#[test]
+fn a_take_back_of_a_version_whose_page_another_heap_now_owns_refuses_the_page() {
+    let (answer, kept, pid) =
+        foreign_target(|h, p, t, _| h.take_back(p, Undo::Restore(t.tid, Xid(1))));
+    let refused = PageError {
+        pid,
+        damage: Damage::Shape(Shape::Frame),
+    };
+    assert_eq!((Err(Error::Page(refused)), None), (answer, kept));
 }
 
 #[test]
@@ -206,8 +185,9 @@ fn a_checked_update_or_retag_of_a_version_whose_page_another_heap_now_owns_is_ch
         }),
     ];
     for (what, write) in writes {
+        let (answer, kept, _) = foreign_target(write);
         let changed = Err(Error::Changed { current: None });
-        assert_eq!((changed, true), foreign_target(write), "{what}");
+        assert_eq!((changed, Some(true)), (answer, kept), "{what}");
     }
 }
 

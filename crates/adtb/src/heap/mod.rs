@@ -15,6 +15,7 @@ mod row;
 mod scribble;
 mod slotted;
 mod stage;
+mod undo;
 mod version;
 mod vm;
 mod write;
@@ -54,6 +55,9 @@ pub(crate) use row::put_uvarint;
 pub use row::{CtorType, FieldType};
 #[cfg(any(test, feature = "testing"))]
 pub use scribble::{Edit, scribble};
+#[cfg(any(test, feature = "testing"))]
+pub use undo::Tested;
+pub use undo::{Abandons, Undo, Undoable};
 #[cfg(test)]
 pub use version::HEADER_LEN;
 pub use version::{Flags, Header};
@@ -121,8 +125,6 @@ pub struct Superseded {
 /// Why a write of a version takes no SIREAD check.
 #[derive(Clone, Copy, Debug)]
 pub enum Unchecked {
-    /// The version is one the writer's statement inserted.
-    OwnInsert,
     /// The version is a catalog row, which no serializable read locks.
     Catalog,
     /// The writer is a test of a heap, outside the serializer.

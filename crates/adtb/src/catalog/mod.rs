@@ -1379,6 +1379,11 @@ impl<R: Runtime> Migrating<'_, R> {
     }
 }
 
+/// The writer of a catalog transaction, which abandons it whole on failure.
+struct Abandoning(());
+
+impl heap::Abandons for Abandoning {}
+
 /// Insert `row` into `heap` as transaction `x`, pruning a page found without room before
 /// looking further. Returns its TID.
 fn insert_row<R: Runtime>(
@@ -1389,7 +1394,8 @@ fn insert_row<R: Runtime>(
     row: &[Value],
 ) -> Result<Tid, Error> {
     let mut judge = txns.judge_now(pager, heap.id().0);
-    Ok(heap.insert_pruning(pager, x, row, &mut judge)?)
+    let put = heap.insert_pruning(pager, x, row, &mut judge);
+    Ok(put.kept(&Abandoning(()))?)
 }
 
 /// Returns the heap of every constructor of relation `r` among `heaps`.
@@ -1443,7 +1449,8 @@ fn delete_keyed<R: Runtime>(
                 continue 'scan;
             };
             if seen.visible() {
-                heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?
+                heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)
+                    .kept(&Abandoning(()))?
                     .unchecked(heap::Unchecked::Catalog);
                 keys.swap_remove(at);
             }

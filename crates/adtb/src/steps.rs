@@ -12,6 +12,10 @@ pub enum Step {
     WriteChanged(Change),
     /// A statement's update, delete or retag of a version checked the SIREAD locks on it.
     WriteChecked,
+    /// A statement's insert of a version changed its page.
+    WriteInserted,
+    /// A failed statement's take-back is to undo its next change.
+    TakeBack,
 }
 
 /// What a statement's write did to a version it superseded.

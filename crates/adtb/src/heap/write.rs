@@ -4,13 +4,13 @@ use crate::faults::{self, Step};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Pid, Reservation};
 
-use super::Refused;
 use super::dir::{Above, Fit};
 use super::handle::Heap;
 use super::large::{LargeStore, Retained};
 use super::page::{HeapPage, HeapPageMut, PageCopy};
 use super::row::Pointer;
 use super::stage::Stage;
+use super::{Error, Refused};
 
 /// A latch's place in the one order every thread takes latches in, shared or exclusive: heap
 /// pages by page id, then large-value store pages by page id, then directory pages by level, the
@@ -87,6 +87,40 @@ pub(super) enum Took<'h> {
     Found(&'h Heap, Pid),
 }
 
+/// The failure of a [`HeapWrite::commit`], and whether it came after the update that wrote the
+/// change's pages.
+#[derive(Debug)]
+pub(super) struct Failed {
+    refused: Refused,
+    written: bool,
+}
+
+impl Failed {
+    /// Returns whether the failure came after the update that wrote the change's pages.
+    pub(super) fn written(&self) -> bool {
+        self.written
+    }
+
+    fn before(refused: Refused) -> Failed {
+        Failed {
+            refused,
+            written: false,
+        }
+    }
+}
+
+impl From<Failed> for Refused {
+    fn from(f: Failed) -> Refused {
+        f.refused
+    }
+}
+
+impl From<Failed> for Error {
+    fn from(f: Failed) -> Error {
+        f.refused.into()
+    }
+}
+
 /// One change to heap pages and to the store, directory and map pages that describe them. Its
 /// exclusive latches are taken in [`Rank`] order.
 pub(super) struct HeapWrite<'p, 'h, R: Runtime> {
@@ -145,13 +179,13 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         took: Option<Took<'h>>,
         retain: &[Pointer],
         release: &[Pointer],
-    ) -> Result<(), Refused> {
+    ) -> Result<(), Failed> {
         let pager = self.pager;
         let store = took.map(|took| match took {
             Took::HeapOnly(heap, _) | Took::Found(heap, _) => heap.large(),
         });
         let mut retained = store.map(|store| store.retained(pager));
-        let above = self.write_pages(took, retained.as_mut(), retain)?;
+        let above = (self.write_pages(took, retained.as_mut(), retain)).map_err(Failed::before)?;
         if let Some(retained) = retained {
             retained.written();
         }
@@ -164,7 +198,10 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         if let Some(Took::Found(heap, pid)) = took {
             heap.hint_at(pid);
         }
-        settled
+        settled.map_err(|refused| Failed {
+            refused,
+            written: true,
+        })
     }
 
     /// Count the versions pointing at each of `retain` in `retained`, clear the map bits of the

@@ -16,10 +16,11 @@ use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
 use super::write::{HeapWrite, Rank, Took, release_each};
-use super::{Error, Refused, Superseded, WriteTarget, fixed, slotted};
+use super::{Error, Refused, Superseded, Undo, Undoable, WriteTarget, fixed, slotted};
 use super::{chain, prune};
 
 mod decode;
+mod deleters;
 mod put;
 
 use decode::Bad;
@@ -64,6 +65,12 @@ impl Version {
         if let StatusError::Page(e) = e {
             return Refused::Page(e);
         }
+        self.refuse_frame(pager)
+    }
+
+    /// Refuse the version's page as out of frame when, under its exclusive latch, the version is
+    /// still there as read. Returns [`Refused::Gone`] when it is not.
+    pub fn refuse_frame<R: Runtime>(&self, pager: &Pager<R>) -> Refused {
         let judge = |p: &PageExclusive<'_, R>| {
             let page = HeapPage::any(p)?;
             let Slot::Normal { at, .. } = page.get(usize::from(self.tid.slot())) else {
@@ -1028,7 +1035,7 @@ impl Heap {
     }
 
     /// Insert `row` as a version written by `xid`, pruning by `judge` a page found without room
-    /// before looking further. Returns its TID.
+    /// before looking further. Returns its TID, with the change that takes the insert back.
     ///
     /// Panics:
     /// - `row` is not a row of the newest format.
@@ -1038,8 +1045,8 @@ impl Heap {
         xid: Xid,
         row: &[Value],
         judge: &mut Judge<'_>,
-    ) -> Result<Tid, Error> {
-        self.put_version(pager, xid, row, Some(judge))
+    ) -> Undoable<Tid> {
+        (self.put_version(pager, xid, row, Some(judge))).unwrap_or_else(Undoable::failed)
     }
 
     /// Insert a copy of `v`, a version of `from` read at `v.tid`, with no successor, and flag the
@@ -1127,11 +1134,11 @@ impl Heap {
         xid: Xid,
         row: &[Value],
         judge: Option<&mut Judge<'_>>,
-    ) -> Result<Tid, Error> {
+    ) -> Result<Undoable<Tid>, Error> {
         let (body, held) = self.body(pager, xid, row, &[])?;
         let ready = (version_bytes(Header::new(xid), &body), held);
-        let tids = self.put_run(pager, xid, &ready, &[], judge)?;
-        Ok(tids[0])
+        let (tids, committed) = self.put_run(pager, xid, &ready, &[], judge)?;
+        Undoable::committed(committed, tids[0], None, Some(Undo::Kill(tids[0], xid)))
     }
 
     /// Prune `pid` by `judge`, if there is one and the page is in the newest format. Returns
@@ -1156,7 +1163,7 @@ impl Heap {
 
     /// Write `row` as the successor `xid` makes of the version at `at`, and point that version at
     /// it, pruning by `judge` a page found without room before looking further. Returns the
-    /// successor and the old version.
+    /// successor and the old version, with the changes that take the update back.
     ///
     /// The successor is heap-only when it fits on the old version's page and no field listed in
     /// `indexed`, the key fields of every index over this heap's constructor, changes.
@@ -1168,8 +1175,9 @@ impl Heap {
         row: &[Value],
         indexed: &[usize],
         judge: &mut Judge<'_>,
-    ) -> Result<(Updated, Superseded), Error> {
-        self.put_successor(pager, at.into(), xid, row, indexed, Some(judge))
+    ) -> Undoable<(Updated, Superseded)> {
+        (self.put_successor(pager, at.into(), xid, row, indexed, Some(judge)))
+            .unwrap_or_else(Undoable::failed)
     }
 
     fn put_successor<R: Runtime>(
@@ -1180,7 +1188,7 @@ impl Heap {
         row: &[Value],
         indexed: &[usize],
         mut judge: Option<&mut Judge<'_>>,
-    ) -> Result<(Updated, Superseded), Error> {
+    ) -> Result<Undoable<(Updated, Superseded)>, Error> {
         let at = target.tid;
         let (format, old_row, pointers) = loop {
             let raw = self.raw(pager, at)?;
@@ -1215,13 +1223,19 @@ impl Heap {
                         Flags::HOT_UPDATED,
                     )?;
                     let retain = [&held[..], &c.gained].concat();
-                    write.commit(Some(Took::HeapOnly(self, o)), &retain, &c.dropped)?;
+                    let committed =
+                        write.commit(Some(Took::HeapOnly(self, o)), &retain, &c.dropped);
                     let updated = Updated {
                         tid: t,
                         heap_only: true,
                     };
                     let change = Change::Update { heap_only: true };
-                    return Ok((updated, self.superseded(at, change)));
+                    return Undoable::committed(
+                        committed,
+                        (updated, self.superseded(at, change)),
+                        Some(Undo::Restore(at, xid)),
+                        Some(Undo::Kill(t, xid)),
+                    );
                 }
                 Put::Stale => continue,
                 Put::Full => tries += 1,
@@ -1247,13 +1261,18 @@ impl Heap {
                         Flags::NONE,
                     )?;
                     let retain = [&held[..], &c.gained].concat();
-                    write.commit(Some(Took::Found(self, n)), &retain, &c.dropped)?;
+                    let committed = write.commit(Some(Took::Found(self, n)), &retain, &c.dropped);
                     let updated = Updated {
                         tid: t,
                         heap_only: false,
                     };
                     let change = Change::Update { heap_only: false };
-                    return Ok((updated, self.superseded(at, change)));
+                    return Undoable::committed(
+                        committed,
+                        (updated, self.superseded(at, change)),
+                        Some(Undo::Restore(at, xid)),
+                        Some(Undo::Kill(t, xid)),
+                    );
                 }
                 Put::Stale => continue,
                 Put::Full => {}
@@ -1274,55 +1293,10 @@ impl Heap {
         }
     }
 
-    /// Mark the version at `at` deleted by `xid`.
-    pub fn delete<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        at: impl Into<WriteTarget>,
-        xid: Xid,
-    ) -> Result<Superseded, Error> {
-        let target = at.into();
-        let mut write = HeapWrite::new(pager);
-        write.latch(&[(self, Pid(target.tid.page()))])?;
-        self.supersede(
-            write.stage(),
-            pager,
-            target,
-            |w| w.superseded_by(xid),
-            None,
-            Flags::NONE,
-        )?;
-        write.commit(None, &[], &[])?;
-        Ok(self.superseded(target.tid, Change::Delete))
-    }
-
-    /// Clear the deleter of the version at `at`, its `next` and its successor flags.
-    ///
-    /// Preconditions: the version's deleter is the caller's running transaction, and the
-    /// successor it wrote, if any, is deleted by that transaction too.
-    pub fn restore<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        at: impl Into<WriteTarget>,
-    ) -> Result<(), Error> {
-        let target = at.into();
-        let mut write = HeapWrite::new(pager);
-        write.latch(&[(self, Pid(target.tid.page()))])?;
-        self.supersede(
-            write.stage(),
-            pager,
-            target,
-            Writers::cleared,
-            None,
-            Flags::NONE,
-        )?;
-        write.commit(None, &[], &[])?;
-        Ok(())
-    }
-
     /// Move the row whose version is at `at` into heap `to` as `row`, written by `xid`, pruning a
     /// page of `to` found without room by `judge`, a judge of `to`'s versions, before looking
-    /// further. Returns the new version's TID and the old version.
+    /// further. Returns the new version's TID and the old version, with the changes that take the
+    /// retag back.
     ///
     /// The new version has the retagged-in flag; the old one gets `xid` as its deleter, the moved
     /// flag and `next` naming the new one. Out-of-line values `row` shares with the old version
@@ -1338,8 +1312,9 @@ impl Heap {
         to: &Heap,
         row: &[Value],
         judge: &mut Judge<'_>,
-    ) -> Result<(Tid, Superseded), Error> {
-        self.put_moved(pager, at.into(), xid, to, row, Some(judge))
+    ) -> Undoable<(Tid, Superseded)> {
+        (self.put_moved(pager, at.into(), xid, to, row, Some(judge)))
+            .unwrap_or_else(Undoable::failed)
     }
 
     fn put_moved<R: Runtime>(
@@ -1350,7 +1325,7 @@ impl Heap {
         to: &Heap,
         row: &[Value],
         mut judge: Option<&mut Judge<'_>>,
-    ) -> Result<(Tid, Superseded), Error> {
+    ) -> Result<Undoable<(Tid, Superseded)>, Error> {
         assert_ne!(self.id, to.id, "a retag moves a row to another heap");
         assert_eq!(self.large, to.large, "a retag stays within one sum");
         let at = target.tid;
@@ -1385,8 +1360,13 @@ impl Heap {
                         Flags::MOVED,
                     )?;
                     let retain = [&held[..], &c.gained].concat();
-                    write.commit(Some(Took::Found(to, n)), &retain, &c.dropped)?;
-                    return Ok((t, self.superseded(at, Change::Retag)));
+                    let committed = write.commit(Some(Took::Found(to, n)), &retain, &c.dropped);
+                    return Undoable::committed(
+                        committed,
+                        (t, self.superseded(at, Change::Retag)),
+                        Some(Undo::Restore(at, xid)),
+                        Some(Undo::Kill(t, xid)),
+                    );
                 }
                 Put::Stale => continue,
                 Put::Full => {}
