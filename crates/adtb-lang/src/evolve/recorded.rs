@@ -7,6 +7,9 @@ use super::*;
 pub struct Recorded {
     steps: Vec<OpSteps>,
     resolved: Result<Vec<ResolvedOp>, Vec<Diag>>,
+    /// The migration model's resolved operators, when the model applied the migration beside
+    /// the operator layer and agreed with it.
+    modelled: Option<Vec<ResolvedOp>>,
 }
 
 /// The steps of one operator, or why they fail.
@@ -27,6 +30,13 @@ impl Recorded {
     /// leaves.
     pub fn resolved(&self) -> Result<&[ResolvedOp], &[Diag]> {
         self.resolved.as_deref().map_err(Vec::as_slice)
+    }
+
+    /// Returns the operators as the migration model resolves them, when the model applied the
+    /// migration beside the operator layer and agreed with it; `None` otherwise, and always in a
+    /// build without the model.
+    pub fn modelled(&self) -> Option<&[ResolvedOp]> {
+        self.modelled.as_deref()
     }
 }
 
@@ -50,11 +60,20 @@ impl Source {
         } = recorder;
         let named = naming.map(|n| (n.into_names(), sources));
         let resolved = next.resolving(next.version, |_| named).map(|(ops, _)| ops);
-        let recorded = Recorded { steps, resolved };
+        let recorded = Recorded {
+            steps,
+            resolved,
+            modelled: None,
+        };
         #[cfg(feature = "compare-migration-model")]
-        if model::enabled() {
-            model::compare_recorded(self, m, text, &next, &recorded);
-        }
+        let recorded = if model::enabled() {
+            Recorded {
+                modelled: model::compare_recorded(self, m, text, &next, &recorded),
+                ..recorded
+            }
+        } else {
+            recorded
+        };
         Ok((next, checked, recorded))
     }
 

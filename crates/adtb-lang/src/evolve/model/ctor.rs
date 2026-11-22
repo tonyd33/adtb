@@ -1,7 +1,7 @@
-use super::apply::{Built, Run};
 use super::field::Applied;
 use super::op::Kind;
 use super::op::{Fail, Res, Resolving, broken, refuse, unmodelled};
+use super::run::{Built, Run};
 use super::*;
 use crate::ast::{self, CtorPlace, CtorSel};
 use crate::check::{self, Ref};
@@ -176,7 +176,7 @@ impl Model {
             .map(|set| Clause::Joins { set })
             .collect();
         if !arms.is_empty() {
-            clauses.extend(self.insert_arms(run, &built, t, c, arms)?);
+            clauses.extend(self.insert_arms(run, &built, t, &[c], arms)?);
         }
         Ok((
             Resolved::AddConstructor {
@@ -192,7 +192,7 @@ impl Model {
 
     /// Returns the canonical form of constructor `name` of the type declared in `file` of
     /// `built`, from its name through its record.
-    fn ctor_canonical(
+    pub(super) fn ctor_canonical(
         &self,
         built: &Built,
         run: &Run,
@@ -270,7 +270,11 @@ impl Model {
 
     /// Returns the declaration an `arm` clause names, the target it resolves to, and for a
     /// computed field the position of its clause.
-    fn arm_target(&self, run: &Run, a: &ast::ArmClause) -> Res<(Item, ArmTarget, Option<usize>)> {
+    pub(super) fn arm_target(
+        &self,
+        run: &Run,
+        a: &ast::ArmClause,
+    ) -> Res<(Item, ArmTarget, Option<usize>)> {
         let resolving = Resolving::new(self, run.module());
         let m = resolving.module_of(&a.target);
         if let Some(f) = &a.field {
@@ -315,7 +319,7 @@ impl Model {
 
     /// Returns where in `file` of `built` the term of `item` that an arm goes into starts: a
     /// function's or constraint's text after its name, or computed clause `k`'s expression.
-    fn term_start(built: &Built, file: FileId, k: Option<usize>) -> Res<usize> {
+    pub(super) fn term_start(built: &Built, file: FileId, k: Option<usize>) -> Res<usize> {
         match (built.decl(file), k) {
             (Some(ast::Decl::Fn(f)), None) => Ok(f.name.span.end as usize),
             (Some(ast::Decl::Constraint(c)), None) => Ok(c.name.span.end as usize),
@@ -347,15 +351,15 @@ impl Model {
         }
     }
 
-    /// Give constructor `c` of type `t` each arm of `arms`, appended to the one match of its
-    /// target over a value that covers `c`, as `built` resolves the declarations. Returns the
-    /// arms' clauses.
-    fn insert_arms(
+    /// Give constructors `cs` of type `t` each arm of `arms`, appended to the one match of its
+    /// target over a value that covers one of `cs`, as `built` resolves the declarations.
+    /// Returns the arms' clauses.
+    pub(super) fn insert_arms(
         &mut self,
         run: &Run,
         built: &Built,
         t: u64,
-        c: u64,
+        cs: &[u64],
         arms: &[ast::ArmClause],
     ) -> Res<Vec<Clause>> {
         let schema = built.schema();
@@ -363,11 +367,16 @@ impl Model {
             .ids()
             .type_of(crate::ids::CatTypeId::from_raw(t))
             .expect("the type");
-        let ci = schema
-            .ids()
-            .ctor_of(crate::ids::CatCtorId::from_raw(c))
-            .expect("the added constructor")
-            .index();
+        let cis: Vec<u32> = cs
+            .iter()
+            .map(|&c| {
+                schema
+                    .ids()
+                    .ctor_of(crate::ids::CatCtorId::from_raw(c))
+                    .expect("an added constructor")
+                    .index()
+            })
+            .collect();
         let refs = check::schema_refs(schema);
         let mut placed: Vec<(Item, Option<usize>, ArmTarget, usize, String)> = Vec::new();
         for a in arms {
@@ -385,7 +394,7 @@ impl Model {
                 .filter(|(f, s, r)| {
                     *f == file
                         && within.is_none_or(|w| w.start <= s.start && s.end <= w.end)
-                        && matches!(r, Ref::Match(ty) if holds(schema, ty, def, ci))
+                        && matches!(r, Ref::Match(ty) if cis.iter().any(|&ci| holds(schema, ty, def, ci)))
                 })
                 .map(|(_, s, _)| *s)
                 .collect();
@@ -416,7 +425,7 @@ impl Model {
             placed.push((item, k, target, off, text));
         }
         let mut order: Vec<usize> = (0..placed.len()).collect();
-        order.sort_by_key(|&i| std::cmp::Reverse((placed[i].3, std::cmp::Reverse(i))));
+        order.sort_by_key(|&i| std::cmp::Reverse((placed[i].3, i)));
         let model = self.clone();
         for &i in &order {
             let (item, k, _, off, text) = &placed[i];

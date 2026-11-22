@@ -123,7 +123,7 @@ fn targets(p: &Granted) -> Vec<&GrantTarget> {
 }
 
 impl Unstated {
-    fn same(&self, o: &Unstated) -> bool {
+    pub(super) fn same(&self, o: &Unstated) -> bool {
         self.role == o.role
             && self.relation == o.relation
             && self.kind == o.kind
@@ -296,7 +296,110 @@ struct Carried {
     unstated: Vec<(u64, String)>,
 }
 
+#[cfg(feature = "compare-migration-model")]
+/// What a structural operator replaces and makes, by id, for [`Carry::new`].
+pub(super) struct Plan {
+    what: Structural,
+    span: Span,
+    /// The relation variables over the type, by id, with their names.
+    relations: Vec<(u64, String)>,
+    /// The sources each named set of a relation over the type holds, by set id.
+    sets: BTreeMap<u64, BTreeSet<u64>>,
+    /// The replaced constructors, by id, with their names.
+    sources: Vec<(u64, String)>,
+    products: Vec<String>,
+    /// The ids of the fields of the sources, by source and field name.
+    fields: BTreeMap<(u64, String), u64>,
+}
+
+#[cfg(feature = "compare-migration-model")]
+/// The relation variables over a type, by id with their names, and the sources each named set
+/// of them holds, by set id.
+pub(super) type Over = (Vec<(u64, String)>, BTreeMap<u64, BTreeSet<u64>>);
+
+#[cfg(feature = "compare-migration-model")]
+/// The replaced constructors by id with their names, the products' names, and the ids of the
+/// sources' fields by source and field name.
+pub(super) type Replacing = (
+    Vec<(u64, String)>,
+    Vec<String>,
+    BTreeMap<(u64, String), u64>,
+);
+
+#[cfg(feature = "compare-migration-model")]
+impl Plan {
+    /// Returns the plan of structural operator `what` at `span`, over the relation variables
+    /// `over`, replacing as `replacing` states.
+    pub(super) fn new(what: Structural, span: Span, over: Over, replacing: Replacing) -> Plan {
+        let (relations, sets) = over;
+        let (sources, products, fields) = replacing;
+        Plan {
+            what,
+            span,
+            relations,
+            sets,
+            sources,
+            products,
+            fields,
+        }
+    }
+
+    pub(super) fn products(&self) -> &[String] {
+        &self.products
+    }
+}
+
 impl Carry {
+    #[cfg(feature = "compare-migration-model")]
+    /// Returns how operator `plan` carries grants, given what its routing reaches and gives by
+    /// name, its discriminators and the source fields its routing matches on by name.
+    pub(super) fn new(
+        plan: Plan,
+        (reaches, given): (&Reaches, &Given),
+        discriminators: &[String],
+        matched: &[String],
+    ) -> Carry {
+        let ctor = |name: &str| {
+            plan.sources
+                .iter()
+                .find(|(_, n)| n == name)
+                .map(|&(id, _)| id)
+        };
+        let field = |s: &str, f: &str| {
+            let c = ctor(s)?;
+            plan.fields.get(&(c, f.to_string())).copied()
+        };
+        Carry {
+            what: plan.what,
+            span: plan.span,
+            ty: (String::new(), String::new()),
+            relations: plan.relations.clone(),
+            sets: plan.sets.clone(),
+            sources: plan.sources.clone(),
+            products: plan.products.clone(),
+            reaches: reaches
+                .iter()
+                .filter_map(|(s, p)| Some((ctor(s)?, p.clone())))
+                .collect(),
+            given: given
+                .iter()
+                .filter_map(|((s, p, g), from)| {
+                    let entries = from
+                        .iter()
+                        .map(|f| f.as_ref().and_then(|f| field(s, f)))
+                        .collect();
+                    Some(((ctor(s)?, p.clone(), g.clone()), entries))
+                })
+                .collect(),
+            discriminators: discriminators.to_vec(),
+            matched: plan
+                .sources
+                .iter()
+                .flat_map(|(_, s)| matched.iter().filter_map(|f| field(s, f)))
+                .collect(),
+        }
+    }
+
     /// Returns what target `t`, with fields `fields` for a `read` or `update` and whether it
     /// may cover a field that tells the sources apart, is carried to: a merge's discriminator
     /// or a nesting field of several sources.
@@ -522,6 +625,81 @@ impl Carry {
         self.matched.is_subset(&fields)
     }
 
+    /// Carry `grants` across the operator, whose products are `products` by name and id and
+    /// whose product fields `field_id` gives by product and field name. Returns the grants it
+    /// could not carry to a product.
+    pub(super) fn carry(
+        &self,
+        grants: &mut [LogGrant],
+        products: &[(String, u64)],
+        field_id: &dyn Fn(&str, &str) -> Option<u64>,
+    ) -> Vec<Unstated> {
+        let mut unstated: Vec<Unstated> = Vec::new();
+        let held = grants.to_vec();
+        let mut note = |u: Unstated| {
+            if !unstated.iter().any(|x| x.same(&u)) {
+                unstated.push(u);
+            }
+        };
+        for g in grants.iter_mut() {
+            let kind = Kind::of(&g.privilege);
+            let role = g.role.clone();
+            let mut carry = |t: &mut GrantTarget, fields: Option<&mut GrantFields>| {
+                let moves = kind == Kind::Read
+                    || (kind == Kind::Update && self.retags(&held, &role, t.relation));
+                let out = self.target(
+                    t,
+                    fields.as_deref().map(|fs| (fs, moves)),
+                    products,
+                    field_id,
+                );
+                if let GrantSel::Ctors(cs) = &mut t.sel {
+                    cs.extend(out.ctors);
+                    cs.sort_unstable();
+                    cs.dedup();
+                }
+                if let Some(fs) = fields {
+                    fs.ids.extend(out.fields);
+                    fs.ids.sort_unstable();
+                    fs.ids.dedup();
+                }
+                for p in out.unstated {
+                    note(self.unstated(&role, t.relation, kind, p));
+                }
+            };
+            match &mut g.privilege {
+                Granted::Read(t, fs) | Granted::Update(t, fs) => carry(t, Some(fs)),
+                Granted::Insert(t) | Granted::Delete(t) => carry(t, None),
+                Granted::Retag(a, b, except) => {
+                    let divided = self.divides(a, b) && !self.updates_routing(&held, &role, a, b);
+                    let differs = self.excepts_apart(except);
+                    carry(a, None);
+                    carry(b, None);
+                    *except = self.excepted(except, products);
+                    if differs {
+                        for (p, id) in products {
+                            note(self.unstated(&role, a.relation, kind, (*id, p.clone())));
+                        }
+                    }
+                    if divided {
+                        for (_, x) in products {
+                            except.extend(
+                                products
+                                    .iter()
+                                    .filter(|(_, y)| y != x)
+                                    .map(|&(_, y)| (*x, y)),
+                            );
+                        }
+                        except.sort_unstable();
+                        except.dedup();
+                    }
+                }
+                Granted::CallFn(_) => {}
+            }
+        }
+        unstated
+    }
+
     fn unstated(&self, role: &str, relation: u64, kind: Kind, product: (u64, String)) -> Unstated {
         let sources: Vec<String> = self.sources.iter().map(|(_, s)| format!("`{s}`")).collect();
         let rel = self
@@ -592,73 +770,7 @@ impl Source {
             .filter_map(|p| Some((p.clone(), ids::ctor_key_id(ids, m, t, p)?)))
             .collect();
         let field_id = |p: &str, g: &str| ids::field_key_id(ids, m, t, Some(p), g);
-        let mut unstated: Vec<Unstated> = Vec::new();
-        let held = self.grants.clone();
-        let mut grants = std::mem::take(&mut self.grants);
-        for g in &mut grants {
-            let kind = Kind::of(&g.privilege);
-            let role = g.role.clone();
-            let mut carry = |t: &mut GrantTarget, fields: Option<&mut GrantFields>| {
-                let moves = kind == Kind::Read
-                    || (kind == Kind::Update && plan.retags(&held, &role, t.relation));
-                let out = plan.target(
-                    t,
-                    fields.as_deref().map(|fs| (fs, moves)),
-                    &products,
-                    &field_id,
-                );
-                if let GrantSel::Ctors(cs) = &mut t.sel {
-                    cs.extend(out.ctors);
-                    cs.sort_unstable();
-                    cs.dedup();
-                }
-                if let Some(fs) = fields {
-                    fs.ids.extend(out.fields);
-                    fs.ids.sort_unstable();
-                    fs.ids.dedup();
-                }
-                for p in out.unstated {
-                    let u = plan.unstated(&role, t.relation, kind, p);
-                    if !unstated.iter().any(|x| x.same(&u)) {
-                        unstated.push(u);
-                    }
-                }
-            };
-            match &mut g.privilege {
-                Granted::Read(t, fs) | Granted::Update(t, fs) => carry(t, Some(fs)),
-                Granted::Insert(t) | Granted::Delete(t) => carry(t, None),
-                Granted::Retag(a, b, except) => {
-                    let divided = plan.divides(a, b) && !plan.updates_routing(&held, &role, a, b);
-                    let differs = plan.excepts_apart(except);
-                    carry(a, None);
-                    carry(b, None);
-                    *except = plan.excepted(except, &products);
-                    if differs {
-                        for (p, id) in &products {
-                            let u = plan.unstated(&role, a.relation, kind, (*id, p.clone()));
-                            if !unstated.iter().any(|x| x.same(&u)) {
-                                unstated.push(u);
-                            }
-                        }
-                    }
-                    if divided {
-                        for (_, x) in &products {
-                            except.extend(
-                                products
-                                    .iter()
-                                    .filter(|(_, y)| y != x)
-                                    .map(|&(_, y)| (*x, y)),
-                            );
-                        }
-                        except.sort_unstable();
-                        except.dedup();
-                    }
-                }
-                Granted::CallFn(_) => {}
-            }
-        }
-        self.grants = grants;
-        for u in unstated {
+        for u in plan.carry(&mut self.grants, &products, &field_id) {
             if !self.unstated.iter().any(|x| x.same(&u)) {
                 self.unstated.push(u);
             }

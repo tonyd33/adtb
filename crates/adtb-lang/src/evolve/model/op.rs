@@ -81,11 +81,43 @@ pub(super) enum Op {
     },
 }
 
+/// Why an operator does not apply, and the span of the migration's text the refusal is at, when
+/// the model names one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Refused {
+    why: String,
+    at: Option<Span>,
+}
+
+impl Refused {
+    pub(super) fn new(why: String) -> Refused {
+        Refused { why, at: None }
+    }
+
+    /// Returns the refusal `why` at `at`.
+    pub(super) fn at(at: Span, why: String) -> Refused {
+        Refused { why, at: Some(at) }
+    }
+
+    pub(super) fn why(&self) -> &str {
+        &self.why
+    }
+
+    /// Returns the span the refusal names, if it names one.
+    pub(super) fn span(&self) -> Option<Span> {
+        self.at
+    }
+
+    pub(super) fn into_why(self) -> String {
+        self.why
+    }
+}
+
 /// Why a model gives no result for an operator.
 #[derive(Clone, Debug)]
 pub(super) enum Fail {
-    /// The operator does not apply, for this reason.
-    Refused(String),
+    /// The operator does not apply.
+    Refused(Refused),
     /// The model does not apply operators of this kind.
     Unmodelled(String),
     /// The model fails to apply the operator, for this reason.
@@ -95,7 +127,25 @@ pub(super) enum Fail {
 pub(super) type Res<T> = Result<T, Fail>;
 
 pub(super) fn refuse<T>(why: impl Into<String>) -> Res<T> {
-    Err(Fail::Refused(why.into()))
+    Err(Fail::Refused(Refused::new(why.into())))
+}
+
+/// Refuse the operator for `why`, at `at` of the migration's text.
+pub(super) fn refuse_at<T>(at: Span, why: impl Into<String>) -> Res<T> {
+    Err(Fail::Refused(Refused {
+        why: why.into(),
+        at: Some(at),
+    }))
+}
+
+impl Fail {
+    /// Returns the reason the failure gives.
+    pub(super) fn reason(self) -> String {
+        match self {
+            Fail::Refused(r) => r.why,
+            Fail::Unmodelled(why) | Fail::Broken(why) => why,
+        }
+    }
 }
 
 pub(super) fn unmodelled<T>(why: impl Into<String>) -> Res<T> {

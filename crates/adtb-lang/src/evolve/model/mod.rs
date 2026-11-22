@@ -4,26 +4,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{LogGrant, Source, State};
+use crate::ast::{self, MigrationFile, OperatorKind};
 use crate::ids::{FIRST_LOG_ID, ObjectKey, Space};
+use crate::schema::Adder;
 
 mod admin;
 mod apply;
 mod clause;
 mod compare;
 mod ctor;
+mod decl;
 mod field;
 mod lift;
 mod moved;
 mod op;
 mod print;
 mod reselect;
+mod run;
 mod slots;
+mod structural;
 mod term;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
-pub(super) use compare::forced;
+pub(super) use compare::{REVERT, REVERT_SKIPPED_AT_MOST, forced};
 pub(super) use compare::{compare, compare_recorded, enabled};
 use term::Term;
 
@@ -57,8 +62,44 @@ pub(super) struct Model {
     grants: Vec<LogGrant>,
     next: BTreeMap<Space, u64>,
     version: u64,
+    /// The log: each migration's number, module, text and count of operators.
+    log: Vec<LogM>,
+    /// Each relation variable an operator of the migration being applied adds.
+    ahead: Vec<AheadM>,
     /// The packages and release data an `install` or `adopt tzdb` may name, by file.
     packages: BTreeMap<String, String>,
+    /// The grants a structural operator of the migration being applied could not carry, which
+    /// a later grant of it must state.
+    unstated: Vec<crate::evolve::carry::Unstated>,
+}
+
+/// A relation variable an operator of the migration being applied adds: named `name` in module
+/// `module`, `typed` when the migration also adds its type.
+#[derive(Clone, Debug)]
+struct AheadM {
+    module: String,
+    name: String,
+    typed: bool,
+    by: Adder,
+    added: Added,
+}
+
+/// Whether the operator adding an [`AheadM`] has applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Added {
+    Not,
+    Applying,
+    /// It has, adding the relation variable of this id.
+    As(u64),
+}
+
+/// A migration of the log, as its number, module, text and count of operators.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LogM {
+    number: u64,
+    module: String,
+    text: String,
+    operators: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,7 +264,59 @@ enum ViewSlot {
     Field(String),
 }
 
+impl LogM {
+    fn of(l: &super::Logged) -> LogM {
+        LogM {
+            number: l.number,
+            module: l.module.clone(),
+            text: l.text.clone(),
+            operators: l.operators.len(),
+        }
+    }
+}
+
 impl Model {
+    /// Hold each relation variable an `add relation` of `m` adds as one its operator has not
+    /// added yet.
+    fn expecting(&mut self, m: &MigrationFile) {
+        let module = m.module.text.as_str();
+        let types: BTreeSet<&str> = m
+            .operators
+            .iter()
+            .filter_map(|op| match &op.kind {
+                OperatorKind::AddType(t) => Some(t.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.ahead = m
+            .operators
+            .iter()
+            .enumerate()
+            .filter_map(|(k, op)| match &op.kind {
+                OperatorKind::AddRelation(r) => Some(AheadM {
+                    module: module.to_string(),
+                    name: r.name.name.text.clone(),
+                    typed: matches!(
+                        &r.ty.kind,
+                        ast::TypeKind::Named { name, .. }
+                            if name.module.as_ref().is_none_or(|m| m.text == module)
+                                && types.contains(name.name.text.as_str())
+                    ),
+                    by: Adder::Operator(k),
+                    added: Added::Not,
+                }),
+                _ => None,
+            })
+            .collect();
+    }
+
+    /// Set whether the operator `by` has added its relation variable.
+    fn mark(&mut self, by: Adder, added: Added) {
+        for e in self.ahead.iter_mut().filter(|e| e.by == by) {
+            e.added = added;
+        }
+    }
+
     /// Returns the next id of `space`, taking it.
     fn fresh(&mut self, space: Space) -> u64 {
         let n = self.next.entry(space).or_insert(FIRST_LOG_ID);

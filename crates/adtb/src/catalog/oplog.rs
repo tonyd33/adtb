@@ -79,6 +79,27 @@ pub fn chained(schema: &Schema, previous: Hash, ops: &[ResolvedOp]) -> Hash {
     log.chained(previous, &log.rows(ops))
 }
 
+/// Panic unless the hash of the version after `previous` chained from `modelled`, the migration
+/// model's resolved operators of a migration, is the one chained from `operators`, the catalog's.
+pub fn modelled_hash_agrees(
+    schema: &Schema,
+    previous: Hash,
+    operators: &[OperatorRow],
+    modelled: &[ResolvedOp],
+) {
+    let log = Log::new(schema);
+    assert_eq!(
+        hex(log.chained(previous, &log.rows(modelled))),
+        hex(log.chained(previous, operators)),
+        "the migration model's resolved operators chain to the catalog's version hash"
+    );
+}
+
+/// Returns `h` in lowercase hexadecimal.
+fn hex(h: Hash) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
 ///
 /// Panics:

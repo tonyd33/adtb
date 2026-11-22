@@ -211,3 +211,52 @@ rename relation rs to rs2",
         ])
     );
 }
+
+/// Returns the reason the model refuses each operator of migration `text` over `src` with, and
+/// the text at the span it names, `None` for an operator it applies.
+fn refusals(src: &Source, text: &str) -> Vec<Option<(String, Option<String>)>> {
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let got = of(src)
+        .expect("the source lifts")
+        .migrate(&m, text)
+        .expect("the model applies the migration");
+    assert_eq!(got.stopped(), None, "the model applies every operator");
+    got.ops()
+        .iter()
+        .map(|op| {
+            op.as_ref().err().map(|r| {
+                let at = r.span().map(|s| text[s.range()].to_string());
+                (r.why().to_string(), at)
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn a_unique_over_a_field_a_member_of_its_scope_lacks_or_types_otherwise_is_refused_at_the_member() {
+    let src = source(&[
+        (
+            "m",
+            "type T { id: Key ts } = A { u: I64 } | B { u: Text } | C",
+        ),
+        ("m", "relation ts : T key id"),
+        ("m", "set S of ts = A | C"),
+    ]);
+    let refused = |why: &str, at: &str| Some((why.to_string(), Some(at.to_string())));
+    assert_eq!(
+        refusals(
+            &src,
+            "module m
+add unique (u) in ts.(A | C)
+add unique (u) in ts.(A | B)
+add unique (u) in ts.S"
+        ),
+        vec![
+            refused("member `C` of `T` has no field `u`", "C"),
+            refused("member `B` declares `u` as `Text`, not `I64`", "B"),
+            refused("member `C` of `T` has no field `u`", "S"),
+        ]
+    );
+}

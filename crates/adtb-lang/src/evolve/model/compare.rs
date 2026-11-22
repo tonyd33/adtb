@@ -1,13 +1,15 @@
 use std::cell::RefCell;
 use std::io::Write as _;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use super::apply::Migrated;
+use super::op::Refused;
 use super::*;
 use crate::ast::{self, MigrationFile, OperatorKind};
 use crate::evolve::{Recorded, Refusal, ResolvedOp, RowMap, SourceDecl};
 use crate::ids::{KeyKind, ObjectKey, Owner, is_named};
 use crate::lex::{Tok, lex};
+use crate::span::Span;
 
 /// Returns the tokens of `text`, comments and the end left out.
 fn tokens(text: &str) -> Vec<String> {
@@ -33,7 +35,8 @@ pub(in crate::evolve) fn enabled() -> bool {
 }
 
 /// Run `f` comparing every migration it applies on this thread. Returns its result and the
-/// number of comparisons of each outcome: `agreed`, `partial`, `skipped` or `known`.
+/// number of comparisons of each hook and outcome, such as `Migrating agreed` or
+/// `Recorded skipped`.
 #[cfg(test)]
 pub(in crate::evolve) fn forced<T>(f: impl FnOnce() -> T) -> (T, BTreeMap<String, usize>) {
     FORCED.with(|x| *x.borrow_mut() = Some(BTreeMap::new()));
@@ -42,15 +45,84 @@ pub(in crate::evolve) fn forced<T>(f: impl FnOnce() -> T) -> (T, BTreeMap<String
     (out, tally)
 }
 
-/// Count `line`'s outcome for [`forced`], and append it to the file `ADTB_MIGRATION_MODEL_LOG`
-/// names, when it names one.
-fn log(line: &str) {
+/// A place that compares a migration the operator layer applies.
+#[derive(Clone, Copy, Debug)]
+enum Hook {
+    /// [`compare`], from `Source::migrating`.
+    Migrating,
+    /// [`compare_recorded`], from `Source::record`.
+    Recorded,
+}
+
+/// The comparisons a hook made in this process: how many, and how many it skipped.
+#[derive(Clone, Copy, Debug, Default)]
+struct Tally {
+    total: usize,
+    skipped: usize,
+}
+
+/// The comparisons [`judge`] counted of each hook in this process, by [`Hook`].
+static TALLIES: Mutex<[Tally; 2]> = Mutex::new(
+    [Tally {
+        total: 0,
+        skipped: 0,
+    }; 2],
+);
+
+/// The share of a hook's comparisons in one process that may be skipped, as a fraction.
+const SKIPPED_AT_MOST: (usize, usize) = (1, 10);
+
+/// The fewest comparisons of a hook in one process [`SKIPPED_AT_MOST`] judges. Below it the
+/// process must have compared a migration before it skips one.
+const JUDGED_FROM: usize = SKIPPED_AT_MOST.1;
+
+/// The tests whose skips [`SKIPPED_AT_MOST`] does not judge, by the name of the thread that
+/// runs them. Each applies few migrations, among them one the model does not compare.
+const UNJUDGED: &[&str] = &[
+    "evolve::tests::adopt_tzdb_changes_no_schema_object",
+    "evolve::tests::a_split_product_naming_the_split_constructor_names_the_products",
+    "evolve::tests::ids::a_view_stored_while_the_source_does_not_build_takes_the_ids_of_its_row_type_in_declaration_order",
+    "evolve::resolved::tests::a_type_naming_what_the_migration_adds_later_is_stored_qualified_in_every_position",
+];
+
+/// The reason of the skips of a migration applied keeping earlier operators' results, which
+/// [`SKIPPED_AT_MOST`] does not judge.
+const KEPT: &str = "kept results";
+
+/// The reason of revert's skips, which [`TALLIES`] leaves out and the comparison over the
+/// cases and the script corpus holds under [`REVERT_SKIPPED_AT_MOST`].
+pub(in crate::evolve) const REVERT: &str = "revert";
+
+/// The share of the comparisons over the cases and the script corpus that may be revert's
+/// skips, as a fraction: the measured 51 of 614, rounded up. Round 4 models revert and removes
+/// it.
+#[cfg(test)]
+pub(in crate::evolve) const REVERT_SKIPPED_AT_MOST: (usize, usize) = (9, 100);
+
+/// Count `line`'s outcome for `hook` and for [`forced`], and append it to the file
+/// `ADTB_MIGRATION_MODEL_LOG` names, when it names one. A `partial` of [`Hook::Migrating`]
+/// compares nothing and counts as skipped. Judge it unless it is a skip for [`REVERT`] or
+/// [`KEPT`] or its thread is one of [`UNJUDGED`].
+fn log(hook: Hook, line: &str) {
+    let outcome = line.split(['\t', ' ']).next().unwrap_or(line);
+    let reason = line.split('\t').nth(1);
+    let skipped = outcome == "skipped" || (outcome == "partial" && matches!(hook, Hook::Migrating));
+    let revert = skipped && reason == Some(REVERT);
     FORCED.with(|x| {
         if let Some(tally) = x.borrow_mut().as_mut() {
-            let outcome = line.split(['\t', ' ']).next().unwrap_or(line);
-            *tally.entry(outcome.to_string()).or_default() += 1;
+            let key = match (revert, skipped) {
+                (true, _) => format!("{hook:?} {REVERT}"),
+                (false, true) => format!("{hook:?} skipped"),
+                (false, false) => format!("{hook:?} {outcome}"),
+            };
+            *tally.entry(key).or_default() += 1;
         }
     });
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or_default();
+    if !revert && reason != Some(KEPT) && !UNJUDGED.contains(&name) {
+        judge(hook, skipped, name, line);
+    }
     let Some(path) = std::env::var_os("ADTB_MIGRATION_MODEL_LOG") else {
         return;
     };
@@ -61,6 +133,36 @@ fn log(line: &str) {
         .unwrap_or_else(|e| panic!("the migration model log {path:?} opens: {e}"));
     f.write_all(format!("{line}\n").as_bytes())
         .unwrap_or_else(|e| panic!("the migration model log {path:?} takes a line: {e}"));
+}
+
+/// Count a comparison of `hook` on thread `name`, `skipped` or not, whose log line is `line`.
+///
+/// Panics:
+/// - `hook` has made [`JUDGED_FROM`] comparisons in this process and skipped more than
+///   [`SKIPPED_AT_MOST`] of them.
+/// - `hook` has made fewer and skipped one before it compared one.
+fn judge(hook: Hook, skipped: bool, name: &str, line: &str) {
+    let tally = {
+        let mut all = TALLIES.lock().unwrap_or_else(PoisonError::into_inner);
+        let t = &mut all[hook as usize];
+        t.total += 1;
+        t.skipped += usize::from(skipped);
+        *t
+    };
+    let (num, den) = SKIPPED_AT_MOST;
+    if tally.total >= JUDGED_FROM {
+        assert!(
+            tally.skipped * den <= tally.total * num,
+            "the {hook:?} hook skipped {} of its {} comparisons in this process, more than {num}/{den}, on thread {name:?}; the last: {line}",
+            tally.skipped,
+            tally.total,
+        );
+    } else {
+        assert!(
+            tally.skipped < tally.total,
+            "the {hook:?} hook skipped a migration in this process before it compared one, on thread {name:?}: {line}"
+        );
+    }
 }
 
 /// Apply migration `m` to the model of `before`, and panic where the model fails or the result
@@ -74,7 +176,7 @@ pub(in crate::evolve) fn compare(
     after: Result<&Source, &Refusal>,
 ) {
     if kept {
-        log("skipped\tkept results");
+        log(Hook::Migrating, &format!("skipped\t{KEPT}"));
         return;
     }
     let model = lifted(before);
@@ -87,16 +189,17 @@ pub(in crate::evolve) fn compare(
         } else {
             "skipped"
         };
-        log(&format!("{outcome}\t{kind}"));
+        log(Hook::Migrating, &format!("{outcome}\t{kind}"));
         return;
     }
     let diffs = differences(m, &migrated, after);
-    report(m, text, &migrated, diffs, after, "agreed");
+    report(Hook::Migrating, m, text, &migrated, diffs, after, "agreed");
 }
 
 /// Log a migration the model and the layer agree on as `agreed`, and one whose `diffs` a
 /// known defect explains as that defect; panic on any other.
 fn report(
+    hook: Hook,
     m: &MigrationFile,
     text: &str,
     got: &Migrated,
@@ -105,11 +208,11 @@ fn report(
     agreed: &str,
 ) {
     if diffs.is_empty() {
-        log(agreed);
+        log(hook, agreed);
         return;
     }
     match known(m, got, &diffs, after) {
-        Some(finding) => log(&format!("known\t{finding}")),
+        Some(finding) => log(hook, &format!("known\t{finding}")),
         None => panic!(
             "the migration model and the operator layer differ on migration\n{text}\n{}",
             diffs
@@ -156,18 +259,26 @@ fn lifted_as_held(model: &Model, before: &Source) {
     );
 }
 
-/// Returns, for each operator of `m`, the reasons a refusal gives for it.
-fn refused_ops(m: &MigrationFile, r: &Refusal) -> Vec<BTreeSet<String>> {
+/// Returns, for each operator of `m`, the reasons a refusal gives for it, each with its span.
+fn refused_ops(m: &MigrationFile, r: &Refusal) -> Vec<Vec<(String, Span)>> {
     m.operators
         .iter()
         .map(|op| {
             r.operators
                 .iter()
                 .filter(|d| op.span.start <= d.span.start && d.span.end <= op.span.end)
-                .map(|d| d.message.clone())
+                .map(|d| (d.message.clone(), d.span))
                 .collect()
         })
         .collect()
+}
+
+/// Returns whether the layer's reasons `layer` hold the model's refusal `mine`: its reason, at its
+/// span when the model names one.
+fn holds_refusal(layer: &[(String, Span)], mine: &Refused) -> bool {
+    layer
+        .iter()
+        .any(|(why, at)| why == mine.why() && mine.span().is_none_or(|x| x == *at))
 }
 
 /// What a difference is in.
@@ -182,6 +293,8 @@ enum Aspect {
     },
     /// The declarations, of these modules.
     Declarations(BTreeSet<String>),
+    /// The version and the log.
+    Log,
     Modules,
     States,
     ValueStates,
@@ -223,7 +336,7 @@ fn differences(m: &MigrationFile, got: &Migrated, after: Result<&Source, &Refusa
             for (k, (layer, mine)) in reasons.iter().zip(got.ops()).enumerate() {
                 if let Err(why) = mine
                     && !layer.is_empty()
-                    && !layer.contains(why)
+                    && !holds_refusal(layer, why)
                 {
                     out.push(Diff {
                         aspect: Aspect::Reason,
@@ -239,12 +352,13 @@ fn differences(m: &MigrationFile, got: &Migrated, after: Result<&Source, &Refusa
                         recheck_only: false,
                     },
                     shown: format!(
-                        "the layer applies the migration; the model refuses {:?}, checks {}",
+                        "the layer applies the migration; the model refuses {:?}, checks {}: {}",
                         got.ops()
                             .iter()
                             .filter_map(|o| o.as_ref().err())
                             .collect::<Vec<_>>(),
-                        got.checks()
+                        got.checks(),
+                        got.model().unchecked()
                     ),
                 });
                 return out;
@@ -322,6 +436,15 @@ fn same(model: &Model, src: &Source) -> Vec<Diff> {
                 .join(" "),
         );
     }
+    check(
+        Aspect::Log,
+        format!(
+            "{} {:?}",
+            src.version,
+            src.log.iter().map(LogM::of).collect::<Vec<_>>()
+        ),
+        format!("{} {:?}", model.version, model.log),
+    );
     check(
         Aspect::Modules,
         format!("{:?} {:?}", src.modules, src.installed),
@@ -541,13 +664,14 @@ fn map_summary(m: &RowMap) -> String {
 /// operator's step count, row maps or source after it, the resolved operators, or the result,
 /// differ from `recorded` and `after`, the operator layer's, by a difference no known defect of
 /// that layer explains. Operators are compared up to the first one the model does not apply.
+/// Returns the model's resolved operators when it applies every operator and agrees.
 pub(in crate::evolve) fn compare_recorded(
     before: &Source,
     m: &MigrationFile,
     text: &str,
     after: &Source,
     recorded: &Recorded,
-) {
+) -> Option<Vec<ResolvedOp>> {
     let steps = recorded.steps();
     let model = lifted(before);
     let got = model
@@ -618,10 +742,13 @@ pub(in crate::evolve) fn compare_recorded(
         }
     }
     let agreed = match got.stopped() {
+        Some(kind) if applied == 0 => format!("skipped\t{kind}"),
         Some(kind) => format!("partial\t{kind}"),
         None => "agreed steps".to_string(),
     };
-    report(m, text, &got, diffs, Ok(after), &agreed);
+    let whole = got.stopped().is_none() && diffs.is_empty();
+    report(Hook::Recorded, m, text, &got, diffs, Ok(after), &agreed);
+    whole.then(|| got.ops().iter().flatten().cloned().collect())
 }
 
 /// Returns the finding of the operator layer that explains `diffs`, when one does; `layer` is
@@ -751,9 +878,10 @@ fn moved_without_action(
         .then_some("F7: move field leaves the moved field `on delete restrict`")
 }
 
-/// Returns the finding when the layer refuses only at its recheck, each reason `no `f` in
-/// scope` for a field `f` of an `add unique` or `add index` of `m` over a constructor set every
-/// member of which declares `f` at one type, and the model applies the migration.
+/// Returns the finding when the layer refuses only at its recheck, each reason `no `f` in scope`
+/// for a field `f` of an `add unique` or `add index` of `m` over a constructor set, and the model
+/// either applies the migration, or refuses only `add unique` operators, each because a member of
+/// its set lacks the field or declares it at another type.
 fn shared_field_refused(
     m: &MigrationFile,
     got: &Migrated,
@@ -765,58 +893,40 @@ fn shared_field_refused(
         || refusal.recheck.is_empty()
         || !diffs
             .iter()
-            .all(|d| matches!(d.aspect, Aspect::Refusals { recheck_only: true }))
+            .all(|d| matches!(d.aspect, Aspect::Refusals { .. }))
     {
         return None;
     }
-    let model = got.model();
-    let mut shared = BTreeSet::new();
-    for op in &m.operators {
+    let mut scoped = BTreeSet::new();
+    for (op, mine) in m.operators.iter().zip(got.ops()) {
         let (OperatorKind::AddUnique(fields, on) | OperatorKind::AddIndex { fields, on, .. }) =
             &op.kind
         else {
+            if mine.is_err() {
+                return None;
+            }
             continue;
         };
-        let module = on
-            .relation
-            .module
-            .as_ref()
-            .map_or(&m.module.text, |x| &x.text);
-        let Some(t) = model
-            .relation_named(module, &on.relation.name.text)
-            .and_then(|r| model.relation_type(r))
-        else {
+        if on.sel.is_none() {
             continue;
-        };
-        let members: Vec<u64> = match &on.sel {
-            None => continue,
-            Some(ast::CtorSel::One(c)) => vec![c],
-            Some(ast::CtorSel::Many(cs)) => cs.iter().collect(),
         }
-        .into_iter()
-        .filter_map(|c| model.ctor_named(t, &c.text))
-        .collect();
+        if let Err(r) = mine {
+            let member = r.why().starts_with("member `")
+                && (r.why().contains("` has no field `") || r.why().contains("` declares `"));
+            if !matches!(op.kind, OperatorKind::AddUnique(..)) || !member {
+                return None;
+            }
+        }
         for f in fields {
-            let ast::ExprKind::Name(q) = &f.kind else {
-                continue;
-            };
-            let types: BTreeSet<String> = members
-                .iter()
-                .filter_map(|&c| model.field_of(t, Some(c), &q.name.text))
-                .map(|x| model.fields[&x].ty.print(model))
-                .collect();
-            let held = members
-                .iter()
-                .all(|&c| model.field_of(t, Some(c), &q.name.text).is_some());
-            if members.len() > 1 && held && types.len() == 1 {
-                shared.insert(format!("no `{}` in scope", q.name.text));
+            if let ast::ExprKind::Name(q) = &f.kind {
+                scoped.insert(format!("no `{}` in scope", q.name.text));
             }
         }
     }
-    (!shared.is_empty()
+    (!scoped.is_empty()
         && refusal
             .recheck
             .iter()
-            .all(|d| shared.contains(&d.diag.message)))
-    .then_some("F6: a unique or index over a field every member of its set declares is refused")
+            .all(|d| scoped.contains(&d.diag.message)))
+    .then_some("F6: a unique or index over a field of a constructor set is refused only at the recheck, as no field in scope")
 }

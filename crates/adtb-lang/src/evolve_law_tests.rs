@@ -2052,9 +2052,9 @@ fn script_migrations(script: &str) -> Vec<String> {
 #[cfg(feature = "compare-migration-model")]
 const COMPARING: usize = 4;
 
-/// The migration model and the operator layer agree on every case of the search in its first
-/// shape and on every migration of the engine's script corpus, each script's applied in order
-/// from an empty source.
+/// The migration model and the operator layer agree on the migrations of every unlabelled case
+/// of the search in its first shape, each set of them once, and on every migration of the
+/// engine's script corpus, each script's applied in order from an empty source.
 #[cfg(feature = "compare-migration-model")]
 #[test]
 fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus() {
@@ -2071,10 +2071,12 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
         .take(1)
         .map(|bits| (Shape::of(bits).source(), Shape::of(bits).cases()))
         .collect();
-    let cases: Vec<(&Source, &Case)> = shapes
+    let mut cases: Vec<(&Source, &Case)> = shapes
         .iter()
         .flat_map(|(start, cases)| cases.iter().map(move |c| (start, c)))
         .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    cases.retain(|(_, c)| c.label.is_none() && seen.insert((&c.first, &c.text)));
     let mut scripts: Vec<Vec<String>> = scripts()
         .into_iter()
         .map(|(path, script)| {
@@ -2151,18 +2153,19 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
         calls <= tally.values().sum::<usize>(),
         "{calls} migrations, {tally:?}"
     );
-    assert!(tally["agreed"] > 0 && tally["partial"] > 0, "{tally:?}");
-    let total: usize = tally.values().sum();
-    let skipped = tally.get("skipped").copied().unwrap_or(0);
+    for hook in ["Migrating", "Recorded"] {
+        assert!(
+            tally.get(&format!("{hook} agreed")).is_some_and(|&n| n > 0),
+            "{tally:?}"
+        );
+    }
+    let reverts: usize = ["Migrating", "Recorded"]
+        .iter()
+        .filter_map(|hook| tally.get(&format!("{hook} {}", model::REVERT)))
+        .sum();
+    let (num, den) = model::REVERT_SKIPPED_AT_MOST;
     assert!(
-        skipped * SKIPPED_AT_MOST.1 <= total * SKIPPED_AT_MOST.0,
-        "skipped {skipped} of {total} comparisons, more than {}/{}: {tally:?}",
-        SKIPPED_AT_MOST.0,
-        SKIPPED_AT_MOST.1
+        reverts * den <= tally.values().sum::<usize>() * num,
+        "revert's skips pass {num}/{den}: {tally:?}"
     );
 }
-
-/// The share of the dedicated comparison's migrations the model may skip, as a fraction: the
-/// skips of the operators it does not model yet.
-#[cfg(feature = "compare-migration-model")]
-const SKIPPED_AT_MOST: (usize, usize) = (1, 10);

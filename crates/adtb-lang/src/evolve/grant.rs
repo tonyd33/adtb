@@ -333,10 +333,10 @@ pub struct Stated {
 }
 
 impl Stated {
-    /// Returns the privilege it states.
+    /// Returns the privilege it states and the ids of the constructors its targets cover.
     #[cfg(feature = "compare-migration-model")]
-    pub(super) fn into_privilege(self) -> Granted {
-        self.privilege
+    pub(super) fn into_covered(self) -> (Granted, BTreeSet<u64>) {
+        (self.privilege, self.covered)
     }
 
     /// Returns the name of the privilege, as `catalog::grants` writes it.

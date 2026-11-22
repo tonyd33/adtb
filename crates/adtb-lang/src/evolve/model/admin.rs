@@ -1,7 +1,7 @@
-use super::apply::{Late, Run};
 use super::field::Applied;
 use super::lift::Lifting;
 use super::op::{Fail, Res, broken, refuse, unmodelled};
+use super::run::{Late, Run};
 use super::*;
 use crate::ast;
 use crate::canon::{Names, canonical_term};
@@ -15,7 +15,7 @@ use crate::span::{FileId, Span};
 
 /// Returns the canonical form of `span` of the migration, `refs` naming what it writes, empty
 /// with a note when a name of it is not among them.
-fn canonical(run: &Run, schema: &Schema, refs: &[(Span, Ref)], span: Span) -> String {
+pub(super) fn canonical(run: &Run, schema: &Schema, refs: &[(Span, Ref)], span: Span) -> String {
     let mut names = Names::default();
     for (s, r) in refs {
         names.note(schema, *s, r);
@@ -65,7 +65,9 @@ impl Model {
     pub(super) fn grant(&mut self, run: &Run, g: &ast::Grant) -> Res<Applied> {
         let (schema, (stated, refs)) = self.stated(run, &g.privileges, Statement::Grant)?;
         for st in stated {
-            let privilege = st.into_privilege();
+            let (privilege, covered) = st.into_covered();
+            self.unstated
+                .retain(|u| !u.stated_by(&g.to.text, &privilege, &covered));
             match self
                 .grants
                 .iter_mut()

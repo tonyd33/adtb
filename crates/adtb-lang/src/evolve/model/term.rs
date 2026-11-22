@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use super::{Model, Obj};
 use crate::canon::Names;
 use crate::ids::{FIRST_LOG_ID, ObjectKey, Space};
+use crate::schema::Adder;
 
 /// Text written in the language, each name in it held as the objects it resolves to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -20,9 +21,10 @@ enum Piece {
         written: String,
         pun: bool,
     },
-    /// The name of a relation variable that operator `by` of the migration being applied adds.
-    Ahead {
-        by: usize,
+    /// The name of the relation variable of the model's [`super::AheadM`] that `by` adds, before
+    /// `by` adds it.
+    Added {
+        by: Adder,
         written: String,
     },
     /// A name whose objects an operator dropped, by their keys, until an operator adds an
@@ -37,9 +39,13 @@ enum Piece {
 impl Piece {
     fn print(&self, model: &Model) -> String {
         match self {
-            Piece::Text(s)
-            | Piece::Ahead { written: s, .. }
-            | Piece::Dropped { written: s, .. } => s.clone(),
+            Piece::Text(s) | Piece::Dropped { written: s, .. } => s.clone(),
+            Piece::Added { by, written } => model
+                .ahead
+                .iter()
+                .find(|a| a.by == *by)
+                .map_or(written, |a| &a.name)
+                .clone(),
             Piece::Name { ids, written, pun } => {
                 let now = match ids.iter().find_map(|&o| model.name(o)) {
                     Some(now) => now,
@@ -58,12 +64,12 @@ impl Piece {
 
 impl Term {
     /// Returns the text at `range` of `text`, each name `names` resolves there held by its ids,
-    /// and each name `ahead` holds by the operator that adds its relation variable.
+    /// and each name `ahead` holds by what adds its relation variable.
     pub(super) fn lift(
         text: &str,
         range: Range<usize>,
         names: &Names,
-        ahead: &[(Range<usize>, usize)],
+        ahead: &[(Range<usize>, Adder)],
     ) -> Term {
         let mut found: Vec<(Range<usize>, Piece)> = names
             .ids_within(range.clone())
@@ -80,7 +86,7 @@ impl Term {
                     .iter()
                     .filter(|(r, _)| range.start <= r.start && r.end <= range.end)
                     .map(|(r, by)| {
-                        let piece = Piece::Ahead {
+                        let piece = Piece::Added {
                             by: *by,
                             written: text[r.clone()].to_string(),
                         };
@@ -205,15 +211,15 @@ impl Term {
             .iter()
             .flat_map(|p| match p {
                 Piece::Name { ids, .. } => ids.as_slice(),
-                Piece::Text(_) | Piece::Ahead { .. } | Piece::Dropped { .. } => &[],
+                Piece::Text(_) | Piece::Added { .. } | Piece::Dropped { .. } => &[],
             })
             .copied()
     }
 
-    /// Hold each name of a relation variable operator `by` adds by `relation`, its id.
-    pub(super) fn added(&mut self, by: usize, relation: u64) {
+    /// Hold each name of the relation variable `by` adds by `relation`, its id.
+    pub(super) fn added(&mut self, by: Adder, relation: u64) {
         for p in &mut self.0 {
-            if let Piece::Ahead { by: k, written } = p
+            if let Piece::Added { by: k, written } = p
                 && *k == by
             {
                 *p = Piece::Name {
@@ -256,7 +262,7 @@ impl Term {
                         };
                     }
                 }
-                Piece::Text(_) | Piece::Ahead { .. } => {}
+                Piece::Text(_) | Piece::Added { .. } => {}
             }
         }
     }

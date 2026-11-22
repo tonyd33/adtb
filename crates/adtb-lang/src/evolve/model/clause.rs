@@ -1,7 +1,7 @@
-use super::apply::{Built, Late, Run};
 use super::field::Applied;
 use super::lift::Lifting;
-use super::op::{Fail, Res, Resolving, broken, refuse, unmodelled};
+use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
+use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, Expr, RelationClause};
 use crate::canon::canonical_term;
@@ -138,6 +138,9 @@ impl Model {
             if let Err(e) = built.schema().relation_sel(rel, sel) {
                 return refuse(e);
             }
+            if kind == IndexKind::Unique {
+                self.members_declare(built.schema(), r, sel, fields)?;
+            }
             r
         } else {
             resolving.relation(&on.relation)?
@@ -199,6 +202,97 @@ impl Model {
             },
         };
         Ok((resolved, clauses, Ok(Vec::new())))
+    }
+
+    /// Refuse a unique over a field named alone that a member of its scope `sel` of relation
+    /// variable `r` does not declare, or declares at another type than the first member does in
+    /// `schema`, at the span of the name of the member in `sel`, or of the named set holding it.
+    fn members_declare(
+        &self,
+        schema: &crate::schema::Schema,
+        r: u64,
+        sel: &ast::CtorSel,
+        fields: &[Expr],
+    ) -> Res<()> {
+        let Some(t) = self.relation_type(r) else {
+            return Ok(());
+        };
+        let Some(def) = self.def_in(schema, t) else {
+            return broken("a relation variable's type the built schema does not hold");
+        };
+        let td = schema.ty(def);
+        let tname = &self.types[&t].name;
+        let named = match sel {
+            ast::CtorSel::One(c) => std::slice::from_ref(c),
+            ast::CtorSel::Many(cs) => cs.as_slice(),
+        };
+        let mut members: Vec<(u64, Span)> = Vec::new();
+        for n in named {
+            let ctors = match self.ctor_named(t, &n.text) {
+                Some(c) => vec![c],
+                None => self
+                    .sets_of(r)
+                    .into_iter()
+                    .find(|s| self.sets[s].name == n.text)
+                    .map(|s| self.scope_ctors_of_set(s))
+                    .unwrap_or_default(),
+            };
+            for c in ctors {
+                if !members.iter().any(|(x, _)| *x == c) {
+                    members.push((c, n.span));
+                }
+            }
+        }
+        for f in fields {
+            let ast::ExprKind::Name(q) = &f.kind else {
+                continue;
+            };
+            if q.module.is_some() {
+                continue;
+            }
+            let u = &q.name.text;
+            let mut first: Option<(u64, &crate::types::Ty)> = None;
+            for &(c, at) in &members {
+                let cname = &self.ctors[&c].name;
+                let held = self
+                    .ctor_index(schema, c)
+                    .and_then(|k| td.field_named(k, u));
+                let (Some(x), Some(held)) = (
+                    self.field_of(t, Some(c), u)
+                        .or_else(|| self.field_of(t, None, u)),
+                    held,
+                ) else {
+                    return refuse_at(
+                        at,
+                        format!("member `{cname}` of `{tname}` has no field `{u}`"),
+                    );
+                };
+                match first {
+                    None => first = Some((x, &held.ty)),
+                    Some((y, b)) if !b.alike(&held.ty) => {
+                        return refuse_at(
+                            at,
+                            format!(
+                                "member `{cname}` declares `{u}` as `{}`, not `{}`",
+                                self.fields[&x].ty.print(self),
+                                self.fields[&y].ty.print(self)
+                            ),
+                        );
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the constructors named set `s` holds.
+    fn scope_ctors_of_set(&self, s: u64) -> Vec<u64> {
+        self.sets[&s]
+            .members
+            .iter()
+            .filter_map(|m| m.objects().next().map(|o| o.1))
+            .collect()
     }
 
     /// Drop the one unique or index over `fields` of the relation variable `on` names whose

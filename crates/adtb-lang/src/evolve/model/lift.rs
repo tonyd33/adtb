@@ -36,6 +36,7 @@ pub(super) fn source(src: &Source) -> Result<Model, String> {
         grants: src.grants.clone(),
         next: src.next.clone(),
         version: src.version,
+        log: src.log.iter().map(LogM::of).collect(),
         packages: src.packages.clone(),
         ..Model::default()
     };
@@ -65,7 +66,7 @@ pub(super) struct Lifting<'a> {
     names: &'a Names,
     /// Each name of a relation variable an operator of the migration being applied adds, by the
     /// operator.
-    ahead: &'a [(std::ops::Range<usize>, usize)],
+    ahead: &'a [(std::ops::Range<usize>, Adder)],
     module: &'a str,
 }
 
@@ -79,7 +80,7 @@ impl<'a> Lifting<'a> {
         file: FileId,
         text: &'a str,
         names: &'a Names,
-        ahead: &'a [(std::ops::Range<usize>, usize)],
+        ahead: &'a [(std::ops::Range<usize>, Adder)],
         module: &'a str,
     ) -> Lifting<'a> {
         Lifting {

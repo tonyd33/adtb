@@ -1,6 +1,6 @@
-use super::apply::Run;
 use super::field::{Applied, Maps};
 use super::op::{Fail, Res, Resolving, broken, refuse, unmodelled};
+use super::run::Run;
 use super::*;
 use crate::ast::{self, CtorSel, Fill, QName};
 use crate::canon::{Names, canonical_term};
@@ -247,9 +247,7 @@ impl Model {
         name: &str,
         fill: Option<&Fill>,
     ) -> Maps {
-        let refused = |e: Fail| match e {
-            Fail::Refused(why) | Fail::Unmodelled(why) | Fail::Broken(why) => why,
-        };
+        let refused = Fail::reason;
         let built = self.schema_now(run).map_err(refused)?;
         let schema = built.schema();
         let def = self.def_in(schema, t).expect("the type");

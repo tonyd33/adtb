@@ -1,5 +1,5 @@
-use super::apply::{Built, Late, Run};
 use super::op::{self, Fail, Res, broken, refuse};
+use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, Fill};
 use crate::canon::{Names, canonical_term};
@@ -260,7 +260,7 @@ impl Model {
         before.remove_field(id);
         let maps = match before.fill_map(run, t, at, &fty, fill, &name) {
             Ok(map) => Ok(vec![map]),
-            Err(Fail::Refused(why)) => Err(why),
+            Err(Fail::Refused(r)) => Err(r.into_why()),
             Err(e) => return Err(e),
         };
         Ok((

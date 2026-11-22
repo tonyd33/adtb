@@ -1,8 +1,8 @@
 use std::ops::Range;
 
-use super::apply::{Built, Run};
 use super::field::Applied;
 use super::op::{Fail, Res, Resolving, broken, refuse};
+use super::run::{Built, Run};
 use super::*;
 use crate::ast::{self, Decl as AstDecl, QName};
 use crate::check::{self, Ref};
@@ -15,7 +15,7 @@ use crate::types::TypeId;
 
 /// Which selections a reselection rewrites, and how its refusals name the operator.
 #[derive(Clone, Copy)]
-struct Mode {
+pub(super) struct Mode {
     /// Whether a selection holding only some of the constructors replaced is refused.
     whole: bool,
     /// Whether the scopes of the relation variables' uniques and indexes are rewritten.
@@ -25,16 +25,47 @@ struct Mode {
     what: &'static str,
 }
 
+impl Mode {
+    /// Returns the reselection of a structural operator named `what`, which leaves the scopes
+    /// of uniques and indexes to the operator; `whole` and `checks` as [`Mode`] states.
+    pub(super) fn structural(what: &'static str, whole: bool, checks: bool) -> Mode {
+        Mode {
+            whole,
+            clauses: false,
+            checks,
+            what,
+        }
+    }
+}
+
 /// An edit of declaration `decl`: `range` of its text without its header replaced by `with`.
-struct Edit {
+pub(super) struct Edit {
     decl: usize,
     range: Range<usize>,
     with: Term,
 }
 
+impl Edit {
+    /// Returns the edit of declaration `decl` replacing `range` of its text without its header
+    /// by `with`.
+    pub(super) fn new(decl: usize, range: Range<usize>, with: Term) -> Edit {
+        Edit { decl, range, with }
+    }
+
+    /// Returns whether this edit and `o` replace the same text.
+    pub(super) fn same_place(&self, o: &Edit) -> bool {
+        self.decl == o.decl && self.range == o.range
+    }
+}
+
 /// Returns `names` with the constructors `gone` replaced by `by` in place of the first of them;
 /// `None` when it names none of `gone`, `Some(None)` when `whole` and it names only some.
-fn reselected(names: &[u64], gone: &[u64], by: &[u64], whole: bool) -> Option<Option<Vec<u64>>> {
+pub(super) fn reselected(
+    names: &[u64],
+    gone: &[u64],
+    by: &[u64],
+    whole: bool,
+) -> Option<Option<Vec<u64>>> {
     let hit = names.iter().filter(|n| gone.contains(n)).count();
     if hit == 0 {
         return None;
@@ -58,7 +89,7 @@ fn reselected(names: &[u64], gone: &[u64], by: &[u64], whole: bool) -> Option<Op
 }
 
 /// Returns the range of `text` a selection of `idents` spans, its parentheses included.
-fn sel_range(text: &str, idents: &[ast::Ident]) -> Range<usize> {
+pub(super) fn sel_range(text: &str, idents: &[ast::Ident]) -> Range<usize> {
     let from = idents[0].span.start as usize;
     let to = idents.last().expect("an ident").span.end as usize;
     if idents.len() > 1 || text[..from].trim_end().ends_with('(') {
@@ -79,7 +110,7 @@ fn sel_idents(sel: &ast::CtorSel) -> Vec<ast::Ident> {
 
 impl Model {
     /// Returns a selection of the constructors `ctors`: `C`, or `(C | D)`.
-    fn selection(&self, ctors: &[u64]) -> Term {
+    pub(super) fn selection(&self, ctors: &[u64]) -> Term {
         let names = ctors
             .iter()
             .map(|&c| Term::name((Space::Shared, c), &self.ctors[&c].name));
@@ -100,7 +131,7 @@ impl Model {
     /// Apply `edits`, each replacing a range of a declaration's text by a term.
     ///
     /// Fail when an edit spans text outside one term.
-    fn edit_decls(&mut self, mut edits: Vec<Edit>) -> Res<()> {
+    pub(super) fn edit_decls(&mut self, mut edits: Vec<Edit>) -> Res<()> {
         edits.sort_by_key(|e| std::cmp::Reverse((e.decl, e.range.start, e.range.end)));
         let names = self.clone();
         for e in edits {
@@ -121,7 +152,7 @@ impl Model {
     }
 
     /// Returns the relation variables of `t` in `built`'s order, with their modules and names.
-    fn rels_of(&self, built: &Built, t: u64) -> Vec<(u64, String, String)> {
+    pub(super) fn rels_of(&self, built: &Built, t: u64) -> Vec<(u64, String, String)> {
         let schema = built.schema();
         let Some(def) = schema.ids().type_of(crate::ids::CatTypeId::from_raw(t)) else {
             return Vec::new();
@@ -137,7 +168,7 @@ impl Model {
     /// as `built` resolves the declarations. Returns the edits of declarations' terms.
     ///
     /// Fail with each selection that holds only some of `gone` when `mode` asks for all or none.
-    fn reselect(
+    pub(super) fn reselect(
         &mut self,
         built: &Built,
         t: u64,
@@ -292,7 +323,7 @@ impl Model {
 
     /// Returns the edits that remove, from the match at `at` of declaration `j` over a value of
     /// type `def`, each arm whose pattern names a constructor of `replaced`.
-    fn arm_removals(
+    pub(super) fn arm_removals(
         &self,
         built: &Built,
         refs: &[(FileId, Span, Ref)],
@@ -336,7 +367,7 @@ impl Model {
     }
 
     /// Returns the constructors scope `s` names, a named set's members in its place.
-    fn scope_ctors(&self, s: &Scope) -> Vec<u64> {
+    pub(super) fn scope_ctors(&self, s: &Scope) -> Vec<u64> {
         let mut out = Vec::new();
         for o in s.parts.iter().filter_map(|p| p.objects().next()) {
             let more = match o {
@@ -357,7 +388,7 @@ impl Model {
     }
 
     /// Remove constructor `c` of type `t` and its fields.
-    fn drop_ctor(&mut self, t: u64, c: u64) {
+    pub(super) fn drop_ctor(&mut self, t: u64, c: u64) {
         for f in self.ctors[&c].fields.clone().into_iter().flatten() {
             self.fields.remove(&f);
         }
