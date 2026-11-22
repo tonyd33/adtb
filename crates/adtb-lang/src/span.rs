@@ -35,10 +35,15 @@ impl fmt::Debug for Span {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiagKind {
     Invalid,
     Denied,
+    /// A body expands past this build's limits; the qualified name of the declaration it belongs
+    /// to, `None` for ad hoc text or a registered body.
+    PastLimits {
+        object: Option<String>,
+    },
     /// A guarantee of the checker or the normaliser does not hold.
     Internal,
     /// A lookup reached a name a refused declaration left poisoned; nothing reports it.
@@ -90,6 +95,11 @@ impl Diag {
     pub(crate) fn restated(self, span: Span, message: impl FnOnce(String) -> String) -> Diag {
         match self.kind {
             DiagKind::Poisoned => Diag::poisoned(span),
+            kind @ DiagKind::PastLimits { .. } => Diag {
+                span,
+                message: message(self.message),
+                kind,
+            },
             _ => Diag::new(span, message(self.message)),
         }
     }

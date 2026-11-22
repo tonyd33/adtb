@@ -49,6 +49,18 @@ pub enum Refused {
     Broken(norm::Error),
 }
 
+impl From<norm::Error> for Refused {
+    fn from(e: norm::Error) -> Refused {
+        match e.cause {
+            norm::Cause::TooLarge => Refused::Untranslatable(Untranslatable {
+                operator: None,
+                reason: e.to_string(),
+            }),
+            norm::Cause::Stuck(_) | norm::Cause::Invalid(_) => Refused::Broken(e),
+        }
+    }
+}
+
 impl From<Untranslatable> for Refused {
     fn from(u: Untranslatable) -> Refused {
         Refused::Untranslatable(u)
@@ -217,7 +229,7 @@ impl<'a> Pinned<'a> {
             .whole(q.terms().ty(q.body()), false, false)
             .map_err(|l| self.lost(&l, "returns"))?;
         let body = w.tm(&mut out, q.body(), None)?;
-        NormalQuery::validated(self.map.to, out, params, body).map_err(Refused::Broken)
+        Ok(NormalQuery::validated(self.map.to, out, params, body)?)
     }
 
     /// Returns the refusal of a value that `what` a type that does not carry whole.
@@ -548,7 +560,8 @@ impl<'a> Pinned<'a> {
             return Ok(n.clone());
         }
         let n = Rc::new(
-            norm::program(self.map.to, self.to_program).map_err(|e| refused(None, e.message))?,
+            norm::program(self.map.to, self.to_program)
+                .map_err(|e| refused(None, e.to_string()))?,
         );
         *self.normal.borrow_mut() = Some(n.clone());
         Ok(n)

@@ -61,6 +61,7 @@ pub(super) fn open_value(e: &OpenError) -> Result<String, String> {
         OpenError::HostFnMissing { name } => field("HostFnMissing", "name", name),
         OpenError::HostFnMismatch { name } => field("HostFnMismatch", "name", name),
         OpenError::DowngradeRefused { cause } => field("DowngradeRefused", "cause", cause),
+        OpenError::PastLimits { object } => field("PastLimits", "object", object),
         OpenError::Locked { .. } => {
             Err("the open is refused with `Locked`, which has no textual value".into())
         }

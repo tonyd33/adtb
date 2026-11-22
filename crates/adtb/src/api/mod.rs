@@ -922,7 +922,7 @@ impl<R: Runtime> Engine<R> {
         let txns = Transactions::refusing(rt.clone(), &pager, damage);
         let (schema, program) = catalog.checking();
         let (schema, program) = (Arc::new(schema.clone()), program.clone());
-        let normal = norm::program(&schema, &program).map_err(corrupt)?;
+        let normal = migrate::normal(&schema, &program)?;
         let (findings, volatile) = held_rows(&catalog, &pager, &txns, &schema, options, true)?;
         let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
         let db = write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
@@ -1096,7 +1096,7 @@ impl<R: Runtime> Engine<R> {
         }
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
-        let normal = norm::program(&schema, &program).map_err(corrupt)?;
+        let normal = migrate::normal(&schema, &program)?;
         let pending = host::pending(log, catalog.source().log.len());
         options.host_fns.bound(&schema, &normal, &pending)?;
         let schema = Arc::new(schema);

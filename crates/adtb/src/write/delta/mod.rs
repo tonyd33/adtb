@@ -12,6 +12,7 @@ use crate::plan::{self, Catalog, Facts, Plan};
 
 use super::Broken;
 
+mod reads;
 #[cfg(test)]
 mod tests;
 
@@ -323,12 +324,17 @@ struct ForTm {
 
 #[derive(Clone, Debug)]
 enum At {
-    /// The source of a generator of the query's top level, the `For` node given.
-    Top(ForTm),
+    /// The source of a generator of the query's top level, the `For` node given, under the
+    /// alternatives `choices` takes.
+    Top(ForTm, Choices),
     /// A read inside an expression of the query: the row it binds and what of the expression
     /// encloses it.
     Nested { row: Row, within: Within },
 }
+
+/// The alternatives of the query's top level on the path to a read, each a `Union`, `If` or `Case`
+/// node and the position among its children of the one the path takes.
+type Choices = Vec<(Tm, usize)>;
 
 /// What encloses a read inside an expression of the query.
 #[derive(Clone, Debug, Default)]
@@ -541,10 +547,10 @@ impl Compiler<'_> {
     fn constraint(&mut self, q: Tm) -> Result<Vec<Delta>, Outside> {
         let mut binders = HashMap::new();
         let mut occurrences = Vec::new();
-        self.top(q, &mut binders, &mut occurrences);
+        self.top(q, &mut binders, &mut Vec::new(), &mut occurrences);
         let mut terms: Vec<(Tm, Option<Var>, String)> = Vec::new();
         let whole = occurrences.iter().any(|o| {
-            matches!(o.at, At::Top(_)) && matches!(o.origin, Origin::Inserted | Origin::Deleted)
+            matches!(o.at, At::Top(..)) && matches!(o.origin, Origin::Inserted | Origin::Deleted)
         });
         if whole {
             let (links, tail) = self.chain(q);
@@ -555,7 +561,7 @@ impl Compiler<'_> {
                 let what = format!("changes to {}", self.scope_name(o.rel, &o.ctors));
                 let (t, trigger) = match (&o.at, o.origin) {
                     (_, Origin::Prior) => continue,
-                    (At::Top(f), _) => self.top_delta(q, *f, o),
+                    (At::Top(f, choices), _) => self.top_delta(q, *f, choices, o),
                     (At::Nested { row, within }, _) => {
                         self.nested_delta(q, o, row, within, &binders)
                     }
@@ -565,31 +571,40 @@ impl Compiler<'_> {
         }
         let mut deltas = Vec::new();
         let mut why: Vec<String> = Vec::new();
+        let mut found = Vec::new();
         for (t, trigger, what) in terms {
             let t = self.priors(t);
-            for reason in self.shapes(t) {
-                let r = format!("{what}: {reason}");
-                if !why.contains(&r) {
-                    why.push(r);
-                }
-            }
+            let shapes = self.shapes(t);
             let inputs = self.inputs_of(t);
-            let free = inputs.iter().map(|i| i.var).chain(trigger).collect();
-            let valid = adtb_lang::kernel::validate(self.schema, self.terms, &[(t, free)])
-                .map_err(|e| Outside::Internal(Broken::IllTyped(e)))?;
-            match plan::plan_bounded(self.schema, self.normal, self.catalog, valid, t) {
+            found.push((t, trigger, what, shapes, inputs));
+        }
+        let roots: Vec<(Tm, Vec<Var>)> = found
+            .iter()
+            .map(|(t, trigger, _, _, inputs)| {
+                (*t, inputs.iter().map(|i| i.var).chain(*trigger).collect())
+            })
+            .collect();
+        let valid = adtb_lang::kernel::validate(self.schema, self.terms, &roots)
+            .map_err(|e| Outside::Internal(Broken::IllTyped(e)))?;
+        let ts: Vec<Tm> = roots.iter().map(|(t, _)| *t).collect();
+        let plans = plan::plan_bounded(self.schema, self.normal, self.catalog, valid, &ts);
+        let mut add = |r: String| {
+            if !why.contains(&r) {
+                why.push(r);
+            }
+        };
+        for ((t, trigger, what, shapes, inputs), plan) in found.into_iter().zip(plans) {
+            for reason in shapes {
+                add(format!("{what}: {reason}"));
+            }
+            match plan {
                 Ok(plan) => deltas.push(Delta {
                     inputs,
                     trigger,
                     term: t,
                     plan,
                 }),
-                Err(e) => {
-                    let r = self.reason(&what, e)?;
-                    if !why.contains(&r) {
-                        why.push(r);
-                    }
-                }
+                Err(e) => add(self.reason(&what, e)?),
             }
         }
         if why.is_empty() {
@@ -645,173 +660,12 @@ impl Compiler<'_> {
         out
     }
 
-    /// Collect the reads of the query's top level `t`, recording each variable it binds.
-    fn top(&mut self, t: Tm, binders: &mut HashMap<Var, Binder>, out: &mut Vec<Occurrence>) {
-        let bind = |binders: &mut HashMap<Var, Binder>, x: Var, node: BinderTm| {
-            let order = binders.len();
-            binders.insert(x, Binder { node, order });
-        };
-        match self.kind(t) {
-            Kind::For(x, src, body) => {
-                match self.source(src) {
-                    Some(Source {
-                        rel,
-                        ctors,
-                        origin,
-                        elem,
-                    }) => out.push(Occurrence {
-                        rel,
-                        ctors,
-                        origin,
-                        node: src,
-                        elem,
-                        at: At::Top(ForTm {
-                            node: t,
-                            var: x,
-                            body,
-                        }),
-                    }),
-                    None => self.nested(src, &mut Within::default(), out),
-                }
-                bind(binders, x, BinderTm::For { node: t, src, body });
-                self.top(body, binders, out);
-            }
-            Kind::If(c, a, b) => {
-                self.nested(c, &mut Within::default(), out);
-                self.top(a, binders, out);
-                self.top(b, binders, out);
-            }
-            Kind::Let(x, e, b) => {
-                self.nested(e, &mut Within::default(), out);
-                bind(
-                    binders,
-                    x,
-                    BinderTm::Let {
-                        node: t,
-                        value: e,
-                        body: b,
-                    },
-                );
-                self.top(b, binders, out);
-            }
-            Kind::Union(a, b) => {
-                self.top(a, binders, out);
-                self.top(b, binders, out);
-            }
-            Kind::Case { scrutinee, arms } => {
-                self.nested(scrutinee, &mut Within::default(), out);
-                for (_, _, a) in arms {
-                    self.top(a, binders, out);
-                }
-            }
-            _ => self.nested(t, &mut Within::default(), out),
-        }
-    }
-
-    /// Collect the reads inside expression `t`, under what of the expression encloses it.
-    fn nested(&mut self, t: Tm, within: &mut Within, out: &mut Vec<Occurrence>) {
-        let here = |row: Row, within: &Within, guards: Vec<Tm>| At::Nested {
-            row,
-            within: Within {
-                guards,
-                ..within.clone()
-            },
-        };
-        match self.kind(t) {
-            Kind::For(y, src, body) => {
-                let closed = match self.source(src) {
-                    Some(Source {
-                        rel,
-                        ctors,
-                        origin,
-                        elem,
-                    }) => {
-                        let mut own = within.guards.clone();
-                        own.extend(self.peel(body).0);
-                        out.push(Occurrence {
-                            rel,
-                            ctors,
-                            origin,
-                            node: src,
-                            elem,
-                            at: here(Row::Gen(y), within, own),
-                        });
-                        Some(src)
-                    }
-                    None => {
-                        self.nested(src, within, out);
-                        None
-                    }
-                };
-                within.path.push((y, closed));
-                self.nested(body, within, out);
-                within.path.pop();
-            }
-            Kind::If(c, a, b) => {
-                self.nested(c, within, out);
-                if matches!(self.terms.kind(b), Kind::EmptySet) || self.is_false(b) {
-                    let n = within.guards.len();
-                    self.conjuncts(c, &mut within.guards);
-                    self.nested(a, within, out);
-                    within.guards.truncate(n);
-                } else {
-                    self.nested(a, within, out);
-                    self.nested(b, within, out);
-                }
-            }
-            Kind::Case { scrutinee, arms } => {
-                self.nested(scrutinee, within, out);
-                for (i, (_, _, a)) in arms.iter().enumerate() {
-                    within.arms.push((t, i));
-                    self.nested(*a, within, out);
-                    within.arms.pop();
-                }
-            }
-            Kind::Deref { key, .. } => {
-                if let Ty::Key { rel, ctors } = self.ty(key) {
-                    let rel = self.schema.declared(rel);
-                    let ctors = ctors.committed().cloned();
-                    out.push(Occurrence {
-                        rel,
-                        ctors: self.ctors_or_all(rel, &ctors),
-                        origin: Origin::State,
-                        node: t,
-                        elem: self.ty(t),
-                        at: here(Row::Deref(key), within, within.guards.clone()),
-                    });
-                }
-                self.nested(key, within, out);
-            }
-            Kind::Rel(..) | Kind::Restrict(..) | Kind::Var(_)
-                if let Some(Source {
-                    rel,
-                    ctors,
-                    origin,
-                    elem,
-                }) = self.source(t) =>
-            {
-                out.push(Occurrence {
-                    rel,
-                    ctors,
-                    origin,
-                    node: t,
-                    elem,
-                    at: here(Row::Bare, within, within.guards.clone()),
-                });
-            }
-            _ => {
-                for c in self.terms.children(t) {
-                    self.nested(c, within, out);
-                }
-            }
-        }
-    }
-
     /// Returns `q` with the top level generator `f` reading the rows the change set inserts
     /// into its source, and that input.
     ///
-    /// Precondition: `f` reads a constructor set in the state after the change.
-    fn top_delta(&mut self, q: Tm, f: ForTm, o: &Occurrence) -> (Tm, Var) {
+    /// Precondition: `f` reads a constructor set in the state after the change, and `top` reached
+    /// it from `q` through `choices`.
+    fn top_delta(&mut self, q: Tm, f: ForTm, choices: &[(Tm, usize)], o: &Occurrence) -> (Tm, Var) {
         let ForTm {
             node: f,
             var: x,
@@ -822,9 +676,42 @@ impl Compiler<'_> {
         let set = self.b().var(d);
         let ty = self.ty(f);
         let new = self.b().for_(x, set, body, ty);
-        let t = self.replace(q, &HashMap::from([(f, new)]), &mut HashMap::new());
+        let t = self.chosen(q, choices, f, new);
         let (links, tail) = self.chain(t);
         (self.ordered(links, tail, self.ty(q)), d)
+    }
+
+    /// Returns `t` of the query's top level with `f` replaced by `new` and each alternative off
+    /// `choices` empty: the rows of `t` a change read at `f` can affect.
+    ///
+    /// Precondition: `top` reached `f` from `t` through `choices`.
+    fn chosen(&mut self, t: Tm, choices: &[(Tm, usize)], f: Tm, new: Tm) -> Tm {
+        if t == f {
+            return new;
+        }
+        if let Kind::Union(a, b) = self.kind(t) {
+            let chosen = if choices[0].1 == 0 { a } else { b };
+            return self.chosen(chosen, &choices[1..], f, new);
+        }
+        let mut children = self.terms.children(t);
+        match self.kind(t) {
+            Kind::For(..) | Kind::Let(..) => {
+                let body = children.len() - 1;
+                children[body] = self.chosen(children[body], choices, f, new);
+            }
+            _ => {
+                let (at, rest) = (choices[0].1, &choices[1..]);
+                let ty = self.ty(t);
+                for (i, c) in children.iter_mut().enumerate().skip(1) {
+                    *c = if i == at {
+                        self.chosen(*c, rest, f, new)
+                    } else {
+                        self.b().empty_set(ty.clone())
+                    };
+                }
+            }
+        }
+        self.b().rebuild_kept(t, &children)
     }
 
     /// Returns `q` restricted to the bindings of its top level that a changed row of the nested

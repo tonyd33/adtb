@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::op::{Res, broken, refuse, refuse_at};
+use super::op::{Res, broken, refuse_at, refuse_diag};
 use super::reselect::Edit;
 use super::run::{Built, Late, Run};
 use super::*;
@@ -222,7 +222,7 @@ impl Model {
             if printed.arms().iter().any(|(k, r)| {
                 written.iter().any(|w| w.key == *k) && r.start <= start && end <= r.end
             }) {
-                return refuse(d.diag.message.clone());
+                return refuse_diag(&d.diag);
             }
         }
         Ok(())

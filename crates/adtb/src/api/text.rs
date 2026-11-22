@@ -74,8 +74,6 @@ pub(super) struct Prepared {
     pub issuer: Option<Issuer>,
 }
 
-const TEXT_TOO_LARGE: &str = "the text expands past what the engine plans";
-
 /// Why ad hoc items do not run.
 pub(super) enum TextError {
     /// The checker refused them, in terms of what the schema holds.
@@ -183,22 +181,8 @@ impl Prepared {
                 _ => None,
             })
             .collect();
-        let normal = norm::adhoc(adhoc.schema(schema), program, &adhoc).map_err(|e| {
-            TextError::Other(if e.past_limit() {
-                Error::invalid(e.message)
-            } else {
-                Error::internal(Broken::AdhocNotNormal(e))
-            })
-        })?;
-        let roots: Vec<Tm> = normal
-            .items()
-            .iter()
-            .copied()
-            .chain(normal.commands().iter().flat_map(|c| c.command.terms()))
-            .collect();
-        if !norm::expands_within_bound(normal.terms(), &roots) {
-            return Err(TextError::Other(Error::invalid(TEXT_TOO_LARGE)));
-        }
+        let normal = norm::adhoc(adhoc.schema(schema), program, &adhoc)
+            .map_err(|e| TextError::Other(Error::not_normal(e, Broken::AdhocNotNormal)))?;
         let bound = params
             .iter()
             .filter_map(|(n, _, v)| normal.params().get(*n).map(|x| (*x, v.clone())))

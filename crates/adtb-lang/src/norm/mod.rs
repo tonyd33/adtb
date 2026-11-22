@@ -14,8 +14,9 @@ use crate::types::*;
 mod limit;
 mod normal;
 
-pub use limit::expands_within_bound;
-use limit::{Budget, TOO_LARGE, planned_within_bound};
+#[cfg(feature = "testing")]
+pub use limit::set_run_height;
+use limit::{Budget, within_run_bound};
 pub use normal::{AdhocParts, NormalAdhoc, NormalAggregate, NormalProgram, NormalQuery};
 
 /// A body of a program or of ad hoc text, by the object it belongs to.
@@ -44,54 +45,118 @@ impl Root {
             _ => Bounds::Declared(&[]),
         }
     }
+
+    /// Returns the qualified name of the declaration a program body of this root belongs to,
+    /// `None` for a root of ad hoc text or of a registered body.
+    pub fn object(self, schema: &Schema) -> Option<String> {
+        let (module, name) = match self {
+            Root::Function(f) => {
+                let d = schema.function(f);
+                (d.module, &d.name)
+            }
+            Root::Constraint(c) => {
+                let d = schema.constraint(c);
+                (d.module, &d.name)
+            }
+            Root::Check(c) => {
+                let d = schema.check(c);
+                (d.module, &d.name)
+            }
+            Root::Domain(t) => {
+                let d = schema.ty(t);
+                (d.module, &d.name)
+            }
+            Root::Aggregate(i) => {
+                let d = &schema.aggregates[i];
+                (d.module, &d.name)
+            }
+            Root::Retag(r)
+            | Root::Default(r, _)
+            | Root::Computed(r, _)
+            | Root::IndexField(r, ..) => {
+                let d = schema.relation(r);
+                (d.module, &d.name)
+            }
+            Root::Item(_) | Root::Command(_) | Root::Query => return None,
+        };
+        Some(format!("{}::{name}", schema.module(module).name))
+    }
+}
+
+/// Why a body has no normal form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// The body expands past a limit of this build on what is normalised or planned.
+    TooLarge,
+    /// Normalising the body breaks a guarantee of the checker.
+    Stuck(&'static str),
+    /// A term of the body breaks an invariant of the kernel, and how.
+    Invalid(Box<(Invalid, String)>),
+}
+
+impl std::fmt::Display for Cause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cause::TooLarge => f.write_str("the text expands past this build's limits"),
+            Cause::Stuck(m) => f.write_str(m),
+            Cause::Invalid(b) => f.write_str(&b.1),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     pub root: Root,
-    pub message: String,
-    invalid: Option<Invalid>,
+    pub cause: Cause,
 }
 
 impl Error {
     /// Returns the error of a term of `terms` that breaks an invariant of the kernel.
     fn invalid(schema: &Schema, root: Root, terms: &Terms, e: Invalid) -> Error {
+        let shown = format!(
+            "kernel term {:?} breaks the invariant that the checker guarantees: {} ({:?} : {})",
+            e.at(),
+            e.reason(),
+            terms.kind(e.at()),
+            schema.show_ty(terms.ty(e.at()))
+        );
         Error {
             root,
-            message: format!(
-                "kernel term {:?} breaks the invariant that the checker guarantees: {} ({:?} : {})",
-                e.at(),
-                e.reason(),
-                terms.kind(e.at()),
-                schema.show_ty(terms.ty(e.at()))
-            ),
-            invalid: Some(e),
+            cause: Cause::Invalid(Box::new((e, shown))),
         }
     }
 
     /// Returns the kernel term that breaks an invariant of the kernel, when this is the error.
     pub fn broken(&self) -> Option<&Invalid> {
-        self.invalid.as_ref()
-    }
-
-    /// Returns whether the root was refused for passing a limit on what is normalised.
-    pub fn past_limit(&self) -> bool {
-        self.message == TOO_LARGE
+        match &self.cause {
+            Cause::Invalid(b) => Some(&b.0),
+            Cause::TooLarge | Cause::Stuck(_) => None,
+        }
     }
 }
 
-fn at<T>(root: Root, r: Result<T, String>) -> Result<T, Error> {
-    r.map_err(|message| Error {
-        root,
-        message,
-        invalid: None,
-    })
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+
+fn at<T>(root: Root, r: Result<T, Cause>) -> Result<T, Error> {
+    r.map_err(|cause| Error { root, cause })
 }
 
 /// Normalise every body of a checked schema.
 pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
     let program = NormalProgram::normalised(schema, p)?;
-    planned_within_bound(&program)?;
+    within_run_bound(
+        program.terms(),
+        program
+            .bodies()
+            .into_iter()
+            // A function is planned only inlined into its caller, which passes the bound itself.
+            .filter(|(root, ..)| !matches!(root, Root::Function(_)))
+            .map(|(root, t, _)| (root, t)),
+    )?;
     Ok(program)
 }
 
@@ -121,6 +186,14 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
             ..c.clone()
         });
     }
+    let items_at = items.iter().enumerate().map(|(i, t)| (Root::Item(i), *t));
+    let commands_at = commands.iter().enumerate().flat_map(|(i, c)| {
+        c.command
+            .terms()
+            .into_iter()
+            .map(move |t| (Root::Command(i), t))
+    });
+    within_run_bound(&n.out, items_at.chain(commands_at))?;
     NormalAdhoc::validated(
         schema,
         &[&a.terms, &p.terms],
@@ -346,7 +419,7 @@ impl<'a> Normaliser<'a> {
     }
 
     /// Normalise an `at` block, its derefs as the entry of an `at` body states.
-    fn at_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn at_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, Cause> {
         let (unchecked, hiding) = (self.unchecked, self.hiding);
         let body = capability::entry(RootKind::AtBody);
         self.mode(unchecked || body.derefs_partial(), hiding);
@@ -447,16 +520,19 @@ impl<'a> Normaliser<'a> {
     fn row_function(&mut self, root: Root, t: Tm) -> Result<(Var, Tm), Error> {
         match self.function(root, MAIN, t, 1)? {
             Some((vars, body)) => Ok((vars[0], body)),
-            None => at(root, Err("a function of a row has a function type".into())),
+            None => at(
+                root,
+                Err(Cause::Stuck("a function of a row has a function type")),
+            ),
         }
     }
 
-    fn first_order(&self, v: Val) -> Result<Tm, String> {
+    fn first_order(&self, v: Val) -> Result<Tm, Cause> {
         match v {
             Val::Tm(t) => Ok(t),
-            _ => Err(
-                "a function value remains where the normal form needs a first-order value".into(),
-            ),
+            _ => Err(Cause::Stuck(
+                "a function value remains where the normal form needs a first-order value",
+            )),
         }
     }
 
@@ -588,7 +664,7 @@ impl<'a> Normaliser<'a> {
         Some((cx.arena, t, cx.targs.to_vec(), vals))
     }
 
-    fn norm(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
+    fn norm(&mut self, t: Tm, cx: &Cx) -> Result<Val, Cause> {
         self.budget.spend(&self.out)?;
         self.budget.depth += 1;
         let v = self.norm_step(t, cx);
@@ -596,7 +672,7 @@ impl<'a> Normaliser<'a> {
         v
     }
 
-    fn norm_step(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
+    fn norm_step(&mut self, t: Tm, cx: &Cx) -> Result<Val, Cause> {
         let key = self.key(t, cx);
         if let Some(k) = &key
             && let Some(o) = self.memo.get(k)
@@ -612,17 +688,17 @@ impl<'a> Normaliser<'a> {
         Ok(v)
     }
 
-    fn tm(&mut self, t: Tm, cx: &Cx) -> Result<Tm, String> {
+    fn tm(&mut self, t: Tm, cx: &Cx) -> Result<Tm, Cause> {
         let v = self.norm(t, cx)?;
         self.first_order(v)
     }
 
-    fn tms(&mut self, ts: &[Tm], cx: &Cx) -> Result<Vec<Tm>, String> {
+    fn tms(&mut self, ts: &[Tm], cx: &Cx) -> Result<Vec<Tm>, Cause> {
         ts.iter().map(|t| self.tm(*t, cx)).collect()
     }
 
     /// Normalise `body` with `var` bound to a fresh output variable, returning both.
-    fn under(&mut self, var: Var, body: Tm, cx: &Cx) -> Result<(Var, Tm), String> {
+    fn under(&mut self, var: Var, body: Tm, cx: &Cx) -> Result<(Var, Tm), Cause> {
         let x = self.fresh(var, cx);
         let xt = self.var_tm(x);
         let cx = cx.with(var, Val::Tm(xt));
@@ -633,7 +709,7 @@ impl<'a> Normaliser<'a> {
         self.b().var(x)
     }
 
-    fn step(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
+    fn step(&mut self, t: Tm, cx: &Cx) -> Result<Val, Cause> {
         let node = self.node(cx.arena, t);
         let ty = node.ty.subst(&cx.targs);
         match &node.kind {
@@ -721,7 +797,7 @@ impl<'a> Normaliser<'a> {
 
     /// Normalise a chain of `Let`, `LetBang`, `Block` and `If` through their bodies and else
     /// branches in a loop, memoising each tail where the chain turns between `If` and the others.
-    fn spine(&mut self, mut t: Tm, cx: &Cx) -> Result<Val, String> {
+    fn spine(&mut self, mut t: Tm, cx: &Cx) -> Result<Val, Cause> {
         let mut cx = cx.clone();
         let mut wraps = Vec::new();
         let mut in_if = matches!(self.node(cx.arena, t).kind, Kind::If(..));
@@ -805,7 +881,7 @@ impl<'a> Normaliser<'a> {
     }
 
     /// Returns `body` under the binder, the write or the condition `w` stands for.
-    fn wrap(&mut self, w: Wrap, body: Val) -> Result<Val, String> {
+    fn wrap(&mut self, w: Wrap, body: Val) -> Result<Val, Cause> {
         Ok(match w {
             Wrap::If(c, a, ty) => match (a, body) {
                 (Val::Tm(a), Val::Tm(b)) => Val::Tm(self.b().if_(c, a, b, ty)),
@@ -869,12 +945,12 @@ impl<'a> Normaliser<'a> {
     }
 
     /// Normalise each child of `kind` in order, binding nothing.
-    fn congruent(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn congruent(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, Cause> {
         let cs = self.tms(&kind.children(), cx)?;
         Ok(self.kept(kind.with_children(&cs), &ty))
     }
 
-    fn field_step(&mut self, source: Tm, x: Tm, l: &str, ty: &Ty, cx: &Cx) -> Result<Val, String> {
+    fn field_step(&mut self, source: Tm, x: Tm, l: &str, ty: &Ty, cx: &Cx) -> Result<Val, Cause> {
         let carry = self.src[cx.arena].transport_fields.contains(&source);
         let x = self.tm(x, cx)?;
         let fs = match self.out.kind(x) {
@@ -907,7 +983,7 @@ impl<'a> Normaliser<'a> {
         arms: &[(u32, Var, Tm)],
         ty: Ty,
         cx: &Cx,
-    ) -> Result<Val, String> {
+    ) -> Result<Val, Cause> {
         let s = self.tm(scrutinee, cx)?;
         if let Some((c, fields)) = self.ctor_value(s)
             && fields.into_iter().all(|f| self.copyable(f))
@@ -950,7 +1026,7 @@ impl<'a> Normaliser<'a> {
         Ok(Val::Case(s, Rc::new(out)))
     }
 
-    fn app_step(&mut self, f: Tm, a: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn app_step(&mut self, f: Tm, a: Tm, ty: Ty, cx: &Cx) -> Result<Val, Cause> {
         let f = self.norm(f, cx)?;
         let a = self.norm(a, cx)?;
         self.then(f, Then::Apply(a, ty))
@@ -963,7 +1039,7 @@ impl<'a> Normaliser<'a> {
         args: &[Tm],
         ty: &Ty,
         cx: &Cx,
-    ) -> Result<Val, String> {
+    ) -> Result<Val, Cause> {
         let type_args: Vec<Ty> = type_args.iter().map(|t| t.subst(&cx.targs)).collect();
         let mut vals = Vec::with_capacity(args.len());
         for a in args {
@@ -989,7 +1065,9 @@ impl<'a> Normaliser<'a> {
         let mut f = self.norm(lam, &Cx::new(FNS, type_args))?;
         for a in vals {
             let Ty::Fn(_, r) = fty else {
-                return Err("a call with more arguments than its function takes".into());
+                return Err(Cause::Stuck(
+                    "a call with more arguments than its function takes",
+                ));
             };
             fty = *r;
             f = self.then(f, Then::Apply(a, fty.clone()))?;
@@ -1005,7 +1083,7 @@ impl<'a> Normaliser<'a> {
         body: Tm,
         ty: Ty,
         cx: &Cx,
-    ) -> Result<Val, String> {
+    ) -> Result<Val, Cause> {
         let source = self.tm(source, cx)?;
         let (var, body) = self.under(var, body, cx)?;
         let agg = Kind::Agg {
@@ -1017,14 +1095,7 @@ impl<'a> Normaliser<'a> {
         Ok(Val::Tm(self.b().kept(agg, &ty)))
     }
 
-    fn group_step(
-        &mut self,
-        var: Var,
-        source: Tm,
-        by: Tm,
-        ty: &Ty,
-        cx: &Cx,
-    ) -> Result<Val, String> {
+    fn group_step(&mut self, var: Var, source: Tm, by: Tm, ty: &Ty, cx: &Cx) -> Result<Val, Cause> {
         let source = self.tm(source, cx)?;
         let (var, by) = self.under(var, by, cx)?;
         Ok(Val::Tm(self.b().kept(Kind::Group { var, source, by }, ty)))
@@ -1038,14 +1109,14 @@ impl<'a> Normaliser<'a> {
         source: Tm,
         ty: Ty,
         cx: &Cx,
-    ) -> Result<Val, String> {
+    ) -> Result<Val, Cause> {
         let count = self.tm(count, cx)?;
         let source = self.tm(source, cx)?;
         let (var, keys) = self.keys(var, keys, cx)?;
         Ok(Val::Tm(self.b().top(count, keys, var, source, ty)))
     }
 
-    fn present_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn present_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, Cause> {
         let Kind::Present {
             var,
             source,
@@ -1065,7 +1136,7 @@ impl<'a> Normaliser<'a> {
         ))
     }
 
-    fn fix_step(&mut self, binds: &[(Var, Tm)], body: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn fix_step(&mut self, binds: &[(Var, Tm)], body: Tm, ty: Ty, cx: &Cx) -> Result<Val, Cause> {
         let mut inner = cx.clone();
         let mut xs = Vec::with_capacity(binds.len());
         for (v, _) in binds {
@@ -1084,7 +1155,7 @@ impl<'a> Normaliser<'a> {
         }
     }
 
-    fn replace_step(&mut self, r: RelId, rows: Tm, f: Tm, cx: &Cx) -> Result<Val, String> {
+    fn replace_step(&mut self, r: RelId, rows: Tm, f: Tm, cx: &Cx) -> Result<Val, Cause> {
         let rows = self.tm(rows, cx)?;
         let fty = self.node(cx.arena, f).ty.subst(&cx.targs);
         let f = self.norm(f, cx)?;
@@ -1092,7 +1163,7 @@ impl<'a> Normaliser<'a> {
         Ok(Val::Tm(self.b().replace(r, rows, f)))
     }
 
-    fn upsert_step(&mut self, kind: &Kind, cx: &Cx) -> Result<Val, String> {
+    fn upsert_step(&mut self, kind: &Kind, cx: &Cx) -> Result<Val, Cause> {
         let Kind::Upsert {
             rel,
             rows,
@@ -1126,7 +1197,7 @@ impl<'a> Normaliser<'a> {
         var: Var,
         keys: &[(Tm, bool)],
         cx: &Cx,
-    ) -> Result<(Var, Vec<(Tm, bool)>), String> {
+    ) -> Result<(Var, Vec<(Tm, bool)>), Cause> {
         let x = self.fresh(var, cx);
         let xt = self.var_tm(x);
         let cx = cx.with(var, Val::Tm(xt));
@@ -1151,7 +1222,7 @@ impl<'a> Normaliser<'a> {
 
     /// Bind `var` to `bound` in `body`: substituting a copyable value that does not branch or is
     /// used at most once, keeping a `let` for any other.
-    fn bind(&mut self, var: Var, bound: Val, body: Tm, cx: &Cx, ty: Ty) -> Result<Val, String> {
+    fn bind(&mut self, var: Var, bound: Val, body: Tm, cx: &Cx, ty: Ty) -> Result<Val, Cause> {
         match bound {
             Val::Tm(b) if self.substitutes(b, var, body, cx) => {
                 let cx = cx.with(var, Val::Tm(b));
@@ -1181,9 +1252,9 @@ impl<'a> Normaliser<'a> {
     }
 
     /// Returns `λx. f x` for the function `f` of type `ty`, normalising the application.
-    fn eta(&mut self, f: Val, ty: Ty) -> Result<Tm, String> {
+    fn eta(&mut self, f: Val, ty: Ty) -> Result<Tm, Cause> {
         let Ty::Fn(a, r) = &ty else {
-            return Err("a row function is not a function".into());
+            return Err(Cause::Stuck("a row function is not a function"));
         };
         let x = self.out.var("ξ", (**a).clone());
         let xt = self.var_tm(x);
@@ -1209,11 +1280,11 @@ impl<'a> Normaliser<'a> {
     }
 
     /// Continue with the function `f` by `k`, pushing `k` into the branches that choose it.
-    fn then(&mut self, f: Val, k: Then) -> Result<Val, String> {
+    fn then(&mut self, f: Val, k: Then) -> Result<Val, Cause> {
         match f {
-            Val::Tm(_) => {
-                Err("an application of a function that normalisation cannot resolve".into())
-            }
+            Val::Tm(_) => Err(Cause::Stuck(
+                "an application of a function that normalisation cannot resolve",
+            )),
             Val::Lam { var, body, cx } => match k {
                 Then::Apply(arg, ty) => self.bind(var, arg, body, &cx, ty),
                 Then::Bind {
@@ -1278,7 +1349,7 @@ impl<'a> Normaliser<'a> {
     }
 
     /// Normalise `for var in s do body` for an already normalised source `s`.
-    fn for_over(&mut self, var: Var, s: Tm, body: Tm, cx: &Cx, ty: &Ty) -> Result<Tm, String> {
+    fn for_over(&mut self, var: Var, s: Tm, body: Tm, cx: &Cx, ty: &Ty) -> Result<Tm, Cause> {
         match self.out.kind(s).clone() {
             Kind::EmptySet => Ok(self.b().empty_set(ty.clone())),
             Kind::Singleton(e) if self.copyable(e) => {

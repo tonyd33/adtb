@@ -59,7 +59,7 @@ impl<'a> Indexing<'a> {
             });
         let pending = readers.map_or(&[][..], |r| &r.pending);
         let specs = pending::kept_indexes(held, texts, pending).map_err(Error::Internal)?;
-        let normal = index_program(held, program, specs.values()).map_err(Error::Internal)?;
+        let normal = index_program(held, program, specs.values(), Error::Internal)?;
         let mut keyed = BTreeMap::new();
         for (id, spec) in &specs {
             keyed.insert(

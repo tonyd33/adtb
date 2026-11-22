@@ -230,6 +230,7 @@ pub enum OpenError {
     HostFnMissing { name: String },
     HostFnMismatch { name: String },
     DowngradeRefused { cause: String },
+    PastLimits { object: String },
     Io(std::io::Error),
 }
 
@@ -265,7 +266,7 @@ impl Error {
 
     pub(super) fn diagnostic(diag: Diag) -> Error {
         match diag.kind {
-            DiagKind::Invalid => Self::invalid(diag.message),
+            DiagKind::Invalid | DiagKind::PastLimits { .. } => Self::invalid(diag.message),
             DiagKind::Denied => Self::rejected(RejectReason::Denied {
                 detail: diag.message,
             }),
@@ -960,6 +961,9 @@ impl fmt::Display for OpenError {
                 write!(f, "host function {name} is bound at another type")
             }
             OpenError::DowngradeRefused { cause } => write!(f, "downgrade refused: {cause}"),
+            OpenError::PastLimits { object } => {
+                write!(f, "{object} expands past this build's limits")
+            }
             OpenError::Io(e) => write!(f, "{e}"),
         }
     }

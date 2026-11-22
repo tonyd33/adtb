@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::ast::FnBody;
@@ -49,52 +50,52 @@ pub fn plan(
         normal,
         catalog,
         terms: terms.terms(),
-        root,
+        roots: &[root],
     };
-    plan_in(&input, options, false)
+    let [plan] = <[_; 1]>::try_from(plan_in(&input, options, false)).expect("one plan per root");
+    plan
 }
 
-/// Returns the plan of `root`, as [`plan`] does, reading every constructor relation only through
-/// an index probe keyed by values bound before it.
+/// Returns the plan of each of `roots`, as [`plan`] does, reading every constructor relation
+/// only through an index probe keyed by values bound before it. The plans share one arena.
 ///
-/// Errors:
+/// Errors, per root:
 /// - [`Error::Unbounded`] when some read has no such probe.
-/// - [`Error::Outside`] when `root` holds a `fix`.
+/// - [`Error::Outside`] when the root holds a `fix`.
 pub fn plan_bounded(
     schema: &Schema,
     normal: &NormalProgram,
     catalog: &Catalog,
     terms: Valid<'_>,
-    root: Tm,
-) -> Result<Plan, Error> {
+    roots: &[Tm],
+) -> Vec<Result<Plan, Error>> {
     let input = Input {
         schema,
         normal,
         catalog,
         terms: terms.terms(),
-        root,
+        roots,
     };
     plan_in(&input, Options::default(), true)
 }
 
-/// What [`plan`] plans: `root`, a normal form in `terms`.
+/// What [`plan`] plans: `roots`, normal forms in `terms`.
 struct Input<'a> {
     schema: &'a Schema,
     normal: &'a NormalProgram,
     catalog: &'a Catalog,
     terms: &'a Terms,
-    root: Tm,
+    roots: &'a [Tm],
 }
 
-fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, Error> {
+fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Vec<Result<Plan, Error>> {
     let Input {
         schema,
         normal,
         catalog,
         terms,
-        root,
+        roots,
     } = *input;
-    user_code(schema, terms, root)?;
     let mut p = Planner {
         schema,
         normal,
@@ -113,18 +114,42 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         outer: Vec::new(),
         lists: 0,
     };
-    let root = p.eval(root)?;
-    let params = (*p.facts.free(&p.t, input.root)).clone();
-    let plan = Plan {
-        terms: p.t,
-        params,
-        root,
-    };
-    validate(
-        Judges::new(schema, catalog, &mut p.facts, &mut p.total, bounded),
-        &plan,
-    )?;
-    Ok(plan)
+    let mut planned: Vec<Result<(Eval, BTreeSet<Var>), Error>> = Vec::with_capacity(roots.len());
+    for &root in roots {
+        if let Err(e) = user_code(schema, terms, root) {
+            planned.push(Err(e));
+            continue;
+        }
+        // A root whose planning failed may leave its bindings and chains behind.
+        p.vars.clear();
+        p.outer.clear();
+        p.past = false;
+        let eval = p.eval(root);
+        planned.push(eval.map(|eval| (eval, (*p.facts.free(&p.t, root)).clone())));
+    }
+    let Planner {
+        t,
+        mut facts,
+        mut total,
+        ..
+    } = p;
+    let terms = Arc::new(t);
+    planned
+        .into_iter()
+        .map(|planned| {
+            let (root, params) = planned?;
+            let plan = Plan {
+                terms: terms.clone(),
+                params,
+                root,
+            };
+            validate(
+                Judges::new(schema, catalog, &mut facts, &mut total, bounded),
+                &plan,
+            )?;
+            Ok(plan)
+        })
+        .collect()
 }
 
 /// Refuse a term reaching a call of a function other than a host function: a Wasm function or

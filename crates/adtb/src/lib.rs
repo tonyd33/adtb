@@ -6,6 +6,8 @@ mod catalog;
 mod exec;
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod sharing_tests;
 mod storage;
 #[cfg(test)]
 mod test_world;

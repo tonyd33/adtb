@@ -189,7 +189,7 @@ fn sound<'d>(diags: impl IntoIterator<Item = &'d Diag>) {
 fn reached(normal: Result<(), norm::Error>) -> Reached {
     match normal {
         Ok(()) => Reached::Normalised,
-        Err(e) if e.broken().is_some() => panic!("{:?}: {}", e.root, e.message),
+        Err(e) if e.broken().is_some() => panic!("{:?}: {e}", e.root),
         Err(_) => Reached::Checked,
     }
 }
@@ -594,7 +594,8 @@ impl Gen<'_> {
 
 impl Gen<'_> {
     /// Returns a statement around one long flat list: a chain of `and`, `or` or `union`, the
-    /// items of a `transact`, the arms of a `match` or the elements of a set literal.
+    /// items of a `transact`, the arms of a `match` or the elements of a set literal. At most
+    /// [`NESTED`] of its items nest in its normal form.
     fn long(&mut self, rng: &mut Rng) -> String {
         let n = 2 + rng.below(1500) as usize;
         let x = self.fresh();
@@ -615,12 +616,14 @@ impl Gen<'_> {
                 sets.join(" union ")
             }
             2 => {
+                let mut lets = 0;
                 let items: String = (0..n)
                     .map(|i| {
                         let name = self.expr(rng, &G::Text, 1);
                         let insert =
                             format!("insert items {{ name: {name}, n: {i}, status: Draft }}");
-                        if rng.below(2) == 0 {
+                        if lets < NESTED && rng.below(2) == 0 {
+                            lets += 1;
                             format!("  let {x}_{i} = {insert}\n")
                         } else {
                             format!("  {insert}\n")
@@ -631,14 +634,14 @@ impl Gen<'_> {
             }
             3 => {
                 let arms: String = self.with(&x, G::Row(0), |s| {
-                    (0..n)
+                    (0..n.min(NESTED))
                         .map(|i| format!(" | {i} -> {}", s.expr(rng, &G::Int, 1)))
                         .collect()
                 });
                 format!("from {x} in items select match {x}.n{arms} | _ -> 0")
             }
             4 => {
-                let arms: String = (0..n.min(100))
+                let arms: String = (0..n.min(NESTED))
                     .map(|i| format!(" | {i} -> delete {x} in items where {x}.n == {i}"))
                     .collect();
                 format!("transact\n  let n = count(y for y in items)\n  match n{arms} | _ -> skip")
@@ -650,6 +653,10 @@ impl Gen<'_> {
         }
     }
 }
+
+/// The most items of a long list that nest, `let` items or `match` arms, below the height of the
+/// run bound.
+const NESTED: usize = 48;
 
 fn scalar(rng: &mut Rng) -> G {
     rng.pick(&[G::Int, G::Text, G::Bool, G::Status, G::OptInt])

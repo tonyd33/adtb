@@ -727,7 +727,8 @@ pub(super) fn restore_dump<R: Runtime>(
             | OpenError::Diverged { .. }
             | OpenError::RegistrationRefused { .. }
             | OpenError::HostFnMismatch { .. }
-            | OpenError::DowngradeRefused { .. }) => {
+            | OpenError::DowngradeRefused { .. }
+            | OpenError::PastLimits { .. }) => {
                 Error::invalid(format!("the dumped log does not open: {e}"))
             }
         })

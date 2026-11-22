@@ -188,12 +188,55 @@ impl Error {
     pub(super) fn internal(cause: Broken) -> Error {
         Error::rejected(internal(cause))
     }
+
+    /// Returns the refusal of a text that expands past this build's limits.
+    pub(super) fn too_large() -> Error {
+        Error::invalid(norm::Cause::TooLarge.to_string())
+    }
+
+    /// Returns what a body that has no normal form for `e` answers: the refusal past this build's
+    /// limits, or the internal error `broken` makes of `e`.
+    pub(super) fn not_normal(e: norm::Error, broken: impl FnOnce(norm::Error) -> Broken) -> Error {
+        match e.cause {
+            norm::Cause::TooLarge => Error::too_large(),
+            norm::Cause::Stuck(_) | norm::Cause::Invalid(..) => Error::internal(broken(e)),
+        }
+    }
+
+    /// Returns what a body whose requirements fail with `e` answers, as [`Error::not_normal`].
+    pub(super) fn unanalysed(
+        e: permission::Error,
+        broken: impl FnOnce(permission::Error) -> Broken,
+    ) -> Error {
+        if past_limits(&e) {
+            Error::too_large()
+        } else {
+            Error::internal(broken(e))
+        }
+    }
 }
 
-/// Returns the refusal of a file that `cause` makes.
+/// Returns whether the permission analysis fails with `e` because its text expands past this
+/// build's limits.
+pub(super) fn past_limits(e: &permission::Error) -> bool {
+    matches!(
+        e,
+        permission::Error::TooLarge
+            | permission::Error::Normalization(norm::Error {
+                cause: norm::Cause::TooLarge,
+                ..
+            })
+    )
+}
+
+/// Returns the refusal of a file that `cause` makes: [`OpenError::PastLimits`] for a stored body
+/// past this build's limits.
 pub(super) fn corrupt(cause: impl Into<Corruption>) -> OpenError {
-    OpenError::Corrupt {
-        detail: cause.into().to_string(),
+    match cause.into() {
+        Corruption::Catalog(catalog::Error::PastLimits(object)) => OpenError::PastLimits { object },
+        cause => OpenError::Corrupt {
+            detail: cause.to_string(),
+        },
     }
 }
 

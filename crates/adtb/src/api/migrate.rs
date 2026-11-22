@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
+use adtb_lang::check::Program;
 use adtb_lang::evolve::Privilege;
+use adtb_lang::norm::{self, NormalProgram};
+use adtb_lang::schema::Schema;
 
 use crate::catalog::{self, Catalog};
 use crate::mvcc::Transactions;
@@ -80,6 +83,17 @@ impl<R: Runtime> Opened<R> {
             .expect("the whole-database mark an open found holds until the engine closes");
         Err(OpenError::MigrationRefused { version, reason })
     }
+}
+
+/// Returns the normal program of `schema`, refusing the file when a body expands past this
+/// build's limits.
+pub(super) fn normal(schema: &Schema, program: &Program) -> Result<NormalProgram, OpenError> {
+    norm::program(schema, program)
+        .map_err(|e| corrupt(catalog::not_normal(schema, e, stored_not_normal)))
+}
+
+fn stored_not_normal(e: norm::Error) -> catalog::Error {
+    catalog::Error::Internal(Box::new(catalog::Broken::StoredNotNormal(e)))
 }
 
 fn refused(version: u64, reason: RejectReason) -> OpenError {

@@ -14,7 +14,7 @@ use crate::storage::PageError;
 
 use super::hosts::unbound;
 use super::ids::{CatConstraintId, CatRelId};
-use super::{Broken, Catalog, Error, Migrating};
+use super::{Broken, Catalog, Error, Migrating, not_normal};
 
 impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks, whose root is in
@@ -50,8 +50,8 @@ impl Catalog {
                 _ => None,
             })
             .collect();
-        let normal =
-            norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
+        let normal = norm::program(schema, program)
+            .map_err(|e| not_normal(schema, e, |e| Error::from(Broken::NotNormal(e))))?;
         let existed: BTreeSet<CatConstraintId> = old
             .ids()
             .constraint_ids()
@@ -121,8 +121,8 @@ impl Catalog {
         keep: impl Fn(&BTreeSet<RelId>) -> bool,
     ) -> Result<Vec<Denial>, Error> {
         let (schema, program) = self.checking();
-        let normal =
-            norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
+        let normal = norm::program(schema, program)
+            .map_err(|e| not_normal(schema, e, |e| Error::from(Broken::NotNormal(e))))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
         let mut out = Vec::new();

@@ -192,7 +192,15 @@ fn a_write_is_refused() {
 /// Returns the bounded plan of `text` over the set parameter `xs` of type `ty`.
 fn bounded(f: &Fixture, text: &str, ty: &str) -> Result<Plan, Error> {
     let (normal, t) = f.normal(text, &[("xs", ty)]);
-    plan_bounded(&f.schema, &f.normal, &f.catalog, normal.valid(), t)
+    let [plan] = <[_; 1]>::try_from(plan_bounded(
+        &f.schema,
+        &f.normal,
+        &f.catalog,
+        normal.valid(),
+        &[t],
+    ))
+    .expect("one plan per root");
+    plan
 }
 
 fn probes_only(text: &str, ty: &str) {

@@ -60,7 +60,7 @@ impl Migrated {
             .flat_map(|(k, (o, op))| match (o, self.uncarried.get(&k)) {
                 (Err(_), Some(ds)) => ds.clone(),
                 (Err(r), None) if r.reported() => {
-                    let first = Diag::new(r.span().unwrap_or(op.span), r.why().to_string());
+                    let first = r.diag(op.span);
                     let more = r.more().iter();
                     let more = more.map(|(at, why)| Diag::new(at.unwrap_or(op.span), why.clone()));
                     std::iter::once(first).chain(more).collect()
@@ -70,9 +70,9 @@ impl Migrated {
             .collect()
     }
 
-    /// Returns why the declarations the migration leaves do not check, empty when they do.
-    pub(in crate::evolve) fn unchecked(&self) -> String {
-        self.model.unchecked()
+    /// Returns the diagnostic at `at` of why the declarations the migration leaves do not check.
+    pub(in crate::evolve) fn unchecked(&self, at: Span) -> Diag {
+        self.model.unchecked(at)
     }
 
     /// Returns whether every operator applied and the result checks.

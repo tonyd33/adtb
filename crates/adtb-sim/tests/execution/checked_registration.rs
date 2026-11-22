@@ -341,22 +341,70 @@ fn a_crash_at_every_flush_of_a_registration_keeps_all_of_it_or_none() {
     assert!(kept, "seed {seed}: the last flush keeps the registration");
 }
 
-/// Assert that a bundle importing function `last`, pinned at `pins`, is refused when it registers
-/// in `sim`.
+/// The refusal of a text past this build's limits, the function `name` its first diagnostic names
+/// when there is one.
+fn past_limits(name: Option<&str>) -> String {
+    let detail = match name {
+        Some(f) => format!("fn `{f}`: {PAST_LIMITS}"),
+        None => PAST_LIMITS.to_owned(),
+    };
+    format!("Rejected {{ reason: Invalid {{ detail: {detail:?} }} }}")
+}
+
+const PAST_LIMITS: &str = "the text expands past this build's limits";
+
+/// The refusal of a migration whose definitions expand past this build's limits.
+fn migration_past_limits() -> String {
+    format!("Rejected {{ reason: SchemaRefused {{ operator: \"\", detail: {PAST_LIMITS:?} }} }}")
+}
+
+/// Assert that a bundle importing function `last`, pinned at `pins`, is refused past this build's
+/// limits when it registers in `sim` and when an open registers it.
 fn import_is_refused(mut sim: Sim, pins: &[&str], last: &str) {
     run(&mut sim, |rt| {
         let db = opened(&rt, pins);
-        let body = format!("import shop\nimport fn {last}\n");
-        let got = register(&db, "owner", &bundle("deep-1.0", pins, &body));
-        let detail = match got {
-            Err(Error::Rejected {
-                reason: RejectReason::Invalid { detail },
-            }) => detail,
-            other => panic!("{other:?}"),
-        };
-        assert_eq!("the call's body expands past what the engine plans", detail);
+        let reg = bundle(
+            "deep-1.0",
+            pins,
+            &format!("import shop\nimport fn {last}\n"),
+        );
+        let got = register(&db, "owner", &reg).map_err(|e| format!("{e:?}"));
+        assert_eq!(Err(past_limits(Some(last))), got);
+        db.close().expect("close");
+        let got = open::open(
+            &rt,
+            "shop.adt",
+            &Log::new(pins.iter().copied()),
+            &OpenOptions {
+                registrations: vec![reg],
+                ..options(2)
+            },
+        )
+        .map(drop)
+        .map_err(|e| format!("{e:?}"));
+        let refused = format!(
+            "RegistrationRefused {{ bundle: \"deep-1.0\", reason: {} }}",
+            past_limits(Some(last))
+        );
+        assert_eq!(Err(refused), got);
     });
 }
+
+#[test]
+fn a_query_past_the_permission_analysis_steps_is_refused_at_registration() {
+    let sums = vec!["1 + 1"; SUMS_PAST_THE_STEPS].join(", ");
+    let body = format!("import shop\nquery big () -> Set I64 = [{sums}]\n");
+    let mut sim = shop_sim(390);
+    run(&mut sim, |rt| {
+        let pins = &[SHOP, GRANTS];
+        let db = opened(&rt, pins);
+        let got = register(&db, "web", &bundle("big-1.0", pins, &body));
+        assert_eq!(Err(past_limits(None)), got.map_err(|e| format!("{e:?}")));
+    });
+}
+
+/// The shortest list of additions past the permission analysis's steps.
+const SUMS_PAST_THE_STEPS: usize = 209_716;
 
 /// Returns a module defining `d0` to `d{last}`, each two operators above the one before.
 fn deepening_fns(last: usize) -> String {
@@ -423,11 +471,7 @@ fn a_function_too_deep_to_run_is_refused_at_its_definition() {
             },
         ) {
             Err(OpenError::MigrationRefused { version: 3, reason }) => {
-                let got = format!("{reason:?}");
-                assert!(
-                    got.contains("the text expands past what the engine normalises"),
-                    "{got}"
-                );
+                assert_eq!(migration_past_limits(), format!("{reason:?}"));
             }
             Err(other) => panic!("{other:?}"),
             Ok(_) => panic!("d43 is defined"),
@@ -520,10 +564,7 @@ fn a_planned_body_past_the_run_bound_is_refused_at_its_definition() {
                     Err(OpenError::MigrationRefused { reason, .. }) => {
                         let got = format!("{reason:?}");
                         assert!(!passes, "{body} at d{k}: {got}");
-                        assert!(
-                            got.contains("the text expands past what the engine plans"),
-                            "{got}"
-                        );
+                        assert_eq!(migration_past_limits(), got, "{body} at d{k}");
                     }
                     Err(other) => panic!("{other:?}"),
                 }
@@ -585,9 +626,9 @@ fn a_tall_function_chain_is_defined_up_to_its_limit() {
         })
     };
     opens(388, chain(31)).expect("the tallest chain");
-    let got = format!("{:?}", opens(389, chain(32)));
-    assert!(
-        got.contains("the text expands past what the engine normalises"),
-        "{got}"
+    let refused = format!(
+        "Err(MigrationRefused {{ version: 3, reason: {} }})",
+        migration_past_limits()
     );
+    assert_eq!(refused, format!("{:?}", opens(389, chain(32))));
 }

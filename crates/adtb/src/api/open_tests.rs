@@ -171,3 +171,41 @@ fn a_refused_open_keeps_only_files_it_found_across_creation_races() {
     }
     assert_eq!(4, ran);
 }
+
+#[test]
+fn a_stored_body_past_this_builds_limits_refuses_the_open() {
+    let scratch = Scratch::new("open-limits", "past");
+    let path = scratch.path().join("tall.adt");
+    let sums = " + 1".repeat(40);
+    let schema = format!(
+        "module shop
+add module shop
+add type Note = {{ id: Key notes, body: Text, n: I64 }}
+add relation notes : Note key id generate sequence index (lower(body))
+add constraint tall =
+  from n in notes
+  where n.n{sums} < 0
+  select n
+"
+    );
+    let log = Log::new([schema.as_str()]);
+    let options = OpenOptions {
+        workers: Some(1),
+        ..OpenOptions::default()
+    };
+    let created = OpenOptions {
+        create: Some(CreateOptions::default()),
+        ..options.clone()
+    };
+    Database::open(&path, &log, &created)
+        .unwrap()
+        .close()
+        .unwrap();
+    adtb_lang::norm::set_run_height(32);
+    let got = Database::open(&path, &log, &options).map(drop);
+    adtb_lang::norm::set_run_height(64);
+    assert_eq!(
+        "Err(PastLimits { object: \"shop::tall\" })",
+        format!("{got:?}")
+    );
+}

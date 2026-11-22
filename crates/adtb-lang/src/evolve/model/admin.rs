@@ -1,6 +1,6 @@
 use super::field::Applied;
 use super::lift::Lifting;
-use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diags};
+use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diag, refuse_diags};
 use super::run::{Late, Run, unbuilt};
 use super::*;
 use crate::ast;
@@ -174,7 +174,7 @@ impl Model {
             Ok(b) => b,
             Err(ds) => {
                 return match ds.iter().filter(|d| own(d.file)).min_by_key(|d| d.file.0) {
-                    Some(d) => refuse(d.diag.message.clone()),
+                    Some(d) => refuse_diag(&d.diag),
                     None => unbuilt(&ds),
                 };
             }
@@ -182,7 +182,7 @@ impl Model {
         if let Err(ds) = check::check_schema(built.schema())
             && let Some(d) = ds.iter().filter(|d| own(d.file)).min_by_key(|d| d.file.0)
         {
-            return refuse(d.diag.message.clone());
+            return refuse_diag(&d.diag);
         }
         for k in 0..more.len() {
             let file = FileId((first + k) as u32);

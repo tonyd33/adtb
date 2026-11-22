@@ -1,6 +1,6 @@
 use crate::kernel::{Kind, Terms, Tm};
 
-use super::{Error, NormalProgram, Root};
+use super::{Cause, Error, Root};
 
 /// The most loops a normal form nests: a generator, an aggregate, a grouping, a top or a fixpoint.
 const MAX_LOOPS: u32 = 64;
@@ -19,11 +19,37 @@ const SPEND_PER_TERM: usize = 4;
 /// The most terms on a path down a term the engine plans and runs, within a worker's stack.
 const MAX_RUN_HEIGHT: u32 = 64;
 
-/// Returns whether each of `roots`, written out with no term shared, stays within what the engine
+#[cfg(feature = "testing")]
+static RUN_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MAX_RUN_HEIGHT);
+
+/// Set the most terms on a path down a term the engine plans and runs, for this process, to
+/// `height`: a build with other limits.
+#[cfg(feature = "testing")]
+pub fn set_run_height(height: u32) {
+    RUN_HEIGHT.store(height, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn run_height() -> u32 {
+    #[cfg(feature = "testing")]
+    return RUN_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(feature = "testing"))]
+    MAX_RUN_HEIGHT
+}
+
+/// Fail on the first of `roots` that, written out with no term shared, passes what the engine
 /// plans and runs.
-pub fn expands_within_bound(terms: &Terms, roots: &[Tm]) -> bool {
+pub(super) fn within_run_bound(
+    terms: &Terms,
+    roots: impl IntoIterator<Item = (Root, Tm)>,
+) -> Result<(), Error> {
     let bound = RunBound::of(terms);
-    roots.iter().all(|r| bound.holds(*r))
+    match roots.into_iter().find(|(_, t)| !bound.holds(*t)) {
+        Some((root, _)) => Err(Error {
+            root,
+            cause: Cause::TooLarge,
+        }),
+        None => Ok(()),
+    }
 }
 
 /// The written out size and the height of each term of an arena.
@@ -51,7 +77,7 @@ impl RunBound {
 
     fn holds(&self, root: Tm) -> bool {
         let (size, height) = self.shapes[root.0 as usize];
-        size <= self.limit && height <= MAX_RUN_HEIGHT
+        size <= self.limit && height <= run_height()
     }
 }
 
@@ -68,10 +94,6 @@ fn stack_height(kind: &Kind, height: impl Fn(Tm) -> u32) -> u32 {
             .unwrap_or(0),
     }
 }
-
-const PAST_RUN_BOUND: &str = "the text expands past what the engine plans";
-
-pub(super) const TOO_LARGE: &str = "the text expands past what the engine normalises";
 
 /// What normalising one root has spent.
 #[derive(Default)]
@@ -99,7 +121,7 @@ impl Budget {
     }
 
     /// Refuse a root past any limit.
-    pub(super) fn spend(&mut self, out: &Terms) -> Result<(), String> {
+    pub(super) fn spend(&mut self, out: &Terms) -> Result<(), Cause> {
         self.steps += 1;
         for at in self.shapes.len()..out.len() {
             let at = Tm(at as u32);
@@ -120,7 +142,7 @@ impl Budget {
             );
             let nested = inner + u32::from(own);
             if nested > MAX_LOOPS || height > MAX_HEIGHT {
-                return Err(TOO_LARGE.to_owned());
+                return Err(Cause::TooLarge);
             }
             self.shapes.push((nested, height));
         }
@@ -128,31 +150,8 @@ impl Budget {
             || self.steps > self.limit
             || out.len() - self.base > self.limit
         {
-            return Err(TOO_LARGE.to_owned());
+            return Err(Cause::TooLarge);
         }
         Ok(())
     }
-}
-
-/// Fail on the first body of `p` that the engine plans and that passes the run bound. A function
-/// is planned only inlined into its caller, which passes the bound itself.
-pub(super) fn planned_within_bound(p: &NormalProgram) -> Result<(), Error> {
-    let bound = RunBound::of(p.terms());
-    let holds = |root: Root, t: Tm| {
-        if bound.holds(t) {
-            Ok(())
-        } else {
-            Err(Error {
-                root,
-                message: PAST_RUN_BOUND.to_owned(),
-                invalid: None,
-            })
-        }
-    };
-    for (root, t, _) in p.bodies() {
-        if !matches!(root, Root::Function(_)) {
-            holds(root, t)?;
-        }
-    }
-    Ok(())
 }

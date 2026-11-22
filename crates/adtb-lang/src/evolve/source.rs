@@ -263,7 +263,7 @@ impl Source {
         }
         if refusal.operators.is_empty() && refusal.recheck.is_empty() {
             let last = m.operators.last().map_or(Span::default(), |op| op.span);
-            refusal.operators.push(Diag::new(last, got.unchecked()));
+            refusal.operators.push(got.unchecked(last));
         }
         refusal.result = Some(Box::new(next));
         Err(refusal)

@@ -15,6 +15,7 @@ mod ids;
 mod insert;
 mod kept;
 mod keying;
+mod limits;
 pub use crate::exec::layout;
 mod memo;
 mod migration;
@@ -66,7 +67,7 @@ use std::sync::{Arc, LazyLock, OnceLock};
 
 use adtb_lang::check::Program;
 use adtb_lang::evolve::{Privilege, Source};
-use adtb_lang::norm::{self, NormalProgram};
+use adtb_lang::norm::NormalProgram;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Committed, Schema};
 use adtb_lang::span::Diag;
@@ -93,6 +94,8 @@ pub use kept::{KeptField, KeptRow};
 pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
+use limits::{index_program, unaccepted, unchecked};
+pub(crate) use limits::{not_normal, past_limits};
 use memo::Memo;
 #[cfg(any(test, feature = "testing"))]
 pub use oplog::chained;
@@ -156,6 +159,8 @@ pub enum Error {
     /// The checker refuses a schema the catalog builds and guarantees it admits; what was built
     /// and each diagnostic.
     Unchecked(String, Vec<Diag>),
+    /// A stored body expands past this build's limits; the qualified name of its declaration.
+    PastLimits(String),
 }
 
 impl From<PageError> for Error {
@@ -274,26 +279,6 @@ fn key_schema(
             .map(|t| (layout::key_type(schema, keys, t), Dir::Asc))
             .collect(),
     ))
-}
-
-/// Returns the normal program of `schema`, whose checked program is `program`, when an index of
-/// `specs` has an element other than a field.
-fn index_program<'s>(
-    schema: &Schema,
-    program: &Program,
-    mut specs: impl Iterator<Item = &'s IndexSpec>,
-) -> Result<Option<NormalProgram>, Box<Broken>> {
-    let derived = specs.any(|s| {
-        s.elements
-            .iter()
-            .any(|e| matches!(e, plan::Element::Derived { .. }))
-    });
-    if !derived {
-        return Ok(None);
-    }
-    norm::program(schema, program)
-        .map(Some)
-        .map_err(|e| Box::new(Broken::StoredNotNormal(e)))
 }
 
 fn index_ctors(schema: &Schema, spec: &IndexSpec) -> BTreeSet<CtorId> {
@@ -539,19 +524,14 @@ fn fold_from_empty(
             .map_err(|ds| refused(ds.into_iter().map(|d| d.message).collect()))?;
         source = source
             .migrate(&file, text)
-            .map_err(|r| refusal(r, refused))?;
+            .map_err(|r| unaccepted(version, r))?;
         if let Some(roles) = dormant.get(&version) {
             for g in &mut source.grants {
                 g.dormant |= roles.contains(&g.role);
             }
         }
     }
-    let (schema, program) = source.check().map_err(|ds| {
-        Error::Unaccepted(
-            source.version,
-            ds.into_iter().map(|d| d.diag.message).collect(),
-        )
-    })?;
+    let (schema, program) = source.check().map_err(|ds| unchecked(source.version, ds))?;
     Ok((
         source,
         committed(schema)?,
@@ -808,7 +788,9 @@ impl Catalog {
             });
         let specs =
             pending::kept_indexes(held, held_texts, &readers.pending).map_err(Rot::KeptIndexes)?;
-        let normal = index_program(held, held_program, specs.values()).map_err(Rot::KeptIndexes)?;
+        let normal = index_program(held, held_program, specs.values(), |b| {
+            Error::Corrupt(Rot::KeptIndexes(b))
+        })?;
         let mut stored = BTreeMap::new();
         for (id, spec) in specs {
             let Some(&at) = named.indexes.get(&id) else {

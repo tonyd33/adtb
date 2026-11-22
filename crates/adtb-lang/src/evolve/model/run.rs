@@ -400,13 +400,13 @@ impl Built {
     }
 
     /// Returns the errors of checking the schema in file `file`.
-    pub(super) fn errors_in(&self, file: FileId) -> Vec<String> {
+    pub(super) fn errors_in(&self, file: FileId) -> Vec<Diag> {
         match check::check_schema(&self.schema) {
             Ok(_) => Vec::new(),
             Err(ds) => ds
                 .into_iter()
                 .filter(|d| d.file == file)
-                .map(|d| d.diag.message)
+                .map(|d| d.diag)
                 .collect(),
         }
     }
@@ -702,22 +702,21 @@ impl Model {
             .is_ok_and(|(b, _)| check::check_schema(&b.schema).is_ok()))
     }
 
-    /// Returns why the declarations do not check, empty when they do.
-    pub(super) fn unchecked(&self) -> String {
+    /// Returns the diagnostic at `at` of why the declarations do not check, with an empty message
+    /// when they do.
+    pub(super) fn unchecked(&self, at: Span) -> Diag {
         if self.dropped_names() {
-            return "a declaration names a dropped object".into();
+            return Diag::new(at, "a declaration names a dropped object");
         }
+        let first = |ds: Vec<FileDiag>| match ds.into_iter().next() {
+            Some(d) => Diag { span: at, ..d.diag },
+            None => Diag::new(at, "a declaration names a poisoned name"),
+        };
         match self.built(&[], &[]) {
-            Err(ds) => ds
-                .first()
-                .map_or("a declaration names a poisoned name", |d| &d.diag.message)
-                .to_string(),
+            Err(ds) => first(ds),
             Ok((b, _)) => match check::check_schema(&b.schema) {
-                Err(ds) => ds
-                    .first()
-                    .map_or("a declaration names a poisoned name", |d| &d.diag.message)
-                    .to_string(),
-                Ok(_) => String::new(),
+                Err(ds) => first(ds),
+                Ok(_) => Diag::new(at, ""),
             },
         }
     }

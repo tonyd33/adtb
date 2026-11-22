@@ -349,7 +349,8 @@ pub struct NormalQuery {
 impl NormalQuery {
     /// Returns `body` of `terms` over `params` as a normal form, refused with the first term
     /// that breaks a typing invariant, is not closed over `params`, is not in normal form or
-    /// sits where its kind may not, or with the first broken node of `terms`.
+    /// sits where its kind may not, with the first broken node of `terms`, or when `body`
+    /// expands past this build's limits.
     pub fn validated(
         schema: &Schema,
         terms: Terms,
@@ -358,6 +359,7 @@ impl NormalQuery {
     ) -> Result<NormalQuery, Error> {
         unbroken(schema, Root::Query, &[&terms])?;
         normal(schema, &terms, Root::Query, &[(body, params.clone())])?;
+        super::limit::within_run_bound(&terms, [(Root::Query, body)])?;
         Ok(NormalQuery {
             terms,
             params,

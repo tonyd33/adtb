@@ -440,7 +440,14 @@ fn long_list(n: i64, row: impl Fn(i64) -> String) -> String {
     format!("[{}]", rows.join(", "))
 }
 
-const PAST_THE_NORMALISER: &str = "the text expands past what the engine normalises";
+const PAST_THE_NORMALISER: &str = "the text expands past this build's limits";
+
+/// Assert the checker refuses `text`, over parameters `n: I64` and `m: I64`, past this build's
+/// limits.
+fn past_the_limits(what: &str, text: &str) {
+    let got = adhoc(&[("n", "I64"), ("m", "I64")], text).map(drop);
+    assert_eq!(Err(vec![PAST_THE_NORMALISER.to_owned()]), got, "{what}");
+}
 
 fn normalises(what: &str, text: &str) {
     let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{what} does not check: {e:?}"));
@@ -691,26 +698,22 @@ fn a_mixed_chain_keeps_precedence() {
 }
 
 #[test]
-fn ten_thousand_transact_items_check_and_normalise() {
+fn ten_thousand_transact_inserts_normalise_and_ten_thousand_lets_are_refused_past_the_limits() {
     let lets: String = (0..10_000)
         .map(|i| format!("  let u{i} = insert users {{ name: \"{i}\" }}\n"))
         .collect();
     let inserts: String = (0..10_000)
         .map(|i| format!("  insert users {{ name: \"{i}\" }}\n"))
         .collect();
-    let texts = [
-        ("lets", format!("transact\n{lets}")),
-        ("inserts", format!("transact\n{inserts}")),
-    ];
+    let (lets, inserts) = (format!("transact\n{lets}"), format!("transact\n{inserts}"));
     on_small_stack(|| {
-        for (what, text) in &texts {
-            normalises(what, text);
-        }
+        normalises("inserts", &inserts);
+        past_the_limits("lets", &lets);
     });
 }
 
 #[test]
-fn two_thousand_match_arms_check_and_normalise() {
+fn two_thousand_match_arms_are_refused_past_the_limits() {
     let arms: String = (0..2000).map(|i| format!(" | {i} -> {i}")).collect();
     let write_arms: String = (0..2000)
         .map(|i| format!(" | {i} -> insert users {{ name: \"{i}\" }}"))
@@ -718,13 +721,13 @@ fn two_thousand_match_arms_check_and_normalise() {
     let query = format!("from r in raws select match r.n{arms} | _ -> 0");
     let write = format!("transact let n = 1 match n{write_arms} | _ -> skip");
     on_small_stack(|| {
-        normalises("a query match", &query);
-        adhoc_refuses(&[], &write, PAST_THE_NORMALISER);
+        past_the_limits("a query match", &query);
+        past_the_limits("a write match", &write);
     });
 }
 
 #[test]
-fn four_thousand_match_arms_and_alternatives_check_and_normalise() {
+fn four_thousand_match_arms_and_alternatives_are_refused_past_the_limits() {
     let arms = |arm: &dyn Fn(usize) -> String| -> String { (0..4000).map(arm).collect() };
     let alts: Vec<String> = (0..4000).map(|i| i.to_string()).collect();
     let texts = [
@@ -756,9 +759,9 @@ fn four_thousand_match_arms_and_alternatives_check_and_normalise() {
     );
     on_small_stack(|| {
         for (what, text) in &texts {
-            normalises(what, text);
+            past_the_limits(what, text);
         }
-        adhoc_refuses(&[], &alternatives, PAST_THE_NORMALISER);
+        past_the_limits("alternatives", &alternatives);
     });
 }
 
@@ -867,15 +870,13 @@ fn match_kernel_terms_grow_linearly_in_multi_test_arms() {
 
 /// Returns how long `f` takes.
 #[test]
-fn a_guarded_write_match_of_64_arms_normalises() {
-    let text = &multi_test_matches(64)[1].1;
-    checked_and_normal(text);
+fn a_guarded_write_match_of_64_arms_is_refused_past_the_limits() {
+    past_the_limits("guarded write", &multi_test_matches(64)[1].1);
 }
 
 #[test]
-fn a_query_match_of_64_two_literal_arms_checks() {
-    let text = &multi_test_matches(64)[2].1;
-    checked_and_normal(text);
+fn a_query_match_of_64_two_literal_arms_is_refused_past_the_limits() {
+    past_the_limits("two field literals", &multi_test_matches(64)[2].1);
 }
 
 #[test]

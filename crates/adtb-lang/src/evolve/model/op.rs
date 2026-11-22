@@ -1,7 +1,7 @@
 use super::*;
 use crate::ast::{self, CtorSel, CtorTarget, OperatorKind, QName};
 use crate::schema::Stage;
-use crate::span::{DiagKind, FileDiag, Span};
+use crate::span::{Diag, DiagKind, FileDiag, Span};
 
 /// The kind of a declaration, as `add` and `drop` operators name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -110,6 +110,8 @@ pub(super) struct Refused {
     /// The operator's further failures, each with the span of the migration's text it names,
     /// if it names one.
     more: Vec<(Option<Span>, String)>,
+    /// The kind of the diagnostic `why` reports.
+    kind: DiagKind,
 }
 
 impl Refused {
@@ -119,6 +121,7 @@ impl Refused {
             at: None,
             reported: true,
             more: Vec::new(),
+            kind: DiagKind::Invalid,
         }
     }
 
@@ -129,6 +132,7 @@ impl Refused {
             at: Some(at),
             reported: true,
             more: Vec::new(),
+            kind: DiagKind::Invalid,
         }
     }
 
@@ -139,6 +143,7 @@ impl Refused {
             at: None,
             reported: false,
             more: Vec::new(),
+            kind: DiagKind::Invalid,
         }
     }
 
@@ -148,11 +153,6 @@ impl Refused {
 
     pub(super) fn why(&self) -> &str {
         &self.why
-    }
-
-    /// Returns the span the refusal names, if it names one.
-    pub(super) fn span(&self) -> Option<Span> {
-        self.at
     }
 
     /// Returns the refusal at its own span, else at `operator`, the span of its operator.
@@ -171,6 +171,20 @@ impl Refused {
     pub(super) fn more(&self) -> &[(Option<Span>, String)] {
         &self.more
     }
+
+    /// Returns the span the refusal names, if it names one.
+    pub(super) fn span(&self) -> Option<Span> {
+        self.at
+    }
+
+    /// Returns the diagnostic of the refusal at `operator` when it names no span.
+    pub(super) fn diag(&self, operator: Span) -> Diag {
+        Diag {
+            span: self.span().unwrap_or(operator),
+            message: self.why.clone(),
+            kind: self.kind.clone(),
+        }
+    }
 }
 
 /// Why a model gives no result for an operator.
@@ -188,15 +202,24 @@ pub(super) fn refuse<T>(why: impl Into<String>) -> Res<T> {
     Err(Fail::Refused(Refused::new(why.into())))
 }
 
+/// Refuse the operator with the message and kind of `d`.
+pub(super) fn refuse_diag<T>(d: &Diag) -> Res<T> {
+    Err(Fail::Refused(Refused {
+        kind: d.kind.clone(),
+        ..Refused::new(d.message.clone())
+    }))
+}
+
 /// Refuse the operator for each of `ds` that reports, at its span, reporting nothing when none
 /// does.
-pub(super) fn refuse_diags<T>(ds: &[crate::span::Diag]) -> Res<T> {
+pub(super) fn refuse_diags<T>(ds: &[Diag]) -> Res<T> {
     let mut reported = ds.iter().filter(|d| d.kind != DiagKind::Poisoned);
     match reported.next() {
         Some(d) => Err(Fail::Refused(Refused {
             more: reported
                 .map(|d| (Some(d.span), d.message.clone()))
                 .collect(),
+            kind: d.kind.clone(),
             ..Refused::at(d.span, d.message.clone())
         })),
         None => Err(Fail::Refused(Refused::poisoned())),
@@ -207,7 +230,10 @@ pub(super) fn refuse_diags<T>(ds: &[crate::span::Diag]) -> Res<T> {
 /// nothing when none does.
 pub(super) fn refuse_first<T>(ds: &[FileDiag], why: impl Fn(&str) -> String) -> Res<T> {
     match ds.iter().find(|d| d.diag.kind != DiagKind::Poisoned) {
-        Some(d) => refuse(why(&d.diag.message)),
+        Some(d) => Err(Fail::Refused(Refused {
+            kind: d.diag.kind.clone(),
+            ..Refused::new(why(&d.diag.message))
+        })),
         None => Err(Fail::Refused(Refused::poisoned())),
     }
 }
@@ -218,6 +244,7 @@ pub(super) fn refuse_each<T>(ds: &[FileDiag]) -> Res<T> {
     match reported.next() {
         Some(d) => Err(Fail::Refused(Refused {
             more: reported.map(|d| (None, d.diag.message.clone())).collect(),
+            kind: d.diag.kind.clone(),
             ..Refused::new(d.diag.message.clone())
         })),
         None => Err(Fail::Refused(Refused::poisoned())),

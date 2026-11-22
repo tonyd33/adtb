@@ -380,7 +380,7 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
         }
         at = at
             .migrate_keeping(&file, &l.text, &kept)
-            .map_err(|r| super::refusal(r, refused))?;
+            .map_err(|r| super::unaccepted(l.number, r))?;
     }
     let enforced = checked(at, |ds| {
         Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
@@ -956,8 +956,9 @@ pub(super) fn checked(
     source: Source,
     refused: impl FnOnce(Vec<Diag>) -> Error,
 ) -> Result<Checked, Error> {
-    let (schema, program) = source
-        .check()
-        .map_err(|ds| refused(ds.into_iter().map(|d| d.diag).collect()))?;
+    let (schema, program) = source.check().map_err(|ds| {
+        super::past_limits(ds.iter().map(|d| &d.diag))
+            .unwrap_or_else(|| refused(ds.into_iter().map(|d| d.diag).collect()))
+    })?;
     Checked::new(source, schema, program)
 }

@@ -357,7 +357,7 @@ impl<'a> Lacking<'a> {
             return Ok(at);
         }
         let normal = norm::program(run.schema, run.program)
-            .map_err(|e| Error::internal(Broken::RegistrationNotNormal(e)))?;
+            .map_err(|e| Error::not_normal(e, Broken::RegistrationNotNormal))?;
         self.held.push(Held {
             schema: run.schema.clone(),
             program: run.program.clone(),
@@ -401,7 +401,7 @@ fn requirements(run: &Run<'_>, program: &NormalProgram) -> Result<Requirements, 
         .chain(run.unit)
         .collect();
     permission::normal(run.schema, program, run.terms, run.body, &params)
-        .map_err(|e| Error::internal(Broken::NoRequirements(e)))
+        .map_err(|e| Error::unanalysed(e, Broken::NoRequirements))
 }
 
 /// Refuse a bundle of `checked`, recorded in `stored` with an owner other than the schema
@@ -749,6 +749,7 @@ fn catalog_error(e: catalog::Error) -> Error {
         catalog::Error::Refused(why) | catalog::Error::Unaccepted(_, why) => {
             Error::invalid(why.join("\n"))
         }
+        catalog::Error::PastLimits(_) => Error::too_large(),
         other => Error::internal(Broken::CatalogError(other)),
     }
 }
@@ -916,7 +917,12 @@ fn translations(
             e.params.iter().flatten().copied().chain(e.unit).collect(),
             e.body,
         )
-        .map_err(|n| Box::new(Broken::CallNotNormal(n)))?;
+        .map_err(Refused::from);
+        let q = match q {
+            Ok(q) => q,
+            Err(Refused::Untranslatable(u)) => return Ok(Err((e.name.clone(), u))),
+            Err(Refused::Broken(n)) => return Err(Box::new(Broken::CallNotNormal(n))),
+        };
         let (terms, params, body) = match p.query(&q) {
             Ok(q) => q.into_parts(),
             Err(Refused::Untranslatable(u)) => return Ok(Err((e.name.clone(), u))),

@@ -124,8 +124,7 @@ struct Binding {
     unit: Option<Var>,
 }
 
-/// Returns the entry `name` of body `body` in `terms`, its row for the caller to complete. Fail
-/// when the body expands past what the engine plans.
+/// Returns the entry `name` of body `body` in `terms`, its row for the caller to complete.
 fn entry(
     name: &str,
     kind: Callable,
@@ -133,11 +132,6 @@ fn entry(
     body: Tm,
     binding: Binding,
 ) -> Result<Entry, Error> {
-    if !norm::expands_within_bound(&terms, &[body]) {
-        return Err(Error::invalid(
-            "the call's body expands past what the engine plans",
-        ));
-    }
     let (writes, retry) = shape(&terms, body);
     Ok(Entry {
         name: name.to_owned(),
@@ -273,9 +267,5 @@ fn registered_valid(schema: &Schema, terms: &Terms, term: Tm) -> Result<(), Erro
 
 /// Returns what a normaliser's refusal of a registered body answers.
 fn not_normal(e: norm::Error) -> Error {
-    if e.past_limit() {
-        Error::invalid(e.message)
-    } else {
-        Error::internal(Broken::CallNotNormal(e))
-    }
+    Error::not_normal(e, Broken::CallNotNormal)
 }

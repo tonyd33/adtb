@@ -209,8 +209,10 @@ impl Catalog {
         texts: &ElementTexts,
         rewritten: &BTreeSet<CatRelId>,
     ) -> Result<(), Error> {
-        let normal = norm::program(schema, program)
-            .map_err(|e| Error::Refused(vec![format!("the schema does not normalise: {e:?}")]))?;
+        let normal = norm::program(schema, program).map_err(|e| match e.cause {
+            norm::Cause::TooLarge => Error::Refused(vec![e.to_string()]),
+            norm::Cause::Stuck(_) | norm::Cause::Invalid(_) => Error::from(Broken::NotNormal(e)),
+        })?;
         kernel::validate(schema, &program.terms, &program.body_terms())
             .and_then(|_| kernel::validate(schema, normal.terms(), &normal.roots()))
             .and_then(|_| kernel::validate_normal(schema, normal.terms(), &normal.roots()))

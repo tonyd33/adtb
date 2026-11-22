@@ -1127,7 +1127,7 @@ fn a_sum_over_shared_branches_is_checked_for_merged_bindings_once() {
 }
 
 #[test]
-fn ad_hoc_text_over_a_doubling_chain_of_functions_checks() {
+fn ad_hoc_text_over_a_doubling_chain_of_functions_is_refused_past_the_limits() {
     let doubling: String = (0..40)
         .map(|i| format!("fn d{} (x: I64) -> I64 = d{i}(x) + d{i}(x)\n", i + 1))
         .collect();
@@ -1137,9 +1137,12 @@ fn ad_hoc_text_over_a_doubling_chain_of_functions_checks() {
         "transact insert orders { user: users.key(1), total: d40(2), qty: 1 }",
         "transact if d40(1) > 0 then insert orders { user: users.key(1), total: d40(2), qty: 1 } else skip",
     ] {
-        if let Err(e) = adhoc(&extra, &[], text) {
-            panic!("`{text}` is refused: {e:?}");
-        }
+        let got = adhoc(&extra, &[], text).map(drop);
+        assert_eq!(
+            Err(vec!["the text expands past this build's limits".to_owned()]),
+            got,
+            "{text}"
+        );
     }
 }
 

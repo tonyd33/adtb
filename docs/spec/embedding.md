@@ -187,12 +187,16 @@ pub enum OpenError {
     HostFnMissing { name: String },
     HostFnMismatch { name: String },
     DowngradeRefused { cause: String },
+    PastLimits { object: String },
     Io(std::io::Error),
 }
 ```
 
 Open takes a slice of bundles of any editions; every generated
 `BundleDef` implements the object-safe `AnyBundleDef`.
+
+`PastLimits` names a stored body this build cannot normalise within its
+limits; a build whose limits admit it opens the file.
 
 `FormatTooNew` is returned by a release older than the one that last
 finalized the file's format ([catalog.md](catalog.md#122-upgrades-and-downgrade)).

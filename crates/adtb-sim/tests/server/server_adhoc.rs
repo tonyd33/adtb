@@ -1016,8 +1016,7 @@ fn deep_answer(
     finish(rt, &task)
 }
 
-const PLANS: &str = "the text expands past what the engine plans";
-const NORMALISES: &str = "the text expands past what the engine normalises";
+const PAST_LIMITS: &str = "the text expands past this build's limits";
 const TYPE_TOO_LARGE: &str = "the type of this expression is too large";
 
 /// The stack the deepening tests run on, in bytes. Stands for under 2 MiB in a dev build, where a
@@ -1091,8 +1090,8 @@ fn fixed_denial(who: &str) -> String {
 }
 
 /// Assert each role runs `kind` at `limit` and refuses it one level on, an owner with `refusal`
-/// and a role that does not read the schema with it unless `hidden`.
-fn runs_to_its_limit(name: &str, seed: u64, kind: &str, limit: usize, refusal: &str, hidden: bool) {
+/// and a role that does not read the schema with the fixed denial.
+fn runs_to_its_limit(name: &str, seed: u64, kind: &str, limit: usize, refusal: &str) {
     let stack = if kind.starts_with("lambda") {
         FUNCTION_CHAIN_STACK
     } else {
@@ -1105,7 +1104,7 @@ fn runs_to_its_limit(name: &str, seed: u64, kind: &str, limit: usize, refusal: &
             for who in ["reader", "owner"] {
                 let at = deep_answer(&rt, &db, who, kind, limit);
                 assert_eq!(Ok(deep_rows(kind, limit)), at, "{kind} {who} at {limit}");
-                let expected = if hidden && who == "reader" {
+                let expected = if who == "reader" {
                     fixed_denial(who)
                 } else {
                     answer_of(refusal)
@@ -1124,8 +1123,7 @@ fn a_function_chain_runs_to_its_limit() {
         700,
         "lambda",
         124,
-        NORMALISES,
-        true,
+        PAST_LIMITS,
     );
 }
 
@@ -1136,8 +1134,7 @@ fn a_function_chain_over_sets_runs_to_its_limit() {
         701,
         "lambda_set",
         61,
-        NORMALISES,
-        true,
+        PAST_LIMITS,
     );
 }
 
@@ -1148,14 +1145,13 @@ fn an_operator_chain_runs_to_its_limit() {
         702,
         "prim",
         62,
-        PLANS,
-        false,
+        PAST_LIMITS,
     );
 }
 
 #[test]
 fn an_if_chain_runs_to_its_limit() {
-    runs_to_its_limit("an_if_chain_runs_to_its_limit", 703, "if", 62, PLANS, false);
+    runs_to_its_limit("an_if_chain_runs_to_its_limit", 703, "if", 62, PAST_LIMITS);
 }
 
 #[test]
@@ -1165,8 +1161,7 @@ fn a_match_chain_runs_to_its_limit() {
         704,
         "match",
         60,
-        PLANS,
-        false,
+        PAST_LIMITS,
     );
 }
 
@@ -1177,8 +1172,7 @@ fn a_record_nesting_runs_to_its_limit() {
         705,
         "record",
         63,
-        PLANS,
-        false,
+        PAST_LIMITS,
     );
 }
 
@@ -1189,8 +1183,7 @@ fn a_set_nesting_runs_to_its_limit() {
         706,
         "set",
         63,
-        PLANS,
-        false,
+        PAST_LIMITS,
     );
 }
 
@@ -1201,8 +1194,7 @@ fn a_comprehension_chain_runs_to_its_limit() {
         707,
         "from",
         60,
-        PLANS,
-        false,
+        PAST_LIMITS,
     );
 }
 
@@ -1213,8 +1205,7 @@ fn a_chain_of_match_arms_runs_to_its_limit() {
         708,
         "arms",
         63,
-        PLANS,
-        false,
+        PAST_LIMITS,
     );
 }
 
@@ -1253,7 +1244,7 @@ fn the_written_out_size_runs_up_to_its_limit_and_no_further() {
         let at = send(&rt, &db, "owner", &wide_doubling(10, 64));
         assert_eq!(Ok(vec![format!("{:?}", in_sets(Value::Int(1), 10))]), at);
         let past = send(&rt, &db, "owner", &wide_doubling(10, 65)).map(drop);
-        assert_eq!(answer_of(PLANS), format!("{past:?}"));
+        assert_eq!(answer_of(PAST_LIMITS), format!("{past:?}"));
     });
 }
 
@@ -1282,22 +1273,17 @@ fn a_nesting_of_fixpoints_runs_to_its_limit_and_no_further() {
 }
 
 /// Assert each role is refused the doubling text of `kind` at 33 doublings: an owner with
-/// `refusal`, and a role that does not read the schema with it unless `hidden`.
-fn doubled_is_refused(seed: u64, kind: &str, refusal: &str, hidden: bool) {
+/// `refusal`, and a role that does not read the schema with the fixed denial.
+fn doubled_is_refused(seed: u64, kind: &str, refusal: &str) {
     let owner = doubled(seed, kind, 33, "owner");
     assert_eq!(answer_of(refusal), owner, "{kind}");
     let role = doubled(seed, kind, 33, "reader");
-    let expected = if hidden {
-        fixed_denial("reader")
-    } else {
-        answer_of(refusal)
-    };
-    assert_eq!(expected, role, "{kind}");
+    assert_eq!(fixed_denial("reader"), role, "{kind}");
 }
 
 #[test]
 fn a_doubling_set_within_the_height_bound_is_refused_for_its_size() {
-    assert_eq!(answer_of(PLANS), doubled(666, "set", 28, "owner"));
+    assert_eq!(answer_of(PAST_LIMITS), doubled(666, "set", 28, "owner"));
 }
 
 #[test]
@@ -1316,27 +1302,27 @@ fn a_very_deep_type_is_refused_on_a_default_stack() {
 
 #[test]
 fn a_doubling_join_is_refused() {
-    doubled_is_refused(648, "join", NORMALISES, true);
+    doubled_is_refused(648, "join", PAST_LIMITS);
 }
 
 #[test]
 fn a_doubling_record_is_refused() {
-    doubled_is_refused(649, "record", TYPE_TOO_LARGE, true);
+    doubled_is_refused(649, "record", TYPE_TOO_LARGE);
 }
 
 #[test]
 fn a_doubling_set_is_refused() {
-    doubled_is_refused(650, "set", PLANS, false);
+    doubled_is_refused(650, "set", PAST_LIMITS);
 }
 
 #[test]
 fn a_doubling_union_is_refused() {
-    doubled_is_refused(651, "union", PLANS, false);
+    doubled_is_refused(651, "union", PAST_LIMITS);
 }
 
 #[test]
 fn a_doubling_function_is_refused() {
-    doubled_is_refused(653, "lambda", NORMALISES, true);
+    doubled_is_refused(653, "lambda", PAST_LIMITS);
 }
 
 #[test]
@@ -1372,8 +1358,8 @@ fn a_chain_of_doubling_functions_is_refused() {
             ));
         }
         let db = open_at(&rt, &options(2), &[&log]);
-        let got = format!("{:?}", send(&rt, &db, "owner", "d40(1)"));
-        assert!(got.contains("expands past"), "{got}");
+        let got = format!("{:?}", send(&rt, &db, "owner", "d40(1)").map(drop));
+        assert_eq!(answer_of(PAST_LIMITS), got);
     });
 }
 
@@ -1400,9 +1386,9 @@ fn fused_loops(loops: usize) -> String {
 fn a_normal_form_nesting_loops_past_its_limit_is_refused() {
     scenario(668, |rt, db| {
         let at = send(&rt, &db, "owner", &fused_loops(64)).map(drop);
-        assert_eq!(answer_of(PLANS), format!("{at:?}"));
+        assert_eq!(answer_of(PAST_LIMITS), format!("{at:?}"));
         let past = send(&rt, &db, "owner", &fused_loops(65)).map(drop);
-        assert_eq!(answer_of(NORMALISES), format!("{past:?}"));
+        assert_eq!(answer_of(PAST_LIMITS), format!("{past:?}"));
     });
 }
 
@@ -1587,7 +1573,7 @@ fn a_text_past_the_normaliser_s_limit_answers_invalid() {
     run(&mut sim, |rt| {
         let db = opened(&rt, &options(2));
         let got = deep_answer(&rt, &db, "owner", "lambda", 200).map(drop);
-        assert_eq!(answer_of(NORMALISES), format!("{got:?}"));
+        assert_eq!(answer_of(PAST_LIMITS), format!("{got:?}"));
         let got = deep_answer(&rt, &db, "reader", "lambda", 200).map(drop);
         assert_eq!(fixed_denial("reader"), format!("{got:?}"));
     });
@@ -1619,8 +1605,7 @@ fn a_text_past_the_permission_check_s_limit_answers_invalid_with_its_row() {
             text = format!("[{text}]");
         }
         let got = format!("{:?}", send(&rt, &db, "reader", &text).map(drop));
-        let refusal = "the text asks more of the permission check than it allows";
-        assert_eq!(answer_of(refusal), got);
+        assert_eq!(answer_of(PAST_LIMITS), got);
         assert_eq!(1, call_rows(&db, "reader"));
     });
 }
@@ -1706,9 +1691,9 @@ fn a_transact_of_a_thousand_inserts_runs_and_explains_on_the_reduced_stack() {
 fn a_chain_of_ifs_just_under_the_normal_form_height_is_normalised() {
     scenario(817, |rt, db| {
         let at = deep_answer(&rt, &db, "owner", "if", 127).map(drop);
-        assert_eq!(answer_of(PLANS), format!("{at:?}"));
+        assert_eq!(answer_of(PAST_LIMITS), format!("{at:?}"));
         let past = deep_answer(&rt, &db, "owner", "if", 128).map(drop);
-        assert_eq!(answer_of(NORMALISES), format!("{past:?}"));
+        assert_eq!(answer_of(PAST_LIMITS), format!("{past:?}"));
     });
 }
 
@@ -1732,7 +1717,7 @@ fn a_chain_of_conditions_past_the_height_limit_is_refused_by_the_normaliser() {
         let arms: String = (0..200).map(|i| format!("| {i} -> skip ")).collect();
         let text = format!("transact let n = 1 match n {arms}| _ -> skip");
         let got = send(&rt, &db, "owner", &text).map(drop);
-        assert_eq!(answer_of(NORMALISES), format!("{got:?}"));
+        assert_eq!(answer_of(PAST_LIMITS), format!("{got:?}"));
     });
 }
 
@@ -1930,7 +1915,7 @@ fn fused_loops_under_the_run_bound_run_on_the_reduced_stack() {
                 allowed(&rt, &db, "owner", &fused_loops(FUSED_LOOPS_THAT_RUN));
                 let past =
                     send(&rt, &db, "owner", &fused_loops(FUSED_LOOPS_THAT_RUN + 1)).map(drop);
-                assert_eq!(answer_of(PLANS), format!("{past:?}"));
+                assert_eq!(answer_of(PAST_LIMITS), format!("{past:?}"));
             });
         },
     );
@@ -2054,11 +2039,11 @@ fn a_list_just_under_the_permission_step_limit_is_checked() {
 }
 
 #[test]
-fn a_list_one_step_past_the_permission_step_limit_is_refused() {
-    let refusal = "the text asks more of the permission check than it allows";
+fn a_list_one_step_past_the_permission_step_limit_is_denied_to_a_role_that_does_not_read_the_schema()
+ {
     scenario(814, |rt, db| {
         let past = send(&rt, &db, "reader", &sums(STEPS_THAT_CHECK + 1)).map(drop);
-        assert_eq!(answer_of(refusal), format!("{past:?}"));
+        assert_eq!(fixed_denial("reader"), format!("{past:?}"));
     });
 }
 

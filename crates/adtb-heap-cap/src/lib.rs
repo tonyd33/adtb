@@ -43,6 +43,13 @@ pub fn raise_cap(bytes: usize) {
     }
 }
 
+/// Returns the allocations this process has made: calls of `alloc`, `alloc_zeroed` and `realloc`.
+/// Zero under Miri, where the allocator is not installed.
+#[must_use]
+pub fn allocations() -> usize {
+    HEAP.allocations.load(Relaxed)
+}
+
 /// Returns the nextest slots a test with a cap of `bytes` holds.
 #[must_use]
 pub const fn slots_for(bytes: usize) -> usize {
@@ -69,6 +76,7 @@ const fn layout_cost(layout: Layout) -> usize {
 pub struct HeapCap {
     live: AtomicUsize,
     cap: AtomicUsize,
+    allocations: AtomicUsize,
 }
 
 impl HeapCap {
@@ -79,6 +87,7 @@ impl HeapCap {
         Self {
             live: AtomicUsize::new(0),
             cap: AtomicUsize::new(cap),
+            allocations: AtomicUsize::new(0),
         }
     }
 
@@ -109,6 +118,7 @@ impl HeapCap {
     }
 
     fn charge(&self, size: usize) {
+        self.allocations.fetch_add(1, Relaxed);
         let live = self.live.fetch_add(size, Relaxed) + size;
         let cap = self.cap();
         if live > cap {

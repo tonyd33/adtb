@@ -26,6 +26,7 @@ pub use validate::counts::{Check, Checked, checked};
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use adtb_lang::kernel::{Agg, Terms, Tm, Var};
 use adtb_lang::types::{CtorSet, RelId, Ty};
@@ -34,7 +35,7 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 #[derive(Clone, Debug)]
 pub struct Plan {
     /// The arena of every scalar expression of the plan.
-    pub terms: Terms,
+    pub terms: Arc<Terms>,
     params: BTreeSet<Var>,
     pub root: Eval,
 }

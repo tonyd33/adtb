@@ -7,7 +7,7 @@ use crate::check::{Adhoc, Program, Query, Txn};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, Root};
 use crate::schema::{DefaultValue, Schema};
-use crate::span::{Diag, FileDiag, FileId, Span};
+use crate::span::{Diag, DiagKind, FileDiag, FileId, Span};
 
 mod aggregate;
 mod fix;
@@ -121,7 +121,7 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
             let (file, span) = root_site(schema, e.root);
             return vec![FileDiag {
                 file,
-                diag: diag(span, e),
+                diag: diag(schema, span, e),
             }];
         }
     };
@@ -172,7 +172,7 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
                 Root::Command(i) => a.commands[i].span,
                 _ => unreachable!("ad hoc errors are at items or commands"),
             };
-            return vec![diag(span, e)];
+            return vec![diag(schema, span, e)];
         }
     };
     let accepted = |t: Tm| accept(n.terms(), &[t]);
@@ -187,12 +187,18 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
         .collect()
 }
 
-/// Returns the diagnostic at `span` of normalisation failing with `e`.
-fn diag(span: Span, e: norm::Error) -> Diag {
-    if e.broken().is_some() {
-        Diag::internal(span, e.message)
-    } else {
-        Diag::new(span, e.message)
+/// Returns the diagnostic at `span` of normalisation over `schema` failing with `e`.
+fn diag(schema: &Schema, span: Span, e: norm::Error) -> Diag {
+    match e.cause {
+        norm::Cause::Invalid(..) => Diag::internal(span, e.to_string()),
+        norm::Cause::Stuck(_) => Diag::new(span, e.to_string()),
+        norm::Cause::TooLarge => Diag {
+            span,
+            message: e.to_string(),
+            kind: DiagKind::PastLimits {
+                object: e.root.object(schema),
+            },
+        },
     }
 }
 
@@ -224,7 +230,7 @@ pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) ->
         q.term,
     )
     .map_err(|m| Diag::new(span, m))?;
-    let n = norm::query(schema, p, q).map_err(|e| diag(span, e))?;
+    let n = norm::query(schema, p, q).map_err(|e| diag(schema, span, e))?;
     accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }
 
@@ -239,6 +245,6 @@ pub(crate) fn txn_diag(schema: &Schema, p: &Program, t: &Txn, span: Span) -> Res
         t.term,
     )
     .map_err(|m| Diag::new(span, m))?;
-    let n = norm::txn(schema, p, t).map_err(|e| diag(span, e))?;
+    let n = norm::txn(schema, p, t).map_err(|e| diag(schema, span, e))?;
     accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }

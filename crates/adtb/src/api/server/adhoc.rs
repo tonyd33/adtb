@@ -14,7 +14,7 @@ use crate::catalog::engine_relation;
 use crate::runtime::Runtime;
 use crate::write;
 
-use super::super::cause::Broken;
+use super::super::cause::{Broken, past_limits};
 use super::super::dump::read_by_dump;
 use super::super::text::{Issuer, Prepared};
 use super::super::{Engine, Error, RejectReason};
@@ -241,10 +241,7 @@ fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTr
 }
 
 fn no_identity(e: permission::Error) -> Error {
-    if e == permission::Error::TooLarge {
-        return Error::invalid("the text asks more of the permission check than it allows");
-    }
-    Error::internal(Broken::NoIdentity(e))
+    Error::unanalysed(e, Broken::NoIdentity)
 }
 
 /// Returns whether `deployed` gives `role` the `monitor` capability.
@@ -303,6 +300,14 @@ impl<R: Runtime> RoleAuthority<R> {
         let origin = CallOrigin::AdHoc(issuer.text);
         let needs = |root| {
             permission::normal(p.schema(), normal, p.terms(), root, &params).map_err(|err| {
+                if !holds.schema && past_limits(&err) {
+                    if let Some(quarantined) = e.refusal() {
+                        return quarantined;
+                    }
+                    return e
+                        .audit_denied(&session.name, caller, &origin)
+                        .map_or_else(|audit| audit, |()| refused_text(&session.name));
+                }
                 let err = no_identity(err);
                 e.audit_call(
                     &CallRow {

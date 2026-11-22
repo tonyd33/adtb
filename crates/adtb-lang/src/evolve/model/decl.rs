@@ -1,5 +1,7 @@
 use super::lift::Lifting;
-use super::op::{Fail, Kind, Res, StateKey, broken, refuse, refuse_at, refuse_each, unchecked};
+use super::op::{
+    Fail, Kind, Res, StateKey, broken, refuse, refuse_at, refuse_diag, refuse_each, unchecked,
+};
 use super::run::{Built, Late, Run, unbuilt};
 use super::slots::Found;
 use super::*;
@@ -101,8 +103,8 @@ impl Model {
                 return Ok(self.hold(run, kind, name, decl.text));
             }
         };
-        if let Some(e) = built.errors_in(at).into_iter().next() {
-            return refuse(e);
+        if let Some(e) = built.errors_in(at).first() {
+            return refuse_diag(e);
         }
         let Some(d) = built.decl(at) else {
             return broken("an added declaration that does not parse alone");
@@ -276,7 +278,7 @@ impl Model {
             Ok(b) => b,
             Err(ds) => {
                 if let Some(d) = ds.iter().find(|d| d.file.0 as usize == at) {
-                    return refuse(d.diag.message.clone());
+                    return refuse_diag(&d.diag);
                 }
                 let item = Item::Fn(function);
                 self.unlifted.push(item);
@@ -285,8 +287,8 @@ impl Model {
             }
         };
         let file = FileId(at as u32);
-        if let Some(e) = built.errors_in(file).into_iter().next() {
-            return refuse(e);
+        if let Some(e) = built.errors_in(file).first() {
+            return refuse_diag(e);
         }
         let Some(ast::Decl::Fn(d)) = built.decl(file) else {
             return broken("a redefined function that does not parse alone");
