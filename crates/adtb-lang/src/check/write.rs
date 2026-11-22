@@ -647,20 +647,18 @@ impl Checker<'_> {
 
     /// Check a relation's default expression where it was declared.
     fn default_expr(&mut self, rel: RelId, e: &Expr, fty: &Ty) -> R<Tm> {
-        let module = self.schema.relation(rel).module;
-        let home = Visible::module(module).scoped(self.vis.scope().cloned());
-        let vis = std::mem::replace(&mut self.vis, home);
-        let scope = std::mem::take(&mut self.scope);
-        let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
-        let tparams = std::mem::take(&mut self.tparams);
-        let reject = std::mem::replace(&mut self.reject_ok, false);
-        let r = self.check(e, fty);
-        self.vis = vis;
-        self.scope = scope;
-        self.ctx = ctx;
-        self.tparams = tparams;
-        self.reject_ok = reject;
-        Ok(r?.tm)
+        self.in_relation(rel, |c| {
+            let scope = std::mem::take(&mut c.scope);
+            let ctx = std::mem::replace(&mut c.ctx, Context::Schema);
+            let tparams = std::mem::take(&mut c.tparams);
+            let reject = std::mem::replace(&mut c.reject_ok, false);
+            let r = c.check(e, fty);
+            c.scope = scope;
+            c.ctx = ctx;
+            c.tparams = tparams;
+            c.reject_ok = reject;
+            Ok(r?.tm)
+        })
     }
 
     /// `key (insert ...)`: the key of the row a nested single-row insert inserts beside its enclosing write.

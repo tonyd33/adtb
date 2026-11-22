@@ -978,14 +978,13 @@ impl Checker<'_> {
                 .find(|c| c.name == f.text)
                 .cloned()
         {
-            let home =
-                Visible::module(self.schema.relation(rel).module).scoped(self.vis.scope().cloned());
-            let saved = std::mem::replace(&mut self.vis, home);
-            self.scope.push();
-            let v = self.bind("self", o.ty.clone(), Some(rel), o.provenance);
-            let body = self.check(&c.expr, &c.ty);
-            self.scope.pop();
-            self.vis = saved;
+            let (v, body) = self.in_relation(rel, |x| {
+                x.scope.push();
+                let v = x.bind("self", o.ty.clone(), Some(rel), o.provenance);
+                let body = x.check(&c.expr, &c.ty);
+                x.scope.pop();
+                (v, body)
+            });
             let body = body?;
             let tm = self.b().let_(v, o.tm, body.tm, c.ty);
             return Ok(self.out(tm));

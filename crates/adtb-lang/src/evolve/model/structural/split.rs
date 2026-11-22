@@ -8,7 +8,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
+use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::{Built, Run};
 use crate::evolve::model::*;
@@ -181,22 +181,9 @@ impl Model {
             .iter()
             .map(|d| probe.new_ctor(run, t, &d.name.text, d.record.as_deref()))
             .collect();
+        probe.reselect_products(run, t, sources, &made)?;
         if let TypeBody::Ctors(cs) = &mut probe.types.get_mut(&t).expect("the type").body {
             cs.extend(&made);
-        }
-        if let Ok((pre, _)) = probe.built(&[], &run.ahead(&probe)) {
-            let ps = pre.schema();
-            let def = def_in(ps, t);
-            let src: Vec<u32> = sources.iter().map(|&c| ctor_in(ps, c)).collect();
-            let names_source = made.iter().any(|&p| {
-                ps.ty(def).ctors()[ctor_in(ps, p) as usize]
-                    .fields
-                    .iter()
-                    .any(|f| names_ctor(ps, &f.ty, def, &src))
-            });
-            if names_source {
-                return unmodelled("a product of a split whose field names a source");
-            }
         }
         let edits = probe.reselect(
             built,
@@ -265,6 +252,54 @@ impl Model {
         })
     }
 
+    /// Put the products `made` in place of the constructors `sources` of type `t` in the
+    /// reference types of the products' own fields.
+    ///
+    /// Preconditions:
+    /// - `made` are constructors of `t` that its body does not yet list.
+    pub(super) fn reselect_products(
+        &mut self,
+        run: &Run,
+        t: u64,
+        sources: &[u64],
+        made: &[u64],
+    ) -> Res<()> {
+        let mut probe = self.clone();
+        if let TypeBody::Ctors(cs) = &mut probe.types.get_mut(&t).expect("the type").body {
+            cs.extend(made);
+        }
+        let Ok((pre, _)) = probe.built(&[], &run.ahead(&probe)) else {
+            return Ok(());
+        };
+        let ps = pre.schema();
+        let def = def_in(ps, t);
+        let src: Vec<u32> = sources.iter().map(|&c| ctor_in(ps, c)).collect();
+        let names_source = made.iter().any(|&p| {
+            ps.ty(def).ctors()[ctor_in(ps, p) as usize]
+                .fields
+                .iter()
+                .any(|f| names_ctor(ps, &f.ty, def, &src))
+        });
+        if !names_source {
+            return Ok(());
+        }
+        let edits = probe.reselect(
+            &pre,
+            t,
+            sources,
+            made,
+            Mode::structural("the split", false, false),
+        )?;
+        probe.edit_decls(edits)?;
+        for &p in made {
+            for f in self.ctors[&p].fields.clone().unwrap_or_default() {
+                self.fields.get_mut(&f).expect("a product's field").ty =
+                    probe.fields[&f].ty.clone();
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the constructor of type `t` that `path` names.
     fn ctor_at(&self, run: &Run, path: &ast::CtorPath) -> Res<(u64, u64)> {
         let t = Resolving::new(self, run.module()).ty(&path.ty)?;
@@ -300,6 +335,7 @@ impl Model {
             .iter()
             .map(|d| self.new_ctor(run, t, &d.name.text, d.record.as_deref()))
             .collect();
+        self.reselect_products(run, t, &[c], &made)?;
         let products: Vec<String> = into.iter().map(|d| d.name.text.clone()).collect();
         let plan = self.carry_plan(run, &built, Structural::Split, t, (&[c], &products));
         let mut edits = Vec::new();

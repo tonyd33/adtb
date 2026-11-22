@@ -229,7 +229,7 @@ impl Model {
                 if !arms.is_empty() {
                     clauses.extend(self.insert_arms(run, &after, t, &[c], arms)?);
                 }
-                self.ctor_canonical(&after, run, file, &n, true)?
+                self.ctor_canonical(&after, run, file, c, true)?
             }
             None => String::new(),
         };

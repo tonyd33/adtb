@@ -303,6 +303,37 @@ impl Migration {
         Ok((rel, cs))
     }
 
+    /// Returns the name field `field` of the constructors `ctors` of relation `rel` takes, by
+    /// the model of each operator's effect.
+    ///
+    /// Fail when an effect on the constructors fails, or when they give the field different
+    /// names.
+    pub fn field(
+        &self,
+        rel: &str,
+        ctors: &BTreeSet<String>,
+        field: &str,
+    ) -> Result<String, String> {
+        let mut names = BTreeSet::new();
+        for c in ctors {
+            let (mut rel, mut cs) = (rel.to_owned(), BTreeSet::from([c.clone()]));
+            let mut name = field.to_owned();
+            for o in &self.ops {
+                o.effect.rename_field(&rel, &cs, &mut name);
+                o.effect.ctors(&mut rel, &mut cs)?;
+            }
+            names.insert(name);
+        }
+        let mut names = names.into_iter();
+        match (names.next(), names.next()) {
+            (Some(name), None) => Ok(name),
+            (None, _) => Err(format!("`{field}` of `{rel}` names no constructor")),
+            (Some(a), Some(b)) => Err(format!(
+                "`{field}` of `{rel}` takes the names `{a}` and `{b}` across {ctors:?}"
+            )),
+        }
+    }
+
     /// Returns each split, merge, nest and unnest of the migration: its kind, relation, the
     /// constructors it replaces and those it makes.
     pub fn replaced(&self) -> Vec<(Kind, String, Vec<String>, Vec<String>)> {

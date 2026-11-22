@@ -326,6 +326,9 @@ struct Reached {
 /// constructors it ranged over; `None` where the model does not follow.
 type Image<'a> = &'a dyn Fn(&str, &BTreeSet<String>) -> Option<(String, BTreeSet<String>)>;
 
+/// The name a field takes, by its relation's name, its constructor and its name.
+type FieldImage<'a> = &'a dyn Fn(&str, &BTreeSet<String>, &str) -> Result<String, String>;
+
 /// Returns the count naming a clause of `obj` re-scoped.
 fn re_scoped(obj: Obj) -> &'static str {
     match obj {
@@ -343,12 +346,14 @@ fn re_scoped(obj: Obj) -> &'static str {
 
 /// Returns each object of `was` that `judged` picks whose rows the objects of `now` do not cover
 /// as the image of those rows, or whose constructors they do not range over as their `image`,
-/// each side with the rows of each relation by its catalog id.
+/// each side with the rows of each relation by its catalog id. A delete action's field is found
+/// on the `now` side by its id, else by the name `field` gives it; one `field` fails to name
+/// is uncovered.
 fn uncovered(
     (was, rows_was): &Covered,
     (now, rows_now): &Covered,
     judged: impl Fn(&Covers) -> bool,
-    image: Image<'_>,
+    (image, field): (Image<'_>, FieldImage<'_>),
     reached: &mut Reached,
 ) -> Vec<String> {
     let old: BTreeSet<(Obj, u64)> = was.iter().map(|c| (c.obj, c.id)).collect();
@@ -357,10 +362,30 @@ fn uncovered(
     for b in was.iter().filter(|b| judged(b)) {
         let empty = Held::new();
         let after = rows_now.get(&b.rel).unwrap_or(&empty);
+        let image_name = match &b.action {
+            None => None,
+            Some((_, name)) => {
+                let by_id = now
+                    .iter()
+                    .find(|a| a.obj == Obj::Action && a.id == b.id)
+                    .and_then(|a| a.action.as_ref().map(|x| x.1.clone()));
+                match (by_id, &b.scope) {
+                    (Some(now_name), _) => Some(now_name),
+                    (None, None) => Some(name.clone()),
+                    (None, Some(s)) => match field(&b.rel_name, s, name) {
+                        Ok(image) => Some(image),
+                        Err(e) => {
+                            out.push(format!("`{}` has no field image: {e}", b.text));
+                            continue;
+                        }
+                    },
+                }
+            }
+        };
         let holds = |k: &Vec<Value>| {
             after
                 .get(k)
-                .is_some_and(|(_, fs)| b.action.as_ref().is_none_or(|(_, name)| fs.contains(name)))
+                .is_some_and(|(_, fs)| image_name.as_ref().is_none_or(|name| fs.contains(name)))
         };
         let rows: BTreeSet<Vec<Value>> = b.rows.iter().filter(|k| holds(k)).cloned().collect();
         reached.judged.insert(b.obj);
@@ -380,8 +405,8 @@ fn uncovered(
         if let Some((_, to)) = mapped {
             *reached.counts.entry("a clause re-scoped").or_default() += 1;
             *reached.counts.entry(re_scoped(b.obj)).or_default() += 1;
-            let named = |a: &Covers| match (&a.action, &b.action) {
-                (Some(x), Some(y)) => x.1 == y.1,
+            let named = |a: &Covers| match (&a.action, &image_name) {
+                (Some(x), Some(y)) => x.1 == *y,
                 _ => a.what == b.what,
             };
             let parts: Vec<&Covers> = now
@@ -433,7 +458,7 @@ fn uncovered(
                 let parts: Vec<&Covers> = now
                     .iter()
                     .filter(|a| {
-                        let field = a.id == b.id || named(a) == named(b);
+                        let field = a.id == b.id || named(a) == image_name;
                         let overlaps = if rows.is_empty() {
                             b.scope.is_none() || a.scope == b.scope
                         } else {
@@ -635,7 +660,28 @@ fn reverted(
         })?;
         Some((from.rel_name.clone(), from.scope.clone()?))
     };
-    let lost = uncovered(mid, &now, kept, &back, seen);
+    let field_back = |rel: &str, cs: &BTreeSet<String>, f: &str| -> Result<String, String> {
+        let mut found = BTreeSet::new();
+        for w in &was.0 {
+            let (Some((_, name)), Some(scope)) = (&w.action, &w.scope) else {
+                continue;
+            };
+            let (r, image) = m.ctors(&w.rel_name, scope)?;
+            if r == rel && !image.is_disjoint(cs) && m.field(&w.rel_name, scope, name)? == f {
+                found.insert(name.clone());
+            }
+        }
+        let mut found = found.into_iter();
+        match (found.next(), found.next()) {
+            (Some(name), None) => Ok(name),
+            (None, _) => Err(format!(
+                "no field before `{}` is `{f}` of `{rel}`",
+                m.text()
+            )),
+            (Some(a), Some(b)) => Err(format!("`{f}` of `{rel}` was both `{a}` and `{b}`")),
+        }
+    };
+    let lost = uncovered(mid, &now, kept, (&back, &field_back), seen);
     if !lost.is_empty() {
         return Err(fail(lost.join("\n")));
     }
@@ -765,8 +811,9 @@ fn search(seed: u64, at: &mut Option<Failed>, reached: &Mutex<Reached>) -> Optio
         let mid = covers(&mid_schema, &mid_names, &migrated, &mid_rows);
         let judged = !m.ops().iter().any(|o| UNJUDGED.contains(&o.kind()));
         let image = |rel: &str, cs: &BTreeSet<String>| m.ctors(rel, cs).ok();
+        let field = |rel: &str, cs: &BTreeSet<String>, f: &str| m.field(rel, cs, f);
         if judged {
-            let lost = uncovered(&was, &mid, |_| true, &image, &mut seen);
+            let lost = uncovered(&was, &mid, |_| true, (&image, &field), &mut seen);
             if !lost.is_empty() {
                 return failed(k, &log, &text, lost.join("\n"));
             }

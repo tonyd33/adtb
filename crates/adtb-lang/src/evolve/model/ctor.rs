@@ -1,9 +1,10 @@
 use super::field::Applied;
 use super::op::Kind;
-use super::op::{Fail, Res, Resolving, broken, refuse, unmodelled};
-use super::run::{Built, Run};
+use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
+use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, CtorPlace, CtorSel};
+use crate::canon::canonical_term;
 use crate::check::{self, Ref};
 use crate::evolve::text::{ctor_extent, holds, match_end};
 use crate::evolve::{ArmTarget, Clause, Cx, GrantSel, Granted, Place, Resolved};
@@ -65,25 +66,37 @@ impl Model {
         let tname = self.types[&t].name.clone();
         match self.types[&t].body {
             TypeBody::New { .. } => {
-                return refuse(format!("newtype `{tname}` has no constructors"));
+                return refuse_at(
+                    path.ty.span(),
+                    format!("newtype `{tname}` has no constructors"),
+                );
             }
             TypeBody::Record { .. } if name == tname => {
-                return refuse(format!("`{name}` is already a constructor of `{tname}`"));
+                return refuse_at(
+                    path.ctor.span,
+                    format!("`{name}` is already a constructor of `{tname}`"),
+                );
             }
             TypeBody::Record { .. } => self.record_to_sum(run, t)?,
             TypeBody::Ctors(_) => {}
         }
         self.schema_now(run)?;
         if self.ctor_named(t, &name).is_some() {
-            return refuse(format!("`{name}` is already a constructor of `{tname}`"));
+            return refuse_at(
+                path.ctor.span,
+                format!("`{name}` is already a constructor of `{tname}`"),
+            );
         }
         let rels = self.relations_of(t);
         for &r in &rels {
             if self.sets_of(r).iter().any(|s| self.sets[s].name == name) {
-                return refuse(format!(
-                    "`{name}` is already a named set of `{}`",
-                    self.relations[&r].name
-                ));
+                return refuse_at(
+                    path.ctor.span,
+                    format!(
+                        "`{name}` is already a named set of `{}`",
+                        self.relations[&r].name
+                    ),
+                );
             }
         }
         let ctors = self.ctors_of(t);
@@ -91,7 +104,10 @@ impl Model {
             None => (ctors.len(), Place::Last),
             Some(CtorPlace::Before(c) | CtorPlace::After(c)) => {
                 let Some(k) = ctors.iter().position(|x| self.ctors[x].name == c.text) else {
-                    return refuse(format!("`{}` is not a constructor of `{tname}`", c.text));
+                    return refuse_at(
+                        c.span,
+                        format!("`{}` is not a constructor of `{tname}`", c.text),
+                    );
                 };
                 match place {
                     Some(CtorPlace::Before(_)) => (k, Place::Before { ctor: ctors[k] }),
@@ -105,13 +121,16 @@ impl Model {
             for j in joins {
                 let r = resolving.relation(&j.relation)?;
                 if self.relation_type(r) != Some(t) {
-                    return refuse(format!(
-                        "`{}` is not a relation variable of `{tname}`",
-                        self.relations[&r].name
-                    ));
+                    return refuse_at(
+                        j.span,
+                        format!(
+                            "`{}` is not a relation variable of `{tname}`",
+                            self.relations[&r].name
+                        ),
+                    );
                 }
                 let Some(CtorSel::One(set)) = &j.sel else {
-                    return refuse("`joins` names a named set: `r.S`");
+                    return refuse_at(j.span, "`joins` names a named set: `r.S`");
                 };
                 joined.push(resolving.set(set, &j.relation)?);
             }
@@ -170,7 +189,7 @@ impl Model {
         };
         let file = self.relift(&built, Item::Type(t))?;
         self.widen_grants(t, c, &rels);
-        let decl = self.ctor_canonical(&built, run, file, &name, record.is_some())?;
+        let decl = self.ctor_canonical(&built, run, file, c, record.is_some())?;
         let mut clauses: Vec<Clause> = joined
             .into_iter()
             .map(|set| Clause::Joins { set })
@@ -190,32 +209,48 @@ impl Model {
         ))
     }
 
-    /// Returns the canonical form of constructor `name` of the type declared in `file` of
-    /// `built`, from its name through its record.
+    /// Returns the canonical form of constructor `c` of the type declared in `file` of `built`,
+    /// from its name through its record, empty with a note when it names what only the
+    /// migration's end resolves.
     pub(super) fn ctor_canonical(
         &self,
         built: &Built,
         run: &Run,
         file: FileId,
-        name: &str,
+        c: u64,
         record: bool,
     ) -> Res<String> {
+        Ok(self
+            .ctor_written(built, file, c, record)?
+            .unwrap_or_else(|| run.late(Late::Ctor { ctor: c, record })))
+    }
+
+    /// Returns the canonical form of constructor `c` of the type declared in `file` of `built`,
+    /// from its name through its record, `None` when a name of it does not resolve there.
+    pub(super) fn ctor_written(
+        &self,
+        built: &Built,
+        file: FileId,
+        c: u64,
+        record: bool,
+    ) -> Res<Option<String>> {
         let Some(ast::Decl::Type(td)) = built.decl(file) else {
             return broken("a type the model printed does not parse");
         };
         let ast::TypeBody::Ctors(cs) = &td.body else {
             return broken("a sum the model printed as no sum");
         };
-        let Some(cd) = cs.iter().find(|x| x.name.text == name) else {
+        let name = &self.ctors[&c].name;
+        let Some(cd) = cs.iter().find(|x| x.name.text == *name) else {
             return broken("a constructor the model printed is missing");
         };
         let span = ctor_extent(built.text(file), &cd.name, record);
-        Ok(Self::canonical_at(
-            built,
-            run,
-            file,
+        Ok(canonical_term(
+            built.text(file),
             Span::new(span.start, span.end),
-        ))
+            &built.names(file),
+        )
+        .ok())
     }
 
     /// Give each `read` and `update` grant open to new constructor `c` of type `t`, whose relation
@@ -288,10 +323,13 @@ impl Model {
                     _ => None,
                 });
             let Some((k, Some(computed))) = found else {
-                return refuse(format!(
-                    "`{}` has no computed field `{}`",
-                    a.target.name.text, f.text
-                ));
+                return refuse_at(
+                    f.span,
+                    format!(
+                        "`{}` has no computed field `{}`",
+                        a.target.name.text, f.text
+                    ),
+                );
             };
             return Ok((
                 Item::Relation(r),
@@ -309,10 +347,13 @@ impl Model {
                     ArmTarget::OfConstraint { constraint },
                     None,
                 )),
-                _ => refuse(format!(
-                    "module `{m}` declares no schema function, constraint or computed field `{}`",
-                    a.target.name.text
-                )),
+                _ => refuse_at(
+                    a.target.span(),
+                    format!(
+                        "module `{m}` declares no schema function, constraint or computed field `{}`",
+                        a.target.name.text
+                    ),
+                ),
             },
         }
     }
@@ -403,16 +444,22 @@ impl Model {
             let at = match found.as_slice() {
                 [one] => *one,
                 [] => {
-                    return refuse(format!(
-                        "`{}` has no match over the constructors this arm is for; redefine it in the same migration instead",
-                        a.target.name.text
-                    ));
+                    return refuse_at(
+                        a.target.span(),
+                        format!(
+                            "`{}` has no match over the constructors this arm is for; redefine it in the same migration instead",
+                            a.target.name.text
+                        ),
+                    );
                 }
                 _ => {
-                    return refuse(format!(
-                        "`{}` has more than one match over the constructors this arm is for; redefine it in the same migration instead",
-                        a.target.name.text
-                    ));
+                    return refuse_at(
+                        a.target.span(),
+                        format!(
+                            "`{}` has more than one match over the constructors this arm is for; redefine it in the same migration instead",
+                            a.target.name.text
+                        ),
+                    );
                 }
             };
             let end = built

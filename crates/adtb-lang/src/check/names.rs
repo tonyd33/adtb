@@ -1,23 +1,69 @@
 use super::*;
 
-/// The names a checker resolves, each recorded by the resolver that resolved it.
+/// The text a recorded name's span indexes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Origin {
+    /// The text being checked.
+    #[default]
+    Checked,
+    /// A schema file, such as the one declaring a default or computed field checked here.
+    File(FileId),
+}
+
+/// The names a checker resolves, each recorded by the resolver that resolved it with the text
+/// its span indexes.
 #[derive(Default)]
-pub(super) struct Refs(RefCell<Vec<(Span, Ref)>>);
+pub(super) struct Refs {
+    at: Cell<Origin>,
+    names: RefCell<Vec<(Origin, Span, Ref)>>,
+}
 
 impl Refs {
-    pub(super) fn take(&self) -> Vec<(Span, Ref)> {
-        self.0.take()
+    /// Returns every name recorded, each with the file its span indexes, `checked` being the
+    /// text checked; leaves none.
+    pub(super) fn take_in(&self, checked: FileId) -> Vec<(FileId, Span, Ref)> {
+        self.names
+            .take()
+            .into_iter()
+            .map(|(o, s, r)| match o {
+                Origin::Checked => (checked, s, r),
+                Origin::File(f) => (f, s, r),
+            })
+            .collect()
+    }
+
+    /// Returns the names recorded in the text being checked; leaves none.
+    pub(super) fn take_checked(&self) -> Vec<(Span, Ref)> {
+        self.names
+            .take()
+            .into_iter()
+            .filter(|(o, ..)| *o == Origin::Checked)
+            .map(|(_, s, r)| (s, r))
+            .collect()
     }
 
     fn push(&self, span: Span, r: Ref) {
-        self.0.borrow_mut().push((span, r));
+        self.names.borrow_mut().push((self.at.get(), span, r));
     }
 }
 
 impl Checker<'_> {
-    /// Returns every name resolved so far, leaving none.
+    /// Run `f` over an expression relation `rel` declares, such as a default or a computed
+    /// field: names resolve in `rel`'s module and are recorded in its file.
+    pub(super) fn in_relation<T>(&mut self, rel: RelId, f: impl FnOnce(&mut Self) -> T) -> T {
+        let decl = self.schema.relation(rel);
+        let home = Visible::module(decl.module).scoped(self.vis.scope().cloned());
+        let vis = std::mem::replace(&mut self.vis, home);
+        let was = self.refs.at.replace(Origin::File(decl.file));
+        let out = f(self);
+        self.refs.at.set(was);
+        self.vis = vis;
+        out
+    }
+
+    /// Returns every name resolved so far in the text being checked, leaving none.
     pub(crate) fn resolved(&self) -> Vec<(Span, Ref)> {
-        self.refs.take()
+        self.refs.take_checked()
     }
 
     pub fn resolve_type(&self, t: &ast::Type) -> R<Ty> {
@@ -27,7 +73,11 @@ impl Checker<'_> {
         let mut ordered = Vec::new();
         let ty = crate::schema::resolve_type(self.schema, &scope, t, &mut ordered, FileId(0))
             .map_err(|(span, msg)| diag(span, msg))?;
-        crate::canon::type_refs(self.schema, self.module(), t, &mut self.refs.0.borrow_mut());
+        let mut named = Vec::new();
+        crate::canon::type_refs(self.schema, self.module(), t, &mut named);
+        for (span, r) in named {
+            self.refs.push(span, r);
+        }
         for (arg, _, span) in ordered {
             if !self.ordered(&arg, span)? {
                 return Err(diag(span, "`Span a` needs an ordered `a`"));

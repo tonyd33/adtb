@@ -1,4 +1,4 @@
-use super::op::{self, Fail, Res, broken, refuse};
+use super::op::{self, Fail, Res, broken, refuse, refuse_at};
 use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, Fill};
@@ -163,7 +163,7 @@ impl Model {
             Some(field_ty),
             RootKind::Fill,
         )
-        .or_else(|d| refuse(d.message))?;
+        .or_else(|d| refuse_at(d.span, d.message))?;
         let mut names = Names::default();
         for (span, r) in &refs {
             names.note(&schema, *span, r);
@@ -186,7 +186,7 @@ impl Model {
             Some(field_ty),
             RootKind::Fill,
         )
-        .or_else(|d| refuse(d.message))?;
+        .or_else(|d| refuse_at(d.span, d.message))?;
         let query = crate::norm::query(&schema, &program, &q)
             .map_err(|e| Fail::Broken(format!("a fill does not normalise: {e:?}")))?;
         Ok((RowFn { schema, query }, text))
@@ -205,10 +205,13 @@ impl Model {
         let (t, ctor) = self.part_of(run, path)?;
         let name = path.field.text.clone();
         if !self.field_free(t, ctor, &name) {
-            return refuse(format!(
-                "`{}` already has a field `{name}`",
-                self.shown_part(t, ctor)
-            ));
+            return refuse_at(
+                path.field.span,
+                format!(
+                    "`{}` already has a field `{name}`",
+                    self.shown_part(t, ctor)
+                ),
+            );
         }
         let id = self.fresh(Space::Field);
         let owner = ctor.unwrap_or(t);
@@ -344,11 +347,14 @@ impl Model {
     pub(super) fn drop_field(&mut self, run: &Run, path: &ast::FieldPath) -> Res<Applied> {
         let (t, ctor) = self.part_of(run, path)?;
         let Some(f) = self.field_of(t, ctor, &path.field.text) else {
-            return refuse(format!(
-                "`{}` has no field `{}`",
-                self.shown_part(t, ctor),
-                path.field.text
-            ));
+            return refuse_at(
+                path.field.span,
+                format!(
+                    "`{}` has no field `{}`",
+                    self.shown_part(t, ctor),
+                    path.field.text
+                ),
+            );
         };
         self.remove_field(f);
         Ok((Resolved::DropField { field: f }, Vec::new(), Ok(Vec::new())))
@@ -363,11 +369,14 @@ impl Model {
     ) -> Res<Applied> {
         let (t, ctor) = self.part_of(run, path)?;
         let Some(f) = self.field_of(t, ctor, &path.field.text) else {
-            return refuse(format!(
-                "`{}` has no field `{}`",
-                self.shown_part(t, ctor),
-                path.field.text
-            ));
+            return refuse_at(
+                path.field.span,
+                format!(
+                    "`{}` has no field `{}`",
+                    self.shown_part(t, ctor),
+                    path.field.text
+                ),
+            );
         };
         self.fields.get_mut(&f).expect("the field").action =
             Some(Term::text(&run.text()[action.range()]));

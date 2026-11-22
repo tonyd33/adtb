@@ -136,7 +136,7 @@ impl Model {
             let r = resolving.relation(&on.relation)?;
             let rel = Self::rel_in(built.schema(), r)?;
             if let Err(e) = built.schema().relation_sel(rel, sel) {
-                return refuse(e);
+                return refuse_at(on.span, e);
             }
             if kind == IndexKind::Unique {
                 self.members_declare(built.schema(), r, sel, fields)?;
@@ -308,7 +308,9 @@ impl Model {
         let r = Resolving::new(self, run.module()).relation(&on.relation)?;
         let schema = built.schema();
         let rel = Self::rel_in(schema, r)?;
-        let want_scope = schema.written_scope(rel, on.sel.as_ref()).or_else(refuse)?;
+        let want_scope = schema
+            .written_scope(rel, on.sel.as_ref())
+            .or_else(|e| refuse_at(on.span, e))?;
         let want: Vec<String> = fields
             .iter()
             .map(|e| run.text()[e.span.range()].to_string())
@@ -420,10 +422,19 @@ impl Model {
             ast::DefaultValue::Expr(e) => e.span.end,
         };
         let span = after_eq(built.text(file), written.span.end as usize, end as usize);
-        let value = Self::canonical_at(&built, run, file, span);
         let ClauseM::Default { ids, .. } = &self.relations[&r].clauses[k] else {
             return broken("an added default lifted as another clause");
         };
+        let value =
+            canonical_term(built.text(file), span, &built.names(file)).unwrap_or_else(|_| {
+                run.late(match ids.first() {
+                    Some(&(_, default)) => Late::Default {
+                        relation: r,
+                        default,
+                    },
+                    None => Late::Unresolved,
+                })
+            });
         let Some(&(field, default)) = ids.first() else {
             run.late(Late::Unresolved);
             return Ok((
@@ -464,10 +475,13 @@ impl Model {
                     && c.as_ref().map(|c| c.print(self)).as_deref() == ctor.map(|c| c.text.as_str()))
         });
         let Some(k) = found else {
-            return refuse(format!(
-                "`{}` has no default for `{}`",
-                relation.name.text, field.text
-            ));
+            return refuse_at(
+                field.span,
+                format!(
+                    "`{}` has no default for `{}`",
+                    relation.name.text, field.text
+                ),
+            );
         };
         let ClauseM::Default { ids, .. } = &self.relations[&r].clauses[k] else {
             return broken("a found default is another clause");
@@ -493,10 +507,13 @@ impl Model {
             .position(|c| matches!(c, ClauseM::Computed { name, .. } if *name == field.text));
         match found {
             Some(k) => Ok(k),
-            None => refuse(format!(
-                "`{}` has no computed field `{}`",
-                relation.name.text, field.text
-            )),
+            None => refuse_at(
+                field.span,
+                format!(
+                    "`{}` has no computed field `{}`",
+                    relation.name.text, field.text
+                ),
+            ),
         }
     }
 
@@ -516,7 +533,58 @@ impl Model {
         let ClauseM::Computed { id: Some(id), .. } = &self.relations[&r].clauses[k] else {
             return broken("a computed field the build gave no id");
         };
-        Ok((*id, Self::canonical_at(built, run, file, n.span.to(e.span))))
+        let canonical = canonical_term(built.text(file), n.span.to(e.span), &built.names(file))
+            .unwrap_or_else(|_| {
+                run.late(Late::Computed {
+                    relation: r,
+                    computed: *id,
+                })
+            });
+        Ok((*id, canonical))
+    }
+
+    /// Returns the canonical form of the value of default `default` of relation variable `r` as
+    /// `built` writes it, `None` when it does not resolve there.
+    pub(super) fn default_canonical(&self, built: &Built, r: u64, default: u64) -> Option<String> {
+        let i = self.decl_at(Item::Relation(r))?;
+        let file = FileId(i as u32);
+        let k = self.relations[&r].clauses.iter().position(
+            |c| matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, d)| d == default)),
+        )?;
+        let Ok(RelationClause::Default {
+            field: written,
+            value,
+            ..
+        }) = Self::clause_written(built, file, k)
+        else {
+            return None;
+        };
+        let end = match &value {
+            ast::DefaultValue::Generate(g) => g.span.end,
+            ast::DefaultValue::Expr(e) => e.span.end,
+        };
+        let span = after_eq(built.text(file), written.span.end as usize, end as usize);
+        canonical_term(built.text(file), span, &built.names(file)).ok()
+    }
+
+    /// Returns the canonical form of computed field `computed` of relation variable `r` as
+    /// `built` writes it, `None` when it does not resolve there.
+    pub(super) fn computed_canonical(
+        &self,
+        built: &Built,
+        r: u64,
+        computed: u64,
+    ) -> Option<String> {
+        let i = self.decl_at(Item::Relation(r))?;
+        let file = FileId(i as u32);
+        let k = self.relations[&r]
+            .clauses
+            .iter()
+            .position(|c| matches!(c, ClauseM::Computed { id: Some(x), .. } if *x == computed))?;
+        let Ok(RelationClause::Computed(n, _, e)) = Self::clause_written(built, file, k) else {
+            return None;
+        };
+        canonical_term(built.text(file), n.span.to(e.span), &built.names(file)).ok()
     }
 
     pub(super) fn add_computed(

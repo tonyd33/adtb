@@ -370,3 +370,36 @@ fn a_parenthesised_type_resolves_its_names() {
         "fn auth::kinds ( ) -> Set ( Local { n : I64 } | Remote { m : Text } ) = [ Local { n : 1 } ]"
     );
 }
+
+#[test]
+fn a_default_a_retag_fills_resolves_only_in_its_relation() {
+    let ty = "type T { id: Key ts } = A { w: I64, x: I64, y: I64, z: I64, u: Option (Key ts) on delete retag B {} } | B { b: V }";
+    let head = "relation ts : T key id generate sequence\n  default B.b =";
+    let pad = ty.find('(').expect("a parenthesis") - head.len();
+    let src = source(&[
+        ("auth", "type V = M | N"),
+        ("auth", ty),
+        ("auth", &format!("{head}{}M", " ".repeat(pad))),
+    ]);
+    assert_eq!(
+        term(&src, 1, "type"),
+        "type auth::T { id : Key auth::ts } = auth::A { w : I64 , x : I64 , y : I64 , z : I64 , u : Option ( Key auth::ts ) on delete retag auth::B { } } | auth::B { b : auth::V }"
+    );
+}
+
+#[test]
+fn a_computed_field_body_resolves_only_in_its_relation() {
+    let rel = "relation ts : T key id generate sequence\n  computed c: V = M";
+    let head = "fn g () -> Set (V) = from t in ts select";
+    let pad = rel.len() - 1 - head.len();
+    let src = source(&[
+        ("auth", "type V = M | N"),
+        ("auth", "type T = { id: Key ts }"),
+        ("auth", rel),
+        ("auth", &format!("{head}{}t.c", " ".repeat(pad))),
+    ]);
+    assert_eq!(
+        term(&src, 3, "fn"),
+        "fn auth::g ( ) -> Set ( auth::V ) = from t in auth::ts select t . c"
+    );
+}

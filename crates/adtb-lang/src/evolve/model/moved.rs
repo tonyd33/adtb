@@ -1,5 +1,5 @@
 use super::field::{Applied, Maps};
-use super::op::{Fail, Res, Resolving, broken, refuse, unmodelled};
+use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
 use super::run::Run;
 use super::*;
 use crate::ast::{self, CtorSel, Fill, QName};
@@ -31,21 +31,22 @@ impl Model {
         if to.name.text != path.ty.name.text
             || resolving.module_of(to) != resolving.module_of(&path.ty)
         {
-            return refuse("a field moves within its own type");
+            return refuse_at(to.span(), "a field moves within its own type");
         }
         let (t, ctor) = self.part_of(run, path)?;
         let name = path.field.text.clone();
         let tname = self.types[&t].name.clone();
         let Some(f) = self.field_of(t, ctor, &name) else {
-            return refuse(format!(
-                "`{}` has no field `{name}`",
-                self.shown_part(t, ctor)
-            ));
+            return refuse_at(
+                path.field.span,
+                format!("`{}` has no field `{name}`", self.shown_part(t, ctor)),
+            );
         };
         let TypeBody::Ctors(ctors) = self.types[&t].body.clone() else {
-            return refuse(format!(
-                "record `{tname}` has no header to move a field to or from"
-            ));
+            return refuse_at(
+                path.ty.span(),
+                format!("record `{tname}` has no header to move a field to or from"),
+            );
         };
         match (ctor, sel) {
             (Some(c), None) => self.move_up(run, t, c, f, fill),
@@ -57,7 +58,10 @@ impl Model {
                 for x in sel_names(sel) {
                     let Some(c) = ctors.iter().copied().find(|c| self.ctors[c].name == x.text)
                     else {
-                        return refuse(format!("`{}` is not a constructor of `{tname}`", x.text));
+                        return refuse_at(
+                            x.span,
+                            format!("`{}` is not a constructor of `{tname}`", x.text),
+                        );
                     };
                     targets.push(c);
                 }
@@ -350,10 +354,13 @@ impl Model {
                 p.field.text.clone(),
             );
             if !needed.contains(&entry) {
-                return refuse(format!(
-                    "`{}` is not a field that references `{rname}`",
-                    path_text(p)
-                ));
+                return refuse_at(
+                    p.field.span,
+                    format!(
+                        "`{}` is not a field that references `{rname}`",
+                        path_text(p)
+                    ),
+                );
             }
             let (t, c) = resolving.part(p)?;
             fields.push(self.field_of(t, c, &p.field.text).expect("a carried field"));

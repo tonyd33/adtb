@@ -1,6 +1,6 @@
 //! Type check programs, ad hoc commands and transactions, elaborating them to kernel terms.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -621,7 +621,7 @@ impl Bodies<'_, '_> {
         let r = f(&mut c);
         self.terms = std::mem::take(&mut c.terms);
         if let Some(out) = self.record.as_deref_mut() {
-            out.extend(c.refs.take().into_iter().map(|(s, r)| (file, s, r)));
+            out.extend(c.refs.take_in(file));
         }
         match r {
             Ok(t) => Some(t),
@@ -941,7 +941,7 @@ fn checked_items(
         }
     }
     if let Some(out) = record {
-        out.extend(c.refs.take());
+        out.extend(c.refs.take_checked());
     }
     if !diags.is_empty() {
         return Err(diags);

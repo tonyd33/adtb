@@ -56,8 +56,8 @@ pub(super) enum StateKey {
 /// applies to. Text it adds stays at its span of the migration's text.
 #[derive(Clone, Debug)]
 pub(super) enum Op {
-    AddModule(String),
-    DropModule(String),
+    AddModule(ast::Ident),
+    DropModule(ast::Ident),
     /// A declaration of kind `kind` named `name`, at `span`.
     Add {
         kind: Kind,
@@ -71,7 +71,7 @@ pub(super) enum Op {
     Drop(Item),
     Rename {
         obj: Obj,
-        to: String,
+        to: ast::Ident,
     },
     Stage {
         key: StateKey,
@@ -108,6 +108,14 @@ impl Refused {
         self.at
     }
 
+    /// Returns the refusal at its own span, else at `operator`, the span of its operator.
+    pub(super) fn or_at(self, operator: Span) -> Refused {
+        Refused {
+            at: Some(self.at.unwrap_or(operator)),
+            ..self
+        }
+    }
+
     pub(super) fn into_why(self) -> String {
         self.why
     }
@@ -128,6 +136,11 @@ pub(super) type Res<T> = Result<T, Fail>;
 
 pub(super) fn refuse<T>(why: impl Into<String>) -> Res<T> {
     Err(Fail::Refused(Refused::new(why.into())))
+}
+
+/// Refuse the operator for diagnostic `d`, at its span of the migration's text.
+pub(super) fn refuse_diag<T>(d: &crate::span::Diag) -> Res<T> {
+    refuse_at(d.span, d.message.clone())
 }
 
 /// Refuse the operator for `why`, at `at` of the migration's text.
@@ -275,7 +288,10 @@ impl<'a> Resolving<'a> {
         let m = self.module_of(q);
         match self.model.type_named(&m, &q.name.text) {
             Some(t) => Ok(t),
-            None => refuse(format!("module `{m}` declares no type `{}`", q.name.text)),
+            None => refuse_at(
+                q.span(),
+                format!("module `{m}` declares no type `{}`", q.name.text),
+            ),
         }
     }
 
@@ -283,10 +299,10 @@ impl<'a> Resolving<'a> {
         let m = self.module_of(q);
         match self.model.relation_named(&m, &q.name.text) {
             Some(r) => Ok(r),
-            None => refuse(format!(
-                "module `{m}` declares no relation `{}`",
-                q.name.text
-            )),
+            None => refuse_at(
+                q.span(),
+                format!("module `{m}` declares no relation `{}`", q.name.text),
+            ),
         }
     }
 
@@ -294,11 +310,10 @@ impl<'a> Resolving<'a> {
         let m = self.module_of(q);
         match self.model.find(&m, kind, &q.name.text) {
             Some(item) => Ok(item),
-            None => refuse(format!(
-                "module `{m}` declares no {} `{}`",
-                kind.word(),
-                q.name.text
-            )),
+            None => refuse_at(
+                q.span(),
+                format!("module `{m}` declares no {} `{}`", kind.word(), q.name.text),
+            ),
         }
     }
 
@@ -309,10 +324,10 @@ impl<'a> Resolving<'a> {
             .find(&m, Kind::Set, &format!("{}.{}", rel.name.text, name.text))
         {
             Some(Item::Set(s)) => Ok(s),
-            _ => refuse(format!(
-                "`{}` declares no named set `{}`",
-                rel.name.text, name.text
-            )),
+            _ => refuse_at(
+                name.span,
+                format!("`{}` declares no named set `{}`", rel.name.text, name.text),
+            ),
         }
     }
 
@@ -320,10 +335,13 @@ impl<'a> Resolving<'a> {
         let t = self.ty(&path.ty)?;
         match self.model.ctor_named(t, &path.ctor.text) {
             Some(c) => Ok((t, c)),
-            None => refuse(format!(
-                "`{}` is not a constructor of `{}`",
-                path.ctor.text, path.ty.name.text
-            )),
+            None => refuse_at(
+                path.ctor.span,
+                format!(
+                    "`{}` is not a constructor of `{}`",
+                    path.ctor.text, path.ty.name.text
+                ),
+            ),
         }
     }
 
@@ -339,15 +357,15 @@ impl<'a> Resolving<'a> {
             (TypeBody::Ctors(_), None) => Ok((t, None)),
             (TypeBody::Ctors(_), Some(c)) => match self.model.ctor_named(t, &c.text) {
                 Some(k) => Ok((t, Some(k))),
-                None => refuse(format!(
-                    "`{}` is not a constructor of `{}`",
-                    c.text, ty.name
-                )),
+                None => refuse_at(
+                    c.span,
+                    format!("`{}` is not a constructor of `{}`", c.text, ty.name),
+                ),
             },
-            (TypeBody::Record { .. }, Some(c)) => refuse(format!(
-                "`{}` is not a constructor of `{}`",
-                c.text, ty.name
-            )),
+            (TypeBody::Record { .. }, Some(c)) => refuse_at(
+                c.span,
+                format!("`{}` is not a constructor of `{}`", c.text, ty.name),
+            ),
         }
     }
 
@@ -360,11 +378,14 @@ impl<'a> Resolving<'a> {
             .find(|f| self.model.fields[f].name == path.field.text);
         match found {
             Some(f) => Ok(f),
-            None => refuse(format!(
-                "`{}` has no field `{}`",
-                self.model.shown_part(t, c),
-                path.field.text
-            )),
+            None => refuse_at(
+                path.field.span,
+                format!(
+                    "`{}` has no field `{}`",
+                    self.model.shown_part(t, c),
+                    path.field.text
+                ),
+            ),
         }
     }
 
@@ -381,7 +402,10 @@ impl<'a> Resolving<'a> {
                     _ => None,
                 };
                 let Some((k, c)) = c else {
-                    return refuse("a lifecycle operator names one constructor: `r.C` or `T.C`");
+                    return refuse_at(
+                        rr.span,
+                        "a lifecycle operator names one constructor: `r.C` or `T.C`",
+                    );
                 };
                 Ok((
                     StateKey::Relation(r, k),
@@ -410,7 +434,7 @@ impl<'a> Resolving<'a> {
         let rename = |obj: Obj, to: &ast::Ident| {
             Ok(Op::Rename {
                 obj,
-                to: to.text.clone(),
+                to: to.clone(),
             })
         };
         let stage = |t: &CtorTarget, verb: &'static str, to: Stage| {
@@ -423,12 +447,13 @@ impl<'a> Resolving<'a> {
             })
         };
         match op {
-            OperatorKind::AddModule(m) => Ok(Op::AddModule(m.text.clone())),
-            OperatorKind::DropModule(m) => Ok(Op::DropModule(m.text.clone())),
+            OperatorKind::AddModule(m) => Ok(Op::AddModule(m.clone())),
+            OperatorKind::DropModule(m) => Ok(Op::DropModule(m.clone())),
             OperatorKind::AddType(t) => add(Kind::Type, &t.name.text, t.span),
             OperatorKind::AddRelation(r) => {
                 if r.name.module.is_some() {
-                    return refuse(
+                    return refuse_at(
+                        r.name.span(),
                         "a relation name is qualified only in the engine's own declarations",
                     );
                 }
@@ -450,10 +475,10 @@ impl<'a> Resolving<'a> {
                         function,
                         span: f.span,
                     }),
-                    _ => refuse(format!(
-                        "module `{}` declares no fn `{}`",
-                        self.module, f.name.text
-                    )),
+                    _ => refuse_at(
+                        f.name.span,
+                        format!("module `{}` declares no fn `{}`", self.module, f.name.text),
+                    ),
                 }
             }
             OperatorKind::DropType(q) => Ok(Op::Drop(self.decl(Kind::Type, q)?)),

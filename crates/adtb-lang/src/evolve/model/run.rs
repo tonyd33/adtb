@@ -32,6 +32,12 @@ pub(super) enum Late {
     Decl(Item),
     /// A field it added, or whose delete action it altered when `action_only`.
     Field { field: u64, action_only: bool },
+    /// A constructor it added or made, from its name through its record when `record`.
+    Ctor { ctor: u64, record: bool },
+    /// A default it added, by its relation variable and id.
+    Default { relation: u64, default: u64 },
+    /// A computed field it added, by its relation variable and id.
+    Computed { relation: u64, computed: u64 },
     /// A clause it added or changed, whose resolved form the model does not give late.
     Unresolved,
 }

@@ -79,30 +79,22 @@ const JUDGED_FROM: usize = SKIPPED_AT_MOST.1;
 /// The tests whose skips [`SKIPPED_AT_MOST`] does not judge, by the name of the thread that
 /// runs them. Each applies few migrations, among them one the model does not compare.
 const UNJUDGED: &[&str] = &[
-    "evolve::tests::adopt_tzdb_changes_no_schema_object",
-    "evolve::tests::a_split_product_naming_the_split_constructor_names_the_products",
     "evolve::tests::ids::a_view_stored_while_the_source_does_not_build_takes_the_ids_of_its_row_type_in_declaration_order",
-    "evolve::resolved::tests::a_type_naming_what_the_migration_adds_later_is_stored_qualified_in_every_position",
 ];
-
-/// The reason of the skips of a migration applied keeping earlier operators' results, which
-/// [`SKIPPED_AT_MOST`] does not judge.
-const KEPT: &str = "kept results";
 
 /// The reason of revert's skips, which [`TALLIES`] leaves out and the comparison over the
 /// cases and the script corpus holds under [`REVERT_SKIPPED_AT_MOST`].
 pub(in crate::evolve) const REVERT: &str = "revert";
 
 /// The share of the comparisons over the cases and the script corpus that may be revert's
-/// skips, as a fraction: the measured 51 of 614, rounded up. Round 4 models revert and removes
-/// it.
+/// skips, as a fraction: the measured 51 of 614, rounded up.
 #[cfg(test)]
 pub(in crate::evolve) const REVERT_SKIPPED_AT_MOST: (usize, usize) = (9, 100);
 
 /// Count `line`'s outcome for `hook` and for [`forced`], and append it to the file
 /// `ADTB_MIGRATION_MODEL_LOG` names, when it names one. A `partial` of [`Hook::Migrating`]
-/// compares nothing and counts as skipped. Judge it unless it is a skip for [`REVERT`] or
-/// [`KEPT`] or its thread is one of [`UNJUDGED`].
+/// compares nothing and counts as skipped. Judge it unless it is a skip for [`REVERT`] or its
+/// thread is one of [`UNJUDGED`].
 fn log(hook: Hook, line: &str) {
     let outcome = line.split(['\t', ' ']).next().unwrap_or(line);
     let reason = line.split('\t').nth(1);
@@ -120,7 +112,7 @@ fn log(hook: Hook, line: &str) {
     });
     let thread = std::thread::current();
     let name = thread.name().unwrap_or_default();
-    if !revert && reason != Some(KEPT) && !UNJUDGED.contains(&name) {
+    if !revert && !UNJUDGED.contains(&name) {
         judge(hook, skipped, name, line);
     }
     let Some(path) = std::env::var_os("ADTB_MIGRATION_MODEL_LOG") else {
@@ -165,23 +157,19 @@ fn judge(hook: Hook, skipped: bool, name: &str, line: &str) {
     }
 }
 
-/// Apply migration `m` to the model of `before`, and panic where the model fails or the result
-/// differs from `after`, the operator layer's result, by a difference no known defect of that
-/// layer explains. A migration applied keeping earlier operators' results, `kept`, is skipped.
+/// Apply migration `m` to the model of `before`, keeping the constraints and checks of `kept`,
+/// and panic where the model fails or the result differs from `after`, the operator layer's
+/// result, by a difference no known defect of that layer explains.
 pub(in crate::evolve) fn compare(
     before: &Source,
     m: &MigrationFile,
     text: &str,
-    kept: bool,
+    kept: &[crate::evolve::Kept],
     after: Result<&Source, &Refusal>,
 ) {
-    if kept {
-        log(Hook::Migrating, &format!("skipped\t{KEPT}"));
-        return;
-    }
     let model = lifted(before);
     let migrated = model
-        .migrate(m, text)
+        .migrate_keeping(m, text, kept)
         .unwrap_or_else(|why| panic!("the migration model fails on migration\n{text}\n{why}"));
     if let Some(kind) = migrated.stopped() {
         let outcome = if migrated.ops().len() == m.operators.len() {
@@ -273,12 +261,12 @@ fn refused_ops(m: &MigrationFile, r: &Refusal) -> Vec<Vec<(String, Span)>> {
         .collect()
 }
 
-/// Returns whether the layer's reasons `layer` hold the model's refusal `mine`: its reason, at its
-/// span when the model names one.
+/// Returns whether the layer's reasons `layer` hold the model's refusal `mine`: its reason at its
+/// span.
 fn holds_refusal(layer: &[(String, Span)], mine: &Refused) -> bool {
     layer
         .iter()
-        .any(|(why, at)| why == mine.why() && mine.span().is_none_or(|x| x == *at))
+        .any(|(why, at)| why == mine.why() && mine.span() == Some(*at))
 }
 
 /// What a difference is in.
@@ -729,15 +717,25 @@ pub(in crate::evolve) fn compare_recorded(
             });
         }
     }
+    let unavailable = model.unavailable(m);
     if got.stopped().is_none() {
         diffs.extend(differences(m, &got, Ok(after)));
         let mine: Vec<ResolvedOp> = got.ops().iter().flatten().cloned().collect();
-        if let Ok(held) = recorded.resolved()
-            && held != mine.as_slice()
-        {
+        let layer = recorded.resolved().map_err(|ds| {
+            ds.iter()
+                .map(|d| (d.span, d.message.clone()))
+                .collect::<Vec<_>>()
+        });
+        let agrees = match &layer {
+            Ok(held) => unavailable.is_empty() && *held == mine.as_slice(),
+            Err(ds) => *ds == unavailable,
+        };
+        if !agrees {
             diffs.push(Diff {
                 aspect: Aspect::Resolved,
-                shown: format!("resolved:\n  layer {held:?}\n  model {mine:?}"),
+                shown: format!(
+                    "resolved:\n  layer {layer:?}\n  model {mine:?}, unavailable {unavailable:?}"
+                ),
             });
         }
     }
@@ -746,7 +744,7 @@ pub(in crate::evolve) fn compare_recorded(
         Some(kind) => format!("partial\t{kind}"),
         None => "agreed steps".to_string(),
     };
-    let whole = got.stopped().is_none() && diffs.is_empty();
+    let whole = got.stopped().is_none() && diffs.is_empty() && unavailable.is_empty();
     report(Hook::Recorded, m, text, &got, diffs, Ok(after), &agreed);
     whole.then(|| got.ops().iter().flatten().cloned().collect())
 }

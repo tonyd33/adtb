@@ -38,7 +38,7 @@ pub fn check_row(
         BTreeSet::new(),
     );
     row_body(&mut c, program, row, body, expected, kind)?;
-    Ok(c.refs.take())
+    Ok(c.refs.take_checked())
 }
 
 /// Type checks `body` as [`check_row`] does, as a query whose one parameter is the row.

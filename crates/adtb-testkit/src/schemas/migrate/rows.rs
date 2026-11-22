@@ -150,6 +150,22 @@ impl Effect {
         Ok(())
     }
 
+    /// Take `field`, of constructors `cs` of relation `rel`, to the name this effect gives it.
+    pub(super) fn rename_field(&self, rel: &str, cs: &BTreeSet<String>, field: &mut String) {
+        if let Effect::RenameField {
+            rel: r,
+            ctor,
+            from,
+            to,
+        } = self
+            && r == rel
+            && cs.contains(ctor)
+            && from == field
+        {
+            to.clone_into(field);
+        }
+    }
+
     /// Apply the effect to `rows`. Fails on an effect the model does not follow.
     pub(super) fn apply(&self, rows: &mut Rows) -> Result<(), String> {
         match self {

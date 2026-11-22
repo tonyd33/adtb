@@ -1,5 +1,5 @@
 use super::lift::Lifting;
-use super::op::{Fail, Kind, Res, StateKey, broken, refuse, unmodelled};
+use super::op::{Fail, Kind, Res, StateKey, broken, refuse, refuse_at, unmodelled};
 use super::run::{Late, Run, unbuilt};
 use super::slots::Found;
 use super::*;
@@ -11,7 +11,7 @@ use crate::span::{FileId, Span};
 
 impl Model {
     /// Refuse a module named `m` added: a built-in module's name, or one taken.
-    pub(super) fn reserved(&self, m: &str) -> Res<()> {
+    pub(super) fn reserved(&self, m: &ast::Ident) -> Res<()> {
         let Ok(schema) = schema::build(&[]) else {
             return broken("the built-in modules do not build");
         };
@@ -19,31 +19,40 @@ impl Model {
             .modules
             .iter()
             .enumerate()
-            .any(|(i, d)| (i == PRELUDE.0 as usize || d.engine) && d.name == m);
+            .any(|(i, d)| (i == PRELUDE.0 as usize || d.engine) && d.name == m.text);
         if built_in {
-            return refuse(format!("no module may be named `{m}`"));
+            return refuse_at(m.span, format!("no module may be named `{}`", m.text));
         }
-        if self.modules.contains(m) {
-            return refuse(format!("module `{m}` already exists"));
+        if self.modules.contains(&m.text) {
+            return refuse_at(m.span, format!("module `{}` already exists", m.text));
         }
         Ok(())
     }
 
-    pub(super) fn add_module(&mut self, m: String) -> Res<(Resolved, Vec<Clause>)> {
-        self.reserved(&m)?;
-        self.modules.insert(m.clone());
-        Ok((Resolved::AddModule { module: m }, Vec::new()))
+    pub(super) fn add_module(&mut self, m: &ast::Ident) -> Res<(Resolved, Vec<Clause>)> {
+        self.reserved(m)?;
+        self.modules.insert(m.text.clone());
+        Ok((
+            Resolved::AddModule {
+                module: m.text.clone(),
+            },
+            Vec::new(),
+        ))
     }
 
-    pub(super) fn drop_module(&mut self, m: String) -> Res<(Resolved, Vec<Clause>)> {
+    pub(super) fn drop_module(&mut self, m: &ast::Ident) -> Res<(Resolved, Vec<Clause>)> {
+        let (span, m) = (m.span, m.text.clone());
         if !self.modules.contains(&m) {
-            return refuse(format!("no module `{m}`"));
+            return refuse_at(span, format!("no module `{m}`"));
         }
         if let Some(i) = self.decls.iter().position(|d| d.module == m) {
-            return refuse(format!(
-                "`drop module {m}` is refused while the module holds {}",
-                self.shown_decl(i)
-            ));
+            return refuse_at(
+                span,
+                format!(
+                    "`drop module {m}` is refused while the module holds {}",
+                    self.shown_decl(i)
+                ),
+            );
         }
         self.modules.remove(&m);
         self.installed.remove(&m);
@@ -65,11 +74,14 @@ impl Model {
             ));
         }
         if self.find(run.module(), kind, name).is_some() {
-            return refuse(format!(
-                "module `{}` already declares {} `{name}`",
-                run.module(),
-                kind.word()
-            ));
+            return refuse_at(
+                span,
+                format!(
+                    "module `{}` already declares {} `{name}`",
+                    run.module(),
+                    kind.word()
+                ),
+            );
         }
         let at = FileId(self.decls.len() as u32);
         let decl = SourceDecl {
@@ -421,8 +433,9 @@ impl Model {
         &mut self,
         run: &Run,
         (space, id): Obj,
-        to: String,
+        to: &ast::Ident,
     ) -> Res<(Resolved, Vec<Clause>)> {
+        let (at, to) = (to.span, to.text.clone());
         let resolved = match space {
             Space::Shared if self.types.contains_key(&id) => {
                 let module = self
@@ -430,7 +443,10 @@ impl Model {
                     .expect("a declared type")
                     .to_string();
                 if self.type_named(&module, &to).is_some() {
-                    return refuse(format!("module `{module}` already declares type `{to}`"));
+                    return refuse_at(
+                        at,
+                        format!("module `{module}` already declares type `{to}`"),
+                    );
                 }
                 self.schema_now(run)?;
                 let ty = self.types.get_mut(&id).expect("the type");
@@ -456,7 +472,7 @@ impl Model {
                         }
                 });
                 if taken {
-                    return refuse(format!("module `{module}` already declares `{to}`"));
+                    return refuse_at(at, format!("module `{module}` already declares `{to}`"));
                 }
                 self.relations.get_mut(&id).expect("the relation").name = to.clone();
                 Resolved::RenameRelation {
@@ -467,10 +483,13 @@ impl Model {
             Space::Shared => {
                 let ty = self.ctors[&id].ty;
                 if self.ctor_named(ty, &to).is_some() {
-                    return refuse(format!(
-                        "`{to}` is already a constructor of `{}`",
-                        self.types[&ty].name
-                    ));
+                    return refuse_at(
+                        at,
+                        format!(
+                            "`{to}` is already a constructor of `{}`",
+                            self.types[&ty].name
+                        ),
+                    );
                 }
                 for r in self.relations_of(ty) {
                     if self
@@ -478,10 +497,13 @@ impl Model {
                         .into_iter()
                         .any(|s| self.sets[&s].name == to)
                     {
-                        return refuse(format!(
-                            "`{to}` is already a named set of `{}`",
-                            self.relations[&r].name
-                        ));
+                        return refuse_at(
+                            at,
+                            format!(
+                                "`{to}` is already a named set of `{}`",
+                                self.relations[&r].name
+                            ),
+                        );
                     }
                 }
                 self.ctors.get_mut(&id).expect("the constructor").name = to.clone();
@@ -498,10 +520,13 @@ impl Model {
                         .relation_type(r)
                         .is_some_and(|t| self.ctor_named(t, &to).is_some());
                 if clash {
-                    return refuse(format!(
-                        "`{}` already has a constructor or named set `{to}`",
-                        self.relations[&r].name
-                    ));
+                    return refuse_at(
+                        at,
+                        format!(
+                            "`{}` already has a constructor or named set `{to}`",
+                            self.relations[&r].name
+                        ),
+                    );
                 }
                 self.sets.get_mut(&id).expect("the set").name = to.clone();
                 Resolved::RenameSet { set: id, name: to }
@@ -517,10 +542,10 @@ impl Model {
                 });
                 if clash {
                     let ctor = (!header).then_some(owner);
-                    return refuse(format!(
-                        "`{}` already has a field `{to}`",
-                        self.shown_part(t, ctor)
-                    ));
+                    return refuse_at(
+                        at,
+                        format!("`{}` already has a field `{to}`", self.shown_part(t, ctor)),
+                    );
                 }
                 self.schema_now(run)?;
                 self.fields.get_mut(&id).expect("the field").name = to.clone();

@@ -6,7 +6,7 @@ use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
 use crate::evolve::grant::IdKind;
 use crate::evolve::source::rekey_leaves_no_old_reference;
-use crate::evolve::{Resolved, ResolvedOp};
+use crate::evolve::{Kept, Resolved, ResolvedOp};
 use crate::lex::{Tok, lex};
 use crate::span::{FileId, Span};
 
@@ -65,6 +65,17 @@ impl Model {
         m: &MigrationFile,
         text: &str,
     ) -> Result<Migrated, String> {
+        self.migrate_keeping(m, text, &[])
+    }
+
+    /// Apply migration `m` as [`Model::migrate`] does, putting back after each operator every
+    /// constraint and check of `kept` it drops, with its catalog id.
+    pub(in crate::evolve) fn migrate_keeping(
+        &self,
+        m: &MigrationFile,
+        text: &str,
+        kept: &[Kept],
+    ) -> Result<Migrated, String> {
         let module = m.module.text.as_str();
         let mut run = Run::new(m, text);
         let mut model = self.clone();
@@ -90,6 +101,7 @@ impl Model {
                         next.mark(by, Added::As(relation));
                         next.terms_mut(&mut |t| t.added(by, relation));
                     }
+                    next.keep(&model, kept);
                     next.rebind(&model);
                     model = next;
                     ops.push(Ok(r));
@@ -98,7 +110,7 @@ impl Model {
                     maps.push(Ok(Vec::new()));
                     run.forget_late(k);
                     model.mark(by, Added::Not);
-                    ops.push(Err(why));
+                    ops.push(Err(why.or_at(op.span)));
                 }
                 Err(Fail::Unmodelled(kind)) => {
                     stopped = Some(kind);
@@ -128,7 +140,7 @@ impl Model {
                                 relation,
                                 *span,
                             ) {
-                                ops[*k] = Err(Refused::new(d.message));
+                                ops[*k] = Err(Refused::at(d.span, d.message));
                             }
                         }
                     }
@@ -158,6 +170,28 @@ impl Model {
             checks,
             stopped,
         })
+    }
+
+    /// Put back each constraint and check of `kept` that `prior` declares and this model does not.
+    fn keep(&mut self, prior: &Model, kept: &[Kept]) {
+        for k in kept {
+            let held = prior.decls.iter().find(|d| {
+                d.module == k.module
+                    && match d.item {
+                        Item::Constraint(c) => !k.check && prior.denials[&c].name == k.name,
+                        Item::Check(c) => k.check && prior.denials[&c].name == k.name,
+                        _ => false,
+                    }
+            });
+            let Some(d) = held else { continue };
+            let (Item::Constraint(c) | Item::Check(c)) = d.item else {
+                continue;
+            };
+            if let std::collections::btree_map::Entry::Vacant(e) = self.denials.entry(c) {
+                e.insert(prior.denials[&c].clone());
+                self.decls.push(d.clone());
+            }
+        }
     }
 
     /// Lift again each declaration of `late` from the declarations as the migration leaves them,
@@ -210,6 +244,38 @@ impl Model {
                         action_only,
                     )
                     .map_err(broken)?
+                }
+                Late::Ctor { ctor, record } => {
+                    let Some(t) = self.ctors.get(&ctor).map(|c| c.ty) else {
+                        continue;
+                    };
+                    let Some(i) = self.decl_at(Item::Type(t)) else {
+                        continue;
+                    };
+                    self.ctor_written(&built, FileId(i as u32), ctor, record)
+                        .map_err(broken)?
+                }
+                Late::Default { relation, default } => {
+                    let held = self.relations.get(&relation).is_some_and(|x| {
+                        x.clauses.iter().any(|c| {
+                            matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, d)| d == default))
+                        })
+                    });
+                    if !held {
+                        continue;
+                    }
+                    self.default_canonical(&built, relation, default)
+                }
+                Late::Computed { relation, computed } => {
+                    let held = self.relations.get(&relation).is_some_and(|x| {
+                        x.clauses.iter().any(|c| {
+                            matches!(c, ClauseM::Computed { id: Some(id), .. } if *id == computed)
+                        })
+                    });
+                    if !held {
+                        continue;
+                    }
+                    self.computed_canonical(&built, relation, computed)
                 }
                 Late::Unresolved => continue,
             };
@@ -318,7 +384,7 @@ impl Model {
                 version,
                 from,
             } => Some(self.install(run, name, version, from)?),
-            OperatorKind::Uninstall(m) => Some(self.uninstall(&m.text)?),
+            OperatorKind::Uninstall(m) => Some(self.uninstall(m)?),
             OperatorKind::AdoptTzdb { release, from } => Some(self.adopt_tzdb(release, from)?),
             op => self.restructuring(run, op)?,
         };
@@ -337,12 +403,12 @@ impl Model {
         }
         let resolved = Resolving::new(self, run.module()).op(op)?;
         let out = match resolved {
-            Op::AddModule(m) => self.add_module(m)?,
-            Op::DropModule(m) => self.drop_module(m)?,
+            Op::AddModule(m) => self.add_module(&m)?,
+            Op::DropModule(m) => self.drop_module(&m)?,
             Op::Add { kind, name, span } => self.add(run, kind, &name, span, op)?,
             Op::RedefineFn { function, span } => self.redefine_fn(run, function, span, op)?,
             Op::Drop(item) => self.drop(run, item)?,
-            Op::Rename { obj, to } => self.rename(run, obj, to)?,
+            Op::Rename { obj, to } => self.rename(run, obj, &to)?,
             Op::Stage {
                 key,
                 to,
@@ -400,7 +466,12 @@ fn set_decl(op: &mut Resolved, decl: String) {
         | Resolved::AddConstraint { body: d, .. }
         | Resolved::AddCheck { body: d, .. }
         | Resolved::AddField { decl: d, .. }
-        | Resolved::AlterField { action: d, .. } => *d = decl,
+        | Resolved::AlterField { action: d, .. }
+        | Resolved::AddComputed { decl: d, .. }
+        | Resolved::AddConstructor { decl: d, .. }
+        | Resolved::Merge { decl: d, .. }
+        | Resolved::Nest { decl: d, .. }
+        | Resolved::AddDefault { value: d, .. } => *d = decl,
         _ => {}
     }
 }

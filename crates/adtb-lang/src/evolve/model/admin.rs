@@ -1,6 +1,6 @@
 use super::field::Applied;
 use super::lift::Lifting;
-use super::op::{Fail, Res, broken, refuse, unmodelled};
+use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diag, unmodelled};
 use super::run::{Late, Run};
 use super::*;
 use crate::ast;
@@ -58,7 +58,7 @@ impl Model {
     ) -> Res<(Schema, StatedRefs)> {
         let schema = self.schema_now(run)?.into_schema();
         let stated = log_privileges(&schema, run.module(), privileges, statement, run.span())
-            .or_else(|ds| refuse(ds[0].message.clone()))?;
+            .or_else(|ds| refuse_diag(&ds[0]))?;
         Ok((schema, stated))
     }
 
@@ -133,7 +133,7 @@ impl Model {
         let (schema, program) = self.checked(run)?;
         let mut refs = Vec::new();
         check::check_script(&schema, &program, w, Some(&mut refs))
-            .or_else(|ds| refuse(ds[0].message.clone()))?;
+            .or_else(|ds| refuse_diag(&ds[0]))?;
         let write = canonical(run, &schema, &refs, w.span);
         Ok((Resolved::Script { write }, Vec::new(), Ok(Vec::new())))
     }
@@ -146,7 +146,7 @@ impl Model {
         from: &str,
     ) -> Res<Applied> {
         let m = name.text.clone();
-        self.reserved(&m)?;
+        self.reserved(name)?;
         let Some(package) = self.packages.get(from).cloned() else {
             return refuse(format!("the package `{from}` is not available"));
         };
@@ -205,9 +205,10 @@ impl Model {
         ))
     }
 
-    pub(super) fn uninstall(&mut self, m: &str) -> Res<Applied> {
+    pub(super) fn uninstall(&mut self, ident: &ast::Ident) -> Res<Applied> {
+        let (at, m) = (ident.span, ident.text.as_str());
         if !self.installed.contains(m) {
-            return refuse(format!("`{m}` is not an installed extension"));
+            return refuse_at(at, format!("`{m}` is not an installed extension"));
         }
         for i in 0..self.decls.len() {
             if self.decls[i].module == m {
@@ -218,10 +219,13 @@ impl Model {
                 .into_iter()
                 .any(|o| self.home_of(o).as_deref() == Some(m));
             if names_it {
-                return refuse(format!(
-                    "`uninstall {m}` is refused while {} names it",
-                    self.shown_decl(i)
-                ));
+                return refuse_at(
+                    at,
+                    format!(
+                        "`uninstall {m}` is refused while {} names it",
+                        self.shown_decl(i)
+                    ),
+                );
             }
         }
         let gone: Vec<Item> = self
@@ -244,10 +248,10 @@ impl Model {
         ))
     }
 
+    /// Adopt release `release` of the tzdb from file `from`. Its resolved form holds no data when
+    /// the source lacks the file; [`Model::unavailable`] names it.
     pub(super) fn adopt_tzdb(&mut self, release: &str, from: &str) -> Res<Applied> {
-        let Some(data) = self.packages.get(from).cloned() else {
-            return unmodelled("adopt tzdb of release data the source lacks");
-        };
+        let data = self.packages.get(from).cloned().unwrap_or_default();
         Ok((
             Resolved::AdoptTzdb {
                 release: release.to_string(),
@@ -256,6 +260,23 @@ impl Model {
             Vec::new(),
             Ok(Vec::new()),
         ))
+    }
+
+    /// Returns why the operators of `m` do not resolve against this model, the model before `m`:
+    /// each `adopt tzdb` whose release data it lacks, at its span.
+    pub(super) fn unavailable(&self, m: &MigrationFile) -> Vec<(Span, String)> {
+        m.operators
+            .iter()
+            .filter_map(|op| match &op.kind {
+                OperatorKind::AdoptTzdb { from, .. } if !self.packages.contains_key(from) => {
+                    Some((
+                        op.span,
+                        format!("the release data `{from}` is not available"),
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Returns the module of the declaration that declares the object of `obj`, a field's that

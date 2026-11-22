@@ -265,7 +265,7 @@ impl Model {
                 if !given.is_empty() {
                     clauses.extend(self.insert_arms(run, &after, t, &[c], given)?);
                 }
-                self.ctor_canonical(&after, run, file, &m, into.record.is_some())?
+                self.ctor_canonical(&after, run, file, c, into.record.is_some())?
             }
             None => String::new(),
         };
