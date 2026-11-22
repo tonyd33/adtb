@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{IoError, OpKind};
 use crate::storage::order::ordered_for_test;
-use crate::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine};
+use crate::storage::{Damage, HEADER_LEN, Lsn, Options, PageError, Pager, Pid, Quarantine};
 use crate::test_world::api;
 use crate::test_world::load as open;
 use crate::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnOptions};
@@ -1054,18 +1054,213 @@ fn with_users(seed: u64, rows: i64) -> Files {
     sim.files()
 }
 
-/// Refuse a log another file wrote, placed beside a file, as long, shorter or longer than its own,
-/// as foreign.
-#[test]
-#[ignore = "the pager answers a whole log of another file as `Damaged` at its first block, not `Foreign`"]
-fn a_foreign_log_beside_a_file_is_refused_as_foreign() {
+/// Returns `ours` with its log replaced by the log of `theirs`.
+fn with_log_of(ours: &Files, theirs: Files) -> Files {
     let log_dir = format!("{FILE}-log/");
+    let mut files = ours.clone();
+    files.retain(|path, _| !path.starts_with(&log_dir));
+    files.extend(theirs.into_iter().filter(|(p, _)| p.starts_with(&log_dir)));
+    files
+}
+
+/// Returns the files of `FILE` holding users of long names past its first log segment.
+fn past_a_segment() -> Files {
+    let mut sim = Sim::new(7, Config::default());
+    adtb_testkit::process::run(&mut sim, |rt| {
+        let db = open::opened(&rt, FILE, &app(), &open::options(2));
+        let name = "x".repeat(3000);
+        for id in 0..6000 {
+            let text = format!(r#"insert users {{ id: users.key({id}), name: "{name}" }}"#);
+            api::results(&db, &text);
+        }
+        db.close().unwrap();
+    });
+    sim.files()
+}
+
+/// Returns `files` after a process opens them, inserts users, takes a checkpoint and crashes.
+fn checkpointed_then_crashed(files: Files) -> Files {
+    let mut sim = Sim::with_files(7, Config::default(), files);
+    adtb_testkit::common::run_then_crash(&mut sim, |rt, _| {
+        let none = OpenOptions {
+            create: None,
+            ..open::options(2)
+        };
+        let db = Database::open_in(rt.clone(), FILE, &app(), &none).unwrap();
+        for id in 100..108 {
+            let text = format!(r#"insert users {{ id: users.key({id}), name: "user {id}" }}"#);
+            api::results(&db, &text);
+        }
+        db.testing().checkpoint();
+        std::mem::forget(db);
+    });
+    sim.files()
+}
+
+/// The log position a file's header names and what its log holds there.
+struct Checkpointed {
+    block: u64,
+    segment: u64,
+    at: Lsn,
+    redo: Lsn,
+}
+
+impl Checkpointed {
+    /// Returns the first LSN of the block holding `lsn`.
+    fn block_of(&self, lsn: Lsn) -> Lsn {
+        Lsn(lsn.0 - lsn.0 % self.block)
+    }
+}
+
+/// Returns the log block size, segment size, checkpoint and redo LSN of `FILE` in `files`.
+fn checkpoint_of(files: &Files) -> Checkpointed {
+    use crate::storage::block::{InMemory, LogImage, batch_at};
+    use crate::storage::header::{FileHeader, choose};
+    use crate::storage::record::Record;
+    let file = &files[FILE];
+    let (_, h) = choose(
+        FileHeader::decode(0, &file[..PAGE]),
+        FileHeader::decode(1, &file[PAGE..2 * PAGE]),
+    )
+    .expect("a header copy verifies");
+    let segments = files
+        .iter()
+        .filter_map(|(p, b)| {
+            let base = u64::from_str_radix(p.strip_prefix(&format!("{FILE}-log/"))?, 16).ok()?;
+            Some((base, Some(b.clone())))
+        })
+        .collect();
+    let block = h.log_block as usize;
+    let mut img = LogImage {
+        file_id: h.file_id,
+        ..LogImage::<InMemory>::in_memory(block, h.segment_size, segments)
+    };
+    let start = img
+        .batch_start(h.checkpoint)
+        .expect("the checkpoint's batch");
+    let redo = batch_at(&mut img, start)
+        .expect("the checkpoint's batch")
+        .records(block)
+        .expect("its records")
+        .into_iter()
+        .find_map(|(lsn, r)| match r {
+            Record::Checkpoint { redo, .. } if lsn == h.checkpoint => Some(redo),
+            _ => None,
+        })
+        .expect("the checkpoint record");
+    Checkpointed {
+        block: block as u64,
+        segment: h.segment_size,
+        at: h.checkpoint,
+        redo,
+    }
+}
+
+/// Returns the bytes of segment 0 of the log in `files`.
+fn segment_zero(files: &Files) -> &[u8] {
+    &files[&format!("{FILE}-log/{:016x}", 0)]
+}
+
+/// Returns the bytes of segment 0 of the log in `files`, to change.
+fn first_segment(files: &mut Files) -> &mut Vec<u8> {
+    files
+        .get_mut(&format!("{FILE}-log/{:016x}", 0))
+        .expect("a first segment")
+}
+
+/// Refuse a log recovery cannot read from its checkpoint or its redo LSN as foreign at the block
+/// another file's log wrote that it holds there or at a segment's start, and as damaged at that
+/// LSN when it holds none: their log as long as ours, longer, shorter, or ending a segment before
+/// our checkpoint; a torn block at the checkpoint or redo LSN; their block at the redo LSN.
+#[test]
+fn a_log_recovery_cannot_read_is_refused_as_foreign_or_damaged_where_it_failed() {
+    use crate::storage::{LogFinding, LogProblem};
     let ours = with_users(7, 8);
-    for rows in [8, 0, 40] {
-        let mut files = ours.clone();
-        files.retain(|path, _| !path.starts_with(&log_dir));
-        let theirs = with_users(8, rows);
-        files.extend(theirs.into_iter().filter(|(p, _)| p.starts_with(&log_dir)));
+    let closed = checkpoint_of(&ours);
+    assert_eq!(
+        closed.at, closed.redo,
+        "a closed file checkpoints at its redo LSN"
+    );
+    let crashed = checkpointed_then_crashed(ours.clone());
+    let live = checkpoint_of(&crashed);
+    assert!(
+        live.block_of(live.redo) < live.block_of(live.at),
+        "the crashed file's redo LSN lies before its checkpoint's block"
+    );
+    let big = past_a_segment();
+    let past = checkpoint_of(&big);
+    assert!(
+        past.at.0 >= past.segment,
+        "the big file checkpoints past its first segment"
+    );
+    let theirs_long = with_users(8, 40);
+    let theirs_empty = with_users(8, 0);
+    let written = |files: &Files| {
+        let from = closed.block_of(closed.at).0 as usize;
+        segment_zero(files)[from..from + closed.block as usize]
+            .iter()
+            .any(|&b| b != 0)
+    };
+    assert!(
+        written(&theirs_long) && !written(&theirs_empty),
+        "their long log reaches our checkpoint and their empty one does not"
+    );
+    let foreign = |lsn| LogFinding {
+        lsn,
+        problem: LogProblem::Foreign,
+    };
+    let damaged = |lsn| LogFinding {
+        lsn,
+        problem: LogProblem::Damaged,
+    };
+    let torn = |mut files: Files, lsn: Lsn| {
+        first_segment(&mut files)[lsn.0 as usize + 100] ^= 0xff;
+        files
+    };
+    let spliced = |mut files: Files, block: Lsn| {
+        let from = block.0 as usize..(block.0 + closed.block) as usize;
+        let theirs = segment_zero(&theirs_long)[from.clone()].to_vec();
+        first_segment(&mut files)[from].copy_from_slice(&theirs);
+        files
+    };
+    let cases: Vec<(&str, Files, LogFinding)> = vec![
+        (
+            "their log as long",
+            with_log_of(&ours, with_users(8, 8)),
+            foreign(closed.block_of(closed.at)),
+        ),
+        (
+            "their longer log",
+            with_log_of(&ours, theirs_long.clone()),
+            foreign(closed.block_of(closed.at)),
+        ),
+        (
+            "their shorter log",
+            with_log_of(&ours, theirs_empty.clone()),
+            foreign(Lsn(0)),
+        ),
+        (
+            "their log a segment short of our checkpoint",
+            with_log_of(&big, theirs_empty),
+            foreign(Lsn(0)),
+        ),
+        (
+            "a torn block at the checkpoint",
+            torn(ours.clone(), closed.block_of(closed.at)),
+            damaged(closed.at),
+        ),
+        (
+            "a torn block at the redo LSN",
+            torn(crashed.clone(), live.block_of(live.redo)),
+            damaged(live.redo),
+        ),
+        (
+            "their block at the redo LSN",
+            spliced(crashed, live.block_of(live.redo)),
+            foreign(live.block_of(live.redo)),
+        ),
+    ];
+    for (name, files, finding) in cases {
         let mut sim = Sim::with_files(9, Config::default(), files);
         let (cause, got) = adtb_testkit::process::run(&mut sim, |rt| {
             let cause = Pager::open(rt.clone(), &Options::new(FILE)).err();
@@ -1078,19 +1273,12 @@ fn a_foreign_log_beside_a_file_is_refused_as_foreign() {
                 Database::open_in(rt, FILE, &app(), &none).map(Database::close),
             )
         });
-        let Some(
-            cause @ crate::storage::OpenError::Log(crate::storage::LogFinding {
-                problem: crate::storage::LogProblem::Foreign,
-                ..
-            }),
-        ) = cause
-        else {
-            panic!("a log of {rows} rows: the pager answers {cause:?}");
-        };
+        let refusal = crate::storage::OpenError::Log(finding);
+        assert_eq!(Some(&refusal), cause.as_ref(), "{name}");
         let Err(OpenError::Corrupt { detail }) = got else {
-            panic!("a log of {rows} rows opens");
+            panic!("{name}: the open answers {got:?}");
         };
-        assert_eq!(format!("{cause:?}"), detail, "a log of {rows} rows");
+        assert_eq!(format!("{refusal:?}"), detail, "{name}");
     }
 }
 
@@ -1150,7 +1338,7 @@ fn a_check_reports_a_log_it_cannot_list() {
         let t = db.testing();
         assert!(t.probe().logged_commits().is_empty());
         let unreadable = crate::storage::Finding::Log(crate::storage::LogFinding {
-            lsn: crate::storage::Lsn(0),
+            lsn: Lsn(0),
             problem: crate::storage::LogProblem::Unreadable,
         });
         assert_eq!(vec![unreadable], t.verify_pages().findings);

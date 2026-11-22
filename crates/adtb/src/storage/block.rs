@@ -216,6 +216,37 @@ impl<S: LogSource> LogImage<S> {
         self.bases.first().map(|&b| Lsn(b))
     }
 
+    /// Returns the finding of a log that cannot be read from `at`: `Foreign` at the block at `at`
+    /// when it is a valid block another file's log wrote, or else at the first such first block
+    /// of a segment present; `Damaged` at `at` when there is none.
+    pub fn unread_at(&mut self, at: Lsn) -> LogFinding {
+        let block = Lsn(at.0 - at.0 % self.block as u64);
+        let bases: Vec<Lsn> = self.bases.iter().map(|&b| Lsn(b)).collect();
+        match std::iter::once(block)
+            .chain(bases)
+            .find(|&b| self.foreign(b))
+        {
+            Some(lsn) => LogFinding {
+                lsn,
+                problem: LogProblem::Foreign,
+            },
+            None => LogFinding {
+                lsn: at,
+                problem: LogProblem::Damaged,
+            },
+        }
+    }
+
+    fn foreign(&mut self, block: Lsn) -> bool {
+        matches!(
+            self.slot(block),
+            Slot::Bytes(b) if matches!(
+                read_block(block, &b),
+                BlockState::Valid(h, _) if h.file_id != self.file_id
+            )
+        )
+    }
+
     /// Returns the first LSN of the batch holding the block at `at`, if that block verifies.
     pub fn batch_start(&mut self, at: Lsn) -> Option<Lsn> {
         let block = Lsn(at.0 - at.0 % self.block as u64);
@@ -517,7 +548,7 @@ pub fn scan<S: LogSource>(
         Mode::Recovery => out
             .findings
             .iter()
-            .find(|f| {
+            .filter(|f| {
                 matches!(
                     f.problem,
                     LogProblem::Gap
@@ -526,6 +557,8 @@ pub fn scan<S: LogSource>(
                         | LogProblem::Foreign
                 )
             })
+            // At one LSN, name a foreign block before the gap it opens.
+            .min_by_key(|f| (f.lsn, f.problem != LogProblem::Foreign))
             .copied(),
         Mode::Verify => None,
     };

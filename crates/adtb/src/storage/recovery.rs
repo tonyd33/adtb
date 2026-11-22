@@ -149,7 +149,7 @@ impl<R: Runtime> Pager<R> {
         let ck = self.checkpoint_lsn();
         let ck_batch = img
             .batch_start(ck)
-            .ok_or(damaged_at(ck, LogProblem::Damaged))?;
+            .ok_or_else(|| OpenError::Log(img.unread_at(ck)))?;
         let (redo, map) = batch_at(&mut img, ck_batch)
             .and_then(|b| b.records(img.block).ok())
             .and_then(|rs| {
@@ -158,11 +158,11 @@ impl<R: Runtime> Pager<R> {
                     _ => None,
                 })
             })
-            .ok_or(damaged_at(ck, LogProblem::Damaged))?;
+            .ok_or_else(|| OpenError::Log(img.unread_at(ck)))?;
         self.recover_map_root(&Replaying(()), map);
         let from = img
             .batch_start(redo)
-            .ok_or(damaged_at(redo, LogProblem::Damaged))?;
+            .ok_or_else(|| OpenError::Log(img.unread_at(redo)))?;
         let s = scan(&mut img, from, Mode::Recovery, |_, _| {});
         if let Some(f) = s.fatal {
             return Err(OpenError::Log(f));
