@@ -1371,7 +1371,6 @@ const KNOWN_FAILURES: &[&str] = &[
     "dumped: Copy of catalog::credentials id: credentials.key(1) of security",
     "dumped: Drop of catalog::grants id: grants.key(1) of security",
     "dumped: Rekey of catalog::grants id: grants.key(1) of security",
-    "dumped: Revalue of catalog::grants id: grants.key(1) of security",
     "dumped: Copy of catalog::grants id: grants.key(1) of security",
     "dumped: Drop of catalog::peer_mappings listener: \"local\", ordinal: 1 of security",
     "dumped: Revalue of catalog::peer_mappings listener: \"local\", ordinal: 1 of security",
