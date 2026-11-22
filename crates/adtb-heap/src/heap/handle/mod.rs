@@ -12,7 +12,7 @@ use super::blame::unchanged;
 use super::dir::{Space, max_fanout, need_category, page_category};
 use super::large::{self, LargeStore};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot, align8};
-use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
+use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored, value_limit};
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
@@ -216,6 +216,8 @@ enum Put {
 pub struct Heap {
     pub(super) id: u32,
     page_size: usize,
+    /// The longest value a row holds.
+    value_limit: u64,
     pub(super) space: Space,
     large: LargeStore,
     formats: Vec<Format>,
@@ -330,6 +332,7 @@ impl Heap {
         Heap {
             id,
             page_size: pager.page_size(),
+            value_limit: value_limit(pager),
             space,
             large,
             formats: vec![Format {
@@ -614,8 +617,20 @@ impl Heap {
         Ok((f.layout.assemble(&fixed_part, &stored), held))
     }
 
+    /// Refuse with `TooLarge` a row with a field whose whole value's stored length passes the
+    /// value limit, `len` that length, or else a row whose smallest version, every value it can move out of line
+    /// moved, passes the largest version a page holds.
     pub fn check_row(&self, row: &[Value]) -> Result<(), Error> {
-        let (_, vars) = self.current().layout.encode(row);
+        let layout = &self.current().layout;
+        let (_, vars) = layout.encode(row);
+        let limit = self.value_limit;
+        let mut lengths = layout.field_lengths(&vars);
+        if let Some(len) = lengths.find(|&len| len as u64 > limit) {
+            return Err(Error::TooLarge {
+                len,
+                limit: limit as usize,
+            });
+        }
         self.check_lengths(vars.iter().map(Vec::len))
     }
 

@@ -102,6 +102,13 @@ impl<R: Runtime> WritePath<R> {
         WritePath::start(rt, Some(f), pool).expect("the file opens")
     }
 
+    /// Returns the write path [`WritePath::of`] returns, its heaps storing no value longer than
+    /// `limit` bytes. The catalog's rows were written without that limit.
+    pub fn of_value_limit(rt: &R, f: &Fixture, limit: u64) -> WritePath<R> {
+        create_loaded(rt, f);
+        WritePath::start_with(rt, Some(f), None, Some(limit)).expect("the file opens")
+    }
+
     /// Returns the write path [`WritePath::of`] returns, over the file [`write_files`] made.
     ///
     /// Preconditions:
@@ -121,7 +128,19 @@ impl<R: Runtime> WritePath<R> {
         staged_by: Option<&Fixture>,
         pool: Option<Arc<Scheduler<R>>>,
     ) -> Option<WritePath<R>> {
+        WritePath::start_with(rt, staged_by, pool, None)
+    }
+
+    fn start_with(
+        rt: &R,
+        staged_by: Option<&Fixture>,
+        pool: Option<Arc<Scheduler<R>>>,
+        value_limit: Option<u64>,
+    ) -> Option<WritePath<R>> {
         let (pager, _) = Pager::open(rt.clone(), &super::options(256)).ok()?;
+        if let Some(limit) = value_limit {
+            pager.steps().lower_value_limit(limit);
+        }
         let (catalog, txns) = Catalog::open(rt.clone(), &pager).expect("the catalog opens");
         let schema = match staged_by {
             Some(f) => Committed::new(

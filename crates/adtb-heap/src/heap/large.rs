@@ -12,7 +12,7 @@ use crate::vacuum::Vacuuming;
 
 use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
-use super::row::{MAX_VALUE_LEN, Pointer};
+use super::row::{Pointer, value_limit};
 use super::slotted;
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, tid_bits, tid_from_bits};
@@ -296,10 +296,11 @@ impl LargeStore {
         xid: Xid,
         bytes: &[u8],
     ) -> Result<Pointer, Error> {
-        if bytes.len() as u64 > MAX_VALUE_LEN {
+        let limit = value_limit(pager);
+        if bytes.len() as u64 > limit {
             return Err(Error::TooLarge {
                 len: bytes.len(),
-                limit: MAX_VALUE_LEN as usize,
+                limit: limit as usize,
             });
         }
         let room = slotted::max_version(pager.page_size()) - BYTES;

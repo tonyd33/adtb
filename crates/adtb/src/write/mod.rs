@@ -1,5 +1,6 @@
 //! Run the write path: change sets, constraint checks, schema changes and reindexing.
 
+mod admit;
 mod apply;
 mod broken;
 mod check;
@@ -24,6 +25,8 @@ mod vacuums;
 mod verify;
 mod writing;
 
+#[cfg(test)]
+mod admit_tests;
 #[cfg(test)]
 mod calls_tests;
 #[cfg(test)]
@@ -219,9 +222,9 @@ impl From<crate::heap::Error> for Error {
                     .collect(),
             )
             .into(),
-            crate::heap::Error::TooLarge { len, limit } => Error::Exec(exec::Error::Unsupported(
-                format!("a row version of {len} bytes, over the limit of {limit}"),
-            )),
+            crate::heap::Error::TooLarge { len, limit } => {
+                Error::Internal(Box::new(Broken::Unadmitted { len, limit }))
+            }
             crate::heap::Error::NoDirectory => {
                 panic!("a heap the write path writes has a directory")
             }

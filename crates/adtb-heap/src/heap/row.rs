@@ -1,7 +1,8 @@
 use std::cmp::Reverse;
 
 use crate::key::{CtorId, F32, F64, Scalar, Tid, Value};
-use crate::storage::Undecoded;
+use crate::runtime::Runtime;
+use crate::storage::{Pager, Undecoded};
 
 use super::version::{tid_bits, tid_from_bits};
 
@@ -31,6 +32,15 @@ pub const POINTER_LEN: usize = 16;
 /// The longest value a large-value store holds: a batch column addresses its bytes by 32-bit
 /// offsets.
 pub const MAX_VALUE_LEN: u64 = i32::MAX as u64;
+
+/// Returns the longest value a heap over `pager` stores: [`MAX_VALUE_LEN`], or the lower limit
+/// a test set on its database.
+pub fn value_limit<R: Runtime>(pager: &Pager<R>) -> u64 {
+    pager
+        .steps()
+        .value_limit()
+        .map_or(MAX_VALUE_LEN, |limit| limit.min(MAX_VALUE_LEN))
+}
 
 /// Where an out-of-line value lies in its sum's large-value store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -517,9 +527,11 @@ enum Place {
         at: usize,
         size: usize,
     },
-    /// A sum's tag at `at` in the fixed part, its payload variable-width field `var`.
+    /// A sum's tag of `tag` bytes at `at` in the fixed part, its payload variable-width field
+    /// `var`.
     Split {
         at: usize,
+        tag: usize,
         var: usize,
     },
     Var {
@@ -573,6 +585,7 @@ impl Layout {
                 },
                 (Some(s), Some(var)) => Place::Split {
                     at: offsets[s],
+                    tag: shapes[s].size,
                     var,
                 },
                 (None, Some(var)) => Place::Var { var },
@@ -586,6 +599,16 @@ impl Layout {
             align: shape.align,
             vars,
         }
+    }
+
+    /// Returns the stored length of each field's whole value, its variable-width bytes given by
+    /// `vars` as [`Layout::encode`] returns them: a split sum's tag and payload together.
+    pub fn field_lengths<'a>(&'a self, vars: &'a [Vec<u8>]) -> impl Iterator<Item = usize> + 'a {
+        self.places.iter().map(move |place| match *place {
+            Place::Fixed { size, .. } => size,
+            Place::Split { tag, var, .. } => tag + vars[var].len(),
+            Place::Var { var } => vars[var].len(),
+        })
     }
 
     /// Returns whether every field lies in the fixed part.
@@ -625,7 +648,7 @@ impl Layout {
         for ((t, v), place) in self.fields.iter().zip(row).zip(&self.places) {
             match *place {
                 Place::Fixed { at, size } => put_fixed(t, v, &mut fixed[at..at + size]),
-                Place::Split { at, var } => {
+                Place::Split { at, var, .. } => {
                     let FieldType::Sum(cs) = t else {
                         unreachable!()
                     };
@@ -750,7 +773,7 @@ impl Layout {
                 .and_then(|b| get_fixed(t, b))
                 .map(Some)
                 .map_err(Failed::Fixed),
-            Place::Split { at, var } => {
+            Place::Split { at, var, .. } => {
                 let FieldType::Sum(cs) = t else {
                     unreachable!()
                 };

@@ -13,7 +13,7 @@ use crate::heap::Abandons;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
-use super::apply::too_large;
+use super::admit::Admitted;
 use super::eval::{Stmt, Violations, Violator, pairs, refuse, violate, violate_key};
 use super::reindex::Scan;
 use super::schema::Indexed;
@@ -40,20 +40,23 @@ impl<R: Runtime> Abandons for Restoring<'_, R> {}
 impl<R: Runtime> Restoring<'_, R> {
     /// Write `rows` into their heaps as one committed transaction, checking only their sizes and
     /// entering no index entry.
-    pub fn write(&self, rows: &Rows) -> Result<(), Error> {
+    pub fn write(&self, rows: Rows) -> Result<(), Error> {
         let tx = self.db.begin()?;
-        match self.insert(&tx, rows) {
+        let stmt = Stmt::reader(self.db, &tx);
+        let written = stmt
+            .check_sizes(rows, Rows::new())
+            .and_then(|set| self.insert(&stmt, &tx, &set));
+        drop(stmt);
+        match written {
             Ok(()) => self.db.commit(tx).map(drop),
             Err(e) => Err(self.db.abandoned(tx, e)),
         }
     }
 
-    fn insert(&self, tx: &Txn, rows: &Rows) -> Result<(), Error> {
+    fn insert(&self, stmt: &Stmt<'_, R>, tx: &Txn, set: &Admitted) -> Result<(), Error> {
         let db = self.db;
-        let stmt = Stmt::reader(db, tx);
-        stmt.check_sizes(rows)?;
         let xid = tx.writer()?;
-        for ((r, c), rows) in rows {
+        for ((r, c), rows) in set.plus() {
             let heap = stmt.rel(*r).ctors[*c as usize].heap;
             let mut most = None;
             for row in rows {
@@ -61,8 +64,7 @@ impl<R: Runtime> Restoring<'_, R> {
                 let h = &db.bindings.heaps()[&heap].heap;
                 let mut judge = db.session.txns.judge_now(&db.pager, h.id().0);
                 h.insert_pruning(&db.pager, xid, &stored, &mut judge)
-                    .kept(self)
-                    .map_err(too_large(*r, *c))?;
+                    .kept(self)?;
                 if let Val::Int(k) = stmt.key_of(*r, row)? {
                     most = most.max(Some(k));
                 }

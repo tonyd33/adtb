@@ -171,6 +171,15 @@ relation variable, `ctor` its constructor, `size` is the size of its
 stored form in bytes and `limit` the limit. When several rows are too
 large, the one named is any of them.
 
+The engine also stores each field of a row within the value limit,
+2^31 - 1 bytes. The limit applies to a field's whole value as the row
+holds it: a field of a record or sum type counts whole, not each of its
+components. A field's stored length is the number of bytes the engine
+stores for that value. A statement whose change set holds a new row with
+a field whose stored length is larger than the value limit fails with
+`RowTooLarge`, `size` that field's stored length and `limit` the value
+limit, whatever the row limit.
+
 The test is made on the normalised change set after `NotOpen` and
 before any key or constraint is checked, so a statement with a row too
 large fails with `RowTooLarge` whatever key or constraint it would
@@ -180,7 +189,7 @@ violate or fault in
 A migration that declares a constructor whose smallest row's stored
 form is larger than the limit is refused ([evolution.md §3.2](evolution.md#32-checks-at-apply)).
 
-Rulings: spec/row-too-large/refuse-at-write
+Rulings: spec/row-too-large/refuse-at-write, spec/row-too-large/value-limit/row-reason-value-limit
 
 ### 1.7 Index keys too large
 

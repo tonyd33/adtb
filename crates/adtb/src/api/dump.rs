@@ -913,7 +913,7 @@ fn fill<R: Runtime>(
     for (r, c, name) in &data {
         let rows = arrows::read_rows(schema, *r, *c, &entries[name]).map_err(|_| damaged(name))?;
         restoring
-            .write(&BTreeMap::from([((*r, *c), rows.into_iter().collect())]))
+            .write(BTreeMap::from([((*r, *c), rows.into_iter().collect())]))
             .map_err(failed)?;
     }
     restoring

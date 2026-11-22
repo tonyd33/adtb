@@ -1002,6 +1002,7 @@ run(s, σ) =
                    row of its key in D(r), if any, does not hold a value equal
                    to w at p
   ⊗RowTooLarge     if some v ∈ Δ*⁺(r.C) has a stored form over the engine's row
+                   limit or a field whose stored length is over the value
                    limit ([writes.md §1.6](writes.md#16-rows-too-large))
   _ ⇐ gather(checkkey(i, v))_{v ∈ Δ*⁺(r.C), i an index of r ranging over C} ;
   (R_c)_{c ∈ cons(Σ)} ⇐ gather(⟦c⟧(D, Δ*, D*))_{c ∈ cons(Σ)} ;

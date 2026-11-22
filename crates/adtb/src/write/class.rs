@@ -88,7 +88,8 @@ impl Broken {
             | Broken::SettingField(_)
             | Broken::CatalogError(_)
             | Broken::DeploymentRefused
-            | Broken::NoDenial(_) => Class::Checker,
+            | Broken::NoDenial(_)
+            | Broken::Unadmitted { .. } => Class::Checker,
         }
     }
 }

@@ -110,7 +110,9 @@ Postconditions:
 
 `with_row_limit(measure)` gives the size of a row's stored form and the
 limit its constructor's rows must fit, `measure(relation, ctor, row)`
-returning `(size, limit)` in bytes. Each new row of `Δ*` is measured
+returning `(size, limit)` in bytes; for a row with a field whose stored
+length passes the value limit of [writes.md §1.6](../spec/writes.md#16-rows-too-large)
+it returns that length and the value limit. Each new row of `Δ*` is measured
 after `NotOpen` and before keys and constraints; the first, by relation,
 constructor and row, whose size is over its limit is `RowTooLarge`.
 Without a measure no row is too large.

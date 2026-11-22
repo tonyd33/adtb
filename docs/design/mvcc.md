@@ -132,8 +132,12 @@ Preconditions: every row a caller writes has a value of each field's
 type; the heap panics on a row that does not.
 
 `Heap::check_row(row)` checks that a row fits the newest format without
-reading or changing pages. It returns `TooLarge { len, limit }` in stored
-row bytes when the row cannot fit even with large values out of line.
+reading or changing pages. It returns `TooLarge { len, limit }` with `len`
+a field's stored length and `limit` the value limit when a field's whole
+value, a split sum's tag and payload together, is longer than the limit,
+and otherwise in stored row bytes when the row cannot fit even with large
+values out of line. A write of a row `check_row` passes does not fail with
+`TooLarge`.
 It has the same row-type precondition as a write.
 
 Postconditions:

@@ -511,11 +511,19 @@ fn call_broken_rows() -> Vec<Row> {
             c,
             "constraint or check app::c has a normal form",
         ),
+        broken_row(
+            B::Unadmitted {
+                len: 9000,
+                limit: 8000,
+            },
+            c,
+            "a heap writes every row its admission passed, found 9000 bytes against the limit of 8000",
+        ),
     ]
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 69;
+const SLOTS: usize = 70;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -598,6 +606,7 @@ fn slot(e: &write::Error) -> usize {
             B::CatalogError(_) => 66,
             B::DeploymentRefused => 67,
             B::NoDenial(_) => 68,
+            B::Unadmitted { .. } => 69,
         },
     }
 }

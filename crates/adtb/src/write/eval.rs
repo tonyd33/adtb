@@ -1245,10 +1245,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// Apply the change set and check it at the statement boundary.
     fn settle(&self, plus: Rows, minus: Rows, result: Val) -> Result<Outcome, Error> {
         self.check_open(&plus)?;
-        self.check_sizes(&plus)?;
+        let set = self.check_sizes(plus, minus)?;
         let mut viol = Violations::new();
         let mut by_key: BTreeMap<(RelId, Val), BTreeSet<Val>> = BTreeMap::new();
-        for ((r, _), rows) in &plus {
+        for ((r, _), rows) in set.plus() {
             for v in rows {
                 by_key
                     .entry((*r, self.key_of(*r, v)?))
@@ -1262,9 +1262,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 violate_key(&mut viol, &name, r, k);
             }
         }
-        self.apply(&plus, &minus, &mut viol)?;
-        self.check(&plus, &minus, &mut viol)?;
+        self.apply(&set, &mut viol)?;
+        self.check(set.plus(), set.minus(), &mut viol)?;
         refuse(viol)?;
+        let (plus, minus) = set.into_rows();
         Ok(Outcome {
             result,
             inserted: plus,

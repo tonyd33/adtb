@@ -22,8 +22,9 @@ use crate::value::{Value, canon32, canon64};
 /// A database: the rows of each constructor relation, by relation variable and constructor index.
 pub type Database = BTreeMap<(RelId, u32), BTreeSet<Value>>;
 
-/// Returns the size of the stored form of a row of a constructor of a relation, and the row
-/// limit that constructor's rows must fit, both in bytes.
+/// Returns, for a row of a constructor of a relation with a field whose stored length passes the
+/// value limit, that length and the value limit; for any other row, the size of its stored form
+/// and the row limit that constructor's rows must fit; all in bytes.
 pub type RowLimit<'a> = dyn Fn(RelId, u32, &Value) -> (usize, usize) + 'a;
 
 /// A constructor of the prelude sum `Fault`.

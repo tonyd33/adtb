@@ -12,21 +12,9 @@ use crate::runtime::Runtime;
 use crate::steps::Step;
 use crate::storage::Pid;
 
+use super::Error;
+use super::admit::Admitted;
 use super::eval::{Stmt, Violations, Violator, pairs, violate, violate_key};
-use super::{Error, Rejection, Rows};
-
-/// Returns the write error of heap error `e`, met writing a row of constructor `ctor` of `rel`.
-pub(super) fn too_large(rel: RelId, ctor: u32) -> impl Fn(heap::Error) -> Error {
-    move |e| match e {
-        heap::Error::TooLarge { len, limit } => Error::Rejected(Rejection::RowTooLarge {
-            relation: rel,
-            ctor,
-            size: len,
-            limit,
-        }),
-        e => e.into(),
-    }
-}
 
 /// Returns the write error of heap error `e`, met taking back a version's change.
 fn undo_failure(e: heap::Error) -> Error {
@@ -52,57 +40,7 @@ struct Written {
 }
 
 impl<R: Runtime> Stmt<'_, R> {
-    pub(super) fn check_sizes(&self, plus: &Rows) -> Result<(), Error> {
-        for ((r, c), rows) in plus {
-            let heap = self.rel(*r).ctors[*c as usize].heap;
-            for row in rows {
-                self.heap(heap)
-                    .check_row(&self.stored(heap, row)?)
-                    .map_err(too_large(*r, *c))?;
-            }
-        }
-        for ((r, c), rows) in plus {
-            let rel = self.rel(*r);
-            let heap = rel.ctors[*c as usize].heap;
-            for row in rows {
-                let row = self.stored(heap, row)?;
-                for (id, ix) in &rel.indexes {
-                    let types = self.store.key_types(*id)?;
-                    let Some(key) = ix.keys.key(*c, &row, &types)? else {
-                        continue;
-                    };
-                    let stored = &self.db.bindings.indexes()[id];
-                    let ctor = *stored
-                        .ctors
-                        .iter()
-                        .find(|(_, n)| **n == *c)
-                        .expect("an index over a constructor holds its id")
-                        .0;
-                    if let Err(e) = stored
-                        .index
-                        .check_key(self.db.pager.page_size(), &key, ctor)
-                    {
-                        return Err(match e {
-                            crate::btree::Error::TooLong { len, max } => {
-                                let size = stored.index.schema().encode(&key).len();
-                                Error::Rejected(Rejection::KeyTooLarge {
-                                    relation: *r,
-                                    ctor: *c,
-                                    index: ix.clause.clone(),
-                                    size,
-                                    limit: max - (len - size),
-                                })
-                            }
-                            e => e.into(),
-                        });
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn heap(&self, id: HeapId) -> &Heap {
+    pub(super) fn heap(&self, id: HeapId) -> &Heap {
         &self.db.bindings.heaps()[&id].heap
     }
 
@@ -217,10 +155,11 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Apply the normalised change set to the heaps and indexes, recording the key and unique
     /// conflicts its new versions meet.
     ///
-    /// Postconditions: the statement's reads see every row of `plus`, two rows of one key
-    /// included, and no row of `minus`.
-    pub fn apply(&self, plus: &Rows, minus: &Rows, viol: &mut Violations) -> Result<(), Error> {
+    /// Postconditions: the statement's reads see every row `set` inserts, two rows of one key
+    /// included, and none it deletes.
+    pub fn apply(&self, set: &Admitted, viol: &mut Violations) -> Result<(), Error> {
         type Pair = (Option<(u32, Val)>, Vec<(u32, Val)>);
+        let (plus, minus) = (set.plus(), set.minus());
         let mut ops: BTreeMap<(RelId, Val), Pair> = BTreeMap::new();
         for ((r, c), rows) in minus {
             for v in rows {
@@ -274,8 +213,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
                         let (up, old) = h
                             .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
-                            .record(&mut self.undo.borrow_mut(), heap, heap)
-                            .map_err(too_large(*rel, c))?;
+                            .record(&mut self.undo.borrow_mut(), heap, heap)?;
                         self.superseded(old)?;
                         self.inserted_into(heap)?;
                         if !up.heap_only {
@@ -298,8 +236,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         let (at, old) = self
                             .heap(from)
                             .retag_pruning(pager, tid, xid, into, &row, &mut judge)
-                            .record(&mut self.undo.borrow_mut(), from, to)
-                            .map_err(too_large(*rel, *d))?;
+                            .record(&mut self.undo.borrow_mut(), from, to)?;
                         self.superseded(old)?;
                         self.inserted_into(to)?;
                         written.push(Written {
@@ -354,8 +291,7 @@ impl<R: Runtime> Stmt<'_, R> {
         let mut judge = self.db.session.txns.judge_now(&self.db.pager, h.id().0);
         let tid = h
             .insert_pruning(&self.db.pager, xid, &row, &mut judge)
-            .record(&mut self.undo.borrow_mut(), heap, heap)
-            .map_err(too_large(rel, d))?;
+            .record(&mut self.undo.borrow_mut(), heap, heap)?;
         self.db.session.steps.at(Step::WriteInserted);
         self.inserted_into(heap)?;
         Ok(Written {

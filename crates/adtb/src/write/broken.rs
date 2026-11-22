@@ -65,6 +65,12 @@ pub enum Broken {
     /// The normal form of a checked schema holds no term of the constraint or check of this
     /// qualified name.
     NoDenial(String),
+    /// A heap refused as too large a row of a change set `check_sizes` admitted, `len` bytes long
+    /// against the heap's `limit`.
+    Unadmitted {
+        len: usize,
+        limit: usize,
+    },
 }
 
 /// A term's kind, equal to another when the kinds are equal, a float constant by its bits.
@@ -125,6 +131,10 @@ impl fmt::Display for Broken {
             Broken::RowsNotSet(v) => write!(f, "a write's rows are a set, found {v:?}"),
             Broken::FailNotText => f.write_str("`fail` takes a Text"),
             Broken::NoArm(c) => write!(f, "a case has an arm for constructor {c}"),
+            Broken::Unadmitted { len, limit } => write!(
+                f,
+                "a heap writes every row its admission passed, found {len} bytes against the limit of {limit}"
+            ),
             Broken::Unreachable => f.write_str(
                 "evaluation reaches no position that exhaustiveness or a dominating test excludes",
             ),

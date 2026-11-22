@@ -189,11 +189,14 @@ pub enum Change {
 #[cfg(any(test, feature = "testing"))]
 pub type StepHook = std::sync::Arc<dyn Fn(Step) + Send + Sync>;
 
-/// The step hook a test set.
+/// What a test set on one database: its step hook, and a value limit below the format's.
 #[derive(Default)]
 pub struct Steps {
     #[cfg(any(test, feature = "testing"))]
     hook: std::sync::Mutex<Option<StepHook>>,
+    /// The lowered value limit, 0 while none is set.
+    #[cfg(any(test, feature = "testing"))]
+    value_limit: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for Steps {
@@ -219,6 +222,19 @@ impl Steps {
         }
     }
 
+    /// Lower the longest value a heap of this database stores to `limit` bytes.
+    ///
+    /// Preconditions: `limit` is positive, and no heap of the database is open yet.
+    pub fn lower_value_limit(&self, limit: u64) {
+        self.value_limit
+            .store(limit, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the value limit a test lowered, if one did.
+    pub fn value_limit(&self) -> Option<u64> {
+        Some(self.value_limit.load(std::sync::atomic::Ordering::Relaxed)).filter(|&l| l > 0)
+    }
+
     pub fn set(&self, hook: StepHook) {
         *self
             .hook
@@ -230,4 +246,8 @@ impl Steps {
 #[cfg(not(any(test, feature = "testing")))]
 impl Steps {
     pub fn at(&self, _: Step) {}
+
+    pub fn value_limit(&self) -> Option<u64> {
+        None
+    }
 }
