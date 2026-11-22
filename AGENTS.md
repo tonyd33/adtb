@@ -54,7 +54,8 @@ For a fresh clone, host prerequisites and optional editor setup, read
   build, then the suite, then the damage profile; a failed stage of clippy or the build leaves
   those after it as did not run. `target/test.txt` holds the suite's output, or the build's
   output marked as a build failure, or a line that the suite did not run. Each stage's output goes to
-  `target/check/STAGE.log`; the check prints each stage's wall time as it ends and the whole
+  `target/check/STAGE.log`, and each stage's outcome and wall time, with the whole check's, to
+  `target/check/times.tsv`; the check prints each stage's wall time as it ends and the whole
   log of each that failed, and fails when any stage fails.
 - `cargo xtask lint [--against REV] [--counts]`: run the TQL rules under `lint/` with `tql`,
   which the dev shell puts on PATH. `lint/rules.toml` declares each query's file set and rows; a

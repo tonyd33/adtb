@@ -101,7 +101,13 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
         }
         None => None,
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "goes if the check stops recording its wall time"
+    )]
+    let started = Instant::now();
     let logs = workspace.target.join("check");
+    let times = logs.join("times.tsv");
     std::fs::create_dir_all(&logs)
         .map_err(|e| format!("xtask check: creating {}: {e}", logs.display()))?;
     let suite = workspace.target.join("test.txt");
@@ -169,8 +175,15 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
         drop(sender);
         let mut ended_stages = Vec::new();
         let mut failed = Vec::new();
+        let mut rows = String::new();
         for ran in ended {
             ran.report()?;
+            rows.push_str(&format!(
+                "{}\t{}\t{:.1}\n",
+                ran.stage.name(),
+                ran.word(),
+                ran.took.as_secs_f64()
+            ));
             if ran.stage == Stage::Clippy && !ran.passed() {
                 launch.stop()?;
             }
@@ -184,7 +197,14 @@ pub fn run(workspace: &Workspace, revset: Option<&str>) -> Result<(), String> {
         }
         for stage in BUILT.into_iter().filter(|s| !ended_stages.contains(s)) {
             say(format_args!("xtask check: {} did not run", stage.name()))?;
+            rows.push_str(&format!("{}\tdid not run\t\n", stage.name()));
         }
+        rows.push_str(&format!(
+            "total\t\t{:.1}\n",
+            started.elapsed().as_secs_f64()
+        ));
+        std::fs::write(&times, rows)
+            .map_err(|e| format!("xtask check: writing {}: {e}", times.display()))?;
         Ok::<_, String>(failed)
     })?;
     if failed.is_empty() {
@@ -428,6 +448,14 @@ impl Ran {
 
     fn failed(&self) -> bool {
         !self.passed() && !matches!(self.outcome, Outcome::Stopped)
+    }
+
+    fn word(&self) -> &'static str {
+        match self.outcome {
+            Outcome::Exited(status) if status.success() => "passed",
+            Outcome::Stopped => "stopped",
+            Outcome::Exited(_) | Outcome::Lost(_) => "failed",
+        }
     }
 
     /// Print the stage's result and wall time, after its whole output when it failed.
