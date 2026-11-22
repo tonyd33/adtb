@@ -8,15 +8,14 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
+use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
 use crate::evolve::model::reselect::Mode;
-use crate::evolve::model::run::{Built, Run};
+use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
-use crate::evolve::text::ctor_extent;
 use crate::evolve::{Clause, Cx, Resolved, RowMap};
 use crate::ids::CatIndexId;
 use crate::schema::Schema;
-use crate::span::{FileId, Span};
+use crate::span::FileId;
 use crate::types::{KeyCtors, RelRef, Ty, TypeId};
 
 /// Returns how a unique or index of kind `kind` is written.
@@ -357,7 +356,8 @@ impl Model {
                 }
             }
         }
-        edits.extend(self.arm_edits(run, &built, t, &[c], &arm_clauses)?);
+        let (arm_edits, written) = self.arm_writes(run, &built, t, (&[c], &[c]), &arm_clauses)?;
+        edits.extend(arm_edits);
         edits.extend(self.reselect(
             &built,
             t,
@@ -387,18 +387,28 @@ impl Model {
         self.rebind(&before);
         self.restate(&made, &stages);
         let after = self.rebuilt(run, t, &rels)?;
+        let armed = self.arm_clauses(run, after.as_ref(), &made, written)?;
+        let record = into.last().is_some_and(|d| d.record.is_some());
         let (decl, clauses) = match &after {
             Some(after) => (
-                self.products_canonical(after, run, t, into)?,
+                self.products_canonical(after, run, t, &made, record)?,
                 self.split_resolved(
                     run,
                     (schema, after),
-                    (t, &made),
+                    (t, armed),
                     given,
                     (first, replaced_at),
                 )?,
             ),
-            None => (String::new(), Vec::new()),
+            None if replaced_at.is_empty() => (
+                run.late(Late::Ctors {
+                    first: made[0],
+                    last: made[made.len() - 1],
+                    record,
+                }),
+                armed,
+            ),
+            None => return unmodelled("a clause added to declarations that do not build"),
         };
         self.settle_ids(run);
         self.carry_grants(
@@ -541,31 +551,18 @@ impl Model {
     }
 
     /// Returns the clauses of a split's resolved form, in the order `given` states them: each
-    /// replacement with the next new index, `before` and `after` the split, and each arm, which
-    /// goes into its target's match over the products `made` of type `t`.
+    /// replacement with the next new index, `before` and `after` the split, and each of `arms`.
     fn split_resolved(
         &mut self,
         run: &Run,
         (before, after): (&Schema, &Built),
-        (t, made): (u64, &[u64]),
+        (t, arms): (u64, Vec<Clause>),
         given: &[SplitClause],
         (first, replaced_at): (Option<u64>, Vec<usize>),
     ) -> Res<Vec<Clause>> {
-        let arm_clauses: Vec<ast::ArmClause> = given
-            .iter()
-            .filter_map(|cl| match cl {
-                SplitClause::Arm(a) => Some((**a).clone()),
-                _ => None,
-            })
-            .collect();
         let mut fresh = fresh_indexes(before, after.schema(), t, replaced_at.len()).into_iter();
         let mut replaced = replaced_at.into_iter();
-        let mut arms = if arm_clauses.is_empty() {
-            Vec::new()
-        } else {
-            self.insert_arms(run, after, t, made, &arm_clauses)?
-        }
-        .into_iter();
+        let mut arms = arms.into_iter();
         let mut out = Vec::new();
         for cl in given {
             let kind = match cl {
@@ -599,33 +596,20 @@ impl Model {
         }
     }
 
-    /// Returns the canonical form of the constructors `into` of type `t` as `built` declares
-    /// them, from the first's name through the last's record.
+    /// Returns the canonical form of the constructors `made` of type `t` as `built` declares
+    /// them, from the first's name through the last's record when `record`.
     fn products_canonical(
         &self,
         built: &Built,
         run: &Run,
         t: u64,
-        into: &[ast::CtorDef],
+        made: &[u64],
+        record: bool,
     ) -> Res<String> {
         let file = FileId(self.decl_at(Item::Type(t)).expect("the type") as u32);
-        let Some(ast::Decl::Type(td)) = built.decl(file) else {
-            return broken("a type the model printed does not parse");
-        };
-        let ast::TypeBody::Ctors(cs) = &td.body else {
-            return broken("a sum the model printed as no sum");
-        };
-        let find = |d: &ast::CtorDef| cs.iter().find(|x| x.name.text == d.name.text);
-        let (Some(a), Some(z)) = (into.first().and_then(find), into.last().and_then(find)) else {
-            return broken("a constructor the model printed is missing");
-        };
-        let end = ctor_extent(built.text(file), &z.name, z.record.is_some());
-        Ok(Self::canonical_at(
-            built,
-            run,
-            file,
-            Span::new(a.name.span.start as usize, end.end),
-        ))
+        Ok(self
+            .ctors_written(built, file, (made[0], made[made.len() - 1]), record)?
+            .unwrap_or_else(|| run.late(Late::Unresolved)))
     }
 
     /// Returns the canonical form of the elements of clause `at` of relation variable `r` as

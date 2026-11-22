@@ -260,3 +260,123 @@ add unique (u) in ts.S"
         ]
     );
 }
+
+/// Returns the arms the operators of migration `text` over `src` resolve to, in order.
+fn resolved_arms(src: &Source, text: &str) -> Vec<String> {
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let got = of(src)
+        .expect("the source lifts")
+        .migrate(&m, text)
+        .expect("the model applies the migration");
+    got.ops()
+        .iter()
+        .flatten()
+        .flat_map(|op| &op.clauses)
+        .filter_map(|c| match c {
+            crate::evolve::Clause::Arm { arm, .. } => Some(arm.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_arm_naming_a_function_a_later_operator_defines_is_kept() {
+    let src = source(&[
+        ("m", "type K = A | B"),
+        ("m", "type Inner = A { x: Text } | B { x: Text }"),
+        (
+            "m",
+            "type T { id: Key ts } = A { x: Text } | B { x: Text } | C { x: Text }",
+        ),
+        ("m", "relation ts : T key id"),
+        (
+            "m",
+            "fn f (t: T) -> Text = match t | A a -> a.x | B b -> b.x | C c -> c.x",
+        ),
+    ]);
+    let h = "define fn h (x: Text) -> Text = x";
+    let after = |t: &str, f: &str| {
+        expected(&[
+            ("m", "type K = A | B"),
+            ("m", "type Inner = A { x: Text } | B { x: Text }"),
+            ("m", t),
+            ("m", "relation ts: T key id"),
+            ("m", f),
+            ("m", "fn h (x: Text) -> Text = x"),
+        ])
+    };
+    let split = format!(
+        "module m
+split constructor T.A into A1 {{ x: Text }} | A2 {{ x: Text }}
+  by match
+    | A {{ x }} -> A1 {{ x: x }}
+  arm f: A1 a -> h(a.x)
+  arm f: A2 a -> a.x
+{h}"
+    );
+    assert_eq!(
+        migrated(&src, &split),
+        after(
+            "type T { id: Key ts } = A1 { x: Text } | A2 { x: Text } | B { x: Text } | C { x: Text }",
+            "fn f (t: T) -> Text = match t | B b -> b.x | C c -> c.x | A1 a -> h(a.x) | A2 a -> a.x",
+        )
+    );
+    assert_eq!(
+        resolved_arms(&src, &split),
+        ["m::A1 a -> m::h ( a . x )", "m::A2 a -> a . x"]
+    );
+    assert_eq!(
+        migrated(
+            &src,
+            &format!(
+                "module m
+merge constructor T.(A | B) into M {{ k: K, x: Text }}
+  by match
+    | A a -> M {{ k: A, x: a.x }}
+    | B b -> M {{ k: B, x: b.x }}
+  arm f: M m -> h(m.x)
+{h}"
+            )
+        ),
+        after(
+            "type T { id: Key ts } = M { k: K, x: Text } | C { x: Text }",
+            "fn f (t: T) -> Text = match t | C c -> c.x | M m -> h(m.x)",
+        )
+    );
+    let nest = "nest constructor T.(A | B) into N { inner: Inner }
+  arm f: N n -> match n.inner | A a -> a.x | B b -> b.x";
+    assert_eq!(
+        migrated(
+            &src,
+            &format!("module m\n{nest}\n{h}").replace("-> a.x |", "-> h(a.x) |")
+        ),
+        after(
+            "type T { id: Key ts } = N { inner: Inner } | C { x: Text }",
+            "fn f (t: T) -> Text = match t | C c -> c.x | N n -> match n.inner | A a -> h(a.x) | B b -> b.x",
+        )
+    );
+    assert_eq!(
+        migrated(
+            &src,
+            &format!(
+                "module m\n{nest}\nunnest constructor T.N\n  arm f: A a -> h(a.x)\n  arm f: B b -> b.x\n{h}"
+            )
+        ),
+        after(
+            "type T { id: Key ts } = A { x: Text } | B { x: Text } | C { x: Text }",
+            "fn f (t: T) -> Text = match t | C c -> c.x | A a -> h(a.x) | B b -> b.x",
+        )
+    );
+    assert_eq!(
+        migrated(
+            &src,
+            &format!("module m\nadd constructor T.D {{ x: Text }}\n  arm f: D d -> h(d.x)\n{h}")
+        ),
+        after(
+            "type T { id: Key ts } = A { x: Text } | B { x: Text } | C { x: Text } | D { x: Text }",
+            "fn f (t: T) -> Text = match t | A a -> a.x | B b -> b.x | C c -> c.x | D d -> h(d.x)",
+        )
+    );
+}

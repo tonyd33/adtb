@@ -46,6 +46,12 @@ pub(super) enum Late {
     /// A declaration it added while the declarations did not build, by its key in
     /// [`Model::held`].
     Held(u64),
+    /// An arm it wrote while the declarations did not build, by its key in [`Model::arms`], the
+    /// `nth` arm clause of the operator.
+    Arm { key: u64, nth: usize },
+    /// The constructors it made while the declarations did not build, from the name of `first`
+    /// through the record of `last` when `record`.
+    Ctors { first: u64, last: u64, record: bool },
 }
 
 impl<'a> Run<'a> {
@@ -385,6 +391,8 @@ impl Model {
             }
         }
         self.held_ids.clear();
+        self.arms_built(built)
+            .unwrap_or_else(|e| panic!("an arm written as text reads once it builds: {e:?}"));
         for item in std::mem::take(&mut self.unlifted) {
             if self.decl_at(item).is_some() {
                 self.relift(built, item).unwrap_or_else(|e| {

@@ -9,7 +9,7 @@ use crate::evolve::ctor::{Carries, arm_image, element_head};
 use crate::evolve::model::field::Applied;
 use crate::evolve::model::op::{Res, Resolving, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
-use crate::evolve::model::run::{Built, Run};
+use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Resolved, RowMap};
 use crate::schema::{FieldDef, Schema, TypeDef, TypeDefKind};
@@ -282,7 +282,8 @@ impl Model {
         edits.extend(self.merged_checks(&built, t, &image)?);
         edits.extend(self.reselect_rows(&built, t, &sources, &[c], true));
         let rewrites = self.merged_clauses(&built, t, &sources, c, &image)?;
-        edits.extend(self.arm_edits(run, &built, t, &sources, given)?);
+        let (arm_edits, written) = self.arm_writes(run, &built, t, (&sources, &sources), given)?;
+        edits.extend(arm_edits);
         edits.extend(self.reselect(
             &built,
             t,
@@ -332,14 +333,12 @@ impl Model {
         self.restate(&[c], &stages);
         let file = FileId(self.decl_at(Item::Type(t)).expect("the type") as u32);
         let mut clauses = members;
-        let decl = match self.rebuilt(run, t, &rels)? {
-            Some(after) => {
-                if !given.is_empty() {
-                    clauses.extend(self.insert_arms(run, &after, t, &[c], given)?);
-                }
-                self.ctor_canonical(&after, run, file, c, into.record.is_some())?
-            }
-            None => String::new(),
+        let after = self.rebuilt(run, t, &rels)?;
+        clauses.extend(self.arm_clauses(run, after.as_ref(), &[c], written)?);
+        let record = into.record.is_some();
+        let decl = match &after {
+            Some(after) => self.ctor_canonical(after, run, file, c, record)?,
+            None => run.late(Late::Ctor { ctor: c, record }),
         };
         self.settle_ids(run);
         self.carry_grants(t, plan, (&reaches, &routed), &disc.fields, &[]);

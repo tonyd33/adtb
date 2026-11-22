@@ -6,7 +6,7 @@ use crate::evolve::ctor::element_head;
 use crate::evolve::model::field::Applied;
 use crate::evolve::model::op::{Res, Resolving, broken, refuse, refuse_at, unmodelled};
 use crate::evolve::model::reselect::Mode;
-use crate::evolve::model::run::{Built, Run};
+use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Resolved, RowMap};
 use crate::schema::{Schema, TypeDefKind};
@@ -182,7 +182,8 @@ impl Model {
         let mut edits = Vec::new();
         let f = field.name.text.clone();
         let rewrites = self.nest_clauses(&built, t, (&sources, c), &f)?;
-        edits.extend(self.arm_edits(run, &built, t, &sources, arms)?);
+        let (arm_edits, written) = self.arm_writes(run, &built, t, (&sources, &sources), arms)?;
+        edits.extend(arm_edits);
         edits.extend(self.reselect(
             &built,
             t,
@@ -225,14 +226,14 @@ impl Model {
         self.restate(&[c], &stages);
         let file = FileId(self.decl_at(Item::Type(t)).expect("the type") as u32);
         let mut clauses = members;
-        let decl = match self.rebuilt(run, t, &rels)? {
-            Some(after) => {
-                if !arms.is_empty() {
-                    clauses.extend(self.insert_arms(run, &after, t, &[c], arms)?);
-                }
-                self.ctor_canonical(&after, run, file, c, true)?
-            }
-            None => String::new(),
+        let after = self.rebuilt(run, t, &rels)?;
+        clauses.extend(self.arm_clauses(run, after.as_ref(), &[c], written)?);
+        let decl = match &after {
+            Some(after) => self.ctor_canonical(after, run, file, c, true)?,
+            None => run.late(Late::Ctor {
+                ctor: c,
+                record: true,
+            }),
         };
         self.settle_ids(run);
         self.carry_grants(t, plan, (&reaches, &given), &[], &[]);
@@ -321,7 +322,8 @@ impl Model {
         let plan = self.carry_plan(run, &built, Structural::Unnest, t, (&[c], &products));
         let mut edits = Vec::new();
         let rewrites = self.unnest_clauses(&built, t, (c, &made), &products, &f)?;
-        edits.extend(self.arm_edits(run, &built, t, &[c], arms)?);
+        let (arm_edits, written) = self.arm_writes(run, &built, t, (&[c], &[c]), arms)?;
+        edits.extend(arm_edits);
         edits.extend(self.reselect(
             &built,
             t,
@@ -349,12 +351,8 @@ impl Model {
         self.replace_ctors(t, &[c], &made);
         self.rebind(&before);
         self.restate(&made, &stages);
-        let mut clauses = Vec::new();
-        if let Some(after) = self.rebuilt(run, t, &rels)?
-            && !arms.is_empty()
-        {
-            clauses.extend(self.insert_arms(run, &after, t, &made, arms)?);
-        }
+        let after = self.rebuilt(run, t, &rels)?;
+        let clauses = self.arm_clauses(run, after.as_ref(), &made, written)?;
         self.settle_ids(run);
         self.carry_grants(t, plan, (&reaches, &given), &[], std::slice::from_ref(&f));
         Ok((

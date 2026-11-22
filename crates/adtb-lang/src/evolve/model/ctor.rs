@@ -1,12 +1,11 @@
 use super::field::Applied;
 use super::op::Kind;
-use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
+use super::op::{Res, Resolving, broken, refuse, refuse_at, unmodelled};
 use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, CtorPlace, CtorSel};
 use crate::canon::canonical_term;
-use crate::check::{self, Ref};
-use crate::evolve::text::{ctor_extent, holds, match_end};
+use crate::evolve::text::ctor_extent;
 use crate::evolve::{ArmTarget, Clause, Cx, GrantSel, Granted, Place, Resolved};
 use crate::schema::Stage;
 use crate::span::FileId;
@@ -195,7 +194,10 @@ impl Model {
             .map(|set| Clause::Joins { set })
             .collect();
         if !arms.is_empty() {
-            clauses.extend(self.insert_arms(run, &built, t, &[c], arms)?);
+            let (edits, written) = self.arm_writes(run, &built, t, (&[c], &[]), arms)?;
+            self.edit_decls(edits)?;
+            let after = self.build_adopting(&[], &run.ahead(self)).ok();
+            clauses.extend(self.arm_clauses(run, after.as_ref(), &[c], written)?);
         }
         Ok((
             Resolved::AddConstructor {
@@ -234,20 +236,33 @@ impl Model {
         c: u64,
         record: bool,
     ) -> Res<Option<String>> {
+        self.ctors_written(built, file, (c, c), record)
+    }
+
+    /// Returns the canonical form of the constructors of the type declared in `file` of `built`
+    /// from the name of `first` through `last` and its record, `None` when a name of them does
+    /// not resolve there.
+    pub(super) fn ctors_written(
+        &self,
+        built: &Built,
+        file: FileId,
+        (first, last): (u64, u64),
+        record: bool,
+    ) -> Res<Option<String>> {
         let Some(ast::Decl::Type(td)) = built.decl(file) else {
             return broken("a type the model printed does not parse");
         };
         let ast::TypeBody::Ctors(cs) = &td.body else {
             return broken("a sum the model printed as no sum");
         };
-        let name = &self.ctors[&c].name;
-        let Some(cd) = cs.iter().find(|x| x.name.text == *name) else {
+        let find = |c: u64| cs.iter().find(|x| x.name.text == self.ctors[&c].name);
+        let (Some(a), Some(z)) = (find(first), find(last)) else {
             return broken("a constructor the model printed is missing");
         };
-        let span = ctor_extent(built.text(file), &cd.name, record);
+        let end = ctor_extent(built.text(file), &z.name, record);
         Ok(canonical_term(
             built.text(file),
-            Span::new(span.start, span.end),
+            Span::new(a.name.span.start as usize, end.end),
             &built.names(file),
         )
         .ok())
@@ -356,161 +371,5 @@ impl Model {
                 ),
             },
         }
-    }
-
-    /// Returns where in `file` of `built` the term of `item` that an arm goes into starts: a
-    /// function's or constraint's text after its name, or computed clause `k`'s expression.
-    pub(super) fn term_start(built: &Built, file: FileId, k: Option<usize>) -> Res<usize> {
-        match (built.decl(file), k) {
-            (Some(ast::Decl::Fn(f)), None) => Ok(f.name.span.end as usize),
-            (Some(ast::Decl::Constraint(c)), None) => Ok(c.name.span.end as usize),
-            (Some(ast::Decl::Relation(rd)), Some(k)) => match rd.clauses.get(k) {
-                Some(ast::RelationClause::Computed(_, _, e)) => Ok(e.span.start as usize),
-                _ => broken("an arm's computed field the model printed as another clause"),
-            },
-            _ => broken("an arm's target the model printed as another declaration"),
-        }
-    }
-
-    /// Returns the term of `item` an arm goes into.
-    fn arm_term(&mut self, item: Item, k: Option<usize>) -> Res<&mut Term> {
-        match (item, k) {
-            (Item::Fn(f), None) => Ok(&mut self.functions.get_mut(&f).expect("a function").rest),
-            (Item::Constraint(c), None) => {
-                Ok(&mut self.denials.get_mut(&c).expect("a constraint").rest)
-            }
-            (Item::Relation(r), Some(k)) => match &mut self
-                .relations
-                .get_mut(&r)
-                .expect("a relation variable")
-                .clauses[k]
-            {
-                ClauseM::Computed { expr, .. } => Ok(expr),
-                _ => broken("an arm's computed field is another clause"),
-            },
-            _ => broken("an arm's target is no term"),
-        }
-    }
-
-    /// Give constructors `cs` of type `t` each arm of `arms`, appended to the one match of its
-    /// target over a value that covers one of `cs`, as `built` resolves the declarations.
-    /// Returns the arms' clauses.
-    pub(super) fn insert_arms(
-        &mut self,
-        run: &Run,
-        built: &Built,
-        t: u64,
-        cs: &[u64],
-        arms: &[ast::ArmClause],
-    ) -> Res<Vec<Clause>> {
-        let schema = built.schema();
-        let def = schema
-            .ids()
-            .type_of(crate::ids::CatTypeId::from_raw(t))
-            .expect("the type");
-        let cis: Vec<u32> = cs
-            .iter()
-            .map(|&c| {
-                schema
-                    .ids()
-                    .ctor_of(crate::ids::CatCtorId::from_raw(c))
-                    .expect("an added constructor")
-                    .index()
-            })
-            .collect();
-        let refs = check::schema_refs(schema);
-        let mut placed: Vec<(Item, Option<usize>, ArmTarget, usize, String)> = Vec::new();
-        for a in arms {
-            let (item, target, k) = self.arm_target(run, a)?;
-            let file = FileId(self.decl_at(item).expect("a declared target") as u32);
-            let within = match (built.decl(file), k) {
-                (Some(ast::Decl::Relation(rd)), Some(k)) => match rd.clauses.get(k) {
-                    Some(ast::RelationClause::Computed(_, _, e)) => Some(e.span),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let mut found: Vec<Span> = refs
-                .iter()
-                .filter(|(f, s, r)| {
-                    *f == file
-                        && within.is_none_or(|w| w.start <= s.start && s.end <= w.end)
-                        && matches!(r, Ref::Match(ty) if cis.iter().any(|&ci| holds(schema, ty, def, ci)))
-                })
-                .map(|(_, s, _)| *s)
-                .collect();
-            found.sort_by_key(|s| (s.start, s.end));
-            found.dedup();
-            let at = match found.as_slice() {
-                [one] => *one,
-                [] => {
-                    return refuse_at(
-                        a.target.span(),
-                        format!(
-                            "`{}` has no match over the constructors this arm is for; redefine it in the same migration instead",
-                            a.target.name.text
-                        ),
-                    );
-                }
-                _ => {
-                    return refuse_at(
-                        a.target.span(),
-                        format!(
-                            "`{}` has more than one match over the constructors this arm is for; redefine it in the same migration instead",
-                            a.target.name.text
-                        ),
-                    );
-                }
-            };
-            let end = built
-                .decl(file)
-                .and_then(|d| match_end(d, at))
-                .unwrap_or(at.end as usize);
-            let off = end - Self::term_start(built, file, k)?;
-            let text =
-                run.text()[a.pattern.span.start as usize..a.body.span.end as usize].to_string();
-            placed.push((item, k, target, off, text));
-        }
-        let mut order: Vec<usize> = (0..placed.len()).collect();
-        order.sort_by_key(|&i| std::cmp::Reverse((placed[i].3, i)));
-        let model = self.clone();
-        for &i in &order {
-            let (item, k, _, off, text) = &placed[i];
-            let joined = format!("\n  | {text}");
-            self.arm_term(*item, *k)?
-                .splice(&model, *off, &joined)
-                .map_err(Fail::Broken)?;
-        }
-        let Ok(after) = self.build_adopting(&[], &run.ahead(self)) else {
-            return unmodelled("arms that leave declarations that do not build");
-        };
-        let mut items: Vec<Item> = Vec::new();
-        for p in &placed {
-            if !items.contains(&p.0) {
-                items.push(p.0);
-            }
-        }
-        for item in items {
-            self.relift(&after, item)?;
-        }
-        let mut out = Vec::new();
-        for (i, (item, k, target, off, text)) in placed.iter().enumerate() {
-            let shift: usize = placed
-                .iter()
-                .enumerate()
-                .filter(|(j, p)| {
-                    p.0 == *item && p.1 == *k && (p.3 < *off || (p.3 == *off && *j < i))
-                })
-                .map(|(_, p)| p.4.len() + "\n  | ".len())
-                .sum();
-            let file = FileId(self.decl_at(*item).expect("a declared target") as u32);
-            let start = Self::term_start(&after, file, *k)? + off + shift + "\n  | ".len();
-            let arm = Self::canonical_at(&after, run, file, Span::new(start, start + text.len()));
-            out.push(Clause::Arm {
-                target: target.clone(),
-                arm,
-            });
-        }
-        Ok(out)
     }
 }

@@ -6,7 +6,7 @@ use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
 use crate::evolve::grant::IdKind;
 use crate::evolve::source::rekey_leaves_no_old_reference;
-use crate::evolve::{Kept, Resolved, ResolvedOp};
+use crate::evolve::{Clause, Kept, Resolved, ResolvedOp};
 use crate::lex::{Tok, lex};
 use crate::span::{FileId, Span};
 
@@ -131,9 +131,10 @@ impl Model {
         }
         let late = run.take_late();
         let mut checks = false;
+        let mut unresolved = late.iter().any(|(_, l)| matches!(l, Late::Unresolved));
         if stopped.is_none() {
-            checks =
-                (late.is_empty() || model.resolve_late(&late, &mut ops)?) && model.checks(&[])?;
+            checks = (late.is_empty() || model.resolve_late(&late, &mut ops, &mut unresolved)?)
+                && model.checks(&[])?;
             if checks && !rekeyed.is_empty() {
                 match model.built(&[], &[]) {
                     Ok((built, _)) => {
@@ -154,7 +155,7 @@ impl Model {
                     }
                 }
             }
-            if checks && late.iter().any(|(_, l)| matches!(l, Late::Unresolved)) {
+            if checks && unresolved {
                 stopped = Some("a clause naming what only the migration's end resolves".into());
             }
         }
@@ -200,11 +201,13 @@ impl Model {
 
     /// Lift again each declaration of `late` from the declarations as the migration leaves them,
     /// and give the operator that wrote it, or a field of it, the canonical form it has there.
-    /// Returns false when the declarations do not build or a late name does not resolve.
+    /// Returns false when the declarations do not build or a late name does not resolve. Set
+    /// `unresolved` when an arm has no canonical form.
     fn resolve_late(
         &mut self,
         late: &[(usize, Late)],
         ops: &mut [Result<ResolvedOp, Refused>],
+        unresolved: &mut bool,
     ) -> Result<bool, String> {
         let Ok(built) = self.build_adopting(&[], &[]) else {
             return Ok(false);
@@ -279,6 +282,45 @@ impl Model {
                         continue;
                     }
                     self.computed_canonical(&built, relation, computed)
+                }
+                Late::Arm { key, nth } => {
+                    let Some(Some(arm)) = self.arms_written.get(&key) else {
+                        *unresolved = true;
+                        continue;
+                    };
+                    let held = ops
+                        .get_mut(k)
+                        .and_then(|op| op.as_mut().ok())
+                        .and_then(|op| {
+                            op.clauses
+                                .iter_mut()
+                                .filter_map(|c| match c {
+                                    Clause::Arm { arm, .. } => Some(arm),
+                                    _ => None,
+                                })
+                                .nth(nth)
+                        });
+                    if let Some(held) = held {
+                        held.clone_from(arm);
+                    }
+                    continue;
+                }
+                Late::Ctors {
+                    first,
+                    last,
+                    record,
+                } => {
+                    let Some(t) = self.ctors.get(&first).map(|c| c.ty) else {
+                        continue;
+                    };
+                    let Some(i) = self.decl_at(Item::Type(t)) else {
+                        continue;
+                    };
+                    if !self.ctors.contains_key(&last) {
+                        continue;
+                    }
+                    self.ctors_written(&built, FileId(i as u32), (first, last), record)
+                        .map_err(broken)?
                 }
                 Late::Unresolved => continue,
             };
@@ -500,6 +542,7 @@ fn set_decl(op: &mut Resolved, decl: String) {
         | Resolved::AddConstructor { decl: d, .. }
         | Resolved::Merge { decl: d, .. }
         | Resolved::Nest { decl: d, .. }
+        | Resolved::Split { decl: d, .. }
         | Resolved::AddDefault { value: d, .. } => *d = decl,
         _ => {}
     }

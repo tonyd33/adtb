@@ -12,10 +12,9 @@ use crate::check::{self, Ref};
 use crate::evolve::RowFn;
 use crate::evolve::carry::{self, Carry, Plan, Structural};
 use crate::evolve::ctor::Carries;
-use crate::evolve::text::holds;
 use crate::ids::{CatCtorId, CatTypeId};
 use crate::schema::{Schema, Stage};
-use crate::span::{FileId, Span};
+use crate::span::FileId;
 use crate::types::TypeId;
 
 /// The write state each relation variable of a type, by id, and the type itself, as `None`,
@@ -241,71 +240,6 @@ impl Model {
                 };
             }
         }
-    }
-
-    /// Returns the edits that remove, from the one match each of `arms` targets over a value
-    /// covering one of `replaced` of type `t`, as `built` resolves the declarations, each arm
-    /// naming one of `replaced`.
-    pub(super) fn arm_edits(
-        &self,
-        run: &Run,
-        built: &Built,
-        t: u64,
-        replaced: &[u64],
-        arms: &[ast::ArmClause],
-    ) -> Res<Vec<Edit>> {
-        let schema = built.schema();
-        let def = def_in(schema, t);
-        let cis: Vec<u32> = replaced.iter().map(|&c| ctor_in(schema, c)).collect();
-        let refs = check::schema_refs(schema);
-        let mut matches: Vec<(usize, Span)> = Vec::new();
-        for a in arms {
-            let (item, _, k) = self.arm_target(run, a)?;
-            let j = self.decl_at(item).expect("a declared target");
-            let file = FileId(j as u32);
-            let within = match (built.decl(file), k) {
-                (Some(ast::Decl::Relation(rd)), Some(k)) => match rd.clauses.get(k) {
-                    Some(ast::RelationClause::Computed(_, _, e)) => Some(e.span),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let mut found: Vec<Span> = refs
-                .iter()
-                .filter(|(f, s, r)| {
-                    *f == file
-                        && within.is_none_or(|w| w.start <= s.start && s.end <= w.end)
-                        && matches!(r, Ref::Match(ty) if cis.iter().any(|&c| holds(schema, ty, def, c)))
-                })
-                .map(|(_, s, _)| *s)
-                .collect();
-            found.sort_by_key(|s| (s.start, s.end));
-            found.dedup();
-            match found.as_slice() {
-                [one] => {
-                    if !matches.contains(&(j, *one)) {
-                        matches.push((j, *one));
-                    }
-                }
-                [] => {
-                    return refuse(format!(
-                        "`{}` has no match over the constructors this arm is for; redefine it in the same migration instead",
-                        a.target.name.text
-                    ));
-                }
-                _ => {
-                    return refuse(format!(
-                        "`{}` has more than one match over the constructors this arm is for; redefine it in the same migration instead",
-                        a.target.name.text
-                    ));
-                }
-            }
-        }
-        let mut out = Vec::new();
-        for (j, at) in matches {
-            out.extend(self.arm_removals(built, &refs, j, at, def, &cis));
-        }
-        Ok(out)
     }
 
     /// Put `made` in the place of the first of `sources` among the constructors of type `t`, and
