@@ -104,6 +104,7 @@ impl Model {
                 }
             }
             self.settle_ids(run);
+            undone.unmapped(self);
         }
         let how = match how {
             Undo::Written | Undo::Unnest(..) => How::Written,
@@ -117,6 +118,7 @@ impl Model {
                 self.redeclare(*item, check)?;
             }
             self.settle_ids(run);
+            undone.unmapped(self);
         }
         if let Some((module, text)) = renames {
             self.undo_ops(run, &module, text.into(), How::Written, &[], undone)?;

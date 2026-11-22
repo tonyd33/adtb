@@ -8,7 +8,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
+use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::unbuilt;
 use crate::evolve::model::run::{Built, Late, Run};
@@ -402,15 +402,19 @@ impl Model {
                     (first, replaced_at),
                 )?,
             ),
-            None if replaced_at.is_empty() => (
-                run.late(Late::Ctors {
-                    first: made[0],
-                    last: made[made.len() - 1],
-                    record,
-                }),
-                armed,
-            ),
-            None => return unmodelled("a clause added to declarations that do not build"),
+            None => {
+                if !replaced_at.is_empty() {
+                    run.late(Late::Unresolved);
+                }
+                (
+                    run.late(Late::Ctors {
+                        first: made[0],
+                        last: made[made.len() - 1],
+                        record,
+                    }),
+                    armed,
+                )
+            }
         };
         self.settle_ids(run);
         self.carry_grants(

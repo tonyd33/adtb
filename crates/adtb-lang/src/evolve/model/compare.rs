@@ -762,25 +762,12 @@ pub(in crate::evolve) fn compare_recorded(
             });
         };
         if matches!(m.operators[k].kind, OperatorKind::Revert { .. }) {
-            match (held, mine) {
-                (Ok(held), Ok(mine)) => {
-                    let layer: Vec<String> =
-                        held.iter().flat_map(|s| &s.maps).map(map_summary).collect();
-                    let mine: Vec<String> = mine.iter().map(map_summary).collect();
-                    if layer != mine {
-                        step(format!("maps:\n  layer {layer:#?}\n  model {mine:#?}"));
-                    }
-                    if let Some(last) = held.last() {
-                        for d in same(&got.afters()[k], &last.after, true) {
-                            diffs.push(Diff {
-                                shown: format!("after operator {k}, {}", d.shown),
-                                ..d
-                            });
-                        }
-                    }
+            match (held, mine, got.steps()[k].as_ref()) {
+                (Ok(held), Ok(_), Some(Ok(mine))) => {
+                    diffs.extend(revert_steps_differ(k, held, mine, &got.afters()[k]));
                 }
-                (Err(ds), Err(why)) if ds.iter().any(|d| d.message == *why) => {}
-                (held, mine) => {
+                (Err(ds), Err(why), _) if ds.iter().any(|d| d.message == *why) => {}
+                (held, mine, _) => {
                     let mine = mine.as_ref().map(Vec::len);
                     step(format!("layer steps {held:?}, model maps {mine:?}"));
                 }
@@ -846,6 +833,76 @@ pub(in crate::evolve) fn compare_recorded(
     let whole = got.stopped().is_none() && diffs.is_empty() && unavailable.is_empty();
     report(Hook::Recorded, m, text, &got, diffs, Ok(after), &agreed);
     whole.then(|| got.ops().iter().flatten().cloned().collect())
+}
+
+/// Returns how the steps `mine` of `revert` operator `k`, which leaves `after`, differ from the
+/// layer's steps `held`: in their row maps and operators, or in the afters a step's maps are
+/// stated against or a mapped step leaves.
+fn revert_steps_differ(
+    k: usize,
+    held: &[crate::evolve::Step],
+    mine: &[revert::Stepped],
+    after: &Model,
+) -> Vec<Diff> {
+    let summary = |maps: &[RowMap], applied: Option<(&str, &str)>| {
+        let maps: Vec<String> = maps.iter().map(map_summary).collect();
+        format!("{maps:?} {applied:?}")
+    };
+    let layer: Vec<String> = held
+        .iter()
+        .map(|s| {
+            let applied = s
+                .applied
+                .as_ref()
+                .map(|a| (a.module.as_str(), &a.text[a.op.span.range()]));
+            summary(&s.maps, applied)
+        })
+        .collect();
+    let mut model: Vec<String> = mine
+        .iter()
+        .map(|s| summary(s.maps(), s.applied()))
+        .collect();
+    if model.is_empty() {
+        model.push(summary(&[], None));
+    }
+    if layer != model {
+        return vec![Diff {
+            aspect: Aspect::Steps,
+            shown: format!("operator {k}: steps:\n  layer {layer:#?}\n  model {model:#?}"),
+        }];
+    }
+    let afters = mine
+        .iter()
+        .map(revert::Stepped::after)
+        .take(held.len().saturating_sub(1))
+        .chain(std::iter::once(after));
+    let last = held.len() - 1;
+    // An after is read only by the maps of the step after it, or as a mapped step's or the
+    // operator's result.
+    let read = |j: usize| j == last || !held[j].maps.is_empty() || !held[j + 1].maps.is_empty();
+    let mut out = Vec::new();
+    for (j, (layer, mine)) in held.iter().zip(afters).enumerate() {
+        if !read(j) {
+            continue;
+        }
+        let within = |a: &Aspect| {
+            j == last
+                || !matches!(
+                    a,
+                    Aspect::States | Aspect::ValueStates | Aspect::Grants | Aspect::Log
+                )
+        };
+        for d in same(mine, &layer.after, true)
+            .into_iter()
+            .filter(|d| within(&d.aspect))
+        {
+            out.push(Diff {
+                shown: format!("after step {j} of operator {k}, {}", d.shown),
+                ..d
+            });
+        }
+    }
+    out
 }
 
 /// Returns how the names the model gives the text of `m`, applied to `before`, differ from those

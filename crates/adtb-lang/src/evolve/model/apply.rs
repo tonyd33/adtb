@@ -18,6 +18,8 @@ pub(in crate::evolve) struct Migrated {
     ops: Vec<Result<ResolvedOp, Refused>>,
     /// For each operator applied, the row maps of its one step, or why they fail.
     maps: Vec<Maps>,
+    /// For each operator applied, its steps when it is a `revert`.
+    steps: Vec<Option<revert::Steps>>,
     /// For each operator applied, the model it leaves.
     afters: Vec<Model>,
     /// Whether the result checks; false when an operator stopped the run.
@@ -52,6 +54,11 @@ impl Migrated {
     /// Returns, for each operator applied, the row maps of its one step, or why they fail.
     pub(super) fn maps(&self) -> &[Maps] {
         &self.maps
+    }
+
+    /// Returns, for each operator applied, its steps when it is a `revert`.
+    pub(super) fn steps(&self) -> &[Option<revert::Steps>] {
+        &self.steps
     }
 
     /// Returns whether the result checks.
@@ -98,6 +105,7 @@ impl Model {
         model.naming = naming::Naming::of(text);
         let mut ops = Vec::new();
         let mut maps = Vec::new();
+        let mut steps = Vec::new();
         let mut afters = Vec::new();
         let mut stopped = None;
         let mut rekeyed = Vec::new();
@@ -106,8 +114,11 @@ impl Model {
             model.mark(by, Added::Applying);
             run.begin(k, op.span);
             let mut next = model.clone();
-            match next.operator(&run, &op.kind) {
+            let applied = next.operator(&run, &op.kind);
+            let reverted = run.take_reverted();
+            match applied {
                 Ok((r, m)) => {
+                    steps.push(reverted);
                     if let OperatorKind::Rekey { relation, .. } = &op.kind {
                         rekeyed.push((k, relation.clone(), op.span));
                     }
@@ -126,6 +137,7 @@ impl Model {
                 }
                 Err(Fail::Refused(why)) => {
                     maps.push(Ok(Vec::new()));
+                    steps.push(None);
                     run.forget_late(k);
                     model.mark(by, Added::Refused);
                     if let Some((name, kind)) = crate::evolve::expected::poisons(&op.kind) {
@@ -206,6 +218,7 @@ impl Model {
             model,
             ops,
             maps,
+            steps,
             afters,
             checks,
             stopped,
@@ -359,6 +372,17 @@ impl Model {
                         });
                     if let Some(held) = held {
                         *held = arm;
+                    }
+                    continue;
+                }
+                Late::Key { relation } => {
+                    if !self.relations.contains_key(&relation) {
+                        continue;
+                    }
+                    if let Some(Ok(op)) = ops.get_mut(k)
+                        && let Resolved::Rekey { key, .. } = &mut op.op
+                    {
+                        *key = Self::key_id(&built, relation).map_err(broken)?;
                     }
                     continue;
                 }

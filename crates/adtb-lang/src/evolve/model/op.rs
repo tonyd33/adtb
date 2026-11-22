@@ -1,3 +1,4 @@
+use super::run::unbuilt;
 use super::*;
 use crate::ast::{self, CtorSel, CtorTarget, OperatorKind, QName};
 use crate::schema::Stage;
@@ -349,10 +350,13 @@ impl<'a> Resolving<'a> {
         let m = self.module_of(q);
         match self.model.type_named(&m, &q.name.text) {
             Some(t) => Ok(t),
-            None => refuse_at(
-                q.span(),
-                format!("module `{m}` declares no type `{}`", q.name.text),
-            ),
+            None => {
+                self.unheld(&m, Kind::Type, &q.name.text)?;
+                refuse_at(
+                    q.span(),
+                    format!("module `{m}` declares no type `{}`", q.name.text),
+                )
+            }
         }
     }
 
@@ -360,10 +364,25 @@ impl<'a> Resolving<'a> {
         let m = self.module_of(q);
         match self.model.relation_named(&m, &q.name.text) {
             Some(r) => Ok(r),
-            None => refuse_at(
-                q.span(),
-                format!("module `{m}` declares no relation `{}`", q.name.text),
-            ),
+            None => {
+                self.unheld(&m, Kind::Relation, &q.name.text)?;
+                refuse_at(
+                    q.span(),
+                    format!("module `{m}` declares no relation `{}`", q.name.text),
+                )
+            }
+        }
+    }
+
+    /// Refuse by the declarations' first failure when module `m` holds a declaration of kind
+    /// `kind` named `name` added while they do not build.
+    fn unheld(&self, m: &str, kind: Kind, name: &str) -> Res<()> {
+        if !matches!(self.model.find(m, kind, name), Some(Item::Held(..))) {
+            return Ok(());
+        }
+        match self.model.built(&[], &self.model.ahead_inputs()) {
+            Err(ds) => unbuilt(&ds),
+            Ok(_) => broken("a held declaration in declarations that build"),
         }
     }
 

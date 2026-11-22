@@ -402,3 +402,36 @@ rename constructor T.A1 to Z";
         "a rename while the declarations do not build is refused"
     );
 }
+
+#[test]
+fn a_rekey_to_a_key_no_field_holds_is_refused_at_the_recheck() {
+    let src = source(&[
+        ("m", "type T { id: Key ts, n: I64 } = T"),
+        ("m", "relation ts : T key id"),
+    ]);
+    let text = "module m\nrekey relation ts key zz";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let (refusal, compared) = forced(|| src.record(&m, text, false).map(|_| ()));
+    let refusal = refusal.expect_err("the rekey is refused");
+    assert_eq!(
+        (
+            refusal.operators,
+            refusal
+                .recheck
+                .iter()
+                .map(|d| d.diag.message.clone())
+                .collect::<Vec<_>>(),
+            compared
+        ),
+        (
+            Vec::new(),
+            vec![
+                "key field `zz` is not a header field or a field of the only constructor of `T`"
+                    .to_string()
+            ],
+            tally("Migrating")
+        )
+    );
+}

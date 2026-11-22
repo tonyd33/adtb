@@ -35,6 +35,8 @@ pub(super) struct Run<'a> {
     noted: RefCell<Names>,
     /// The copies of the text whose names do not resolve.
     missed: RefCell<Vec<Diag>>,
+    /// The steps of the `revert` just applied, until the operator applying it takes them.
+    reverted: RefCell<Option<revert::Steps>>,
 }
 
 /// What an operator wrote naming what only the migration's end resolves.
@@ -61,6 +63,8 @@ pub(super) enum Late {
     /// The constructors it made while the declarations did not build, from the name of `first`
     /// through the record of `last` when `record`.
     Ctors { first: u64, last: u64, record: bool },
+    /// The key it gave relation variable `relation` while the declarations did not build.
+    Key { relation: u64 },
 }
 
 impl<'a> Run<'a> {
@@ -76,6 +80,7 @@ impl<'a> Run<'a> {
             copying: true,
             noted: RefCell::default(),
             missed: RefCell::default(),
+            reverted: RefCell::default(),
         }
     }
 
@@ -161,6 +166,17 @@ impl<'a> Run<'a> {
     /// Returns what the operators wrote naming what only the migration's end resolves.
     pub(super) fn take_late(&self) -> Vec<(usize, Late)> {
         self.late.take()
+    }
+
+    /// Hold `steps`, those of the `revert` just applied.
+    pub(super) fn reverted(&self, steps: revert::Steps) {
+        *self.reverted.borrow_mut() = Some(steps);
+    }
+
+    /// Returns the steps of the `revert` just applied, taking them; `None` after any other
+    /// operator.
+    pub(super) fn take_reverted(&self) -> Option<revert::Steps> {
+        self.reverted.take()
     }
 
     /// Returns the module of the migration.

@@ -1,6 +1,6 @@
 use super::field::{Applied, Maps};
 use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
-use super::run::Run;
+use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, CtorSel, Fill, QName};
 use crate::canon::{Names, canonical_term};
@@ -411,25 +411,26 @@ impl Model {
             *listed = key.len() > 1;
             *generate = None;
         }
-        let Ok(after) = self.build_adopting(&[], &run.ahead(self)) else {
-            return unmodelled("a rekey that leaves declarations that do not build");
-        };
-        self.relift(&after, Item::Relation(r))?;
         let (Some(first), Some(last)) = (key.first(), key.last()) else {
             return broken("a rekey to no key");
         };
-        let rel_after = after
-            .schema()
-            .ids()
-            .relation_of(CatRelId::from_raw(r))
-            .expect("the relation variable");
-        let Some(key_id) = after.schema().ids().key_id(rel_after) else {
-            return broken("a rekeyed relation variable without a key id");
+        let key_id = match self.build_adopting(&[], &run.ahead(self)) {
+            Ok(after) => {
+                self.relift(&after, Item::Relation(r))?;
+                Self::key_id(&after, r)?
+            }
+            Err(_) => {
+                if !self.unlifted.contains(&Item::Relation(r)) {
+                    self.unlifted.push(Item::Relation(r));
+                }
+                run.late(Late::Key { relation: r });
+                0
+            }
         };
         Ok((
             Resolved::Rekey {
                 relation: r,
-                key: key_id.raw(),
+                key: key_id,
                 fields: canonical_term(run.text(), first.span.to(last.span), &Names::default())
                     .map_err(|u| Fail::Broken(format!("a key does not resolve: {u:?}")))?,
             },
@@ -439,5 +440,17 @@ impl Model {
                 .collect(),
             maps,
         ))
+    }
+
+    /// Returns the id of the key of relation variable `r` in `built`.
+    pub(super) fn key_id(built: &Built, r: u64) -> Res<u64> {
+        let ids = built.schema().ids();
+        match ids
+            .relation_of(CatRelId::from_raw(r))
+            .and_then(|rel| ids.key_id(rel))
+        {
+            Some(k) => Ok(k.raw()),
+            None => broken("a rekeyed relation variable without a key id"),
+        }
     }
 }

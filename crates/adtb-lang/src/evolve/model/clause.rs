@@ -89,19 +89,28 @@ impl Model {
         }
     }
 
-    /// Append `clause` to relation variable `r` and build. Returns the build and the file of the
-    /// relation's declaration, its clauses lifted from the build.
-    fn appended(&mut self, run: &Run, r: u64, clause: ClauseM) -> Res<(Built, FileId)> {
+    /// Append `clause` to relation variable `r` and build as [`Model::rebuilt_relation`] does.
+    fn appended(&mut self, run: &Run, r: u64, clause: ClauseM) -> Res<Option<(Built, FileId)>> {
         self.relations
             .get_mut(&r)
             .expect("a resolved relation variable")
             .clauses
             .push(clause);
+        self.rebuilt_relation(run, r)
+    }
+
+    /// Build after an operator changed the clauses of relation variable `r`. Returns the build
+    /// and the file of the relation's declaration, its clauses lifted from the build; `None` when
+    /// the declarations do not build, the relation then lifted again at the next build.
+    fn rebuilt_relation(&mut self, run: &Run, r: u64) -> Res<Option<(Built, FileId)>> {
         let Ok(built) = self.build_adopting(&[], &run.ahead(self)) else {
-            return unmodelled("a clause added to declarations that do not build");
+            if !self.unlifted.contains(&Item::Relation(r)) {
+                self.unlifted.push(Item::Relation(r));
+            }
+            return Ok(None);
         };
         let file = self.relift(&built, Item::Relation(r))?;
-        Ok((built, file))
+        Ok(Some((built, file)))
     }
 
     /// Returns the clause of the relation declaration of `file` in `built` at `k`.
@@ -163,7 +172,23 @@ impl Model {
             elems: vec![Term::text(&run.text()[first.span.to(last.span).range()])],
             scope,
         };
-        let (built, file) = self.appended(run, r, clause)?;
+        let Some((built, file)) = self.appended(run, r, clause)? else {
+            let fields = run.late(Late::Unresolved);
+            let resolved = match kind {
+                IndexKind::Unique => Resolved::AddUnique {
+                    index: 0,
+                    relation: r,
+                    fields,
+                },
+                _ => Resolved::AddIndex {
+                    index: 0,
+                    relation: r,
+                    interval: kind == IndexKind::Interval,
+                    fields,
+                },
+            };
+            return Ok((resolved, Vec::new(), Ok(Vec::new())));
+        };
         let k = self.relations[&r].clauses.len() - 1;
         let (fs, _) = match Self::clause_written(&built, file, k)? {
             RelationClause::Unique(fs, s, _) => (fs, s),
@@ -414,7 +439,19 @@ impl Model {
             value,
             ids: Vec::new(),
         };
-        let (built, file) = self.appended(run, r, clause)?;
+        let Some((built, file)) = self.appended(run, r, clause)? else {
+            let value = run.late(Late::Unresolved);
+            return Ok((
+                Resolved::AddDefault {
+                    default: 0,
+                    relation: r,
+                    field: 0,
+                    value,
+                },
+                Vec::new(),
+                Ok(Vec::new()),
+            ));
+        };
         let k = self.relations[&r].clauses.len() - 1;
         let RelationClause::Default {
             field: written,
@@ -609,7 +646,19 @@ impl Model {
             ty: Term::text(&run.text()[ty.span.range()]),
             expr: Term::text(&run.text()[expr.span.range()]),
         };
-        let (built, file) = self.appended(run, r, clause)?;
+        let Some((built, file)) = self.appended(run, r, clause)? else {
+            let decl = run.late(Late::Unresolved);
+            return Ok((
+                Resolved::AddComputed {
+                    computed: 0,
+                    relation: r,
+                    name: field.text.clone(),
+                    decl,
+                },
+                Vec::new(),
+                Ok(Vec::new()),
+            ));
+        };
         let k = self.relations[&r].clauses.len() - 1;
         let (computed, decl) = self.computed_written(&built, run, file, r, k)?;
         Ok((
@@ -647,10 +696,23 @@ impl Model {
             *held_ty = Term::text(&run.text()[ty.span.range()]);
             *held_expr = Term::text(&run.text()[expr.span.range()]);
         }
-        let Ok(built) = self.build_adopting(&[], &run.ahead(self)) else {
-            return unmodelled("a clause added to declarations that do not build");
+        let Some((built, file)) = self.rebuilt_relation(run, r)? else {
+            let ClauseM::Computed {
+                id: Some(computed), ..
+            } = self.relations[&r].clauses[k]
+            else {
+                return broken("a redefined computed field held no id");
+            };
+            let decl = run.late(Late::Computed {
+                relation: r,
+                computed,
+            });
+            return Ok((
+                Resolved::RedefineComputed { computed, decl },
+                Vec::new(),
+                Ok(Vec::new()),
+            ));
         };
-        let file = self.relift(&built, Item::Relation(r))?;
         let (computed, decl) = self.computed_written(&built, run, file, r, k)?;
         Ok((
             Resolved::RedefineComputed { computed, decl },
