@@ -78,9 +78,7 @@ const JUDGED_FROM: usize = SKIPPED_AT_MOST.1;
 
 /// The tests whose skips [`SKIPPED_AT_MOST`] does not judge, by the name of the thread that
 /// runs them. Each applies few migrations, among them one the model does not compare.
-const UNJUDGED: &[&str] = &[
-    "evolve::tests::ids::a_view_stored_while_the_source_does_not_build_takes_the_ids_of_its_row_type_in_declaration_order",
-];
+const UNJUDGED: &[&str] = &[];
 
 /// The reason of revert's skips, which [`TALLIES`] leaves out and the comparison over the
 /// cases and the script corpus holds under [`REVERT_SKIPPED_AT_MOST`].
@@ -501,7 +499,7 @@ fn same(model: &Model, src: &Source) -> Vec<Diff> {
 impl Model {
     /// Returns the key and id of each named object, as a source holds them.
     pub(super) fn named_keys(&self) -> BTreeMap<ObjectKey, u64> {
-        let mut out = BTreeMap::new();
+        let mut out = self.held_ids.clone();
         let shared = |id: u64| Owner::Object(Space::Shared, id);
         for d in &self.decls {
             let module = || Owner::Module(d.module.clone());
@@ -577,6 +575,7 @@ impl Model {
                         }
                     }
                 }
+                Item::Held(..) => {}
             }
         }
         out

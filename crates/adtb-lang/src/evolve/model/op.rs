@@ -4,7 +4,7 @@ use crate::schema::Stage;
 use crate::span::Span;
 
 /// The kind of a declaration, as `add` and `drop` operators name it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Kind {
     Type,
     Relation,
@@ -40,6 +40,7 @@ impl Kind {
             Item::Constraint(_) => Kind::Constraint,
             Item::Check(_) => Kind::Check,
             Item::Store(_) => Kind::Store,
+            Item::Held(kind, _) => kind,
         }
     }
 }
@@ -208,6 +209,7 @@ impl Model {
             Item::Fn(f) | Item::Aggregate(f) => self.functions[&f].name.clone(),
             Item::Constraint(c) | Item::Check(c) => self.denials[&c].name.clone(),
             Item::Store(v) => self.store_name(v).to_string(),
+            Item::Held(_, k) => self.held[&k].name.clone(),
         }
     }
 

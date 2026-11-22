@@ -29,7 +29,7 @@ impl<'a> Fills<'a> {
 
 /// The steps of the inverse of a run of operators, each run ending at a source that builds, with
 /// each object the run removed, by its key before the run, and its id.
-type Undoing = (Vec<Inverse>, Vec<(ObjectKey, u64)>);
+pub(in crate::evolve) type Undoing = (Vec<Inverse>, Vec<(ObjectKey, u64)>);
 
 /// How an inverse applies an operator of its text.
 #[derive(Clone, Copy)]
@@ -44,7 +44,7 @@ pub(super) enum How<'a> {
 
 /// One step of the inverse of an operator.
 #[derive(Clone, Debug)]
-pub(super) enum Inverse {
+pub(in crate::evolve) enum Inverse {
     /// Rename the object of an id to `to`; `of` is the text of the operator inverted.
     Rename {
         object: NamedId,
@@ -386,8 +386,35 @@ impl<'a> Spelling<'a> {
     }
 }
 
+/// The inverse of a migration of the log as a revert applies it: the steps of each run of its
+/// operators, the objects of the source after it, the relation variables the steps add back,
+/// and for each fill of the revert the key of the field an inverse took it for.
+pub(in crate::evolve) struct Inverted {
+    pub(in crate::evolve) steps: Vec<Undoing>,
+    pub(in crate::evolve) late: Late,
+    pub(in crate::evolve) linked: Vec<Expected>,
+    pub(in crate::evolve) filled: Vec<Option<ObjectKey>>,
+}
+
 impl Cx<'_> {
     pub(super) fn revert(&mut self, migration: &str, fills: &[(ast::FieldPath, Fill)]) -> R<()> {
+        let inverted = self.inverted(migration, fills)?;
+        self.src.filled = inverted.filled;
+        let ahead = self.src.ahead.clone();
+        self.src.ahead.extend(inverted.linked);
+        let undone = self.undo_all(inverted.steps, &inverted.late);
+        self.src.ahead = ahead;
+        undone
+    }
+
+    /// Returns the inverse of migration `migration` of the log, with the revert's fills `fills`.
+    ///
+    /// Fail as a revert is refused before its inverse applies.
+    pub(in crate::evolve) fn inverted(
+        &self,
+        migration: &str,
+        fills: &[(ast::FieldPath, Fill)],
+    ) -> R<Inverted> {
         let Some(pos) = self.src.logged_at(migration) else {
             return self.err(format!("migration {migration} is not in the log"));
         };
@@ -456,13 +483,12 @@ impl Cx<'_> {
         if self.src.accepting && self.src.replaying.is_none() {
             self.untaken(migration, &fills)?;
         }
-        self.src.filled = fills.taken.borrow().clone();
-        let ahead = self.src.ahead.clone();
-        self.src.ahead.extend(linked(&steps));
-        let late = late(self.src.after(pos));
-        let undone = self.undo_all(steps, &late);
-        self.src.ahead = ahead;
-        undone
+        Ok(Inverted {
+            linked: linked(&steps),
+            steps,
+            late: late(self.src.after(pos)),
+            filled: fills.taken.into_inner(),
+        })
     }
 
     /// Apply the steps of the inverse of each run of operators of a migration, last run first.

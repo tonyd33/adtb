@@ -332,6 +332,7 @@ impl Model {
             Item::Fn(f) | Item::Aggregate(f) => terms.push(&self.functions[&f].rest),
             Item::Constraint(c) | Item::Check(c) => terms.push(&self.denials[&c].rest),
             Item::Store(v) => terms.push(&self.stores[&v].rest),
+            Item::Held(..) => {}
         }
         terms.into_iter().flat_map(Term::objects).collect()
     }

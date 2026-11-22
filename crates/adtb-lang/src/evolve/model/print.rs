@@ -70,6 +70,7 @@ impl Model {
                 out.push(&format!("store {}", self.store_name(v)));
                 out.term(&self.stores[&v].rest, self);
             }
+            Item::Held(_, k) => out.push(&self.held[&k].text),
         }
         out
     }
@@ -150,6 +151,7 @@ impl Model {
                 out.push(&mut self.denials.get_mut(&c).expect("the constraint").rest);
             }
             Item::Store(v) => out.push(&mut self.stores.get_mut(&v).expect("the view").rest),
+            Item::Held(..) => {}
         }
         out
     }

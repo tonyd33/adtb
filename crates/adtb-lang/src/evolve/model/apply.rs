@@ -1,7 +1,7 @@
 use super::field::Maps;
 use super::lift::Lifting;
 use super::op::{Fail, Op, Refused, Res, Resolving};
-use super::run::{Late, Run};
+use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
 use crate::evolve::grant::IdKind;
@@ -80,6 +80,7 @@ impl Model {
         let mut run = Run::new(m, text);
         let mut model = self.clone();
         model.version += 1;
+        model.lifted.clear();
         model.expecting(m);
         let mut ops = Vec::new();
         let mut maps = Vec::new();
@@ -208,26 +209,25 @@ impl Model {
         let broken = Fail::reason;
         for &(k, late) in late {
             let canonical = match late {
-                Late::Decl(item) => {
-                    let Some(i) = self.decl_at(item) else {
+                Late::Decl(item) => match self.late_decl(&built, item)? {
+                    Some(canonical) => canonical,
+                    None => continue,
+                },
+                Late::Held(key) => {
+                    let Some(&item) = self.lifted.get(&key) else {
+                        return Ok(false);
+                    };
+                    let Some(canonical) = self.late_decl(&built, item)? else {
                         continue;
                     };
-                    let file = FileId(i as u32);
-                    let d = built
-                        .decl(file)
-                        .ok_or("a declaration the model printed does not parse")?;
-                    let names = built.names(file);
-                    Lifting::new(
-                        built.schema(),
-                        file,
-                        built.text(file),
-                        &names,
-                        &[],
-                        &self.decls[i].module.clone(),
-                    )
-                    .decl(self, d)?;
-                    self.decls.pop();
-                    built.canonical(file).map_err(broken)?
+                    let Some(canonical) = canonical else {
+                        return Ok(false);
+                    };
+                    let (op, clauses) = self.added(item, canonical);
+                    if let Some(Ok(r)) = ops.get_mut(k) {
+                        *r = ResolvedOp { op, clauses };
+                    }
+                    continue;
                 }
                 Late::Field { field, action_only } => {
                     let Some(t) = self.field_type(field) else {
@@ -287,6 +287,31 @@ impl Model {
             }
         }
         Ok(true)
+    }
+
+    /// Lift declaration `item` again from `built`, the declarations as the migration leaves them.
+    /// Returns its canonical form there, `None` inside when a name of it does not resolve there,
+    /// and `None` when no declaration is `item`.
+    fn late_decl(&mut self, built: &Built, item: Item) -> Result<Option<Option<String>>, String> {
+        let Some(i) = self.decl_at(item) else {
+            return Ok(None);
+        };
+        let file = FileId(i as u32);
+        let d = built
+            .decl(file)
+            .ok_or("a declaration the model printed does not parse")?;
+        let names = built.names(file);
+        Lifting::new(
+            built.schema(),
+            file,
+            built.text(file),
+            &names,
+            &[],
+            &self.decls[i].module.clone(),
+        )
+        .decl(self, d)?;
+        self.decls.pop();
+        built.canonical(file).map(Some).map_err(Fail::reason)
     }
 
     /// Apply one operator. Returns it resolved.
@@ -405,7 +430,7 @@ impl Model {
         let out = match resolved {
             Op::AddModule(m) => self.add_module(&m)?,
             Op::DropModule(m) => self.drop_module(&m)?,
-            Op::Add { kind, name, span } => self.add(run, kind, &name, span, op)?,
+            Op::Add { kind, name, span } => self.add(run, kind, &name, span)?,
             Op::RedefineFn { function, span } => self.redefine_fn(run, function, span, op)?,
             Op::Drop(item) => self.drop(run, item)?,
             Op::Rename { obj, to } => self.rename(run, obj, &to)?,

@@ -18,7 +18,7 @@ mod reach;
 pub use fixed::{FixedType, RELATIONS, TYPES, engine_ctor, engine_rel, engine_type};
 pub use key::{KeyKind, ObjectKey, Owner, Path, PathStep, forget};
 pub use named::{is_named, named_ids};
-pub use objects::{Object, assign, objects};
+pub use objects::{Object, assign, keyed, objects, placing};
 pub use reach::Replacement;
 
 macro_rules! catalog_id {
@@ -523,6 +523,33 @@ impl CatalogIds {
             Slot::ViewType(f) => drop(self.view_types.insert(f, CatTypeId(id))),
             Slot::ViewCtor(f) => drop(self.view_ctors.insert(f, CatCtorId(id))),
             Slot::ViewField(f, n) => drop(self.view_fields.insert((f, n), CatFieldId(id))),
+        }
+    }
+
+    /// Returns the stored form of the id of the object at `slot`.
+    pub fn slot_id(&self, slot: &Slot) -> Option<u64> {
+        match slot.clone() {
+            Slot::Type(t) => self.types.get(&t).map(|x| x.0),
+            Slot::Ctor(c) => self.ctors.get(&c).map(|x| x.0),
+            Slot::Relation(r) => self.relations.get(&r).map(|x| x.0),
+            Slot::Field(f) => self.fields.get(&f).map(|x| x.0),
+            Slot::Set(r, s) => self.sets.get(&(r, s)).map(|x| x.0),
+            Slot::Function(f) => self.functions.get(&f).map(|x| x.0),
+            Slot::Key(r) => self.keys.get(&r).map(|x| x.0),
+            Slot::Index(r, i) => self.indexes.get(&(r, i)).map(|x| x.0),
+            Slot::Implied(r, f) => self.implied.get(&(r, f)).map(|x| x.0),
+            Slot::Generated(r) => self.generated.get(&r).map(|x| x.0),
+            Slot::Default(r, i, f) => self.defaults.get(&(r, i, f)).map(|x| x.0),
+            Slot::Computed(r, i) => self.computed.get(&(r, i)).map(|x| x.0),
+            Slot::Aggregate(i) => self.aggregates.get(&i).map(|x| x.0),
+            Slot::Constraint(i) => self.constraints.get(&i).map(|x| x.0),
+            Slot::Check(i) => self.checks.get(&i).map(|x| x.0),
+            Slot::View(f) => self.views.get(&f).map(|x| x.0),
+            Slot::ViewKey(f) => self.view_keys.get(&f).map(|x| x.0),
+            Slot::ViewIndex(f, i) => self.view_indexes.get(&(f, i)).map(|x| x.0),
+            Slot::ViewType(f) => self.view_types.get(&f).map(|x| x.0),
+            Slot::ViewCtor(f) => self.view_ctors.get(&f).map(|x| x.0),
+            Slot::ViewField(f, n) => self.view_fields.get(&(f, n)).map(|x| x.0),
         }
     }
 

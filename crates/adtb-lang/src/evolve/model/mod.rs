@@ -22,6 +22,7 @@ mod print;
 mod reselect;
 mod run;
 mod slots;
+mod source;
 mod structural;
 mod term;
 #[cfg(test)]
@@ -71,6 +72,28 @@ pub(super) struct Model {
     /// The grants a structural operator of the migration being applied could not carry, which
     /// a later grant of it must state.
     unstated: Vec<crate::evolve::carry::Unstated>,
+    /// Each declaration an operator added while the declarations did not build, by its key in
+    /// [`Item::Held`], until they build.
+    held: BTreeMap<u64, HeldM>,
+    /// The declarations whose terms an operator wrote as text while the declarations did not
+    /// build, each lifted again once they build.
+    unlifted: Vec<Item>,
+    /// The declaration each held one became once the declarations built, by its key.
+    lifted: BTreeMap<u64, Item>,
+    /// The id of each named object a held declaration declares, by its key, given when the
+    /// operator adding it applied.
+    held_ids: BTreeMap<ObjectKey, u64>,
+    /// The log as the source the model was lifted from holds it, with the source before each
+    /// migration.
+    logged: Vec<super::Logged>,
+}
+
+/// A declaration held as its text: the name it is found by and its text without the module
+/// header.
+#[derive(Clone, Debug)]
+struct HeldM {
+    name: String,
+    text: String,
 }
 
 /// A relation variable an operator of the migration being applied adds: named `name` in module
@@ -120,6 +143,8 @@ enum Item {
     Check(u64),
     /// A stored view, by its relation variable.
     Store(u64),
+    /// A declaration of this kind not lifted yet, by its key in [`Model::held`].
+    Held(op::Kind, u64),
 }
 
 #[derive(Clone, Debug)]

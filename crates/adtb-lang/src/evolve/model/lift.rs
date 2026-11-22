@@ -37,6 +37,7 @@ pub(super) fn source(src: &Source) -> Result<Model, String> {
         next: src.next.clone(),
         version: src.version,
         log: src.log.iter().map(LogM::of).collect(),
+        logged: src.log.clone(),
         packages: src.packages.clone(),
         ..Model::default()
     };

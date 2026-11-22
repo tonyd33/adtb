@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 
+use super::lift::Lifting;
 use super::op::{Res, broken, refuse};
 use super::slots::{Found, default_refs, implied_key};
 use super::*;
@@ -7,7 +8,7 @@ use crate::ast::{self, MigrationFile};
 use crate::canon::{self, Names, canonical_term};
 use crate::check;
 use crate::evolve::{SourceDecl, decl_exprs, each_type, walk_type};
-use crate::ids::{CatalogIds, objects};
+use crate::ids::{CatalogIds, objects, placing};
 use crate::lex::{Tok, lex};
 use crate::schema::{self, Adder, Ahead, AheadState, PRELUDE, Schema};
 use crate::span::{FileDiag, FileId, Span};
@@ -40,6 +41,9 @@ pub(super) enum Late {
     Computed { relation: u64, computed: u64 },
     /// A clause it added or changed, whose resolved form the model does not give late.
     Unresolved,
+    /// A declaration it added while the declarations did not build, by its key in
+    /// [`Model::held`].
+    Held(u64),
 }
 
 impl<'a> Run<'a> {
@@ -130,6 +134,13 @@ impl Built {
 
     pub(super) fn into_schema(self) -> Schema {
         self.schema
+    }
+
+    /// Returns every object the built declarations declare, in creation order.
+    pub(super) fn objects(&self) -> Vec<crate::ids::Object> {
+        objects(&self.schema, &self.files, &|f, s| {
+            span_text(&self.texts[f.0 as usize], s)
+        })
     }
 
     /// Returns the text of file `file`, its module header included.
@@ -264,18 +275,11 @@ impl Model {
         let text = |f: FileId, s: Span| span_text(&texts[f.0 as usize], s);
         let objs = objects(schema, files, &text);
         let placed: BTreeMap<crate::ids::Slot, u64> = self.placed(schema).into_iter().collect();
+        let ids = placing(&objs, &|s| placed.get(s).copied(), &self.held_ids, next);
         for o in &objs {
             out.forget(o.slot());
         }
-        for o in &objs {
-            let id = match placed.get(o.slot()) {
-                Some(&id) => id,
-                None => {
-                    let n = next.entry(o.space()).or_insert(FIRST_LOG_ID);
-                    *n += 1;
-                    *n - 1
-                }
-            };
+        for (o, id) in objs.iter().zip(ids) {
             out.set(o.slot(), id);
         }
         out
@@ -321,8 +325,51 @@ impl Model {
     ) -> Result<Built, Vec<FileDiag>> {
         let (built, next) = self.built(more, ahead)?;
         self.next = next;
+        self.lift_held(&built);
         self.adopt(built.schema());
         Ok(built)
+    }
+
+    /// Lift each held declaration in its place from `built`, which the declarations built, and lift
+    /// again each declaration whose terms an operator wrote as text.
+    ///
+    /// Panics when a declaration the model printed does not lift from its own build.
+    fn lift_held(&mut self, built: &Built) {
+        for i in 0..self.decls.len() {
+            let Item::Held(_, key) = self.decls[i].item else {
+                continue;
+            };
+            let file = FileId(i as u32);
+            let d = built
+                .decl(file)
+                .expect("a held declaration the declarations built parses");
+            let names = built.names(file);
+            let ahead = built.ahead_ranges(file);
+            let module = self.decls[i].module.clone();
+            Lifting::new(
+                built.schema(),
+                file,
+                built.text(file),
+                &names,
+                &ahead,
+                &module,
+            )
+            .decl(self, d)
+            .unwrap_or_else(|e| panic!("a held declaration lifts once it builds: {e}"));
+            let lifted = self.decls.pop().expect("the lifted declaration");
+            self.decls[i] = lifted.clone();
+            self.held.remove(&key);
+            self.lifted.insert(key, lifted.item);
+            self.enable(lifted.item, built, file);
+        }
+        self.held_ids.clear();
+        for item in std::mem::take(&mut self.unlifted) {
+            if self.decl_at(item).is_some() {
+                self.relift(built, item).unwrap_or_else(|e| {
+                    panic!("a declaration written as text lifts once it builds: {e:?}")
+                });
+            }
+        }
     }
 
     /// Give each clause of each relation variable, and each index its reference fields imply,

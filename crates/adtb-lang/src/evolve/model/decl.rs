@@ -1,11 +1,12 @@
 use super::lift::Lifting;
 use super::op::{Fail, Kind, Res, StateKey, broken, refuse, refuse_at, unmodelled};
-use super::run::{Late, Run, unbuilt};
+use super::run::{Built, Late, Run, unbuilt};
 use super::slots::Found;
 use super::*;
 use crate::ast::{self, OperatorKind};
 use crate::check;
 use crate::evolve::{Clause, Resolved, SourceDecl, Target, mentions_def, mentions_rel};
+use crate::ids::named_ids;
 use crate::schema::{self, PRELUDE, Stage};
 use crate::span::{FileId, Span};
 
@@ -65,7 +66,6 @@ impl Model {
         kind: Kind,
         name: &str,
         span: Span,
-        op: &OperatorKind,
     ) -> Res<(Resolved, Vec<Clause>)> {
         if !self.modules.contains(run.module()) {
             return refuse(format!(
@@ -97,7 +97,7 @@ impl Model {
                 if kind == Kind::Relation {
                     return unbuilt(&ds);
                 }
-                return unmodelled("an added declaration in a source that does not build");
+                return Ok(self.hold(run, kind, name, decl.text));
             }
         };
         if let Some(e) = built.errors_in(at).into_iter().next() {
@@ -123,41 +123,88 @@ impl Model {
             Some(decl) => decl,
             None => run.late(Late::Decl(item)),
         };
+        self.enable(item, &built, at);
+        Ok(self.added(item, decl))
+    }
+
+    /// Hold declaration `text` of kind `kind` named `name`, added while the declarations do not
+    /// build, until they build. Returns the operator resolved as the migration's end resolves it.
+    fn hold(&mut self, run: &Run, kind: Kind, name: &str, text: String) -> (Resolved, Vec<Clause>) {
+        let key = self
+            .held
+            .keys()
+            .chain(self.lifted.keys())
+            .max()
+            .map_or(0, |k| k + 1);
+        self.held.insert(
+            key,
+            HeldM {
+                name: name.to_string(),
+                text,
+            },
+        );
+        self.decls.push(Decl {
+            module: run.module().to_string(),
+            item: Item::Held(kind, key),
+        });
+        if let Ok(files) = self.files(&[]) {
+            let known = self.named_keys();
+            let given = named_ids(&files, &known, &mut self.next, &mut BTreeSet::new());
+            self.held_ids
+                .extend(given.into_iter().filter(|(k, _)| !known.contains_key(k)));
+        }
+        let decl = run.late(Late::Held(key));
+        (Resolved::AddModule { module: decl }, Vec::new())
+    }
+
+    /// Give each constructor declaration `item`, of file `at` of `built`, declares its first write
+    /// states: a type's its value-level ones, a relation variable's those of its row type's.
+    pub(super) fn enable(&mut self, item: Item, built: &Built, at: FileId) {
         let since = self.version;
-        let enabled = State {
-            stage: Stage::Enabled,
-            since,
-        };
-        let mut clauses = Vec::new();
-        let resolved = match (item, op) {
-            (Item::Type(t), _) => {
-                if !matches!(self.types[&t].body, TypeBody::New { .. }) {
-                    for c in self.ctors_of(t) {
-                        self.value_states.insert(c, enabled);
-                    }
+        match item {
+            Item::Type(t) if !matches!(self.types[&t].body, TypeBody::New { .. }) => {
+                for c in self.ctors_of(t) {
+                    self.value_states.insert(
+                        c,
+                        State {
+                            stage: Stage::Enabled,
+                            since,
+                        },
+                    );
                 }
-                Resolved::AddType { sum: t, decl }
             }
-            (Item::Relation(r), _) => {
+            Item::Relation(r) => {
                 let schema = built.schema();
-                if let Some(rel) = Found::new(schema, at).relation() {
-                    let td = schema.ty(schema.relation(rel).elem_def);
-                    if matches!(td.kind, schema::TypeDefKind::Sum { .. }) {
-                        for c in td.ctor_refs() {
-                            let Some(ctor) = schema.ids().ctor_id(c) else {
-                                continue;
-                            };
-                            let stage = self
-                                .value_states
-                                .get(&ctor.raw())
-                                .map_or(Stage::Enabled, |s| s.stage);
-                            self.states.insert((r, ctor.raw()), State { stage, since });
-                        }
-                    }
+                let Some(rel) = Found::new(schema, at).relation() else {
+                    return;
+                };
+                let td = schema.ty(schema.relation(rel).elem_def);
+                if !matches!(td.kind, schema::TypeDefKind::Sum { .. }) {
+                    return;
                 }
-                Resolved::AddRelation { relation: r, decl }
+                for c in td.ctor_refs() {
+                    let Some(ctor) = schema.ids().ctor_id(c) else {
+                        continue;
+                    };
+                    let stage = self
+                        .value_states
+                        .get(&ctor.raw())
+                        .map_or(Stage::Enabled, |s| s.stage);
+                    self.states.insert((r, ctor.raw()), State { stage, since });
+                }
             }
-            (Item::Set(s), _) => {
+            _ => {}
+        }
+    }
+
+    /// Returns the operator that added declaration `item`, whose canonical form is `decl`,
+    /// resolved.
+    pub(super) fn added(&self, item: Item, decl: String) -> (Resolved, Vec<Clause>) {
+        let mut clauses = Vec::new();
+        let resolved = match item {
+            Item::Type(t) => Resolved::AddType { sum: t, decl },
+            Item::Relation(r) => Resolved::AddRelation { relation: r, decl },
+            Item::Set(s) => {
                 let set = &self.sets[&s];
                 for m in &set.members {
                     if let Some((Space::Shared, c)) = m.objects().next() {
@@ -170,23 +217,24 @@ impl Model {
                     name: set.name.clone(),
                 }
             }
-            (Item::Fn(f), _) => Resolved::DefineFn { function: f, decl },
-            (Item::Aggregate(f), _) => Resolved::DefineAggregate { function: f, decl },
-            (Item::Constraint(c), _) => Resolved::AddConstraint {
+            Item::Fn(f) => Resolved::DefineFn { function: f, decl },
+            Item::Aggregate(f) => Resolved::DefineAggregate { function: f, decl },
+            Item::Constraint(c) => Resolved::AddConstraint {
                 constraint: c,
                 body: decl,
             },
-            (Item::Check(c), _) => Resolved::AddCheck {
+            Item::Check(c) => Resolved::AddCheck {
                 constraint: c,
                 body: decl,
             },
-            (Item::Store(v), _) => Resolved::Store {
+            Item::Store(v) => Resolved::Store {
                 view: v,
                 function: self.stores[&v].function,
                 decl,
             },
+            Item::Held(..) => Resolved::AddModule { module: decl },
         };
-        Ok((resolved, clauses))
+        (resolved, clauses)
     }
 
     pub(super) fn redefine_fn(
@@ -210,10 +258,13 @@ impl Model {
         let built = match self.build_adopting(&[], &run.ahead(self)) {
             Ok(b) => b,
             Err(ds) => {
-                return match ds.iter().find(|d| d.file.0 as usize == at) {
-                    Some(d) => refuse(d.diag.message.clone()),
-                    None => unmodelled("a redefinition in a source that does not build"),
-                };
+                if let Some(d) = ds.iter().find(|d| d.file.0 as usize == at) {
+                    return refuse(d.diag.message.clone());
+                }
+                let item = Item::Fn(function);
+                self.unlifted.push(item);
+                let decl = run.late(Late::Decl(item));
+                return Ok((Resolved::RedefineFn { function, decl }, Vec::new()));
             }
         };
         let file = FileId(at as u32);
@@ -262,6 +313,11 @@ impl Model {
             Item::Constraint(c) => Resolved::DropConstraint { constraint: c },
             Item::Check(c) => Resolved::DropCheck { constraint: c },
             Item::Store(v) => Resolved::Unstore { view: v },
+            Item::Held(..) => {
+                return unmodelled(
+                    "a drop of a declaration held while the declarations do not build",
+                );
+            }
         };
         let mut gone = vec![item];
         if let Item::Relation(r) = item {
@@ -324,6 +380,9 @@ impl Model {
             }
             Item::Store(v) => {
                 self.stores.remove(&v);
+            }
+            Item::Held(_, k) => {
+                self.held.remove(&k);
             }
         }
     }

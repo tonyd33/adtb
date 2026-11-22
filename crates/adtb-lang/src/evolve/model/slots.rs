@@ -124,7 +124,7 @@ impl Model {
                         out.push((Slot::Check(x), c));
                     }
                 }
-                Item::Set(_) | Item::Store(_) => {}
+                Item::Set(_) | Item::Store(_) | Item::Held(..) => {}
             }
         }
         let field_id = |f: &FieldRef| fields.get(f).copied();

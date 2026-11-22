@@ -110,6 +110,70 @@ impl Object {
     }
 }
 
+/// Returns the id of each of `objs`: the id `placed` gives its slot, else the id `known` holds
+/// for its key, else the next id `next` gives its space.
+///
+/// Preconditions: `objs` are in creation order.
+/// Postconditions: each space's new ids follow the order of `objs`.
+pub fn placing(
+    objs: &[Object],
+    placed: &dyn Fn(&Slot) -> Option<u64>,
+    known: &BTreeMap<ObjectKey, u64>,
+    next: &mut BTreeMap<Space, u64>,
+) -> Vec<u64> {
+    let mut ids: BTreeMap<Slot, u64> = BTreeMap::new();
+    let mut seen: BTreeMap<ObjectKey, usize> = BTreeMap::new();
+    let mut out = vec![0; objs.len()];
+    for round in 0..3 {
+        for (at, o) in objs.iter().enumerate().filter(|(_, o)| o.round() == round) {
+            let key = o.key(&|s| {
+                *ids.get(s)
+                    .expect("an object a key names takes its id in an earlier round or before it")
+            });
+            let n = seen.entry(key.clone()).or_default();
+            let key = key.nth(*n);
+            *n += 1;
+            let id = match placed(&o.slot).or_else(|| known.get(&key).copied()) {
+                Some(id) => id,
+                None => {
+                    let n = next.entry(o.space()).or_insert(FIRST_LOG_ID);
+                    *n += 1;
+                    *n - 1
+                }
+            };
+            ids.insert(o.slot.clone(), id);
+            out[at] = id;
+        }
+    }
+    out
+}
+
+/// Returns the key and the id of each of `objs`, each object taking the id `id` gives its slot,
+/// `None` when `id` gives none for one of them.
+///
+/// Preconditions: `objs` are in creation order.
+pub fn keyed(objs: &[Object], id: &dyn Fn(&Slot) -> Option<u64>) -> Option<Vec<(ObjectKey, u64)>> {
+    let mut seen: BTreeMap<ObjectKey, usize> = BTreeMap::new();
+    let mut out = Vec::with_capacity(objs.len());
+    for o in objs {
+        let held = id(&o.slot)?;
+        let missing = std::cell::Cell::new(false);
+        let key = o.key(&|s| {
+            id(s).unwrap_or_else(|| {
+                missing.set(true);
+                0
+            })
+        });
+        if missing.get() {
+            return None;
+        }
+        let n = seen.entry(key.clone()).or_default();
+        out.push((key.nth(*n), held));
+        *n += 1;
+    }
+    Some(out)
+}
+
 /// Returns the key and the id of each of `objs`: a named object takes the id `known` holds for
 /// its key; a unique, index or default takes the id `known` holds for its key, else for a key
 /// whose elements correspond to it through `replaced`, else the next id `next` gives its space.
