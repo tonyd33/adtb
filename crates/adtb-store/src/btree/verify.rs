@@ -169,7 +169,7 @@ impl BTree {
                     }
                     for (i, item) in page.items.into_iter().enumerate() {
                         let sep = if i == 0 { low.clone() } else { Some(item.key) };
-                        below.push((item.child.expect("an inner item has a child"), sep));
+                        below.push((item.child.ok_or(Error::Malformed(pid))?, sep));
                     }
                 }
                 chain.insert(pid, (chain.len(), low, page.incomplete));
@@ -362,7 +362,7 @@ impl BTree {
     ) -> Result<(), Error> {
         let low = l.page.low.clone();
         for (i, item) in l.page.items.iter().enumerate() {
-            let child = item.child.expect("an inner item has a child");
+            let child = item.child.ok_or(Error::Malformed(pid))?;
             below.insert(child);
             let read = live_at(pager, self.owner(), child)?;
             if !unchanged(pager, pid, l.lsn)? {

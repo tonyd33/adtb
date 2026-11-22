@@ -260,7 +260,10 @@ impl<'a, R: Runtime> Testing<'a, R> {
     /// constructor; `None` when no leaf holds it.
     pub fn leaf_of(self, object: Object, entry: &Entry) -> Result<Option<Pid>, Failed> {
         let index = self.index_object(object)?;
-        let encoded = index.schema().encode_entry(entry);
+        let encoded = index
+            .schema()
+            .encode_entry(entry)
+            .map_err(crate::btree::Error::Key)?;
         Ok(index
             .tree()
             .leaf_holding(self.db.tested_pager(), &encoded)?)

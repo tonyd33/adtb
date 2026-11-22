@@ -347,7 +347,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 .find(|(_, c)| **c == w.ctor)
                 .expect("an index over a constructor holds its id")
                 .0;
-            let encoded = stored.index.schema().encode(&key);
+            let encoded = stored.index.schema().encode(&key)?;
             let latch = 'probe: loop {
                 let latch = self.db.latches[id].lock(&self.db.rt);
                 let Some(name) = &ix.unique else {

@@ -923,7 +923,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     return Ok(Vec::new());
                 };
                 let schema = self.db.bindings.indexes()[&u.index].index.schema();
-                let want = schema.encode(&key);
+                let want = schema.encode(&key)?;
                 let scope = r.routes(u.scope.iter().copied());
                 let mut out = BTreeMap::new();
                 for n in self.probe(u.index, &key, &scope)? {
@@ -932,7 +932,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         continue;
                     };
                     let found = ix.keys.key(d, &stored, &types)?;
-                    if found.is_some_and(|k| schema.encode(&k) == want) {
+                    let found = found.map(|k| schema.encode(&k)).transpose()?;
+                    if found.as_ref() == Some(&want) {
                         let o = self.row(rel, d, &stored)?;
                         out.insert(self.key_of(rel, &o)?, o);
                     }

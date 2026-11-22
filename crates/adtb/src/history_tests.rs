@@ -64,8 +64,8 @@ fn ctors() -> BTreeSet<CtorId> {
     BTreeSet::from([CTOR])
 }
 
-fn key(_: CtorId, row: &[Value]) -> Vec<Value> {
-    vec![row[0].clone()]
+fn key(_: CtorId, row: &[Value]) -> Option<Vec<Value>> {
+    Some(vec![row[0].clone()])
 }
 
 fn pair(row: &[Value]) -> (i64, i64) {

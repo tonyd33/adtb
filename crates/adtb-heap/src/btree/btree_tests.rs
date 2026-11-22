@@ -791,7 +791,7 @@ fn an_index_keeps_the_entries_of_one_key_as_postings() {
             shuffled.swap(i, below(rt, i + 1));
         }
         for e in shuffled {
-            let bytes = i64_schema().encode_entry(&to_entry(e));
+            let bytes = i64_schema().encode_entry(&to_entry(e)).unwrap();
             assert_eq!(plain.insert(pager, &bytes), Ok(true));
         }
         let pages = index.tree().pages(pager).unwrap().len();

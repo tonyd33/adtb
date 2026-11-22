@@ -26,6 +26,16 @@ pub enum DecodeError {
     BadVarint,
 }
 
+/// Why a key does not encode under a key schema.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncodeError {
+    /// The key, or a record or constructor in it, has `found` values where its type has
+    /// `expected`.
+    Count { expected: usize, found: usize },
+    /// A value does not have the type of its place in the key.
+    Type,
+}
+
 impl KeySchema {
     pub fn new(components: Vec<(KeyType, Dir)>) -> KeySchema {
         KeySchema { components }
@@ -35,25 +45,28 @@ impl KeySchema {
         &self.components
     }
 
-    pub fn encode(&self, values: &[Value]) -> Vec<u8> {
+    pub fn encode(&self, values: &[Value]) -> Result<Vec<u8>, EncodeError> {
         let mut out = Vec::new();
-        self.encode_into(values, &mut out);
-        out
+        self.encode_into(values, &mut out)?;
+        Ok(out)
     }
 
-    /// Append the encoding of `values` to `out`.
+    /// Append the encoding of `values` to `out`, refusing a key without the schema's component
+    /// types. A refusal leaves `out` as it was.
     ///
-    /// Panics:
-    /// - `values` does not have the schema's component types.
-    pub fn encode_into(&self, values: &[Value], out: &mut Vec<u8>) {
-        assert_eq!(
-            self.components.len(),
-            values.len(),
-            "key has the wrong number of components"
-        );
-        for ((ty, dir), v) in self.components.iter().zip(values) {
-            encode_value(&mut Writer::new(out, *dir), ty, v);
+    /// Preconditions: every value is in its type's domain.
+    pub fn encode_into(&self, values: &[Value], out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let start = out.len();
+        let encoded = counted(self.components.len(), values.len()).and_then(|()| {
+            for ((ty, dir), v) in self.components.iter().zip(values) {
+                encode_value(&mut Writer::new(out, *dir), ty, v)?;
+            }
+            Ok(())
+        });
+        if encoded.is_err() {
+            out.truncate(start);
         }
+        encoded
     }
 
     /// Returns the key `bytes` encodes, refusing any byte string the
@@ -123,7 +136,15 @@ impl Writer<'_> {
     }
 }
 
-fn encode_value(w: &mut Writer, ty: &KeyType, v: &Value) {
+fn counted(expected: usize, found: usize) -> Result<(), EncodeError> {
+    if expected == found {
+        Ok(())
+    } else {
+        Err(EncodeError::Count { expected, found })
+    }
+}
+
+fn encode_value(w: &mut Writer, ty: &KeyType, v: &Value) -> Result<(), EncodeError> {
     match (ty, v) {
         (KeyType::Scalar(s), v) => encode_scalar(w, *s, v),
         (KeyType::Record(tys), Value::Record(vs)) => encode_fields(w, tys, vs),
@@ -131,41 +152,47 @@ fn encode_value(w: &mut Writer, ty: &KeyType, v: &Value) {
             let c = usize::try_from(*ctor)
                 .ok()
                 .and_then(|i| sum.ctors().get(i))
-                .unwrap_or_else(|| mismatch(ty, v));
+                .ok_or(EncodeError::Type)?;
             w.bytes(c.order_key.as_bytes());
             w.byte(0x00);
-            encode_fields(w, &c.fields, fields);
+            encode_fields(w, &c.fields, fields)
         }
         (KeyType::AnonRecord(rec), Value::Record(vs)) => encode_named(w, rec.fields(), vs),
         (KeyType::AnonSum(sum), Value::Sum { ctor, fields }) => {
             let (_, rec) = usize::try_from(*ctor)
                 .ok()
                 .and_then(|i| sum.ctors().get(i))
-                .unwrap_or_else(|| mismatch(ty, v));
+                .ok_or(EncodeError::Type)?;
             let mut tag = Vec::new();
             ovarint::encode(*ctor, &mut tag);
             w.bytes(&tag);
-            encode_named(w, rec.fields(), fields);
+            encode_named(w, rec.fields(), fields)
         }
-        _ => mismatch(ty, v),
+        _ => Err(EncodeError::Type),
     }
 }
 
-fn encode_fields(w: &mut Writer, tys: &[KeyType], vs: &[Value]) {
-    assert_eq!(tys.len(), vs.len(), "value has the wrong number of fields");
+fn encode_fields(w: &mut Writer, tys: &[KeyType], vs: &[Value]) -> Result<(), EncodeError> {
+    counted(tys.len(), vs.len())?;
     for (ty, v) in tys.iter().zip(vs) {
-        encode_value(w, ty, v);
+        encode_value(w, ty, v)?;
     }
+    Ok(())
 }
 
-fn encode_named(w: &mut Writer, tys: &[(String, KeyType)], vs: &[Value]) {
-    assert_eq!(tys.len(), vs.len(), "value has the wrong number of fields");
+fn encode_named(
+    w: &mut Writer,
+    tys: &[(String, KeyType)],
+    vs: &[Value],
+) -> Result<(), EncodeError> {
+    counted(tys.len(), vs.len())?;
     for ((_, ty), v) in tys.iter().zip(vs) {
-        encode_value(w, ty, v);
+        encode_value(w, ty, v)?;
     }
+    Ok(())
 }
 
-fn encode_scalar(w: &mut Writer, s: Scalar, v: &Value) {
+fn encode_scalar(w: &mut Writer, s: Scalar, v: &Value) -> Result<(), EncodeError> {
     match (s, v) {
         (Scalar::I8, Value::I8(x)) => w.signed(x.to_be_bytes()),
         (Scalar::I16, Value::I16(x)) => w.signed(x.to_be_bytes()),
@@ -188,12 +215,9 @@ fn encode_scalar(w: &mut Writer, s: Scalar, v: &Value) {
             w.signed(months.to_be_bytes());
             w.signed(days.to_be_bytes());
         }
-        _ => mismatch(&KeyType::Scalar(s), v),
+        _ => return Err(EncodeError::Type),
     }
-}
-
-fn mismatch(ty: &KeyType, v: &Value) -> ! {
-    panic!("value {v:?} does not have key type {ty:?}")
+    Ok(())
 }
 
 fn f32_order_bits(x: F32) -> u32 {

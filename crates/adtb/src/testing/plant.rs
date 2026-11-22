@@ -120,7 +120,10 @@ impl<R: Runtime> Testing<'_, R> {
             }
             Plant::AddRawEntry { index, entry } => {
                 let index = self.index_object(index)?;
-                let bytes = index.schema().encode_entry(&entry);
+                let bytes = index
+                    .schema()
+                    .encode_entry(&entry)
+                    .map_err(crate::btree::Error::Key)?;
                 changed(index.tree().insert(pager, &bytes)?)?;
             }
             Plant::DropEntry { index, entry } => {

@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 
 use crate::storage::{
-    FIRST_EDITABLE, HEADER_LEN, PageKind, Pid, flags, format, header_edit, kind, owner,
+    FIRST_EDITABLE, HEADER_LEN, PageKind, Pid, Shape, flags, format, header_edit, kind, kind_fault,
+    owner,
 };
 
 pub const FORMAT: u16 = 2;
@@ -110,6 +111,10 @@ impl<'a> Node<'a> {
         self.count
     }
 
+    pub fn page_size(&self) -> usize {
+        self.page.len()
+    }
+
     #[expect(
         clippy::disallowed_methods,
         reason = "a node reads page bytes; an owner its caller passes from the guard would remove it"
@@ -129,7 +134,9 @@ impl<'a> Node<'a> {
     }
 
     pub fn right(&self) -> Option<Pid> {
-        let p = u64::from_le_bytes(self.page[RIGHT..RIGHT + 8].try_into().unwrap());
+        let mut p = [0; CHILD];
+        p.copy_from_slice(&self.page[RIGHT..RIGHT + CHILD]);
+        let p = u64::from_le_bytes(p);
         (p != 0).then_some(Pid(p))
     }
 
@@ -244,8 +251,9 @@ impl<'a> Node<'a> {
             return Err(Malformed);
         }
         let end = at + LEN + key.len();
-        let bytes = self.page.get(end..end + CHILD).ok_or(Malformed)?;
-        Ok(Pid(u64::from_le_bytes(bytes.try_into().unwrap())))
+        let mut child = [0; CHILD];
+        child.copy_from_slice(self.page.get(end..end + CHILD).ok_or(Malformed)?);
+        Ok(Pid(u64::from_le_bytes(child)))
     }
 
     /// Returns the first slot whose key is not below `x`, or after it when
@@ -287,7 +295,9 @@ impl<'a> Node<'a> {
         }
         let high = self.high()?.map_or(0, |h| LEN + h.len());
         let low = self.low()?.map_or(0, |l| LEN + l.len());
-        Ok(capacity(self.page.len()) - self.count * SLOT - live - high - low)
+        capacity(self.page.len())
+            .checked_sub(self.count * SLOT + live + high + low)
+            .ok_or(Malformed)
     }
 
     pub fn item(&self, i: usize) -> Result<Item, Malformed> {
@@ -308,6 +318,17 @@ impl<'a> Node<'a> {
 
     pub fn items(&self) -> Result<Vec<Item>, Malformed> {
         (0..self.count).map(|i| self.item(i)).collect()
+    }
+
+    /// Returns whether `items` fit in the page beside its fence keys.
+    pub fn fits(&self, items: &[Item]) -> Result<bool, Malformed> {
+        let f = fences(self)?;
+        let fences: usize = [f.low, f.high]
+            .iter()
+            .flatten()
+            .map(|k| LEN + k.len())
+            .sum();
+        Ok(items.iter().map(Item::cost).sum::<usize>() + fences <= capacity(self.page.len()))
     }
 }
 
@@ -422,13 +443,26 @@ pub struct Bounds<'a> {
 /// Panics:
 /// - The items and fence keys do not fit.
 /// - An item's child does not match the level.
+pub fn build(page: &mut [u8], level: u16, items: &[Item], bounds: Bounds) {
+    build_flagged(page, level, items, bounds, flags(page));
+}
+
+/// Write a node over `page` as [`build`] does, marked as lacking its downlink in its parent.
+///
+/// Panics:
+/// - The items and fence keys do not fit.
+/// - An item's child does not match the level.
+pub fn build_incomplete(page: &mut [u8], level: u16, items: &[Item], bounds: Bounds) {
+    build_flagged(page, level, items, bounds, flags(page) | INCOMPLETE_SPLIT);
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "rewrites the header with the page's own owner; a header edit that keeps the owner would remove it"
 )]
-pub fn build(page: &mut [u8], level: u16, items: &[Item], bounds: Bounds) {
+fn build_flagged(page: &mut [u8], level: u16, items: &[Item], bounds: Bounds, flags: u16) {
     let Bounds { low, high, right } = bounds;
-    let header = header_edit(FORMAT, kind_of(level), owner(page), flags(page));
+    let header = header_edit(FORMAT, kind_of(level), owner(page), flags);
     page[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header);
     page[HEADER_LEN..].fill(0);
     page[RIGHT..RIGHT + 8].copy_from_slice(&right.map_or(0, |p| p.0).to_le_bytes());
@@ -461,34 +495,6 @@ pub fn build(page: &mut [u8], level: u16, items: &[Item], bounds: Bounds) {
     );
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "rewrites the header with the page's own owner; a header edit that keeps the owner would remove it"
-)]
-fn set_flag(page: &mut [u8], flag: u16, on: bool) {
-    let level = Node::new(page).expect("a marked page is a node").level();
-    let rest = flags(page) & !flag;
-    let mark = if on { flag } else { 0 };
-    let header = header_edit(FORMAT, kind_of(level), owner(page), rest | mark);
-    page[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header);
-}
-
-/// Mark `page` as lacking its downlink in its parent, or clear the mark.
-///
-/// Panics:
-/// - The page is not a node.
-pub fn set_incomplete(page: &mut [u8], incomplete: bool) {
-    set_flag(page, INCOMPLETE_SPLIT, incomplete);
-}
-
-/// Mark `page` as unlinked from its tree.
-///
-/// Panics:
-/// - The page is not a node.
-pub fn set_deleted(page: &mut [u8]) {
-    set_flag(page, DELETED, true);
-}
-
 /// The fence keys and right sibling of a node, copied.
 #[derive(Clone, Debug)]
 pub struct Fences {
@@ -515,90 +521,164 @@ pub fn fences(node: &Node) -> Result<Fences, Malformed> {
     })
 }
 
-/// Returns whether `items` fit in `page` beside its fence keys.
-///
-/// Panics:
-/// - The page is not a node.
-pub fn fits(page: &[u8], items: &[Item]) -> bool {
-    let node = Node::new(page).expect("a page fitted is a node");
-    let f = fences(&node).expect("a page fitted is a node");
-    let fences: usize = [f.low, f.high]
-        .iter()
-        .flatten()
-        .map(|k| LEN + k.len())
-        .sum();
-    items.iter().map(Item::cost).sum::<usize>() + fences <= capacity(page.len())
-}
-
-/// Rewrite `page` to hold `items` with its own fence keys and right sibling.
-///
-/// Panics:
-/// - The page is not a node or the items do not fit.
-pub fn rebuild(page: &mut [u8], items: &[Item]) {
-    let node = Node::new(page).expect("a rebuilt page is a node");
-    let level = node.level();
-    let f = fences(&node).expect("a rebuilt page is a node");
-    build(page, level, items, f.bounds());
-}
-
-/// Insert `item` at slot `i`, compacting the cell area first if its free
-/// gap is too small.
-///
-/// Panics:
-/// - The item does not fit or the page is not a node.
-pub fn insert(page: &mut [u8], i: usize, item: &Item) {
-    let node = Node::new(page).expect("an inserted page is a node");
-    let level = node.level();
-    if node.free() < item.cost() {
-        let items = node.items().expect("an inserted page is a node");
-        rebuild(page, &items);
+/// Returns how `page` is out of shape as a node of `owner`: of another kind, format or owner, or
+/// with a header, slot, cell or fence its own bytes contradict. Returns `None` for a whole node.
+pub fn shape(page: &[u8], owner: u32) -> Option<Shape> {
+    if page.len() < SLOTS {
+        return Some(Shape::Frame);
     }
-    let node = Node::new(page).unwrap();
-    let count = node.count();
-    assert!(node.free() >= item.cost(), "item overflows the page");
-    assert!(i <= count, "slot {i} is past {count}");
-    assert_eq!(
-        item.child.is_some(),
-        level > 0,
-        "item does not suit level {level}"
-    );
-    let at = push_cell(page, item);
-    let slot = SLOTS + i * SLOT;
-    page.copy_within(slot..SLOTS + count * SLOT, slot + SLOT);
-    put_u16(page, slot, at);
-    put_u16(page, COUNT, count + 1);
-}
-
-/// Replace the cell of slot `i` by `item`, compacting the cell area first if
-/// its free gap is too small. The old cell stays as garbage.
-///
-/// Panics:
-/// - The item does not fit, there is no slot `i`, or the page is not
-///   a node.
-pub fn replace(page: &mut [u8], i: usize, item: &Item) {
-    let node = Node::new(page).expect("a replaced page is a node");
-    assert!(i < node.count(), "slot {i} is past {}", node.count());
-    if node.free() < item.cell_len() {
-        let mut items = node.items().expect("a replaced page is a node");
-        items[i] = item.clone();
-        rebuild(page, &items);
-        return;
+    let level = u16_at(page, LEVEL);
+    if kind(page) != PageKind::IndexLeaf as u16 && kind(page) != PageKind::IndexInner as u16 {
+        return Some(kind_fault(page));
     }
-    let at = push_cell(page, item);
-    put_u16(page, SLOTS + i * SLOT, at);
+    if format(page) != FORMAT {
+        return Some(Shape::Format);
+    }
+    if kind(page) != kind_of(level) as u16 {
+        return Some(Shape::Kind);
+    }
+    let Ok(n) = Node::new(page) else {
+        return Some(Shape::Frame);
+    };
+    if n.owner() != owner {
+        return Some(Shape::Owner);
+    }
+    let whole = |n: &Node| -> Result<bool, Malformed> {
+        n.items()?;
+        n.room()?;
+        let fenced = n.high()?.is_some() == n.right().is_some();
+        Ok(fenced && (n.is_leaf() || n.count() > 0))
+    };
+    match whole(&n) {
+        Ok(true) => None,
+        _ => Some(Shape::Frame),
+    }
 }
 
-/// Remove slot `i`. Its cell stays as garbage until the page is compacted.
-///
-/// Panics:
-/// - There is no slot `i`.
-pub fn remove(page: &mut [u8], i: usize) {
-    let count = Node::new(page)
-        .expect("a page removed from is a node")
-        .count();
-    assert!(i < count, "slot {i} is past {count}");
-    let slot = SLOTS + i * SLOT;
-    page.copy_within(slot + SLOT..SLOTS + count * SLOT, slot);
-    put_u16(page, SLOTS + (count - 1) * SLOT, 0);
-    put_u16(page, COUNT, count - 1);
+/// Returns a copy of `page`, a node, as `f` changes it, and what `f` returns.
+pub fn edit<T>(
+    page: &[u8],
+    f: impl FnOnce(&mut NodeMut) -> Result<T, Malformed>,
+) -> Result<(Vec<u8>, T), Malformed> {
+    let mut copy = page.to_vec();
+    let made = f(&mut NodeMut::new(&mut copy)?)?;
+    Ok((copy, made))
+}
+
+/// A node over a page its caller may change, checked as [`Node::new`] checks one.
+#[derive(Debug)]
+pub struct NodeMut<'a> {
+    page: &'a mut [u8],
+    count: usize,
+    level: u16,
+}
+
+impl<'a> NodeMut<'a> {
+    pub fn new(page: &'a mut [u8]) -> Result<NodeMut<'a>, Malformed> {
+        let Node { count, level, .. } = Node::new(page)?;
+        Ok(NodeMut { page, count, level })
+    }
+
+    pub fn view(&self) -> Node<'_> {
+        Node {
+            page: self.page,
+            count: self.count,
+            level: self.level,
+        }
+    }
+
+    /// Rewrite the page to hold `items` with its own fence keys and right sibling. Returns
+    /// [`Malformed`] when they do not fit beside its fence keys or do not suit its level.
+    pub fn rebuild(&mut self, items: &[Item]) -> Result<(), Malformed> {
+        let f = fences(&self.view())?;
+        let leaf = self.level == 0;
+        let suit = |i: &Item| i.child.is_none() == leaf && (leaf || i.rest.is_empty());
+        if !items.iter().all(suit) || !self.view().fits(items)? {
+            return Err(Malformed);
+        }
+        build(self.page, self.level, items, f.bounds());
+        self.count = items.len();
+        Ok(())
+    }
+
+    /// Insert `item` at slot `i`, compacting the cell area first if its free gap is too small.
+    ///
+    /// Panics:
+    /// - The item does not fit, does not suit the level, or `i` is past the slots.
+    pub fn insert(&mut self, i: usize, item: &Item) -> Result<(), Malformed> {
+        if self.view().free() < item.cost() {
+            let items = self.view().items()?;
+            self.rebuild(&items)?;
+        }
+        let count = self.count;
+        assert!(self.view().free() >= item.cost(), "item overflows the page");
+        assert!(i <= count, "slot {i} is past {count}");
+        assert_eq!(
+            item.child.is_some(),
+            self.level > 0,
+            "item does not suit level {}",
+            self.level
+        );
+        let at = push_cell(self.page, item);
+        let slot = SLOTS + i * SLOT;
+        self.page
+            .copy_within(slot..SLOTS + count * SLOT, slot + SLOT);
+        put_u16(self.page, slot, at);
+        put_u16(self.page, COUNT, count + 1);
+        self.count = count + 1;
+        Ok(())
+    }
+
+    /// Replace the cell of slot `i` by `item`, compacting the cell area first if its free gap is
+    /// too small. The old cell stays as garbage.
+    ///
+    /// Panics:
+    /// - The item does not fit, or there is no slot `i`.
+    pub fn replace(&mut self, i: usize, item: &Item) -> Result<(), Malformed> {
+        assert!(i < self.count, "slot {i} is past {}", self.count);
+        if self.view().free() < item.cell_len() {
+            let mut items = self.view().items()?;
+            items[i] = item.clone();
+            return self.rebuild(&items);
+        }
+        let at = push_cell(self.page, item);
+        put_u16(self.page, SLOTS + i * SLOT, at);
+        Ok(())
+    }
+
+    /// Remove slot `i`. Its cell stays as garbage until the page is compacted.
+    ///
+    /// Panics:
+    /// - There is no slot `i`.
+    pub fn remove(&mut self, i: usize) {
+        let count = self.count;
+        assert!(i < count, "slot {i} is past {count}");
+        let slot = SLOTS + i * SLOT;
+        self.page
+            .copy_within(slot + SLOT..SLOTS + count * SLOT, slot);
+        put_u16(self.page, SLOTS + (count - 1) * SLOT, 0);
+        put_u16(self.page, COUNT, count - 1);
+        self.count = count - 1;
+    }
+
+    /// Mark the page as lacking its downlink in its parent, or clear the mark.
+    pub fn set_incomplete(&mut self, incomplete: bool) {
+        self.set_flag(INCOMPLETE_SPLIT, incomplete);
+    }
+
+    /// Mark the page as unlinked from its tree.
+    pub fn set_deleted(&mut self) {
+        self.set_flag(DELETED, true);
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "rewrites the header with the page's own owner; a header edit that keeps the owner would remove it"
+    )]
+    fn set_flag(&mut self, flag: u16, on: bool) {
+        let rest = flags(self.page) & !flag;
+        let mark = if on { flag } else { 0 };
+        let header = header_edit(FORMAT, kind_of(self.level), owner(self.page), rest | mark);
+        self.page[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header);
+    }
 }

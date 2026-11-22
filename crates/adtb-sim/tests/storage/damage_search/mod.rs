@@ -4,6 +4,7 @@
 mod case;
 mod consumers;
 mod generate;
+mod index_shape;
 mod judge;
 mod ledger;
 mod plans;

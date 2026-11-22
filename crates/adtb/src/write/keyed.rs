@@ -24,7 +24,7 @@ impl<R: Runtime> Stmt<'_, R> {
         let (prefix, mut rows) = self.keyed(rel, key)?;
         if rows.len() > 1 {
             let index = &self.db.bindings.indexes()[&self.rel(rel).key_index].index;
-            return Err(Broken::DuplicateKey(index.schema().encode(&prefix)).into());
+            return Err(Broken::DuplicateKey(index.schema().encode(&prefix)?).into());
         }
         Ok(rows.pop())
     }

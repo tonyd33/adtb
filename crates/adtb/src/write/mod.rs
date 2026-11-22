@@ -230,6 +230,7 @@ impl From<vacuum::Error> for Error {
                  {len} bytes over the limit of {limit}"
             ),
             vacuum::Error::Stopped => Error::Exec(exec::Error::Cancelled),
+            vacuum::Error::Unkeyed(c) => Error::Exec(exec::Broken::UnkeyedRow(c.0).into()),
         }
     }
 }
@@ -238,8 +239,15 @@ impl From<crate::btree::Error> for Error {
     fn from(e: crate::btree::Error) -> Error {
         match e {
             crate::btree::Error::Page(p) => p.into(),
+            crate::btree::Error::Key(e) => e.into(),
             other => Rot::Index(other).into(),
         }
+    }
+}
+
+impl From<crate::key::EncodeError> for Error {
+    fn from(e: crate::key::EncodeError) -> Error {
+        Error::Exec(e.into())
     }
 }
 
@@ -256,7 +264,7 @@ impl From<crate::catalog::Error> for Error {
             C::Page(p)
             | C::Heap(crate::heap::Error::Page(p))
             | C::Index(crate::btree::Error::Page(p)) => p.into(),
-            C::Index(e @ (crate::btree::Error::Malformed(_) | crate::btree::Error::Entry(_))) => {
+            C::Index(e @ (crate::btree::Error::Malformed(_) | crate::btree::Error::Entry(..))) => {
                 Rot::Index(e).into()
             }
             C::Corrupt(r) => Rot::Catalog(r).into(),

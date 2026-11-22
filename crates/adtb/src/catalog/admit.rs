@@ -230,7 +230,7 @@ fn too_long(
     };
     let rel = schema.relation(spec.relation);
     let module = &schema.module(rel.module).name;
-    let size = ks.encode(key).len();
+    let size = ks.encode(key)?.len();
     Ok(format!(
         "index `{module}::{}.{}` needs a key payload of {size} bytes; the limit is {} bytes",
         rel.name,

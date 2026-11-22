@@ -761,7 +761,7 @@ fn duplicates(b: &Built) -> Result<(), Error> {
                 element_types(schema, normal, spec.relation, c, &spec.elements).map_err(broken)?;
             for row in &ctors[&ctor_id(schema, spec.relation, c)] {
                 if let Some(key) = row_key(b.indexing.keyed(*id), &ks, c, row)?
-                    && !seen.insert(ks.encode(&key))
+                    && !seen.insert(ks.encode(&key)?)
                 {
                     shared.push(shown_key(schema, &types, &key)?);
                 }

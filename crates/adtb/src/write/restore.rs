@@ -216,7 +216,7 @@ fn duplicates<R: Runtime>(
         let at = stmt.stored(r.ctors[c as usize].heap, &row)?;
         if let Some(key) = ix.keys.key(c, &at, &types)? {
             let group = groups
-                .entry(stored.index.schema().encode(&key))
+                .entry(stored.index.schema().encode(&key)?)
                 .or_default();
             if id == r.key_index {
                 group.insert(row.clone(), row);

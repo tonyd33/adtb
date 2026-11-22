@@ -487,6 +487,7 @@ fn value_size(v: &Value) -> usize {
 fn index_error(e: btree::Error) -> Error {
     match e {
         btree::Error::Page(p) => Error::Page(p),
+        btree::Error::Key(e) => e.into(),
         other => Rot::Index(other).into(),
     }
 }
@@ -731,7 +732,7 @@ impl<R: Runtime> Store<R> {
         bounds: ProbeBounds<'_>,
     ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
         let schema = self.index(index)?.index.schema();
-        let wanted = schema.encode(key);
+        let wanted = schema.encode(key)?;
         let types = self.key_types(index)?;
         for &(c, heap) in routes {
             let Some(stored) = self.past_heap(heap)? else {
@@ -750,7 +751,9 @@ impl<R: Runtime> Store<R> {
                         if !rows
                             .keys
                             .key(c, &v.row, &types)?
-                            .is_some_and(|k| schema.encode(&k) == wanted)
+                            .map(|k| schema.encode(&k))
+                            .transpose()?
+                            .is_some_and(|k| k == wanted)
                         {
                             continue;
                         }
@@ -898,8 +901,8 @@ impl<R: Runtime> Store<R> {
         let field = KeySchema::new(vec![next]);
         let at = |v: &Value| {
             let mut b = base.clone();
-            field.encode_into(std::slice::from_ref(v), &mut b);
-            b
+            field.encode_into(std::slice::from_ref(v), &mut b)?;
+            Ok::<_, Error>(b)
         };
         let (lo, hi) = match dir {
             Dir::Asc => (lo, hi),
@@ -907,23 +910,23 @@ impl<R: Runtime> Store<R> {
         };
         let start = match lo {
             None => Bound::Included(base.clone()),
-            Some((v, true)) => Bound::Included(at(&v)),
-            Some((v, false)) => match prefix_end(&at(&v)) {
+            Some((v, true)) => Bound::Included(at(&v)?),
+            Some((v, false)) => match prefix_end(&at(&v)?) {
                 Bound::Excluded(end) => Bound::Included(end),
                 _ => return Ok(Vec::new()),
             },
         };
         let end = match hi {
             None => prefix_end(&base),
-            Some((v, true)) => prefix_end(&at(&v)),
-            Some((v, false)) => Bound::Excluded(at(&v)),
+            Some((v, true)) => prefix_end(&at(&v)?),
+            Some((v, false)) => Bound::Excluded(at(&v)?),
         };
         self.entries(id, start, end, routes, bounds)
     }
 
     fn encode_prefix(&self, id: IndexId, prefix: &[Value]) -> Result<Vec<u8>, Error> {
         let components = self.index(id)?.index.schema().components();
-        Ok(KeySchema::new(components[..prefix.len()].to_vec()).encode(prefix))
+        Ok(KeySchema::new(components[..prefix.len()].to_vec()).encode(prefix)?)
     }
 
     /// Returns the entries of index `id` whose encodings lie between `lo` and `hi`, each with
@@ -1030,7 +1033,7 @@ impl<R: Runtime> Store<R> {
                         let Some(key) = rows.keys.key(c, &v.row, &types)? else {
                             continue;
                         };
-                        let bytes = schema.encode(&key);
+                        let bytes = schema.encode(&key)?;
                         let span = (
                             lo.as_ref().map(Vec::as_slice),
                             hi.as_ref().map(Vec::as_slice),

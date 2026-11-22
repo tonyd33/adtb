@@ -171,7 +171,16 @@ impl From<heap::Error> for Error {
 
 impl From<btree::Error> for Error {
     fn from(e: btree::Error) -> Error {
-        Error::Index(e)
+        match e {
+            btree::Error::Key(e) => e.into(),
+            e => Error::Index(e),
+        }
+    }
+}
+
+impl From<crate::key::EncodeError> for Error {
+    fn from(e: crate::key::EncodeError) -> Error {
+        Broken::IndexKey(e.into()).into()
     }
 }
 

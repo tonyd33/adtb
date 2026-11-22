@@ -19,6 +19,10 @@ include = [
   "crates/adtb/src/catalog/codec.rs",
   "crates/adtb-exec/src/exec/layout.rs",
   "crates/adtb-store/src/mvcc/**/*.rs",
+  "crates/adtb-store/src/key/**/*.rs",
+  "crates/adtb-store/src/btree/**/*.rs",
+  "crates/adtb/src/write/past.rs",
+  "crates/adtb-exec/src/exec/store.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs"]
 rows = { decode_panics = "ratchet" }

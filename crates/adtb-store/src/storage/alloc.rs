@@ -52,6 +52,18 @@ fn first_difference(old: &[u8], new: &[u8], mut i: usize) -> usize {
     i
 }
 
+impl<R: Runtime> PageExclusive<'_, R> {
+    /// Change the page through `f` as [`PageExclusive::update`] does when `f` succeeds. Returns
+    /// what `f` returns; on an error the page and the log are unchanged.
+    pub fn try_update<T, E>(&mut self, f: impl FnOnce(&mut [u8]) -> Result<T, E>) -> Result<T, E> {
+        let mut copy = self.to_vec();
+        let made = f(&mut copy)?;
+        let edits = diff(self, &copy);
+        self.change(edits);
+        Ok(made)
+    }
+}
+
 impl<R: Runtime> Pager<R> {
     /// Returns the number of pages one allocation bitmap page covers.
     fn bitmap_span(&self) -> u64 {

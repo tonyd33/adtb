@@ -16,6 +16,8 @@ pub enum Error {
     Page(PageError),
     Index(btree::Error),
     Heap(heap::Error),
+    /// A version of this constructor holds a row whose key does not compute.
+    Unkeyed(CtorId),
 }
 
 impl From<PageError> for Error {
@@ -36,8 +38,8 @@ impl From<heap::Error> for Error {
     }
 }
 
-/// Returns the key of a row of a constructor.
-pub type Key<'a> = dyn Fn(CtorId, &[Value]) -> Vec<Value> + Sync + 'a;
+/// Returns the key of a row of a constructor, `None` when it does not compute.
+pub type Key<'a> = dyn Fn(CtorId, &[Value]) -> Option<Vec<Value>> + Sync + 'a;
 
 /// The history heaps of some constructors of one sum and the key index over them, whose
 /// entries are `(key, ctor, tid)`.
@@ -100,7 +102,7 @@ pub(crate) fn keep<R: Runtime>(
             if !kept {
                 continue;
             }
-            let key = (into.key)(ctor, &v.row);
+            let key = (into.key)(ctor, &v.row).ok_or(Error::Unkeyed(ctor))?;
             let earlier = if v.flags.contains(Flags::KEPT) {
                 held(pager, into, past, ctor, &key, &v.header)?
             } else {
@@ -154,10 +156,19 @@ fn held<R: Runtime>(
         }
     }
     let mut found = Held::Not;
+    let mut unkeyed = false;
     past.scan(pager, |v| {
-        if v.header.writers == writers && (into.key)(ctor, &v.row) == key {
-            found = Held::Unindexed(v.tid);
+        if v.header.writers != writers {
+            return;
+        }
+        match (into.key)(ctor, &v.row) {
+            Some(k) if k == key => found = Held::Unindexed(v.tid),
+            Some(_) => {}
+            None => unkeyed = true,
         }
     })?;
+    if unkeyed {
+        return Err(Error::Unkeyed(ctor));
+    }
     Ok(found)
 }

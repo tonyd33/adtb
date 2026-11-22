@@ -348,10 +348,22 @@ A page id read anywhere may be stale by the time it is followed: the
 page may have been unlinked and freed, and allocated again to any
 owner. A reader trusts a page it reaches only once a validated read
 shows it a live page of the tree, at the level it expects, whose low
-key is at or below the key sought; a page that fails while the page that
-led to it is unchanged is malformed, and otherwise the reader starts
-again from the root. A writer checks the same under the page's
-exclusive latch. Pages of the leaf level are the only ones unlinked.
+key is at or below the key sought, and, reached by a right link, whose
+low key is the high key of the page whose link it followed; a page that
+fails while the page that led to it is unchanged is malformed, and
+otherwise the reader starts again from the root. A writer checks the
+same under the page's exclusive latch. Pages of the leaf level are the
+only ones unlinked.
+
+A malformed page, and a leaf holding an entry that does not decode
+under its index's key schema, are refused as out of shape
+([storage.md §3](storage.md#3-corruption-detection)), judged again
+under the exclusive latch of the page refused with no latch of the tree
+held: the page itself when its own bytes put it out of frame or format,
+or the root out of any shape, and otherwise the page whose downlink or
+right link names it, while that page still names it and a validated
+read still finds the fault. A descent whose fault no longer holds
+starts again from the root.
 
 Invariants:
 

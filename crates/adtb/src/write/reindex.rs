@@ -232,13 +232,13 @@ impl<R: Runtime> Scan<'_, R> {
                 break on_page;
             };
             for (key, roots, counted) in on_page {
-                let key_len = schema.encode(&key).len();
+                let key_len = schema.encode(&key)?.len();
                 for root in roots {
                     let entry = schema.encode_entry(&Entry {
                         key: key.clone(),
                         ctor,
                         tid: root,
-                    });
+                    })?;
                     out.push(RunEntry {
                         entry,
                         key_len,

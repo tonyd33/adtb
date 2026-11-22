@@ -1,6 +1,6 @@
 use adtb_lang::ids::CatCtorId;
 
-use super::codec::{DecodeError, KeySchema, Reader};
+use super::codec::{DecodeError, EncodeError, KeySchema, Reader};
 use super::ovarint;
 use super::value::Value;
 
@@ -46,12 +46,12 @@ pub struct Entry {
 }
 
 impl KeySchema {
-    pub fn encode_entry(&self, entry: &Entry) -> Vec<u8> {
-        let mut out = self.encode(&entry.key);
+    pub fn encode_entry(&self, entry: &Entry) -> Result<Vec<u8>, EncodeError> {
+        let mut out = self.encode(&entry.key)?;
         ovarint::encode(entry.ctor.0, &mut out);
         out.extend_from_slice(&entry.tid.page.to_be_bytes()[2..]);
         out.extend_from_slice(&entry.tid.slot.to_be_bytes());
-        out
+        Ok(out)
     }
 
     pub fn decode_entry(&self, bytes: &[u8]) -> Result<Entry, DecodeError> {

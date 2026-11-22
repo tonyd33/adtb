@@ -12,7 +12,7 @@ use crate::runtime::{Runtime, Threads};
 use crate::steps::{Retire, Step};
 use crate::storage::{Damage, PageError, Pager, Pid, Quarantine};
 
-use super::node::{self, Bounds, FORMAT, Item, kind_of};
+use super::node::{self, Bounds, FORMAT, Item, NodeMut, kind_of};
 use super::tree::{BTree, Error, node_of, separator, visit};
 
 /// One entry of a run.
@@ -335,6 +335,7 @@ impl BTree {
 ///
 /// A page is marked after the pages leading to it, so a reader still in the old tree that finds a
 /// page deleted or reused finds the page that led to it changed, and starts again from the root.
+/// A page that is not a node is freed unmarked.
 ///
 /// Precondition: nothing writes the pages.
 pub fn retire<R: Runtime>(pager: &Pager<R>, pages: &[Pid]) -> Result<(), PageError> {
@@ -343,7 +344,12 @@ pub fn retire<R: Runtime>(pager: &Pager<R>, pages: &[Pid]) -> Result<(), PageErr
         if pager.is_free(pid)? {
             continue;
         }
-        match pager.update(&[pid], |p| node::set_deleted(p[0])) {
+        let mark = |p: &mut [&mut [u8]]| {
+            if let Ok(mut n) = NodeMut::new(p[0]) {
+                n.set_deleted();
+            }
+        };
+        match pager.update(&[pid], mark) {
             Ok(_) => sound.push(pid),
             Err(e) if e.pid == pid && e.damage != Damage::Unreadable => pager.scrap(pid)?,
             Err(e) => return Err(e),

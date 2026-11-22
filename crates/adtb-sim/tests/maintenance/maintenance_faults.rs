@@ -1121,7 +1121,7 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
         for (spelled, value, want) in keys {
             let text = form.replace("{}", &spelled);
             let plan = format!("Probe {rel} {field}");
-            let key = schema.encode(&[value]);
+            let key = schema.encode(&[value]).unwrap();
             reads.push(Crossing {
                 text,
                 want,

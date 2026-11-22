@@ -487,7 +487,7 @@ fn generated_keys_round_trip() {
     for _ in 0..5000 {
         let schema = gen_schema(&mut rng, false);
         let key = gen_key(&mut rng, &schema);
-        let bytes = schema.encode(&key);
+        let bytes = schema.encode(&key).unwrap();
         assert_eq!(
             schema.decode(&bytes),
             Ok(key.clone()),
@@ -496,7 +496,7 @@ fn generated_keys_round_trip() {
         let other = gen_nearby_key(&mut rng, &schema, &key);
         assert_eq!(
             key == other,
-            bytes == schema.encode(&other),
+            bytes == schema.encode(&other).unwrap(),
             "{key:?} {other:?}"
         );
     }
@@ -510,7 +510,7 @@ fn generated_keys_preserve_order() {
         let a = gen_key(&mut rng, &schema);
         let b = gen_nearby_key(&mut rng, &schema, &a);
         assert_eq!(
-            schema.encode(&a).cmp(&schema.encode(&b)),
+            schema.encode(&a).unwrap().cmp(&schema.encode(&b).unwrap()),
             cmp_keys(&schema, &a, &b),
             "{schema:?}\n{a:?}\n{b:?}"
         );
@@ -535,7 +535,7 @@ fn decoding_accepts_only_encodings() {
                 Err(DecodeError::OutOfDomain)
             };
             assert_eq!(
-                schema.decode(&schema.encode(&[v])),
+                schema.decode(&schema.encode(&[v]).unwrap()),
                 want,
                 "{:?} {n}",
                 e.scalar
@@ -560,7 +560,7 @@ fn decoding_accepts_only_encodings() {
             Err(DecodeError::OutOfDomain)
         };
         assert_eq!(
-            schema.decode(&schema.encode(std::slice::from_ref(&v))),
+            schema.decode(&schema.encode(std::slice::from_ref(&v)).unwrap()),
             want,
             "{v:?}"
         );
@@ -568,7 +568,7 @@ fn decoding_accepts_only_encodings() {
     let mut rng = Rng(3);
     for _ in 0..20000 {
         let schema = gen_schema(&mut rng, false);
-        let mut bytes = schema.encode(&gen_key(&mut rng, &schema));
+        let mut bytes = schema.encode(&gen_key(&mut rng, &schema)).unwrap();
         match rng.below(4) {
             0 if !bytes.is_empty() => {
                 let i = rng.below(bytes.len());
@@ -582,7 +582,7 @@ fn decoding_accepts_only_encodings() {
             _ => bytes = (0..rng.below(12)).map(|_| rng.next() as u8).collect(),
         }
         if let Ok(key) = schema.decode(&bytes) {
-            assert_eq!(schema.encode(&key), bytes, "{schema:?} {key:?}");
+            assert_eq!(schema.encode(&key).unwrap(), bytes, "{schema:?} {key:?}");
         }
     }
 }
@@ -603,14 +603,17 @@ fn generated_entries_order_and_round_trip() {
             .unwrap(),
         };
         let (a, b) = (entry(), entry());
-        let (ea, eb) = (schema.encode_entry(&a), schema.encode_entry(&b));
+        let (ea, eb) = (
+            schema.encode_entry(&a).unwrap(),
+            schema.encode_entry(&b).unwrap(),
+        );
         assert_eq!(schema.decode_entry(&ea), Ok(a.clone()));
         let expected = cmp_keys(&schema, &a.key, &b.key)
             .then(a.ctor.cmp(&b.ctor))
             .then(a.tid.cmp(&b.tid));
         assert_eq!(ea.cmp(&eb), expected, "{a:?} {b:?}");
 
-        let mut seek = schema.encode(&a.key);
+        let mut seek = schema.encode(&a.key).unwrap();
         ovarint::encode(a.ctor.0, &mut seek);
         assert!(ea.starts_with(&seek));
         let same_range = a.key == b.key && a.ctor == b.ctor;
@@ -763,7 +766,7 @@ fn each_type_encodes_as_its_row_of_the_encoding_table() {
         (KeyType::Record(vec![]), Value::Record(vec![]), vec![]),
     ];
     for (ty, v, bytes) in rows {
-        let encoded = asc(vec![ty]).encode(std::slice::from_ref(&v));
+        let encoded = asc(vec![ty]).encode(std::slice::from_ref(&v)).unwrap();
         assert_eq!(encoded, bytes, "{v:?}");
     }
 }
@@ -790,7 +793,7 @@ fn text_order_is_code_point_order() {
     ];
     let encoded: Vec<Vec<u8>> = ascending
         .iter()
-        .map(|t| schema.encode(&[Value::Text((*t).into())]))
+        .map(|t| schema.encode(&[Value::Text((*t).into())]).unwrap())
         .collect();
     assert!(encoded.windows(2).all(|w| w[0] < w[1]));
 }
@@ -798,8 +801,12 @@ fn text_order_is_code_point_order() {
 #[test]
 fn text_is_prefix_free_before_another_component() {
     let schema = asc(vec![scalar(Scalar::Text), scalar(Scalar::I16)]);
-    let short = schema.encode(&[Value::Text("a".into()), Value::I16(i16::MAX)]);
-    let long = schema.encode(&[Value::Text("a\0".into()), Value::I16(i16::MIN)]);
+    let short = schema
+        .encode(&[Value::Text("a".into()), Value::I16(i16::MAX)])
+        .unwrap();
+    let long = schema
+        .encode(&[Value::Text("a\0".into()), Value::I16(i16::MIN)])
+        .unwrap();
     assert!(short < long);
 }
 
@@ -812,7 +819,11 @@ fn descending_components_invert_the_order() {
     let ascending = ["", "\0", "a", "a\0", "ab", "b"];
     let encoded: Vec<Vec<u8>> = ascending
         .iter()
-        .map(|t| schema.encode(&[Value::Text((*t).into()), Value::I64(0)]))
+        .map(|t| {
+            schema
+                .encode(&[Value::Text((*t).into()), Value::I64(0)])
+                .unwrap()
+        })
         .collect();
     assert!(encoded.windows(2).all(|w| w[0] > w[1]));
     for (t, bytes) in ascending.iter().zip(&encoded) {
@@ -822,7 +833,7 @@ fn descending_components_invert_the_order() {
         );
     }
     let desc_i8 = KeySchema::new(vec![(scalar(Scalar::I8), Dir::Desc)]);
-    assert_eq!(desc_i8.encode(&[Value::I8(0)]), [0x7F]);
+    assert_eq!(desc_i8.encode(&[Value::I8(0)]).unwrap(), [0x7F]);
 }
 
 #[test]
@@ -837,7 +848,7 @@ fn floats_are_canonical_and_ordered() {
     assert_eq!(F32::new(f32::from_bits(0xFF80_0001)), F32::new(f32::NAN));
 
     let f64s = asc(vec![scalar(Scalar::F64)]);
-    let encode64 = |x: f64| f64s.encode(&[Value::F64(F64::new(x))]);
+    let encode64 = |x: f64| f64s.encode(&[Value::F64(F64::new(x))]).unwrap();
     assert_eq!(encode64(-0.0), encode64(0.0));
     assert_eq!(encode64(0.0), [0x80, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(encode64(f64::NAN), [0xFF, 0xF8, 0, 0, 0, 0, 0, 0]);
@@ -859,7 +870,7 @@ fn floats_are_canonical_and_ordered() {
     assert!(encoded.windows(2).all(|w| w[0] < w[1]));
 
     let f32s = asc(vec![scalar(Scalar::F32)]);
-    let encode32 = |x: f32| f32s.encode(&[Value::F32(F32::new(x))]);
+    let encode32 = |x: f32| f32s.encode(&[Value::F32(F32::new(x))]).unwrap();
     assert_eq!(encode32(-0.0), encode32(0.0));
     assert_eq!(encode32(f32::NAN), [0xFF, 0xC0, 0, 0]);
     let ascending32 = [
@@ -911,7 +922,7 @@ fn sums_order_by_declaration_through_order_keys() {
     ];
     let encoded: Vec<Vec<u8>> = ascending
         .iter()
-        .map(|v| schema.encode(std::slice::from_ref(v)))
+        .map(|v| schema.encode(std::slice::from_ref(v)).unwrap())
         .collect();
     assert!(encoded.windows(2).all(|w| w[0] < w[1]));
 }
@@ -928,7 +939,7 @@ fn nested_options_order() {
     ];
     let encoded: Vec<Vec<u8>> = ascending
         .iter()
-        .map(|v| schema.encode(std::slice::from_ref(v)))
+        .map(|v| schema.encode(std::slice::from_ref(v)).unwrap())
         .collect();
     assert!(encoded.windows(2).all(|w| w[0] < w[1]));
     for (v, bytes) in ascending.iter().zip(&encoded) {
@@ -949,7 +960,7 @@ fn unordered_types_encode_their_parts() {
             days: -1,
         },
     ];
-    let bytes = schema.encode(&key);
+    let bytes = schema.encode(&key).unwrap();
     assert_eq!(
         bytes,
         [
@@ -961,6 +972,56 @@ fn unordered_types_encode_their_parts() {
 }
 
 type Decoded = Result<Vec<Value>, DecodeError>;
+
+#[test]
+fn encoding_refuses_a_key_outside_its_types_and_leaves_the_output() {
+    use EncodeError::*;
+    let text = || scalar(Scalar::Text);
+    let rows: Vec<(Vec<KeyType>, Vec<Value>, EncodeError)> = vec![
+        (
+            vec![text()],
+            vec![],
+            Count {
+                expected: 1,
+                found: 0,
+            },
+        ),
+        (vec![text()], vec![Value::I64(1)], Type),
+        (
+            vec![option(text())],
+            vec![Value::Sum {
+                ctor: 2,
+                fields: vec![],
+            }],
+            Type,
+        ),
+        (
+            vec![option(text())],
+            vec![Value::Sum {
+                ctor: 1,
+                fields: vec![],
+            }],
+            Count {
+                expected: 1,
+                found: 0,
+            },
+        ),
+        (
+            vec![KeyType::Record(vec![text(), text()])],
+            vec![Value::Record(vec![Value::Text("a".into()), Value::I64(1)])],
+            Type,
+        ),
+    ];
+    for (types, key, refused) in rows {
+        let mut out = vec![7];
+        assert_eq!(
+            asc(types).encode_into(&key, &mut out),
+            Err(refused),
+            "{key:?}"
+        );
+        assert_eq!(vec![7], out);
+    }
+}
 
 #[test]
 fn decoding_refuses_each_form_the_encoding_does_not_produce() {
@@ -1048,7 +1109,7 @@ fn decoding_refuses_each_form_the_encoding_does_not_produce() {
         ctor: CtorId(300),
         tid: Tid::new(12, 3).unwrap(),
     };
-    let bytes = schema.encode_entry(&entry);
+    let bytes = schema.encode_entry(&entry).unwrap();
     assert_eq!(bytes, [0x87, 0xF1, 0x01, 0x2C, 0, 0, 0, 0, 0, 12, 0, 3]);
     assert_eq!(schema.decode_entry(&bytes), Ok(entry));
     assert_eq!(
@@ -1118,7 +1179,7 @@ fn anonymous_records_encode_fields_in_name_order() {
     let schema = asc(vec![KeyType::AnonRecord(ty)]);
     let v = Value::Record(vec![Value::Text("x".into()), Value::I8(1)]);
     assert_eq!(
-        schema.encode(std::slice::from_ref(&v)),
+        schema.encode(std::slice::from_ref(&v)).unwrap(),
         [0x78, 0x00, 0x01, 0x81]
     );
     assert_eq!(
@@ -1157,14 +1218,17 @@ fn anonymous_sums_encode_the_name_order_index_then_fields() {
         fields: vec![Value::I8(-1), Value::I16(2)],
     };
     assert_eq!(
-        schema.encode(std::slice::from_ref(&many)),
+        schema.encode(std::slice::from_ref(&many)).unwrap(),
         [0x00, 0x7F, 0x80, 0x02]
     );
     let some = Value::Sum {
         ctor: 2,
         fields: vec![Value::I8(0)],
     };
-    assert_eq!(schema.encode(std::slice::from_ref(&some)), [0x02, 0x80]);
+    assert_eq!(
+        schema.encode(std::slice::from_ref(&some)).unwrap(),
+        [0x02, 0x80]
+    );
     assert_eq!(schema.decode(&[0x02, 0x80]), Ok(vec![some]));
     assert_eq!(schema.decode(&[0x03]), Err(DecodeError::UnknownConstructor));
     assert_eq!(schema.decode(&[0xF0, 0x01]), Err(DecodeError::BadVarint));
@@ -1184,7 +1248,7 @@ fn descending_anonymous_sums_invert_the_index() {
         ctor: 1,
         fields: vec![],
     };
-    assert_eq!(schema.encode(std::slice::from_ref(&b)), [0xFE]);
+    assert_eq!(schema.encode(std::slice::from_ref(&b)).unwrap(), [0xFE]);
     assert_eq!(schema.decode(&[0xFE]), Ok(vec![b]));
 }
 

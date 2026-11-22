@@ -2,7 +2,7 @@ use std::ops::Bound;
 
 use super::build::{BuildError, RunEntry, merge_runs};
 use super::leaf;
-use super::node::{self, Item, Malformed, Node};
+use super::node::{self, Item, Malformed, Node, NodeMut};
 use super::tree::{prefix_end, separator};
 use super::{BTree, FORMAT};
 use crate::storage::{FIRST_EDITABLE, HEADER_LEN, PageKind, Pid, header_edit};
@@ -123,7 +123,7 @@ fn inserts_keep_slots_in_order() {
     let mut p = blank(PageKind::IndexLeaf);
     for k in [&b"m"[..], b"a", b"z", b"", b"mm"] {
         let i = Node::new(&p).unwrap().search(k, true).unwrap();
-        node::insert(&mut p, i, &leaf(k));
+        NodeMut::new(&mut p).unwrap().insert(i, &leaf(k)).unwrap();
     }
     assert_eq!(
         keys(&p),
@@ -144,18 +144,24 @@ fn removed_cells_are_reclaimed_by_compaction() {
     while Node::new(&p).unwrap().room().unwrap() >= leaf(&big).cost() {
         let mut k = big.clone();
         k.push(n);
-        node::insert(&mut p, usize::from(n), &leaf(&k));
+        NodeMut::new(&mut p)
+            .unwrap()
+            .insert(usize::from(n), &leaf(&k))
+            .unwrap();
         n += 1;
     }
     assert_eq!(n, 6);
     for _ in 0..n {
-        node::remove(&mut p, 0);
+        NodeMut::new(&mut p).unwrap().remove(0);
     }
     assert_eq!(Node::new(&p).unwrap().room(), Ok(room));
     for i in 0..n {
         let mut k = big.clone();
         k.push(i + 100);
-        node::insert(&mut p, usize::from(i), &leaf(&k));
+        NodeMut::new(&mut p)
+            .unwrap()
+            .insert(usize::from(i), &leaf(&k))
+            .unwrap();
     }
     let want: Vec<Vec<u8>> = (0..n).map(|i| [&big[..], &[i + 100]].concat()).collect();
     assert_eq!(want, keys(&p));
@@ -198,7 +204,10 @@ fn build_writes_high_key_right_link_and_children() {
 #[test]
 fn out_of_bounds_offsets_are_refused() {
     let mut p = blank(PageKind::IndexLeaf);
-    node::insert(&mut p, 0, &leaf(b"abc"));
+    NodeMut::new(&mut p)
+        .unwrap()
+        .insert(0, &leaf(b"abc"))
+        .unwrap();
     let mut bad_slot = p.clone();
     bad_slot[42..44].copy_from_slice(&30_u16.to_le_bytes());
     assert_eq!(Node::new(&bad_slot).unwrap().key(0), Err(Malformed));
@@ -233,7 +242,7 @@ fn the_incomplete_mark_survives_rebuilds_and_keeps_other_flags() {
     let mut p = vec![0; PAGE];
     p[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header_edit(FORMAT, PageKind::IndexLeaf, 9, 1));
     assert!(!Node::new(&p).unwrap().incomplete());
-    node::set_incomplete(&mut p, true);
+    NodeMut::new(&mut p).unwrap().set_incomplete(true);
     assert!(Node::new(&p).unwrap().incomplete());
     let bounds = node::Bounds {
         low: None,
@@ -243,7 +252,7 @@ fn the_incomplete_mark_survives_rebuilds_and_keeps_other_flags() {
     node::build(&mut p, 0, &[leaf(b"a")], bounds);
     assert!(Node::new(&p).unwrap().incomplete());
     assert_eq!(crate::storage::flags(&p) & 1, 1);
-    node::set_incomplete(&mut p, false);
+    NodeMut::new(&mut p).unwrap().set_incomplete(false);
     assert!(!Node::new(&p).unwrap().incomplete());
     assert_eq!(crate::storage::flags(&p), 1);
     assert_eq!(keys(&p), [b"a".to_vec()]);
@@ -307,7 +316,10 @@ fn a_posting_stands_for_its_key_followed_by_each_remainder() {
 fn an_entry_sharing_a_postings_key_joins_it() {
     let mut p = leaf_of(&[posting(b"k", &[b"2", b"4"]), leaf(b"m")]);
     for x in [&b"k3"[..], b"k1", b"k5", b"l"] {
-        assert!(leaf::insert(&mut p, x));
+        assert_eq!(
+            Ok(true),
+            leaf::insert(&mut NodeMut::new(&mut p).unwrap(), x)
+        );
     }
     assert_eq!(
         all(&p),
@@ -344,10 +356,10 @@ fn removing_a_postings_last_remainder_removes_its_cell() {
     let mut p = leaf_of(&[posting(b"k", &[b"1", b"2"]), leaf(b"z")]);
     let find = |p: &[u8], x: &[u8]| leaf::find(&Node::new(p).unwrap(), x).unwrap();
     let at = find(&p, b"k2");
-    leaf::remove(&mut p, at);
+    leaf::remove(&mut NodeMut::new(&mut p).unwrap(), at).unwrap();
     assert_eq!(all(&p), strings(&[b"k1", b"z"]));
     let at = find(&p, b"k1");
-    leaf::remove(&mut p, at);
+    leaf::remove(&mut NodeMut::new(&mut p).unwrap(), at).unwrap();
     assert_eq!(all(&p), strings(&[b"z"]));
     assert_eq!(Node::new(&p).unwrap().count(), 1);
 }
@@ -435,9 +447,9 @@ fn index_key_limits_include_encoding_constructor_width_and_tid() {
                 tid: Tid::new(1, 0).unwrap(),
             };
             let max = BTree::max_entry_len(page_size);
-            let overhead = index.schema().encode_entry(&entry).len();
+            let overhead = index.schema().encode_entry(&entry).unwrap().len();
             entry.key = vec![Value::Bytes(vec![1; max - overhead])];
-            assert_eq!(index.schema().encode_entry(&entry).len(), max);
+            assert_eq!(index.schema().encode_entry(&entry).unwrap().len(), max);
             assert_eq!(index.check_key(page_size, &entry.key, ctor), Ok(()));
             entry.key = vec![Value::Bytes(vec![1; max - overhead + 1])];
             assert_eq!(

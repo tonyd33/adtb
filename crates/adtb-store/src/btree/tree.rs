@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 use std::ops::Bound;
 
-use crate::key::DecodeError;
+use crate::key::{DecodeError, EncodeError};
 use crate::runtime::Runtime;
 use crate::steps;
 use crate::storage::{PageError, PageExclusive, PageOptimistic, Pager, Pid, Shape, Walk};
 
 use super::leaf;
-use super::node::{self, Bounds, FORMAT, Item, Malformed, Node, kind_of};
+use super::node::{self, Bounds, FORMAT, Item, Malformed, Node, NodeMut, kind_of};
 
 /// A B-link tree of byte strings ordered by `memcmp`, rooted at a page that
 /// never moves.
@@ -27,8 +27,11 @@ pub enum Error {
         len: usize,
         max: usize,
     },
-    /// A stored entry does not decode under its index's key schema.
-    Entry(DecodeError),
+    /// A key does not encode under its index's key schema.
+    Key(EncodeError),
+    /// A stored entry does not decode under its index's key schema, and this leaf, whose range
+    /// holds it, no longer holds it under its exclusive latch.
+    Entry(Pid, DecodeError),
 }
 
 impl From<PageError> for Error {
@@ -74,6 +77,15 @@ enum Step {
     Right(Pid, Vec<u8>),
     Down(Pid),
     Here,
+}
+
+/// What came of refusing a page a descent found out of shape.
+enum Reached {
+    Refused(PageError),
+    /// The page, or the page that led to it, changed before the fault could be judged again.
+    Changed,
+    /// The root is a node of the tree but not the page the descent expects.
+    Unjudged,
 }
 
 /// The page at a level whose range held a key when it was read, and the page
@@ -176,11 +188,43 @@ fn holds_from(n: &Node, key: &[u8], level: u16) -> Result<bool, Malformed> {
     Ok(!n.deleted() && n.level() == level && n.above_low(key)?)
 }
 
-/// Clear the mark of the child page at `at` in `pages`, if there is one.
-fn complete(pages: &mut [&mut [u8]], at: usize) {
-    if let Some(child) = pages.get_mut(at) {
-        node::set_incomplete(child, false);
+/// Returns whether `n`, reached by the right link of a page whose high key is `high`, has that
+/// key as its low key. Returns true when `n` was not reached by a right link.
+fn follows(n: &Node, high: Option<&[u8]>) -> Result<bool, Malformed> {
+    match high {
+        None => Ok(true),
+        Some(h) => Ok(n.low()? == Some(h)),
     }
+}
+
+/// Returns whether `shape` is a fault of a page's own bytes, not of the page naming it.
+fn own_fault(shape: Shape) -> bool {
+    matches!(shape, Shape::Frame | Shape::Format | Shape::Kind)
+}
+
+/// Returns whether `n` names page `pid` as its right sibling or as a child.
+fn names(n: &Node, pid: Pid) -> bool {
+    n.right() == Some(pid) || (0..n.count()).any(|i| n.child(i) == Ok(pid))
+}
+
+/// Returns a copy of the latched node `g` with its mark of a missing downlink cleared.
+fn marked_complete<R: Runtime>(g: &PageExclusive<'_, R>) -> Result<Vec<u8>, Error> {
+    let (copy, ()) = node::edit(g, |n| {
+        n.set_incomplete(false);
+        Ok(())
+    })
+    .map_err(|Malformed| Error::Malformed(g.pid()))?;
+    Ok(copy)
+}
+
+/// Returns a copy of the latched node `g` marked as unlinked from its tree.
+fn marked_deleted<R: Runtime>(g: &PageExclusive<'_, R>) -> Result<Vec<u8>, Error> {
+    let (copy, ()) = node::edit(g, |n| {
+        n.set_deleted();
+        Ok(())
+    })
+    .map_err(|Malformed| Error::Malformed(g.pid()))?;
+    Ok(copy)
 }
 
 /// Returns the shortest prefix of `right` above `left`.
@@ -222,9 +266,9 @@ impl BTree {
         Ok(self.descend(pager, from, key, level)?.pid)
     }
 
-    /// Refuse the leaf holding `entry` as [`BTree::refuse_holding`] does.
+    /// Refuse the leaf holding `entry` as [`Shape::Stray`] as [`BTree::refuse_holding`] does.
     pub fn refuse_holding_tested<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Error {
-        self.refuse_holding(pager, entry)
+        self.refuse_holding(pager, entry, Shape::Stray)
     }
 }
 
@@ -250,7 +294,24 @@ impl BTree {
     /// Returns the root's level, which is the number of levels above the
     /// leaves.
     pub fn height<R: Runtime>(&self, pager: &Pager<R>) -> Result<u16, Error> {
-        visit(pager, self.owner, self.root, |n| Ok(n.level()))
+        visit(pager, self.owner, self.root, |n| Ok(n.level())).map_err(|e| self.refused(pager, e))
+    }
+
+    /// Returns `e` with the page it names malformed refused when, under that page's exclusive
+    /// latch, its own bytes put it out of frame or format, or put the root out of any shape.
+    ///
+    /// Preconditions: the caller holds no latch on a page of the tree.
+    fn refused<R: Runtime>(&self, pager: &Pager<R>, e: Error) -> Error {
+        let Error::Malformed(pid) = e else {
+            return e;
+        };
+        let own = |p: &PageExclusive<'_, R>| {
+            node::shape(p, self.owner).filter(|s| pid == self.root || own_fault(*s))
+        };
+        match pager.refuse_if(pid, own) {
+            Some(refused) => Error::Page(refused),
+            None => e,
+        }
     }
 
     /// Returns the longest entry a tree over pages of `page_size` bytes holds.
@@ -311,9 +372,9 @@ impl BTree {
             let mut stack = Vec::new();
             let mut low: Option<Vec<u8>> = None;
             let mut incomplete = None;
-            let mut came_from: Option<PageOptimistic<'_, R>> = None;
+            let mut came_from: Option<(Pid, PageOptimistic<'_, R>)> = None;
             loop {
-                let read = observe(pager, self.owner, pid, |n| {
+                let judge = |n: &Node| {
                     let at = n.level();
                     let (from_low, past_high) = match side {
                         Side::At => (n.above_low(key)?, n.beyond(key)?),
@@ -322,7 +383,12 @@ impl BTree {
                             n.high()?.is_some_and(|h| h < key),
                         ),
                     };
-                    if n.deleted() || at < level || expected.is_some_and(|e| e != at) || !from_low {
+                    if n.deleted()
+                        || at < level
+                        || expected.is_some_and(|e| e != at)
+                        || !from_low
+                        || !follows(n, low.as_deref())?
+                    {
                         return Ok(None);
                     }
                     let mut found = None;
@@ -342,12 +408,15 @@ impl BTree {
                         Step::Down(child)
                     };
                     Ok(Some((step, n.incomplete(), at, found)))
-                });
+                };
+                let read = observe(pager, self.owner, pid, judge);
                 let (step, marked, at, found, guard) = match read {
                     Ok((Ok(Some((step, marked, at, found))), guard)) => {
                         (step, marked, at, found, guard)
                     }
-                    Ok((_, _)) | Err(_) if came_from.as_ref().is_some_and(|g| !g.validate()) => {
+                    Ok((_, _)) | Err(_)
+                        if came_from.as_ref().is_some_and(|(_, g)| !g.validate()) =>
+                    {
                         start = self.root;
                         continue 'descent;
                     }
@@ -355,7 +424,17 @@ impl BTree {
                         start = self.root;
                         continue 'descent;
                     }
-                    Ok((_, _)) => return Err(Error::Malformed(pid)),
+                    Ok((_, _)) => {
+                        let fits = |n: &Node| judge(n).map(|s| s.is_some());
+                        match self.refuse_reached(pager, pid, came_from.as_ref(), fits) {
+                            Reached::Refused(e) => return Err(Error::Page(e)),
+                            Reached::Changed => {
+                                start = self.root;
+                                continue 'descent;
+                            }
+                            Reached::Unjudged => return Err(Error::Malformed(pid)),
+                        }
+                    }
                     Err(e) => return Err(Error::Page(e)),
                 };
                 if marked
@@ -369,7 +448,7 @@ impl BTree {
                         stack: stack.clone(),
                     });
                 }
-                came_from = Some(guard);
+                came_from = Some((pid, guard));
                 match step {
                     Step::Right(p, high) => {
                         pid = p;
@@ -396,6 +475,71 @@ impl BTree {
                     }
                 }
             }
+        }
+    }
+
+    /// Refuse page `pid`, which a descent reached from `from`, the page and validated read that
+    /// led to it, `None` for the root, when a read of it found it out of shape or failing `fits`.
+    ///
+    /// A page out of frame or format by its own bytes, or the root out of any shape, is refused
+    /// itself, judged under its exclusive latch while `from` is unchanged. Any other fault refuses
+    /// `from`, judged under its exclusive latch to name `pid` while a validated read of `pid` still
+    /// finds the fault.
+    ///
+    /// Preconditions: the caller holds no latch on `pid` or on `from`'s page.
+    fn refuse_reached<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        from: Option<&(Pid, PageOptimistic<'_, R>)>,
+        fits: impl Fn(&Node) -> Result<bool, Malformed>,
+    ) -> Reached {
+        let owner = self.owner;
+        let changed = std::cell::Cell::new(false);
+        let own = |p: &PageExclusive<'_, R>| {
+            let shape = node::shape(p, owner).filter(|s| from.is_none() || own_fault(*s));
+            if shape.is_some() && from.is_some_and(|(by, g)| *by != pid && !g.validate()) {
+                changed.set(true);
+                return None;
+            }
+            shape
+        };
+        if let Some(e) = pager.refuse_if(pid, own) {
+            return Reached::Refused(e);
+        }
+        if changed.get() {
+            return Reached::Changed;
+        }
+        let Some((by, _)) = from else {
+            return Reached::Unjudged;
+        };
+        let fault = |page: &[u8]| match node::shape(page, owner) {
+            Some(shape) => Some(shape),
+            None => match node_of(page, owner).and_then(|n| fits(&n)) {
+                Ok(true) => None,
+                _ => Some(Shape::Frame),
+            },
+        };
+        let named = |p: &PageExclusive<'_, R>| {
+            let names = node_of(p, owner).is_ok_and(|n| names(&n, pid));
+            let shape = if !names {
+                None
+            } else if *by == pid {
+                fault(p)
+            } else {
+                pager.try_optimistic(pid).and_then(|seen| {
+                    let shape = seen.read(fault);
+                    seen.validate().then_some(shape).flatten()
+                })
+            };
+            if shape.is_none() {
+                changed.set(true);
+            }
+            shape
+        };
+        match pager.refuse_if(*by, named) {
+            Some(e) => Reached::Refused(e),
+            None => Reached::Changed,
         }
     }
 
@@ -433,7 +577,10 @@ impl BTree {
         loop {
             let g = pager.exclusive(pid)?;
             let next = match node_of(&g, self.owner) {
-                Ok(n) if holds_from(&n, key, level).unwrap_or(false) => {
+                Ok(n)
+                    if holds_from(&n, key, level).unwrap_or(false)
+                        && follows(&n, low.as_deref()).unwrap_or(false) =>
+                {
                     if n.incomplete()
                         && passed.is_none()
                         && let Some(low) = low.take()
@@ -499,14 +646,19 @@ impl BTree {
         Ok(held.then_some(descent.pid))
     }
 
-    /// Refuse the leaf whose range holds `entry` as [`Shape::Stray`], judged under its exclusive
+    /// Refuse the leaf whose range holds `entry` as out of `shape`, judged under its exclusive
     /// latch to hold `entry`, descending again while a split has moved `entry` off the leaf
     /// reached. Returns the refusal, the error reaching the leaf, or [`Error::Malformed`] naming a
     /// leaf whose range holds `entry` and which does not hold it.
     ///
     /// Preconditions: the caller holds no latch on a page of the tree, and no write removes
     /// `entry` from the tree.
-    pub(super) fn refuse_holding<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Error {
+    pub(super) fn refuse_holding<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        entry: &[u8],
+        shape: Shape,
+    ) -> Error {
         let owner = self.owner;
         loop {
             let pid = match self.descend(pager, self.root, entry, 0) {
@@ -524,7 +676,7 @@ impl BTree {
                     moved.set(true);
                     return None;
                 }
-                leaf::contains(&n, entry).ok()?.then_some(Shape::Stray)
+                leaf::contains(&n, entry).ok()?.then_some(shape)
             };
             match pager.refuse_if(pid, judge) {
                 Some(e) => return Error::Page(e),
@@ -548,6 +700,16 @@ impl BTree {
     ///
     /// `entries` is consulted under the leaf's exclusive latch.
     pub fn insert_with<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        entry: &[u8],
+        entries: &mut impl Entries,
+    ) -> Result<bool, Error> {
+        self.inserted(pager, entry, entries)
+            .map_err(|e| self.refused(pager, e))
+    }
+
+    fn inserted<R: Runtime>(
         &self,
         pager: &Pager<R>,
         entry: &[u8],
@@ -591,27 +753,32 @@ impl BTree {
         entries: &mut impl Entries,
         mut stack: Vec<Pid>,
     ) -> Result<(), Error> {
-        let mut done = false;
-        g.update(|p| done = leaf::insert(p, entry));
+        let pid = g.pid();
+        let malformed = |Malformed| Error::Malformed(pid);
+        let done = g
+            .try_update(|p| leaf::insert(&mut NodeMut::new(p)?, entry))
+            .map_err(malformed)?;
         if done {
             return Ok(());
         }
-        let pid = g.pid();
-        let malformed = |Malformed| Error::Malformed(pid);
         let cap = leaf::posting_cap(pager.page_size());
-        let items = latched(&g, pid, self.owner)?.items().map_err(malformed)?;
+        let n = latched(&g, pid, self.owner)?;
+        let items = n.items().map_err(malformed)?;
         let (kept, _) = leaf::retain(&items, |e| !entries.dead(e));
         let packed = leaf::dedup(&kept, &|e| entries.key_len(e), cap);
-        let packed = if node::fits(&g, &packed) {
+        let packed = if n.fits(&packed).map_err(malformed)? {
             packed
         } else {
             kept
         };
         if packed != items {
-            g.update(|p| {
-                node::rebuild(p, &packed);
-                done = leaf::insert(p, entry);
-            });
+            let done = g
+                .try_update(|p| {
+                    let mut n = NodeMut::new(p)?;
+                    n.rebuild(&packed)?;
+                    leaf::insert(&mut n, entry)
+                })
+                .map_err(malformed)?;
             if done {
                 return Ok(());
             }
@@ -660,6 +827,12 @@ impl BTree {
     /// sibling under the same parent and is not the rightmost of its level.
     #[cfg(any(test, feature = "testing"))]
     pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
+        self.deleted(pager, entry)
+            .map_err(|e| self.refused(pager, e))
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    fn deleted<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         let leaf = self.descend(pager, self.root, entry, 0)?.pid;
         let (mut g, passed) = self.claim(pager, leaf, entry, 0)?;
         let pid = g.pid();
@@ -673,7 +846,8 @@ impl BTree {
         }
         let last = leaf::len(&n).map_err(malformed)? == 1;
         let emptied = last.then(|| n.low().map(|l| l.map(<[u8]>::to_vec)));
-        g.update(|p| leaf::remove(p, place));
+        g.try_update(|p| leaf::remove(&mut NodeMut::new(p)?, place))
+            .map_err(malformed)?;
         drop(g);
         if let Some(low) = emptied.transpose().map_err(malformed)? {
             self.unlink(pager, low.as_deref())?;
@@ -692,6 +866,16 @@ impl BTree {
     pub fn retain<R: Runtime>(
         &self,
         pager: &Pager<R>,
+        keep: impl FnMut(&[u8]) -> bool,
+        between: &mut dyn FnMut() -> bool,
+    ) -> Result<Walk, Error> {
+        self.retained(pager, keep, between)
+            .map_err(|e| self.refused(pager, e))
+    }
+
+    fn retained<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
         mut keep: impl FnMut(&[u8]) -> bool,
         between: &mut dyn FnMut() -> bool,
     ) -> Result<Walk, Error> {
@@ -708,7 +892,8 @@ impl BTree {
             let low = n.low().map_err(malformed)?.map(<[u8]>::to_vec);
             let emptied = kept.is_empty();
             if gone > 0 {
-                g.update(|p| node::rebuild(p, &kept));
+                g.try_update(|p| NodeMut::new(p)?.rebuild(&kept))
+                    .map_err(malformed)?;
                 deleted += gone;
             }
             drop(g);
@@ -745,12 +930,19 @@ impl BTree {
         }
         let key = low.unwrap_or_default();
         let (mut parent, passed) = self.latch(pager, self.root, key, 1)?;
-        let done = self.unlink_under(pager, &mut parent, low);
-        drop(parent);
+        let ppid = parent.pid();
+        let done = match self.unlink_under(pager, &mut parent, low) {
+            Err(Error::Malformed(p)) if p == ppid => Err(Error::Page(parent.refuse(Shape::Frame))),
+            done => {
+                drop(parent);
+                done
+            }
+        };
         self.finish_all(pager, passed)?;
         done
     }
 
+    /// Returns [`Error::Malformed`] naming `parent` for a fault judged under its latch.
     fn unlink_under<'p, R: Runtime>(
         &self,
         pager: &'p Pager<R>,
@@ -788,7 +980,7 @@ impl BTree {
         let mut leaf = pager.exclusive(lpid)?;
         let ln = latched(&leaf, lpid, self.owner)?;
         if !ln.is_leaf() {
-            return Err(Error::Malformed(lpid));
+            return Err(Error::Malformed(ppid));
         }
         let lf = node::fences(&ln).map_err(|Malformed| Error::Malformed(lpid))?;
         let (Some(rpid), Some(lhigh)) = (lf.right, lf.high) else {
@@ -807,15 +999,21 @@ impl BTree {
             let shrinks = xf.high.as_ref().map_or(0, Vec::len);
             if xn.room().map_err(xm)? + shrinks >= lhigh.len() {
                 let x_items = xn.items().map_err(xm)?;
+                let (unlinked, ()) = node::edit(parent, |n| {
+                    n.remove(j);
+                    Ok(())
+                })
+                .map_err(pm)?;
+                let deleted = marked_deleted(&leaf)?;
                 pager.update_all_with(freed, &mut [parent, x, &mut leaf], |p| {
-                    node::remove(p[0], j);
+                    p[0].copy_from_slice(&unlinked);
                     let bounds = Bounds {
                         high: Some(&lhigh),
                         right: Some(rpid),
                         ..xf.bounds()
                     };
                     node::build(p[1], 0, &x_items, bounds);
-                    node::set_deleted(p[2]);
+                    p[2].copy_from_slice(&deleted);
                 })?;
                 return Ok(true);
             }
@@ -841,16 +1039,19 @@ impl BTree {
             }
             None => None,
         };
+        let (relinked, ()) = node::edit(parent, |n| {
+            n.remove(j + 1);
+            let mut items = n.view().items()?;
+            items[j].child = Some(next);
+            n.rebuild(&items)
+        })
+        .map_err(pm)?;
+        let deleted = marked_deleted(&leaf)?;
         let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![parent, &mut leaf, &mut right];
         pages.extend(left.as_mut());
         pager.update_all_with(freed, &mut pages, |p| {
-            node::remove(p[0], j + 1);
-            let mut items = Node::new(p[0])
-                .and_then(|n| n.items())
-                .expect("a parent is a node");
-            items[j].child = Some(next);
-            node::rebuild(p[0], &items);
-            node::set_deleted(p[1]);
+            p[0].copy_from_slice(&relinked);
+            p[1].copy_from_slice(&deleted);
             let r_bounds = Bounds { low, ..rf.bounds() };
             node::build(p[2], 0, &r_items, r_bounds);
             if let Some((x_items, xf)) = &x_page {
@@ -871,7 +1072,9 @@ impl BTree {
     ///
     /// For a later slot, walks right from the child before it under the same
     /// parent; for the first, finds the neighbour under the parent's left
-    /// sibling by a descent to the keys just below `low`.
+    /// sibling by a descent to the keys just below `low`. Refuses, under its
+    /// latch, a leaf of the walk whose right link passes `low` without naming
+    /// `lpid` or names a page whose low key is not its high key.
     fn left_of<'p, R: Runtime>(
         &self,
         pager: &'p Pager<R>,
@@ -894,13 +1097,22 @@ impl BTree {
         loop {
             let xpid = x.pid();
             let xn = latched(&x, xpid, self.owner)?;
-            match xn.right() {
-                Some(r) if r == lpid => return Ok(Some(x)),
-                Some(r) if xn.high().map_err(|Malformed| Error::Malformed(xpid))? < Some(low) => {
-                    x = pager.exclusive(r)?;
-                }
-                _ => return Err(Error::Malformed(xpid)),
+            let step = match (xn.right(), xn.high()) {
+                (Some(r), _) if r == lpid => None,
+                (Some(r), Ok(high)) if high < Some(low) => Some((r, high.map(<[u8]>::to_vec))),
+                _ => return Err(Error::Page(x.refuse(Shape::Frame))),
+            };
+            let Some((r, high)) = step else {
+                return Ok(Some(x));
+            };
+            let next = pager.exclusive(r)?;
+            let follows = latched(&next, r, self.owner)
+                .is_ok_and(|n| follows(&n, high.as_deref()).unwrap_or(false));
+            if !follows {
+                drop(next);
+                return Err(Error::Page(x.refuse(Shape::Frame)));
             }
+            x = next;
         }
     }
 
@@ -939,9 +1151,11 @@ impl BTree {
             let n = latched(&g, pid, self.owner)?;
             let i = n.search(&item.key, true).map_err(malformed)?;
             if n.room().map_err(malformed)? >= item.cost() {
+                let (linked, ()) = node::edit(&g, |n| n.insert(i, &item)).map_err(malformed)?;
+                let completed = marked_complete(&child)?;
                 pager.update_all(&mut [&mut g, &mut child], |p| {
-                    node::insert(p[0], i, &item);
-                    complete(p, 1);
+                    p[0].copy_from_slice(&linked);
+                    p[1].copy_from_slice(&completed);
                 });
                 break true;
             }
@@ -992,6 +1206,12 @@ impl BTree {
             items[s].first()
         };
         let (left, upper) = items.split_at(s);
+        let completed = below.as_deref().map(marked_complete).transpose()?;
+        let complete = |p: &mut [&mut [u8]], at: usize| {
+            if let Some(c) = &completed {
+                p[at].copy_from_slice(c);
+            }
+        };
         if pid == self.root {
             let mut new = pager.reserve();
             let a = new.page(FORMAT, kind_of(level), self.owner)?;
@@ -1040,8 +1260,7 @@ impl BTree {
                 ..f.bounds()
             };
             node::build(p[0], level, left, left_bounds);
-            node::build(p[1], level, upper, upper_bounds);
-            node::set_incomplete(p[1], true);
+            node::build_incomplete(p[1], level, upper, upper_bounds);
             complete(p, 2);
         })?;
         Ok(Some((sep, q)))

@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::ops::Bound;
 
-use crate::key::{CtorId, Entry, KeySchema, Value, ovarint};
+use crate::key::{CtorId, DecodeError, Entry, KeySchema, Value, ovarint};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Walk};
+use crate::storage::{PageError, Pager, Shape, Walk};
 
 use super::tree::{BTree, Cursor, Entries, Error, prefix_end};
 
@@ -19,7 +19,7 @@ impl Entries for Encoded<'_> {
 
     fn key_len(&self, entry: &[u8]) -> Option<usize> {
         let e = self.schema.decode_entry(entry).ok()?;
-        Some(self.schema.encode(&e.key).len())
+        Some(self.schema.encode(&e.key).ok()?.len())
     }
 }
 
@@ -71,13 +71,13 @@ impl Index {
         check_key(&self.schema, page_size, key, ctor)
     }
 
-    fn encode(&self, entry: &Entry) -> Vec<u8> {
+    fn encode(&self, entry: &Entry) -> Result<Vec<u8>, Error> {
         assert!(
             self.ctors.contains(&entry.ctor),
             "{:?} is not in the index's constructor set",
             entry.ctor
         );
-        self.schema.encode_entry(entry)
+        self.schema.encode_entry(entry).map_err(Error::Key)
     }
 
     /// Insert `entry`. Returns false if it is already in the index.
@@ -89,7 +89,7 @@ impl Index {
             schema: &self.schema,
         };
         self.tree
-            .insert_with(pager, &self.encode(entry), &mut entries)
+            .insert_with(pager, &self.encode(entry)?, &mut entries)
     }
 
     /// Delete `entry`. Returns false if it was not in the index.
@@ -98,7 +98,7 @@ impl Index {
     /// - Its constructor is not in the index's set.
     #[cfg(any(test, feature = "testing"))]
     pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Result<bool, Error> {
-        self.tree.delete(pager, &self.encode(entry))
+        self.tree.delete(pager, &self.encode(entry)?)
     }
 
     /// Delete every entry `keep` refuses, one leaf at a time, calling `between` after each leaf
@@ -115,15 +115,26 @@ impl Index {
             |bytes| match self.schema.decode_entry(bytes) {
                 Ok(e) => keep(&e),
                 Err(e) => {
-                    bad.get_or_insert(e);
+                    bad.get_or_insert((bytes.to_vec(), e));
                     true
                 }
             },
             between,
         )?;
         match bad {
-            Some(e) => Err(Error::Entry(e)),
+            Some((bytes, e)) => Err(self.undecoded(pager, &bytes, e)),
             None => Ok(deleted),
+        }
+    }
+
+    /// Returns the failure of a read that met `entry`, which does not decode as `error` says:
+    /// the refusal of the leaf holding it, judged under its exclusive latch.
+    ///
+    /// Preconditions: the caller holds no latch on a page of the tree.
+    fn undecoded<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8], error: DecodeError) -> Error {
+        match self.tree.refuse_holding(pager, entry, Shape::Frame) {
+            Error::Malformed(leaf) => Error::Entry(leaf, error),
+            e => e,
         }
     }
 
@@ -134,7 +145,10 @@ impl Index {
     ) -> Result<Vec<Entry>, Error> {
         let mut out = Vec::new();
         while let Some(bytes) = cursor.next(pager)? {
-            out.push(self.schema.decode_entry(&bytes).map_err(Error::Entry)?);
+            match self.schema.decode_entry(&bytes) {
+                Ok(e) => out.push(e),
+                Err(e) => return Err(self.undecoded(pager, &bytes, e)),
+            }
         }
         Ok(out)
     }
@@ -164,13 +178,16 @@ impl Index {
     /// Preconditions: the caller holds no latch on a page of the tree, and the index does not hold
     /// `entry`'s constructor.
     pub fn refuse_stray<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Error {
-        self.tree
-            .refuse_holding(pager, &self.schema.encode_entry(entry))
+        match self.schema.encode_entry(entry) {
+            Ok(bytes) => self.tree.refuse_holding(pager, &bytes, Shape::Stray),
+            Err(e) => Error::Key(e),
+        }
     }
 
     /// Returns every entry of `key`, in order of constructor and TID.
     pub fn probe<R: Runtime>(&self, pager: &Pager<R>, key: &[Value]) -> Result<Vec<Entry>, Error> {
-        self.scan_prefix(pager, &self.schema.encode(key))
+        let prefix = self.schema.encode(key).map_err(Error::Key)?;
+        self.scan_prefix(pager, &prefix)
     }
 
     /// Returns the entries of `key` and constructor `ctor`, in TID order.
@@ -181,7 +198,7 @@ impl Index {
         key: &[Value],
         ctor: CtorId,
     ) -> Result<Vec<Entry>, Error> {
-        let mut prefix = self.schema.encode(key);
+        let mut prefix = self.schema.encode(key).map_err(Error::Key)?;
         ovarint::encode(ctor.0, &mut prefix);
         self.scan_prefix(pager, &prefix)
     }
@@ -193,18 +210,18 @@ impl Index {
         lo: Bound<&[Value]>,
         hi: Bound<&[Value]>,
     ) -> Result<Vec<Entry>, Error> {
-        let past = |k: &[Value]| prefix_end(&self.schema.encode(k));
+        let encode = |k: &[Value]| self.schema.encode(k).map_err(Error::Key);
         let lo = match lo {
-            Bound::Included(k) => Bound::Included(self.schema.encode(k)),
-            Bound::Excluded(k) => match past(k) {
+            Bound::Included(k) => Bound::Included(encode(k)?),
+            Bound::Excluded(k) => match prefix_end(&encode(k)?) {
                 Bound::Excluded(end) => Bound::Included(end),
                 _ => return Ok(Vec::new()),
             },
             Bound::Unbounded => Bound::Unbounded,
         };
         let hi = match hi {
-            Bound::Included(k) => past(k),
-            Bound::Excluded(k) => Bound::Excluded(self.schema.encode(k)),
+            Bound::Included(k) => prefix_end(&encode(k)?),
+            Bound::Excluded(k) => Bound::Excluded(encode(k)?),
             Bound::Unbounded => Bound::Unbounded,
         };
         let cursor = self.tree.range(
@@ -223,7 +240,7 @@ pub fn check_key(
     key: &[Value],
     ctor: CtorId,
 ) -> Result<(), Error> {
-    let mut encoded = schema.encode(key);
+    let mut encoded = schema.encode(key).map_err(Error::Key)?;
     ovarint::encode(ctor.0, &mut encoded);
     let len = encoded.len() + 8;
     let max = BTree::max_entry_len(page_size);

@@ -9,7 +9,7 @@ mod value;
 #[cfg(test)]
 mod tests;
 
-pub use codec::{DecodeError, Dir, KeySchema};
+pub use codec::{DecodeError, Dir, EncodeError, KeySchema};
 pub use entry::{CtorId, Entry, Tid, stored};
 pub use hash::{hash32, hash64};
 pub use value::{

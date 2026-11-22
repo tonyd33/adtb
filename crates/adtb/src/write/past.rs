@@ -295,11 +295,8 @@ impl<R: Runtime> VacuumHold<'_, R> {
             .iter()
             .map(|(t, _)| t.clone())
             .collect();
-        let key = |ctor: CtorId, row: &[Value]| -> Vec<Value> {
-            let c = ctors[&ctor];
-            keyed.key(c, row, &types).ok().flatten().unwrap_or_else(|| {
-                panic!("a stored row of constructor {c} has the key it had at its insert")
-            })
+        let key = |ctor: CtorId, row: &[Value]| -> Option<Vec<Value>> {
+            keyed.key(*ctors.get(&ctor)?, row, &types).ok().flatten()
         };
         let pasts: Vec<(CtorId, &Heap)> = sum
             .heaps

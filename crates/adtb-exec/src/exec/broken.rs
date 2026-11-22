@@ -7,7 +7,7 @@ use adtb_lang::types::Ty;
 use super::layout::Step;
 use crate::batch;
 use crate::heap::{FieldType, HeapNo};
-use crate::key::{KeyType, Scalar, Value};
+use crate::key::{EncodeError, KeyType, Scalar, Value};
 use crate::plan::{HeapId, IndexId};
 
 use super::{Error, Val};
@@ -41,6 +41,10 @@ pub enum Broken {
         ty: KeyType,
     },
     NotConverted(Value),
+    /// A key the engine builds does not encode under its index's key schema.
+    Unencodable(EncodeError),
+    /// A stored row of the constructor of this id has no key.
+    UnkeyedRow(u32),
     /// A row whose value in one column passes 2^31 elements or value bytes alone, which no row
     /// within the value limit of 2^31 - 1 bytes holds.
     PastOffsets,
@@ -113,6 +117,12 @@ impl From<Broken> for Error {
     }
 }
 
+impl From<EncodeError> for Error {
+    fn from(e: EncodeError) -> Error {
+        Broken::Unencodable(e).into()
+    }
+}
+
 impl fmt::Debug for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.to_string())
@@ -139,6 +149,18 @@ impl fmt::Display for Broken {
             Broken::NotKeyed { value, ty } => write!(f, "{value:?} is not a value of {ty:?}"),
             Broken::NotConverted(value) => {
                 write!(f, "{value:?} is not a value of its field's type")
+            }
+            Broken::Unencodable(e) => match e {
+                EncodeError::Count { expected, found } => write!(
+                    f,
+                    "a key has {found} values where its index's key schema has {expected}"
+                ),
+                EncodeError::Type => {
+                    f.write_str("a key holds a value not of its type in its index's key schema")
+                }
+            },
+            Broken::UnkeyedRow(c) => {
+                write!(f, "a stored row of constructor {c} has no key")
             }
             Broken::PastOffsets => {
                 f.write_str("a row passes 2^31 elements or value bytes in one column alone")

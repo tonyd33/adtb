@@ -365,7 +365,7 @@ impl<R: Runtime> Database<R> {
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
         let mut held = Held::new();
         for e in entries {
-            let encoded = schema.encode(&e.key);
+            let encoded = schema.encode(&e.key)?;
             let at = format!("page {} slot {}", e.tid.page(), e.tid.slot());
             let Some(&c) = stored.ctors.get(&e.ctor) else {
                 out.push(Found::Orphan {
@@ -385,7 +385,7 @@ impl<R: Runtime> Database<R> {
                 };
                 for row in &rows {
                     let key = ix.keys.key(c, row, &types)?;
-                    if key.is_some_and(|k| schema.encode(&k) == encoded) {
+                    if key.map(|k| schema.encode(&k)).transpose()?.as_ref() == Some(&encoded) {
                         return Ok(true);
                     }
                 }
@@ -513,7 +513,7 @@ impl<R: Runtime> Database<R> {
                 let Some(key) = ix.keys.key(c, &v.row, &types)? else {
                     continue;
                 };
-                let encoded = schema.encode(&key);
+                let encoded = schema.encode(&key)?;
                 if !roots
                     .into_iter()
                     .any(|root| held.contains(&(encoded.clone(), ctor, root)))

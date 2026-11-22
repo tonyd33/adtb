@@ -80,7 +80,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     {
                         return Err(match e {
                             crate::btree::Error::TooLong { len, max } => {
-                                let size = stored.index.schema().encode(&key).len();
+                                let size = stored.index.schema().encode(&key)?.len();
                                 Error::Rejected(Rejection::KeyTooLarge {
                                     relation: *r,
                                     ctor: *c,

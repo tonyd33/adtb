@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use super::node::{self, Item, Malformed, Node};
+use super::node::{self, Item, Malformed, Node, NodeMut};
 
 /// Where an entry stands among a leaf's: the cell that holds it or that it
 /// would go before, its position among that cell's remainders, and whether it
@@ -250,27 +250,25 @@ pub fn dedup(items: &[Item], key_len: &dyn Fn(&[u8]) -> Option<usize>, cap: usiz
     out
 }
 
-/// Add `x` to the leaf `page`, which does not hold it, joining a posting when
-/// it can. Returns false, changing nothing, if there is no room.
-///
-/// Panics:
-/// - The page is not a leaf.
-pub fn insert(page: &mut [u8], x: &[u8]) -> bool {
-    let n = Node::new(page).expect("an inserted leaf is a node");
-    let place = find(&n, x).expect("an inserted leaf is a node");
-    let cap = posting_cap(page.len());
-    let room = || n.room().expect("an inserted leaf is a node");
-    let inside = place.cell < n.count() && place.at > 0;
+/// Add `x` to leaf `n`, which does not hold it, joining a posting when it can. Returns false,
+/// changing nothing, if there is no room.
+pub fn insert(n: &mut NodeMut, x: &[u8]) -> Result<bool, Malformed> {
+    let view = n.view();
+    let place = find(&view, x)?;
+    let cap = posting_cap(view.page_size());
+    let room = view.room()?;
+    let count = view.count();
+    let inside = place.cell < count && place.at > 0;
     let neighbours: &[usize] = if inside {
         &[place.cell]
     } else {
         &[place.cell, place.cell.wrapping_sub(1)]
     };
     for &c in neighbours {
-        if c >= n.count() {
+        if c >= count {
             continue;
         }
-        let it = n.item(c).expect("an inserted leaf is a node");
+        let it = n.view().item(c)?;
         let Some(r) = remainder(x, &it.key).filter(|_| !it.rest.is_empty()) else {
             continue;
         };
@@ -278,44 +276,43 @@ pub fn insert(page: &mut [u8], x: &[u8]) -> bool {
         let j = grown.rest.partition_point(|s| s.as_slice() < r);
         grown.rest.insert(j, r.to_vec());
         if grown.cost() <= cap {
-            if room() + it.cost() < grown.cost() {
-                return false;
+            if room + it.cost() < grown.cost() {
+                return Ok(false);
             }
-            node::replace(page, c, &grown);
-            return true;
+            n.replace(c, &grown)?;
+            return Ok(true);
         }
     }
     if !inside {
         let item = Item::entry(x.to_vec());
-        if room() < item.cost() {
-            return false;
+        if room < item.cost() {
+            return Ok(false);
         }
-        node::insert(page, place.cell, &item);
-        return true;
+        n.insert(place.cell, &item)?;
+        return Ok(true);
     }
-    let mut items = n.items().expect("an inserted leaf is a node");
+    let mut items = n.view().items()?;
     add(&mut items, x, cap);
-    if !node::fits(page, &items) {
-        return false;
+    if !n.view().fits(&items)? {
+        return Ok(false);
     }
-    node::rebuild(page, &items);
-    true
+    n.rebuild(&items)?;
+    Ok(true)
 }
 
-/// Remove the entry at `place`, which the leaf `page` holds.
+/// Remove the entry at `place`, which leaf `n` holds.
 ///
 /// Panics:
-/// - The page is not a leaf or holds no entry there.
+/// - The leaf holds no entry there.
 #[cfg(any(test, feature = "testing"))]
-pub fn remove(page: &mut [u8], place: Place) {
-    let n = Node::new(page).expect("a leaf removed from is a node");
-    let mut it = n.item(place.cell).expect("a leaf removed from is a node");
+pub fn remove(n: &mut NodeMut, place: Place) -> Result<(), Malformed> {
+    let mut it = n.view().item(place.cell)?;
     if it.rest.len() <= 1 {
-        node::remove(page, place.cell);
-        return;
+        n.remove(place.cell);
+        return Ok(());
     }
     it.rest.remove(place.at);
-    node::replace(page, place.cell, &it);
+    n.replace(place.cell, &it)
 }
 
 /// Returns `items` with the entries `keep` refuses removed, postings left

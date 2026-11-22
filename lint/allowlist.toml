@@ -56,6 +56,7 @@
 
 [decode_panics]
 "crates/adtb-exec/src/exec/layout.rs" = 7
+"crates/adtb-exec/src/exec/store.rs" = 3
 "crates/adtb-heap/src/heap/blame.rs" = 1
 "crates/adtb-heap/src/heap/chain.rs" = 2
 "crates/adtb-heap/src/heap/dir.rs" = 10
@@ -73,6 +74,11 @@
 "crates/adtb-heap/src/heap/version.rs" = 3
 "crates/adtb-heap/src/heap/vm.rs" = 1
 "crates/adtb-heap/src/heap/write.rs" = 4
+"crates/adtb-store/src/btree/index.rs" = 2
+"crates/adtb-store/src/btree/node.rs" = 10
+"crates/adtb-store/src/btree/tree.rs" = 2
+"crates/adtb-store/src/key/entry.rs" = 1
+"crates/adtb-store/src/key/value.rs" = 2
 "crates/adtb-store/src/mvcc/clog.rs" = 11
 "crates/adtb-store/src/mvcc/snapshot.rs" = 2
 "crates/adtb-store/src/mvcc/ssi.rs" = 6
@@ -81,6 +87,7 @@
 "crates/adtb-store/src/mvcc/watermark.rs" = 1
 "crates/adtb-store/src/mvcc/writers.rs" = 1
 "crates/adtb/src/catalog/codec.rs" = 38
+"crates/adtb/src/write/past.rs" = 1
 
 [engine_names]
 "crates/adtb-lang/src/schema/engine.rs" = 5

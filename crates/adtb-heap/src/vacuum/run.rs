@@ -23,6 +23,8 @@ pub enum Error {
     Heap(heap::Error),
     /// The vacuum's pace stopped it.
     Stopped,
+    /// A version of this constructor holds a row whose key does not compute.
+    Unkeyed(CtorId),
 }
 
 impl From<heap::Error> for Error {
@@ -37,6 +39,7 @@ impl From<history::Error> for Error {
             history::Error::Page(e) => Error::Page(e),
             history::Error::Index(e) => Error::Index(e),
             history::Error::Heap(e) => Error::Heap(e),
+            history::Error::Unkeyed(c) => Error::Unkeyed(c),
         }
     }
 }
