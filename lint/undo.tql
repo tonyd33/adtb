@@ -1,11 +1,12 @@
--- discarded_heap_writes: a heap write's `Undoable` passed to `mem::forget` or `ManuallyDrop`,
--- which skips the check its drop makes that `record` or `kept` consumed it.
+-- discarded_heap_writes: a heap write's `Undoable` or `Written` passed to `mem::forget` or
+-- `ManuallyDrop`, which skips the check its drop makes that `record`, `kept` or `finish` consumed
+-- it.
 
 forgotten = do {
   c <- descendants_of_kind :call_expression;
   f <- pure c | #function;
   guard $ text f ~ r"(^|::)(forget|ManuallyDrop::new)$";
-  guard $ text c ~ r"\.(insert_pruning|update_pruning|retag_pruning|delete)\s*\(";
+  guard $ text c ~ r"\.(insert_pruning|update_pruning|retag_pruning|delete|commit|commit_pruned|commit_refused|commit_store)\s*\(";
   return c;
 };
 

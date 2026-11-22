@@ -72,7 +72,7 @@
 "crates/adtb-heap/src/heap/stage.rs" = 3
 "crates/adtb-heap/src/heap/version.rs" = 3
 "crates/adtb-heap/src/heap/vm.rs" = 1
-"crates/adtb-heap/src/heap/write.rs" = 6
+"crates/adtb-heap/src/heap/write.rs" = 5
 "crates/adtb/src/catalog/codec.rs" = 38
 
 [engine_names]

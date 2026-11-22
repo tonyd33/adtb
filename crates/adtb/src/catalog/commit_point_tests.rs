@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::process::run;
+use adtb_testkit::profile;
 use adtb_testkit::search::Files;
 
 use super::root::{Changing, Root};
@@ -16,7 +17,8 @@ use crate::faults::Step;
 use crate::faults::armed::{self, Run, Site};
 use crate::heap::{self, Heap, Tested, Undo};
 use crate::key::{CtorId, Tid, Value};
-use crate::mvcc::{Fate, Writers, Xid};
+use crate::mvcc::{Begun, Fate, StatusError, Writers};
+use crate::storage::Walk;
 use crate::storage::{self, Pager};
 use crate::test_world;
 use crate::test_world::api::{printed, query};
@@ -370,90 +372,6 @@ fn vacuumed(fail: Option<(Site, usize)>) -> Ran {
     Ran { runs, ok, found }
 }
 
-/// The rows [`wide_heap`] inserts, and one in how many of them [`pruned`] keeps.
-const WIDE_ROWS: i64 = 48;
-const PRUNE_KEPT: i64 = 4;
-
-/// The transaction of the heap writes the tests make after [`wide_heap`].
-const WRITER: Xid = Xid(2);
-
-/// Returns the row of key `key`: a wide text and a large value.
-fn wide_row(key: i64) -> Vec<Value> {
-    vec![
-        Value::I64(key),
-        Value::Text("w".repeat(600)),
-        Value::Bytes(vec![key as u8; 5000]),
-    ]
-}
-
-/// Returns a heap whose directory nodes hold two entries, filled with [`WIDE_ROWS`] rows of
-/// [`wide_row`] over several pages, and the TID of each row.
-fn wide_heap(rt: &SimRuntime) -> (Pager<SimRuntime>, Heap, Vec<Tid>) {
-    let mut s = Storage::create(rt, &test_world::options(64));
-    let large = s.large();
-    s.heap(row_type(EMAIL), large, 2);
-    let (pager, _, heaps, _) = s.split();
-    let heap = heaps.into_iter().next().expect("the heap just made");
-    let tids = (0..WIDE_ROWS)
-        .map(|key| {
-            heap.insert(&pager, Xid(1), &wide_row(key))
-                .expect("the row inserts")
-        })
-        .collect();
-    let pages = heap.pages(&pager).expect("the heap reads").len();
-    assert!(pages > 4, "the rows fill {pages} pages");
-    (pager, heap, tids)
-}
-
-/// Returns what verify finds of `heap` that [`counted`] counts.
-fn heap_findings(pager: &Pager<SimRuntime>, heap: &Heap, what: &str) -> Findings {
-    let inventory = Inventory {
-        sums: vec![Sum {
-            heaps: vec![(CtorId(0), heap)],
-            indexes: Vec::new(),
-        }],
-        ..Inventory::default()
-    };
-    counted(&verify::verify(pager, &inventory).findings, what)
-}
-
-/// Fill a [`wide_heap`], delete all but one row in [`PRUNE_KEPT`], then prune each page,
-/// failing `fail`. Each prune leaves its page roomier than the entries above it say.
-fn pruned(fail: Option<(Site, usize)>) -> Ran {
-    let what = format!("prune {fail:?}");
-    let mut sim = Sim::new(SEED, Config::default());
-    run(&mut sim, |rt| {
-        let (pager, heap, tids) = wide_heap(&rt);
-        for (key, tid) in (0..).zip(tids) {
-            if key % PRUNE_KEPT != 0 {
-                heap.delete(&pager, tid, WRITER)
-                    .kept(&Tested)
-                    .expect("the row deletes")
-                    .unchecked(&Tested);
-            }
-        }
-        let judge = |w: &Writers| {
-            Ok(if w.deleted_by(WRITER) {
-                Fate::Remove
-            } else {
-                Fate::Keep
-            })
-        };
-        let pages = heap.pages(&pager).expect("the heap reads");
-        arm(fail);
-        let ok = pages
-            .iter()
-            .try_for_each(|&pid| heap.prune(&pager, pid, judge, &[], false).map(drop))
-            .is_ok();
-        let runs = armed::reached();
-        Ran {
-            runs,
-            ok,
-            found: heap_findings(&pager, &heap, &what),
-        }
-    })
-}
-
 type Case = (
     &'static str,
     fn(Option<(Site, usize)>) -> Ran,
@@ -471,7 +389,6 @@ const CASES: &[Case] = &[
     ("pending drop", settled, AFTER_COMMIT),
     ("insert", inserted, BEFORE_COMMIT),
     ("vacuum", vacuumed, BEFORE_COMMIT),
-    ("prune", pruned, BEFORE_COMMIT),
     ("update", updated, BEFORE_UPDATE),
     ("wide insert", widened, BEFORE_UPDATE_WIDE),
 ];
@@ -528,8 +445,10 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
         (("decode.rs", Step::Release), 1),
         (("pending.rs", Step::FreeLeaked), 1),
         (("pending.rs", Step::EndChange), 1),
-        (("write.rs", Step::Release), 1),
-        (("write.rs", Step::Settle), 2),
+        (("mod.rs", Step::Release), 1),
+        (("mod.rs", Step::Settle), 1),
+        (("put.rs", Step::Settle), 1),
+        (("large.rs", Step::Settle), 5),
         (("large.rs", Step::Retain), 1),
         (("write.rs", Step::ClearBit), 1),
         (("write.rs", Step::Reflect), 1),
@@ -675,84 +594,553 @@ fn a_change_freeing_a_heap_counts_its_versions_off_every_value_they_point_at() {
     assert_eq!(expected, found);
 }
 
-/// A write a statement makes to a heap, as `WRITER`, of the version at the TID given, its
-/// take-back recorded on the list given.
-type HeapWrite =
-    fn(&Heap, &Pager<SimRuntime>, Tid, &mut Vec<((), Undo)>) -> Result<(), heap::Error>;
+/// The rows [`wide`] inserts, and one in how many of them a prune keeps.
+const WIDE_ROWS: i64 = 48;
+const PRUNE_KEPT: i64 = 4;
 
-/// Returns the rows of the versions of `heap` no transaction deleted, by key.
-fn live(pager: &Pager<SimRuntime>, heap: &Heap) -> Vec<Vec<Value>> {
-    let mut rows = Vec::new();
-    heap.scan(pager, |v| {
-        if !v.header.writers.deleted() {
-            rows.push(v.row);
-        }
-    })
-    .expect("the heap reads");
-    rows.sort_by_key(|r| key_of(r));
-    rows
+/// Returns the row of key `key`: a wide text and a large value.
+fn wide_row(key: i64) -> Vec<Value> {
+    vec![
+        Value::I64(key),
+        Value::Text("w".repeat(600)),
+        Value::Bytes(vec![key as u8; 5000]),
+    ]
 }
 
-const HEAP_WRITES: &[(&str, HeapWrite)] = &[
-    ("insert", |heap, pager, _, list| {
-        let put = heap.insert_pruning(pager, WRITER, &wide_row(WIDE_ROWS), &mut |_| Ok(Fate::Keep));
-        put.record(list, (), ()).map(drop)
-    }),
-    ("update", |heap, pager, tid, list| {
-        let put = heap.update_pruning(pager, tid, WRITER, &wide_row(WIDE_ROWS), &[0], &mut |_| {
-            Ok(Fate::Keep)
-        });
-        let (_, old) = put.record(list, (), ())?;
+/// A heap filled with [`WIDE_ROWS`] rows of [`wide_row`] over several pages, its directory nodes
+/// two entries wide, and a heap of the same sum holding one row.
+struct Wide {
+    pager: Pager<SimRuntime>,
+    txns: Transactions<SimRuntime>,
+    heap: Heap,
+    other: Heap,
+    /// The TID of each row, by key.
+    tids: Vec<Tid>,
+    /// The TID of the row of `other`.
+    other_tid: Tid,
+    /// The running transaction of the heap writes the tests make.
+    writer: Begun,
+}
+
+fn wide(rt: &SimRuntime) -> Wide {
+    let mut s = Storage::create(rt, &test_world::options(64));
+    s.commit_log(rt);
+    let large = s.large();
+    s.heap(row_type(EMAIL), large, 2);
+    s.heap(row_type(EMAIL), large, 2);
+    let (pager, txns, heaps, _) = s.split();
+    let txns = txns.expect("the commit log just made");
+    let [heap, other] = <[Heap; 2]>::try_from(heaps).expect("the two heaps just made");
+    let filler = txns.begin(&pager).expect("a transaction begins");
+    let tids = (0..WIDE_ROWS)
+        .map(|key| {
+            heap.insert(&pager, filler.xid(), &wide_row(key))
+                .expect("the row inserts")
+        })
+        .collect();
+    let other_tid = other
+        .insert(&pager, filler.xid(), &wide_row(WIDE_ROWS + 10))
+        .expect("the row inserts");
+    txns.commit(&pager, filler).expect("the rows commit");
+    let pages = heap.pages(&pager).expect("the heap reads").len();
+    assert!(pages > 4, "the rows fill {pages} pages");
+    let writer = txns.begin(&pager).expect("a transaction begins");
+    Wide {
+        pager,
+        txns,
+        heap,
+        other,
+        tids,
+        other_tid,
+        writer,
+    }
+}
+
+impl Wide {
+    /// Returns the overcounted heads and unsettled directory entries verify finds, failing on any
+    /// other finding. With `dropped`, the first heap is left out and its pages are not findings.
+    fn findings(&self, dropped: bool, what: &str) -> Findings {
+        let clog = self.txns.commit_log();
+        let mut heaps = vec![(CtorId(1), &self.other)];
+        if !dropped {
+            heaps.push((CtorId(0), &self.heap));
+        }
+        let inventory = Inventory {
+            commit_log: Some(&clog),
+            sums: vec![Sum {
+                heaps,
+                indexes: Vec::new(),
+            }],
+            ..Inventory::default()
+        };
+        let report = verify::verify(&self.pager, &inventory);
+        assert!(report.complete, "{what}: {:?}", report.findings);
+        let owner = |pid| self.pager.read(pid).expect("a leaked page reads").owner();
+        let kept: Vec<Finding> = report
+            .findings
+            .into_iter()
+            .filter(|f| {
+                !(dropped && f.problem == Problem::Leaked && owner(f.pid) == self.heap.id().0)
+            })
+            .collect();
+        counted(&kept, what)
+    }
+
+    /// Returns the rows of the versions of `heap` no transaction deleted, by key.
+    fn live(&self, heap: &Heap) -> Vec<Vec<Value>> {
+        let mut rows = Vec::new();
+        heap.scan(&self.pager, |v| {
+            if !v.header.writers.deleted() {
+                rows.push(v.row);
+            }
+        })
+        .expect("the heap reads");
+        rows.sort_by_key(|r| key_of(r));
+        rows
+    }
+
+    /// Delete as the writer all but one row in [`PRUNE_KEPT`].
+    fn delete_most(&self) {
+        for (key, &tid) in (0..).zip(&self.tids) {
+            if key % PRUNE_KEPT != 0 {
+                self.heap
+                    .delete(&self.pager, tid, self.writer.xid())
+                    .kept(&Tested)
+                    .expect("the row deletes")
+                    .unchecked(&Tested);
+            }
+        }
+    }
+
+    /// Returns a judge removing the versions the writer deleted and keeping any other.
+    fn removed(&self) -> impl FnMut(&Writers) -> Result<Fate, StatusError> + use<> {
+        let writer = self.writer.xid();
+        move |w: &Writers| {
+            Ok(if w.deleted_by(writer) {
+                Fate::Remove
+            } else {
+                Fate::Keep
+            })
+        }
+    }
+
+    /// Prune each page of the heap by [`Wide::removed`], up to the first that fails.
+    fn prune_all(&self) -> Result<(), heap::Refused> {
+        let pages = self.heap.pages(&self.pager).expect("the heap reads");
+        for pid in pages {
+            self.heap
+                .prune(&self.pager, pid, self.removed(), &[], false)?;
+        }
+        Ok(())
+    }
+
+    /// Delete as the writer every other row on the page of `tid` but the one at `tid`, so that a
+    /// write finding that page full prunes it by [`Wide::removed`] and frees large values.
+    fn make_room(&self, tid: Tid) {
+        let on_page = self
+            .tids
+            .iter()
+            .filter(|t| t.page() == tid.page() && **t != tid);
+        for &t in on_page.step_by(2) {
+            self.heap
+                .delete(&self.pager, t, self.writer.xid())
+                .kept(&Tested)
+                .expect("the row deletes")
+                .unchecked(&Tested);
+        }
+    }
+
+    /// Returns the TID of the last row, on the page the heap's next insert tries first.
+    fn last(&self) -> Tid {
+        *self.tids.last().expect("the rows inserted")
+    }
+}
+
+/// The live rows of both heaps of a [`Wide`].
+type Both = (Vec<Vec<Value>>, Vec<Vec<Value>>);
+
+/// The take-backs a statement recorded, each with whether its version is in the second heap.
+type Recorded = Vec<(bool, Undo)>;
+
+/// One run of a heap entry over a [`Wide`], failing `fail` once the entry's setup is done:
+/// the runs of steps it reached and whether it succeeded.
+type HeapEntry = fn(&Wide, Option<(Site, usize)>, &str) -> (Vec<Run>, bool);
+
+/// Run `entry` on `w`, failing `fail`, recording its writes as a statement does. Returns the
+/// runs of steps it reached and its result; when it fails, takes back what it recorded and fails
+/// unless the live rows of both heaps are those it found.
+fn statement(
+    w: &Wide,
+    fail: Option<(Site, usize)>,
+    what: &str,
+    entry: impl FnOnce(&mut Recorded) -> Result<(), heap::Error>,
+) -> (Vec<Run>, bool) {
+    let found: Both = (w.live(&w.heap), w.live(&w.other));
+    let mut list = Vec::new();
+    arm(fail);
+    let ok = entry(&mut list).is_ok();
+    let runs = armed::reached();
+    if !ok {
+        for (in_other, u) in list.into_iter().rev() {
+            let heap = if in_other { &w.other } else { &w.heap };
+            heap.take_back(&w.pager, u)
+                .expect("the write is taken back");
+        }
+        assert_eq!(found, (w.live(&w.heap), w.live(&w.other)), "{what}");
+    }
+    (runs, ok)
+}
+
+/// Returns the row of the version of `heap` at `tid` with a new text.
+fn rewritten(w: &Wide, heap: &Heap, tid: Tid) -> Vec<Value> {
+    let v = heap.read(&w.pager, tid).expect("the heap reads");
+    let mut row = v.expect("the row").row;
+    row[1] = Value::Text("u".repeat(600));
+    row
+}
+
+fn insert(w: &Wide, fail: Option<(Site, usize)>, what: &str) -> (Vec<Run>, bool) {
+    w.make_room(w.last());
+    statement(w, fail, what, |list| {
+        let row = wide_row(WIDE_ROWS);
+        let put = w
+            .heap
+            .insert_pruning(&w.pager, w.writer.xid(), &row, &mut w.removed());
+        put.record(list, false, false).map(drop)
+    })
+}
+
+fn insert_all(w: &Wide, fail: Option<(Site, usize)>, _: &str) -> (Vec<Run>, bool) {
+    let rows = (WIDE_ROWS..WIDE_ROWS + 3).map(|k| Ok::<_, heap::Error>(wide_row(k)));
+    let mut placed = 0;
+    w.make_room(w.last());
+    arm(fail);
+    let ok = w
+        .heap
+        .insert_all_pruning(
+            &w.pager,
+            w.writer.xid(),
+            rows,
+            &mut w.removed(),
+            |_, _| {
+                placed += 1;
+                Ok(())
+            },
+            &Tested,
+        )
+        .is_ok();
+    let runs = armed::reached();
+    if ok {
+        assert_eq!(3, placed, "every row is placed");
+    }
+    (runs, ok)
+}
+
+/// Update the row at `tid` to `row`, as a statement does. Fails unless a successful update is
+/// heap-only exactly when `hot` holds.
+fn update_at(
+    w: &Wide,
+    tid: Tid,
+    row: Vec<Value>,
+    hot: bool,
+    fail: Option<(Site, usize)>,
+    what: &str,
+) -> (Vec<Run>, bool) {
+    statement(w, fail, what, |list| {
+        let put =
+            w.heap
+                .update_pruning(&w.pager, tid, w.writer.xid(), &row, &[0], &mut w.removed());
+        let (updated, old) = put.record(list, false, false)?;
+        old.unchecked(&Tested);
+        assert_eq!(hot, updated.heap_only, "{what}");
+        Ok(())
+    })
+}
+
+/// Update the first row keeping its key, on its own page, which it finds full of heap-only
+/// versions the writer superseded and prunes.
+fn hot_update(w: &Wide, fail: Option<(Site, usize)>, what: &str) -> (Vec<Run>, bool) {
+    w.delete_most();
+    w.prune_all().expect("the prunes succeed");
+    let target = w.tids[0];
+    let mut chain = w.tids[PRUNE_KEPT as usize];
+    assert_eq!(target.page(), chain.page(), "the two rows share a page");
+    for text in 0.. {
+        let mut row = rewritten(w, &w.heap, chain);
+        row[1] = Value::Text(format!("{text}").repeat(600));
+        let updated = w
+            .heap
+            .update(&w.pager, chain, w.writer.xid(), &row, &[0])
+            .expect("the row updates");
+        if !updated.heap_only {
+            break;
+        }
+        chain = updated.tid;
+    }
+    update_at(w, target, rewritten(w, &w.heap, target), true, fail, what)
+}
+
+/// Update a middle row to a new key, onto the page of the last row, which it finds full and
+/// prunes.
+fn cold_update(w: &Wide, fail: Option<(Site, usize)>, what: &str) -> (Vec<Run>, bool) {
+    let tid = w.tids[w.tids.len() / 2];
+    w.make_room(w.last());
+    let mut row = rewritten(w, &w.heap, tid);
+    row[0] = Value::I64(WIDE_ROWS + 20);
+    update_at(w, tid, row, false, fail, what)
+}
+
+/// Retag the row of the second heap into the first, onto the page of the last row, which it
+/// finds full and prunes.
+fn retag(w: &Wide, fail: Option<(Site, usize)>, what: &str) -> (Vec<Run>, bool) {
+    let tid = w.other_tid;
+    let row = rewritten(w, &w.other, tid);
+    w.make_room(w.last());
+    statement(w, fail, what, |list| {
+        let put = w.other.retag_pruning(
+            &w.pager,
+            tid,
+            w.writer.xid(),
+            &w.heap,
+            &row,
+            &mut w.removed(),
+        );
+        let (_, old) = put.record(list, true, false)?;
         old.unchecked(&Tested);
         Ok(())
-    }),
-    ("delete", |heap, pager, tid, list| {
-        let old = heap.delete(pager, tid, WRITER).record(list, (), ())?;
-        old.unchecked(&Tested);
+    })
+}
+
+fn delete(w: &Wide, fail: Option<(Site, usize)>, what: &str) -> (Vec<Run>, bool) {
+    let tid = w.tids[w.tids.len() / 2];
+    statement(w, fail, what, |list| {
+        let old = w.heap.delete(&w.pager, tid, w.writer.xid());
+        old.record(list, false, false)?.unchecked(&Tested);
         Ok(())
-    }),
+    })
+}
+
+/// Copy the row of the second heap into the first, onto the page of the last row, which it
+/// finds full and prunes.
+fn copy(w: &Wide, fail: Option<(Site, usize)>, _: &str) -> (Vec<Run>, bool) {
+    let v = w
+        .other
+        .read(&w.pager, w.other_tid)
+        .expect("the heap reads")
+        .expect("the row");
+    w.make_room(w.last());
+    arm(fail);
+    let copied = w.heap.copy_version_pruning(
+        &crate::vacuum::Vacuuming::unheld(&w.pager, &w.txns),
+        &w.other,
+        &v,
+        &mut w.removed(),
+    );
+    let runs = armed::reached();
+    if let Ok(copied) = &copied {
+        assert!(copied.is_some(), "the version is copied");
+    }
+    (runs, copied.is_ok())
+}
+
+fn prune(w: &Wide, fail: Option<(Site, usize)>, _: &str) -> (Vec<Run>, bool) {
+    w.delete_most();
+    arm(fail);
+    let ok = w.prune_all().is_ok();
+    (armed::reached(), ok)
+}
+
+fn sweep(w: &Wide, fail: Option<(Site, usize)>, _: &str) -> (Vec<Run>, bool) {
+    w.delete_most();
+    w.prune_all().expect("the prunes succeed");
+    arm(fail);
+    let swept = w.heap.large().sweep(
+        &crate::vacuum::Vacuuming::unheld(&w.pager, &w.txns),
+        |_| Ok(true),
+        &mut || true,
+    );
+    let runs = armed::reached();
+    if let Ok(walk) = &swept {
+        assert!(
+            matches!(walk, Walk::Done(n) if *n > 0),
+            "the sweep frees chunks: {walk:?}"
+        );
+    }
+    (runs, swept.is_ok())
+}
+
+fn release_page(w: &Wide, fail: Option<(Site, usize)>, _: &str) -> (Vec<Run>, bool) {
+    let pages = w.heap.pages(&w.pager).expect("the heap reads");
+    arm(fail);
+    let mut counted = true;
+    for pid in pages {
+        counted &= w.heap.release_page(&w.pager, pid);
+    }
+    (armed::reached(), counted)
+}
+
+/// A heap entry the search fails at each run of a step after an update.
+struct HeapCase {
+    name: &'static str,
+    run: HeapEntry,
+    /// The steps after an update the entry reaches.
+    steps: &'static [Step],
+    /// The entry counts the first heap's versions off as a drop does, leaving it out of verify.
+    dropped: bool,
+    /// A failed settle leaves an entry unsettled.
+    unsettles: bool,
+}
+
+const HEAP_CASES: &[HeapCase] = &[
+    HeapCase {
+        name: "insert",
+        run: insert,
+        steps: &[Step::Release, Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "insert all",
+        run: insert_all,
+        steps: &[Step::Release, Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "hot update",
+        run: hot_update,
+        steps: &[Step::Release, Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "cold update",
+        run: cold_update,
+        steps: &[Step::Release, Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "retag",
+        run: retag,
+        steps: &[Step::Release, Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "delete",
+        run: delete,
+        steps: &[Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "copy",
+        run: copy,
+        steps: &[Step::Release, Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "prune",
+        run: prune,
+        steps: &[Step::Release, Step::Settle],
+        dropped: false,
+        unsettles: true,
+    },
+    HeapCase {
+        name: "sweep",
+        run: sweep,
+        steps: &[Step::Settle],
+        dropped: false,
+        unsettles: false,
+    },
+    HeapCase {
+        name: "release page",
+        run: release_page,
+        steps: &[Step::Release, Step::Settle],
+        dropped: true,
+        unsettles: false,
+    },
 ];
 
-/// Write `write` over a [`wide_heap`], failing `fail`. Returns the runs of steps it reached and
-/// its result; when it fails, takes back what it recorded and fails unless the heap's live rows
-/// are those it found.
-fn heap_written(write: HeapWrite, fail: Option<(Site, usize)>) -> (Vec<Run>, bool) {
-    let what = format!("{fail:?}");
+/// Run `case` on a fresh [`wide`] world, failing `fail`. Returns the runs of steps it reached,
+/// whether it succeeded and what verify then finds.
+fn heap_ran(case: &HeapCase, fail: Option<(Site, usize)>, what: &str) -> Ran {
     let mut sim = Sim::new(SEED, Config::default());
     run(&mut sim, |rt| {
-        let (pager, heap, tids) = wide_heap(&rt);
-        let found = live(&pager, &heap);
-        let mut list = Vec::new();
-        arm(fail);
-        let ok = write(&heap, &pager, tids[tids.len() / 2], &mut list).is_ok();
-        let runs = armed::reached();
-        if !ok {
-            for ((), u) in list.into_iter().rev() {
-                heap.take_back(&pager, u).expect("the write is taken back");
-            }
-            assert_eq!(found, live(&pager, &heap), "{what}");
-        }
-        (runs, ok)
+        let w = wide(&rt);
+        let (runs, ok) = (case.run)(&w, fail, what);
+        let found = w.findings(case.dropped, what);
+        Ran { runs, ok, found }
     })
+}
+
+/// Returns the runs of `steps` among `runs` the search fails: under the deep profile every one,
+/// otherwise the first and the last of each site.
+fn searched(runs: &[Run], steps: &[Step]) -> BTreeSet<(Site, usize)> {
+    if !profile::every_case() {
+        return ends(runs, steps);
+    }
+    runs.iter()
+        .filter(|r| steps.contains(&r.0.step()))
+        .map(|&(site, n, _)| (site, n))
+        .collect()
 }
 
 #[test]
-fn a_heap_write_failing_after_its_update_returns_a_take_back_restoring_the_rows_it_found() {
-    for (kind, write) in HEAP_WRITES {
-        let (clean, ok) = heap_written(*write, None);
-        assert!(ok, "{kind} fails with nothing failed");
-        let sites = ends(&clean, BEFORE_COMMIT);
-        assert!(
-            sites.iter().any(|(s, _)| s.step() == Step::Settle),
-            "{kind} reaches no settle: {clean:?}"
-        );
-        for (site, n) in sites {
-            let (runs, ok) = heap_written(*write, Some((site, n)));
+fn a_heap_entry_failing_a_release_or_settle_after_its_update_fails_and_skips_no_other_step() {
+    let mut retain_settles = 0;
+    for case in HEAP_CASES {
+        let name = case.name;
+        let clean = heap_ran(case, None, name);
+        assert!(clean.ok, "{name} fails with nothing failed");
+        let settled = Findings {
+            overcounted: 0,
+            unsettled: 0,
+        };
+        assert_eq!(settled, clean.found, "{name} with nothing failed");
+        let mut struck: BTreeSet<Site> = BTreeSet::new();
+        let mut unsettled = false;
+        for (site, n) in searched(&clean.runs, case.steps) {
+            let what = format!("{name}: run {n} of {site:?}");
+            let got = heap_ran(case, Some((site, n)), &what);
             assert!(
-                runs.contains(&(site, n, true)),
-                "{kind}: run {n} of {site:?} armed and not failed: {runs:?}"
+                got.runs.contains(&(site, n, true)),
+                "{what} armed and not failed: {:?}",
+                got.runs
             );
-            assert!(!ok, "{kind}: run {n} of {site:?}");
+            assert!(!got.ok, "{what}");
+            let released = site.step() == Step::Release;
+            assert_eq!(usize::from(released), got.found.overcounted, "{what}");
+            if released {
+                assert_eq!(0, got.found.unsettled, "{what}");
+            }
+            unsettled |= got.found.unsettled > 0;
+            struck.insert(site);
+        }
+        let steps: BTreeSet<Step> = case.steps.iter().copied().collect();
+        let struck_steps: BTreeSet<Step> = struck.iter().map(|s| s.step()).collect();
+        assert_eq!(steps, struck_steps, "{name}");
+        // The settle of a raise of counts ahead of an update runs right after its Retain step.
+        for pair in clean.runs.windows(2) {
+            if let [(retain, ..), (settle, ..)] = pair
+                && retain.step() == Step::Retain
+            {
+                assert_eq!(Step::Settle, settle.step(), "{name}: after {retain:?}");
+                assert!(struck.contains(settle), "{name}: {settle:?} not failed");
+                retain_settles += 1;
+            }
+        }
+        if case.unsettles {
+            assert!(
+                unsettled,
+                "{name}: no failed settle left an entry unsettled"
+            );
         }
     }
+    assert!(
+        retain_settles > 0,
+        "no entry raised counts ahead of its update"
+    );
 }

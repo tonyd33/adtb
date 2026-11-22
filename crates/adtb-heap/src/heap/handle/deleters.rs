@@ -39,7 +39,7 @@ impl Heap {
             None,
             Flags::NONE,
         )?;
-        let committed = write.commit(None, &[], &[]);
+        let committed = write.commit_in_place().finish();
         let old = self.superseded(target.tid, Change::Delete);
         Undoable::committed(committed, old, Some(Undo::Restore(target.tid, xid)), None)
     }
@@ -76,7 +76,7 @@ impl Heap {
                 self.supersede(stage, pager, target, Writers::cleared, None, Flags::NONE)?;
             }
         }
-        write.commit(None, &[], &[])?;
+        write.commit_in_place().finish()?;
         Ok(())
     }
 

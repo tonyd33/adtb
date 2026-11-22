@@ -85,7 +85,8 @@ impl Heap {
                         tids.push(t);
                         retain.extend(held.iter().cloned());
                     }
-                    return match write.commit(Some(Took::Found(self, pid)), &retain, &c.dropped) {
+                    let took = Took::Found(self, pid);
+                    return match write.commit(took, &retain, &c.dropped).finish() {
                         Err(f) if !f.written() => Err(f.into()),
                         committed => Ok((tids, committed)),
                     };
