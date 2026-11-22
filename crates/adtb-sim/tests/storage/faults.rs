@@ -60,10 +60,13 @@ fn torn_write_lands_some_atomic_units() {
             },
         );
         setup(&mut sim, 8);
-        run_then_crash(&mut sim, |rt, io| {
-            let (file, _) = open(rt, io, "f", false).unwrap();
-            write(rt, io, file, 0, &[0xbb; 8 * SECTOR]).unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                let (file, _) = open(rt, io, "f", false).unwrap();
+                write(rt, io, file, 0, &[0xbb; 8 * SECTOR]).unwrap();
+            }),
+        );
         let bytes = read_all(&mut sim);
         let mut new = 0;
         for (i, s) in bytes.chunks(SECTOR).enumerate() {
@@ -95,10 +98,13 @@ fn write_within_atomic_unit_never_tears() {
             },
         );
         setup(&mut sim, 8);
-        run_then_crash(&mut sim, |rt, io| {
-            let (file, _) = open(rt, io, "f", false).unwrap();
-            write(rt, io, file, 0, &[0xbb; 8 * SECTOR]).unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                let (file, _) = open(rt, io, "f", false).unwrap();
+                write(rt, io, file, 0, &[0xbb; 8 * SECTOR]).unwrap();
+            }),
+        );
         let bytes = read_all(&mut sim);
         let new = bytes.chunks(SECTOR).filter(|s| s[0] == 0xbb).count();
         assert!(
@@ -166,7 +172,7 @@ fn lost_write_is_acknowledged_and_absent() {
     });
     assert_eq!(sector(1), seen);
     sim.set_faults(Faults::none(512));
-    run_then_crash(&mut sim, |_, _| {});
+    run_then_crash(&mut sim, Box::new(|_, _| {}));
     assert_eq!(sector(1), read_all(&mut sim));
 }
 
@@ -259,12 +265,15 @@ fn crash_keeps_forced_writes_and_loses_some_unforced() {
     for seed in 0..32 {
         let mut sim = sim(seed, Faults::none(512));
         setup(&mut sim, 2);
-        run_then_crash(&mut sim, |rt, io| {
-            let (file, _) = open(rt, io, "f", false).unwrap();
-            write(rt, io, file, 0, &sector(0xaa)).unwrap();
-            sync(rt, io, file).unwrap();
-            write(rt, io, file, SECTOR as u64, &sector(0xbb)).unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                let (file, _) = open(rt, io, "f", false).unwrap();
+                write(rt, io, file, 0, &sector(0xaa)).unwrap();
+                sync(rt, io, file).unwrap();
+                write(rt, io, file, SECTOR as u64, &sector(0xbb)).unwrap();
+            }),
+        );
         let bytes = read_all(&mut sim);
         assert_eq!(
             sector(0xaa),
@@ -295,10 +304,13 @@ fn without_lose_unsynced_completed_writes_survive_a_crash() {
             },
         );
         setup(&mut sim, 1);
-        run_then_crash(&mut sim, |rt, io| {
-            let (file, _) = open(rt, io, "f", false).unwrap();
-            write(rt, io, file, 0, &sector(0xbb)).unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                let (file, _) = open(rt, io, "f", false).unwrap();
+                write(rt, io, file, 0, &sector(0xbb)).unwrap();
+            }),
+        );
         assert_eq!(sector(0xbb), read_all(&mut sim), "seed {seed}");
     }
 }
@@ -348,22 +360,28 @@ fn creation_without_directory_force_may_vanish() {
     let mut vanished = false;
     for seed in 0..32 {
         let mut sim = sim(seed, Faults::none(512));
-        run_then_crash(&mut sim, |rt, io| {
-            let (file, _) = open(rt, io, "f", true).unwrap();
-            write(rt, io, file, 0, &sector(1)).unwrap();
-            sync(rt, io, file).unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                let (file, _) = open(rt, io, "f", true).unwrap();
+                write(rt, io, file, 0, &sector(1)).unwrap();
+                sync(rt, io, file).unwrap();
+            }),
+        );
         vanished |= !sim.files().contains_key("f");
     }
     assert!(vanished);
     for seed in 0..32 {
         let mut sim = sim(seed, Faults::none(512));
-        run_then_crash(&mut sim, |rt, io| {
-            let (file, _) = open(rt, io, "f", true).unwrap();
-            write(rt, io, file, 0, &sector(1)).unwrap();
-            sync(rt, io, file).unwrap();
-            sync_dir(rt, io, "").unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                let (file, _) = open(rt, io, "f", true).unwrap();
+                write(rt, io, file, 0, &sector(1)).unwrap();
+                sync(rt, io, file).unwrap();
+                sync_dir(rt, io, "").unwrap();
+            }),
+        );
         assert_eq!(Some(&sector(1)), sim.files().get("f"), "seed {seed}");
     }
 }
@@ -373,12 +391,15 @@ fn directory_force_covers_only_its_directory() {
     let mut vanished = false;
     for seed in 0..32 {
         let mut sim = sim(seed, Faults::none(512));
-        run_then_crash(&mut sim, |rt, io| {
-            create_dir(rt, io, "log");
-            open(rt, io, "log/0", true).unwrap();
-            open(rt, io, "data", true).unwrap();
-            sync_dir(rt, io, "").unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                create_dir(rt, io, "log");
+                open(rt, io, "log/0", true).unwrap();
+                open(rt, io, "data", true).unwrap();
+                sync_dir(rt, io, "").unwrap();
+            }),
+        );
         assert!(sim.files().contains_key("data"), "seed {seed}");
         vanished |= !sim.files().contains_key("log/0");
     }
@@ -390,11 +411,14 @@ fn unforced_directory_takes_its_files_at_a_crash() {
     let mut vanished = false;
     for seed in 0..32 {
         let mut sim = sim(seed, Faults::none(512));
-        run_then_crash(&mut sim, |rt, io| {
-            create_dir(rt, io, "log");
-            open(rt, io, "log/0", true).unwrap();
-            sync_dir(rt, io, "log").unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                create_dir(rt, io, "log");
+                open(rt, io, "log/0", true).unwrap();
+                sync_dir(rt, io, "log").unwrap();
+            }),
+        );
         let files = sim.files();
         vanished |= !files.contains_key("log/0");
         let survived = run(&mut sim, |rt, io| {
@@ -417,12 +441,15 @@ fn unforced_directory_takes_its_files_at_a_crash() {
 fn directory_force_keeps_the_directory_and_its_files() {
     for seed in 0..16 {
         let mut sim = sim(seed, Faults::none(512));
-        run_then_crash(&mut sim, |rt, io| {
-            create_dir(rt, io, "log");
-            sync_dir(rt, io, "").unwrap();
-            open(rt, io, "log/0", true).unwrap();
-            sync_dir(rt, io, "log").unwrap();
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                create_dir(rt, io, "log");
+                sync_dir(rt, io, "").unwrap();
+                open(rt, io, "log/0", true).unwrap();
+                sync_dir(rt, io, "log").unwrap();
+            }),
+        );
         assert!(sim.files().contains_key("log/0"), "seed {seed}");
     }
 }
@@ -433,18 +460,21 @@ fn removal_needs_a_directory_force() {
     for seed in 0..32 {
         let mut sim = sim(seed, Faults::none(512));
         setup(&mut sim, 1);
-        run_then_crash(&mut sim, |rt, io| {
-            assert_eq!(
-                Ok(Done::Removed),
-                complete(rt, io, Op::Remove { path: "f".into() }).result,
-                "seed {seed}"
-            );
-            assert_eq!(
-                Err(IoError::NotFound),
-                open(rt, io, "f", false).map(|_| ()),
-                "seed {seed}"
-            );
-        });
+        run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                assert_eq!(
+                    Ok(Done::Removed),
+                    complete(rt, io, Op::Remove { path: "f".into() }).result,
+                    "seed {seed}"
+                );
+                assert_eq!(
+                    Err(IoError::NotFound),
+                    open(rt, io, "f", false).map(|_| ()),
+                    "seed {seed}"
+                );
+            }),
+        );
         back |= sim.files().contains_key("f");
     }
     assert!(back);
@@ -576,11 +606,14 @@ fn ordinary_panics_are_not_accepted_as_fatal_io_crashes() {
     ] {
         let mut sim = Sim::new(31, Config::default());
         let caught = catch_unwind(AssertUnwindSafe(|| {
-            adtb_testkit::crash::run_process(&mut sim, |_| match case {
-                OrdinaryPanic::Owned => panic_any(MESSAGE.to_owned()),
-                OrdinaryPanic::Borrowed => panic_any(MESSAGE),
-                OrdinaryPanic::Other => panic_any(17_u32),
-            })
+            adtb_testkit::crash::run_process(
+                &mut sim,
+                Box::new(|_| match case {
+                    OrdinaryPanic::Owned => panic_any(MESSAGE.to_owned()),
+                    OrdinaryPanic::Borrowed => panic_any(MESSAGE),
+                    OrdinaryPanic::Other => panic_any(17_u32),
+                }),
+            )
         }));
         let payload = caught.expect_err("an ordinary panic must escape the crash helper");
         let text = match case {

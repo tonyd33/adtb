@@ -270,7 +270,7 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
         7,
         8,
         1,
-        |rt| {
+        Box::new(|rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
             let warm = load(rt, &pager, &pages, 2 * EVERY, 0);
             rt.arm(Match::kinds([]));
@@ -285,8 +285,8 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
             run.times.splice(0..0, warm.times);
             *ledger.lock().unwrap() = (run, Probe::of(&pager).appended(), base);
             before_first_acks
-        },
-        |at, image| {
+        }),
+        &mut |at, image| {
             let (load, last, base) = &*ledger.lock().unwrap();
             // Recovery starts at or past the checkpoint before the one the header names, so it
             // reads the threshold, the span of the named checkpoint's cycle and the log after it.
@@ -368,7 +368,7 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
         9,
         24,
         1,
-        |rt| {
+        Box::new(|rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
             let before = Probe::of(&pager).checkpoint();
             let load = load(rt, &pager, &pages, EVERY, 0);
@@ -384,8 +384,8 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
             checkpoints.dedup();
             *taken.lock().unwrap() = checkpoints;
             Vec::new()
-        },
-        |at, image| {
+        }),
+        &mut |at, image| {
             let (named, _) = header_checkpoint(&image);
             let mut durable = taken.lock().unwrap().clone();
             durable.retain(|&c| c <= named);

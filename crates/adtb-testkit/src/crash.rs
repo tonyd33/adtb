@@ -25,7 +25,7 @@ pub fn silence_fatal_panics() {
 }
 
 /// Run `body` as a process, treating a crash caused by a failed write or force as a crash.
-pub fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
+pub fn run_process(sim: &mut Sim, body: Box<dyn FnOnce(SimRuntime) + '_>) -> Outcome {
     match panic::catch_unwind(AssertUnwindSafe(|| sim.run(body))) {
         Ok(o) => o,
         Err(payload) if payload.is::<FatalIo>() => Outcome::Crashed,
@@ -154,7 +154,7 @@ impl Round<'_> {
 
     /// Run `body` as a process under the loop's faults, crashing at this round's time. Returns
     /// whether it crashed.
-    pub fn crash(&mut self, body: impl FnOnce(SimRuntime)) -> bool {
+    pub fn crash(&mut self, body: Box<dyn FnOnce(SimRuntime) + '_>) -> bool {
         self.sim.set_faults(self.faults);
         let after = crash_after(
             self.seed,
@@ -174,8 +174,8 @@ impl Round<'_> {
     /// crashed.
     pub fn crash_after_setup<T>(
         &mut self,
-        setup: impl FnOnce(&SimRuntime) -> T,
-        body: impl FnOnce(SimRuntime, T),
+        setup: Box<dyn FnOnce(&SimRuntime) -> T + '_>,
+        body: Box<dyn FnOnce(SimRuntime, T) + '_>,
     ) -> bool {
         self.sim.set_faults(self.faults);
         let after = crash_after(
@@ -184,11 +184,14 @@ impl Round<'_> {
             self.rounds.base,
             self.rounds.span,
         );
-        let crashed = run_process(self.sim, |rt| {
-            let set = setup(&rt);
-            rt.crash_after(after);
-            body(rt, set);
-        }) == Outcome::Crashed;
+        let crashed = run_process(
+            self.sim,
+            Box::new(|rt| {
+                let set = setup(&rt);
+                rt.crash_after(after);
+                body(rt, set);
+            }),
+        ) == Outcome::Crashed;
         self.crashed |= crashed;
         crashed
     }
@@ -274,8 +277,8 @@ pub fn crash_loop<T: Reopened>(
     seed: u64,
     faults: Faults,
     rounds: Rounds,
-    mut workload: impl FnMut(&mut Round<'_>),
-    mut recovered: impl FnMut(SimRuntime, &Ledger) -> T,
+    workload: &mut dyn FnMut(&mut Round<'_>),
+    recovered: &mut dyn FnMut(SimRuntime, &Ledger) -> T,
 ) -> Crashes<T> {
     silence_fatal_panics();
     let quiet = Faults {
@@ -374,12 +377,12 @@ mod tests {
                 5,
                 Faults::none(512),
                 ROUNDS,
-                |r| {
+                &mut |r| {
                     if r.index() == 0 {
                         r.ledger().submit(1);
                     }
                 },
-                |_, _| Shows(shown.next().expect("a round's database")),
+                &mut |_, _| Shows(shown.next().expect("a round's database")),
             )
         };
         let failed = panic::catch_unwind(run).expect_err("the loop fails");
@@ -398,12 +401,12 @@ mod tests {
             6,
             Faults::none(512),
             ROUNDS,
-            |r| {
+            &mut |r| {
                 let id = r.index() as u64;
                 r.ledger().submit(id);
                 r.ledger().acknowledge(id);
             },
-            |_, ledger| {
+            &mut |_, ledger| {
                 reopens += 1;
                 assert_eq!(Some(adtb_sim::Fate::Acknowledged), ledger.fate(0));
                 Lossy

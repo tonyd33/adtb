@@ -980,19 +980,22 @@ pub fn run(
         let mut whole = false;
         starts.push(reads.len());
         processes.push((logged.len(), runner.writes.len() as u64));
-        let outcome = crash::run_process(&mut sim, |rt| {
-            if !armed {
-                rt.arm(write_outs());
-                arm(&rt);
-                armed = true;
-            }
-            whole = runner.process(&rt);
-            if whole && runner.next > 0 && ops[runner.next - 1] == Op::Crash {
-                let mut io = rt.io();
-                common::sleep(&rt, &mut io, Duration::from_secs(1000));
-                unreachable!("the crash comes first");
-            }
-        });
+        let outcome = crash::run_process(
+            &mut sim,
+            Box::new(|rt| {
+                if !armed {
+                    rt.arm(write_outs());
+                    arm(&rt);
+                    armed = true;
+                }
+                whole = runner.process(&rt);
+                if whole && runner.next > 0 && ops[runner.next - 1] == Op::Crash {
+                    let mut io = rt.io();
+                    common::sleep(&rt, &mut io, Duration::from_secs(1000));
+                    unreachable!("the crash comes first");
+                }
+            }),
+        );
         let planned = whole && runner.next > 0 && ops[runner.next - 1] == Op::Crash;
         if watched {
             evidence.extend(ledger::evidence(&sim.files()));

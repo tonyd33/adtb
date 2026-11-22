@@ -35,7 +35,7 @@ fn outcome(history: &[iso::Txn], t: u64) -> Ended {
 fn every_scenario_runs_without_anomaly() {
     for scenario in SCENARIOS {
         for seed in 0..4 {
-            let history = simulate(seed, |_, e| script(e, scenario.steps));
+            let history = simulate(seed, Box::new(|_, e| script(e, scenario.steps)));
             assert_eq!(
                 Ok(vec![]),
                 iso::check(&history),
@@ -48,7 +48,7 @@ fn every_scenario_runs_without_anomaly() {
 
 #[test]
 fn write_skew_aborts_one_side() {
-    let history = simulate(1, |_, e| script(e, iso::WRITE_SKEW.steps));
+    let history = simulate(1, Box::new(|_, e| script(e, iso::WRITE_SKEW.steps)));
     let sides = [outcome(&history, 1), outcome(&history, 2)];
     assert!(sides.contains(&Ended::Aborted), "{sides:?}");
     assert!(sides.contains(&Ended::Committed), "{sides:?}");
@@ -56,7 +56,7 @@ fn write_skew_aborts_one_side() {
 
 #[test]
 fn lost_update_by_appends_aborts_one_side() {
-    let history = simulate(2, |_, e| script(e, iso::LOST_UPDATE.steps));
+    let history = simulate(2, Box::new(|_, e| script(e, iso::LOST_UPDATE.steps)));
     let sides = [outcome(&history, 1), outcome(&history, 2)];
     assert_eq!([Ended::Committed, Ended::Aborted], sides);
 }
@@ -89,7 +89,7 @@ const FEKETE: &[Step] = &[
 #[test]
 fn feketes_read_only_anomaly_aborts_one_transaction() {
     for seed in 0..4 {
-        let history = simulate(seed, |_, e| script(e, FEKETE));
+        let history = simulate(seed, Box::new(|_, e| script(e, FEKETE)));
         assert_eq!(Ok(vec![]), iso::check(&history), "seed {seed}");
         let ends = [1, 2, 3].map(|t| outcome(&history, t));
         assert!(ends.contains(&Ended::Aborted), "seed {seed}: {ends:?}");
@@ -110,48 +110,51 @@ fn markers(elems: &Elems) -> Vec<(Position, Snapshot)> {
 #[test]
 fn a_deferrable_reader_waits_for_a_safe_snapshot_and_never_fails() {
     for seed in 0..8 {
-        let (ends, seen) = simulate(seed, |rt, e| {
-            let logged = markers(e).len();
-            let t2 = Worker::start(rt, e, Kind::ReadWrite);
-            t2.call(rt, Req::Read(1)).unwrap();
-            t2.call(rt, Req::Read(2)).unwrap();
-            let t1 = Worker::start(rt, e, Kind::ReadWrite);
-            t1.call(rt, Req::Read(2)).unwrap();
-            t1.call(rt, Req::Append(2, 10)).unwrap();
-            t1.call(rt, Req::Commit).unwrap();
-            t2.call(rt, Req::Append(1, 20)).unwrap();
-            let e2 = e.clone();
-            let seen = Arc::new(Mutex::new(None));
-            let out = seen.clone();
-            let d = rt.spawn("deferrable", move || {
-                let mut r = e2.begin(Kind::Deferrable).unwrap();
-                let snapshot = e2.database().testing().snapshot(&r).unwrap();
-                let x = e2.read(&mut r, 1).unwrap();
-                let y = e2.read(&mut r, 2).unwrap();
-                r.commit(None).unwrap();
-                *out.lock().unwrap() = Some((x, y, snapshot));
-            });
-            for _ in 0..20 {
-                rt.yield_now();
-            }
-            assert!(
-                seen.lock().unwrap().is_none(),
-                "the reader ran on an unsafe snapshot"
-            );
-            let end2 = t2.call(rt, Req::Commit);
-            rt.join(d);
-            for t in [t1.thread(), t2.thread()] {
-                rt.join(t);
-            }
-            let (x, y, snapshot) = seen.lock().unwrap().take().unwrap();
-            let new: Vec<Snapshot> = markers(e)
-                .split_off(logged)
-                .into_iter()
-                .map(|(_, s)| s)
-                .collect();
-            assert_eq!(vec![snapshot], new, "only the retaken snapshot is safe");
-            (end2.map(drop), (x, y))
-        });
+        let (ends, seen) = simulate(
+            seed,
+            Box::new(|rt, e| {
+                let logged = markers(e).len();
+                let t2 = Worker::start(rt, e, Kind::ReadWrite);
+                t2.call(rt, Req::Read(1)).unwrap();
+                t2.call(rt, Req::Read(2)).unwrap();
+                let t1 = Worker::start(rt, e, Kind::ReadWrite);
+                t1.call(rt, Req::Read(2)).unwrap();
+                t1.call(rt, Req::Append(2, 10)).unwrap();
+                t1.call(rt, Req::Commit).unwrap();
+                t2.call(rt, Req::Append(1, 20)).unwrap();
+                let e2 = e.clone();
+                let seen = Arc::new(Mutex::new(None));
+                let out = seen.clone();
+                let d = rt.spawn("deferrable", move || {
+                    let mut r = e2.begin(Kind::Deferrable).unwrap();
+                    let snapshot = e2.database().testing().snapshot(&r).unwrap();
+                    let x = e2.read(&mut r, 1).unwrap();
+                    let y = e2.read(&mut r, 2).unwrap();
+                    r.commit(None).unwrap();
+                    *out.lock().unwrap() = Some((x, y, snapshot));
+                });
+                for _ in 0..20 {
+                    rt.yield_now();
+                }
+                assert!(
+                    seen.lock().unwrap().is_none(),
+                    "the reader ran on an unsafe snapshot"
+                );
+                let end2 = t2.call(rt, Req::Commit);
+                rt.join(d);
+                for t in [t1.thread(), t2.thread()] {
+                    rt.join(t);
+                }
+                let (x, y, snapshot) = seen.lock().unwrap().take().unwrap();
+                let new: Vec<Snapshot> = markers(e)
+                    .split_off(logged)
+                    .into_iter()
+                    .map(|(_, s)| s)
+                    .collect();
+                assert_eq!(vec![snapshot], new, "only the retaken snapshot is safe");
+                (end2.map(drop), (x, y))
+            }),
+        );
         assert_eq!(Ok(()), ends, "seed {seed}");
         assert_eq!((vec![20], vec![10]), seen, "seed {seed}");
     }
@@ -159,17 +162,20 @@ fn a_deferrable_reader_waits_for_a_safe_snapshot_and_never_fails() {
 
 #[test]
 fn a_deferrable_reader_with_no_concurrent_writer_starts_at_once() {
-    simulate(0, |rt, e| {
-        let w = Worker::start(rt, e, Kind::ReadWrite);
-        w.call(rt, Req::Append(1, 1)).unwrap();
-        w.call(rt, Req::Commit).unwrap();
-        let r = Worker::start(rt, e, Kind::Deferrable);
-        assert_eq!(Ok(vec![1]), r.call(rt, Req::Read(1)));
-        r.call(rt, Req::Commit).unwrap();
-        for t in [w.thread(), r.thread()] {
-            rt.join(t);
-        }
-    });
+    simulate(
+        0,
+        Box::new(|rt, e| {
+            let w = Worker::start(rt, e, Kind::ReadWrite);
+            w.call(rt, Req::Append(1, 1)).unwrap();
+            w.call(rt, Req::Commit).unwrap();
+            let r = Worker::start(rt, e, Kind::Deferrable);
+            assert_eq!(Ok(vec![1]), r.call(rt, Req::Read(1)));
+            r.call(rt, Req::Commit).unwrap();
+            for t in [w.thread(), r.thread()] {
+                rt.join(t);
+            }
+        }),
+    );
 }
 
 fn appender(rt: &SimRuntime, e: &Arc<Elems>, k: i64, elem: i64) -> Worker {
@@ -193,22 +199,25 @@ fn settle(rt: &SimRuntime, w: &Worker) -> Option<Reply> {
 #[test]
 fn an_insert_of_a_key_a_running_transaction_inserted_waits_and_fails_if_it_commits() {
     for seed in 0..4 {
-        let (r, t2) = simulate(seed, |rt, e| {
-            let t1 = appender(rt, e, 1, 1);
-            let t2 = Worker::start(rt, e, Kind::ReadWrite);
-            t2.send(rt, Req::Append(1, 2));
-            assert_eq!(
-                None,
-                settle(rt, &t2),
-                "seed {seed}: the second insert did not wait"
-            );
-            t1.call(rt, Req::Commit).unwrap();
-            let r = t2.reply(rt);
-            for t in [t1.thread(), t2.thread()] {
-                rt.join(t);
-            }
-            (r, t2.id())
-        });
+        let (r, t2) = simulate(
+            seed,
+            Box::new(|rt, e| {
+                let t1 = appender(rt, e, 1, 1);
+                let t2 = Worker::start(rt, e, Kind::ReadWrite);
+                t2.send(rt, Req::Append(1, 2));
+                assert_eq!(
+                    None,
+                    settle(rt, &t2),
+                    "seed {seed}: the second insert did not wait"
+                );
+                t1.call(rt, Req::Commit).unwrap();
+                let r = t2.reply(rt);
+                for t in [t1.thread(), t2.thread()] {
+                    rt.join(t);
+                }
+                (r, t2.id())
+            }),
+        );
         assert_eq!(serialization(t2, ELEMS), r, "seed {seed}");
     }
 }
@@ -216,35 +225,41 @@ fn an_insert_of_a_key_a_running_transaction_inserted_waits_and_fails_if_it_commi
 #[test]
 fn an_insert_that_waited_proceeds_if_the_other_transaction_aborts() {
     for seed in 0..4 {
-        let read = simulate(seed, |rt, e| {
-            let t1 = appender(rt, e, 1, 1);
-            let t2 = Worker::start(rt, e, Kind::ReadWrite);
-            t2.send(rt, Req::Append(1, 2));
-            assert_eq!(None, settle(rt, &t2), "seed {seed}");
-            t1.call(rt, Req::Abort).unwrap();
-            t2.reply(rt).unwrap();
-            t2.call(rt, Req::Commit).unwrap();
-            for t in [t1.thread(), t2.thread()] {
-                rt.join(t);
-            }
-            e.lists(1..2)
-        });
+        let read = simulate(
+            seed,
+            Box::new(|rt, e| {
+                let t1 = appender(rt, e, 1, 1);
+                let t2 = Worker::start(rt, e, Kind::ReadWrite);
+                t2.send(rt, Req::Append(1, 2));
+                assert_eq!(None, settle(rt, &t2), "seed {seed}");
+                t1.call(rt, Req::Abort).unwrap();
+                t2.reply(rt).unwrap();
+                t2.call(rt, Req::Commit).unwrap();
+                for t in [t1.thread(), t2.thread()] {
+                    rt.join(t);
+                }
+                e.lists(1..2)
+            }),
+        );
         assert_eq!(vec![vec![2]], read, "seed {seed}");
     }
 }
 
 #[test]
 fn an_insert_of_a_key_in_the_snapshot_violates_its_unique_constraint() {
-    let r = simulate(3, |rt, e| {
-        let t1 = appender(rt, e, 1, 5);
-        t1.call(rt, Req::Commit).unwrap();
-        let t2 = Worker::start(rt, e, Kind::ReadWrite);
-        let r = t2.call(rt, Req::Append(1, 5));
-        for t in [t1.thread(), t2.thread()] {
-            rt.join(t);
-        }
-        r
-    });
+    let r = simulate(
+        3,
+        Box::new(|rt, e| {
+            let t1 = appender(rt, e, 1, 5);
+            t1.call(rt, Req::Commit).unwrap();
+            let t2 = Worker::start(rt, e, Kind::ReadWrite);
+            let r = t2.call(rt, Req::Append(1, 5));
+            for t in [t1.thread(), t2.thread()] {
+                rt.join(t);
+            }
+            r
+        }),
+    );
     let elem = |id, pos| Value::Ctor(0, [id, 1, pos, 5].map(Value::Int).into());
     let pair = |a, b| Value::Record([a, b].into());
     assert_eq!(
@@ -261,40 +276,46 @@ fn an_insert_of_a_key_in_the_snapshot_violates_its_unique_constraint() {
 
 #[test]
 fn an_insert_of_a_key_committed_after_the_snapshot_fails() {
-    let (r, t2) = simulate(4, |rt, e| {
-        let t2 = Worker::start(rt, e, Kind::ReadWrite);
-        let t1 = appender(rt, e, 1, 5);
-        t1.call(rt, Req::Commit).unwrap();
-        let r = t2.call(rt, Req::Append(1, 5));
-        for t in [t1.thread(), t2.thread()] {
-            rt.join(t);
-        }
-        (r, t2.id())
-    });
+    let (r, t2) = simulate(
+        4,
+        Box::new(|rt, e| {
+            let t2 = Worker::start(rt, e, Kind::ReadWrite);
+            let t1 = appender(rt, e, 1, 5);
+            t1.call(rt, Req::Commit).unwrap();
+            let r = t2.call(rt, Req::Append(1, 5));
+            for t in [t1.thread(), t2.thread()] {
+                rt.join(t);
+            }
+            (r, t2.id())
+        }),
+    );
     assert_eq!(serialization(t2, ELEMS), r);
 }
 
 #[test]
 fn two_inserts_waiting_on_each_other_abort_one() {
     for seed in 0..4 {
-        let (r1, r2, t2) = simulate(seed, |rt, e| {
-            let t1 = appender(rt, e, 1, 1);
-            let t2 = appender(rt, e, 2, 1);
-            t1.send(rt, Req::Append(2, 2));
-            assert_eq!(None, settle(rt, &t1), "seed {seed}");
-            let r2 = t2.call(rt, Req::Append(1, 2));
-            if r2.is_ok() {
-                t2.call(rt, Req::Abort).unwrap();
-            }
-            let r1 = t1.reply(rt);
-            if r1.is_ok() {
-                t1.call(rt, Req::Abort).unwrap();
-            }
-            for t in [t1.thread(), t2.thread()] {
-                rt.join(t);
-            }
-            (r1, r2, t2.id())
-        });
+        let (r1, r2, t2) = simulate(
+            seed,
+            Box::new(|rt, e| {
+                let t1 = appender(rt, e, 1, 1);
+                let t2 = appender(rt, e, 2, 1);
+                t1.send(rt, Req::Append(2, 2));
+                assert_eq!(None, settle(rt, &t1), "seed {seed}");
+                let r2 = t2.call(rt, Req::Append(1, 2));
+                if r2.is_ok() {
+                    t2.call(rt, Req::Abort).unwrap();
+                }
+                let r1 = t1.reply(rt);
+                if r1.is_ok() {
+                    t1.call(rt, Req::Abort).unwrap();
+                }
+                for t in [t1.thread(), t2.thread()] {
+                    rt.join(t);
+                }
+                (r1, r2, t2.id())
+            }),
+        );
         assert_eq!(Ok(vec![]), r1, "seed {seed}");
         assert_eq!(serialization(t2, ELEMS), r2, "seed {seed}");
     }
@@ -324,23 +345,26 @@ fn increment(id: i64) -> Req {
 #[test]
 fn a_lost_update_fails_the_second_writer() {
     for seed in 0..4 {
-        let (r, n, t2) = simulate(seed, |rt, e| {
-            counter(rt, e, 7);
-            let t1 = Worker::start(rt, e, Kind::ReadWrite);
-            let t2 = Worker::start(rt, e, Kind::ReadWrite);
-            assert_eq!(Ok(vec![0]), t1.call(rt, get(7)), "seed {seed}");
-            assert_eq!(Ok(vec![0]), t2.call(rt, get(7)), "seed {seed}");
-            t1.call(rt, increment(7)).unwrap();
-            t1.call(rt, Req::Commit).unwrap();
-            let r = t2.call(rt, increment(7));
-            let check = Worker::start(rt, e, Kind::ReadOnly);
-            let n = check.call(rt, get(7));
-            check.call(rt, Req::Commit).unwrap();
-            for t in [t1.thread(), t2.thread(), check.thread()] {
-                rt.join(t);
-            }
-            (r, n, t2.id())
-        });
+        let (r, n, t2) = simulate(
+            seed,
+            Box::new(|rt, e| {
+                counter(rt, e, 7);
+                let t1 = Worker::start(rt, e, Kind::ReadWrite);
+                let t2 = Worker::start(rt, e, Kind::ReadWrite);
+                assert_eq!(Ok(vec![0]), t1.call(rt, get(7)), "seed {seed}");
+                assert_eq!(Ok(vec![0]), t2.call(rt, get(7)), "seed {seed}");
+                t1.call(rt, increment(7)).unwrap();
+                t1.call(rt, Req::Commit).unwrap();
+                let r = t2.call(rt, increment(7));
+                let check = Worker::start(rt, e, Kind::ReadOnly);
+                let n = check.call(rt, get(7));
+                check.call(rt, Req::Commit).unwrap();
+                for t in [t1.thread(), t2.thread(), check.thread()] {
+                    rt.join(t);
+                }
+                (r, n, t2.id())
+            }),
+        );
         assert_eq!(serialization(t2, COUNTERS), r, "seed {seed}");
         assert_eq!(Ok(vec![1]), n, "seed {seed}");
     }
@@ -349,37 +373,40 @@ fn a_lost_update_fails_the_second_writer() {
 #[test]
 fn a_write_of_a_row_another_transaction_is_writing_waits_for_it() {
     for seed in 0..4 {
-        let (committed, aborted, n) = simulate(seed, |rt, e| {
-            counter(rt, e, 1);
-            counter(rt, e, 2);
-            let mut out = Vec::new();
-            for (id, commit) in [(1, true), (2, false)] {
-                let t1 = Worker::start(rt, e, Kind::ReadWrite);
-                t1.call(rt, increment(id)).unwrap();
-                let t2 = Worker::start(rt, e, Kind::ReadWrite);
-                t2.send(rt, increment(id));
-                assert_eq!(
-                    None,
-                    settle(rt, &t2),
-                    "seed {seed}: the second write did not wait"
-                );
-                t1.call(rt, if commit { Req::Commit } else { Req::Abort })
-                    .unwrap();
-                let r = t2.reply(rt);
-                if r.is_ok() {
-                    t2.call(rt, Req::Commit).unwrap();
+        let (committed, aborted, n) = simulate(
+            seed,
+            Box::new(|rt, e| {
+                counter(rt, e, 1);
+                counter(rt, e, 2);
+                let mut out = Vec::new();
+                for (id, commit) in [(1, true), (2, false)] {
+                    let t1 = Worker::start(rt, e, Kind::ReadWrite);
+                    t1.call(rt, increment(id)).unwrap();
+                    let t2 = Worker::start(rt, e, Kind::ReadWrite);
+                    t2.send(rt, increment(id));
+                    assert_eq!(
+                        None,
+                        settle(rt, &t2),
+                        "seed {seed}: the second write did not wait"
+                    );
+                    t1.call(rt, if commit { Req::Commit } else { Req::Abort })
+                        .unwrap();
+                    let r = t2.reply(rt);
+                    if r.is_ok() {
+                        t2.call(rt, Req::Commit).unwrap();
+                    }
+                    for t in [t1.thread(), t2.thread()] {
+                        rt.join(t);
+                    }
+                    out.push((r, t2.id()));
                 }
-                for t in [t1.thread(), t2.thread()] {
-                    rt.join(t);
-                }
-                out.push((r, t2.id()));
-            }
-            let check = Worker::start(rt, e, Kind::ReadOnly);
-            let n = [1, 2].map(|id| check.call(rt, get(id)));
-            check.call(rt, Req::Commit).unwrap();
-            rt.join(check.thread());
-            (out[0].clone(), out[1].clone(), n)
-        });
+                let check = Worker::start(rt, e, Kind::ReadOnly);
+                let n = [1, 2].map(|id| check.call(rt, get(id)));
+                check.call(rt, Req::Commit).unwrap();
+                rt.join(check.thread());
+                (out[0].clone(), out[1].clone(), n)
+            }),
+        );
         assert_eq!(
             serialization(committed.1, COUNTERS),
             committed.0,
@@ -400,37 +427,41 @@ fn random_history(
     clients: usize,
     per_client: usize,
 ) -> (Vec<iso::Txn>, usize) {
-    simulate_with(seed, options, move |rt, e| {
-        let history = Arc::new(Mutex::new(Vec::new()));
-        let next = Arc::new(Mutex::new(0_u64));
-        let threads: Vec<ThreadId> = (0..clients)
-            .map(|_| {
-                let (e, history, next) = (e.clone(), history.clone(), next.clone());
-                let rt2 = rt.clone();
-                rt.spawn("client", move || {
-                    for _ in 0..per_client {
-                        let id = {
-                            let mut n = next.lock().unwrap();
-                            *n += 1;
-                            *n
-                        };
-                        let txn = random_txn(&e, &rt2, id);
-                        history.lock().unwrap().push(txn);
-                    }
+    simulate_with(
+        seed,
+        options,
+        Box::new(move |rt, e| {
+            let history = Arc::new(Mutex::new(Vec::new()));
+            let next = Arc::new(Mutex::new(0_u64));
+            let threads: Vec<ThreadId> = (0..clients)
+                .map(|_| {
+                    let (e, history, next) = (e.clone(), history.clone(), next.clone());
+                    let rt2 = rt.clone();
+                    rt.spawn("client", move || {
+                        for _ in 0..per_client {
+                            let id = {
+                                let mut n = next.lock().unwrap();
+                                *n += 1;
+                                *n
+                            };
+                            let txn = random_txn(&e, &rt2, id);
+                            history.lock().unwrap().push(txn);
+                        }
+                    })
                 })
-            })
-            .collect();
-        for t in threads {
-            rt.join(t);
-        }
-        let ops = (0..KEYS)
-            .zip(e.lists(0..KEYS))
-            .map(|(key, list)| iso::Op::Read { key, list })
-            .collect();
-        let mut history = std::mem::take(&mut *history.lock().unwrap());
-        history.push(iso::Txn::new(0, Ended::Committed, ops));
-        (history, e.database().testing().tracked())
-    })
+                .collect();
+            for t in threads {
+                rt.join(t);
+            }
+            let ops = (0..KEYS)
+                .zip(e.lists(0..KEYS))
+                .map(|(key, list)| iso::Op::Read { key, list })
+                .collect();
+            let mut history = std::mem::take(&mut *history.lock().unwrap());
+            history.push(iso::Txn::new(0, Ended::Committed, ops));
+            (history, e.database().testing().tracked())
+        }),
+    )
 }
 
 fn random_txn(e: &Elems, rt: &SimRuntime, id: u64) -> iso::Txn {
@@ -530,44 +561,50 @@ fn histories_stay_serializable_when_every_lock_promotes() {
 
 #[test]
 fn locks_of_finished_transactions_are_released() {
-    simulate(6, |rt, e| {
-        let w = appender(rt, e, 1, 1);
-        let r = Worker::start(rt, e, Kind::ReadWrite);
-        r.call(rt, Req::Read(1)).unwrap();
-        w.call(rt, Req::Commit).unwrap();
-        r.call(rt, Req::Commit).unwrap();
-        for t in [w.thread(), r.thread()] {
-            rt.join(t);
-        }
-        assert_eq!(0, e.database().testing().tracked());
-    });
+    simulate(
+        6,
+        Box::new(|rt, e| {
+            let w = appender(rt, e, 1, 1);
+            let r = Worker::start(rt, e, Kind::ReadWrite);
+            r.call(rt, Req::Read(1)).unwrap();
+            w.call(rt, Req::Commit).unwrap();
+            r.call(rt, Req::Commit).unwrap();
+            for t in [w.thread(), r.thread()] {
+                rt.join(t);
+            }
+            assert_eq!(0, e.database().testing().tracked());
+        }),
+    );
 }
 
 #[test]
 fn every_snapshot_found_safe_logs_a_marker_at_the_last_commit_before_it() {
-    simulate(10, |_, e| {
-        let testing = e.database().testing();
-        let mut first = e.begin(Kind::ReadWrite).unwrap();
-        e.append(&mut first, 2, 1).unwrap();
-        let before = first.commit(None).unwrap();
-        let logged = markers(e).len();
-        let mut w = e.begin(Kind::ReadWrite).unwrap();
-        e.append(&mut w, 1, 1).unwrap();
-        let pending = e.begin(Kind::ReadOnly).unwrap();
-        assert_eq!(
-            logged,
-            markers(e).len(),
-            "a pending snapshot logged a marker"
-        );
-        let written = w.commit(None).unwrap();
-        let after = e.begin(Kind::ReadOnly).unwrap();
-        let snapshots = [&pending, &after].map(|t| testing.snapshot(t).unwrap());
-        let [p, a] = snapshots;
-        assert_eq!(
-            vec![(before, p), (written, a)],
-            markers(e).split_off(logged)
-        );
-        pending.commit(None).unwrap();
-        after.commit(None).unwrap();
-    });
+    simulate(
+        10,
+        Box::new(|_, e| {
+            let testing = e.database().testing();
+            let mut first = e.begin(Kind::ReadWrite).unwrap();
+            e.append(&mut first, 2, 1).unwrap();
+            let before = first.commit(None).unwrap();
+            let logged = markers(e).len();
+            let mut w = e.begin(Kind::ReadWrite).unwrap();
+            e.append(&mut w, 1, 1).unwrap();
+            let pending = e.begin(Kind::ReadOnly).unwrap();
+            assert_eq!(
+                logged,
+                markers(e).len(),
+                "a pending snapshot logged a marker"
+            );
+            let written = w.commit(None).unwrap();
+            let after = e.begin(Kind::ReadOnly).unwrap();
+            let snapshots = [&pending, &after].map(|t| testing.snapshot(t).unwrap());
+            let [p, a] = snapshots;
+            assert_eq!(
+                vec![(before, p), (written, a)],
+                markers(e).split_off(logged)
+            );
+            pending.commit(None).unwrap();
+            after.commit(None).unwrap();
+        }),
+    );
 }

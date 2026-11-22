@@ -730,15 +730,15 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
             step,
             Faults::none(512),
             Rounds::new(1, 9_000, 26_400),
-            |r| {
-                r.crash(|rt| {
+            &mut |r| {
+                r.crash(Box::new(|rt| {
                     let (pager, heap) = open(rt);
                     let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
                     heap.insert(&pager, Xid(2), &fresh).unwrap();
                     pager.flush_log();
-                });
+                }));
             },
-            |rt, _| {
+            &mut |rt, _| {
                 let (pager, heap) = open(rt);
                 let inventory = notes_inventory(&heap);
                 left += usize::from(
@@ -845,10 +845,10 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
             step,
             Faults::none(512),
             Rounds::new(1, 85_000, 140_000),
-            |r| {
-                r.crash(prune);
+            &mut |r| {
+                r.crash(Box::new(prune));
             },
-            |rt, _| {
+            &mut |rt, _| {
                 let db = Db::of(Storage::reopen(&rt, &roots).unwrap());
                 let inventory = Inventory {
                     sums: vec![Sum {
@@ -993,11 +993,11 @@ fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> usize {
         seed,
         faults,
         rounds,
-        |r| {
+        &mut |r| {
             let (l, w) = (r.ledger().clone(), world.clone());
-            r.crash(|rt| workload(rt, &w, &l, 300));
+            r.crash(Box::new(|rt| workload(rt, &w, &l, 300)));
         },
-        |rt, ledger| inspect(rt, &world, ledger),
+        &mut |rt, ledger| inspect(rt, &world, ledger),
     );
     let w = world.lock().unwrap();
     assert!(

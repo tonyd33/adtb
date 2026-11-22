@@ -94,7 +94,7 @@ impl Stop {
     pub fn stopped<T>(
         &self,
         rt: &SimRuntime,
-        mut done: impl FnMut() -> Option<T>,
+        done: &mut dyn FnMut() -> Option<T>,
     ) -> Result<Step, T> {
         loop {
             {
@@ -216,11 +216,11 @@ pub fn interleave(
     db: &Database<SimRuntime>,
     (first, second): (&mut impl Stepping, &mut impl Stepping),
     (i, j): (usize, usize),
-    between: impl FnOnce(),
+    between: Box<dyn FnOnce() + '_>,
 ) -> [Reached; 2] {
     let [a, b] = Stop::set_each(rt, db, [(first.boundaries(), i), (second.boundaries(), j)]);
     first.start(rt);
-    let a_stopped = a.stopped(rt, || first.ended().then_some(())).is_ok();
+    let a_stopped = a.stopped(rt, &mut || first.ended().then_some(())).is_ok();
     let (mut b_stopped, mut b_blocked, mut a_blocked) = (false, false, false);
     if a_stopped {
         between();
@@ -296,7 +296,7 @@ pub type Pair = (Step, Second);
 ///
 /// Panic when a case does not stop where its pair says, or the first side reaches other
 /// boundaries than the case before it.
-pub fn every_pair(mut case: impl FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<Step>, Vec<Pair>) {
+pub fn every_pair(case: &mut dyn FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<Step>, Vec<Pair>) {
     let mut pairs = Vec::new();
     let mut stops = Vec::new();
     for i in 1.. {
@@ -330,7 +330,7 @@ pub fn every_pair(mut case: impl FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<
 /// Run `case` at each boundary its first side reaches, with the second run to its end or
 /// blocked, ending once a case shows the first side reaches none past the one it stopped at. Returns the boundaries the first side stopped at and each pair run.
 pub fn every_boundary(
-    mut case: impl FnMut((usize, usize)) -> [Reached; 2],
+    case: &mut dyn FnMut((usize, usize)) -> [Reached; 2],
 ) -> (Vec<Step>, Vec<Pair>) {
     let mut pairs = Vec::new();
     let mut stops = Vec::new();

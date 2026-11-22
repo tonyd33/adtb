@@ -288,7 +288,7 @@ fn stopped_write(
     let mut stopped = None;
     if !two.aborted {
         two.worker.send(rt, w.of(A));
-        match stop.stopped(rt, || two.worker.try_reply()) {
+        match stop.stopped(rt, &mut || two.worker.try_reply()) {
             Ok(step) => {
                 stopped = Some(step);
                 one.read(rt, read, A, 2);
@@ -313,80 +313,89 @@ fn stopped_write(
 /// before side 1 writes. Returns the history with a final read of both rows, and the steps of the
 /// side `at` stops.
 fn skew(write: Write, read: Read, at: At, seed: u64) -> (Vec<iso::Txn>, Steps) {
-    simulate_with(seed, &options(), |rt, e| {
-        fill(rt, e, write);
-        let (mut one, mut two) = (Side::start(rt, e, 1, write), Side::start(rt, e, 2, write));
-        two.read(rt, read, B, 1);
-        let none = || Steps {
-            stopped: None,
-            reached: vec![],
-        };
-        let (two, steps) = match at {
-            At::Before => {
-                one.read(rt, read, A, 2);
-                two.write(rt, write, A);
-                (two.end(rt), none())
-            }
-            At::Writer(n) => {
-                let steps = stopped_write(rt, e, (&mut one, &mut two), write, read, n);
-                (two.end(rt), steps)
-            }
-            At::Reader(n) => {
-                let stop = Stop::set(rt, e.database(), (one.worker.thread(), |_| true), n);
-                one.worker.send(rt, read.row(A));
-                let (reply, stopped, two) = match stop.stopped(rt, || one.worker.try_reply()) {
-                    Ok(step) => {
-                        two.write(rt, write, A);
-                        let two = two.end(rt);
-                        stop.release(rt);
-                        (one.worker.reply(rt), Some(step), two)
-                    }
-                    Err(reply) => {
-                        two.write(rt, write, A);
-                        (reply, None, two.end(rt))
-                    }
-                };
-                one.was_read(reply, read, A, 2);
-                let reached = stop.reached();
-                (two, Steps { stopped, reached })
-            }
-        };
-        one.write(rt, write, B);
-        let one = one.end(rt);
-        let last = Worker::start(rt, e, Kind::ReadOnly);
-        let ops = [(A, 2), (B, 1)]
-            .map(|(key, elem)| {
-                let v = last.call(rt, Read::Key.row(key)).expect("a read-only read");
-                iso::Op::Read {
-                    key,
-                    list: list(&v, write, elem),
+    simulate_with(
+        seed,
+        &options(),
+        Box::new(|rt, e| {
+            fill(rt, e, write);
+            let (mut one, mut two) = (Side::start(rt, e, 1, write), Side::start(rt, e, 2, write));
+            two.read(rt, read, B, 1);
+            let none = || Steps {
+                stopped: None,
+                reached: vec![],
+            };
+            let (two, steps) = match at {
+                At::Before => {
+                    one.read(rt, read, A, 2);
+                    two.write(rt, write, A);
+                    (two.end(rt), none())
                 }
-            })
-            .into();
-        last.call(rt, Req::Commit).expect("a reader commits");
-        rt.join(last.thread());
-        let history = vec![iso::Txn::new(0, Outcome::Committed, ops), one, two];
-        (history, steps)
-    })
+                At::Writer(n) => {
+                    let steps = stopped_write(rt, e, (&mut one, &mut two), write, read, n);
+                    (two.end(rt), steps)
+                }
+                At::Reader(n) => {
+                    let stop = Stop::set(rt, e.database(), (one.worker.thread(), |_| true), n);
+                    one.worker.send(rt, read.row(A));
+                    let (reply, stopped, two) =
+                        match stop.stopped(rt, &mut || one.worker.try_reply()) {
+                            Ok(step) => {
+                                two.write(rt, write, A);
+                                let two = two.end(rt);
+                                stop.release(rt);
+                                (one.worker.reply(rt), Some(step), two)
+                            }
+                            Err(reply) => {
+                                two.write(rt, write, A);
+                                (reply, None, two.end(rt))
+                            }
+                        };
+                    one.was_read(reply, read, A, 2);
+                    let reached = stop.reached();
+                    (two, Steps { stopped, reached })
+                }
+            };
+            one.write(rt, write, B);
+            let one = one.end(rt);
+            let last = Worker::start(rt, e, Kind::ReadOnly);
+            let ops = [(A, 2), (B, 1)]
+                .map(|(key, elem)| {
+                    let v = last.call(rt, Read::Key.row(key)).expect("a read-only read");
+                    iso::Op::Read {
+                        key,
+                        list: list(&v, write, elem),
+                    }
+                })
+                .into();
+            last.call(rt, Req::Commit).expect("a reader commits");
+            rt.join(last.thread());
+            let history = vec![iso::Txn::new(0, Outcome::Committed, ops), one, two];
+            (history, steps)
+        }),
+    )
 }
 
 /// Returns the page locks an early read of A and one of B leave, each in a transaction of its own,
 /// over the rows a write of an existing version finds.
 fn early_pages(seed: u64) -> [usize; 2] {
-    simulate_with(seed, &options(), |rt, e| {
-        fill(rt, e, Write::Delete);
-        [A, B].map(|id| {
-            let Req::Text(text) = Read::Early.row(id) else {
-                unreachable!("a read is text")
-            };
-            let mut tx = e.begin(Kind::ReadWrite).expect("a transaction");
-            tx.query_text(&text, &[], &TxnCallOptions::default())
-                .expect("an early read");
-            let locks = e.database().testing().locks(&tx);
-            tx.rollback().expect("a rollback");
-            locks.iter().filter(|l| l.starts_with("page ")).count()
-        })
-    })
+    simulate_with(
+        seed,
+        &options(),
+        Box::new(|rt, e| {
+            fill(rt, e, Write::Delete);
+            [A, B].map(|id| {
+                let Req::Text(text) = Read::Early.row(id) else {
+                    unreachable!("a read is text")
+                };
+                let mut tx = e.begin(Kind::ReadWrite).expect("a transaction");
+                tx.query_text(&text, &[], &TxnCallOptions::default())
+                    .expect("an early read");
+                let locks = e.database().testing().locks(&tx);
+                tx.rollback().expect("a rollback");
+                locks.iter().filter(|l| l.starts_with("page ")).count()
+            })
+        }),
+    )
 }
 
 /// The anomalies of the histories judged, and how many were judged.

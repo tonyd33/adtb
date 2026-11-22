@@ -847,7 +847,7 @@ fn written_whole(files: Files, pid: Pid, crash: bool) -> Files {
         p
     };
     if crash {
-        adtb_testkit::common::run_then_crash(&mut sim, |rt, _| drop(body(rt.clone())));
+        adtb_testkit::common::run_then_crash(&mut sim, Box::new(|rt, _| drop(body(rt.clone()))));
     } else {
         finished(&mut sim, |rt| body(rt).close());
     }

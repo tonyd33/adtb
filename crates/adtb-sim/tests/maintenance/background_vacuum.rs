@@ -335,21 +335,24 @@ fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
         sim.crash_at(sim.now() + crash::crash_after(seed, 1, 200_000, 2_000_000));
         let steps = Arc::new(AtomicU64::new(0));
         let seen = steps.clone();
-        let outcome = crash::run_process(&mut sim, |rt| {
-            let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
-            budget(&db, 1.0);
-            let o = CallOptions::default();
-            let mut n = 0_i64;
-            loop {
-                let t = format!("insert others.O {{ o: 0, id: others.key({n}), n: {n} }}");
-                db.query_text(&t, &[], &o).ok();
-                let gone = format!("delete o in others where o.n < {}", n - 20);
-                db.query_text(&gone, &[], &o).ok();
-                let charged = db.testing().charged().steps;
-                seen.store(charged, Ordering::Relaxed);
-                n += 1;
-            }
-        });
+        let outcome = crash::run_process(
+            &mut sim,
+            Box::new(|rt| {
+                let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
+                budget(&db, 1.0);
+                let o = CallOptions::default();
+                let mut n = 0_i64;
+                loop {
+                    let t = format!("insert others.O {{ o: 0, id: others.key({n}), n: {n} }}");
+                    db.query_text(&t, &[], &o).ok();
+                    let gone = format!("delete o in others where o.n < {}", n - 20);
+                    db.query_text(&gone, &[], &o).ok();
+                    let charged = db.testing().charged().steps;
+                    seen.store(charged, Ordering::Relaxed);
+                    n += 1;
+                }
+            }),
+        );
         assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
         let steps = steps.load(Ordering::Relaxed);
         assert!(

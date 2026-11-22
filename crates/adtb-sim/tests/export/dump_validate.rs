@@ -356,7 +356,7 @@ fn a_violating_restore_with_any_op_failed_publishes_nothing() {
         got.map(drop)
     };
     let mut reached = 0;
-    search::each_fatal_failure(&base, 13, 4, &[], workload, |failed| {
+    search::each_fatal_failure(&base, 13, 4, &[], &workload, &mut |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
         match &failed.out {
             Some(Err(Error::Rejected { reason })) => assert_eq!(&expected, reason, "{label}"),

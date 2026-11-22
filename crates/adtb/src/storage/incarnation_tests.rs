@@ -244,48 +244,51 @@ fn run(case: Case) {
         pager.flush_log();
         intact(pager, p, ops, &format!("{case:?}: allocated"));
     };
-    common::run_then_crash(&mut sim, |rt, _| {
-        let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
-        match evidence {
-            Evidence::LostThenFreed => ops.free(&pager, p),
-            Evidence::ReadThenFreed => {
-                assert_eq!(
-                    Err(PageError {
-                        pid: p,
-                        damage: lost
-                    }),
-                    pager.read(p).map(drop)
-                );
-                ops.free(&pager, p);
-            }
-            Evidence::ReadWhileFree => {
-                assert_eq!(Ok(1), pager.read(p).map(|g| g[HEADER_LEN]), "{case:?}");
-                let probe = Probe::of(&pager);
-                let judged = (
-                    probe.refusals().remove(&p),
-                    probe.records().pages().get(&p).copied(),
-                );
-                assert_eq!((None, None), judged, "{case:?}");
-            }
-            Evidence::RecordedAfterFree => drop(pager.damage(p, Damage::Checksum)),
-            Evidence::RecordedAfterRecycle => {
-                let _ = pager.damage(p, Damage::Checksum);
-                assert_eq!(
-                    Some(&Damage::Checksum),
-                    Probe::of(&pager).records().pages().get(&p),
-                    "{case:?}: the damage is recorded"
-                );
-            }
-            Evidence::LostWhileFree => {}
-        }
-        if reopened {
-            pager.close();
+    common::run_then_crash(
+        &mut sim,
+        Box::new(|rt, _| {
             let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
-            allocate(&pager, &mut ops);
-        } else {
-            allocate(&pager, &mut ops);
-        }
-    });
+            match evidence {
+                Evidence::LostThenFreed => ops.free(&pager, p),
+                Evidence::ReadThenFreed => {
+                    assert_eq!(
+                        Err(PageError {
+                            pid: p,
+                            damage: lost
+                        }),
+                        pager.read(p).map(drop)
+                    );
+                    ops.free(&pager, p);
+                }
+                Evidence::ReadWhileFree => {
+                    assert_eq!(Ok(1), pager.read(p).map(|g| g[HEADER_LEN]), "{case:?}");
+                    let probe = Probe::of(&pager);
+                    let judged = (
+                        probe.refusals().remove(&p),
+                        probe.records().pages().get(&p).copied(),
+                    );
+                    assert_eq!((None, None), judged, "{case:?}");
+                }
+                Evidence::RecordedAfterFree => drop(pager.damage(p, Damage::Checksum)),
+                Evidence::RecordedAfterRecycle => {
+                    let _ = pager.damage(p, Damage::Checksum);
+                    assert_eq!(
+                        Some(&Damage::Checksum),
+                        Probe::of(&pager).records().pages().get(&p),
+                        "{case:?}: the damage is recorded"
+                    );
+                }
+                Evidence::LostWhileFree => {}
+            }
+            if reopened {
+                pager.close();
+                let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+                allocate(&pager, &mut ops);
+            } else {
+                allocate(&pager, &mut ops);
+            }
+        }),
+    );
     let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
     harness::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options).unwrap();
@@ -327,11 +330,14 @@ fn damage_of_a_page_whose_free_a_crash_left_to_replay_is_held_unrecorded() {
         pager.close();
     });
     let p = allocated.unwrap();
-    common::run_then_crash(&mut sim, |rt, _| {
-        let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
-        pager.free(p).unwrap();
-        pager.flush_log();
-    });
+    common::run_then_crash(
+        &mut sim,
+        Box::new(|rt, _| {
+            let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+            pager.free(p).unwrap();
+            pager.flush_log();
+        }),
+    );
     let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
     harness::finished(&mut sim, |rt| {
         let (pager, opening) = Pager::open(rt, &options).unwrap();

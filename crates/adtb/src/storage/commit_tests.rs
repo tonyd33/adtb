@@ -411,7 +411,7 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
     recovered_commit_prefix(baseline.files(), 2, 2, u64::MAX);
     let (mut writes, mut syncs, mut before_ack, mut after_ack) = (0, 0, 0, 0);
     let mut positions = BTreeSet::new();
-    search::each_fatal_failure(&files, seed, 4, &[], workload, |failed| {
+    search::each_fatal_failure(&files, seed, 4, &[], &workload, &mut |failed| {
         assert_eq!(None, failed.out, "failure {}: {}", failed.at, failed.struck);
         assert!(positions.insert(failed.at), "a distinct failure position");
         match failed.struck.kind() {
@@ -476,7 +476,7 @@ fn public_commits_preserve_acknowledged_pairs_under_crashes_at_sampled_events() 
         seed,
         3,
         2,
-        |rt| {
+        Box::new(|rt| {
             let db = public_commit_db(rt.clone());
             rt.arm(Match::any());
             for text in &COMMIT_PAIRS[1..] {
@@ -487,8 +487,8 @@ fn public_commits_preserve_acknowledged_pairs_under_crashes_at_sampled_events() 
             }
             rt.disarm();
             acks.lock().unwrap().clone()
-        },
-        |at, image| {
+        }),
+        &mut |at, image| {
             let acknowledged = acks.lock().unwrap().iter().filter(|&&e| e <= at).count();
             let attempted = attempts
                 .lock()

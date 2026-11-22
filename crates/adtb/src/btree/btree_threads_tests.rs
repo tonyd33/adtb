@@ -597,7 +597,7 @@ fn threaded_crash_rounds(seed: u64, rounds: usize, cuts: usize, shape: Shape) ->
         seed,
         crash_config().faults,
         Rounds::new(rounds + cuts, 2_000, 150_000),
-        |r| {
+        &mut |r| {
             let round = r.index();
             if round % 2 == 1 && round < 2 * cuts {
                 let sim = r.sim();
@@ -605,10 +605,10 @@ fn threaded_crash_rounds(seed: u64, rounds: usize, cuts: usize, shape: Shape) ->
                 crash_at_a_flush(sim, &world, seed * 1000 + round as u64, shape);
             } else {
                 let w = world.clone();
-                r.crash(move |rt| crash_run(rt, &w, shape));
+                r.crash(Box::new(move |rt| crash_run(rt, &w, shape)));
             }
         },
-        |rt, _| reopen(rt, &world, shape, &mut repaired),
+        &mut |rt, _| reopen(rt, &world, shape, &mut repaired),
     );
     (out.crashed(), repaired)
 }

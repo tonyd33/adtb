@@ -698,9 +698,12 @@ fn a_change_refused_unwritten_is_replayed_by_the_next_open() {
                 pager.checkpoint();
             };
             if crash {
-                adtb_testkit::common::run_then_crash(&mut sim, |rt, _| {
-                    change(&Pager::open(rt.clone(), &options()).unwrap().0);
-                });
+                adtb_testkit::common::run_then_crash(
+                    &mut sim,
+                    Box::new(|rt, _| {
+                        change(&Pager::open(rt.clone(), &options()).unwrap().0);
+                    }),
+                );
             } else {
                 session(&mut sim, |pager, _| change(pager));
             }

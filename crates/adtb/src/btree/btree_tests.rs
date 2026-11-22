@@ -571,19 +571,19 @@ fn crash_rounds(seed: u64, rounds: usize) -> Reached {
         seed,
         crash_config().faults,
         rounds,
-        |r| {
+        &mut |r| {
             let round = r.index();
             let prefixed = round < 2;
             if round % 2 == 0 {
                 let w = world.clone();
-                r.crash(move |rt| crash_workload(rt, &w, 600, prefixed));
+                r.crash(Box::new(move |rt| crash_workload(rt, &w, 600, prefixed)));
             } else {
                 let sim = r.sim();
                 sim.set_faults(crash_config().faults);
                 crash_at_a_flush(sim, &world, seed * 1000 + round as u64, round == 1);
             }
         },
-        |rt, _| reopen(rt, &world, &mut reached),
+        &mut |rt, _| reopen(rt, &world, &mut reached),
     );
     reached.crashes = out.crashed();
     reached

@@ -117,3 +117,8 @@ query = "undo.tql"
 include = ["crates/adtb/src/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
 rows = { discarded_heap_writes = "zero" }
+
+[[rule]]
+query = "runners.tql"
+include = ["crates/adtb-sim/src/**/*.rs", "crates/adtb-simkit/src/**/*.rs", "crates/adtb-testkit/src/**/*.rs"]
+rows = { generic_runners = "zero" }

@@ -344,9 +344,9 @@ fn a_crash_during_an_archive_copy_publishes_no_partial_segment_and_the_next_pass
         7,
         8,
         2,
-        workload,
-        |image| image.keys().any(|p| is_segment(p)),
-        |at, image| {
+        Box::new(workload),
+        &|image| image.keys().any(|p| is_segment(p)),
+        &mut |at, image| {
             for (path, bytes) in image.iter().filter(|(p, _)| is_segment(p)) {
                 let (base, hash) = path.rsplit_once('/').unwrap().1.split_once('-').unwrap();
                 assert_eq!(named(bytes), hash, "event {at}: {path}");

@@ -1685,41 +1685,48 @@ fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
     };
     let pinned = PINNED.map(|(at, _)| at);
     let mut struck = Vec::new();
-    search::each_fatal_failure_at_every_name(&base, 11, FAILURES, &pinned, workload, |failed| {
-        let label = format!("op {} {}", failed.at, failed.struck);
-        struck.push((
-            failed.struck.kind(),
-            failed.struck.path().unwrap_or_default().to_owned(),
-        ));
-        if let Some((_, strikes)) = PINNED.iter().find(|(at, _)| *at == failed.at) {
-            assert!(strikes(&failed.struck), "{label}: the pinned op moved");
-        }
-        match &failed.out {
-            Some(Ok(())) => assert!(
-                failed.files.contains_key(COPY),
-                "{label}: nothing published"
-            ),
-            Some(Err(e)) => {
-                assert!(
-                    matches!(
-                        e,
-                        Error::Fatal {
-                            reason: FatalReason::Storage { .. }
-                        }
-                    ),
-                    "{label}: {e:?}"
-                );
-                assert!(
-                    !failed.files.contains_key(COPY)
-                        || (failed.struck.kind(), failed.struck.path())
-                            == (OpKind::SyncDir, Some("")),
-                    "{label}: published, {e:?}"
-                );
+    search::each_fatal_failure_at_every_name(
+        &base,
+        11,
+        FAILURES,
+        &pinned,
+        &workload,
+        &mut |failed| {
+            let label = format!("op {} {}", failed.at, failed.struck);
+            struck.push((
+                failed.struck.kind(),
+                failed.struck.path().unwrap_or_default().to_owned(),
+            ));
+            if let Some((_, strikes)) = PINNED.iter().find(|(at, _)| *at == failed.at) {
+                assert!(strikes(&failed.struck), "{label}: the pinned op moved");
             }
-            None => {}
-        }
-        assert_restored_or_absent(&failed.files, 11, &label);
-    });
+            match &failed.out {
+                Some(Ok(())) => assert!(
+                    failed.files.contains_key(COPY),
+                    "{label}: nothing published"
+                ),
+                Some(Err(e)) => {
+                    assert!(
+                        matches!(
+                            e,
+                            Error::Fatal {
+                                reason: FatalReason::Storage { .. }
+                            }
+                        ),
+                        "{label}: {e:?}"
+                    );
+                    assert!(
+                        !failed.files.contains_key(COPY)
+                            || (failed.struck.kind(), failed.struck.path())
+                                == (OpKind::SyncDir, Some("")),
+                        "{label}: published, {e:?}"
+                    );
+                }
+                None => {}
+            }
+            assert_restored_or_absent(&failed.files, 11, &label);
+        },
+    );
     assert_publish_failed(&struck);
 }
 
@@ -1765,9 +1772,9 @@ fn a_restore_crashed_anywhere_leaves_nothing_or_the_whole_file() {
         12,
         CRASH_POINTS,
         CRASH_IMAGES,
-        workload,
-        |image| image.contains_key(COPY),
-        |at, image| assert_restored_or_absent(&image, at as u64, &format!("event {at}")),
+        Box::new(workload),
+        &|image| image.contains_key(COPY),
+        &mut |at, image| assert_restored_or_absent(&image, at as u64, &format!("event {at}")),
     );
 }
 
@@ -1806,7 +1813,7 @@ fn armed_dump(rt: &SimRuntime) -> Result<(), Error> {
 #[test]
 fn a_dump_with_any_op_failed_writes_all_or_nothing() {
     let base = undumped();
-    search::each_failure(&base, 13, FAILURES, armed_dump, |failed| {
+    search::each_failure(&base, 13, FAILURES, &armed_dump, &mut |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
         let whole = failed.files.contains_key(&format!("{DUMP}/manifest"));
         match &failed.out {
@@ -1825,8 +1832,8 @@ fn a_dump_crashed_anywhere_leaves_nothing_or_the_whole_dump() {
         14,
         CRASH_POINTS,
         CRASH_IMAGES,
-        |rt| armed_dump(rt).unwrap(),
-        |image| image.contains_key(&format!("{DUMP}/manifest")),
-        |at, image| assert_dumped_or_absent(&image, at as u64, &format!("event {at}")),
+        Box::new(|rt| armed_dump(rt).unwrap()),
+        &|image| image.contains_key(&format!("{DUMP}/manifest")),
+        &mut |at, image| assert_dumped_or_absent(&image, at as u64, &format!("event {at}")),
     );
 }

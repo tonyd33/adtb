@@ -376,15 +376,14 @@ pub fn created() -> BTreeMap<String, Vec<u8>> {
         .clone()
 }
 
+/// A body run over the workload database.
+pub type Workload<'a, T> = Box<dyn FnOnce(&SimRuntime, &Arc<Elems>) -> T + 'a>;
+
 /// Run `body` in a simulated process seeded `seed` over a new workload database opened with
 /// `options`, then check that `verify` finds nothing. Returns what `body` returns.
 ///
 /// Preconditions: `options` create the file [`options`] creates.
-pub fn simulate_with<T>(
-    seed: u64,
-    options: &OpenOptions,
-    body: impl FnOnce(&SimRuntime, &Arc<Elems>) -> T,
-) -> T {
+pub fn simulate_with<T>(seed: u64, options: &OpenOptions, body: Workload<'_, T>) -> T {
     let mut sim = Sim::with_files(seed, Config::default(), created());
     process::run(&mut sim, |rt| {
         let elems = Arc::new(Elems::open(&rt, options).expect("the workload's database opens"));
@@ -395,7 +394,7 @@ pub fn simulate_with<T>(
 }
 
 /// Run `body` as [`simulate_with`] does, with [`options`].
-pub fn simulate<T>(seed: u64, body: impl FnOnce(&SimRuntime, &Arc<Elems>) -> T) -> T {
+pub fn simulate<T>(seed: u64, body: Workload<'_, T>) -> T {
     simulate_with(seed, &options(), body)
 }
 
@@ -407,96 +406,114 @@ mod tests {
 
     #[test]
     fn appends_read_back_in_order_inside_their_transaction_and_after_it_commits() {
-        simulate(1, |_, elems| {
-            let mut tx = elems.begin(Kind::ReadWrite).unwrap();
-            elems.append(&mut tx, 1, 30).unwrap();
-            elems.append(&mut tx, 1, 10).unwrap();
-            elems.append(&mut tx, 2, 20).unwrap();
-            assert_eq!(Ok(vec![30, 10]), elems.read(&mut tx, 1));
-            tx.commit(None).unwrap();
-            assert_eq!(vec![vec![], vec![30, 10], vec![20]], elems.lists(0..3));
-        });
+        simulate(
+            1,
+            Box::new(|_, elems| {
+                let mut tx = elems.begin(Kind::ReadWrite).unwrap();
+                elems.append(&mut tx, 1, 30).unwrap();
+                elems.append(&mut tx, 1, 10).unwrap();
+                elems.append(&mut tx, 2, 20).unwrap();
+                assert_eq!(Ok(vec![30, 10]), elems.read(&mut tx, 1));
+                tx.commit(None).unwrap();
+                assert_eq!(vec![vec![], vec![30, 10], vec![20]], elems.lists(0..3));
+            }),
+        );
     }
 
     #[test]
     fn a_read_only_or_deferrable_transaction_reads_and_refuses_an_append() {
-        simulate(2, |_, elems| {
-            for kind in [Kind::ReadOnly, Kind::Deferrable] {
-                let mut tx = elems.begin(kind).unwrap();
-                assert_eq!(Ok(vec![]), elems.read(&mut tx, 1), "{kind:?}");
-                assert_eq!(
-                    Err(Error::Rejected {
-                        reason: RejectReason::Invalid {
-                            detail: "a read-only transaction does not write".to_owned()
-                        }
-                    }),
-                    elems.append(&mut tx, 1, 1),
-                    "{kind:?}"
-                );
-                tx.commit(None).unwrap();
-            }
-        });
+        simulate(
+            2,
+            Box::new(|_, elems| {
+                for kind in [Kind::ReadOnly, Kind::Deferrable] {
+                    let mut tx = elems.begin(kind).unwrap();
+                    assert_eq!(Ok(vec![]), elems.read(&mut tx, 1), "{kind:?}");
+                    assert_eq!(
+                        Err(Error::Rejected {
+                            reason: RejectReason::Invalid {
+                                detail: "a read-only transaction does not write".to_owned()
+                            }
+                        }),
+                        elems.append(&mut tx, 1, 1),
+                        "{kind:?}"
+                    );
+                    tx.commit(None).unwrap();
+                }
+            }),
+        );
     }
 
     #[test]
     fn of_two_appends_at_one_position_only_the_first_to_commit_commits() {
-        simulate(3, |_, elems| {
-            let mut db = elems.client();
-            let mut late = db.begin();
-            let mut first = db.begin();
-            db.append(&mut first, 1, 1).unwrap();
-            assert_eq!(Ok(()), db.commit(first));
-            assert_eq!(Err(Aborted), db.append(&mut late, 1, 2));
-            drop(late);
-            assert_eq!(vec![vec![1]], elems.lists(1..2));
-        });
+        simulate(
+            3,
+            Box::new(|_, elems| {
+                let mut db = elems.client();
+                let mut late = db.begin();
+                let mut first = db.begin();
+                db.append(&mut first, 1, 1).unwrap();
+                assert_eq!(Ok(()), db.commit(first));
+                assert_eq!(Err(Aborted), db.append(&mut late, 1, 2));
+                drop(late);
+                assert_eq!(vec![vec![1]], elems.lists(1..2));
+            }),
+        );
     }
 
     #[test]
     fn an_append_at_a_taken_position_violates_unique_positions_and_is_aborted() {
-        simulate(5, |_, elems| {
-            let db = elems.database();
-            db.query_text(
-                "insert elems { k: 1, pos: 1, e: 9 }",
-                &[],
-                &adtb::CallOptions::default(),
-            )
-            .unwrap();
-            let elem = |id, e| Value::Ctor(0, [id, 1, 1, e].map(Value::Int).into());
-            let pair = |a, b| Value::Record([a, b].into());
-            let mut tx = elems.begin(Kind::ReadWrite).unwrap();
-            assert_eq!(
-                Err(Error::Rejected {
-                    reason: RejectReason::Violated {
-                        constraint: POSITIONS.to_owned(),
-                        report: vec![pair(elem(1, 9), elem(2, 2)), pair(elem(2, 2), elem(1, 9)),],
-                        redacted: 0,
-                    }
-                }),
-                elems.append(&mut tx, 1, 2)
-            );
-            drop(tx);
-            let mut client = elems.client();
-            let mut tx = client.begin();
-            assert_eq!(Err(Aborted), client.append(&mut tx, 1, 3));
-        });
+        simulate(
+            5,
+            Box::new(|_, elems| {
+                let db = elems.database();
+                db.query_text(
+                    "insert elems { k: 1, pos: 1, e: 9 }",
+                    &[],
+                    &adtb::CallOptions::default(),
+                )
+                .unwrap();
+                let elem = |id, e| Value::Ctor(0, [id, 1, 1, e].map(Value::Int).into());
+                let pair = |a, b| Value::Record([a, b].into());
+                let mut tx = elems.begin(Kind::ReadWrite).unwrap();
+                assert_eq!(
+                    Err(Error::Rejected {
+                        reason: RejectReason::Violated {
+                            constraint: POSITIONS.to_owned(),
+                            report: vec![
+                                pair(elem(1, 9), elem(2, 2)),
+                                pair(elem(2, 2), elem(1, 9)),
+                            ],
+                            redacted: 0,
+                        }
+                    }),
+                    elems.append(&mut tx, 1, 2)
+                );
+                drop(tx);
+                let mut client = elems.client();
+                let mut tx = client.begin();
+                assert_eq!(Err(Aborted), client.append(&mut tx, 1, 3));
+            }),
+        );
     }
 
     #[test]
     fn a_commit_the_serializer_refuses_is_aborted() {
-        simulate(4, |_, elems| {
-            let mut db = elems.client();
-            let mut a = db.begin();
-            let mut b = db.begin();
-            for t in [&mut a, &mut b] {
-                assert_eq!(Ok(vec![]), db.read(t, 1));
-                assert_eq!(Ok(vec![]), db.read(t, 2));
-            }
-            db.append(&mut a, 1, 1).unwrap();
-            db.append(&mut b, 2, 1).unwrap();
-            assert_eq!(Ok(()), db.commit(a));
-            assert_eq!(Err(Aborted), db.commit(b));
-            assert_eq!(vec![vec![1], vec![]], elems.lists(1..3));
-        });
+        simulate(
+            4,
+            Box::new(|_, elems| {
+                let mut db = elems.client();
+                let mut a = db.begin();
+                let mut b = db.begin();
+                for t in [&mut a, &mut b] {
+                    assert_eq!(Ok(vec![]), db.read(t, 1));
+                    assert_eq!(Ok(vec![]), db.read(t, 2));
+                }
+                db.append(&mut a, 1, 1).unwrap();
+                db.append(&mut b, 2, 1).unwrap();
+                assert_eq!(Ok(()), db.commit(a));
+                assert_eq!(Err(Aborted), db.commit(b));
+                assert_eq!(vec![vec![1], vec![]], elems.lists(1..3));
+            }),
+        );
     }
 }

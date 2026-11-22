@@ -436,10 +436,11 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
         let [mapper_reached, racer_reached] = match case.first {
             First::Mapper => {
                 let probe = || marked_at_stop = Some(db.testing().probe().marked(planted));
-                steps::interleave(&rt, db, (&mut mapper, &mut racer), (i, j), probe)
+                steps::interleave(&rt, db, (&mut mapper, &mut racer), (i, j), Box::new(probe))
             }
             First::Racer => {
-                let [r, m] = steps::interleave(&rt, db, (&mut racer, &mut mapper), (j, i), || {});
+                let [r, m] =
+                    steps::interleave(&rt, db, (&mut racer, &mut mapper), (j, i), Box::new(|| {}));
                 [m, r]
             }
         };
@@ -717,7 +718,7 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
         let reqs = vec![Req::Append(k, v), Req::Commit];
         let mut commit = Txn::start(&rt, &e, (2, Kind::ReadWrite), of_a_commit, reqs);
         let whole = (usize::MAX, usize::MAX);
-        let [m, c] = steps::interleave(&rt, db, (&mut mapper, &mut commit), whole, || {});
+        let [m, c] = steps::interleave(&rt, db, (&mut mapper, &mut commit), whole, Box::new(|| {}));
         let walked = [Map::Begun, Map::Incomplete, Map::Marked].map(Step::Map);
         assert_eq!(walked, m.steps(), "the failing read's mapping");
         let committed = [Map::Begun, Map::Marked].map(Step::CommitMap);

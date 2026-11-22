@@ -369,7 +369,7 @@ fn crash_through_recycles_in_session(atomic: bool) {
         5,
         24,
         1,
-        |rt| {
+        Box::new(|rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
             storage::recycle_at_open(&pager, None);
             load(&pager, &pages, 2 * EVERY);
@@ -401,8 +401,8 @@ fn crash_through_recycles_in_session(atomic: bool) {
                 .iter()
                 .flat_map(|&(e, _)| [e - 1, e, e + 1])
                 .collect()
-        },
-        |at, image| {
+        }),
+        &mut |at, image| {
             let held: BTreeSet<u64> = image
                 .keys()
                 .filter_map(|k| k.strip_prefix(&dir))

@@ -1739,8 +1739,8 @@ fn a_backup_with_any_op_failed() {
         &file_with_rows(SEARCH_ROWS),
         90,
         FAILURES,
-        workload,
-        |failed| {
+        &workload,
+        &mut |failed| {
             let label = format!("op {} {}", failed.at, failed.struck);
             let out = failed.out;
             if out.got == Ok(()) {
@@ -1774,9 +1774,9 @@ fn a_backup_crashed_anywhere() {
         91,
         CRASH_POINTS,
         CRASH_IMAGES,
-        workload,
-        |image| image.keys().any(|p| p.starts_with("bk/")),
-        |at, image| {
+        Box::new(workload),
+        &|image| image.keys().any(|p| p.starts_with("bk/")),
+        &mut |at, image| {
             let label = format!("event {at}");
             let published = image.keys().any(|p| p.starts_with("bk/"));
             let mut sim = Sim::with_files(at as u64, Config::default(), image);
@@ -1837,7 +1837,7 @@ fn two_backups_to_one_target() {
         db.close().unwrap();
     };
     let files = file_with_rows(SEARCH_ROWS);
-    search::each_start(&files, 92, STARTS, workload, |at, files| {
+    search::each_start(&files, 92, STARTS, &workload, &mut |at, files| {
         assert!(!files.keys().any(|p| is_aside(p)), "op {at}");
         assert_eq!(
             rows_upto(SEARCH_ROWS),
@@ -1912,7 +1912,7 @@ fn a_restore_with_any_op_failed() {
         rt.disarm();
         (got, rt.files_open())
     };
-    search::each_failure(&base, 93, FAILURES, workload, |failed| {
+    search::each_failure(&base, 93, FAILURES, &workload, &mut |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
         let (got, files_open) = failed.out;
         assert_eq!(0, files_open, "{label}");
@@ -1952,9 +1952,9 @@ fn a_restore_crashed_anywhere() {
         94,
         CRASH_POINTS,
         CRASH_IMAGES,
-        workload,
-        |image| image.contains_key(COPY),
-        |at, image| {
+        Box::new(workload),
+        &|image| image.contains_key(COPY),
+        &mut |at, image| {
             assert_restore_state(&base, &image, true, at as u64, &format!("event {at}"));
             let segments = segments_of(&image, &log_dir);
             if final_files(&image).contains_key(COPY) || segments.is_empty() {
@@ -2038,7 +2038,7 @@ fn an_open_at_each_op_of_a_restore() {
         }
     };
     let base = backed_up(SEARCH_ROWS);
-    search::each_start(&base, 95, STARTS, workload, |at, files| {
+    search::each_start(&base, 95, STARTS, &workload, &mut |at, files| {
         assert!(!files.keys().any(|p| is_aside(p)), "op {at}");
     });
     let (restore, open) = (
@@ -2140,7 +2140,7 @@ fn two_restores_to_one_path() {
         }
     };
     let base = backed_up(SEARCH_ROWS);
-    search::each_start(&base, 95, STARTS, workload, |at, files| {
+    search::each_start(&base, 95, STARTS, &workload, &mut |at, files| {
         assert!(!files.keys().any(|p| is_aside(p)), "op {at}");
         assert_restore_state(&base, &files, false, at, &format!("op {at}"));
     });
@@ -2186,7 +2186,7 @@ fn a_prove_with_any_op_failed() {
         rt.disarm();
         (got, rt.files_open())
     };
-    search::each_failure(&base, 96, FAILURES, workload, |failed| {
+    search::each_failure(&base, 96, FAILURES, &workload, &mut |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
         let (got, files_open) = failed.out;
         assert_eq!(0, files_open, "{label}");
@@ -2209,7 +2209,7 @@ fn a_failed_read_of_the_test_database_records_no_verdict() {
         rt.disarm();
         got
     };
-    search::each_failure(&base, 96, FAILURES, workload, |failed| {
+    search::each_failure(&base, 96, FAILURES, &workload, &mut |failed| {
         let label = format!("op {} {}", failed.at, failed.struck);
         if let Ok(proof) = &failed.out {
             assert_eq!(&Proof::Proven, proof, "{label}: a false verdict");
@@ -2234,9 +2234,9 @@ fn a_prove_crashed_anywhere() {
         97,
         CRASH_POINTS,
         CRASH_IMAGES,
-        workload,
-        |image| image.contains_key(&proof),
-        |at, image| {
+        Box::new(workload),
+        &|image| image.contains_key(&proof),
+        &mut |at, image| {
             let names: BTreeSet<String> = image.keys().cloned().collect();
             if retried.insert(names.clone()) || every_case() {
                 if names.iter().any(|p| p.contains(".partial-")) {
@@ -2281,7 +2281,7 @@ fn two_proves_of_one_backup() {
         assert_eq!(Proof::Proven, proof_in(rt, &archive()).unwrap());
     };
     let base = backed_up(SEARCH_ROWS);
-    search::each_start(&base, 98, STARTS, workload, |at, files| {
+    search::each_start(&base, 98, STARTS, &workload, &mut |at, files| {
         assert!(!files.keys().any(|p| is_aside(p)), "op {at}");
         let mut finals = final_files(&files);
         finals.remove(&format!("{TARGET}/{}", storage::PROOF));

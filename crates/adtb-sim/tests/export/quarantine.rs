@@ -2384,16 +2384,19 @@ fn a_mark_a_crash_loses_before_it_is_written_is_set_again_by_the_next_open() {
         db.close().unwrap();
         (pid, mark)
     });
-    adtb_testkit::common::run_then_crash(&mut sim, |rt, _| {
-        let db = open_app(rt.clone());
-        db.testing()
-            .plant(Plant::Refuse {
-                page: pid,
-                damage: Damage::Checksum,
-            })
-            .unwrap();
-        assert_eq!(BTreeSet::new(), marks(&db));
-    });
+    adtb_testkit::common::run_then_crash(
+        &mut sim,
+        Box::new(|rt, _| {
+            let db = open_app(rt.clone());
+            db.testing()
+                .plant(Plant::Refuse {
+                    page: pid,
+                    damage: Damage::Checksum,
+                })
+                .unwrap();
+            assert_eq!(BTreeSet::new(), marks(&db));
+        }),
+    );
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(BTreeSet::from([google]), marks(&db));

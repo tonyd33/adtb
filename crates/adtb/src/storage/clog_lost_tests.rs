@@ -473,7 +473,7 @@ fn session(sim: &mut Sim, root: Option<Pid>, ops: &[Op], end: End) -> Session {
     };
     match end {
         End::Close => process::finished(sim, |rt| body(&rt)),
-        End::Crash => common::run_then_crash(sim, |rt, _| body(rt)),
+        End::Crash => common::run_then_crash(sim, Box::new(|rt, _| body(rt))),
     }
     out.unwrap()
 }

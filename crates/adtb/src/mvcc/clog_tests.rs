@@ -459,11 +459,11 @@ fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
         seed,
         faults,
         rounds,
-        |r| {
+        &mut |r| {
             let (l, w) = (r.ledger().clone(), world.clone());
-            r.crash(|rt| workload(rt, root, &pages, &l, &w));
+            r.crash(Box::new(|rt| workload(rt, root, &pages, &l, &w)));
         },
-        |rt, _| {
+        &mut |rt, _| {
             let assigned = world.lock().unwrap().assigned.clone();
             inspect(rt, root, &pages, &assigned)
         },

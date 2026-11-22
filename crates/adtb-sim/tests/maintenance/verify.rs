@@ -1679,25 +1679,28 @@ fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
             |rt| Database::open_in(rt, NAME, &Log::new([BILLING]), &open::options(2)).unwrap();
         process::run(&mut sim, |rt| open(rt).close().unwrap());
         sim.crash_at(sim.now() + crash::crash_after(seed, 1, 2_000, 300_000));
-        let outcome = crash::run_process(&mut sim, |rt| {
-            let db = open(rt);
-            let big = "x".repeat(30_000);
-            let o = CallOptions::default();
-            let mut n = 0i64;
-            loop {
-                let t = format!(
-                    r#"insert invoices {{ id: invoices.key({n}), status: Draft, email: "A{n}", n: {n}, score: 1.5, note: "{big}" }}"#
-                );
-                db.query_text(&t, &[], &o).ok();
-                let gone = format!(
-                    "delete i in invoices where key i == invoices.key({})",
-                    n / 2
-                );
-                db.query_text(&gone, &[], &o).ok();
-                db.query_text("vacuum invoices", &[], &o).ok();
-                n += 1;
-            }
-        });
+        let outcome = crash::run_process(
+            &mut sim,
+            Box::new(|rt| {
+                let db = open(rt);
+                let big = "x".repeat(30_000);
+                let o = CallOptions::default();
+                let mut n = 0i64;
+                loop {
+                    let t = format!(
+                        r#"insert invoices {{ id: invoices.key({n}), status: Draft, email: "A{n}", n: {n}, score: 1.5, note: "{big}" }}"#
+                    );
+                    db.query_text(&t, &[], &o).ok();
+                    let gone = format!(
+                        "delete i in invoices where key i == invoices.key({})",
+                        n / 2
+                    );
+                    db.query_text(&gone, &[], &o).ok();
+                    db.query_text("vacuum invoices", &[], &o).ok();
+                    n += 1;
+                }
+            }),
+        );
         assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
         process::run(&mut sim, |rt| {
             let db = open(rt);

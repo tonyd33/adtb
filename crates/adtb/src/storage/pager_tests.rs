@@ -899,12 +899,14 @@ fn crash_rounds(tally: &mut Tally, seed: u64, fault: Fault, layout: Layout) {
         seed,
         faults,
         Rounds::new(4, 500, 60_000),
-        |r| {
+        &mut |r| {
             let c = Client {
                 ledger: r.ledger().clone(),
                 world: world.clone(),
             };
-            r.crash(|rt| drive(rt.clone(), &Host::sim(&rt), &c, layout, 400));
+            r.crash(Box::new(|rt| {
+                drive(rt.clone(), &Host::sim(&rt), &c, layout, 400);
+            }));
             lost_log_write.set(
                 r.sim()
                     .trace()
@@ -912,7 +914,7 @@ fn crash_rounds(tally: &mut Tally, seed: u64, fault: Fault, layout: Layout) {
                     .any(|l| l.starts_with("fault lost write") && l.contains("-log/")),
             );
         },
-        |rt, ledger| {
+        &mut |rt, ledger| {
             let pages = world.lock().unwrap().pages.clone();
             let mut report = inspect(rt, &pages, layout);
             report.damage_allowed = fault.damages();
@@ -1301,11 +1303,14 @@ fn a_failed_log_allocate_is_fatal_and_leaves_a_file_a_later_create_can_use() {
                 ..Config::default()
             },
         );
-        let outcome = run_process(&mut sim, |rt| {
-            if let Err(e) = Pager::create(rt, &options(PLAIN)) {
-                assert_eq!(OpenError::Io(IoError::Failed), e, "seed {seed}");
-            }
-        });
+        let outcome = run_process(
+            &mut sim,
+            Box::new(|rt| {
+                if let Err(e) = Pager::create(rt, &options(PLAIN)) {
+                    assert_eq!(OpenError::Io(IoError::Failed), e, "seed {seed}");
+                }
+            }),
+        );
         if sim.trace().contains("fault fail allocate") {
             failed = true;
             assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
@@ -1327,9 +1332,12 @@ fn a_seed_replays_exactly() {
         setup(&mut sim, &client, PLAIN);
         sim.crash_at(sim.now() + Duration::from_millis(20));
         let c = client.clone();
-        run_process(&mut sim, |rt| {
-            workload(rt.clone(), &Host::sim(&rt), &c, PLAIN, 200);
-        });
+        run_process(
+            &mut sim,
+            Box::new(|rt| {
+                workload(rt.clone(), &Host::sim(&rt), &c, PLAIN, 200);
+            }),
+        );
         (sim.trace(), sim.files())
     };
     assert_eq!(run(9), run(9));
@@ -1800,8 +1808,8 @@ fn a_crash_keeps_each_allocation_and_free_with_its_link_and_every_flushed_change
             seed,
             faults,
             Rounds::new(4, 20_000, 80_000),
-            |r| {
-                r.crash(|rt| {
+            &mut |r| {
+                r.crash(Box::new(|rt| {
                     let Ok((p, _)) = Pager::open(rt.clone(), &options(PLAIN)) else {
                         return;
                     };
@@ -1833,9 +1841,9 @@ fn a_crash_keeps_each_allocation_and_free_with_its_link_and_every_flushed_change
                             l.acked = l.states.len() - 1;
                         }
                     }
-                });
+                }));
             },
-            |rt, _| {
+            &mut |rt, _| {
                 let (p, _) = Pager::open(rt, &options(PLAIN)).expect("open");
                 let mut problems: Vec<String> = p
                     .verify()

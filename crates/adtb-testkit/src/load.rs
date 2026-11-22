@@ -364,7 +364,7 @@ pub fn made_once(
     cache: &'static LocalKey<Made>,
     decls: &str,
     rows: &adtb_reference::Database,
-    make: impl FnOnce(&SimRuntime),
+    make: Box<dyn FnOnce(&SimRuntime) + '_>,
 ) -> Files {
     let key = (decls.to_owned(), rows.clone());
     if let Some(files) = cache.with_borrow(|m| m.get(&key).cloned()) {

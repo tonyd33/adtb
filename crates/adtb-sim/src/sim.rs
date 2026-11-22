@@ -306,7 +306,13 @@ impl Sim {
     /// - A thread panics, with its payload.
     /// - A live thread that is no daemon is blocked and only a daemon's timer can still fire.
     /// - Its threads return with an op held, whether or not a crash is scheduled.
+    // Keep inline: box `body` in the caller's codegen unit.
+    #[inline]
     pub fn run<F: FnOnce(SimRuntime)>(&mut self, body: F) -> Outcome {
+        self.run_boxed(Box::new(body))
+    }
+
+    fn run_boxed(&mut self, body: Box<dyn FnOnce(SimRuntime) + '_>) -> Outcome {
         let process = {
             let mut st = lock(&self.shared.state);
             st.process += 1;
@@ -957,10 +963,7 @@ impl Entropy for SimRuntime {
 }
 
 impl SimRuntime {
-    fn start_thread<F>(&self, name: &str, daemon: bool, body: F) -> ThreadId
-    where
-        F: FnOnce() + Send + 'static,
-    {
+    fn start_thread(&self, name: &str, daemon: bool, body: Box<dyn FnOnce() + Send>) -> ThreadId {
         let Some(mut st) = self.enter() else {
             return ThreadId(u64::MAX);
         };
@@ -996,18 +999,20 @@ impl SimRuntime {
 }
 
 impl Threads for SimRuntime {
+    #[inline]
     fn spawn<F>(&self, name: &str, body: F) -> ThreadId
     where
         F: FnOnce() + Send + 'static,
     {
-        self.start_thread(name, false, body)
+        self.start_thread(name, false, Box::new(body))
     }
 
+    #[inline]
     fn spawn_daemon<F>(&self, name: &str, body: F) -> ThreadId
     where
         F: FnOnce() + Send + 'static,
     {
-        self.start_thread(name, true, body)
+        self.start_thread(name, true, Box::new(body))
     }
 
     fn current(&self) -> ThreadId {

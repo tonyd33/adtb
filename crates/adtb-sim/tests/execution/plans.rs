@@ -84,16 +84,19 @@ fn a_crash_takes_a_held_write_as_in_flight() {
     let (mut landed, mut lost) = (0, 0);
     for seed in 0..16 {
         let mut sim = Sim::new(seed, config.clone());
-        common::run_then_crash(&mut sim, |rt, io| {
-            let (file, _) = open(rt, io, "f", true).unwrap();
-            write(rt, io, file, 0, &sector(1)).unwrap();
-            rt.plan(held_writes());
-            io.submit(Op::Write {
-                file,
-                offset: 0,
-                buf: AlignedBuf::from_slice(&sector(2)),
-            });
-        });
+        common::run_then_crash(
+            &mut sim,
+            Box::new(|rt, io| {
+                let (file, _) = open(rt, io, "f", true).unwrap();
+                write(rt, io, file, 0, &sector(1)).unwrap();
+                rt.plan(held_writes());
+                io.submit(Op::Write {
+                    file,
+                    offset: 0,
+                    buf: AlignedBuf::from_slice(&sector(2)),
+                });
+            }),
+        );
         let got = &sim.files()["f"];
         if *got == sector(2) {
             landed += 1;

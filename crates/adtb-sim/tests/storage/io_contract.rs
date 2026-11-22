@@ -289,9 +289,12 @@ fn a_rename_into_the_parent_is_forced_by_both_directories_on_the_sim() {
     for seed in 0..16 {
         for synced in PARENT_SYNCS {
             let mut sim = Sim::new(seed, Config::default());
-            adtb_testkit::common::run_then_crash(&mut sim, |rt, io| {
-                rename_into_the_parent(rt, io, synced);
-            });
+            adtb_testkit::common::run_then_crash(
+                &mut sim,
+                Box::new(|rt, io| {
+                    rename_into_the_parent(rt, io, synced);
+                }),
+            );
             let files = sim.files().into_keys().collect();
             seen.insert(after_a_parent_rename(files, synced, seed));
         }

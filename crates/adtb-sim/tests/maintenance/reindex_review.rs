@@ -1441,26 +1441,29 @@ fn a_read_runs_while_gated_writes_fill_the_workers() {
 fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
     crash::silence_fatal_panics();
     let mut sim = Sim::new(3, Config::default());
-    let outcome = crash::run_process(&mut sim, |rt| {
-        let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
-        for i in 1..=400 {
-            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
-        }
-        let (w, clock) = (db.clone(), rt.clone());
-        db.testing().on_reindex_phase(move |p| {
-            if p == "swap" {
-                w.testing().flush_log();
-                clock.set_faults(Faults {
-                    fail_p: 1.0,
-                    ..Faults::none(512)
-                });
+    let outcome = crash::run_process(
+        &mut sim,
+        Box::new(|rt| {
+            let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
+            for i in 1..=400 {
+                api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
             }
-        });
-        api::results(&db, "reindex ts index (v)");
-        wait_jobs(&rt, &db);
-        rt.set_faults(Faults::none(512));
-        db.close().unwrap();
-    });
+            let (w, clock) = (db.clone(), rt.clone());
+            db.testing().on_reindex_phase(move |p| {
+                if p == "swap" {
+                    w.testing().flush_log();
+                    clock.set_faults(Faults {
+                        fail_p: 1.0,
+                        ..Faults::none(512)
+                    });
+                }
+            });
+            api::results(&db, "reindex ts index (v)");
+            wait_jobs(&rt, &db);
+            rt.set_faults(Faults::none(512));
+            db.close().unwrap();
+        }),
+    );
     assert_eq!(
         Outcome::Crashed,
         outcome,

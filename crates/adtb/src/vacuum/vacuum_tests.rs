@@ -1282,15 +1282,15 @@ fn crash_rounds(seed: u64, faults: Faults, vacuum_faults: Faults, rounds: usize)
         seed,
         faults,
         rounds,
-        |r| {
+        &mut |r| {
             let (l, w) = (r.ledger().clone(), world.clone());
-            if r.crash(|rt| workload(rt, &w, &l, 300)) {
+            if r.crash(Box::new(|rt| workload(rt, &w, &l, 300))) {
                 let mut w = world.lock().unwrap();
                 w.crashed_vacuuming += usize::from(w.vacuuming);
                 w.vacuuming = false;
             }
         },
-        |rt, _| inspect(rt, &world),
+        &mut |rt, _| inspect(rt, &world),
     );
     let w = world.lock().unwrap();
     assert!(

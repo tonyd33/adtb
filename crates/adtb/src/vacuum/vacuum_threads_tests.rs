@@ -639,23 +639,23 @@ fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
         seed,
         faults,
         rounds,
-        |r| {
+        &mut |r| {
             world.lock().unwrap().ledger = r.ledger().clone();
             let w = world.clone();
-            let crashed = r.crash(move |rt| {
+            let crashed = r.crash(Box::new(move |rt| {
                 let roots = w.lock().unwrap().roots.clone().unwrap();
                 let Some(db) = Storage::reopen(&rt, &roots).ok().map(Db::of) else {
                     return;
                 };
                 process(rt, Arc::new(db), w, 60, Arc::new(Progress::new()));
-            });
+            }));
             let mut w = world.lock().unwrap();
             if crashed {
                 w.crashed_vacuuming += usize::from(w.vacuuming);
             }
             w.vacuuming = false;
         },
-        |rt, _| {
+        &mut |rt, _| {
             let roots = world.lock().unwrap().roots.clone().unwrap();
             let db = Db::of(Storage::reopen(&rt, &roots).expect("the database reopens"));
             inspect(&db, &world.lock().unwrap())

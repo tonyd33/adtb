@@ -67,10 +67,13 @@ fn closed(files: &Files, atomic: bool, body: impl FnOnce(&Pager<SimRuntime>)) ->
 /// Returns `files` after a process opens them, runs `body` and crashes.
 fn crashed(files: &Files, atomic: bool, body: impl FnOnce(&Pager<SimRuntime>)) -> Files {
     let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
-    common::run_then_crash(&mut sim, |rt, _| {
-        let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
-        body(&pager);
-    });
+    common::run_then_crash(
+        &mut sim,
+        Box::new(|rt, _| {
+            let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
+            body(&pager);
+        }),
+    );
     sim.files()
 }
 
@@ -295,7 +298,10 @@ fn each_detection_leaves_a_record_a_crash_and_a_close_keep_but_an_unreadable_pag
             if close {
                 harness::finished(&mut sim, |rt| found = Some(detected(&site, &rt, true)));
             } else {
-                common::run_then_crash(&mut sim, |rt, _| found = Some(detected(&site, rt, false)));
+                common::run_then_crash(
+                    &mut sim,
+                    Box::new(|rt, _| found = Some(detected(&site, rt, false))),
+                );
             }
             let (damage, recorded) = found.unwrap();
             assert_eq!(damage, recorded, "{name}: the record of the call");
@@ -413,10 +419,13 @@ fn a_record_forced_before_a_whole_file_mark_is_kept_by_every_later_open_and_afte
             .unwrap();
     };
     let mut crash = Sim::with_files(SEED, Config::default(), files.clone());
-    common::run_then_crash(&mut crash, |rt, io| {
-        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
-        marked(&pager, rt, io);
-    });
+    common::run_then_crash(
+        &mut crash,
+        Box::new(|rt, io| {
+            let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
+            marked(&pager, rt, io);
+        }),
+    );
     let mut close = Sim::with_files(SEED, Config::default(), files);
     common::run(&mut close, |rt, io| {
         let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
@@ -600,13 +609,13 @@ fn what_an_open_finds_is_reported_after_a_crash_anywhere_in_the_open() {
             SEED,
             12,
             2,
-            |rt| {
+            Box::new(|rt| {
                 rt.arm(Match::any());
                 let (pager, _) = Pager::open(rt.clone(), &o).unwrap();
                 pager.close();
                 Vec::new()
-            },
-            |at, image| {
+            }),
+            &mut |at, image| {
                 let count = header_log_count(&image);
                 let mut sim = Sim::with_files(SEED, Config::default(), image);
                 harness::finished(&mut sim, |rt| {

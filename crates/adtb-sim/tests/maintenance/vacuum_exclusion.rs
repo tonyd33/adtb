@@ -229,7 +229,8 @@ fn run(racer: Racer, seed: u64, (i, j): (usize, usize)) -> Ran {
         let mut first = Call::spawn(&rt, &db, "vacuum items", None);
         let mut second = Call::spawn(&rt, &db, racer.text(), Some(WAIT));
         let before = db.testing().rebuild_waits();
-        let [vacuum, raced] = steps::interleave(&rt, &db, (&mut first, &mut second), (i, j), || {});
+        let [vacuum, raced] =
+            steps::interleave(&rt, &db, (&mut first, &mut second), (i, j), Box::new(|| {}));
         let waits = db.testing().rebuild_waits() - before;
         let after = ["vacuum items", "vacuum others"].map(|text| {
             let mut again = Call::spawn(&rt, &db, text, None);
@@ -274,7 +275,7 @@ fn waits_out(racer: Racer, seed: u64, i: usize) {
             [(first.boundaries(), i), (second.boundaries(), 1)],
         );
         first.start(&rt);
-        a.stopped(&rt, || first.ended().then_some(()))
+        a.stopped(&rt, &mut || first.ended().then_some(()))
             .unwrap_or_else(|()| panic!("{what}: the vacuum ended first"));
         let before = db.testing().rebuild_waits();
         second.start(&rt);
@@ -289,7 +290,7 @@ fn waits_out(racer: Racer, seed: u64, i: usize) {
         );
         assert!(!b.has_stopped() && !second.ended(), "{what}");
         a.release(&rt);
-        b.stopped(&rt, || second.ended().then_some(()))
+        b.stopped(&rt, &mut || second.ended().then_some(()))
             .unwrap_or_else(|()| panic!("{what}: the racer reaches no pace point"));
         let reached = a.reached();
         b.release(&rt);
@@ -371,7 +372,7 @@ fn each_change(mut case: impl FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<Ste
 fn search(racer: Racer) -> Vec<Vacuum> {
     let mut kinds = Vec::new();
     for seed in sweep(SEEDS) {
-        let case = |pair: (usize, usize)| {
+        let mut case = |pair: (usize, usize)| {
             let r = run(racer, seed, pair);
             if r.vacuum.stopped() {
                 check(racer, r.vacuum.steps()[pair.0 - 1], &r);
@@ -380,7 +381,7 @@ fn search(racer: Racer) -> Vec<Vacuum> {
             [r.vacuum, r.racer]
         };
         let (stops, pairs) = if profile::every_case() {
-            steps::every_pair(case)
+            steps::every_pair(&mut case)
         } else {
             each_change(case)
         };

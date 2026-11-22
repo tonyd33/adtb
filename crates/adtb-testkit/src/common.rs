@@ -222,8 +222,11 @@ pub fn sleep(rt: &SimRuntime, io: &mut SimIo, d: std::time::Duration) {
     assert_eq!(Ok(Done::Fired), complete(rt, io, Op::Timer { at }).result);
 }
 
+/// The body of a process that drives the simulated device through its own I/O queue.
+pub type IoBody<'a, T = ()> = Box<dyn FnOnce(&SimRuntime, &mut SimIo) -> T + 'a>;
+
 /// Run `body` and crash the process one second of simulated time after it starts, while it sleeps.
-pub fn run_then_crash<F: FnOnce(&SimRuntime, &mut SimIo)>(sim: &mut adtb_sim::Sim, body: F) {
+pub fn run_then_crash(sim: &mut adtb_sim::Sim, body: IoBody<'_>) {
     sim.crash_at(sim.now() + std::time::Duration::from_secs(1));
     let outcome = sim.run(|rt| {
         let mut io = rt.io();
@@ -234,7 +237,12 @@ pub fn run_then_crash<F: FnOnce(&SimRuntime, &mut SimIo)>(sim: &mut adtb_sim::Si
     assert_eq!(adtb_sim::Outcome::Crashed, outcome);
 }
 
+#[inline]
 pub fn run<T, F: FnOnce(&SimRuntime, &mut SimIo) -> T>(sim: &mut adtb_sim::Sim, body: F) -> T {
+    ran(sim, Box::new(body))
+}
+
+fn ran<T>(sim: &mut adtb_sim::Sim, body: IoBody<'_, T>) -> T {
     let mut out = None;
     let outcome = sim.run(|rt| {
         let mut io = rt.io();

@@ -1,0 +1,16 @@
+-- generic_runners: a pub fn of the simulator's test crates generic over a closure, whose instances
+-- put every test's body in one codegen unit. A runner takes its body as `Box<dyn FnOnce ..>`,
+-- `&dyn Fn ..` or `&mut dyn FnMut ..`. A function whose body passes `Box::new(body)` is left: the
+-- `#[inline]` wrappers `Sim::run`, `process::run`, `process::once`, `process::finished` and
+-- `common::run`.
+
+main = do {
+  f <- descendants_of_kind :function_item;
+  v <- pure f | children_of_kind :visibility_modifier;
+  guard $ text v == "pub";
+  s <- pure f | alt (#parameters) (alt (#type_parameters) (children_of_kind :where_clause));
+  guard $ text s ~ r"(\bimpl\s+|[<:+,]\s*)Fn(Once|Mut)?\s*\(";
+  b <- pure f | #body;
+  guard $ not (text b ~ r"Box::new\(body\)");
+  return f;
+} | arr range;

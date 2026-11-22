@@ -98,11 +98,16 @@ pub fn files(
     rows: &adtb_reference::Database,
     options: &OpenOptions,
 ) -> Files {
-    load::made_once(&MADE, decls, rows, |rt| {
-        let db = open_with(rt, decls, options);
-        committed_noise(&db, schema, rows);
-        db.close().expect("the database closes");
-    })
+    load::made_once(
+        &MADE,
+        decls,
+        rows,
+        Box::new(|rt| {
+            let db = open_with(rt, decls, options);
+            committed_noise(&db, schema, rows);
+            db.close().expect("the database closes");
+        }),
+    )
 }
 
 struct Api<'a, R: Runtime>(&'a Database<R>);

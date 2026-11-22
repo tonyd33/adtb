@@ -658,8 +658,8 @@ fn search_failures(workload: Workload) -> String {
         SEED,
         FAILED_OPS,
         &also,
-        |rt| run_workload(rt, workload, &ledger, writes_and_forces()),
-        |failure| {
+        &|rt| run_workload(rt, workload, &ledger, writes_and_forces()),
+        &mut |failure| {
             let at = failure.at;
             assert!(positions.insert(at), "{name}: failure {at} twice");
             match failure.struck.kind() {
@@ -740,14 +740,14 @@ fn search_crashes(workload: Workload) -> String {
         SEED,
         CRASH_POINTS,
         CRASH_IMAGES,
-        |rt| {
+        Box::new(|rt| {
             run_workload(rt, workload, &ledger, Match::any()).expect("the crash baseline runs");
             let ledger = ledger.lock().unwrap();
             let (start, ack) = (ledger.step_start + lead_events, ledger.acks[MAINTAIN]);
             assert!(start < ack, "{name}: the action has device events");
             vec![start + 1, start.midpoint(ack), ack]
-        },
-        |at, image| {
+        }),
+        &mut |at, image| {
             events.insert(at);
             let (acked, attempted, window) = {
                 let ledger = ledger.lock().unwrap();
@@ -850,12 +850,12 @@ fn an_open_that_migrates_has_made_the_migration_durable_when_it_returns() {
         SEED,
         1,
         CRASH_IMAGES,
-        |rt| {
+        Box::new(|rt| {
             run_workload(rt, workload, &ledger, Match::any()).expect("the baseline runs");
             *ack.lock().unwrap() = ledger.lock().unwrap().acks[MAINTAIN];
             vec![*ack.lock().unwrap()]
-        },
-        |at, image| {
+        }),
+        &mut |at, image| {
             if at == *ack.lock().unwrap() {
                 images += 1;
                 let label = format!("crash at the acknowledgement, event {at}");

@@ -245,12 +245,12 @@ fn history(seed: u64) -> Searched {
         seed,
         faults(),
         Rounds::new(CRASHES, 2_000, 40_000),
-        |r| {
+        &mut |r| {
             book(&b).process = r.index();
             let (l, b) = (r.ledger().clone(), b.clone());
-            r.crash_after_setup(opened, |rt, e| clients(&rt, &e, &b, &l));
+            r.crash_after_setup(Box::new(opened), Box::new(|rt, e| clients(&rt, &e, &b, &l)));
         },
-        |rt, _| recovered(&rt, &b),
+        &mut |rt, _| recovered(&rt, &b),
     );
     book(&b).process = CRASHES;
     let last = process::run(&mut sim, |rt| {
@@ -345,7 +345,7 @@ fn unflushed_reads(seed: u64) -> (Vec<iso::Txn>, Crashes<Reopen>, usize) {
         seed,
         faults(),
         Rounds::new(2, 50_000, 1),
-        |r| {
+        &mut |r| {
             let (l, b) = (r.ledger().clone(), b.clone());
             if r.index() == 1 {
                 return process::run(r.sim(), |rt| {
@@ -360,39 +360,42 @@ fn unflushed_reads(seed: u64) -> (Vec<iso::Txn>, Crashes<Reopen>, usize) {
                     commit(tx, id, Kind::ReadWrite, &b, &l);
                 });
             }
-            r.crash_after_setup(opened, |rt, e| {
-                let id = book(&b).begin();
-                let mut tx = e.begin(Kind::ReadWrite).unwrap();
-                let elem = book(&b).elem(id);
-                e.append(&mut tx, 1, elem).unwrap();
-                book(&b).txn(id).ops.push(Op::Append { key: 1, elem });
-                hold_log_forces(&rt, &e);
-                for _ in 0..2 {
-                    let (e, b, l, rt2) = (e.clone(), b.clone(), l.clone(), rt.clone());
-                    let empty = empty.clone();
-                    rt.spawn("reader", move || {
-                        loop {
-                            let mut tx = e.begin(Kind::ReadOnly).unwrap();
-                            let list = e.read(&mut tx, 1).unwrap();
-                            if list.is_empty() {
-                                tx.commit(None).unwrap();
-                                empty.fetch_add(1, Ordering::Relaxed);
-                                rt2.yield_now();
-                                continue;
+            r.crash_after_setup(
+                Box::new(opened),
+                Box::new(|rt, e| {
+                    let id = book(&b).begin();
+                    let mut tx = e.begin(Kind::ReadWrite).unwrap();
+                    let elem = book(&b).elem(id);
+                    e.append(&mut tx, 1, elem).unwrap();
+                    book(&b).txn(id).ops.push(Op::Append { key: 1, elem });
+                    hold_log_forces(&rt, &e);
+                    for _ in 0..2 {
+                        let (e, b, l, rt2) = (e.clone(), b.clone(), l.clone(), rt.clone());
+                        let empty = empty.clone();
+                        rt.spawn("reader", move || {
+                            loop {
+                                let mut tx = e.begin(Kind::ReadOnly).unwrap();
+                                let list = e.read(&mut tx, 1).unwrap();
+                                if list.is_empty() {
+                                    tx.commit(None).unwrap();
+                                    empty.fetch_add(1, Ordering::Relaxed);
+                                    rt2.yield_now();
+                                    continue;
+                                }
+                                let id = book(&b).begin();
+                                book(&b).txn(id).ops.push(Op::Read { key: 1, list });
+                                return commit(tx, id, Kind::ReadOnly, &b, &l);
                             }
-                            let id = book(&b).begin();
-                            book(&b).txn(id).ops.push(Op::Read { key: 1, list });
-                            return commit(tx, id, Kind::ReadOnly, &b, &l);
-                        }
-                    });
-                }
-                while empty.load(Ordering::Relaxed) == 0 {
-                    rt.yield_now();
-                }
-                commit(tx, id, Kind::ReadWrite, &b, &l);
-            });
+                        });
+                    }
+                    while empty.load(Ordering::Relaxed) == 0 {
+                        rt.yield_now();
+                    }
+                    commit(tx, id, Kind::ReadWrite, &b, &l);
+                }),
+            );
         },
-        |rt, _| recovered(&rt, &b),
+        &mut |rt, _| recovered(&rt, &b),
     );
     let txns = book(&b).txns.values().cloned().collect();
     (txns, out, empty.load(Ordering::Relaxed))

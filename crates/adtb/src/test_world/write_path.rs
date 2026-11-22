@@ -84,7 +84,7 @@ thread_local! {
 /// thread for each declarations and rows.
 pub fn write_files(f: &Fixture) -> Files {
     let decls = f.decls().expect("the fixture has declarations");
-    load::made_once(&MADE, decls, &f.db, |rt| create_loaded(rt, f))
+    load::made_once(&MADE, decls, &f.db, Box::new(|rt| create_loaded(rt, f)))
 }
 
 /// Returns a simulator of `seed` and `config` holding the files [`write_files`] returns for `f`.

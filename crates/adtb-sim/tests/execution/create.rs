@@ -154,9 +154,9 @@ fn a_create_crashed_anywhere_is_retried() {
         1,
         CRASH_POINTS,
         if every_case() { 2 } else { 1 },
-        workload,
-        |image| image.contains_key(FILE),
-        |at, image| {
+        Box::new(workload),
+        &|image| image.contains_key(FILE),
+        &mut |at, image| {
             let stage = stage(&image);
             *reached.entry(stage).or_insert(0) += 1;
             if every_case() && stage != Stage::Building {

@@ -131,7 +131,7 @@ pub struct Failed<T> {
 }
 
 /// Returns the kind of each op `workload` numbers on a device holding `files`, run with no fault.
-fn eligible_ops<T>(files: &Files, seed: u64, workload: &impl Fn(&SimRuntime) -> T) -> Vec<OpKind> {
+fn eligible_ops<T>(files: &Files, seed: u64, workload: &dyn Fn(&SimRuntime) -> T) -> Vec<OpKind> {
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     process::run(&mut sim, |rt| {
         workload(&rt);
@@ -156,8 +156,8 @@ pub fn each_failure<T>(
     files: &Files,
     seed: u64,
     most: u64,
-    workload: impl Fn(&SimRuntime) -> T,
-    mut check: impl FnMut(Failed<T>),
+    workload: &dyn Fn(&SimRuntime) -> T,
+    check: &mut dyn FnMut(Failed<T>),
 ) {
     failure_runs(
         files,
@@ -166,7 +166,7 @@ pub fn each_failure<T>(
         &[],
         workload,
         Mode::Finishing,
-        |failed| {
+        &mut |failed| {
             check(Failed {
                 at: failed.at,
                 struck: failed.struck,
@@ -186,8 +186,8 @@ pub fn each_fatal_failure<T>(
     seed: u64,
     most: u64,
     also: &[u64],
-    workload: impl Fn(&SimRuntime) -> T,
-    check: impl FnMut(Failed<Option<T>>),
+    workload: &dyn Fn(&SimRuntime) -> T,
+    check: &mut dyn FnMut(Failed<Option<T>>),
 ) {
     failure_runs(files, seed, most, also, workload, Mode::Fatal, check);
 }
@@ -199,8 +199,8 @@ pub fn each_fatal_failure_at_every_name<T>(
     seed: u64,
     most: u64,
     also: &[u64],
-    workload: impl Fn(&SimRuntime) -> T,
-    check: impl FnMut(Failed<Option<T>>),
+    workload: &dyn Fn(&SimRuntime) -> T,
+    check: &mut dyn FnMut(Failed<Option<T>>),
 ) {
     failure_runs(
         files,
@@ -218,12 +218,12 @@ fn failure_runs<T>(
     seed: u64,
     most: u64,
     also: &[u64],
-    workload: impl Fn(&SimRuntime) -> T,
+    workload: &dyn Fn(&SimRuntime) -> T,
     mode: Mode,
-    mut check: impl FnMut(Failed<Option<T>>),
+    check: &mut dyn FnMut(Failed<Option<T>>),
 ) {
     let fatal = mode != Mode::Finishing;
-    let kinds = eligible_ops(files, seed, &workload);
+    let kinds = eligible_ops(files, seed, workload);
     assert!(!kinds.is_empty(), "the workload arms the search");
     let total = kinds.len();
     let mut positions: BTreeSet<_> = chosen_ops(&kinds, most, mode).into_iter().collect();
@@ -244,7 +244,7 @@ fn failure_runs<T>(
             out = Some(workload(&rt));
         };
         let outcome = if fatal {
-            crash::run_process(&mut sim, body)
+            crash::run_process(&mut sim, Box::new(body))
         } else {
             sim.run(body)
         };
@@ -301,26 +301,36 @@ pub fn each_crash<T>(
     seed: u64,
     most: u64,
     images: usize,
-    workload: impl FnOnce(&SimRuntime) -> T,
-    published: impl Fn(&Files) -> bool,
-    mut check: impl FnMut(usize, Files),
+    workload: Box<dyn FnOnce(&SimRuntime) -> T + '_>,
+    published: &dyn Fn(&Files) -> bool,
+    check: &mut dyn FnMut(usize, Files),
 ) {
     let (mut before, mut after) = (0, 0);
     let run = |rt: &SimRuntime| {
         workload(rt);
         Vec::new()
     };
-    each_crash_image(files, seed, most, images, run, |at, image| {
-        if published(&image) {
-            after += 1;
-        } else {
-            before += 1;
-        }
-        check(at, image);
-    });
+    each_crash_image(
+        files,
+        seed,
+        most,
+        images,
+        Box::new(run),
+        &mut |at, image| {
+            if published(&image) {
+                after += 1;
+            } else {
+                before += 1;
+            }
+            check(at, image);
+        },
+    );
     assert_reached("an image before the result is published", before, 1);
     assert_reached("an image with the result published", after, 1);
 }
+
+/// A workload that returns the armed device events a crash search must include.
+pub type ArmedEvents<'a> = Box<dyn FnOnce(&SimRuntime) -> Vec<usize> + 'a>;
 
 /// Run `workload` once and give `check` each image a crash at each chosen device event after it arms
 /// the search can leave, up to `images` for each event, with the event's number. The chosen events
@@ -330,8 +340,8 @@ pub fn each_crash_image(
     seed: u64,
     most: u64,
     images: usize,
-    workload: impl FnOnce(&SimRuntime) -> Vec<usize>,
-    mut check: impl FnMut(usize, Files),
+    workload: ArmedEvents<'_>,
+    check: &mut dyn FnMut(usize, Files),
 ) {
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     sim.record();
@@ -376,8 +386,8 @@ pub fn each_start(
     files: &Files,
     seed: u64,
     most: u64,
-    workload: impl Fn(&SimRuntime, Option<u64>),
-    mut after: impl FnMut(u64, Files),
+    workload: &dyn Fn(&SimRuntime, Option<u64>),
+    after: &mut dyn FnMut(u64, Files),
 ) {
     let kinds = eligible_ops(files, seed, &|rt: &SimRuntime| workload(rt, None));
     assert!(!kinds.is_empty(), "the workload arms the search");
