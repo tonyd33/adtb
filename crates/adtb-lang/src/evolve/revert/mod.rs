@@ -388,8 +388,7 @@ impl<'a> Spelling<'a> {
 
 impl Cx<'_> {
     pub(super) fn revert(&mut self, migration: &str, fills: &[(ast::FieldPath, Fill)]) -> R<()> {
-        let number: u64 = migration.parse().unwrap_or(u64::MAX);
-        let Some(pos) = self.src.log.iter().position(|l| l.number == number) else {
+        let Some(pos) = self.src.logged_at(migration) else {
             return self.err(format!("migration {migration} is not in the log"));
         };
         let logged = self.src.log[pos].clone();

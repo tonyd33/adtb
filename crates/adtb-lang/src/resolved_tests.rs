@@ -486,9 +486,14 @@ fn a_script_holds_its_write_in_canonical_form() {
 }
 
 #[test]
-#[should_panic(expected = "the log holds migration 3")]
-fn resolving_a_migration_the_log_lacks_panics() {
-    let _unresolved = first().resolved(3);
+fn resolving_a_migration_the_log_lacks_is_refused() {
+    assert_eq!(
+        Err(vec![Diag::new(
+            Span::default(),
+            "migration 3 is not in the log"
+        )]),
+        first().resolved(3)
+    );
 }
 
 #[test]

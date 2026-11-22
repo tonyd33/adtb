@@ -433,8 +433,7 @@ impl Cx<'_> {
             }
             OperatorKind::Script(_) => self.err("a `script` has no inverse"),
             OperatorKind::Revert { migration, .. } => {
-                let n: u64 = migration.parse().unwrap_or(u64::MAX);
-                let Some(k) = self.src.log.iter().position(|l| l.number == n) else {
+                let Some(k) = self.src.logged_at(migration) else {
                     return self.err(format!("migration {migration} is not in the log"));
                 };
                 let logged = &self.src.log[k];

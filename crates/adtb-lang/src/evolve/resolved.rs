@@ -471,7 +471,7 @@ impl Source {
     /// nearest before and after it that do.
     ///
     /// Fail with the operators whose data the source lacks, at their spans, or with the operands
-    /// whose names do not resolve. Panics if the log holds no migration `number`.
+    /// whose names do not resolve, or when the log holds no migration `number`.
     pub fn resolved(&self, number: u64) -> Result<Vec<ResolvedOp>, Vec<Diag>> {
         self.resolving(number, Logged::replayed).map(|(ops, _)| ops)
     }
@@ -491,18 +491,30 @@ impl Source {
         for op in &ops {
             if let Resolved::Revert { migration } = op.op {
                 out.extend(self.named_by(migration)?);
-                out.extend(self.created(self.at(migration)));
+                out.extend(self.created(self.at(migration)?));
             }
         }
         Ok(out)
     }
 
     /// Returns the position of migration `number` in the log.
-    fn at(&self, number: u64) -> usize {
+    ///
+    /// Fail when the log holds no migration `number`.
+    fn at(&self, number: u64) -> Result<usize, Vec<Diag>> {
         self.log
             .iter()
             .position(|l| l.number == number)
-            .unwrap_or_else(|| panic!("the log holds migration {number}"))
+            .ok_or_else(|| {
+                vec![Diag::new(
+                    Span::default(),
+                    format!("migration {number} is not in the log"),
+                )]
+            })
+    }
+
+    /// Returns the position in the log of the migration whose number `migration` spells.
+    pub(super) fn logged_at(&self, migration: &str) -> Option<usize> {
+        self.at(migration.parse().ok()?).ok()
     }
 
     /// Resolve migration `number` as [`Source::resolved`] does, `replayed` giving the names of its
@@ -512,7 +524,7 @@ impl Source {
         number: u64,
         replayed: impl FnOnce(&Logged) -> Result<(Names, Vec<Source>), Vec<Diag>>,
     ) -> Result<(Vec<ResolvedOp>, Names), Vec<Diag>> {
-        let i = self.at(number);
+        let i = self.at(number)?;
         let logged = &self.log[i];
         let after = self.log.get(i + 1).map_or(self, |l| &*l.before);
         let unavailable: Vec<Diag> = logged
@@ -961,8 +973,9 @@ impl Resolver<'_> {
                         fill: self.term(fill_span(f)?),
                     });
                 }
+                let reverted = self.logged.before.logged_at(migration)?;
                 Resolved::Revert {
-                    migration: migration.parse().ok()?,
+                    migration: self.logged.before.log[reverted].number,
                 }
             }
             kind => return self.reshaping(kind, clauses),
