@@ -18,6 +18,14 @@ impl Cx<'_> {
         self.copy_range(span.range())
     }
 
+    /// Record that range `from` of the migration's text matched the text at `at` of declaration
+    /// `i` before the operator, when the operator's text is the migration's own.
+    pub(super) fn read_mark(&mut self, from: Range<usize>, i: usize, at: usize) {
+        if self.copying {
+            self.src.read_mark(from, i, at);
+        }
+    }
+
     pub(super) fn copy_range(&self, r: Range<usize>) -> Written {
         Written {
             text: self.text[r.clone()].to_string(),

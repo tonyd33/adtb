@@ -80,6 +80,16 @@ impl Names {
         self.ids.values().flatten().copied()
     }
 
+    /// Returns the span of each name.
+    pub fn spans(&self) -> impl Iterator<Item = Span> + '_ {
+        self.modules
+            .keys()
+            .chain(self.ids.keys())
+            .chain(&self.puns)
+            .chain(&self.unresolved)
+            .map(|&(start, end)| Span::new(start as usize, end as usize))
+    }
+
     /// Record that the identifier at `span` names the object of catalog id `id`.
     pub fn tie(&mut self, span: Span, id: (Space, u64)) {
         self.ids

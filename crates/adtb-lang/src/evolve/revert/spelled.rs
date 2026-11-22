@@ -2,9 +2,32 @@ use super::*;
 use crate::ids::{KeyKind, Space};
 
 /// A text an inverse applies, each name of a catalog object in it held as the object's ids.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(in crate::evolve) struct Spelled {
     pieces: Vec<Piece>,
+}
+
+impl std::fmt::Debug for Spelled {
+    /// Show the tokens of the text, each name as written with its ids.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut shown: Vec<String> = Vec::new();
+        let mut text = String::new();
+        let flush = |text: &mut String, shown: &mut Vec<String>| {
+            shown.extend(tokens(text).into_iter().map(|(_, r)| text[r].to_string()));
+            text.clear();
+        };
+        for p in &self.pieces {
+            match p {
+                Piece::Text(w) => text.push_str(&w.text),
+                Piece::Name { written, ids, pun } => {
+                    flush(&mut text, &mut shown);
+                    shown.push(format!("{written}{ids:?}{}", if *pun { "pun" } else { "" }));
+                }
+            }
+        }
+        flush(&mut text, &mut shown);
+        write!(f, "{:?}", shown.join(" "))
+    }
 }
 
 #[derive(Clone, Debug)]

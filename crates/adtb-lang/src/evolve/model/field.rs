@@ -83,7 +83,7 @@ impl Model {
 
     /// Returns field `name` of `ctor` of type declaration `file` as `built` parses it, the
     /// header's when `ctor` is `None`.
-    fn field_written(
+    pub(super) fn field_written(
         built: &Built,
         file: FileId,
         ctor: Option<&str>,
@@ -164,6 +164,7 @@ impl Model {
             RootKind::Fill,
         )
         .or_else(|d| refuse_at(d.span, d.message))?;
+        run.note(&schema, &refs);
         let mut names = Names::default();
         for (span, r) in &refs {
             names.note(&schema, *span, r);

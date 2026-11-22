@@ -122,13 +122,13 @@ impl Naming {
         span: Span,
     ) -> Result<(), Vec<Diag>> {
         let marks = src.marks.as_mut().expect("a replay records its copies");
-        let read = std::mem::take(&mut marks.read);
-        let written: Vec<Mark> = marks
-            .written
+        let within = |m: &&Mark| span.range().contains(&m.from.start);
+        let read: Vec<Mark> = std::mem::take(&mut marks.read)
             .iter()
-            .filter(|m| span.range().contains(&m.from.start))
+            .filter(within)
             .cloned()
             .collect();
+        let written: Vec<Mark> = marks.written.iter().filter(within).cloned().collect();
         if !read.is_empty() {
             let before = prior.names().map_err(unbuilt)?;
             copy_marked(&mut self.names, &before, prior, &read);

@@ -388,6 +388,25 @@ impl<'a> Spelling<'a> {
     }
 }
 
+/// A migration of the log applied again: the source before its first operator and after each,
+/// and the names of its text, each operand naming an object tied to its id, when the replay
+/// gives them.
+pub(in crate::evolve) struct Replayed {
+    states: Vec<Source>,
+    spelling: Option<Result<Names, Vec<Diag>>>,
+}
+
+impl Replayed {
+    /// Returns the replay that passes through `states`, with `spelling` the names of its text.
+    #[cfg(feature = "compare-migration-model")]
+    pub(in crate::evolve) fn new(
+        states: Vec<Source>,
+        spelling: Option<Result<Names, Vec<Diag>>>,
+    ) -> Replayed {
+        Replayed { states, spelling }
+    }
+}
+
 /// The inverse of a migration of the log as a revert applies it: the steps of each run of its
 /// operators, the objects of the source after it, the relation variables the steps add back,
 /// and for each fill of the revert the key of the field an inverse took it for.
@@ -399,6 +418,66 @@ pub(in crate::evolve) struct Inverted {
 }
 
 impl Inverted {
+    /// Returns the first part in which `other` differs from these inverses, each side shown.
+    #[cfg(feature = "compare-migration-model")]
+    pub(in crate::evolve) fn differs_from(
+        &self,
+        other: &Inverted,
+    ) -> Option<(String, String, String)> {
+        if self.late != other.late {
+            let only = |a: &Late, b: &Late| {
+                format!(
+                    "{:?}",
+                    a.iter()
+                        .filter(|(k, _)| !b.contains_key(k))
+                        .collect::<Vec<_>>()
+                )
+            };
+            return Some((
+                "late".into(),
+                only(&self.late, &other.late),
+                only(&other.late, &self.late),
+            ));
+        }
+        if self.steps.len() != other.steps.len() {
+            return Some((
+                "steps".into(),
+                self.steps.len().to_string(),
+                other.steps.len().to_string(),
+            ));
+        }
+        let shown = |(inverses, removed): &Undoing| {
+            let inverses: Vec<String> = inverses
+                .iter()
+                .map(|i| match i {
+                    Inverse::Replay {
+                        logged,
+                        text,
+                        again,
+                        of,
+                    } => format!(
+                        "Replay {{ logged: {}, text: {text:?}, again: {again:?}, of: {of:?} }}",
+                        logged.number
+                    ),
+                    i => format!("{i:?}"),
+                })
+                .collect();
+            format!("{inverses:?} {removed:?}")
+        };
+        for (k, (a, b)) in self.steps.iter().zip(&other.steps).enumerate() {
+            let (a, b) = (shown(a), shown(b));
+            if a != b {
+                return Some((format!("step {k}"), a, b));
+            }
+        }
+        let (a, b) = (format!("{:?}", self.linked), format!("{:?}", other.linked));
+        if a != b {
+            return Some(("linked".into(), a, b));
+        }
+        let (a, b) = (format!("{:?}", self.filled), format!("{:?}", other.filled));
+        (a != b).then(|| ("filled".into(), a, b))
+    }
+
     /// Returns the steps of each run, the objects of the source after the reverted migration,
     /// the relation variables the steps restore, and the key of the field each fill was taken
     /// for.
@@ -427,6 +506,17 @@ impl Cx<'_> {
         &self,
         migration: &str,
         fills: &[(ast::FieldPath, Fill)],
+    ) -> R<Inverted> {
+        self.inverted_with(migration, fills, |logged| self.replayed(logged))
+    }
+
+    /// Returns the inverse of migration `migration` of the log as [`Cx::inverted`] does, `replay`
+    /// giving the sources the migration's operators pass through.
+    pub(in crate::evolve) fn inverted_with(
+        &self,
+        migration: &str,
+        fills: &[(ast::FieldPath, Fill)],
+        replay: impl FnOnce(&Logged) -> R<Replayed>,
     ) -> R<Inverted> {
         let Some(pos) = self.src.logged_at(migration) else {
             return self.err(format!("migration {migration} is not in the log"));
@@ -461,36 +551,29 @@ impl Cx<'_> {
                 "`revert {migration}` is refused while migration {later:04} depends on it: it names {object}"
             ));
         }
-        let mut state = (*logged.before).clone();
-        state.version = logged.number;
-        state.expecting(&logged.module, &logged.operators);
+        let Replayed { states, spelling } = replay(&logged)?;
         let mut steps = Vec::new();
-        let mut start = state.clone();
+        let mut start = states[0].clone();
         let mut group: Vec<Vec<Inverse>> = Vec::new();
-        let spelling = std::cell::OnceCell::new();
+        let cell = std::cell::OnceCell::new();
+        if let Some(names) = spelling {
+            cell.set(names).ok();
+        }
         let fills = Fills::new(fills);
         for (i, op) in Listed::all(&logged.operators).enumerate() {
-            let before = state.clone();
-            if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
-                return Err(ds
-                    .into_iter()
-                    .map(|d| {
-                        Diag::new(self.span, format!("the log does not replay: {}", d.message))
-                    })
-                    .collect());
-            }
-            let run = Run::new(&start, &logged, &spelling, &fills);
-            group.push(self.inverse(&run.at(&before, &state, &op))?);
+            let (before, state) = (&states[i], &states[i + 1]);
+            let run = Run::new(&start, &logged, &cell, &fills);
+            group.push(self.inverse(&run.at(before, state, &op))?);
             if state.built().is_err() && i + 1 < logged.operators.len() {
                 continue;
             }
             let mut step: Vec<Inverse> = group.drain(..).rev().flatten().collect();
-            let (gone, kept) = grants_back(&start, &state);
+            let (gone, kept) = grants_back(&start, state);
             if let Some(gone) = gone {
                 step.insert(0, gone);
             }
             step.extend(kept);
-            steps.push((step, removed(&start, &state)));
+            steps.push((step, removed(&start, state)));
             start = state.clone();
         }
         if self.src.accepting && self.src.replaying.is_none() {
@@ -501,6 +584,30 @@ impl Cx<'_> {
             steps,
             late: late(self.src.after(pos)),
             filled: fills.taken.into_inner(),
+        })
+    }
+
+    /// Returns the sources migration `logged` passes through as the operator layer applies it
+    /// again; its spelling is left to [`Logged::spelling`].
+    fn replayed(&self, logged: &Logged) -> R<Replayed> {
+        let mut state = (*logged.before).clone();
+        state.version = logged.number;
+        state.expecting(&logged.module, &logged.operators);
+        let mut states = vec![state.clone()];
+        for op in Listed::all(&logged.operators) {
+            if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
+                return Err(ds
+                    .into_iter()
+                    .map(|d| {
+                        Diag::new(self.span, format!("the log does not replay: {}", d.message))
+                    })
+                    .collect());
+            }
+            states.push(state.clone());
+        }
+        Ok(Replayed {
+            states,
+            spelling: None,
         })
     }
 

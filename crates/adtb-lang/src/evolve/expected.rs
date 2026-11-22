@@ -80,6 +80,27 @@ impl Expected {
         }
     }
 
+    /// Returns relation variable `relation` of module `module` as [`Expected::new`] does, added
+    /// as `added` says: not yet when `None`, being added when `Some(None)`, and added as the
+    /// relation variable of id `r` when `Some(Some(r))`.
+    #[cfg(feature = "compare-migration-model")]
+    pub(super) fn added(
+        module: String,
+        relation: String,
+        typed: bool,
+        by: Adder,
+        added: Option<Option<u64>>,
+    ) -> Expected {
+        Expected {
+            state: match added {
+                None => Added::Not,
+                Some(None) => Added::Applying,
+                Some(Some(r)) => Added::As(CatRelId::from_raw(r)),
+            },
+            ..Expected::new(module, relation, typed, by)
+        }
+    }
+
     /// Returns its module, its name as the adding operator spells it, whether the migration also
     /// adds its type, and its adder.
     #[cfg(feature = "compare-migration-model")]

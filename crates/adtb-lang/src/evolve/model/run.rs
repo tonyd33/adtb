@@ -11,6 +11,7 @@ use crate::evolve::{SourceDecl, decl_exprs, each_type, walk_type};
 use crate::ids::{CatalogIds, objects, placing};
 use crate::lex::{Tok, lex};
 use crate::schema::{self, Adder, Ahead, AheadState, PRELUDE, Schema};
+use crate::span::Diag;
 use crate::span::{FileDiag, FileId, Span};
 use crate::types::ModuleId;
 
@@ -26,6 +27,14 @@ pub(super) struct Run<'a> {
     late: RefCell<Vec<(usize, Late)>>,
     /// Whether the log does not yet hold the migration.
     accepting: bool,
+    /// Whether the run applies the migration's own operators, whose copies of its text are
+    /// named; false for the operators of an inverse.
+    copying: bool,
+    /// The names the fills, routings, grants and scripts of its operators resolve, by span of
+    /// the text.
+    noted: RefCell<Names>,
+    /// The copies of the text whose names do not resolve.
+    missed: RefCell<Vec<Diag>>,
 }
 
 /// What an operator wrote naming what only the migration's end resolves.
@@ -64,7 +73,51 @@ impl<'a> Run<'a> {
             span: Span { start: 0, end: 0 },
             late: RefCell::default(),
             accepting: false,
+            copying: true,
+            noted: RefCell::default(),
+            missed: RefCell::default(),
         }
+    }
+
+    /// Returns the run of the operators of an inverse, whose copies of its text are not named.
+    pub(super) fn nested(self) -> Run<'a> {
+        Run {
+            copying: false,
+            ..self
+        }
+    }
+
+    /// Returns whether the run names the copies of its text.
+    pub(super) fn is_copying(&self) -> bool {
+        self.copying
+    }
+
+    /// Record the names `refs` resolve in the text, `schema` holding what they name.
+    pub(super) fn note(&self, schema: &Schema, refs: &[(Span, check::Ref)]) {
+        let mut noted = self.noted.borrow_mut();
+        for (span, r) in refs {
+            noted.note(schema, *span, r);
+        }
+    }
+
+    /// Record `names`, of the text.
+    pub(super) fn note_names(&self, names: Names) {
+        self.noted.borrow_mut().extend(names);
+    }
+
+    /// Record `missed`, copies of the text whose names do not resolve.
+    pub(super) fn miss(&self, missed: Vec<Diag>) {
+        self.missed.borrow_mut().extend(missed);
+    }
+
+    /// Returns the names the run recorded.
+    pub(super) fn take_noted(&self) -> Names {
+        self.noted.take()
+    }
+
+    /// Returns the copies of the text the run recorded whose names do not resolve.
+    pub(super) fn take_missed(&self) -> Vec<Diag> {
+        self.missed.take()
     }
 
     /// Returns the run, applying text the log does not yet hold when `accepting`.
@@ -88,6 +141,16 @@ impl<'a> Run<'a> {
     pub(super) fn begin(&mut self, at: usize, span: Span) {
         self.at = at;
         self.span = span;
+    }
+
+    /// Returns the operator being applied.
+    pub(super) fn at(&self) -> usize {
+        self.at
+    }
+
+    /// Returns what the operators wrote naming what only the migration's end resolves so far.
+    pub(super) fn lates(&self) -> Vec<(usize, Late)> {
+        self.late.borrow().clone()
     }
 
     /// Forget what operator `at` wrote naming what only the migration's end resolves.

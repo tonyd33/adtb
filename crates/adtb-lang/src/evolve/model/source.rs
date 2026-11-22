@@ -30,6 +30,33 @@ impl Model {
         }
     }
 
+    /// Returns the source the model holds as [`Model::source`] does, with the relation variables
+    /// the operators of the migration being applied add.
+    pub(super) fn replay_source(&self) -> Source {
+        let ahead = self
+            .ahead
+            .iter()
+            .map(|a| {
+                let added = match a.added {
+                    Added::Not => None,
+                    Added::Applying => Some(None),
+                    Added::As(r) => Some(Some(r)),
+                };
+                crate::evolve::Expected::added(
+                    a.module.clone(),
+                    a.name.clone(),
+                    a.typed,
+                    a.by,
+                    added,
+                )
+            })
+            .collect();
+        Source {
+            ahead,
+            ..self.source()
+        }
+    }
+
     /// Returns the catalog id of each object of the declarations, by its key.
     ///
     /// Fail when the declarations do not build.

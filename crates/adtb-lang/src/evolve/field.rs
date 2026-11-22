@@ -632,11 +632,7 @@ impl Cx<'_> {
                     let theirs = lex(&text[at..f.span.end as usize - h]).0;
                     for (a, b) in lex(self.slice(e.span)).0.iter().zip(&theirs) {
                         let r = a.span.range();
-                        self.src.read_mark(
-                            from + r.start..from + r.end,
-                            i,
-                            at + b.span.start as usize,
-                        );
+                        self.read_mark(from + r.start..from + r.end, i, at + b.span.start as usize);
                     }
                 }
                 self.drop_clause(i, &ranges, k);

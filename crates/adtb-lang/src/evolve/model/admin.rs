@@ -16,6 +16,7 @@ use crate::span::{FileId, Span};
 /// Returns the canonical form of `span` of the migration, `refs` naming what it writes, empty
 /// with a note when a name of it is not among them.
 pub(super) fn canonical(run: &Run, schema: &Schema, refs: &[(Span, Ref)], span: Span) -> String {
+    run.note(schema, refs);
     let mut names = Names::default();
     for (s, r) in refs {
         names.note(schema, *s, r);

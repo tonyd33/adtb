@@ -105,7 +105,7 @@ impl Model {
     }
 
     /// Returns the clause of the relation declaration of `file` in `built` at `k`.
-    fn clause_written(built: &Built, file: FileId, k: usize) -> Res<RelationClause> {
+    pub(super) fn clause_written(built: &Built, file: FileId, k: usize) -> Res<RelationClause> {
         match built.decl(file) {
             Some(ast::Decl::Relation(rd)) => match rd.clauses.get(k) {
                 Some(c) => Ok(c.clone()),
@@ -331,7 +331,7 @@ impl Model {
                 && texts.len() == tokens.len()
                 && texts.iter().zip(&tokens).all(|(a, b)| a == b)
             {
-                found.push(k);
+                found.push((k, ix - 1));
             }
         }
         let word = match kind {
@@ -341,7 +341,7 @@ impl Model {
         };
         let rname = self.relations[&r].name.clone();
         let shown = scope_shown(on.sel.as_ref());
-        let k = match found.as_slice() {
+        let (k, at) = match found.as_slice() {
             [] => {
                 return refuse(format!(
                     "`{rname}` has no {word} ({}){shown}",
@@ -357,6 +357,13 @@ impl Model {
                 ));
             }
         };
+        if run.is_copying() {
+            let Some(i) = self.decl_at(Item::Relation(r)) else {
+                return broken("a dropped clause's relation variable has no declaration");
+            };
+            let file = FileId(i as u32);
+            run.read(&built, file, &defs[at].fields, fields);
+        }
         let ClauseM::Index {
             id: Some(index), ..
         } = self

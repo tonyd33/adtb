@@ -18,6 +18,7 @@ mod decl;
 mod field;
 mod lift;
 mod moved;
+mod naming;
 mod op;
 mod print;
 mod reselect;
@@ -104,6 +105,8 @@ pub(super) struct Model {
     /// when its target no longer held it or a name of it did not resolve, or why it could not
     /// be read.
     arms_written: BTreeMap<u64, Result<Option<String>, String>>,
+    /// The names of the text of the migration being applied that its operators copied.
+    naming: naming::Naming,
 }
 
 /// A declaration held as its text: the name it is found by and its text without the module

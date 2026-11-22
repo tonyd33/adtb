@@ -1773,11 +1773,28 @@ impl Found {
     }
 
     /// Apply migration `text` to `src`, recording in `unresolved` why it does not resolve when
-    /// it applies, or each object an operator resolves to that neither the source before it nor
-    /// the next that builds after it holds.
+    /// it applies, each object an operator resolves to that neither the source before it nor
+    /// the next that builds after it holds, and each name of its text outside its operators.
     fn migrate(&mut self, src: &Source, text: &str) -> Result<Source, Vec<String>> {
         let next = migrate(src, text)?;
         let logged = next.log.last().expect("a migration is logged");
+        match logged.names() {
+            Ok(names) => {
+                let ops: Vec<Span> = logged.operators.iter().map(|o| o.span).collect();
+                self.unresolved.extend(
+                    names
+                        .spans()
+                        .filter(|s| !ops.iter().any(|o| o.start <= s.start && s.end <= o.end))
+                        .map(|s| {
+                            let at = format!("a name at {s:?} lies outside every operator");
+                            (Aspect::Unresolved, at)
+                        }),
+                );
+            }
+            Err(ds) => self
+                .unresolved
+                .extend(ds.into_iter().map(|d| (Aspect::Unresolved, d.message))),
+        }
         match next.resolved(logged.number) {
             Err(ds) => self
                 .unresolved
@@ -1955,7 +1972,8 @@ const COMPARING: usize = 4;
 
 /// The migration model and the operator layer agree on the migrations of every unlabelled case
 /// of the search in its first shape, each set of them once, and on every migration of the
-/// engine's script corpus, each script's applied in order from an empty source.
+/// engine's script corpus, each script's applied in order from an empty source: on the result,
+/// the names of the migration's text and the inverses of each revert.
 #[cfg(feature = "compare-migration-model")]
 #[test]
 fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus() {
@@ -2054,7 +2072,7 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
         calls <= tally.values().sum::<usize>(),
         "{calls} migrations, {tally:?}"
     );
-    for hook in ["Migrating", "Recorded"] {
+    for hook in ["Migrating", "Recorded", "Inverses"] {
         assert!(
             tally.get(&format!("{hook} agreed")).is_some_and(|&n| n > 0),
             "{tally:?}"

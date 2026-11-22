@@ -4,11 +4,12 @@ use super::op::{Fail, Op, Refused, Res, Resolving};
 use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
+use crate::canon::Names;
 use crate::evolve::grant::IdKind;
 use crate::evolve::source::rekey_leaves_no_old_reference;
 use crate::evolve::{Clause, Kept, Resolved, ResolvedOp};
 use crate::lex::{Tok, lex};
-use crate::span::{FileId, Span};
+use crate::span::{Diag, FileId, Span};
 
 /// A migration applied to a model.
 pub(in crate::evolve) struct Migrated {
@@ -21,6 +22,9 @@ pub(in crate::evolve) struct Migrated {
     afters: Vec<Model>,
     /// Whether the result checks; false when an operator stopped the run.
     checks: bool,
+    /// The names of the migration's text, when they were asked for, or the copies a later
+    /// operator rewrote before they were named.
+    names: Option<Result<Names, Vec<Diag>>>,
     /// The kind of the first operator the model does not apply, which stops the run there.
     stopped: Option<String>,
 }
@@ -54,6 +58,11 @@ impl Migrated {
     pub(super) fn checks(&self) -> bool {
         self.checks
     }
+
+    /// Returns the names of the migration's text, when they were asked for.
+    pub(super) fn names(&self) -> Option<&Result<Names, Vec<Diag>>> {
+        self.names.as_ref()
+    }
 }
 
 impl Model {
@@ -66,18 +75,19 @@ impl Model {
         m: &MigrationFile,
         text: &str,
     ) -> Result<Migrated, String> {
-        self.migrate_keeping(m, text, &[], false)
+        self.migrate_keeping(m, text, &[], false, false)
     }
 
     /// Apply migration `m` as [`Model::migrate`] does, putting back after each operator every
     /// constraint and check of `kept` it drops, with its catalog id, and with a `revert` refusing
-    /// a fill no inverse takes when `accepting`.
+    /// a fill no inverse takes when `accepting`; naming its text when `naming`.
     pub(in crate::evolve) fn migrate_keeping(
         &self,
         m: &MigrationFile,
         text: &str,
         kept: &[Kept],
         accepting: bool,
+        naming: bool,
     ) -> Result<Migrated, String> {
         let module = m.module.text.as_str();
         let mut run = Run::new(m, text).accepting(accepting);
@@ -85,6 +95,7 @@ impl Model {
         model.version += 1;
         model.lifted.clear();
         model.expecting(m);
+        model.naming = naming::Naming::of(text);
         let mut ops = Vec::new();
         let mut maps = Vec::new();
         let mut afters = Vec::new();
@@ -107,6 +118,9 @@ impl Model {
                     }
                     next.keep(&model, kept);
                     next.rebind(&model);
+                    if naming {
+                        next.name_copies(&run, op, &r);
+                    }
                     model = next;
                     ops.push(Ok(r));
                 }
@@ -167,6 +181,17 @@ impl Model {
                 operators: m.operators.len(),
             });
         }
+        let names = (naming && checks && stopped.is_none()).then(|| {
+            model.name_late(&run);
+            let missed = run.take_missed();
+            if !missed.is_empty() {
+                return Err(missed);
+            }
+            let copied = std::mem::take(&mut model.naming).into_names()?;
+            let mut names = run.take_noted();
+            names.extend(copied);
+            Ok(names)
+        });
         Ok(Migrated {
             model,
             ops,
@@ -174,6 +199,7 @@ impl Model {
             afters,
             checks,
             stopped,
+            names,
         })
     }
 

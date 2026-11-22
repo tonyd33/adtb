@@ -1,15 +1,17 @@
 use super::field::{Applied, Maps};
-use super::op::{Fail, Refused, Res, broken, refuse, unmodelled};
+use super::op::{Fail, Refused, Res, broken, refuse, refuse_at, unmodelled};
 use super::run::Run;
 use super::*;
 use crate::ast::{self, Fill, OperatorKind};
+use crate::canon::Names;
+use crate::evolve::revert::Replayed;
 use crate::evolve::revert::{
     DeclOf, Inverse, Late as Gone, NamedId, Recreated, Spelled, dropped, holding, recreate, word,
 };
-use crate::evolve::{Clause, Cx, Resolved, StateOf};
+use crate::evolve::{Clause, Cx, Logged, Resolved, StateOf, Written};
 use crate::ids::KeyKind;
 use crate::parse::{Options, parse_migration};
-use crate::span::Diag;
+use crate::span::{Diag, Span};
 
 /// How a step of an inverse applies an operator of its text.
 #[derive(Clone, Copy)]
@@ -49,6 +51,53 @@ impl Undone {
     }
 }
 
+/// Returns the sources migration `logged` passes through as the model applies its operators
+/// again, and the names of its text, each operand naming an object tied to its id; a refusal of
+/// one of them is at `span`.
+fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
+    let model = of(&logged.before).map_err(Fail::Broken)?;
+    let m = MigrationFile {
+        module: ast::Ident {
+            text: logged.module.clone(),
+            span: Span::default(),
+        },
+        operators: logged.operators.clone(),
+    };
+    let got = model
+        .migrate_keeping(&m, &logged.text, &[], false, true)
+        .map_err(Fail::Broken)?;
+    if let Some(kind) = got.stopped() {
+        return unmodelled(kind.to_string());
+    }
+    if let Some(Err(why)) = got.ops().iter().find(|o| o.is_err()) {
+        return refuse_at(span, format!("the log does not replay: {}", why.why()));
+    }
+    let mut first = model;
+    first.version += 1;
+    first.expecting(&m);
+    let states: Vec<Source> = std::iter::once(first.replay_source())
+        .chain(got.afters().iter().map(Model::replay_source))
+        .collect();
+    let spelling = match got.names() {
+        Some(Ok(names)) => {
+            let mut names = names.clone();
+            for (k, op) in logged.operators.iter().enumerate() {
+                crate::evolve::operands::tie_operands(
+                    &states[k],
+                    &states[k + 1],
+                    &logged.module,
+                    op,
+                    &mut names,
+                );
+            }
+            Ok(names)
+        }
+        Some(Err(ds)) => Err(ds.clone()),
+        None => Err(vec![Diag::new(span, "the logged migration does not check")]),
+    };
+    Ok(Replayed::new(states, Some(spelling)))
+}
+
 /// Returns the refusal of the first of `ds`.
 fn refused<T>(ds: &[Diag]) -> Res<T> {
     match ds.first() {
@@ -77,10 +126,28 @@ impl Model {
                 text: run.text(),
                 span: run.span(),
                 noted: None,
-                copying: false,
+                copying: true,
                 steps: None,
             };
-            cx.inverted(migration, fills)
+            let failed = std::cell::RefCell::new(None);
+            let mine = cx.inverted_with(migration, fills, |logged| {
+                replayed(logged, run.span()).map_err(|e| {
+                    failed.replace(Some(e));
+                    Vec::new()
+                })
+            });
+            let failed = failed.into_inner();
+            if enabled() && !matches!(failed, Some(Fail::Unmodelled(_))) {
+                let layer = cx.inverted(migration, fills);
+                match &failed {
+                    Some(e) => compare::replay_failed(run.text(), &layer, e),
+                    None => compare::same_inverses(run.text(), &layer, &mine),
+                }
+            }
+            if let Some(e) = failed {
+                return Err(e);
+            }
+            mine
         };
         let (steps, gone, linked, filled) = match inverted {
             Ok(i) => i.into_parts(),
@@ -175,10 +242,16 @@ impl Model {
     /// Returns `text` with each name spelled as the model names its object now, refusing as the
     /// inverse of operator text `of` when a later migration dropped one.
     pub(super) fn spell(&self, text: &Spelled, of: &str, gone: &Gone) -> Res<String> {
+        self.spell_copies(text, of, gone).map(|w| w.text)
+    }
+
+    /// Returns `text` spelled as [`Model::spell`] does, with the ranges of the revert's text it
+    /// copies.
+    pub(super) fn spell_copies(&self, text: &Spelled, of: &str, gone: &Gone) -> Res<Written> {
         let now = self.spellings();
         let now: BTreeMap<Obj, &str> = now.iter().map(|(&o, n)| (o, n.as_str())).collect();
         match text.spelled(&now, gone, of) {
-            Ok(w) => Ok(w.text),
+            Ok(w) => Ok(w),
             Err(why) => refuse(why),
         }
     }
@@ -196,8 +269,8 @@ impl Model {
                 of,
             } => self.restructure(run, (drops, op, adds, how, checks), &of, gone, undone),
             Inverse::Apply { text, of } => {
-                let text = self.spell(&text, &of, gone)?;
-                self.undo_ops(run, run.module(), &text, How::Written, &[], undone)
+                let text = self.spell_copies(&text, &of, gone)?;
+                self.undo_ops(run, run.module(), text, How::Written, &[], undone)
             }
             Inverse::Rename { object, to, of } => {
                 let schema = self.schema_now(run)?.into_schema();
@@ -205,7 +278,7 @@ impl Model {
                     return refuse(dropped(&of, object.word()));
                 };
                 let text = format!("rename {} {name} to {to}", object.word());
-                self.undo_ops(run, &module, &text, How::Written, &[], undone)
+                self.undo_ops(run, &module, text.into(), How::Written, &[], undone)
             }
             Inverse::DropSet { set, of } => {
                 let schema = self.schema_now(run)?.into_schema();
@@ -215,7 +288,7 @@ impl Model {
                 self.undo_ops(
                     run,
                     &module,
-                    &format!("drop set {set}"),
+                    format!("drop set {set}").into(),
                     How::Written,
                     &[],
                     undone,
@@ -358,12 +431,14 @@ impl Model {
         &mut self,
         run: &Run,
         module: &str,
-        text: &str,
+        written: Written,
         how: How,
         checks: &[(Item, String)],
         undone: &mut Undone,
     ) -> Res<()> {
-        let full = format!("module {module}\n{text}");
+        let text = written.text.as_str();
+        let head = format!("module {module}\n");
+        let full = format!("{head}{text}");
         let m = match parse_migration(&full, Options::default()).ok() {
             Ok(m) => m,
             Err(ds) => {
@@ -373,7 +448,7 @@ impl Model {
                 ));
             }
         };
-        let mut sub = Run::new(&m, &full).accepting(run.is_accepting());
+        let mut sub = Run::new(&m, &full).accepting(run.is_accepting()).nested();
         let n = m.operators.len();
         for (k, op) in m.operators.iter().enumerate() {
             sub.begin(k, op.span);
@@ -425,6 +500,13 @@ impl Model {
             self.restate_held()?;
             self.rebind(&before);
         }
+        let noted = sub.take_noted();
+        let mut copied = Names::default();
+        for (o, from) in &written.copies {
+            let at = head.len() + o;
+            copied.copy(&noted, at..at + from.len(), from.start);
+        }
+        run.note_names(copied);
         Ok(())
     }
 
@@ -453,7 +535,7 @@ impl Model {
         }
         let module = schema.module(rd.module).name.clone();
         let text = format!("add set {name} of {} = {}", rd.name, ctors.join(" | "));
-        self.undo_ops(run, &module, &text, How::Written, &[], undone)
+        self.undo_ops(run, &module, text.into(), How::Written, &[], undone)
     }
 
     /// Set each write state of `states` to what it states, refusing as the inverse of `of` when a
@@ -643,7 +725,7 @@ impl Model {
         let ahead = self.ahead.clone();
         self.expecting(&m);
         let replaying = self.replaying.replace(again);
-        let mut sub = Run::new(&m, text).accepting(run.is_accepting());
+        let mut sub = Run::new(&m, text).accepting(run.is_accepting()).nested();
         let mut out = Ok(());
         for (k, op) in m.operators.iter().enumerate() {
             sub.begin(k, op.span);

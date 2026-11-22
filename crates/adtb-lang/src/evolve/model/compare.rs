@@ -3,7 +3,7 @@ use std::io::Write as _;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use super::apply::Migrated;
-use super::op::Refused;
+use super::op::{Fail, Refused};
 use super::*;
 use crate::ast::{self, MigrationFile, OperatorKind};
 use crate::evolve::{Recorded, Refusal, ResolvedOp, RowMap, SourceDecl, meaning};
@@ -156,7 +156,7 @@ pub(in crate::evolve) fn compare(
 ) {
     let model = lifted(before);
     let migrated = model
-        .migrate_keeping(m, text, kept, accepting)
+        .migrate_keeping(m, text, kept, accepting, false)
         .unwrap_or_else(|why| panic!("the migration model fails on migration\n{text}\n{why}"));
     if let Some(kind) = migrated.stopped() {
         let outcome = if migrated.ops().len() == m.operators.len() {
@@ -283,6 +283,8 @@ enum Aspect {
     Functions,
     /// An operator's steps or row maps.
     Steps,
+    /// The names of the migration's text.
+    Names,
     Resolved,
 }
 
@@ -728,7 +730,7 @@ pub(in crate::evolve) fn compare_recorded(
     let steps = recorded.steps();
     let model = lifted(before);
     let got = model
-        .migrate_keeping(m, text, &[], accepting)
+        .migrate_keeping(m, text, &[], accepting, true)
         .unwrap_or_else(|why| panic!("the migration model fails on migration\n{text}\n{why}"));
     let mut diffs = Vec::new();
     let applied = got.ops().len();
@@ -811,6 +813,7 @@ pub(in crate::evolve) fn compare_recorded(
     let unavailable = model.unavailable(m);
     if got.stopped().is_none() {
         diffs.extend(differences(m, &got, Ok(after)));
+        diffs.extend(names_differ(before, m, text, &got));
         let mine: Vec<ResolvedOp> = got.ops().iter().flatten().cloned().collect();
         let layer = recorded.resolved().map_err(|ds| {
             ds.iter()
@@ -838,6 +841,32 @@ pub(in crate::evolve) fn compare_recorded(
     let whole = got.stopped().is_none() && diffs.is_empty() && unavailable.is_empty();
     report(Hook::Recorded, m, text, &got, diffs, Ok(after), &agreed);
     whole.then(|| got.ops().iter().flatten().cloned().collect())
+}
+
+/// Returns how the names the model gives the text of `m`, applied to `before`, differ from those
+/// [`Logged::names`] gives it.
+fn names_differ(before: &Source, m: &MigrationFile, text: &str, got: &Migrated) -> Option<Diff> {
+    let mine = got.names()?;
+    let logged = crate::evolve::Logged {
+        number: before.version + 1,
+        module: m.module.text.clone(),
+        text: text.to_string(),
+        operators: m.operators.clone(),
+        before: std::sync::Arc::new(before.clone()),
+    };
+    let layer = logged.names();
+    let shown = |r: &Result<crate::canon::Names, Vec<crate::span::Diag>>| match r {
+        Ok(n) => format!("{n:?}"),
+        Err(ds) => format!(
+            "{:?}",
+            ds.iter().map(|d| (d.span, &d.message)).collect::<Vec<_>>()
+        ),
+    };
+    let (layer, mine) = (shown(&layer), shown(mine));
+    (layer != mine).then(|| Diff {
+        aspect: Aspect::Names,
+        shown: format!("Names:\n  layer {layer}\n  model {mine}"),
+    })
 }
 
 /// Returns the finding of the operator layer that explains `diffs`, when one does; `layer` is
@@ -1020,4 +1049,52 @@ fn shared_field_refused(
             .iter()
             .all(|d| scoped.contains(&d.diag.message)))
     .then_some("F6: a unique or index over a field of a constructor set is refused only at the recheck, as no field in scope")
+}
+
+/// Panic when the operator layer gives the inverses `layer` of a logged migration that the
+/// model's replay fails as `failed`, the revert being of migration text `text`.
+pub(super) fn replay_failed(
+    text: &str,
+    layer: &Result<crate::evolve::revert::Inverted, Vec<crate::span::Diag>>,
+    failed: &Fail,
+) {
+    if layer.is_ok() {
+        panic!(
+            "the model's replay of the reverted migration fails where the operator layer's applies, in revert\n{text}\n  model {failed:?}"
+        );
+    }
+}
+
+/// Panic unless the inverses `mine`, from the model's replay of a logged migration, are those
+/// `layer`, from the operator layer's, gives, the revert being of migration text `text`.
+pub(super) fn same_inverses(
+    text: &str,
+    layer: &Result<crate::evolve::revert::Inverted, Vec<crate::span::Diag>>,
+    mine: &Result<crate::evolve::revert::Inverted, Vec<crate::span::Diag>>,
+) {
+    let refused = |ds: &Vec<crate::span::Diag>| {
+        format!(
+            "{:?}",
+            ds.iter().map(|d| (d.span, &d.message)).collect::<Vec<_>>()
+        )
+    };
+    let differ = match (layer, mine) {
+        (Ok(a), Ok(b)) => a.differs_from(b),
+        (Err(a), Err(b)) => {
+            let (a, b) = (refused(a), refused(b));
+            (a != b).then(|| ("refusal".into(), a, b))
+        }
+        (Ok(_), Err(b)) => Some(("refusal".into(), "none".into(), refused(b))),
+        (Err(a), Ok(_)) => Some(("refusal".into(), refused(a), "none".into())),
+    };
+    if let Some((part, layer, mine)) = differ {
+        panic!(
+            "the model's inverses differ from the operator layer's in revert\n{text}\n{part}:\n  layer {layer}\n  model {mine}"
+        );
+    }
+    FORCED.with(|x| {
+        if let Some(tally) = x.borrow_mut().as_mut() {
+            *tally.entry("Inverses agreed".into()).or_default() += 1;
+        }
+    });
 }

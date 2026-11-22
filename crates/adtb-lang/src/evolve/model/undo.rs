@@ -34,8 +34,8 @@ impl Model {
         gone: &Gone,
         undone: &mut Undone,
     ) -> Res<()> {
-        let text = self.spell(&op, of, gone)?;
-        let adds = self.spell(&adds, of, gone)?;
+        let text = self.spell_copies(&op, of, gone)?;
+        let adds = self.spell_copies(&adds, of, gone)?;
         let mut set = Vec::new();
         for (c, t) in checks {
             let Some(item) = self.decl_of(DeclOf::Object(KeyKind::Constraint, c.raw())) else {
@@ -110,8 +110,8 @@ impl Model {
             Undo::Derived => How::Derived,
             Undo::UpFrom(_) => How::UpFrom(&from),
         };
-        if !text.is_empty() {
-            self.undo_ops(run, run.module(), &text, how, &set, undone)?;
+        if !text.text.is_empty() {
+            self.undo_ops(run, run.module(), text, how, &set, undone)?;
         } else if !set.is_empty() {
             for (item, check) in &set {
                 self.redeclare(*item, check)?;
@@ -119,10 +119,10 @@ impl Model {
             self.settle_ids(run);
         }
         if let Some((module, text)) = renames {
-            self.undo_ops(run, &module, &text, How::Written, &[], undone)?;
+            self.undo_ops(run, &module, text.into(), How::Written, &[], undone)?;
         }
-        if !adds.is_empty() {
-            self.undo_ops(run, run.module(), &adds, How::Written, &[], undone)?;
+        if !adds.text.is_empty() {
+            self.undo_ops(run, run.module(), adds, How::Written, &[], undone)?;
         }
         Ok(())
     }

@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use super::op::{Res, broken, refuse, refuse_at};
 use super::reselect::Edit;
 use super::run::{Built, Late, Run};
@@ -117,6 +119,9 @@ impl Model {
                 self.next_arm += 1;
                 joined.push(Term::text("\n  | "));
                 joined.push(Term::arm(key, &run.text()[start..a.body.span.end as usize]));
+                if run.is_copying() {
+                    self.naming.arm(key, start..a.body.span.end as usize);
+                }
                 self.arms.insert(key, p.item);
                 written[n] = Some(ArmM {
                     item: p.item,
@@ -226,17 +231,32 @@ impl Model {
     /// `built`, the declarations as they first build.
     pub(super) fn arms_built(&mut self, built: &Built) {
         for (key, item) in std::mem::take(&mut self.arms) {
-            let arm = self
-                .arm_written(built, item, key)
-                .map_err(|e| format!("{e:?}"));
+            let placed = self.arm_place(built, item, key);
+            let arm = match &placed {
+                Ok(Some((file, r))) => {
+                    self.name_arm(built, key, *file, r.clone());
+                    Ok(canonical_term(
+                        built.text(*file),
+                        Span::new(r.start, r.end),
+                        &built.names(*file),
+                    )
+                    .ok())
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(format!("{e:?}")),
+            };
             self.arms_written.insert(key, arm);
         }
     }
 
-    /// Returns the canonical form of arm `key` of `item` in `built`, which the declarations as
-    /// the model holds them built; `None` when `item` no longer holds it or a name of it does not
-    /// resolve there.
-    fn arm_written(&self, built: &Built, item: Item, key: u64) -> Res<Option<String>> {
+    /// Returns the file of arm `key` of `item` in `built`, which the declarations as the model
+    /// holds them built, and the range it takes there; `None` when `item` no longer holds it.
+    fn arm_place(
+        &self,
+        built: &Built,
+        item: Item,
+        key: u64,
+    ) -> Res<Option<(FileId, Range<usize>)>> {
         let Some(j) = self.decl_at(item) else {
             return Ok(None);
         };
@@ -251,11 +271,10 @@ impl Model {
         };
         let file = FileId(j as u32);
         let h = format!("module {}\n", self.decls[j].module).len();
-        let text = built.text(file);
-        if text.get(h + r.start..h + r.end).is_none() {
+        if built.text(file).get(h + r.start..h + r.end).is_none() {
             return broken("an arm the model printed is outside its declaration's build");
         }
-        Ok(canonical_term(text, Span::new(h + r.start, h + r.end), &built.names(file)).ok())
+        Ok(Some((file, h + r.start..h + r.end)))
     }
 }
 
