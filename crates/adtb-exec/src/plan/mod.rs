@@ -3,6 +3,7 @@
 //! [`with_rewrites`] is a hook for tests: while it runs, every unbounded plan its thread makes
 //! applies the rewrites it names in place of the ones its caller passes.
 
+mod aborts;
 mod broken;
 mod catalog;
 pub mod explain;
@@ -111,6 +112,8 @@ pub struct Lookup {
     pub index: IndexId,
     pub key: Vec<Tm>,
     pub routes: Vec<(u32, HeapId)>,
+    /// The dereference the lookup computes.
+    deref: Tm,
 }
 
 /// Pipelines that push values into one sink, and the value the sink forms from them.
@@ -302,6 +305,8 @@ pub struct GroupAgg {
 pub struct Fix {
     pub binds: Vec<FixBind>,
     pub body: Eval,
+    /// The fixpoint term the plan computes.
+    term: Tm,
 }
 
 #[derive(Clone, Debug)]

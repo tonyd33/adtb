@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use adtb::testing::{PlanCheck, Rewrites, plans_checked, with_rewrites};
 use adtb::{
     CallOptions, Called, CreateOptions, Database, Error, Limit, Log, OpenError, OpenOptions,
-    Registration, RejectReason,
+    Registration, RejectReason, TxnCallOptions, TxnOptions,
 };
 use adtb_lang::schema::Committed;
 use adtb_lang::textual;
@@ -24,6 +24,7 @@ use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::cases::{Case, Forms, Inverse, Operator, Query, Walk, case, walk, walk_of};
 use adtb_testkit::corpus::{self, Script};
 use adtb_testkit::fixture::Fixture;
+use adtb_testkit::fuzz::{self, Kind};
 use adtb_testkit::{Rng, profile};
 
 #[path = "differential/migration_searches.rs"]
@@ -615,8 +616,8 @@ fn generated_queries_cover_forms() {
 }
 
 /// The checks of the planner's validator no generated query reaches: the generator writes no
-/// `at` block.
-const UNREACHED: [PlanCheck; 1] = [PlanCheck::Past];
+/// `at` block, and declares no constraint, whose incremental checks alone are planned bounded.
+const UNREACHED: [PlanCheck; 2] = [PlanCheck::Past, PlanCheck::Bounded];
 
 #[test]
 fn every_plan_of_the_generated_queries_keeps_the_plan_invariants() {
@@ -653,6 +654,116 @@ fn every_plan_of_the_generated_queries_keeps_the_plan_invariants() {
             ran(c)
         );
     }
+}
+
+/// The rows the front-end fuzzer's statements range over, one write a line.
+const FUZZ_LOAD: [&str; 5] = [
+    r#"insert items { name: "a", n: 1, status: Draft }"#,
+    r#"insert items { name: "b", n: 2, status: Sent { at: 5 } }"#,
+    r#"insert items { name: "c", n: -3, status: Paid { at: 7, by: "x" } }"#,
+    "insert tags.Small { item: items.key(1), size: 3 }",
+    r#"insert tags.Large { item: items.key(2), label: "l" }"#,
+];
+
+/// Front-end fuzzer seeds per run, [`profile::deep`] sized. Each statement runs in a
+/// transaction rolled back after it, over [`FUZZ_LOAD`].
+const FUZZ_SEEDS: u64 = 2000;
+
+/// The rounds a fuzzed statement's fixpoint may take before it is rejected.
+const FUZZ_FIX_ROUNDS: usize = 200;
+
+/// The checks of the planner's validator the fuzzed statements must reach: all but `Past`, as the
+/// generator writes no `at` block, and `Bounded`, as a statement declares no constraint, whose
+/// incremental checks alone are planned bounded.
+const FUZZ_REACHED: [PlanCheck; 9] = [
+    PlanCheck::Bound,
+    PlanCheck::Arms,
+    PlanCheck::Scans,
+    PlanCheck::Routes,
+    PlanCheck::Ranges,
+    PlanCheck::Conditions,
+    PlanCheck::Builds,
+    PlanCheck::Probes,
+    PlanCheck::Totals,
+];
+
+/// The secondary indexes the fuzzed statements' schema adds to [`fuzz::SCHEMA`], each after the
+/// declaration of its relation.
+const FUZZ_INDEXES: [(&str, &str); 2] = [
+    (
+        "relation items : Item key id generate sequence",
+        "index (n)",
+    ),
+    (
+        "relation tags : Tagged key id generate sequence",
+        "index (item)",
+    ),
+];
+
+/// Returns [`fuzz::SCHEMA`] with [`FUZZ_INDEXES`].
+fn fuzz_schema() -> String {
+    let mut out = fuzz::SCHEMA.to_owned();
+    for (relation, index) in FUZZ_INDEXES {
+        assert_eq!(
+            1,
+            out.matches(relation).count(),
+            "the fuzz schema declares `{relation}`"
+        );
+        out = out.replace(relation, &format!("{relation}\n  {index}"));
+    }
+    out
+}
+
+#[test]
+fn every_plan_of_the_fuzzed_statements_keeps_the_plan_invariants() {
+    let log = adtb_conformance::migrations(&fuzz_schema())
+        .unwrap_or_else(|e| panic!("the fuzz schema has no migrations: {e}"));
+    let corpus = fuzz::spec_corpus(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec"));
+    let writes: Vec<String> = FUZZ_LOAD.iter().map(ToString::to_string).collect();
+    let before = plans_checked();
+    process(&mut Sim::new(0, Config::default()), |rt| {
+        let options = OpenOptions {
+            create: Some(CreateOptions::default()),
+            fix_rounds: Some(FUZZ_FIX_ROUNDS),
+            ..OpenOptions::default()
+        };
+        let db = Database::open_in(rt, "fuzzed.adt", &Log::new(log), &options)
+            .unwrap_or_else(|e| panic!("the engine does not open the fuzz schema: {e:?}"));
+        write(&db, &writes);
+        for seed in 0..profile::deep(FUZZ_SEEDS) {
+            let c = fuzz::case(seed, &corpus);
+            if c.kind != Kind::Adhoc {
+                continue;
+            }
+            for rw in [Rewrites::ALL, Rewrites::NONE] {
+                let at = plans_checked();
+                let mut t = db
+                    .begin(&TxnOptions::default())
+                    .unwrap_or_else(|e| panic!("no transaction begins: {e}"));
+                drop(with_rewrites(rw, || {
+                    t.query_text(&c.text, &[], &TxnCallOptions::default())
+                }));
+                t.rollback()
+                    .unwrap_or_else(|e| panic!("seed {seed}: the rollback fails: {e}"));
+                let refused = plans_checked().get(PlanCheck::Refused) - at.get(PlanCheck::Refused);
+                assert_eq!(0, refused, "seed {seed}, {rw:?}:\n{}", c.text);
+            }
+        }
+        close(db);
+    });
+    let after = plans_checked();
+    let ran = |c: PlanCheck| after.get(c) - before.get(c);
+    profile::assert_reached(
+        "plans of fuzzed statements",
+        ran(PlanCheck::Plans) as usize,
+        1000,
+    );
+    let unreached: Vec<PlanCheck> = FUZZ_REACHED.into_iter().filter(|c| ran(*c) == 0).collect();
+    assert_eq!(
+        Vec::<PlanCheck>::new(),
+        unreached,
+        "the checks no plan of a fuzzed statement ran"
+    );
 }
 
 fn differential(env: &Env, q: &Query) -> Option<String> {

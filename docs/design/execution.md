@@ -112,8 +112,9 @@ An expression is a `Tm` of `Plan.terms`, an arena of
 [kernel.md](kernel.md) terms. Every expression a plan names is scalar:
 its forms are `Var`, `Const`, `Prim`, `Record`, `Field`, `Ctor`,
 `Case`, `If`, `Let`, `Caller`, `Key`, `KeyOf`, `Tag`, `Try`,
-`Singleton`, `EmptySet`, `Union`, `Restrict` and `Unreachable`, each
-with the meaning and typing invariants of kernel.md §3. A scalar
+`Singleton`, `EmptySet`, `Union`, `Restrict`, `Reject`, `Unreachable`,
+`Call` of a host function and `Placeholder`, each with the meaning and
+typing invariants of kernel.md §3. A scalar
 expression reads nothing; every read of a plan is a `Scan`, an `Index`
 end, a `Lookup` or a `Build`. `Plan.terms` holds the terms the planner
 was given, so a variable of the input keeps its `Var`.
@@ -129,9 +130,9 @@ parameter's value.
 | `If(c, a, b)` | `a`'s when `c` is `True`, else `b`'s |
 | `Case(s, arms)` | The arm's for the constructor of `s`'s value, its variable bound to that value; one arm per constructor `s` may hold |
 | `Try(a)` | `Ok { value }` of `a`'s value, or `Err { error }` of the `Fault` it raises; any other abort passes through |
-| `Lookup { index, key, routes }` | The row whose `index` entry has the field values `key`, fetched from the heap its constructor routes to; fails with `NoSuchRow` when there is none or its constructor has no route. `index` is the relation's key index, and `key` one value per key field |
+| `Lookup { index, key, routes, deref }` | The row whose `index` entry has the field values `key`, fetched from the heap its constructor routes to; fails with `NoSuchRow` when there is none or its constructor has no route. `index` is the relation's key index, `key` one value per key field, and `deref` the dereference of `Plan.terms` the lookup computes |
 | `Query(q)` | The value `q`'s sink forms (below) |
-| `Fix(f)` | As below |
+| `Fix(f)` | As below; `f.term` is the fixpoint of `Plan.terms` it computes |
 | `GroupRows { groups, key }` | The `rows` of the record of the set `groups`, a value a `Group` sink with `rows` set formed, whose `key` equals `key`'s value; the empty set when none does |
 | `At { instant, point, pins, body, heaps }` | `body`'s, evaluated at the state `point`'s value names, a `Position`, or an `Instant` when `instant` is set, for a block typed at version `pins` or, when it is `None`, at the version of that state; `heaps` are the heaps `body` reads. Fails with `HistoryUnavailable { oldest }` or `WrongVersion { version }` as [mvcc.md §10.3](mvcc.md#103-history-heaps-and-reads-of-the-past) states |
 
@@ -235,6 +236,7 @@ Invariants of every plan:
   database holds; aborts for the statement's limits and cancellation
   excepted. A `Spine::Let` the planner adds binds a value that
   evaluation computes without aborting.
+- A plan made by `plan_bounded` has no `Scan` source and no `Build`.
 - `Plan.reads` holds every heap a `Scan`, route or `Lookup` names, the
   heap of every constructor of the relation of each route and
   `Lookup`, which a fetch following a retag chain reads, and every
@@ -246,10 +248,17 @@ Invariants of every plan:
   body.
 
 The planner refuses a plan that breaks one of these invariants with
-an `Internal` failure naming the invariant. It does not check that
-conditions are `Bool`, that a `Range` end's bounds are of its field's
-type, the invariant of `Probe` and builds, `total`, or that a query
-holding an `At` holds nothing computed from its body.
+an `Internal` failure naming the invariant, with these limits:
+
+- `total` is judged by recomputing, from the terms the query's
+  pipelines, builds and sink's per-element parts evaluate, whether one
+  may abort, as kernel.md judges those terms; a `Lookup` is judged by
+  its `deref` and a `Fix` by its `term`.
+- Of a query holding an `At`, it checks that the `At`'s body reads no
+  `GroupRows` of a grouping bound outside the body; a build is probed
+  only from its own query's pipelines.
+- That a `Spine::Let` the planner adds cannot abort is checked only in
+  a query marked `total`.
 
 Precondition of executing a plan's program: the caller binds every
 variable of `Plan::params`. The executor refuses a call that leaves one

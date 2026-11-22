@@ -20,14 +20,17 @@ use crate::{
 const FILE: &str = "conformance.adt";
 
 /// Run `script` against a fresh database file of the engine under `rt`. Returns every
-/// directive whose outcome differs from the script. A file scan reads a relative path against
-/// the working directory.
+/// directive whose outcome differs from the script and, under feature `scripts`, a difference at
+/// line 0 when the planner's validator refused a plan in this process while it ran. A file scan
+/// reads a relative path against the working directory.
 pub fn run_engine<R: Runtime>(rt: R, script: &Script) -> Vec<Difference> {
     run_engine_in(rt, script, Path::new(""))
 }
 
 /// Run `script` as [`run_engine`] does, a file scan reading a relative path against `dir`.
 pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Difference> {
+    #[cfg(feature = "scripts")]
+    let refused = plans_refused();
     let mut directives = script.directives();
     let mut log = Log::default();
     if let [first, rest @ ..] = directives
@@ -62,6 +65,14 @@ pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Diff
             out.push(e);
         }
     }
+    #[cfg(feature = "scripts")]
+    if plans_refused() > refused {
+        let n = plans_refused() - refused;
+        out.push(differ(
+            0,
+            format!("the planner's validator refused {n} plans"),
+        ));
+    }
     if let Err(e) = db.close() {
         out.push(differ(
             0,
@@ -69,6 +80,13 @@ pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Diff
         ));
     }
     out
+}
+
+/// Returns how many plans the planner's validator refused in this process.
+#[cfg(feature = "scripts")]
+fn plans_refused() -> u64 {
+    use adtb::testing::{PlanCheck, plans_checked};
+    plans_checked().get(PlanCheck::Refused)
 }
 
 /// Returns the migration of each module file of the schema `body`, each as

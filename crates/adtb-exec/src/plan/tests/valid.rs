@@ -1,14 +1,24 @@
-use adtb_lang::kernel::{Build, Var};
+use adtb_lang::analysis::Totality;
+use adtb_lang::kernel::{Build, Const, Var};
 use adtb_lang::types::{Base, Ty};
 
-use super::super::validate::validate;
+use super::super::validate::{Judges, validate};
 use super::*;
 
 /// An arm of a `Spine::Case`.
 type SpineArm = (u32, Var, Spine);
 
+/// Returns the judgement of `p` over `catalog`, as of a plan built bounded when `bounded` is set.
+fn check_in(f: &Fixture, catalog: &Catalog, p: &Plan, bounded: bool) -> Result<(), Broken> {
+    let mut total = Totality::new(&f.schema, false)
+        .with_aggregates(f.normal.terms(), f.normal.aggregate_parts());
+    let mut facts = Facts::default();
+    let judges = Judges::new(&f.schema, catalog, &mut facts, &mut total, bounded);
+    validate(judges, p)
+}
+
 fn check(f: &Fixture, p: &Plan) -> Result<(), Broken> {
-    validate(&f.schema, &f.catalog, &mut Facts::default(), p)
+    check_in(f, &f.catalog, p, false)
 }
 
 fn spine_mut(p: &mut Plan) -> &mut Spine {
@@ -215,10 +225,13 @@ fn a_lookup_of_an_index_other_than_the_key_index_is_refused() {
     let f = running();
     let (mut p, _) = valid(&f, GID_PROBE, &[]);
     let gid = gid_index(&f);
+    let deref =
+        Build::new(&f.schema, &mut p.terms).empty_set(Ty::Set(Box::new(Ty::Base(Base::I64))));
     p.root = Eval::Lookup(Lookup {
         index: gid,
         key: Vec::new(),
         routes: Vec::new(),
+        deref,
     });
     assert_eq!(Err(Broken::LookupNotKey(gid)), check(&f, &p));
 }
@@ -237,7 +250,7 @@ fn a_range_of_an_unordered_index_or_past_its_fields_is_refused() {
     let unordered = Catalog::new(relations);
     assert_eq!(
         Err(Broken::RangeNotOrdered(index)),
-        validate(&f.schema, &unordered, &mut Facts::default(), &p)
+        check_in(&f, &unordered, &p, false)
     );
     let End::Range {
         index: i, key, lo, ..
@@ -268,6 +281,125 @@ fn a_read_of_the_past_breaking_its_shape_is_refused() {
     }));
     let key_index = f.catalog.relation(f.rel("identities")).key_index;
     assert_eq!(Err(Broken::PastIndex(key_index)), check(&f, &probe));
+}
+
+const FILTER: &str = "from o in orders where o.qty > 1 select o.id";
+
+const HASH_JOIN: &str = "from o in orders, f in follows where o.user == f.dst select o.id";
+
+fn query_mut(p: &mut Plan) -> &mut Query {
+    match &mut p.root {
+        Eval::Query(q) => q,
+        other => panic!("not a query: {other:?}"),
+    }
+}
+
+#[test]
+fn a_condition_that_is_not_bool_is_refused() {
+    let f = running();
+    let (mut p, _) = valid(&f, FILTER, &[]);
+    let chain = &mut first_pipeline(spine_mut(&mut p)).chain;
+    let End::Emit(id) = chain.end else {
+        panic!("an emit: {:?}", chain.end)
+    };
+    let [Step::Filter(c)] = chain.steps.as_mut_slice() else {
+        panic!("one filter: {:?}", chain.steps)
+    };
+    *c = id;
+    assert_eq!(Err(Broken::NotBool(id)), check(&f, &p));
+}
+
+#[test]
+fn an_expression_that_is_not_scalar_is_refused() {
+    let f = running();
+    let (n, t) = f.normal(FILTER, &[]);
+    let mut p = plan_with(&f, n.valid(), t, Rewrites::ALL);
+    first_pipeline(spine_mut(&mut p)).chain.end = End::Emit(t);
+    assert_eq!(Err(Broken::NotScalar(t)), check(&f, &p));
+}
+
+#[test]
+fn a_range_bound_not_of_its_fields_type_is_refused() {
+    let f = running();
+    let (mut p, _) = valid(&f, RANGE, &[]);
+    let two = Build::new(&f.schema, &mut p.terms).constant(Const::Int(2), Ty::Base(Base::I64));
+    let index = f.catalog.relation(f.rel("orders")).key_index;
+    let End::Range { lo: Some(lo), .. } = index_end(&mut p) else {
+        panic!("a range with a lower bound")
+    };
+    lo.value = two;
+    assert_eq!(
+        Err(Broken::RangeBoundType { index, bound: two }),
+        check(&f, &p)
+    );
+}
+
+/// Returns the plan of [`HASH_JOIN`], which holds one build, after checking that it passes.
+fn hash_join(f: &Fixture) -> Plan {
+    let (p, _) = valid(f, HASH_JOIN, &[]);
+    let mut p = p;
+    assert_eq!(1, query_mut(&mut p).builds.len());
+    p
+}
+
+#[test]
+fn a_probe_of_no_build_of_its_query_is_refused() {
+    let f = running();
+    let mut p = hash_join(&f);
+    let chain = &mut first_pipeline(spine_mut(&mut p)).chain;
+    let probe = chain.steps.iter_mut().find_map(|s| match s {
+        Step::Probe { build, .. } => Some(build),
+        _ => None,
+    });
+    *probe.expect("a probe") = BuildId(1);
+    assert_eq!(Err(Broken::UnknownBuild(BuildId(1))), check(&f, &p));
+}
+
+#[test]
+fn a_build_that_is_not_filtered_scans_is_refused() {
+    let f = running();
+    let mut p = hash_join(&f);
+    query_mut(&mut p).builds[0].pipelines[0].chain.end = End::Fork(Vec::new());
+    assert_eq!(Err(Broken::BuildShape(BuildId(0))), check(&f, &p));
+}
+
+#[test]
+fn a_bounded_plan_holding_a_scan_or_a_build_is_refused() {
+    let f = running();
+    let p = hash_join(&f);
+    assert_eq!(
+        Err(Broken::BoundedBuild(BuildId(0))),
+        check_in(&f, &f.catalog, &p, true)
+    );
+    let (p, _) = valid(&f, MATCH, &[]);
+    assert_eq!(
+        Err(Broken::BoundedScan(heap(&f, "identities", 0))),
+        check_in(&f, &f.catalog, &p, true)
+    );
+}
+
+#[test]
+fn a_query_marked_total_whose_parts_abort_is_refused() {
+    let f = running();
+    let (mut p, _) = valid(&f, "exists o in orders where o.total / o.qty > 1", &[]);
+    let q = query_mut(&mut p);
+    assert!(!q.total, "a division by a row's field may fault");
+    q.total = true;
+    assert_eq!(Err(Broken::TotalAborts), check(&f, &p));
+}
+
+#[test]
+fn a_read_of_the_past_reading_a_grouping_outside_it_is_refused() {
+    let f = running();
+    let (mut p, _) = valid(&f, PAST, &[("p", "Position")]);
+    let point = at(&mut p).point;
+    let ty = Ty::Set(Box::new(Ty::Base(Base::I64)));
+    let g = p.terms.var("%groups", ty.clone());
+    let mut b = Build::new(&f.schema, &mut p.terms);
+    let (groups, empty) = (b.var(g), b.empty_set(ty));
+    at(&mut p).body = Eval::GroupRows { groups, key: point };
+    p.root = Eval::Let(g, Box::new(Eval::Expr(empty)), Box::new(p.root.clone()));
+    assert_eq!(Err(Broken::PastGroups(g)), check(&f, &p));
 }
 
 /// Ad hoc texts of the planner's tests over the running schema, each with its parameters.
@@ -340,6 +472,10 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
         .unwrap_or_else(|e| panic!("the search with {name}: {e}"));
         made += 1;
     }
+    let (n, t) = f.normal(KEY_PROBE, &[("k", "Key identities")]);
+    plan_bounded(&f.schema, &f.normal, &f.catalog, n.valid(), t)
+        .unwrap_or_else(|e| panic!("`{KEY_PROBE}` bounded: {e}"));
+    made += 1;
     let after = checked();
     let ran = |c: Check| after.get(c) - before.get(c);
     assert_eq!(made, ran(Check::Plans));

@@ -5,8 +5,9 @@ use adtb_lang::textual::key_names;
 use adtb_lang::types::{CtorSet, RelId, RelRef, Ty};
 
 use super::{
-    Access, BuildKey, Fixed, Fixes, HEAP_ROWS, IndexProbe, Limit, PROBE_COST, PROBE_ROWS, Planner,
-    QueryCx, Scope, Span, chain, erase, is_nothing, nothing, prepend, union,
+    Access, BuildKey, Fixed, Fixes, HEAP_ROWS, IndexProbe, Limit, Movable, Moved, PROBE_COST,
+    PROBE_ROWS, Planner, QueryCx, Scope, Slot, Span, chain, erase, is_nothing, nothing, prepend,
+    union,
 };
 use crate::plan::{
     Broken, Build, BuildId, Chain, Element, End, Error, IndexDesc, Lookup, Pipeline, RangeBound,
@@ -21,7 +22,13 @@ struct Then<'a> {
 }
 
 impl Planner<'_> {
-    pub(super) fn lookup(&mut self, key: Tm, admits: &Option<CtorSet>) -> Result<Lookup, Error> {
+    /// Returns the lookup computing `deref`, a dereference of `key` admitting `admits`.
+    pub(super) fn lookup(
+        &mut self,
+        deref: Tm,
+        key: Tm,
+        admits: &Option<CtorSet>,
+    ) -> Result<Lookup, Error> {
         let Ty::Key {
             rel: RelRef::Declared(rel),
             ..
@@ -42,6 +49,7 @@ impl Planner<'_> {
                 .iter()
                 .map(|c| (*c, self.catalog.heap(rel, *c)))
                 .collect(),
+            deref,
         })
     }
 
@@ -90,11 +98,11 @@ impl Planner<'_> {
     fn equality(
         &mut self,
         rel: RelId,
-        c: Tm,
+        c: &Moved,
         x: Var,
         arms: &HashMap<Var, Vec<PathStep>>,
     ) -> Option<Fixes> {
-        let Kind::Prim(Prim::Eq, args) = self.kind(c) else {
+        let Kind::Prim(Prim::Eq, args) = self.moved_kind(c) else {
             return None;
         };
         let [a, b] = args[..] else { return None };
@@ -109,11 +117,14 @@ impl Planner<'_> {
             if let Kind::Key(row) = self.kind(this)
                 && matches!(self.t.kind(row), Kind::Var(v) if *v == x)
             {
-                let fields = self.key_values(rel, other).into_iter();
-                return Some(fields.map(|(f, v)| (Fixed::field(f, v), v)).collect());
+                let mut fixes = Vec::new();
+                for (f, v) in self.key_values(rel, other) {
+                    fixes.push((Fixed::field(f, v), self.part(c, v)?));
+                }
+                return Some(fixes);
             }
             let path = self.path_of(this, x, arms).filter(|p| !p.is_empty());
-            return Some(vec![(Fixed { path, term: this }, other)]);
+            return Some(vec![(Fixed { path, term: this }, self.part(c, other)?)]);
         }
         None
     }
@@ -149,14 +160,18 @@ impl Planner<'_> {
             Kind::For(_, src, _) if self.rel_source(src).is_none() => {
                 self.arm_equalities(rel, src, x, arms, out);
             }
-            Kind::Case { .. } => {
-                let Some(body) = self.live_arm(t, x, arms, Planner::is_empty_set) else {
+            Kind::Case {
+                scrutinee,
+                arms: cases,
+            } => {
+                let Some(body) = self.live_arm(scrutinee, &cases, x, arms, Planner::is_empty_set)
+                else {
                     return;
                 };
                 let (conds, rest) = self.peel(body);
-                let n = self.total_prefix(&conds);
-                for cond in &conds[..n] {
-                    self.cond_equalities(rel, *cond, x, arms, out);
+                let prefix = self.total_prefix(&conds);
+                for (_, cond) in prefix.iter() {
+                    self.cond_equalities(rel, cond, x, arms, out);
                 }
                 self.arm_equalities(rel, rest, x, arms, out);
             }
@@ -164,57 +179,59 @@ impl Planner<'_> {
         }
     }
 
-    /// Add to `out` what of row `x` of `rel` total condition `c` needs fixed to hold: an
-    /// equality, the conjuncts of a conjunction, or under a case over a path from `x` with one
-    /// arm that is not false, what that arm needs.
+    /// Add to `out` what of row `x` of `rel` condition `c` needs fixed to hold: an equality, the
+    /// conjuncts of a conjunction, or under a case over a path from `x` with one arm that is not
+    /// false, what that arm needs.
     fn cond_equalities(
         &mut self,
         rel: RelId,
-        c: Tm,
+        c: Moved,
         x: Var,
         arms: &mut HashMap<Var, Vec<PathStep>>,
         out: &mut Fixes,
     ) {
-        if let Some(pairs) = self.equality(rel, c, x, arms) {
+        if let Some(pairs) = self.equality(rel, &c, x, arms) {
             out.extend(pairs);
             return;
         }
-        let Some(body) = self.live_arm(c, x, arms, |p, a| p.literal(a) == Some(false)) else {
+        let Kind::Case {
+            scrutinee,
+            arms: cases,
+        } = self.moved_kind(&c)
+        else {
+            return;
+        };
+        let false_arm = |p: &Self, a: Tm| p.literal(a) == Some(false);
+        let Some(body) = self.live_arm(scrutinee, &cases, x, arms, false_arm) else {
             return;
         };
         let from = out.len();
         let mut conjuncts = Vec::new();
         self.conjuncts(body, &mut conjuncts);
         for d in conjuncts {
-            self.cond_equalities(rel, d, x, arms, out);
+            if let Some(d) = self.part(&c, d) {
+                self.cond_equalities(rel, d, x, arms, out);
+            }
         }
-        if let Kind::Case { scrutinee, .. } = self.kind(c)
-            && let Some(path) = self.path_of(scrutinee, x, arms)
-            && let Some(at) = self.arm_ctor(c, |p, a| p.literal(a) == Some(false))
+        if let Some(path) = self.path_of(scrutinee, x, arms)
+            && let Some(at) = self.arm_ctor(&cases, false_arm)
         {
-            self.whole_ctor(scrutinee, &path, at, from, out);
+            self.whole_ctor(&c, scrutinee, &path, at, from, out);
         }
     }
 
-    /// Returns the body of the one arm of case `t` over a path from `x` that `dead` does not
-    /// hold of, binding its variable in `arms` to the path through its constructor.
+    /// Returns the body of the one arm of `cases` of a case over `scrutinee`, a path from `x`,
+    /// that `dead` does not hold of, binding its variable in `arms` to the path through its
+    /// constructor.
     fn live_arm(
         &self,
-        t: Tm,
+        scrutinee: Tm,
+        cases: &[(u32, Var, Tm)],
         x: Var,
         arms: &mut HashMap<Var, Vec<PathStep>>,
         dead: impl Fn(&Self, Tm) -> bool,
     ) -> Option<Tm> {
-        let Kind::Case {
-            scrutinee,
-            arms: cases,
-        } = self.t.kind(t)
-        else {
-            return None;
-        };
-        let mut path = self
-            .path_of(*scrutinee, x, arms)
-            .filter(|p| !p.is_empty())?;
+        let mut path = self.path_of(scrutinee, x, arms).filter(|p| !p.is_empty())?;
         let live: Vec<&(u32, Var, Tm)> = cases.iter().filter(|(_, _, a)| !dead(self, *a)).collect();
         let [(c, v, body)] = live[..] else {
             return None;
@@ -277,26 +294,25 @@ impl Planner<'_> {
             .all(|(x, y)| self.same_term(x, y, vars))
     }
 
-    /// Returns the best index of `rel` covering `ctors` whose elements the total prefix of
-    /// `conds`, or the arms of `rest` as [`Planner::arm_equalities`] reads them, fix for row `x`.
+    /// Returns the best index of `rel` covering `ctors` whose elements the conditions of
+    /// `prefix`, or the arms of `rest` as [`Planner::arm_equalities`] reads them, fix for row `x`.
     pub(super) fn index_for(
         &mut self,
         rel: RelId,
         ctors: &CtorSet,
         x: Var,
-        conds: &[Tm],
+        prefix: &Movable,
         rest: Tm,
     ) -> Option<IndexProbe> {
         if self.past {
             return None;
         }
-        let n = self.total_prefix(conds);
-        let mut fixed: Vec<(Option<usize>, Fixes)> = Vec::new();
+        let mut fixed: Vec<(Option<Slot>, Fixes)> = Vec::new();
         let mut in_arms = Vec::new();
-        for (i, c) in conds.iter().enumerate().take(n) {
-            match self.equality(rel, *c, x, &HashMap::new()) {
-                Some(pairs) => fixed.push((Some(i), pairs)),
-                None => self.cond_equalities(rel, *c, x, &mut HashMap::new(), &mut in_arms),
+        for (slot, c) in prefix.iter() {
+            match self.equality(rel, &c, x, &HashMap::new()) {
+                Some(pairs) => fixed.push((Some(slot), pairs)),
+                None => self.cond_equalities(rel, c, x, &mut HashMap::new(), &mut in_arms),
             }
         }
         self.arm_equalities(rel, rest, x, &mut HashMap::new(), &mut in_arms);
@@ -304,9 +320,9 @@ impl Planner<'_> {
             fixed.push((None, in_arms));
         }
         let limits: Vec<Limit> = if self.rw.range_probe && !self.bounded {
-            conds[..n]
+            prefix
                 .iter()
-                .filter_map(|c| self.comparison(*c, x))
+                .filter_map(|(_, c)| self.comparison(c, x))
                 .collect()
         } else {
             Vec::new()
@@ -326,7 +342,7 @@ impl Planner<'_> {
                     .flat_map(|(_, ps)| ps)
                     .find(|(f, _)| self.is_element(rel, x, e, f));
                 match found {
-                    Some((_, v)) => key.push(*v),
+                    Some((_, v)) => key.push(v.clone()),
                     None => break,
                 }
             }
@@ -380,8 +396,8 @@ impl Planner<'_> {
 
     /// Returns the bound comparison `c` puts on a field of row `x`, when it compares the field with
     /// a term of the same type that does not mention `x`.
-    fn comparison(&mut self, c: Tm, x: Var) -> Option<Limit> {
-        let Kind::Prim(op, args) = self.kind(c) else {
+    fn comparison(&mut self, c: Moved, x: Var) -> Option<Limit> {
+        let Kind::Prim(op, args) = self.moved_kind(&c) else {
             return None;
         };
         let (below, inclusive) = match op {
@@ -401,7 +417,7 @@ impl Planner<'_> {
                 && !self.mentions(other, &[x])
             {
                 let bound = RangeBound {
-                    value: other,
+                    value: self.part(&c, other)?.place(),
                     inclusive,
                 };
                 return Some((f, below, bound));
@@ -412,12 +428,11 @@ impl Planner<'_> {
 
     /// Returns the refusal of a read of the rows `x` of `ctors` of `rel` under `conds` that no
     /// index probe reaches.
-    fn unbounded(&mut self, rel: RelId, ctors: &CtorSet, x: Var, conds: &[Tm]) -> Error {
-        let n = self.total_prefix(conds);
+    fn unbounded(&mut self, rel: RelId, ctors: &CtorSet, x: Var, prefix: &Movable) -> Error {
         let mut fields: Vec<String> = Vec::new();
-        for c in &conds[..n] {
+        for (_, c) in prefix.iter() {
             for (f, _) in self
-                .equality(rel, *c, x, &HashMap::new())
+                .equality(rel, &c, x, &HashMap::new())
                 .unwrap_or_default()
             {
                 if let Some([PathStep::Field(f)]) = f.path.as_deref()
@@ -445,8 +460,9 @@ impl Planner<'_> {
         sc: &Scope,
     ) -> Result<Spine, Error> {
         let (conds, rest) = self.pulled(body);
+        let prefix = self.total_prefix(&conds);
         if (self.rw.index_scan || self.bounded)
-            && let Some(probe) = self.index_for(r, ctors, x, &conds, rest)
+            && let Some(probe) = self.index_for(r, ctors, x, &prefix, rest)
         {
             let rows = if probe.unique() { 1.0 } else { PROBE_ROWS };
             let IndexProbe {
@@ -455,16 +471,14 @@ impl Planner<'_> {
                 range,
                 used,
             } = probe;
-            let left: Vec<Tm> = (0..conds.len())
-                .filter(|i| !used.contains(i))
-                .map(|i| conds[i])
-                .collect();
+            let left = prefix.without(&used)?;
             let then = Then {
                 x,
                 conds: &left,
                 rest,
             };
             let routes = self.routes(r, ctors, &index.ctors, then, q, &sc.clone().times(rows))?;
+            let key = key.into_iter().map(Moved::place).collect();
             let ends = self.index_ends(&index, key, range, x, routes);
             return Ok(union(
                 ends.into_iter()
@@ -478,7 +492,7 @@ impl Planner<'_> {
             ));
         }
         if self.bounded {
-            return Err(self.unbounded(r, ctors, x, &conds));
+            return Err(self.unbounded(r, ctors, x, &prefix));
         }
         let heaps = if self.rw.prune {
             ctors.clone()
@@ -602,21 +616,22 @@ impl Planner<'_> {
     ) -> Result<Chain, Error> {
         let outer = sc;
         let (all, rest) = self.pulled(body);
-        let n = self.total_prefix(&all);
+        let hoisted = self.total_prefix(&all);
         let mut pre = Vec::new();
         let mut conds = Vec::new();
         for (i, c) in all.iter().enumerate() {
-            if i < n && !self.mentions(*c, &[y]) {
-                pre.push(Step::Filter(self.here(*c, sc)?));
-            } else {
-                conds.push(*c);
+            match hoisted.get(i) {
+                Some(m) if !self.reads(&m, &[y]) => {
+                    pre.push(Step::Filter(self.here(m.place(), sc)?));
+                }
+                _ => conds.push(*c),
             }
         }
         let sc = &sc.clone().times(0.5f64.powi(pre.len() as i32));
-        let n = self.total_prefix(&conds);
+        let prefix = self.total_prefix(&conds);
         let mut options: Vec<(f64, Access)> = Vec::new();
         if (self.rw.index_join || self.bounded)
-            && let Some(probe) = self.index_for(r, ctors, y, &conds, rest)
+            && let Some(probe) = self.index_for(r, ctors, y, &prefix, rest)
         {
             let per = if probe.unique() {
                 PROBE_COST
@@ -629,7 +644,7 @@ impl Planner<'_> {
             let each: Vec<CtorSet> = ctors.iter().map(|&c| CtorSet::from([c])).collect();
             if each
                 .iter()
-                .all(|one| self.index_for(r, one, y, &conds, rest).is_some())
+                .all(|one| self.index_for(r, one, y, &prefix, rest).is_some())
             {
                 let arms = each
                     .iter()
@@ -639,29 +654,23 @@ impl Planner<'_> {
             }
         }
         if self.bounded && options.is_empty() {
-            return Err(self.unbounded(r, ctors, y, &conds));
+            return Err(self.unbounded(r, ctors, y, &prefix));
         }
         let mut keys = Vec::new();
         let mut filters = Vec::new();
-        for (i, c) in conds.iter().enumerate().take(n) {
-            if self.free_in(*c, &sc.local) {
+        for (slot, c) in prefix.iter() {
+            if self.reads_any(&c, &sc.local) {
                 if self.rw.hash_join
-                    && let Kind::Prim(Prim::Eq, args) = self.kind(*c)
-                    && let [a, b] = args[..]
-                    && erase(&self.ty(a)) == erase(&self.ty(b))
+                    && let Some((build, probe)) = self.equal_sides(&c, |p, build, probe| {
+                        p.reads(build, &[y])
+                            && !p.reads_any(build, &sc.local)
+                            && !p.reads(probe, &[y])
+                    })
                 {
-                    for (build, probe) in [(a, b), (b, a)] {
-                        if self.mentions(build, &[y])
-                            && !self.free_in(build, &sc.local)
-                            && !self.mentions(probe, &[y])
-                        {
-                            keys.push((i, build, probe));
-                            break;
-                        }
-                    }
+                    keys.push((slot, build, probe));
                 }
-            } else if self.mentions(*c, &[y]) {
-                filters.push(i);
+            } else if self.reads(&c, &[y]) {
+                filters.push((slot, c));
             }
         }
         let build_rows = ctors.len() as f64 * HEAP_ROWS;
@@ -680,7 +689,7 @@ impl Planner<'_> {
                 build_rows + sc.rows * kept,
                 Access::Build {
                     keys: Vec::new(),
-                    filters: filters.clone(),
+                    filters,
                 },
             ));
         }
@@ -697,10 +706,7 @@ impl Planner<'_> {
                     range,
                     used,
                 } = probe;
-                let left: Vec<Tm> = (0..conds.len())
-                    .filter(|i| !used.contains(i))
-                    .map(|i| conds[i])
-                    .collect();
+                let left = prefix.without(&used)?;
                 let inner = sc.clone().times(rows);
                 let then = Then {
                     x: y,
@@ -710,7 +716,7 @@ impl Planner<'_> {
                 let routes = self.routes(r, ctors, &index.ctors, then, q, &inner)?;
                 let key = key
                     .into_iter()
-                    .map(|k| self.here(k, sc))
+                    .map(|k| self.here(k.place(), sc))
                     .collect::<Result<_, _>>()?;
                 let range = range.map(|s| self.span_here(s, sc)).transpose()?;
                 let mut ends = self.index_ends(&index, key, range, y, routes);
@@ -725,22 +731,27 @@ impl Planner<'_> {
                 })
             }
             Access::Build { keys, filters } => {
-                let key_conds: Vec<usize> = keys.iter().map(|(i, _, _)| *i).collect();
-                let build_filters: Vec<Tm> = filters.iter().map(|i| conds[*i]).collect();
-                let build_keys: Vec<Tm> = keys.iter().map(|(_, b, _)| *b).collect();
-                let probe: Vec<Tm> = keys.iter().map(|(_, _, p)| *p).collect();
-                let build = self.build(r, ctors, y, build_keys, build_filters, q)?;
-                let left: Vec<Tm> = (0..conds.len())
-                    .filter(|i| !filters.contains(i) && !key_conds.contains(i))
-                    .map(|i| conds[i])
-                    .collect();
                 let rows = if keys.is_empty() { kept } else { 1.0 };
+                let mut moved = Vec::new();
+                let (mut build_keys, mut probe) = (Vec::new(), Vec::new());
+                for (s, b, p) in keys {
+                    moved.push(s);
+                    build_keys.push(b);
+                    probe.push(p);
+                }
+                let mut build_filters = Vec::new();
+                for (s, f) in filters {
+                    moved.push(s);
+                    build_filters.push(f);
+                }
+                let build = self.build(r, ctors, y, build_keys, build_filters, q)?;
+                let left = prefix.without(&moved)?;
                 let known = (ctors.len() == 1).then(|| ctors[0]);
                 let inner = sc.bind_known(y, known).times(rows);
                 let rest = self.filtered(&left, rest, q, &inner)?;
                 let probe = probe
                     .into_iter()
-                    .map(|k| self.here(k, sc))
+                    .map(|k| self.here(Moved::place(k), sc))
                     .collect::<Result<_, _>>()?;
                 pre.push(Step::Probe {
                     build,
@@ -757,10 +768,12 @@ impl Planner<'_> {
         r: RelId,
         ctors: &CtorSet,
         y: Var,
-        key: Vec<Tm>,
-        filters: Vec<Tm>,
+        key: Vec<Moved>,
+        filters: Vec<Moved>,
         q: &mut QueryCx,
     ) -> Result<BuildId, Error> {
+        let key: Vec<Tm> = key.into_iter().map(Moved::place).collect();
+        let filters: Vec<Tm> = filters.into_iter().map(Moved::place).collect();
         let memo = BuildKey {
             rel: r,
             ctors: ctors.clone(),

@@ -77,6 +77,15 @@ impl<'s> Totality<'s> {
         self.abort(terms, t) == Abort::Never
     }
 
+    /// Returns whether `t` may abort in a way `try` does not catch: fail, be rejected, not
+    /// terminate or reach an `Unreachable`.
+    ///
+    /// Preconditions:
+    /// - as [`Totality::total`].
+    pub fn escapes(&mut self, terms: &Terms, t: Tm) -> bool {
+        self.abort(terms, t) == Abort::Escapes
+    }
+
     fn abort(&mut self, terms: &Terms, t: Tm) -> Abort {
         if let Some(&r) = self.memo.get(&t) {
             return r;
@@ -347,7 +356,7 @@ impl<'s> Totality<'s> {
 }
 
 /// Returns whether `count` is a nonnegative integer literal.
-fn literal_count(terms: &Terms, count: Tm) -> bool {
+pub fn literal_count(terms: &Terms, count: Tm) -> bool {
     matches!(terms.kind(count), Kind::Const(Const::Int(n)) if *n >= 0)
 }
 

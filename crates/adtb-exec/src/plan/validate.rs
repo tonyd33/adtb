@@ -1,41 +1,82 @@
 use std::collections::BTreeSet;
 
+use adtb_lang::analysis::Totality;
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::types::Ty;
 
+use super::aborts::Aborts;
 use super::catalog::{Catalog, Element, IndexDesc, RelationDesc};
+use super::lower::erase;
 use super::terms::Facts;
 use super::{
-    Broken, Build, Chain, End, Eval, Fix, HeapId, IndexId, Pipeline, Plan, Query, Route, Sink,
-    Source, Spine, Step,
+    Broken, Build, BuildId, Chain, End, Eval, Fix, HeapId, IndexId, Pipeline, Plan, Query,
+    RangeBound, Route, Sink, Source, Spine, Step,
 };
 
+/// What [`validate`] judges a plan against.
+pub(super) struct Judges<'a, 's> {
+    schema: &'a Schema,
+    catalog: &'a Catalog,
+    facts: &'a mut Facts,
+    total: &'a mut Totality<'s>,
+    bounded: bool,
+}
+
+impl<'a, 's> Judges<'a, 's> {
+    /// Returns the judges of a plan over `schema` and `catalog`, its terms classified by `total`,
+    /// built bounded when `bounded` is set.
+    pub(super) fn new(
+        schema: &'a Schema,
+        catalog: &'a Catalog,
+        facts: &'a mut Facts,
+        total: &'a mut Totality<'s>,
+        bounded: bool,
+    ) -> Self {
+        Judges {
+            schema,
+            catalog,
+            facts,
+            total,
+            bounded,
+        }
+    }
+}
+
 /// Refuse `plan` when it breaks an invariant of every plan that a walk of its structure decides:
-/// every variable bound where it is read, every case naming each constructor its scrutinee may
-/// hold once, every scan and route reading its constructor's heap, every range probing an
-/// ordered index on a field, every read of the past holding no index probe and no other read of
-/// the past, and every term the plan evaluates typed under its kind's rule.
-pub(super) fn validate(
-    schema: &Schema,
-    catalog: &Catalog,
-    facts: &mut Facts,
-    plan: &Plan,
-) -> Result<(), Broken> {
+/// every variable bound where it is read, every expression scalar, every condition `Bool`,
+/// every case naming each constructor its scrutinee may hold once, every scan and route reading
+/// its constructor's heap, every range probing an ordered index on a field with bounds of that
+/// field's ordered type, every probe of a build of its query and every build a filtered scan,
+/// every read of the past holding no index probe, no other read of the past and no grouping of
+/// a query outside it, every query marked `total` evaluating nothing that aborts, no scan or
+/// build in a bounded plan, and every term the plan evaluates typed under its kind's rule.
+pub(super) fn validate(j: Judges<'_, '_>, plan: &Plan) -> Result<(), Broken> {
     let mut bound = vec![0u32; plan.terms.vars().len()];
     for v in &plan.params {
         bound[v.0 as usize] += 1;
     }
+    let Judges {
+        schema,
+        catalog,
+        facts,
+        total,
+        bounded,
+    } = j;
     let mut w = Walk {
         schema,
         catalog,
         terms: &plan.terms,
         facts,
+        total,
+        bounded,
         bound,
-        past: false,
+        past: None,
+        builds: 0,
         seen: Seen::default(),
         exprs: Vec::new(),
     };
+    w.seen.bounded = bounded;
     let out = w.eval(&plan.root);
     let out = out.and_then(|()| {
         adtb_lang::kernel::validate_typed(schema, &plan.terms, &w.exprs).map_err(Broken::IllTyped)
@@ -54,24 +95,34 @@ struct Seen {
     routes: bool,
     ranges: bool,
     past: bool,
+    conditions: bool,
+    builds: bool,
+    probes: bool,
+    totals: bool,
+    bounded: bool,
 }
 
-struct Walk<'a> {
+struct Walk<'a, 's> {
     schema: &'a Schema,
     catalog: &'a Catalog,
     terms: &'a Terms,
     facts: &'a mut Facts,
+    total: &'a mut Totality<'s>,
+    bounded: bool,
     /// How many binders in scope bind each variable.
     bound: Vec<u32>,
-    /// Set while walking the body of a read of the past.
-    past: bool,
+    /// While walking the body of a read of the past, how many binders outside it bind each
+    /// variable.
+    past: Option<Vec<u32>>,
+    /// How many builds the innermost query being walked holds.
+    builds: usize,
     seen: Seen,
     exprs: Vec<Tm>,
 }
 
 type R = Result<(), Broken>;
 
-impl<'a> Walk<'a> {
+impl<'a> Walk<'a, '_> {
     fn bind(&mut self, v: Var) {
         self.bound[v.0 as usize] += 1;
     }
@@ -91,10 +142,24 @@ impl<'a> Walk<'a> {
     fn expr(&mut self, t: Tm) -> R {
         self.seen.bound = true;
         self.exprs.push(t);
+        if !self.facts.scalar(self.terms, t) {
+            return Err(Broken::NotScalar(t));
+        }
         let free = self.facts.free(self.terms, t);
         match free.iter().find(|v| self.bound[v.0 as usize] == 0) {
             Some(v) => Err(Broken::Unbound(*v)),
             None => Ok(()),
+        }
+    }
+
+    /// Check condition `c`, which is `Bool`.
+    fn cond(&mut self, c: Tm) -> R {
+        self.expr(c)?;
+        self.seen.conditions = true;
+        let bool = self.schema.prelude().bool();
+        match self.terms.ty(c) {
+            Ty::Data { def, args, .. } if *def == bool && args.is_empty() => Ok(()),
+            _ => Err(Broken::NotBool(c)),
         }
     }
 
@@ -110,7 +175,7 @@ impl<'a> Walk<'a> {
                 self.under(&[*x], |w| w.eval(b))
             }
             Eval::If(c, a, b) => {
-                self.expr(*c)?;
+                self.cond(*c)?;
                 self.eval(a)?;
                 self.eval(b)
             }
@@ -128,16 +193,26 @@ impl<'a> Walk<'a> {
             }
             Eval::Query(q) => self.query(q),
             Eval::Fix(f) => self.fix(f),
-            Eval::GroupRows { groups, key } => self.exprs(&[*groups, *key]),
+            Eval::GroupRows { groups, key } => {
+                self.exprs(&[*groups, *key])?;
+                let Some(outside) = &self.past else {
+                    return Ok(());
+                };
+                let free = self.facts.free(self.terms, *groups);
+                match free.iter().find(|v| outside[v.0 as usize] > 0) {
+                    Some(v) => Err(Broken::PastGroups(*v)),
+                    None => Ok(()),
+                }
+            }
             Eval::At(a) => {
                 self.seen.past = true;
-                if self.past {
+                if self.past.is_some() {
                     return Err(Broken::NestedPast);
                 }
                 self.expr(a.point)?;
-                self.past = true;
+                self.past = Some(self.bound.clone());
                 let out = self.eval(&a.body);
-                self.past = false;
+                self.past = None;
                 out
             }
         }
@@ -157,12 +232,41 @@ impl<'a> Walk<'a> {
     }
 
     fn query(&mut self, q: &'a Query) -> R {
-        q.builds.iter().try_for_each(|b| self.build(b))?;
-        self.spine(&q.spine)?;
-        self.sink(&q.sink)
+        let outer = std::mem::replace(&mut self.builds, q.builds.len());
+        let out = self.query_in(q);
+        self.builds = outer;
+        out
     }
 
-    fn build(&mut self, b: &'a Build) -> R {
+    fn query_in(&mut self, q: &'a Query) -> R {
+        for (i, b) in q.builds.iter().enumerate() {
+            self.build(BuildId(i as u32), b)?;
+        }
+        self.spine(&q.spine)?;
+        self.sink(&q.sink)?;
+        if q.total {
+            self.seen.totals = true;
+            if Aborts::new(self.terms, self.total).query_parts(q) {
+                return Err(Broken::TotalAborts);
+            }
+        }
+        Ok(())
+    }
+
+    /// Check build `id`, `b`: filtered scans emitting what `b`'s key reads.
+    fn build(&mut self, id: BuildId, b: &'a Build) -> R {
+        self.seen.builds = true;
+        if self.bounded {
+            return Err(Broken::BoundedBuild(id));
+        }
+        let shaped = |p: &Pipeline| {
+            matches!(p.source, Source::Scan { .. })
+                && p.chain.steps.iter().all(|s| matches!(s, Step::Filter(_)))
+                && matches!(p.chain.end, End::Emit(_) | End::Nothing)
+        };
+        if !b.pipelines.iter().all(shaped) {
+            return Err(Broken::BuildShape(id));
+        }
         b.pipelines.iter().try_for_each(|p| self.pipeline(p))?;
         self.under(&[b.var], |w| w.exprs(&b.key))
     }
@@ -209,7 +313,7 @@ impl<'a> Walk<'a> {
             Spine::Pipeline(p) => self.pipeline(p),
             Spine::Union(ss) => ss.iter().try_for_each(|s| self.spine(s)),
             Spine::If(c, a, b) => {
-                self.expr(*c)?;
+                self.cond(*c)?;
                 self.spine(a)?;
                 self.spine(b)
             }
@@ -230,6 +334,9 @@ impl<'a> Walk<'a> {
             Source::Unit => self.chain(&p.chain),
             Source::Scan { heap, ctor, var } => {
                 self.seen.scans = true;
+                if self.bounded {
+                    return Err(Broken::BoundedScan(*heap));
+                }
                 match self.catalog.heap_of(*heap) {
                     Some((_, c)) if c == *ctor => {}
                     _ => return Err(Broken::ScanHeap(*heap)),
@@ -251,7 +358,7 @@ impl<'a> Walk<'a> {
         for s in &ch.steps {
             let v = match s {
                 Step::Filter(t) => {
-                    self.expr(*t)?;
+                    self.cond(*t)?;
                     continue;
                 }
                 Step::Bind(x, e) => {
@@ -262,7 +369,11 @@ impl<'a> Walk<'a> {
                     self.expr(*t)?;
                     *x
                 }
-                Step::Probe { key, var, .. } => {
+                Step::Probe { build, key, var } => {
+                    self.seen.probes = true;
+                    if build.0 as usize >= self.builds {
+                        return Err(Broken::UnknownBuild(*build));
+                    }
                     self.exprs(key)?;
                     *var
                 }
@@ -279,7 +390,7 @@ impl<'a> Walk<'a> {
             End::Emit(t) => self.expr(*t),
             End::Fork(cs) => cs.iter().try_for_each(|c| self.chain(c)),
             End::If(c, a, b) => {
-                self.expr(*c)?;
+                self.cond(*c)?;
                 self.chain(a)?;
                 self.chain(b)
             }
@@ -305,7 +416,8 @@ impl<'a> Walk<'a> {
                 for b in lo.iter().chain(hi) {
                     self.expr(b.value)?;
                 }
-                self.probe(*index, key, *var, routes, true)
+                self.probe(*index, key, *var, routes, true)?;
+                self.bounds(*index, key.len(), lo.iter().chain(hi))
             }
         }
     }
@@ -320,7 +432,7 @@ impl<'a> Walk<'a> {
         routes: &'a [Route],
         range: bool,
     ) -> R {
-        if self.past {
+        if self.past.is_some() {
             return Err(Broken::PastIndex(index));
         }
         self.exprs(key)?;
@@ -333,6 +445,44 @@ impl<'a> Walk<'a> {
         self.under(&[var], |w| {
             routes.iter().try_for_each(|r| w.chain(&r.chain))
         })
+    }
+
+    /// Check that each of `bounds` on the field after the first `prefix` of index `index`, a
+    /// range probe's, is of that field's type, which is ordered.
+    fn bounds<'b>(
+        &self,
+        index: IndexId,
+        prefix: usize,
+        bounds: impl Iterator<Item = &'b RangeBound>,
+    ) -> R {
+        let (_, desc) = self.index(index)?;
+        let Some(Element::Field(f)) = desc.elements.get(prefix) else {
+            return Err(Broken::RangeNotField(index));
+        };
+        let (r, _) = self
+            .catalog
+            .index_of(index)
+            .ok_or(Broken::UnknownIndex(index))?;
+        let relation = self.schema.relation(r);
+        let args = match &relation.elem {
+            Ty::Data { args, .. } => args.as_slice(),
+            _ => &[],
+        };
+        let def = self.schema.ty(relation.elem_def);
+        let field = desc.ctors.first().and_then(|c| def.field_named(*c, f));
+        let ty = field.map(|d| d.ty.subst(args));
+        for b in bounds {
+            let fits = ty.as_ref().is_some_and(|ty| {
+                erase(self.terms.ty(b.value)) == erase(ty) && self.schema.is_ordered(ty) == Ok(true)
+            });
+            if !fits {
+                return Err(Broken::RangeBoundType {
+                    index,
+                    bound: b.value,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn range(&mut self, index: IndexId, desc: &IndexDesc, prefix: usize) -> R {
@@ -455,23 +605,33 @@ pub mod counts {
         Routes,
         Ranges,
         Past,
+        Conditions,
+        Builds,
+        Probes,
+        Totals,
+        Bounded,
     }
 
     impl Check {
         /// The checks, without `Plans` and `Refused`.
-        pub const CHECKS: [Check; 6] = [
+        pub const CHECKS: [Check; 11] = [
             Check::Bound,
             Check::Arms,
             Check::Scans,
             Check::Routes,
             Check::Ranges,
             Check::Past,
+            Check::Conditions,
+            Check::Builds,
+            Check::Probes,
+            Check::Totals,
+            Check::Bounded,
         ];
     }
 
     /// The counts of this process's validations, by [`Check`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Checked([u64; 8]);
+    pub struct Checked([u64; 13]);
 
     impl Checked {
         pub fn get(&self, c: Check) -> u64 {
@@ -479,11 +639,23 @@ pub mod counts {
         }
     }
 
-    static COUNTS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+    static COUNTS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 
     pub(super) fn add(s: &Seen, refused: bool) {
         let ran = [
-            true, refused, s.bound, s.arms, s.scans, s.routes, s.ranges, s.past,
+            true,
+            refused,
+            s.bound,
+            s.arms,
+            s.scans,
+            s.routes,
+            s.ranges,
+            s.past,
+            s.conditions,
+            s.builds,
+            s.probes,
+            s.totals,
+            s.bounded,
         ];
         for (c, r) in COUNTS.iter().zip(ran) {
             c.fetch_add(u64::from(r), Ordering::Relaxed);

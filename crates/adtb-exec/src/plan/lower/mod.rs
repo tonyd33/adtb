@@ -3,19 +3,22 @@ use std::rc::Rc;
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::ast::FnBody;
-use adtb_lang::kernel::{self, Agg, Kind, PathStep, Prim, Terms, Tm, Valid, Var};
+use adtb_lang::kernel::{self, Agg, Kind, PathStep, Terms, Tm, Valid, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, KeyCtors, RelId, Ty};
 
 use super::catalog::{Catalog, IndexDesc};
 use super::terms::Facts;
-use super::validate::validate;
+use super::validate::{Judges, validate};
 use super::*;
 
 mod group;
+mod movable;
 mod probe;
 mod split;
+
+use movable::{Movable, Moved, Slot};
 
 /// The rows the fixed cost model assumes in every heap.
 const HEAP_ROWS: f64 = 1000.0;
@@ -108,6 +111,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         facts: Facts::default(),
         vars: HashMap::new(),
         outer: Vec::new(),
+        lists: 0,
     };
     let root = p.eval(root)?;
     let params = (*p.facts.free(&p.t, input.root)).clone();
@@ -116,7 +120,10 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         params,
         root,
     };
-    validate(schema, catalog, &mut p.facts, &plan)?;
+    validate(
+        Judges::new(schema, catalog, &mut p.facts, &mut p.total, bounded),
+        &plan,
+    )?;
     Ok(plan)
 }
 
@@ -156,6 +163,8 @@ struct Planner<'a> {
     vars: HashMap<Var, Tm>,
     /// One entry per chain being planned, innermost last.
     outer: Vec<Outer>,
+    /// The lists of conditions [`Planner::total_prefix`] has judged.
+    lists: u32,
 }
 
 /// What a query planned inside a chain may add to the query that holds the chain.
@@ -231,9 +240,9 @@ struct BuildKey {
 /// the conditions the values replace.
 struct IndexProbe {
     index: IndexDesc,
-    key: Vec<Tm>,
+    key: Vec<Moved>,
     range: Option<Span>,
-    used: Vec<usize>,
+    used: Vec<Slot>,
 }
 
 /// The bounds a range probe puts on the index field after its key.
@@ -261,7 +270,7 @@ struct Fixed {
 }
 
 /// What conditions fix of a row, each with its value.
-type Fixes = Vec<(Fixed, Tm)>;
+type Fixes = Vec<(Fixed, Moved)>;
 
 impl Fixed {
     fn field(f: String, term: Tm) -> Fixed {
@@ -275,9 +284,11 @@ impl Fixed {
 /// One way to read a constructor relation inside a pipeline.
 enum Access {
     Index(IndexProbe),
+    /// A probe of a build keyed by the build and probe sides of equality conditions, filtered by
+    /// conditions.
     Build {
-        keys: Vec<(usize, Tm, Tm)>,
-        filters: Vec<usize>,
+        keys: Vec<(Slot, Moved, Moved)>,
+        filters: Vec<(Slot, Moved)>,
     },
 }
 
@@ -323,7 +334,7 @@ fn is_nothing(c: &Chain) -> bool {
 }
 
 /// Returns the type with every constructor-set restriction removed.
-fn erase(t: &Ty) -> Ty {
+pub(super) fn erase(t: &Ty) -> Ty {
     match t {
         Ty::Data { def, args, .. } => Ty::Data {
             def: *def,
@@ -509,14 +520,13 @@ impl Planner<'_> {
             return (conds, rest);
         }
         let (ic, ir) = self.peel(inner);
-        let n = self.total_prefix(&ic);
+        let prefix = self.total_prefix(&ic);
         let mut kept = Vec::new();
         let before = conds.len();
         for (i, c) in ic.iter().enumerate() {
-            if i < n && !self.mentions(*c, &[y]) {
-                conds.push(*c);
-            } else {
-                kept.push(*c);
+            match prefix.get(i) {
+                Some(m) if !self.reads(&m, &[y]) => conds.push(m.place()),
+                _ => kept.push(*c),
             }
         }
         if conds.len() == before {
@@ -607,17 +617,6 @@ impl Planner<'_> {
         out
     }
 
-    /// Returns how many conditions from the first are scalar and total.
-    fn total_prefix(&mut self, conds: &[Tm]) -> usize {
-        conds
-            .iter()
-            .take_while(|c| {
-                let c = **c;
-                self.scalar(c) && self.total(c)
-            })
-            .count()
-    }
-
     fn eval(&mut self, t: Tm) -> Result<Eval, Error> {
         self.refuse(t)?;
         if self.scalar(t) {
@@ -626,7 +625,7 @@ impl Planner<'_> {
         let ty = self.ty(t);
         match self.kind(t) {
             Kind::Fix(..) if self.bounded => Err(Error::Outside("fix")),
-            Kind::Fix(binds, body) => self.fix(&binds, body),
+            Kind::Fix(binds, body) => self.fix(t, &binds, body),
             Kind::Let(x, e, b) => Ok(Eval::Let(
                 x,
                 Box::new(self.eval(e)?),
@@ -654,7 +653,7 @@ impl Planner<'_> {
             } => self.at(instant, point, pins, body),
             Kind::Deref { key, admits, .. } => {
                 let (lets, k) = self.lift_eval(key)?;
-                let lookup = self.lookup(k, &admits)?;
+                let lookup = self.lookup(t, k, &admits)?;
                 Ok(wrap_eval(lets, Eval::Lookup(lookup)))
             }
             Kind::Agg {
@@ -741,7 +740,7 @@ impl Planner<'_> {
                         last = Some(i);
                     }
                 }
-                let last = last.expect("a term that is not scalar has a child that is not");
+                let last = last.ok_or(Broken::Unplanned(t))?;
                 let mut lets = Vec::new();
                 let mut new = cs.clone();
                 for (i, c) in cs.iter().enumerate().take(last + 1) {
@@ -935,41 +934,30 @@ impl Planner<'_> {
             return Ok(None);
         };
         let (conds, rest) = self.peel(body);
-        let n = self.total_prefix(&conds);
-        let outside = |p: &mut Self, t: Tm| {
-            p.facts
-                .free(&p.t, t)
-                .iter()
-                .all(|v| *v == y || env.contains(v))
-        };
-        let (mut filters, mut keys, mut probes, mut kept) = (vec![], vec![], vec![], vec![]);
-        for (i, c) in conds.iter().enumerate() {
-            if i < n && self.mentions(*c, &[y]) && outside(self, *c) {
-                filters.push(*c);
+        let prefix = self.total_prefix(&conds);
+        let outside =
+            |p: &mut Self, m: &Moved| p.free_of(m).iter().all(|v| *v == y || env.contains(v));
+        let (mut filters, mut keys, mut probes, mut moved) = (vec![], vec![], vec![], vec![]);
+        for (slot, m) in prefix.iter() {
+            if self.reads(&m, &[y]) && outside(self, &m) {
+                filters.push(m.place());
+                moved.push(slot);
                 continue;
             }
-            if i < n
-                && let Kind::Prim(Prim::Eq, args) = self.kind(*c)
-                && let [a, b] = args[..]
-                && erase(&self.ty(a)) == erase(&self.ty(b))
-                && let Some((build, probe)) = [(a, b), (b, a)].into_iter().find(|(build, probe)| {
-                    self.mentions(*build, &[y])
-                        && outside(self, *build)
-                        && !self.mentions(*probe, &[y])
-                })
-            {
+            if let Some((build, probe)) = self.equal_sides(&m, |p, build, probe| {
+                p.reads(build, &[y]) && outside(p, build) && !p.reads(probe, &[y])
+            }) {
                 keys.push(build);
                 probes.push(probe);
-                continue;
+                moved.push(slot);
             }
-            kept.push(*c);
         }
         if keys.is_empty() {
             return Ok(None);
         }
         let heap_rows = ctors.len() as f64 * HEAP_ROWS;
         let per_row = match self.rw.index_scan {
-            true => match self.index_for(r, &ctors, y, &conds, rest) {
+            true => match self.index_for(r, &ctors, y, &prefix, rest) {
                 Some(p) if p.unique() => PROBE_COST,
                 Some(_) => PROBE_COST + PROBE_ROWS,
                 None => heap_rows,
@@ -979,7 +967,8 @@ impl Planner<'_> {
         if heap_rows + rows >= rows * per_row {
             return Ok(None);
         }
-        let (by, probe) = self.group_key(&keys, &probes);
+        let kept = prefix.without(&moved)?;
+        let (by, probe) = self.group_key(keys, probes);
         let row_ty = self.elem_ty(src)?;
         let set_ty = Ty::Set(Box::new(row_ty.clone()));
         let one = self.var_tm(y);
@@ -1015,8 +1004,10 @@ impl Planner<'_> {
 
     /// Returns the key a grouping keys its rows by and the key a probe of it looks up: the one
     /// term of each, or a record of them.
-    fn group_key(&mut self, keys: &[Tm], probes: &[Tm]) -> (Tm, Tm) {
-        if let ([k], [p]) = (keys, probes) {
+    fn group_key(&mut self, keys: Vec<Moved>, probes: Vec<Moved>) -> (Tm, Tm) {
+        let keys: Vec<Tm> = keys.into_iter().map(Moved::place).collect();
+        let probes: Vec<Tm> = probes.into_iter().map(Moved::place).collect();
+        if let ([k], [p]) = (&keys[..], &probes[..]) {
             return (*k, *p);
         }
         let names: Vec<String> = (0..keys.len()).map(|i| format!("k{i:04}")).collect();
@@ -1025,7 +1016,7 @@ impl Planner<'_> {
             let ty = Ty::Record(fields.iter().map(|(n, t)| (n.clone(), p.ty(*t))).collect());
             p.b().record(fields, ty)
         };
-        (record(self, keys), record(self, probes))
+        (record(self, &keys), record(self, &probes))
     }
 
     fn spine(&mut self, t: Tm, q: &mut QueryCx, sc: &Scope) -> Result<Spine, Error> {
@@ -1071,7 +1062,7 @@ impl Planner<'_> {
             Kind::For(x, src, body) => {
                 if let Some((r, ctors)) = self.rel_source(src) {
                     if self.rw.unswitch
-                        && let Some(u) = self.unswitch(t, x, src, body)
+                        && let Some(u) = self.unswitch(t, x, src, body)?
                     {
                         return self.spine(u, q, sc);
                     }
@@ -1231,7 +1222,7 @@ impl Planner<'_> {
         self.refuse(src)?;
         if let Some((r, ctors)) = self.rel_source(src) {
             if (self.rw.unswitch || self.bounded)
-                && let Some(split) = self.split_join(y, src, body)
+                && let Some(split) = self.split_join(y, src, body)?
             {
                 return self.chain(split, q, sc);
             }
@@ -1263,57 +1254,63 @@ impl Planner<'_> {
     }
 
     /// Returns `for x in src do body` with a condition or a scrutinee that does not depend on `x` taken out of the loop, when there is one.
-    fn unswitch(&mut self, t: Tm, x: Var, src: Tm, body: Tm) -> Option<Tm> {
+    fn unswitch(&mut self, t: Tm, x: Var, src: Tm, body: Tm) -> Result<Option<Tm>, Broken> {
         let ty = self.ty(t);
         let (conds, rest) = self.peel(body);
-        let n = self.total_prefix(&conds);
-        let invariant = |p: &mut Self, c: Tm| p.scalar(c) && p.total(c) && !p.mentions(c, &[x]);
-        for i in 0..conds.len() {
-            let c = conds[i];
-            if i <= n && invariant(self, c) {
-                let mut others = conds.clone();
-                others.remove(i);
+        let prefix = self.total_prefix(&conds);
+        for (slot, c) in prefix.iter() {
+            if !self.reads(&c, &[x]) {
+                let others = prefix.without(&[slot])?;
                 let inner = self.guarded(&others, rest, &ty);
                 let looped = self.b().for_(x, src, inner, ty.clone());
-                return Some(self.guarded(&[c], looped, &ty));
+                return Ok(Some(self.guarded(&[c.place()], looped, &ty)));
             }
-            if let Kind::Case { scrutinee, arms } = self.kind(c)
-                && invariant(self, scrutinee)
+            if let Kind::Case { scrutinee, arms } = self.moved_kind(&c)
+                && let Some(scrutinee) = self.part(&c, scrutinee)
+                && !self.reads(&scrutinee, &[x])
             {
                 let mut out = Vec::new();
                 for (k, v, arm) in arms {
-                    let mut cs = conds.clone();
-                    cs[i] = arm;
+                    let cs = prefix.with(slot, arm)?;
                     let inner = self.guarded(&cs, rest, &ty);
                     out.push((k, v, self.b().for_(x, src, inner, ty.clone())));
                 }
-                return Some(self.b().case(scrutinee, out, ty));
+                return Ok(Some(self.b().case(scrutinee.place(), out, ty)));
             }
         }
-        if n < conds.len() {
-            return None;
+        let head = match self.kind(rest) {
+            Kind::Case { scrutinee, .. } => scrutinee,
+            Kind::If(c, ..) => c,
+            _ => return Ok(None),
+        };
+        let Some(head) = self.after_prefix(&prefix, head) else {
+            return Ok(None);
+        };
+        if self.reads(&head, &[x]) {
+            return Ok(None);
         }
-        match self.kind(rest) {
-            Kind::Case { scrutinee, arms } if invariant(self, scrutinee) => {
+        let head = head.place();
+        Ok(match self.kind(rest) {
+            Kind::Case { arms, .. } => {
                 let mut out = Vec::new();
                 for (k, v, arm) in arms {
                     let inner = self.guarded(&conds, arm, &ty);
                     out.push((k, v, self.b().for_(x, src, inner, ty.clone())));
                 }
-                Some(self.b().case(scrutinee, out, ty))
+                Some(self.b().case(head, out, ty))
             }
-            Kind::If(c, a, b) if invariant(self, c) => {
+            Kind::If(_, a, b) => {
                 let a = self.guarded(&conds, a, &ty);
                 let b = self.guarded(&conds, b, &ty);
                 let a = self.b().for_(x, src, a, ty.clone());
                 let b = self.b().for_(x, src, b, ty.clone());
-                Some(self.b().if_(c, a, b, ty))
+                Some(self.b().if_(head, a, b, ty))
             }
             _ => None,
-        }
+        })
     }
 
-    fn fix(&mut self, binds: &[(Var, Tm)], body: Tm) -> Result<Eval, Error> {
+    fn fix(&mut self, t: Tm, binds: &[(Var, Tm)], body: Tm) -> Result<Eval, Error> {
         let xs: Vec<Var> = binds.iter().map(|(x, _)| *x).collect();
         let deltas: Vec<(Var, Var)> = binds
             .iter()
@@ -1346,6 +1343,7 @@ impl Planner<'_> {
         Ok(Eval::Fix(Box::new(Fix {
             binds: out,
             body: self.eval(body)?,
+            term: t,
         })))
     }
 

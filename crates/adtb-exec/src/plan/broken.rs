@@ -1,9 +1,9 @@
 use std::fmt;
 
-use adtb_lang::kernel::{Invalid, Var};
+use adtb_lang::kernel::{Invalid, Tm, Var};
 use adtb_lang::types::Ty;
 
-use super::{Error, HeapId, IndexId};
+use super::{BuildId, Error, HeapId, IndexId};
 
 /// A guarantee of the checker or the normaliser that a term given to the planner breaks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +41,22 @@ pub enum Broken {
     NestedPast,
     /// A term of the plan breaks its kind's typing rule.
     IllTyped(Invalid),
+    NotScalar(Tm),
+    NotBool(Tm),
+    RangeBoundType {
+        index: IndexId,
+        bound: Tm,
+    },
+    UnknownBuild(BuildId),
+    BuildShape(BuildId),
+    PastGroups(Var),
+    TotalAborts,
+    BoundedScan(HeapId),
+    BoundedBuild(BuildId),
+    /// The planner met a term whose form no plan computes.
+    Unplanned(Tm),
+    /// The planner moved a condition by its position in a list other than its own.
+    ForeignSlot,
 }
 
 impl From<Broken> for Error {
@@ -123,6 +139,41 @@ impl fmt::Display for Broken {
                 e.at(),
                 e.reason()
             ),
+            Broken::NotScalar(t) => {
+                write!(f, "an expression of a plan is scalar, not term {}", t.0)
+            }
+            Broken::NotBool(t) => write!(f, "a condition is `Bool`, not term {}", t.0),
+            Broken::RangeBoundType { index, bound } => write!(
+                f,
+                "a bound of a range of index {} is of its field's ordered type, not term {}",
+                index.0, bound.0
+            ),
+            Broken::UnknownBuild(b) => {
+                write!(f, "a probe reads a build of its query, not build {}", b.0)
+            }
+            Broken::BuildShape(b) => write!(
+                f,
+                "build {} is filtered scans emitting a value or nothing",
+                b.0
+            ),
+            Broken::PastGroups(v) => write!(
+                f,
+                "a read of the past reads no grouping of a query outside it, not variable {}",
+                v.0
+            ),
+            Broken::TotalAborts => {
+                f.write_str("a query marked total evaluates nothing that aborts")
+            }
+            Broken::BoundedScan(h) => {
+                write!(f, "a bounded plan scans no heap, not heap {}", h.0)
+            }
+            Broken::BoundedBuild(b) => {
+                write!(f, "a bounded plan holds no build, not build {}", b.0)
+            }
+            Broken::Unplanned(t) => {
+                write!(f, "a plan computes the form of term {}", t.0)
+            }
+            Broken::ForeignSlot => f.write_str("a condition moves by its position in its own list"),
         }
     }
 }

@@ -4,7 +4,8 @@ use adtb_lang::kernel::{Kind, PathStep, Prim, Tm, Var};
 use adtb_lang::schema::CtorRef;
 use adtb_lang::types::{CtorSet, Ty};
 
-use super::{Fixed, Fixes, Planner};
+use super::{Fixed, Fixes, Moved, Planner};
+use crate::plan::Broken;
 
 impl Planner<'_> {
     /// Returns `for y in src do body` with the first condition of its total prefix that reads `y`
@@ -14,13 +15,16 @@ impl Planner<'_> {
     ///   that value first;
     /// - a case over `y` itself with one arm that is not false narrows `src` to that arm's
     ///   constructor, and the arm's variable binds the rows.
-    pub(super) fn split_join(&mut self, y: Var, src: Tm, body: Tm) -> Option<Tm> {
+    pub(super) fn split_join(&mut self, y: Var, src: Tm, body: Tm) -> Result<Option<Tm>, Broken> {
         let ty = self.ty(body);
         let (conds, rest) = self.peel(body);
-        let n = self.total_prefix(&conds);
-        for i in 0..n {
-            let c = self.ctor_equality(conds[i], y).unwrap_or(conds[i]);
-            let Kind::Case { scrutinee, arms } = self.kind(c) else {
+        let prefix = self.total_prefix(&conds);
+        for (slot, moved) in prefix.iter() {
+            let c = match self.ctor_equality(&moved, y) {
+                Some(c) => c,
+                None => moved,
+            };
+            let Kind::Case { scrutinee, arms } = self.moved_kind(&c) else {
                 continue;
             };
             if matches!(self.kind(scrutinee), Kind::Var(v) if v == y) {
@@ -30,18 +34,16 @@ impl Planner<'_> {
                     .collect();
                 let [(k, v, arm)] = live[..] else { continue };
                 let (k, v, arm) = (*k, *v, *arm);
-                let mut cs = conds.clone();
-                cs[i] = arm;
+                let cs = prefix.with(slot, arm)?;
                 let inner = self.guarded(&cs, rest, &ty);
                 let inner = self.rename(inner, y, v, &mut HashMap::new());
                 let narrowed = self.b().restrict(src, CtorSet::from([k]));
-                return Some(self.b().for_(v, narrowed, inner, ty));
+                return Ok(Some(self.b().for_(v, narrowed, inner, ty)));
             }
-            if self.mentions(scrutinee, &[y])
-                || !self.mentions(c, &[y])
-                || !self.scalar(scrutinee)
-                || !self.total(scrutinee)
-            {
+            let Some(scrutinee) = self.part(&c, scrutinee) else {
+                continue;
+            };
+            if self.reads(&scrutinee, &[y]) || !self.reads(&c, &[y]) {
                 continue;
             }
             let mut out = Vec::new();
@@ -50,20 +52,19 @@ impl Planner<'_> {
                     out.push((k, v, self.empty(ty.clone())));
                     continue;
                 }
-                let mut cs = conds.clone();
-                cs[i] = arm;
+                let cs = prefix.with(slot, arm)?;
                 let inner = self.guarded(&cs, rest, &ty);
                 out.push((k, v, self.b().for_(y, src, inner, ty.clone())));
             }
-            return Some(self.b().case(scrutinee, out, ty));
+            return Ok(Some(self.b().case(scrutinee.place(), out, ty)));
         }
-        None
+        Ok(None)
     }
 
     /// Returns equality `c` of a value that does not read `y` with a constructor value that does,
     /// as a case over the value whose arm for that constructor compares each field.
-    fn ctor_equality(&mut self, c: Tm, y: Var) -> Option<Tm> {
-        let Kind::Prim(Prim::Eq, args) = self.kind(c) else {
+    fn ctor_equality(&mut self, c: &Moved, y: Var) -> Option<Moved> {
+        let Kind::Prim(Prim::Eq, args) = self.moved_kind(c) else {
             return None;
         };
         let [a, b] = args[..] else { return None };
@@ -108,7 +109,8 @@ impl Planner<'_> {
             };
             arms.push((k, v, body));
         }
-        Some(self.b().case(other, arms, bool_ty))
+        let case = self.b().case(other, arms, bool_ty);
+        self.part(c, case)
     }
 
     /// Add to `out`, after `from`, the constructor value the path `path` holds when the
@@ -116,6 +118,7 @@ impl Planner<'_> {
     /// `scrutinee` the term reading the path.
     pub(super) fn whole_ctor(
         &mut self,
+        of: &Moved,
         scrutinee: Tm,
         path: &[PathStep],
         ctor: u32,
@@ -143,13 +146,16 @@ impl Planner<'_> {
                 })
             });
             match found {
-                Some((_, v)) => fields.push((name, *v)),
+                Some((_, v)) => fields.push((name, v.clone().place())),
                 None => return,
             }
         }
         fields.sort_by(|a, b| a.0.cmp(&b.0));
         let ty = self.ty(scrutinee);
         let value = self.b().ctor(ctor, fields, ty);
+        let Some(value) = self.part(of, value) else {
+            return;
+        };
         out.push((
             Fixed {
                 path: Some(path.to_vec()),
@@ -159,11 +165,12 @@ impl Planner<'_> {
         ));
     }
 
-    /// Returns the constructor of the one arm of case `t` that `dead` does not hold of.
-    pub(super) fn arm_ctor(&self, t: Tm, dead: impl Fn(&Self, Tm) -> bool) -> Option<u32> {
-        let Kind::Case { arms, .. } = self.t.kind(t) else {
-            return None;
-        };
+    /// Returns the constructor of the one arm of `arms` that `dead` does not hold of.
+    pub(super) fn arm_ctor(
+        &self,
+        arms: &[(u32, Var, Tm)],
+        dead: impl Fn(&Self, Tm) -> bool,
+    ) -> Option<u32> {
         let live: Vec<u32> = arms
             .iter()
             .filter(|(_, _, a)| !dead(self, *a))

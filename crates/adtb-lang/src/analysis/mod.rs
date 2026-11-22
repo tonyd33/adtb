@@ -23,7 +23,7 @@ mod totality_tests;
 pub use aggregate::ranges_over_bindings;
 pub use fix::{bounded, stratified};
 pub use system::writable_relation;
-pub use totality::Totality;
+pub use totality::{Totality, literal_count};
 pub use volatile::{reads_volatile, write_depends_on_volatile};
 
 /// Apply every acceptance rule stated over the normal form to the terms reachable from `roots`.
