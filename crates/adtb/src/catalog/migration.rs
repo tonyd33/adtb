@@ -132,7 +132,7 @@ impl Catalog {
         };
         if let Some(modelled) = recorded.modelled() {
             let previous = self.hash.get(&self.schema, &self.source)?;
-            oplog::modelled_hash_agrees(&schema, previous, &operators, modelled);
+            oplog::modelled_hash_agrees(&schema, previous, &operators, modelled)?;
         }
         let next = Checked::new(next, schema, program)?;
         let stepped = steps::stepped(recorded.steps(), &file, text)?;

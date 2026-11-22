@@ -1,0 +1,7 @@
+macro_rules! grant {
+    ($t:path) => {
+        impl $t for Writer {}
+    };
+}
+
+grant!(adtb_heap::heap::UncheckedWriter);

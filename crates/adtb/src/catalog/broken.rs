@@ -14,6 +14,7 @@ use crate::{plan, write};
 use super::Error;
 use super::change::Failed;
 use super::ids::{CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId};
+use super::oplog::Hash;
 use super::root::{Changing, Unended};
 
 /// A guarantee of the checker, the planner, the executor or the catalog itself that does not
@@ -108,6 +109,17 @@ pub enum Broken {
     ForeignCtor(CatCtorId),
     /// A stored value has another shape than its type stores.
     Unshaped(Value),
+    /// The migration model's resolved operators of a migration chain to the hash `modelled`,
+    /// the catalog's to `catalog`.
+    ModelledHash {
+        modelled: Hash,
+        catalog: Hash,
+    },
+}
+
+/// Returns `h` in lowercase hexadecimal.
+fn hex(h: &Hash) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl From<Broken> for Error {
@@ -205,6 +217,12 @@ impl fmt::Display for Broken {
             Broken::ForeignCtor(c) => write!(
                 f,
                 "the data holds only constructors of the schema before, not {c}"
+            ),
+            Broken::ModelledHash { modelled, catalog } => write!(
+                f,
+                "the migration model's resolved operators chain to the catalog's version hash {}, not {}",
+                hex(catalog),
+                hex(modelled)
             ),
         }
     }

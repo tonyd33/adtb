@@ -150,3 +150,9 @@ rows = { abandons_impls = "ratchet", unchecked_impls = "ratchet", stops_early_ju
 query = "capability-names.tql"
 include = ["crates/**/*.rs"]
 rows = { capability_renames = "zero" }
+
+[[rule]]
+query = "serializer.tql"
+include = ["crates/**/*.rs"]
+exclude = ["crates/adtb-lang/**", "**/tests.rs", "**/*_tests.rs", "**/tests/**"]
+rows = { serializer_writes = "zero" }

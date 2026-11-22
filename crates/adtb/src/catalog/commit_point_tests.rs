@@ -443,6 +443,7 @@ fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_cal
         (("migration.rs", Step::FreeLeaked), 1),
         (("migration.rs", Step::EndChange), 1),
         (("decode.rs", Step::Release), 1),
+        (("dir.rs", Step::Settle), 1),
         (("pending.rs", Step::FreeLeaked), 1),
         (("pending.rs", Step::EndChange), 1),
         (("mod.rs", Step::Release), 1),

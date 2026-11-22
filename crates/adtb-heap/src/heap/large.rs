@@ -66,10 +66,7 @@ impl<R: Runtime> Retained<'_, R> {
             if let Some(e) = faults::injected(Step::Retain) {
                 return Err(e.into());
             }
-            match write
-                .commit_store(self.pager.reserve(), Above::default())
-                .finish()
-            {
+            match write.commit_store(self.pager.reserve(), Above::default()) {
                 Err(f) if !f.written() => return Err(f.into()),
                 finished => {
                     self.counted.extend(pages.iter().copied().flatten());
@@ -373,7 +370,7 @@ impl LargeStore {
                 })?;
             }
             let above = self.space.reflect(stage, pager, pid, FORMAT, Fit::Chunk)?;
-            write.commit_store(pager.reserve(), above).finish()?;
+            write.commit_store(pager.reserve(), above)?;
             return Ok(tid(pid, slot));
         }
     }
@@ -389,7 +386,7 @@ impl LargeStore {
         let above = self
             .space
             .reflect(fix.stage(), pager, pid, FORMAT, Fit::Refused)?;
-        Ok(fix.commit_store(pager.reserve(), above).finish()?)
+        Ok(fix.commit_store(pager.reserve(), above)?)
     }
 
     /// Returns the pages a sweep reads: those touched since the sweep that last left them, in
@@ -590,7 +587,7 @@ impl LargeStore {
                 .position();
             above = self.space.touch(stage, pager, pid, position, true)?;
         }
-        Ok(write.commit_store(pager.reserve(), above).finish()?)
+        Ok(write.commit_store(pager.reserve(), above)?)
     }
 
     /// Settle the store's directory, then free every value whose head on a touched page has count
@@ -710,7 +707,7 @@ impl LargeStore {
                 let fit = Fit::Pruned { roomier: true };
                 self.space.reflect(stage, pager, here, FORMAT, fit)?
             };
-            write.commit_store(gone, above).finish()?;
+            write.commit_store(gone, above)?;
             freed += 1;
             if !between() {
                 return Ok(Walk::Stopped(freed));
@@ -731,7 +728,7 @@ impl LargeStore {
             return Ok(());
         };
         let above = self.space.touch(stage, pager, pid, position, true)?;
-        Ok(write.commit_store(pager.reserve(), above).finish()?)
+        Ok(write.commit_store(pager.reserve(), above)?)
     }
 
     /// Returns a [`Retained`] that has counted nothing yet.
@@ -756,7 +753,7 @@ impl LargeStore {
             .any(|c| c.head && c.count == 0);
         if !waiting {
             let above = self.space.touch(stage, pager, pid, position, false)?;
-            write.commit_store(pager.reserve(), above).finish()?;
+            write.commit_store(pager.reserve(), above)?;
         }
         Ok(())
     }
@@ -785,7 +782,7 @@ impl LargeStore {
                 .space
                 .touch(stage, pager, Pid(head.page()), position, true)?;
         }
-        Ok(write.commit_store(pager.reserve(), above).finish()?)
+        Ok(write.commit_store(pager.reserve(), above)?)
     }
 
     /// Returns what is wrong with the store's chunks, `versions` being the number of versions

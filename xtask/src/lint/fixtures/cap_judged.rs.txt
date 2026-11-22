@@ -1,0 +1,7 @@
+use adtb_store::mvcc::StopsEarly as Judged;
+
+type Early = StopsEarly;
+
+fn judge() -> (Judged, Early) {
+    (Judged::judged(), <StopsEarly>::judged())
+}

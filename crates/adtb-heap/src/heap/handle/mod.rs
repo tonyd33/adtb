@@ -804,7 +804,7 @@ impl Heap {
         {
             return Ok(());
         }
-        Ok(write.commit_refused(self, pid).finish()?)
+        Ok(write.commit_refused(self, pid)?)
     }
 
     /// Returns a page that may take a version needing `need` bytes: the last page that took an
@@ -1037,9 +1037,7 @@ impl Heap {
         } else {
             page.all_visible() && out == copy
         };
-        let removed = write
-            .commit_pruned(self, pid, out, visible, &released)
-            .finish()?;
+        let removed = write.commit_pruned(self, pid, out, visible, &released)?;
         Ok(Pruned {
             freed: plan
                 .release
@@ -1109,9 +1107,7 @@ impl Heap {
             match self.try_put(write.stage(), pager, n, &version, Flags::NONE, pre)? {
                 Put::Done(t, c) => {
                     let retain = [&held[..], &c.gained].concat();
-                    write
-                        .commit(Took::Found(self, n), &retain, &c.dropped)
-                        .finish()?;
+                    write.commit(Took::Found(self, n), &retain, &c.dropped)?;
                     return Ok(Some(t));
                 }
                 Put::Stale => continue,
@@ -1244,9 +1240,7 @@ impl Heap {
                         Flags::HOT_UPDATED,
                     )?;
                     let retain = [&held[..], &c.gained].concat();
-                    let committed = write
-                        .commit(Took::HeapOnly(self, o), &retain, &c.dropped)
-                        .finish();
+                    let committed = write.commit(Took::HeapOnly(self, o), &retain, &c.dropped);
                     let updated = Updated {
                         tid: t,
                         heap_only: true,
@@ -1283,9 +1277,7 @@ impl Heap {
                         Flags::NONE,
                     )?;
                     let retain = [&held[..], &c.gained].concat();
-                    let committed = write
-                        .commit(Took::Found(self, n), &retain, &c.dropped)
-                        .finish();
+                    let committed = write.commit(Took::Found(self, n), &retain, &c.dropped);
                     let updated = Updated {
                         tid: t,
                         heap_only: false,
@@ -1384,9 +1376,7 @@ impl Heap {
                         Flags::MOVED,
                     )?;
                     let retain = [&held[..], &c.gained].concat();
-                    let committed = write
-                        .commit(Took::Found(to, n), &retain, &c.dropped)
-                        .finish();
+                    let committed = write.commit(Took::Found(to, n), &retain, &c.dropped);
                     return Undoable::committed(
                         committed,
                         (t, self.superseded(at, Change::Retag)),

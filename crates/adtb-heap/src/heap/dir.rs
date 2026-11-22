@@ -8,7 +8,7 @@ use super::blame::{Blame, Holds, unchanged};
 use super::page::{Arrangement, CONTENTS, HeapPage, Kinded, Owned, PageCopy, u16_at, u64_at};
 use super::stage::Stage;
 use super::vm;
-use super::write::{Level, Rank};
+use super::write::{Level, Rank, commit_settling};
 
 const LEVEL: usize = CONTENTS;
 const COUNT: usize = CONTENTS + 2;
@@ -1040,8 +1040,7 @@ impl Space {
         let Some((above, _)) = changed else {
             return Ok(None);
         };
-        stage.commit_with(pager, new)?;
-        above.settle(pager)?;
+        commit_settling(stage, pager, new, above)?;
         Ok(Some(page))
     }
 
@@ -1459,8 +1458,10 @@ impl Space {
             return Ok(None);
         }
         push(node, page, cat);
-        stage.commit_with(pager, new)?;
-        self.settle_above(pager, position)?;
+        let above = Above {
+            at: Some((*self, position)),
+        };
+        commit_settling(stage, pager, new, above)?;
         Ok(Some(page))
     }
 }

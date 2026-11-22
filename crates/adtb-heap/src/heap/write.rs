@@ -1,5 +1,4 @@
 use std::cmp::{Ordering, Reverse};
-use std::marker::PhantomData;
 
 use crate::faults::{self, Step};
 use crate::runtime::Runtime;
@@ -88,7 +87,7 @@ pub(super) enum Took<'h> {
     Found(&'h Heap, Pid),
 }
 
-/// The failure of a [`Written::finish`], and whether it came after the update that wrote the
+/// The failure of a heap write's commit, and whether it came after the update that wrote the
 /// change's pages.
 #[derive(Debug)]
 pub(super) struct Failed {
@@ -115,15 +114,6 @@ impl From<Failed> for Error {
     }
 }
 
-/// A change whose update ran, or failed before writing anything, with the steps left after it.
-/// Only [`Written::finish`] consumes it: dropping it fails the build.
-#[must_use = "a change's releases and settle run only in `Written::finish`"]
-pub(super) struct Written<'p, 'a, R: Runtime, T = ()> {
-    pager: &'p Pager<R>,
-    update: Result<After<'a, T>, Refused>,
-    unfinished: Unfinished<R>,
-}
-
 /// What is left of a change once its update wrote its pages.
 struct After<'a, T> {
     /// The values the change no longer points at, and their store.
@@ -143,58 +133,32 @@ impl After<'static, ()> {
     }
 }
 
-/// A guard whose drop fails the build wherever it may run: [`Written::finish`] forgets it.
-struct Unfinished<R: Runtime>(PhantomData<R>);
-
-impl<R: Runtime> Drop for Unfinished<R> {
-    fn drop(&mut self) {
-        const { panic!("a Written is dropped unfinished") }
-    }
-}
-
-impl<'p, 'a, R: Runtime, T> Written<'p, 'a, R, T> {
-    /// Returns the change whose update `update` reports.
-    ///
-    /// Postcondition: the build fails unless every path from here reaches `finish` with nothing
-    /// between that may unwind.
-    fn new(pager: &'p Pager<R>, update: Result<After<'a, T>, Refused>) -> Written<'p, 'a, R, T> {
-        Written {
-            pager,
-            update,
-            unfinished: Unfinished(PhantomData),
-        }
-    }
-
-    /// Count one version fewer pointing at each value the change released, each in an update of
-    /// its own, then settle the directory entries above the changed ones; a step that fails
-    /// stops none of the others. Returns the change's result, or the first failure, its update's
-    /// included.
-    #[track_caller]
-    pub fn finish(self) -> Result<T, Failed> {
-        let Written {
-            pager,
-            update,
-            unfinished,
-        } = self;
-        std::mem::forget(unfinished);
-        let After {
-            released,
-            above,
-            done,
-        } = update.map_err(|refused| Failed {
-            refused,
-            written: false,
-        })?;
-        let released = match released {
-            Some((store, pointers)) => release_each(pager, &store, pointers),
-            None => Ok(()),
-        };
-        let settled = released.and(settle(pager, above));
-        settled.map(|()| done).map_err(|refused| Failed {
-            refused,
-            written: true,
-        })
-    }
+/// Count one version fewer pointing at each value the change whose update `update` reports
+/// released, each in an update of its own, then settle the directory entries above the changed
+/// ones; a step that fails stops none of the others. Returns the change's result, or the first
+/// failure, its update's included.
+#[track_caller]
+fn finish<R: Runtime, T>(
+    pager: &Pager<R>,
+    update: Result<After<'_, T>, Refused>,
+) -> Result<T, Failed> {
+    let After {
+        released,
+        above,
+        done,
+    } = update.map_err(|refused| Failed {
+        refused,
+        written: false,
+    })?;
+    let released = match released {
+        Some((store, pointers)) => release_each(pager, &store, pointers),
+        None => Ok(()),
+    };
+    let settled = released.and(settle(pager, above).map_err(Refused::from));
+    settled.map(|()| done).map_err(|refused| Failed {
+        refused,
+        written: true,
+    })
 }
 
 /// One change to heap pages and to the store, directory and map pages that describe them. Its
@@ -244,16 +208,18 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
     /// change wrote; set the level-0 directory entry of the page `took` names from its staged
     /// copy; write every staged page in one update; point the heap's next insert at a page found
     /// for the version. The counts and the map bits change in updates of their own. A failure
-    /// before the update counts each of `retain` it counted off again. Returns the change, whose
-    /// `finish` counts one version fewer pointing at each of `released` in that store.
+    /// before the update counts each of `retain` it counted off again. After the update, count
+    /// one version fewer pointing at each of `released` in that store and settle the directory
+    /// entries above, as `finish` does.
     ///
     /// Panic if a staged heap page the change wrote was not latched through [`HeapWrite::latch`].
-    pub fn commit<'a>(
+    #[track_caller]
+    pub fn commit(
         self,
         took: Took<'h>,
         retain: &[Pointer],
-        released: &'a [Pointer],
-    ) -> Written<'p, 'a, R> {
+        released: &[Pointer],
+    ) -> Result<(), Failed> {
         let pager = self.pager;
         let (Took::HeapOnly(heap, pid) | Took::Found(heap, pid)) = took;
         let store = heap.large();
@@ -279,16 +245,17 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
                 Err(e)
             }
         };
-        Written::new(pager, update)
+        finish(pager, update)
     }
 
     /// Write a change to versions in place: clear the all-visible flag and the map bit of every
     /// staged heap page it wrote, and write every staged page in one update.
     ///
     /// Panic if a staged heap page the change wrote was not latched through [`HeapWrite::latch`].
-    pub fn commit_in_place(self) -> Written<'p, 'static, R> {
+    #[track_caller]
+    pub fn commit_in_place(self) -> Result<(), Failed> {
         let pager = self.pager;
-        Written::new(pager, self.write_pages(None).map(After::settling))
+        finish(pager, self.write_pages(None).map(After::settling))
     }
 
     /// Clear the map bits of the change, set the level-0 directory entry of the heap page `took`
@@ -346,11 +313,11 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
     }
 
     /// Set the level-0 directory entry of `pid`, a latched page of `heap` that could not take a
-    /// version, from its staged copy, and write it. Returns the change, whose `finish` settles
-    /// the entries above.
-    pub fn commit_refused(self, heap: &Heap, pid: Pid) -> Written<'p, 'static, R> {
+    /// version, from its staged copy, write it and settle the entries above.
+    #[track_caller]
+    pub fn commit_refused(self, heap: &Heap, pid: Pid) -> Result<(), Failed> {
         let pager = self.pager;
-        Written::new(pager, self.write_refused(heap, pid).map(After::settling))
+        finish(pager, self.write_refused(heap, pid).map(After::settling))
     }
 
     fn write_refused(mut self, heap: &Heap, pid: Pid) -> Result<Above, Refused> {
@@ -366,18 +333,20 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
     /// Write `pruned` as page `pid` of `heap`, latched, with its all-visible flag and map bit set
     /// when `all_visible` holds and cleared otherwise. A page left empty leaves the directory and
     /// is freed in the same update; any other gets its directory entry from its staged copy as
-    /// [`Fit::Pruned`] says. Returns the change, whose `finish` counts one version fewer pointing
-    /// at each of `released` and returns whether the page was freed.
+    /// [`Fit::Pruned`] says. After the update, count one version fewer pointing at each of
+    /// `released` and settle the entries above, as `finish` does. Returns whether the page was
+    /// freed.
     ///
     /// Precondition: the map has the path to `pid` when `all_visible` holds.
-    pub fn commit_pruned<'a>(
+    #[track_caller]
+    pub fn commit_pruned(
         self,
         heap: &Heap,
         pid: Pid,
         pruned: PageCopy,
         all_visible: bool,
-        released: &'a [Pointer],
-    ) -> Written<'p, 'a, R, bool> {
+        released: &[Pointer],
+    ) -> Result<bool, Failed> {
         let pager = self.pager;
         let update = self.write_pruned(heap, pid, pruned, all_visible);
         let update = update.map(|(above, removed)| After {
@@ -385,7 +354,7 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
             above,
             done: removed,
         });
-        Written::new(pager, update)
+        finish(pager, update)
     }
 
     /// Write the update [`HeapWrite::commit_pruned`] makes. Returns the entries above to settle
@@ -433,14 +402,27 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
     }
 
     /// Write a change to large-value store pages in one update, allocating and freeing the pages
-    /// of `new`. Returns the change, whose `finish` settles `above`.
-    pub fn commit_store(self, new: Reservation<'_, R>, above: Above) -> Written<'p, 'static, R> {
+    /// of `new`, then settle `above`.
+    #[track_caller]
+    pub fn commit_store(self, new: Reservation<'_, R>, above: Above) -> Result<(), Failed> {
         let update = self.stage.commit_with(self.pager, new).map(|()| above);
-        Written::new(
+        finish(
             self.pager,
             update.map(After::settling).map_err(Refused::from),
         )
     }
+}
+
+/// Write `stage` in one update, allocating and freeing the pages of `new`, then settle `above`.
+#[track_caller]
+pub(super) fn commit_settling<R: Runtime>(
+    stage: Stage<'_, R>,
+    pager: &Pager<R>,
+    new: Reservation<'_, R>,
+    above: Above,
+) -> Result<(), PageError> {
+    stage.commit_with(pager, new)?;
+    settle(pager, above)
 }
 
 /// Count one version fewer pointing at each of `pointers` in `store`, each in an update of its
@@ -468,7 +450,9 @@ fn fault(step: Step) -> Result<(), Refused> {
 }
 
 #[track_caller]
-fn settle<R: Runtime>(pager: &Pager<R>, above: Above) -> Result<(), Refused> {
-    fault(Step::Settle)?;
-    Ok(above.settle(pager)?)
+fn settle<R: Runtime>(pager: &Pager<R>, above: Above) -> Result<(), PageError> {
+    if let Some(e) = faults::injected(Step::Settle) {
+        return Err(e);
+    }
+    above.settle(pager)
 }

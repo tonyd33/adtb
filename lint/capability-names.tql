@@ -1,5 +1,6 @@
 -- capability_renames: `Abandons`, `UncheckedWriter` or `StopsEarly` imported, re-exported or
--- aliased under another name.
+-- aliased under another name, or named inside a macro's tokens, where an impl or a call is not
+-- counted.
 
 capability = r"(^|::)(Abandons|UncheckedWriter|StopsEarly)$";
 
@@ -17,4 +18,11 @@ aliases = do {
   return t;
 };
 
-main = (renamed_uses `alt` aliases) | arr (\n -> ("capability_renames", range n));
+in_macros = do {
+  t <- descendants_of_kind :token_tree;
+  n <- pure t | children_of_kind :identifier;
+  guard $ text n ~ capability;
+  return n;
+};
+
+main = (renamed_uses `alt` aliases `alt` in_macros) | arr (\n -> ("capability_renames", range n));

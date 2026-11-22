@@ -12,13 +12,13 @@ impls name = do {
 
 judgements = do {
   p <- descendants_of_kind :scoped_identifier;
-  guard $ text p ~ r"(^|::)StopsEarly::judged$";
+  guard $ text p ~ r"(^|::|<)StopsEarly>?::judged$";
   return p;
 };
 
 main = do {
-  a <- collect (impls r"(^|::)Abandons$") | arr length;
-  u <- collect (impls r"(^|::)UncheckedWriter$") | arr length;
+  a <- collect (impls r"(^|::)Abandons(<.*>)?$") | arr length;
+  u <- collect (impls r"(^|::)UncheckedWriter(<.*>)?$") | arr length;
   s <- collect judgements | arr length;
   return (("abandons_impls", a), ("unchecked_impls", u), ("stops_early_judgements", s));
 };

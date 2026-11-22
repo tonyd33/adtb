@@ -232,6 +232,71 @@ fn every_weak_refusal_form_is_a_finding_and_a_bound_or_exact_one_is_not() {
     assert_eq!(tally.findings, expected);
 }
 
+/// Returns each site the capability and serializer rules find in fixture `name`: each finding of
+/// a zero row, and `FILE: ROW: N` for each ratchet row the file counts above zero.
+fn capability_sites(name: &str) -> Vec<String> {
+    let rules = [
+        rule(
+            "capabilities.tql",
+            &[
+                ("abandons_impls", Kind::Ratchet),
+                ("unchecked_impls", Kind::Ratchet),
+                ("stops_early_judgements", Kind::Ratchet),
+            ],
+        ),
+        rule(
+            "capability-names.tql",
+            &[("capability_renames", Kind::Zero)],
+        ),
+        rule("serializer.tql", &[("serializer_writes", Kind::Zero)]),
+    ];
+    let files = fixture_paths(&[name]);
+    let mut tally = Tally::default();
+    for r in &rules {
+        let output = query(repository(), &r.query, &files, 1).expect("tql exits 0");
+        apply(r, &BTreeSet::new(), &output, &mut tally).expect("the fixture parses");
+    }
+    let mut sites = tally.findings;
+    for (row, files) in tally.counts {
+        for (file, n) in files {
+            if n > 0 {
+                sites.push(format!("{file}: {row}: {n}"));
+            }
+        }
+    }
+    sites.sort();
+    sites
+}
+
+#[test]
+fn every_renamed_aliased_or_macro_made_capability_and_every_serializer_write_is_a_site() {
+    let file = |name: &str| format!("xtask/src/lint/fixtures/{name}");
+    for (name, expected) in [
+        ("cap_aliased_impl.rs.txt", vec!["1: capability_renames"]),
+        (
+            "cap_reexport.rs.txt",
+            vec!["1: capability_renames", "1: capability_renames"],
+        ),
+        ("cap_macro_impl.rs.txt", vec!["7: capability_renames"]),
+        (
+            "cap_judged.rs.txt",
+            vec![
+                "1: capability_renames",
+                "3: capability_renames",
+                " stops_early_judgements: 1",
+            ],
+        ),
+        ("cap_serializer.rs.txt", vec![" serializer_writes: 2 sites"]),
+    ] {
+        let mut expected: Vec<String> = expected
+            .into_iter()
+            .map(|site| format!("{}:{site}", file(name)))
+            .collect();
+        expected.sort();
+        assert_eq!(capability_sites(name), expected, "{name}");
+    }
+}
+
 #[test]
 fn the_files_of_a_rule_match_an_include_and_no_exclude() {
     let root = std::env::temp_dir().join(format!("xtask-lint-files-{}", std::process::id()));

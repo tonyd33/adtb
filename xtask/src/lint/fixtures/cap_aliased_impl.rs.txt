@@ -1,0 +1,3 @@
+use adtb_heap::heap::Abandons as Kept;
+
+impl Kept for Writer {}

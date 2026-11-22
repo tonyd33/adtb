@@ -1,0 +1,7 @@
+use adtb_store::mvcc::Serializer as Ser;
+
+fn early(ser: &mut Ser, id: SerialId, tid: Tid) {
+    ser.write_at(id, 0, tid).unwrap();
+    let check = Ser::write_at;
+    check(ser, id, 0, tid).unwrap();
+}
