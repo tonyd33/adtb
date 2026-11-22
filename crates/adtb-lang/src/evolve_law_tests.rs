@@ -255,6 +255,9 @@ add relation ws : W
             Case::new("drop field T.B.z\nadd field T.B.z: Text fill \"q\"")
                 .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
                 .fill("T.B.z = \"z\""),
+            Case::new("revert {first}\n  fill T.B.z = \"z\"")
+                .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
+                .after("drop field T.B.z\nadd field T.B.z: Text fill \"q\""),
         ];
         out.extend(self.removing());
         out.extend(self.structural());
@@ -1848,7 +1851,7 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (171, 2, 5);
+const CASES: (usize, usize, usize) = (172, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
 const REFUSED: usize = 18;

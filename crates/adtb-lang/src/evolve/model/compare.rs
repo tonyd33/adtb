@@ -279,6 +279,8 @@ enum Aspect {
     ClauseIds,
     /// The id of each object of the source the model gives, by its key.
     SourceIds,
+    /// The functions and aggregates of the result.
+    Functions,
     /// An operator's steps or row maps.
     Steps,
     Resolved,
@@ -341,9 +343,24 @@ fn differences(m: &MigrationFile, got: &Migrated, after: Result<&Source, &Refusa
                 return out;
             }
             out.extend(same(got.model(), src, reverts(m)));
+            out.extend(functions_differ(got.model(), src));
         }
     }
     out
+}
+
+/// Returns how the functions and aggregates of the source `model` gives differ from those of
+/// `src`, each with its signature and canonical code.
+fn functions_differ(model: &Model, src: &Source) -> Option<Diff> {
+    let shown = |s: &Source| match s.functions() {
+        Ok(fs) => format!("{fs:?}"),
+        Err(ds) => format!("{:?}", ds.first().map(|d| &d.diag.message)),
+    };
+    let (layer, mine) = (shown(src), shown(&model.source()));
+    (layer != mine).then(|| Diff {
+        aspect: Aspect::Functions,
+        shown: format!("Functions:\n  layer {layer}\n  model {mine}"),
+    })
 }
 
 /// Returns how declarations `mine` differ from `layer`'s in meaning, each compared by its
