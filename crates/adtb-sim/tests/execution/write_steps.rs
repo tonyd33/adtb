@@ -284,7 +284,7 @@ fn stopped_write(
     n: usize,
 ) -> Steps {
     let (one, two) = sides;
-    let stop = Stop::set(rt, e.database(), (two.worker.thread(), of_a_write), n);
+    let stop = Stop::set(rt, e.database(), (Some(two.worker.thread()), of_a_write), n);
     let mut stopped = None;
     if !two.aborted {
         two.worker.send(rt, w.of(A));
@@ -335,7 +335,8 @@ fn skew(write: Write, read: Read, at: At, seed: u64) -> (Vec<iso::Txn>, Steps) {
                     (two.end(rt), steps)
                 }
                 At::Reader(n) => {
-                    let stop = Stop::set(rt, e.database(), (one.worker.thread(), |_| true), n);
+                    let stop =
+                        Stop::set(rt, e.database(), (Some(one.worker.thread()), |_| true), n);
                     one.worker.send(rt, read.row(A));
                     let (reply, stopped, two) =
                         match stop.stopped(rt, &mut || one.worker.try_reply()) {

@@ -2,17 +2,17 @@
 //! a second mapping at each boundary of either side, and at every pair of them under the deep
 //! profile.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use adtb::runtime::{ThreadId, Threads};
+use adtb::runtime::Threads;
 use adtb::testing::{Change, Checkpoint, Damage, Map, Pid, Plant, Quarantine, Step, StepFn};
-use adtb::{Database, Error, FatalReason};
+use adtb::{Error, FatalReason};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::elle::{self, Elems, Kind, Reply, Req, Worker};
+use adtb_simkit::racers::{Called, Txn};
 use adtb_simkit::steps::{self, Boundaries, Pair, Reached, Second, Stepping};
 use adtb_testkit::isolation::{self as iso, Outcome};
 use adtb_testkit::process;
@@ -165,153 +165,9 @@ fn of_a_checkpoint(s: Step) -> bool {
     s.function() == StepFn::Checkpoint
 }
 
-/// What the history records of a request once it succeeds.
-enum Logged {
-    Append { key: i64, elem: i64 },
-    Read { key: i64 },
-    Nothing,
-}
-
-/// A transaction of the workload on a thread of its own, sending its requests in turn and
-/// ending at the first that fails.
-struct Txn {
-    rt: SimRuntime,
-    id: u64,
-    worker: Worker,
-    boundaries: fn(Step) -> bool,
-    to_send: VecDeque<Req>,
-    sent: Option<Logged>,
-    ops: Vec<iso::Op>,
-    /// The reply of each request it sent, in order.
-    replies: Vec<Reply>,
-    outcome: Option<Outcome>,
-}
-
-impl Txn {
-    fn start(
-        rt: &SimRuntime,
-        e: &Arc<Elems>,
-        (id, kind): (u64, Kind),
-        boundaries: fn(Step) -> bool,
-        reqs: Vec<Req>,
-    ) -> Txn {
-        Txn {
-            rt: rt.clone(),
-            id,
-            worker: Worker::start(rt, e, kind),
-            boundaries,
-            to_send: reqs.into(),
-            sent: None,
-            ops: Vec::new(),
-            replies: Vec::new(),
-            outcome: None,
-        }
-    }
-
-    fn send_next(&mut self) {
-        let req = self.to_send.pop_front().expect("a request to send");
-        self.sent = Some(match req {
-            Req::Append(key, elem) => Logged::Append { key, elem },
-            Req::Read(key) => Logged::Read { key },
-            Req::Text(_) | Req::Commit | Req::Abort => Logged::Nothing,
-        });
-        self.worker.send(&self.rt, req);
-    }
-
-    /// Take `reply` to the request last sent, and send the next while it succeeded.
-    fn replied(&mut self, reply: Reply) {
-        let sent = self.sent.take().expect("a reply answers a request");
-        match (sent, &reply) {
-            (Logged::Append { key, elem }, Ok(_)) => self.ops.push(iso::Op::Append { key, elem }),
-            (Logged::Read { key }, Ok(list)) => self.ops.push(iso::Op::Read {
-                key,
-                list: list.clone(),
-            }),
-            _ => {}
-        }
-        let failed = reply.is_err();
-        self.replies.push(reply);
-        if failed {
-            self.outcome = Some(Outcome::Aborted);
-        } else if self.to_send.is_empty() {
-            self.outcome = Some(Outcome::Committed);
-        } else {
-            self.send_next();
-        }
-    }
-
-    fn history(&self) -> iso::Txn {
-        let outcome = self.outcome.expect("the transaction ended");
-        iso::Txn::new(self.id, outcome, self.ops.clone())
-    }
-}
-
-impl Stepping for Txn {
-    fn boundaries(&self) -> Boundaries {
-        (self.worker.thread(), self.boundaries)
-    }
-
-    fn start(&mut self, _: &SimRuntime) {
-        self.send_next();
-    }
-
-    fn ended(&mut self) -> bool {
-        while self.outcome.is_none() {
-            let Some(reply) = self.worker.try_reply() else {
-                return false;
-            };
-            self.replied(reply);
-        }
-        self.rt.join(self.worker.thread());
-        true
-    }
-}
-
-/// A checkpoint taken on a thread of its own once started.
-struct Checkpointing {
-    thread: ThreadId,
-    go: Arc<AtomicBool>,
-    done: Arc<AtomicBool>,
-}
-
-impl Checkpointing {
-    fn spawn(rt: &SimRuntime, db: &Database<SimRuntime>) -> Checkpointing {
-        let (go, done) = (
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
-        );
-        let (go2, done2) = (go.clone(), done.clone());
-        let (db, rt2, driver) = (db.clone(), rt.clone(), rt.current());
-        let thread = rt.spawn("checkpoint", move || {
-            while !go2.load(Ordering::Acquire) {
-                rt2.park();
-            }
-            db.testing().checkpoint();
-            done2.store(true, Ordering::Release);
-            rt2.unpark(driver);
-        });
-        Checkpointing { thread, go, done }
-    }
-}
-
-impl Stepping for Checkpointing {
-    fn boundaries(&self) -> Boundaries {
-        (self.thread, of_a_checkpoint)
-    }
-
-    fn start(&mut self, rt: &SimRuntime) {
-        self.go.store(true, Ordering::Release);
-        rt.unpark(self.thread);
-    }
-
-    fn ended(&mut self) -> bool {
-        self.done.load(Ordering::Acquire)
-    }
-}
-
 enum Side {
     Txn(Txn),
-    Checkpoint(Checkpointing),
+    Checkpoint(Called<()>),
 }
 
 impl Stepping for Side {
@@ -424,7 +280,13 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
             Racer::Append => txn(of_a_statement, vec![Req::Append(KEY, RACED), Req::Commit]),
             Racer::Update => txn(of_a_statement, vec![text(update), Req::Commit]),
             Racer::Read => txn(of_a_statement, vec![Req::Read(KEY), Req::Commit]),
-            Racer::Checkpoint => Side::Checkpoint(Checkpointing::spawn(&rt, db)),
+            Racer::Checkpoint => {
+                let checkpointing = db.clone();
+                let on = ("checkpoint", of_a_checkpoint as fn(Step) -> bool);
+                Side::Checkpoint(Called::spawn(&rt, on, move || {
+                    checkpointing.testing().checkpoint();
+                }))
+            }
             Racer::Mapper => txn(of_the_mapper, vec![read_counters()]),
             Racer::Damaged(w) => txn(of_a_statement, vec![text(w.text()), Req::Commit]),
             Racer::Commit => {
@@ -436,11 +298,22 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
         let [mapper_reached, racer_reached] = match case.first {
             First::Mapper => {
                 let probe = || marked_at_stop = Some(db.testing().probe().marked(planted));
-                steps::interleave(&rt, db, (&mut mapper, &mut racer), (i, j), Box::new(probe))
+                steps::interleave(
+                    &rt,
+                    db,
+                    (&mut mapper, &mut racer),
+                    (i, j),
+                    (Box::new(probe), Box::new(|_| {})),
+                )
             }
             First::Racer => {
-                let [r, m] =
-                    steps::interleave(&rt, db, (&mut racer, &mut mapper), (j, i), Box::new(|| {}));
+                let [r, m] = steps::interleave(
+                    &rt,
+                    db,
+                    (&mut racer, &mut mapper),
+                    (j, i),
+                    steps::nothing_between(),
+                );
                 [m, r]
             }
         };
@@ -451,8 +324,8 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
         let (mut raced, mut raced_as) = (Vec::new(), None);
         if let Side::Txn(racer) = &mut racer {
             history.push(racer.history());
-            raced = std::mem::take(&mut racer.replies);
-            raced_as = racer.outcome;
+            raced = racer.replies().to_vec();
+            raced_as = racer.outcome();
         }
         let keys = KEY..SECOND.0 + 1;
         let lists = e.lists(keys.clone());
@@ -472,7 +345,7 @@ fn run(case: Case, (i, j): (usize, usize)) -> Ran {
         Ran {
             mapper: mapper_reached,
             racer: racer_reached,
-            mapped: mapper.replies,
+            mapped: mapper.replies().to_vec(),
             raced,
             raced_as,
             marked_at_stop,
@@ -718,7 +591,13 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
         let reqs = vec![Req::Append(k, v), Req::Commit];
         let mut commit = Txn::start(&rt, &e, (2, Kind::ReadWrite), of_a_commit, reqs);
         let whole = (usize::MAX, usize::MAX);
-        let [m, c] = steps::interleave(&rt, db, (&mut mapper, &mut commit), whole, Box::new(|| {}));
+        let [m, c] = steps::interleave(
+            &rt,
+            db,
+            (&mut mapper, &mut commit),
+            whole,
+            steps::nothing_between(),
+        );
         let walked = [Map::Begun, Map::Incomplete, Map::Marked].map(Step::Map);
         assert_eq!(walked, m.steps(), "the failing read's mapping");
         let committed = [Map::Begun, Map::Marked].map(Step::CommitMap);
@@ -731,8 +610,8 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
                 ),
             },
         });
-        assert_eq!(vec![failed], mapper.replies, "the read");
-        assert_eq!(vec![Ok(vec![]), Ok(vec![])], commit.replies, "the commit");
+        assert_eq!(vec![failed], mapper.replies(), "the read");
+        assert_eq!(vec![Ok(vec![]), Ok(vec![])], commit.replies(), "the commit");
         let probe = db.testing().probe();
         assert_eq!(BTreeSet::new(), probe.marks());
         assert_eq!(None, probe.mapped_to(page));

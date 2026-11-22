@@ -28,6 +28,18 @@ pub enum Step {
     Checkpoint(Checkpoint),
     /// A vacuum reached one of its pace points, holding the vacuum lock.
     Vacuum(Vacuum),
+    /// A rebuild of an index began a phase, holding the vacuum lock, and the index's write lock
+    /// at [`Reindex::Sweep`]. An offline rebuild also holds the writes to its relation.
+    Reindex(Reindex),
+    /// The retirement of the pages of an index a rebuild replaced reached a point of its work,
+    /// holding the vacuum lock, and the index's write lock at [`Retire::Held`].
+    Retire(Retire),
+    /// The checkpoint of a recycle of the log reached a point of its work, holding the recycle
+    /// lock.
+    Recycle(Checkpoint),
+    /// A descent of a B-tree read a child's page id from its parent and has yet to read the
+    /// child.
+    Descended,
 }
 
 /// A point of the damage mapper's work.
@@ -69,6 +81,61 @@ pub enum Vacuum {
     Expire,
 }
 
+/// A phase of a rebuild of an index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reindex {
+    /// It is to scan the heaps into runs of entries.
+    Scan,
+    /// It is to build the new tree from the runs.
+    Build,
+    /// It is to catch up with the writes made since its scan.
+    CatchUp,
+    /// It is to take the index's write lock, catch up a last time and swap the new tree in.
+    Swap,
+    /// It swapped the new tree in and is to look for pages of the old tree its walk missed.
+    Sweep,
+    /// It is to free the pages of the old tree.
+    Reclaim,
+}
+
+impl Reindex {
+    /// Returns the name a job's row shows for this phase.
+    pub fn name(self) -> &'static str {
+        match self {
+            Reindex::Scan => "scan",
+            Reindex::Build => "build",
+            Reindex::CatchUp => "catch up",
+            Reindex::Swap => "swap",
+            Reindex::Sweep => "sweep",
+            Reindex::Reclaim => "reclaim",
+        }
+    }
+
+    /// Returns the fraction of the rebuild done when this phase begins.
+    pub fn done(self) -> f64 {
+        match self {
+            Reindex::Scan => 0.1,
+            Reindex::Build => 0.4,
+            Reindex::CatchUp => 0.6,
+            Reindex::Swap => 0.8,
+            Reindex::Sweep => 0.85,
+            Reindex::Reclaim => 0.9,
+        }
+    }
+}
+
+/// A point of the retirement of the pages of a replaced tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retire {
+    /// The pager holds the pages as retired, and the swap that replaces their tree is to run.
+    Held,
+    /// The sound pages still allocated are marked deleted and the damaged ones scrapped, and no
+    /// sound page is yet freed.
+    Deleted,
+    /// It freed one page.
+    Freed,
+}
+
 /// A step function of the engine, by the boundaries it names.
 #[cfg(any(test, feature = "testing"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +147,10 @@ pub enum StepFn {
     CommitMap,
     Checkpoint,
     Vacuum,
+    Reindex,
+    Retire,
+    Recycle,
+    Descend,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -94,6 +165,10 @@ impl Step {
             Step::CommitMap(_) => StepFn::CommitMap,
             Step::Checkpoint(_) => StepFn::Checkpoint,
             Step::Vacuum(_) => StepFn::Vacuum,
+            Step::Reindex(_) => StepFn::Reindex,
+            Step::Retire(_) => StepFn::Retire,
+            Step::Recycle(_) => StepFn::Recycle,
+            Step::Descended => StepFn::Descend,
         }
     }
 }

@@ -21,6 +21,7 @@ use adtb_lang::textual::print;
 use adtb_sim::{Action, Config, Match, OpLog, Outcome, Plan, Planned, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_simkit::steps;
 use adtb_testkit::common;
 use adtb_testkit::crash::silence_fatal_panics;
 use adtb_testkit::damage::DataFile;
@@ -347,8 +348,8 @@ fn maintain(
         }
         Maintenance::Reindex => {
             let seen = ledger.clone();
-            db.testing().on_reindex_phase(move |phase| {
-                seen.lock().unwrap().phases.insert(phase.to_owned());
+            steps::on_reindex(&db, move |phase| {
+                seen.lock().unwrap().phases.insert(phase.name().to_owned());
             });
             enter_step(rt, ledger);
             query(&db, "reindex filler").map_err(|e| failed("reindex", e))?;

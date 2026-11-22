@@ -6,4 +6,5 @@ pub mod elle;
 mod instances;
 pub mod load;
 pub mod open;
+pub mod racers;
 pub mod steps;

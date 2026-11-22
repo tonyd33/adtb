@@ -5,6 +5,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
 
 use crate::runtime::Runtime;
+use crate::steps::{Retire, Step};
 use crate::storage::{Damage, PageError, Pager, Pid, Quarantine};
 
 use super::node::{self, Bounds, FORMAT, Item, kind_of};
@@ -277,8 +278,10 @@ pub fn retire<R: Runtime>(pager: &Pager<R>, pages: &[Pid]) -> Result<(), PageErr
             Err(e) => return Err(e),
         }
     }
+    pager.steps().at(Step::Retire(Retire::Deleted));
     for pid in sound {
         pager.free(pid)?;
+        pager.steps().at(Step::Retire(Retire::Freed));
     }
     Ok(())
 }

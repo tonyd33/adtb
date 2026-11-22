@@ -29,6 +29,7 @@ use crate::mvcc::{Transactions, Xid};
 use crate::plan::IndexId;
 use crate::ranks;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
+use crate::steps::{Reindex, Step};
 use crate::storage::{self, Damage, Lsn, Pager, Pid, Quarantine};
 
 use super::past::Retained;
@@ -40,8 +41,8 @@ pub struct Rebuild<'a> {
     pub rel: RelId,
     pub index: IndexId,
     pub online: bool,
-    /// Told each phase as it starts, and the fraction of the rebuild done.
-    pub phase: &'a dyn Fn(&str, f64),
+    /// Told each phase as it starts.
+    pub phase: &'a dyn Fn(Reindex),
 }
 
 /// Why a rebuild kept the old index.
@@ -121,8 +122,8 @@ impl<'b> HoldWait<'b> {
 
 /// The holder of the vacuum lock.
 pub(super) enum Holder {
-    /// One that keeps the lock until it is done.
-    Keeps,
+    /// One on `thread` that keeps the lock until it is done.
+    Keeps { thread: ThreadId },
     /// One that gives the lock up once `asked` is set, looking at it each time `thread` unparks.
     Yields {
         asked: Arc<AtomicBool>,
@@ -225,6 +226,18 @@ struct Replaced {
 struct Offline<'d, R: Runtime> {
     db: &'d Database<R>,
     rel: RelId,
+}
+
+/// The wait of the calling thread on a hold of another, recorded until dropped.
+struct Waiting<'d, R: Runtime> {
+    db: &'d Database<R>,
+}
+
+impl<R: Runtime> Drop for Waiting<'_, R> {
+    fn drop(&mut self) {
+        let me = self.db.rt.current();
+        self.db.waiting.lock(&self.db.rt).remove(&me);
+    }
 }
 
 impl<R: Runtime> Drop for Offline<'_, R> {
@@ -381,18 +394,22 @@ impl<R: Runtime> Database<R> {
     /// Returns the vacuum lock for a rebuild job, waiting as long as another holds it.
     pub fn holding_off_vacuum(&self) -> VacuumHold<'_, R> {
         ranks::VACUUM.check();
+        let _waiting = self.waiting();
         loop {
-            if let Some(hold) = self.try_hold_vacuum() {
-                return hold;
+            match self.try_hold_vacuum() {
+                Ok(hold) => return hold,
+                Err(holder) => self.pause_for_rebuild(holder),
             }
-            self.pause_for_rebuild();
         }
     }
 
-    /// Returns the vacuum lock unless another holds it. [`VACUUM_HOLDER`] runs exactly while one
-    /// does, so a call that watches it and finds it ended finds the lock free.
-    fn try_hold_vacuum(&self) -> Option<VacuumHold<'_, R>> {
-        self.try_hold(Holder::Keeps)
+    /// Returns the vacuum lock unless another holds it, else the holder's thread.
+    /// [`VACUUM_HOLDER`] runs exactly while one does, so a call that watches it and finds it ended
+    /// finds the lock free.
+    fn try_hold_vacuum(&self) -> Result<VacuumHold<'_, R>, ThreadId> {
+        self.try_hold(Holder::Keeps {
+            thread: self.rt.current(),
+        })
     }
 
     /// Returns the vacuum lock as [`Database::try_hold_vacuum`] does, for the calling thread to
@@ -403,24 +420,25 @@ impl<R: Runtime> Database<R> {
             asked,
             thread: self.rt.current(),
         })
+        .ok()
     }
 
-    fn try_hold(&self, holder: Holder) -> Option<VacuumHold<'_, R>> {
+    fn try_hold(&self, holder: Holder) -> Result<VacuumHold<'_, R>, ThreadId> {
         let mut held = self.vacuuming.lock(&self.rt);
         match &*held {
-            Some(Holder::Keeps) => None,
+            Some(Holder::Keeps { thread }) => Err(*thread),
             Some(Holder::Yields { asked, thread }) => {
                 asked.store(true, Ordering::Release);
                 self.vacuum_yields.fetch_add(1, Ordering::Relaxed);
                 let thread = *thread;
                 drop(held);
                 self.rt.unpark(thread);
-                None
+                Err(thread)
             }
             None => {
                 *held = Some(holder);
                 self.session.waits.started(VACUUM_HOLDER);
-                Some(VacuumHold {
+                Ok(VacuumHold {
                     db: self,
                     vacuuming: Vacuuming {
                         pager: &self.pager,
@@ -445,10 +463,12 @@ impl<R: Runtime> Database<R> {
     /// Returns the vacuum lock as [`Database::hold_vacuum`] does, stopping as `stop` says.
     pub(super) fn hold_vacuum_until(&self, stop: &Stop) -> Result<VacuumHold<'_, R>, Error> {
         ranks::VACUUM.check();
+        let _waiting = self.waiting();
         loop {
-            if let Some(hold) = self.try_hold_vacuum() {
-                return Ok(hold);
-            }
+            let holder = match self.try_hold_vacuum() {
+                Ok(hold) => return Ok(hold),
+                Err(holder) => holder,
+            };
             self.rebuild_stopped()?;
             if let Some(rerun) = stop.suspend {
                 return Err(Error::Blocked {
@@ -457,7 +477,7 @@ impl<R: Runtime> Database<R> {
                 });
             }
             stop.check(self.rt.now())?;
-            self.pause_for_rebuild();
+            self.pause_for_rebuild(holder);
         }
     }
 
@@ -473,10 +493,10 @@ impl<R: Runtime> Database<R> {
         self.vacuum_yields.load(Ordering::Relaxed)
     }
 
-    /// Returns whether an offline rebuild holds writes to any of `rels`.
-    pub(super) fn holds_writes(&self, mut rels: impl Iterator<Item = RelId>) -> bool {
+    /// Returns the thread of an offline rebuild that holds writes to any of `rels`.
+    pub(super) fn writes_held_by(&self, mut rels: impl Iterator<Item = RelId>) -> Option<ThreadId> {
         let held = self.offline.lock(&self.rt);
-        !held.is_empty() && rels.any(|r| held.contains(&r))
+        rels.find_map(|r| held.get(&r).copied())
     }
 
     /// Stop every rebuild before its swap and refuse statements its gate holds, from now on.
@@ -493,10 +513,26 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Count a wait for a rebuild and block the calling thread until `GATE_POLL` has passed.
-    pub(super) fn pause_for_rebuild(&self) {
+    /// Returns the record of the calling thread's wait on a hold, cleared when dropped.
+    pub(super) fn waiting(&self) -> impl Drop + '_ {
+        Waiting { db: self }
+    }
+
+    /// Count a wait for a rebuild, record the calling thread as waiting on a hold of `holder`,
+    /// and block it until `GATE_POLL` has passed.
+    ///
+    /// Precondition: the caller holds what [`Database::waiting`] returned for the whole wait.
+    pub(super) fn pause_for_rebuild(&self, holder: ThreadId) {
         self.rebuild_waits.fetch_add(1, Ordering::Relaxed);
+        let me = self.rt.current();
+        self.waiting.lock(&self.rt).insert(me, holder);
         self.pause_a_poll();
+    }
+
+    /// Returns whether a thread waits on a hold of `holder`.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn waits_on(&self, holder: ThreadId) -> bool {
+        self.waiting.lock(&self.rt).values().any(|h| *h == holder)
     }
 
     /// Block the calling thread until `GATE_POLL` has passed.
@@ -525,6 +561,11 @@ impl<R: Runtime> Database<R> {
         )
     }
 
+    fn began(&self, job: &Rebuild<'_>, phase: Reindex) {
+        (job.phase)(phase);
+        self.pager.steps().at(Step::Reindex(phase));
+    }
+
     fn rebuild(&self, job: &Rebuild<'_>) -> Result<bool, Failure> {
         let mut pages = Pages {
             built: Vec::new(),
@@ -536,7 +577,7 @@ impl<R: Runtime> Database<R> {
         };
         match self.rebuild_and_swap(job, &mut pages) {
             Ok(()) => {
-                (job.phase)("reclaim", 0.9);
+                self.began(job, Reindex::Reclaim);
                 let freed = retire(&self.pager, &pages.old.pages);
                 Ok(pages.old.found && freed.is_ok())
             }
@@ -591,30 +632,31 @@ impl<R: Runtime> Database<R> {
         };
         let _offline = (!job.online).then(|| {
             self.session.waits.started(OFFLINE_GATE);
-            self.offline.lock(&self.rt).insert(job.rel);
+            let me = self.rt.current();
+            self.offline.lock(&self.rt).insert(job.rel, me);
             Offline {
                 db: self,
                 rel: job.rel,
             }
         });
-        (job.phase)("scan", 0.1);
+        self.began(job, Reindex::Scan);
         let mut since = self.pager.appended();
         let snapshot = self.session.begin_reader(false)?;
         let runs = scan.runs(None, Some(&snapshot));
         let runs = self.abort_returning(snapshot, runs)?;
         self.rebuild_stopped()?;
-        (job.phase)("build", 0.4);
+        self.began(job, Reindex::Build);
         let stop = self.build_stop();
         let entries = merge_runs(runs, ix.desc.unique, &stop)?;
         let built = BTree::bulk(&self.pager, tree.owner(), entries, &mut pages.built, &stop)?;
-        (job.phase)("catch up", 0.6);
+        self.began(job, Reindex::CatchUp);
         if job.online {
             for _ in 0..CATCH_UPS {
                 since = scan.catch_up(built, since)?;
                 self.rebuild_stopped()?;
             }
         }
-        (job.phase)("swap", 0.8);
+        self.began(job, Reindex::Swap);
         let _held = self.latches[&job.index].lock(&self.rt);
         scan.catch_up(built, since)?;
         self.rebuild_stopped()?;
@@ -694,7 +736,7 @@ impl<R: Runtime> Database<R> {
         if reached {
             return Ok(());
         }
-        (job.phase)("sweep", 0.85);
+        self.began(job, Reindex::Sweep);
         let (strays, judged) = tree.strays(&self.pager).unwrap_or((Vec::new(), false));
         self.pager.retire(strays.iter().copied());
         append_strays(&mut old.pages, strays);

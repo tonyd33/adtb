@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
 use crate::exec;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, ThreadId};
 use crate::storage::{self, Pager, Pid};
 use crate::testing::Site;
 use crate::write;
 
-use super::reindex::PhaseHook;
 use super::{Database, Engine};
 
 impl<R: Runtime> Database<R> {
@@ -45,9 +44,9 @@ impl<R: Runtime> Database<R> {
         Some(self.engine.db.store(txn.tested_txn()?))
     }
 
-    /// Returns how many reindex job threads are not yet joined.
-    pub(crate) fn reindex_threads(&self) -> usize {
-        self.engine.reindexing.threads.lock(&self.engine.rt).len()
+    /// Returns the reindex job threads not yet joined.
+    pub(crate) fn reindex_threads(&self) -> Vec<ThreadId> {
+        self.engine.reindexing.threads.lock(&self.engine.rt).clone()
     }
 
     /// Returns the next page of the background scrub's pass as last saved in the file: the page,
@@ -74,10 +73,6 @@ impl<R: Runtime> Database<R> {
                 *self.engine.verifier.fail_kept.lock(&self.engine.rt) = Some(message);
             }
         }
-    }
-
-    pub(crate) fn set_phase_hook(&self, hook: PhaseHook) {
-        *self.engine.reindexing.hook.lock(&self.engine.rt) = Some(hook);
     }
 
     pub(crate) fn archive_state(&self) -> Option<storage::ArchiveStatus> {

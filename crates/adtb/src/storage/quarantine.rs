@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::runtime::Runtime;
+use crate::steps::{Retire, Step};
 
 use super::alloc::diff;
 use super::evidence::{Cause, Evidence, Judged};
@@ -947,6 +948,7 @@ impl<R: Runtime> Pager<R> {
     /// Hold `pids`, pages of a tree a swap replaced, as retired until each one's own free.
     pub fn retire(&self, pids: impl IntoIterator<Item = Pid>) {
         self.evidence().retire(pids);
+        self.steps().at(Step::Retire(Retire::Held));
     }
 
     /// Stop holding `pids` as retired: the swap that would have replaced their tree failed.

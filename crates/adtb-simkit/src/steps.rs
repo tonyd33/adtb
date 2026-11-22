@@ -4,13 +4,13 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use adtb::Database;
-use adtb::runtime::{ThreadId, Threads};
-use adtb::testing::Step;
+use adtb::runtime::{Runtime, ThreadId, Threads};
+use adtb::testing::{Reindex, Step};
 use adtb_sim::SimRuntime;
 
 #[derive(Debug)]
 struct State {
-    thread: ThreadId,
+    thread: Option<ThreadId>,
     counts: fn(Step) -> bool,
     driver: ThreadId,
     at: usize,
@@ -30,7 +30,8 @@ fn state(s: &Mutex<State>) -> MutexGuard<'_, State> {
 }
 
 /// The boundaries of a step function a thread runs: the thread, and which steps it counts.
-pub type Boundaries = (ThreadId, fn(Step) -> bool);
+/// `None` names the first thread to reach a step it counts that no other stop set with it names.
+pub type Boundaries = (Option<ThreadId>, fn(Step) -> bool);
 
 impl Stop {
     /// Stop `thread` at the `at`th step it reaches in `db` from now of those `counts` accepts,
@@ -64,7 +65,15 @@ impl Stop {
         let (all, rt2) = (states.clone(), rt.clone());
         db.testing().on_step(move |step| {
             let here = rt2.current();
-            let Some(s) = all.iter().find(|s| state(s).thread == here) else {
+            let named = all.iter().find(|s| state(s).thread == Some(here));
+            let Some(s) = named.or_else(|| {
+                let unnamed = all.iter().find(|s| {
+                    let s = state(s);
+                    s.thread.is_none() && (s.counts)(step)
+                })?;
+                state(unnamed).thread = Some(here);
+                Some(unnamed)
+            }) else {
                 return;
             };
             let driver = {
@@ -110,6 +119,11 @@ impl Stop {
         }
     }
 
+    /// Returns the thread it stops, once named.
+    pub fn thread(&self) -> Option<ThreadId> {
+        state(&self.state).thread
+    }
+
     /// Returns whether the thread has stopped.
     pub fn has_stopped(&self) -> bool {
         state(&self.state).stopped
@@ -122,7 +136,9 @@ impl Stop {
             s.released = true;
             s.thread
         };
-        rt.unpark(thread);
+        if let Some(thread) = thread {
+            rt.unpark(thread);
+        }
     }
 
     /// Returns the steps `counts` accepts the thread reached since the stop was set.
@@ -161,7 +177,8 @@ pub enum Second {
     At(Step),
     /// Ended before the boundary the pair names.
     Whole,
-    /// Waiting on the stopped first side, with no thread able to run.
+    /// Waiting on the stopped first side: no thread able to run, or a thread waiting for the
+    /// vacuum lock or a rebuild's gate that the first side's thread holds.
     Blocked,
 }
 
@@ -207,34 +224,45 @@ impl Reached {
 /// side blocked: enough for a thread waiting on a lock just released to take it.
 const STALLED: usize = 64;
 
-/// Run `first` to its `i`th boundary, run `between`, then run `second` to its `j`th boundary, its
-/// end, or until it blocks on `first`, then `first` to its end, releasing `second` should `first`
-/// block on it, then `second` to its end, each boundary counted from 1. When `first` ends before its `i`th boundary, run `second` whole after
-/// it. Returns what each reached.
+/// Run `first` to its `i`th boundary, run the first of `between`, then run `second` to its `j`th
+/// boundary, its end, or until it blocks on `first`, run the second of `between` with where
+/// `second` is, then `first` to its end, releasing `second` should `first` block on it, then
+/// `second` to its end, each boundary counted from 1. When `first` ends before its `i`th
+/// boundary, run `second` whole after it and neither of `between`. Returns what each reached.
 pub fn interleave(
     rt: &SimRuntime,
     db: &Database<SimRuntime>,
     (first, second): (&mut impl Stepping, &mut impl Stepping),
     (i, j): (usize, usize),
-    between: Box<dyn FnOnce() + '_>,
+    between: Between<'_>,
 ) -> [Reached; 2] {
     let [a, b] = Stop::set_each(rt, db, [(first.boundaries(), i), (second.boundaries(), j)]);
     first.start(rt);
     let a_stopped = a.stopped(rt, &mut || first.ended().then_some(())).is_ok();
     let (mut b_stopped, mut b_blocked, mut a_blocked) = (false, false, false);
     if a_stopped {
-        between();
+        let (stopped, waited_on) = between;
+        stopped();
         second.start(rt);
-        match waited(rt, second, Some(&b)) {
-            Waited::Stopped => b_stopped = true,
-            Waited::Ended => {}
+        let at = match waited(rt, db, second, Some(&b), a.thread()) {
+            Waited::Stopped => {
+                b_stopped = true;
+                Second::At(
+                    *b.reached()
+                        .last()
+                        .expect("a stopped side reached a boundary"),
+                )
+            }
+            Waited::Ended => Second::Whole,
             Waited::Stalled => {
                 b_blocked = true;
                 b.release(rt);
+                Second::Blocked
             }
-        }
+        };
+        waited_on(at);
         a.release(rt);
-        if waited(rt, first, None) == Waited::Stalled {
+        if waited(rt, db, first, None, b.thread()) == Waited::Stalled {
             a_blocked = true;
             b.release(rt);
             until_ended(rt, first);
@@ -257,12 +285,19 @@ pub fn interleave(
 enum Waited {
     Stopped,
     Ended,
-    /// No thread could make progress for [`STALLED`] turns of the driver in a row.
+    /// No thread could make progress for [`STALLED`] turns of the driver in a row, or a thread
+    /// waited for the vacuum lock or a rebuild's gate that the stopped side's thread holds.
     Stalled,
 }
 
-/// Wait until `side` stops at `stop`, ends, or blocks.
-fn waited(rt: &SimRuntime, side: &mut impl Stepping, stop: Option<&Stop>) -> Waited {
+/// Wait until `side` stops at `stop`, ends, or blocks on `stopped`, the other side's thread.
+fn waited(
+    rt: &SimRuntime,
+    db: &Database<SimRuntime>,
+    side: &mut impl Stepping,
+    stop: Option<&Stop>,
+    stopped: Option<ThreadId>,
+) -> Waited {
     let mut stalled = 0;
     loop {
         if stop.is_some_and(Stop::has_stopped) {
@@ -272,7 +307,7 @@ fn waited(rt: &SimRuntime, side: &mut impl Stepping, stop: Option<&Stop>) -> Wai
             return Waited::Ended;
         }
         stalled = if rt.stalled() { stalled + 1 } else { 0 };
-        if stalled == STALLED {
+        if stalled == STALLED || stopped.is_some_and(|t| db.testing().waits_on(t)) {
             return Waited::Stalled;
         }
         rt.yield_to_event();
@@ -285,22 +320,32 @@ fn until_ended(rt: &SimRuntime, side: &mut impl Stepping) {
     }
 }
 
+/// What [`interleave`] runs once the first side stops, and once the second stops, ends or
+/// blocks, given where it is.
+pub type Between<'a> = (Box<dyn FnOnce() + 'a>, Box<dyn FnOnce(Second) + 'a>);
+
+/// Returns a [`Between`] that runs nothing.
+pub fn nothing_between<'a>() -> Between<'a> {
+    (Box::new(|| {}), Box::new(|_| {}))
+}
+
 /// One case of a search: the boundary of the first side it stopped at, and where the second was.
 pub type Pair = (Step, Second);
 
-/// Run `case` at every pair of boundaries its two sides reach, ending once a case shows the first
-/// side reaches none past the one it stopped at, as [`interleave`] numbers them:
+/// Run `case` at every pair of boundaries its two sides reach, ending once no case at a boundary
+/// of the first side shows it reaches one past it, as [`interleave`] numbers them:
 /// each boundary of the first side the first reaches, with each boundary of the second the
 /// second then reaches, and with the second run to its end or blocked. Returns the boundaries
 /// the first side stopped at and each pair run.
 ///
 /// Panic when a case does not stop where its pair says, or the first side reaches other
-/// boundaries than the case before it.
+/// boundaries up to its stop than the case before it.
 pub fn every_pair(case: &mut dyn FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<Step>, Vec<Pair>) {
     let mut pairs = Vec::new();
     let mut stops = Vec::new();
     for i in 1.. {
         let mut first: Option<Vec<Step>> = None;
+        let mut past = false;
         for j in 1.. {
             let [a, b] = case((i, j));
             if !first_stopped(i, j, &a) {
@@ -310,14 +355,14 @@ pub fn every_pair(case: &mut dyn FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<
                 stops.push(a.steps[i - 1]);
             }
             if let Some(f) = &first {
-                assert_eq!(f, &a.steps, "the first side at {i} reaches as it did");
+                assert_eq!(f, &a.steps[..i], "the first side at {i} reaches as it did");
             }
             let second = b.second(j);
             pairs.push((a.steps[i - 1], second));
-            let last = a.steps.len() == i;
-            first = Some(a.steps);
+            past |= a.steps.len() > i;
+            first = Some(a.steps[..i].to_vec());
             if !matches!(second, Second::At(_)) {
-                if last {
+                if !past {
                     return (stops, pairs);
                 }
                 break;
@@ -363,4 +408,19 @@ fn first_stopped(i: usize, j: usize, a: &Reached) -> bool {
         i - 1
     );
     false
+}
+
+/// Call `hook` with each phase of every later rebuild of an index as it begins, on the job's
+/// thread, in place of any step hook set before.
+#[inline]
+pub fn on_reindex<R: Runtime>(db: &Database<R>, body: impl Fn(Reindex) + Send + Sync + 'static) {
+    on_phase(db, Box::new(body));
+}
+
+fn on_phase<R: Runtime>(db: &Database<R>, hook: Box<dyn Fn(Reindex) + Send + Sync>) {
+    db.testing().on_step(move |step| {
+        if let Step::Reindex(phase) = step {
+            hook(phase);
+        }
+    });
 }

@@ -60,7 +60,7 @@ use crate::mvcc::{
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::ranks;
-use crate::runtime::{Instant, Runtime};
+use crate::runtime::{Instant, Runtime, ThreadId};
 #[cfg(any(test, feature = "testing"))]
 use crate::storage::Pid;
 use crate::storage::{MarkFailure, PageError, Pager, Position, Quarantine};
@@ -624,8 +624,10 @@ pub struct Database<R: Runtime> {
     rebuild_waits: AtomicU64,
     /// How many times a call asked a background vacuum to give up the vacuum lock.
     vacuum_yields: AtomicU64,
-    /// The relations an offline rebuild holds writes to.
-    offline: Lock<BTreeSet<RelId>>,
+    /// The relations an offline rebuild holds writes to, with the rebuild's thread.
+    offline: Lock<BTreeMap<RelId, ThreadId>>,
+    /// The holder's thread each thread waiting for the vacuum lock or a rebuild's gate waits on.
+    waiting: Lock<BTreeMap<ThreadId, ThreadId>>,
     /// Set once the engine closes: rebuilds stop and their gates refuse.
     rebuilds_stopped: AtomicBool,
     /// The structures history is kept in, once [`Database::with_history`] gives them.
@@ -742,6 +744,7 @@ impl<R: Runtime> Database<R> {
             rebuild_waits: AtomicU64::new(0),
             vacuum_yields: AtomicU64::new(0),
             offline: Lock::default(),
+            waiting: Lock::default(),
             rebuilds_stopped: AtomicBool::new(false),
             retained: None,
             hosts: Arc::default(),

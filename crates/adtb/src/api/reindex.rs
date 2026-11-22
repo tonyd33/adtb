@@ -1,7 +1,7 @@
 //! The `reindex` command: a job with its row of `sys::jobs`, on a thread of its own, that rebuilds
 //! each named index in turn.
 
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 
 use adtb_lang::ids::engine_rel;
 use adtb_lang::schema::Schema;
@@ -12,14 +12,12 @@ use crate::catalog::{self, engine_relation};
 use crate::exec::Val;
 use crate::plan::IndexId;
 use crate::runtime::{Runtime, ThreadId};
+use crate::steps::Reindex;
 use crate::write::{self, Failure, Found, Rebuild};
 
 use super::Engine;
 use super::text::{DynRows, rows};
 use super::verify::{Job, Started};
-
-/// Called with each phase of a rebuild as it starts, on the job's thread.
-pub type PhaseHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// What the running rebuild jobs need of the engine.
 pub(super) struct Jobs<R: Runtime> {
@@ -27,7 +25,6 @@ pub(super) struct Jobs<R: Runtime> {
     pub(super) threads: Lock<Vec<ThreadId>>,
     /// The jobs whose threads are about to return.
     finished: Lock<Vec<ThreadId>>,
-    pub(super) hook: Lock<Option<PhaseHook>>,
 }
 
 impl<R: Runtime> Default for Jobs<R> {
@@ -36,7 +33,6 @@ impl<R: Runtime> Default for Jobs<R> {
             me: Lock::new(Weak::new()),
             threads: Lock::default(),
             finished: Lock::default(),
-            hook: Lock::new(None),
         }
     }
 }
@@ -129,13 +125,7 @@ impl<R: Runtime> Engine<R> {
 
     fn rebuild_all(&self, schema: &Schema, work: &Work, job: &Job<'_, R>) {
         let no_vacuum = self.db.holding_off_vacuum();
-        let hook = self.reindexing.hook.lock(&self.rt).clone();
-        let phase = |name: &str, done: f64| {
-            job.phase(name, done);
-            if let Some(hook) = &hook {
-                hook(name);
-            }
-        };
+        let phase = |p: Reindex| job.phase(p.name(), p.done());
         let marked = match self.catalog.begin_reindexing(&self.pager) {
             Ok(marked) => marked,
             Err(e) => {

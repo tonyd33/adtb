@@ -181,7 +181,8 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Wait while an offline rebuild holds writes to any of `rels`, or fail with `Blocked` when
     /// the statement suspends instead. Fail with `Cancelled` once the engine closes.
     fn wait_for_rebuilds(&self, rels: impl Iterator<Item = RelId> + Clone) -> Result<(), Error> {
-        while self.db.holds_writes(rels.clone()) {
+        let _waiting = self.db.waiting();
+        while let Some(holder) = self.db.writes_held_by(rels.clone()) {
             self.db.rebuild_stopped()?;
             if let Some(rerun) = self.stop.suspend {
                 return Err(Error::Blocked {
@@ -190,7 +191,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 });
             }
             self.stopped()?;
-            self.db.pause_for_rebuild();
+            self.db.pause_for_rebuild(holder);
         }
         Ok(())
     }

@@ -76,10 +76,11 @@ impl<R: Runtime> Pager<R> {
         self.checkpoint_pinning(false, |c| self.steps().at(Step::Checkpoint(c)));
     }
 
-    /// Take a checkpoint as [`Pager::checkpoint`] does, reporting no boundary. Returns its LSN,
-    /// its redo LSN and the bitmap groups it captured.
+    /// Take a checkpoint as [`Pager::checkpoint`] does, reporting its boundaries as a recycle's.
+    /// Returns its LSN, its redo LSN and the bitmap groups it captured.
     pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
-        let (at, redo, groups, _) = self.checkpoint_pinning(false, |_| {});
+        let (at, redo, groups, _) =
+            self.checkpoint_pinning(false, |c| self.steps().at(Step::Recycle(c)));
         (at, redo, groups)
     }
 

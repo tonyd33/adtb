@@ -20,7 +20,7 @@ use crate::btree;
 use crate::exec;
 use crate::mvcc::Transactions;
 use crate::plan;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, ThreadId};
 use crate::storage::Pager;
 use crate::write;
 
@@ -30,7 +30,7 @@ pub use crate::mvcc::{Limits, Snapshot, Xid};
 pub use crate::plan::{
     Check as PlanCheck, Checked as PlansChecked, Rewrites, checked as plans_checked, with_rewrites,
 };
-pub use crate::steps::{Change, Checkpoint, Map, Step, StepFn, Vacuum};
+pub use crate::steps::{Change, Checkpoint, Map, Reindex, Retire, Step, StepFn, Vacuum};
 use crate::storage::Position;
 pub use crate::storage::policy::Holder;
 pub use crate::storage::{
@@ -253,6 +253,12 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.tested_db().rebuild_waits()
     }
 
+    /// Returns whether a thread waits for the vacuum lock or a rebuild's gate while `holder` holds
+    /// it.
+    pub fn waits_on(self, holder: ThreadId) -> bool {
+        self.db.tested_db().waits_on(holder)
+    }
+
     /// Returns how many times a call asked a background vacuum to give up the vacuum lock.
     pub fn vacuum_yields(self) -> u64 {
         self.db.tested_db().vacuum_yields()
@@ -329,8 +335,8 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.tested_db().planned().clone()
     }
 
-    /// Returns how many reindex job threads are not yet joined.
-    pub fn reindex_threads(self) -> usize {
+    /// Returns the reindex job threads not yet joined.
+    pub fn reindex_threads(self) -> Vec<ThreadId> {
         self.db.reindex_threads()
     }
 

@@ -14,13 +14,16 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::testing::{Damage, Knobs, PageKind, Plant, Quarantine, page::HEADER_LEN, panic_text};
+use adtb::testing::{
+    Damage, Knobs, PageKind, Plant, Quarantine, Reindex, page::HEADER_LEN, panic_text,
+};
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_simkit::steps;
 use adtb_sys::runtime::Faults;
 use adtb_testkit::damage::DataFile;
 use adtb_testkit::seeds::assert_reached;
@@ -692,8 +695,8 @@ fn a_statement_past_the_gate_loses_no_entry() {
         x.query_text(&t, &[], &TxnCallOptions::default()).unwrap();
     }
     x.commit(None).unwrap();
-    db.testing().on_reindex_phase(|phase| {
-        if phase == "build" {
+    steps::on_reindex(&db, |phase| {
+        if phase == Reindex::Build {
             std::thread::sleep(Duration::from_millis(30));
         }
     });
@@ -706,8 +709,8 @@ fn a_statement_past_the_gate_loses_no_entry() {
 fn hold_build(db: &Database) -> Arc<AtomicBool> {
     let go = Arc::new(AtomicBool::new(false));
     let g = go.clone();
-    db.testing().on_reindex_phase(move |phase| {
-        if phase == "build" {
+    steps::on_reindex(db, move |phase| {
+        if phase == Reindex::Build {
             while !g.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -893,7 +896,7 @@ fn wait_jobs(rt: &SimRuntime, db: &Database<SimRuntime>) {
     }
 }
 
-type Times = Arc<Mutex<Vec<(String, adtb::runtime::Instant)>>>;
+type Times = Arc<Mutex<Vec<(Reindex, adtb::runtime::Instant)>>>;
 
 fn seq_body(rt: &SimRuntime, times: Option<Times>) {
     let db = seq_open(rt.clone());
@@ -901,13 +904,13 @@ fn seq_body(rt: &SimRuntime, times: Option<Times>) {
         api::results(&db, &format!("insert ps {{ k: {i}, v: {i} }}"));
     }
     let (w, clock) = (db.clone(), rt.clone());
-    db.testing().on_reindex_phase(move |phase| {
-        if phase == "build" {
+    steps::on_reindex(&db, move |phase| {
+        if phase == Reindex::Build {
             api::results(&w, "insert gs { v: 1 }");
         }
         w.testing().flush_log();
         if let Some(t) = &times {
-            t.lock().unwrap().push((phase.to_owned(), clock.now()));
+            t.lock().unwrap().push((phase, clock.now()));
         }
     });
     api::results(&db, "reindex ps index (v)");
@@ -925,7 +928,7 @@ fn a_crash_at_the_swap_after_a_sequence_is_used_leaves_a_clean_file() {
         .lock()
         .unwrap()
         .iter()
-        .find(|(p, _)| p == "swap")
+        .find(|(p, _)| *p == Reindex::Swap)
         .unwrap()
         .1;
     crash::silence_fatal_panics();
@@ -1104,8 +1107,8 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
         let read = seed_history(&db);
         let (d, r) = (db.clone(), read.clone());
         let once = AtomicBool::new(false);
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "build" && !once.swap(true, Ordering::AcqRel) {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Build && !once.swap(true, Ordering::AcqRel) {
                 d.testing()
                     .plant(Plant::Refuse {
                         page: history_root(&d),
@@ -1193,8 +1196,7 @@ fn a_heap_marked_while_the_rebuild_waits_stops_it() {
         }
         let phases = Arc::new(Mutex::new(Vec::new()));
         let saw = phases.clone();
-        db.testing()
-            .on_reindex_phase(move |p| saw.lock().unwrap().push(p.to_owned()));
+        steps::on_reindex(&db, move |p| saw.lock().unwrap().push(p));
         let held = db.testing().hold_vacuum();
         api::results(&db, "reindex ts index (v)");
         for _ in 0..2000 {
@@ -1205,7 +1207,7 @@ fn a_heap_marked_while_the_rebuild_waits_stops_it() {
         drop(held);
         wait_jobs(&rt, &db);
         assert!(
-            phases.lock().unwrap().iter().all(|p| p != "swap"),
+            !phases.lock().unwrap().contains(&Reindex::Swap),
             "{phases:?}"
         );
         let found = api::printed(api::result(&db, "from f in sys::verify_findings select f"));
@@ -1225,11 +1227,11 @@ fn a_heap_marked_during_the_build_stops_the_swap() {
         let mark = ts_heap(&db);
         let reclaimed = Arc::new(AtomicBool::new(false));
         let r = reclaimed.clone();
-        db.testing().on_reindex_phase(move |p| {
-            if p == "build" {
+        steps::on_reindex(&db, move |p| {
+            if p == Reindex::Build {
                 d.testing().plant(Plant::Mark(mark)).unwrap();
             }
-            if p == "reclaim" {
+            if p == Reindex::Reclaim {
                 r.store(true, Ordering::Release);
             }
         });
@@ -1268,8 +1270,8 @@ fn a_panic_after_the_swap_ends_the_run_and_the_next_open_frees_no_page_of_the_ne
                     damage: Damage::Checksum,
                 })
                 .unwrap();
-            db.testing().on_reindex_phase(|p| {
-                if p == "sweep" {
+            steps::on_reindex(&db, |p| {
+                if p == Reindex::Sweep {
                     panic!("the injected failure");
                 }
             });
@@ -1311,8 +1313,8 @@ fn a_page_a_failed_sweep_freed_marks_the_database_once_reused_outside_every_walk
         assert!(pages.len() > 2, "a tree with a page between two to sweep");
         let (scrapped, unreadable) = (pages[1], *pages.last().unwrap());
         let d = db.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "reclaim" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Reclaim {
                 d.testing()
                     .plant(Plant::Refuse {
                         page: scrapped,
@@ -1370,7 +1372,7 @@ fn a_job_joins_the_threads_of_jobs_before_it() {
                 rt.yield_now();
             }
         }
-        assert_eq!(1, db.testing().reindex_threads());
+        assert_eq!(1, db.testing().reindex_threads().len());
         db.close().unwrap();
     });
 }
@@ -1388,8 +1390,8 @@ fn a_read_runs_while_gated_writes_fill_the_workers() {
         let (clock, s2, rd, out) = (rt.clone(), session, read_done, seen.clone());
         let threads = Arc::new(Mutex::new(Vec::new()));
         let th = threads.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "build" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Build {
                 for i in 0..2 {
                     let (c, s) = (clock.clone(), s2.clone());
                     th.lock().unwrap().push(clock.spawn("w", move || {
@@ -1449,8 +1451,8 @@ fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
                 api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
             }
             let (w, clock) = (db.clone(), rt.clone());
-            db.testing().on_reindex_phase(move |p| {
-                if p == "swap" {
+            steps::on_reindex(&db, move |p| {
+                if p == Reindex::Swap {
                     w.testing().flush_log();
                     clock.set_faults(Faults {
                         fail_p: 1.0,
@@ -1549,8 +1551,8 @@ fn read_beside_tasks_waiting_on_a_rebuild(caller: &'static str) -> bool {
         let (clock, s2, rd, out) = (rt.clone(), session, read_done, seen.clone());
         let threads = Arc::new(Mutex::new(Vec::new()));
         let th = threads.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "build" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Build {
                 for _ in 0..2 {
                     let (c, s) = (clock.clone(), s2.clone());
                     th.lock().unwrap().push(clock.spawn("c", move || {
@@ -1782,12 +1784,12 @@ fn a_panic_inside_the_swap_ends_the_run_and_the_next_open_leaves_a_clean_file() 
             let w = db.clone();
             let before = Arc::new(Mutex::new(Vec::new()));
             let planted = freed.clone();
-            db.testing().on_reindex_phase(move |p| {
+            steps::on_reindex(&db, move |p| {
                 let t = w.testing();
-                if p == "build" {
+                if p == Reindex::Build {
                     *before.lock().unwrap() = t.allocated().unwrap();
                 }
-                if p == "swap" {
+                if p == Reindex::Swap {
                     let was = before.lock().unwrap().clone();
                     let new: Vec<_> = t
                         .allocated()
@@ -1840,8 +1842,8 @@ fn a_reindex_then_vacuum_waiting_on_the_lock_starts_one_job() {
         let session = Arc::new(db.role_authority().session("owner").unwrap());
         let scans = Arc::new(Mutex::new(0u32));
         let s = scans.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "scan" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Scan {
                 *s.lock().unwrap() += 1;
             }
         });

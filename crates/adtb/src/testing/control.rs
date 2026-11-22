@@ -98,11 +98,6 @@ impl<'a, R: Runtime> Testing<'a, R> {
         Ok(x)
     }
 
-    /// Call `hook` with each phase of every later rebuild as it starts, on the job's thread.
-    pub fn on_reindex_phase(self, hook: impl Fn(&str) + Send + Sync + 'static) {
-        self.db.set_phase_hook(Arc::new(hook));
-    }
-
     /// Call `hook` with each later step of the engine's work, on the thread that reaches it.
     pub fn on_step(self, hook: impl Fn(super::Step) + Send + Sync + 'static) {
         self.db.tested_db().set_step_hook(Arc::new(hook));

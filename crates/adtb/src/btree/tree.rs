@@ -3,6 +3,7 @@ use std::ops::Bound;
 
 use crate::key::DecodeError;
 use crate::runtime::Runtime;
+use crate::steps;
 use crate::storage::{PageError, PageExclusive, PageOptimistic, Pager, Pid, Shape, Walk};
 
 use super::leaf;
@@ -355,6 +356,7 @@ impl BTree {
                         low = Some(high);
                     }
                     Step::Down(c) => {
+                        pager.steps().at(steps::Step::Descended);
                         stack.push(pid);
                         pid = c;
                         expected = Some(at - 1);

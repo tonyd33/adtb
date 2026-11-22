@@ -192,7 +192,7 @@ impl Call {
 
 impl Stepping for Call {
     fn boundaries(&self) -> Boundaries {
-        (self.thread, of_a_vacuum)
+        (Some(self.thread), of_a_vacuum)
     }
 
     fn start(&mut self, rt: &SimRuntime) {
@@ -221,7 +221,8 @@ struct Ran {
     verified: Vec<String>,
 }
 
-/// Run `vacuum items` stopped at its `i`th pace point, with `racer` run to its `j`th or its end.
+/// Run `vacuum items` stopped at its `i`th pace point, with `racer` run to its `j`th or its end,
+/// or blocked and then to its deadline, before the vacuum goes on.
 fn run(racer: Racer, seed: u64, (i, j): (usize, usize)) -> Ran {
     process::run(&mut built(seed), |rt| {
         let db = Database::open_in(rt.clone(), FILE, &Log::new([SCHEMA]), &options())
@@ -229,8 +230,24 @@ fn run(racer: Racer, seed: u64, (i, j): (usize, usize)) -> Ran {
         let mut first = Call::spawn(&rt, &db, "vacuum items", None);
         let mut second = Call::spawn(&rt, &db, racer.text(), Some(WAIT));
         let before = db.testing().rebuild_waits();
-        let [vacuum, raced] =
-            steps::interleave(&rt, &db, (&mut first, &mut second), (i, j), Box::new(|| {}));
+        let (replied, rt2) = (second.reply.clone(), rt.clone());
+        let deadline = move |at| {
+            while at == Second::Blocked
+                && replied
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_none()
+            {
+                rt2.park();
+            }
+        };
+        let [vacuum, raced] = steps::interleave(
+            &rt,
+            &db,
+            (&mut first, &mut second),
+            (i, j),
+            (Box::new(|| {}), Box::new(deadline)),
+        );
         let waits = db.testing().rebuild_waits() - before;
         let after = ["vacuum items", "vacuum others"].map(|text| {
             let mut again = Call::spawn(&rt, &db, text, None);
@@ -318,8 +335,8 @@ fn rows(rows: &[&str]) -> Reply {
 
 /// Check `r`, a run with the racer started at the vacuum's pace point `at`:
 ///
-/// - the racer reaches no pace point, pauses for the vacuum lock, and is refused at its deadline:
-///   it waits for the lock the whole time the vacuum is stopped;
+/// - the racer reaches no pace point, waits for the vacuum lock the stopped vacuum holds, and is
+///   refused at its deadline;
 /// - the vacuum frees what the deletes left, its versions copied to history and their chunks
 ///   swept;
 /// - run after, `vacuum items` frees nothing, and `vacuum others` frees all of its relation's
@@ -328,7 +345,7 @@ fn rows(rows: &[&str]) -> Reply {
 #[track_caller]
 fn check(racer: Racer, at: Step, r: &Ran) {
     let what = format!("{racer:?} at {at:?}");
-    assert_eq!(Second::Whole, r.racer.second(1), "{what}");
+    assert_eq!(Second::Blocked, r.racer.second(1), "{what}");
     assert!(r.racer.steps().is_empty(), "{what}: {:?}", r.racer.steps());
     assert_ne!(0, r.waits, "{what}");
     refused_as(
@@ -385,7 +402,10 @@ fn search(racer: Racer) -> Vec<Vacuum> {
         } else {
             each_change(case)
         };
-        assert!(pairs.iter().all(|(_, s)| *s == Second::Whole), "{pairs:?}");
+        assert!(
+            pairs.iter().all(|(_, s)| *s == Second::Blocked),
+            "{pairs:?}"
+        );
         for stop in stops {
             let Step::Vacuum(kind) = stop else {
                 panic!("the vacuum stops at a pace point, not {stop:?}");

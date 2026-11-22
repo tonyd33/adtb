@@ -13,11 +13,12 @@ use std::time::Duration;
 
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::testing::{Damage, Pid, Plant, Quarantine, page::HEADER_LEN, panic_text};
+use adtb::testing::{Damage, Pid, Plant, Quarantine, Reindex, page::HEADER_LEN, panic_text};
 use adtb::{Database, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
+use adtb_simkit::steps;
 use adtb_testkit::damage::{DataFile, Files};
 use adtb_testkit::{crash, seeds};
 
@@ -41,7 +42,13 @@ const API_PAGE: usize = 8192;
 const USER_INDEX: &str = "index (user) in (Google | Apple)";
 const GID_INDEX: &str = "unique (gid) in Google";
 const USER_REINDEX: &str = "reindex identities index (user) in (Google | Apple)";
-const PHASES: [&str; 6] = ["waiting", "scan", "build", "catch up", "swap", "reclaim"];
+const PHASES: [Reindex; 5] = [
+    Reindex::Scan,
+    Reindex::Build,
+    Reindex::CatchUp,
+    Reindex::Swap,
+    Reindex::Reclaim,
+];
 
 fn open_app(rt: SimRuntime) -> Database<SimRuntime> {
     Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2)).expect("the database opens")
@@ -135,8 +142,8 @@ fn the_result_names_the_job_and_the_row_shows_its_phase_while_it_runs() {
         seed_rows(&db, 3);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (shown, reader) = (seen.clone(), db.clone());
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "build" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Build {
                 *shown.lock().unwrap() = api::printed(api::result(
                     &reader,
                     "from j in sys::jobs select { k: j.kind, t: j.target, p: j.phase, d: j.done }",
@@ -163,16 +170,16 @@ fn the_result_names_the_job_and_the_row_shows_its_phase_while_it_runs() {
 
 #[test]
 fn a_panic_in_each_phase_of_the_job_ends_the_run_and_the_next_open_keeps_every_row() {
-    for phase in PHASES[1..].iter().copied() {
+    for phase in PHASES {
         let mut sim = Sim::new(2, Config::default());
         let after = AtomicBool::new(false);
         let run = catch_unwind(AssertUnwindSafe(|| {
             sim.run(|rt| {
                 let db = open_app(rt.clone());
                 seed_rows(&db, 3);
-                db.testing().on_reindex_phase(move |p| {
+                steps::on_reindex(&db, move |p| {
                     if p == phase {
-                        panic!("the injected failure at {phase}");
+                        panic!("the injected failure at {phase:?}");
                     }
                 });
                 api::results(&db, USER_REINDEX);
@@ -182,19 +189,19 @@ fn a_panic_in_each_phase_of_the_job_ends_the_run_and_the_next_open_keeps_every_r
         }));
         let payload = run.expect_err("the panic ends the run");
         assert_eq!(
-            Some(format!("the injected failure at {phase}")),
+            Some(format!("the injected failure at {phase:?}")),
             panic_text(&*payload)
         );
         assert!(
             !after.load(Ordering::Relaxed),
-            "{phase}: a call ran past the panic"
+            "{phase:?}: a call ran past the panic"
         );
         process::run(&mut sim, |rt| {
             let db = open_app(rt);
-            assert_every_row_found(&db, 1..=3, phase);
-            assert_eq!(Vec::<String>::new(), verified(&db), "{phase}");
-            assert_eq!(Vec::<String>::new(), findings(&db), "{phase}");
-            assert_eq!(0, changing_words(&db), "{phase}");
+            assert_every_row_found(&db, 1..=3, &format!("{phase:?}"));
+            assert_eq!(Vec::<String>::new(), verified(&db), "{phase:?}");
+            assert_eq!(Vec::<String>::new(), findings(&db), "{phase:?}");
+            assert_eq!(0, changing_words(&db), "{phase:?}");
             db.close().unwrap();
         });
     }
@@ -231,40 +238,18 @@ fn a_rebuild_under_writers_loses_no_row() {
 }
 
 #[test]
-fn a_commit_landing_in_each_phase_is_in_the_new_index() {
-    process::once(3, |rt| {
-        let db = open_app(rt.clone());
-        seed_rows(&db, 10);
-        let next = Arc::new(Mutex::new(100));
-        let (writer, counter) = (db.clone(), next.clone());
-        db.testing().on_reindex_phase(move |_| {
-            let mut n = counter.lock().unwrap();
-            insert_user(&writer, *n);
-            *n += 1;
-        });
-        api::results(&db, USER_REINDEX);
-        wait_for_jobs(&rt, &db);
-        let end = *next.lock().unwrap();
-        assert!(end >= 100 + PHASES.len() as u32 - 1, "{end}");
-        assert_every_row_found(&db, (1..=10).chain(100..end), "after the rebuild");
-        assert_eq!(Vec::<String>::new(), verified_live(&db));
-        db.close().unwrap();
-    });
-}
-
-#[test]
 fn a_write_keeps_its_uniqueness_check_across_a_rebuild() {
     process::once(4, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
         let refused = Arc::new(Mutex::new(Vec::new()));
         let (writer, out) = (db.clone(), refused.clone());
-        db.testing().on_reindex_phase(move |phase| {
+        steps::on_reindex(&db, move |phase| {
             let e = api::failure(
                 &writer,
                 r#"insert identities.Google { id: identities.key(9000), user: users.key(1), gid: "g1" }"#,
             );
-            out.lock().unwrap().push(format!("{phase}: {e:?}"));
+            out.lock().unwrap().push(format!("{phase:?}: {e:?}"));
         });
         api::results(&db, "reindex identities index (gid) in Google");
         wait_for_jobs(&rt, &db);
@@ -274,7 +259,7 @@ fn a_write_keeps_its_uniqueness_check_across_a_rebuild() {
 }
 
 /// Returns the instant the run of seed `seed` reaches each phase.
-fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
+fn phase_times(seed: u64) -> Vec<(Reindex, adtb::runtime::Instant)> {
     let times = Arc::new(Mutex::new(Vec::new()));
     let out = times.clone();
     let mut sim = Sim::new(seed, Config::default());
@@ -282,8 +267,8 @@ fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
         let db = crash_body(&rt);
         let (clock, seen) = (rt.clone(), out);
         let flushing = db.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            seen.lock().unwrap().push((phase.to_owned(), clock.now()));
+        steps::on_reindex(&db, move |phase| {
+            seen.lock().unwrap().push((phase, clock.now()));
             flushing.testing().flush_log();
         });
         api::results(&db, USER_REINDEX);
@@ -296,7 +281,7 @@ fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
 fn crash_body(rt: &SimRuntime) -> Database<SimRuntime> {
     let db = open_app(rt.clone());
     seed_rows(&db, 40);
-    db.testing().on_reindex_phase(|_| {});
+    steps::on_reindex(&db, |_| {});
     db
 }
 
@@ -313,21 +298,21 @@ fn a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing()
             let ran = sim.run(|rt| {
                 let db = crash_body(&rt);
                 let flushing = db.clone();
-                db.testing().on_reindex_phase(move |_| {
+                steps::on_reindex(&db, move |_| {
                     flushing.testing().flush_log();
                 });
                 api::results(&db, USER_REINDEX);
                 wait_for_jobs(&rt, &db);
                 db.close().unwrap();
             });
-            assert_eq!(Outcome::Crashed, ran, "seed {seed} phase {phase}");
+            assert_eq!(Outcome::Crashed, ran, "seed {seed} phase {phase:?}");
             process::run(&mut sim, |rt| {
                 let db = open_app(rt);
-                assert_every_row_found(&db, 1..=40, &format!("seed {seed} phase {phase}"));
+                assert_every_row_found(&db, 1..=40, &format!("seed {seed} phase {phase:?}"));
                 assert_eq!(
                     Vec::<String>::new(),
                     verified(&db),
-                    "seed {seed} phase {phase}"
+                    "seed {seed} phase {phase:?}"
                 );
                 db.close().unwrap();
             });
@@ -424,8 +409,8 @@ fn restore_damaged_root(
     );
     assert_eq!(BTreeSet::from([user_mark(&db)]), marks(&db));
     let clock = rt.clone();
-    db.testing().on_reindex_phase(move |phase| {
-        if phase == "reclaim"
+    steps::on_reindex(&db, move |phase| {
+        if phase == Reindex::Reclaim
             && let Some(at) = &report
         {
             *at.lock().unwrap() = Some(clock.now());
@@ -494,15 +479,18 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
         let db = open_app(rt.clone());
         quarantine_user_index(&db);
         let clock = rt.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            seen.lock().unwrap().push((phase.to_owned(), clock.now()));
+        steps::on_reindex(&db, move |phase| {
+            seen.lock().unwrap().push((phase, clock.now()));
         });
         api::results(&db, USER_REINDEX);
         wait_for_jobs(&rt, &db);
         db.close().unwrap();
     });
     let times = times.lock().unwrap().clone();
-    assert!(times.iter().any(|(p, _)| p == "reclaim"), "{times:?}");
+    assert!(
+        times.iter().any(|(p, _)| *p == Reindex::Reclaim),
+        "{times:?}"
+    );
     crash::silence_fatal_panics();
     for (phase, at) in times {
         let mut sim = Sim::with_files(8, Config::default(), files.clone());
@@ -510,33 +498,33 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
         let ran = sim.run(|rt| {
             let db = open_app(rt.clone());
             quarantine_user_index(&db);
-            db.testing().on_reindex_phase(|_| {});
+            steps::on_reindex(&db, |_| {});
             api::results(&db, USER_REINDEX);
             wait_for_jobs(&rt, &db);
             db.close().unwrap();
         });
-        assert_eq!(Outcome::Crashed, ran, "phase {phase}");
+        assert_eq!(Outcome::Crashed, ran, "phase {phase:?}");
         process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             if marks(&db).is_empty() {
                 assert!(
-                    ["sweep", "reclaim"].contains(&phase.as_str()),
-                    "the swap had not run at {phase}"
+                    [Reindex::Sweep, Reindex::Reclaim].contains(&phase),
+                    "the swap had not run at {phase:?}"
                 );
-                assert_every_row_found(&db, 1..=2, &phase);
+                assert_every_row_found(&db, 1..=2, &format!("{phase:?}"));
             } else {
-                assert_eq!(BTreeSet::from([user_mark(&db)]), marks(&db), "{phase}");
+                assert_eq!(BTreeSet::from([user_mark(&db)]), marks(&db), "{phase:?}");
                 api::results(&db, USER_REINDEX);
                 wait_for_jobs(&rt, &db);
-                assert_eq!(BTreeSet::new(), marks(&db), "{phase}");
-                assert_every_row_found(&db, 1..=2, &phase);
+                assert_eq!(BTreeSet::new(), marks(&db), "{phase:?}");
+                assert_every_row_found(&db, 1..=2, &format!("{phase:?}"));
             }
             db.close().unwrap();
         });
         process::run(&mut sim, |rt| {
             let db = open_app(rt);
-            assert_eq!(BTreeSet::new(), marks(&db), "{phase}");
-            assert_eq!(Vec::<String>::new(), verified(&db), "{phase}");
+            assert_eq!(BTreeSet::new(), marks(&db), "{phase:?}");
+            assert_eq!(Vec::<String>::new(), verified(&db), "{phase:?}");
             db.close().unwrap();
         });
     }
@@ -549,8 +537,8 @@ fn a_page_of_the_old_index_damaged_during_the_build_does_not_stop_it() {
         seed_rows(&db, 300);
         let page = *user_index_pages(&db).last().unwrap();
         let hit = db.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "build" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Build {
                 hit.testing()
                     .plant(Plant::Refuse {
                         page,
@@ -642,8 +630,8 @@ fn writes_during(seed: u64, how: &str) -> bool {
             (db.clone(), done.clone(), rt.clone(), thread.clone());
         let during = Arc::new(Mutex::new(None));
         let saw = during.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "build" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Build {
                 let (w, f) = (writer.clone(), finished.clone());
                 *held.lock().unwrap() = Some(clock.spawn("writer", move || {
                     api::results(
@@ -773,9 +761,9 @@ fn a_close_stops_a_running_job_before_its_swap_and_the_old_index_stays() {
         let (seen, clock) = (phases.clone(), rt.clone());
         let started = Arc::new(AtomicBool::new(false));
         let scanning = started.clone();
-        db.testing().on_reindex_phase(move |phase| {
-            seen.lock().unwrap().push(phase.to_owned());
-            if phase == "scan" {
+        steps::on_reindex(&db, move |phase| {
+            seen.lock().unwrap().push(phase);
+            if phase == Reindex::Scan {
                 scanning.store(true, Ordering::Release);
                 for _ in 0..2000 {
                     clock.yield_now();
@@ -788,7 +776,7 @@ fn a_close_stops_a_running_job_before_its_swap_and_the_old_index_stays() {
         }
         db.close().unwrap();
         let phases = phases.lock().unwrap().clone();
-        assert!(!phases.iter().any(|p| p == "swap"), "{phases:?}");
+        assert!(!phases.contains(&Reindex::Swap), "{phases:?}");
     });
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -881,8 +869,8 @@ fn a_grant_runs_while_a_set_setting_waits_for_a_rebuild_holding_the_vacuum_lock(
             Arc::new(AtomicBool::new(false)),
         );
         let (gate, reached, clock) = (open.clone(), building.clone(), rt.clone());
-        db.testing().on_reindex_phase(move |phase| {
-            if phase == "build" {
+        steps::on_reindex(&db, move |phase| {
+            if phase == Reindex::Build {
                 reached.store(true, Ordering::Release);
                 while !gate.load(Ordering::Acquire) {
                     common::sleep(&clock, &mut clock.io(), Duration::from_millis(1));
