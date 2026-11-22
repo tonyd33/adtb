@@ -1,0 +1,19 @@
+seed 1
+
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = T { a: I64 } | D
+  add relation ts : T key id generate sequence
+
+run
+  insert ts.T { a: 1 }
+
+migrate
+  module m
+  rename type T to U
+
+query rowsort
+  from x in ts.T select x.a
+----
+1
