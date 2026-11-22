@@ -60,24 +60,27 @@ impl Model {
     /// Apply migration `m`, whose text is `text`, numbered one past the model's version.
     ///
     /// Fail with why the model does not apply it.
+    #[cfg(test)]
     pub(in crate::evolve) fn migrate(
         &self,
         m: &MigrationFile,
         text: &str,
     ) -> Result<Migrated, String> {
-        self.migrate_keeping(m, text, &[])
+        self.migrate_keeping(m, text, &[], false)
     }
 
     /// Apply migration `m` as [`Model::migrate`] does, putting back after each operator every
-    /// constraint and check of `kept` it drops, with its catalog id.
+    /// constraint and check of `kept` it drops, with its catalog id, and with a `revert` refusing
+    /// a fill no inverse takes when `accepting`.
     pub(in crate::evolve) fn migrate_keeping(
         &self,
         m: &MigrationFile,
         text: &str,
         kept: &[Kept],
+        accepting: bool,
     ) -> Result<Migrated, String> {
         let module = m.module.text.as_str();
-        let mut run = Run::new(m, text);
+        let mut run = Run::new(m, text).accepting(accepting);
         let mut model = self.clone();
         model.version += 1;
         model.lifted.clear();
@@ -315,7 +318,7 @@ impl Model {
     }
 
     /// Apply one operator. Returns it resolved.
-    fn operator(&mut self, run: &Run, op: &OperatorKind) -> Res<(ResolvedOp, Maps)> {
+    pub(super) fn operator(&mut self, run: &Run, op: &OperatorKind) -> Res<(ResolvedOp, Maps)> {
         let structural = match op {
             OperatorKind::AddField {
                 path,
@@ -411,6 +414,7 @@ impl Model {
             } => Some(self.install(run, name, version, from)?),
             OperatorKind::Uninstall(m) => Some(self.uninstall(m)?),
             OperatorKind::AdoptTzdb { release, from } => Some(self.adopt_tzdb(release, from)?),
+            OperatorKind::Revert { migration, fills } => Some(self.revert(run, migration, fills)?),
             op => self.restructuring(run, op)?,
         };
         if let Some((op, clauses, maps)) = structural {

@@ -115,6 +115,7 @@ impl Object {
 ///
 /// Preconditions: `objs` are in creation order.
 /// Postconditions: each space's new ids follow the order of `objs`.
+#[cfg(feature = "compare-migration-model")]
 pub fn placing(
     objs: &[Object],
     placed: &dyn Fn(&Slot) -> Option<u64>,
@@ -152,6 +153,7 @@ pub fn placing(
 /// `None` when `id` gives none for one of them.
 ///
 /// Preconditions: `objs` are in creation order.
+#[cfg(feature = "compare-migration-model")]
 pub fn keyed(objs: &[Object], id: &dyn Fn(&Slot) -> Option<u64>) -> Option<Vec<(ObjectKey, u64)>> {
     let mut seen: BTreeMap<ObjectKey, usize> = BTreeMap::new();
     let mut out = Vec::with_capacity(objs.len());

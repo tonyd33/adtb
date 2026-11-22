@@ -79,6 +79,13 @@ impl Expected {
             state: Added::Not,
         }
     }
+
+    /// Returns its module, its name as the adding operator spells it, whether the migration also
+    /// adds its type, and its adder.
+    #[cfg(feature = "compare-migration-model")]
+    pub(super) fn parts(&self) -> (&str, &str, bool, Adder) {
+        (&self.module, &self.relation, self.typed, self.by)
+    }
 }
 
 impl Source {

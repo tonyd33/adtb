@@ -12,7 +12,7 @@ pub(in crate::evolve) enum NamedId {
 }
 
 impl NamedId {
-    pub(super) fn word(self) -> &'static str {
+    pub(in crate::evolve) fn word(self) -> &'static str {
         match self {
             NamedId::Type(_) => "type",
             NamedId::Ctor(_) => "constructor",
@@ -24,7 +24,7 @@ impl NamedId {
 
     /// Returns the module of the object of the id in `schema` and its name in a rename
     /// operator, `None` when no object of `schema` has the id.
-    pub(super) fn spelled(self, schema: &Schema) -> Option<(String, String)> {
+    pub(in crate::evolve) fn spelled(self, schema: &Schema) -> Option<(String, String)> {
         let ty = |def: TypeId| {
             let td = schema.ty(def);
             let m = schema.module(td.module).name.clone();
@@ -102,9 +102,9 @@ pub(in crate::evolve) enum DeclOf {
 }
 
 impl DeclOf {
-    pub(super) fn word(self) -> &'static str {
+    pub(in crate::evolve) fn word(self) -> &'static str {
         match self {
-            DeclOf::Object(kind, _) => spelled::word(kind),
+            DeclOf::Object(kind, _) => word(kind),
             DeclOf::Store(_) => "function",
         }
     }
@@ -151,7 +151,7 @@ impl DeclOf {
         })
     }
 
-    fn mapped(self, again: &Recreated) -> DeclOf {
+    pub(in crate::evolve) fn mapped(self, again: &Recreated) -> DeclOf {
         match self {
             DeclOf::Object(kind, id) => DeclOf::Object(kind, again_id(again, kind.space(), id)),
             DeclOf::Store(f) => DeclOf::Store(again_id(again, Space::Function, f)),
@@ -167,7 +167,7 @@ pub(super) fn again_id(again: &Recreated, space: Space, id: u64) -> u64 {
 }
 
 /// Returns the space and id of each object of `ids`.
-pub(super) fn holding(ids: &BTreeMap<ObjectKey, u64>) -> BTreeSet<(Space, u64)> {
+pub(in crate::evolve) fn holding(ids: &BTreeMap<ObjectKey, u64>) -> BTreeSet<(Space, u64)> {
     ids.iter().map(|(k, &id)| (k.kind().space(), id)).collect()
 }
 
@@ -185,7 +185,7 @@ pub(super) fn removed(before: &Source, after: &Source) -> Vec<(ObjectKey, u64)> 
 /// Record in `again`, for each object of `removed` that `now` holds again under an id `held`
 /// lacks and `again` gives no other object, the id it takes: the id `now` gives its key with every
 /// id of the key that `again` maps replaced.
-pub(super) fn recreate(
+pub(in crate::evolve) fn recreate(
     again: &mut Recreated,
     removed: &[(ObjectKey, u64)],
     held: &BTreeSet<(Space, u64)>,
@@ -262,7 +262,7 @@ impl Source {
 impl Inverse {
     /// Returns the step with each id an earlier step of the revert created again replaced by
     /// the id `again` maps it to.
-    pub(super) fn mapped(self, again: &Recreated) -> Inverse {
+    pub(in crate::evolve) fn mapped(self, again: &Recreated) -> Inverse {
         let shared = |id: u64| again_id(again, Space::Shared, id);
         match self {
             Inverse::Rename { object, to, of } => Inverse::Rename {
@@ -412,6 +412,6 @@ impl Inverse {
 }
 
 /// Returns the refusal of the inverse of operator text `of` whose object of kind `word` is gone.
-pub(super) fn dropped(of: &str, word: &str) -> String {
+pub(in crate::evolve) fn dropped(of: &str, word: &str) -> String {
     format!("the inverse of `{of}` names a {word} a later migration dropped")
 }

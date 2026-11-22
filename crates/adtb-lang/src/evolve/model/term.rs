@@ -216,6 +216,20 @@ impl Term {
             .copied()
     }
 
+    /// Hold each name of an object `map` maps by the object it maps it to.
+    pub(super) fn remap(&mut self, map: &BTreeMap<Obj, Obj>) {
+        for p in &mut self.0 {
+            if let Piece::Name { ids, .. } = p {
+                for o in ids.iter_mut() {
+                    if let Some(&to) = map.get(o) {
+                        *o = to;
+                    }
+                }
+                ids.dedup();
+            }
+        }
+    }
+
     /// Hold each name of the relation variable `by` adds by `relation`, its id.
     pub(super) fn added(&mut self, by: Adder, relation: u64) {
         for p in &mut self.0 {

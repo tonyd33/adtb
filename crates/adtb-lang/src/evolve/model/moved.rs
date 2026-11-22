@@ -77,7 +77,7 @@ impl Model {
     }
 
     /// Put field `f` of `t` into the record of `c`, at its end.
-    fn place_field(&mut self, t: u64, c: Option<u64>, f: u64) {
+    pub(super) fn place_field(&mut self, t: u64, c: Option<u64>, f: u64) {
         self.fields.get_mut(&f).expect("the field").owner = c.unwrap_or(t);
         let held = match c {
             Some(c) => &mut self.ctors.get_mut(&c).expect("the constructor").fields,
@@ -87,7 +87,7 @@ impl Model {
     }
 
     /// Take field `f` out of the part of `t` that holds it.
-    fn unplace_field(&mut self, f: u64) {
+    pub(super) fn unplace_field(&mut self, f: u64) {
         let owner = self.fields[&f].owner;
         let held = match self.types.get_mut(&owner) {
             Some(t) => &mut t.header,
@@ -189,7 +189,7 @@ impl Model {
                 return unmodelled("a move to the header with a fill no constructor takes");
             }
             self.built_for(run)?;
-            let maps = before.up_maps(run, t, c, &[], &name, None);
+            let maps = before.up_maps(run, t, &[c], &[], &name, None);
             return Ok((
                 Resolved::MoveField {
                     field: f,
@@ -228,7 +228,7 @@ impl Model {
         };
         let (_, text) = self.fill(run, t, Some(ks), &fty, fill)?;
         self.lift_grants(built.schema(), t, c, f, fill);
-        let maps = before.up_maps(run, t, c, &others, &name, Some(fill));
+        let maps = before.up_maps(run, t, &[c], &others, &name, Some(fill));
         Ok((
             Resolved::MoveField {
                 field: f,
@@ -240,13 +240,13 @@ impl Model {
         ))
     }
 
-    /// Returns the maps of a move of field `name` of constructor `c` of `t` to the header over
-    /// the declarations now, the constructors `others` taking `fill`.
-    fn up_maps(
+    /// Returns the maps of a move of field `name` of each constructor of `from` of `t` to the
+    /// header over the declarations now, the constructors `others` taking `fill`.
+    pub(super) fn up_maps(
         &self,
         run: &Run,
         t: u64,
-        c: u64,
+        from: &[u64],
         others: &[u64],
         name: &str,
         fill: Option<&Fill>,
@@ -255,13 +255,21 @@ impl Model {
         let built = self.schema_now(run).map_err(refused)?;
         let schema = built.schema();
         let def = self.def_in(schema, t).expect("the type");
-        let k = self.ctor_index(schema, c).expect("the constructor");
-        let Some(fty) = schema.ty(def).field_named(k, name).map(|x| x.ty.clone()) else {
-            return Err(format!("`{}` has no field `{name}`", self.ctors[&c].name));
+        let ks: Vec<u32> = from
+            .iter()
+            .map(|&c| self.ctor_index(schema, c).expect("the constructor"))
+            .collect();
+        let Some(fty) = schema
+            .ty(def)
+            .field_named(ks[0], name)
+            .map(|x| x.ty.clone())
+        else {
+            let names: Vec<&str> = from.iter().map(|c| self.ctors[c].name.as_str()).collect();
+            return Err(format!("`{}` has no field `{name}`", names.join(" | ")));
         };
         let mut maps = vec![RowMap::Copy {
             def,
-            ctors: vec![k],
+            ctors: ks,
             field: name.to_string(),
         }];
         if let Some(fill) = fill

@@ -250,6 +250,11 @@ add relation ws : W
             Case::new("grant call fn spare to support"),
             Case::new("revoke read us from support").after("grant read us to support"),
             Case::new("grant read us to support with grant option"),
+            Case::new("revert {first}").after("add type W = W1 | W2"),
+            Case::new("revert {first}").after("rename field T.A.x to x2"),
+            Case::new("drop field T.B.z\nadd field T.B.z: Text fill \"q\"")
+                .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
+                .fill("T.B.z = \"z\""),
         ];
         out.extend(self.removing());
         out.extend(self.structural());
@@ -1129,116 +1134,9 @@ enum Aspect {
     Unresolved,
 }
 
-/// Returns the declarations of `s` by module and text, in order of both, each text with its
-/// white space collapsed outside string literals, a relation's clauses in sorted order, the arms of a `match` in sorted
-/// order, and a field's `on delete restrict` dropped.
+/// Returns the declarations of `s` by their meaning, as [`meaning::decls`] gives them.
 fn decls(s: &Source) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = s
-        .decls
-        .iter()
-        .map(|d| (d.module.clone(), normalized(&collapsed(&d.text))))
-        .collect();
-    out.sort();
-    out
-}
-
-/// Returns `text` with each run of white space outside a string literal as one space.
-fn collapsed(text: &str) -> String {
-    let mut out = String::new();
-    let (mut quoted, mut escaped, mut space) = (false, false, false);
-    for c in text.trim().chars() {
-        if !quoted && c.is_whitespace() {
-            space = true;
-            continue;
-        }
-        if space {
-            out.push(' ');
-            space = false;
-        }
-        out.push(c);
-        if quoted && escaped {
-            escaped = false;
-        } else if quoted && c == '\\' {
-            escaped = true;
-        } else if c == '"' {
-            quoted = !quoted;
-        }
-    }
-    out
-}
-
-fn normalized(text: &str) -> String {
-    if text.starts_with("type ") {
-        return text.replace(" on delete restrict", "");
-    }
-    if text.starts_with("relation ") {
-        let (head, mut clauses) = relation_clauses(text);
-        clauses.sort();
-        return [head]
-            .into_iter()
-            .chain(clauses)
-            .collect::<Vec<_>>()
-            .join(" ");
-    }
-    arms_sorted(text)
-}
-
-/// Returns `text` with the arms of its first `match` sorted, unless an arm holds a `match` of
-/// its own outside parentheses, whose arms the first `match`'s would take in.
-fn arms_sorted(text: &str) -> String {
-    let words: Vec<&str> = text.split(' ').collect();
-    let mut depth = 0i32;
-    let mut cuts = Vec::new();
-    let mut start = None;
-    for (at, w) in words.iter().enumerate() {
-        if depth == 0 {
-            match *w {
-                "match" if start.is_some() => return text.to_string(),
-                "match" => start = Some(at),
-                "|" if start.is_some() => cuts.push(at),
-                _ => {}
-            }
-        }
-        depth += w.matches(['(', '{']).count() as i32 - w.matches([')', '}']).count() as i32;
-    }
-    let Some(&first) = cuts.first() else {
-        return text.to_string();
-    };
-    let mut arms: Vec<String> = cuts
-        .iter()
-        .zip(cuts.iter().skip(1).chain([&words.len()]))
-        .map(|(&a, &b)| words[a..b].join(" "))
-        .collect();
-    arms.sort();
-    [words[..first].join(" ")]
-        .into_iter()
-        .chain(arms)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Returns a relation declaration's flat text up to its first clause, and each clause.
-fn relation_clauses(text: &str) -> (String, Vec<String>) {
-    let words: Vec<&str> = text.split(' ').collect();
-    let starts = |at: usize| match words[at] {
-        "unique" | "interval" | "default" | "computed" | "key" | "volatile" => true,
-        "index" => at == 0 || words[at - 1] != "interval",
-        _ => false,
-    };
-    let first = (0..words.len())
-        .find(|&at| starts(at))
-        .unwrap_or(words.len());
-    let mut out = Vec::new();
-    let mut at = first;
-    while at < words.len() {
-        let mut end = at + 1;
-        while end < words.len() && !starts(end) {
-            end += 1;
-        }
-        out.push(words[at..end].join(" "));
-        at = end;
-    }
-    (words[..first].join(" "), out)
+    meaning::decls(&s.decls)
 }
 
 /// A schema object with a catalog id: a clause of a relation by the relation and the clause's
@@ -1270,7 +1168,7 @@ struct Clauses {
 fn clauses(s: &Source, relation: &str) -> Option<Clauses> {
     let (m, name) = relation.split_once("::").expect("a qualified relation");
     let i = s.find("relation", m, name)?;
-    let (_, all) = relation_clauses(&collapsed(&s.decls[i].text));
+    let (_, all) = meaning::relation_clauses(&s.decls[i].text);
     let mut out = Clauses::default();
     for clause in all {
         match clause.split(' ').next() {
@@ -1950,7 +1848,7 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (168, 2, 5);
+const CASES: (usize, usize, usize) = (171, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
 const REFUSED: usize = 18;
@@ -2159,13 +2057,4 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
             "{tally:?}"
         );
     }
-    let reverts: usize = ["Migrating", "Recorded"]
-        .iter()
-        .filter_map(|hook| tally.get(&format!("{hook} {}", model::REVERT)))
-        .sum();
-    let (num, den) = model::REVERT_SKIPPED_AT_MOST;
-    assert!(
-        reverts * den <= tally.values().sum::<usize>() * num,
-        "revert's skips pass {num}/{den}: {tally:?}"
-    );
 }

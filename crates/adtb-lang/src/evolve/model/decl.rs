@@ -130,6 +130,22 @@ impl Model {
     /// Hold declaration `text` of kind `kind` named `name`, added while the declarations do not
     /// build, until they build. Returns the operator resolved as the migration's end resolves it.
     fn hold(&mut self, run: &Run, kind: Kind, name: &str, text: String) -> (Resolved, Vec<Clause>) {
+        let key = self.hold_text(run.module(), kind, name, text, true);
+        let decl = run.late(Late::Held(key));
+        (Resolved::AddModule { module: decl }, Vec::new())
+    }
+
+    /// Hold declaration `text` of kind `kind` named `name` in module `module` after the others
+    /// until the declarations build, giving it its first write states then when `enabling`.
+    /// Returns its key in [`Model::held`].
+    pub(super) fn hold_text(
+        &mut self,
+        module: &str,
+        kind: Kind,
+        name: &str,
+        text: String,
+        enabling: bool,
+    ) -> u64 {
         let key = self
             .held
             .keys()
@@ -141,10 +157,11 @@ impl Model {
             HeldM {
                 name: name.to_string(),
                 text,
+                enabling,
             },
         );
         self.decls.push(Decl {
-            module: run.module().to_string(),
+            module: module.to_string(),
             item: Item::Held(kind, key),
         });
         if let Ok(files) = self.files(&[]) {
@@ -153,8 +170,7 @@ impl Model {
             self.held_ids
                 .extend(given.into_iter().filter(|(k, _)| !known.contains_key(k)));
         }
-        let decl = run.late(Late::Held(key));
-        (Resolved::AddModule { module: decl }, Vec::new())
+        key
     }
 
     /// Give each constructor declaration `item`, of file `at` of `built`, declares its first write

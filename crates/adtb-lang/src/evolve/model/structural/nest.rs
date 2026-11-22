@@ -101,6 +101,7 @@ impl Model {
     /// `rels` again from the build. Returns `None` when the declarations do not build, the
     /// operator's arms then left out.
     pub(super) fn rebuilt(&mut self, run: &Run, t: u64, rels: &[u64]) -> Res<Option<Built>> {
+        self.restate_held()?;
         let Ok(built) = self.build_adopting(&[], &run.ahead(self)) else {
             return Ok(None);
         };

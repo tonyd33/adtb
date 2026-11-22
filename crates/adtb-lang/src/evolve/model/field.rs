@@ -288,11 +288,9 @@ impl Model {
         fill: &Fill,
         name: &str,
     ) -> Res<RowMap> {
-        let before = self.schema_now(run)?;
-        let def = self
-            .def_in(before.schema(), t)
-            .expect("a type the model holds");
-        let all: Vec<u32> = (0..before.schema().ty(def).ctors().len() as u32).collect();
+        let (before, _) = self.checked(run)?;
+        let def = self.def_in(&before, t).expect("a type the model holds");
+        let all: Vec<u32> = (0..before.ty(def).ctors().len() as u32).collect();
         let (row_fn, _) = self.fill(run, t, at.clone(), fty, fill)?;
         Ok(RowMap::Fill {
             def,

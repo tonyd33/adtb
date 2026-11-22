@@ -20,6 +20,7 @@ mod moved;
 mod op;
 mod print;
 mod reselect;
+mod revert;
 mod run;
 mod slots;
 mod source;
@@ -27,9 +28,10 @@ mod structural;
 mod term;
 #[cfg(test)]
 mod tests;
+mod undo;
 
 #[cfg(test)]
-pub(super) use compare::{REVERT, REVERT_SKIPPED_AT_MOST, forced};
+pub(super) use compare::forced;
 pub(super) use compare::{compare, compare_recorded, enabled};
 use term::Term;
 
@@ -86,6 +88,12 @@ pub(super) struct Model {
     /// The log as the source the model was lifted from holds it, with the source before each
     /// migration.
     logged: Vec<super::Logged>,
+    /// While the operators being applied replay a logged migration as an inverse, the id each
+    /// object the inverse created again takes, by the id it had.
+    replaying: Option<super::revert::Recreated>,
+    /// The text each declaration takes within the step of the structural operator being applied
+    /// as an inverse, set before that operator first builds.
+    restating: Vec<(Item, String)>,
 }
 
 /// A declaration held as its text: the name it is found by and its text without the module
@@ -94,6 +102,8 @@ pub(super) struct Model {
 struct HeldM {
     name: String,
     text: String,
+    /// Whether it takes its first write states once it lifts.
+    enabling: bool,
 }
 
 /// A relation variable an operator of the migration being applied adds: named `name` in module

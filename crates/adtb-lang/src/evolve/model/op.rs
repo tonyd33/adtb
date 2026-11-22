@@ -30,6 +30,22 @@ impl Kind {
         }
     }
 
+    /// Returns the kind whose keyword is `word`.
+    pub(super) fn named(word: &str) -> Option<Kind> {
+        [
+            Kind::Type,
+            Kind::Relation,
+            Kind::Set,
+            Kind::Fn,
+            Kind::Aggregate,
+            Kind::Constraint,
+            Kind::Check,
+            Kind::Store,
+        ]
+        .into_iter()
+        .find(|k| k.word() == word)
+    }
+
     fn of(item: Item) -> Kind {
         match item {
             Item::Type(_) => Kind::Type,

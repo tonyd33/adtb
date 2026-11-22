@@ -20,13 +20,75 @@ use crate::types::Ty;
 struct Image<'a> {
     /// The merged constructor's name.
     ctor: &'a str,
-    /// The discriminator field.
-    disc: &'a str,
+    disc: &'a Disc,
     /// The sources' names, in declaration order.
     sources: &'a [String],
     /// The sources' positions in the type, in declaration order.
     src_ix: &'a [u32],
     carries: &'a Carries,
+}
+
+/// The fields of a merged row that tell which merged constructor it came from, with each
+/// constructor's values of them as expression text.
+struct Disc {
+    fields: Vec<String>,
+    values: BTreeMap<String, Vec<(String, String)>>,
+}
+
+impl Disc {
+    /// Returns the discriminator field `field` alone, each of `sources` its own constructor name.
+    fn named(field: String, sources: &[String]) -> Disc {
+        Disc {
+            values: sources
+                .iter()
+                .map(|s| (s.clone(), vec![(field.clone(), s.clone())]))
+                .collect(),
+            fields: vec![field],
+        }
+    }
+
+    fn value(&self, ctor: &str, field: &str) -> Option<&str> {
+        self.values
+            .get(ctor)?
+            .iter()
+            .find(|(f, _)| f == field)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// Returns the fields the arms of a derived merge, in `text`, give a value not read from the
+/// row, with each source's values.
+fn fixed_disc(text: &str, arms: &[ast::Arm]) -> Disc {
+    let mut disc = Disc {
+        fields: Vec::new(),
+        values: BTreeMap::new(),
+    };
+    for a in arms {
+        let (
+            Some(ast::PatternKind::Ctor { path, ctor, .. }),
+            ast::ExprKind::Ctor {
+                record: Some(ast::RecordExpr::Fields(given, _)),
+                ..
+            },
+        ) = (a.patterns.first().map(|p| &p.kind), &a.body.kind)
+        else {
+            continue;
+        };
+        let from = ctor.as_ref().unwrap_or(&path.name).text.clone();
+        for (g, e) in given {
+            if matches!(e.kind, ast::ExprKind::Field(..) | ast::ExprKind::Name(_)) {
+                continue;
+            }
+            if !disc.fields.contains(&g.text) {
+                disc.fields.push(g.text.clone());
+            }
+            disc.values
+                .entry(from.clone())
+                .or_default()
+                .push((g.text.clone(), text[e.span.range()].to_string()));
+        }
+    }
+    disc
 }
 
 /// Returns a selection of `names` as written: `C`, or `(C | D)`.
@@ -117,14 +179,17 @@ fn carried_by_name(
     sources: &[String],
     m: &str,
     mfields: &[FieldDef],
-    disc: &str,
+    disc: &Disc,
 ) -> Res<Carries> {
     let mut c = Vec::new();
     for s in sources {
         let k = td.ctor_index(s).expect("a source");
         let sf = &td.ctors()[k as usize].fields;
         for f in sf {
-            match mfields.iter().find(|g| g.name == f.name && g.name != disc) {
+            match mfields
+                .iter()
+                .find(|g| g.name == f.name && !disc.fields.contains(&g.name))
+            {
                 Some(g) if g.ty.alike(&f.ty) => {
                     c.push((s.clone(), f.name.clone(), m.to_string(), f.name.clone()));
                 }
@@ -137,7 +202,7 @@ fn carried_by_name(
             }
         }
         for g in mfields {
-            if g.name != disc && !sf.iter().any(|f| f.name == g.name) {
+            if !disc.fields.contains(&g.name) && !sf.iter().any(|f| f.name == g.name) {
                 return refuse(format!(
                     "field `{m}.{}` has no counterpart in `{s}`",
                     g.name
@@ -158,14 +223,16 @@ struct Rewrite {
 }
 
 impl Model {
-    pub(super) fn merge(
+    /// Merge constructors `sel` of `ty` into `into`. With `derived`, the values the routing's arms
+    /// fix tell the merged constructors apart, and no field need be a discriminator.
+    pub(in crate::evolve::model) fn merge(
         &mut self,
         run: &Run,
-        ty: &QName,
-        sel: &CtorSel,
+        (ty, sel): (&QName, &CtorSel),
         into: &ast::CtorDef,
         arms: Option<&[ast::Arm]>,
         given: &[ast::ArmClause],
+        derived: bool,
     ) -> Res<Applied> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
@@ -183,9 +250,14 @@ impl Model {
             None => None,
         };
         let (mfields, disc) = self.merged_shape(run, t, into, &names)?;
+        let disc = match arms {
+            Some(a) if derived => fixed_disc(run.text(), a),
+            _ => Disc::named(disc?, &names),
+        };
         let carries: Carries = match (arms, &routing) {
+            (Some(_), Some(r)) if derived => r.carries.clone(),
             (Some(a), Some(r)) => {
-                own_names(a, &disc)?;
+                own_names(a, &disc.fields[0])?;
                 r.carries.clone()
             }
             _ => carried_by_name(schema.ty(def), &names, &m, &mfields, &disc)?,
@@ -270,20 +342,14 @@ impl Model {
             None => String::new(),
         };
         self.settle_ids(run);
-        self.carry_grants(
-            t,
-            plan,
-            (&reaches, &routed),
-            std::slice::from_ref(&disc),
-            &[],
-        );
+        self.carry_grants(t, plan, (&reaches, &routed), &disc.fields, &[]);
         let map = match routing.as_ref() {
             Some(_) => None,
             None => Some(RowMap::Merge {
                 def,
                 from: src_ix.clone(),
                 into: m.clone(),
-                discriminator: disc.clone(),
+                discriminator: disc.fields[0].clone(),
             }),
         };
         let (routing_text, map) = match routing {
@@ -316,7 +382,7 @@ impl Model {
         t: u64,
         into: &ast::CtorDef,
         names: &[String],
-    ) -> Res<(Vec<FieldDef>, String)> {
+    ) -> Res<(Vec<FieldDef>, Res<String>)> {
         let mut probe = self.clone();
         let pc = probe.new_ctor(run, t, &into.name.text, into.record.as_deref());
         if let TypeBody::Ctors(cs) = &mut probe.types.get_mut(&t).expect("the type").body {
@@ -330,7 +396,7 @@ impl Model {
         let mfields: Vec<FieldDef> = ps.ty(def_in(ps, t)).ctors()[ctor_in(ps, pc) as usize]
             .fields
             .clone();
-        let disc = named_disc(ps, &mfields, into, names)?;
+        let disc = named_disc(ps, &mfields, into, names);
         Ok((mfields, disc))
     }
 
@@ -405,8 +471,12 @@ impl Model {
                         }
                     }
                 }
-                if cl.kind == IndexKind::Unique && !fs.iter().any(|f| f == image.disc) {
-                    fs.insert(0, image.disc.to_string());
+                if cl.kind == IndexKind::Unique {
+                    for f in image.disc.fields.iter().rev() {
+                        if !fs.contains(f) {
+                            fs.insert(0, f.clone());
+                        }
+                    }
                 }
                 match &fields {
                     None => fields = Some(fs),
@@ -521,19 +591,31 @@ impl Model {
                 nested |= matches!(e.kind, ast::ExprKind::Match(..));
             });
             let body = if nested { format!("({body})") } else { body };
+            let untold = || {
+                refuse(format!(
+                    "check `{}` has no image under the merge: no one field of `{}` tells its constructors apart",
+                    chk.name, image.ctor
+                ))
+            };
+            let [field] = image.disc.fields.as_slice() else {
+                return untold();
+            };
             let mut arms: Vec<String> = Vec::new();
             for (s, c) in image.sources.iter().zip(image.src_ix) {
+                let Some(v) = image.disc.value(s, field) else {
+                    return untold();
+                };
                 let e = if cs.contains(c) {
                     body.as_str()
                 } else {
                     "true"
                 };
-                arms.push(format!("{s} -> {e}"));
+                arms.push(format!("{v} -> {e}"));
             }
             edits.push(Edit::new(
                 j,
                 pred,
-                Term::text(&format!("match {} | {}", image.disc, arms.join(" | "))),
+                Term::text(&format!("match {field} | {}", arms.join(" | "))),
             ));
         }
         Ok(edits)

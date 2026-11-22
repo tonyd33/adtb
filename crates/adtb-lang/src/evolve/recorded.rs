@@ -68,7 +68,7 @@ impl Source {
         #[cfg(feature = "compare-migration-model")]
         let recorded = if model::enabled() {
             Recorded {
-                modelled: model::compare_recorded(self, m, text, &next, &recorded),
+                modelled: model::compare_recorded(self, m, text, accepting, &next, &recorded),
                 ..recorded
             }
         } else {

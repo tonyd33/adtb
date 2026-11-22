@@ -175,41 +175,38 @@ pub(super) struct HeldGrant {
     pub(super) held: Option<(usize, bool, bool)>,
 }
 
-impl Source {
-    /// Set what each role of `back` holds of its privilege to what it states, putting a grant
-    /// it lacks back at its place.
-    ///
-    /// Preconditions:
-    /// - The privileges of `back` with a place are in ascending order of it.
-    pub(super) fn hold(&mut self, back: Vec<HeldGrant>) {
-        let (gone, kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
-            back.into_iter().partition(|h| h.held.is_none());
-        for h in gone.into_iter().chain(kept) {
-            let privilege = h.privilege;
-            let at = self
-                .grants
-                .iter()
-                .position(|x| x.role == h.role && x.privilege == privilege);
-            match (at, h.held) {
-                (Some(i), Some((_, grant_option, dormant))) => {
-                    self.grants[i].grant_option = grant_option;
-                    self.grants[i].dormant = dormant;
-                }
-                (Some(i), None) => {
-                    self.grants.remove(i);
-                }
-                (None, Some((i, grant_option, dormant))) => self.grants.insert(
-                    i.min(self.grants.len()),
-                    LogGrant {
-                        role: h.role,
-                        privilege,
-                        grant_option,
-                        row: None,
-                        dormant,
-                    },
-                ),
-                (None, None) => {}
+/// Set what each role of `back` holds of its privilege in `grants` to what it states, putting a
+/// grant it lacks back at its place.
+///
+/// Preconditions:
+/// - The privileges of `back` with a place are in ascending order of it.
+pub(super) fn hold(grants: &mut Vec<LogGrant>, back: Vec<HeldGrant>) {
+    let (gone, kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
+        back.into_iter().partition(|h| h.held.is_none());
+    for h in gone.into_iter().chain(kept) {
+        let privilege = h.privilege;
+        let at = grants
+            .iter()
+            .position(|x| x.role == h.role && x.privilege == privilege);
+        match (at, h.held) {
+            (Some(i), Some((_, grant_option, dormant))) => {
+                grants[i].grant_option = grant_option;
+                grants[i].dormant = dormant;
             }
+            (Some(i), None) => {
+                grants.remove(i);
+            }
+            (None, Some((i, grant_option, dormant))) => grants.insert(
+                i.min(grants.len()),
+                LogGrant {
+                    role: h.role,
+                    privilege,
+                    grant_option,
+                    row: None,
+                    dormant,
+                },
+            ),
+            (None, None) => {}
         }
     }
 }

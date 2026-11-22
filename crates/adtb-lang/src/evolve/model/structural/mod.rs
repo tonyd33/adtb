@@ -128,7 +128,7 @@ impl Model {
                 into,
                 arms,
                 clauses,
-            } => self.merge(run, ty, sel, into, arms.as_deref(), clauses)?,
+            } => self.merge(run, (ty, sel), into, arms.as_deref(), clauses, false)?,
             OperatorKind::UnnestConstructor(path, clauses) => self.unnest(run, path, clauses)?,
             _ => return Ok(None),
         }))

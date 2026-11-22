@@ -6,7 +6,7 @@ use super::apply::Migrated;
 use super::op::Refused;
 use super::*;
 use crate::ast::{self, MigrationFile, OperatorKind};
-use crate::evolve::{Recorded, Refusal, ResolvedOp, RowMap, SourceDecl};
+use crate::evolve::{Recorded, Refusal, ResolvedOp, RowMap, SourceDecl, meaning};
 use crate::ids::{KeyKind, ObjectKey, Owner, is_named};
 use crate::lex::{Tok, lex};
 use crate::span::Span;
@@ -80,37 +80,25 @@ const JUDGED_FROM: usize = SKIPPED_AT_MOST.1;
 /// runs them. Each applies few migrations, among them one the model does not compare.
 const UNJUDGED: &[&str] = &[];
 
-/// The reason of revert's skips, which [`TALLIES`] leaves out and the comparison over the
-/// cases and the script corpus holds under [`REVERT_SKIPPED_AT_MOST`].
-pub(in crate::evolve) const REVERT: &str = "revert";
-
-/// The share of the comparisons over the cases and the script corpus that may be revert's
-/// skips, as a fraction: the measured 51 of 614, rounded up.
-#[cfg(test)]
-pub(in crate::evolve) const REVERT_SKIPPED_AT_MOST: (usize, usize) = (9, 100);
-
 /// Count `line`'s outcome for `hook` and for [`forced`], and append it to the file
 /// `ADTB_MIGRATION_MODEL_LOG` names, when it names one. A `partial` of [`Hook::Migrating`]
-/// compares nothing and counts as skipped. Judge it unless it is a skip for [`REVERT`] or its
-/// thread is one of [`UNJUDGED`].
+/// compares nothing and counts as skipped. Judge it unless its thread is one of [`UNJUDGED`].
 fn log(hook: Hook, line: &str) {
     let outcome = line.split(['\t', ' ']).next().unwrap_or(line);
-    let reason = line.split('\t').nth(1);
     let skipped = outcome == "skipped" || (outcome == "partial" && matches!(hook, Hook::Migrating));
-    let revert = skipped && reason == Some(REVERT);
     FORCED.with(|x| {
         if let Some(tally) = x.borrow_mut().as_mut() {
-            let key = match (revert, skipped) {
-                (true, _) => format!("{hook:?} {REVERT}"),
-                (false, true) => format!("{hook:?} skipped"),
-                (false, false) => format!("{hook:?} {outcome}"),
+            let key = if skipped {
+                format!("{hook:?} skipped")
+            } else {
+                format!("{hook:?} {outcome}")
             };
             *tally.entry(key).or_default() += 1;
         }
     });
     let thread = std::thread::current();
     let name = thread.name().unwrap_or_default();
-    if !revert && !UNJUDGED.contains(&name) {
+    if !UNJUDGED.contains(&name) {
         judge(hook, skipped, name, line);
     }
     let Some(path) = std::env::var_os("ADTB_MIGRATION_MODEL_LOG") else {
@@ -163,11 +151,12 @@ pub(in crate::evolve) fn compare(
     m: &MigrationFile,
     text: &str,
     kept: &[crate::evolve::Kept],
+    accepting: bool,
     after: Result<&Source, &Refusal>,
 ) {
     let model = lifted(before);
     let migrated = model
-        .migrate_keeping(m, text, kept)
+        .migrate_keeping(m, text, kept, accepting)
         .unwrap_or_else(|why| panic!("the migration model fails on migration\n{text}\n{why}"));
     if let Some(kind) = migrated.stopped() {
         let outcome = if migrated.ops().len() == m.operators.len() {
@@ -288,6 +277,8 @@ enum Aspect {
     NextIds,
     NamedIds,
     ClauseIds,
+    /// The id of each object of the source the model gives, by its key.
+    SourceIds,
     /// An operator's steps or row maps.
     Steps,
     Resolved,
@@ -349,15 +340,63 @@ fn differences(m: &MigrationFile, got: &Migrated, after: Result<&Source, &Refusa
                 });
                 return out;
             }
-            out.extend(same(got.model(), src));
+            out.extend(same(got.model(), src, reverts(m)));
         }
     }
     out
 }
 
-/// Returns each way `model` differs from `src`. While `src` does not build, its clause ids
-/// may still hold those of clauses that are gone, so the model's need only be among them.
-fn same(model: &Model, src: &Source) -> Vec<Diff> {
+/// Returns how declarations `mine` differ from `layer`'s in meaning, each compared by its
+/// tokens with [`meaning::decls`].
+fn meaning_differs(layer: &[SourceDecl], mine: &[SourceDecl]) -> Option<Diff> {
+    let (layer, mine) = (meaning::decls(layer), meaning::decls(mine));
+    if layer == mine {
+        return None;
+    }
+    let modules: BTreeSet<String> = layer
+        .iter()
+        .chain(&mine)
+        .filter(|d| !layer.contains(d) || !mine.contains(d))
+        .map(|(m, _)| m.clone())
+        .collect();
+    let aspect = Aspect::Declarations(modules);
+    let shown = format!("{aspect:?}:\n  layer {layer:?}\n  model {mine:?}");
+    Some(Diff { aspect, shown })
+}
+
+/// Returns how the ids of the source `model` gives differ from those `src` holds, by key.
+fn source_ids_differ(model: &Model, src: &Source) -> Option<Diff> {
+    let given = model.source().ids;
+    let layer: Vec<_> = src
+        .ids
+        .iter()
+        .filter(|(k, v)| given.get(k) != Some(v))
+        .collect();
+    let mine: Vec<_> = given
+        .iter()
+        .filter(|(k, v)| src.ids.get(k) != Some(v))
+        .collect();
+    if layer.is_empty() && mine.is_empty() {
+        return None;
+    }
+    let shown = format!("SourceIds:\n  layer {layer:?}\n  model {mine:?}");
+    Some(Diff {
+        aspect: Aspect::SourceIds,
+        shown,
+    })
+}
+
+/// Returns whether `m` holds a `revert`.
+fn reverts(m: &MigrationFile) -> bool {
+    m.operators
+        .iter()
+        .any(|op| matches!(op.kind, OperatorKind::Revert { .. }))
+}
+
+/// Returns each way `model` differs from `src`, the declarations compared by their meaning when
+/// `by_meaning`. While `src` does not build, its clause ids may still hold those of clauses that
+/// are gone, so the model's need only be among them.
+fn same(model: &Model, src: &Source, by_meaning: bool) -> Vec<Diff> {
     let printed_decls = match model.printed() {
         Ok(ds) => ds,
         Err(why) => {
@@ -367,7 +406,13 @@ fn same(model: &Model, src: &Source) -> Vec<Diff> {
             }];
         }
     };
-    let mut out = Vec::new();
+    let mut out: Vec<Diff> = if by_meaning {
+        meaning_differs(&src.decls, &printed_decls)
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut check = |aspect: Aspect, a: String, b: String| {
         if a != b {
             let shown = format!("{aspect:?}:\n  layer {a}\n  model {b}");
@@ -385,7 +430,7 @@ fn same(model: &Model, src: &Source) -> Vec<Diff> {
     };
     let printed = module_tokens(&printed_decls);
     let held = module_tokens(&src.decls);
-    if held != printed {
+    if !by_meaning && held != printed {
         let of = |ds: &[SourceDecl], m: &str| -> Vec<String> {
             ds.iter()
                 .filter(|d| d.module == m)
@@ -492,6 +537,9 @@ fn same(model: &Model, src: &Source) -> Vec<Diff> {
             format!("{clauses:?}"),
             format!("{mine:?}"),
         );
+    }
+    if builds {
+        out.extend(source_ids_differ(model, src));
     }
     out
 }
@@ -656,13 +704,14 @@ pub(in crate::evolve) fn compare_recorded(
     before: &Source,
     m: &MigrationFile,
     text: &str,
+    accepting: bool,
     after: &Source,
     recorded: &Recorded,
 ) -> Option<Vec<ResolvedOp>> {
     let steps = recorded.steps();
     let model = lifted(before);
     let got = model
-        .migrate(m, text)
+        .migrate_keeping(m, text, &[], accepting)
         .unwrap_or_else(|why| panic!("the migration model fails on migration\n{text}\n{why}"));
     let mut diffs = Vec::new();
     let applied = got.ops().len();
@@ -688,6 +737,32 @@ pub(in crate::evolve) fn compare_recorded(
                 shown: format!("operator {k}: {shown}"),
             });
         };
+        if matches!(m.operators[k].kind, OperatorKind::Revert { .. }) {
+            match (held, mine) {
+                (Ok(held), Ok(mine)) => {
+                    let layer: Vec<String> =
+                        held.iter().flat_map(|s| &s.maps).map(map_summary).collect();
+                    let mine: Vec<String> = mine.iter().map(map_summary).collect();
+                    if layer != mine {
+                        step(format!("maps:\n  layer {layer:#?}\n  model {mine:#?}"));
+                    }
+                    if let Some(last) = held.last() {
+                        for d in same(&got.afters()[k], &last.after, true) {
+                            diffs.push(Diff {
+                                shown: format!("after operator {k}, {}", d.shown),
+                                ..d
+                            });
+                        }
+                    }
+                }
+                (Err(ds), Err(why)) if ds.iter().any(|d| d.message == *why) => {}
+                (held, mine) => {
+                    let mine = mine.as_ref().map(Vec::len);
+                    step(format!("layer steps {held:?}, model maps {mine:?}"));
+                }
+            }
+            continue;
+        }
         let held = match (held, mine) {
             (Ok(held), Ok(mine)) if held.len() == 1 => {
                 let layer: Vec<String> = held[0].maps.iter().map(map_summary).collect();
@@ -709,7 +784,7 @@ pub(in crate::evolve) fn compare_recorded(
                 continue;
             }
         };
-        for d in same(&got.afters()[k], &held.after) {
+        for d in same(&got.afters()[k], &held.after, false) {
             diffs.push(Diff {
                 shown: format!("after operator {k}, {}", d.shown),
                 ..d
@@ -793,7 +868,7 @@ fn known(
     )
 }
 
-/// Returns the finding when `diffs` are only in declarations and named ids, and renaming, after
+/// Returns the finding when `diffs` are only in declarations and ids, and renaming, after
 /// each `rename type T to U` of `m`, a constructor `T` of a type that is not a record to `U`
 /// gives the model's result as `layer`.
 fn respelled_constructor(
@@ -803,10 +878,12 @@ fn respelled_constructor(
     layer: Option<&Source>,
 ) -> Option<&'static str> {
     let layer = layer?;
-    if !diffs
-        .iter()
-        .all(|d| matches!(d.aspect, Aspect::Declarations(_) | Aspect::NamedIds))
-    {
+    if !diffs.iter().all(|d| {
+        matches!(
+            d.aspect,
+            Aspect::Declarations(_) | Aspect::NamedIds | Aspect::SourceIds
+        )
+    }) {
         return None;
     }
     let mut model = got.model().clone();
@@ -827,7 +904,7 @@ fn respelled_constructor(
             respelled = true;
         }
     }
-    (respelled && same(&model, layer).is_empty())
+    (respelled && same(&model, layer, false).is_empty())
         .then_some("E-2: rename type also renames a constructor of a sum spelled like the type")
 }
 
@@ -871,7 +948,7 @@ fn moved_without_action(
             }
         }
     }
-    (dropped && same(&model, layer).is_empty())
+    (dropped && same(&model, layer, false).is_empty())
         .then_some("F7: move field leaves the moved field `on delete restrict`")
 }
 

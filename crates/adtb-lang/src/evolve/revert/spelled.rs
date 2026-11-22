@@ -19,7 +19,7 @@ enum Piece {
 
 /// The kind of each object the source after a reverted migration holds, by the space of its id
 /// and the id.
-pub(super) type Late = BTreeMap<(Space, u64), KeyKind>;
+pub(in crate::evolve) type Late = BTreeMap<(Space, u64), KeyKind>;
 
 /// Returns the kind of each object `src` holds, by the space of its id and the id.
 pub(super) fn late(src: &Source) -> Late {
@@ -38,7 +38,7 @@ pub(super) fn spellings(src: &Source) -> BTreeMap<(Space, u64), &str> {
 }
 
 /// Returns the word a refusal names an object of kind `kind` by.
-pub(super) fn word(kind: KeyKind) -> &'static str {
+pub(in crate::evolve) fn word(kind: KeyKind) -> &'static str {
     match kind {
         KeyKind::Type => "type",
         KeyKind::Ctor => "constructor",
@@ -121,7 +121,7 @@ impl Spelled {
 
     /// Returns the text with each id a step of the revert created again replaced by the id
     /// `again` maps it to.
-    pub(super) fn mapped(self, again: &Recreated) -> Spelled {
+    pub(in crate::evolve) fn mapped(self, again: &Recreated) -> Spelled {
         let pieces = self
             .pieces
             .into_iter()
@@ -147,7 +147,7 @@ impl Spelled {
     /// Fail with the refusal of the inverse of operator text `of` when a name stands for an object
     /// `late` holds and `now` lacks, which a later migration dropped, or when the objects of one
     /// name now have different names.
-    pub(super) fn spelled(
+    pub(in crate::evolve) fn spelled(
         &self,
         now: &BTreeMap<(Space, u64), &str>,
         late: &Late,

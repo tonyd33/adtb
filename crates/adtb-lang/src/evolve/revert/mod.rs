@@ -7,10 +7,12 @@ mod spelled;
 mod structural;
 
 pub(super) use by_id::Recreated;
-use by_id::{DeclOf, NamedId, again_id, dropped, holding, recreate, removed};
+pub(in crate::evolve) use by_id::{DeclOf, NamedId, dropped, holding, recreate};
+use by_id::{again_id, removed};
 use inverse::Run;
-use spelled::{Late, Spelled, late, spellings};
-use structural::Undo;
+pub(in crate::evolve) use spelled::{Late, Spelled, word};
+use spelled::{late, spellings};
+pub(in crate::evolve) use structural::{PlacedArms, Undo};
 
 /// The `fill` clauses of a revert, each with the key of the field an inverse took it for.
 pub(super) struct Fills<'a> {
@@ -97,7 +99,7 @@ pub(in crate::evolve) enum Inverse {
         text: Spelled,
         after: Option<CatCtorId>,
         joins: Vec<CatSetId>,
-        arms: Vec<structural::PlacedArms>,
+        arms: Vec<PlacedArms>,
         of: String,
     },
     /// Set write states back, `None` removing the state; `of` is the text of the operator
@@ -390,19 +392,30 @@ impl<'a> Spelling<'a> {
 /// operators, the objects of the source after it, the relation variables the steps add back,
 /// and for each fill of the revert the key of the field an inverse took it for.
 pub(in crate::evolve) struct Inverted {
-    pub(in crate::evolve) steps: Vec<Undoing>,
-    pub(in crate::evolve) late: Late,
-    pub(in crate::evolve) linked: Vec<Expected>,
-    pub(in crate::evolve) filled: Vec<Option<ObjectKey>>,
+    steps: Vec<Undoing>,
+    late: Late,
+    linked: Vec<Expected>,
+    filled: Vec<Option<ObjectKey>>,
+}
+
+impl Inverted {
+    /// Returns the steps of each run, the objects of the source after the reverted migration,
+    /// the relation variables the steps restore, and the key of the field each fill was taken
+    /// for.
+    pub(in crate::evolve) fn into_parts(
+        self,
+    ) -> (Vec<Undoing>, Late, Vec<Expected>, Vec<Option<ObjectKey>>) {
+        (self.steps, self.late, self.linked, self.filled)
+    }
 }
 
 impl Cx<'_> {
     pub(super) fn revert(&mut self, migration: &str, fills: &[(ast::FieldPath, Fill)]) -> R<()> {
-        let inverted = self.inverted(migration, fills)?;
-        self.src.filled = inverted.filled;
+        let (steps, late, linked, filled) = self.inverted(migration, fills)?.into_parts();
+        self.src.filled = filled;
         let ahead = self.src.ahead.clone();
-        self.src.ahead.extend(inverted.linked);
-        let undone = self.undo_all(inverted.steps, &inverted.late);
+        self.src.ahead.extend(linked);
+        let undone = self.undo_all(steps, &late);
         self.src.ahead = ahead;
         undone
     }
@@ -848,7 +861,7 @@ impl Cx<'_> {
                 Ok(())
             }
             Inverse::Grants { back } => {
-                self.src.hold(back);
+                grant::hold(&mut self.src.grants, back);
                 Ok(())
             }
             Inverse::Restore {

@@ -2,16 +2,13 @@ use super::*;
 use crate::ids::{CatCtorId, CatRelId, keyed};
 
 impl Model {
-    /// Returns the source the model holds: its declarations printed, and each object of them by
-    /// its key with the id the model holds.
-    ///
-    /// Fail when a declaration names a dropped object no operator added again, or the
-    /// declarations do not build.
-    pub(super) fn source(&self) -> Result<Source, String> {
-        let decls = self.source_decls()?;
-        Ok(Source {
-            ids: self.ids()?,
-            decls,
+    /// Returns the source the model holds: its declarations printed, a name of dropped objects as
+    /// written, and each object of them by its key with the id the model holds, of each named
+    /// one alone while they do not build.
+    pub(super) fn source(&self) -> Source {
+        Source {
+            decls: self.printed().expect("the declarations print"),
+            ids: self.ids().unwrap_or_else(|_| self.named_keys()),
             modules: self.modules.clone(),
             installed: self.installed.clone(),
             packages: self.packages.clone(),
@@ -30,7 +27,7 @@ impl Model {
             log: self.logged.clone(),
             next: self.next.clone(),
             ..Source::default()
-        })
+        }
     }
 
     /// Returns the catalog id of each object of the declarations, by its key.
@@ -38,7 +35,7 @@ impl Model {
     /// Fail when the declarations do not build.
     pub(super) fn ids(&self) -> Result<BTreeMap<ObjectKey, u64>, String> {
         let (built, _) = self
-            .built(&[], &[])
+            .built(&[], &self.ahead_inputs())
             .map_err(|ds| ds[0].diag.message.clone())?;
         let schema = built.schema();
         let objs = built.objects();

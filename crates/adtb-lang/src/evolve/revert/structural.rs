@@ -1029,7 +1029,7 @@ fn ctor_path(src: &Source, c: CatCtorId) -> Option<ast::CtorPath> {
 /// Arms of a constructor an inverse puts back in a match of a constraint: the constraint's id,
 /// the match's position among those over the type in it, the constructor of the arm they follow,
 /// none for first, and the arms.
-pub(super) type PlacedArms = (CatConstraintId, usize, Option<CatCtorId>, Vec<Spelled>);
+pub(in crate::evolve) type PlacedArms = (CatConstraintId, usize, Option<CatCtorId>, Vec<Spelled>);
 
 /// Where a constructor an inverse puts back goes: after the constructor of an id, else first;
 /// the sets it joins; and its arms in each match of each constraint.

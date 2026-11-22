@@ -399,7 +399,7 @@ impl Model {
     }
 
     pub(super) fn remove_constructor(&mut self, run: &Run, path: &ast::CtorPath) -> Res<Applied> {
-        let built = self.schema_now(run)?;
+        self.schema_now(run)?;
         let resolving = Resolving::new(self, run.module());
         let t = resolving.ty(&path.ty)?;
         let tname = self.types[&t].name.clone();
@@ -407,6 +407,20 @@ impl Model {
         let Some(c) = self.ctor_named(t, &name) else {
             return refuse(format!("`{name}` is not a constructor of `{tname}`"));
         };
+        self.remove_ctor(run, t, c, false)?;
+        Ok((
+            Resolved::RemoveConstructor { ctor: c },
+            Vec::new(),
+            Ok(Vec::new()),
+        ))
+    }
+
+    /// Remove constructor `c` of type `t` with its arms, as the inverse of adding it when
+    /// `inverse`: then it need not be deprecated, and its arms leave every declaration.
+    pub(super) fn remove_ctor(&mut self, run: &Run, t: u64, c: u64, inverse: bool) -> Res<()> {
+        let built = self.schema_now(run)?;
+        let tname = self.types[&t].name.clone();
+        let name = self.ctors[&c].name.clone();
         let schema = built.schema();
         let def = schema
             .ids()
@@ -421,7 +435,9 @@ impl Model {
         let earlier = |s: Option<&State>| {
             s.is_some_and(|s| s.stage == Stage::Deprecated && s.since < self.version)
         };
-        let why = if rels.is_empty() {
+        let why = if inverse {
+            None
+        } else if rels.is_empty() {
             (!earlier(self.value_states.get(&c)))
                 .then(|| format!("`{name}` is not deprecated in its type by an earlier migration"))
         } else {
@@ -457,7 +473,7 @@ impl Model {
         let mut edits = self.reselect(&built, t, &[c], &[], mode)?;
         let refs = check::schema_refs(schema);
         for j in 0..self.decls.len() {
-            if !matches!(self.decls[j].item, Item::Constraint(_)) {
+            if !inverse && !matches!(self.decls[j].item, Item::Constraint(_)) {
                 continue;
             }
             let file = FileId(j as u32);
@@ -496,10 +512,6 @@ impl Model {
         self.drop_ctor(t, c);
         self.rebind(&before);
         self.settle_ids(run);
-        Ok((
-            Resolved::RemoveConstructor { ctor: c },
-            Vec::new(),
-            Ok(Vec::new()),
-        ))
+        Ok(())
     }
 }

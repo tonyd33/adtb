@@ -24,6 +24,8 @@ pub(super) struct Run<'a> {
     /// Each declaration or field an operator wrote naming what only the migration's end
     /// resolves, by the operator.
     late: RefCell<Vec<(usize, Late)>>,
+    /// Whether the log does not yet hold the migration.
+    accepting: bool,
 }
 
 /// What an operator wrote naming what only the migration's end resolves.
@@ -55,7 +57,18 @@ impl<'a> Run<'a> {
             at: 0,
             span: Span { start: 0, end: 0 },
             late: RefCell::default(),
+            accepting: false,
         }
+    }
+
+    /// Returns the run, applying text the log does not yet hold when `accepting`.
+    pub(super) fn accepting(self, accepting: bool) -> Run<'a> {
+        Run { accepting, ..self }
+    }
+
+    /// Returns whether the run applies text the log does not yet hold.
+    pub(super) fn is_accepting(&self) -> bool {
+        self.accepting
     }
 
     /// Note that the operator being applied wrote `late`. Returns the empty text its canonical
@@ -99,24 +112,7 @@ impl<'a> Run<'a> {
     /// Returns the relation variables the builder takes as ones a later operator adds, from
     /// `m`'s.
     pub(super) fn ahead(&self, m: &Model) -> Vec<Ahead> {
-        m.ahead
-            .iter()
-            .filter_map(|e| {
-                let (module, relation, state) = match e.added {
-                    Added::Not => (e.module.clone(), e.name.clone(), AheadState::Pending),
-                    Added::Applying => {
-                        (e.module.clone(), e.name.clone(), AheadState::UnlessDeclared)
-                    }
-                    Added::As(r) if e.typed => (
-                        m.module_of((Space::Shared, r))?.to_string(),
-                        m.relations.get(&r)?.name.clone(),
-                        AheadState::Declared,
-                    ),
-                    Added::As(_) => return None,
-                };
-                Some(Ahead::new(module, relation, e.typed, state, e.by))
-            })
-            .collect()
+        m.ahead_inputs()
     }
 }
 
@@ -261,6 +257,29 @@ fn span_text(text: &str, span: Span) -> String {
 }
 
 impl Model {
+    /// Returns the relation variables the builder takes as ones a later operator adds.
+    pub(super) fn ahead_inputs(&self) -> Vec<Ahead> {
+        let m = self;
+        self.ahead
+            .iter()
+            .filter_map(|e| {
+                let (module, relation, state) = match e.added {
+                    Added::Not => (e.module.clone(), e.name.clone(), AheadState::Pending),
+                    Added::Applying => {
+                        (e.module.clone(), e.name.clone(), AheadState::UnlessDeclared)
+                    }
+                    Added::As(r) if e.typed => (
+                        m.module_of((Space::Shared, r))?.to_string(),
+                        m.relations.get(&r)?.name.clone(),
+                        AheadState::Declared,
+                    ),
+                    Added::As(_) => return None,
+                };
+                Some(Ahead::new(module, relation, e.typed, state, e.by))
+            })
+            .collect()
+    }
+
     /// Returns the catalog ids of `schema`, built from `files` whose texts are `texts`: each
     /// object a declaration of the model holds the model's id, and every other object of a user
     /// module the next id of its space `next` gives, in creation order.
@@ -333,7 +352,8 @@ impl Model {
     /// Lift each held declaration in its place from `built`, which the declarations built, and lift
     /// again each declaration whose terms an operator wrote as text.
     ///
-    /// Panics when a declaration the model printed does not lift from its own build.
+    /// Panics:
+    /// - A declaration the model printed does not lift from its own build.
     fn lift_held(&mut self, built: &Built) {
         for i in 0..self.decls.len() {
             let Item::Held(_, key) = self.decls[i].item else {
@@ -358,9 +378,11 @@ impl Model {
             .unwrap_or_else(|e| panic!("a held declaration lifts once it builds: {e}"));
             let lifted = self.decls.pop().expect("the lifted declaration");
             self.decls[i] = lifted.clone();
-            self.held.remove(&key);
+            let held = self.held.remove(&key).expect("a held declaration");
             self.lifted.insert(key, lifted.item);
-            self.enable(lifted.item, built, file);
+            if held.enabling {
+                self.enable(lifted.item, built, file);
+            }
         }
         self.held_ids.clear();
         for item in std::mem::take(&mut self.unlifted) {

@@ -30,6 +30,8 @@ mod grant;
 mod grant_text;
 mod ids;
 mod keep;
+#[cfg(any(test, feature = "compare-migration-model"))]
+pub(crate) mod meaning;
 mod memo;
 #[cfg(feature = "compare-migration-model")]
 mod model;

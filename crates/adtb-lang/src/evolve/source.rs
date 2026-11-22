@@ -393,7 +393,14 @@ impl Source {
         };
         #[cfg(feature = "compare-migration-model")]
         if model::enabled() && !(recording && result.is_ok()) {
-            model::compare(self, m, text, kept, result.as_ref().map(|(s, _)| s));
+            model::compare(
+                self,
+                m,
+                text,
+                kept,
+                accepting,
+                result.as_ref().map(|(s, _)| s),
+            );
         }
         result
     }
