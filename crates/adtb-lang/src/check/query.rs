@@ -688,9 +688,18 @@ impl Checker<'_> {
         }
         let mut bound = Vec::new();
         let r = (|| -> R<Out> {
-            for (i, (_, e)) in binds.iter().enumerate() {
+            for (i, (n, e)) in binds.iter().enumerate() {
                 let want = Ty::Set(Box::new(tys[i].clone().expect("solved")));
                 let o = self.check(e, &want)?;
+                if !self.row_origin(&o).within(origins[i]) {
+                    return Err(Diag::internal(
+                        n.span,
+                        format!(
+                            "the rows of `{}` come from more than the row origin its binder was given",
+                            n.text
+                        ),
+                    ));
+                }
                 bound.push((vars[i], o.tm));
             }
             match expected {
@@ -747,19 +756,22 @@ impl Checker<'_> {
 
     pub(super) fn aggregate(
         &mut self,
-        name: &str,
+        f: PreludeFn,
         value: &Expr,
         gens: &[ast::Generator],
         filter: Option<&Expr>,
         span: Span,
     ) -> R<Out> {
-        let op = match name {
-            "count" => Agg::Count,
-            "sum" => Agg::Sum,
-            "min" => Agg::Min,
-            "max" => Agg::Max,
-            "avg" => Agg::Avg,
-            _ => return Err(diag(span, format!("`{name}` is not an aggregate"))),
+        let name = f.name();
+        let PreludeFn::Aggregate(a) = f else {
+            return Err(diag(span, format!("`{name}` is not an aggregate")));
+        };
+        let op = match a {
+            AggregateFn::Count => Agg::Count,
+            AggregateFn::Sum => Agg::Sum,
+            AggregateFn::Min => Agg::Min,
+            AggregateFn::Max => Agg::Max,
+            AggregateFn::Avg => Agg::Avg,
         };
         self.scope.push();
         let r = self.aggregate_in(op, name, value, gens, filter);

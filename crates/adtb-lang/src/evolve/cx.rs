@@ -56,7 +56,7 @@ impl Cx<'_> {
     pub(super) fn schema(&self) -> R<Schema> {
         self.src.schema().map_err(|ds| {
             ds.into_iter()
-                .map(|d| Diag::new(self.span, d.diag.message))
+                .map(|d| d.diag.restated(self.span, |m| m))
                 .collect()
         })
     }
@@ -65,13 +65,11 @@ impl Cx<'_> {
         self.src.check().map_err(|ds| {
             ds.into_iter()
                 .map(|d| {
-                    Diag::new(
-                        self.span,
+                    d.diag.restated(self.span, |m| {
                         format!(
-                            "the operator checks against the schema the operators before it produce, which does not check: {}",
-                            d.diag.message
-                        ),
-                    )
+                            "the operator checks against the schema the operators before it produce, which does not check: {m}"
+                        )
+                    })
                 })
                 .collect()
         })
@@ -214,7 +212,7 @@ impl Cx<'_> {
                         .any(|(k, r)| *k == i && r.start <= at.start && at.end <= r.end)
                 }
             })
-            .map(|d| Diag::new(self.span, d.diag.message))
+            .map(|d| d.diag.restated(self.span, |m| m))
             .collect();
         if own.is_empty() { Ok(()) } else { Err(own) }
     }
@@ -477,7 +475,7 @@ impl Cx<'_> {
         let own: Vec<Diag> = ds
             .into_iter()
             .filter(|d| d.file == FileId(i as u32))
-            .map(|d| Diag::new(self.span, d.diag.message))
+            .map(|d| d.diag.restated(self.span, |m| m))
             .collect();
         if own.is_empty() { Ok(()) } else { Err(own) }
     }

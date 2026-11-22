@@ -1,4 +1,5 @@
 use super::*;
+use crate::resolve::Unbound;
 
 impl Builder<'_> {
     /// Returns the declared sum `r` ranges over, else reports why it names none.
@@ -11,8 +12,10 @@ impl Builder<'_> {
         let head = match &r.ty.kind {
             ast::TypeKind::Named {
                 name, sel: None, ..
-            } => self.schema.lookup_type(module, name),
-            _ => Err("a relation's element type is a declared sum or record".to_string()),
+            } => self.schema.find_type_in(module, name, None),
+            _ => Err(Unbound::Missing(
+                "a relation's element type is a declared sum or record".to_string(),
+            )),
         };
         match head {
             Ok(TypeName::Decl(t)) if matches!(self.schema.ty(t).kind, TypeDefKind::Sum { .. }) => {
@@ -23,7 +26,10 @@ impl Builder<'_> {
                 r.ty.span,
                 "a relation's element type is a declared sum or record",
             ),
-            Err(e) => self.err(file, r.ty.span, e),
+            Err(e) => self.diags.push(FileDiag {
+                file,
+                diag: e.at(r.ty.span),
+            }),
         }
         None
     }
@@ -118,7 +124,7 @@ impl Builder<'_> {
             mode: TypeMode::Field,
             names: None,
         };
-        if let Some(elem) = self.resolve_type(file, &scope, &r.ty) {
+        if let Some(elem) = self.resolve_type(file, &scope, &r.ty, FnTypes::Refused(FN_RELATION)) {
             self.schema.defs_mut().relations[id.0 as usize].elem = elem;
         }
         let def = self.schema.ty(elem_def).clone();
@@ -217,7 +223,9 @@ impl Builder<'_> {
                         mode: TypeMode::Field,
                         names: None,
                     };
-                    let ty = self.resolve_type(file, &scope, ty).unwrap_or(Ty::Unit);
+                    let ty = self
+                        .resolve_type(file, &scope, ty, FnTypes::Refused(FN_FIELD))
+                        .unwrap_or(Ty::Unit);
                     if (0..def.ctors().len() as u32)
                         .any(|i| def.field_named(i, &name.text).is_some())
                     {

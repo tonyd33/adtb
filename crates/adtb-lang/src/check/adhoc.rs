@@ -263,7 +263,7 @@ impl Checker<'_> {
                     f.span(),
                     format!("`{}` is not a function", f.name.text),
                 )),
-                Err(e) => Err(diag(f.span(), e)),
+                Err(e) => Err(e.at(f.span())),
             },
             Privilege::Call(..) | Privilege::CallAt(_) | Privilege::Capability(..) => Ok(()),
         }
@@ -285,7 +285,7 @@ impl Checker<'_> {
                 q.span(),
                 format!("`{}` is not a relation", q.name.text),
             )),
-            Err(e) => Err(diag(q.span(), e)),
+            Err(e) => Err(e.at(q.span())),
         }
     }
 
@@ -366,7 +366,7 @@ impl Checker<'_> {
                 ),
             ));
         }
-        let ty = self.resolve_type(&t.ty)?;
+        let ty = self.resolve_type(&t.ty, FnTypes::Refused(FN_RELATION))?;
         let (row, candidates): (TempRow, Vec<String>) = match &ty {
             Ty::Record(fs) => {
                 let mut fields = fs.clone();

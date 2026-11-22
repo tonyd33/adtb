@@ -215,7 +215,7 @@ impl Catalog {
     ) -> Result<(), Error> {
         let normal = norm::program(schema, program)
             .map_err(|e| Error::Refused(vec![format!("the schema does not normalise: {e:?}")]))?;
-        kernel::validate(schema, &program.terms, &program.roots())
+        kernel::validate(schema, &program.terms, &program.body_terms())
             .and_then(|_| kernel::validate(schema, normal.terms(), &normal.roots()))
             .and_then(|_| kernel::validate_normal(schema, normal.terms(), &normal.roots()))
             .map_err(|e| Error::from(Broken::IllTyped(e)))?;

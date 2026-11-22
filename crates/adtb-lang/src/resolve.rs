@@ -124,9 +124,56 @@ impl Visible {
     }
 }
 
-pub fn lookup_value(schema: &Schema, vis: &Visible, name: &QName) -> Result<ValueDef, String> {
+/// A name a lookup finds no declaration for.
+#[derive(Debug)]
+pub enum Unbound {
+    /// The name of a relation variable a refused operator left poisoned.
+    Poisoned,
+    Missing(String),
+}
+
+impl std::fmt::Display for Unbound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unbound::Poisoned => f.write_str("the declaration of this name was refused"),
+            Unbound::Missing(m) => f.write_str(m),
+        }
+    }
+}
+
+impl Unbound {
+    /// Returns the diagnostic of the name at `span`, one nothing reports for a poisoned name.
+    pub fn at(self, span: Span) -> Diag {
+        match self {
+            Unbound::Poisoned => Diag::poisoned(span),
+            Unbound::Missing(m) => Diag::new(span, m),
+        }
+    }
+}
+
+/// Returns the value `name` denotes among the modules of `vis`.
+///
+/// Fail with `Unbound::Poisoned` when it finds none and names a relation variable a refused
+/// operator left poisoned.
+pub fn lookup_value(schema: &Schema, vis: &Visible, name: &QName) -> Result<ValueDef, Unbound> {
+    let missing = |e: String| {
+        let modules = match &name.module {
+            Some(m) => schema.module_named(&m.text).into_iter().collect(),
+            None => vis.modules.clone(),
+        };
+        let poisoned = modules
+            .into_iter()
+            .any(|m| schema.poisoned(m, &name.name.text));
+        if poisoned {
+            Unbound::Poisoned
+        } else {
+            Unbound::Missing(e)
+        }
+    };
     if name.module.is_some() {
-        return schema.lookup_value_in(vis.first(), name, vis.scope.as_ref());
+        return schema
+            .lookup_value_in(vis.first(), name, vis.scope.as_ref())
+            .map_err(missing);
     }
     let found: Vec<(ModuleId, ValueDef)> = vis
         .modules
@@ -135,32 +182,55 @@ pub fn lookup_value(schema: &Schema, vis: &Visible, name: &QName) -> Result<Valu
         .collect();
     match found.as_slice() {
         [(_, v)] => Ok(*v),
-        [] => Err(format!("no `{}` in scope", name.name.text)),
-        many => Err(format!(
+        [] => Err(missing(format!("no `{}` in scope", name.name.text))),
+        many => Err(Unbound::Missing(format!(
             "`{}` is declared in modules {}; qualify it",
             name.name.text,
             many.iter()
                 .map(|(m, _)| format!("`{}`", schema.module(*m).name))
                 .collect::<Vec<_>>()
                 .join(" and ")
-        )),
+        ))),
     }
 }
 
 /// Returns the relation variable `name` denotes among the modules of `vis`.
 ///
 /// Fail when `name` does not resolve or denotes something other than a relation.
-pub fn lookup_relation(schema: &Schema, vis: &Visible, name: &QName) -> Result<RelId, String> {
+pub fn lookup_relation(schema: &Schema, vis: &Visible, name: &QName) -> Result<RelId, Unbound> {
     match lookup_value(schema, vis, name)? {
         ValueDef::Relation(rel) => Ok(rel),
-        _ => Err(format!("`{}` is not a relation", name.name.text)),
+        _ => Err(Unbound::Missing(format!(
+            "`{}` is not a relation",
+            name.name.text
+        ))),
     }
 }
 
-pub fn lookup_type(schema: &Schema, vis: &Visible, name: &QName) -> Result<TypeName, String> {
+/// Returns the type `name` names among the modules of `vis`.
+///
+/// Fail with `Unbound::Poisoned` when it finds none and names a type a refused operator left
+/// poisoned.
+pub fn lookup_type(schema: &Schema, vis: &Visible, name: &QName) -> Result<TypeName, Unbound> {
+    let missing = |e: String| {
+        let modules = match &name.module {
+            Some(m) => schema.module_named(&m.text).into_iter().collect(),
+            None => vis.modules.clone(),
+        };
+        if modules
+            .into_iter()
+            .any(|m| schema.poisoned_type(m, &name.name.text))
+        {
+            Unbound::Poisoned
+        } else {
+            Unbound::Missing(e)
+        }
+    };
     let scope = vis.scope.as_ref();
     if name.module.is_some() {
-        return schema.lookup_type_in(vis.first(), name, scope);
+        return schema
+            .lookup_type_in(vis.first(), name, scope)
+            .map_err(missing);
     }
     let found: Vec<ModuleId> = vis
         .modules
@@ -169,12 +239,14 @@ pub fn lookup_type(schema: &Schema, vis: &Visible, name: &QName) -> Result<TypeN
         .filter(|&m| vis.type_in(schema, m, &name.name.text).is_some())
         .collect();
     match found.as_slice() {
-        [m] => schema.lookup_type_in(*m, name, scope),
-        [] => schema.lookup_type_in(crate::schema::PRELUDE, name, scope),
-        _ => Err(format!(
+        [m] => schema.lookup_type_in(*m, name, scope).map_err(missing),
+        [] => schema
+            .lookup_type_in(crate::schema::PRELUDE, name, scope)
+            .map_err(missing),
+        _ => Err(Unbound::Missing(format!(
             "type `{}` is declared in several modules; qualify it",
             name.name.text
-        )),
+        ))),
     }
 }
 
@@ -408,6 +480,13 @@ impl<'a> Resolver<'a> {
         self.diags.push(Diag::new(span, msg));
     }
 
+    /// Report the name at `span` that finds nothing, unless it is poisoned.
+    fn unbound(&mut self, span: Span, e: Unbound) {
+        if let Unbound::Missing(msg) = e {
+            self.err(span, msg);
+        }
+    }
+
     fn lower_name(&mut self, q: &QName, as_call: bool) {
         if q.module.is_none() {
             let text = q.name.text.as_str();
@@ -438,7 +517,7 @@ impl<'a> Resolver<'a> {
                 if self.ctx == Context::Adhoc && q.module.is_none() && !as_call {
                     self.params.insert(q.name.text.clone());
                 } else {
-                    self.err(q.span(), e);
+                    self.unbound(q.span(), e);
                 }
             }
         }
@@ -448,7 +527,7 @@ impl<'a> Resolver<'a> {
         let rel = match lookup_relation(self.schema, &self.vis, &r.relation) {
             Ok(rel) => rel,
             Err(e) => {
-                self.err(r.span, e);
+                self.unbound(r.span, e);
                 return None;
             }
         };
@@ -476,7 +555,7 @@ impl<'a> Resolver<'a> {
                 path.span(),
                 format!("`{}` has no constructors", path.name.text),
             ),
-            Err(e) => self.err(path.span(), e),
+            Err(e) => self.unbound(path.span(), e),
         }
     }
 
@@ -484,7 +563,7 @@ impl<'a> Resolver<'a> {
         if let TypeKind::Named { name, .. } = &ty.kind
             && let Err(e) = lookup_type(self.schema, &self.vis, name)
         {
-            self.err(name.span(), e);
+            self.unbound(name.span(), e);
         }
     }
 
@@ -775,7 +854,7 @@ impl<'a> Resolver<'a> {
                     callee.name.text
                 ),
             ),
-            Err(err) => self.err(callee.span(), err),
+            Err(err) => self.unbound(callee.span(), err),
         }
     }
 
@@ -804,7 +883,7 @@ impl<'a> Resolver<'a> {
                 match lookup_value(self.schema, &self.vis, q) {
                     Ok(ValueDef::Relation(_)) => {}
                     Ok(_) => self.err(x.span, "`.key(...)` follows a relation name"),
-                    Err(err) => self.err(x.span, err),
+                    Err(err) => self.unbound(x.span, err),
                 }
             }
             _ => self.err(x.span, "`.key(...)` follows a relation name"),
@@ -871,7 +950,7 @@ impl<'a> Resolver<'a> {
                     match lookup_value(self.schema, &self.vis, r) {
                         Ok(ValueDef::Relation(_)) => {}
                         Ok(_) => self.err(r.span(), "rejects go into a relation"),
-                        Err(e) => self.err(r.span(), e),
+                        Err(e) => self.unbound(r.span(), e),
                     }
                 }
             }

@@ -216,7 +216,7 @@ fn root_principal_resolves_from_empty_imports_and_the_prelude() {
         ] {
             assert_eq!(
                 expected,
-                lookup_type(&schema, &vis, &name),
+                lookup_type(&schema, &vis, &name).map_err(|e| e.to_string()),
                 "custom={custom}, {vis:?}"
             );
         }
@@ -231,6 +231,7 @@ fn root_principal_resolves_from_empty_imports_and_the_prelude() {
             assert_eq!(
                 Err("module `identity` declares no type `Principal`".into()),
                 lookup_type(&schema, &Visible::of(Vec::new()), &qualified)
+                    .map_err(|e| e.to_string())
             );
         } else {
             assert_eq!(schema.principal, schema.prelude().principal());

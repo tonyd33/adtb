@@ -1,14 +1,15 @@
 use super::expr::wants_expected;
 use super::*;
 use crate::ast::{CallArgs, Expr};
-use crate::kernel::{Agg, FileFormat, Prim};
+use crate::kernel::{Agg, Prim};
+use crate::resolve::Unbound;
 
 /// What the callee of a call denotes.
 pub(super) enum Callee {
     Local(Local),
     Declared(ValueDef),
-    Prelude,
-    Unknown(String),
+    Prelude(PreludeFn),
+    Unknown(Unbound),
 }
 
 impl Checker<'_> {
@@ -102,7 +103,7 @@ impl Checker<'_> {
                 let mut vars = Vec::new();
                 let mut want = expected.cloned();
                 for p in params {
-                    let t = self.resolve_type(&p.ty)?;
+                    let t = self.resolve_type(&p.ty, FnTypes::Allowed)?;
                     if let Some(Ty::Fn(a, r)) = &want {
                         if !subtype(self.schema, a, &t) {
                             return Err(diag(
@@ -140,15 +141,8 @@ impl Checker<'_> {
         span: Span,
     ) -> R<Out> {
         let text = callee.name.text.as_str();
-        let format = match text {
-            "read_csv" => Some(FileFormat::Csv),
-            "read_ndjson" => Some(FileFormat::Ndjson),
-            "read_parquet" => Some(FileFormat::Parquet),
-            "read_arrow" => Some(FileFormat::Arrow),
-            _ => None,
-        };
         if let Some(v) = pins
-            && (format.is_none() || !matches!(self.callee(callee), Callee::Prelude))
+            && !matches!(self.callee(callee), Callee::Prelude(PreludeFn::File(_)))
         {
             return Err(diag(v.span, "only a file scan takes `pins`"));
         }
@@ -158,8 +152,8 @@ impl Checker<'_> {
         let def = match self.callee(callee) {
             Callee::Local(local) => return self.apply_local(local, args, span),
             Callee::Declared(def) => def,
-            Callee::Unknown(e) => return Err(diag(callee.span(), e)),
-            Callee::Prelude => return self.prelude_callee(text, args, format, pins, span),
+            Callee::Unknown(e) => return Err(e.at(callee.span())),
+            Callee::Prelude(f) => return self.prelude_callee(f, args, pins, span),
         };
         self.record_value(callee, def);
         match def {
@@ -200,32 +194,27 @@ impl Checker<'_> {
         }
         match self.find_value(callee) {
             Ok(def) => Callee::Declared(def),
-            Err(e) if callee.module.is_some() || !PRELUDE_FUNCTIONS.contains(&text) => {
-                Callee::Unknown(e)
-            }
-            Err(_) => Callee::Prelude,
+            Err(e) => match PreludeFn::named(text) {
+                Some(f) if callee.module.is_none() => Callee::Prelude(f),
+                _ => Callee::Unknown(e),
+            },
         }
     }
 
     fn prelude_callee(
         &mut self,
-        text: &str,
+        f: PreludeFn,
         args: &CallArgs,
-        format: Option<FileFormat>,
         pins: Option<&ast::Version>,
         span: Span,
     ) -> R<Out> {
-        match (args, format) {
-            (
-                CallArgs::Aggregate {
-                    expr,
-                    generators,
-                    filter,
-                },
-                _,
-            ) => self.aggregate(text, expr, generators, filter.as_deref(), span),
-            (CallArgs::List(es), Some(format)) => self.file_scan(text, format, es, pins, span),
-            (CallArgs::List(es), None) => self.prelude_call(text, es, span),
+        match args {
+            CallArgs::Aggregate {
+                expr,
+                generators,
+                filter,
+            } => self.aggregate(f, expr, generators, filter.as_deref(), span),
+            CallArgs::List(es) => self.prelude_call(f, es, pins, span),
         }
     }
 
@@ -238,7 +227,7 @@ impl Checker<'_> {
                     format!("`{}` is not a newtype", callee.name.text),
                 ));
             }
-            Err(e) => return Err(diag(callee.span(), e)),
+            Err(e) => return Err(e.at(callee.span())),
         };
         let TypeDefKind::Newtype { base, .. } = &self.schema.ty(def).kind else {
             return Err(diag(
@@ -344,10 +333,7 @@ impl Checker<'_> {
                 ));
             };
             if t.mentions_fn() {
-                return Err(diag(
-                    span,
-                    "a type argument is a value type, never a function type",
-                ));
+                return Err(diag(span, FN_TYPE_ARGUMENT));
             }
             for b in bounds {
                 let ok = match b {

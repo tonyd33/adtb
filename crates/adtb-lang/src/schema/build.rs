@@ -92,6 +92,18 @@ impl Builder<'_> {
             let Some(module) = self.schema.module_named(&a.module) else {
                 continue;
             };
+            let defs = self.schema.defs_mut();
+            match a.kind {
+                AheadKind::Relation => {}
+                AheadKind::Type => {
+                    defs.poisoned_types.insert((module, a.relation.clone()));
+                    continue;
+                }
+                AheadKind::Function => {
+                    defs.poisoned.insert((module, a.relation.clone()));
+                    continue;
+                }
+            }
             let values = &self.schema.module(module).values;
             let named = values.contains_key(&a.relation);
             let declared = match values.get(&a.relation) {
@@ -100,10 +112,13 @@ impl Builder<'_> {
             };
             let rel = match a.state {
                 AheadState::Declared => declared,
-                AheadState::Pending if named => None,
+                AheadState::Pending | AheadState::Refused if named => None,
                 AheadState::UnlessDeclared if named => declared,
-                AheadState::Pending | AheadState::UnlessDeclared => {
+                AheadState::Pending | AheadState::UnlessDeclared | AheadState::Refused => {
                     let defs = self.schema.defs_mut();
+                    if a.state == AheadState::Refused {
+                        defs.poisoned.insert((module, a.relation.clone()));
+                    }
                     defs.ahead.push((module, a.relation.clone(), a.by));
                     Some(RelRef::Ahead(AheadId::at(defs.ahead.len() - 1)))
                 }
@@ -197,11 +212,13 @@ impl Builder<'_> {
                     format!("parameter `{}` is declared twice", p.name.text),
                 );
             }
-            let ty = self.resolve_type(file, &scope, &p.ty).unwrap_or(Ty::Unit);
+            let ty = self
+                .resolve_type(file, &scope, &p.ty, FnTypes::Refused(FN_AGGREGATE))
+                .unwrap_or(Ty::Unit);
             params.push((p.name.text.clone(), ty));
         }
         let result = self
-            .resolve_type(file, &scope, &a.result)
+            .resolve_type(file, &scope, &a.result, FnTypes::Refused(FN_AGGREGATE))
             .unwrap_or(Ty::Unit);
         let mut fields: Vec<(String, Ty)> = Vec::new();
         for f in &a.state {
@@ -212,7 +229,9 @@ impl Builder<'_> {
                     format!("state field `{}` is declared twice", f.name.text),
                 );
             }
-            let ty = self.resolve_type(file, &scope, &f.ty).unwrap_or(Ty::Unit);
+            let ty = self
+                .resolve_type(file, &scope, &f.ty, FnTypes::Refused(FN_FIELD))
+                .unwrap_or(Ty::Unit);
             fields.push((f.name.text.clone(), ty));
         }
         fields.sort_by(|x, y| x.0.cmp(&y.0));
@@ -265,11 +284,13 @@ impl Builder<'_> {
                     format!("parameter `{}` is declared twice", p.name.text),
                 );
             }
-            let ty = self.resolve_type(file, &scope, &p.ty).unwrap_or(Ty::Unit);
+            let ty = self
+                .resolve_type(file, &scope, &p.ty, FnTypes::Allowed)
+                .unwrap_or(Ty::Unit);
             params.push((p.name.text.clone(), ty));
         }
         let result = self
-            .resolve_type(file, &scope, &f.result)
+            .resolve_type(file, &scope, &f.result, FnTypes::Allowed)
             .unwrap_or(Ty::Unit);
         let def = &mut self.schema.defs_mut().functions[id.0 as usize];
         def.type_params = tparams;

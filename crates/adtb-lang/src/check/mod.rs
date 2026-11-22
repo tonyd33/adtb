@@ -10,12 +10,14 @@ use crate::kernel::{Build, Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
 use crate::schema::prelude::ctor;
 use crate::schema::{
-    Committed, DefaultValue, PRELUDE, Schema, TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
+    Committed, DefaultValue, FN_RELATION, FN_TYPE_ARGUMENT, FnTypes, PRELUDE, Schema, TypeDefKind,
+    TypeMode, TypeName, TypeScope, ValueDef,
 };
-use crate::span::{Diag, FileDiag, FileId, Span};
+use crate::span::{Diag, DiagKind, FileDiag, FileId, Span};
 use crate::types::*;
 
 mod adhoc;
+mod body;
 mod call;
 mod expr;
 mod names;
@@ -37,6 +39,7 @@ pub(crate) mod tests;
 use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
+pub use body::ProgramBody;
 pub use order::{declaration_order, schema_migration};
 pub use row_body::{RowBody, check_row, row_query};
 pub use txn::{Txn, check_txn, check_txn_in};
@@ -139,14 +142,6 @@ impl Program {
 
     pub fn checks(&self) -> impl Iterator<Item = (CheckIdx, Tm)> + '_ {
         self.checks.iter().map(|(&c, &t)| (c, t))
-    }
-
-    /// Returns every body of the program with the variables free in it.
-    pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
-        crate::depends::bodies(self)
-            .into_iter()
-            .map(|(_, t, vs)| (t, vs))
-            .collect()
     }
 }
 
@@ -529,14 +524,19 @@ fn call_order(schema: &Schema) -> Result<Vec<FnId>, FileDiag> {
 }
 
 /// Type checks every body of a schema and elaborates it to the kernel.
+///
+/// Fail with no diagnostic of a body that names a relation variable a refused operator left
+/// poisoned.
 pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
     let order = call_order(schema).map_err(|d| vec![d])?;
     let (program, mut diags) = bodies(schema, &order, None);
-    if diags.is_empty() {
+    let poisoned = diags.iter().any(|d| d.diag.kind == DiagKind::Poisoned);
+    diags.retain(|d| d.diag.kind != DiagKind::Poisoned);
+    if diags.is_empty() && !poisoned {
         diags = crate::analysis::schema_diags(schema, &program);
     }
-    if diags.is_empty() {
-        crate::kernel::assert_valid(schema, &program.terms, &program.roots());
+    if diags.is_empty() && !poisoned {
+        crate::kernel::assert_valid(schema, &program.terms, &program.body_terms());
         Ok(program)
     } else {
         Err(diags)
@@ -1026,8 +1026,8 @@ pub fn check_feed_in(
     f: &ast::FeedDecl,
 ) -> Result<(RelId, CtorSet), Diag> {
     let of = &f.of;
-    let rel = crate::resolve::lookup_relation(schema, &vis, &of.relation)
-        .map_err(|e| Diag::new(of.span, e))?;
+    let rel =
+        crate::resolve::lookup_relation(schema, &vis, &of.relation).map_err(|e| e.at(of.span))?;
     if schema.relation(rel).volatile {
         return Err(Diag::new(
             of.span,
@@ -1048,23 +1048,17 @@ impl Checker<'_> {
         if let Some(l) = &q.limit {
             self.check(l, &Ty::Base(Base::Duration))?;
         }
-        let result = self.resolve_type(&q.result)?;
-        if result.mentions_fn() {
-            return Err(diag(
-                q.result.span,
-                "a registered query never returns a function",
-            ));
-        }
+        let result = self.resolve_type(
+            &q.result,
+            FnTypes::Refused("a registered query never returns a function"),
+        )?;
         self.scope.push();
         let mut vars = Vec::new();
         for p in &q.params {
-            let pty = self.resolve_type(&p.ty)?;
-            if pty.mentions_fn() {
-                return Err(diag(
-                    p.ty.span,
-                    "a parameter of a registered query never has a function type",
-                ));
-            }
+            let pty = self.resolve_type(
+                &p.ty,
+                FnTypes::Refused("a parameter of a registered query never has a function type"),
+            )?;
             vars.push(self.bind(&p.name.text, pty, None, Provenance::Built));
         }
         let body = self.top_query(&q.body, Some(&result));

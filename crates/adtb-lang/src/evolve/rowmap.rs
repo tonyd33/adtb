@@ -261,7 +261,7 @@ impl Cx<'_> {
         let def = self.type_id(&schema, &path.ty)?;
         let after = after.schema().map_err(|ds| {
             ds.into_iter()
-                .map(|d| Diag::new(self.span, d.diag.message))
+                .map(|d| d.diag.restated(self.span, |m| m))
                 .collect::<Vec<_>>()
         })?;
         let ad = self.type_id(&after, &path.ty)?;
@@ -388,7 +388,7 @@ impl Cx<'_> {
     fn discriminator(&self, after: &Source, ty: &QName, m: &str, sources: &[String]) -> R<String> {
         let after = after.schema().map_err(|ds| {
             ds.into_iter()
-                .map(|d| Diag::new(self.span, d.diag.message))
+                .map(|d| d.diag.restated(self.span, |m| m))
                 .collect::<Vec<_>>()
         })?;
         let ad = self.type_id(&after, ty)?;

@@ -1073,7 +1073,7 @@ impl Cx<'_> {
     fn built(src: &Source, span: Span) -> R<Schema> {
         src.schema().map_err(|ds| {
             ds.into_iter()
-                .map(|d| Diag::new(span, d.diag.message))
+                .map(|d| d.diag.restated(span, |m| m))
                 .collect()
         })
     }

@@ -127,7 +127,17 @@ impl Model {
                 Err(Fail::Refused(why)) => {
                     maps.push(Ok(Vec::new()));
                     run.forget_late(k);
-                    model.mark(by, Added::Not);
+                    model.mark(by, Added::Refused);
+                    if let Some((name, kind)) = crate::evolve::expected::poisons(&op.kind) {
+                        model.ahead.push(AheadM {
+                            module: module.to_string(),
+                            name: name.to_string(),
+                            typed: false,
+                            by,
+                            added: Added::Refused,
+                            kind,
+                        });
+                    }
                     ops.push(Err(why.or_at(op.span)));
                 }
                 Err(Fail::Unmodelled(kind)) => {

@@ -439,7 +439,7 @@ impl Checker<'_> {
                         return Ok(Out::of(tm, ty));
                     }
                     if self.ambiguous(&q.name.text) {
-                        return Err(diag(q.span(), e));
+                        return Err(e.at(q.span()));
                     }
                     return Err(diag(
                         q.span(),
@@ -449,7 +449,7 @@ impl Checker<'_> {
                         ),
                     ));
                 }
-                Err(diag(q.span(), e))
+                Err(e.at(q.span()))
             }
         }
     }
@@ -1121,7 +1121,7 @@ impl Checker<'_> {
                     format!("`{}` is not a relation", rref.relation.name.text),
                 ));
             }
-            Err(e) => return Err(diag(rref.span, e)),
+            Err(e) => return Err(e.at(rref.span)),
         };
         let r = self.schema.relation(rel);
         let def = self.schema.ty(r.elem_def);

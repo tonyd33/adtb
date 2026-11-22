@@ -1,0 +1,28 @@
+# A refused `add relation` reports its own refusal: a type, a function and a constraint naming
+# the relation report nothing more, while a refusal of another declaration still reports.
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "no `zz` in scope\n`+` does not apply to I64 and Text" } } }
+  module app
+  add module app
+  add type Item = { id: Key items, n: I64 }
+  add type Label = { id: Key labels, item: Key items }
+  add relation items : Item key id generate sequence
+    index (zz)
+  add relation labels : Label key id generate sequence
+  define fn total () -> I64 = count(1 for x in items)
+  define fn wrong () -> I64 = 1 + "a"
+  add constraint big = from x in items where x.n > 10 select x
+
+# An operator that reads the checked schema after a body names the refused relation stops there:
+# the refusal the migration reports is the relation's own.
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "no `zz` in scope" } } }
+  module app
+  add module app
+  add type Item = { id: Key items, n: I64 }
+  add relation items : Item key id generate sequence
+    index (zz)
+  add type Note = { id: Key notes, n: I64 }
+  add relation notes : Note key id generate sequence
+  define fn total () -> I64 = count(1 for x in items)
+  add field Note.code: Text fill "z"

@@ -1,0 +1,37 @@
+# A function type is written only as a parameter or result of a fn or a side of its arrow, never
+# as a type argument, a set element or an aggregate's input.
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a type argument is a value type, never a function type" } } }
+  module app
+  add module app
+  add type R = { id: Key rs, v: I64 }
+  add relation rs : R key id generate sequence
+  define fn g () -> Option (I64 -> I64) = Some { value: fn (x: I64) -> x }
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a set element never has a function type" } } }
+  module app
+  add module app
+  add type R = { id: Key rs, v: I64 }
+  add relation rs : R key id generate sequence
+  define fn h () -> Set (I64 -> I64) = from r in rs select fn (x: I64) -> x + r.v
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a set element never has a function type" } } }
+  module app
+  add module app
+  define fn k (f: Set (I64 -> I64)) -> I64 = 1
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "an aggregate's input and result never have a function type" } } }
+  module app
+  add module app
+  define aggregate a (x: I64 -> I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> s merge (a, b) -> a finish s -> s.n
+
+migrate
+  module app
+  add module app
+  define fn ap (f: I64 -> I64 -> I64) -> I64 -> I64 = f(1)
+  define fn apply (g: I64 -> I64, x: I64) -> I64 = g(x)
+
+query
+  apply(ap(fn (a: I64, b: I64) -> a - b), 3)
+----
+-2

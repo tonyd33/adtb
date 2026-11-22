@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::{Error, FNS, MAIN, Normaliser, Root};
-use crate::check::{AdhocCommand, Program};
+use crate::check::{AdhocCommand, Program, ProgramBody};
 use crate::kernel::{self, Body, IndexField, Invalid, Terms, Tm, Valid, Var};
 use crate::schema::Schema;
 use crate::types::*;
@@ -21,6 +21,9 @@ pub struct NormalProgram {
     computed: BTreeMap<(RelId, usize), (Var, Tm)>,
     index_fields: BTreeMap<(RelId, usize, usize), (Var, IndexField)>,
     aggregates: Vec<Option<NormalAggregate>>,
+    /// Every body, by the object it belongs to, with the variables free in it; the parts of an
+    /// aggregate under one root.
+    bodies: Vec<(Root, Tm, Vec<Var>)>,
 }
 
 impl NormalProgram {
@@ -30,70 +33,86 @@ impl NormalProgram {
     /// forms', charged to the first body.
     pub(super) fn normalised(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
         let mut n = Normaliser::new(schema, [&p.terms, &p.terms], p);
-        let mut functions = Vec::with_capacity(p.functions.len());
-        for (i, (f, def)) in p.functions.iter().zip(&schema.functions).enumerate() {
-            functions.push(match f {
-                Some(t) => n.function(
-                    Root::Function(FnId(i as u32)),
-                    FNS,
-                    *t,
-                    def.params.len().max(1),
-                )?,
-                None => None,
-            });
-        }
+        let mut functions = vec![None; p.functions.len()];
         let mut constraints = BTreeMap::new();
-        for (c, t) in p.constraints() {
-            constraints.insert(c, n.root(Root::Constraint(c), t)?);
-        }
         let mut checks = BTreeMap::new();
-        for (c, t) in p.checks() {
-            checks.insert(c, n.root(Root::Check(c), t)?);
-        }
         let mut domains = BTreeMap::new();
-        for (id, (v, t)) in &p.domains {
-            let x = n.free_var(MAIN, *v);
-            domains.insert(*id, (x, n.root(Root::Domain(*id), *t)?));
-        }
         let mut retags = BTreeMap::new();
-        for (r, t) in &p.retags {
-            retags.insert(*r, n.row_function(Root::Retag(*r), *t)?);
-        }
         let mut defaults = BTreeMap::new();
-        for (&(r, i), t) in &p.defaults {
-            defaults.insert((r, i), n.root(Root::Default(r, i), *t)?);
-        }
         let mut computed = BTreeMap::new();
-        for (&(r, i), (v, t)) in &p.computed {
-            let x = n.free_var(MAIN, *v);
-            computed.insert((r, i), (x, n.root(Root::Computed(r, i), *t)?));
-        }
         let mut index_fields = BTreeMap::new();
-        for (&(r, i, j), f) in &p.index_fields {
-            let (x, value) = n.row_function(Root::IndexField(r, i, j), f.value)?;
-            let path = f.path.clone();
-            index_fields.insert((r, i, j), (x, IndexField { value, path }));
-        }
-        let mut aggregates = Vec::with_capacity(p.aggregates.len());
-        for (i, a) in p.aggregates.iter().enumerate() {
-            let Some(a) = a else {
-                aggregates.push(None);
-                continue;
-            };
-            let root = Root::Aggregate(i);
-            let init = n.root(root, a.init)?;
-            let step = n.function(root, MAIN, a.step, 2)?;
-            let merge = n.function(root, MAIN, a.merge, 2)?;
-            let finish = n.function(root, MAIN, a.finish, 1)?;
-            aggregates.push(match (step, merge, finish) {
-                (Some(step), Some(merge), Some(finish)) => Some(NormalAggregate {
-                    init,
-                    step,
-                    merge,
-                    finish,
-                }),
-                _ => None,
-            });
+        let mut aggregates: Vec<Option<NormalAggregate>> = std::iter::repeat_with(|| None)
+            .take(p.aggregates.len())
+            .collect();
+        let mut bodies = Vec::new();
+        for body in p.roots() {
+            let root = body.root();
+            match body {
+                ProgramBody::Function(f, t) => {
+                    let arity = schema.function(f).params.len().max(1);
+                    let normal = n.function(root, FNS, t, arity)?;
+                    if let Some((ps, t)) = &normal {
+                        bodies.push((root, *t, ps.clone()));
+                    }
+                    functions[f.0 as usize] = normal;
+                }
+                ProgramBody::Constraint(c, t) => {
+                    let t = n.root(root, t)?;
+                    bodies.push((root, t, vec![]));
+                    constraints.insert(c, t);
+                }
+                ProgramBody::Check(c, t) => {
+                    let t = n.root(root, t)?;
+                    bodies.push((root, t, vec![]));
+                    checks.insert(c, t);
+                }
+                ProgramBody::Domain(d, v, t) => {
+                    let x = n.free_var(MAIN, v);
+                    let t = n.root(root, t)?;
+                    bodies.push((root, t, vec![x]));
+                    domains.insert(d, (x, t));
+                }
+                ProgramBody::Retag(r, t) => {
+                    let (x, t) = n.row_function(root, t)?;
+                    bodies.push((root, t, vec![x]));
+                    retags.insert(r, (x, t));
+                }
+                ProgramBody::Default(r, i, t) => {
+                    let t = n.root(root, t)?;
+                    bodies.push((root, t, vec![]));
+                    defaults.insert((r, i), t);
+                }
+                ProgramBody::Computed(r, i, v, t) => {
+                    let x = n.free_var(MAIN, v);
+                    let t = n.root(root, t)?;
+                    bodies.push((root, t, vec![x]));
+                    computed.insert((r, i), (x, t));
+                }
+                ProgramBody::IndexField(r, i, j, f) => {
+                    let (x, value) = n.row_function(root, f.value)?;
+                    bodies.push((root, value, vec![x]));
+                    let path = f.path.clone();
+                    index_fields.insert((r, i, j), (x, IndexField { value, path }));
+                }
+                ProgramBody::Aggregate(i, a) => {
+                    let init = n.root(root, a.init)?;
+                    let step = n.function(root, MAIN, a.step, 2)?;
+                    let merge = n.function(root, MAIN, a.merge, 2)?;
+                    let finish = n.function(root, MAIN, a.finish, 1)?;
+                    if let (Some(step), Some(merge), Some(finish)) = (step, merge, finish) {
+                        bodies.push((root, init, vec![]));
+                        for (vs, t) in [&step, &merge, &finish] {
+                            bodies.push((root, *t, vs.clone()));
+                        }
+                        aggregates[i] = Some(NormalAggregate {
+                            init,
+                            step,
+                            merge,
+                            finish,
+                        });
+                    }
+                }
+            }
         }
         let program = NormalProgram {
             terms: n.out,
@@ -106,12 +125,12 @@ impl NormalProgram {
             computed,
             index_fields,
             aggregates,
+            bodies,
         };
-        let bodies = program.bodies();
-        for (root, t, free) in &bodies {
+        for (root, t, free) in &program.bodies {
             normal(schema, &program.terms, *root, &[(*t, free.clone())])?;
         }
-        if let Some((root, ..)) = bodies.first() {
+        if let Some((root, ..)) = program.bodies.first() {
             unbroken(schema, *root, &[&p.terms, &program.terms])?;
         }
         Ok(program)
@@ -196,64 +215,7 @@ impl NormalProgram {
 
     /// Returns every body of the program with the object it belongs to and the variables free in it.
     pub fn bodies(&self) -> Vec<(Root, Tm, Vec<Var>)> {
-        let NormalProgram {
-            terms: _,
-            functions,
-            constraints,
-            checks,
-            domains,
-            retags,
-            defaults,
-            computed,
-            index_fields,
-            aggregates,
-        } = self;
-        let mut out: Vec<(Root, Tm, Vec<Var>)> = Vec::new();
-        for (i, f) in functions.iter().enumerate() {
-            if let Some((ps, t)) = f {
-                out.push((Root::Function(FnId(i as u32)), *t, ps.clone()));
-            }
-        }
-        out.extend(
-            constraints
-                .iter()
-                .map(|(&c, &t)| (Root::Constraint(c), t, vec![])),
-        );
-        out.extend(checks.iter().map(|(&c, &t)| (Root::Check(c), t, vec![])));
-        out.extend(
-            domains
-                .iter()
-                .map(|(&d, (v, t))| (Root::Domain(d), *t, vec![*v])),
-        );
-        out.extend(
-            retags
-                .iter()
-                .map(|(&r, (v, t))| (Root::Retag(r), *t, vec![*v])),
-        );
-        out.extend(
-            defaults
-                .iter()
-                .map(|(&(r, i), &t)| (Root::Default(r, i), t, vec![])),
-        );
-        out.extend(
-            computed
-                .iter()
-                .map(|(&(r, i), (v, t))| (Root::Computed(r, i), *t, vec![*v])),
-        );
-        out.extend(
-            index_fields
-                .iter()
-                .map(|(&(r, i, j), (v, f))| (Root::IndexField(r, i, j), f.value, vec![*v])),
-        );
-        for (i, a) in aggregates.iter().enumerate() {
-            if let Some(a) = a {
-                out.push((Root::Aggregate(i), a.init, vec![]));
-                for (vs, t) in [&a.step, &a.merge, &a.finish] {
-                    out.push((Root::Aggregate(i), *t, vs.clone()));
-                }
-            }
-        }
-        out
+        self.bodies.clone()
     }
 }
 

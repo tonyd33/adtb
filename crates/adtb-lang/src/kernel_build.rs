@@ -312,9 +312,7 @@ impl<'a> Build<'a> {
                     ctors: KeyCtors::All,
                 },
                 Ty::Data { def, ctors, .. },
-            ) if self.schema.relation(*r).elem_def == *def
-                && self.schema.relation(*r).key.iter().any(|k| k == l) =>
-            {
+            ) if self.schema.relation(*r).elem_def == *def && self.schema.self_key(*r, l) => {
                 Ty::Key {
                     rel: RelRef::Declared(*r),
                     ctors: KeyCtors::of_row(ctors.clone()),

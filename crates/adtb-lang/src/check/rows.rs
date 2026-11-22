@@ -19,6 +19,11 @@ impl RowOrigin {
         }
     }
 
+    /// Returns whether every row of this origin is a row of `other`.
+    pub(super) fn within(self, other: Self) -> bool {
+        self.join(other) == other
+    }
+
     pub(super) fn relation(self) -> Option<RelId> {
         match self {
             Self::Relation(r, _) => Some(r),

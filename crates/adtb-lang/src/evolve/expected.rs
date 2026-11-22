@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use super::*;
-use crate::schema::{Adder, AheadState};
+use crate::schema::{Adder, AheadKind, AheadState};
 
 /// An operator of a migration with its position among the migration's operators, or an
 /// operator outside every migration.
@@ -46,7 +46,8 @@ impl Deref for Listed<'_> {
     }
 }
 
-/// A relation variable an operator of the migration being applied adds.
+/// A relation variable an operator of the migration being applied adds, or a type or function
+/// a refused operator of it would have declared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expected {
     module: String,
@@ -56,13 +57,16 @@ pub struct Expected {
     typed: bool,
     by: Adder,
     state: Added,
+    kind: AheadKind,
 }
 
 /// How far the operator that adds an expected relation variable has gone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Added {
+pub(super) enum Added {
     Not,
     Applying,
+    /// Refused: its name stays bound, poisoned, to the end of the migration.
+    Refused,
     /// Added, as the relation variable of this id.
     As(CatRelId),
 }
@@ -77,26 +81,34 @@ impl Expected {
             typed,
             by,
             state: Added::Not,
+            kind: AheadKind::Relation,
         }
     }
 
-    /// Returns relation variable `relation` of module `module` as [`Expected::new`] does, added
-    /// as `added` says: not yet when `None`, being added when `Some(None)`, and added as the
-    /// relation variable of id `r` when `Some(Some(r))`.
+    /// Returns the type or function `name` of module `module`, which the refused operator `by`
+    /// would have declared.
+    pub(super) fn refused(module: String, name: String, kind: AheadKind, by: Adder) -> Expected {
+        Expected {
+            state: Added::Refused,
+            kind,
+            ..Expected::new(module, name, false, by)
+        }
+    }
+
+    /// Returns relation variable `relation` of module `module` as [`Expected::new`] does, its
+    /// adding operator gone as far as `state`.
     #[cfg(feature = "compare-migration-model")]
     pub(super) fn added(
         module: String,
         relation: String,
         typed: bool,
         by: Adder,
-        added: Option<Option<u64>>,
+        state: Added,
+        kind: AheadKind,
     ) -> Expected {
         Expected {
-            state: match added {
-                None => Added::Not,
-                Some(None) => Added::Applying,
-                Some(Some(r)) => Added::As(CatRelId::from_raw(r)),
-            },
+            state,
+            kind,
             ..Expected::new(module, relation, typed, by)
         }
     }
@@ -118,6 +130,17 @@ impl Source {
             .filter_map(|e| {
                 let (module, relation, state) = match (e.state, e.by) {
                     (Added::Not, _) => (e.module.clone(), e.relation.clone(), AheadState::Pending),
+                    (Added::Refused, _) if e.kind != AheadKind::Relation => {
+                        return Some(schema::Ahead::refused(
+                            e.module.clone(),
+                            e.relation.clone(),
+                            e.kind,
+                            e.by,
+                        ));
+                    }
+                    (Added::Refused, _) => {
+                        (e.module.clone(), e.relation.clone(), AheadState::Refused)
+                    }
                     (Added::Applying, _) => (
                         e.module.clone(),
                         e.relation.clone(),
@@ -139,6 +162,28 @@ impl Source {
         for e in self.expected_by(op) {
             e.state = Added::Applying;
         }
+    }
+
+    /// Poison the name of the relation variable, type or function operator `op` of a migration
+    /// of `module` would have declared.
+    pub(super) fn refused(&mut self, module: &str, op: Listed<'_>) {
+        for e in self.expected_by(op) {
+            e.state = Added::Refused;
+        }
+        let (Some(at), Some((name, kind))) = (op.at, poisons(&op.kind)) else {
+            return;
+        };
+        self.ahead.push(Expected::refused(
+            module.to_string(),
+            name.to_string(),
+            kind,
+            Adder::Operator(at),
+        ));
+    }
+
+    /// Keep only the relation variables whose adding operator was refused.
+    pub(super) fn keep_refused(&mut self) {
+        self.ahead.retain(|e| e.state == Added::Refused);
     }
 
     /// Mark the relation variable operator `op` of `module` added as added, with its id.
@@ -171,5 +216,14 @@ impl Source {
             .filter(|_| matches!(op.kind, OperatorKind::AddRelation(_)))
             .map(Adder::Operator);
         self.ahead.iter_mut().filter(move |e| Some(e.by) == by)
+    }
+}
+
+/// Returns the name and kind of the type or function `op` declares.
+pub(super) fn poisons(op: &OperatorKind) -> Option<(&str, AheadKind)> {
+    match op {
+        OperatorKind::AddType(t) => Some((&t.name.text, AheadKind::Type)),
+        OperatorKind::DefineFn(f) => Some((&f.name.text, AheadKind::Function)),
+        _ => None,
     }
 }

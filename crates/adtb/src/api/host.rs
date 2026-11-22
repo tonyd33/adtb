@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use adtb_lang::ast::{FnBody, OperatorKind};
 use adtb_lang::kernel::{Kind, Terms, Tm};
-use adtb_lang::norm::NormalProgram;
+use adtb_lang::norm::{NormalProgram, Root};
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::{FunctionDef, Schema};
 use adtb_lang::types::FnId;
@@ -182,23 +182,25 @@ fn redefined(pending: &[&str], name: &str, version: &str) -> bool {
 }
 
 /// Returns the functions called from the stored parts of `normal`: its constraints, checks,
-/// domains, retags, defaults, computed fields, index fields and stored views.
+/// domains, retags, defaults, computed fields, index fields, aggregates and stored views.
 fn reached(schema: &Schema, normal: &NormalProgram) -> BTreeSet<FnId> {
-    let mut roots: Vec<Tm> = Vec::new();
-    roots.extend(normal.constraints().map(|(_, t)| t));
-    roots.extend(normal.checks().map(|(_, t)| t));
-    roots.extend(normal.domains().values().map(|(_, t)| *t));
-    roots.extend(normal.retags().values().map(|(_, t)| *t));
-    roots.extend(normal.defaults().values());
-    roots.extend(normal.computed().values().map(|(_, t)| *t));
-    roots.extend(normal.index_fields().values().map(|(_, f)| f.value));
-    for (f, body) in normal.functions().iter().enumerate() {
-        if let Some((_, t)) = body
-            && schema.functions[f].stored.is_some()
-        {
-            roots.push(*t);
-        }
-    }
+    let roots = normal
+        .bodies()
+        .into_iter()
+        .filter(|(root, _, _)| match *root {
+            Root::Function(f) => schema.functions[f.0 as usize].stored.is_some(),
+            Root::Constraint(_)
+            | Root::Check(_)
+            | Root::Domain(_)
+            | Root::Retag(_)
+            | Root::Default(..)
+            | Root::Computed(..)
+            | Root::IndexField(..)
+            | Root::Aggregate(_) => true,
+            Root::Item(_) | Root::Command(_) | Root::Query => false,
+        })
+        .map(|(_, t, _)| t)
+        .collect();
     calls(normal.terms(), roots)
 }
 

@@ -1,7 +1,7 @@
 use super::field::Applied;
 use super::op::Kind;
-use super::op::{Res, Resolving, broken, refuse, refuse_at, unmodelled};
-use super::run::{Built, Late, Run};
+use super::op::{Res, Resolving, broken, refuse_at, unmodelled};
+use super::run::{Built, Late, Run, unbuilt};
 use super::*;
 use crate::ast::{self, CtorPlace, CtorSel};
 use crate::canon::canonical_term;
@@ -183,7 +183,7 @@ impl Model {
         self.value_states.insert(c, declared);
         let built = match self.build_adopting(&[], &run.ahead(self)) {
             Ok(b) => b,
-            Err(ds) if !arms.is_empty() => return refuse(ds[0].diag.message.clone()),
+            Err(ds) if !arms.is_empty() => return unbuilt(&ds),
             Err(_) => return unmodelled("a constructor added to declarations that do not build"),
         };
         let file = self.relift(&built, Item::Type(t))?;

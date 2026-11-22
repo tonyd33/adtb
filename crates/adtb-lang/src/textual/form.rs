@@ -1,4 +1,4 @@
-use crate::schema::{Generator, Schema, TypeDefKind};
+use crate::schema::{Schema, TypeDefKind};
 use crate::types::{Base, CtorSet, RelId, RelRef, Ty};
 
 /// The shape of the values of a type, as their textual syntax needs it.
@@ -62,14 +62,7 @@ pub fn key_names(schema: &Schema, rel: RelId) -> Vec<String> {
 pub fn key_field_ty(schema: &Schema, rel: RelId, f: &str) -> Ty {
     let r = schema.relation(rel);
     if schema.self_key(rel, f) {
-        return match r.generate {
-            Some(Generator::Uuidv7) => Ty::Data {
-                def: schema.prelude().uuid(),
-                args: Vec::new(),
-                ctors: None,
-            },
-            _ => Ty::Base(Base::I64),
-        };
+        return schema.generated_key_ty(rel).unwrap_or(Ty::Base(Base::I64));
     }
     schema
         .ty(r.elem_def)

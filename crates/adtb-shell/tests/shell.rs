@@ -527,7 +527,7 @@ fn a_refused_migration_prints_one_line_per_message() {
     );
     assert_eq!(Some(1), out.status.code(), "{out:?}");
     assert_eq!(
-        "DIR/db.adt: migration 1 is refused:\n  no type `Int`; did you mean `I64`?\n  no type `Float`; did you mean `F64`?\n  no type `P`\n",
+        "DIR/db.adt: migration 1 is refused:\n  no type `Int`; did you mean `I64`?\n  no type `Float`; did you mean `F64`?\n",
         stderr(&out).replace(dir.to_str().unwrap(), "DIR")
     );
 }

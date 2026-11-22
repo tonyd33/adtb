@@ -270,6 +270,9 @@ impl Error {
                 detail: diag.message,
             }),
             DiagKind::Internal => Self::internal(Broken::Diagnosed(diag.message)),
+            DiagKind::Poisoned => Self::internal(Broken::Diagnosed(
+                "a name a refused operator poisoned reached a report".to_string(),
+            )),
         }
     }
 

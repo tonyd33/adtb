@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{bodies, changed, reached};
+use super::{changed, reached};
 use crate::check::Program;
 use crate::evolve::Source;
 use crate::norm::Root;
@@ -95,7 +95,7 @@ fn every_kind_of_body_reaches_the_functions_it_calls() {
     let f = Root::Function(function(&schema, "f"));
     let reached = reached(&program);
     let mut kinds = BTreeSet::new();
-    for (root, _, _) in bodies(&program) {
+    for (root, _, _) in program.bodies() {
         if root == f || !of_app(&schema, root) {
             continue;
         }
@@ -134,7 +134,8 @@ fn a_redefinition_changes_every_body_that_reaches_it_and_only_when_its_body_chan
         "module app\nredefine fn f (x: I64) -> I64 = x + 2\n",
     );
     let (b, new) = checked(&other);
-    let every: BTreeSet<Root> = bodies(&new)
+    let every: BTreeSet<Root> = new
+        .bodies()
         .into_iter()
         .map(|(r, _, _)| r)
         .filter(|&r| of_app(&b, r))
@@ -168,7 +169,8 @@ add relation items : Item key id generate sequence
         function(&b, "h"),
         "setup: `h` takes the position of `g`"
     );
-    let index = bodies(&new)
+    let index = new
+        .bodies()
         .into_iter()
         .map(|(r, _, _)| r)
         .filter(|&r| matches!(r, Root::IndexField(..)) && of_app(&b, r))

@@ -166,81 +166,144 @@ pub fn is_prelude_type(name: &str) -> bool {
             .any(|&(module, type_name, _, _)| module == "prelude" && type_name == name)
 }
 
-/// Prelude functions and built-in forms written as calls; no schema or bundle may declare one.
-pub const PRELUDE_FUNCTIONS: &[&str] = &[
-    "span",
-    "start",
-    "end",
-    "overlaps",
-    "covers",
-    "uuid",
-    "text",
-    "checked_add",
-    "checked_sub",
-    "checked_mul",
-    "checked_div",
-    "checked_rem",
-    "checked_neg",
-    "div",
-    "round",
-    "rescale",
-    "abs",
-    "i8",
-    "i16",
-    "i32",
-    "i64",
-    "decimal",
-    "f32",
-    "f64",
-    "checked_i8",
-    "checked_i16",
-    "checked_i32",
-    "checked_i64",
-    "checked_decimal",
-    "checked_f32",
-    "unwrap",
-    "value",
-    "bytes_len",
-    "scalar_len",
-    "grapheme_len",
-    "starts_with",
-    "ends_with",
-    "contains",
-    "matches",
-    "lower",
-    "upper",
-    "fold",
-    "collate",
-    "utf8",
-    "bytes",
-    "micros",
-    "millis",
-    "seconds",
-    "minutes",
-    "hours",
-    "days",
-    "weeks",
-    "months",
-    "years",
-    "add_period",
-    "zoned",
-    "in_zone",
-    "to_instant",
-    "count",
-    "sum",
-    "min",
-    "max",
-    "avg",
-    "tag",
-    "print",
-    "inserted",
-    "deleted",
-    "prior",
-    "read_csv",
-    "read_ndjson",
-    "read_parquet",
-    "read_arrow",
-];
+macro_rules! prelude_functions {
+    ($($family:ident($ty:ident) { $($v:ident = $name:literal,)* })*) => {
+        $(
+            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+            pub enum $ty {
+                $($v,)*
+            }
+
+            impl $ty {
+                pub fn name(self) -> &'static str {
+                    match self {
+                        $($ty::$v => $name,)*
+                    }
+                }
+            }
+        )*
+
+        /// A prelude function or built-in form written as a call, by the checker's family of it.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum PreludeFn {
+            $($family($ty),)*
+        }
+
+        impl PreludeFn {
+            /// Returns the function a call of `name` with no module names; `None` when none.
+            pub fn named(name: &str) -> Option<PreludeFn> {
+                match name {
+                    $($($name => Some(PreludeFn::$family($ty::$v)),)*)*
+                    _ => None,
+                }
+            }
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(PreludeFn::$family(f) => f.name(),)*
+                }
+            }
+        }
+
+        /// Prelude functions and built-in forms written as calls; no schema or bundle may declare one.
+        pub const PRELUDE_FUNCTIONS: &[&str] = &[$($($name,)*)*];
+    };
+}
+
+prelude_functions! {
+    Span(SpanFn) {
+        Span = "span",
+        Start = "start",
+        End = "end",
+        Overlaps = "overlaps",
+        Covers = "covers",
+    }
+    Text(TextFn) {
+        Uuid = "uuid",
+        Text = "text",
+        BytesLen = "bytes_len",
+        ScalarLen = "scalar_len",
+        GraphemeLen = "grapheme_len",
+        Utf8 = "utf8",
+        Bytes = "bytes",
+    }
+    Checked(CheckedFn) {
+        Add = "checked_add",
+        Sub = "checked_sub",
+        Mul = "checked_mul",
+        Div = "checked_div",
+        Rem = "checked_rem",
+        Neg = "checked_neg",
+    }
+    Decimal(DecimalFn) {
+        Div = "div",
+        Round = "round",
+        Rescale = "rescale",
+        Abs = "abs",
+    }
+    Convert(ConvertFn) {
+        I8 = "i8",
+        I16 = "i16",
+        I32 = "i32",
+        I64 = "i64",
+        CheckedI8 = "checked_i8",
+        CheckedI16 = "checked_i16",
+        CheckedI32 = "checked_i32",
+        CheckedI64 = "checked_i64",
+        Decimal = "decimal",
+        CheckedDecimal = "checked_decimal",
+        F32 = "f32",
+        F64 = "f64",
+        CheckedF32 = "checked_f32",
+        Unwrap = "unwrap",
+        Value = "value",
+    }
+    String(StringFn) {
+        StartsWith = "starts_with",
+        EndsWith = "ends_with",
+        Contains = "contains",
+        Matches = "matches",
+        Lower = "lower",
+        Upper = "upper",
+        Fold = "fold",
+        Collate = "collate",
+    }
+    Time(TimeFn) {
+        Micros = "micros",
+        Millis = "millis",
+        Seconds = "seconds",
+        Minutes = "minutes",
+        Hours = "hours",
+        Days = "days",
+        Weeks = "weeks",
+        Months = "months",
+        Years = "years",
+        AddPeriod = "add_period",
+        Zoned = "zoned",
+        InZone = "in_zone",
+        ToInstant = "to_instant",
+    }
+    Change(ChangeFn) {
+        Tag = "tag",
+        Print = "print",
+        Inserted = "inserted",
+        Deleted = "deleted",
+        Prior = "prior",
+    }
+    Aggregate(AggregateFn) {
+        Count = "count",
+        Sum = "sum",
+        Min = "min",
+        Max = "max",
+        Avg = "avg",
+    }
+    File(FileFn) {
+        Csv = "read_csv",
+        Ndjson = "read_ndjson",
+        Parquet = "read_parquet",
+        Arrow = "read_arrow",
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Bound {

@@ -104,7 +104,8 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
         }
     };
     let judge = Judge::new(schema, p);
-    let refused: Vec<FileDiag> = crate::depends::bodies(p)
+    let refused: Vec<FileDiag> = p
+        .bodies()
         .into_iter()
         .filter_map(|(root, t, _)| {
             let r = judge.judge(capability::kind_of(schema, root), &p.terms, t);

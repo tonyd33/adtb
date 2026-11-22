@@ -105,34 +105,37 @@ impl Checker<'_> {
         )
     }
 
-    pub(super) fn prelude_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Out> {
-        if matches!(name, "count" | "sum" | "min" | "max" | "avg") {
-            return Err(diag(
-                span,
-                format!("`{name}` is an aggregate: `{name}(e for x in q)`"),
-            ));
-        }
-        let families = [
-            Self::span_call,
-            Self::text_call,
-            Self::checked_call,
-            Self::decimal_call,
-            Self::convert_call,
-            Self::string_call,
-            Self::time_call,
-            Self::change_call,
-        ];
-        for family in families {
-            if let Some(out) = family(self, name, es, span)? {
-                return Ok(out);
+    pub(super) fn prelude_call(
+        &mut self,
+        f: PreludeFn,
+        es: &[Expr],
+        pins: Option<&ast::Version>,
+        span: Span,
+    ) -> R<Out> {
+        match f {
+            PreludeFn::Span(g) => self.span_call(g, es, span),
+            PreludeFn::Text(g) => self.text_call(g, es, span),
+            PreludeFn::Checked(g) => self.checked_call(g, es, span),
+            PreludeFn::Decimal(g) => self.decimal_call(g, es, span),
+            PreludeFn::Convert(g) => self.convert_call(g, es, span),
+            PreludeFn::String(g) => self.string_call(g, es, span),
+            PreludeFn::Time(g) => self.time_call(g, es, span),
+            PreludeFn::Change(g) => self.change_call(g, es, span),
+            PreludeFn::Aggregate(_) => {
+                let name = f.name();
+                Err(diag(
+                    span,
+                    format!("`{name}` is an aggregate: `{name}(e for x in q)`"),
+                ))
             }
+            PreludeFn::File(g) => self.file_scan(g, es, pins, span),
         }
-        Err(diag(span, format!("`{name}` is not a function")))
     }
 
-    fn span_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
-        let out = match name {
-            "span" => {
+    fn span_call(&mut self, f: SpanFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
+        match f {
+            SpanFn::Span => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
@@ -153,7 +156,7 @@ impl Checker<'_> {
                 };
                 Ok(self.prim(Prim::Span, vec![x.tm, y.tm], ty))
             }
-            "start" | "end" => {
+            SpanFn::Start | SpanFn::End => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -161,14 +164,14 @@ impl Checker<'_> {
                 let t = self
                     .span_arg(&o.ty)
                     .ok_or_else(|| self.wrong(name, &[&o.ty], span))?;
-                let p = if name == "start" {
+                let p = if f == SpanFn::Start {
                     Prim::Start
                 } else {
                     Prim::End
                 };
                 Ok(self.prim(p, vec![o.tm], t))
             }
-            "overlaps" | "covers" => {
+            SpanFn::Overlaps | SpanFn::Covers => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
@@ -176,7 +179,7 @@ impl Checker<'_> {
                 let t = self
                     .span_arg(&x.ty)
                     .ok_or_else(|| self.wrong(name, &[&x.ty], span))?;
-                let y = if name == "covers" && !self.calls_span(b) {
+                let y = if f == SpanFn::Covers && !self.calls_span(b) {
                     let o = self.synth(b)?;
                     if self.span_arg(&o.ty).is_some() {
                         self.subsume(o, &x.ty, b.span)?
@@ -186,7 +189,7 @@ impl Checker<'_> {
                 } else {
                     self.check(b, &x.ty)?
                 };
-                let p = if name == "covers" {
+                let p = if f == SpanFn::Covers {
                     Prim::Covers
                 } else {
                     Prim::Overlaps
@@ -194,16 +197,15 @@ impl Checker<'_> {
                 let bt = self.bool_ty();
                 Ok(self.prim(p, vec![x.tm, y.tm], bt))
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
-    fn text_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+    fn text_call(&mut self, f: TextFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
         let text = Ty::Base(Base::Text);
         let i64t = Ty::Base(Base::I64);
-        let out = match name {
-            "uuid" => {
+        match f {
+            TextFn::Uuid => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -211,7 +213,7 @@ impl Checker<'_> {
                 let ty = Self::named_ty(self.schema.prelude().uuid());
                 Ok(self.prim(Prim::ParseUuid, vec![x.tm], ty))
             }
-            "text" => {
+            TextFn::Text => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -247,7 +249,7 @@ impl Checker<'_> {
                 }
                 Ok(self.prim(Prim::ToText, vec![x.tm], text))
             }
-            "bytes_len" => {
+            TextFn::BytesLen => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -257,19 +259,19 @@ impl Checker<'_> {
                 }
                 Ok(self.prim(Prim::BytesLen, vec![x.tm], i64t))
             }
-            "scalar_len" | "grapheme_len" => {
+            TextFn::ScalarLen | TextFn::GraphemeLen => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::Text)?;
-                let p = if name == "scalar_len" {
+                let p = if f == TextFn::ScalarLen {
                     Prim::ScalarLen
                 } else {
                     Prim::GraphemeLen
                 };
                 Ok(self.prim(p, vec![x], i64t))
             }
-            "utf8" => {
+            TextFn::Utf8 => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -277,34 +279,33 @@ impl Checker<'_> {
                 let ty = self.option_ty(text);
                 Ok(self.prim(Prim::Utf8, vec![x], ty))
             }
-            "bytes" => {
+            TextFn::Bytes => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::Text)?;
                 Ok(self.prim(Prim::Bytes, vec![x], Ty::Base(Base::Bytes)))
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
-    fn checked_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
-        let out = match name {
-            "checked_add" | "checked_sub" | "checked_mul" => {
+    fn checked_call(&mut self, f: CheckedFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
+        match f {
+            CheckedFn::Add | CheckedFn::Sub | CheckedFn::Mul => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
-                let op = match name {
-                    "checked_add" => BinOp::Add,
-                    "checked_sub" => BinOp::Sub,
+                let op = match f {
+                    CheckedFn::Add => BinOp::Add,
+                    CheckedFn::Sub => BinOp::Sub,
                     _ => BinOp::Mul,
                 };
                 let (x, y) = self.operator_operands(op, a, b, None)?;
                 let ty = match (&x.ty, &y.ty) {
                     (s, t) if Self::is_integer(s) && s == t => s.clone(),
                     (Ty::Base(Base::Decimal(s)), Ty::Base(Base::Decimal(t))) => {
-                        if name == "checked_mul" {
+                        if f == CheckedFn::Mul {
                             if u32::from(*s) + u32::from(*t) > 38 {
                                 return Err(diag(span, "the product's scale is above 38"));
                             }
@@ -315,15 +316,15 @@ impl Checker<'_> {
                     }
                     _ => return Err(self.wrong(name, &[&x.ty, &y.ty], span)),
                 };
-                let p = match name {
-                    "checked_add" => Prim::CheckedAdd,
-                    "checked_sub" => Prim::CheckedSub,
+                let p = match f {
+                    CheckedFn::Add => Prim::CheckedAdd,
+                    CheckedFn::Sub => Prim::CheckedSub,
                     _ => Prim::CheckedMul,
                 };
                 let ty = self.option_ty(ty);
                 Ok(self.prim(p, vec![x.tm, y.tm], ty))
             }
-            "checked_div" | "checked_rem" => {
+            CheckedFn::Div | CheckedFn::Rem => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
@@ -331,7 +332,7 @@ impl Checker<'_> {
                 if !(Self::is_integer(&x.ty) && x.ty == y.ty) {
                     return Err(self.wrong(name, &[&x.ty, &y.ty], span));
                 }
-                let p = if name == "checked_div" {
+                let p = if f == CheckedFn::Div {
                     Prim::CheckedDiv
                 } else {
                     Prim::CheckedRem
@@ -339,7 +340,7 @@ impl Checker<'_> {
                 let ty = self.option_ty(x.ty.clone());
                 Ok(self.prim(p, vec![x.tm, y.tm], ty))
             }
-            "checked_neg" => {
+            CheckedFn::Neg => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -350,15 +351,14 @@ impl Checker<'_> {
                 let ty = self.option_ty(x.ty.clone());
                 Ok(self.prim(Prim::CheckedNeg, vec![x.tm], ty))
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
-    fn decimal_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+    fn decimal_call(&mut self, f: DecimalFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
         let i64t = Ty::Base(Base::I64);
-        let out = match name {
-            "div" => {
+        match f {
+            DecimalFn::Div => {
                 let [a, b, u, r] = self.arity(name, es, 4, span)? else {
                     unreachable!()
                 };
@@ -379,8 +379,8 @@ impl Checker<'_> {
                     Ty::Base(Base::Decimal(scale as u8)),
                 ))
             }
-            "round" | "rescale" => {
-                let n = if name == "round" { 3 } else { 2 };
+            DecimalFn::Round | DecimalFn::Rescale => {
+                let n = if f == DecimalFn::Round { 3 } else { 2 };
                 let args = self.arity(name, es, n, span)?;
                 let x = self.synth(&args[0])?;
                 let Ty::Base(Base::Decimal(s)) = x.ty else {
@@ -390,7 +390,7 @@ impl Checker<'_> {
                 if scale > 38 {
                     return Err(diag(args[1].span, "a decimal scale is at most 38"));
                 }
-                if name == "round" && scale >= u64::from(s) {
+                if f == DecimalFn::Round && scale >= u64::from(s) {
                     return Err(diag(
                         args[1].span,
                         format!(
@@ -398,7 +398,7 @@ impl Checker<'_> {
                         ),
                     ));
                 }
-                if name == "rescale" && scale < u64::from(s) {
+                if f == DecimalFn::Rescale && scale < u64::from(s) {
                     return Err(diag(
                         args[1].span,
                         format!(
@@ -407,19 +407,19 @@ impl Checker<'_> {
                     ));
                 }
                 let mut tms = vec![x.tm, self.check(&args[1], &i64t)?.tm];
-                if name == "round" {
+                if f == DecimalFn::Round {
                     let rt =
                         self.check(&args[2], &Self::named_ty(self.schema.prelude().rounding()))?;
                     tms.push(rt.tm);
                 }
-                let p = if name == "round" {
+                let p = if f == DecimalFn::Round {
                     Prim::Round
                 } else {
                     Prim::Rescale
                 };
                 Ok(self.prim(p, tms, Ty::Base(Base::Decimal(scale as u8))))
             }
-            "abs" => {
+            DecimalFn::Abs => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -430,19 +430,31 @@ impl Checker<'_> {
                 let ty = x.ty.clone();
                 Ok(self.prim(Prim::Abs, vec![x.tm], ty))
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
-    fn convert_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+    fn convert_call(&mut self, f: ConvertFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
         let i64t = Ty::Base(Base::I64);
-        let out = match name {
-            "i8" | "i16" | "i32" | "i64" | "checked_i8" | "checked_i16" | "checked_i32"
-            | "checked_i64" => {
-                let checked = name.starts_with("checked_");
-                let target = Base::from_name(&name.trim_start_matches("checked_").to_uppercase())
-                    .expect("an integer type");
+        match f {
+            ConvertFn::I8
+            | ConvertFn::I16
+            | ConvertFn::I32
+            | ConvertFn::I64
+            | ConvertFn::CheckedI8
+            | ConvertFn::CheckedI16
+            | ConvertFn::CheckedI32
+            | ConvertFn::CheckedI64 => {
+                let (checked, target) = match f {
+                    ConvertFn::I8 => (false, Base::I8),
+                    ConvertFn::I16 => (false, Base::I16),
+                    ConvertFn::I32 => (false, Base::I32),
+                    ConvertFn::I64 => (false, Base::I64),
+                    ConvertFn::CheckedI8 => (true, Base::I8),
+                    ConvertFn::CheckedI16 => (true, Base::I16),
+                    ConvertFn::CheckedI32 => (true, Base::I32),
+                    _ => (true, Base::I64),
+                };
                 let x = match es {
                     [a] | [a, _] => self.synth(a)?,
                     _ => return Err(self.arity(name, es, 1, span).expect_err("wrong arity")),
@@ -474,8 +486,8 @@ impl Checker<'_> {
                 };
                 Ok(self.prim(Prim::Convert { checked }, tms, ty))
             }
-            "decimal" | "checked_decimal" => {
-                let checked = name == "checked_decimal";
+            ConvertFn::Decimal | ConvertFn::CheckedDecimal => {
+                let checked = f == ConvertFn::CheckedDecimal;
                 let (x, s, r) = match es {
                     [x, s] => (x, s, None),
                     [x, s, r] => (x, s, Some(r)),
@@ -501,12 +513,11 @@ impl Checker<'_> {
                 let ty = if checked { self.option_ty(t) } else { t };
                 Ok(self.prim(Prim::Convert { checked }, tms, ty))
             }
-            "f32" | "f64" | "checked_f32" => {
-                let checked = name == "checked_f32";
-                let target = if name.ends_with("32") {
-                    Base::F32
-                } else {
-                    Base::F64
+            ConvertFn::F32 | ConvertFn::F64 | ConvertFn::CheckedF32 => {
+                let (checked, target) = match f {
+                    ConvertFn::F32 => (false, Base::F32),
+                    ConvertFn::F64 => (false, Base::F64),
+                    _ => (true, Base::F32),
                 };
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
@@ -525,7 +536,7 @@ impl Checker<'_> {
                 };
                 Ok(self.prim(Prim::Convert { checked }, vec![x.tm], ty))
             }
-            "unwrap" => {
+            ConvertFn::Unwrap => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -539,7 +550,7 @@ impl Checker<'_> {
                 };
                 Ok(self.prim(Prim::Unwrap, vec![x.tm], base))
             }
-            "value" => {
+            ConvertFn::Value => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -554,29 +565,28 @@ impl Checker<'_> {
                     .map_err(|e| diag(span, e))?;
                 Ok(self.prim(Prim::KeyValue, vec![x.tm], ty))
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
-    fn string_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+    fn string_call(&mut self, f: StringFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
         let text = Ty::Base(Base::Text);
-        let out = match name {
-            "starts_with" | "ends_with" | "contains" => {
+        match f {
+            StringFn::StartsWith | StringFn::EndsWith | StringFn::Contains => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::Text)?;
                 let y = self.base_arg(b, Base::Text)?;
-                let p = match name {
-                    "starts_with" => Prim::StartsWith,
-                    "ends_with" => Prim::EndsWith,
+                let p = match f {
+                    StringFn::StartsWith => Prim::StartsWith,
+                    StringFn::EndsWith => Prim::EndsWith,
                     _ => Prim::Contains,
                 };
                 let bt = self.bool_ty();
                 Ok(self.prim(p, vec![x, y], bt))
             }
-            "matches" => {
+            StringFn::Matches => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
@@ -598,19 +608,19 @@ impl Checker<'_> {
                 let bt = self.bool_ty();
                 Ok(self.prim(Prim::Matches, vec![x, y], bt))
             }
-            "lower" | "upper" | "fold" => {
+            StringFn::Lower | StringFn::Upper | StringFn::Fold => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::Text)?;
-                let p = match name {
-                    "lower" => Prim::Lower,
-                    "upper" => Prim::Upper,
+                let p = match f {
+                    StringFn::Lower => Prim::Lower,
+                    StringFn::Upper => Prim::Upper,
                     _ => Prim::Fold,
                 };
                 Ok(self.prim(p, vec![x], text))
             }
-            "collate" => {
+            StringFn::Collate => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
@@ -620,33 +630,39 @@ impl Checker<'_> {
                 let y = self.base_arg(b, Base::Text)?;
                 Ok(self.prim(Prim::Collate, vec![x, y], Ty::Base(Base::SortKey)))
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
-    fn time_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
-        let out = match name {
-            "micros" | "millis" | "seconds" | "minutes" | "hours" | "days" | "weeks" | "months"
-            | "years" => {
+    fn time_call(&mut self, f: TimeFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
+        match f {
+            TimeFn::Micros
+            | TimeFn::Millis
+            | TimeFn::Seconds
+            | TimeFn::Minutes
+            | TimeFn::Hours
+            | TimeFn::Days
+            | TimeFn::Weeks
+            | TimeFn::Months
+            | TimeFn::Years => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::I64)?;
-                let (p, ty) = match name {
-                    "micros" => (Prim::Micros, Base::Duration),
-                    "millis" => (Prim::Millis, Base::Duration),
-                    "seconds" => (Prim::Seconds, Base::Duration),
-                    "minutes" => (Prim::Minutes, Base::Duration),
-                    "hours" => (Prim::Hours, Base::Duration),
-                    "days" => (Prim::Days, Base::Period),
-                    "weeks" => (Prim::Weeks, Base::Period),
-                    "months" => (Prim::Months, Base::Period),
+                let (p, ty) = match f {
+                    TimeFn::Micros => (Prim::Micros, Base::Duration),
+                    TimeFn::Millis => (Prim::Millis, Base::Duration),
+                    TimeFn::Seconds => (Prim::Seconds, Base::Duration),
+                    TimeFn::Minutes => (Prim::Minutes, Base::Duration),
+                    TimeFn::Hours => (Prim::Hours, Base::Duration),
+                    TimeFn::Days => (Prim::Days, Base::Period),
+                    TimeFn::Weeks => (Prim::Weeks, Base::Period),
+                    TimeFn::Months => (Prim::Months, Base::Period),
                     _ => (Prim::Years, Base::Period),
                 };
                 Ok(self.prim(p, vec![x], Ty::Base(ty)))
             }
-            "add_period" => {
+            TimeFn::AddPeriod => {
                 let [a, b, o] = self.arity(name, es, 3, span)? else {
                     unreachable!()
                 };
@@ -667,7 +683,7 @@ impl Checker<'_> {
                 };
                 Ok(self.prim(Prim::AddPeriod, vec![x.tm, p, ot.tm], ty))
             }
-            "zoned" => {
+            TimeFn::Zoned => {
                 let [a, b, o] = self.arity(name, es, 3, span)? else {
                     unreachable!()
                 };
@@ -679,7 +695,7 @@ impl Checker<'_> {
                 let ty = if reject { self.option_ty(t) } else { t };
                 Ok(self.prim(Prim::Zoned, vec![x, z, ot.tm], ty))
             }
-            "in_zone" => {
+            TimeFn::InZone => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
@@ -687,22 +703,21 @@ impl Checker<'_> {
                 let z = self.base_arg(b, Base::Text)?;
                 Ok(self.prim(Prim::InZone, vec![x, z], Ty::Base(Base::ZonedDateTime)))
             }
-            "to_instant" => {
+            TimeFn::ToInstant => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::ZonedDateTime)?;
                 Ok(self.prim(Prim::ToInstant, vec![x], Ty::Base(Base::Instant)))
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
-    fn change_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+    fn change_call(&mut self, f: ChangeFn, es: &[Expr], span: Span) -> R<Out> {
+        let name = f.name();
         let text = Ty::Base(Base::Text);
-        let out = match name {
-            "tag" => {
+        match f {
+            ChangeFn::Tag => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -729,7 +744,7 @@ impl Checker<'_> {
                 };
                 Ok(Out::of(self.b().tag(x.tm), ty))
             }
-            "print" => {
+            ChangeFn::Print => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
@@ -739,15 +754,15 @@ impl Checker<'_> {
                 }
                 Ok(self.prim(Prim::Print, vec![x.tm], text))
             }
-            "inserted" | "deleted" | "prior" => {
+            ChangeFn::Inserted | ChangeFn::Deleted | ChangeFn::Prior => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
                 };
                 let (rel, ctors) = self.relation_ref_expr(a)?;
                 let base = self.rel_out(rel, ctors.clone());
-                let t = match name {
-                    "inserted" => Transition::Inserted,
-                    "deleted" => Transition::Deleted,
+                let t = match f {
+                    ChangeFn::Inserted => Transition::Inserted,
+                    ChangeFn::Deleted => Transition::Deleted,
                     _ => Transition::Prior,
                 };
                 let provenance = match t {
@@ -759,20 +774,24 @@ impl Checker<'_> {
                 o.provenance = provenance;
                 Ok(o)
             }
-            _ => return Ok(None),
-        };
-        out.map(Some)
+        }
     }
 
     /// `read_csv(path, T)` and the other file scans, each read at the declared row type `T`.
-    pub(super) fn file_scan(
+    fn file_scan(
         &mut self,
-        name: &str,
-        format: FileFormat,
+        f: FileFn,
         es: &[Expr],
         pins: Option<&ast::Version>,
         span: Span,
     ) -> R<Out> {
+        let name = f.name();
+        let format = match f {
+            FileFn::Csv => FileFormat::Csv,
+            FileFn::Ndjson => FileFormat::Ndjson,
+            FileFn::Parquet => FileFormat::Parquet,
+            FileFn::Arrow => FileFormat::Arrow,
+        };
         if self.ctx != Context::Adhoc && !self.reject_ok {
             return Err(diag(
                 span,
@@ -813,7 +832,7 @@ impl Checker<'_> {
         let def = match self.lookup_type(path) {
             Ok(TypeName::Decl(d)) => d,
             Ok(_) => return Err(refused()),
-            Err(m) => return Err(diag(e.span, m)),
+            Err(m) => return Err(m.at(e.span)),
         };
         let td = self.schema.ty(def);
         if matches!(td.kind, TypeDefKind::Newtype { .. }) || !td.params.is_empty() {
@@ -862,7 +881,7 @@ impl Checker<'_> {
     /// Returns whether `e` is a call of the prelude's `span`, before checking it.
     fn calls_span(&self, e: &Expr) -> bool {
         matches!(&e.kind, ExprKind::Call { callee, .. }
-            if callee.name.text == "span" && matches!(self.callee(callee), Callee::Prelude))
+            if matches!(self.callee(callee), Callee::Prelude(PreludeFn::Span(SpanFn::Span))))
     }
 
     pub(super) fn type_call(
@@ -872,7 +891,10 @@ impl Checker<'_> {
         args: &ast::CallArgs,
         span: Span,
     ) -> R<Out> {
-        let ty = self.resolve_type(t)?;
+        let ty = self.resolve_type(
+            t,
+            FnTypes::Refused("`T.parse` reads a value type, never a function type"),
+        )?;
         let ast::CallArgs::List(es) = args else {
             return Err(diag(span, "`T.parse` takes one text"));
         };

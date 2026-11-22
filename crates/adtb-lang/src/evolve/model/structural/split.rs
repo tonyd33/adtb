@@ -10,6 +10,7 @@ use crate::evolve::model::admin::canonical;
 use crate::evolve::model::field::Applied;
 use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
 use crate::evolve::model::reselect::Mode;
+use crate::evolve::model::run::unbuilt;
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Cx, Resolved, RowMap};
@@ -194,7 +195,7 @@ impl Model {
         probe.edit_decls(edits)?;
         let probed = match probe.built(&[], &run.ahead(&probe)) {
             Ok((b, _)) => b,
-            Err(ds) => return refuse(ds[0].diag.message.clone()),
+            Err(ds) => return unbuilt(&ds),
         };
         let schema: Schema = probed.schema().clone();
         let def = def_in(&schema, t);

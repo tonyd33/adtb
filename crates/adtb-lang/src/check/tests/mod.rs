@@ -193,7 +193,8 @@ fn adhoc_in(
         let c = Checker::of_adhoc(&s, Visible::all(&s));
         let resolve = |t: &str| {
             let parsed = parse_type(t, Options::default()).ok().expect("a type");
-            c.resolve_type(&parsed).expect("a known type")
+            c.resolve_type(&parsed, FnTypes::Allowed)
+                .expect("a known type")
         };
         for (name, t) in params {
             tys.insert(name.to_string(), resolve(t));

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::FnBody;
 use crate::check::Program;
-use crate::kernel::{Agg, Kind, Terms, Tm, Var, alpha_equal_under};
+use crate::kernel::{Agg, Kind, Terms, Tm, alpha_equal_under};
 use crate::norm::Root;
 use crate::schema::Schema;
 use crate::types::{DenialIdx, FnId, RelId, RelRef, Ty, TypeId};
@@ -13,53 +13,11 @@ use crate::types::{DenialIdx, FnId, RelId, RelRef, Ty, TypeId};
 #[path = "depends_tests.rs"]
 mod tests;
 
-/// Returns every body of `p`, by the object it belongs to, with the variables free in it; the
-/// parts of an aggregate under one root.
-pub fn bodies(p: &Program) -> Vec<(Root, Tm, Vec<Var>)> {
-    let mut out: Vec<(Root, Tm, Vec<Var>)> = Vec::new();
-    for (f, t) in p.functions.iter().enumerate() {
-        out.extend(t.map(|t| (Root::Function(FnId(f as u32)), t, vec![])));
-    }
-    out.extend(
-        p.constraints()
-            .map(|(c, t)| (Root::Constraint(c), t, vec![])),
-    );
-    out.extend(p.checks().map(|(c, t)| (Root::Check(c), t, vec![])));
-    out.extend(
-        p.domains
-            .iter()
-            .map(|(&d, &(v, t))| (Root::Domain(d), t, vec![v])),
-    );
-    out.extend(p.retags.iter().map(|(&r, &t)| (Root::Retag(r), t, vec![])));
-    out.extend(
-        p.defaults
-            .iter()
-            .map(|(&(r, i), &t)| (Root::Default(r, i), t, vec![])),
-    );
-    out.extend(
-        p.computed
-            .iter()
-            .map(|(&(r, i), &(v, t))| (Root::Computed(r, i), t, vec![v])),
-    );
-    out.extend(
-        p.index_fields
-            .iter()
-            .map(|(&(r, i, j), f)| (Root::IndexField(r, i, j), f.value, vec![])),
-    );
-    for (i, a) in p.aggregates.iter().enumerate() {
-        if let Some(a) = a {
-            let parts = [a.init, a.step, a.merge, a.finish];
-            out.extend(parts.map(|t| (Root::Aggregate(i), t, vec![])));
-        }
-    }
-    out
-}
-
 /// Returns, for each body of `p`, every function and aggregate it calls, directly or through
 /// the bodies of what it calls, each as its own root.
 pub fn reached(p: &Program) -> BTreeMap<Root, BTreeSet<Root>> {
     let mut direct: BTreeMap<Root, BTreeSet<Root>> = BTreeMap::new();
-    for (root, t, _) in bodies(p) {
+    for (root, t, _) in p.bodies() {
         direct.entry(root).or_default().extend(calls(&p.terms, t));
     }
     direct
@@ -114,11 +72,11 @@ pub fn changed(a: &Schema, old: &Program, b: &Schema, new: &Program) -> BTreeSet
     let kind = |k: &Kind| at.kind(k);
     let ty = |t: &Ty| at.ty(t);
     let mut before: BTreeMap<Root, Vec<Tm>> = BTreeMap::new();
-    for (root, t, _) in bodies(old) {
+    for (root, t, _) in old.bodies() {
         before.entry(root).or_default().push(t);
     }
     let mut after: BTreeMap<Root, Vec<Tm>> = BTreeMap::new();
-    for (root, t, _) in bodies(new) {
+    for (root, t, _) in new.bodies() {
         after.entry(root).or_default().push(t);
     }
     let mut differs: BTreeSet<Root> = after

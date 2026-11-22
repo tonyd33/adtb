@@ -133,7 +133,7 @@ impl Checker<'_> {
                         format!("`{}` has no constructors", path.name.text),
                     ));
                 }
-                Err(e) => return Err(diag(path.span(), e)),
+                Err(e) => return Err(e.at(path.span())),
             };
             let c = self.schema.ty(def).ctor_index(name).ok_or_else(|| {
                 diag(

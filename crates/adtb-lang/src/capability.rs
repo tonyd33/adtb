@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::FnBody;
-use crate::check::Program;
+use crate::check::{Program, ProgramBody};
 use crate::kernel::{Agg, Kind, Prim, Terms, Tm};
 use crate::norm::Root;
 use crate::schema::Schema;
@@ -273,29 +273,29 @@ impl<'a> Judge<'a> {
     pub fn new(schema: &'a Schema, program: &'a Program) -> Self {
         let mut scans: HashMap<Callee, Scan> = HashMap::new();
         for (i, def) in schema.functions.iter().enumerate() {
-            let f = FnId(i as u32);
-            let scan = match (&def.body, program.functions[i]) {
-                (
-                    FnBody::Host {
-                        deterministic: false,
-                        ..
-                    },
-                    _,
-                ) => Scan {
+            let scan = match &def.body {
+                FnBody::Host {
+                    deterministic: false,
+                    ..
+                } => Scan {
                     reaches: BTreeSet::from([Reach::Nondeterministic]),
                     calls: BTreeSet::new(),
                 },
-                (_, Some(t)) => scan(schema, &program.terms, &[t]),
-                (_, None) => Scan::default(),
+                _ => Scan::default(),
             };
-            scans.insert(Callee::Function(f), scan);
+            scans.insert(Callee::Function(FnId(i as u32)), scan);
         }
-        for (i, parts) in program.aggregate_parts().enumerate() {
-            let parts: Vec<Tm> = parts.into_iter().flatten().collect();
-            scans.insert(
-                Callee::Aggregate(i as u32),
-                scan(schema, &program.terms, &parts),
-            );
+        for (i, _) in schema.aggregates.iter().enumerate() {
+            scans.insert(Callee::Aggregate(i as u32), Scan::default());
+        }
+        for body in program.roots() {
+            let callee = match body {
+                ProgramBody::Function(f, _) => Callee::Function(f),
+                ProgramBody::Aggregate(i, _) => Callee::Aggregate(i as u32),
+                _ => continue,
+            };
+            let terms: Vec<Tm> = body.terms().into_iter().map(|(t, _)| t).collect();
+            scans.insert(callee, scan(schema, &program.terms, &terms));
         }
         let mut closed: HashMap<Callee, BTreeSet<Reach>> =
             scans.iter().map(|(c, s)| (*c, s.reaches.clone())).collect();

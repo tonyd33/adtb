@@ -107,7 +107,8 @@ pub(super) fn adhoc(
             let parsed = parse_type(t, Options::default()).ok().expect("a type");
             tys.insert(
                 name.to_string(),
-                c.resolve_type(&parsed).expect("a known type"),
+                c.resolve_type(&parsed, crate::schema::FnTypes::Allowed)
+                    .expect("a known type"),
             );
         }
     }

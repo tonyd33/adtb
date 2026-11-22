@@ -107,7 +107,7 @@ pub fn read_document<V: Textual>(schema: &Schema, text: &str) -> Result<Document
         Ok(rel) => rel,
         Err(e) => {
             r.pos = at;
-            return r.fail(e);
+            return r.fail(e.to_string());
         }
     };
     let form = Form::of(schema, &schema.relation(rel).elem);

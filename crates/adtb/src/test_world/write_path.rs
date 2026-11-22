@@ -229,7 +229,7 @@ impl<R: Runtime> WritePath<R> {
             .ok()
             .unwrap_or_else(|_| panic!("`{text}` is not a type"));
         Checker::of_adhoc(&self.schema, Visible::all(&self.schema))
-            .resolve_type(&parsed)
+            .resolve_type(&parsed, adtb_lang::schema::FnTypes::Allowed)
             .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
     }
 

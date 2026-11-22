@@ -220,8 +220,14 @@ fn ty(schema: &Schema, text: &str) -> Ty {
         .ok()
         .unwrap_or_else(|_| panic!("`{text}` is not a type"));
     Checker::of_adhoc(schema, Visible::all(schema))
-        .resolve_type(&parsed)
+        .resolve_type(&parsed, adtb_lang::schema::FnTypes::Allowed)
         .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
+}
+
+/// Returns `{ f: I64 -> I64 }`, a type no text writes.
+fn fn_field() -> Ty {
+    let i64 = || Box::new(Ty::Base(Base::I64));
+    Ty::Record(vec![("f".to_string(), Ty::Fn(i64(), i64()))])
 }
 
 fn form(schema: &Schema, text: &str) -> Form {
@@ -463,7 +469,7 @@ fn reading_refuses_text_outside_the_form() {
 #[test]
 fn a_type_with_no_syntax_has_an_opaque_form() {
     let s = schema();
-    let f = form(&s, "{ f: I64 -> I64 }");
+    let f = Form::of(&s, &fn_field());
     assert!(!f.has_syntax());
     assert!(form(&s, "Set (Option Order)").has_syntax());
     let got: Result<Tree, ParseError> = parse("{ f: 1 }", &f);
@@ -688,17 +694,16 @@ fn a_value_not_of_its_form_does_not_print() {
             Tree::Set([text()].into_iter().collect()),
             r#"Text("a") is not a value of I64"#,
         ),
-        (
-            "{ f: I64 -> I64 }",
-            Tree::Record(Vec::new()),
-            "a value of a form with 1 fields has 1 fields, found Record([])",
-        ),
     ];
     for (name, v, message) in cases {
         let f = form(&s, name);
         print_refused(print(&v, &f), message);
         print_refused(to_text(&v, &f), message);
     }
+    let opaque = Form::of(&s, &fn_field());
+    let message = "a value of a form with 1 fields has 1 fields, found Record([])";
+    print_refused(print(&Tree::Record(Vec::new()), &opaque), message);
+    print_refused(to_text(&Tree::Record(Vec::new()), &opaque), message);
     let email = form(&s, "Email");
     print_refused(
         print(&int(), &email),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::span::DiagKind;
 
 impl Source {
     /// Returns the source of a schema declared directly, every constructor enabled at version 0.
@@ -173,9 +174,10 @@ impl Source {
             .collect();
     }
 
-    /// End the migration `expecting` prepared the source for.
+    /// End the migration `expecting` prepared the source for, keeping the name of each relation
+    /// variable a refused operator would have added bound, poisoned.
     pub fn settled(&mut self) {
-        self.ahead.clear();
+        self.keep_refused();
     }
 
     /// Build and type check the schema.
@@ -371,7 +373,9 @@ impl Source {
                 .collect();
             refusal.recheck = ds
                 .into_iter()
-                .filter(|d| !reported.contains(&d.diag.message))
+                .filter(|d| {
+                    d.diag.kind != DiagKind::Poisoned && !reported.contains(&d.diag.message)
+                })
                 .collect();
             refusal.recheck_from = self.copied_from(m, text, &applied, &refusal.recheck);
         });
@@ -438,6 +442,7 @@ impl Source {
             };
             applied.push(ended.is_ok());
             if let Err(mut ds) = ended {
+                ds.retain(|d| d.kind != DiagKind::Poisoned);
                 refusal.operators.append(&mut ds);
             }
             if let Some(prior) = prior {
@@ -552,7 +557,10 @@ impl Source {
                 self.added(module, op);
                 self.carry_grants(&before, module, &op.kind);
             }
-            Err(_) => *self = before,
+            Err(_) => {
+                *self = before;
+                self.refused(module, op);
+            }
         }
         r
     }

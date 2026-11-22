@@ -465,7 +465,7 @@ impl Checker<'_> {
                     format!("`{}` is not a relation", target.relation.name.text),
                 ));
             }
-            Err(e) => return Err(diag(target.span, e)),
+            Err(e) => return Err(e.at(target.span)),
         };
         let r = self.schema.relation(rel);
         let def = r.elem_def;
@@ -755,7 +755,7 @@ impl Checker<'_> {
                     format!("`{}` is not a relation", j.name.text),
                 ));
             }
-            Err(e) => return Err(diag(j.span(), e)),
+            Err(e) => return Err(e.at(j.span())),
         };
         if self.schema.relation(into).elem_def != self.schema.prelude().rejected_row() {
             return Err(diag(

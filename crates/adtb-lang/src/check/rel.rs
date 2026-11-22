@@ -36,12 +36,10 @@ impl Checker<'_> {
     pub(super) fn self_key(&self, def: TypeId) -> Option<(RelId, String)> {
         self.schema.relations.iter().enumerate().find_map(|(i, r)| {
             let rel = RelId(i as u32);
-            if r.elem_def != def || r.key.len() != 1 {
-                return None;
+            match r.key.as_slice() {
+                [k] if r.elem_def == def && self.schema.self_key(rel, k) => Some((rel, k.clone())),
+                _ => None,
             }
-            let f = self.schema.ty(def).field_named(0, &r.key[0])?;
-            matches!(f.ty, Ty::Key { rel: own, .. } if own == RelRef::Declared(rel))
-                .then(|| (rel, r.key[0].clone()))
         })
     }
 
@@ -113,19 +111,12 @@ pub(crate) fn key_value_ty(schema: &Schema, rel: RelId) -> Result<Ty, String> {
             .field_named(0, name)
             .ok_or_else(|| format!("`{}` has no key field `{name}`", r.name))?;
         match &f.ty {
-            Ty::Key { rel: own, .. } if *own == RelRef::Declared(rel) => match r.generate {
-                Some(crate::schema::Generator::Sequence) => Ok(Ty::Base(Base::I64)),
-                None if schema.module(r.module).engine => Ok(Ty::Base(Base::I64)),
-                Some(crate::schema::Generator::Uuidv7) => Ok(Ty::Data {
-                    def: schema.prelude().uuid(),
-                    args: Vec::new(),
-                    ctors: None,
-                }),
-                _ => Err(format!(
+            _ if schema.self_key(rel, name) => schema.generated_key_ty(rel).ok_or_else(|| {
+                format!(
                     "`{}` identifies its rows by `Key {}` with no generator, so its key has no value",
                     r.name, r.name
-                )),
-            },
+                )
+            }),
             t => Ok(t.subst(r.elem_args())),
         }
     };

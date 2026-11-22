@@ -393,7 +393,7 @@ impl Resolving<'_> {
         let rel = self
             .names
             .lookup_relation(&r.relation)
-            .map_err(|e| vec![Diag::new(r.span, e)])?;
+            .map_err(|e| vec![e.at(r.span)])?;
         let rd = schema.relation(rel);
         if schema.module(rd.module).engine != self.system {
             let why = if self.system {
@@ -610,7 +610,7 @@ impl Resolving<'_> {
                         format!("`{}` is not a function", f.name.text),
                     )]);
                 }
-                Err(e) => return Err(vec![Diag::new(f.span(), e)]),
+                Err(e) => return Err(vec![e.at(f.span())]),
             },
             ast::Privilege::Call(..) | ast::Privilege::CallAt(_) => {
                 return Err(vec![Diag::new(

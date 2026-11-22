@@ -253,23 +253,19 @@ impl Checker<'_> {
         if let Some(l) = &t.limit {
             self.check(l, &Ty::Base(Base::Duration))?;
         }
-        let result = self.resolve_type(&t.result)?;
-        if result.mentions_fn() {
-            return Err(diag(
-                t.result.span,
-                "a registered transaction never returns a function",
-            ));
-        }
+        let result = self.resolve_type(
+            &t.result,
+            FnTypes::Refused("a registered transaction never returns a function"),
+        )?;
         self.scope.push();
         let mut vars = Vec::new();
         for p in &t.params {
-            let pty = self.resolve_type(&p.ty)?;
-            if pty.mentions_fn() {
-                return Err(diag(
-                    p.ty.span,
+            let pty = self.resolve_type(
+                &p.ty,
+                FnTypes::Refused(
                     "a parameter of a registered transaction never has a function type",
-                ));
-            }
+                ),
+            )?;
             vars.push(self.bind(&p.name.text, pty, None, Provenance::Built));
         }
         let body = self.transact(&t.body, Some(&result));

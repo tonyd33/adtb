@@ -46,7 +46,8 @@ fn run(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<St
             let parsed = parse_type(t, Options::default()).ok().expect("a type");
             tys.insert(
                 name.to_string(),
-                c.resolve_type(&parsed).expect("a known type"),
+                c.resolve_type(&parsed, FnTypes::Allowed)
+                    .expect("a known type"),
             );
         }
     }

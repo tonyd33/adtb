@@ -1,5 +1,32 @@
 use super::*;
 
+/// Whether a written type may hold a function type, at any depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FnTypes {
+    /// A function type is allowed at the top and on either side of an arrow; inside a field, a
+    /// set element or a type argument it is refused.
+    Allowed,
+    /// Refused with this reason wherever a function type occurs in it.
+    Refused(&'static str),
+}
+
+pub(crate) const FN_FIELD: &str = "a field never has a function type";
+pub(crate) const FN_TYPE_ARGUMENT: &str = "a type argument is a value type, never a function type";
+const FN_SET_ELEMENT: &str = "a set element never has a function type";
+pub(crate) const FN_RELATION: &str = "a relation never holds a function";
+pub(crate) const FN_AGGREGATE: &str = "an aggregate's input and result never have a function type";
+
+impl FnTypes {
+    /// Returns the rule for a part of the type other than a side of its arrow: refused with
+    /// `reason` unless refused already.
+    fn under(self, reason: &'static str) -> FnTypes {
+        match self {
+            FnTypes::Allowed => FnTypes::Refused(reason),
+            FnTypes::Refused(_) => self,
+        }
+    }
+}
+
 impl Builder<'_> {
     /// The constructor and header names of a type, with field types left for later.
     pub(super) fn type_skeleton(
@@ -123,11 +150,17 @@ impl Builder<'_> {
         }
     }
 
-    pub fn resolve_type(&mut self, file: FileId, scope: &TypeScope, t: &ast::Type) -> Option<Ty> {
-        match resolve_type(&self.schema, scope, t, &mut self.ordered_args, file) {
+    pub fn resolve_type(
+        &mut self,
+        file: FileId,
+        scope: &TypeScope,
+        t: &ast::Type,
+        fns: FnTypes,
+    ) -> Option<Ty> {
+        match resolve_type(&self.schema, scope, t, fns, &mut self.ordered_args, file) {
             Ok(ty) => Some(ty),
-            Err((span, msg)) => {
-                self.err(file, span, msg);
+            Err(d) => {
+                self.diags.push(FileDiag { file, diag: d });
                 None
             }
         }
@@ -149,7 +182,9 @@ impl Builder<'_> {
         };
         let mut out = Vec::new();
         for f in fields {
-            let ty = self.resolve_type(file, &scope, &f.ty).unwrap_or(Ty::Unit);
+            let ty = self
+                .resolve_type(file, &scope, &f.ty, FnTypes::Refused(FN_FIELD))
+                .unwrap_or(Ty::Unit);
             let on_delete = match &f.on_delete {
                 None => OnDelete::Restrict,
                 Some(a) => {
@@ -228,7 +263,9 @@ impl Builder<'_> {
                     mode: TypeMode::Field,
                     names: None,
                 };
-                let ty = self.resolve_type(file, &scope, base).unwrap_or(Ty::Unit);
+                let ty = self
+                    .resolve_type(file, &scope, base, FnTypes::Refused(FN_FIELD))
+                    .unwrap_or(Ty::Unit);
                 if !matches!(ty, Ty::Base(_)) && ty != Ty::Unit {
                     self.err(file, base.span, "a newtype is over a base type");
                 }
@@ -278,23 +315,25 @@ impl Builder<'_> {
     }
 }
 
-/// Resolve a written type in `scope`, recording `Span` arguments whose order is checked later.
+/// Resolve a written type in `scope`, where `fns` rules on a function type, recording `Span`
+/// arguments whose order is checked later.
 pub fn resolve_type(
     schema: &Schema,
     scope: &TypeScope,
     t: &ast::Type,
+    fns: FnTypes,
     ordered_args: &mut Vec<(Ty, FileId, Span)>,
     file: FileId,
-) -> Result<Ty, (Span, String)> {
+) -> Result<Ty, Diag> {
     Resolver {
         schema,
         scope,
         file,
     }
-    .ty(t, ordered_args)
+    .ty(t, fns, ordered_args)
 }
 
-type Resolved<T> = Result<T, (Span, String)>;
+type Resolved<T> = Result<T, Diag>;
 
 type Ordered = Vec<(Ty, FileId, Span)>;
 
@@ -309,7 +348,7 @@ impl Resolver<'_> {
         self.scope.mode == TypeMode::Field
     }
 
-    fn ty(&self, t: &ast::Type, ordered_args: &mut Ordered) -> Resolved<Ty> {
+    fn ty(&self, t: &ast::Type, fns: FnTypes, ordered_args: &mut Ordered) -> Resolved<Ty> {
         let field = self.field();
         match &t.kind {
             ast::TypeKind::Var(v) => self
@@ -318,39 +357,37 @@ impl Resolver<'_> {
                 .iter()
                 .position(|p| *p == v.text)
                 .map(|i| Ty::Param(i as u32))
-                .ok_or_else(|| (v.span, format!("no type parameter `{}`", v.text))),
+                .ok_or_else(|| Diag::new(v.span, format!("no type parameter `{}`", v.text))),
             ast::TypeKind::Unit => {
                 if field {
-                    Err((t.span, "a field has no unit type".to_string()))
+                    Err(Diag::new(t.span, "a field has no unit type".to_string()))
                 } else {
                     Ok(Ty::Unit)
                 }
             }
-            ast::TypeKind::Fn(a, b) => {
-                if field {
-                    return Err((t.span, "a field never has a function type".to_string()));
-                }
-                Ok(Ty::Fn(
-                    Box::new(self.ty(a, ordered_args)?),
-                    Box::new(self.ty(b, ordered_args)?),
-                ))
-            }
+            ast::TypeKind::Fn(a, b) => match fns {
+                FnTypes::Refused(reason) => Err(Diag::new(t.span, reason.to_string())),
+                FnTypes::Allowed => Ok(Ty::Fn(
+                    Box::new(self.ty(a, fns, ordered_args)?),
+                    Box::new(self.ty(b, fns, ordered_args)?),
+                )),
+            },
             ast::TypeKind::Record(fs) => {
                 if field {
-                    return Err((
+                    return Err(Diag::new(
                         t.span,
                         "a declared field's type is a named type; declare a record type for it"
                             .to_string(),
                     ));
                 }
-                let mut out = self.fields(fs, ordered_args)?;
+                let mut out = self.fields(fs, fns, ordered_args)?;
                 out.sort_by(|a, b| a.0.cmp(&b.0));
                 Ok(Ty::Record(out))
             }
-            ast::TypeKind::Sum(cs) => self.sum(t, cs, ordered_args),
+            ast::TypeKind::Sum(cs) => self.sum(t, cs, fns, ordered_args),
             ast::TypeKind::Key(_, r) => self.key(r),
             ast::TypeKind::Named { name, sel, args } => {
-                self.named(t, name, sel.as_ref(), args, ordered_args)
+                self.named(t, name, sel.as_ref(), args, fns, ordered_args)
             }
         }
     }
@@ -359,24 +396,34 @@ impl Resolver<'_> {
     fn fields(
         &self,
         fs: &[ast::FieldType],
+        fns: FnTypes,
         ordered_args: &mut Ordered,
     ) -> Resolved<Vec<(String, Ty)>> {
         let mut out: Vec<(String, Ty)> = Vec::new();
         for f in fs {
             if out.iter().any(|(n, _)| *n == f.name.text) {
-                return Err((
+                return Err(Diag::new(
                     f.name.span,
                     format!("field `{}` is written twice", f.name.text),
                 ));
             }
-            out.push((f.name.text.clone(), self.ty(&f.ty, ordered_args)?));
+            out.push((
+                f.name.text.clone(),
+                self.ty(&f.ty, fns.under(FN_FIELD), ordered_args)?,
+            ));
         }
         Ok(out)
     }
 
-    fn sum(&self, t: &ast::Type, cs: &[ast::AnonCtor], ordered_args: &mut Ordered) -> Resolved<Ty> {
+    fn sum(
+        &self,
+        t: &ast::Type,
+        cs: &[ast::AnonCtor],
+        fns: FnTypes,
+        ordered_args: &mut Ordered,
+    ) -> Resolved<Ty> {
         if self.field() {
-            return Err((
+            return Err(Diag::new(
                 t.span,
                 "a declared field's type is a named type; declare a sum type for it".to_string(),
             ));
@@ -384,12 +431,13 @@ impl Resolver<'_> {
         let mut out: Vec<(String, Vec<(String, Ty)>)> = Vec::new();
         for c in cs {
             if out.iter().any(|(n, _)| *n == c.name.text) {
-                return Err((
+                return Err(Diag::new(
                     c.name.span,
                     format!("constructor `{}` is written twice", c.name.text),
                 ));
             }
-            let mut fields = self.fields(c.record.as_deref().unwrap_or_default(), ordered_args)?;
+            let mut fields =
+                self.fields(c.record.as_deref().unwrap_or_default(), fns, ordered_args)?;
             fields.sort_by(|a, b| a.0.cmp(&b.0));
             out.push((c.name.text.clone(), fields));
         }
@@ -412,7 +460,7 @@ impl Resolver<'_> {
                     .map(RelRef::Ahead)
                     .ok_or(e)
             })
-            .map_err(|e| (r.span, e))?;
+            .map_err(|e| Diag::new(r.span, e))?;
         let late = schema.selects_late(rel);
         let written = |sel: &ast::CtorSel| match sel {
             ast::CtorSel::One(c) => c.text.clone(),
@@ -428,7 +476,7 @@ impl Resolver<'_> {
             (None, _) => KeyCtors::All,
             (Some(sel), RelRef::Ahead(_)) if late => KeyCtors::Late(written(sel)),
             (Some(_), RelRef::Ahead(_)) => {
-                return Err((
+                return Err(Diag::new(
                     r.span,
                     format!(
                         "`{}` is added by a later operator and its type is not added by this migration, so only `Key {}` may name it",
@@ -441,7 +489,7 @@ impl Resolver<'_> {
                     KeyCtors::of_row(schema.normalize_ctors(schema.relation(rel).elem_def, set))
                 }
                 Err(_) if late => KeyCtors::Late(written(sel)),
-                Err(e) => return Err((r.span, e)),
+                Err(e) => return Err(Diag::new(r.span, e)),
             },
         };
         Ok(Ty::Key { rel, ctors })
@@ -453,17 +501,18 @@ impl Resolver<'_> {
         name: &ast::QName,
         sel: Option<&ast::CtorSel>,
         args: &[ast::TypeArg],
+        fns: FnTypes,
         ordered_args: &mut Ordered,
     ) -> Resolved<Ty> {
         let schema = self.schema;
         let found = schema
-            .lookup_type_in(self.scope.module, name, self.scope.names)
-            .map_err(|e| (name.span(), e))?;
+            .find_type_in(self.scope.module, name, self.scope.names)
+            .map_err(|e| e.at(name.span()))?;
         let arity = |n: usize| -> Resolved<()> {
             if args.len() == n {
                 Ok(())
             } else {
-                Err((
+                Err(Diag::new(
                     t.span,
                     format!(
                         "`{}` takes {n} type argument{}, given {}",
@@ -477,7 +526,7 @@ impl Resolver<'_> {
         let no_sel = || -> Resolved<()> {
             match sel {
                 None => Ok(()),
-                Some(_) => Err((
+                Some(_) => Err(Diag::new(
                     t.span,
                     format!("`{}` has no constructors to select", name.name.text),
                 )),
@@ -494,12 +543,12 @@ impl Resolver<'_> {
                 match args {
                     [ast::TypeArg::Int(s, span)] => {
                         if *s > 38 {
-                            Err((*span, "a decimal scale is at most 38".to_string()))
+                            Err(Diag::new(*span, "a decimal scale is at most 38".to_string()))
                         } else {
                             Ok(Ty::Base(Base::Decimal(*s as u8)))
                         }
                     }
-                    _ => Err((
+                    _ => Err(Diag::new(
                         t.span,
                         "`Decimal` takes its scale, a number: `Decimal 2`".to_string(),
                     )),
@@ -507,16 +556,19 @@ impl Resolver<'_> {
             }
             TypeName::Set => {
                 if self.field() {
-                    return Err((
+                    return Err(Diag::new(
                         t.span,
                         "a field never holds a set; a many-valued fact is a relation".to_string(),
                     ));
                 }
                 arity(1)?;
                 no_sel()?;
-                Ok(Ty::Set(Box::new(self.type_args(args, ordered_args)?.remove(0))))
+                Ok(Ty::Set(Box::new(
+                    self.type_args(args, fns.under(FN_SET_ELEMENT), ordered_args)?
+                        .remove(0),
+                )))
             }
-            TypeName::Group => Err((
+            TypeName::Group => Err(Diag::new(
                 t.span,
                 "`Group K T` is the type of a group binder and is never written; a group passed on is a `Set T`"
                     .to_string(),
@@ -524,19 +576,21 @@ impl Resolver<'_> {
             TypeName::Tag => {
                 arity(1)?;
                 no_sel()?;
-                let arg = self.type_args(args, ordered_args)?.remove(0);
+                let arg = self
+                    .type_args(args, fns.under(FN_TYPE_ARGUMENT), ordered_args)?
+                    .remove(0);
                 match &arg {
                     Ty::Data { def, .. }
                         if matches!(schema.ty(*def).kind, TypeDefKind::Sum { .. }) =>
                     {
                         Ok(Ty::Tag(Box::new(arg)))
                     }
-                    _ => Err((t.span, "`Tag T` takes a declared sum".to_string())),
+                    _ => Err(Diag::new(t.span, "`Tag T` takes a declared sum".to_string())),
                 }
             }
             TypeName::Decl(def) => {
                 arity(schema.ty(def).params.len())?;
-                let targs = self.type_args(args, ordered_args)?;
+                let targs = self.type_args(args, fns.under(FN_TYPE_ARGUMENT), ordered_args)?;
                 if def == schema.prelude().span() {
                     ordered_args.push((targs[0].clone(), self.file, t.span));
                 }
@@ -549,11 +603,16 @@ impl Resolver<'_> {
         }
     }
 
-    fn type_args(&self, args: &[ast::TypeArg], ordered_args: &mut Ordered) -> Resolved<Vec<Ty>> {
+    fn type_args(
+        &self,
+        args: &[ast::TypeArg],
+        fns: FnTypes,
+        ordered_args: &mut Ordered,
+    ) -> Resolved<Vec<Ty>> {
         args.iter()
             .map(|a| match a {
-                ast::TypeArg::Type(t) => self.ty(t, ordered_args),
-                ast::TypeArg::Int(_, span) => Err((
+                ast::TypeArg::Type(t) => self.ty(t, fns, ordered_args),
+                ast::TypeArg::Int(_, span) => Err(Diag::new(
                     *span,
                     "a number is a type argument only as the scale of `Decimal`".to_string(),
                 )),
@@ -571,15 +630,21 @@ impl Resolver<'_> {
         let Some(sel) = sel else { return Ok(None) };
         let d = self.schema.ty(def);
         if matches!(d.kind, TypeDefKind::Newtype { .. }) {
-            return Err((t.span, format!("newtype `{}` has no constructors", d.name)));
+            return Err(Diag::new(
+                t.span,
+                format!("newtype `{}` has no constructors", d.name),
+            ));
         }
         if self.field() {
-            return Err((
+            return Err(Diag::new(
                 t.span,
                 "a declared field's type is a whole sum, never a constructor row type".to_string(),
             ));
         }
-        let set = self.schema.type_sel(def, sel).map_err(|e| (t.span, e))?;
+        let set = self
+            .schema
+            .type_sel(def, sel)
+            .map_err(|e| Diag::new(t.span, e))?;
         Ok(self.schema.normalize_ctors(def, set))
     }
 }

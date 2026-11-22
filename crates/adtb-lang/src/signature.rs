@@ -9,7 +9,8 @@ use crate::evolve::{Listed, Source, Uncommitted};
 use crate::parse::{Options, parse_adhoc, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
 use crate::schema::{
-    Committed, FieldPart, PRELUDE, Schema, TypeDefKind, TypeMode, TypeScope, ValueDef, resolve_type,
+    Committed, FieldPart, FnTypes, PRELUDE, Schema, TypeDefKind, TypeMode, TypeScope, ValueDef,
+    resolve_type,
 };
 use crate::span::{Diag, FileId, Span};
 use crate::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
@@ -300,7 +301,15 @@ pub fn family_signature(target: &str) -> Option<ast::CallSignature> {
 pub fn signature_ids(schema: &Committed, signature: &ast::CallSignature) -> Result<Ids, String> {
     let scope = TypeScope::new(PRELUDE, &[], TypeMode::Signature);
     let read = |t: &ast::Type| {
-        resolve_type(schema, &scope, t, &mut Vec::new(), FileId(0)).map_err(|(_, m)| m)
+        resolve_type(
+            schema,
+            &scope,
+            t,
+            FnTypes::Allowed,
+            &mut Vec::new(),
+            FileId(0),
+        )
+        .map_err(|d| d.message)
     };
     let params = signature
         .params

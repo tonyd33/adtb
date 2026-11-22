@@ -164,6 +164,7 @@ impl Model {
                     typed,
                     by,
                     added: Added::Not,
+                    kind: AheadKind::Relation,
                 }
             })
             .collect();

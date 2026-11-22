@@ -1,5 +1,5 @@
 use super::lift::Lifting;
-use super::op::{Fail, Kind, Res, StateKey, broken, refuse, refuse_at, unmodelled};
+use super::op::{Fail, Kind, Res, StateKey, broken, refuse, refuse_at, refuse_first, unmodelled};
 use super::run::{Built, Late, Run, unbuilt};
 use super::slots::Found;
 use super::*;
@@ -8,7 +8,7 @@ use crate::check;
 use crate::evolve::{Clause, Resolved, SourceDecl, Target, mentions_def, mentions_rel};
 use crate::ids::named_ids;
 use crate::schema::{self, PRELUDE, Stage};
-use crate::span::{FileId, Span};
+use crate::span::{FileDiag, FileId, Span};
 
 impl Model {
     /// Refuse a module named `m` added: a built-in module's name, or one taken.
@@ -91,8 +91,9 @@ impl Model {
         let built = match self.build_adopting(std::slice::from_ref(&decl), &run.ahead(self)) {
             Ok(b) => b,
             Err(ds) => {
-                if let Some(d) = ds.iter().find(|d| d.file == at) {
-                    return refuse(d.diag.message.clone());
+                let own: Vec<FileDiag> = ds.iter().filter(|d| d.file == at).cloned().collect();
+                if !own.is_empty() {
+                    return refuse_first(&own, str::to_string);
                 }
                 if kind == Kind::Relation {
                     return unbuilt(&ds);

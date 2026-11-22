@@ -43,7 +43,9 @@ fn requirements(s: &Committed, params: &[(&str, &str)], text: &str) -> Requireme
                 .expect("type parses");
             (
                 name.to_string(),
-                checker.resolve_type(&ty).expect("type checks"),
+                checker
+                    .resolve_type(&ty, crate::schema::FnTypes::Allowed)
+                    .expect("type checks"),
             )
         })
         .collect();

@@ -301,7 +301,9 @@ fn outcome(kind: RootKind, decl: &str, body: &str) -> Vec<String> {
             };
             let c = Checker::of_adhoc(s, Visible::all(s));
             let raw = parse_type("Raw", Options::default()).ok().expect("a type");
-            let row = c.resolve_type(&raw).expect("a known type");
+            let row = c
+                .resolve_type(&raw, FnTypes::Allowed)
+                .expect("a known type");
             let b = c.bool_ty();
             let module = s.module_named("auth").expect("module auth");
             let r = check_row(s, p, module, &row, RowBody::Expr(e), Some(&b), kind);

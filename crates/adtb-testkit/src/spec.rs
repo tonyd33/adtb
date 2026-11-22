@@ -442,7 +442,7 @@ pub fn given_types(b: &Block, schema: &Schema) -> (BTreeMap<String, Ty>, Vec<Str
             errs.push(format!("{}:{}: `{ty}` is not a type", b.file, b.line));
             continue;
         };
-        match c.resolve_type(&parsed) {
+        match c.resolve_type(&parsed, adtb_lang::schema::FnTypes::Allowed) {
             Ok(t) => {
                 params.insert(name, t);
             }
@@ -462,7 +462,11 @@ pub fn bundles(schema: &Schema, registered: &[Registered]) -> (Bundles, Vec<Stri
     let mut bundles = Bundles::default();
     let mut errs = Vec::new();
     for (family, version, q) in registered {
-        let params: Result<Vec<_>, _> = q.params.iter().map(|p| c.resolve_type(&p.ty)).collect();
+        let params: Result<Vec<_>, _> = q
+            .params
+            .iter()
+            .map(|p| c.resolve_type(&p.ty, adtb_lang::schema::FnTypes::Allowed))
+            .collect();
         match params {
             Ok(params) => bundles.insert(family, version, &q.name.text, params),
             Err(d) => errs.push(format!(

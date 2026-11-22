@@ -296,7 +296,11 @@ struct Diff {
 
 /// Returns each way the model's result differs from the operator layer's.
 fn differences(m: &MigrationFile, got: &Migrated, after: Result<&Source, &Refusal>) -> Vec<Diff> {
-    let model_refused: Vec<bool> = got.ops().iter().map(Result::is_err).collect();
+    let model_refused: Vec<bool> = got
+        .ops()
+        .iter()
+        .map(|o| o.as_ref().is_err_and(Refused::reported))
+        .collect();
     let mut out = Vec::new();
     match after {
         Err(r) => {
@@ -316,6 +320,7 @@ fn differences(m: &MigrationFile, got: &Migrated, after: Result<&Source, &Refusa
             }
             for (k, (layer, mine)) in reasons.iter().zip(got.ops()).enumerate() {
                 if let Err(why) = mine
+                    && why.reported()
                     && !layer.is_empty()
                     && !holds_refusal(layer, why)
                 {

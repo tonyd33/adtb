@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{LogGrant, Source, State};
 use crate::ast::{self, MigrationFile, OperatorKind};
 use crate::ids::{FIRST_LOG_ID, ObjectKey, Space};
-use crate::schema::Adder;
+use crate::schema::{Adder, AheadKind};
 
 mod admin;
 mod apply;
@@ -120,7 +120,8 @@ struct HeldM {
 }
 
 /// A relation variable an operator of the migration being applied adds: named `name` in module
-/// `module`, `typed` when the migration also adds its type.
+/// `module`, `typed` when the migration also adds its type. Or a type or function a refused
+/// operator of it would have declared, by `kind`.
 #[derive(Clone, Debug)]
 struct AheadM {
     module: String,
@@ -128,6 +129,7 @@ struct AheadM {
     typed: bool,
     by: Adder,
     added: Added,
+    kind: AheadKind,
 }
 
 /// Whether the operator adding an [`AheadM`] has applied.
@@ -135,6 +137,8 @@ struct AheadM {
 enum Added {
     Not,
     Applying,
+    /// It was refused: its name stays bound, poisoned, to the end of the migration.
+    Refused,
     /// It has, adding the relation variable of this id.
     As(u64),
 }
@@ -352,6 +356,7 @@ impl Model {
                     ),
                     by: Adder::Operator(k),
                     added: Added::Not,
+                    kind: AheadKind::Relation,
                 }),
                 _ => None,
             })

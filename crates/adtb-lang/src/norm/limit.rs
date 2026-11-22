@@ -149,31 +149,9 @@ pub(super) fn planned_within_bound(p: &NormalProgram) -> Result<(), Error> {
             })
         }
     };
-    for (c, t) in p.constraints() {
-        holds(Root::Constraint(c), t)?;
-    }
-    for (c, t) in p.checks() {
-        holds(Root::Check(c), t)?;
-    }
-    for (id, (_, t)) in p.domains() {
-        holds(Root::Domain(*id), *t)?;
-    }
-    for (r, (_, t)) in p.retags() {
-        holds(Root::Retag(*r), *t)?;
-    }
-    for (&(r, i), t) in p.defaults() {
-        holds(Root::Default(r, i), *t)?;
-    }
-    for (&(r, i), (_, t)) in p.computed() {
-        holds(Root::Computed(r, i), *t)?;
-    }
-    for (&(r, i, j), (_, f)) in p.index_fields() {
-        holds(Root::IndexField(r, i, j), f.value)?;
-    }
-    for (i, a) in p.aggregates().iter().enumerate() {
-        let Some(a) = a else { continue };
-        for t in [a.init(), a.step().1, a.merge().1, a.finish().1] {
-            holds(Root::Aggregate(i), t)?;
+    for (root, t, _) in p.bodies() {
+        if !matches!(root, Root::Function(_)) {
+            holds(root, t)?;
         }
     }
     Ok(())

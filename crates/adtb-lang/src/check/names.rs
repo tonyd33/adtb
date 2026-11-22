@@ -1,4 +1,5 @@
 use super::*;
+use crate::resolve::Unbound;
 
 /// The text a recorded name's span indexes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,13 +67,12 @@ impl Checker<'_> {
         self.refs.take_checked()
     }
 
-    pub fn resolve_type(&self, t: &ast::Type) -> R<Ty> {
+    pub fn resolve_type(&self, t: &ast::Type, fns: FnTypes) -> R<Ty> {
         let names: Vec<String> = self.tparams.iter().map(|(n, _)| n.clone()).collect();
         let scope =
             TypeScope::new(self.module(), &names, TypeMode::Signature).naming(self.vis.scope());
         let mut ordered = Vec::new();
-        let ty = crate::schema::resolve_type(self.schema, &scope, t, &mut ordered, FileId(0))
-            .map_err(|(span, msg)| diag(span, msg))?;
+        let ty = crate::schema::resolve_type(self.schema, &scope, t, fns, &mut ordered, FileId(0))?;
         let mut named = Vec::new();
         crate::canon::type_refs(self.schema, self.module(), t, &mut named);
         for (span, r) in named {
@@ -86,7 +86,7 @@ impl Checker<'_> {
         Ok(ty)
     }
 
-    pub(super) fn lookup_type(&self, name: &ast::QName) -> Result<TypeName, String> {
+    pub(super) fn lookup_type(&self, name: &ast::QName) -> Result<TypeName, Unbound> {
         let t = crate::resolve::lookup_type(self.schema, &self.vis, name);
         match t {
             Ok(TypeName::Decl(d)) => self.refs.push(name.name.span, Ref::Type(d)),
@@ -96,28 +96,30 @@ impl Checker<'_> {
         t
     }
 
-    pub(crate) fn lookup_relation(&self, name: &ast::QName) -> Result<RelId, String> {
+    pub(crate) fn lookup_relation(&self, name: &ast::QName) -> Result<RelId, Unbound> {
         match self.lookup_value(name)? {
             ValueDef::Relation(rel) => Ok(rel),
-            _ => Err(format!("`{}` is not a relation", name.name.text)),
+            _ => Err(Unbound::Missing(format!(
+                "`{}` is not a relation",
+                name.name.text
+            ))),
         }
     }
 
-    pub(crate) fn lookup_value(&self, name: &ast::QName) -> Result<ValueDef, String> {
+    pub(crate) fn lookup_value(&self, name: &ast::QName) -> Result<ValueDef, Unbound> {
         let v = self.find_value(name)?;
         self.record_value(name, v);
         Ok(v)
     }
 
     /// Returns the declaration `name` denotes, recording nothing.
-    pub(super) fn find_value(&self, name: &ast::QName) -> Result<ValueDef, String> {
-        let v = crate::resolve::lookup_value(self.schema, &self.vis, name);
-        if let Ok(ValueDef::Relation(r)) = v
-            && self.hidden.contains(&r)
-        {
-            return Err(format!("no `{}` in scope", name.name.text));
+    pub(super) fn find_value(&self, name: &ast::QName) -> Result<ValueDef, Unbound> {
+        match crate::resolve::lookup_value(self.schema, &self.vis, name) {
+            Ok(ValueDef::Relation(r)) if self.hidden.contains(&r) => Err(Unbound::Missing(
+                format!("no `{}` in scope", name.name.text),
+            )),
+            v => v,
         }
-        v
     }
 
     /// Record that `name` denotes `v`.

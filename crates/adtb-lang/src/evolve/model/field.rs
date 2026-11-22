@@ -1,4 +1,4 @@
-use super::op::{self, Fail, Res, broken, refuse, refuse_at};
+use super::op::{self, Fail, Res, broken, refuse, refuse_at, refuse_first};
 use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, Fill};
@@ -38,17 +38,17 @@ impl Model {
     /// that checks against a schema that does not check when they do not build or check.
     pub(super) fn checked(&self, run: &Run) -> Res<(Schema, check::Program)> {
         let unchecked = |why: &str| {
-            refuse(format!(
+            format!(
                 "the operator checks against the schema the operators before it produce, which does not check: {why}"
-            ))
+            )
         };
         let schema = match self.schema(&run.ahead(self)) {
             Ok(s) => s,
-            Err(ds) => return unchecked(&ds[0].diag.message),
+            Err(ds) => return refuse_first(&ds, unchecked),
         };
         match check::check_schema(&schema) {
             Ok(p) => Ok((schema, p)),
-            Err(ds) => unchecked(&ds[0].diag.message),
+            Err(ds) => refuse_first(&ds, unchecked),
         }
     }
 

@@ -68,8 +68,7 @@ impl Planner<'_> {
                 .subst(&args)
         };
         match r.key.as_slice() {
-            [f] if matches!(field_ty(f), Ty::Key { rel: own, .. } if own == RelRef::Declared(rel)) =>
-            {
+            [f] if self.schema.self_key(rel, f) => {
                 vec![(f.clone(), k)]
             }
             [f] => {

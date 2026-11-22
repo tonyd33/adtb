@@ -1,6 +1,6 @@
 use super::field::Applied;
 use super::lift::Lifting;
-use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diag, unmodelled};
+use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diags, unmodelled};
 use super::run::{Late, Run};
 use super::*;
 use crate::ast;
@@ -59,7 +59,7 @@ impl Model {
     ) -> Res<(Schema, StatedRefs)> {
         let schema = self.schema_now(run)?.into_schema();
         let stated = log_privileges(&schema, run.module(), privileges, statement, run.span())
-            .or_else(|ds| refuse_diag(&ds[0]))?;
+            .or_else(|ds| refuse_diags(&ds))?;
         Ok((schema, stated))
     }
 
@@ -134,7 +134,7 @@ impl Model {
         let (schema, program) = self.checked(run)?;
         let mut refs = Vec::new();
         check::check_script(&schema, &program, w, Some(&mut refs))
-            .or_else(|ds| refuse_diag(&ds[0]))?;
+            .or_else(|ds| refuse_diags(&ds))?;
         let write = canonical(run, &schema, &refs, w.span);
         Ok((Resolved::Script { write }, Vec::new(), Ok(Vec::new())))
     }

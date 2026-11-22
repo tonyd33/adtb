@@ -30,7 +30,7 @@ mod names;
 pub use names::{canonical_unique_name, field_path};
 
 mod ahead;
-pub use ahead::{Adder, AheadState};
+pub use ahead::{Adder, AheadKind, AheadState};
 mod build;
 mod built_in;
 use built_in::BUILT_IN;
@@ -52,7 +52,8 @@ pub use refs::{CtorRef, FieldPart, FieldRef};
 pub use scope::Scope;
 pub(crate) use temps::{Temp, TempRow};
 
-pub use types::resolve_type;
+pub(crate) use types::{FN_AGGREGATE, FN_FIELD, FN_RELATION, FN_TYPE_ARGUMENT};
+pub use types::{FnTypes, resolve_type};
 
 #[derive(Clone, Debug)]
 pub struct ModuleDef {
@@ -428,6 +429,12 @@ pub struct SchemaDefs {
     /// The relation variables the migration being applied adds with their type: a reference
     /// type's selection of their constructors resolves when it ends.
     pub late_sels: Vec<RelRef>,
+    /// The names, by module, of the relation variables and functions a refused operator of the
+    /// migration being applied would have declared.
+    poisoned: BTreeSet<(ModuleId, String)>,
+    /// The names, by module, of the types a refused operator of the migration being applied
+    /// would have declared.
+    poisoned_types: BTreeSet<(ModuleId, String)>,
     /// `None` until the builder collects the declarations.
     prelude: Option<Prelude>,
     /// `None` until the schema builds.
@@ -1066,7 +1073,7 @@ impl Order<'_> {
             .iter()
             .try_fold(OrderParams::new(), |mut required, name| {
                 let field = definition.field_named(0, name)?;
-                if !matches!(&field.ty, Ty::Key { rel: own, .. } if *own == RelRef::Declared(rel)) {
+                if !self.schema.self_key(rel, name) {
                     required.extend(self.parameters(&field.ty.subst(relation.elem_args()))?);
                 }
                 Some(required)
@@ -1193,13 +1200,30 @@ impl Schema {
             .collect()
     }
 
-    /// Returns whether key field `f` of `rel` is a `Key` of `rel` itself.
+    /// Returns whether `f` is a key field of `rel` whose type is a `Key` of `rel` itself.
     pub fn self_key(&self, rel: RelId, f: &str) -> bool {
         let r = self.relation(rel);
-        matches!(
-            self.ty(r.elem_def).field_named(0, f).map(|d| &d.ty),
-            Some(Ty::Key { rel: own, .. }) if *own == RelRef::Declared(rel)
-        )
+        r.key.iter().any(|k| k == f)
+            && matches!(
+                self.ty(r.elem_def).field_named(0, f).map(|d| &d.ty),
+                Some(Ty::Key { rel: own, .. }) if *own == RelRef::Declared(rel)
+            )
+    }
+
+    /// Returns the type of the value `rel`'s generator draws for a key field of `rel` itself,
+    /// `None` when it has no generator to draw one.
+    pub fn generated_key_ty(&self, rel: RelId) -> Option<Ty> {
+        let r = self.relation(rel);
+        match r.generate {
+            Some(Generator::Sequence) => Some(Ty::Base(Base::I64)),
+            None if self.module(r.module).engine => Some(Ty::Base(Base::I64)),
+            Some(Generator::Uuidv7) => Some(Ty::Data {
+                def: self.prelude().uuid(),
+                args: Vec::new(),
+                ctors: None,
+            }),
+            None | Some(Generator::Clock) => None,
+        }
     }
 
     /// Returns the target, its constructor selection and whether the field is optional, if
@@ -1216,7 +1240,7 @@ impl Schema {
         };
         match key {
             Ty::Key { rel: target, ctors }
-                if !(target == RelRef::Declared(rel) && r.key.contains(&f.name)) =>
+                if !(target == RelRef::Declared(rel) && self.self_key(rel, &f.name)) =>
             {
                 let ctors = match ctors {
                     KeyCtors::All | KeyCtors::Late(_) => None,
@@ -1310,6 +1334,7 @@ pub struct Ahead {
     typed: bool,
     state: AheadState,
     by: Adder,
+    kind: AheadKind,
 }
 
 /// Build the schema as `build` does, where a `Key r` type may also name each relation variable
@@ -1359,6 +1384,8 @@ fn build_over(
                 principal: TypeId(0),
                 ahead: Vec::new(),
                 late_sels: Vec::new(),
+                poisoned: BTreeSet::new(),
+                poisoned_types: BTreeSet::new(),
                 prelude: None,
                 engine_ctors: None,
                 engine_ids: None,

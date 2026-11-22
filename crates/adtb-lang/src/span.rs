@@ -41,6 +41,8 @@ pub enum DiagKind {
     Denied,
     /// A guarantee of the checker or the normaliser does not hold.
     Internal,
+    /// A lookup reached a name a refused declaration left poisoned; nothing reports it.
+    Poisoned,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +74,23 @@ impl Diag {
             span,
             message: message.into(),
             kind: DiagKind::Denied,
+        }
+    }
+
+    pub(crate) fn poisoned(span: Span) -> Diag {
+        Diag {
+            span,
+            message: String::new(),
+            kind: DiagKind::Poisoned,
+        }
+    }
+
+    /// Returns the diagnostic `message` makes of this one's message at `span`, a poisoned one
+    /// staying poisoned.
+    pub(crate) fn restated(self, span: Span, message: impl FnOnce(String) -> String) -> Diag {
+        match self.kind {
+            DiagKind::Poisoned => Diag::poisoned(span),
+            _ => Diag::new(span, message(self.message)),
         }
     }
 

@@ -1,7 +1,7 @@
 use super::*;
 use crate::ast::{self, CtorSel, CtorTarget, OperatorKind, QName};
 use crate::schema::Stage;
-use crate::span::Span;
+use crate::span::{DiagKind, FileDiag, Span};
 
 /// The kind of a declaration, as `add` and `drop` operators name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -104,16 +104,40 @@ pub(super) enum Op {
 pub(super) struct Refused {
     why: String,
     at: Option<Span>,
+    /// False for a refusal that reports nothing: a name a refused operator poisoned stands
+    /// behind every failure.
+    reported: bool,
 }
 
 impl Refused {
     pub(super) fn new(why: String) -> Refused {
-        Refused { why, at: None }
+        Refused {
+            why,
+            at: None,
+            reported: true,
+        }
     }
 
     /// Returns the refusal `why` at `at`.
     pub(super) fn at(at: Span, why: String) -> Refused {
-        Refused { why, at: Some(at) }
+        Refused {
+            why,
+            at: Some(at),
+            reported: true,
+        }
+    }
+
+    /// Returns a refusal that reports nothing.
+    pub(super) fn poisoned() -> Refused {
+        Refused {
+            why: String::new(),
+            at: None,
+            reported: false,
+        }
+    }
+
+    pub(super) fn reported(&self) -> bool {
+        self.reported
     }
 
     pub(super) fn why(&self) -> &str {
@@ -160,11 +184,30 @@ pub(super) fn refuse_diag<T>(d: &crate::span::Diag) -> Res<T> {
     refuse_at(d.span, d.message.clone())
 }
 
+/// Refuse the operator for the first of `ds` that reports, at its span, reporting nothing when
+/// none does.
+pub(super) fn refuse_diags<T>(ds: &[crate::span::Diag]) -> Res<T> {
+    match ds.iter().find(|d| d.kind != DiagKind::Poisoned) {
+        Some(d) => refuse_diag(d),
+        None => Err(Fail::Refused(Refused::poisoned())),
+    }
+}
+
+/// Refuse the operator for the first of `ds` that reports, `why` writing its message, reporting
+/// nothing when none does.
+pub(super) fn refuse_first<T>(ds: &[FileDiag], why: impl Fn(&str) -> String) -> Res<T> {
+    match ds.iter().find(|d| d.diag.kind != DiagKind::Poisoned) {
+        Some(d) => refuse(why(&d.diag.message)),
+        None => Err(Fail::Refused(Refused::poisoned())),
+    }
+}
+
 /// Refuse the operator for `why`, at `at` of the migration's text.
 pub(super) fn refuse_at<T>(at: Span, why: impl Into<String>) -> Res<T> {
     Err(Fail::Refused(Refused {
         why: why.into(),
         at: Some(at),
+        reported: true,
     }))
 }
 

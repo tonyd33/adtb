@@ -1123,10 +1123,8 @@ pub fn conv(schema: &Schema, ty: &Ty) -> Conv {
                     .clone()
             };
             match r.key.as_slice() {
-                [k] => match field_ty(k) {
-                    Ty::Key { rel: own, .. } if own == RelRef::Declared(*rel) => Conv::Scalar,
-                    f => conv(schema, &f),
-                },
+                [k] if schema.self_key(*rel, k) => Conv::Scalar,
+                [k] => conv(schema, &field_ty(k)),
                 _ => Conv::AnonRecord(
                     key_names(schema, *rel)
                         .iter()

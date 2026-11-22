@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use super::lift::Lifting;
-use super::op::{Res, broken, refuse};
+use super::op::{Res, broken, refuse_first};
 use super::slots::{Found, default_refs, implied_key};
 use super::*;
 use crate::ast::{self, MigrationFile};
@@ -10,7 +10,7 @@ use crate::check;
 use crate::evolve::{SourceDecl, decl_exprs, each_type, walk_type};
 use crate::ids::{CatalogIds, objects, placing};
 use crate::lex::{Tok, lex};
-use crate::schema::{self, Adder, Ahead, AheadState, PRELUDE, Schema};
+use crate::schema::{self, Adder, Ahead, AheadKind, AheadState, PRELUDE, Schema};
 use crate::span::Diag;
 use crate::span::{FileDiag, FileId, Span};
 use crate::types::ModuleId;
@@ -334,6 +334,15 @@ impl Model {
             .filter_map(|e| {
                 let (module, relation, state) = match e.added {
                     Added::Not => (e.module.clone(), e.name.clone(), AheadState::Pending),
+                    Added::Refused if e.kind != AheadKind::Relation => {
+                        return Some(Ahead::refused(
+                            e.module.clone(),
+                            e.name.clone(),
+                            e.kind,
+                            e.by,
+                        ));
+                    }
+                    Added::Refused => (e.module.clone(), e.name.clone(), AheadState::Refused),
                     Added::Applying => {
                         (e.module.clone(), e.name.clone(), AheadState::UnlessDeclared)
                     }
@@ -546,9 +555,15 @@ impl Model {
             return "a declaration names a dropped object".into();
         }
         match self.built(&[], &[]) {
-            Err(ds) => ds[0].diag.message.clone(),
+            Err(ds) => ds
+                .first()
+                .map_or("a declaration names a poisoned name", |d| &d.diag.message)
+                .to_string(),
             Ok((b, _)) => match check::check_schema(&b.schema) {
-                Err(ds) => ds[0].diag.message.clone(),
+                Err(ds) => ds
+                    .first()
+                    .map_or("a declaration names a poisoned name", |d| &d.diag.message)
+                    .to_string(),
                 Ok(_) => String::new(),
             },
         }
@@ -572,7 +587,7 @@ impl Model {
 
 /// Refuse an operator that reads declarations failing with `ds`, by the first failure.
 pub(super) fn unbuilt<T>(ds: &[FileDiag]) -> Res<T> {
-    refuse(ds[0].diag.message.clone())
+    refuse_first(ds, str::to_string)
 }
 
 /// Call `f` on every type expression of a declaration and of the expressions it holds: lambda
