@@ -387,7 +387,8 @@ impl Model {
         self.rebind(&before);
         self.restate(&made, &stages);
         let after = self.rebuilt(run, t, &rels)?;
-        let armed = self.arm_clauses(run, after.as_ref(), &made, written)?;
+        let armed = self.arm_clauses(run, after.as_ref().map_err(Vec::as_slice), written)?;
+        let after = after.ok();
         let record = into.last().is_some_and(|d| d.record.is_some());
         let (decl, clauses) = match &after {
             Some(after) => (

@@ -235,11 +235,7 @@ impl Operands<'_> {
                 self.sel(rel, None, &[set]);
             }
             OperatorKind::AddConstructor {
-                path,
-                place,
-                joins,
-                arms,
-                ..
+                path, place, joins, ..
             } => {
                 let ty = self.ty(&path.ty);
                 if let Some(CtorPlace::Before(c) | CtorPlace::After(c)) = place {
@@ -248,31 +244,24 @@ impl Operands<'_> {
                 for j in joins {
                     self.relation_ref(j);
                 }
-                self.arm_targets(arms);
+                self.arm_targets(kind.arm_clauses());
             }
             OperatorKind::RemoveConstructor(p) | OperatorKind::RenameConstructor(p, _) => {
                 self.ctor_path(p);
             }
-            OperatorKind::SplitConstructor { path, clauses, .. } => {
+            OperatorKind::SplitConstructor { path, .. } => {
                 self.ctor_path(path);
-                self.arm_targets(clauses.iter().filter_map(|c| match c {
-                    ast::SplitClause::Arm(a) => Some(&**a),
-                    _ => None,
-                }));
+                self.arm_targets(kind.arm_clauses());
             }
-            OperatorKind::MergeConstructor {
-                ty, sel, clauses, ..
-            }
-            | OperatorKind::NestConstructor {
-                ty, sel, clauses, ..
-            } => {
+            OperatorKind::MergeConstructor { ty, sel, .. }
+            | OperatorKind::NestConstructor { ty, sel, .. } => {
                 let t = self.ty(ty);
                 self.sel(None, t, &sel_idents(sel));
-                self.arm_targets(clauses);
+                self.arm_targets(kind.arm_clauses());
             }
-            OperatorKind::UnnestConstructor(p, clauses) => {
+            OperatorKind::UnnestConstructor(p, _) => {
                 self.ctor_path(p);
-                self.arm_targets(clauses);
+                self.arm_targets(kind.arm_clauses());
             }
             OperatorKind::AddField { path, .. } => self.path(path, true),
             OperatorKind::AlterField { path, .. }

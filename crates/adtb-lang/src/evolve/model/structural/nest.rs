@@ -10,7 +10,7 @@ use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Resolved, RowMap};
 use crate::schema::{Schema, TypeDefKind};
-use crate::span::FileId;
+use crate::span::{FileDiag, FileId};
 use crate::types::{Ty, TypeId};
 
 /// Returns whether the field of nesting constructor `nc` of type `def` in `after` holds a sum
@@ -98,12 +98,17 @@ impl Model {
     }
 
     /// Build after a structural operator, and lift the type `t` and each relation variable of
-    /// `rels` again from the build. Returns `None` when the declarations do not build, the
-    /// operator's arms then left out.
-    pub(super) fn rebuilt(&mut self, run: &Run, t: u64, rels: &[u64]) -> Res<Option<Built>> {
+    /// `rels` again from the build. Returns the failures when the declarations do not build.
+    pub(super) fn rebuilt(
+        &mut self,
+        run: &Run,
+        t: u64,
+        rels: &[u64],
+    ) -> Res<Result<Built, Vec<FileDiag>>> {
         self.restate_held()?;
-        let Ok(built) = self.build_adopting(&[], &run.ahead(self)) else {
-            return Ok(None);
+        let built = match self.build_adopting(&[], &run.ahead(self)) {
+            Ok(b) => b,
+            Err(ds) => return Ok(Err(ds)),
         };
         self.relift(&built, Item::Type(t))?;
         for &r in rels {
@@ -118,7 +123,7 @@ impl Model {
             self.relift(&built, item)?;
         }
         match self.build_adopting(&[], &run.ahead(self)) {
-            Ok(b) => Ok(Some(b)),
+            Ok(b) => Ok(Ok(b)),
             Err(_) => broken("declarations lifted again from a build do not build"),
         }
     }
@@ -227,7 +232,8 @@ impl Model {
         let file = FileId(self.decl_at(Item::Type(t)).expect("the type") as u32);
         let mut clauses = members;
         let after = self.rebuilt(run, t, &rels)?;
-        clauses.extend(self.arm_clauses(run, after.as_ref(), &[c], written)?);
+        clauses.extend(self.arm_clauses(run, after.as_ref().map_err(Vec::as_slice), written)?);
+        let after = after.ok();
         let decl = match &after {
             Some(after) => self.ctor_canonical(after, run, file, c, true)?,
             None => run.late(Late::Ctor {
@@ -352,7 +358,7 @@ impl Model {
         self.rebind(&before);
         self.restate(&made, &stages);
         let after = self.rebuilt(run, t, &rels)?;
-        let clauses = self.arm_clauses(run, after.as_ref(), &made, written)?;
+        let clauses = self.arm_clauses(run, after.as_ref().map_err(Vec::as_slice), written)?;
         self.settle_ids(run);
         self.carry_grants(t, plan, (&reaches, &given), &[], std::slice::from_ref(&f));
         Ok((

@@ -1,6 +1,7 @@
 use super::*;
 use crate::evolve::SourceDecl;
 use crate::parse::{Options, parse_migration};
+use crate::span::{Diag, Span};
 
 fn source(decls: &[(&str, &str)]) -> Source {
     let decls = decls
@@ -261,29 +262,35 @@ add unique (u) in ts.S"
     );
 }
 
-/// Returns the arms the operators of migration `text` over `src` resolve to, in order.
-fn resolved_arms(src: &Source, text: &str) -> Vec<String> {
+/// The declarations a recording leaves, as their modules and flattened texts, or the operators'
+/// refusals.
+type Recorded = Result<Vec<(String, String)>, Vec<Diag>>;
+
+/// Returns the declarations recording migration `text` on `src` leaves, as their modules and
+/// texts with whitespace flattened, or the operators' refusals; with the comparisons of the
+/// migration model the recording made.
+fn recorded(src: &Source, text: &str) -> (Recorded, BTreeMap<String, usize>) {
     let m = parse_migration(text, Options::default())
         .ok()
         .expect("the migration parses");
-    let got = of(src)
-        .expect("the source lifts")
-        .migrate(&m, text)
-        .expect("the model applies the migration");
-    got.ops()
-        .iter()
-        .flatten()
-        .flat_map(|op| &op.clauses)
-        .filter_map(|c| match c {
-            crate::evolve::Clause::Arm { arm, .. } => Some(arm.clone()),
-            _ => None,
-        })
-        .collect()
+    forced(|| {
+        src.record(&m, text, false)
+            .map(|(s, _, _)| {
+                s.decls
+                    .into_iter()
+                    .map(|d| (d.module, flat(&d.text)))
+                    .collect()
+            })
+            .map_err(|r| r.operators)
+    })
 }
 
-#[test]
-fn an_arm_naming_a_function_a_later_operator_defines_is_kept() {
-    let src = source(&[
+fn tally(hook: &str) -> BTreeMap<String, usize> {
+    [(format!("{hook} agreed"), 1)].into()
+}
+
+fn arms_source() -> Source {
+    source(&[
         ("m", "type K = A | B"),
         ("m", "type Inner = A { x: Text } | B { x: Text }"),
         (
@@ -295,88 +302,103 @@ fn an_arm_naming_a_function_a_later_operator_defines_is_kept() {
             "m",
             "fn f (t: T) -> Text = match t | A a -> a.x | B b -> b.x | C c -> c.x",
         ),
-    ]);
-    let h = "define fn h (x: Text) -> Text = x";
-    let after = |t: &str, f: &str| {
+    ])
+}
+
+#[test]
+fn an_arm_naming_a_function_a_later_operator_defines_is_refused() {
+    let src = arms_source();
+    let nest = "nest constructor T.(A | B) into N { inner: Inner }
+  arm f: N n -> match n.inner | A a -> a.x | B b -> b.x";
+    let cases = [
+        (
+            "",
+            "split constructor T.A into A1 { x: Text } | A2 { x: Text }
+  by match
+    | A { x } -> A1 { x: x }
+  arm f: A1 a -> h(a.x)
+  arm f: A2 a -> a.x"
+                .to_string(),
+        ),
+        (
+            "",
+            "merge constructor T.(A | B) into M { k: K, x: Text }
+  by match
+    | A a -> M { k: A, x: a.x }
+    | B b -> M { k: B, x: b.x }
+  arm f: M m -> h(m.x)"
+                .to_string(),
+        ),
+        ("", nest.replace("-> a.x |", "-> h(a.x) |")),
+        (
+            nest,
+            "unnest constructor T.N\n  arm f: A a -> h(a.x)\n  arm f: B b -> b.x".to_string(),
+        ),
+        (
+            "",
+            "add constructor T.D { x: Text }\n  arm f: D d -> h(d.x)".to_string(),
+        ),
+    ];
+    for (first, op) in cases {
+        let head = if first.is_empty() {
+            "module m\n".to_string()
+        } else {
+            format!("module m\n{first}\n")
+        };
+        let text = format!("{head}{op}\ndefine fn h (x: Text) -> Text = x");
+        let at = Span::new(head.len(), head.len() + op.len());
+        assert_eq!(
+            recorded(&src, &text),
+            (
+                Err(vec![Diag::new(at, "no `h` in scope")]),
+                tally("Migrating")
+            ),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn an_arm_follows_a_rename_of_its_constructor_by_id() {
+    let split = "split constructor T.A into A1 { x: Text } | A2 { x: Text }
+  by match
+    | A { x } -> A1 { x: x }
+  arm f: A1 a -> a.x ++ \"A1\"
+  arm f: A2 a -> a.x
+rename constructor T.A1 to Z";
+    let after = |rel: &str| {
         expected(&[
             ("m", "type K = A | B"),
             ("m", "type Inner = A { x: Text } | B { x: Text }"),
-            ("m", t),
-            ("m", "relation ts: T key id"),
-            ("m", f),
-            ("m", "fn h (x: Text) -> Text = x"),
+            (
+                "m",
+                "type T { id: Key ts } = Z { x: Text } | A2 { x: Text } | B { x: Text } | C { x: Text }",
+            ),
+            ("m", rel),
+            (
+                "m",
+                "fn f (t: T) -> Text = match t | B b -> b.x | C c -> c.x | Z a -> a.x ++ \"A1\" | A2 a -> a.x",
+            ),
         ])
     };
-    let split = format!(
-        "module m
-split constructor T.A into A1 {{ x: Text }} | A2 {{ x: Text }}
-  by match
-    | A {{ x }} -> A1 {{ x: x }}
-  arm f: A1 a -> h(a.x)
-  arm f: A2 a -> a.x
-{h}"
-    );
     assert_eq!(
-        migrated(&src, &split),
-        after(
-            "type T { id: Key ts } = A1 { x: Text } | A2 { x: Text } | B { x: Text } | C { x: Text }",
-            "fn f (t: T) -> Text = match t | B b -> b.x | C c -> c.x | A1 a -> h(a.x) | A2 a -> a.x",
-        )
+        recorded(&arms_source(), &format!("module m\n{split}")),
+        (Ok(after("relation ts : T key id")), tally("Recorded"))
     );
+    let mut src = arms_source();
+    src.decls[3].text = "relation ts : T key id default A.x = \"a\"".to_string();
+    let src = Source::new(src.decls).expect("the source builds");
+    let text = format!("module m\n{split}\ndrop default ts.A.x");
+    let at = text.find("rename").expect("the rename");
     assert_eq!(
-        resolved_arms(&src, &split),
-        ["m::A1 a -> m::h ( a . x )", "m::A2 a -> a . x"]
-    );
-    assert_eq!(
-        migrated(
-            &src,
-            &format!(
-                "module m
-merge constructor T.(A | B) into M {{ k: K, x: Text }}
-  by match
-    | A a -> M {{ k: A, x: a.x }}
-    | B b -> M {{ k: B, x: b.x }}
-  arm f: M m -> h(m.x)
-{h}"
-            )
+        recorded(&src, &text),
+        (
+            Err(vec![Diag::new(
+                Span::new(at, at + "rename constructor T.A1 to Z".len()),
+                "`A` is not a constructor of `T`"
+            )]),
+            tally("Migrating")
         ),
-        after(
-            "type T { id: Key ts } = M { k: K, x: Text } | C { x: Text }",
-            "fn f (t: T) -> Text = match t | C c -> c.x | M m -> h(m.x)",
-        )
-    );
-    let nest = "nest constructor T.(A | B) into N { inner: Inner }
-  arm f: N n -> match n.inner | A a -> a.x | B b -> b.x";
-    assert_eq!(
-        migrated(
-            &src,
-            &format!("module m\n{nest}\n{h}").replace("-> a.x |", "-> h(a.x) |")
-        ),
-        after(
-            "type T { id: Key ts } = N { inner: Inner } | C { x: Text }",
-            "fn f (t: T) -> Text = match t | C c -> c.x | N n -> match n.inner | A a -> h(a.x) | B b -> b.x",
-        )
-    );
-    assert_eq!(
-        migrated(
-            &src,
-            &format!(
-                "module m\n{nest}\nunnest constructor T.N\n  arm f: A a -> h(a.x)\n  arm f: B b -> b.x\n{h}"
-            )
-        ),
-        after(
-            "type T { id: Key ts } = A { x: Text } | B { x: Text } | C { x: Text }",
-            "fn f (t: T) -> Text = match t | C c -> c.x | A a -> h(a.x) | B b -> b.x",
-        )
-    );
-    assert_eq!(
-        migrated(
-            &src,
-            &format!("module m\nadd constructor T.D {{ x: Text }}\n  arm f: D d -> h(d.x)\n{h}")
-        ),
-        after(
-            "type T { id: Key ts } = A { x: Text } | B { x: Text } | C { x: Text } | D { x: Text }",
-            "fn f (t: T) -> Text = match t | A a -> a.x | B b -> b.x | C c -> c.x | D d -> h(d.x)",
-        )
+        "a rename while the declarations do not build is refused"
     );
 }

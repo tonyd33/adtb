@@ -194,10 +194,7 @@ impl Model {
             .map(|set| Clause::Joins { set })
             .collect();
         if !arms.is_empty() {
-            let (edits, written) = self.arm_writes(run, &built, t, (&[c], &[]), arms)?;
-            self.edit_decls(edits)?;
-            let after = self.build_adopting(&[], &run.ahead(self)).ok();
-            clauses.extend(self.arm_clauses(run, after.as_ref(), &[c], written)?);
+            clauses.extend(self.arms_added(run, &built, (t, c), arms)?);
         }
         Ok((
             Resolved::AddConstructor {

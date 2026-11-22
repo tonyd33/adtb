@@ -6,8 +6,19 @@ mod split;
 
 impl Cx<'_> {
     /// The text of an `arm` clause's arm: its pattern through its body.
+    /// Returns the text of arm clause `a`'s arm, as a copy of it whether or not the operator
+    /// records its copies.
     pub(super) fn arm_text(&self, a: &ast::ArmClause) -> Written {
-        self.copy_range(a.pattern.span.start as usize..a.body.span.end as usize)
+        let r = Self::arm_range(a);
+        Written {
+            text: self.text[r.clone()].to_string(),
+            copies: vec![(0, r)],
+        }
+    }
+
+    /// Returns the range of the migration's text arm clause `a`'s arm takes.
+    pub(super) fn arm_range(a: &ast::ArmClause) -> Range<usize> {
+        a.pattern.span.start as usize..a.body.span.end as usize
     }
 
     /// The declaration an `arm` clause names, and for a computed field the span of its expression.

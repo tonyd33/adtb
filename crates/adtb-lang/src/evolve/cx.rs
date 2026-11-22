@@ -156,7 +156,62 @@ impl Cx<'_> {
         }
     }
 
+    /// Apply `op`, refusing it when an arm one of its `arm` clauses writes fails to check where it
+    /// is written.
     pub(super) fn operator(&mut self, op: &OperatorKind) -> R<()> {
+        let arms = op.arm_clauses();
+        if arms.is_empty() {
+            return self.operator_kind(op);
+        }
+        let own = self.src.marks.is_none();
+        if own {
+            self.src.marks = Some(Marks::default());
+        }
+        let applied = self.operator_kind(op);
+        let marks = if own {
+            self.src.marks.take()
+        } else {
+            self.src.marks.clone()
+        }
+        .expect("the operator's copies are recorded");
+        applied?;
+        let written: Vec<(usize, Range<usize>)> = marks
+            .written
+            .iter()
+            .filter(|m| {
+                arms.iter().any(|a| {
+                    let r = Self::arm_range(a);
+                    r.start <= m.from.start && m.from.end <= r.end
+                })
+            })
+            .map(|m| (m.decl, m.at..m.at + m.from.len()))
+            .collect();
+        self.arms_check(&written)
+    }
+
+    /// Refuse the operator when the source fails to check inside a range of `written`, each a
+    /// declaration and a range of its text without the header.
+    fn arms_check(&self, written: &[(usize, Range<usize>)]) -> R<()> {
+        let Err(ds) = self.src.check_declared() else {
+            return Ok(());
+        };
+        let own: Vec<Diag> = ds
+            .into_iter()
+            .filter(|d| {
+                let i = d.file.0 as usize;
+                i < self.src.decls.len() && {
+                    let at = self.src.local(i, d.diag.span);
+                    written
+                        .iter()
+                        .any(|(k, r)| *k == i && r.start <= at.start && at.end <= r.end)
+                }
+            })
+            .map(|d| Diag::new(self.span, d.diag.message))
+            .collect();
+        if own.is_empty() { Ok(()) } else { Err(own) }
+    }
+
+    fn operator_kind(&mut self, op: &OperatorKind) -> R<()> {
         match op {
             OperatorKind::AddModule(m) => self.add_module(m),
             OperatorKind::DropModule(m) => self.drop_module(m),

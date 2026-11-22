@@ -95,12 +95,15 @@ pub(super) struct Model {
     /// The text each declaration takes within the step of the structural operator being applied
     /// as an inverse, set before that operator first builds.
     restating: Vec<(Item, String)>,
-    /// Each arm an operator wrote while the declarations did not build, by its key in
-    /// [`run::Late::Arm`], until they build.
-    arms: BTreeMap<u64, arms::ArmM>,
+    /// The key the next arm an operator writes takes.
+    next_arm: u64,
+    /// The target of each arm an operator wrote while the declarations did not build, by its
+    /// key, until they build.
+    arms: BTreeMap<u64, Item>,
     /// The canonical form each arm of [`Model::arms`] took once the declarations built, `None`
-    /// when its target no longer held it or a name of it did not resolve.
-    arms_written: BTreeMap<u64, Option<String>>,
+    /// when its target no longer held it or a name of it did not resolve, or why it could not
+    /// be read.
+    arms_written: BTreeMap<u64, Result<Option<String>, String>>,
 }
 
 /// A declaration held as its text: the name it is found by and its text without the module

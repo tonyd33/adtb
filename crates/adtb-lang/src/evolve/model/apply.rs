@@ -283,28 +283,6 @@ impl Model {
                     }
                     self.computed_canonical(&built, relation, computed)
                 }
-                Late::Arm { key, nth } => {
-                    let Some(Some(arm)) = self.arms_written.get(&key) else {
-                        *unresolved = true;
-                        continue;
-                    };
-                    let held = ops
-                        .get_mut(k)
-                        .and_then(|op| op.as_mut().ok())
-                        .and_then(|op| {
-                            op.clauses
-                                .iter_mut()
-                                .filter_map(|c| match c {
-                                    Clause::Arm { arm, .. } => Some(arm),
-                                    _ => None,
-                                })
-                                .nth(nth)
-                        });
-                    if let Some(held) = held {
-                        held.clone_from(arm);
-                    }
-                    continue;
-                }
                 Late::Ctors {
                     first,
                     last,
@@ -321,6 +299,32 @@ impl Model {
                     }
                     self.ctors_written(&built, FileId(i as u32), (first, last), record)
                         .map_err(broken)?
+                }
+                Late::Arm { key, nth } => {
+                    let arm = match self.arms_written.get(&key) {
+                        Some(Ok(Some(arm))) => arm.clone(),
+                        Some(Err(e)) => return Err(e.clone()),
+                        _ => {
+                            *unresolved = true;
+                            continue;
+                        }
+                    };
+                    let held = ops
+                        .get_mut(k)
+                        .and_then(|op| op.as_mut().ok())
+                        .and_then(|op| {
+                            op.clauses
+                                .iter_mut()
+                                .filter_map(|c| match c {
+                                    Clause::Arm { arm, .. } => Some(arm),
+                                    _ => None,
+                                })
+                                .nth(nth)
+                        });
+                    if let Some(held) = held {
+                        *held = arm;
+                    }
+                    continue;
                 }
                 Late::Unresolved => continue,
             };

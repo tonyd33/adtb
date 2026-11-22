@@ -334,7 +334,8 @@ impl Model {
         let file = FileId(self.decl_at(Item::Type(t)).expect("the type") as u32);
         let mut clauses = members;
         let after = self.rebuilt(run, t, &rels)?;
-        clauses.extend(self.arm_clauses(run, after.as_ref(), &[c], written)?);
+        clauses.extend(self.arm_clauses(run, after.as_ref().map_err(Vec::as_slice), written)?);
+        let after = after.ok();
         let record = into.record.is_some();
         let decl = match &after {
             Some(after) => self.ctor_canonical(after, run, file, c, record)?,

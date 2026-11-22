@@ -391,8 +391,7 @@ impl Model {
             }
         }
         self.held_ids.clear();
-        self.arms_built(built)
-            .unwrap_or_else(|e| panic!("an arm written as text reads once it builds: {e:?}"));
+        self.arms_built(built);
         for item in std::mem::take(&mut self.unlifted) {
             if self.decl_at(item).is_some() {
                 self.relift(built, item).unwrap_or_else(|e| {

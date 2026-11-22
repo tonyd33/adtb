@@ -12,6 +12,8 @@ pub(super) struct Printed {
     /// The range of the text each term takes, in the order [`Model::decl_terms_mut`] gives
     /// the terms.
     terms: Vec<std::ops::Range<usize>>,
+    /// The range of the text each arm held as written takes, by its key.
+    arms: Vec<(u64, std::ops::Range<usize>)>,
 }
 
 impl Printed {
@@ -19,6 +21,11 @@ impl Printed {
     /// gives the terms.
     pub(super) fn terms(&self) -> &[std::ops::Range<usize>] {
         &self.terms
+    }
+
+    /// Returns the range of the text each arm held as written takes, by its key.
+    pub(super) fn arms(&self) -> &[(u64, std::ops::Range<usize>)] {
+        &self.arms
     }
 
     fn push(&mut self, s: &str) {
@@ -29,6 +36,11 @@ impl Printed {
         let start = self.text.len();
         self.text.push_str(&t.print(model));
         self.terms.push(start..self.text.len());
+        self.arms.extend(
+            t.arm_ranges(model)
+                .into_iter()
+                .map(|(k, r)| (k, start + r.start..start + r.end)),
+        );
     }
 
     fn list(&mut self, ts: &[Term], model: &Model, sep: &str) {

@@ -3775,17 +3775,15 @@ add relation members : Member key id generate sequence index (team)",
 #[test]
 fn a_recheck_error_in_copied_text_is_located_in_the_migration() {
     let text = "module auth
-add constructor Identity.Corp { domain: Text }
-  arm display_name: Corp c -> c.nosuch
-  arm login_present: Corp c -> false";
+add constructor Identity.Corp { domain: Text, name: Text }
+  arm display_name: Corp c -> c.name
+  arm login_present: Corp c -> false
+drop field Identity.Corp.name";
     let m = parse_migration(text, Options::default()).ok().unwrap();
     let r = running().migrate(&m, text).unwrap_err();
-    let at = text.find("nosuch").unwrap();
+    let at = text.find("c.name").unwrap() + 2;
     assert_eq!(1, r.recheck.len(), "{:?}", r.recheck);
-    assert_eq!(
-        vec![Some(Span::new(at, at + "nosuch".len()))],
-        r.recheck_from
-    );
+    assert_eq!(vec![Some(Span::new(at, at + "name".len()))], r.recheck_from);
     let text = "module auth\ndrop field Identity.Google.gid";
     let m = parse_migration(text, Options::default()).ok().unwrap();
     let r = running().migrate(&m, text).unwrap_err();

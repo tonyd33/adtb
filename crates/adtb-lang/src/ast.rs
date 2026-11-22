@@ -795,6 +795,26 @@ pub enum OperatorKind {
     Revoke(Revoke),
 }
 
+impl OperatorKind {
+    /// Returns the `arm` clauses of the operator.
+    pub fn arm_clauses(&self) -> Vec<&ArmClause> {
+        match self {
+            OperatorKind::AddConstructor { arms, .. } => arms.iter().collect(),
+            OperatorKind::SplitConstructor { clauses, .. } => clauses
+                .iter()
+                .filter_map(|c| match c {
+                    SplitClause::Arm(a) => Some(&**a),
+                    _ => None,
+                })
+                .collect(),
+            OperatorKind::MergeConstructor { clauses, .. }
+            | OperatorKind::NestConstructor { clauses, .. }
+            | OperatorKind::UnnestConstructor(_, clauses) => clauses.iter().collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallTarget {
     Bundle(BundleName),

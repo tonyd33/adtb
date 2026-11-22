@@ -14,6 +14,11 @@ pub(super) struct Term(Vec<Piece>);
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Piece {
     Text(String),
+    /// Text of the arm `key` an operator wrote, held apart until the declarations build.
+    Arm {
+        key: u64,
+        text: String,
+    },
     /// A name resolving to `ids`, as `written`; `pun` when it also stands for a variable of
     /// that name.
     Name {
@@ -39,7 +44,9 @@ enum Piece {
 impl Piece {
     fn print(&self, model: &Model) -> String {
         match self {
-            Piece::Text(s) | Piece::Dropped { written: s, .. } => s.clone(),
+            Piece::Text(s) | Piece::Arm { text: s, .. } | Piece::Dropped { written: s, .. } => {
+                s.clone()
+            }
             Piece::Added { by, written } => model
                 .ahead
                 .iter()
@@ -116,6 +123,32 @@ impl Term {
     /// Returns plain text holding no name.
     pub(super) fn text(s: &str) -> Term {
         Term(vec![Piece::Text(s.to_string())])
+    }
+
+    /// Returns the text `s` of arm `key`.
+    pub(super) fn arm(key: u64, s: &str) -> Term {
+        Term(vec![Piece::Arm {
+            key,
+            text: s.to_string(),
+        }])
+    }
+
+    /// Returns each arm of the term with the range it takes in the term as `model` prints it,
+    /// from its first piece through its last.
+    pub(super) fn arm_ranges(&self, model: &Model) -> Vec<(u64, Range<usize>)> {
+        let mut at = 0;
+        let mut out: Vec<(u64, Range<usize>)> = Vec::new();
+        for p in &self.0 {
+            let n = p.print(model).len();
+            if let Piece::Arm { key, .. } = p {
+                match out.iter_mut().find(|(k, _)| k == key) {
+                    Some((_, r)) => r.end = at + n,
+                    None => out.push((*key, at..at + n)),
+                }
+            }
+            at += n;
+        }
+        out
     }
 
     /// Returns a name resolving to `ids`, written `written`.
@@ -211,7 +244,10 @@ impl Term {
             .iter()
             .flat_map(|p| match p {
                 Piece::Name { ids, .. } => ids.as_slice(),
-                Piece::Text(_) | Piece::Added { .. } | Piece::Dropped { .. } => &[],
+                Piece::Text(_)
+                | Piece::Arm { .. }
+                | Piece::Added { .. }
+                | Piece::Dropped { .. } => &[],
             })
             .copied()
     }
@@ -276,7 +312,7 @@ impl Term {
                         };
                     }
                 }
-                Piece::Text(_) | Piece::Added { .. } => {}
+                Piece::Text(_) | Piece::Arm { .. } | Piece::Added { .. } => {}
             }
         }
     }

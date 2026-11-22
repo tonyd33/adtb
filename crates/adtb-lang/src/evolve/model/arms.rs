@@ -1,26 +1,20 @@
-use super::op::{Res, broken, refuse_at};
+use super::op::{Res, broken, refuse, refuse_at};
 use super::reselect::Edit;
 use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast;
 use crate::canon::canonical_term;
 use crate::check::{self, Ref};
-use crate::evolve::text::{holds, match_arms, match_end};
+use crate::evolve::text::{holds, match_end};
 use crate::evolve::{ArmTarget, Clause};
-use crate::lex::{Tok, lex};
-use crate::span::{FileId, Span};
+use crate::span::{FileDiag, FileId, Span};
 
-/// An arm an operator wrote into the one match of its target over some of the constructors
-/// `ctors` of type `ty`: the `at`th of the `of` arms it appended to that match, written `text`.
+/// An arm an operator wrote into a match of its target `item`, held by `key` in its pieces.
 #[derive(Clone, Debug)]
 pub(super) struct ArmM {
     item: Item,
     target: ArmTarget,
-    ty: u64,
-    ctors: Vec<u64>,
-    at: usize,
-    of: usize,
-    text: String,
+    key: u64,
 }
 
 /// The match of a target that arms go into: its declaration, its span, and the arms by their
@@ -38,7 +32,7 @@ impl Model {
     /// covering one of `cs` of type `t`, as `built` resolves the declarations, and remove from
     /// that match each arm naming one of `removed`; with the arms as written.
     pub(super) fn arm_writes(
-        &self,
+        &mut self,
         run: &Run,
         built: &Built,
         t: u64,
@@ -102,9 +96,6 @@ impl Model {
             .iter()
             .map(|&c| structural::ctor_in(schema, c))
             .collect();
-        let text = |a: &ast::ArmClause| {
-            run.text()[a.pattern.span.start as usize..a.body.span.end as usize].to_string()
-        };
         let mut edits = Vec::new();
         let mut written: Vec<Option<ArmM>> = vec![None; arms.len()];
         for p in placed {
@@ -118,35 +109,51 @@ impl Model {
                 .and_then(|d| match_end(d, p.at))
                 .unwrap_or(p.at.end as usize)
                 - h;
-            let joined: String = p
-                .arms
-                .iter()
-                .map(|&n| format!("\n  | {}", text(&arms[n])))
-                .collect();
-            edits.push(Edit::new(p.decl, end..end, Term::text(&joined)));
-            for (at, &n) in p.arms.iter().enumerate() {
+            let mut joined = Vec::new();
+            for &n in &p.arms {
+                let a = &arms[n];
+                let start = a.pattern.span.start as usize;
+                let key = self.next_arm;
+                self.next_arm += 1;
+                joined.push(Term::text("\n  | "));
+                joined.push(Term::arm(key, &run.text()[start..a.body.span.end as usize]));
+                self.arms.insert(key, p.item);
                 written[n] = Some(ArmM {
                     item: p.item,
                     target: p.target.clone(),
-                    ty: t,
-                    ctors: Vec::new(),
-                    at,
-                    of: p.arms.len(),
-                    text: text(&arms[n]),
+                    key,
                 });
             }
+            edits.push(Edit::new(p.decl, end..end, Term::concat(joined)));
         }
         Ok((edits, written.into_iter().flatten().collect()))
     }
 
-    /// Returns the clause of each arm of `written`, which now goes into a match over some of the
-    /// constructors `cs`: its canonical form in `after`, the declarations once they build, or,
-    /// while they do not, the form they give it once they first build.
+    /// Write `arms` for constructor `c` an operator added to type `t`, as `built` resolves the
+    /// declarations before them. Returns their clauses.
+    pub(super) fn arms_added(
+        &mut self,
+        run: &Run,
+        built: &Built,
+        (t, c): (u64, u64),
+        arms: &[ast::ArmClause],
+    ) -> Res<Vec<Clause>> {
+        let (edits, written) = self.arm_writes(run, built, t, (&[c], &[]), arms)?;
+        self.edit_decls(edits)?;
+        let after = self.build_adopting(&[], &run.ahead(self));
+        self.arm_clauses(run, after.as_ref().map_err(Vec::as_slice), written)
+    }
+
+    /// Returns the clause of each arm of `written`: the canonical form the declarations gave it
+    /// when they built as `after`, or, while they do not build, the form they give it once they
+    /// first build.
+    ///
+    /// Fail when `after` is the failures of declarations that do not build and one is inside
+    /// an arm of `written`.
     pub(super) fn arm_clauses(
         &mut self,
         run: &Run,
-        after: Option<&Built>,
-        cs: &[u64],
+        after: Result<&Built, &[FileDiag]>,
         written: Vec<ArmM>,
     ) -> Res<Vec<Clause>> {
         let mut items: Vec<Item> = Vec::new();
@@ -157,40 +164,33 @@ impl Model {
         }
         let mut out = Vec::new();
         match after {
-            Some(after) => {
-                for &item in &items {
-                    self.relift(after, item)?;
-                }
-                for mut w in written {
-                    w.ctors = cs.to_vec();
-                    let arm = self
-                        .arm_written(after, &w)?
-                        .unwrap_or_else(|| run.late(Late::Unresolved));
+            Ok(after) => {
+                for w in written {
+                    let arm = match self.arms_written.remove(&w.key) {
+                        Some(Ok(Some(arm))) => arm,
+                        Some(Err(e)) => return broken(e),
+                        _ => run.late(Late::Unresolved),
+                    };
                     out.push(Clause::Arm {
                         target: w.target,
                         arm,
                     });
                 }
+                for item in items {
+                    self.relift(after, item)?;
+                }
             }
-            None => {
+            Err(ds) => {
+                self.arms_refused(ds, &written)?;
                 for item in items {
                     if !self.unlifted.contains(&item) {
                         self.unlifted.push(item);
                     }
                 }
-                for (nth, mut w) in written.into_iter().enumerate() {
-                    w.ctors = cs.to_vec();
-                    let key = self
-                        .arms
-                        .keys()
-                        .chain(self.arms_written.keys())
-                        .max()
-                        .map_or(0, |k| k + 1);
-                    let target = w.target.clone();
-                    self.arms.insert(key, w);
+                for (nth, w) in written.into_iter().enumerate() {
                     out.push(Clause::Arm {
-                        target,
-                        arm: run.late(Late::Arm { key, nth }),
+                        target: w.target,
+                        arm: run.late(Late::Arm { key: w.key, nth }),
                     });
                 }
             }
@@ -198,74 +198,64 @@ impl Model {
         Ok(out)
     }
 
-    /// Give each arm written while the declarations did not build the canonical form it has in
-    /// `built`, the declarations as they first build.
-    pub(super) fn arms_built(&mut self, built: &Built) -> Res<()> {
-        for (key, w) in std::mem::take(&mut self.arms) {
-            let arm = self.arm_written(built, &w)?;
-            self.arms_written.insert(key, arm);
+    /// Refuse the operator with the first of `ds` inside an arm of `written`.
+    fn arms_refused(&self, ds: &[FileDiag], written: &[ArmM]) -> Res<()> {
+        for d in ds {
+            let i = d.file.0 as usize;
+            if !written.iter().any(|w| self.decl_at(w.item) == Some(i)) {
+                continue;
+            }
+            let h = format!("module {}\n", self.decls[i].module).len();
+            let (Some(start), Some(end)) = (
+                (d.diag.span.start as usize).checked_sub(h),
+                (d.diag.span.end as usize).checked_sub(h),
+            ) else {
+                continue;
+            };
+            let printed = self.print_mapped(i);
+            if printed.arms().iter().any(|(k, r)| {
+                written.iter().any(|w| w.key == *k) && r.start <= start && end <= r.end
+            }) {
+                return refuse(d.diag.message.clone());
+            }
         }
         Ok(())
     }
 
-    /// Returns the canonical form of arm `w` in `built`, `None` when its target no longer holds
-    /// it as written or a name of it does not resolve there.
-    fn arm_written(&self, built: &Built, w: &ArmM) -> Res<Option<String>> {
-        let Some(j) = self.decl_at(w.item) else {
+    /// Give each arm written while the declarations did not build the canonical form it has in
+    /// `built`, the declarations as they first build.
+    pub(super) fn arms_built(&mut self, built: &Built) {
+        for (key, item) in std::mem::take(&mut self.arms) {
+            let arm = self
+                .arm_written(built, item, key)
+                .map_err(|e| format!("{e:?}"));
+            self.arms_written.insert(key, arm);
+        }
+    }
+
+    /// Returns the canonical form of arm `key` of `item` in `built`, which the declarations as
+    /// the model holds them built; `None` when `item` no longer holds it or a name of it does not
+    /// resolve there.
+    fn arm_written(&self, built: &Built, item: Item, key: u64) -> Res<Option<String>> {
+        let Some(j) = self.decl_at(item) else {
             return Ok(None);
         };
-        let file = FileId(j as u32);
-        let k = match (&w.target, w.item) {
-            (ArmTarget::OfComputed { computed }, Item::Relation(r)) => {
-                self.relations[&r].clauses.iter().position(
-                    |c| matches!(c, ClauseM::Computed { id: Some(id), .. } if id == computed),
-                )
-            }
-            _ => None,
-        };
-        let schema = built.schema();
-        let def = structural::def_in(schema, w.ty);
-        let cis: Vec<u32> = w
-            .ctors
+        let Some((_, r)) = self
+            .print_mapped(j)
+            .arms()
             .iter()
-            .map(|&c| structural::ctor_in(schema, c))
-            .collect();
-        let within = computed_span(built, file, k);
-        let mut found: Vec<Span> = check::schema_refs(schema)
-            .into_iter()
-            .filter(|(f, s, r)| {
-                *f == file
-                    && within.is_none_or(|x| x.start <= s.start && s.end <= x.end)
-                    && matches!(r, Ref::Match(ty) if cis.iter().any(|&c| holds(schema, ty, def, c)))
-            })
-            .map(|(_, s, _)| s)
-            .collect();
-        found.sort_by_key(|s| (s.start, s.end));
-        found.dedup();
-        let [at] = found.as_slice() else {
-            return Ok(None);
-        };
-        let Some(d) = built.decl(file) else {
-            return broken("a declaration the model printed does not parse");
-        };
-        let Some(held) = match_arms(d, *at) else {
-            return Ok(None);
-        };
-        let Some(arm) = (held.len() + w.at)
-            .checked_sub(w.of)
-            .and_then(|n| held.get(n))
+            .find(|(k, _)| *k == key)
+            .cloned()
         else {
             return Ok(None);
         };
-        let span = Span::new(
-            arm.patterns[0].span.start as usize,
-            arm.body.span.end as usize,
-        );
+        let file = FileId(j as u32);
+        let h = format!("module {}\n", self.decls[j].module).len();
         let text = built.text(file);
-        if tokens(&text[span.range()]) != tokens(&w.text) {
-            return Ok(None);
+        if text.get(h + r.start..h + r.end).is_none() {
+            return broken("an arm the model printed is outside its declaration's build");
         }
-        Ok(canonical_term(text, span, &built.names(file)).ok())
+        Ok(canonical_term(text, Span::new(h + r.start, h + r.end), &built.names(file)).ok())
     }
 }
 
@@ -279,13 +269,4 @@ fn computed_span(built: &Built, file: FileId, k: Option<usize>) -> Option<Span> 
         },
         _ => None,
     }
-}
-
-fn tokens(text: &str) -> Vec<&str> {
-    lex(text)
-        .0
-        .into_iter()
-        .filter(|t| t.tok != Tok::Eof)
-        .map(|t| &text[t.span.range()])
-        .collect()
 }
