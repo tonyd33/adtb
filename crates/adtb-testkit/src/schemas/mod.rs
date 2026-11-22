@@ -6,6 +6,7 @@
 mod draw;
 mod migrate;
 
+use adtb_lang::schema::canonical_unique_name;
 use draw::Draw;
 pub use migrate::{Kind, Migration, Op, ROLE, Rows};
 
@@ -30,8 +31,8 @@ const SET: &str = "Pair";
 /// order its clause writes them.
 const SEARCH_DROP_INDEX_REVERSED_SCOPE: bool = true;
 
-/// Whether a migration adds a unique or an index clause its relation already holds. Its revert
-/// is refused: the inverse drop names neither clause alone.
+/// Whether a migration adds an index clause its relation already holds. Its revert is refused:
+/// the inverse drop names neither clause alone.
 const SEARCH_DUPLICATE_CLAUSE: bool = false;
 
 /// Whether a migration removes a constructor a default names. Its revert does not restore the
@@ -324,6 +325,27 @@ impl Rel {
             Some(s) if self.sum => format!("{}.{s}", self.name),
             _ => self.name.clone(),
         }
+    }
+
+    /// Returns the canonical constraint name of a unique of the relation over clause `c`.
+    fn unique_name(&self, c: &Clause) -> String {
+        let scope: Option<Vec<&str>> = c
+            .ctors
+            .as_ref()
+            .map(|cs| cs.iter().map(|d| self.ctors[*d].name.as_str()).collect());
+        canonical_unique_name(
+            "app",
+            &self.name,
+            std::slice::from_ref(&c.field),
+            scope.as_deref(),
+            self.ctors.len(),
+        )
+    }
+
+    /// Returns whether a unique of the relation has the canonical name a unique over `c` takes.
+    fn holds_unique(&self, c: &Clause) -> bool {
+        let name = self.unique_name(c);
+        self.uniques.iter().any(|u| self.unique_name(u) == name)
     }
 
     /// Returns the header fields that are not key fields.

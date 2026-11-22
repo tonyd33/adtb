@@ -27,7 +27,7 @@ pub fn reserved_module(name: &str) -> bool {
 mod tests;
 
 mod names;
-pub use names::field_path;
+pub use names::{canonical_unique_name, field_path};
 
 mod ahead;
 pub use ahead::{Adder, AheadState};

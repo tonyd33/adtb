@@ -18,25 +18,46 @@ impl Schema {
     /// element is not a field path.
     pub(crate) fn field_unique_name(&self, rel: RelId, index: usize) -> Option<String> {
         let r = self.relation(rel);
-        let name = format!("{}::{}", self.module(r.module).name, r.name);
         let ix = &r.indexes[index];
         let paths: Vec<_> = ix.fields.iter().map(field_path).collect::<Option<_>>()?;
-        let name = format!("{name}.unique({})", paths.join(", "));
         let ctors = self.ty(r.elem_def).ctors();
-        let Some(scope) = ix.scope.as_ref().filter(|scope| scope.len() != ctors.len()) else {
-            return Some(name);
-        };
-        let mut names: Vec<_> = scope
-            .iter()
-            .map(|c| ctors[*c as usize].name.as_str())
-            .collect();
-        names.sort_unstable();
-        let set = match names.as_slice() {
-            [one] => (*one).to_owned(),
-            many => format!("({})", many.join(" | ")),
-        };
-        Some(format!("{name} in {set}"))
+        let scope: Option<Vec<_>> = ix.scope.as_ref().map(|scope| {
+            scope
+                .iter()
+                .map(|c| ctors[*c as usize].name.as_str())
+                .collect()
+        });
+        Some(canonical_unique_name(
+            &self.module(r.module).name,
+            &r.name,
+            &paths,
+            scope.as_deref(),
+            ctors.len(),
+        ))
     }
+}
+
+/// Returns the canonical constraint name of a unique of relation `rel` of module `module` over
+/// field paths `paths`, ranging over the constructors named `scope` of the relation's `ctors`
+/// constructors, every one when `None`.
+pub fn canonical_unique_name(
+    module: &str,
+    rel: &str,
+    paths: &[String],
+    scope: Option<&[&str]>,
+    ctors: usize,
+) -> String {
+    let name = format!("{module}::{rel}.unique({})", paths.join(", "));
+    let Some(scope) = scope.filter(|scope| scope.len() != ctors) else {
+        return name;
+    };
+    let mut names = scope.to_vec();
+    names.sort_unstable();
+    let set = match names.as_slice() {
+        [one] => (*one).to_owned(),
+        many => format!("({})", many.join(" | ")),
+    };
+    format!("{name} in {set}")
 }
 
 /// Returns the field path `e` is, written `f.C.g`.

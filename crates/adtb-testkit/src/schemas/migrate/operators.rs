@@ -912,16 +912,20 @@ impl Model {
             };
             set(a) == set(b)
         };
+        let clause = |(field, ctors): &(String, Option<Vec<usize>>)| Clause {
+            field: field.clone(),
+            ctors: ctors.clone(),
+            name: String::new(),
+        };
+        if kind == Kind::AddUnique {
+            fields.retain(|f| !r.holds_unique(&clause(f)));
+        }
         let (field, ctors) = rng.pick_some(&fields)?.clone();
         let duplicate = held
             .iter()
             .any(|c| c.field == field && same(&c.ctors, &ctors))
             && !super::super::SEARCH_DUPLICATE_CLAUSE;
-        let clause = Clause {
-            field: field.clone(),
-            ctors: ctors.clone(),
-            name: String::new(),
-        };
+        let clause = clause(&(field.clone(), ctors.clone()));
         let text = format!("add {verb} ({field}) in {}", r.target(ctors.as_ref()));
         let r = &mut self.s.rels[i];
         let added = if kind == Kind::AddUnique {
