@@ -397,8 +397,6 @@ fn forced() -> Option<Rewrites> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
     pub rewrites: Rewrites,
-    /// Set for a bundle declaring `hide new constructors`.
-    pub hiding: bool,
 }
 
 /// Why a term has no plan.

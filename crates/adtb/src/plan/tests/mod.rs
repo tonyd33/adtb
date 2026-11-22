@@ -6,10 +6,7 @@ use super::fixture::{Fixture, running, variants};
 use super::*;
 
 fn plan_with(f: &Fixture, terms: adtb_lang::kernel::Valid<'_>, t: Tm, rewrites: Rewrites) -> Plan {
-    let options = Options {
-        rewrites,
-        hiding: false,
-    };
+    let options = Options { rewrites };
     plan(&f.schema, &f.normal, &f.catalog, terms, t, options)
         .unwrap_or_else(|e| panic!("no plan: {e}"))
 }

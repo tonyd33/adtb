@@ -51,8 +51,10 @@ Preconditions:
   value-level sum is not in `catalog`; the planner uses none (§5).
 
 `options.rewrites` turns each rewrite of §1.3, §3, §4, §7.2 and §7.4
-on or off. `options.hiding` is set for a bundle declaring `hide new
-constructors`, for which every dereference is partial.
+on or off. A translated call of a bundle declaring `hide new
+constructors` reaches the planner with each dereference admitting
+only the constructors the bundle pins, so a dereference that can
+reach a hidden row is partial.
 
 Postconditions:
 

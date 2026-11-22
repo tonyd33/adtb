@@ -320,10 +320,7 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
                 &f.catalog,
                 n.valid(),
                 t,
-                Options {
-                    rewrites: rw,
-                    hiding: false,
-                },
+                Options { rewrites: rw },
             ) {
                 panic!("`{text}` with {name}: {e}");
             }
@@ -338,10 +335,7 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
             &f.catalog,
             q.valid(),
             q.body(),
-            Options {
-                rewrites: rw,
-                hiding: false,
-            },
+            Options { rewrites: rw },
         )
         .unwrap_or_else(|e| panic!("the search with {name}: {e}"));
         made += 1;

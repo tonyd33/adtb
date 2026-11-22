@@ -128,10 +128,7 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
                 &f.catalog,
                 n.valid(),
                 t,
-                PlanOptions {
-                    rewrites,
-                    hiding: false,
-                },
+                PlanOptions { rewrites },
             )
             .unwrap_or_else(|e| panic!("`{text}` has no plan: {e}"));
             let program = exec::compile(&f.schema, &f.catalog, &p, None)
