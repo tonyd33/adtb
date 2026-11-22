@@ -22,7 +22,7 @@ use crate::btree::{self, BTree};
 use crate::exec;
 use crate::heap::Heap;
 use crate::key::{CtorId, Entry};
-use crate::mvcc::Xid;
+use crate::mvcc::{Gate, Gated};
 use crate::plan::IndexId;
 use crate::ranks;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
@@ -54,12 +54,6 @@ pub struct Failure {
 
 /// How many catch-ups run while writes continue before the one that holds them.
 const CATCH_UPS: usize = 2;
-
-/// The transaction a statement gated by an offline rebuild waits for.
-pub(super) const OFFLINE_GATE: Xid = Xid(u64::MAX);
-
-/// The transaction a call waiting for the vacuum lock waits for: running while a holder has it.
-pub(super) const VACUUM_HOLDER: Xid = Xid(u64::MAX - 1);
 
 /// How often a statement that cannot suspend looks at what it waits for and at what stops it.
 pub(super) const GATE_POLL: Duration = Duration::from_millis(5);
@@ -114,19 +108,8 @@ impl<'b> HoldWait<'b> {
 /// every other rebuild, and every other holder.
 pub struct VacuumHold<'d, R: Runtime> {
     db: &'d Database<R>,
-    /// The lock, freed when dropped, before `_ended`.
     vacuuming: Vacuuming<'d, R>,
-    _ended: HolderEnded<'d, R>,
     _rank: HeldRank,
-}
-
-/// The record that a thread holds the vacuum lock, ended by the drop.
-struct HolderEnded<'d, R: Runtime>(&'d Database<R>);
-
-impl<R: Runtime> Drop for HolderEnded<'_, R> {
-    fn drop(&mut self) {
-        self.0.session.waits.ended(VACUUM_HOLDER);
-    }
 }
 
 impl<'d, R: Runtime> VacuumHold<'d, R> {
@@ -173,6 +156,8 @@ struct Replaced {
 struct Offline<'d, R: Runtime> {
     db: &'d Database<R>,
     rel: RelId,
+    /// Ended once the relation has left the offline set.
+    _gated: Gated<'d, R>,
 }
 
 /// The wait of the calling thread on a hold of another, recorded until dropped.
@@ -190,7 +175,6 @@ impl<R: Runtime> Drop for Waiting<'_, R> {
 impl<R: Runtime> Drop for Offline<'_, R> {
     fn drop(&mut self) {
         self.db.offline.lock(&self.db.rt).remove(&self.rel);
-        self.db.session.waits.ended(OFFLINE_GATE);
     }
 }
 
@@ -351,8 +335,8 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns the vacuum lock unless another holds it, else the holder's thread.
-    /// [`VACUUM_HOLDER`] runs exactly while one does, so a call that watches it and finds it ended
-    /// finds the lock free.
+    /// [`Gate::VacuumHolder`] runs exactly while one does, so a call that watches it and finds it
+    /// ended finds the lock free.
     fn try_hold_vacuum(&self) -> Result<VacuumHold<'_, R>, ThreadId> {
         self.try_hold(Holder::Keeps {
             thread: self.rt.current(),
@@ -371,14 +355,10 @@ impl<R: Runtime> Database<R> {
     }
 
     fn try_hold(&self, holder: Holder) -> Result<VacuumHold<'_, R>, ThreadId> {
-        let taken = self.session.txns.take_vacuum(holder, || {
-            self.session.waits.started(VACUUM_HOLDER);
-        });
-        match taken {
+        match self.session.txns.take_vacuum(holder) {
             Ok(vacuuming) => Ok(VacuumHold {
                 db: self,
                 vacuuming,
-                _ended: HolderEnded(self),
                 _rank: ranks::VACUUM.hold(),
             }),
             Err(Busy::Kept(thread)) => Err(thread),
@@ -411,7 +391,7 @@ impl<R: Runtime> Database<R> {
             self.rebuild_stopped()?;
             if let Some(rerun) = stop.suspend {
                 return Err(Error::Blocked {
-                    on: VACUUM_HOLDER,
+                    on: Gate::VacuumHolder.xid(),
                     rerun,
                 });
             }
@@ -468,10 +448,11 @@ impl<R: Runtime> Database<R> {
         self.pause_a_poll();
     }
 
-    /// Returns whether a thread waits on a hold of `holder`.
+    /// Returns whether a thread waits on a hold of `holder` or on a transaction begun on it.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn waits_on(&self, holder: ThreadId) -> bool {
-        self.waiting.lock(&self.rt).values().any(|h| *h == holder)
+        let gated = self.waiting.lock(&self.rt).values().any(|h| *h == holder);
+        gated || self.session.waits().watched_on(holder)
     }
 
     /// Block the calling thread until `GATE_POLL` has passed.
@@ -570,12 +551,13 @@ impl<R: Runtime> Database<R> {
             ix,
         };
         let _offline = (!job.online).then(|| {
-            self.session.waits.started(OFFLINE_GATE);
+            let gated = self.session.waits().gate(Gate::Offline);
             let me = self.rt.current();
             self.offline.lock(&self.rt).insert(job.rel, me);
             Offline {
                 db: self,
                 rel: job.rel,
+                _gated: gated,
             }
         });
         self.began(job, Reindex::Scan);

@@ -3,15 +3,15 @@ use crate::storage::Pager;
 
 use super::conflict::later;
 use super::{
-    Hold, Pinned, Probe, Snapshot, Status, StatusError, Transactions, Write, Writers, Xid,
+    Hold, Pinned, Probe, Snapshot, Standing, Status, StatusError, Transactions, Write, Writers, Xid,
 };
 
-/// The latest commit log status of an id.
+/// The latest standing of an id.
 pub trait Statuses {
     type Error;
 
-    /// Returns the status of `x`.
-    fn status(&self, x: Xid) -> Result<Status, Self::Error>;
+    /// Returns the standing of `x`.
+    fn status(&self, x: Xid) -> Result<Standing, Self::Error>;
 }
 
 /// The statuses the commit log of a set of transactions records, with what keeps the reader's
@@ -33,8 +33,8 @@ enum Kept {
 impl<R: Runtime> Statuses for Logged<R> {
     type Error = StatusError;
 
-    fn status(&self, x: Xid) -> Result<Status, StatusError> {
-        self.txns.status(&self.pager, x)
+    fn status(&self, x: Xid) -> Result<Standing, StatusError> {
+        self.txns.standing(&self.pager, x)
     }
 }
 
@@ -42,8 +42,8 @@ impl<R: Runtime> Statuses for Logged<R> {
 impl<E, F: Fn(Xid) -> Result<Status, E>> Statuses for F {
     type Error = E;
 
-    fn status(&self, x: Xid) -> Result<Status, E> {
-        self(x)
+    fn status(&self, x: Xid) -> Result<Standing, E> {
+        self(x).map(Standing::from)
     }
 }
 
@@ -171,7 +171,9 @@ impl<S: Statuses> Reader<S> {
         Ok(match seen.on {
             Count::Committed | Count::Aborted => None,
             Count::Concurrent(x) => Some(x),
-            Count::Excluded(x) => (self.statuses.status(x)? != Status::Aborted).then_some(x),
+            Count::Excluded(x) => {
+                (self.statuses.status(x)?.counted() != Status::Aborted).then_some(x)
+            }
         })
     }
 
@@ -179,7 +181,7 @@ impl<S: Statuses> Reader<S> {
     /// log only for an id below its `xmax` and not in progress.
     pub fn counts_committed(&self, x: Xid) -> Result<bool, S::Error> {
         self.snapshot
-            .counts_committed(x, |x| self.statuses.status(x))
+            .counts_committed(x, |x| Ok(self.statuses.status(x)?.counted()))
     }
 
     fn count(&self, x: Xid) -> Result<Count, S::Error> {
@@ -189,7 +191,7 @@ impl<S: Statuses> Reader<S> {
         if self.snapshot.excludes(x) {
             return Ok(Count::Excluded(x));
         }
-        Ok(match self.statuses.status(x)? {
+        Ok(match self.statuses.status(x)?.counted() {
             Status::Committed => Count::Committed,
             Status::Aborted => Count::Aborted,
             Status::InProgress => Count::Concurrent(x),
@@ -202,7 +204,7 @@ impl<S: Statuses> Reader<S> {
     /// A version `me` inserted and has not deleted is a conflict; whether it came from the same
     /// statement is the caller's, from its command ids.
     pub fn probe_unique(&self, me: Xid, writers: &Writers) -> Result<Probe, S::Error> {
-        let status = |x| self.statuses.status(x);
+        let status = |x| Ok(self.statuses.status(x)?.counted());
         let (xmin, xmax) = (writers.inserter(), writers.deleter());
         let inserter = if xmin == me {
             Status::Committed
@@ -238,7 +240,7 @@ impl<S: Statuses> Reader<S> {
         let Some(xmax) = writers.deleter().filter(|&x| x != me) else {
             return Ok(Write::Proceed);
         };
-        Ok(match self.statuses.status(xmax)? {
+        Ok(match self.statuses.status(xmax)?.counted() {
             Status::Aborted => Write::Proceed,
             Status::InProgress => Write::Wait(xmax),
             Status::Committed => Write::Fail(later(xmax)),

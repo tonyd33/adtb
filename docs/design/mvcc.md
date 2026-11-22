@@ -230,10 +230,16 @@ Postconditions:
   is spent, starting a read-write transaction is refused; snapshots
   and reads go on. The id `2^64 - 1` is never assigned.
 
-`Transactions::begin` returns a `Begun` guard for the new id. The id
+`Transactions::begin` returns a `Begun` guard for the new id and
+starts the id in the waits (§6) before any version names it. The id
 is running until `Transactions::commit` or `Transactions::abort` takes
-the guard, or the guard drops; each of the three takes it out of the
-running transactions on every path.
+the guard, or the guard drops. Each of the three reaches one end in
+`Transactions`, which every transaction, the catalog's among them,
+takes: it records the commit or the abort, or keeps the id unresolved
+when nothing is recorded, takes the id out of the running
+transactions, and then ends it in the waits, waking its waiters. No
+other path records a commit or an abort in the commit log of an open
+database.
 
 - A commit that fails aborts the id and returns the commit's failure,
   or the abort record's when that fails.
@@ -242,9 +248,14 @@ running transactions on every path.
   panics, or after its pager closes, records nothing.
 - An abort whose record fails, which refuses the database whole, or
   that records nothing leaves the commit log saying the id is in
-  progress. Readers treat it as not committed, and recovery settles it
-  as aborted. Until then it is unresolved: it bounds the resolved id
-  each reservation logs, as a running id does.
+  progress. This process counts it aborted, as recovery settles it: a
+  reader treats it as not committed, a write meeting a version it
+  wrote neither waits for it nor fails on it, and pruning and vacuum
+  remove the versions it inserted and clear it as a deleter. Until the
+  next open it is unresolved: it bounds the resolved id each
+  reservation logs and the truncation of the commit log (§4.4), as a
+  running id does, and bounds no horizon of pruning or vacuum (§9,
+  §10.1), which pass it.
 - A panic inside `commit` or `abort` leaves the id running in memory
   and in progress in the commit log; the process ends, and recovery
   settles it.
@@ -417,9 +428,9 @@ Rulings: mvcc/xid-clog, mvcc/xid-width/xid64, mvcc/status/clog-lookup
 ### 4.5 Transactions of the write path
 
 `write::Database::begin`, `begin_read` and `begin_deferrable` return
-a `Txn`. It holds its id's `Begun` guard when it writes, its
-snapshot's `Hold`, its entry in the serializer, its snapshot in the
-readers when it only reads, and its id's registration with the waits.
+a `Txn`. It holds its id's `Begun` guard when it writes, which holds
+its id's registration with the waits, its snapshot's `Hold`, its entry
+in the serializer, and its snapshot in the readers when it only reads.
 `Database::commit`, `Database::abort` and `Database::abandon` take
 it; dropping it aborts it, with no reply. It reaches the
 transactions, the serializer, the readers and the waits through one
@@ -456,8 +467,9 @@ Postconditions:
   nothing: the safe snapshot markers it would log wait for the next
   end, and its id's abort is unrecorded. A read-only transaction that
   ends before its marker is logged gets none.
-- The versions a dropped `Txn` made dead are counted for vacuum and
-  wake no worker.
+- The versions a dropped `Txn` made dead are counted for vacuum, and
+  wake the background worker when a relation is then due, as a
+  commit's and an abort's do.
 - Under `testing`, a drop counts as an end by drop unless one of the
   `Txn`'s own operations has returned an error other than a suspension
   on a transaction wait, which marks it failed. The count is asserted
@@ -993,22 +1005,22 @@ version the window keeps (§10.3) is kept though dead to every
 snapshot; under `Moving` it is removed once vacuum has moved it to
 history.
 
-Postconditions of a vacuum of a sum begun when the oldest running or
-unresolved transaction was `x`, or when there was none and `x` was the
-next id:
+Postconditions of a vacuum of a sum begun when the oldest running
+transaction was `x`, or when there was none and `x` was the next id:
 
 - no index entry of the sum names a slot vacuum freed;
-- no version of the sum names an aborted transaction below `x`, in
-  `xmin` or in `xmax`, so the commit log may be truncated below `x`
-  once every other sum has been vacuumed as well (§4.4);
+- no version of the sum names an aborted or unresolved transaction
+  below `x`, in `xmin` or in `xmax`, so the commit log may be truncated
+  below `x`, and below the oldest unresolved transaction, once every
+  other sum has been vacuumed as well (§4.4);
 - a live snapshot reads what it read before.
 
 Writers, readers and on-access pruning of the sum run beside a vacuum.
 Each heap is judged for the whole of one vacuum by the least of its
 watermark and the oldest transaction running when the vacuum first
 judges it: every transaction below that bound had resolved or is
-unresolved, whose status stays in progress and counts as not committed
-in this process, so a version found dead stays dead from the scan that collects it to the
+unresolved, whose status stays in progress and which this process
+counts aborted, so a version found dead stays dead from the scan that collects it to the
 prune that frees it, whatever snapshots are taken meanwhile. That
 bound is `Transactions::horizon_fixed`.
 

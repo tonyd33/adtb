@@ -140,6 +140,7 @@ pub struct Called<T> {
     counts: fn(Step) -> bool,
     go: Arc<AtomicBool>,
     out: Arc<Mutex<Option<T>>>,
+    unwinds: bool,
 }
 
 impl<T: Send + 'static> Called<T> {
@@ -176,6 +177,16 @@ impl<T: Send + 'static> Called<T> {
             counts,
             go,
             out,
+            unwinds: false,
+        }
+    }
+
+    /// Returns the call going on by unwinding from its stop in an
+    /// [`interleave`](crate::steps::interleave), which its body must catch.
+    pub fn unwinding(self) -> Called<T> {
+        Called {
+            unwinds: true,
+            ..self
         }
     }
 
@@ -206,5 +217,9 @@ impl<T> Stepping for Called<T> {
     fn ended(&mut self) -> bool {
         let out = self.out.lock().unwrap_or_else(PoisonError::into_inner);
         out.is_some()
+    }
+
+    fn unwinds(&self) -> bool {
+        self.unwinds
     }
 }

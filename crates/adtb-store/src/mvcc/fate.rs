@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
-use super::{Status, StatusError, Transactions, Writers, Xid};
+use super::{Standing, Status, StatusError, Transactions, Writers, Xid};
 
 /// What a pruner decides of one version from its writers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,13 +89,13 @@ impl<R: Runtime> Transactions<R> {
         Ok(match horizon.rule {
             Rule::Past if keeps(deleter.unwrap_or(Xid::NONE))? => Fate::Keep,
             Rule::Past => Fate::Remove,
-            Rule::Current | Rule::Moving => match self.status(pager, inserter)? {
+            Rule::Current | Rule::Moving => match self.standing(pager, inserter)?.counted() {
                 Status::Aborted => Fate::Remove,
                 Status::InProgress => Fate::Keep,
                 Status::Committed => match deleter {
                     None if inserter < horizon.watermark => Fate::AllVisible,
                     None => Fate::Keep,
-                    Some(x) => match self.status(pager, x)? {
+                    Some(x) => match self.standing(pager, x)?.counted() {
                         Status::Aborted => Fate::Clear,
                         Status::Committed if x >= horizon.watermark => Fate::Keep,
                         Status::Committed
@@ -166,9 +166,9 @@ impl<R: Runtime> Transactions<R> {
         self.judge(pager, self.horizon_now(heap))
     }
 
-    /// Returns whether `x` has committed or aborted.
+    /// Returns whether `x` has ended: committed, aborted, or ended with its abort unrecorded.
     pub fn resolved(&self, pager: &Pager<R>, x: Xid) -> Result<bool, StatusError> {
-        Ok(self.status(pager, x)? != Status::InProgress)
+        Ok(self.standing(pager, x)? != Standing::Running)
     }
 
     /// Returns whether the inserter of a version written as `w` committed and its deleter, if any,

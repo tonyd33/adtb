@@ -58,7 +58,7 @@ use crate::exec::{self, Budget, Scheduler, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
     Begun, Hold, Limits, Safety, SerialId, SerializationFailure, Serializer, Snapshot, Taken,
-    Transactions, Waits, Watch, Xid,
+    Transactions, Watch, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -374,9 +374,9 @@ pub enum Deferral {
 /// the engine is closed.
 ///
 /// Dropping it takes the serializer's lock and, inside it, the lock of the transactions, the
-/// commit log and the status page of its id as its `Begun` aborts, then the readers' lock, then
-/// the lock of the transactions again as its hold is released. Once the serializer's lock is
-/// released it takes the waits' lock, waking the waiters of its id outside it, then the lock of
+/// commit log and the status page of its id as its `Begun` aborts, then the waits' lock, waking
+/// the waiters of its id outside it, then the readers' lock, then the lock of the transactions
+/// again as its hold is released. Once the serializer's lock is released it takes the lock of
 /// the dead counts.
 pub struct Txn {
     /// `None` for a read-only transaction.
@@ -399,8 +399,6 @@ struct Held {
     /// `None` for a read-write transaction.
     reader: Option<SerialId>,
     hold: Option<Hold>,
-    /// `None` for a read-only transaction.
-    waits: Option<Xid>,
     changed: RefCell<vacuums::Changed>,
     /// Set once one of its operations has failed other than by suspending on a wait; dropping it
     /// then counts no end by drop.
@@ -422,8 +420,8 @@ struct Session<R: Runtime> {
     ser: Arc<Ranked<Serializer>>,
     /// The snapshot of each running read-only transaction, for its safe snapshot marker.
     readers: Ranked<BTreeMap<SerialId, (Taken, Snapshot)>>,
-    waits: Waits<R>,
     dead: Ranked<vacuums::Dead>,
+    heaps: vacuums::RelHeaps,
     steps: Arc<crate::steps::Steps>,
     /// How many transactions ended by being dropped.
     #[cfg(any(test, feature = "testing"))]
@@ -717,7 +715,21 @@ impl<R: Runtime> Database<R> {
             .map(|i| (*i, Ranked::new(ranks::INDEX_LATCH, ())))
             .collect();
         let seed = rt.next_u64();
-        let session = Session::new(rt.clone(), setup.pager.clone(), setup.txns, setup.limits);
+        let heaps = (rels.values())
+            .map(|r| {
+                let heaps = (r.ctors.iter())
+                    .map(|c| (c.heap, setup.bindings.heaps()[&c.heap].heap.id().0))
+                    .collect();
+                (r.id, heaps)
+            })
+            .collect();
+        let session = Session::new(
+            rt.clone(),
+            setup.pager.clone(),
+            setup.txns,
+            setup.limits,
+            heaps,
+        );
         Ok(Database {
             schema: setup.schema,
             normal: setup.normal,
@@ -858,7 +870,7 @@ impl<R: Runtime> Database<R> {
             match self.defer(tx)? {
                 Deferral::Safe(t) => return Ok(t),
                 Deferral::Wait { tx: t, on } => {
-                    self.session.waits.wait(None, on)?;
+                    self.session.waits().wait(None, on)?;
                     tx = t;
                 }
             }
@@ -897,12 +909,12 @@ impl<R: Runtime> Database<R> {
         on: Xid,
         waker: &Waker,
     ) -> Result<Watch, SerializationFailure> {
-        self.session.waits.watch(me, on, waker)
+        self.session.waits().watch(me, on, waker)
     }
 
     /// Withdraw the registration of `waker` on `on` made as `me`, if `on` has not ended.
     pub fn withdraw(&self, me: Option<Xid>, on: Xid, waker: &Waker) {
-        self.session.waits.withdraw(me, on, waker);
+        self.session.waits().withdraw(me, on, waker);
     }
 
     /// Run term `t` of `terms`, a `Transact`, a write or a query, as one statement of `tx`, each
@@ -1218,7 +1230,7 @@ impl<R: Runtime> Database<R> {
         let written = tx.written.take();
         let mut held = tx.end();
         let begun = held.begun.take();
-        let (serial, hold) = (&mut held.serial, &mut held.hold);
+        let (serial, reader, hold) = (&mut held.serial, &mut held.reader, &mut held.hold);
         let committed = self.session.txns.commit_with(
             &self.pager,
             begun,
@@ -1233,6 +1245,9 @@ impl<R: Runtime> Database<R> {
                     ser.committed(sid);
                 }
                 self.session.log_safe(ser);
+                if let Some(sid) = reader.take() {
+                    self.session.readers.lock(&self.rt).remove(&sid);
+                }
                 drop(hold.take());
             },
         );
@@ -1240,7 +1255,7 @@ impl<R: Runtime> Database<R> {
             Ok(c) => {
                 let changed = held.changed.take();
                 drop(held);
-                self.add_dead(&changed, true);
+                self.session.count_dead(&changed, true);
                 Ok(self.pager.position(c.lsn()))
             }
             Err(e) => Err(either(self.abandon_held(held, || e, |r| r))),
@@ -1268,13 +1283,13 @@ impl<R: Runtime> Database<R> {
     /// Returns the transactions a waiter may wait on, started and not yet ended.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn waits_running(&self) -> BTreeSet<Xid> {
-        self.session.waits.running()
+        self.session.waits().running()
     }
 
     /// Returns the transactions some waiter waits on to end.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn waited_on(&self) -> BTreeSet<Xid> {
-        self.session.waits.watched()
+        self.session.waits().watched()
     }
 
     /// Returns how many transactions have ended by being dropped, none of their operations
@@ -1291,8 +1306,9 @@ impl<R: Runtime> Database<R> {
 
     /// Abort `tx` and release what it holds.
     ///
-    /// Fail if the database is quarantined, the commit log still saying `tx`'s id is in
-    /// progress.
+    /// Fail when its abort record fails: the database is quarantined, an I/O failure, or the
+    /// engine is closed. The commit log then still says `tx`'s id is in progress, and this
+    /// process counts it aborted.
     pub fn abort(&self, tx: Txn) -> Result<(), Error> {
         self.abort_held(tx.end())
     }
@@ -1300,7 +1316,7 @@ impl<R: Runtime> Database<R> {
     fn abort_held(&self, held: Held) -> Result<(), Error> {
         let changed = held.changed.take();
         let aborted = held.close();
-        self.add_dead(&changed, false);
+        self.session.count_dead(&changed, false);
         aborted?;
         Ok(())
     }

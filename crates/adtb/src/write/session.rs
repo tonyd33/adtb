@@ -6,10 +6,11 @@ use std::sync::Arc;
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::Ordering;
 
+use adtb_lang::types::RelId;
 use adtb_sys::lock::Ranked;
 
 use crate::mvcc::{self, Access, Begun, Hold, Limits, Scope, SerialId, Serializer};
-use crate::mvcc::{Transactions, Waits};
+use crate::mvcc::{Transactions, Waits, Xid};
 use crate::ranks;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -35,11 +36,11 @@ impl<R: Runtime> Session<R> {
         pager: Pager<R>,
         txns: Arc<Transactions<R>>,
         limits: Limits,
+        heaps: vacuums::RelHeaps,
     ) -> Arc<Session<R>> {
         let ser = txns.serializer().clone();
         ser.lock(&rt).limit(limits);
         Arc::new(Session {
-            waits: Waits::new(rt.clone()),
             steps: pager.steps().clone(),
             rt,
             pager,
@@ -47,6 +48,7 @@ impl<R: Runtime> Session<R> {
             ser,
             readers: Ranked::new(ranks::READERS, BTreeMap::new()),
             dead: Ranked::new(ranks::DEAD, vacuums::Dead::default()),
+            heaps,
             #[cfg(any(test, feature = "testing"))]
             dropped: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -56,14 +58,10 @@ impl<R: Runtime> Session<R> {
     pub(super) fn begin(self: &Arc<Self>) -> Result<Txn, Error> {
         let begun = self.txns.begin(&self.pager)?;
         let xid = begun.xid();
-        let tx = {
-            let mut ser = self.ser.lock(&self.rt);
-            let hold = self.txns.take(Scope::Every)?;
-            let sid = ser.begin(Access::ReadWrite(xid));
-            self.txn(Some(begun), None, sid, hold)
-        };
-        self.waits.started(xid);
-        Ok(tx)
+        let mut ser = self.ser.lock(&self.rt);
+        let hold = self.txns.take(Scope::Every)?;
+        let sid = ser.begin(Access::ReadWrite(xid));
+        Ok(self.txn(Some(begun), None, sid, hold))
     }
 
     /// Begin a read-only transaction, `deferrable` or not.
@@ -103,13 +101,17 @@ impl<R: Runtime> Session<R> {
                 serial: Some(sid),
                 reader,
                 hold: Some(hold),
-                waits: xid,
                 changed: RefCell::default(),
                 failed: Cell::new(false),
                 ending: false,
                 session: self.clone(),
             },
         }
+    }
+
+    /// Returns the waits on running transactions, which the transactions start and end.
+    pub(super) fn waits(&self) -> &Waits<R> {
+        self.txns.waits()
     }
 
     /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
@@ -121,9 +123,35 @@ impl<R: Runtime> Session<R> {
         }
     }
 
-    /// Count the versions `changed` made dead, as [`vacuums::Dead::add`] does.
+    /// Count the versions `changed` made dead, as [`vacuums::Dead::add`] does, and unpark the
+    /// background worker if it is idle and a relation is now due.
     pub(super) fn count_dead(&self, changed: &vacuums::Changed, committed: bool) {
-        self.dead.lock(&self.rt).add(changed, committed);
+        if changed.is_empty() {
+            return;
+        }
+        let mut d = self.dead.lock(&self.rt);
+        d.add(changed, committed);
+        let due = (self.heaps.iter())
+            .filter(|(_, heaps)| heaps.iter().any(|(h, _)| changed.contains_key(h)))
+            .any(|(rel, _)| self.dead_due(&d, *rel));
+        if let Some(t) = due.then(|| d.wake()).flatten() {
+            self.rt.unpark(t);
+        }
+    }
+
+    /// Returns whether `rel` is due a vacuum by the dead versions `d` counts.
+    pub(super) fn dead_due(&self, d: &vacuums::Dead, rel: RelId) -> bool {
+        let heaps = self.heaps.get(&rel).map_or(&[][..], Vec::as_slice);
+        d.due(rel, heaps, || self.horizon(rel))
+    }
+
+    /// Returns the least watermark of the heaps of `rel`.
+    pub(super) fn horizon(&self, rel: RelId) -> Xid {
+        let heaps = self.heaps.get(&rel).map_or(&[][..], Vec::as_slice);
+        (heaps.iter())
+            .map(|(_, id)| self.txns.watermark(*id))
+            .min()
+            .unwrap_or_else(|| self.txns.next())
     }
 }
 
@@ -155,13 +183,7 @@ impl<R: Runtime> Release for Session<R> {
             }
             drop(held.hold.take());
         }
-        if let Some(x) = held.waits.take() {
-            self.waits.ended(x);
-        }
-        let changed = held.changed.take();
-        if !changed.is_empty() {
-            self.count_dead(&changed, committed);
-        }
+        self.count_dead(&held.changed.take(), committed);
         recorded
     }
 
@@ -201,7 +223,9 @@ impl Txn {
 }
 
 impl Held {
-    /// Release what is left, as a drop does. Returns the abort record's failure, uncounted.
+    /// Release what is left and record its id's abort, also on a panicking thread or once the
+    /// pager closes, logging the safe snapshot markers its end makes due. Count no end by drop.
+    /// Returns the abort record's failure, uncounted.
     pub(super) fn close(mut self) -> Result<(), mvcc::Error> {
         let session = self.session.clone();
         session.release(&mut self, false)

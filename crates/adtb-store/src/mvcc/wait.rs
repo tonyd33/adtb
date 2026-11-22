@@ -13,6 +13,9 @@ struct State {
     /// The wakers registered on each running transaction, each with the transaction it waits as.
     watchers: BTreeMap<Xid, Vec<(Option<Xid>, Waker)>>,
     waits_for: BTreeMap<Xid, Xid>,
+    /// The thread each running transaction began on.
+    #[cfg(any(test, feature = "testing"))]
+    begun_on: BTreeMap<Xid, ThreadId>,
 }
 
 /// What a registration with [`Waits::watch`] found.
@@ -24,12 +27,46 @@ pub enum Watch {
     Pending,
 }
 
+/// A pseudo-transaction no begin assigns, running while a [`Gated`] of it lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gate {
+    /// Running while an offline rebuild holds writes to a relation.
+    Offline,
+    /// Running while a thread holds the vacuum lock.
+    VacuumHolder,
+}
+
+impl Gate {
+    /// Returns the id waiters wait on.
+    pub fn xid(self) -> Xid {
+        match self {
+            Gate::Offline => Xid(u64::MAX),
+            Gate::VacuumHolder => Xid(u64::MAX - 1),
+        }
+    }
+}
+
+/// A gate started in the waits, ended when dropped.
+#[must_use]
+#[derive(Debug)]
+pub struct Gated<'a, R: Runtime> {
+    waits: &'a Waits<R>,
+    gate: Gate,
+}
+
+impl<R: Runtime> Drop for Gated<'_, R> {
+    fn drop(&mut self) {
+        self.waits.ended(self.gate.xid());
+    }
+}
+
 /// The waits of one transaction for another to end, as wakers woken when it ends.
 ///
 /// Preconditions on the caller:
 ///
 /// - `started` runs before any version names the transaction, and `ended` after the commit log
-///   records its end.
+///   records its end or its end is kept unresolved. [`Transactions`](super::Transactions) runs
+///   both for every transaction of its waits.
 /// - No latch is held across `wait`, nor while a call registered by `watch` is suspended.
 #[derive(Debug)]
 pub struct Waits<R: Runtime> {
@@ -56,8 +93,11 @@ impl<R: Runtime> Waits<R> {
         }
     }
 
-    pub fn started(&self, x: Xid) {
-        self.state.lock(&self.rt).running.insert(x);
+    pub(super) fn started(&self, x: Xid) {
+        let mut st = self.state.lock(&self.rt);
+        st.running.insert(x);
+        #[cfg(any(test, feature = "testing"))]
+        st.begun_on.insert(x, self.rt.current());
     }
 
     /// Returns the transactions started and not yet ended.
@@ -72,11 +112,40 @@ impl<R: Runtime> Waits<R> {
         self.state.lock(&self.rt).watchers.keys().copied().collect()
     }
 
+    /// Returns whether some waker is registered on a transaction begun on `thread`.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn watched_on(&self, thread: ThreadId) -> bool {
+        let st = self.state.lock(&self.rt);
+        st.watchers
+            .keys()
+            .any(|x| st.begun_on.get(x) == Some(&thread))
+    }
+
+    /// Start `gate`, running until the returned [`Gated`] drops.
+    pub fn gate(&self, gate: Gate) -> Gated<'_, R> {
+        self.started(gate.xid());
+        Gated { waits: self, gate }
+    }
+
+    /// Start `x` as [`Transactions`](super::Transactions) starts a transaction it begins.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn started_tested(&self, x: Xid) {
+        self.started(x);
+    }
+
+    /// End `x` as [`Transactions`](super::Transactions) ends a transaction it begins.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn ended_tested(&self, x: Xid) {
+        self.ended(x);
+    }
+
     /// Wake every waker registered on `x`, outside the state lock.
-    pub fn ended(&self, x: Xid) {
+    pub(super) fn ended(&self, x: Xid) {
         let watchers = {
             let mut st = self.state.lock(&self.rt);
             st.running.remove(&x);
+            #[cfg(any(test, feature = "testing"))]
+            st.begun_on.remove(&x);
             st.waits_for.remove(&x);
             let watchers = st.watchers.remove(&x).unwrap_or_default();
             for (me, _) in &watchers {

@@ -104,8 +104,8 @@ pub struct Report {
     pub moved: usize,
     /// Rounds of index cleanup and pruning.
     pub rounds: usize,
-    /// No version of the sum names an aborted transaction below this id, nor has one as its
-    /// deleter.
+    /// No version of the sum names an aborted transaction or one ended with its abort unrecorded
+    /// below this id, nor has one as its deleter.
     pub clean_below: Xid,
     /// What it did to each heap that freed something, by heap id.
     pub heaps: BTreeMap<u32, Freed>,
@@ -342,7 +342,7 @@ fn run<R: Runtime>(
         chunks: 0,
         moved: 0,
         rounds: 0,
-        clean_below: txns.resolved_below(),
+        clean_below: txns.ended_below(),
         heaps: BTreeMap::new(),
     };
     let mut dead = DeadSet::new();

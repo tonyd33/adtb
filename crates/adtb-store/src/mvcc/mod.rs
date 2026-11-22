@@ -37,7 +37,7 @@ pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer, StopsEarly};
 pub use txn::RESERVATION;
 pub use txn::{Begun, DurableCommit, Hold, PastError, Pinned, Taken, Transactions};
 pub use vacuuming::{Busy, Holder, Vacuuming};
-pub use wait::{Waits, Watch};
+pub use wait::{Gate, Gated, Waits, Watch};
 use watermark::SnapshotId;
 pub use watermark::{Holds, Scope};
 pub use writers::Writers;
@@ -67,6 +67,41 @@ impl Status {
             1 => Status::Committed,
             2 => Status::Aborted,
             _ => panic!("commit log status bits {bits:#b} name no status"),
+        }
+    }
+}
+
+/// How this process counts a transaction id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    Committed,
+    Aborted,
+    Running,
+    /// Ended with its abort unrecorded: in progress in the commit log, aborted for this process
+    /// and settled aborted by the next open.
+    Unrecorded,
+}
+
+impl From<Status> for Standing {
+    /// Returns the standing of an id whose status is `status` and that is running while it is in
+    /// progress.
+    fn from(status: Status) -> Standing {
+        match status {
+            Status::Committed => Standing::Committed,
+            Status::Aborted => Standing::Aborted,
+            Status::InProgress => Standing::Running,
+        }
+    }
+}
+
+impl Standing {
+    /// Returns the status readers, writes and pruners count it as: an end left unrecorded as
+    /// aborted.
+    pub fn counted(self) -> Status {
+        match self {
+            Standing::Committed => Status::Committed,
+            Standing::Aborted | Standing::Unrecorded => Status::Aborted,
+            Standing::Running => Status::InProgress,
         }
     }
 }

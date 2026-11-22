@@ -13,7 +13,8 @@ use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position};
 
 use super::past::{Commit, Marker, Past};
 use super::{
-    CommitLog, Error, Holds, Scope, Serializer, Snapshot, SnapshotId, Status, StatusError, Xid,
+    CommitLog, Error, Holds, Scope, Serializer, Snapshot, SnapshotId, Standing, Status,
+    StatusError, Waits, Xid,
 };
 
 /// The number of ids one xid allocation record reserves.
@@ -142,6 +143,8 @@ pub struct Shared<R: Runtime> {
     clog: RwLock<CommitLog>,
     /// Taken by every commit, around its record and its publication.
     ser: Arc<Ranked<Serializer>>,
+    /// Holds every id from its begin until its end.
+    waits: Waits<R>,
     state: Lock<State>,
     history: OnceLock<Past>,
     /// The first damage found keeping a marker; every read of the past fails with it after.
@@ -224,16 +227,13 @@ impl<R: Runtime> Transactions<R> {
         }
     }
 
-    /// Take the database's vacuum lock for `holder`, calling `taken` while no other can take it.
-    /// The lock is free again once the returned [`Vacuuming`] drops.
+    /// Take the database's vacuum lock for `holder`, starting
+    /// [`Gate::VacuumHolder`](super::Gate::VacuumHolder) while no other can take it. The lock is
+    /// free again once the returned [`Vacuuming`] drops, and the gate ends after.
     ///
     /// Fail while another holds it, setting a yielding holder's `asked` first.
-    pub fn take_vacuum(
-        &self,
-        holder: Holder,
-        taken: impl FnOnce(),
-    ) -> Result<Vacuuming<'_, R>, Busy> {
-        self.vacuum.take(&self.rt, &self.pager, self, holder, taken)
+    pub fn take_vacuum(&self, holder: Holder) -> Result<Vacuuming<'_, R>, Busy> {
+        self.vacuum.take(&self.rt, &self.pager, self, holder)
     }
 
     fn over(rt: R, pager: &Pager<R>, clog: CommitLog) -> Transactions<R> {
@@ -249,6 +249,7 @@ impl<R: Runtime> Transactions<R> {
             window: Duration::ZERO,
         };
         Transactions(Arc::new(Shared {
+            waits: Waits::new(rt.clone()),
             rt,
             pager: pager.clone(),
             clog: RwLock::new(clog),
@@ -277,6 +278,12 @@ impl<R: Runtime> Transactions<R> {
         &self.ser
     }
 
+    /// Returns the waits on running transactions: each id is started in them as it begins and
+    /// ended as its end is recorded or kept unresolved.
+    pub fn waits(&self) -> &Waits<R> {
+        &self.waits
+    }
+
     /// Returns the id the next transaction gets.
     pub fn next(&self) -> Xid {
         self.state.lock(&self.rt).next
@@ -286,10 +293,11 @@ impl<R: Runtime> Transactions<R> {
         self.state.lock(&self.rt).running.clone()
     }
 
-    /// Returns the least id that is running or unresolved, else the next id: every id below it
-    /// has resolved.
-    pub fn resolved_below(&self) -> Xid {
-        self.state.lock(&self.rt).resolved()
+    /// Returns the least running id, else the next id: every id below it has committed, aborted
+    /// or ended with its abort unrecorded.
+    pub fn ended_below(&self) -> Xid {
+        let st = self.state.lock(&self.rt);
+        st.running.first().copied().unwrap_or(st.next)
     }
 
     /// Start a transaction, first reserving more ids and forcing the log when the reservation is
@@ -316,6 +324,8 @@ impl<R: Runtime> Transactions<R> {
         let x = st.next;
         st.next = Xid(x.0 + 1);
         st.running.insert(x);
+        drop(st);
+        self.waits.started(x);
         let txns: Weak<dyn Release> = Arc::<Shared<R>>::downgrade(&self.0);
         Ok(Begun {
             xid: x,
@@ -388,18 +398,9 @@ impl<R: Runtime> Transactions<R> {
     ) -> Result<DurableCommit, E> {
         let mut ser = self.ser.lock(&self.rt);
         let checked = check(&mut ser);
-        let x = begun.map(|b| self.end(b));
-        let recorded = checked.and_then(|()| {
-            x.map(|x| self.record(pager, x, also))
-                .transpose()
-                .map_err(E::from)
-        });
-        let own = match recorded {
-            Ok(own) => own,
-            Err(e) => {
-                let aborted = x.map_or(Ok(()), |x| self.abandon_running(pager, x));
-                return Err(aborted.map_or_else(E::from, |()| e));
-            }
+        let own = match begun {
+            None => checked.map(|()| None)?,
+            Some(b) => Some(self.commit_running(pager, self.end(b), checked, also)?),
         };
         then(&mut ser);
         drop(ser);
@@ -411,19 +412,41 @@ impl<R: Runtime> Transactions<R> {
         Ok(DurableCommit { lsn })
     }
 
-    /// Record the commit of the running `x` and publish it. Returns the LSN of its commit
-    /// record.
-    fn record(
+    /// End the running `x`: once `checked`, record its commit and publish it, else record its
+    /// abort. Returns the LSN of its commit record.
+    ///
+    /// Fail with the failure of `checked` or of the commit record once the abort is recorded,
+    /// else with the abort record's, counted.
+    fn commit_running<E: From<Error>>(
         &self,
         pager: &Pager<R>,
         x: Xid,
+        checked: Result<(), E>,
         also: (&[Pid], impl FnOnce(&mut [&mut [u8]])),
-    ) -> Result<Lsn, Error> {
-        self.admit()?;
-        let mut st = self.state.lock(&self.rt);
-        let lsn = self.commit_running(&mut st, pager, x, also)?;
-        self.publish(&st, pager, x, lsn);
-        Ok(lsn)
+    ) -> Result<Lsn, E> {
+        let ended = self.conclude(
+            x,
+            |st| {
+                let committed = checked.and_then(|()| {
+                    self.admit()
+                        .and_then(|()| self.record_commit(st, pager, x, also))
+                        .map_err(E::from)
+                });
+                match committed {
+                    Ok(lsn) => Ok(Ok(lsn)),
+                    Err(e) => self.record_abort(pager, x).map(|_| Err(e)),
+                }
+            },
+            |st, done| {
+                if let Ok(lsn) = done {
+                    self.publish(st, pager, x, *lsn);
+                }
+            },
+        );
+        ended.unwrap_or_else(|unrecorded| {
+            self.count_unrecorded();
+            Err(E::from(unrecorded))
+        })
     }
 
     /// Abort the transaction of `begun` after its work failed, as a failed commit is aborted:
@@ -436,18 +459,9 @@ impl<R: Runtime> Transactions<R> {
         self.abandon_running(pager, x)
     }
 
-    /// Abort the running `x`, counting a failed record. Returns the record's failure.
-    fn abandon_running(&self, pager: &Pager<R>, x: Xid) -> Result<(), Error> {
-        let admitted = self.admit();
-        let mut st = self.state.lock(&self.rt);
-        let aborted = self.abort_locked(&mut st, pager, x, admitted);
-        if aborted.is_err() {
-            self.count_unrecorded();
-        }
-        aborted.map(drop)
-    }
-
-    fn commit_running(
+    /// Record the commit of `x` at a time no earlier than the latest commit's. Returns the LSN
+    /// of its commit record.
+    fn record_commit(
         &self,
         st: &mut State,
         pager: &Pager<R>,
@@ -460,7 +474,6 @@ impl<R: Runtime> Transactions<R> {
         }
         let committed = self.clog.read(&self.rt).commit_at(pager, x, time, also);
         let lsn = self.checked(committed)?;
-        st.running.remove(&x);
         st.last_commit = Some(lsn);
         st.last_time = time;
         Ok(lsn)
@@ -475,9 +488,7 @@ impl<R: Runtime> Transactions<R> {
     /// Panic if `begun` did not begin in these transactions.
     pub fn abort(&self, pager: &Pager<R>, begun: Begun) -> Result<Lsn, Error> {
         let x = self.end(begun);
-        let admitted = self.admit();
-        let mut st = self.state.lock(&self.rt);
-        self.abort_locked(&mut st, pager, x, admitted)
+        self.conclude(x, |_| self.record_abort(pager, x), |_, _| {})
     }
 
     /// Count a failed abort record of a transaction a call abandons when it fails or releases it
@@ -524,6 +535,25 @@ impl<R: Runtime> Transactions<R> {
             Err(StatusError::Page(e)) => Err(StatusError::Page(self.pager.refuse_whole(e))),
             found => found,
         }
+    }
+
+    /// Returns how this process counts `x`: as its status says, or, while the commit log says it
+    /// is in progress, as running or as ended with its abort unrecorded.
+    ///
+    /// Fail as [`Transactions::status`] does.
+    pub(super) fn standing(&self, pager: &Pager<R>, x: Xid) -> Result<Standing, StatusError> {
+        let status = self.status(pager, x)?;
+        if status != Status::InProgress {
+            return Ok(status.into());
+        }
+        let st = self.state.lock(&self.rt);
+        if st.running.contains(&x) {
+            return Ok(Standing::Running);
+        }
+        Ok(match self.status(pager, x)? {
+            Status::InProgress => Standing::Unrecorded,
+            status => status.into(),
+        })
     }
 
     /// Returns what the commit log records of `x`, whether or not the database is quarantined.
@@ -857,33 +887,47 @@ impl<R: Runtime> Shared<R> {
         r.map_err(|e| self.damaged(e))
     }
 
-    /// Take `x` out of the running transactions and, once `admitted`, record its abort in the
-    /// commit log. Keep `x` unresolved when nothing is recorded.
+    /// End the running `x`: run `record` with the state locked, take `x` out of the running
+    /// transactions, then run `then` on what `record` returned when it succeeded, else keep `x`
+    /// unresolved. Once the state is unlocked, wake the waiters of `x`. Returns what `record`
+    /// returned.
     ///
-    /// Panic if `x` is not running.
-    fn abort_locked(
+    /// Panic if `x` is not running. A panic in `record` leaves `x` running.
+    fn conclude<T, E>(
         &self,
-        st: &mut State,
-        pager: &Pager<R>,
         x: Xid,
-        admitted: Result<(), Error>,
-    ) -> Result<Lsn, Error> {
-        assert!(st.running.remove(&x), "{x:?} is not running");
-        let recorded = admitted.and_then(|()| {
-            let aborted = self.clog.read(&self.rt).abort(pager, x);
-            self.checked(aborted)
-        });
-        if recorded.is_err() {
-            st.unresolved.insert(x);
+        record: impl FnOnce(&mut State) -> Result<T, E>,
+        then: impl FnOnce(&State, &T),
+    ) -> Result<T, E> {
+        let mut st = self.state.lock(&self.rt);
+        assert!(st.running.contains(&x), "{x:?} is not running");
+        let recorded = record(&mut st);
+        st.running.remove(&x);
+        match &recorded {
+            Ok(done) => then(&st, done),
+            Err(_) => {
+                st.unresolved.insert(x);
+            }
         }
+        drop(st);
+        self.waits.ended(x);
         recorded
     }
 
-    /// Abort `x` as [`Shared::abort_locked`] does, counting a failed record.
-    fn abandon_locked(&self, st: &mut State, pager: &Pager<R>, x: Xid) {
-        if self.abort_locked(st, pager, x, self.admit()).is_err() {
+    /// Record the abort of `x` in the commit log once the database admits it.
+    fn record_abort(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
+        self.admit()?;
+        let aborted = self.clog.read(&self.rt).abort(pager, x);
+        self.checked(aborted)
+    }
+
+    /// End the running `x` by its abort, counting a failed record. Returns the record's failure.
+    fn abandon_running(&self, pager: &Pager<R>, x: Xid) -> Result<(), Error> {
+        let aborted = self.conclude(x, |_| self.record_abort(pager, x), |_, _| {});
+        if aborted.is_err() {
             self.count_unrecorded();
         }
+        aborted.map(drop)
     }
 
     fn count_unrecorded(&self) {
@@ -922,13 +966,10 @@ impl<R: Runtime> Release for Shared<R> {
     }
 
     fn abandon(&self, x: Xid) {
-        let mut st = self.state.lock(&self.rt);
-        if std::thread::panicking() {
-            st.running.remove(&x);
-            st.unresolved.insert(x);
+        if !std::thread::panicking() {
+            self.abandon_running(&self.pager, x).ok();
+        } else if self.conclude(x, |_| Err::<(), ()>(()), |_, ()| {}).is_err() {
             self.count_unrecorded();
-        } else {
-            self.abandon_locked(&mut st, &self.pager, x);
         }
     }
 }

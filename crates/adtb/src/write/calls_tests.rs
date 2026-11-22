@@ -150,7 +150,7 @@ impl<R: Runtime> Resumable for Gate<R> {
             Watch::Pending => {
                 self.registered = Some(waker.clone());
                 if std::mem::take(&mut self.end_first) {
-                    self.waits.ended(self.on);
+                    self.waits.ended_tested(self.on);
                 }
                 self.log.push(Event::Waiting(self.name));
                 Step::Wait
@@ -193,7 +193,7 @@ struct End<R: Runtime> {
 impl<R: Runtime> Resumable for End<R> {
     fn run(&mut self, _: &Waker) -> Step {
         self.log.push(Event::Ran(self.name));
-        self.waits.ended(self.on);
+        self.waits.ended_tested(self.on);
         self.log.push(Event::Done(self.name));
         Step::Done
     }
@@ -394,7 +394,7 @@ fn waiting_calls_stop_on_cancel_and_deadline<R: Runtime>(rt: &R) {
     let pool = Scheduler::start(rt.clone(), 1);
     let log = Log::new(rt);
     let waits = Arc::new(Waits::new(rt.clone()));
-    waits.started(X);
+    waits.started_tested(X);
     let soon = rt.now() + Duration::from_millis(10);
     let g1 = pool.admit(plain(0), gate("g1", X, &waits, &log)).unwrap();
     pool.admit(
@@ -410,7 +410,7 @@ fn waiting_calls_stop_on_cancel_and_deadline<R: Runtime>(rt: &R) {
     g1.cancel();
     log.until(|es| es.contains(&Event::Stopped("g1", Stopped::Cancelled)));
     log.until(|es| es.contains(&Event::Stopped("g2", Stopped::DeadlineExceeded)));
-    waits.ended(X);
+    waits.ended_tested(X);
     pool.admit(plain(1), note("after", &log)).unwrap();
     log.until(|es| es.contains(&Event::Done("after")));
     assert!(!log.has(&Event::Done("g1")));
@@ -435,7 +435,7 @@ impl<R: Runtime> Wake for Flag<R> {
 fn a_registration_racing_the_end_is_woken<R: Runtime>(rt: &R, rounds: usize) {
     for round in 0..rounds {
         let waits = Arc::new(Waits::new(rt.clone()));
-        waits.started(X);
+        waits.started_tested(X);
         let flag = Arc::new(Flag {
             rt: rt.clone(),
             main: rt.current(),
@@ -444,7 +444,7 @@ fn a_registration_racing_the_end_is_woken<R: Runtime>(rt: &R, rounds: usize) {
         let waker = Waker::from(flag.clone());
         let ender = {
             let waits = waits.clone();
-            rt.spawn("ender", move || waits.ended(X))
+            rt.spawn("ender", move || waits.ended_tested(X))
         };
         if waits.watch(None, X, &waker).unwrap() == Watch::Pending {
             while !flag.set.load(Ordering::Acquire) {
@@ -465,14 +465,14 @@ fn a_wake_during_a_step_runs_the_call_again<R: Runtime>(rt: &R, rounds: usize) {
     let pool = Scheduler::start(rt.clone(), 2);
     let log = Log::new(rt);
     let waits = Arc::new(Waits::new(rt.clone()));
-    waits.started(X);
+    waits.started_tested(X);
     let mut g = gate("self", X, &waits, &log);
     g.end_first = true;
     pool.admit(plain(0), g).unwrap();
     log.until(|es| es.contains(&Event::Done("self")));
     for round in 0..rounds {
         let on = Xid(100 + round as u64);
-        waits.started(on);
+        waits.started_tested(on);
         pool.admit(plain(0), gate("gate", on, &waits, &log))
             .unwrap();
         pool.admit(
@@ -501,7 +501,7 @@ fn a_queued_end_runs_while_every_call_waits<R: Runtime>(rt: &R) {
     let pool = Scheduler::start(rt.clone(), workers);
     let log = Log::new(rt);
     let waits = Arc::new(Waits::new(rt.clone()));
-    waits.started(X);
+    waits.started_tested(X);
     let names = ["w0", "w1", "w2", "w3"];
     for (i, name) in names.into_iter().enumerate() {
         pool.admit(plain(10 + i as u64), gate(name, X, &waits, &log))
@@ -571,7 +571,7 @@ fn shutdown_stops_queued_and_waiting_calls<R: Runtime>(rt: &R) {
 
     let pool = Scheduler::start(rt.clone(), 1);
     let waits = Arc::new(Waits::new(rt.clone()));
-    waits.started(X);
+    waits.started_tested(X);
     let late = rt.now() + Duration::from_secs(3600);
     let waiting = pool
         .admit(
@@ -584,7 +584,7 @@ fn shutdown_stops_queued_and_waiting_calls<R: Runtime>(rt: &R) {
     assert!(log.has(&Event::Stopped("waiting", Stopped::ShutDown)));
     waiting.cancel();
     assert!(!pool.help(), "a cancel after shutdown queues nothing");
-    waits.ended(X);
+    waits.ended_tested(X);
     assert!(!log.has(&Event::Done("waiting")));
 }
 
@@ -612,7 +612,7 @@ fn waiting_calls_leave_the_admission_bound<R: Runtime>(rt: &R) {
     );
     let log = Log::new(rt);
     let waits = Arc::new(Waits::new(rt.clone()));
-    waits.started(X);
+    waits.started_tested(X);
     let names = ["w0", "w1", "w2", "w3", "w4", "w5"];
     for (i, name) in names.into_iter().enumerate() {
         admit_retrying(&pool, plain(i as u64), || gate(name, X, &waits, &log));
@@ -1245,7 +1245,7 @@ fn a_cancel_racing_shutdown_stops_once<R: Runtime>(rt: &R) {
     let pool = Scheduler::start(rt.clone(), 1);
     let log = Log::new(rt);
     let waits = Arc::new(Waits::new(rt.clone()));
-    waits.started(X);
+    waits.started_tested(X);
     let call = pool.admit(plain(0), gate("g", X, &waits, &log)).unwrap();
     log.until(|es| es.contains(&Event::Waiting("g")));
     let canceller = {
@@ -1271,7 +1271,7 @@ fn a_dropped_scheduler_stops_its_calls<R: Runtime>(rt: &R) {
     let pool = Scheduler::start(rt.clone(), 1);
     let log = Log::new(rt);
     let waits = Arc::new(Waits::new(rt.clone()));
-    waits.started(X);
+    waits.started_tested(X);
     pool.admit(plain(0), gate("g", X, &waits, &log)).unwrap();
     log.until(|es| es.contains(&Event::Waiting("g")));
     drop(pool);

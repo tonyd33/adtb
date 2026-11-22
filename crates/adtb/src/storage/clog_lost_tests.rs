@@ -1116,7 +1116,7 @@ fn a_status_page_reverted_to_an_older_page_at_its_pid_is_refused() {
         let per = clog.ids_per_page();
         clog.reserve(&pager, Xid(per), Xid::FIRST).unwrap();
         for x in 1..per {
-            clog.abort(&pager, Xid(x)).unwrap();
+            clog.abort_tested(&pager, Xid(x)).unwrap();
         }
         clog.reserve(&pager, Xid(2 * per), Xid(per)).unwrap();
         let old = clog.status_pages()[&0];

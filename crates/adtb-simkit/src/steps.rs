@@ -17,6 +17,8 @@ struct State {
     reached: Vec<Step>,
     stopped: bool,
     released: bool,
+    /// Set when the stopped thread is to unwind from its stop as it goes on.
+    unwind: bool,
 }
 
 /// The stop of one thread at one step, set as the database's step hook.
@@ -60,6 +62,7 @@ impl Stop {
                 reached: Vec::new(),
                 stopped: false,
                 released: false,
+                unwind: false,
             }))
         });
         let (all, rt2) = (states.clone(), rt.clone());
@@ -91,6 +94,10 @@ impl Stop {
             rt2.unpark(driver);
             while !state(s).released {
                 rt2.park();
+            }
+            let unwind = state(s).unwind;
+            if unwind {
+                std::panic::resume_unwind(Box::new(Unwound));
             }
         });
         states.map(|state| Stop { state })
@@ -131,9 +138,20 @@ impl Stop {
 
     /// Let the stopped thread go on.
     pub fn release(&self, rt: &SimRuntime) {
+        self.go_on(rt, false);
+    }
+
+    /// Let the stopped thread go on by unwinding from its stop with an [`Unwound`] payload,
+    /// without running the panic hook.
+    pub fn unwind(&self, rt: &SimRuntime) {
+        self.go_on(rt, true);
+    }
+
+    fn go_on(&self, rt: &SimRuntime, unwind: bool) {
         let thread = {
             let mut s = state(&self.state);
             s.released = true;
+            s.unwind = unwind;
             s.thread
         };
         if let Some(thread) = thread {
@@ -156,6 +174,10 @@ impl Drop for Stop {
     }
 }
 
+/// The payload a thread [`Stop::unwind`] lets go on unwinds with.
+#[derive(Debug)]
+pub struct Unwound;
+
 /// A step function run on a thread of its own, which a driving thread starts and waits for.
 pub trait Stepping {
     /// Returns its thread and the steps that are its boundaries.
@@ -168,6 +190,11 @@ pub trait Stepping {
 
     /// Returns whether the step function has ended.
     fn ended(&mut self) -> bool;
+
+    /// Returns whether, stopped first in an [`interleave`], it goes on by unwinding from its stop.
+    fn unwinds(&self) -> bool {
+        false
+    }
 }
 
 /// Where the second side of an interleaving was when the first went on.
@@ -178,7 +205,8 @@ pub enum Second {
     /// Ended before the boundary the pair names.
     Whole,
     /// Waiting on the stopped first side: no thread able to run, or a thread waiting for the
-    /// vacuum lock or a rebuild's gate that the first side's thread holds.
+    /// vacuum lock or a rebuild's gate that the first side's thread holds, or for a transaction
+    /// begun on that thread to end.
     Blocked,
 }
 
@@ -187,6 +215,8 @@ pub enum Second {
 pub struct Reached {
     stopped: bool,
     blocked: bool,
+    /// Whether it went on from its stop by unwinding, reaching no later boundary.
+    unwound: bool,
     steps: Vec<Step>,
 }
 
@@ -205,6 +235,12 @@ impl Reached {
     /// Returns every boundary it reached, in order.
     pub fn steps(&self) -> &[Step] {
         &self.steps
+    }
+
+    /// Returns whether a boundary after its stop may follow: it reached one, or it went on by
+    /// unwinding, which cuts off those its run alone reaches.
+    fn may_pass(&self, i: usize) -> bool {
+        self.steps.len() > i || self.unwound
     }
 
     /// Returns where the second side was when the first went on, `j` the boundary the pair names
@@ -226,8 +262,9 @@ const STALLED: usize = 64;
 
 /// Run `first` to its `i`th boundary, run the first of `between`, then run `second` to its `j`th
 /// boundary, its end, or until it blocks on `first`, run the second of `between` with where
-/// `second` is, then `first` to its end, releasing `second` should `first` block on it, then
-/// `second` to its end, each boundary counted from 1. When `first` ends before its `i`th
+/// `second` is, then `first` to its end, unwinding from its stop when it
+/// [unwinds](Stepping::unwinds), releasing `second` should `first` block on it, then `second` to
+/// its end, each boundary counted from 1. When `first` ends before its `i`th
 /// boundary, run `second` whole after it and neither of `between`. Returns what each reached.
 pub fn interleave(
     rt: &SimRuntime,
@@ -240,6 +277,7 @@ pub fn interleave(
     first.start(rt);
     let a_stopped = a.stopped(rt, &mut || first.ended().then_some(())).is_ok();
     let (mut b_stopped, mut b_blocked, mut a_blocked) = (false, false, false);
+    let mut a_unwound = false;
     if a_stopped {
         let (stopped, waited_on) = between;
         stopped();
@@ -261,7 +299,12 @@ pub fn interleave(
             }
         };
         waited_on(at);
-        a.release(rt);
+        a_unwound = first.unwinds();
+        if a_unwound {
+            a.unwind(rt);
+        } else {
+            a.release(rt);
+        }
         if waited(rt, db, first, None, b.thread()) == Waited::Stalled {
             a_blocked = true;
             b.release(rt);
@@ -273,9 +316,14 @@ pub fn interleave(
         second.start(rt);
     }
     until_ended(rt, second);
-    [(a, a_stopped, a_blocked), (b, b_stopped, b_blocked)].map(|(stop, stopped, blocked)| Reached {
+    [
+        (a, a_stopped, a_blocked, a_unwound),
+        (b, b_stopped, b_blocked, false),
+    ]
+    .map(|(stop, stopped, blocked, unwound)| Reached {
         stopped,
         blocked,
+        unwound,
         steps: stop.reached(),
     })
 }
@@ -286,7 +334,8 @@ enum Waited {
     Stopped,
     Ended,
     /// No thread could make progress for [`STALLED`] turns of the driver in a row, or a thread
-    /// waited for the vacuum lock or a rebuild's gate that the stopped side's thread holds.
+    /// waited for the vacuum lock or a rebuild's gate that the stopped side's thread holds, or for
+    /// a transaction begun on that thread to end.
     Stalled,
 }
 
@@ -333,7 +382,8 @@ pub fn nothing_between<'a>() -> Between<'a> {
 pub type Pair = (Step, Second);
 
 /// Run `case` at every pair of boundaries its two sides reach, ending once no case at a boundary
-/// of the first side shows it reaches one past it, as [`interleave`] numbers them:
+/// of the first side shows it reaches one past it, or, for a first side that unwinds from its
+/// stop, once it ends before the boundary, as [`interleave`] numbers them:
 /// each boundary of the first side the first reaches, with each boundary of the second the
 /// second then reaches, and with the second run to its end or blocked. Returns the boundaries
 /// the first side stopped at and each pair run.
@@ -359,7 +409,7 @@ pub fn every_pair(case: &mut dyn FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<
             }
             let second = b.second(j);
             pairs.push((a.steps[i - 1], second));
-            past |= a.steps.len() > i;
+            past |= a.may_pass(i);
             first = Some(a.steps[..i].to_vec());
             if !matches!(second, Second::At(_)) {
                 if !past {
@@ -373,7 +423,9 @@ pub fn every_pair(case: &mut dyn FnMut((usize, usize)) -> [Reached; 2]) -> (Vec<
 }
 
 /// Run `case` at each boundary its first side reaches, with the second run to its end or
-/// blocked, ending once a case shows the first side reaches none past the one it stopped at. Returns the boundaries the first side stopped at and each pair run.
+/// blocked, ending once a case shows the first side reaches none past the one it stopped at, or,
+/// for a first side that unwinds from its stop, once it ends before it. Returns the boundaries
+/// the first side stopped at and each pair run.
 pub fn every_boundary(
     case: &mut dyn FnMut((usize, usize)) -> [Reached; 2],
 ) -> (Vec<Step>, Vec<Pair>) {
@@ -386,7 +438,7 @@ pub fn every_boundary(
         }
         stops.push(a.steps[i - 1]);
         pairs.push((a.steps[i - 1], b.second(usize::MAX)));
-        if a.steps.len() == i {
+        if !a.may_pass(i) {
             return (stops, pairs);
         }
     }

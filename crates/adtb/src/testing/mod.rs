@@ -24,7 +24,7 @@ use crate::write;
 
 pub use crate::catalog::chained as chained_hash;
 pub use crate::heap::{Edit, Error as HeapError, Flags, Header, Laid, Slot};
-pub use crate::mvcc::{Limits, Snapshot, Xid};
+pub use crate::mvcc::{Gate, Limits, Snapshot, Status, Xid};
 pub use crate::plan::{
     Check as PlanCheck, Checked as PlansChecked, Rewrites, checked as plans_checked, with_rewrites,
 };
@@ -252,9 +252,20 @@ impl<'a, R: Runtime> Testing<'a, R> {
     }
 
     /// Returns whether a thread waits for the vacuum lock or a rebuild's gate while `holder` holds
-    /// it.
+    /// it, or for a transaction begun on `holder` to end.
     pub fn waits_on(self, holder: ThreadId) -> bool {
         self.db.tested_db().waits_on(holder)
+    }
+
+    /// Vacuum relation `relation`, by qualified name. Returns what the vacuum did in all.
+    ///
+    /// Panics:
+    /// - No relation is named `relation`.
+    pub fn vacuum(self, relation: &str) -> Result<crate::vacuum::Report, write::Error> {
+        let db = self.db.tested_db();
+        let rel =
+            (db.rel_named(relation)).unwrap_or_else(|| panic!("no relation is named {relation}"));
+        Ok(db.vacuum(rel, write::HoldWait::unbounded())?.report)
     }
 
     /// Returns how many times a call asked a background vacuum to give up the vacuum lock.
@@ -295,6 +306,11 @@ impl<'a, R: Runtime> Testing<'a, R> {
         let mut out: Vec<String> = held.iter().map(|l| catalog.lock_named(l)).collect();
         out.sort();
         out
+    }
+
+    /// Returns the transactions running: begun, and neither recorded ended nor kept unresolved.
+    pub fn running(self) -> BTreeSet<Xid> {
+        self.db.tested_db().txns().running()
     }
 
     /// Returns the transactions a waiter may wait on, started and not yet ended.

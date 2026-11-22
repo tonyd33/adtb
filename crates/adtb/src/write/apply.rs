@@ -107,7 +107,7 @@ impl<R: Runtime> Stmt<'_, R> {
         }
         self.db
             .session
-            .waits
+            .waits()
             .wait_pausing(xid, on, || -> Result<(), Error> {
                 self.db.rebuild_stopped().map_err(|_| Error::Closed)?;
                 self.stopped()?;
@@ -124,7 +124,7 @@ impl<R: Runtime> Stmt<'_, R> {
             self.db.rebuild_stopped()?;
             if let Some(rerun) = self.stop.suspend {
                 return Err(Error::Blocked {
-                    on: super::reindex::OFFLINE_GATE,
+                    on: crate::mvcc::Gate::Offline.xid(),
                     rerun,
                 });
             }

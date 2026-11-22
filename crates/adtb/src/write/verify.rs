@@ -186,7 +186,7 @@ impl<R: Runtime> Database<R> {
                     tx = self.session.begin_reader(true)?;
                 }
                 Safety::Pending(writers) => match writers.first() {
-                    Some(w) => self.session.waits.wait(None, *w)?,
+                    Some(w) => self.session.waits().wait(None, *w)?,
                     None => self.rt.yield_now(),
                 },
             }
@@ -526,6 +526,11 @@ impl<R: Runtime> Database<R> {
     pub(crate) fn heap_named(&self, relation: &str, ctor: &str) -> Option<HeapId> {
         let r = self.rels.values().find(|r| r.qualified == relation)?;
         Some(r.ctors.iter().find(|c| c.name == ctor)?.heap)
+    }
+
+    /// Returns relation `relation`, by qualified name.
+    pub(crate) fn rel_named(&self, relation: &str) -> Option<RelId> {
+        Some(self.rels.values().find(|r| r.qualified == relation)?.id)
     }
 
     /// Returns the key index of relation `relation`, by qualified name.

@@ -5,12 +5,11 @@ use adtb_sim::{Config, Outcome, SimRuntime};
 use adtb_sys::lock::Ranked;
 use adtb_testkit::fixture::Fixture;
 
-use crate::mvcc::{Status, Xid};
+use crate::mvcc::{Gate, Status, Xid};
 use crate::ranks::{self, broken, order_broken};
 use crate::test_world::write_path::{self, WritePath};
 
 use super::Database;
-use super::reindex::{OFFLINE_GATE, VACUUM_HOLDER};
 
 const ITEMS: &str =
     "type Item = { id: Key items, n: I64 }\nrelation items : Item key id generate sequence\n";
@@ -20,7 +19,7 @@ const ITEMS: &str =
 type Holding = (usize, usize, BTreeSet<Xid>, BTreeSet<Xid>);
 
 fn holding(db: &Database<SimRuntime>) -> Holding {
-    let gates = [OFFLINE_GATE, VACUUM_HOLDER];
+    let gates = [Gate::Offline.xid(), Gate::VacuumHolder.xid()];
     let waits = db.waits_running().into_iter();
     (
         db.tracked(),
@@ -77,6 +76,50 @@ fn a_drop_while_panicking_or_once_closed_releases_records_nothing_and_counts() {
         assert_eq!(2, db.txns().unrecorded_aborts());
         assert_eq!(2, db.take_ends_by_drop());
     });
+}
+
+/// A catalog transaction ends through the one end user transactions take: once it commits,
+/// its id is recorded committed and out of the running set and the waits, and a user writer
+/// running beside it holds what it held.
+#[test]
+fn a_catalog_end_leaves_only_the_user_writer_beside_it_held() {
+    use crate::catalog::Rewrite;
+    use crate::catalog::codec::{Codec, ROLE_CREATED, ROLE_ID, ROLE_NAME, RoleRow};
+    use crate::key::Value as Field;
+    use adtb_lang::ids::engine_ctor as k;
+
+    let f = Fixture::new(ITEMS);
+    let mut sim = write_path::sim(4, Config::default(), &f);
+    let outcome = sim.run(|rt| {
+        let w = WritePath::loaded(&rt, &f, None);
+        let db = w.db();
+        let user = db.begin().expect("a writer begins");
+        let y = user.xid().expect("a writer has an id");
+        let x = db.txns().next();
+        let codec = Codec::<RoleRow>::new(w.catalog().schema());
+        let row = codec.encode(
+            k::ROLE,
+            [
+                (ROLE_ID, Field::I64(100)),
+                (ROLE_NAME, Field::Text("r100".to_owned())),
+                (ROLE_CREATED, Field::Instant(0)),
+            ],
+        );
+        let rewrite = Rewrite {
+            relation: codec.relation(),
+            deleted: Vec::new(),
+            inserted: vec![row],
+        };
+        (w.catalog())
+            .deploy(db.pager(), db.txns(), &[rewrite])
+            .expect("the catalog commits");
+        assert_eq!(Ok(Status::Committed), db.txns().recorded(db.pager(), x));
+        let ys = BTreeSet::from([y]);
+        assert_eq!((1, 0, ys.clone(), ys), holding(db));
+        db.abort(user).expect("the writer aborts");
+        assert_eq!(nothing(), holding(db));
+    });
+    assert_eq!(Outcome::Finished, outcome);
 }
 
 #[test]
@@ -141,7 +184,7 @@ fn the_waits_waited_for_under_the_dead_counts_panics() {
         let _dead = db.session.dead.lock(&db.rt);
         assert_eq!(
             broken("the waits lock", "the dead counts lock"),
-            order_broken(|| drop(db.session.waits.running()))
+            order_broken(|| drop(db.session.waits().running()))
         );
     });
 }

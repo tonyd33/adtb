@@ -192,6 +192,9 @@ pub(super) struct Change {
 
 pub(super) type Changed = BTreeMap<HeapId, Change>;
 
+/// The heaps of each relation, each with the id its watermark is held under.
+pub(super) type RelHeaps = BTreeMap<RelId, Vec<(HeapId, u32)>>;
+
 /// What makes each relation due a background vacuum.
 #[derive(Default)]
 pub(super) struct Dead {
@@ -219,6 +222,31 @@ impl Dead {
             *self.heaps.entry(*heap).or_default() += dead + c.undone;
         }
     }
+
+    /// Mark the worker woken if it is idle. Returns the worker to unpark.
+    pub(super) fn wake(&mut self) -> Option<ThreadId> {
+        std::mem::replace(&mut self.idle, false)
+            .then_some(self.worker)
+            .flatten()
+    }
+
+    /// Returns whether `rel`, of `heaps`, is due a vacuum: never vacuumed since open, or with
+    /// dead versions past its pages and past `LEAST_DEAD` and `horizon` past the watermark its
+    /// last vacuum began under.
+    pub(super) fn due(
+        &self,
+        rel: RelId,
+        heaps: &[(HeapId, u32)],
+        horizon: impl FnOnce() -> Xid,
+    ) -> bool {
+        let Some(&pages) = self.pages.get(&rel) else {
+            return true;
+        };
+        let count: u64 = (heaps.iter())
+            .map(|(h, _)| self.heaps.get(h).copied().unwrap_or(0))
+            .sum();
+        count >= pages.max(LEAST_DEAD) && self.horizon.get(&rel) < Some(&horizon())
+    }
 }
 
 /// A relation due a background vacuum, else when the next one is due by the clock.
@@ -244,49 +272,12 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Count the versions `changed` made dead: those it deleted on a commit, those it inserted
-    /// on an abort, and those taken back either way. Unpark the background worker if it is idle
-    /// and a relation is now due.
-    pub(super) fn add_dead(&self, changed: &Changed, committed: bool) {
-        if changed.is_empty() {
-            return;
-        }
-        let mut d = self.session.dead.lock(&self.rt);
-        d.add(changed, committed);
-        let due = (self.rels.values())
-            .filter(|r| r.ctors.iter().any(|c| changed.contains_key(&c.heap)))
-            .any(|r| self.dead_due(&d, r));
-        if due && d.idle {
-            d.idle = false;
-            if let Some(t) = d.worker {
-                self.rt.unpark(t);
-            }
-        }
-    }
-
-    fn dead_due(&self, d: &Dead, rel: &super::schema::Rel) -> bool {
-        let Some(&pages) = d.pages.get(&rel.id) else {
-            return true;
-        };
-        let count: u64 = (rel.ctors.iter())
-            .map(|c| d.heaps.get(&c.heap).copied().unwrap_or(0))
-            .sum();
-        count >= pages.max(LEAST_DEAD) && d.horizon.get(&rel.id) < Some(&self.horizon(rel))
-    }
-
     /// Returns the least watermark of the heaps of `rel`.
     pub(super) fn horizon(&self, rel: &super::schema::Rel) -> Xid {
-        (rel.ctors.iter())
-            .map(|c| {
-                self.session
-                    .txns
-                    .watermark(self.bindings.heaps()[&c.heap].heap.id().0)
-            })
-            .min()
-            .unwrap_or_else(|| self.session.txns.next())
+        self.session.horizon(rel.id)
     }
 
-    /// Unpark `worker` when a commit or an abort makes a relation due while it is idle.
+    /// Unpark `worker` when the end of a transaction makes a relation due while it is idle.
     pub fn watch_dead(&self, worker: ThreadId) {
         self.session.dead.lock(&self.rt).worker = Some(worker);
     }
@@ -309,7 +300,7 @@ impl<R: Runtime> Database<R> {
             .partition(|r| last.is_some_and(|l| r.id > l));
         for rel in after.into_iter().chain(before) {
             let clock = d.kept.get(&rel.id).map(|&at| at + window / 4);
-            if self.dead_due(&d, rel) || clock.is_some_and(|at| at <= now) {
+            if self.session.dead_due(&d, rel.id) || clock.is_some_and(|at| at <= now) {
                 d.idle = false;
                 return Due::Now(rel.id);
             }

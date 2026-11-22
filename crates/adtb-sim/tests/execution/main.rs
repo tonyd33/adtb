@@ -13,6 +13,7 @@ mod scheduler;
 mod ssi;
 mod system_writes;
 mod tasks;
+mod txn_ends;
 mod update_concurrency;
 mod write_states;
 mod write_steps;

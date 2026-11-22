@@ -564,7 +564,8 @@ impl CommitLog {
         })
     }
 
-    /// Record that `x` committed and log its commit record, in one batch.
+    /// Record that `x` committed and log its commit record, in one batch, in a commit log no
+    /// transactions hold.
     ///
     /// Returns the LSN of the commit record.
     ///
@@ -574,7 +575,7 @@ impl CommitLog {
     /// Panics:
     /// - `x` is not reserved or has resolved.
     #[cfg(any(test, feature = "testing"))]
-    pub fn commit<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+    pub fn commit<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
         pager.commit(x.0, &[pid], |p| set_status(p[0], i, Status::Committed))
     }
@@ -582,7 +583,7 @@ impl CommitLog {
     /// Commit `x` as [`CommitLog::commit`] does, its commit record recording `time`, in
     /// nanoseconds since the Unix epoch, and the pages `also` names changed through its function
     /// in the same batch.
-    pub fn commit_at<R: Runtime>(
+    pub(super) fn commit_at<R: Runtime>(
         &self,
         pager: &Pager<R>,
         x: Xid,
@@ -598,9 +599,15 @@ impl CommitLog {
     }
 
     /// Record that `x` aborted and log its abort record, in one batch.
-    pub fn abort<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+    pub(super) fn abort<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
         pager.abort(x.0, &[pid], |p| set_status(p[0], i, Status::Aborted))
+    }
+
+    /// Abort `x` as [`CommitLog::abort`] does, in a commit log no transactions hold.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn abort_tested<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+        self.abort(pager, x)
     }
 
     /// Returns the status page holding `x` and its index there.

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use adtb_sys::lock::Lock;
 
 use super::Transactions;
+use super::wait::{Gate, Gated};
 use crate::runtime::{Runtime, ThreadId};
 use crate::storage::Pager;
 
@@ -45,8 +46,9 @@ impl VacuumLock {
         }
     }
 
-    /// Take the lock over `pager` and `txns` for `holder`, calling `taken` while no other can take
-    /// it. The lock is free again once the returned [`Vacuuming`] drops.
+    /// Take the lock over `pager` and `txns` for `holder`, starting [`Gate::VacuumHolder`] while no
+    /// other can take it. The lock is free again once the returned [`Vacuuming`] drops, and the
+    /// gate ends after.
     ///
     /// Fail while another holds it, setting a yielding holder's `asked` first.
     pub(super) fn take<'d, R: Runtime>(
@@ -55,7 +57,6 @@ impl VacuumLock {
         pager: &'d Pager<R>,
         txns: &'d Transactions<R>,
         holder: Holder,
-        taken: impl FnOnce(),
     ) -> Result<Vacuuming<'d, R>, Busy> {
         let mut held = self.held.lock(rt);
         match &*held {
@@ -66,9 +67,9 @@ impl VacuumLock {
             }
             None => {
                 *held = Some(holder);
-                taken();
                 Ok(Vacuuming {
                     lock: Some((self, rt)),
+                    _gated: Some(txns.waits().gate(Gate::VacuumHolder)),
                     pager,
                     txns,
                     _one_thread: PhantomData,
@@ -83,6 +84,8 @@ impl VacuumLock {
 /// tests.
 pub struct Vacuuming<'d, R: Runtime> {
     lock: Option<(&'d VacuumLock, &'d R)>,
+    /// Ended once the lock is free.
+    _gated: Option<Gated<'d, R>>,
     pager: &'d Pager<R>,
     txns: &'d Transactions<R>,
     _one_thread: PhantomData<Cell<()>>,
@@ -102,6 +105,7 @@ impl<'d, R: Runtime> Vacuuming<'d, R> {
     pub fn unheld(pager: &'d Pager<R>, txns: &'d Transactions<R>) -> Vacuuming<'d, R> {
         Vacuuming {
             lock: None,
+            _gated: None,
             pager,
             txns,
             _one_thread: PhantomData,

@@ -231,7 +231,7 @@ fn commit_log_pages_fill_and_page() {
             for k in 0..3 {
                 let x = Xid(from.0 + (k * 7919 + from.0 % 13) % per);
                 if k == 2 {
-                    clog.abort(pager, x).expect("abort");
+                    clog.abort_tested(pager, x).expect("abort");
                     resolved.insert(x, Status::Aborted);
                 } else {
                     clog.commit(pager, x).expect("commit");
