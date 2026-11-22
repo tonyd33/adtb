@@ -3,9 +3,18 @@ schema
   module test
   fn big [a: Num] (x: a) -> a = x + 300
   fn lit [a: Num] (x: a) -> a = 300
+  fn huge [a: Num] (x: a) -> a = x + 100000000000000000000
+  fn huge_lit [a: Num] (x: a) -> a = 100000000000000000000
+  fn largest [a: Num] (x: a) -> a = 9223372036854775807
+  fn past_largest [a: Num] (x: a) -> a = 9223372036854775808
   fn small (x: I8) -> I8 = big(x)
   fn wide (x: I16) -> I16 = big(x)
   fn small_lit (x: I8) -> I8 = lit(x)
+  fn huge32 (x: I32) -> I32 = huge(x)
+  fn huge64 (x: I64) -> I64 = huge(x)
+  fn huge64_lit (x: I64) -> I64 = huge_lit(x)
+  fn largest64 (x: I64) -> I64 = largest(x)
+  fn past_largest64 (x: I64) -> I64 = past_largest(x)
 error Faulted
   small(1)
 error Faulted
@@ -14,3 +23,15 @@ query
   wide(1)
 ----
 301
+error Faulted
+  huge32(1)
+error Faulted
+  huge64(1)
+error Faulted
+  huge64_lit(1)
+query
+  largest64(1)
+----
+9223372036854775807
+error Faulted
+  past_largest64(1)

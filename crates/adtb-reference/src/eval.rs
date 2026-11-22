@@ -922,7 +922,7 @@ fn constant(c: &Const, ty: &Ty) -> R<Value> {
         (Const::Int(i), Ty::Base(b)) => {
             Value::Int(in_range(*i, *b).ok_or(Abort::Fault(Fault::ArithmeticOverflow))?)
         }
-        (Const::Int(i), _) => Value::Int(*i as i64),
+        (Const::Int(i), t) => return internal(format!("integer constant {i} at {t:?}")),
         (Const::Decimal(d), Ty::Base(Base::Decimal(s))) => Value::Decimal(*d, *s),
         (Const::Decimal(d), t) => return internal(format!("decimal constant {d} at {t:?}")),
         (Const::Float(f), Ty::Base(Base::F32)) => Value::F32(canon32(*f as f32)),
