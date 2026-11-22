@@ -175,6 +175,20 @@ pub enum Error {
     },
 }
 
+impl Error {
+    /// Returns this error, a serialization failure naming no constructor relation given
+    /// constructor `ctor` of `rel` as the one the caller's write is on.
+    #[must_use]
+    pub(super) fn on(self, rel: RelId, ctor: u32) -> Error {
+        match self {
+            Error::Exec(exec::Error::Serialization(f)) => {
+                Error::Exec(exec::Error::Serialization(f.at(rel, ctor)))
+            }
+            other => other,
+        }
+    }
+}
+
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Exec(exec::Error::Page(e))

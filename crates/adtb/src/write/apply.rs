@@ -247,72 +247,79 @@ impl<R: Runtime> Stmt<'_, R> {
         let mut written = Vec::new();
         for ((rel, key), (old, news)) in &ops {
             let r = self.rel(*rel);
+            let Some(&(ctor, _)) = old.as_ref().or(news.first()) else {
+                continue;
+            };
             let target = |(c, row): &(u32, Val)| self.writable(*rel, key, *c, row);
-            match (old, news.first()) {
-                (None, None) => {}
-                (Some(old), None) => {
-                    let (c, tid) = target(old)?;
-                    let heap = r.ctors[c as usize].heap;
-                    let old = (self.heap(heap).delete(pager, tid, xid)).record(
-                        &mut self.undo.borrow_mut(),
-                        heap,
-                        heap,
-                    )?;
-                    self.superseded(old)?;
-                }
-                (Some(old @ (c, _)), Some((d, n))) if c == d => {
-                    let (c, tid) = target(old)?;
-                    let heap = r.ctors[c as usize].heap;
-                    let indexed: Vec<usize> = r
-                        .indexes
-                        .iter()
-                        .flat_map(|(_, ix)| ix.keys.reads(c))
-                        .collect();
-                    let row = self.stored(heap, n)?;
-                    let h = self.heap(heap);
-                    let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
-                    let (up, old) = h
-                        .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
-                        .record(&mut self.undo.borrow_mut(), heap, heap)
-                        .map_err(too_large(*rel, c))?;
-                    self.superseded(old)?;
-                    self.inserted_into(heap)?;
-                    if !up.heap_only {
+            let mut write = || -> Result<(), Error> {
+                match (old, news.first()) {
+                    (None, None) => {}
+                    (Some(old), None) => {
+                        let (c, tid) = target(old)?;
+                        let heap = r.ctors[c as usize].heap;
+                        let old = (self.heap(heap).delete(pager, tid, xid)).record(
+                            &mut self.undo.borrow_mut(),
+                            heap,
+                            heap,
+                        )?;
+                        self.superseded(old)?;
+                    }
+                    (Some(old @ (c, _)), Some((d, n))) if c == d => {
+                        let (c, tid) = target(old)?;
+                        let heap = r.ctors[c as usize].heap;
+                        let indexed: Vec<usize> = r
+                            .indexes
+                            .iter()
+                            .flat_map(|(_, ix)| ix.keys.reads(c))
+                            .collect();
+                        let row = self.stored(heap, n)?;
+                        let h = self.heap(heap);
+                        let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
+                        let (up, old) = h
+                            .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
+                            .record(&mut self.undo.borrow_mut(), heap, heap)
+                            .map_err(too_large(*rel, c))?;
+                        self.superseded(old)?;
+                        self.inserted_into(heap)?;
+                        if !up.heap_only {
+                            written.push(Written {
+                                rel: *rel,
+                                ctor: c,
+                                tid: up.tid,
+                                row: n.clone(),
+                                stored: row,
+                            });
+                        }
+                    }
+                    (Some(old), Some((d, n))) => {
+                        let (c, tid) = target(old)?;
+                        let to = r.ctors[*d as usize].heap;
+                        let row = self.stored(to, n)?;
+                        let from = r.ctors[c as usize].heap;
+                        let into = self.heap(to);
+                        let mut judge = self.db.session.txns.judge_now(pager, into.id().0);
+                        let (at, old) = self
+                            .heap(from)
+                            .retag_pruning(pager, tid, xid, into, &row, &mut judge)
+                            .record(&mut self.undo.borrow_mut(), from, to)
+                            .map_err(too_large(*rel, *d))?;
+                        self.superseded(old)?;
+                        self.inserted_into(to)?;
                         written.push(Written {
                             rel: *rel,
-                            ctor: c,
-                            tid: up.tid,
+                            ctor: *d,
+                            tid: at,
                             row: n.clone(),
                             stored: row,
                         });
                     }
+                    (None, Some((d, n))) => written.push(self.insert(*rel, *d, n, xid)?),
                 }
-                (Some(old), Some((d, n))) => {
-                    let (c, tid) = target(old)?;
-                    let to = r.ctors[*d as usize].heap;
-                    let row = self.stored(to, n)?;
-                    let from = r.ctors[c as usize].heap;
-                    let into = self.heap(to);
-                    let mut judge = self.db.session.txns.judge_now(pager, into.id().0);
-                    let (at, old) = self
-                        .heap(from)
-                        .retag_pruning(pager, tid, xid, into, &row, &mut judge)
-                        .record(&mut self.undo.borrow_mut(), from, to)
-                        .map_err(too_large(*rel, *d))?;
-                    self.superseded(old)?;
-                    self.inserted_into(to)?;
-                    written.push(Written {
-                        rel: *rel,
-                        ctor: *d,
-                        tid: at,
-                        row: n.clone(),
-                        stored: row,
-                    });
-                }
-                (None, Some((d, n))) => written.push(self.insert(*rel, *d, n, xid)?),
-            }
+                Ok(())
+            };
+            write().map_err(|e| e.on(*rel, ctor))?;
             for (d, n) in news.iter().skip(1) {
-                written.push(self.insert(*rel, *d, n, xid)?);
+                written.push(self.insert(*rel, *d, n, xid).map_err(|e| e.on(*rel, *d))?);
             }
         }
         for ((r, _), rows) in plus {
@@ -328,7 +335,8 @@ impl<R: Runtime> Stmt<'_, R> {
         }
         let mut groups: BTreeMap<(RelId, IndexId, Vec<u8>), BTreeMap<Val, Val>> = BTreeMap::new();
         for w in &written {
-            self.entries(w, viol, &mut groups)?;
+            self.entries(w, viol, &mut groups)
+                .map_err(|e| e.on(w.rel, w.ctor))?;
         }
         for ((rel, ix, _), group) in &groups {
             let found = self.rel(*rel).indexes.iter().find(|(i, _)| i == ix);

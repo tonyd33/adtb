@@ -1,0 +1,86 @@
+# A write of a row, or of a unique value, that a transaction committed after the writer's snapshot
+# fails naming the constructor relation the writer wrote: an update, a delete, a retag from the
+# constructor written, and an insert under a unique, also of the later of two rows of one key
+# inserted under different constructors.
+migrate
+  module app
+  add module app
+  add type Item { id: Key items, code: I64 }
+    = Open   { value: I64 }
+    | Closed { reason: Text }
+  add relation items : Item key id generate sequence
+    unique (code)
+
+run
+  insert items.Open { id: items.key(1), code: 1, value: 10 }
+  insert items.Closed { id: items.key(2), code: 2, reason: "done" }
+
+begin u id U
+
+begin w
+
+in w run
+  update i in items.Open where key i == items.key(1) set Open { i with code: 11 }
+
+commit w
+
+in u retry Serialization { txn: $U, on: "app::items.Open" }
+  update i in items.Open where key i == items.key(1) set Open { i with code: 12 }
+
+rollback u
+
+begin d id D
+
+begin w
+
+in w run
+  update i in items.Closed where key i == items.key(2) set Closed { i with code: 21 }
+
+commit w
+
+in d retry Serialization { txn: $D, on: "app::items.Closed" }
+  delete i in items where key i == items.key(2)
+
+rollback d
+
+begin r id R
+
+begin w
+
+in w run
+  update i in items.Open where key i == items.key(1) set Open { i with code: 13 }
+
+commit w
+
+in r retry Serialization { txn: $R, on: "app::items.Open" }
+  update i in items.Open where key i == items.key(1) set Closed { code: i.code, reason: "x" }
+
+rollback r
+
+begin n id N
+
+begin w
+
+in w run
+  insert items.Open { id: items.key(3), code: 3, value: 30 }
+
+commit w
+
+in n retry Serialization { txn: $N, on: "app::items.Closed" }
+  insert items.Closed { id: items.key(4), code: 3, reason: "y" }
+
+rollback n
+
+begin m id M
+
+begin w
+
+in w run
+  insert items.Open { id: items.key(5), code: 5, value: 50 }
+
+commit w
+
+in m retry Serialization { txn: $M, on: "app::items.Closed" }
+  insert items from [Open { id: items.key(6), code: 60, value: 60 }, Closed { id: items.key(6), code: 5, reason: "z" }]
+
+rollback m

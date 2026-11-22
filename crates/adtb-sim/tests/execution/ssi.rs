@@ -10,14 +10,17 @@ use adtb::{Error, OpenOptions, Position, RejectReason, RetryReason, TxnId, Value
 use adtb_sim::SimRuntime;
 use adtb_testkit::isolation::{self as iso, Outcome as Ended, SCENARIOS, Step};
 
-/// Returns the transaction a serialization failure `r` reports.
-fn failed<T>(r: &Result<T, Error>) -> Option<TxnId> {
-    match r {
-        Err(Error::Retry {
-            reason: RetryReason::Serialization { txn, .. },
-        }) => Some(*txn),
-        _ => None,
-    }
+const ELEMS: &str = "elle::elems.Elem";
+const COUNTERS: &str = "elle::counters.Counter";
+
+/// Returns the serialization failure of transaction `txn` on constructor relation `on`.
+fn serialization<T>(txn: TxnId, on: &str) -> Result<T, Error> {
+    Err(Error::Retry {
+        reason: RetryReason::Serialization {
+            txn,
+            on: on.to_owned(),
+        },
+    })
 }
 
 fn script(elems: &Elems, steps: &[Step]) -> Vec<iso::Txn> {
@@ -206,7 +209,7 @@ fn an_insert_of_a_key_a_running_transaction_inserted_waits_and_fails_if_it_commi
             }
             (r, t2.id())
         });
-        assert_eq!(Some(t2), failed(&r), "seed {seed}");
+        assert_eq!(serialization(t2, ELEMS), r, "seed {seed}");
     }
 }
 
@@ -268,7 +271,7 @@ fn an_insert_of_a_key_committed_after_the_snapshot_fails() {
         }
         (r, t2.id())
     });
-    assert_eq!(Some(t2), failed(&r));
+    assert_eq!(serialization(t2, ELEMS), r);
 }
 
 #[test]
@@ -293,7 +296,7 @@ fn two_inserts_waiting_on_each_other_abort_one() {
             (r1, r2, t2.id())
         });
         assert_eq!(Ok(vec![]), r1, "seed {seed}");
-        assert_eq!(Some(t2), failed(&r2), "seed {seed}");
+        assert_eq!(serialization(t2, ELEMS), r2, "seed {seed}");
     }
 }
 
@@ -338,7 +341,7 @@ fn a_lost_update_fails_the_second_writer() {
             }
             (r, n, t2.id())
         });
-        assert_eq!(Some(t2), failed(&r), "seed {seed}");
+        assert_eq!(serialization(t2, COUNTERS), r, "seed {seed}");
         assert_eq!(Ok(vec![1]), n, "seed {seed}");
     }
 }
@@ -377,7 +380,11 @@ fn a_write_of_a_row_another_transaction_is_writing_waits_for_it() {
             rt.join(check.thread());
             (out[0].clone(), out[1].clone(), n)
         });
-        assert_eq!(Some(committed.1), failed(&committed.0), "seed {seed}");
+        assert_eq!(
+            serialization(committed.1, COUNTERS),
+            committed.0,
+            "seed {seed}"
+        );
         assert_eq!(Ok(vec![]), aborted.0, "seed {seed}");
         assert_eq!([Ok(vec![1]), Ok(vec![1])], n, "seed {seed}");
     }
@@ -438,28 +445,35 @@ fn random_txn(e: &Elems, rt: &SimRuntime, id: u64) -> iso::Txn {
     for step in 0..steps {
         rt.yield_now();
         let key = (rt.next_u64() % KEYS as u64) as i64;
-        let r = if kind != Kind::ReadWrite || rt.next_u64().is_multiple_of(2) {
-            e.read(&mut tx, key).map(|list| iso::Op::Read { key, list })
+        let (r, on) = if kind != Kind::ReadWrite || rt.next_u64().is_multiple_of(2) {
+            (
+                e.read(&mut tx, key).map(|list| iso::Op::Read { key, list }),
+                elle::READ,
+            )
         } else {
             let elem = (id * 10 + step) as i64;
-            e.append(&mut tx, key, elem)
-                .map(|()| iso::Op::Append { key, elem })
+            (
+                e.append(&mut tx, key, elem)
+                    .map(|()| iso::Op::Append { key, elem }),
+                elle::APPEND,
+            )
         };
         match r {
             Ok(op) => ops.push(op),
             Err(f) => {
                 assert_ne!(Kind::Deferrable, kind, "a deferrable transaction failed");
-                elle::aborted(f);
+                elle::aborted(tx.id(), on)(f);
                 return iso::Txn::new(id, Ended::Aborted, ops);
             }
         }
     }
     rt.yield_now();
+    let txn = tx.id();
     let outcome = match tx.commit(None) {
         Ok(_) => Ended::Committed,
         Err(f) => {
             assert_ne!(Kind::Deferrable, kind, "a deferrable commit failed: {f:?}");
-            elle::aborted(f);
+            elle::aborted(txn, elle::READ)(f);
             Ended::Aborted
         }
     };

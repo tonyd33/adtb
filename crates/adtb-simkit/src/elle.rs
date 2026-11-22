@@ -175,19 +175,37 @@ fn int(v: &Value) -> i64 {
     }
 }
 
-/// Returns `Aborted` for an error that aborts a workload transaction: a serialization failure,
-/// or a violation of `unique (k, pos)` by two appends at one position.
+/// The `on` of a serialization failure that names no constructor relation.
+const UNNAMED: &str = "";
+
+/// The `on` a serialization failure at a read or a commit reports.
+pub const READ: &[&str] = &[UNNAMED];
+
+/// The `on` a serialization failure at an append reports: the constructor relation it writes, or
+/// none when the transaction fails before or after its write.
+pub const APPEND: &[&str] = &["elle::elems.Elem", UNNAMED];
+
+/// The `on` a serialization failure at a write of a cell its setup inserted reports: the
+/// constructor relation it writes, or none when the transaction fails before or after its write.
+pub const CELL_WRITE: &[&str] = &["elle::cells.Even", UNNAMED];
+
+/// Returns `Aborted` for an error that aborts workload transaction `txn`: its serialization
+/// failure on one of `on`, or a violation of `unique (k, pos)` by two appends at one position.
 ///
 /// Panic at any other error.
-pub fn aborted(e: Error) -> Aborted {
-    match &e {
-        Error::Retry {
-            reason: RetryReason::Serialization { .. },
-        } => Aborted,
+pub fn aborted(txn: TxnId, on: &'static [&'static str]) -> impl Fn(Error) -> Aborted {
+    let serialization = move |on: &str| Error::Retry {
+        reason: RetryReason::Serialization {
+            txn,
+            on: on.to_owned(),
+        },
+    };
+    move |e| match &e {
         Error::Rejected {
             reason: RejectReason::Violated { constraint, .. },
         } if constraint == POSITIONS => Aborted,
-        _ => panic!("a workload transaction fails: {e:?}"),
+        _ if on.iter().any(|on| e == serialization(on)) => Aborted,
+        _ => panic!("workload transaction {txn:?} fails otherwise than on one of {on:?}: {e:?}"),
     }
 }
 
@@ -203,15 +221,18 @@ impl<'d> adtb_testkit::isolation::Database for Client<'d> {
     }
 
     fn append(&mut self, txn: &mut Txn<'d>, key: i64, elem: i64) -> Result<(), Aborted> {
-        self.0.append(txn, key, elem).map_err(aborted)
+        let id = txn.id();
+        self.0.append(txn, key, elem).map_err(aborted(id, APPEND))
     }
 
     fn read(&mut self, txn: &mut Txn<'d>, key: i64) -> Result<Vec<i64>, Aborted> {
-        self.0.read(txn, key).map_err(aborted)
+        let id = txn.id();
+        self.0.read(txn, key).map_err(aborted(id, READ))
     }
 
     fn commit(&mut self, txn: Txn<'d>) -> Result<(), Aborted> {
-        txn.commit(None).map(drop).map_err(aborted)
+        let id = txn.id();
+        txn.commit(None).map(drop).map_err(aborted(id, READ))
     }
 
     fn abort(&mut self, txn: Txn<'d>) {

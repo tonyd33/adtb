@@ -23,7 +23,7 @@ in a run
 
 commit a
 
-in b retry Serialization { txn: $B, on: "" }
+in b retry Serialization { txn: $B, on: "app::items.Item" }
   insert items { id: items.key(2), value: 2 }
 
 rollback b

@@ -317,12 +317,17 @@ fn a_serialization_failure_names_the_transaction_by_its_id() {
         a.commit(None).expect("a commits");
         let id = b.id();
         let got = b.query_text(BUMP, &body("b"), &TxnCallOptions::default());
-        match got {
-            Err(Error::Retry {
-                reason: RetryReason::Serialization { txn, .. },
-            }) => assert_eq!(id, txn),
-            other => panic!("not a serialization failure: {other:?}"),
-        }
+        let serialization = Error::Retry {
+            reason: RetryReason::Serialization {
+                txn: id,
+                on: "shop::notes.Note".to_owned(),
+            },
+        };
+        let reason = format!(
+            "transaction {} conflicts with a concurrent transaction on `shop::notes.Note`; retry",
+            id.0
+        );
+        adtb_testkit::refused_as(got.map(drop), &serialization, &reason);
     });
 }
 

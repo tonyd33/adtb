@@ -375,7 +375,7 @@ impl Error {
                 Error::invalid("the generated counter exhausted its integer range")
             }
             write::Error::Internal(b) => Error::internal(Broken::Write(*b)),
-            write::Error::Exec(e) => Error::of_exec(txn, e),
+            write::Error::Exec(e) => Error::of_exec(schema, txn, e),
             write::Error::Blocked { .. } => unreachable!("no caller maps a suspension"),
             write::Error::FileChanged(path) => Error::Retry {
                 reason: RetryReason::FileChanged { path },
@@ -391,8 +391,9 @@ impl Error {
         }
     }
 
-    /// Returns the client error of executor failure `e`, met by transaction `txn`.
-    fn of_exec(txn: TxnId, e: exec::Error) -> Error {
+    /// Returns the client error of executor failure `e`, met by transaction `txn` of a database
+    /// of `schema`.
+    fn of_exec(schema: &Schema, txn: TxnId, e: exec::Error) -> Error {
         match e {
             exec::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
             exec::Error::StatementLimit(x) => Error::rejected(RejectReason::StatementLimit {
@@ -408,10 +409,14 @@ impl Error {
                     Exceeded::Time { after } => Limit::Time { after },
                 },
             }),
-            exec::Error::Serialization(_) => Error::Retry {
+            exec::Error::Serialization(f) => Error::Retry {
                 reason: RetryReason::Serialization {
                     txn,
-                    on: String::new(),
+                    on: f.on().map_or_else(String::new, |(rel, ctor)| {
+                        let r = schema.relation(rel);
+                        let name = &schema.ty(r.elem_def).ctors()[ctor as usize].name;
+                        format!("{}.{name}", qualified(schema, rel))
+                    }),
                 },
             },
             exec::Error::Page(p) => Error::storage(format!("{p:?}")),

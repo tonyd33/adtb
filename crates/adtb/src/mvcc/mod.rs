@@ -12,6 +12,8 @@ mod wait;
 mod watermark;
 mod writers;
 
+use adtb_lang::types::RelId;
+
 use crate::storage::PageError;
 
 #[cfg(test)]
@@ -103,11 +105,31 @@ pub struct SerializationFailure {
     /// The other transactions in the conflict that have xids, in order. A read-only transaction
     /// has none and is not named.
     pub with: Vec<Xid>,
+    on: Option<(RelId, u32)>,
 }
 
 impl SerializationFailure {
     pub fn new(cause: Cause, with: Vec<Xid>) -> SerializationFailure {
-        SerializationFailure { cause, with }
+        SerializationFailure {
+            cause,
+            with,
+            on: None,
+        }
+    }
+
+    /// Returns the relation and constructor position of the caller's read or write on the
+    /// conflicting edge, `None` when not known.
+    pub fn on(&self) -> Option<(RelId, u32)> {
+        self.on
+    }
+
+    /// Returns this failure on constructor `ctor` of `rel`, unless it names one already.
+    #[must_use]
+    pub fn at(self, rel: RelId, ctor: u32) -> SerializationFailure {
+        SerializationFailure {
+            on: self.on.or(Some((rel, ctor))),
+            ..self
+        }
     }
 }
 

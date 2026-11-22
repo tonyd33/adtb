@@ -121,11 +121,12 @@ fn commit(tx: elle::Txn<'_>, id: u64, kind: Kind, b: &Mutex<Book>, ledger: &Ledg
     if wrote {
         ledger.submit(id);
     }
+    let txn = tx.id();
     let outcome = match tx.commit(None) {
         Ok(_) => Ended::Committed,
         Err(f) => {
             assert_ne!(Kind::Deferrable, kind, "a deferrable commit failed: {f:?}");
-            elle::aborted(f);
+            elle::aborted(txn, elle::READ)(f);
             Ended::Aborted
         }
     };
@@ -151,18 +152,24 @@ fn client(e: &Elems, rt: &SimRuntime, b: &Mutex<Book>, ledger: &Ledger) {
         for _ in 0..=(rt.next_u64() % 4) {
             rt.yield_now();
             let key = (rt.next_u64() % KEYS as u64) as i64;
-            let op = if kind != Kind::ReadWrite || rt.next_u64().is_multiple_of(2) {
-                e.read(&mut tx, key).map(|list| Op::Read { key, list })
+            let (op, on) = if kind != Kind::ReadWrite || rt.next_u64().is_multiple_of(2) {
+                (
+                    e.read(&mut tx, key).map(|list| Op::Read { key, list }),
+                    elle::READ,
+                )
             } else {
                 let elem = book(b).elem(id);
-                e.append(&mut tx, key, elem)
-                    .map(|()| Op::Append { key, elem })
+                (
+                    e.append(&mut tx, key, elem)
+                        .map(|()| Op::Append { key, elem }),
+                    elle::APPEND,
+                )
             };
             match op {
                 Ok(op) => book(b).txn(id).ops.push(op),
                 Err(f) => {
                     assert_ne!(Kind::Deferrable, kind, "a deferrable transaction failed");
-                    elle::aborted(f);
+                    elle::aborted(tx.id(), on)(f);
                     failed = true;
                     break;
                 }
