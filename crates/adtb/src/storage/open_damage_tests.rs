@@ -1081,19 +1081,22 @@ fn past_a_segment() -> Files {
 /// Returns `files` after a process opens them, inserts users, takes a checkpoint and crashes.
 fn checkpointed_then_crashed(files: Files) -> Files {
     let mut sim = Sim::with_files(7, Config::default(), files);
-    adtb_testkit::common::run_then_crash(&mut sim, |rt, _| {
-        let none = OpenOptions {
-            create: None,
-            ..open::options(2)
-        };
-        let db = Database::open_in(rt.clone(), FILE, &app(), &none).unwrap();
-        for id in 100..108 {
-            let text = format!(r#"insert users {{ id: users.key({id}), name: "user {id}" }}"#);
-            api::results(&db, &text);
-        }
-        db.testing().checkpoint();
-        std::mem::forget(db);
-    });
+    adtb_testkit::common::run_then_crash(
+        &mut sim,
+        Box::new(|rt, _| {
+            let none = OpenOptions {
+                create: None,
+                ..open::options(2)
+            };
+            let db = Database::open_in(rt.clone(), FILE, &app(), &none).unwrap();
+            for id in 100..108 {
+                let text = format!(r#"insert users {{ id: users.key({id}), name: "user {id}" }}"#);
+                api::results(&db, &text);
+            }
+            db.testing().checkpoint();
+            std::mem::forget(db);
+        }),
+    );
     sim.files()
 }
 
