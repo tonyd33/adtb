@@ -33,17 +33,6 @@ impl<'a> Fills<'a> {
 /// each object the run removed, by its key before the run, and its id.
 pub(in crate::evolve) type Undoing = (Vec<Inverse>, Vec<(ObjectKey, u64)>);
 
-/// How an inverse applies an operator of its text.
-#[derive(Clone, Copy)]
-pub(super) enum How<'a> {
-    /// As the operator written.
-    Written,
-    /// A merge whose arms' fixed values tell its constructors apart.
-    Derived,
-    /// A move to the header of the field of every constructor of the slice.
-    UpFrom(&'a [String]),
-}
-
 /// One step of the inverse of an operator.
 #[derive(Clone, Debug)]
 pub(in crate::evolve) enum Inverse {
@@ -398,7 +387,6 @@ pub(in crate::evolve) struct Replayed {
 
 impl Replayed {
     /// Returns the replay that passes through `states`, with `spelling` the names of its text.
-    #[cfg(feature = "compare-migration-model")]
     pub(in crate::evolve) fn new(
         states: Vec<Source>,
         spelling: Option<Result<Names, Vec<Diag>>>,
@@ -418,66 +406,6 @@ pub(in crate::evolve) struct Inverted {
 }
 
 impl Inverted {
-    /// Returns the first part in which `other` differs from these inverses, each side shown.
-    #[cfg(feature = "compare-migration-model")]
-    pub(in crate::evolve) fn differs_from(
-        &self,
-        other: &Inverted,
-    ) -> Option<(String, String, String)> {
-        if self.late != other.late {
-            let only = |a: &Late, b: &Late| {
-                format!(
-                    "{:?}",
-                    a.iter()
-                        .filter(|(k, _)| !b.contains_key(k))
-                        .collect::<Vec<_>>()
-                )
-            };
-            return Some((
-                "late".into(),
-                only(&self.late, &other.late),
-                only(&other.late, &self.late),
-            ));
-        }
-        if self.steps.len() != other.steps.len() {
-            return Some((
-                "steps".into(),
-                self.steps.len().to_string(),
-                other.steps.len().to_string(),
-            ));
-        }
-        let shown = |(inverses, removed): &Undoing| {
-            let inverses: Vec<String> = inverses
-                .iter()
-                .map(|i| match i {
-                    Inverse::Replay {
-                        logged,
-                        text,
-                        again,
-                        of,
-                    } => format!(
-                        "Replay {{ logged: {}, text: {text:?}, again: {again:?}, of: {of:?} }}",
-                        logged.number
-                    ),
-                    i => format!("{i:?}"),
-                })
-                .collect();
-            format!("{inverses:?} {removed:?}")
-        };
-        for (k, (a, b)) in self.steps.iter().zip(&other.steps).enumerate() {
-            let (a, b) = (shown(a), shown(b));
-            if a != b {
-                return Some((format!("step {k}"), a, b));
-            }
-        }
-        let (a, b) = (format!("{:?}", self.linked), format!("{:?}", other.linked));
-        if a != b {
-            return Some(("linked".into(), a, b));
-        }
-        let (a, b) = (format!("{:?}", self.filled), format!("{:?}", other.filled));
-        (a != b).then(|| ("filled".into(), a, b))
-    }
-
     /// Returns the steps of each run, the objects of the source after the reverted migration,
     /// the relation variables the steps restore, and the key of the field each fill was taken
     /// for.
@@ -489,29 +417,10 @@ impl Inverted {
 }
 
 impl Cx<'_> {
-    pub(super) fn revert(&mut self, migration: &str, fills: &[(ast::FieldPath, Fill)]) -> R<()> {
-        let (steps, late, linked, filled) = self.inverted(migration, fills)?.into_parts();
-        self.src.filled = filled;
-        let ahead = self.src.ahead.clone();
-        self.src.ahead.extend(linked);
-        let undone = self.undo_all(steps, &late);
-        self.src.ahead = ahead;
-        undone
-    }
-
-    /// Returns the inverse of migration `migration` of the log, with the revert's fills `fills`.
+    /// Returns the inverse of migration `migration` of the log, with the revert's fills `fills`,
+    /// `replay` giving the sources the migration's operators pass through.
     ///
     /// Fail as a revert is refused before its inverse applies.
-    pub(in crate::evolve) fn inverted(
-        &self,
-        migration: &str,
-        fills: &[(ast::FieldPath, Fill)],
-    ) -> R<Inverted> {
-        self.inverted_with(migration, fills, |logged| self.replayed(logged))
-    }
-
-    /// Returns the inverse of migration `migration` of the log as [`Cx::inverted`] does, `replay`
-    /// giving the sources the migration's operators pass through.
     pub(in crate::evolve) fn inverted_with(
         &self,
         migration: &str,
@@ -541,7 +450,7 @@ impl Cx<'_> {
                 })
                 .collect()
         };
-        let dependants = if self.src.replaying.is_some() {
+        let dependants = if self.replaying {
             Vec::new()
         } else {
             self.src.dependants(pos).map_err(unresolved)?
@@ -576,7 +485,7 @@ impl Cx<'_> {
             steps.push((step, removed(&start, state)));
             start = state.clone();
         }
-        if self.src.accepting && self.src.replaying.is_none() {
+        if self.accepting && !self.replaying {
             self.untaken(migration, &fills)?;
         }
         Ok(Inverted {
@@ -585,69 +494,6 @@ impl Cx<'_> {
             late: late(self.src.after(pos)),
             filled: fills.taken.into_inner(),
         })
-    }
-
-    /// Returns the sources migration `logged` passes through as the operator layer applies it
-    /// again; its spelling is left to [`Logged::spelling`].
-    fn replayed(&self, logged: &Logged) -> R<Replayed> {
-        let mut state = (*logged.before).clone();
-        state.version = logged.number;
-        state.expecting(&logged.module, &logged.operators);
-        let mut states = vec![state.clone()];
-        for op in Listed::all(&logged.operators) {
-            if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
-                return Err(ds
-                    .into_iter()
-                    .map(|d| {
-                        Diag::new(self.span, format!("the log does not replay: {}", d.message))
-                    })
-                    .collect());
-            }
-            states.push(state.clone());
-        }
-        Ok(Replayed {
-            states,
-            spelling: None,
-        })
-    }
-
-    /// Apply the steps of the inverse of each run of operators of a migration, last run first.
-    fn undo_all(&mut self, steps: Vec<Undoing>, late: &Late) -> R<()> {
-        let mut again = self.src.replaying.clone().unwrap_or_default();
-        let held = holding(&self.src.ids);
-        for (s, (step, gone)) in steps.into_iter().enumerate().rev() {
-            for (j, inv) in step.into_iter().enumerate() {
-                let recorded = matches!(
-                    inv,
-                    Inverse::Restructure { .. }
-                        | Inverse::Apply { .. }
-                        | Inverse::Rename { .. }
-                        | Inverse::DropSet { .. }
-                        | Inverse::AddSet { .. }
-                        | Inverse::Replay { .. }
-                );
-                let restored = match &inv {
-                    Inverse::RestoreRelation { module, name, .. } => {
-                        Some((module.clone(), name.clone()))
-                    }
-                    _ => None,
-                };
-                self.undo(inv.mapped(&again), late)?;
-                self.src.settle_ids();
-                if let Some((module, name)) = restored {
-                    self.src.restored(Adder::Inverse(s, j), &module, &name);
-                }
-                recreate(&mut again, &gone, &held, &self.src.ids);
-                if let (Some(steps), false) = (self.steps, recorded) {
-                    steps.borrow_mut().push(Step {
-                        after: self.src.clone(),
-                        maps: Vec::new(),
-                        applied: None,
-                    });
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Refuse the first fill of a revert of migration `migration` that no inverse took.
@@ -780,358 +626,6 @@ impl Cx<'_> {
             order,
             of,
         })
-    }
-
-    /// Set type `ty`, a sum of one constructor named after it, to record text `text`, its header
-    /// fields keeping their ids as fields of that constructor.
-    pub(super) fn unsum(&mut self, ty: &QName, text: Written) -> R<()> {
-        let (i, _) = self.type_decl(ty)?;
-        self.src.rewrite(i, text);
-        let (m, t) = (self.module_of(ty), &ty.name.text);
-        if let (Some(header), Some(ctor)) = (
-            self.src.field_owner(&m, t, None),
-            self.src.field_owner(&m, t, Some(t)),
-        ) {
-            let fields: Vec<ObjectKey> = self
-                .src
-                .ids
-                .keys()
-                .filter(|k| k.kind() == KeyKind::Field && *k.owner() == header)
-                .cloned()
-                .collect();
-            for f in fields {
-                let to = f.owned_by(ctor.clone());
-                self.src.rekey(&f, to);
-            }
-        }
-        Ok(())
-    }
-
-    /// Apply operators given as source text in the migration's module as `how` says, then set
-    /// the declaration of each of `checks` to its text within the last operator's step.
-    fn undo_ops(&mut self, text: &Written, how: How, checks: &[(DeclOf, Written)]) -> R<()> {
-        let span = self.span;
-        let wrap = |ds: Vec<Diag>, what: &str| -> Vec<Diag> {
-            ds.into_iter()
-                .map(|d| {
-                    Diag::new(
-                        span,
-                        format!("the inverse `{what}` does not apply: {}", d.message),
-                    )
-                })
-                .collect()
-        };
-        let head = format!("module {}\n", self.module);
-        let full = format!("{head}{}", text.text);
-        let m = crate::parse::parse_migration(&full, Options::default())
-            .ok()
-            .map_err(|ds| wrap(ds, &text.text))?;
-        let noted = RefCell::new(Names::default());
-        for (k, op) in m.operators.iter().enumerate() {
-            let before = self.src.clone();
-            let mut sub = Cx {
-                src: &mut *self.src,
-                module: self.module.clone(),
-                text: &full,
-                span: op.span,
-                noted: self.noted.map(|_| &noted),
-                copying: false,
-                steps: None,
-            };
-            match (&op.kind, how) {
-                (
-                    OperatorKind::MergeConstructor {
-                        ty,
-                        sel,
-                        into,
-                        arms,
-                        clauses,
-                    },
-                    How::Derived,
-                ) => sub.merge(ty, sel, into, arms.as_deref(), clauses, true),
-                (OperatorKind::MoveField { path, fill, .. }, How::UpFrom(from)) => {
-                    sub.move_up(path, from, fill.as_ref())
-                }
-                (kind, _) => sub.operator(kind),
-            }
-            .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
-            self.src.carry = None;
-            self.src.rename_ids(&before, &self.module, &op.kind);
-            if k + 1 == m.operators.len() {
-                for (decl, check) in checks {
-                    if let Some((i, ..)) = decl.find(self.src) {
-                        self.src.rewrite(i, check.clone());
-                    }
-                }
-            }
-            self.src.settle_ids();
-            if let Some(steps) = self.steps {
-                let maps = before
-                    .row_maps(&self.module, op, &full, self.src, how)
-                    .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
-                steps.borrow_mut().push(Step {
-                    after: self.src.clone(),
-                    maps,
-                    applied: Some(Applied {
-                        module: self.module.clone(),
-                        text: full.clone(),
-                        op: op.clone(),
-                    }),
-                });
-            }
-        }
-        if let Some(out) = self.noted {
-            let noted = noted.into_inner();
-            for (o, from) in &text.copies {
-                let at = head.len() + o;
-                out.borrow_mut()
-                    .copy(&noted, at..at + from.len(), from.start);
-            }
-        }
-        Ok(())
-    }
-
-    /// Apply one step of an inverse to the source, `late` holding the objects of the source after
-    /// the reverted migration.
-    pub(super) fn undo(&mut self, inv: Inverse, late: &Late) -> R<()> {
-        match inv {
-            Inverse::Restructure {
-                drops,
-                op,
-                adds,
-                how,
-                checks,
-                of,
-            } => self.restructure(drops, [op, adds], how, checks, &of, late),
-            Inverse::Apply { text, of } => {
-                let text = self.spell(&text, &of, late)?;
-                self.undo_ops(&text, How::Written, &[])
-            }
-            Inverse::Rename { object, to, of } => {
-                let schema = self.schema()?;
-                let Some((module, name)) = object.spelled(&schema) else {
-                    return self.err(dropped(&of, object.word()));
-                };
-                self.undo_in(module, format!("rename {} {name} to {to}", object.word()))
-            }
-            Inverse::DropSet { set, of } => {
-                let schema = self.schema()?;
-                let Some((module, set)) = NamedId::Set(set).spelled(&schema) else {
-                    return self.err(dropped(&of, "set"));
-                };
-                self.undo_in(module, format!("drop set {set}"))
-            }
-            Inverse::AddSet {
-                relation,
-                name,
-                members,
-                of,
-            } => {
-                let schema = self.schema()?;
-                let Some(r) = schema.ids().relation_of(relation) else {
-                    return self.err(dropped(&of, "relation"));
-                };
-                let rd = schema.relation(r);
-                let mut ctors = Vec::new();
-                for c in members {
-                    let Some(c) = schema.ids().ctor_of(c) else {
-                        return self.err(dropped(&of, "constructor"));
-                    };
-                    ctors.push(schema.ty(c.def()).ctor_def(c).name.clone());
-                }
-                let module = schema.module(rd.module).name.clone();
-                let text = format!("add set {name} of {} = {}", rd.name, ctors.join(" | "));
-                self.undo_in(module, text)
-            }
-            Inverse::Unadd { ctor, record, of } => self.unadd(ctor, record, &of),
-            Inverse::Readd {
-                ty,
-                ctor,
-                name,
-                text,
-                after,
-                joins,
-                arms,
-                of,
-            } => self.readd((ty, ctor, &name), &text, (after, joins, arms), &of, late),
-            Inverse::States { states, of } => {
-                let mut held = Vec::new();
-                for (s, state) in states {
-                    match s.held(self.src) {
-                        Ok(s) => held.push((s, state)),
-                        Err(word) => return self.err(dropped(&of, word)),
-                    }
-                }
-                for (s, state) in held {
-                    self.src.set_state(s, state);
-                }
-                Ok(())
-            }
-            Inverse::Grants { back } => {
-                grant::hold(&mut self.src.grants, back);
-                Ok(())
-            }
-            Inverse::Restore {
-                module,
-                kind,
-                name,
-                text,
-                of,
-            } => self.restore_spelled(&module, kind, &name, &text, &of, late),
-            Inverse::RestoreRelation {
-                module,
-                name,
-                text,
-                of,
-                ..
-            } => self.restore_spelled(&module, "relation", &name, &text, &of, late),
-            Inverse::Redeclare { decl, text, of } => {
-                let Some((i, ..)) = decl.find(self.src) else {
-                    return self.err(dropped(&of, decl.word()));
-                };
-                match text {
-                    Some(text) => {
-                        let text = self.spell(&text, &of, late)?;
-                        self.src.rewrite(i, text);
-                    }
-                    None => self.src.remove_decl(i),
-                }
-                Ok(())
-            }
-            Inverse::Module {
-                name,
-                present,
-                installed,
-                decls,
-                of,
-            } => {
-                let decls = decls
-                    .iter()
-                    .map(|d| self.spell(d, &of, late))
-                    .collect::<R<Vec<Written>>>()?;
-                self.restore_module(name, present, installed, decls)
-            }
-            Inverse::Reorder {
-                ty,
-                ctor,
-                order,
-                of,
-            } => self.reorder_by_id(ty, ctor, order, &of, late),
-            Inverse::KeyClause { relation, text, of } => {
-                let Some(q) = NamedId::Relation(relation).qualified(self.src) else {
-                    return self.err(dropped(&of, "relation"));
-                };
-                let text = self.spell(&text, &of, late)?;
-                let (i, rd, ranges) = self.clauses(&q)?;
-                if let Some(k) = rd
-                    .clauses
-                    .iter()
-                    .position(|c| matches!(c, RelationClause::Key(..)))
-                {
-                    self.src.edit(i, vec![(ranges[k].clone(), text)]);
-                }
-                Ok(())
-            }
-            Inverse::Replay {
-                logged,
-                text,
-                again,
-                of,
-            } => self.replay_spelled(*logged, &text, again, &of, late),
-        }
-    }
-
-    /// Apply operator text `text` as an inverse in module `module`.
-    fn undo_in(&mut self, module: String, text: String) -> R<()> {
-        let reverting = std::mem::replace(&mut self.module, module);
-        let done = self.undo_ops(&text.into(), How::Written, &[]);
-        self.module = reverting;
-        done
-    }
-
-    pub(super) fn replay(&mut self, l: &Logged) -> R<()> {
-        for op in Listed::all(&l.operators) {
-            match self.steps {
-                Some(steps) => {
-                    let mut more = self.src.steps(&l.module, op, &l.text)?;
-                    steps.borrow_mut().append(&mut more);
-                }
-                None => self.src.apply(&l.module, op, &l.text)?,
-            }
-        }
-        Ok(())
-    }
-
-    fn restore_module(
-        &mut self,
-        name: String,
-        present: bool,
-        installed: bool,
-        decls: Vec<Written>,
-    ) -> R<()> {
-        if present {
-            self.src.modules.insert(name.clone());
-            for d in decls {
-                self.src.push(&name, d);
-            }
-            if installed {
-                self.src.installed.insert(name);
-            }
-        } else if installed {
-            self.uninstall(&ast::Ident {
-                text: name,
-                span: self.span,
-            })?;
-        } else {
-            if self.src.decls.iter().any(|d| d.module == name) {
-                return self.err(format!(
-                    "`drop module {name}` is refused while the module holds a declaration"
-                ));
-            }
-            self.src.modules.remove(&name);
-            self.src.installed.remove(&name);
-        }
-        Ok(())
-    }
-
-    pub(super) fn reorder_fields(
-        &mut self,
-        ty: &QName,
-        ctor: Option<&str>,
-        order: &[String],
-    ) -> R<()> {
-        let (i, t) = self.type_decl(ty)?;
-        let h = header(&self.src.decls[i].module).len();
-        let text = self.src.decls[i].text.clone();
-        let Some(braces) = field_braces(&text, h, &t, ctor) else {
-            return Ok(());
-        };
-        let part = match (&t.body, &ctor) {
-            (ast::TypeBody::Record(_), _) => Part::Ctor(t.name.text.clone()),
-            (_, Some(c)) => Part::Ctor(c.to_string()),
-            (_, None) => Part::Header,
-        };
-        let mut items: Vec<(String, String)> = Vec::new();
-        for (c, f) in decl_fields(&t) {
-            let here = match (&part, c) {
-                (Part::Header, None) => true,
-                (Part::Ctor(p), Some(c)) => p == c,
-                _ => false,
-            };
-            if here {
-                let start = f.name.span.start as usize - h;
-                let end = item_end(&text, start);
-                items.push((f.name.text.clone(), text[start..end].trim_end().to_string()));
-            }
-        }
-        if items.is_empty() {
-            return Ok(());
-        }
-        items.sort_by_key(|(n, _)| order.iter().position(|o| o == n).unwrap_or(usize::MAX));
-        let inner: Vec<String> = items.into_iter().map(|(_, t)| t).collect();
-        self.src
-            .edit(i, vec![(braces, format!("{{ {} }}", inner.join(", ")))]);
-        Ok(())
     }
 }
 

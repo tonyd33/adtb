@@ -466,14 +466,13 @@ pub enum Code {
 }
 
 impl Source {
-    /// Returns the operators of migration `number` of the log in ordinal order, each resolved
-    /// against the sources just before and just after it, or, while those do not build, the
-    /// nearest before and after it that do.
+    /// Returns the operators of migration `number` of the log in ordinal order, each resolved as
+    /// the migration applies again to the source before it.
     ///
     /// Fail with the operators whose data the source lacks, at their spans, or with the operands
     /// whose names do not resolve, or when the log holds no migration `number`.
     pub fn resolved(&self, number: u64) -> Result<Vec<ResolvedOp>, Vec<Diag>> {
-        self.resolving(number, Logged::replayed).map(|(ops, _)| ops)
+        self.resolving(number).map(|(ops, _)| ops)
     }
 
     /// Returns every object the operators of migration `number` name: as an operand, in a clause,
@@ -482,7 +481,7 @@ impl Source {
     ///
     /// Fail as [`Source::resolved`] does.
     pub(super) fn named_by(&self, number: u64) -> Result<BTreeSet<Reached>, Vec<Diag>> {
-        let (ops, names) = self.resolving(number, Logged::replayed)?;
+        let (ops, names) = self.resolving(number)?;
         let mut out: BTreeSet<Reached> = ops
             .iter()
             .flat_map(ResolvedOp::operands)
@@ -517,60 +516,16 @@ impl Source {
         self.at(migration.parse().ok()?).ok()
     }
 
-    /// Resolve migration `number` as [`Source::resolved`] does, `replayed` giving the names of its
-    /// text and the source before each operator.
-    pub(super) fn resolving(
-        &self,
-        number: u64,
-        replayed: impl FnOnce(&Logged) -> Result<(Names, Vec<Source>), Vec<Diag>>,
-    ) -> Result<(Vec<ResolvedOp>, Names), Vec<Diag>> {
-        let i = self.at(number)?;
-        let logged = &self.log[i];
-        let after = self.log.get(i + 1).map_or(self, |l| &*l.before);
-        let unavailable: Vec<Diag> = logged
-            .operators
-            .iter()
-            .filter_map(|op| match &op.kind {
-                OperatorKind::AdoptTzdb { from, .. } if !self.packages.contains_key(from) => {
-                    Some(Diag::new(
-                        op.span,
-                        format!("the release data `{from}` is not available"),
-                    ))
-                }
-                _ => None,
-            })
-            .collect();
+    /// Resolve migration `number` as [`Source::resolved`] does. Returns its operators resolved and
+    /// the names of its text.
+    fn resolving(&self, number: u64) -> Result<(Vec<ResolvedOp>, Names), Vec<Diag>> {
+        let logged = &self.log[self.at(number)?];
+        let unavailable = self.unavailable(&logged.operators);
         if !unavailable.is_empty() {
             return Err(unavailable);
         }
-        let (names, sources) = replayed(logged)?;
-        let unbuilt = |ds: Vec<FileDiag>| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>();
-        let mut schemas = vec![Some(logged.before.schema().map_err(unbuilt)?)];
-        schemas.extend(sources.iter().skip(1).map(|s| s.schema().ok()));
-        schemas.push(Some(after.schema().map_err(unbuilt)?));
-        let mut ops = Vec::new();
-        let mut start = 0;
-        let unnamed = RefCell::default();
-        for end in 1..schemas.len() {
-            let (Some(before), Some(schema)) = (&schemas[start], &schemas[end]) else {
-                continue;
-            };
-            let mut r = Resolver {
-                logged,
-                schema,
-                before,
-                sources: (&sources[start], after),
-                names: Some(&names),
-                unnamed: &unnamed,
-                indexes: BTreeMap::new(),
-            };
-            for k in start..end {
-                r.sources = (&sources[k], sources.get(k + 1).unwrap_or(after));
-                ops.push(r.operator(&logged.operators[k])?);
-            }
-            start = end;
-        }
-        Ok((ops, names))
+        let (_, names, got) = model::replay(logged)?;
+        Ok((got.resolved(), names?))
     }
 }
 
@@ -597,8 +552,6 @@ struct Resolver<'a> {
     schema: &'a Schema,
     /// The schema before the operators being resolved.
     before: &'a Schema,
-    /// The sources just before and just after the operator being resolved.
-    sources: (&'a Source, &'a Source),
     /// `None` when resolving by id only.
     names: Option<&'a Names>,
     /// The first name a term of the operator being resolved writes that `names` lacks.
@@ -627,7 +580,6 @@ impl Applied {
             logged: &logged,
             schema: &after.schema().map_err(unbuilt)?,
             before: &before.schema().map_err(unbuilt)?,
-            sources: (before, after),
             names: None,
             unnamed: &RefCell::default(),
             indexes: BTreeMap::new(),
@@ -959,20 +911,7 @@ impl Resolver<'_> {
             OperatorKind::DropCheck(c) => Resolved::DropCheck {
                 constraint: self.constraint_in(before, c)?,
             },
-            OperatorKind::Revert { migration, fills } => {
-                let (src_before, src_after) = self.sources;
-                for ((_, f), key) in fills.iter().zip(&src_after.filled) {
-                    let Some(key) = key else { continue };
-                    let field = src_after
-                        .ids
-                        .get(key)
-                        .or_else(|| src_before.ids.get(key))
-                        .copied()?;
-                    clauses.push(Clause::Fill {
-                        field,
-                        fill: self.term(fill_span(f)?),
-                    });
-                }
+            OperatorKind::Revert { migration, .. } => {
                 let reverted = self.logged.before.logged_at(migration)?;
                 Resolved::Revert {
                     migration: self.logged.before.log[reverted].number,

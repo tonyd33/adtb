@@ -1,5 +1,5 @@
 use super::field::{Applied, Maps};
-use super::op::{Fail, Refused, Res, broken, refuse, refuse_at, unmodelled};
+use super::op::{Fail, Refused, Res, broken, refuse, refuse_at};
 use super::run::Run;
 use super::*;
 use crate::ast::{self, Fill, OperatorKind};
@@ -11,7 +11,7 @@ use crate::evolve::revert::{
 use crate::evolve::{Clause, Cx, Logged, Resolved, StateOf, Written};
 use crate::ids::KeyKind;
 use crate::parse::{Options, parse_migration};
-use crate::span::{Diag, Span};
+use crate::span::{Diag, DiagKind, Span};
 
 /// How a step of an inverse applies an operator of its text.
 #[derive(Clone, Copy)]
@@ -41,19 +41,15 @@ pub(super) struct Stepped {
 }
 
 impl Stepped {
-    pub(super) fn after(&self) -> &Model {
-        &self.after
-    }
-
-    pub(super) fn maps(&self) -> &[crate::evolve::RowMap] {
-        &self.maps
-    }
-
-    /// Returns the module and the text of the operator the step applies, when it applies one.
-    pub(super) fn applied(&self) -> Option<(&str, &str)> {
-        self.applied
-            .as_ref()
-            .map(|(module, text, op)| (module.as_str(), &text[op.span.range()]))
+    /// Returns the step as a source step, `after` in place of its own model when given.
+    pub(super) fn into_step(self, after: Option<&Model>) -> crate::evolve::Step {
+        crate::evolve::Step {
+            after: after.unwrap_or(&self.after).replay_source(),
+            maps: self.maps,
+            applied: self
+                .applied
+                .map(|(module, text, op)| crate::evolve::Applied { module, text, op }),
+        }
     }
 }
 
@@ -107,50 +103,80 @@ impl Undone {
     }
 }
 
-/// Returns the sources migration `logged` passes through as the model applies its operators
-/// again, and the names of its text, each operand naming an object tied to its id; a refusal of
-/// one of them is at `span`.
-fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
-    let model = of(&logged.before).map_err(Fail::Broken)?;
-    let m = MigrationFile {
+/// A migration of the log applied again by the model: the source before its first operator and
+/// after each; the names of its text, or the copies a later operator rewrote before they were
+/// named; and what the model gave.
+pub(in crate::evolve) type Replay = (Vec<Source>, Result<Names, Vec<Diag>>, Migrated);
+
+/// Returns the migration file of `logged`.
+pub(in crate::evolve) fn logged_file(logged: &Logged) -> MigrationFile {
+    MigrationFile {
         module: ast::Ident {
             text: logged.module.clone(),
             span: Span::default(),
         },
         operators: logged.operators.clone(),
-    };
-    let got = model
-        .migrate_keeping(&m, &logged.text, &[], false, true)
-        .map_err(Fail::Broken)?;
-    if let Some(kind) = got.stopped() {
-        return unmodelled(kind.to_string());
     }
-    if let Some(Err(why)) = got.ops().iter().find(|o| o.is_err()) {
-        return refuse_at(span, format!("the log does not replay: {}", why.why()));
+}
+
+/// Apply migration `logged` again to the source before it.
+///
+/// Fail with the refusals of its operators that do not apply.
+///
+/// Fail with an internal diagnostic when the source before it does not lift or the model fails
+/// on it.
+pub(in crate::evolve) fn replay(logged: &Logged) -> Result<Replay, Vec<Diag>> {
+    let m = logged_file(logged);
+    let got = migrated(&logged.before, &m, &logged.text, &[], false, true).map_err(|d| vec![d])?;
+    let refused = got.refusals(&m);
+    if !refused.is_empty() || got.ops().iter().any(Result::is_err) {
+        return Err(refused);
     }
-    let mut first = model;
+    let mut first =
+        of(&logged.before).map_err(|e| vec![fault(format!("the source does not lift: {e}"))])?;
     first.version += 1;
     first.expecting(&m);
     let states: Vec<Source> = std::iter::once(first.replay_source())
         .chain(got.afters().iter().map(Model::replay_source))
         .collect();
-    let spelling = match got.names() {
-        Some(Ok(names)) => {
-            let mut names = names.clone();
-            for (k, op) in logged.operators.iter().enumerate() {
-                crate::evolve::operands::tie_operands(
-                    &states[k],
-                    &states[k + 1],
-                    &logged.module,
-                    op,
-                    &mut names,
-                );
-            }
-            Ok(names)
-        }
-        Some(Err(ds)) => Err(ds.clone()),
-        None => Err(vec![Diag::new(span, "the logged migration does not check")]),
+    let names = match got.names() {
+        Some(names) => names.clone(),
+        None => Err(vec![Diag::new(
+            Span::default(),
+            "the logged migration does not check",
+        )]),
     };
+    Ok((states, names, got))
+}
+
+/// Returns the sources migration `logged` passes through as the model applies its operators
+/// again, and the names of its text, each operand naming an object tied to its id; a refusal of
+/// one of them is at `span`.
+fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
+    let (states, names, _) = match replay(logged) {
+        Ok(r) => r,
+        Err(ds) => {
+            if let Some(d) = ds.iter().find(|d| d.kind == DiagKind::Internal) {
+                return Err(Fail::Broken(d.message.clone()));
+            }
+            let why = ds
+                .first()
+                .map_or("an operator does not apply", |d| d.message.as_str());
+            return refuse_at(span, format!("the log does not replay: {why}"));
+        }
+    };
+    let spelling = names.map(|mut names| {
+        for (k, op) in logged.operators.iter().enumerate() {
+            crate::evolve::operands::tie_operands(
+                &states[k],
+                &states[k + 1],
+                &logged.module,
+                op,
+                &mut names,
+            );
+        }
+        names
+    });
     Ok(Replayed::new(states, Some(spelling)))
 }
 
@@ -172,8 +198,6 @@ impl Model {
         fills: &[(ast::FieldPath, Fill)],
     ) -> Res<Applied> {
         let mut src = self.source();
-        src.accepting = run.is_accepting();
-        src.replaying = self.replaying.clone();
         let number = src.logged_at(migration).map(|pos| src.log[pos].number);
         let inverted = {
             let cx = Cx {
@@ -181,29 +205,21 @@ impl Model {
                 module: run.module().to_string(),
                 text: run.text(),
                 span: run.span(),
-                noted: None,
                 copying: true,
-                steps: None,
+                accepting: run.is_accepting(),
+                replaying: self.replaying.is_some(),
             };
             let failed = std::cell::RefCell::new(None);
-            let mine = cx.inverted_with(migration, fills, |logged| {
+            let inverted = cx.inverted_with(migration, fills, |logged| {
                 replayed(logged, run.span()).map_err(|e| {
                     failed.replace(Some(e));
                     Vec::new()
                 })
             });
-            let failed = failed.into_inner();
-            if enabled() && !matches!(failed, Some(Fail::Unmodelled(_))) {
-                let layer = cx.inverted(migration, fills);
-                match &failed {
-                    Some(e) => compare::replay_failed(run.text(), &layer, e),
-                    None => compare::same_inverses(run.text(), &layer, &mine),
-                }
-            }
-            if let Some(e) = failed {
+            if let Some(e) = failed.into_inner() {
                 return Err(e);
             }
-            mine
+            inverted
         };
         let (steps, gone, linked, filled) = match inverted {
             Ok(i) => i.into_parts(),
@@ -242,7 +258,7 @@ impl Model {
                 continue;
             };
             let Some(fill) = undone.fills.get(&field) else {
-                return unmodelled("a revert fill no operator of its inverses resolves");
+                return broken("a revert fill no operator of its inverses resolves");
             };
             clauses.push(Clause::Fill {
                 field,
@@ -726,7 +742,7 @@ impl Model {
         let body = match item {
             Item::Fn(f) | Item::Aggregate(f) => self.functions.get_mut(&f),
             Item::Constraint(c) | Item::Check(c) => self.denials.get_mut(&c),
-            _ => return unmodelled("a declaration other than a body set back by a revert"),
+            _ => return broken("a declaration other than a body set back by a revert"),
         };
         let Some(body) = body else {
             return broken("a body the model does not hold");

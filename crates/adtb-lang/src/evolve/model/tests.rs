@@ -31,20 +31,9 @@ fn migrated(src: &Source, text: &str) -> Vec<(String, String)> {
     let m = parse_migration(text, Options::default())
         .ok()
         .expect("the migration parses");
-    let got = of(src)
-        .expect("the source lifts")
-        .migrate(&m, text)
-        .expect("the model applies the migration");
-    assert_eq!(got.stopped(), None, "the model applies every operator");
-    assert!(
-        got.ops().iter().all(Result::is_ok),
-        "every operator applies: {:?}",
-        got.ops()
-    );
-    assert!(got.checks(), "the migrated declarations check");
-    got.model()
-        .source_decls()
-        .expect("the declarations print")
+    src.migrate(&m, text)
+        .unwrap_or_else(|r| panic!("the migration applies: {r:?}"))
+        .decls
         .into_iter()
         .map(|d| (d.module, flat(&d.text)))
         .collect()
@@ -223,7 +212,6 @@ fn refusals(src: &Source, text: &str) -> Vec<Option<(String, Option<String>)>> {
         .expect("the source lifts")
         .migrate(&m, text)
         .expect("the model applies the migration");
-    assert_eq!(got.stopped(), None, "the model applies every operator");
     got.ops()
         .iter()
         .map(|op| {
@@ -267,26 +255,19 @@ add unique (u) in ts.S"
 type Recorded = Result<Vec<(String, String)>, Vec<Diag>>;
 
 /// Returns the declarations recording migration `text` on `src` leaves, as their modules and
-/// texts with whitespace flattened, or the operators' refusals; with the comparisons of the
-/// migration model the recording made.
-fn recorded(src: &Source, text: &str) -> (Recorded, BTreeMap<String, usize>) {
+/// texts with whitespace flattened, or the operators' refusals.
+fn recorded(src: &Source, text: &str) -> Recorded {
     let m = parse_migration(text, Options::default())
         .ok()
         .expect("the migration parses");
-    forced(|| {
-        src.record(&m, text, false)
-            .map(|(s, _, _)| {
-                s.decls
-                    .into_iter()
-                    .map(|d| (d.module, flat(&d.text)))
-                    .collect()
-            })
-            .map_err(|r| r.operators)
-    })
-}
-
-fn tally(hook: &str) -> BTreeMap<String, usize> {
-    [(format!("{hook} agreed"), 1)].into()
+    src.record(&m, text, false)
+        .map(|(s, _, _)| {
+            s.decls
+                .into_iter()
+                .map(|d| (d.module, flat(&d.text)))
+                .collect()
+        })
+        .map_err(|r| r.operators)
 }
 
 fn arms_source() -> Source {
@@ -349,10 +330,7 @@ fn an_arm_naming_a_function_a_later_operator_defines_is_refused() {
         let at = Span::new(head.len(), head.len() + op.len());
         assert_eq!(
             recorded(&src, &text),
-            (
-                Err(vec![Diag::new(at, "no `h` in scope")]),
-                tally("Migrating")
-            ),
+            Err(vec![Diag::new(at, "no `h` in scope")]),
             "{text}"
         );
     }
@@ -383,7 +361,7 @@ rename constructor T.A1 to Z";
     };
     assert_eq!(
         recorded(&arms_source(), &format!("module m\n{split}")),
-        (Ok(after("relation ts : T key id")), tally("Recorded"))
+        Ok(after("relation ts: T key id"))
     );
     let mut src = arms_source();
     src.decls[3].text = "relation ts : T key id default A.x = \"a\"".to_string();
@@ -392,13 +370,10 @@ rename constructor T.A1 to Z";
     let at = text.find("rename").expect("the rename");
     assert_eq!(
         recorded(&src, &text),
-        (
-            Err(vec![Diag::new(
-                Span::new(at, at + "rename constructor T.A1 to Z".len()),
-                "`A` is not a constructor of `T`"
-            )]),
-            tally("Migrating")
-        ),
+        Err(vec![Diag::new(
+            Span::new(at, at + "rename constructor T.A1 to Z".len()),
+            "`A` is not a constructor of `T`"
+        )]),
         "a rename while the declarations do not build is refused"
     );
 }
@@ -413,8 +388,10 @@ fn a_rekey_to_a_key_no_field_holds_is_refused_at_the_recheck() {
     let m = parse_migration(text, Options::default())
         .ok()
         .expect("the migration parses");
-    let (refusal, compared) = forced(|| src.record(&m, text, false).map(|_| ()));
-    let refusal = refusal.expect_err("the rekey is refused");
+    let refusal = src
+        .record(&m, text, false)
+        .map(|_| ())
+        .expect_err("the rekey is refused");
     assert_eq!(
         (
             refusal.operators,
@@ -423,7 +400,6 @@ fn a_rekey_to_a_key_no_field_holds_is_refused_at_the_recheck() {
                 .iter()
                 .map(|d| d.diag.message.clone())
                 .collect::<Vec<_>>(),
-            compared
         ),
         (
             Vec::new(),
@@ -431,7 +407,6 @@ fn a_rekey_to_a_key_no_field_holds_is_refused_at_the_recheck() {
                 "key field `zz` is not a header field or a field of the only constructor of `T`"
                     .to_string()
             ],
-            tally("Migrating")
         )
     );
 }
@@ -474,13 +449,9 @@ fn an_operator_over_declarations_that_do_not_build_resolves_once_they_build() {
             let m = parse_migration(&text, Options::default())
                 .ok()
                 .expect("the migration parses");
-            let (accepted, compared) = forced(|| src.record(&m, &text, false).is_ok());
-            (case.to_string(), accepted, compared)
+            (case.to_string(), src.record(&m, &text, false).is_ok())
         })
         .collect();
-    let want: Vec<_> = cases
-        .iter()
-        .map(|case| (case.clone(), true, tally("Recorded")))
-        .collect();
+    let want: Vec<_> = cases.iter().map(|case| (case.clone(), true)).collect();
     assert_eq!(got, want);
 }

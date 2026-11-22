@@ -461,7 +461,7 @@ fn restored(s: &Source) -> impl PartialEq + std::fmt::Debug {
         m.iter().map(|(k, v)| (k.clone(), v.stage)).collect()
     };
     let (relations, values) = named_states(s);
-    (s.decls.clone(), stages(&relations), stages(&values))
+    (flat_decls(s), stages(&relations), stages(&values))
 }
 
 #[test]
@@ -690,9 +690,10 @@ fn a_revert_gives_each_dropped_field_the_fill_that_names_it_by_module() {
         .ok()
         .expect("the revert parses");
     let steps = s
-        .clone()
-        .steps("auth", Listed::nth(&m.operators, 0), text)
-        .unwrap_or_else(|e| panic!("the revert applies: {e:?}"));
+        .record_steps(&m, text)
+        .unwrap_or_else(|e| panic!("the revert applies: {e:?}"))
+        .remove(0)
+        .unwrap_or_else(|e| panic!("the revert's steps: {e:?}"));
     let filled: Vec<(String, String)> = steps
         .iter()
         .filter_map(|step| {
@@ -824,9 +825,10 @@ fn ahead_per_step(s: &Source, text: &str) -> Vec<Vec<(String, bool)>> {
     let m = parse_migration(text, Options::default())
         .ok()
         .expect("the revert parses");
-    s.clone()
-        .steps("auth", Listed::nth(&m.operators, 0), text)
+    s.record_steps(&m, text)
         .unwrap_or_else(|e| panic!("the revert applies: {e:?}"))
+        .remove(0)
+        .unwrap_or_else(|e| panic!("the revert's steps: {e:?}"))
         .iter()
         .map(|step| {
             let schema = step.after.schema().unwrap_or_else(|e| panic!("{e:?}"));

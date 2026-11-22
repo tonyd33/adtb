@@ -1462,23 +1462,35 @@ fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
 /// Returns whether `text`, applied where migration `m` of the log was, gives the version hash
 /// `m` gives; not when `text` does not parse, apply, build or resolve.
 ///
-/// Fail when the log up to `m` does not resolve.
+/// Fail when the log up to `m` does not resolve or the migration model fails on either text.
 fn same_hash(m: &Logged, text: &str) -> Result<bool, OpenError> {
-    let hash = |text: &str| -> Option<Result<catalog::Hash, Vec<Diag>>> {
-        let file = parse_migration(text, ParseOptions::default()).ok().ok()?;
-        let source = m.before.migrate(&file, text).ok()?;
-        let schema = source.schema().ok()?;
-        Some(catalog::version_hash(&schema, &source))
+    let refused = |ds| OpenError::MigrationRefused {
+        version: m.number,
+        reason: Error::internal(Broken::Catalog(catalog::Broken::Unresolved(ds))),
     };
-    let Some(Ok(shipped)) = hash(text) else {
+    let hash = |text: &str| -> Result<Option<Result<catalog::Hash, Vec<Diag>>>, OpenError> {
+        let Ok(file) = parse_migration(text, ParseOptions::default()).ok() else {
+            return Ok(None);
+        };
+        let source = match m.before.migrate(&file, text) {
+            Ok(source) => source,
+            Err(r) => {
+                return r
+                    .broken()
+                    .map_or(Ok(None), |d| Err(refused(vec![d.clone()])));
+            }
+        };
+        let Ok(schema) = source.schema() else {
+            return Ok(None);
+        };
+        Ok(Some(catalog::version_hash(&schema, &source)))
+    };
+    let Some(Ok(shipped)) = hash(text)? else {
         return Ok(false);
     };
-    match hash(&m.text) {
+    match hash(&m.text)? {
         Some(Ok(h)) => Ok(h == shipped),
-        Some(Err(ds)) => Err(OpenError::MigrationRefused {
-            version: m.number,
-            reason: Error::internal(Broken::Catalog(catalog::Broken::Unresolved(ds))),
-        }),
+        Some(Err(ds)) => Err(refused(ds)),
         None => Ok(false),
     }
 }

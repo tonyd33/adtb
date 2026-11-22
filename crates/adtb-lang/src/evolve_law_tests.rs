@@ -1582,7 +1582,7 @@ const KNOWN: &[Known] = &[
 /// source before the operator nor the next source after it that builds holds, `next` being the
 /// source after the migration.
 fn outside(logged: &Logged, next: &Source, ops: &[ResolvedOp]) -> Vec<String> {
-    let (_, mut sources) = logged.replayed().expect("a logged migration replays");
+    let mut sources = logged.states().expect("a logged migration replays");
     sources.push(next.clone());
     let held = |s: &Source| -> BTreeSet<Reached> {
         s.ids
@@ -1917,7 +1917,6 @@ fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
 }
 
 /// Returns each script under the engine's script corpus, as its path and text.
-#[cfg(feature = "compare-migration-model")]
 fn scripts() -> Vec<(std::path::PathBuf, String)> {
     let mut out = Vec::new();
     let mut dirs = vec![std::path::PathBuf::from(concat!(
@@ -1941,7 +1940,6 @@ fn scripts() -> Vec<(std::path::PathBuf, String)> {
 
 /// Returns the migrations of the `migrate` directives of `script` that apply to the version
 /// before them, in order, each starting at its `module` line.
-#[cfg(feature = "compare-migration-model")]
 fn script_migrations(script: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut inside = false;
@@ -1966,25 +1964,152 @@ fn script_migrations(script: &str) -> Vec<String> {
     out
 }
 
-/// How many threads the comparison over the cases and the script corpus runs on.
-#[cfg(feature = "compare-migration-model")]
-const COMPARING: usize = 4;
+/// How many threads the law search over the cases and the script corpus runs on.
+const SEARCHING: usize = 4;
 
-/// The migration model and the operator layer agree on the migrations of every unlabelled case
-/// of the search in its first shape, each set of them once, and on every migration of the
-/// engine's script corpus, each script's applied in order from an empty source: on the result,
-/// the names of the migration's text and the inverses of each revert.
-#[cfg(feature = "compare-migration-model")]
+/// What the laws over one migration saw.
+#[derive(Default)]
+struct Seen {
+    applied: usize,
+    refused: usize,
+    revert_steps: usize,
+    copied_rechecks: usize,
+}
+
+/// Returns `text` as its tokens joined by single spaces.
+fn token_form(text: &str) -> String {
+    tokens(text)
+        .into_iter()
+        .map(|(_, r)| &text[r])
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Apply migration `text` to `src` and check the laws a migration keeps, counting what it saw in
+/// `seen`. Returns the source it leaves, when it applies.
+///
+/// The laws:
+/// - Ids are fresh: `next` of each space never falls, and an id the result holds that `src` did
+///   not is drawn from `src`'s `next` of its space and is below the result's.
+/// - Each step of a `revert` whose steps state their row maps resolves against the step before
+///   it, and its last step leaves the source the revert leaves.
+/// - Each recheck failure in text an operator copied points to text whose tokens are those of
+///   the span of the migration it names.
+/// - Each refusal of an operator lies within that operator's span.
+fn lawful(src: &Source, text: &str, seen: &mut Seen) -> Option<Source> {
+    let m = parse_migration(text, Options::default()).ok().ok()?;
+    match src.record(&m, text, false) {
+        Ok((next, _, recorded)) => {
+            seen.applied += 1;
+            for (space, &n) in &src.next {
+                assert!(
+                    next.next.get(space).is_some_and(|&m| m >= n),
+                    "{text}\nnext of {space:?} falls"
+                );
+            }
+            let held: BTreeSet<(Space, u64)> = src
+                .ids
+                .iter()
+                .map(|(k, &id)| (k.kind().space(), id))
+                .collect();
+            for (k, &id) in &next.ids {
+                let space = k.kind().space();
+                if id < crate::ids::FIRST_LOG_ID || held.contains(&(space, id)) {
+                    continue;
+                }
+                let from = src
+                    .next
+                    .get(&space)
+                    .copied()
+                    .unwrap_or(crate::ids::FIRST_LOG_ID);
+                let to = next
+                    .next
+                    .get(&space)
+                    .copied()
+                    .unwrap_or(crate::ids::FIRST_LOG_ID);
+                assert!(
+                    from <= id && id < to,
+                    "{text}\n{k:?} takes id {id} outside {from}..{to}"
+                );
+            }
+            for (op, steps) in m.operators.iter().zip(recorded.steps()) {
+                if !matches!(op.kind, OperatorKind::Revert { .. }) {
+                    continue;
+                }
+                let Ok(steps) = steps else {
+                    continue;
+                };
+                let mut before = src.clone();
+                for s in steps {
+                    seen.revert_steps += 1;
+                    if let Some(a) = &s.applied {
+                        a.resolved(&before, &s.after).unwrap_or_else(|ds| {
+                            panic!("{text}\na revert step does not resolve: {ds:?}")
+                        });
+                    }
+                    before = s.after.clone();
+                }
+                if m.operators.len() == 1 {
+                    let last = &steps.last().expect("a revert takes a step").after;
+                    assert_eq!(
+                        (
+                            &next.ids,
+                            next.decls
+                                .iter()
+                                .map(|d| token_form(&d.text))
+                                .collect::<Vec<_>>()
+                        ),
+                        (
+                            &last.ids,
+                            last.decls
+                                .iter()
+                                .map(|d| token_form(&d.text))
+                                .collect::<Vec<_>>()
+                        ),
+                        "{text}\nthe last step leaves the revert's result"
+                    );
+                }
+            }
+            Some(next)
+        }
+        Err(r) => {
+            seen.refused += 1;
+            for d in &r.operators {
+                if d.kind == DiagKind::Internal {
+                    panic!("{text}\nthe model fails: {}", d.message);
+                }
+                assert!(
+                    m.operators
+                        .iter()
+                        .any(|op| op.span.start <= d.span.start && d.span.end <= op.span.end),
+                    "{text}\nrefusal outside every operator: {d:?}"
+                );
+            }
+            if let Some(result) = &r.result {
+                for (d, from) in r.recheck.iter().zip(&r.recheck_from) {
+                    let Some(from) = from else { continue };
+                    seen.copied_rechecks += 1;
+                    let file = result.file_text(d.file);
+                    assert_eq!(
+                        token_form(&text[from.range()]),
+                        token_form(&file[d.diag.span.range()]),
+                        "{text}\nrecheck {d:?} points elsewhere than its copy"
+                    );
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Every migration of the unlabelled cases of the search in its first shape, and every migration
+/// of the engine's script corpus, each script's applied in order from an empty source, keeps the
+/// laws [`lawful`] states.
 #[test]
-fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus() {
+fn the_migrations_of_the_cases_and_the_script_corpus_keep_their_laws() {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let record = |src: &Source, text: &str, calls: &mut usize| -> Option<Source> {
-        let m = parse_migration(text, Options::default()).ok().ok()?;
-        *calls += 1;
-        src.record(&m, text, false).ok().map(|(next, _, _)| next)
-    };
     let shapes: Vec<(Source, Vec<Case>)> = SHAPES
         .into_iter()
         .take(1)
@@ -1994,8 +2119,8 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
         .iter()
         .flat_map(|(start, cases)| cases.iter().map(move |c| (start, c)))
         .collect();
-    let mut seen = std::collections::BTreeSet::new();
-    cases.retain(|(_, c)| c.label.is_none() && seen.insert((&c.first, &c.text)));
+    let mut seen_cases = BTreeSet::new();
+    cases.retain(|(_, c)| c.label.is_none() && seen_cases.insert((&c.first, &c.text)));
     let mut scripts: Vec<Vec<String>> = scripts()
         .into_iter()
         .map(|(path, script)| {
@@ -2012,70 +2137,63 @@ fn the_migration_model_agrees_with_the_layer_on_the_cases_and_the_script_corpus(
     let next_job = AtomicUsize::new(0);
     let jobs = cases.len() + scripts.len();
     let work = || {
-        model::forced(|| {
-            let mut calls = 0;
-            loop {
-                let job = next_job.fetch_add(1, Ordering::Relaxed);
-                if job >= jobs {
-                    return calls;
+        let mut seen = Seen::default();
+        loop {
+            let job = next_job.fetch_add(1, Ordering::Relaxed);
+            if job >= jobs {
+                return seen;
+            }
+            if let Some(&(start, case)) = job.checked_sub(scripts.len()).and_then(|k| cases.get(k))
+            {
+                let mut was = start.clone();
+                for first in &case.first {
+                    was = lawful(&was, first, &mut seen).expect("a case's first migration applies");
                 }
-                if let Some(&(start, case)) =
-                    job.checked_sub(scripts.len()).and_then(|k| cases.get(k))
-                {
-                    let mut was = start.clone();
-                    for first in &case.first {
-                        was = record(&was, first, &mut calls)
-                            .expect("a case's first migration applies");
+                let before = format!("{:04}", was.log.last().map_or(0, |l| l.number));
+                lawful(&was, &case.text.replace("{first}", &before), &mut seen);
+                continue;
+            }
+            let mut src = Source::new(Vec::new()).expect("an empty source builds");
+            let mut prefix = String::new();
+            for text in &scripts[job] {
+                prefix.push_str(text);
+                prefix.push('\0');
+                let held = applied
+                    .lock()
+                    .expect("the applied prefixes")
+                    .get(&prefix)
+                    .cloned();
+                src = match held {
+                    Some(next) => next.unwrap_or(src),
+                    None => {
+                        let next = lawful(&src, text, &mut seen);
+                        applied
+                            .lock()
+                            .expect("the applied prefixes")
+                            .insert(prefix.clone(), next.clone());
+                        next.unwrap_or(src)
                     }
-                    let before = format!("{:04}", was.log.last().map_or(0, |l| l.number));
-                    record(&was, &case.text.replace("{first}", &before), &mut calls);
-                    continue;
-                }
-                let mut src = Source::new(Vec::new()).expect("an empty source builds");
-                let mut prefix = String::new();
-                for text in &scripts[job] {
-                    prefix.push_str(text);
-                    prefix.push('\0');
-                    let held = applied
-                        .lock()
-                        .expect("the applied prefixes")
-                        .get(&prefix)
-                        .cloned();
-                    src = match held {
-                        Some(next) => next.unwrap_or(src),
-                        None => {
-                            let next = record(&src, text, &mut calls);
-                            applied
-                                .lock()
-                                .expect("the applied prefixes")
-                                .insert(prefix.clone(), next.clone());
-                            next.unwrap_or(src)
-                        }
-                    };
-                }
+                };
             }
-        })
+        }
     };
-    let mut calls = 0;
-    let mut tally: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seen = Seen::default();
     std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..COMPARING).map(|_| scope.spawn(work)).collect();
+        let workers: Vec<_> = (0..SEARCHING).map(|_| scope.spawn(work)).collect();
         for w in workers {
-            let (n, t) = w.join().expect("a comparing thread");
-            calls += n;
-            for (outcome, k) in t {
-                *tally.entry(outcome).or_default() += k;
-            }
+            let s = w.join().expect("a searching thread");
+            seen.applied += s.applied;
+            seen.refused += s.refused;
+            seen.revert_steps += s.revert_steps;
+            seen.copied_rechecks += s.copied_rechecks;
         }
     });
     assert!(
-        calls <= tally.values().sum::<usize>(),
-        "{calls} migrations, {tally:?}"
+        seen.applied > 0 && seen.refused > 0 && seen.revert_steps > 0 && seen.copied_rechecks > 0,
+        "the search reaches each law: {} applied, {} refused, {} revert steps, {} copied rechecks",
+        seen.applied,
+        seen.refused,
+        seen.revert_steps,
+        seen.copied_rechecks
     );
-    for hook in ["Migrating", "Recorded", "Inverses"] {
-        assert!(
-            tally.get(&format!("{hook} agreed")).is_some_and(|&n| n > 0),
-            "{tally:?}"
-        );
-    }
 }

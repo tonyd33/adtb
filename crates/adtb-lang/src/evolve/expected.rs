@@ -85,19 +85,8 @@ impl Expected {
         }
     }
 
-    /// Returns the type or function `name` of module `module`, which the refused operator `by`
-    /// would have declared.
-    pub(super) fn refused(module: String, name: String, kind: AheadKind, by: Adder) -> Expected {
-        Expected {
-            state: Added::Refused,
-            kind,
-            ..Expected::new(module, name, false, by)
-        }
-    }
-
     /// Returns relation variable `relation` of module `module` as [`Expected::new`] does, its
     /// adding operator gone as far as `state`.
-    #[cfg(feature = "compare-migration-model")]
     pub(super) fn added(
         module: String,
         relation: String,
@@ -115,7 +104,6 @@ impl Expected {
 
     /// Returns its module, its name as the adding operator spells it, whether the migration also
     /// adds its type, and its adder.
-    #[cfg(feature = "compare-migration-model")]
     pub(super) fn parts(&self) -> (&str, &str, bool, Adder) {
         (&self.module, &self.relation, self.typed, self.by)
     }
@@ -157,65 +145,9 @@ impl Source {
             .collect()
     }
 
-    /// Mark the relation variable operator `op` adds as being added.
-    pub(super) fn adding(&mut self, op: Listed<'_>) {
-        for e in self.expected_by(op) {
-            e.state = Added::Applying;
-        }
-    }
-
-    /// Poison the name of the relation variable, type or function operator `op` of a migration
-    /// of `module` would have declared.
-    pub(super) fn refused(&mut self, module: &str, op: Listed<'_>) {
-        for e in self.expected_by(op) {
-            e.state = Added::Refused;
-        }
-        let (Some(at), Some((name, kind))) = (op.at, poisons(&op.kind)) else {
-            return;
-        };
-        self.ahead.push(Expected::refused(
-            module.to_string(),
-            name.to_string(),
-            kind,
-            Adder::Operator(at),
-        ));
-    }
-
     /// Keep only the relation variables whose adding operator was refused.
     pub(super) fn keep_refused(&mut self) {
         self.ahead.retain(|e| e.state == Added::Refused);
-    }
-
-    /// Mark the relation variable operator `op` of `module` added as added, with its id.
-    pub(super) fn added(&mut self, module: &str, op: Listed<'_>) {
-        let OperatorKind::AddRelation(r) = &op.kind else {
-            return;
-        };
-        let id = self
-            .relation_key_id(module, &r.name.name.text)
-            .expect("an applied `add relation` gives its relation variable an id");
-        for e in self.expected_by(op) {
-            e.state = Added::As(id);
-        }
-    }
-
-    /// Mark the relation variable `name` of `module` that `by`, a step of a revert, restored as
-    /// added, with its id.
-    pub(super) fn restored(&mut self, by: Adder, module: &str, name: &str) {
-        let id = self
-            .relation_key_id(module, name)
-            .expect("a restored relation variable has an id");
-        for e in self.ahead.iter_mut().filter(|e| e.by == by) {
-            e.state = Added::As(id);
-        }
-    }
-
-    fn expected_by(&mut self, op: Listed<'_>) -> impl Iterator<Item = &mut Expected> {
-        let by = op
-            .at
-            .filter(|_| matches!(op.kind, OperatorKind::AddRelation(_)))
-            .map(Adder::Operator);
-        self.ahead.iter_mut().filter(move |e| Some(e.by) == by)
     }
 }
 

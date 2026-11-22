@@ -562,8 +562,12 @@ The printout states every module, type, relation variable with its
 clauses, named set, schema function, aggregate, constraint, stored
 view, default, computed field, grant and constructor write state at
 that version, in the declaration syntax of [syntax.md](syntax.md),
-headed by the version and its hash. Equal versions print identical
-text. `--check` compares a committed printout with the fold of the log
+headed by the version and its hash. The printout is canonical:
+whitespace normalised and comments dropped, as for a single
+migration, except the declaration of a function, aggregate,
+constraint, check or stored view, printed as written with each name a
+later operator renamed respelled. Equal versions print
+identical text. `--check` compares a committed printout with the fold of the log
 and fails on any difference. The review sees each migration beside the
 schema it produces. The printout is never input: the log is the only
 authored schema.

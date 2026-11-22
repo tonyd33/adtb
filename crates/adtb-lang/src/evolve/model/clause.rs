@@ -1,7 +1,7 @@
 use super::field::Applied;
 use super::lift::Lifting;
-use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
-use super::run::{Built, Late, Run};
+use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
+use super::run::{Built, Decls, Late, Run};
 use super::*;
 use crate::ast::{self, Expr, RelationClause};
 use crate::canon::canonical_term;
@@ -135,7 +135,11 @@ impl Model {
     }
 
     /// Returns the clause of the relation declaration of `file` in `built` at `k`.
-    pub(super) fn clause_written(built: &Built, file: FileId, k: usize) -> Res<RelationClause> {
+    pub(super) fn clause_written(
+        built: &impl Decls,
+        file: FileId,
+        k: usize,
+    ) -> Res<RelationClause> {
         match built.decl(file) {
             Some(ast::Decl::Relation(rd)) => match rd.clauses.get(k) {
                 Some(c) => Ok(c.clone()),
@@ -584,7 +588,7 @@ impl Model {
             return broken("a found default is another clause");
         };
         let Some(&(_, default)) = ids.first() else {
-            return unmodelled("a dropped default that fills no field");
+            return broken("a default that fills no field");
         };
         let clauses = self.default_members(ids);
         self.relations

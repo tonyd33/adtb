@@ -565,17 +565,28 @@ fn a_merge_applies_when_grant_operators_of_its_migration_state_the_merged_grants
         &grants(),
         "module auth\ngrant read identities.(EmailPass | Google) (user), insert identities.Apple to support",
     );
-    refuses(
-        &s,
-        &format!("{MERGE}\ngrant read identities.Social to support"),
-        "cannot carry the `insert` grant of `support`",
+    let uncarried = |p: &str| {
+        format!(
+            "the merge of `Google`, `Apple` into `Social` cannot carry the `{p}` grant of `support` on `identities`, which does not cover each of them alike; grant `{p}` on `identities.Social` to `support` in the same migration"
+        )
+    };
+    assert_eq!(
+        Err(vec![uncarried("insert")]),
+        migrate(
+            &s,
+            &format!("{MERGE}\ngrant read identities.Social to support")
+        )
+        .map(drop)
     );
-    refuses(
-        &s,
-        &format!(
-            "{MERGE}\ngrant read identities.Social to web\ngrant insert identities.Social to web"
-        ),
-        "cannot carry the `read` grant of `support`",
+    assert_eq!(
+        Err(vec![uncarried("read"), uncarried("insert")]),
+        migrate(
+            &s,
+            &format!(
+                "{MERGE}\ngrant read identities.Social to web\ngrant insert identities.Social to web"
+            )
+        )
+        .map(drop)
     );
     let s = applies(
         &s,

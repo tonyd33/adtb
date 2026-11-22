@@ -241,6 +241,29 @@ fn replayed(body: &str) -> Result<Replayed, String> {
     Ok(Replayed::Accepted(decls))
 }
 
+/// Returns `r` with each declaration as its tokens joined by single spaces, sorted.
+fn token_form(r: Replayed) -> Replayed {
+    match r {
+        Replayed::Accepted(decls) => {
+            let mut out: Vec<String> = decls
+                .iter()
+                .map(|d| {
+                    let (tokens, _) = adtb_lang::lex::lex(d);
+                    tokens
+                        .iter()
+                        .filter(|t| t.tok != adtb_lang::lex::Tok::Eof)
+                        .map(|t| &d[t.span.range()])
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+            out.sort();
+            Replayed::Accepted(out)
+        }
+        refused => refused,
+    }
+}
+
 /// Returns how replaying `body` ends when it is accepted: its declarations as written, sorted;
 /// else the reason `adtb_conformance::migrations` refuses it.
 fn written(body: &str) -> Replayed {
@@ -367,7 +390,7 @@ fn a_schema_body_replays_alike_in_every_order_of_its_declarations() {
     assert_eq!(
         Ok(Replayed::Accepted(vec![
             "fn name () -> I64 = count(1 for p in pets)".into(),
-            "relation pets : Pet key name".into(),
+            "relation pets: Pet\n  key name".into(),
             "type Pet = { name: Text }".into(),
         ])),
         replayed(NAMED_LIKE_A_FIELD)
@@ -389,13 +412,13 @@ fn a_schema_body_replays_alike_in_every_order_of_its_declarations() {
                     let (mut accepted, mut tried) = (0, 0);
                     let mut failures = Vec::new();
                     for (i, (name, body)) in bodies.iter().enumerate().skip(k).step_by(jobs) {
-                        let expected = written(body);
+                        let expected = token_form(written(body));
                         if let Replayed::Accepted(_) = expected {
                             accepted += 1;
                         }
                         for p in orders(body, PERMUTED_SEED + i as u64) {
                             tried += 1;
-                            match replayed(&p) {
+                            match replayed(&p).map(token_form) {
                                 Ok(got) if got == expected => {}
                                 Ok(got) => failures.push(format!(
                                     "{name}: in the order\n{p}ends as {got:?}, not {expected:?}"

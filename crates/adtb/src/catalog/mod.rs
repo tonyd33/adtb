@@ -65,7 +65,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use adtb_lang::check::Program;
-use adtb_lang::evolve::{Privilege, Refusal, Source};
+use adtb_lang::evolve::{Privilege, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Committed, Schema};
@@ -84,6 +84,7 @@ use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Problem, Report};
 
 pub use broken::Broken;
+use broken::refusal;
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
@@ -538,7 +539,7 @@ fn fold_from_empty(
             .map_err(|ds| refused(ds.into_iter().map(|d| d.message).collect()))?;
         source = source
             .migrate(&file, text)
-            .map_err(|r| refused(reasons(r)))?;
+            .map_err(|r| refusal(r, refused))?;
         if let Some(roles) = dormant.get(&version) {
             for g in &mut source.grants {
                 g.dormant |= roles.contains(&g.role);
@@ -575,13 +576,6 @@ fn check_order_keys(schema: &Schema, keys: &OrderKeys) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-/// Returns the message of each operator `r` refuses, then of each file its recheck refuses.
-fn reasons(r: Refusal) -> Vec<String> {
-    let ops = r.operators.into_iter().map(|d| d.message);
-    ops.chain(r.recheck.into_iter().map(|d| d.diag.message))
-        .collect()
 }
 
 /// Returns the failure that stops `report` finding every leaked page: the first damaged page,

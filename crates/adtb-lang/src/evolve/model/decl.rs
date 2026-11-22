@@ -1,5 +1,5 @@
 use super::lift::Lifting;
-use super::op::{Fail, Kind, Res, StateKey, broken, refuse, refuse_at, refuse_first, unmodelled};
+use super::op::{Fail, Kind, Res, StateKey, broken, refuse, refuse_at, refuse_each, unchecked};
 use super::run::{Built, Late, Run, unbuilt};
 use super::slots::Found;
 use super::*;
@@ -93,7 +93,7 @@ impl Model {
             Err(ds) => {
                 let own: Vec<FileDiag> = ds.iter().filter(|d| d.file == at).cloned().collect();
                 if !own.is_empty() {
-                    return refuse_first(&own, str::to_string);
+                    return refuse_each(&own);
                 }
                 if kind == Kind::Relation {
                     return unbuilt(&ds);
@@ -331,9 +331,10 @@ impl Model {
             Item::Check(c) => Resolved::DropCheck { constraint: c },
             Item::Store(v) => Resolved::Unstore { view: v },
             Item::Held(..) => {
-                return unmodelled(
-                    "a drop of a declaration held while the declarations do not build",
-                );
+                return match self.built(&[], &self.ahead_inputs()) {
+                    Err(ds) => unchecked(&ds),
+                    Ok(_) => broken("a held declaration in declarations that build"),
+                };
             }
         };
         let mut gone = vec![item];

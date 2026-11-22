@@ -7,12 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Cap the heap of a test binary this crate links into, and run the migration model beside the
-# operator layer on every migration.
-test-heap-cap = ["dep:adtb-heap-cap", "compare-migration-model"]
-# Apply every migration to the migration model too, and panic where its result differs from the
-# operator layer's by a difference no known defect of the operator layer explains.
-compare-migration-model = []
+# Cap the heap of a test binary this crate links into.
+test-heap-cap = ["dep:adtb-heap-cap"]
 # Validate kernel terms at the exits of check and of `norm::program`, as a debug build does.
 testing = []
 

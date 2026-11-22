@@ -12,7 +12,6 @@ mod admin;
 mod apply;
 mod arms;
 mod clause;
-mod compare;
 mod ctor;
 mod decl;
 mod field;
@@ -32,9 +31,8 @@ mod term;
 mod tests;
 mod undo;
 
-#[cfg(test)]
-pub(super) use compare::forced;
-pub(super) use compare::{compare, compare_recorded, enabled};
+pub(super) use apply::Migrated;
+pub(super) use revert::{logged_file, replay};
 use term::Term;
 
 /// A catalog object, by the space of its id and the id.
@@ -593,4 +591,30 @@ impl Model {
 /// Returns the model of `src`, or why it has none.
 pub(super) fn of(src: &Source) -> Result<Model, String> {
     lift::source(src)
+}
+
+/// Apply migration `m`, whose text is `text`, to the model of `src` as
+/// [`Model::migrate_keeping`] does.
+///
+/// Fail with an internal diagnostic when `src` does not lift or the model fails on the migration.
+pub(super) fn migrated(
+    src: &Source,
+    m: &MigrationFile,
+    text: &str,
+    kept: &[super::Kept],
+    accepting: bool,
+    naming: bool,
+) -> Result<Migrated, crate::span::Diag> {
+    of(src)
+        .map_err(|e| fault(format!("the source does not lift: {e}")))?
+        .migrate_keeping(m, text, kept, accepting, naming)
+        .map_err(fault)
+}
+
+/// Returns the internal diagnostic of a failure `why` of the migration model.
+pub(super) fn fault(why: String) -> crate::span::Diag {
+    crate::span::Diag::internal(
+        crate::span::Span::default(),
+        format!("the migration model fails: {why}"),
+    )
 }

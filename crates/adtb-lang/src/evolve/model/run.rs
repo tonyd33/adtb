@@ -226,6 +226,63 @@ impl<'a> Run<'a> {
     }
 }
 
+/// Parsed declarations of a model: the declaration of each file and its text.
+pub(super) trait Decls {
+    fn decl(&self, file: FileId) -> Option<&ast::Decl>;
+
+    /// Returns the text of file `file`, its module header included.
+    fn text(&self, file: FileId) -> &str;
+}
+
+/// A model's declarations parsed, whether or not they build.
+pub(super) struct Parsed {
+    files: Vec<(FileId, ast::SchemaFile)>,
+    texts: Vec<String>,
+}
+
+impl Decls for Parsed {
+    fn decl(&self, file: FileId) -> Option<&ast::Decl> {
+        self.files
+            .iter()
+            .find(|(f, _)| *f == file)
+            .and_then(|(_, sf)| sf.decls.first())
+    }
+
+    fn text(&self, file: FileId) -> &str {
+        &self.texts[file.0 as usize]
+    }
+}
+
+impl Model {
+    /// Returns the declarations parsed, those that do not parse left out.
+    pub(super) fn parsed(&self) -> Parsed {
+        let texts: Vec<String> = (0..self.decls.len())
+            .map(|i| format!("module {}\n{}", self.decls[i].module, self.print(i)))
+            .collect();
+        let files = texts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                let f = crate::parse::parse_schema(t, crate::parse::Options { elisions: true })
+                    .ok()
+                    .ok()?;
+                Some((FileId(i as u32), f))
+            })
+            .collect();
+        Parsed { files, texts }
+    }
+}
+
+impl Decls for Built {
+    fn decl(&self, file: FileId) -> Option<&ast::Decl> {
+        Built::decl(self, file)
+    }
+
+    fn text(&self, file: FileId) -> &str {
+        Built::text(self, file)
+    }
+}
+
 /// A schema built from a model's declarations and the files and texts it was built from.
 pub(super) struct Built {
     schema: Schema,

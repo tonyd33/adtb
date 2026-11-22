@@ -19,7 +19,6 @@ pub use fixed::{FixedType, RELATIONS, TYPES, engine_ctor, engine_field, engine_r
 pub use key::{KeyKind, ObjectKey, Owner, Path, PathStep, forget};
 pub use named::{is_named, named_ids};
 pub use objects::{Object, assign, objects};
-#[cfg(feature = "compare-migration-model")]
 pub use objects::{keyed, placing};
 pub use reach::Replacement;
 
@@ -529,7 +528,6 @@ impl CatalogIds {
     }
 
     /// Returns the stored form of the id of the object at `slot`.
-    #[cfg(feature = "compare-migration-model")]
     pub fn slot_id(&self, slot: &Slot) -> Option<u64> {
         match slot.clone() {
             Slot::Type(t) => self.types.get(&t).map(|x| x.0),

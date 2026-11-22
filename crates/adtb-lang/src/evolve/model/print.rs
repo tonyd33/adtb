@@ -309,16 +309,6 @@ impl Model {
         }
     }
 
-    /// Returns the declarations as a source holds them, each printed.
-    ///
-    /// Fail when a declaration holds a name of dropped objects no operator added again.
-    pub(super) fn source_decls(&self) -> Result<Vec<SourceDecl>, String> {
-        if self.dropped_names() {
-            return Err("a declaration names a dropped object".into());
-        }
-        self.printed()
-    }
-
     /// Returns the declarations as [`Model::source_decls`] does, a name of dropped objects as
     /// written, for a build while a migration applies.
     pub(super) fn printed(&self) -> Result<Vec<SourceDecl>, String> {

@@ -1,7 +1,7 @@
 use super::field::Applied;
 use super::lift::Lifting;
-use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diags, unmodelled};
-use super::run::{Late, Run};
+use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diags};
+use super::run::{Late, Run, unbuilt};
 use super::*;
 use crate::ast;
 use crate::canon::{Names, canonical_term};
@@ -35,7 +35,7 @@ fn privileges(
     let mut terms = Vec::new();
     for p in privileges {
         let Some((name, span)) = privilege_term(p) else {
-            return broken("a log privilege the layer resolves to no term");
+            return broken("a log privilege that resolves to no term");
         };
         terms.push((name.name().to_string(), canonical(run, schema, refs, span)));
     }
@@ -175,7 +175,7 @@ impl Model {
             Err(ds) => {
                 return match ds.iter().filter(|d| own(d.file)).min_by_key(|d| d.file.0) {
                     Some(d) => refuse(d.diag.message.clone()),
-                    None => unmodelled("an installed package in a source that does not build"),
+                    None => unbuilt(&ds),
                 };
             }
         };
@@ -261,23 +261,6 @@ impl Model {
             Vec::new(),
             Ok(Vec::new()),
         ))
-    }
-
-    /// Returns why the operators of `m` do not resolve against this model, the model before `m`:
-    /// each `adopt tzdb` whose release data it lacks, at its span.
-    pub(super) fn unavailable(&self, m: &MigrationFile) -> Vec<(Span, String)> {
-        m.operators
-            .iter()
-            .filter_map(|op| match &op.kind {
-                OperatorKind::AdoptTzdb { from, .. } if !self.packages.contains_key(from) => {
-                    Some((
-                        op.span,
-                        format!("the release data `{from}` is not available"),
-                    ))
-                }
-                _ => None,
-            })
-            .collect()
     }
 
     /// Returns the module of the declaration that declares the object of `obj`, a field's that

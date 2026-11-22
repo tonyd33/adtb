@@ -332,13 +332,10 @@ fn only_key_names_sorts_the_fields_of_a_key() {
         seen > 100,
         "the search read the sorts of those crates: {seen}"
     );
-    let membership = [
-        "crates/adtb-lang/src/evolve/ctor/mod.rs: \
-         pub(in crate::evolve) fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {",
-        "crates/adtb-lang/src/evolve/ids.rs: let keys: BTreeSet<&String> = schema",
-    ];
+    let membership = "crates/adtb-lang/src/evolve/ctor/mod.rs: \
+         pub(in crate::evolve) fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {";
     let rule = "crates/adtb-lang/src/textual/form.rs: names.sort();";
-    assert_eq!(vec![membership[0], membership[1], rule], found);
+    assert_eq!(vec![membership, rule], found);
 }
 
 #[test]

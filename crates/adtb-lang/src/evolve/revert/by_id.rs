@@ -1,5 +1,5 @@
 use super::*;
-use crate::ids::{KeyKind, Owner, Space};
+use crate::ids::{KeyKind, Space};
 
 /// A named object, by its catalog id.
 #[derive(Clone, Copy, Debug)]
@@ -65,34 +65,6 @@ impl NamedId {
     }
 }
 
-impl NamedId {
-    /// Returns the name of the type or relation of the id in `src`, qualified by its module,
-    /// `None` when `src` holds no type or relation of the id.
-    pub(super) fn qualified(self, src: &Source) -> Option<QName> {
-        let (kind, id) = match self {
-            NamedId::Type(t) => (KeyKind::Type, t.raw()),
-            NamedId::Relation(r) => (KeyKind::Relation, r.raw()),
-            _ => return None,
-        };
-        let key = src
-            .ids
-            .iter()
-            .find(|(k, x)| **x == id && k.kind() == kind)?
-            .0;
-        let Owner::Module(m) = key.owner() else {
-            return None;
-        };
-        let ident = |text: &str| ast::Ident {
-            text: text.to_string(),
-            span: Span::new(0, 0),
-        };
-        Some(QName {
-            module: Some(ident(m)),
-            name: ident(key.name()?),
-        })
-    }
-}
-
 /// A declaration, by the id of the object it declares, a stored view's by the id of its
 /// function.
 #[derive(Clone, Copy, Debug)]
@@ -107,48 +79,6 @@ impl DeclOf {
             DeclOf::Object(kind, _) => word(kind),
             DeclOf::Store(_) => "function",
         }
-    }
-
-    /// Returns the declaration in `src` with its kind, module and name, `None` when `src` holds
-    /// no object of the id.
-    pub(super) fn find(self, src: &Source) -> Option<(usize, &'static str, String, String)> {
-        let (kind, id) = match self {
-            DeclOf::Object(kind, id) => (kind, id),
-            DeclOf::Store(f) => (KeyKind::Function, f),
-        };
-        let key = src
-            .ids
-            .iter()
-            .find(|(k, x)| **x == id && k.kind() == kind)?
-            .0;
-        let name = key.name()?.to_string();
-        let (module, name) = match key.owner() {
-            Owner::Module(m) => (m.clone(), name),
-            Owner::Object(space, rel) => {
-                let owner = src
-                    .ids
-                    .iter()
-                    .find(|(k, x)| **x == *rel && k.kind().space() == *space)?
-                    .0;
-                let Owner::Module(m) = owner.owner() else {
-                    return None;
-                };
-                (m.clone(), format!("{}.{name}", owner.name()?))
-            }
-        };
-        let kinds: &[&'static str] = match (self, kind) {
-            (DeclOf::Store(_), _) => &["store"],
-            (_, KeyKind::Type) => &["type"],
-            (_, KeyKind::Relation) => &["relation"],
-            (_, KeyKind::Set) => &["set"],
-            (_, KeyKind::Function) => &["fn", "aggregate"],
-            (_, KeyKind::Constraint) => &["constraint", "check"],
-            _ => &[],
-        };
-        kinds.iter().find_map(|&k| {
-            let i = src.find(k, &module, &name)?;
-            Some((i, k, module.clone(), name.clone()))
-        })
     }
 
     pub(in crate::evolve) fn mapped(self, again: &Recreated) -> DeclOf {
@@ -214,24 +144,6 @@ pub(in crate::evolve) fn recreate(
 }
 
 impl StateOf {
-    /// Returns the state when `src` holds its relation variable and constructor, else the kind of
-    /// the object it lacks.
-    pub(super) fn held(self, src: &Source) -> Result<StateOf, &'static str> {
-        let held =
-            |kind: KeyKind, id: u64| src.ids.iter().any(|(k, x)| *x == id && k.kind() == kind);
-        let (rel, ctor) = match self {
-            StateOf::Relation(r, c) => (Some(r), c),
-            StateOf::Value(c) => (None, c),
-        };
-        if rel.is_some_and(|r| !held(KeyKind::Relation, r.raw())) {
-            return Err("relation");
-        }
-        if !held(KeyKind::Ctor, ctor.raw()) {
-            return Err("constructor");
-        }
-        Ok(self)
-    }
-
     fn mapped(self, again: &Recreated) -> StateOf {
         let ctor = |c: CatCtorId| CatCtorId::from_raw(again_id(again, Space::Shared, c.raw()));
         match self {

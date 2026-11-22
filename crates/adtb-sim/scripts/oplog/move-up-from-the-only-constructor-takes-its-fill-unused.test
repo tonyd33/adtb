@@ -1,0 +1,19 @@
+seed 1
+
+migrate
+  module m
+  add module m
+  add type W { id: Key ws } = P { x: I64 }
+  add relation ws : W key id generate sequence
+
+run
+  insert ws.P { x: 7 }
+
+migrate
+  module m
+  move field W.P.x to W fill 3
+
+query rowsort
+  from w in ws select w.x
+----
+7

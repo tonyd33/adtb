@@ -1,7 +1,7 @@
 use super::field::Maps;
 use super::lift::Lifting;
 use super::op::{Fail, Op, Refused, Res, Resolving};
-use super::run::{Built, Gave, Late, Run};
+use super::run::{Built, Decls, Gave, Late, Run};
 use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
 use crate::canon::Names;
@@ -22,20 +22,20 @@ pub(in crate::evolve) struct Migrated {
     steps: Vec<Option<revert::Steps>>,
     /// For each operator applied, the model it leaves.
     afters: Vec<Model>,
-    /// Whether the result checks; false when an operator stopped the run.
+    /// Whether the result checks.
     checks: bool,
     /// The names of the migration's text, when they were asked for, or the copies a later
     /// operator rewrote before they were named.
     names: Option<Result<Names, Vec<Diag>>>,
-    /// The kind of the first operator the model does not apply, which stops the run there.
-    stopped: Option<String>,
+    /// Each copy of the migration's text its applied operators made: the range it copies and
+    /// where it is.
+    copies: Vec<(std::ops::Range<usize>, naming::At)>,
+    /// For each structural operator that cannot carry a grant no later grant operator states,
+    /// every such grant's refusal.
+    uncarried: BTreeMap<usize, Vec<Diag>>,
 }
 
 impl Migrated {
-    pub(super) fn model(&self) -> &Model {
-        &self.model
-    }
-
     /// Returns, for each operator applied, its resolved form, or why it was refused.
     pub(super) fn ops(&self) -> &[Result<ResolvedOp, Refused>] {
         &self.ops
@@ -46,29 +46,148 @@ impl Migrated {
         &self.afters
     }
 
-    /// Returns the kind of the operator that stopped the run, if one did.
-    pub(super) fn stopped(&self) -> Option<&str> {
-        self.stopped.as_deref()
-    }
-
-    /// Returns, for each operator applied, the row maps of its one step, or why they fail.
-    pub(super) fn maps(&self) -> &[Maps] {
-        &self.maps
-    }
-
-    /// Returns, for each operator applied, its steps when it is a `revert`.
-    pub(super) fn steps(&self) -> &[Option<revert::Steps>] {
-        &self.steps
-    }
-
-    /// Returns whether the result checks.
-    pub(super) fn checks(&self) -> bool {
-        self.checks
-    }
-
     /// Returns the names of the migration's text, when they were asked for.
-    pub(super) fn names(&self) -> Option<&Result<Names, Vec<Diag>>> {
+    pub(in crate::evolve) fn names(&self) -> Option<&Result<Names, Vec<Diag>>> {
         self.names.as_ref()
+    }
+
+    /// Returns why each operator of `m` that does not apply is refused, at its span.
+    pub(in crate::evolve) fn refusals(&self, m: &MigrationFile) -> Vec<Diag> {
+        self.ops
+            .iter()
+            .zip(&m.operators)
+            .enumerate()
+            .flat_map(|(k, (o, op))| match (o, self.uncarried.get(&k)) {
+                (Err(_), Some(ds)) => ds.clone(),
+                (Err(r), None) if r.reported() => {
+                    let first = Diag::new(r.span().unwrap_or(op.span), r.why().to_string());
+                    let more = r.more().iter();
+                    let more = more.map(|(at, why)| Diag::new(at.unwrap_or(op.span), why.clone()));
+                    std::iter::once(first).chain(more).collect()
+                }
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Returns why the declarations the migration leaves do not check, empty when they do.
+    pub(in crate::evolve) fn unchecked(&self) -> String {
+        self.model.unchecked()
+    }
+
+    /// Returns whether every operator applied and the result checks.
+    pub(in crate::evolve) fn applies(&self) -> bool {
+        self.checks && self.ops.iter().all(Result::is_ok)
+    }
+
+    /// Returns the source the migration leaves, with the relation variables its operators add.
+    pub(in crate::evolve) fn source(&self) -> Source {
+        self.model.replay_source()
+    }
+
+    /// Returns the operators resolved.
+    pub(in crate::evolve) fn resolved(&self) -> Vec<ResolvedOp> {
+        self.ops.iter().flatten().cloned().collect()
+    }
+
+    /// Returns the steps of each operator of `m`, whose text is `text`, in order, ending at the
+    /// first operator whose steps fail.
+    ///
+    /// Preconditions:
+    /// - Every operator of `m` applied.
+    pub(in crate::evolve) fn op_steps(
+        &mut self,
+        m: &MigrationFile,
+        text: &str,
+    ) -> Vec<crate::evolve::OpSteps> {
+        let mut out = Vec::new();
+        let maps = std::mem::take(&mut self.maps);
+        let steps = std::mem::take(&mut self.steps);
+        for (k, ((op, maps), steps)) in m.operators.iter().zip(maps).zip(steps).enumerate() {
+            let after = &self.afters[k];
+            let failed = |why: String| Err(vec![Diag::new(op.span, why)]);
+            let stepped = match (steps, maps) {
+                (Some(Ok(steps)), _) if steps.is_empty() => Ok(vec![crate::evolve::Step {
+                    after: after.replay_source(),
+                    maps: Vec::new(),
+                    applied: None,
+                }]),
+                (Some(Ok(steps)), _) => {
+                    let last = steps.len() - 1;
+                    Ok(steps
+                        .into_iter()
+                        .enumerate()
+                        .map(|(j, s)| s.into_step((j == last).then_some(after)))
+                        .collect())
+                }
+                (Some(Err(why)), _) | (None, Err(why)) => failed(why),
+                (None, Ok(maps)) => Ok(vec![crate::evolve::Step {
+                    after: after.replay_source(),
+                    maps,
+                    applied: Some(crate::evolve::Applied {
+                        module: m.module.text.clone(),
+                        text: text.to_string(),
+                        op: op.clone(),
+                    }),
+                }]),
+            };
+            let stop = stepped.is_err();
+            out.push(stepped);
+            if stop {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Returns, for each of `diags`, diagnostics of the declarations the migration leaves, the
+    /// span of the migration's text `text` an operator copied the diagnosed text from, when it
+    /// copied it.
+    pub(in crate::evolve) fn copied_from(
+        &self,
+        text: &str,
+        diags: &[crate::span::FileDiag],
+    ) -> Vec<Option<Span>> {
+        let parsed = self.model.parsed();
+        diags
+            .iter()
+            .map(|d| {
+                let span = d.diag.span;
+                let placed = self.copies.iter().find_map(|(from, at)| {
+                    let (file, at) = self.model.span_of(&parsed, *at)?;
+                    (file == d.file && at.start <= span.start && span.end <= at.end)
+                        .then(|| {
+                            naming::copied_span(
+                                parsed.text(file),
+                                at.range(),
+                                text,
+                                from.clone(),
+                                span,
+                            )
+                        })
+                        .flatten()
+                });
+                placed.or_else(|| {
+                    self.model
+                        .naming
+                        .arm_copies()
+                        .iter()
+                        .find_map(|(from, item)| {
+                            let file = FileId(self.model.decl_at(*item)? as u32);
+                            (file == d.file)
+                                .then(|| {
+                                    naming::searched_span(
+                                        parsed.text(file),
+                                        text,
+                                        from.clone(),
+                                        span,
+                                    )
+                                })
+                                .flatten()
+                        })
+                })
+            })
+            .collect()
     }
 }
 
@@ -107,8 +226,8 @@ impl Model {
         let mut maps = Vec::new();
         let mut steps = Vec::new();
         let mut afters = Vec::new();
-        let mut stopped = None;
         let mut rekeyed = Vec::new();
+        let mut copies = Vec::new();
         for (k, op) in m.operators.iter().enumerate() {
             let by = Adder::Operator(k);
             model.mark(by, Added::Applying);
@@ -129,6 +248,7 @@ impl Model {
                     }
                     next.keep(&model, kept);
                     next.rebind(&model);
+                    copies.extend(next.copies_of(&run, op, &r, &mut Vec::new()));
                     if naming {
                         next.name_copies(&run, op, &r);
                     }
@@ -152,48 +272,38 @@ impl Model {
                     }
                     ops.push(Err(why.or_at(op.span)));
                 }
-                Err(Fail::Unmodelled(kind)) => {
-                    stopped = Some(kind);
-                    break;
-                }
                 Err(Fail::Broken(why)) => return Err(why),
             }
             afters.push(model.clone());
         }
+        let mut uncarried: BTreeMap<usize, Vec<Diag>> = BTreeMap::new();
         for u in std::mem::take(&mut model.unstated) {
             if let Some(k) = m.operators.iter().position(|op| op.span == u.span) {
+                uncarried
+                    .entry(k)
+                    .or_default()
+                    .push(Diag::new(u.span, u.message.clone()));
                 ops[k] = Err(Refused::at(u.span, u.message));
             }
         }
         let late = run.take_late();
-        let mut checks = false;
         let mut unresolved = late.iter().any(|(_, l)| matches!(l, Late::Unresolved));
-        if stopped.is_none() {
-            checks = (late.is_empty() || model.resolve_late(&late, &mut ops, &mut unresolved)?)
-                && model.checks(&[])?;
-            if checks && !rekeyed.is_empty() {
-                match model.built(&[], &[]) {
-                    Ok((built, _)) => {
-                        for (k, relation, span) in &rekeyed {
-                            if let Err(d) = rekey_leaves_no_old_reference(
-                                built.schema(),
-                                module,
-                                relation,
-                                *span,
-                            ) {
-                                ops[*k] = Err(Refused::at(d.span, d.message));
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        stopped =
-                            Some("a rekey's end check over declarations that do not build".into());
-                    }
+        let checks = (late.is_empty() || model.resolve_late(&late, &mut ops, &mut unresolved)?)
+            && model.checks(&[])?;
+        if checks && !rekeyed.is_empty() {
+            let Ok((built, _)) = model.built(&[], &[]) else {
+                return Err("declarations that check and do not build".into());
+            };
+            for (k, relation, span) in &rekeyed {
+                if let Err(d) =
+                    rekey_leaves_no_old_reference(built.schema(), module, relation, *span)
+                {
+                    ops[*k] = Err(Refused::at(d.span, d.message));
                 }
             }
-            if checks && unresolved {
-                stopped = Some("a clause naming what only the migration's end resolves".into());
-            }
+        }
+        if checks && unresolved {
+            return Err("a clause naming what only the migration's end resolves".into());
         }
         if checks && ops.iter().all(Result::is_ok) {
             model.log.push(LogM {
@@ -203,7 +313,7 @@ impl Model {
                 operators: m.operators.len(),
             });
         }
-        let names = (naming && checks && stopped.is_none()).then(|| {
+        let names = (naming && checks).then(|| {
             model.name_late(&run);
             let missed = run.take_missed();
             if !missed.is_empty() {
@@ -221,8 +331,9 @@ impl Model {
             steps,
             afters,
             checks,
-            stopped,
             names,
+            copies,
+            uncarried,
         })
     }
 

@@ -4,7 +4,7 @@ use crate::ast::{self, CtorSel, QName};
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::element_head;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Res, Resolving, broken, refuse, refuse_at, unmodelled};
+use crate::evolve::model::op::{Res, Resolving, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
@@ -294,11 +294,12 @@ impl Model {
                 return refuse(format!("`{p}` is already a constructor of `{tname}`"));
             }
         }
+        let not_declared = || refuse(format!("`{}` is not a type of the schema", st.name));
         let Some(inner) = schema.ids().type_id(*s).map(u64::from) else {
-            return broken("a sum the built schema gives no id");
+            return not_declared();
         };
         let Some(inner_ctors) = self.types.get(&inner).map(|_| self.ctors_of(inner)) else {
-            return unmodelled("an unnest of a sum of no user module");
+            return not_declared();
         };
         let f = field.name.clone();
         let mut made = Vec::new();

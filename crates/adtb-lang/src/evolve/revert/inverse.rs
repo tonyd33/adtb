@@ -623,9 +623,9 @@ impl Cx<'_> {
                     module: logged.module.clone(),
                     text: &logged.text,
                     span: op.span,
-                    noted: None,
                     copying: false,
-                    steps: None,
+                    accepting: false,
+                    replaying: false,
                 };
                 let (state, _) = cx.stage_key(t)?;
                 Ok(vec![Inverse::States {

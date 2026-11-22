@@ -79,24 +79,6 @@ pub fn chained(schema: &Schema, previous: Hash, ops: &[ResolvedOp]) -> Hash {
     log.chained(previous, &log.rows(ops))
 }
 
-/// Fail with [`Broken::ModelledHash`] unless the hash of the version after `previous` chained
-/// from `modelled`, the migration model's resolved operators of a migration, is the one chained
-/// from `operators`, the catalog's.
-pub fn modelled_hash_agrees(
-    schema: &Schema,
-    previous: Hash,
-    operators: &[OperatorRow],
-    modelled: &[ResolvedOp],
-) -> Result<(), Error> {
-    let log = Log::new(schema);
-    let modelled = log.chained(previous, &log.rows(modelled));
-    let catalog = log.chained(previous, operators);
-    if modelled == catalog {
-        return Ok(());
-    }
-    Err(Broken::ModelledHash { modelled, catalog }.into())
-}
-
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
 ///
 /// Panics:

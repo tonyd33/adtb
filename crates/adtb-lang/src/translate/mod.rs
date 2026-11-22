@@ -7,7 +7,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::check::Program;
-use crate::evolve::{Clause, Code, Listed, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
+use crate::evolve::{Clause, Code, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
 use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, NormalProgram, NormalQuery};
@@ -570,15 +570,9 @@ impl<'a> Pinned<'a> {
         let found = match &o.from {
             Origin::Logged(i, k) => {
                 let logged = &self.to_source.log[*i];
-                let mut src = replayed(logged, *k).map_err(|ds| failed(&o.text, ds))?;
-                let steps = src
-                    .steps(
-                        &logged.module,
-                        Listed::nth(&logged.operators, *k),
-                        &logged.text,
-                    )
-                    .map_err(|ds| failed(&o.text, ds))?;
-                filled(steps.into_iter().flat_map(|s| s.maps)).map(|f| (f, src))
+                let (_, steps) = logged.stepped(*k).map_err(|ds| failed(&o.text, ds))?;
+                let after = steps.last().map(|s| s.after.clone());
+                filled(steps.into_iter().flat_map(|s| s.maps)).zip(after)
             }
             Origin::Reverted(fill) => fill
                 .as_ref()
@@ -663,28 +657,10 @@ fn filled(maps: impl IntoIterator<Item = RowMap>) -> Option<Rc<RowFn>> {
     })
 }
 
-/// Returns the source before operator `k` of `logged`.
-fn replayed(logged: &Logged, k: usize) -> Result<Source, Vec<crate::span::Diag>> {
-    let mut src = (*logged.before).clone();
-    src.expecting(&logged.module, &logged.operators);
-    for op in Listed::all(&logged.operators).take(k) {
-        src.apply(&logged.module, op, &logged.text)?;
-    }
-    Ok(src)
-}
-
 /// Returns each operator that revert `k` of `logged`, whose text is `text`, applies, resolved
 /// against the source before and after it.
 fn reverted(logged: &Logged, k: usize, text: &str) -> R<Vec<Op>> {
-    let mut before = replayed(logged, k).map_err(|ds| failed(text, ds))?;
-    let steps = before
-        .clone()
-        .steps(
-            &logged.module,
-            Listed::nth(&logged.operators, k),
-            &logged.text,
-        )
-        .map_err(|ds| failed(text, ds))?;
+    let (mut before, steps) = logged.stepped(k).map_err(|ds| failed(text, ds))?;
     let mut out = Vec::new();
     for s in steps {
         if let Some(a) = &s.applied {

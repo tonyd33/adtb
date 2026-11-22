@@ -10,15 +10,15 @@ use crate::ast::{
     QName, RelationClause,
 };
 use crate::canon::Names;
-use crate::check::{self, Program, Ref, RowBody};
+use crate::check::{self, Program, Ref};
 use crate::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatFunctionId, CatIndexId, CatRelId, CatSetId,
-    CatTypeId, ObjectKey, PathStep, held_id,
+    CatTypeId, ObjectKey, held_id,
 };
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
 use crate::schema::{self, Committed, Schema, TypeDefKind, ValueDef};
-use crate::span::{Diag, FileDiag, FileId, Span};
+use crate::span::{Diag, DiagKind, FileDiag, FileId, Span};
 use crate::types::*;
 
 mod carry;
@@ -30,10 +30,9 @@ mod grant;
 mod grant_text;
 mod ids;
 mod keep;
-#[cfg(any(test, feature = "compare-migration-model"))]
+#[cfg(test)]
 pub(crate) mod meaning;
 mod memo;
-#[cfg(feature = "compare-migration-model")]
 mod model;
 mod names;
 mod operands;
@@ -44,9 +43,7 @@ mod rowmap;
 mod source;
 mod text;
 
-use field::{Part, path_text};
-use ids::{Held, Replaced};
-use source::stated_ctors;
+use field::path_text;
 use text::*;
 
 #[cfg(test)]
@@ -67,7 +64,6 @@ pub use grant::{
     deployment_grant, deployment_revoke, family_query, target_covers,
 };
 pub use keep::Kept;
-use recorded::Recorder;
 pub use recorded::{Migrated, OpSteps, Recorded};
 use resolved::Reached;
 pub use resolved::{
@@ -149,56 +145,11 @@ pub struct Source {
     pub ids: BTreeMap<ObjectKey, u64>,
     /// The next id of each space.
     pub next: BTreeMap<crate::ids::Space, u64>,
-    /// Where operators copied the text of the migration [`Logged::names`] replays; `None` otherwise.
-    pub marks: Option<Marks>,
     /// The relation variables, by module and name, that the operators of the migration being
     /// applied add.
     pub ahead: Vec<Expected>,
-    /// How the operator being applied carries grants, once the constructors it makes have ids.
-    carry: Option<carry::Carry>,
-    /// The paths of field ids the operator being applied replaces, until its objects take ids.
-    replaced: Vec<Replaced>,
-    /// The named objects that took new ids since the uniques, indexes and defaults last took
-    /// theirs.
-    created: BTreeSet<(crate::ids::Space, u64)>,
-    /// The key and the id of each field retired since the uniques, indexes and defaults last
-    /// took ids.
-    dropped: BTreeSet<(ObjectKey, u64)>,
-    /// The grants the structural operators of the migration being applied could not carry and
-    /// no later grant operator of it has stated.
-    unstated: Vec<carry::Unstated>,
     memo: memo::BuiltMemo,
     parsed: memo::ParsedMemo,
-    /// While the operators being applied replay a logged migration as an inverse, the id each
-    /// object the inverse created again takes, by the id it had; a `revert` among them applies
-    /// without its dependency gate and names those objects by the ids this maps them to.
-    replaying: Option<revert::Recreated>,
-    /// Set while applying text the log does not yet hold; a `revert` then refuses a fill no
-    /// inverse takes.
-    accepting: bool,
-    /// For each fill of the last `revert` applied, the key of the field an inverse took it for.
-    filled: Vec<Option<ObjectKey>>,
-}
-
-/// Text of the migration being replayed that an operator copied into a declaration.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Mark {
-    /// The copied range of the migration's text.
-    from: Range<usize>,
-    decl: usize,
-    /// The offset of the copy in the declaration's text, without the header.
-    at: usize,
-}
-
-/// The copies of a replayed migration's text in the declarations of a source.
-#[derive(Clone, Debug, Default)]
-pub struct Marks {
-    /// The copies in the declarations as they are now, each moved by every later edit, less the text a
-    /// later edit replaces.
-    written: Vec<Mark>,
-    /// The text of the migration that the current operator matched against declarations as they were
-    /// before it.
-    read: Vec<Mark>,
 }
 
 /// Text an operator writes into a declaration, with the ranges of the migration's text it copies.
@@ -219,16 +170,6 @@ impl Written {
         self.text.push_str(&w.text);
         self.copies
             .extend(w.copies.into_iter().map(|(o, r)| (at + o, r)));
-    }
-
-    /// Returns `parts`, each after `before`.
-    fn prefixed(parts: impl IntoIterator<Item = Written>, before: &str) -> Written {
-        let mut out = Written::default();
-        for p in parts {
-            out.push(before);
-            out.append(p);
-        }
-        out
     }
 
     /// Returns `parts` with `sep` between each two.
@@ -277,6 +218,22 @@ pub struct Refusal {
     pub result: Option<Box<Source>>,
 }
 
+impl Refusal {
+    /// Returns the refusal of a migration the engine fails on internally, for `d`.
+    fn broken_by(d: Diag) -> Refusal {
+        Refusal {
+            operators: vec![d],
+            ..Refusal::default()
+        }
+    }
+
+    /// Returns the internal failure that stands for this refusal, when the engine failed on the
+    /// migration rather than refusing it.
+    pub fn broken(&self) -> Option<&Diag> {
+        self.operators.iter().find(|d| d.kind == DiagKind::Internal)
+    }
+}
+
 fn header(module: &str) -> String {
     format!("module {module}\n")
 }
@@ -308,28 +265,6 @@ fn sel_idents(sel: &CtorSel) -> Vec<&ast::Ident> {
     match sel {
         CtorSel::One(c) => vec![c],
         CtorSel::Many(cs) => cs.iter().collect(),
-    }
-}
-
-fn scope_idents(s: &ast::CtorScope) -> Vec<&ast::Ident> {
-    match s {
-        ast::CtorScope::One(c) => vec![c],
-        ast::CtorScope::Many(cs) => cs.iter().collect(),
-    }
-}
-
-fn scope_sel(s: &ast::CtorScope) -> CtorSel {
-    match s {
-        ast::CtorScope::One(c) => CtorSel::One(c.clone()),
-        ast::CtorScope::Many(cs) => CtorSel::Many(cs.clone()),
-    }
-}
-
-/// The text of a constructor selection: `C` or `(C | D)`.
-fn sel_text(names: &[String]) -> String {
-    match names {
-        [one] => one.clone(),
-        many => format!("({})", many.join(" | ")),
     }
 }
 
@@ -415,37 +350,24 @@ fn decl_fields(t: &ast::TypeDecl) -> Vec<(Option<&str>, &ast::FieldType)> {
     out
 }
 
-/// How a structural operator rewrites the selections over the constructors it replaces.
-#[derive(Clone, Copy, Debug)]
-struct Reselect {
-    /// A selection must hold all or none of them.
-    whole: bool,
-    /// The scopes of relation clauses are rewritten too.
-    clauses: bool,
-    /// The scopes of checks are rewritten too.
-    checks: bool,
-    /// The operator, as a refusal names it.
-    what: &'static str,
-}
-
-/// One operator being applied.
+/// A `revert` whose inverse is being computed: the source it applies to, its migration's module
+/// and text, and its span there.
 struct Cx<'a> {
     src: &'a mut Source,
     module: String,
     text: &'a str,
     span: Span,
-    /// Where a fill or routing records the names it resolves, when replaying for them.
-    noted: Option<&'a RefCell<Names>>,
-    /// Whether the text the operator copies into declarations is recorded as copies of `text`.
+    /// Whether the text it copies into the inverse is recorded as copies of `text`.
     copying: bool,
-    /// Where a revert records the steps of its inverses, when replaying for them.
-    steps: Option<&'a RefCell<Vec<Step>>>,
+    /// Whether the log does not yet hold the revert's migration; a fill no inverse takes is then
+    /// refused.
+    accepting: bool,
+    /// Whether the revert is among the operators of a logged migration an inverse applies again;
+    /// it then applies without its dependency gate.
+    replaying: bool,
 }
 
 type R<T> = Result<T, Vec<Diag>>;
-
-/// Edits of declaration texts, by declaration.
-type Edits = BTreeMap<usize, Vec<(Range<usize>, Written)>>;
 
 /// The write state of a constructor relation, by the ids of the relation variable and the
 /// constructor, or of a value-level constructor, by its id.

@@ -9,18 +9,6 @@ impl Source {
         Ok(self.names_in(&schema))
     }
 
-    /// Returns the names of each declaration as `names` does, and the declarations whose names
-    /// wait: those that write a name this source does not resolve. `None` while the source does
-    /// not build.
-    fn names_built(&self) -> Option<(Vec<Names>, BTreeSet<usize>)> {
-        let schema = self.schema().ok()?;
-        let names = self.names_in(&schema);
-        let waiting = (0..names.len())
-            .filter(|&i| !names[i].all_resolve())
-            .collect();
-        Some((names, waiting))
-    }
-
     fn names_in(&self, schema: &Schema) -> Vec<Names> {
         let mut out = vec![Names::default(); self.decls.len()];
         for (file, f) in self.files().expect("a source whose schema builds parses") {
@@ -52,183 +40,39 @@ impl Logged {
     /// resolve in the clause they match before the operator. A fill or a routing resolves as the
     /// operator checks it.
     pub fn names(&self) -> Result<Names, Vec<Diag>> {
-        self.names_with(false, None)
+        model::replay(self)?.1
     }
 
-    /// Returns the names of this migration's text as [`Logged::names`] does, and the source before
-    /// each operator.
-    pub(super) fn replayed(&self) -> Result<(Names, Vec<Source>), Vec<Diag>> {
-        let mut sources = Vec::new();
-        let names = self.names_with(false, Some(&mut sources))?;
-        Ok((names, sources))
+    /// Returns the source before this migration's first operator and after each.
+    pub fn states(&self) -> Result<Vec<Source>, Vec<Diag>> {
+        Ok(model::replay(self)?.0)
     }
 
     /// Returns the names of this migration's text as [`Logged::names`] does, with each operand
     /// that names an object tied to its catalog id as [`operands::tie_operands`] resolves it.
     pub(super) fn spelling(&self) -> Result<Names, Vec<Diag>> {
-        self.names_with(true, None)
-    }
-
-    fn names_with(
-        &self,
-        operands: bool,
-        mut sources: Option<&mut Vec<Source>>,
-    ) -> Result<Names, Vec<Diag>> {
-        let mut src = (*self.before).clone();
-        src.version += 1;
-        src.expecting(&self.module, &self.operators);
-        src.marks = Some(Marks::default());
-        let mut naming = Naming::default();
-        for op in Listed::all(&self.operators) {
-            let prior = src.clone();
-            let noted = RefCell::new(Names::default());
-            src.apply_noting(&self.module, op, &self.text, Some(&noted))?;
-            let names = naming.noted(noted.into_inner());
-            if operands {
-                operands::tie_operands(&prior, &src, &self.module, &op, names);
-            }
-            naming.copied(&prior, &mut src, op.span)?;
-            if let Some(out) = sources.as_deref_mut() {
-                out.push(prior);
-            }
+        let (states, names, _) = model::replay(self)?;
+        let mut names = names?;
+        for (k, op) in self.operators.iter().enumerate() {
+            operands::tie_operands(&states[k], &states[k + 1], &self.module, op, &mut names);
         }
-        naming.finish(&src)?;
-        Ok(naming.into_names())
-    }
-}
-
-/// The names of a migration's text, gathered as its operators apply one at a time to a source
-/// that records its copies.
-#[derive(Default)]
-pub(super) struct Naming {
-    names: Names,
-    late: Vec<Range<usize>>,
-    missing: Vec<Diag>,
-}
-
-impl Naming {
-    /// Add the names an operator noted. Returns the names so far.
-    pub(super) fn noted(&mut self, noted: Names) -> &mut Names {
-        self.names.extend(noted);
-        &mut self.names
+        Ok(names)
     }
 
-    /// Name the text of the migration the operator at `span` matched in `prior`, the source
-    /// before it, and copied into `src`, the source after it.
-    pub(super) fn copied(
-        &mut self,
-        prior: &Source,
-        src: &mut Source,
-        span: Span,
-    ) -> Result<(), Vec<Diag>> {
-        let marks = src.marks.as_mut().expect("a replay records its copies");
-        let within = |m: &&Mark| span.range().contains(&m.from.start);
-        let read: Vec<Mark> = std::mem::take(&mut marks.read)
-            .iter()
-            .filter(within)
-            .cloned()
-            .collect();
-        let written: Vec<Mark> = marks.written.iter().filter(within).cloned().collect();
-        if !read.is_empty() {
-            let before = prior.names().map_err(unbuilt)?;
-            copy_marked(&mut self.names, &before, prior, &read);
-        }
-        match src.names_built() {
-            Some((after, waiting)) => {
-                copy_marked(&mut self.names, &after, src, &written);
-                self.late.extend(
-                    written
-                        .into_iter()
-                        .filter(|m| waiting.contains(&m.decl))
-                        .map(|m| m.from),
-                );
-                copy_late(
-                    &mut self.names,
-                    &after,
-                    src,
-                    &waiting,
-                    &mut self.late,
-                    &mut self.missing,
-                );
-            }
-            None => self.late.extend(written.into_iter().map(|m| m.from)),
-        }
-        Ok(())
-    }
-
-    /// Name the copies still unnamed in `src`, the source the last operator leaves.
+    /// Returns the source before operator `k` of this migration and the steps operator `k` takes
+    /// from it, as [`Recorded::steps`] gives them.
     ///
-    /// Fail when the source does not build or a later operator rewrote a copy.
-    pub(super) fn finish(&mut self, src: &Source) -> Result<(), Vec<Diag>> {
-        if !self.late.is_empty() {
-            let result = src.names().map_err(unbuilt)?;
-            copy_late(
-                &mut self.names,
-                &result,
-                src,
-                &BTreeSet::new(),
-                &mut self.late,
-                &mut self.missing,
-            );
-        }
-        if self.missing.is_empty() {
-            Ok(())
-        } else {
-            Err(std::mem::take(&mut self.missing))
-        }
-    }
-
-    pub(super) fn into_names(self) -> Names {
-        self.names
-    }
-}
-
-/// Copy into `names` the names `decl_names` holds at the copies in `src` of each range of
-/// `late` that `names` does not name yet, keeping in `late` each range copied into a declaration
-/// of `waiting`, and record in `missing` each range a later operator rewrote.
-fn copy_late(
-    names: &mut Names,
-    decl_names: &[Names],
-    src: &Source,
-    waiting: &BTreeSet<usize>,
-    late: &mut Vec<Range<usize>>,
-    missing: &mut Vec<Diag>,
-) {
-    let marks = src.marks.as_ref().expect("a replay records its copies");
-    let mut kept = Vec::new();
-    for from in late.drain(..) {
-        let pieces: Vec<Mark> = marks
-            .written
-            .iter()
-            .filter(|m| from.start <= m.from.start && m.from.end <= from.end)
-            .cloned()
-            .collect();
-        if pieces.is_empty() {
-            missing.push(Diag::new(
-                Span::new(from.start, from.end),
-                "a later operator of the migration rewrites the declaration this operand was written into, so its names do not resolve",
-            ));
-        }
-        if pieces.iter().any(|m| waiting.contains(&m.decl)) {
-            kept.push(from);
-            continue;
-        }
-        for m in &pieces {
-            let at = header(&src.decls[m.decl].module).len() + m.at;
-            names.copy_unnamed(&decl_names[m.decl], at..at + m.from.len(), m.from.start);
-        }
-    }
-    *late = kept;
-}
-
-fn unbuilt(ds: Vec<FileDiag>) -> Vec<Diag> {
-    ds.into_iter().map(|d| d.diag).collect()
-}
-
-/// Copy into `names` the names `decl_names` holds at each mark of a declaration of `src`.
-fn copy_marked(names: &mut Names, decl_names: &[Names], src: &Source, marks: &[Mark]) {
-    for m in marks {
-        let at = header(&src.decls[m.decl].module).len() + m.at;
-        names.copy(&decl_names[m.decl], at..at + m.from.len(), m.from.start);
+    /// Fail with the refusals of the operators that do not apply, or why the steps fail.
+    pub fn stepped(&self, k: usize) -> Result<(Source, Vec<Step>), Vec<Diag>> {
+        let (mut states, _, mut got) = model::replay(self)?;
+        let m = model::logged_file(self);
+        let steps = got.op_steps(&m, &self.text).into_iter().nth(k);
+        let steps = steps.ok_or_else(|| {
+            vec![Diag::new(
+                self.operators[k].span,
+                "an earlier operator's steps fail",
+            )]
+        })??;
+        Ok((states.swap_remove(k), steps))
     }
 }

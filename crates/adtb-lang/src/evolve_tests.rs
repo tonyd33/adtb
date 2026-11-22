@@ -214,9 +214,26 @@ fn decl(src: &Source, kind: &str, name: &str) -> String {
     src.decls[i].text.clone()
 }
 
+/// Returns each declaration of `src` as its module and its text in token form.
+fn flat_decls(src: &Source) -> Vec<(String, String)> {
+    src.decls
+        .iter()
+        .map(|d| (d.module.clone(), token_form(&d.text)))
+        .collect()
+}
+
 /// The declaration's text with its white space collapsed.
 fn flat(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Returns the tokens of `text` joined by single spaces, its comments dropped.
+fn token_form(text: &str) -> String {
+    tokens(text)
+        .into_iter()
+        .map(|(_, r)| &text[r])
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn stage(src: &Source, relation: &str, ctor: &str) -> Stage {
@@ -385,8 +402,7 @@ fn a_printed_schema_replays_as_a_first_migration() {
         WORLD.trim_start_matches("module auth")
     ));
     let s = applies(&Source::default(), &replay(&printed, "auth"));
-    let texts = |s: &Source| s.decls.iter().map(|d| d.text.clone()).collect::<Vec<_>>();
-    assert_eq!(texts(&printed), texts(&s));
+    assert_eq!(flat_decls(&printed), flat_decls(&s));
 }
 
 #[test]
@@ -742,7 +758,7 @@ rename field Login.EmailPass.hash to pw_hash",
         "{t}"
     );
     let r = flat(&decl(&s, "relation", "logins"));
-    assert!(r.starts_with("relation logins : Login"), "{r}");
+    assert!(r.starts_with("relation logins: Login"), "{r}");
     assert!(r.contains("unique (gid) in Gmail"), "{r}");
     assert_eq!(
         "set Federated of logins = Gmail | Apple",
@@ -2006,46 +2022,26 @@ fn revert_of_a_dropped_field_ignores_a_comment_after_its_delete_action() {
 }
 
 #[test]
-fn alter_field_keeps_a_comment_after_the_delete_action() {
-    let s = with_owner("owner: Option (Key users) on delete clear -- keep the npc\n");
-    let s = applies(&s, "module auth\nalter field Npc.owner on delete restrict");
-    let t = decl(&s, "type", "Npc");
-    assert!(
-        t.contains("owner: Option (Key users) on delete restrict -- keep the npc\n"),
-        "{t}"
-    );
-}
-
-#[test]
-fn alter_field_takes_a_comment_holding_a_comma_as_a_comment() {
-    let s = with_owner("owner: Option (Key users) on delete clear -- keep, really\n");
-    let s = applies(&s, "module auth\nalter field Npc.owner on delete restrict");
-    let t = decl(&s, "type", "Npc");
-    assert!(
-        t.contains("owner: Option (Key users) on delete restrict -- keep, really\n"),
-        "{t}"
-    );
-}
-
-#[test]
 fn revert_of_alter_field_restores_an_action_after_a_comment() {
     let s = with_owner("owner: Option (Key users) -- the player\n    on delete clear\n");
+    let npc = |action: &str| {
+        format!(
+            "type Npc = {{ id: Key npcs, owner: Option (Key users) on delete {action}, name: Text }}"
+        )
+    };
     let s = applies(&s, "module auth\nalter field Npc.owner on delete restrict");
-    let t = flat(&decl(&s, "type", "Npc"));
-    assert!(t.contains("-- the player on delete restrict"), "{t}");
+    assert_eq!(npc("restrict"), flat(&decl(&s, "type", "Npc")));
     let s = applies(&s, "module auth\nrevert 0001");
-    let t = flat(&decl(&s, "type", "Npc"));
-    assert!(t.contains("-- the player on delete clear"), "{t}");
+    assert_eq!(npc("clear"), flat(&decl(&s, "type", "Npc")));
 }
 
 #[test]
 fn alter_field_adds_an_action_to_a_field_without_one() {
     let s = with_owner("owner: Option (Key users) -- the player\n");
     let s = applies(&s, "module auth\nalter field Npc.owner on delete clear");
-    let t = decl(&s, "type", "Npc");
-    assert!(
-        t.contains("owner: Option (Key users) on delete clear -- the player\n"),
-        "{t}"
+    assert_eq!(
+        "type Npc = { id: Key npcs, owner: Option (Key users) on delete clear, name: Text }",
+        flat(&decl(&s, "type", "Npc"))
     );
 }
 
@@ -2220,8 +2216,8 @@ relation orders : Order key id generate sequence",
     let s3 = r.unwrap_or_else(|e| panic!("{e:?}"));
     let i = s3.find("relation", "billing", "prices").unwrap();
     assert_eq!(
-        "relation prices : Price key (sku, during)",
-        s3.decls[i].text
+        "relation prices: Price key (sku, during)",
+        flat(&s3.decls[i].text)
     );
     let errs = migrate(
         &s,
@@ -2500,14 +2496,14 @@ fn adopt_tzdb_changes_no_schema_object() {
         &running(),
         "module auth\nadopt tzdb \"2026b\" from \"tzdata-2026b.tzif\"",
     );
-    assert_eq!(running().decls, s.decls);
+    assert_eq!(flat_decls(&running()), flat_decls(&s));
 }
 
 #[test]
 fn revert_undoes_a_migration_by_its_inverse() {
     let s = applies(&running(), "module auth\nadd index (user) in identities");
     let s = applies(&s, "module auth\nrevert 0001");
-    assert_eq!(running().decls, s.decls);
+    assert_eq!(flat_decls(&running()), flat_decls(&s));
     assert_eq!(2, s.version);
 }
 
@@ -2521,7 +2517,7 @@ rename type Identity to Login
 rename relation identities to logins",
     );
     let s = applies(&s, "module auth\nrevert 0001");
-    assert_eq!(running().decls, s.decls);
+    assert_eq!(flat_decls(&running()), flat_decls(&s));
 }
 
 #[test]
@@ -2534,7 +2530,7 @@ add constructor Identity.Corp { domain: Text }
   arm login_present: Corp c -> scalar_len(c.domain) == 0",
     );
     let s = applies(&s, "module auth\nrevert 0001");
-    assert_eq!(running().decls, s.decls);
+    assert_eq!(flat_decls(&running()), flat_decls(&s));
     assert!(
         !named_states(&s)
             .0
@@ -2697,7 +2693,7 @@ fn revert_of_a_split_by_a_discriminator_named_otherwise_merges_back() {
     );
     let r = flat(&decl(&s, "relation", "places"));
     assert_eq!(
-        "relation places : Place key id generate sequence unique (name) in Location",
+        "relation places: Place key id generate sequence unique (name) in Location",
         r
     );
     assert_eq!(
@@ -2833,8 +2829,8 @@ relation orders : Order key id generate sequence",
     let s = migrate(&s, "module billing\nrevert 0001").unwrap_or_else(|e| panic!("{e:?}"));
     let i = s.find("relation", "billing", "prices").unwrap();
     assert_eq!(
-        "relation prices : Price key id generate sequence",
-        s.decls[i].text
+        "relation prices: Price key id generate sequence",
+        flat(&s.decls[i].text)
     );
 }
 
@@ -2853,7 +2849,7 @@ fn revert_of_a_field_rename_and_a_move_restores_the_field() {
         "module auth\nrename field Identity.EmailPass.hash to pw_hash",
     );
     let s = applies(&s, "module auth\nrevert 0001");
-    assert_eq!(running().decls, s.decls);
+    assert_eq!(flat_decls(&running()), flat_decls(&s));
     let s = applies(
         &running(),
         "module auth\nmove field Identity.EmailPass.email to Identity fill match | Google g -> g.gid | Apple a -> a.sub",
@@ -2887,8 +2883,8 @@ fn a_record_gains_a_constructor_as_any_sum() {
         "module auth\nadd constructor Point.Polar { r: F64, theta: F64 }",
     );
     assert_eq!(
-        "type Point = Point { x: I64, y: I64 }\n  | Polar { r: F64, theta: F64 }",
-        decl(&s, "type", "Point")
+        "type Point = Point { x: I64, y: I64 } | Polar { r: F64, theta: F64 }",
+        flat(&decl(&s, "type", "Point"))
     );
     refuses(
         &s,
@@ -2907,14 +2903,14 @@ fn a_keyed_record_gains_a_constructor_with_its_key_in_the_header() {
         "module auth\nadd constructor User.Admin { level: I32 }",
     );
     assert_eq!(
-        "type User { id: Key users }\n  = User { name: Text }\n  | Admin { level: I32 }",
-        decl(&s, "type", "User")
+        "type User { id: Key users } = User { name: Text } | Admin { level: I32 }",
+        flat(&decl(&s, "type", "User"))
     );
     assert_eq!(id, field_id(&ids_of(&s), "User", None, "id"));
     let s = applies(&s, "module auth\nrevert 0001");
     assert_eq!(
         "type User = { id: Key users, name: Text }",
-        decl(&s, "type", "User")
+        flat(&decl(&s, "type", "User"))
     );
     assert_eq!(id, field_id(&ids_of(&s), "User", Some("User"), "id"));
 }
@@ -2930,8 +2926,8 @@ fn a_record_keyed_by_all_its_fields_gains_a_constructor_as_a_nullary_one() {
         "module auth\nadd constructor Label.Pinned { rank: I32 }",
     );
     assert_eq!(
-        "type Label { name: Text }\n  = Label\n  | Pinned { rank: I32 }",
-        decl(&s, "type", "Label")
+        "type Label { name: Text } = Label | Pinned { rank: I32 }",
+        flat(&decl(&s, "type", "Label"))
     );
 }
 
@@ -3662,21 +3658,31 @@ nest constructor Payment.(Card | Invoice) into Held { method: Method }",
     assert!(r.contains("unique (last4) in Card"), "{r}");
 }
 
+/// Returns the source after each operator of migration `text` applied to `src`.
+fn afters(src: &Source, text: &str) -> Vec<Source> {
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    src.record_steps(&m, text)
+        .unwrap_or_else(|e| panic!("the migration applies: {e:?}"))
+        .into_iter()
+        .map(|steps| {
+            steps
+                .unwrap_or_else(|e| panic!("the operator's steps: {e:?}"))
+                .pop()
+                .expect("an operator takes a step")
+                .after
+        })
+        .collect()
+}
+
 #[test]
 fn a_relation_added_then_renamed_is_pending_no_more_and_selects_late_under_its_new_name() {
     let text = "module auth
 add type Stamp = { id: Key stamps }
 add relation stamps : Stamp key id generate sequence
 rename relation stamps to labels";
-    let m = parse_migration(text, Options::default())
-        .ok()
-        .expect("the migration parses");
-    let mut s = running();
-    s.expecting("auth", &m.operators);
-    for op in Listed::all(&m.operators) {
-        s.apply("auth", op, text)
-            .unwrap_or_else(|e| panic!("{op:?} refused: {e:?}"));
-    }
+    let s = afters(&running(), text).pop().expect("the last operator");
     let schema = s.schema().unwrap_or_else(|e| panic!("{e:?}"));
     let labels = schema
         .relations
@@ -3698,13 +3704,7 @@ fn a_source_a_migration_is_being_applied_to_gives_no_committed_schema() {
     let text = "module auth
 add type Team = { id: Key teams }
 add relation teams : Team key id generate sequence";
-    let m = parse_migration(text, Options::default())
-        .ok()
-        .expect("the migration parses");
-    let mut s = running();
-    s.expecting("auth", &m.operators);
-    s.apply("auth", Listed::nth(&m.operators, 0), text)
-        .unwrap_or_else(|e| panic!("add type refused: {e:?}"));
+    let s = afters(&running(), text).remove(0);
     assert_eq!(
         (
             Err(Uncommitted::Migrating),
@@ -3729,13 +3729,7 @@ fn a_relation_a_later_operator_adds_is_no_relation_before_it() {
     let text = "module auth
 add type Team = { id: Key teams }
 add relation teams : Team key id generate sequence";
-    let m = parse_migration(text, Options::default())
-        .ok()
-        .expect("the migration parses");
-    let mut s = running();
-    s.expecting("auth", &m.operators);
-    s.apply("auth", Listed::nth(&m.operators, 0), text)
-        .unwrap_or_else(|e| panic!("add type refused: {e:?}"));
+    let s = afters(&running(), text).remove(0);
     let schema = s.schema().unwrap_or_else(|e| panic!("{e:?}"));
     assert!(schema.relations.iter().all(|r| r.name != "teams"));
     let team = schema
@@ -3990,10 +3984,7 @@ add relation stamps : Stamp key id generate sequence";
         Committed::new(schema).map(|c| (c.ahead.len(), c.late_sels.len()))
     };
     let pending = committed(&s);
-    for op in Listed::all(&m.operators) {
-        s.apply("auth", op, text)
-            .unwrap_or_else(|e| panic!("{op:?} refused: {e:?}"));
-    }
+    let mut s = afters(&running(), text).pop().expect("the last operator");
     let declared = committed(&s);
     s.settled();
     assert_eq!(

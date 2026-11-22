@@ -1,6 +1,6 @@
 use super::field::Applied;
 use super::op::Kind;
-use super::op::{Res, Resolving, broken, refuse_at, unmodelled};
+use super::op::{Res, Resolving, broken, refuse_at};
 use super::run::{Built, Late, Run, unbuilt};
 use super::*;
 use crate::ast::{self, CtorPlace, CtorSel};
@@ -25,7 +25,7 @@ impl Model {
             return broken("a record that is not one");
         };
         if self.types[&t].header.is_some() {
-            return unmodelled("a constructor added to a record with a header");
+            return broken("a record with a header");
         }
         let all = self.ctors[&ctor].fields.clone().unwrap_or_default();
         let (head, rest): (Vec<u64>, Vec<u64>) = all
@@ -183,8 +183,7 @@ impl Model {
         self.value_states.insert(c, declared);
         let built = match self.build_adopting(&[], &run.ahead(self)) {
             Ok(b) => b,
-            Err(ds) if !arms.is_empty() => return unbuilt(&ds),
-            Err(_) => return unmodelled("a constructor added to declarations that do not build"),
+            Err(ds) => return unbuilt(&ds),
         };
         let file = self.relift(&built, Item::Type(t))?;
         self.widen_grants(t, c, &rels);

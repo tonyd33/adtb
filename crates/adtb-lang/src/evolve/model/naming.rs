@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::run::{Built, Late, Run};
+use super::run::{Built, Decls, Late, Run};
 use super::*;
 use crate::ast::{self, Operator, OperatorKind, RelationClause, SplitClause};
 use crate::canon::Names;
@@ -22,6 +22,9 @@ pub(super) struct Naming {
     missing: Vec<Diag>,
     /// The migration's text.
     text: std::sync::Arc<str>,
+    /// The range of the migration's text each arm an operator wrote copies, with the
+    /// declaration it was written into.
+    arm_copies: Vec<(Range<usize>, Item)>,
 }
 
 /// Where a copy of the migration's text is in the declarations.
@@ -82,9 +85,17 @@ impl Naming {
         }
     }
 
-    /// Note that the arm of key `key` copies `from` of the migration's text.
-    pub(super) fn arm(&mut self, key: u64, from: Range<usize>) {
-        self.arms.insert(key, from);
+    /// Note that the arm of key `key`, written into declaration `item`, copies `from` of the
+    /// migration's text.
+    pub(super) fn arm(&mut self, key: u64, from: Range<usize>, item: Item) {
+        self.arms.insert(key, from.clone());
+        self.arm_copies.push((from, item));
+    }
+
+    /// Returns the range of the migration's text each arm an operator wrote copies, with the
+    /// declaration it was written into.
+    pub(super) fn arm_copies(&self) -> &[(Range<usize>, Item)] {
+        &self.arm_copies
     }
 }
 
@@ -127,6 +138,74 @@ fn copy_tokens(
             out.copy(names, b.clone(), a.start);
         }
     }
+}
+
+/// Returns the tokens of `range` of `s`, each with its range in `s`.
+fn tokens_in(s: &str, range: Range<usize>) -> Vec<(&str, Range<usize>)> {
+    lex(&s[range.clone()])
+        .0
+        .into_iter()
+        .filter(|t| t.tok != Tok::Eof)
+        .map(|t| {
+            let x = t.span.range();
+            let r = range.start + x.start..range.start + x.end;
+            (&s[r.clone()], r)
+        })
+        .collect()
+}
+
+/// Returns the span of `migration` that `span` of `text` copies, where `held`, the tokens of
+/// `text` around `span`, copy `written`, the tokens of `migration`, one for one.
+fn mapped(
+    held: &[(&str, Range<usize>)],
+    written: &[(&str, Range<usize>)],
+    span: Span,
+) -> Option<Span> {
+    let (start, end) = (span.start as usize, span.end as usize);
+    let first = held.iter().position(|(_, r)| r.end > start)?;
+    let last = held
+        .iter()
+        .rposition(|(_, r)| r.start < end.max(start + 1))?;
+    let (a, z) = (&held[first].1, &held[last].1);
+    let (wa, wz) = (&written[first].1, &written[last].1);
+    let from = wa.start + start.saturating_sub(a.start).min(wa.len());
+    let to = wz.start + (end.max(z.start) - z.start).min(wz.len());
+    Some(Span::new(from, to.max(from)))
+}
+
+/// Returns the span of `from`, of the migration's text `migration`, that `span` of `text`
+/// copies, when `range` of `text`, which holds `span`, holds the tokens of `from` one for one.
+pub(super) fn copied_span(
+    text: &str,
+    range: Range<usize>,
+    migration: &str,
+    from: Range<usize>,
+    span: Span,
+) -> Option<Span> {
+    let (held, written) = (tokens_in(text, range), tokens_in(migration, from));
+    let same = held.len() == written.len() && held.iter().zip(&written).all(|(a, b)| a.0 == b.0);
+    same.then(|| mapped(&held, &written, span)).flatten()
+}
+
+/// Returns the span of `from`, of the migration's text `migration`, that `span` of `text`
+/// copies, at the first run of the tokens of `text` that holds `span` and the tokens of `from`
+/// one for one.
+pub(super) fn searched_span(
+    text: &str,
+    migration: &str,
+    from: Range<usize>,
+    span: Span,
+) -> Option<Span> {
+    let (held, written) = (tokens_in(text, 0..text.len()), tokens_in(migration, from));
+    if written.is_empty() {
+        return None;
+    }
+    held.windows(written.len()).find_map(|w| {
+        let holds =
+            w[0].1.start <= span.start as usize && span.end as usize <= w[w.len() - 1].1.end;
+        let same = w.iter().zip(&written).all(|(a, b)| a.0 == b.0);
+        (holds && same).then(|| mapped(w, &written, span)).flatten()
+    })
 }
 
 /// Returns the declaration operator `op` added or redefined.
@@ -281,7 +360,7 @@ impl Model {
 
     /// Returns the file and span the copy at `at` takes in `built`, which the model's
     /// declarations built.
-    fn span_of(&self, built: &Built, at: At) -> Option<(FileId, Span)> {
+    pub(super) fn span_of(&self, built: &impl Decls, at: At) -> Option<(FileId, Span)> {
         match at {
             At::Decl(item) => {
                 let file = FileId(self.decl_at(item)? as u32);
@@ -410,7 +489,7 @@ impl Model {
     /// Returns each copy of the migration's text operator `op`, resolved as `resolved`, made: the
     /// range it copies and where it is. Push onto `missing` a refusal of each copy whose place is
     /// unknown.
-    fn copies_of(
+    pub(super) fn copies_of(
         &self,
         run: &Run,
         op: &Operator,

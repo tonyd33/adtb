@@ -1,5 +1,5 @@
-use super::op::{self, Fail, Res, broken, refuse, refuse_at, refuse_first};
-use super::run::{Built, Late, Run};
+use super::op::{self, Fail, Res, broken, refuse, refuse_at, unchecked};
+use super::run::{Built, Decls, Late, Run};
 use super::*;
 use crate::ast::{self, Fill};
 use crate::canon::{Names, canonical_term};
@@ -14,7 +14,7 @@ use crate::types::{Ty, TypeId};
 /// An operator applied: its resolved form, its clauses, and its row maps or why they fail.
 pub(super) type Applied = (Resolved, Vec<Clause>, Maps);
 
-/// The row maps of an operator's one step, or why the layer fails to state them.
+/// The row maps of an operator's one step, or why they cannot be stated.
 pub(super) type Maps = Result<Vec<RowMap>, String>;
 
 impl Model {
@@ -37,18 +37,13 @@ impl Model {
     /// Returns the schema the model builds now and its program, refusing the operator as one
     /// that checks against a schema that does not check when they do not build or check.
     pub(super) fn checked(&self, run: &Run) -> Res<(Schema, check::Program)> {
-        let unchecked = |why: &str| {
-            format!(
-                "the operator checks against the schema the operators before it produce, which does not check: {why}"
-            )
-        };
         let schema = match self.schema(&run.ahead(self)) {
             Ok(s) => s,
-            Err(ds) => return refuse_first(&ds, unchecked),
+            Err(ds) => return unchecked(&ds),
         };
         match check::check_schema(&schema) {
             Ok(p) => Ok((schema, p)),
-            Err(ds) => refuse_first(&ds, unchecked),
+            Err(ds) => unchecked(&ds),
         }
     }
 
@@ -84,7 +79,7 @@ impl Model {
     /// Returns field `name` of `ctor` of type declaration `file` as `built` parses it, the
     /// header's when `ctor` is `None`.
     pub(super) fn field_written(
-        built: &Built,
+        built: &impl Decls,
         file: FileId,
         ctor: Option<&str>,
         name: &str,

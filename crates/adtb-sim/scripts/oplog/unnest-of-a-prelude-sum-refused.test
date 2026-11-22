@@ -1,0 +1,9 @@
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { r: Rounding } | B
+  add relation ts : T key id generate sequence
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`Rounding` is not a type of the schema" } } }
+  module m
+  unnest constructor T.A

@@ -46,24 +46,6 @@ impl Source {
         .copied()
     }
 
-    /// Set the write state of `s` to `state`, or remove it for `None`.
-    pub(super) fn set_state(&mut self, s: StateOf, state: Option<State>) {
-        match (s, state) {
-            (StateOf::Relation(r, c), Some(v)) => {
-                self.states.insert((r, c), v);
-            }
-            (StateOf::Relation(r, c), None) => {
-                self.states.remove(&(r, c));
-            }
-            (StateOf::Value(c), Some(v)) => {
-                self.value_states.insert(c, v);
-            }
-            (StateOf::Value(c), None) => {
-                self.value_states.remove(&c);
-            }
-        }
-    }
-
     pub(super) fn every_state(&self) -> impl Iterator<Item = (StateOf, State)> + '_ {
         let relations = self
             .states
@@ -187,12 +169,6 @@ impl Source {
         Ok((schema, program))
     }
 
-    /// Type check the schema the declarations build, without the source's catalog ids and write
-    /// states.
-    pub(super) fn check_declared(&self) -> Result<(), Vec<FileDiag>> {
-        check::check_schema(&*self.built()?).map(drop)
-    }
-
     pub(super) fn parsed(&self, i: usize) -> Option<Decl> {
         let text = self.file_text(FileId(i as u32));
         parse_schema(&text, Options { elisions: true })
@@ -217,118 +193,6 @@ impl Source {
         span.start as usize - h..span.end as usize - h
     }
 
-    /// Replace each range of declaration `i`'s text by its text.
-    ///
-    /// Precondition: the ranges do not overlap, except that equal edits count once.
-    pub(super) fn edit<W: Into<Written>>(&mut self, i: usize, edits: Vec<(Range<usize>, W)>) {
-        let mut edits: Vec<(Range<usize>, Written)> =
-            edits.into_iter().map(|(r, w)| (r, w.into())).collect();
-        edits.sort_by(|a, b| b.0.start.cmp(&a.0.start).then(b.0.end.cmp(&a.0.end)));
-        edits.dedup();
-        for (r, w) in edits {
-            self.decls[i].text.replace_range(r.clone(), &w.text);
-            let Some(marks) = &mut self.marks else {
-                continue;
-            };
-            let grown = w.text.len() as isize - r.len() as isize;
-            let moved = |at: usize| {
-                at.checked_add_signed(grown)
-                    .expect("a copy after an edit stays inside its declaration")
-            };
-            let mut kept = Vec::new();
-            for m in std::mem::take(&mut marks.written) {
-                let end = m.at + m.from.len();
-                if m.decl != i || end <= r.start {
-                    kept.push(m);
-                } else if m.at >= r.end {
-                    kept.push(Mark {
-                        at: moved(m.at),
-                        ..m
-                    });
-                } else {
-                    if m.at < r.start {
-                        kept.push(Mark {
-                            from: m.from.start..m.from.start + (r.start - m.at),
-                            ..m.clone()
-                        });
-                    }
-                    if end > r.end {
-                        kept.push(Mark {
-                            from: m.from.end - (end - r.end)..m.from.end,
-                            decl: i,
-                            at: moved(r.end),
-                        });
-                    }
-                }
-            }
-            marks.written = kept;
-            marks.written.extend(
-                w.copies
-                    .into_iter()
-                    .filter(|(_, from)| !from.is_empty())
-                    .map(|(o, from)| Mark {
-                        from,
-                        decl: i,
-                        at: r.start + o,
-                    }),
-            );
-        }
-    }
-
-    pub(super) fn push(&mut self, module: &str, text: impl Into<Written>) -> usize {
-        self.decls.push(SourceDecl {
-            module: module.to_string(),
-            text: String::new(),
-        });
-        let i = self.decls.len() - 1;
-        self.edit(i, vec![(0..0, text)]);
-        i
-    }
-
-    /// Replace the whole text of declaration `i`.
-    pub(super) fn rewrite(&mut self, i: usize, text: impl Into<Written>) {
-        let end = self.decls[i].text.len();
-        self.edit(i, vec![(0..end, text)]);
-    }
-
-    /// Remove every declaration `drop` holds.
-    pub(super) fn remove_decls(&mut self, drop: impl Fn(usize, &SourceDecl) -> bool) {
-        let mut kept = Vec::new();
-        let mut decls = Vec::new();
-        for (i, d) in std::mem::take(&mut self.decls).into_iter().enumerate() {
-            if drop(i, &d) {
-                kept.push(None);
-            } else {
-                kept.push(Some(decls.len()));
-                decls.push(d);
-            }
-        }
-        self.decls = decls;
-        if let Some(marks) = &mut self.marks {
-            for ms in [&mut marks.written, &mut marks.read] {
-                ms.retain_mut(|m| match kept[m.decl] {
-                    Some(k) => {
-                        m.decl = k;
-                        true
-                    }
-                    None => false,
-                });
-            }
-        }
-    }
-
-    pub(super) fn remove_decl(&mut self, i: usize) {
-        self.remove_decls(|j, _| j == i);
-    }
-
-    /// Record that the operator matched the text at `from` of the migration against the text at `at`
-    /// of declaration `i`, as it is before the operator edits it.
-    pub(super) fn read_mark(&mut self, from: Range<usize>, i: usize, at: usize) {
-        if let Some(marks) = &mut self.marks {
-            marks.read.push(Mark { from, decl: i, at });
-        }
-    }
-
     /// Apply a migration, numbered one past the current version, and recheck the result.
     pub fn migrate(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
         self.migrate_keeping(m, text, &[])
@@ -337,7 +201,7 @@ impl Source {
     /// Apply migration text the log does not hold yet as [`Source::migrate`] does, and refuse
     /// what only new text may not state: a `revert` fill no inverse takes.
     pub fn accept(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
-        self.migrating(m, text, &[], true, None).map(|(s, _)| s)
+        self.migrating(m, text, &[], true, false).map(|(s, ..)| s)
     }
 
     /// Apply a migration as [`Source::migrate`] does, putting back after each operator every
@@ -348,24 +212,42 @@ impl Source {
         text: &str,
         kept: &[Kept],
     ) -> Result<Source, Refusal> {
-        self.migrating(m, text, kept, false, None).map(|(s, _)| s)
+        self.migrating(m, text, kept, false, false).map(|(s, ..)| s)
     }
 
     /// Apply migration `m` as [`Source::migrate_keeping`] does, refusing as [`Source::accept`]
-    /// does when `accepting`, and with `recorder` recording each operator. Returns the source
-    /// it leaves, checked.
+    /// does when `accepting`, naming its text when `naming`. Returns the source it leaves,
+    /// checked, and the migration as the model applied it.
     pub(super) fn migrating(
         &self,
         m: &MigrationFile,
         text: &str,
         kept: &[Kept],
         accepting: bool,
-        recorder: Option<&mut Recorder>,
-    ) -> Result<(Source, (Schema, Program)), Refusal> {
-        #[cfg(feature = "compare-migration-model")]
-        let recording = recorder.is_some();
-        let (mut next, mut refusal, applied) = self.applying(m, text, kept, accepting, recorder);
-        let checked = next.check().map_err(|ds| {
+        naming: bool,
+    ) -> Result<(Source, (Schema, Program), model::Migrated), Refusal> {
+        let got =
+            model::migrated(self, m, text, kept, accepting, naming).map_err(Refusal::broken_by)?;
+        let mut refusal = Refusal {
+            operators: got.refusals(m),
+            ..Refusal::default()
+        };
+        let mut next = got.source();
+        next.settled();
+        let checked = next.check();
+        if got.applies()
+            && let Ok(checked) = checked
+        {
+            next.log.push(Logged {
+                number: next.version,
+                module: m.module.text.clone(),
+                text: text.to_string(),
+                operators: m.operators.clone(),
+                before: Arc::new(self.clone()),
+            });
+            return Ok((next, checked, got));
+        }
+        if let Err(ds) = checked {
             let reported: BTreeSet<String> = refusal
                 .operators
                 .iter()
@@ -377,204 +259,14 @@ impl Source {
                     d.diag.kind != DiagKind::Poisoned && !reported.contains(&d.diag.message)
                 })
                 .collect();
-            refusal.recheck_from = self.copied_from(m, text, &applied, &refusal.recheck);
-        });
-        let result = match checked {
-            Ok(checked) if refusal.operators.is_empty() => {
-                next.log.push(Logged {
-                    number: next.version,
-                    module: m.module.text.clone(),
-                    text: text.to_string(),
-                    operators: m.operators.clone(),
-                    before: Arc::new(self.clone()),
-                });
-                Ok((next, checked))
-            }
-            _ => {
-                refusal.result = Some(Box::new(next));
-                Err(refusal)
-            }
-        };
-        #[cfg(feature = "compare-migration-model")]
-        if model::enabled() && !(recording && result.is_ok()) {
-            model::compare(
-                self,
-                m,
-                text,
-                kept,
-                accepting,
-                result.as_ref().map(|(s, _)| s),
-            );
+            refusal.recheck_from = got.copied_from(text, &refusal.recheck);
         }
-        result
-    }
-
-    /// Apply the operators of migration `m` one at a time to a copy of this source, as
-    /// [`Source::migrating`] does, up to the check of the result. Returns the source they leave,
-    /// settled, the refusals of its operators, and whether each operator applied.
-    pub(super) fn applying(
-        &self,
-        m: &MigrationFile,
-        text: &str,
-        kept: &[Kept],
-        accepting: bool,
-        mut recorder: Option<&mut Recorder>,
-    ) -> (Source, Refusal, Vec<bool>) {
-        let mut next = self.clone();
-        next.accepting = accepting;
-        next.version += 1;
-        next.expecting(&m.module.text, &m.operators);
-        next.unstated.clear();
-        if let Some(r) = recorder.as_deref() {
-            r.start(&mut next);
+        if refusal.operators.is_empty() && refusal.recheck.is_empty() {
+            let last = m.operators.last().map_or(Span::default(), |op| op.span);
+            refusal.operators.push(Diag::new(last, got.unchecked()));
         }
-        let mut refusal = Refusal::default();
-        let mut rekeyed = Vec::new();
-        let mut applied = Vec::with_capacity(m.operators.len());
-        for op in Listed::all(&m.operators) {
-            if let OperatorKind::Rekey { relation, .. } = &op.kind {
-                rekeyed.push((relation.clone(), op.span));
-            }
-            let prior = (!kept.is_empty()).then(|| next.clone());
-            let ended = match recorder.as_deref_mut() {
-                Some(r) => r.apply(&mut next, &m.module.text, op, text),
-                None => next.apply(&m.module.text, op, text),
-            };
-            applied.push(ended.is_ok());
-            if let Err(mut ds) = ended {
-                ds.retain(|d| d.kind != DiagKind::Poisoned);
-                refusal.operators.append(&mut ds);
-            }
-            if let Some(prior) = prior {
-                next.keep(&prior, kept);
-            }
-        }
-        if let Some(r) = recorder {
-            r.end(&mut next);
-        }
-        next.accepting = false;
-        refusal.operators.extend(
-            std::mem::take(&mut next.unstated)
-                .into_iter()
-                .map(|u| Diag::new(u.span, u.message)),
-        );
-        for (relation, span) in rekeyed {
-            if let Err(d) = next.rekey_leaves_no_old_reference(&m.module.text, &relation, span) {
-                refusal.operators.push(d);
-            }
-        }
-        next.settled();
-        (next, refusal, applied)
-    }
-
-    /// Returns, for each diagnostic of the result of migration `m`, the span of `text` an operator
-    /// copied the diagnosed text from, by applying `m` again recording its copies.
-    ///
-    /// Preconditions:
-    /// - `applied` holds, for each operator of `m`, whether [`Source::migrate`] applied it.
-    fn copied_from(
-        &self,
-        m: &MigrationFile,
-        text: &str,
-        applied: &[bool],
-        diags: &[FileDiag],
-    ) -> Vec<Option<Span>> {
-        let mut replay = self.clone();
-        replay.version += 1;
-        replay.expecting(&m.module.text, &m.operators);
-        replay.marks = Some(Marks::default());
-        for (op, &was) in Listed::all(&m.operators).zip(applied) {
-            let noted = RefCell::new(Names::default());
-            let ended = replay.apply_noting(&m.module.text, op, text, Some(&noted));
-            match (was, ended) {
-                (true, Ok(())) | (false, Err(_)) => {}
-                (true, Err(e)) => panic!(
-                    "a replay of a migration applies each operator the migration applied, but refused one: {e:?}"
-                ),
-                (false, Ok(())) => panic!(
-                    "a replay of a migration applies only the operators the migration applied"
-                ),
-            }
-        }
-        let marks = replay.marks.take().expect("the replay records its copies");
-        diags
-            .iter()
-            .map(|d| {
-                let i = d.file.0 as usize;
-                let h = header(replay.decls.get(i)?.module.as_str()).len();
-                let start = (d.diag.span.start as usize).checked_sub(h)?;
-                let end = d.diag.span.end as usize - h;
-                marks
-                    .written
-                    .iter()
-                    .find(|w| w.decl == i && w.at <= start && end <= w.at + w.from.len())
-                    .map(|w| Span::new(w.from.start + start - w.at, w.from.start + end - w.at))
-            })
-            .collect()
-    }
-
-    /// Apply one operator of a migration of `module` whose text is `text`.
-    ///
-    /// On a refusal the source is left as it was.
-    pub fn apply(&mut self, module: &str, op: Listed<'_>, text: &str) -> Result<(), Vec<Diag>> {
-        self.apply_noting(module, op, text, None)
-    }
-
-    pub(super) fn apply_noting(
-        &mut self,
-        module: &str,
-        op: Listed<'_>,
-        text: &str,
-        noted: Option<&RefCell<Names>>,
-    ) -> Result<(), Vec<Diag>> {
-        self.apply_recording(module, op, text, noted, None)
-    }
-
-    pub(super) fn apply_recording(
-        &mut self,
-        module: &str,
-        op: Listed<'_>,
-        text: &str,
-        noted: Option<&RefCell<Names>>,
-        steps: Option<&RefCell<Vec<Step>>>,
-    ) -> Result<(), Vec<Diag>> {
-        let before = self.clone();
-        self.adding(op);
-        let r = Cx {
-            src: self,
-            module: module.to_string(),
-            text,
-            span: op.span,
-            noted,
-            copying: noted.is_some(),
-            steps,
-        }
-        .operator(&op.kind);
-        match r {
-            Ok(()) => {
-                self.rename_ids(&before, module, &op.kind);
-                self.settle_ids();
-                self.added(module, op);
-                self.carry_grants(&before, module, &op.kind);
-            }
-            Err(_) => {
-                *self = before;
-                self.refused(module, op);
-            }
-        }
-        r
-    }
-
-    fn rekey_leaves_no_old_reference(
-        &self,
-        module: &str,
-        relation: &QName,
-        span: Span,
-    ) -> Result<(), Diag> {
-        match self.schema() {
-            Ok(schema) => rekey_leaves_no_old_reference(&schema, module, relation, span),
-            Err(_) => Ok(()),
-        }
+        refusal.result = Some(Box::new(next));
+        Err(refusal)
     }
 }
 

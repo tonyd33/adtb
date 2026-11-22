@@ -1,4 +1,3 @@
-use super::run::unbuilt;
 use super::*;
 use crate::ast::{self, CtorSel, CtorTarget, OperatorKind, QName};
 use crate::schema::Stage;
@@ -108,6 +107,9 @@ pub(super) struct Refused {
     /// False for a refusal that reports nothing: a name a refused operator poisoned stands
     /// behind every failure.
     reported: bool,
+    /// The operator's further failures, each with the span of the migration's text it names,
+    /// if it names one.
+    more: Vec<(Option<Span>, String)>,
 }
 
 impl Refused {
@@ -116,6 +118,7 @@ impl Refused {
             why,
             at: None,
             reported: true,
+            more: Vec::new(),
         }
     }
 
@@ -125,6 +128,7 @@ impl Refused {
             why,
             at: Some(at),
             reported: true,
+            more: Vec::new(),
         }
     }
 
@@ -134,6 +138,7 @@ impl Refused {
             why: String::new(),
             at: None,
             reported: false,
+            more: Vec::new(),
         }
     }
 
@@ -161,6 +166,11 @@ impl Refused {
     pub(super) fn into_why(self) -> String {
         self.why
     }
+
+    /// Returns the operator's further failures, each with the span it names, if it names one.
+    pub(super) fn more(&self) -> &[(Option<Span>, String)] {
+        &self.more
+    }
 }
 
 /// Why a model gives no result for an operator.
@@ -168,8 +178,6 @@ impl Refused {
 pub(super) enum Fail {
     /// The operator does not apply.
     Refused(Refused),
-    /// The model does not apply operators of this kind.
-    Unmodelled(String),
     /// The model fails to apply the operator, for this reason.
     Broken(String),
 }
@@ -180,16 +188,17 @@ pub(super) fn refuse<T>(why: impl Into<String>) -> Res<T> {
     Err(Fail::Refused(Refused::new(why.into())))
 }
 
-/// Refuse the operator for diagnostic `d`, at its span of the migration's text.
-pub(super) fn refuse_diag<T>(d: &crate::span::Diag) -> Res<T> {
-    refuse_at(d.span, d.message.clone())
-}
-
-/// Refuse the operator for the first of `ds` that reports, at its span, reporting nothing when
-/// none does.
+/// Refuse the operator for each of `ds` that reports, at its span, reporting nothing when none
+/// does.
 pub(super) fn refuse_diags<T>(ds: &[crate::span::Diag]) -> Res<T> {
-    match ds.iter().find(|d| d.kind != DiagKind::Poisoned) {
-        Some(d) => refuse_diag(d),
+    let mut reported = ds.iter().filter(|d| d.kind != DiagKind::Poisoned);
+    match reported.next() {
+        Some(d) => Err(Fail::Refused(Refused {
+            more: reported
+                .map(|d| (Some(d.span), d.message.clone()))
+                .collect(),
+            ..Refused::at(d.span, d.message.clone())
+        })),
         None => Err(Fail::Refused(Refused::poisoned())),
     }
 }
@@ -203,13 +212,31 @@ pub(super) fn refuse_first<T>(ds: &[FileDiag], why: impl Fn(&str) -> String) -> 
     }
 }
 
+/// Refuse the operator for each of `ds` that reports, reporting nothing when none does.
+pub(super) fn refuse_each<T>(ds: &[FileDiag]) -> Res<T> {
+    let mut reported = ds.iter().filter(|d| d.diag.kind != DiagKind::Poisoned);
+    match reported.next() {
+        Some(d) => Err(Fail::Refused(Refused {
+            more: reported.map(|d| (None, d.diag.message.clone())).collect(),
+            ..Refused::new(d.diag.message.clone())
+        })),
+        None => Err(Fail::Refused(Refused::poisoned())),
+    }
+}
+
+/// Refuse an operator that checks against the schema the operators before it produce, which
+/// fails with `ds`, by the first failure.
+pub(super) fn unchecked<T>(ds: &[FileDiag]) -> Res<T> {
+    refuse_first(ds, |why| {
+        format!(
+            "the operator checks against the schema the operators before it produce, which does not check: {why}"
+        )
+    })
+}
+
 /// Refuse the operator for `why`, at `at` of the migration's text.
 pub(super) fn refuse_at<T>(at: Span, why: impl Into<String>) -> Res<T> {
-    Err(Fail::Refused(Refused {
-        why: why.into(),
-        at: Some(at),
-        reported: true,
-    }))
+    Err(Fail::Refused(Refused::at(at, why.into())))
 }
 
 impl Fail {
@@ -217,13 +244,9 @@ impl Fail {
     pub(super) fn reason(self) -> String {
         match self {
             Fail::Refused(r) => r.why,
-            Fail::Unmodelled(why) | Fail::Broken(why) => why,
+            Fail::Broken(why) => why,
         }
     }
-}
-
-pub(super) fn unmodelled<T>(why: impl Into<String>) -> Res<T> {
-    Err(Fail::Unmodelled(why.into()))
 }
 
 pub(super) fn broken<T>(why: impl Into<String>) -> Res<T> {
@@ -381,7 +404,7 @@ impl<'a> Resolving<'a> {
             return Ok(());
         }
         match self.model.built(&[], &self.model.ahead_inputs()) {
-            Err(ds) => unbuilt(&ds),
+            Err(ds) => unchecked(&ds),
             Ok(_) => broken("a held declaration in declarations that build"),
         }
     }
@@ -577,7 +600,10 @@ impl<'a> Resolving<'a> {
             OperatorKind::Enable(t) => stage(t, "enable", Stage::Enabled),
             OperatorKind::Disable(t) => stage(t, "disable", Stage::Declared),
             OperatorKind::Deprecate(t) => stage(t, "deprecate", Stage::Deprecated),
-            other => unmodelled(operator_name(other)),
+            other => broken(format!(
+                "an operator applied before its names resolve: {}",
+                operator_name(other)
+            )),
         }
     }
 }

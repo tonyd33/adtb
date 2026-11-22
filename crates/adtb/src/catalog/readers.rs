@@ -361,7 +361,7 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
             let steps = l
                 .before
                 .record_steps(&file, &l.text)
-                .map_err(|r| Error::Refused(super::reasons(r)))?;
+                .map_err(|r| super::refusal(r, Error::Refused))?;
             let stepped = super::steps::stepped(&steps, &file, &l.text)?;
             let drops = changes(&l.before, &before, &file, &stepped)?.uniques;
             let skipped: BTreeSet<usize> = drops
@@ -380,7 +380,7 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
         }
         at = at
             .migrate_keeping(&file, &l.text, &kept)
-            .map_err(|r| refused(super::reasons(r)))?;
+            .map_err(|r| super::refusal(r, refused))?;
     }
     let enforced = checked(at, |ds| {
         Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
@@ -540,7 +540,11 @@ impl Catalog {
             |why: &str| format!("pending-dropped {} has no image: {why}", objects.join(", "));
         let source = base
             .migrate_keeping(&skipping(file, &skipped), text, &kept)
-            .map_err(|r| Error::Refused(super::reasons(r).iter().map(|w| no_image(w)).collect()))?;
+            .map_err(|r| {
+                super::refusal(r, |why| {
+                    Error::Refused(why.iter().map(|w| no_image(w)).collect())
+                })
+            })?;
         let enforced = checked(source, |ds| {
             Error::Refused(ds.iter().map(|d| no_image(&d.message)).collect())
         })?;

@@ -486,11 +486,11 @@ split constructor T.A into C { c: Text } | D { d: Text }
     let file = parse_migration(text, Options::default())
         .ok()
         .expect("the migration parses");
-    let mut at = base.clone();
-    at.expecting("auth", &file.operators);
-    let steps = at
-        .steps("auth", Listed::nth(&file.operators, 0), text)
-        .unwrap_or_else(|e| panic!("the split applies: {e:?}"));
+    let steps = base
+        .record_steps(&file, text)
+        .unwrap_or_else(|e| panic!("the split applies: {e:?}"))
+        .remove(0)
+        .unwrap_or_else(|e| panic!("the split's steps: {e:?}"));
     let routing = steps
         .iter()
         .flat_map(|s| &s.maps)
@@ -832,7 +832,7 @@ split constructor T.A into A1 { z: Text } | A2 { w: Text }
   index (z) in (A1 | B)",
     );
     assert_eq!(
-        "relation ts : T key id generate sequence index (z) in (A1 | B)",
+        "relation ts: T key id generate sequence index (z) in (A1 | B)",
         flat(&decl(&split, "relation", "ts"))
     );
 }
@@ -853,14 +853,14 @@ relation ts : T
             "split constructor T.A into A1 { z: Text } | A2 { z: Text }
   by match
     | A a -> A1 { z: a.z }",
-            "relation ts : T key id generate sequence index (n) in (A1 | A2 | B)",
+            "relation ts: T key id generate sequence index (n) in (A1 | A2 | B)",
         ),
         (
             "merge constructor T.(A | B) into M { k: K, z: Text }
   by match
     | A a -> M { k: A, z: a.z }
     | B b -> M { k: B, z: b.z }",
-            "relation ts : T key id generate sequence index (n) in M",
+            "relation ts: T key id generate sequence index (n) in M",
         ),
     ];
     for (op, text) in operators {
@@ -891,7 +891,7 @@ split constructor T.A into A1 { z: Text } | A2 { z: Text }
     );
     assert_eq!(
         (
-            "relation ts : T key id generate sequence unique (n) in (A1 | A2 | B)",
+            "relation ts: T key id generate sequence unique (n) in (A1 | A2 | B)",
             vec![1026]
         ),
         (
@@ -964,7 +964,7 @@ relation ts : T
     );
     let merged = applies(&four, &format!("module auth\n{MERGE_A_B}"));
     assert_eq!(
-        "relation ts : T key id generate sequence unique (z) in (M | C)",
+        "relation ts: T key id generate sequence unique (z) in (M | C)",
         flat(&decl(&merged, "relation", "ts"))
     );
 }

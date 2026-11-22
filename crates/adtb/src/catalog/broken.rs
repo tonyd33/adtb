@@ -1,7 +1,7 @@
 use std::fmt;
 
 use adtb_lang::canon::Unnamed;
-use adtb_lang::evolve::LogGrant;
+use adtb_lang::evolve::{LogGrant, Refusal};
 use adtb_lang::kernel::Invalid;
 use adtb_lang::norm;
 use adtb_lang::span::{Diag, FileDiag};
@@ -14,7 +14,6 @@ use crate::{plan, write};
 use super::Error;
 use super::change::Failed;
 use super::ids::{CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId};
-use super::oplog::Hash;
 use super::root::{Changing, Unended};
 
 /// A guarantee of the checker, the planner, the executor or the catalog itself that does not
@@ -109,17 +108,8 @@ pub enum Broken {
     ForeignCtor(CatCtorId),
     /// A stored value has another shape than its type stores.
     Unshaped(Value),
-    /// The migration model's resolved operators of a migration chain to the hash `modelled`,
-    /// the catalog's to `catalog`.
-    ModelledHash {
-        modelled: Hash,
-        catalog: Hash,
-    },
-}
-
-/// Returns `h` in lowercase hexadecimal.
-fn hex(h: &Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
+    /// The migration model fails on a migration, for this reason.
+    Model(String),
 }
 
 impl From<Broken> for Error {
@@ -211,6 +201,7 @@ impl fmt::Display for Broken {
             Broken::RoutedNotCtor => f.write_str("a routing gives a constructor"),
             Broken::UnnestedNotCtor => f.write_str("the unnested field holds a constructor"),
             Broken::RekeyedGone(r) => write!(f, "the rekeyed relation {r} is gone"),
+            Broken::Model(why) => write!(f, "{why}"),
             Broken::Unshaped(v) => {
                 write!(f, "a stored value has another shape than its type: {v:?}")
             }
@@ -218,12 +209,20 @@ impl fmt::Display for Broken {
                 f,
                 "the data holds only constructors of the schema before, not {c}"
             ),
-            Broken::ModelledHash { modelled, catalog } => write!(
-                f,
-                "the migration model's resolved operators chain to the catalog's version hash {}, not {}",
-                hex(catalog),
-                hex(modelled)
-            ),
         }
     }
+}
+
+/// Returns the error of refusal `r`: [`Broken::Model`] when the migration model failed on the
+/// migration, else `refused` of the message of each operator `r` refuses, then of each file its
+/// recheck refuses.
+pub(super) fn refusal(r: Refusal, refused: impl FnOnce(Vec<String>) -> Error) -> Error {
+    if let Some(d) = r.broken() {
+        return Broken::Model(d.message.clone()).into();
+    }
+    let ops = r.operators.into_iter().map(|d| d.message);
+    refused(
+        ops.chain(r.recheck.into_iter().map(|d| d.diag.message))
+            .collect(),
+    )
 }

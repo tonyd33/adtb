@@ -211,79 +211,6 @@ pub(super) fn hold(grants: &mut Vec<LogGrant>, back: Vec<HeldGrant>) {
     }
 }
 
-impl Cx<'_> {
-    /// Add each privilege to the role's log grants, keeping one entry per privilege and making
-    /// it no longer dormant, with the grant option this grant states when it was dormant, and
-    /// settle each grant of the role that a structural operator of this migration could not
-    /// carry to a constructor the privilege covers.
-    pub(super) fn grant(&mut self, g: &ast::Grant) -> R<()> {
-        for Stated {
-            privilege, covered, ..
-        } in self.granted(&g.privileges, Statement::Grant)?
-        {
-            self.src
-                .unstated
-                .retain(|u| !u.stated_by(&g.to.text, &privilege, &covered));
-            match self
-                .src
-                .grants
-                .iter_mut()
-                .find(|x| x.role == g.to.text && x.privilege == privilege)
-            {
-                Some(held) if held.dormant => {
-                    held.grant_option = g.grant_option;
-                    held.dormant = false;
-                }
-                Some(held) => held.grant_option |= g.grant_option,
-                None => self.src.grants.push(LogGrant {
-                    role: g.to.text.clone(),
-                    privilege,
-                    grant_option: g.grant_option,
-                    row: None,
-                    dormant: false,
-                }),
-            }
-        }
-        Ok(())
-    }
-
-    /// Delete from the role's log grants each one a privilege of `r` matches.
-    ///
-    /// Fail, naming the revoke, when a privilege matches none of them.
-    pub(super) fn revoke(&mut self, r: &ast::Revoke) -> R<()> {
-        let gone = self.granted(&r.privileges, Statement::Revoke)?;
-        for stated in &gone {
-            let held = self
-                .src
-                .grants
-                .iter()
-                .any(|x| x.role == r.from.text && stated.revokes(&x.privilege));
-            if !held {
-                return self.err_at(
-                    r.span,
-                    format!(
-                        "`{}` matches no grant `{}` holds",
-                        self.slice(r.span),
-                        r.from.text
-                    ),
-                );
-            }
-        }
-        self.src
-            .grants
-            .retain(|x| x.role != r.from.text || !gone.iter().any(|p| p.revokes(&x.privilege)));
-        Ok(())
-    }
-
-    /// Resolve the privileges of a log grant or revoke to the catalog ids of what they name.
-    fn granted(&self, privileges: &[ast::Privilege], statement: Statement) -> R<Vec<Stated>> {
-        let schema = self.schema()?;
-        let (out, refs) = log_privileges(&schema, &self.module, privileges, statement, self.span)?;
-        self.note(&schema, &refs);
-        Ok(out)
-    }
-}
-
 /// The privileges a grant or revoke states, and the names its targets resolve.
 pub(super) type StatedRefs = (Vec<Stated>, Vec<(Span, Ref)>);
 
@@ -331,7 +258,6 @@ pub struct Stated {
 
 impl Stated {
     /// Returns the privilege it states and the ids of the constructors its targets cover.
-    #[cfg(feature = "compare-migration-model")]
     pub(super) fn into_covered(self) -> (Granted, BTreeSet<u64>) {
         (self.privilege, self.covered)
     }

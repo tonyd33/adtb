@@ -1,5 +1,5 @@
 use super::field::{Applied, Maps};
-use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at, unmodelled};
+use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
 use super::run::{Built, Late, Run};
 use super::*;
 use crate::ast::{self, CtorSel, Fill, QName};
@@ -185,9 +185,6 @@ impl Model {
         }
         self.place_field(t, None, f);
         if others.is_empty() {
-            if fill.is_some() {
-                return unmodelled("a move to the header with a fill no constructor takes");
-            }
             self.built_for(run)?;
             let maps = before.up_maps(run, t, &[c], &[], &name, None);
             return Ok((

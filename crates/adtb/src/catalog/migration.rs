@@ -36,7 +36,7 @@ use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
     Hash, Migrating, Readers, VersionHash, change, ctor_count, ctor_id, ctor_index, ctor_relations,
     delete_keyed, delete_rows, element_types, heap_root, index_ctors, index_keys, indexes, layout,
-    moved, oplog, owner, pending, planned, reasons, rel_id, relation, row_key, row_type, rows,
+    moved, oplog, owner, pending, planned, refusal, rel_id, relation, row_key, row_type, rows,
     steps, update_root, visible,
 };
 
@@ -120,7 +120,7 @@ impl Catalog {
         };
         let (next, (schema, program), recorded) = match self.source.record(&file, text, new) {
             Ok(migrated) => migrated,
-            Err(r) => return refused(reasons(r)),
+            Err(r) => return Err(refusal(r, Error::Refused)),
         };
         if next.grants.iter().any(|g| g.row.is_none()) {
             self.counters(pager)?;
@@ -129,10 +129,6 @@ impl Catalog {
             Ok(ops) => oplog::Log::new(&schema).rows(ops),
             Err(why) => return refused(why),
         };
-        if let Some(modelled) = recorded.modelled() {
-            let previous = self.hash.get(&self.schema, &self.source)?;
-            oplog::modelled_hash_agrees(&schema, previous, &operators, modelled)?;
-        }
         let next = Checked::new(next, schema, program)?;
         let stepped = steps::stepped(recorded.steps(), &file, text)?;
         let readers = self.held(&file, text, &next, &stepped)?;

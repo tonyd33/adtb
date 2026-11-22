@@ -1,4 +1,3 @@
-use super::names::Naming;
 use super::*;
 
 /// A migration applied once to a source: the steps each operator takes and the operators
@@ -7,9 +6,6 @@ use super::*;
 pub struct Recorded {
     steps: Vec<OpSteps>,
     resolved: Result<Vec<ResolvedOp>, Vec<Diag>>,
-    /// The migration model's resolved operators, when the model applied the migration beside
-    /// the operator layer and agreed with it.
-    modelled: Option<Vec<ResolvedOp>>,
 }
 
 /// The steps of one operator, or why they fail.
@@ -31,13 +27,6 @@ impl Recorded {
     pub fn resolved(&self) -> Result<&[ResolvedOp], &[Diag]> {
         self.resolved.as_deref().map_err(Vec::as_slice)
     }
-
-    /// Returns the operators as the migration model resolves them, when the model applied the
-    /// migration beside the operator layer and agreed with it; `None` otherwise, and always in a
-    /// build without the model.
-    pub fn modelled(&self) -> Option<&[ResolvedOp]> {
-        self.modelled.as_deref()
-    }
 }
 
 impl Source {
@@ -50,31 +39,15 @@ impl Source {
         text: &str,
         accepting: bool,
     ) -> Result<Migrated, Refusal> {
-        let mut recorder = Recorder::new(true);
-        let (next, checked) = self.migrating(m, text, &[], accepting, Some(&mut recorder))?;
-        let Recorder {
-            steps,
-            naming,
-            sources,
-            ..
-        } = recorder;
-        let named = naming.map(|n| (n.into_names(), sources));
-        let resolved = next.resolving(next.version, |_| named).map(|(ops, _)| ops);
-        let recorded = Recorded {
-            steps,
-            resolved,
-            modelled: None,
+        let (next, checked, mut got) = self.migrating(m, text, &[], accepting, true)?;
+        let steps = got.op_steps(m, text);
+        let unavailable = next.unavailable(&m.operators);
+        let resolved = match got.names() {
+            _ if !unavailable.is_empty() => Err(unavailable),
+            Some(Err(ds)) => Err(ds.clone()),
+            _ => Ok(got.resolved()),
         };
-        #[cfg(feature = "compare-migration-model")]
-        let recorded = if model::enabled() {
-            Recorded {
-                modelled: model::compare_recorded(self, m, text, accepting, &next, &recorded),
-                ..recorded
-            }
-        } else {
-            recorded
-        };
-        Ok((next, checked, recorded))
+        Ok((next, checked, Recorded { steps, resolved }))
     }
 
     /// Apply the operators of migration `m` as [`Source::migrate`] does, each once, without
@@ -82,109 +55,60 @@ impl Source {
     ///
     /// Fail with the refusals of the operators that do not apply.
     pub fn record_steps(&self, m: &MigrationFile, text: &str) -> Result<Vec<OpSteps>, Refusal> {
-        let mut recorder = Recorder::new(false);
-        let (next, mut refusal, _) = self.applying(m, text, &[], false, Some(&mut recorder));
-        if refusal.operators.is_empty() {
-            Ok(recorder.steps)
-        } else {
-            refusal.result = Some(Box::new(next));
-            Err(refusal)
+        let mut got =
+            model::migrated(self, m, text, &[], false, false).map_err(Refusal::broken_by)?;
+        let operators = got.refusals(m);
+        if operators.is_empty() {
+            return Ok(got.op_steps(m, text));
         }
-    }
-}
-
-/// What applying the operators of a migration one at a time records while each applies.
-pub(super) struct Recorder {
-    steps: Vec<OpSteps>,
-    naming: Result<Naming, Vec<Diag>>,
-    /// Whether names and the sources before each operator are recorded.
-    names: bool,
-    /// The source before each operator, while recording names.
-    sources: Vec<Source>,
-    live: bool,
-}
-
-impl Recorder {
-    fn new(names: bool) -> Recorder {
-        Recorder {
-            steps: Vec::new(),
-            naming: Ok(Naming::default()),
-            names,
-            sources: Vec::new(),
-            live: true,
-        }
+        let mut result = got.source();
+        result.settled();
+        Err(Refusal {
+            operators,
+            result: Some(Box::new(result)),
+            ..Refusal::default()
+        })
     }
 
-    /// Prepare `src`, the source the first operator applies to, to record its copies when
-    /// recording names.
-    pub(super) fn start(&self, src: &mut Source) {
-        if self.names {
-            src.marks = Some(Marks::default());
-        }
-    }
-
-    /// Apply operator `op` of a migration of `module` whose text is `text` to `src` as
-    /// [`Source::apply`] does, recording its steps and names while every operator before it
-    /// applied.
-    pub(super) fn apply(
-        &mut self,
-        src: &mut Source,
+    /// Returns this source with `ops`, operators of module `module` whose text is `text`, applied
+    /// in order, the result unchecked.
+    ///
+    /// Fail with the refusals of the operators that do not apply.
+    pub fn declaring(
+        &self,
         module: &str,
-        op: Listed<'_>,
+        ops: &[Operator],
         text: &str,
-    ) -> Result<(), Vec<Diag>> {
-        if !self.live {
-            return src.apply(module, op, text);
+    ) -> Result<Source, Vec<Diag>> {
+        let m = MigrationFile {
+            module: ast::Ident {
+                text: module.to_string(),
+                span: Span::default(),
+            },
+            operators: ops.to_vec(),
+        };
+        let got = model::migrated(self, &m, text, &[], false, false).map_err(|d| vec![d])?;
+        let refused = got.refusals(&m);
+        if !refused.is_empty() {
+            return Err(refused);
         }
-        let prior = src.clone();
-        let stepping = !matches!(self.steps.last(), Some(Err(_)));
-        let noted = RefCell::new(Names::default());
-        let noting = self.names.then_some(&noted);
-        let recorded = RefCell::new(Vec::new());
-        let steps =
-            match src.apply_recording(module, op, text, noting, stepping.then_some(&recorded)) {
-                Ok(()) if stepping => {
-                    Some(prior.stepped(module, op, text, src, recorded.into_inner()))
-                }
-                Ok(()) => None,
-                Err(ds) if !stepping => return Err(self.stop(src, ds)),
-                Err(ds) => {
-                    noted.take();
-                    if let Err(again) = src.apply_recording(module, op, text, noting, None) {
-                        return Err(self.stop(src, again));
-                    }
-                    Some(Err(ds))
-                }
-            };
-        self.steps.extend(steps);
-        if self.names {
-            if let Ok(naming) = &mut self.naming {
-                naming.noted(noted.into_inner());
-                if let Err(ds) = naming.copied(&prior, src, op.span) {
-                    self.naming = Err(ds);
-                }
-            }
-            self.sources.push(prior);
-        }
-        Ok(())
+        let mut out = got.source();
+        out.settled();
+        Ok(out)
     }
 
-    /// Stop recording at an operator that does not apply, refused with `ds`.
-    fn stop(&mut self, src: &mut Source, ds: Vec<Diag>) -> Vec<Diag> {
-        self.live = false;
-        src.marks = None;
-        ds
-    }
-
-    /// End the recording at `src`, the source the last operator leaves.
-    pub(super) fn end(&mut self, src: &mut Source) {
-        if self.live
-            && self.names
-            && let Ok(naming) = &mut self.naming
-            && let Err(ds) = naming.finish(src)
-        {
-            self.naming = Err(ds);
-        }
-        src.marks = None;
+    /// Returns why each of `ops` that adopts release data this source lacks cannot be resolved.
+    pub(super) fn unavailable(&self, ops: &[Operator]) -> Vec<Diag> {
+        ops.iter()
+            .filter_map(|op| match &op.kind {
+                OperatorKind::AdoptTzdb { from, .. } if !self.packages.contains_key(from) => {
+                    Some(Diag::new(
+                        op.span,
+                        format!("the release data `{from}` is not available"),
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
     }
 }
