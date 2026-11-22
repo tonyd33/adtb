@@ -17,6 +17,8 @@ pub enum Broken {
     /// Planning a statement's read breaks a guarantee of the checker or the normaliser.
     StatementPlan(plan::Error),
     DuplicateKey(Vec<u8>),
+    /// A bulk build was handed this entry after one not below it.
+    UnsortedBuild(Vec<u8>),
     DenialNotSet(Val),
     UniqueUnindexed {
         position: usize,
@@ -126,6 +128,12 @@ impl fmt::Display for Broken {
             | Broken::StatementPlan(plan::Error::Internal(b)) => write!(f, "{b}"),
             Broken::BoundedPlan(e) | Broken::StatementPlan(e) => write!(f, "{e}"),
             Broken::DuplicateKey(key) => write!(f, "a duplicate of key {key:?} in a unique index"),
+            Broken::UnsortedBuild(entry) => {
+                write!(
+                    f,
+                    "a bulk build's entry {entry:?} is not above the one before it"
+                )
+            }
             Broken::DenialNotSet(v) => write!(f, "a denial query returns a set, found {v:?}"),
             Broken::UniqueUnindexed { position, relation } => {
                 write!(f, "unique {position} of relation {relation} has an index")

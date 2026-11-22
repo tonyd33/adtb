@@ -70,6 +70,10 @@ mod held {
             .unwrap_or(0)
     }
 
+    pub(super) fn count_all() -> usize {
+        HELD.try_with(|h| h.borrow().len()).unwrap_or(0)
+    }
+
     pub(super) fn release(mem: usize, pid: u64) {
         HELD.try_with(|h| {
             let mut h = h.borrow_mut();
@@ -89,6 +93,15 @@ mod held {
     pub(super) fn count(_: usize) -> usize {
         0
     }
+    pub(super) fn count_all() -> usize {
+        0
+    }
+}
+
+/// Returns the number of latches the calling thread holds in any page memory, in debug builds and
+/// when `latch-checks` is on; 0 otherwise.
+pub fn latched_by_this_thread() -> usize {
+    held::count_all()
 }
 
 thread_local! {

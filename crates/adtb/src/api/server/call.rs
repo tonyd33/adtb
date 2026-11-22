@@ -208,7 +208,7 @@ impl<R: Runtime> Call<R> {
         let Some(call) = self.role_call.take() else {
             return Ok(());
         };
-        e.audit_call(&self.call_row(&call, failed))
+        e.audit_call(&self.call_row(&call, failed), self.grant.as_ref())
     }
 
     /// Record the failure `err`, or the owner's request that replaces it. Returns the error to
@@ -271,7 +271,7 @@ impl<R: Runtime> Call<R> {
             e.db.admit_grant()
                 .map_err(|err| e.write_error(TxnId(0), err))?;
         self.shared.defer(|s| {
-            s.grant = Arc::downgrade(&grant);
+            s.granted(&grant);
             ((), [None, None])
         });
         self.grant = Some(grant);
@@ -647,7 +647,9 @@ impl<R: Runtime> Call<R> {
             (Some(_), Some(marked)) if tx.wrote() => {
                 return Err(either(self.abandon(e, id, tx, || marked)));
             }
-            (Some(text), None) => e.audit_call_in(&tx, id, &self.call_row(text, None)),
+            (Some(text), None) => {
+                e.audit_call_in(&tx, id, &self.call_row(text, None), self.grant.as_ref())
+            }
             _ => Ok(()),
         };
         if let Err(err) = row {
@@ -933,6 +935,18 @@ impl<R: Runtime> Source<R> {
             Source::Whole(it, _) => it.len() == 0,
             Source::Stream(s) => !s.more && s.pending.is_empty(),
         }
+    }
+}
+
+impl<R: Runtime> Drop for Call<R> {
+    /// Let go of the call's grant and output, then make its completion observable.
+    fn drop(&mut self) {
+        self.grant = None;
+        self.phase = Phase::Over;
+        self.shared.with(|s| {
+            s.released();
+            ((), [s.observer.take(), None])
+        });
     }
 }
 

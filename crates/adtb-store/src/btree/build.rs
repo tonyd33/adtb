@@ -3,8 +3,12 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
+use std::marker::PhantomData;
 
-use crate::runtime::Runtime;
+use adtb_sys::lock::{Ranked, RankedGuard};
+
+use crate::ranks;
+use crate::runtime::{Runtime, Threads};
 use crate::steps::{Retire, Step};
 use crate::storage::{Damage, PageError, Pager, Pid, Quarantine};
 
@@ -30,6 +34,8 @@ pub enum BuildError {
     Page(PageError),
     /// The key of two different entries of a unique merge that both count.
     Duplicate(Vec<u8>),
+    /// An entry of a bulk build not above the entry before it.
+    Unsorted(Vec<u8>),
 }
 
 impl From<PageError> for BuildError {
@@ -78,6 +84,81 @@ pub fn merge_runs(
         }
     }
     Ok(out)
+}
+
+/// The trees of one index: its own, and its history tree when history is kept.
+#[derive(Clone, Copy, Debug)]
+pub struct IndexTrees {
+    index: BTree,
+    history: Option<BTree>,
+}
+
+impl IndexTrees {
+    pub fn new(index: BTree, history: Option<BTree>) -> IndexTrees {
+        IndexTrees { index, history }
+    }
+}
+
+/// The latch of one index's inserts, through which alone its trees are taken over.
+#[derive(Debug)]
+pub struct IndexLatch(Ranked<IndexTrees>);
+
+/// The guard of an [`IndexLatch`].
+#[derive(Debug)]
+pub struct IndexLatched<'a>(RankedGuard<'a, IndexTrees>);
+
+/// A tree of an index whose latch is held.
+#[derive(Clone, Copy, Debug)]
+pub struct LatchedTree<'g> {
+    tree: BTree,
+    _held: PhantomData<&'g ()>,
+}
+
+impl IndexLatch {
+    pub const fn new(trees: IndexTrees) -> IndexLatch {
+        IndexLatch(Ranked::new(ranks::INDEX_LATCH, trees))
+    }
+
+    /// Wait for the latch as [`Ranked::lock`] does.
+    pub fn lock(&self, threads: &impl Threads) -> IndexLatched<'_> {
+        IndexLatched(self.0.lock(threads))
+    }
+}
+
+impl IndexLatched<'_> {
+    pub fn index(&self) -> LatchedTree<'_> {
+        LatchedTree {
+            tree: self.0.index,
+            _held: PhantomData,
+        }
+    }
+
+    pub fn history(&self) -> Option<LatchedTree<'_>> {
+        Some(LatchedTree {
+            tree: self.0.history?,
+            _held: PhantomData,
+        })
+    }
+}
+
+impl LatchedTree<'_> {
+    pub fn tree(&self) -> BTree {
+        self.tree
+    }
+
+    /// Give the tree's root the contents of `built`'s root and free that page, removing the mark
+    /// on `release` if one is named and held, in one batch. Returns once that is durable.
+    ///
+    /// Preconditions: nothing but the latch's holder writes the tree or `built`, and `built`'s
+    /// pages carry the tree's owner.
+    pub fn take_over<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        built: BTree,
+        release: Option<Quarantine>,
+    ) -> Result<(), PageError> {
+        pager.replace_contents(self.tree.root(), built.root(), release)
+    }
 }
 
 /// The share of a page's capacity a build fills, leaving room for inserts.
@@ -161,7 +242,8 @@ impl BTree {
     /// filled left to right and each level is built from the first keys of the level below.
     ///
     /// Every page written is added to `made`, a failed build's included. Fail with `Stopped` once
-    /// `stop` returns true, which it is asked before each page.
+    /// `stop` returns true, which it is asked before each page, and with `Unsorted` before
+    /// writing any page when an entry is not above the one before it.
     pub fn bulk<R: Runtime>(
         pager: &Pager<R>,
         owner: u32,
@@ -169,6 +251,9 @@ impl BTree {
         made: &mut Vec<Pid>,
         stop: &dyn Fn() -> bool,
     ) -> Result<BTree, BuildError> {
+        if let Some(w) = entries.windows(2).find(|w| w[1] <= w[0]) {
+            return Err(BuildError::Unsorted(w[1].clone()));
+        }
         let items: Vec<Item> = entries.into_iter().map(Item::entry).collect();
         let mut level = 0;
         let mut pages = write_level(pager, owner, level, &items, made, stop)?;
@@ -181,20 +266,6 @@ impl BTree {
             pages = write_level(pager, owner, level, &links, made, stop)?;
         }
         Ok(BTree::open(pages[0].1, owner))
-    }
-
-    /// Give this tree's root the contents of `built`'s root and free that page, removing the mark
-    /// on `release` if one is named and held, in one batch. Returns once that is durable.
-    ///
-    /// Preconditions: nothing writes this tree or `built`, and `built`'s pages carry this tree's
-    /// owner.
-    pub fn take_over<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        built: BTree,
-        release: Option<Quarantine>,
-    ) -> Result<(), PageError> {
-        pager.replace_contents(self.root(), built.root(), release)
     }
 
     /// Returns the pages below the root as far as they can be followed, each level left to right

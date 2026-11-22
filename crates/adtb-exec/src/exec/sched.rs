@@ -5,6 +5,7 @@ use std::sync::{Arc, Weak};
 use std::task::{Wake, Waker};
 
 use adtb_sys::lock::{Lock, Ranked};
+use adtb_sys::pages;
 
 use crate::ranks;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId, Ticket};
@@ -537,8 +538,13 @@ impl Inner {
     }
 
     /// Run one step of call `id`, then queue it again, leave it waiting, stop it or drop it.
+    /// Panic, in debug builds and under `latch-checks`, if the step waits holding a page latch.
     fn step<R: Runtime>(&self, rt: &R, id: CallId, mut call: Box<dyn Resumable>, waker: &Waker) {
         let step = call.run(waker);
+        assert!(
+            step == Step::Done || pages::latched_by_this_thread() == 0,
+            "a call's step returned {step:?} holding a page latch"
+        );
         let mut c = self.calls.lock(rt);
         let closed = c.closed;
         let slot = c.slots.get_mut(&id).expect("a running call keeps its slot");

@@ -356,6 +356,11 @@ fn store_broken_rows() -> Vec<Row> {
             "a duplicate of key [1] in a unique index",
         ),
         broken_row(
+            B::UnsortedBuild(vec![1]),
+            c,
+            "a bulk build's entry [1] is not above the one before it",
+        ),
+        broken_row(
             B::DenialNotSet(Val::Int(1)),
             c,
             "a denial query returns a set, found Int(1)",
@@ -532,7 +537,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 71;
+const SLOTS: usize = 72;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -617,6 +622,7 @@ fn slot(e: &write::Error) -> usize {
             B::NoDenial(_) => 68,
             B::Unadmitted { .. } => 69,
             B::UniqueUnnamed { .. } => 70,
+            B::UnsortedBuild(_) => 71,
         },
     }
 }

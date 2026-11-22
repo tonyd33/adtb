@@ -139,7 +139,8 @@ impl<R: Runtime> Restoring<'_, R> {
         };
         let tree = db.bindings.indexes()[&id].index.tree();
         let built = BTree::bulk(&db.pager, tree.owner(), entries, &mut Vec::new(), &stop)?;
-        tree.take_over(&db.pager, built, None)?;
+        let held = db.latches[&id].lock(&db.rt);
+        held.index().take_over(&db.pager, built, None)?;
         Ok(duplicated)
     }
 

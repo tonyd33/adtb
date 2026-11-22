@@ -17,7 +17,7 @@ use std::time::Duration;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::HeldRank;
 
-use crate::btree::build::{BuildError, RunEntry, merge_runs, retire};
+use crate::btree::build::{BuildError, IndexLatched, LatchedTree, RunEntry, merge_runs, retire};
 use crate::btree::{self, BTree};
 use crate::exec;
 use crate::heap::{Heap, Refused};
@@ -587,13 +587,14 @@ impl<R: Runtime> Database<R> {
             }
         }
         self.began(job, Reindex::Swap);
-        let _held = self.latches[&job.index].lock(&self.rt);
+        let held = self.latches[&job.index].lock(&self.rt);
         scan.catch_up(built, since)?;
         self.rebuild_stopped()?;
         self.admit_reindex(job.rel)?;
-        self.mend_history(job, &scan, pages)?;
+        self.mend_history(&held, job, &scan, pages)?;
         let release = Some(Quarantine::Index(tree.owner()));
-        self.swap_in(tree, built, release, job, &mut pages.built, &mut pages.old)
+        let swap = (held.index(), built);
+        self.swap_in(swap, release, job, &mut pages.built, &mut pages.old)
     }
 
     /// Returns whether a build should stop.
@@ -612,14 +613,15 @@ impl<R: Runtime> Database<R> {
     /// that fails on anything but an I/O error shows damage.
     fn mend_history(
         &self,
+        held: &IndexLatched<'_>,
         job: &Rebuild<'_>,
         scan: &Scan<'_, R>,
         pages: &mut Pages,
     ) -> Result<(), Error> {
-        let (Some(retained), Some(tree)) = (self.retained.as_deref(), self.history_tree(job.index))
-        else {
+        let (Some(retained), Some(latched)) = (self.retained.as_deref(), held.history()) else {
             return Ok(());
         };
+        let tree = latched.tree();
         match tree.pages(&self.pager) {
             Ok(_) => return Ok(()),
             Err(btree::Error::Page(e)) if e.damage == Damage::Unreadable => return Err(e.into()),
@@ -635,8 +637,7 @@ impl<R: Runtime> Database<R> {
             &stop,
         )?;
         self.swap_in(
-            tree,
-            built,
+            (latched, built),
             None,
             job,
             &mut pages.built_past,
@@ -648,16 +649,16 @@ impl<R: Runtime> Database<R> {
     /// Empties `made`, the pages of `built`, which from the swap on belong to `tree`.
     fn swap_in(
         &self,
-        tree: BTree,
-        built: BTree,
+        (latched, built): (LatchedTree<'_>, BTree),
         release: Option<Quarantine>,
         job: &Rebuild<'_>,
         made: &mut Vec<Pid>,
         old: &mut Replaced,
     ) -> Result<(), Error> {
+        let tree = latched.tree();
         let (reached_pages, reached) = tree.reachable(&self.pager);
         self.pager.retire(reached_pages.iter().copied());
-        if let Err(e) = tree.take_over(&self.pager, built, release) {
+        if let Err(e) = latched.take_over(&self.pager, built, release) {
             self.pager.unretire(&reached_pages);
             return Err(e.into());
         }
@@ -681,6 +682,7 @@ impl From<BuildError> for Error {
             BuildError::Stopped => Error::Exec(exec::Error::Cancelled),
             BuildError::Page(e) => e.into(),
             BuildError::Duplicate(key) => Broken::DuplicateKey(key).into(),
+            BuildError::Unsorted(entry) => Broken::UnsortedBuild(entry).into(),
         }
     }
 }

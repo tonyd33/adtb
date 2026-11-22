@@ -304,13 +304,16 @@ impl<R: Runtime> RoleAuthority<R> {
         let needs = |root| {
             permission::normal(p.schema(), normal, p.terms(), root, &params).map_err(|err| {
                 let err = no_identity(err);
-                e.audit_call(&CallRow {
-                    role: &session.name,
-                    caller,
-                    origin: &origin,
-                    args,
-                    failed: Some(&err),
-                })
+                e.audit_call(
+                    &CallRow {
+                        role: &session.name,
+                        caller,
+                        origin: &origin,
+                        args,
+                        failed: Some(&err),
+                    },
+                    None,
+                )
                 .map_or_else(|audit| audit, |()| err)
             })
         };

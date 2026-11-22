@@ -53,6 +53,7 @@ use adtb_lang::schema::Committed;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::{Lock, Ranked};
 
+use crate::btree::build::{IndexLatch, IndexTrees};
 use crate::catalog::{IndexSpec, Structures};
 use crate::exec::{self, Budget, Scheduler, Val};
 use crate::key::CtorId;
@@ -582,7 +583,7 @@ pub struct Database<R: Runtime> {
     pager: Pager<R>,
     session: Arc<Session<R>>,
     bindings: exec::Bindings,
-    latches: BTreeMap<IndexId, Ranked<()>>,
+    latches: BTreeMap<IndexId, IndexLatch>,
     rels: Rels,
     /// Every structure of the file, each with the holder of its pages.
     structures: Structures,
@@ -685,12 +686,7 @@ impl<R: Runtime> Database<R> {
             None => Sequences::none(),
             Some(page) => Sequences::open(&setup.pager, page)?,
         };
-        let latches = setup
-            .bindings
-            .indexes()
-            .keys()
-            .map(|i| (*i, Ranked::new(ranks::INDEX_LATCH, ())))
-            .collect();
+        let latches = latches(&setup.bindings, None);
         let seed = rt.next_u64();
         let heaps = (rels.values())
             .map(|r| {
@@ -768,6 +764,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// Fail if the record of the window is damaged.
     pub fn with_history(mut self, retained: Retained, window: Duration) -> Result<Self, Error> {
+        self.latches = latches(&self.bindings, Some(&retained));
         self.retained = Some(Arc::new(retained));
         self.hold_vacuum(HoldWait::unbounded())?
             .set_retention(window)?;
@@ -1475,4 +1472,21 @@ impl<R: Runtime> VacuumHold<'_, R> {
             .collect();
         Ok(Vacuumed { ctors, report })
     }
+}
+
+/// Returns the latch of each index of `bindings`, over its tree and its history tree in
+/// `retained`.
+fn latches(
+    bindings: &exec::Bindings,
+    retained: Option<&Retained>,
+) -> BTreeMap<IndexId, IndexLatch> {
+    (bindings.indexes().iter())
+        .map(|(id, b)| {
+            let history = retained.and_then(|r| Some(r.indexes.get(id)?.tree()));
+            (
+                *id,
+                IndexLatch::new(IndexTrees::new(b.index.tree(), history)),
+            )
+        })
+        .collect()
 }

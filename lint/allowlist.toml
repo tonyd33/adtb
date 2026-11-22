@@ -42,7 +42,7 @@
 "crates/adtb/src/api/server/call.rs" = 5
 "crates/adtb/src/api/server/session.rs" = 4
 "crates/adtb/src/api/server/tables.rs" = 25
-"crates/adtb/src/api/server/task.rs" = 15
+"crates/adtb/src/api/server/task.rs" = 14
 "crates/adtb/src/api/settings.rs" = 9
 "crates/adtb/src/api/statements.rs" = 3
 "crates/adtb/src/api/stop.rs" = 3

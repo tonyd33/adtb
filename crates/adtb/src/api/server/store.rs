@@ -1,7 +1,9 @@
 use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::exec::Val;
+use std::sync::Arc;
+
+use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
 use crate::write::{Bounds, Local, Text, Txn, either};
 
@@ -21,10 +23,13 @@ impl Changes {
         self.rows.push((relation, false, row));
     }
 
+    /// Apply the rows in `tx`, charging the statement to `grant`, or to a grant of its own when
+    /// `None`.
     pub(super) fn apply<R: Runtime>(
         &self,
         e: &Engine<R>,
         tx: &Txn,
+        grant: Option<&Arc<Grant>>,
     ) -> Result<(), crate::write::Error> {
         if self.rows.is_empty() {
             return Ok(());
@@ -57,7 +62,11 @@ impl Changes {
             clock: e.clock(),
             caller: None,
         };
-        e.db.statements(tx, text, &mut Local::default(), Bounds::default())
+        let bounds = Bounds {
+            grant: grant.cloned(),
+            ..Bounds::default()
+        };
+        e.db.statements(tx, text, &mut Local::default(), bounds)
             .map(|_| ())
             .map_err(|failure| failure.error)
     }
@@ -66,6 +75,16 @@ impl Changes {
 pub(super) fn run<R: Runtime, T>(
     e: &Engine<R>,
     write: bool,
+    body: &mut impl FnMut(&Engine<R>, &Txn, TxnId, &mut Changes) -> Result<T, Error>,
+) -> Result<T, Error> {
+    run_under(e, write, None, body)
+}
+
+/// Run `body` as [`run`] does, its changes charged to `grant`.
+pub(super) fn run_under<R: Runtime, T>(
+    e: &Engine<R>,
+    write: bool,
+    grant: Option<&Arc<Grant>>,
     body: &mut impl FnMut(&Engine<R>, &Txn, TxnId, &mut Changes) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let retries = e.settings.lock(&e.rt).retries;
@@ -80,7 +99,7 @@ pub(super) fn run<R: Runtime, T>(
         let mut changes = Changes::default();
         let result = body(e, &tx, id, &mut changes).and_then(|value| {
             changes
-                .apply(e, &tx)
+                .apply(e, &tx, grant)
                 .map_err(|error| e.write_error(id, error))?;
             Ok(value)
         });

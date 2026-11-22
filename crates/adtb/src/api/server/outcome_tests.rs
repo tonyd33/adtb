@@ -503,13 +503,16 @@ fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
             let origin = CallOrigin::Function { name: text("f") };
             for error in errors {
                 engine
-                    .audit_call(&CallRow {
-                        role: "",
-                        caller: &caller,
-                        origin: &origin,
-                        args: &[0; 32],
-                        failed: Some(error),
-                    })
+                    .audit_call(
+                        &CallRow {
+                            role: "",
+                            caller: &caller,
+                            origin: &origin,
+                            args: &[0; 32],
+                            failed: Some(error),
+                        },
+                        None,
+                    )
                     .expect("the call's audit row is written");
             }
             let mut results = db

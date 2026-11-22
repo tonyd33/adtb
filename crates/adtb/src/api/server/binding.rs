@@ -352,13 +352,16 @@ impl<R: Runtime> RoleBinding<R> {
         let bound = match self.registered.bound(&e, ordinal, &args, caller.clone()) {
             Ok(bound) => bound,
             Err(err) => {
-                e.audit_call(&CallRow {
-                    role: &session.name,
-                    caller: &caller,
-                    origin: &origin,
-                    args: &hash,
-                    failed: Some(&err),
-                })?;
+                e.audit_call(
+                    &CallRow {
+                        role: &session.name,
+                        caller: &caller,
+                        origin: &origin,
+                        args: &hash,
+                        failed: Some(&err),
+                    },
+                    None,
+                )?;
                 return Err(err);
             }
         };

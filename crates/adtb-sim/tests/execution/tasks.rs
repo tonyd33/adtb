@@ -1050,22 +1050,43 @@ fn a_waiting_write_fails_at_its_statement_limit() {
     });
 }
 
+/// An audited call's audit row is written under the call's own grant: a read runs under a
+/// budget of one grant.
+#[test]
+fn an_audited_task_runs_under_one_grant() {
+    sim_once(|rt| {
+        let f = open_under(rt, 10, 2, Some(64 << 20));
+        let task = f.submit(2, read_opts());
+        let (rows, done) = drive(rt, &task);
+        assert!(matches!(done, Completion::Read { .. }), "{done:?}");
+        assert_eq!(vec![Value::Int(10)], rows);
+    });
+}
+
+/// Under a budget of one grant, a call submitted as soon as the last one's `Done` is observed is
+/// admitted, the finished tasks' handles still held.
 #[test]
 fn a_finished_task_holds_no_memory_grant() {
-    sim_once(|rt| {
-        let f = open_with(rt, 10, 2);
-        let finished: Vec<Task<SimRuntime>> = (0..4)
-            .map(|_| {
-                let task = f.submit(2, read_opts());
-                let (_, done) = drive(rt, &task);
-                assert!(matches!(done, Completion::Read { .. }), "{done:?}");
-                task
-            })
-            .collect();
-        assert_eq!(10, f.items(), "a call runs beside four finished tasks");
-        let task = f.submit(2, read_opts());
-        assert_eq!(vec![Value::Int(10)], drive(rt, &task).0);
-        drop(finished);
+    sim_seeds_in(0..16, |rt| {
+        let f = open_under(rt, 10, 2, Some(64 << 20));
+        let mut finished: Vec<Task<SimRuntime>> = Vec::new();
+        for n in 11..14 {
+            let task = f.submit(3, read_opts());
+            let (_, done) = drive(rt, &task);
+            assert!(
+                matches!(done, Completion::Committed { .. }),
+                "bump to {n}: {done:?}"
+            );
+            finished.push(task);
+            let task = f.submit(2, read_opts());
+            let (rows, done) = drive(rt, &task);
+            assert!(
+                matches!(done, Completion::Read { .. }),
+                "count of {n}: {done:?}"
+            );
+            assert_eq!(vec![Value::Int(n)], rows);
+            finished.push(task);
+        }
     });
 }
 

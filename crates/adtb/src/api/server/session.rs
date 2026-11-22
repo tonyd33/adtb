@@ -1,10 +1,10 @@
-use std::sync::Weak;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::types::RelId;
 
-use crate::exec::Val;
+use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
 use crate::write::Txn;
 
@@ -280,11 +280,16 @@ impl<R: Runtime> Engine<R> {
         })
     }
 
-    /// Record the call `call`, in a transaction of its own, unless a mark stops the row.
-    pub(super) fn audit_call(&self, call: &CallRow<'_>) -> Result<(), Error> {
+    /// Record the call `call`, in a transaction of its own charged to the call's `grant`, unless
+    /// a mark stops the row.
+    pub(super) fn audit_call(
+        &self,
+        call: &CallRow<'_>,
+        grant: Option<&Arc<Grant>>,
+    ) -> Result<(), Error> {
         self.audit_unless_marked(|| {
             let seq = self.audit_seq()?;
-            store::run(self, true, &mut |e, _, id, changes| {
+            store::run_under(self, true, grant, &mut |e, _, id, changes| {
                 let t = Tables::new(&e.schema, id);
                 changes.insert(t.audit_relation(), t.call_row(e, seq, call)?);
                 Ok(())
@@ -313,19 +318,21 @@ impl<R: Runtime> Engine<R> {
         Some(self.write_error(TxnId(0), marked))
     }
 
-    /// Add the row of call `call`, the transaction `id`, to `tx` before its commit.
+    /// Add the row of call `call`, the transaction `id`, to `tx` before its commit, charged to the
+    /// call's `grant`.
     pub(super) fn audit_call_in(
         &self,
         tx: &Txn,
         id: TxnId,
         call: &CallRow<'_>,
+        grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
         let seq = self.audit_seq()?;
         let t = Tables::new(&self.schema, id);
         let mut changes = Changes::default();
         changes.insert(t.audit_relation(), t.call_row(self, seq, call)?);
         changes
-            .apply(self, tx)
+            .apply(self, tx, grant)
             .map_err(|error| self.write_error(id, error))
     }
 

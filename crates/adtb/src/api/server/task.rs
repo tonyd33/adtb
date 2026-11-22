@@ -93,12 +93,25 @@ pub(super) struct State {
     pub(super) observer: Option<Waker>,
     /// The call's waker while it waits for capacity or the drain acknowledgement.
     pub(super) producer: Option<Waker>,
-    pub(super) grant: Weak<Grant>,
+    grant: Weak<Grant>,
+    /// Set while the call holds its grant, from its start until it is dropped.
+    granted: bool,
     /// Wakers a step of the call notifies once it has left the engine.
     pub(super) deferred: Vec<Waker>,
 }
 
 impl State {
+    /// Record `grant` as the call's, held until [`State::released`].
+    pub(super) fn granted(&mut self, grant: &Arc<Grant>) {
+        self.grant = Arc::downgrade(grant);
+        self.granted = true;
+    }
+
+    /// Record that the call no longer holds its grant.
+    pub(super) fn released(&mut self) {
+        self.granted = false;
+    }
+
     /// Settle the task with `c` unless it has settled, discarding unobserved batches of a
     /// failure.
     pub(super) fn settle(&mut self, c: Completion) {
@@ -302,8 +315,8 @@ impl<R: Runtime> Task<R> {
                 | Completion::Committed {
                     incomplete: true, ..
                 }),
-            ) => return Observation::Done(c.clone()),
-            Some(c) if s.drained => return Observation::Done(c.clone()),
+            ) if !s.granted => return Observation::Done(c.clone()),
+            Some(c) if s.drained && !s.granted => return Observation::Done(c.clone()),
             _ => {}
         }
         if s.produced && !s.drained {
@@ -404,13 +417,16 @@ impl<R: Runtime> RoleSession<R> {
             }
         };
         let failed = |args: &[u8; 32], err: Error| {
-            e.audit_call(&CallRow {
-                role: &self.name,
-                caller: &caller,
-                origin: &origin,
-                args,
-                failed: Some(&err),
-            })
+            e.audit_call(
+                &CallRow {
+                    role: &self.name,
+                    caller: &caller,
+                    origin: &origin,
+                    args,
+                    failed: Some(&err),
+                },
+                None,
+            )
             .map_or_else(|audit| audit, |()| err)
         };
         if unseen.is_some_and(|h| {

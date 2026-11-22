@@ -56,6 +56,7 @@ impl Broken {
             Broken::BoundedPlan(_)
             | Broken::StatementPlan(_)
             | Broken::DuplicateKey(_)
+            | Broken::UnsortedBuild(_)
             | Broken::DenialNotSet(_)
             | Broken::UniqueUnindexed { .. }
             | Broken::UniqueUnnamed { .. }

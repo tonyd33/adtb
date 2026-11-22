@@ -737,7 +737,8 @@ impl BTree {
     /// It latches the parent, then the left sibling, then the leaf and its right
     /// sibling. Does nothing if the leaf is no longer empty, is the rightmost
     /// of its level, lacks its downlink, or is its parent's only child, or if
-    /// neither sibling can take its range.
+    /// neither sibling can take its range. Fail with `Malformed` naming the page under the leaf's
+    /// downlink when it is not a leaf.
     fn unlink<R: Runtime>(&self, pager: &Pager<R>, low: Option<&[u8]>) -> Result<bool, Error> {
         if self.height(pager)? == 0 {
             return Ok(false);
@@ -786,6 +787,9 @@ impl BTree {
         };
         let mut leaf = pager.exclusive(lpid)?;
         let ln = latched(&leaf, lpid, self.owner)?;
+        if !ln.is_leaf() {
+            return Err(Error::Malformed(lpid));
+        }
         let lf = node::fences(&ln).map_err(|Malformed| Error::Malformed(lpid))?;
         let (Some(rpid), Some(lhigh)) = (lf.right, lf.high) else {
             return Ok(false);
