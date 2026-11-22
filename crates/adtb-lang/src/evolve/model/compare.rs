@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::io::Write as _;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::OnceLock;
 
 use super::apply::Migrated;
 use super::op::{Fail, Refused};
@@ -54,93 +54,40 @@ enum Hook {
     Recorded,
 }
 
-/// The comparisons a hook made in this process: how many, and how many it skipped.
-#[derive(Clone, Copy, Debug, Default)]
-struct Tally {
-    total: usize,
-    skipped: usize,
-}
-
-/// The comparisons [`judge`] counted of each hook in this process, by [`Hook`].
-static TALLIES: Mutex<[Tally; 2]> = Mutex::new(
-    [Tally {
-        total: 0,
-        skipped: 0,
-    }; 2],
-);
-
-/// The share of a hook's comparisons in one process that may be skipped, as a fraction.
-const SKIPPED_AT_MOST: (usize, usize) = (1, 10);
-
-/// The fewest comparisons of a hook in one process [`SKIPPED_AT_MOST`] judges. Below it the
-/// process must have compared a migration before it skips one.
-const JUDGED_FROM: usize = SKIPPED_AT_MOST.1;
-
-/// The tests whose skips [`SKIPPED_AT_MOST`] does not judge, by the name of the thread that
-/// runs them. Each applies few migrations, among them one the model does not compare.
-const UNJUDGED: &[&str] = &[];
-
 /// Count `line`'s outcome for `hook` and for [`forced`], and append it to the file
-/// `ADTB_MIGRATION_MODEL_LOG` names, when it names one. A `partial` of [`Hook::Migrating`]
-/// compares nothing and counts as skipped. Judge it unless its thread is one of [`UNJUDGED`].
-fn log(hook: Hook, line: &str) {
-    let outcome = line.split(['\t', ' ']).next().unwrap_or(line);
-    let skipped = outcome == "skipped" || (outcome == "partial" && matches!(hook, Hook::Migrating));
-    FORCED.with(|x| {
-        if let Some(tally) = x.borrow_mut().as_mut() {
-            let key = if skipped {
-                format!("{hook:?} skipped")
-            } else {
-                format!("{hook:?} {outcome}")
-            };
-            *tally.entry(key).or_default() += 1;
-        }
-    });
-    let thread = std::thread::current();
-    let name = thread.name().unwrap_or_default();
-    if !UNJUDGED.contains(&name) {
-        judge(hook, skipped, name, line);
-    }
-    let Some(path) = std::env::var_os("ADTB_MIGRATION_MODEL_LOG") else {
-        return;
-    };
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .unwrap_or_else(|e| panic!("the migration model log {path:?} opens: {e}"));
-    f.write_all(format!("{line}\n").as_bytes())
-        .unwrap_or_else(|e| panic!("the migration model log {path:?} takes a line: {e}"));
-}
-
-/// Count a comparison of `hook` on thread `name`, `skipped` or not, whose log line is `line`.
+/// `ADTB_MIGRATION_MODEL_LOG` names, when it names one.
 ///
 /// Panics:
-/// - `hook` has made [`JUDGED_FROM`] comparisons in this process and skipped more than
-///   [`SKIPPED_AT_MOST`] of them.
-/// - `hook` has made fewer and skipped one before it compared one.
-fn judge(hook: Hook, skipped: bool, name: &str, line: &str) {
-    let tally = {
-        let mut all = TALLIES.lock().unwrap_or_else(PoisonError::into_inner);
-        let t = &mut all[hook as usize];
-        t.total += 1;
-        t.skipped += usize::from(skipped);
-        *t
-    };
-    let (num, den) = SKIPPED_AT_MOST;
-    if tally.total >= JUDGED_FROM {
-        assert!(
-            tally.skipped * den <= tally.total * num,
-            "the {hook:?} hook skipped {} of its {} comparisons in this process, more than {num}/{den}, on thread {name:?}; the last: {line}",
-            tally.skipped,
-            tally.total,
-        );
-    } else {
-        assert!(
-            tally.skipped < tally.total,
-            "the {hook:?} hook skipped a migration in this process before it compared one, on thread {name:?}: {line}"
-        );
+/// - the model skipped the migration or stopped partway, outside [`forced`].
+fn log(hook: Hook, line: &str) {
+    let outcome = line.split(['\t', ' ']).next().unwrap_or(line);
+    let skipped = outcome == "skipped" || outcome == "partial";
+    let forced = FORCED.with(|x| {
+        let mut x = x.borrow_mut();
+        let Some(tally) = x.as_mut() else {
+            return false;
+        };
+        let key = if skipped {
+            format!("{hook:?} skipped")
+        } else {
+            format!("{hook:?} {outcome}")
+        };
+        *tally.entry(key).or_default() += 1;
+        true
+    });
+    if let Some(path) = std::env::var_os("ADTB_MIGRATION_MODEL_LOG") {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap_or_else(|e| panic!("the migration model log {path:?} opens: {e}"));
+        f.write_all(format!("{line}\n").as_bytes())
+            .unwrap_or_else(|e| panic!("the migration model log {path:?} takes a line: {e}"));
     }
+    assert!(
+        forced || !skipped,
+        "the {hook:?} hook did not compare a migration: {line}"
+    );
 }
 
 /// Apply migration `m` to the model of `before`, keeping the constraints and checks of `kept`,
@@ -281,6 +228,9 @@ enum Aspect {
     SourceIds,
     /// The functions and aggregates of the result.
     Functions,
+    /// The texts the catalog holds as written: function signatures and bodies, computed fields,
+    /// defaults, generated keys, constraints and checks.
+    Written,
     /// An operator's steps or row maps.
     Steps,
     /// The names of the migration's text.
@@ -564,8 +514,95 @@ fn same(model: &Model, src: &Source, by_meaning: bool) -> Vec<Diff> {
     }
     if builds {
         out.extend(source_ids_differ(model, src));
+        out.extend(written_differs(src, printed_decls));
     }
     out
+}
+
+/// Returns how the texts the catalog holds as written differ between `src` and `src` holding
+/// `printed` in place of its declarations.
+fn written_differs(src: &Source, printed: Vec<SourceDecl>) -> Option<Diff> {
+    let mine = Source {
+        decls: printed,
+        ..src.clone()
+    };
+    let (layer, mine) = (written(src), written(&mine));
+    if layer == mine {
+        return None;
+    }
+    let differ = |a: &Result<BTreeMap<String, String>, String>,
+                  b: &Result<BTreeMap<String, String>, String>| match (a, b) {
+        (Ok(a), Ok(b)) => format!(
+            "{:?}",
+            a.iter()
+                .filter(|(k, v)| b.get(*k) != Some(v))
+                .collect::<Vec<_>>()
+        ),
+        (a, _) => format!("{a:?}"),
+    };
+    Some(Diff {
+        aspect: Aspect::Written,
+        shown: format!(
+            "Written:\n  layer {}\n  model {}",
+            differ(&layer, &mine),
+            differ(&mine, &layer)
+        ),
+    })
+}
+
+/// Returns each text the catalog holds as written of the declarations of `src`, by what holds
+/// it.
+fn written(src: &Source) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    let functions = src.functions().map_err(|ds| format!("{ds:?}"))?;
+    for f in functions {
+        let body = match &f.code {
+            crate::evolve::Code::Language { body, .. }
+            | crate::evolve::Code::Aggregate { body, .. } => body.as_str(),
+            _ => "",
+        };
+        out.insert(
+            format!("fn {}::{}", f.module, f.name),
+            format!("{} = {body}", f.signature),
+        );
+    }
+    let files = src.files().map_err(|ds| format!("{ds:?}"))?;
+    for (file, sf) in &files {
+        let i = file.0 as usize;
+        let module = &src.decls[i].module;
+        let text = src.file_text(*file);
+        let at = |sp: Span| text[sp.range()].to_string();
+        let generate = |g: Span| match text[..g.start as usize].rfind("generate") {
+            Some(k) => text[k..g.end as usize].to_string(),
+            None => at(g),
+        };
+        for d in &sf.decls {
+            match d {
+                ast::Decl::Relation(r) => {
+                    let name = format!("{module}::{}", r.name.name.text);
+                    for (k, c) in r.clauses.iter().enumerate() {
+                        let shown = match c {
+                            ast::RelationClause::Key(_, Some(g)) => generate(g.span),
+                            ast::RelationClause::Default { value, .. } => match value {
+                                ast::DefaultValue::Generate(g) => generate(g.span),
+                                ast::DefaultValue::Expr(e) => at(e.span),
+                            },
+                            ast::RelationClause::Computed(_, ty, e) => {
+                                format!("{} = {}", at(ty.span), at(e.span))
+                            }
+                            _ => continue,
+                        };
+                        out.insert(format!("{name} clause {k}"), shown);
+                    }
+                }
+                ast::Decl::Constraint(_) | ast::Decl::Check(_) => {
+                    out.insert(format!("decl {i}"), src.decls[i].text.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(out)
 }
 
 impl Model {

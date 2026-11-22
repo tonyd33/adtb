@@ -1,0 +1,13 @@
+seed 1
+use empty
+
+migrate
+  module app
+  add module app
+  add type T = { id: Key ts, n: I64 }
+  add relation ts : T key id generate sequence
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "field `T.id` of `ts`'s own type is typed `Key ts` and is outside the new key; drop it in the same migration" } } }
+  module app
+  rekey relation ts key zz
+  add field T.zz : I64 fill match | T t -> 0

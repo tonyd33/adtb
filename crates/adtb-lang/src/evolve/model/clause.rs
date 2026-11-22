@@ -53,6 +53,14 @@ impl Model {
     /// it. Returns the file of the declaration.
     pub(super) fn relift(&mut self, built: &Built, item: Item) -> Res<FileId> {
         let i = self.decl_at(item).expect("a declared item");
+        let pending: Vec<Option<u64>> = match item {
+            Item::Relation(r) => self.relations[&r]
+                .clauses
+                .iter()
+                .map(ClauseM::pending)
+                .collect(),
+            _ => Vec::new(),
+        };
         let file = FileId(i as u32);
         let Some(d) = built.decl(file) else {
             return broken("a declaration the model printed does not parse");
@@ -71,6 +79,19 @@ impl Model {
         .decl(self, d)
         .map_err(Fail::Broken)?;
         self.decls.pop();
+        if let Item::Relation(r) = item {
+            let clauses = &mut self
+                .relations
+                .get_mut(&r)
+                .expect("a relifted relation")
+                .clauses;
+            if clauses.len() != pending.len() {
+                return broken("a relation lifted again with other clauses");
+            }
+            for (c, p) in clauses.iter_mut().zip(pending) {
+                c.set_pending(p);
+            }
+        }
         Ok(file)
     }
 
@@ -168,65 +189,91 @@ impl Model {
         });
         let clause = ClauseM::Index {
             id: None,
+            pending: None,
             kind,
             elems: vec![Term::text(&run.text()[first.span.to(last.span).range()])],
             scope,
         };
-        let Some((built, file)) = self.appended(run, r, clause)? else {
-            let fields = run.late(Late::Unresolved);
-            let resolved = match kind {
-                IndexKind::Unique => Resolved::AddUnique {
-                    index: 0,
-                    relation: r,
-                    fields,
-                },
-                _ => Resolved::AddIndex {
-                    index: 0,
-                    relation: r,
-                    interval: kind == IndexKind::Interval,
-                    fields,
-                },
-            };
-            return Ok((resolved, Vec::new(), Ok(Vec::new())));
-        };
+        let built = self.appended(run, r, clause)?;
         let k = self.relations[&r].clauses.len() - 1;
-        let (fs, _) = match Self::clause_written(&built, file, k)? {
-            RelationClause::Unique(fs, s, _) => (fs, s),
-            RelationClause::Index { fields, scope, .. } => (fields, scope),
-            _ => return broken("an added index the model printed as another clause"),
+        let (index, fields, clauses) = match built {
+            Some((built, _)) => {
+                let ClauseM::Index {
+                    id: Some(index), ..
+                } = self.relations[&r].clauses[k]
+                else {
+                    return broken("an added index the build gave no id");
+                };
+                let fields = self
+                    .index_canonical(&built, r, k)
+                    .unwrap_or_else(|| run.late(Late::Unresolved));
+                (index, fields, self.index_scope(r, k))
+            }
+            None => {
+                let pending = self.pend(r, k);
+                let fields = run.late(Late::Index {
+                    relation: r,
+                    pending,
+                });
+                (0, fields, Vec::new())
+            }
         };
-        let span = fs[0].span.to(fs[fs.len() - 1].span);
-        let text = Self::canonical_at(&built, run, file, span);
-        let ClauseM::Index {
-            id: Some(index),
-            scope,
-            ..
-        } = &self.relations[&r].clauses[k]
+        let resolved = match kind {
+            IndexKind::Unique => Resolved::AddUnique {
+                index,
+                relation: r,
+                fields,
+            },
+            _ => Resolved::AddIndex {
+                index,
+                relation: r,
+                interval: kind == IndexKind::Interval,
+                fields,
+            },
+        };
+        Ok((resolved, clauses, Ok(Vec::new())))
+    }
+
+    /// Mark clause `k` of relation variable `r` as added while the declarations do not build.
+    /// Returns its token.
+    fn pend(&mut self, r: u64, k: usize) -> u64 {
+        let token = self.next_pending;
+        self.next_pending += 1;
+        self.relations
+            .get_mut(&r)
+            .expect("a resolved relation variable")
+            .clauses[k]
+            .set_pending(Some(token));
+        token
+    }
+
+    /// Returns the canonical form of the fields of clause `k` of relation variable `r`, a unique
+    /// or index, as `built` writes it, `None` when it does not resolve there.
+    pub(super) fn index_canonical(&self, built: &Built, r: u64, k: usize) -> Option<String> {
+        let file = FileId(self.decl_at(Item::Relation(r))? as u32);
+        let (RelationClause::Unique(fs, _, _) | RelationClause::Index { fields: fs, .. }) =
+            Self::clause_written(built, file, k).ok()?
         else {
-            return broken("an added index the build gave no id");
+            return None;
         };
-        let clauses = scope
+        let span = fs.first()?.span.to(fs.last()?.span);
+        canonical_term(built.text(file), span, &built.names(file)).ok()
+    }
+
+    /// Returns the constructors and named sets the scope of clause `k` of relation variable `r`
+    /// names.
+    pub(super) fn index_scope(&self, r: u64, k: usize) -> Vec<Clause> {
+        let ClauseM::Index { scope, .. } = &self.relations[&r].clauses[k] else {
+            return Vec::new();
+        };
+        scope
             .iter()
             .flat_map(|s| s.parts.iter())
             .filter_map(|p| match p.objects().next()? {
                 (Space::Set, s) => Some(Clause::Scope { set: s }),
                 (_, c) => Some(Clause::Member { ctor: c }),
             })
-            .collect();
-        let resolved = match kind {
-            IndexKind::Unique => Resolved::AddUnique {
-                index: *index,
-                relation: r,
-                fields: text,
-            },
-            _ => Resolved::AddIndex {
-                index: *index,
-                relation: r,
-                interval: kind == IndexKind::Interval,
-                fields: text,
-            },
-        };
-        Ok((resolved, clauses, Ok(Vec::new())))
+            .collect()
     }
 
     /// Refuse a unique over a field named alone that a member of its scope `sel` of relation
@@ -409,7 +456,7 @@ impl Model {
     }
 
     /// Returns a `Member` clause for each constructor whose field default clause `ids` fills.
-    fn default_members(&self, ids: &[(u64, u64)]) -> Vec<Clause> {
+    pub(super) fn default_members(&self, ids: &[(u64, u64)]) -> Vec<Clause> {
         ids.iter()
             .filter_map(|(f, _)| {
                 let owner = self.fields.get(f)?.owner;
@@ -438,9 +485,15 @@ impl Model {
             field: Term::text(&field.text),
             value,
             ids: Vec::new(),
+            pending: None,
         };
         let Some((built, file)) = self.appended(run, r, clause)? else {
-            let value = run.late(Late::Unresolved);
+            let k = self.relations[&r].clauses.len() - 1;
+            let pending = self.pend(r, k);
+            let value = run.late(Late::AddedDefault {
+                relation: r,
+                pending,
+            });
             return Ok((
                 Resolved::AddDefault {
                     default: 0,
@@ -647,10 +700,24 @@ impl Model {
             expr: Term::text(&run.text()[expr.span.range()]),
         };
         let Some((built, file)) = self.appended(run, r, clause)? else {
-            let decl = run.late(Late::Unresolved);
+            let computed = self.fresh(Space::Computed);
+            let k = self.relations[&r].clauses.len() - 1;
+            if let ClauseM::Computed { id, .. } = &mut self
+                .relations
+                .get_mut(&r)
+                .expect("a resolved relation variable")
+                .clauses[k]
+            {
+                *id = Some(computed);
+            }
+            self.computed_unbuilt.insert((r, computed));
+            let decl = run.late(Late::Computed {
+                relation: r,
+                computed,
+            });
             return Ok((
                 Resolved::AddComputed {
-                    computed: 0,
+                    computed,
                     relation: r,
                     name: field.text.clone(),
                     decl,
@@ -703,6 +770,7 @@ impl Model {
             else {
                 return broken("a redefined computed field held no id");
             };
+            self.computed_unbuilt.insert((r, computed));
             let decl = run.late(Late::Computed {
                 relation: r,
                 computed,

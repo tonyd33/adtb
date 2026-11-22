@@ -423,6 +423,7 @@ impl Model {
                 if !self.unlifted.contains(&Item::Relation(r)) {
                     self.unlifted.push(Item::Relation(r));
                 }
+                self.rekeyed_unbuilt.insert(r);
                 run.late(Late::Key { relation: r });
                 0
             }

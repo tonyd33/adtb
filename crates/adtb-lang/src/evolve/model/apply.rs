@@ -1,7 +1,7 @@
 use super::field::Maps;
 use super::lift::Lifting;
 use super::op::{Fail, Op, Refused, Res, Resolving};
-use super::run::{Built, Late, Run};
+use super::run::{Built, Gave, Late, Run};
 use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
 use crate::canon::Names;
@@ -248,6 +248,40 @@ impl Model {
         }
     }
 
+    /// Returns what `built`, the build at the migration's end, gives clause `pending` of relation
+    /// variable `relation`, written late as `late`, or what the first build after it gave the
+    /// clause when an operator removed it since.
+    fn gave(&self, built: &Built, late: Late, relation: u64, pending: u64) -> Result<Gave, String> {
+        let held = self.relations.get(&relation).and_then(|x| {
+            x.clauses
+                .iter()
+                .enumerate()
+                .find(|(_, c)| c.pending() == Some(pending))
+        });
+        let now = match held {
+            Some((at, ClauseM::Index { id: Some(id), .. })) => Some(Gave::Index {
+                id: *id,
+                fields: self.index_canonical(built, relation, at),
+                clauses: self.index_scope(relation, at),
+            }),
+            Some((_, ClauseM::Default { ids, .. })) => {
+                ids.first().map(|&(field, default)| Gave::Default {
+                    default,
+                    field,
+                    value: self.default_canonical(built, relation, default),
+                    clauses: self.default_members(ids),
+                })
+            }
+            _ => None,
+        };
+        let what = match late {
+            Late::Index { .. } => "a unique or index",
+            _ => "a default",
+        };
+        now.or_else(|| self.gave_clauses.get(&pending).cloned())
+            .ok_or_else(|| unbuilt_gone(what))
+    }
+
     /// Lift again each declaration of `late` from the declarations as the migration leaves them,
     /// and give the operator that wrote it, or a field of it, the canonical form it has there.
     /// Returns false when the declarations do not build or a late name does not resolve. Set
@@ -327,10 +361,11 @@ impl Model {
                             matches!(c, ClauseM::Computed { id: Some(id), .. } if *id == computed)
                         })
                     });
-                    if !held {
-                        continue;
+                    match (held, self.gave_computed.get(&computed)) {
+                        (true, _) => self.computed_canonical(&built, relation, computed),
+                        (false, Some(canonical)) => canonical.clone(),
+                        (false, None) => return Err(unbuilt_gone("a computed field")),
                     }
-                    self.computed_canonical(&built, relation, computed)
                 }
                 Late::Ctors {
                     first,
@@ -375,14 +410,25 @@ impl Model {
                     }
                     continue;
                 }
-                Late::Key { relation } => {
-                    if !self.relations.contains_key(&relation) {
+                Late::Index { relation, pending } | Late::AddedDefault { relation, pending } => {
+                    let gave = self.gave(&built, late, relation, pending)?;
+                    let Some(Ok(op)) = ops.get_mut(k) else {
                         continue;
-                    }
+                    };
+                    given(op, gave)?
+                }
+                Late::Key { relation } => {
+                    let id = match self.relations.contains_key(&relation) {
+                        true => Self::key_id(&built, relation).map_err(broken)?,
+                        false => match self.gave_keys.get(&relation) {
+                            Some(&id) => id,
+                            None => return Err(unbuilt_gone("a rekeyed key")),
+                        },
+                    };
                     if let Some(Ok(op)) = ops.get_mut(k)
                         && let Resolved::Rekey { key, .. } = &mut op.op
                     {
-                        *key = Self::key_id(&built, relation).map_err(broken)?;
+                        *key = id;
                     }
                     continue;
                 }
@@ -603,6 +649,9 @@ fn set_decl(op: &mut Resolved, decl: String) {
         | Resolved::AddField { decl: d, .. }
         | Resolved::AlterField { action: d, .. }
         | Resolved::AddComputed { decl: d, .. }
+        | Resolved::RedefineComputed { decl: d, .. }
+        | Resolved::AddUnique { fields: d, .. }
+        | Resolved::AddIndex { fields: d, .. }
         | Resolved::AddConstructor { decl: d, .. }
         | Resolved::Merge { decl: d, .. }
         | Resolved::Nest { decl: d, .. }
@@ -625,4 +674,44 @@ fn action_span(text: &str, ty: Span, decl: Span) -> Span {
         .get(2)
         .map_or(decl.end as usize, |t| from + t.span.start as usize);
     Span::new(start, decl.end as usize)
+}
+
+/// Returns why the model does not resolve `what` an operator wrote while the declarations did not
+/// build, which a later operator removed before any build gave it an id.
+fn unbuilt_gone(what: &str) -> String {
+    format!("{what} written while the declarations did not build was removed before any build")
+}
+
+/// Give `op` the ids, constructors and named sets `gave` holds. Returns the canonical form it
+/// gives the clause.
+fn given(op: &mut ResolvedOp, gave: Gave) -> Result<Option<String>, String> {
+    match (gave, &mut op.op) {
+        (
+            Gave::Index {
+                id,
+                fields,
+                clauses,
+            },
+            Resolved::AddUnique { index, .. } | Resolved::AddIndex { index, .. },
+        ) => {
+            *index = id;
+            op.clauses = clauses;
+            Ok(fields)
+        }
+        (
+            Gave::Default {
+                default: d,
+                field: f,
+                value,
+                clauses,
+            },
+            Resolved::AddDefault { default, field, .. },
+        ) => {
+            *default = d;
+            *field = f;
+            op.clauses = clauses;
+            Ok(value)
+        }
+        _ => Err("a late clause of another operator".into()),
+    }
 }

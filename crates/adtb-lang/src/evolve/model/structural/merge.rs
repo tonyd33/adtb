@@ -505,6 +505,7 @@ impl Model {
             if !w.added.iter().any(|(x, _)| *x == text) {
                 let clause = ClauseM::Index {
                     id: None,
+                    pending: None,
                     kind: cl.kind,
                     elems: fields.iter().map(|f| Term::text(f)).collect(),
                     scope: Some(Scope {

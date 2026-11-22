@@ -63,8 +63,33 @@ pub(super) enum Late {
     /// The constructors it made while the declarations did not build, from the name of `first`
     /// through the record of `last` when `record`.
     Ctors { first: u64, last: u64, record: bool },
+    /// A unique or index it added while the declarations did not build, by its relation
+    /// variable and token.
+    Index { relation: u64, pending: u64 },
+    /// A default it added while the declarations did not build, by its relation variable and
+    /// token.
+    AddedDefault { relation: u64, pending: u64 },
     /// The key it gave relation variable `relation` while the declarations did not build.
     Key { relation: u64 },
+}
+
+/// What the first build after it gave a clause an operator added while the declarations did not
+/// build.
+#[derive(Clone, Debug)]
+pub(super) enum Gave {
+    /// A unique's or index's id, its fields' canonical form and its scope.
+    Index {
+        id: u64,
+        fields: Option<String>,
+        clauses: Vec<crate::evolve::Clause>,
+    },
+    /// A default's id and first field, its value's canonical form and the constructors it fills.
+    Default {
+        default: u64,
+        field: u64,
+        value: Option<String>,
+        clauses: Vec<crate::evolve::Clause>,
+    },
 }
 
 impl<'a> Run<'a> {
@@ -440,7 +465,62 @@ impl Model {
         self.next = next;
         self.lift_held(&built);
         self.adopt(built.schema());
+        self.record_given(&built);
         Ok(built)
+    }
+
+    /// Record what `built`, a build the model adopted, gives each key and clause an operator
+    /// wrote while the declarations did not build, when no build gave it one before.
+    fn record_given(&mut self, built: &Built) {
+        for &r in &self.rekeyed_unbuilt {
+            if !self.gave_keys.contains_key(&r)
+                && let Ok(id) = Self::key_id(built, r)
+            {
+                self.gave_keys.insert(r, id);
+            }
+        }
+        for &(r, c) in &self.computed_unbuilt {
+            if !self.gave_computed.contains_key(&c) && self.relations.contains_key(&r) {
+                let canonical = self.computed_canonical(built, r, c);
+                self.gave_computed.insert(c, canonical);
+            }
+        }
+        let mut gave = Vec::new();
+        for (&r, rel) in &self.relations {
+            for (k, c) in rel.clauses.iter().enumerate() {
+                let Some(token) = c.pending() else {
+                    continue;
+                };
+                if self.gave_clauses.contains_key(&token) {
+                    continue;
+                }
+                match c {
+                    ClauseM::Index { id: Some(id), .. } => gave.push((
+                        token,
+                        Gave::Index {
+                            id: *id,
+                            fields: self.index_canonical(built, r, k),
+                            clauses: self.index_scope(r, k),
+                        },
+                    )),
+                    ClauseM::Default { ids, .. } => {
+                        if let Some(&(field, default)) = ids.first() {
+                            gave.push((
+                                token,
+                                Gave::Default {
+                                    default,
+                                    field,
+                                    value: self.default_canonical(built, r, default),
+                                    clauses: self.default_members(ids),
+                                },
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.gave_clauses.extend(gave);
     }
 
     /// Lift each held declaration in its place from `built`, which the declarations built, and lift

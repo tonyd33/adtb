@@ -49,6 +49,7 @@ fn sel_text(names: &[String]) -> String {
 fn index_clause(kind: IndexKind, elems: &[String], names: &[String]) -> ClauseM {
     ClauseM::Index {
         id: None,
+        pending: None,
         kind,
         elems: elems.iter().map(|e| Term::text(e)).collect(),
         scope: Some(Scope {

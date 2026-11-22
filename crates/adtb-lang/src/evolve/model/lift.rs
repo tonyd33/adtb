@@ -347,6 +347,7 @@ impl<'a> Lifting<'a> {
                                 .ok_or_else(|| missing("an index"))?
                                 .raw(),
                         ),
+                        pending: None,
                         kind,
                         elems: fields.iter().map(|e| self.term(e.span)).collect(),
                         scope: scope.as_ref().map(|s| match s {
@@ -397,6 +398,7 @@ impl<'a> Lifting<'a> {
                             ast::DefaultValue::Expr(e) => self.term(e.span),
                         },
                         ids,
+                        pending: None,
                     };
                     dx += 1;
                     clause

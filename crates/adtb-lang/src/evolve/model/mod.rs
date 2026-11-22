@@ -47,6 +47,22 @@ pub(super) type Obj = (Space, u64);
 /// declaration prints each name it writes as that object's name now.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Model {
+    /// The next token of a clause added while the declarations do not build.
+    next_pending: u64,
+    /// The relation variables rekeyed while the declarations did not build.
+    rekeyed_unbuilt: BTreeSet<u64>,
+    /// What the first build after it gave what an operator wrote while the declarations did not
+    /// build: the key of each relation variable rekeyed so, by the relation variable.
+    gave_keys: BTreeMap<u64, u64>,
+    /// The computed fields added or redefined while the declarations did not build, by their
+    /// relation variable and id.
+    computed_unbuilt: BTreeSet<(u64, u64)>,
+    /// The canonical form the first build after it gave each computed field added or redefined
+    /// while the declarations did not build, by its id.
+    gave_computed: BTreeMap<u64, Option<String>>,
+    /// What the first build after it gave each clause added while the declarations did not
+    /// build, by its token.
+    gave_clauses: BTreeMap<u64, run::Gave>,
     modules: BTreeSet<String>,
     installed: BTreeSet<String>,
     /// The declarations in source order; declaration `i` prints file `i`.
@@ -247,6 +263,9 @@ enum ClauseM {
     Volatile,
     Index {
         id: Option<u64>,
+        /// The token of an index added while the declarations did not build, until the migration
+        /// ends.
+        pending: Option<u64>,
         kind: IndexKind,
         elems: Vec<Term>,
         scope: Option<Scope>,
@@ -257,6 +276,9 @@ enum ClauseM {
         value: Term,
         /// One default for each field the clause fills, by the field's id.
         ids: Vec<(u64, u64)>,
+        /// The token of a default added while the declarations did not build, until the
+        /// migration ends.
+        pending: Option<u64>,
     },
     Computed {
         id: Option<u64>,
@@ -264,6 +286,21 @@ enum ClauseM {
         ty: Term,
         expr: Term,
     },
+}
+
+impl ClauseM {
+    fn pending(&self) -> Option<u64> {
+        match self {
+            ClauseM::Index { pending, .. } | ClauseM::Default { pending, .. } => *pending,
+            _ => None,
+        }
+    }
+
+    fn set_pending(&mut self, token: Option<u64>) {
+        if let ClauseM::Index { pending, .. } | ClauseM::Default { pending, .. } = self {
+            *pending = token;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

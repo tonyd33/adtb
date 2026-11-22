@@ -46,6 +46,21 @@ pub(super) enum At {
     /// Constructors `first` through `last` of a type, from the name of `first` through the record
     /// of `last` when `record`.
     Ctors { first: u64, last: u64, record: bool },
+    /// A part of a clause added while the declarations did not build, by its token.
+    Pending {
+        relation: u64,
+        pending: u64,
+        part: Part,
+    },
+}
+
+/// A part of a clause [`At::Pending`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Part {
+    /// The fields of a unique or index.
+    Fields,
+    /// The value of a default.
+    Value,
 }
 
 impl Naming {
@@ -255,6 +270,7 @@ impl Model {
             }
             At::Field { field, .. } => !self.fields.contains_key(&field),
             At::Index { relation, .. }
+            | At::Pending { relation, .. }
             | At::Default { relation, .. }
             | At::Computed { relation, .. } => !self.relations.contains_key(&relation),
             At::Ctors { first, last, .. } => {
@@ -312,6 +328,27 @@ impl Model {
                     return None;
                 };
                 Some((file, fs.first()?.span.to(fs.last()?.span)))
+            }
+            At::Pending {
+                relation,
+                pending,
+                part,
+            } => {
+                let (file, k) = self.clause_place(relation, |c| c.pending() == Some(pending))?;
+                match (Self::clause_written(built, file, k).ok()?, part) {
+                    (
+                        RelationClause::Unique(fs, ..) | RelationClause::Index { fields: fs, .. },
+                        Part::Fields,
+                    ) => Some((file, fs.first()?.span.to(fs.last()?.span))),
+                    (
+                        RelationClause::Default {
+                            value: ast::DefaultValue::Expr(e),
+                            ..
+                        },
+                        Part::Value,
+                    ) => Some((file, e.span)),
+                    _ => None,
+                }
             }
             At::Default { relation, default } => {
                 let (file, k) = self.clause_place(relation, |c| {
@@ -427,9 +464,16 @@ impl Model {
             ) => match (fields.first(), fields.last()) {
                 (Some(a), Some(z)) => vec![(
                     a.span.start as usize..z.span.end as usize,
-                    At::Index {
-                        relation: *relation,
-                        index: *index,
+                    match self.pending_last(*relation) {
+                        Some(pending) => At::Pending {
+                            relation: *relation,
+                            pending,
+                            part: Part::Fields,
+                        },
+                        None => At::Index {
+                            relation: *relation,
+                            index: *index,
+                        },
                     },
                 )],
                 _ => Vec::new(),
@@ -444,9 +488,16 @@ impl Model {
                 },
             ) => vec![(
                 range(e.span),
-                At::Default {
-                    relation: *relation,
-                    default: *default,
+                match self.pending_last(*relation) {
+                    Some(pending) => At::Pending {
+                        relation: *relation,
+                        pending,
+                        part: Part::Value,
+                    },
+                    None => At::Default {
+                        relation: *relation,
+                        default: *default,
+                    },
                 },
             )],
             (
@@ -601,6 +652,12 @@ impl Model {
     }
 
     /// Returns the relation variable holding computed field `computed`.
+    /// Returns the token of the last clause of relation variable `r`, the one the operator being
+    /// named appended, when it was added while the declarations did not build.
+    fn pending_last(&self, r: u64) -> Option<u64> {
+        self.relations.get(&r)?.clauses.last()?.pending()
+    }
+
     fn computed_relation(&self, computed: u64) -> Option<u64> {
         self.relations.iter().find_map(|(&r, rel)| {
             rel.clauses

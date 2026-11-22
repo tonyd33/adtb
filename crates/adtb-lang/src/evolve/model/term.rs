@@ -56,8 +56,7 @@ impl Piece {
             Piece::Name { ids, written, pun } => {
                 let now = match ids.iter().find_map(|&o| model.name(o)) {
                     Some(now) => now,
-                    None if ids.iter().all(|o| o.1 < FIRST_LOG_ID) => written,
-                    None => panic!("a printed term names a gone object: {ids:?}"),
+                    None => written,
                 };
                 match (*pun, now != written) {
                     (true, true) => format!("{now}: {written}"),
