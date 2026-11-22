@@ -124,8 +124,6 @@ impl Catalog {
             Lock::Scan(h) => format!("scan {}", self.heap_named(*h)),
             Lock::Range(i, ctors) => format!("range {}", self.index_named(*i, ctors)),
             Lock::Index(i, ctors) => format!("index {}", self.index_named(*i, ctors)),
-            #[cfg(test)]
-            Lock::Schema(version) => format!("schema {version}"),
         }
     }
 

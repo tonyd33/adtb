@@ -199,11 +199,7 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Record the statement's write of the version `old` names against the SIREAD locks on it.
     fn superseded(&self, old: Superseded) -> Result<(), Error> {
         self.db.session.steps.at(Step::WriteChanged(old.change()));
-        self.db
-            .session
-            .ser
-            .lock(&self.db.rt)
-            .write_tuple(self.tx.sid, old)?;
+        old.check(&mut self.db.session.ser.lock(&self.db.rt), self.tx.sid)?;
         self.db.session.steps.at(Step::WriteChecked);
         Ok(())
     }

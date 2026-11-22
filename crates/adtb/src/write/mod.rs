@@ -68,14 +68,14 @@ use crate::vacuum;
 
 pub use adtb_lang::schema::Stage;
 
+pub use adtb_store::panic_text;
 pub use broken::{Broken, TermKind, detail};
 pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
 pub use quarantine::{By, Mapped};
-pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, Vacuuming, panic_text};
-pub(crate) use restore::Restoring;
+pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold};
 pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;
@@ -616,8 +616,6 @@ pub struct Database<R: Runtime> {
     options: exec::Options,
     grant: usize,
     files: Disk,
-    /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
-    vacuuming: Lock<Option<reindex::Holder>>,
     vacuums: vacuums::Vacuums,
     pacer: Arc<vacuum::Pacer>,
     /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
@@ -738,7 +736,6 @@ impl<R: Runtime> Database<R> {
             options: setup.options,
             grant: setup.grant,
             files: Disk::default(),
-            vacuuming: Lock::new(None),
             vacuums: vacuums::Vacuums::default(),
             pacer: Arc::new(vacuum::Pacer::new(0.1)),
             rebuild_waits: AtomicU64::new(0),

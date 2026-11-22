@@ -4,8 +4,15 @@
 # fails when an entry is above the one the allowlist at REV holds, so a rise is a maintainer's act
 # on main. `cargo xtask lint --counts` prints this file for the tree.
 
+[abandons_impls]
+"crates/adtb-heap/src/heap/undo.rs" = 1
+"crates/adtb/src/catalog/mod.rs" = 1
+"crates/adtb/src/write/restore.rs" = 1
+
 [crate_fields]
 "crates/adtb-codegen/src/emit.rs" = 1
+"crates/adtb-exec/src/exec/run.rs" = 4
+"crates/adtb-heap/src/heap/handle/mod.rs" = 2
 "crates/adtb-lang/src/check/pat.rs" = 6
 "crates/adtb-lang/src/check/query.rs" = 1
 "crates/adtb-lang/src/check/write.rs" = 2
@@ -18,6 +25,11 @@
 "crates/adtb-lang/src/textual/read.rs" = 2
 "crates/adtb-reference/src/eval.rs" = 14
 "crates/adtb-sim/src/disk.rs" = 6
+"crates/adtb-store/src/btree/tree.rs" = 7
+"crates/adtb-store/src/mvcc/clog.rs" = 7
+"crates/adtb-store/src/storage/backup.rs" = 1
+"crates/adtb-store/src/storage/driver.rs" = 1
+"crates/adtb-store/src/storage/log.rs" = 5
 "crates/adtb-sys/src/os/queue.rs" = 3
 "crates/adtb-testkit/src/cases/draw.rs" = 3
 "crates/adtb-testkit/src/cases/expr.rs" = 11
@@ -36,39 +48,32 @@
 "crates/adtb/src/api/stop.rs" = 3
 "crates/adtb/src/api/txn.rs" = 3
 "crates/adtb/src/api/verify.rs" = 9
-"crates/adtb/src/btree/tree.rs" = 7
 "crates/adtb/src/catalog/history.rs" = 5
 "crates/adtb/src/catalog/readers.rs" = 8
-"crates/adtb/src/exec/run.rs" = 4
-"crates/adtb/src/heap/handle/mod.rs" = 2
-"crates/adtb/src/mvcc/clog.rs" = 7
-"crates/adtb/src/storage/backup.rs" = 1
-"crates/adtb/src/storage/driver.rs" = 1
-"crates/adtb/src/storage/log.rs" = 5
 "crates/adtb/src/write/past.rs" = 5
 "crates/adtb/src/write/reindex.rs" = 4
 "crates/adtb/src/write/vacuums.rs" = 2
 
 [decode_panics]
+"crates/adtb-exec/src/exec/layout.rs" = 7
+"crates/adtb-heap/src/heap/blame.rs" = 1
+"crates/adtb-heap/src/heap/chain.rs" = 2
+"crates/adtb-heap/src/heap/dir.rs" = 10
+"crates/adtb-heap/src/heap/fixed.rs" = 1
+"crates/adtb-heap/src/heap/handle/mod.rs" = 14
+"crates/adtb-heap/src/heap/handle/observe.rs" = 1
+"crates/adtb-heap/src/heap/large.rs" = 12
+"crates/adtb-heap/src/heap/named.rs" = 2
+"crates/adtb-heap/src/heap/page.rs" = 4
+"crates/adtb-heap/src/heap/prune.rs" = 3
+"crates/adtb-heap/src/heap/rooted.rs" = 2
+"crates/adtb-heap/src/heap/row.rs" = 17
+"crates/adtb-heap/src/heap/slotted.rs" = 3
+"crates/adtb-heap/src/heap/stage.rs" = 3
+"crates/adtb-heap/src/heap/version.rs" = 3
+"crates/adtb-heap/src/heap/vm.rs" = 1
+"crates/adtb-heap/src/heap/write.rs" = 6
 "crates/adtb/src/catalog/codec.rs" = 38
-"crates/adtb/src/catalog/layout.rs" = 7
-"crates/adtb/src/heap/blame.rs" = 1
-"crates/adtb/src/heap/chain.rs" = 2
-"crates/adtb/src/heap/dir.rs" = 10
-"crates/adtb/src/heap/fixed.rs" = 1
-"crates/adtb/src/heap/handle/mod.rs" = 14
-"crates/adtb/src/heap/handle/observe.rs" = 1
-"crates/adtb/src/heap/large.rs" = 12
-"crates/adtb/src/heap/named.rs" = 2
-"crates/adtb/src/heap/page.rs" = 4
-"crates/adtb/src/heap/prune.rs" = 3
-"crates/adtb/src/heap/rooted.rs" = 2
-"crates/adtb/src/heap/row.rs" = 17
-"crates/adtb/src/heap/slotted.rs" = 3
-"crates/adtb/src/heap/stage.rs" = 3
-"crates/adtb/src/heap/version.rs" = 3
-"crates/adtb/src/heap/vm.rs" = 1
-"crates/adtb/src/heap/write.rs" = 6
 
 [engine_names]
 "crates/adtb-lang/src/evolve/cx.rs" = 1
@@ -80,7 +85,35 @@
 [pub_fields]
 "crates/adtb-codegen/src/lib.rs" = 3
 "crates/adtb-conformance/src/lib.rs" = 3
+"crates/adtb-exec/src/batch/ipc/flat.rs" = 2
+"crates/adtb-exec/src/batch/ipc/mod.rs" = 5
+"crates/adtb-exec/src/batch/ipc/schema.rs" = 2
+"crates/adtb-exec/src/batch/types.rs" = 2
+"crates/adtb-exec/src/exec/code.rs" = 7
+"crates/adtb-exec/src/exec/host.rs" = 7
+"crates/adtb-exec/src/exec/ir.rs" = 46
+"crates/adtb-exec/src/exec/join.rs" = 4
+"crates/adtb-exec/src/exec/mod.rs" = 7
+"crates/adtb-exec/src/exec/run.rs" = 10
+"crates/adtb-exec/src/exec/sched.rs" = 8
+"crates/adtb-exec/src/exec/store.rs" = 13
+"crates/adtb-exec/src/plan/catalog.rs" = 10
+"crates/adtb-exec/src/plan/explain.rs" = 16
+"crates/adtb-exec/src/plan/fixture.rs" = 5
+"crates/adtb-exec/src/plan/mod.rs" = 62
 "crates/adtb-file/src/lib.rs" = 4
+"crates/adtb-heap/src/heap/dir.rs" = 4
+"crates/adtb-heap/src/heap/handle/mod.rs" = 15
+"crates/adtb-heap/src/heap/large.rs" = 6
+"crates/adtb-heap/src/heap/mod.rs" = 1
+"crates/adtb-heap/src/heap/named.rs" = 1
+"crates/adtb-heap/src/heap/prune.rs" = 4
+"crates/adtb-heap/src/heap/row.rs" = 4
+"crates/adtb-heap/src/heap/version.rs" = 3
+"crates/adtb-heap/src/history.rs" = 3
+"crates/adtb-heap/src/vacuum/pace.rs" = 4
+"crates/adtb-heap/src/vacuum/run.rs" = 21
+"crates/adtb-heap/src/verify/mod.rs" = 14
 "crates/adtb-lang/src/ast.rs" = 164
 "crates/adtb-lang/src/check/adhoc.rs" = 3
 "crates/adtb-lang/src/check/mod.rs" = 25
@@ -116,6 +149,26 @@
 "crates/adtb-server/src/wire/reassembly.rs" = 6
 "crates/adtb-sim/src/check.rs" = 2
 "crates/adtb-sim/src/sim.rs" = 5
+"crates/adtb-store/src/btree/build.rs" = 3
+"crates/adtb-store/src/btree/leaf.rs" = 3
+"crates/adtb-store/src/btree/node.rs" = 9
+"crates/adtb-store/src/key/entry.rs" = 4
+"crates/adtb-store/src/key/value.rs" = 2
+"crates/adtb-store/src/mvcc/mod.rs" = 3
+"crates/adtb-store/src/mvcc/past.rs" = 6
+"crates/adtb-store/src/mvcc/ssi.rs" = 4
+"crates/adtb-store/src/storage/archive.rs" = 2
+"crates/adtb-store/src/storage/backup.rs" = 22
+"crates/adtb-store/src/storage/block.rs" = 29
+"crates/adtb-store/src/storage/damage_log.rs" = 3
+"crates/adtb-store/src/storage/dump.rs" = 4
+"crates/adtb-store/src/storage/dump_crypt.rs" = 3
+"crates/adtb-store/src/storage/header.rs" = 20
+"crates/adtb-store/src/storage/mod.rs" = 4
+"crates/adtb-store/src/storage/pager.rs" = 13
+"crates/adtb-store/src/storage/record.rs" = 5
+"crates/adtb-store/src/storage/recovery.rs" = 5
+"crates/adtb-store/src/storage/verify.rs" = 3
 "crates/adtb-sys/src/os/faults.rs" = 2
 "crates/adtb-sys/src/runtime/faults.rs" = 11
 "crates/adtb-sys/src/runtime/mod.rs" = 5
@@ -141,13 +194,6 @@
 "crates/adtb/src/api/text.rs" = 15
 "crates/adtb/src/api/txn.rs" = 16
 "crates/adtb/src/api/typed.rs" = 8
-"crates/adtb/src/batch/ipc/flat.rs" = 2
-"crates/adtb/src/batch/ipc/mod.rs" = 5
-"crates/adtb/src/batch/ipc/schema.rs" = 2
-"crates/adtb/src/batch/types.rs" = 2
-"crates/adtb/src/btree/build.rs" = 3
-"crates/adtb/src/btree/leaf.rs" = 3
-"crates/adtb/src/btree/node.rs" = 9
 "crates/adtb/src/catalog/change.rs" = 9
 "crates/adtb/src/catalog/deploy.rs" = 3
 "crates/adtb/src/catalog/deployment.rs" = 7
@@ -156,48 +202,7 @@
 "crates/adtb/src/catalog/readers.rs" = 8
 "crates/adtb/src/catalog/root.rs" = 7
 "crates/adtb/src/catalog/rows.rs" = 6
-"crates/adtb/src/exec/code.rs" = 7
-"crates/adtb/src/exec/host.rs" = 7
-"crates/adtb/src/exec/ir.rs" = 46
-"crates/adtb/src/exec/join.rs" = 4
-"crates/adtb/src/exec/mod.rs" = 7
-"crates/adtb/src/exec/run.rs" = 10
-"crates/adtb/src/exec/sched.rs" = 8
-"crates/adtb/src/exec/store.rs" = 13
-"crates/adtb/src/heap/dir.rs" = 4
-"crates/adtb/src/heap/handle/mod.rs" = 15
-"crates/adtb/src/heap/large.rs" = 6
-"crates/adtb/src/heap/mod.rs" = 1
-"crates/adtb/src/heap/named.rs" = 1
-"crates/adtb/src/heap/prune.rs" = 4
-"crates/adtb/src/heap/row.rs" = 4
-"crates/adtb/src/heap/version.rs" = 3
-"crates/adtb/src/history.rs" = 3
-"crates/adtb/src/key/entry.rs" = 4
-"crates/adtb/src/key/value.rs" = 2
-"crates/adtb/src/mvcc/mod.rs" = 3
-"crates/adtb/src/mvcc/past.rs" = 6
-"crates/adtb/src/mvcc/ssi.rs" = 4
-"crates/adtb/src/plan/catalog.rs" = 10
-"crates/adtb/src/plan/explain.rs" = 16
-"crates/adtb/src/plan/fixture.rs" = 5
-"crates/adtb/src/plan/mod.rs" = 62
-"crates/adtb/src/storage/archive.rs" = 2
-"crates/adtb/src/storage/backup.rs" = 22
-"crates/adtb/src/storage/block.rs" = 29
-"crates/adtb/src/storage/damage_log.rs" = 3
-"crates/adtb/src/storage/dump.rs" = 4
-"crates/adtb/src/storage/dump_crypt.rs" = 3
-"crates/adtb/src/storage/header.rs" = 20
-"crates/adtb/src/storage/mod.rs" = 4
-"crates/adtb/src/storage/pager.rs" = 13
-"crates/adtb/src/storage/record.rs" = 5
-"crates/adtb/src/storage/recovery.rs" = 5
-"crates/adtb/src/storage/verify.rs" = 3
 "crates/adtb/src/test_world/grants.rs" = 6
-"crates/adtb/src/vacuum/pace.rs" = 4
-"crates/adtb/src/vacuum/run.rs" = 21
-"crates/adtb/src/verify/mod.rs" = 14
 "crates/adtb/src/write/broken.rs" = 1
 "crates/adtb/src/write/check.rs" = 3
 "crates/adtb/src/write/delta/mod.rs" = 14
@@ -208,6 +213,10 @@
 "crates/adtb/src/write/schema.rs" = 32
 
 [sim_test_opens]
+"crates/adtb-heap/src/btree/btree_tests.rs" = 1
+"crates/adtb-heap/src/heap/heap_tests.rs" = 1
+"crates/adtb-heap/src/mvcc/clog_tests.rs" = 1
+"crates/adtb-heap/src/test_world/fixture.rs" = 1
 "crates/adtb-sim/tests/execution/checked_registration.rs" = 2
 "crates/adtb-sim/tests/execution/create.rs" = 2
 "crates/adtb-sim/tests/execution/isolation.rs" = 1
@@ -236,28 +245,31 @@
 "crates/adtb-sim/tests/storage/damage_search/world.rs" = 1
 "crates/adtb-sim/tests/storage/io_contract.rs" = 4
 "crates/adtb-sim/tests/storage/truncated_open.rs" = 4
-"crates/adtb/src/btree/btree_tests.rs" = 1
-"crates/adtb/src/btree/btree_threads_tests.rs" = 1
+"crates/adtb-store/src/btree/btree_threads_tests.rs" = 1
+"crates/adtb-store/src/storage/damage_log_tests.rs" = 1
+"crates/adtb-store/src/storage/damage_race_tests.rs" = 1
+"crates/adtb-store/src/storage/pager_tests.rs" = 1
+"crates/adtb-store/src/test_world/mod.rs" = 1
 "crates/adtb/src/catalog/catalog_tests.rs" = 4
 "crates/adtb/src/catalog/grant_rows_tests.rs" = 1
 "crates/adtb/src/catalog/oplog_tests.rs" = 2
 "crates/adtb/src/exec/host_fns_tests.rs" = 1
-"crates/adtb/src/heap/heap_tests.rs" = 1
 "crates/adtb/src/history_tests.rs" = 1
-"crates/adtb/src/mvcc/clog_tests.rs" = 1
 "crates/adtb/src/storage/backup_tests.rs" = 2
 "crates/adtb/src/storage/checkpointer_tests.rs" = 2
 "crates/adtb/src/storage/clog_lost_tests.rs" = 6
 "crates/adtb/src/storage/commit_tests.rs" = 1
-"crates/adtb/src/storage/damage_log_tests.rs" = 1
-"crates/adtb/src/storage/damage_race_tests.rs" = 1
 "crates/adtb/src/storage/open_damage_tests.rs" = 2
-"crates/adtb/src/storage/pager_tests.rs" = 1
 "crates/adtb/src/storage/quarantine_tests.rs" = 1
 "crates/adtb/src/storage/real_file_tests.rs" = 2
-"crates/adtb/src/test_world/fixture.rs" = 1
 "crates/adtb/src/test_world/load.rs" = 4
-"crates/adtb/src/test_world/mod.rs" = 1
 "crates/adtb/src/test_world/write_path.rs" = 1
 "crates/adtb/src/verify/verify_tests.rs" = 1
 "crates/adtb/src/write/write_states_tests.rs" = 3
+
+[stops_early_judgements]
+"crates/adtb-exec/src/exec/run.rs" = 1
+
+[unchecked_impls]
+"crates/adtb-heap/src/heap/undo.rs" = 1
+"crates/adtb/src/catalog/mod.rs" = 1

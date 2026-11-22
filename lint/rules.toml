@@ -15,9 +15,9 @@ rows = { pub_fields = "ratchet", crate_fields = "ratchet" }
 [[rule]]
 query = "structure.tql"
 include = [
-  "crates/adtb/src/heap/**/*.rs",
+  "crates/adtb-heap/src/heap/**/*.rs",
   "crates/adtb/src/catalog/codec.rs",
-  "crates/adtb/src/catalog/layout.rs",
+  "crates/adtb-exec/src/exec/layout.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs"]
 rows = { decode_panics = "ratchet" }
@@ -30,7 +30,12 @@ rows = { engine_names = "ratchet" }
 
 [[rule]]
 query = "engine-var.tql"
-include = ["crates/adtb/src/**/*.rs"]
+include = [
+  "crates/adtb/src/**/*.rs",
+  "crates/adtb-exec/src/**/*.rs",
+  "crates/adtb-heap/src/**/*.rs",
+  "crates/adtb-store/src/**/*.rs",
+]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
 rows = { engine_names = "ratchet" }
 
@@ -46,8 +51,16 @@ include = [
   "crates/adtb-sim/tests/**/*.rs",
   "crates/adtb/src/**/tests.rs",
   "crates/adtb/src/**/*_tests.rs",
-  "crates/adtb/src/**/tests/**/*.rs",
   "crates/adtb/src/**/test_world/**/*.rs",
+  "crates/adtb-exec/src/**/tests.rs",
+  "crates/adtb-exec/src/**/*_tests.rs",
+  "crates/adtb-exec/src/**/tests/**/*.rs",
+  "crates/adtb-heap/src/**/tests.rs",
+  "crates/adtb-heap/src/**/*_tests.rs",
+  "crates/adtb-heap/src/**/test_world/**/*.rs",
+  "crates/adtb-store/src/**/tests.rs",
+  "crates/adtb-store/src/**/*_tests.rs",
+  "crates/adtb-store/src/**/test_world/**/*.rs",
 ]
 rows = { sim_test_opens = "ratchet" }
 
@@ -60,7 +73,7 @@ rows = { holder_builders = "zero" }
 [[rule]]
 query = "marked-readers.tql"
 include = ["crates/**/*.rs"]
-exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/storage/**"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb-store/src/storage/**"]
 rows = { marked_readers = "zero" }
 
 [[rule]]
@@ -76,7 +89,7 @@ rows = { weak_refusals = "zero" }
 
 [[rule]]
 query = "storage-io.tql"
-include = ["crates/adtb/src/storage/**/*.rs"]
+include = ["crates/adtb-store/src/storage/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
 rows = { storage_io_panics = "zero" }
 
@@ -114,7 +127,12 @@ rows = { domain_copies = "zero" }
 
 [[rule]]
 query = "undo.tql"
-include = ["crates/adtb/src/**/*.rs"]
+include = [
+  "crates/adtb/src/**/*.rs",
+  "crates/adtb-exec/src/**/*.rs",
+  "crates/adtb-heap/src/**/*.rs",
+  "crates/adtb-store/src/**/*.rs",
+]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**"]
 rows = { discarded_heap_writes = "zero" }
 
@@ -122,3 +140,13 @@ rows = { discarded_heap_writes = "zero" }
 query = "runners.tql"
 include = ["crates/adtb-sim/src/**/*.rs", "crates/adtb-simkit/src/**/*.rs", "crates/adtb-testkit/src/**/*.rs"]
 rows = { generic_runners = "zero" }
+
+[[rule]]
+query = "capabilities.tql"
+include = ["crates/**/*.rs"]
+rows = { abandons_impls = "ratchet", unchecked_impls = "ratchet", stops_early_judgements = "ratchet" }
+
+[[rule]]
+query = "capability-names.tql"
+include = ["crates/**/*.rs"]
+rows = { capability_renames = "zero" }

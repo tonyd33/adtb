@@ -2,30 +2,23 @@
 #![forbid(unsafe_code)]
 
 mod api;
-pub mod batch;
-mod btree;
 mod catalog;
-mod consumed;
 mod exec;
-mod faults;
-mod heap;
-mod history;
 #[cfg(test)]
 mod history_tests;
-pub mod key;
-mod mvcc;
-mod plan;
-mod ranks;
-mod steps;
 mod storage;
 #[cfg(test)]
 mod test_world;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-mod vacuum;
 mod verify;
 mod write;
 
+pub use adtb_exec::batch;
+use adtb_exec::plan;
+use adtb_heap::{heap, history, vacuum};
+pub use adtb_store::key;
+use adtb_store::{btree, faults, mvcc, ranks, steps};
 pub use adtb_sys::runtime;
 
 pub use api::{

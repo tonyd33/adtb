@@ -1414,7 +1414,7 @@ fn a_refused_page_with_sound_bytes_restores_as_copied_unless_stale() {
         let mut sim = Sim::with_files(51, Config::default(), files.clone());
         let got = process::run(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
-            pager.damage(used, damage);
+            pager.damage_tested(used, damage);
             let manifest = backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
             assert_eq!(listed, manifest.damaged, "{damage:?}");
             pager.close();
@@ -2083,7 +2083,7 @@ fn a_backup_refuses_a_block_of_another_file_in_the_log() {
         let file = common::open(&rt, &mut io, name, false).unwrap().0;
         common::write(&rt, &mut io, file, last as u64, &foreign).unwrap();
         let text = format!("backup to {TARGET:?}");
-        let at = super::log::parse_segment(name).expect("a segment name") + last as u64;
+        let at = super::parse_segment(name).expect("a segment name") + last as u64;
         let detail = format!("`log block at {at}`: Failed");
         adtb_testkit::refused_as(
             db.query_text(&text, &[], &CallOptions::default()),

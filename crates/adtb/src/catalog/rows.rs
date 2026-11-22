@@ -10,6 +10,7 @@ use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, field_path};
 use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
+pub use crate::exec::layout::Step;
 use crate::exec::{self, Broken};
 use crate::key::Value;
 use crate::plan::{Element, declared_elements};
@@ -305,14 +306,6 @@ pub fn indexed_fields(def: &IndexDef) -> Option<Vec<String>> {
             _ => None,
         })
         .collect()
-}
-
-/// One step of a field path through a row: a field by its position, or the constructor by its
-/// position that the value the steps before it reach must hold.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Step {
-    Field(usize),
-    Ctor(u32),
 }
 
 /// Returns the steps of field path `path` through a row of constructor `c` of `r`, and the type

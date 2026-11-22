@@ -3,7 +3,7 @@
 # the damage search but its pinned cases to the damage and deep ones.
 [profile.default]
 slow-timeout = { period = "20s", terminate-after = 15 }
-default-filter = "not (binary(=differential) and (test(=every_schema_walk_keeps_engine_equal_to_reference) or test(=every_operator_keeps_its_laws))) and not (binary(=storage) and test(/^damage_search::/) and not test(=damage_search::a_pinned_known_failure_still_shows) and not test(=damage_search::a_pinned_case_of_each_row_asks_it_and_breaks_no_rule)) and not (package(=adtb) and test(/^storage::pager_tests::every_cell_/))"
+default-filter = "not (binary(=differential) and (test(=every_schema_walk_keeps_engine_equal_to_reference) or test(=every_operator_keeps_its_laws))) and not (binary(=storage) and test(/^damage_search::/) and not test(=damage_search::a_pinned_known_failure_still_shows) and not test(=damage_search::a_pinned_case_of_each_row_asks_it_and_breaks_no_rule)) and not (package(=adtb-store) and test(/^storage::pager_tests::every_cell_/))"
 
 # Lists and starts every test binary, and builds them when an earlier step did not.
 [[profile.default.overrides]]

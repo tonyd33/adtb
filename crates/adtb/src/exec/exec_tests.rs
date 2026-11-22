@@ -241,14 +241,14 @@ fn call(
     pool: Option<&Arc<Scheduler<SimRuntime>>>,
     options: XOptions,
 ) -> Call<SimRuntime> {
-    Call {
-        store: store.clone(),
+    Call::new(
+        store.clone(),
         grant,
-        pool: pool.cloned(),
         options,
-        cancel: Arc::new(AtomicBool::new(false)),
-        deadline: None,
-    }
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .on(pool.cloned())
 }
 
 /// Run every case under the simulator. Returns each case's outcome, and how many tasks the

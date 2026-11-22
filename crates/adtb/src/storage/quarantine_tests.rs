@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::btree::{self, BTree};
 use crate::key::Value;
 use crate::runtime::{Clock, Runtime, Threads};
-use crate::storage::order::ordered_for_test;
+use crate::storage::ordered_for_test;
 use crate::storage::policy::{self, Fault, Holder, Mark, Phase};
 use crate::storage::{
     Damage, HEADER_LEN, MarkFailure, Options, PageError, Pager, Pid, Quarantine, Stopped,
@@ -127,7 +127,7 @@ fn a_mark_failing_on_a_damaged_marks_page_leaves_its_record_unmapped() {
             object: Quarantine::Heap(7),
             engine_module: false,
         };
-        p.damage(pid, Damage::Checksum);
+        p.damage_tested(pid, Damage::Checksum);
         let failed = p.map_damage(|_| Some(BTreeSet::from([heap])), &ordered_for_test());
         let refused = MarkFailure::Page(PageError {
             pid: page,
@@ -484,7 +484,7 @@ fn mapping_a_page_of_one_tree_never_marks_a_tree_changing_beside_it() {
         c.insert(&*pager, &entry(i)).unwrap();
     }
     let damaged = *c.pages(&*pager).unwrap().last().unwrap();
-    pager.damage(damaged, Damage::Checksum);
+    pager.damage_tested(damaged, Damage::Checksum);
     let limit = Duration::from_millis(1200);
     let mutate = churn_tree(&rt, limit, &pager, a, b);
     let got = {
@@ -550,7 +550,7 @@ fn mapping_a_page_of_a_changing_tree_finds_that_tree_or_nothing() {
     }
     let pages = a.pages(&*pager).unwrap();
     let damaged = pages[pages.len() - pages.len() / 2];
-    pager.damage(damaged, Damage::Checksum);
+    pager.damage_tested(damaged, Damage::Checksum);
     let deadline = rt.now() + Duration::from_millis(300);
     let mutate = {
         let p = pager.clone();

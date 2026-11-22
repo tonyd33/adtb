@@ -6,23 +6,18 @@ version = 4
 name = "adtb"
 version = "0.1.0"
 dependencies = [
+ "adtb-exec",
  "adtb-file",
+ "adtb-heap",
  "adtb-heap-cap",
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
+ "adtb-store",
  "adtb-sys",
  "adtb-testkit",
- "argon2",
  "blake3",
- "chacha20poly1305",
- "icu_casemap",
- "icu_collator",
- "icu_locale_core",
- "icu_segmenter",
- "jiff",
  "unicode-normalization",
- "zeroize",
 ]
 
 [[package]]
@@ -64,11 +59,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-exec"
+version = "0.1.0"
+dependencies = [
+ "adtb-heap",
+ "adtb-heap-cap",
+ "adtb-lang",
+ "adtb-reference",
+ "adtb-sim",
+ "adtb-store",
+ "adtb-sys",
+ "adtb-testkit",
+ "icu_casemap",
+ "icu_collator",
+ "icu_locale_core",
+ "icu_segmenter",
+ "jiff",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "adtb-file"
 version = "0.1.0"
 dependencies = [
  "adtb-lang",
  "unicode-normalization",
+]
+
+[[package]]
+name = "adtb-heap"
+version = "0.1.0"
+dependencies = [
+ "adtb-heap-cap",
+ "adtb-lang",
+ "adtb-sim",
+ "adtb-store",
+ "adtb-sys",
+ "adtb-testkit",
 ]
 
 [[package]]
@@ -162,6 +189,23 @@ dependencies = [
  "adtb-sim",
  "adtb-sys",
  "adtb-testkit",
+]
+
+[[package]]
+name = "adtb-store"
+version = "0.1.0"
+dependencies = [
+ "adtb-heap-cap",
+ "adtb-lang",
+ "adtb-sim",
+ "adtb-sys",
+ "adtb-testkit",
+ "argon2",
+ "blake3",
+ "chacha20poly1305",
+ "jiff",
+ "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]

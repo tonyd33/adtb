@@ -5,14 +5,7 @@ pub use adtb_lang::ids::{
 use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::types::{RelId, TypeId};
 
-use crate::key::CtorId;
-
-/// Returns the id heaps and keys store constructor `id` under.
-///
-/// Preconditions: `id` fits 32 bits.
-pub fn stored(id: CatCtorId) -> CtorId {
-    CtorId(u32::try_from(id.raw()).expect("a constructor id fits 32 bits"))
-}
+pub use crate::key::stored;
 
 /// Returns the catalog id of relation `r` of `schema`.
 pub fn rel_id(schema: &Schema, r: RelId) -> CatRelId {

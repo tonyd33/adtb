@@ -14,7 +14,7 @@ mod ids;
 mod insert;
 mod kept;
 mod keying;
-pub mod layout;
+pub use crate::exec::layout;
 mod memo;
 mod migration;
 mod moved;
@@ -99,7 +99,7 @@ pub(crate) use root::Changing;
 #[cfg(any(test, feature = "testing"))]
 pub(crate) use root::Unbegun;
 pub use rot::{Rot, detail};
-pub use rows::{ElementTexts, IndexSpec, Rows, Step, indexed_fields, indexes};
+pub use rows::{ElementTexts, IndexSpec, Rows, indexed_fields, indexes};
 #[cfg(test)]
 pub use rows::{applied, declared};
 pub use validate::Denial;
@@ -1404,6 +1404,8 @@ pub struct Abandoning(());
 
 impl heap::Abandons for Abandoning {}
 
+impl heap::UncheckedWriter for Abandoning {}
+
 /// Insert `row` into `heap` as transaction `x`, pruning a page found without room before
 /// looking further. Returns its TID.
 fn insert_row<R: Runtime>(
@@ -1471,7 +1473,7 @@ fn delete_keyed<R: Runtime>(
             if seen.visible() {
                 heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)
                     .kept(&Abandoning(()))?
-                    .unchecked(heap::Unchecked::Catalog(Abandoning(())));
+                    .unchecked(&Abandoning(()));
                 keys.swap_remove(at);
             }
         }

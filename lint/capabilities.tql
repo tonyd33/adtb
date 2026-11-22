@@ -1,0 +1,24 @@
+-- abandons_impls: an `impl` of `Abandons`, which lets a writer keep its heap writes with no
+-- take-back. unchecked_impls: an `impl` of `UncheckedWriter`, which lets a writer skip the SIREAD
+-- check of a version it supersedes. stops_early_judgements: a use of `StopsEarly::judged`, the
+-- judgement that lets a scan keep page locks on only the pages it read.
+
+impls name = do {
+  i <- descendants_of_kind :impl_item;
+  t <- pure i | #trait;
+  guard $ text t ~ name;
+  return i;
+};
+
+judgements = do {
+  p <- descendants_of_kind :scoped_identifier;
+  guard $ text p ~ r"(^|::)StopsEarly::judged$";
+  return p;
+};
+
+main = do {
+  a <- collect (impls r"(^|::)Abandons$") | arr length;
+  u <- collect (impls r"(^|::)UncheckedWriter$") | arr length;
+  s <- collect judgements | arr length;
+  return (("abandons_impls", a), ("unchecked_impls", u), ("stops_early_judgements", s));
+};

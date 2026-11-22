@@ -17,7 +17,7 @@ function in the query's meaning exactly once; the planner never merges
 or repeats such calls
 ([../spec/interop.md §9.3](../spec/interop.md#93-host-functions)).
 
-The planner is the module `adtb::plan`. This section states its input,
+The planner is the module `adtb_exec::plan`. This section states its input,
 the plan it returns and how a plan is evaluated, which is all an
 executor relies on.
 
@@ -475,7 +475,10 @@ Plans are made per statement, so choosing no quarantined index needs no
 invalidation. A key lookup and a constraint's stored check plan may go
 on naming a quarantined index: while the mark holds, the store answers
 their probes from the heaps of the index's constructors, in index order,
-with a scan's read set. A read under `at` is planned as any other. While the
+with a scan's read set. The catalog gives the executor, for each index, how a stored
+row of each of its constructors is keyed (`adtb_exec::exec::RowKeys`):
+the row's key in that index, or none when the index holds no entry for
+it. A read under `at` is planned as any other. While the
 key index is quarantined, a key lookup that reaches the past finds its version
 by scanning the history heaps of its constructors instead of the history key
 index, one scan per lookup. Damage to one of those heaps fails the call.
@@ -495,7 +498,7 @@ compilation pays.
 
 TODO: the code generator backend is deferred.
 
-The interpreter is `adtb::exec`. `exec::compile` turns a plan into a
+The interpreter is `adtb_exec::exec`. `exec::compile` turns a plan into a
 program: each scalar expression becomes register instructions, each
 primitive an operation chosen for its operand types, and each field
 access or key a position in the row. An instruction runs over every

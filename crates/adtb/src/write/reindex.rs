@@ -9,10 +9,7 @@
 //!
 //! SIREAD locks on an index are key ranges on its root page, whose id the swap keeps.
 
-use std::any::Any;
-use std::cell::Cell;
 use std::collections::BTreeSet;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,12 +22,13 @@ use crate::btree::{self, BTree};
 use crate::exec;
 use crate::heap::Heap;
 use crate::key::{CtorId, Entry};
-use crate::mvcc::{Transactions, Xid};
+use crate::mvcc::Xid;
 use crate::plan::IndexId;
 use crate::ranks;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::steps::{Reindex, Step};
-use crate::storage::{self, Damage, Lsn, Pager, Pid, Quarantine};
+use crate::storage::{self, Damage, Lsn, Pid, Quarantine};
+use crate::vacuum::{Busy, Holder, Vacuuming};
 
 use super::past::Retained;
 use super::schema::{Indexed, Rel};
@@ -52,14 +50,6 @@ pub struct Failure {
     pub cause: Option<String>,
     /// Whether every page it allocated is free again.
     pub reclaimed: bool,
-}
-
-/// Returns the text of a `String` or `&str` panic payload.
-pub fn panic_text(payload: &(dyn Any + Send)) -> Option<String> {
-    payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
 }
 
 /// How many catch-ups run while writes continue before the one that holds them.
@@ -120,29 +110,22 @@ impl<'b> HoldWait<'b> {
     }
 }
 
-/// The holder of the vacuum lock.
-pub(super) enum Holder {
-    /// One on `thread` that keeps the lock until it is done.
-    Keeps { thread: ThreadId },
-    /// One that gives the lock up once `asked` is set, looking at it each time `thread` unparks.
-    Yields {
-        asked: Arc<AtomicBool>,
-        thread: ThreadId,
-    },
-}
-
 /// The vacuum lock. Holds off vacuum, the one other writer that removes entries and frees slots,
 /// every other rebuild, and every other holder.
 pub struct VacuumHold<'d, R: Runtime> {
     db: &'d Database<R>,
+    /// The lock, freed when dropped, before `_ended`.
     vacuuming: Vacuuming<'d, R>,
+    _ended: HolderEnded<'d, R>,
     _rank: HeldRank,
 }
 
-impl<R: Runtime> Drop for VacuumHold<'_, R> {
+/// The record that a thread holds the vacuum lock, ended by the drop.
+struct HolderEnded<'d, R: Runtime>(&'d Database<R>);
+
+impl<R: Runtime> Drop for HolderEnded<'_, R> {
     fn drop(&mut self) {
-        *self.db.vacuuming.lock(&self.db.rt) = None;
-        self.db.session.waits.ended(VACUUM_HOLDER);
+        self.0.session.waits.ended(VACUUM_HOLDER);
     }
 }
 
@@ -162,42 +145,6 @@ impl<'d, R: Runtime> VacuumHold<'d, R> {
     /// step. Returns whether every old page was freed.
     pub fn rebuild(&self, job: &Rebuild<'_>) -> Result<bool, Failure> {
         self.db.rebuild(job)
-    }
-}
-
-/// The vacuum lock of one database, held on one thread, as the vacuum, the sweep of a large-value
-/// store and a copy to a history heap take it. Built only by a [`VacuumHold`], and by tests.
-pub struct Vacuuming<'d, R: Runtime> {
-    pager: &'d Pager<R>,
-    txns: &'d Transactions<R>,
-    _one_thread: PhantomData<Cell<()>>,
-}
-
-impl<'d, R: Runtime> Vacuuming<'d, R> {
-    /// Returns a lock over `pager` and `txns` that holds nothing off.
-    #[cfg(test)]
-    pub(crate) fn unheld(pager: &'d Pager<R>, txns: &'d Transactions<R>) -> Vacuuming<'d, R> {
-        Vacuuming {
-            pager,
-            txns,
-            _one_thread: PhantomData,
-        }
-    }
-
-    /// Returns the pager of the database whose lock this is.
-    pub(crate) fn pager(&self) -> &'d Pager<R> {
-        self.pager
-    }
-
-    /// Returns the transactions of the database whose lock this is.
-    pub(crate) fn txns(&self) -> &'d Transactions<R> {
-        self.txns
-    }
-}
-
-impl<R: Runtime> std::fmt::Debug for Vacuuming<'_, R> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Vacuuming")
     }
 }
 
@@ -424,29 +371,21 @@ impl<R: Runtime> Database<R> {
     }
 
     fn try_hold(&self, holder: Holder) -> Result<VacuumHold<'_, R>, ThreadId> {
-        let mut held = self.vacuuming.lock(&self.rt);
-        match &*held {
-            Some(Holder::Keeps { thread }) => Err(*thread),
-            Some(Holder::Yields { asked, thread }) => {
-                asked.store(true, Ordering::Release);
+        let taken = self.session.txns.take_vacuum(holder, || {
+            self.session.waits.started(VACUUM_HOLDER);
+        });
+        match taken {
+            Ok(vacuuming) => Ok(VacuumHold {
+                db: self,
+                vacuuming,
+                _ended: HolderEnded(self),
+                _rank: ranks::VACUUM.hold(),
+            }),
+            Err(Busy::Kept(thread)) => Err(thread),
+            Err(Busy::Asked(thread)) => {
                 self.vacuum_yields.fetch_add(1, Ordering::Relaxed);
-                let thread = *thread;
-                drop(held);
                 self.rt.unpark(thread);
                 Err(thread)
-            }
-            None => {
-                *held = Some(holder);
-                self.session.waits.started(VACUUM_HOLDER);
-                Ok(VacuumHold {
-                    db: self,
-                    vacuuming: Vacuuming {
-                        pager: &self.pager,
-                        txns: &self.session.txns,
-                        _one_thread: PhantomData,
-                    },
-                    _rank: ranks::VACUUM.hold(),
-                })
             }
         }
     }

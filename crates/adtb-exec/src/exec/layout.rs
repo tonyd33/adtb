@@ -1,0 +1,308 @@
+use std::collections::BTreeMap;
+
+use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::textual::{key_field_ty, key_names};
+use adtb_lang::types::{Base, RelId, RelRef, Ty, TypeId};
+
+use crate::batch;
+use crate::heap::{self, FieldType};
+use crate::key::{
+    self, AnonRecordType, AnonSumType, CtorId, KeyType, OrderKey, Scalar, SumType, stored,
+};
+
+/// One step of a field path through a row: a field by its position, or the constructor by its
+/// position that the value the steps before it reach must hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Field(usize),
+    Ctor(u32),
+}
+
+/// Returns `ty` with every newtype replaced by its representation, down to a base, a sum or
+/// another type that is no newtype.
+pub fn repr(schema: &Schema, ty: &Ty) -> Ty {
+    let mut t = ty.clone();
+    while let Ty::Data { def, args, .. } = &t {
+        match &schema.ty(*def).kind {
+            TypeDefKind::Newtype { base, .. } => t = base.subst(args),
+            TypeDefKind::Sum { .. } => break,
+        }
+    }
+    t
+}
+
+/// The order key of each constructor of a declared sum, by the constructor's catalog id.
+pub type OrderKeys = BTreeMap<u64, OrderKey>;
+
+/// Returns an order key for each constructor of a declared sum of `schema` that `keys` holds
+/// none for: spread over the sum when `keys` holds none of its constructors, else between the
+/// keys of its neighbours in declaration order.
+///
+/// Precondition: the keys `keys` holds for each sum's constructors rise in declaration order.
+pub fn new_order_keys(schema: &Schema, keys: &OrderKeys) -> OrderKeys {
+    let mut out = OrderKeys::new();
+    for cs in declared_sums(schema) {
+        if !cs.iter().any(|id| keys.contains_key(id)) {
+            out.extend(cs.iter().copied().zip(OrderKey::spread(cs.len())));
+            continue;
+        }
+        let mut last: Option<OrderKey> = None;
+        for (i, id) in cs.iter().enumerate() {
+            if let Some(k) = keys.get(id) {
+                last = Some(k.clone());
+                continue;
+            }
+            let next = cs[i + 1..].iter().find_map(|c| keys.get(c));
+            let k = OrderKey::between(last.as_ref(), next);
+            out.insert(*id, k.clone());
+            last = Some(k);
+        }
+    }
+    out
+}
+
+/// Returns the catalog ids of the constructors of each declared sum of `schema`, in declaration
+/// order.
+pub fn declared_sums(schema: &Schema) -> Vec<Vec<u64>> {
+    let mut sums: BTreeMap<TypeId, Vec<(u32, u64)>> = BTreeMap::new();
+    for (c, id) in schema.ids().ctor_ids() {
+        if matches!(
+            schema.ty(c.def()).kind,
+            TypeDefKind::Sum { record: false, .. }
+        ) {
+            sums.entry(c.def()).or_default().push((c.index(), id.raw()));
+        }
+    }
+    sums.into_values()
+        .map(|mut cs| {
+            cs.sort_unstable();
+            cs.into_iter().map(|(_, id)| id).collect()
+        })
+        .collect()
+}
+
+/// Returns the constructors of the sum `ty`, each with its catalog id and its fields, the header
+/// fields first. An anonymous sum's constructors have their positions for ids. The constructors
+/// of `Tag T` are those of `T` without fields.
+pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
+    let fields = ctor_fields(schema, ty);
+    match repr(schema, ty) {
+        Ty::Tag(t) => ctors(schema, &t)
+            .into_iter()
+            .map(|(id, _)| (id, Vec::new()))
+            .collect(),
+        Ty::Data { def, .. } => {
+            let d = schema.ty(def);
+            d.ctors()
+                .iter()
+                .zip(d.ctor_refs())
+                .zip(fields)
+                .map(|((c, k), fs)| {
+                    let id = schema
+                        .ids()
+                        .ctor_id(k)
+                        .unwrap_or_else(|| panic!("constructor {} has a catalog id", c.name));
+                    (stored(id).0, fs)
+                })
+                .collect()
+        }
+        _ => fields.into_iter().zip(0..).map(|(fs, i)| (i, fs)).collect(),
+    }
+}
+
+/// Returns the fields of each constructor of the sum `ty`, in declaration order, the header
+/// fields first. The constructors of `Tag T` are those of `T` without fields.
+pub fn ctor_fields(schema: &Schema, ty: &Ty) -> Vec<Vec<(String, Ty)>> {
+    match repr(schema, ty) {
+        Ty::Tag(t) => ctor_fields(schema, &t).iter().map(|_| Vec::new()).collect(),
+        Ty::Data { def, args, .. } => {
+            let d = schema.ty(def);
+            let header: Vec<(String, Ty)> = d
+                .header()
+                .iter()
+                .map(|f| (f.name.clone(), f.ty.subst(&args)))
+                .collect();
+            d.ctors()
+                .iter()
+                .map(|c| {
+                    let mut fs = header.clone();
+                    fs.extend(c.fields.iter().map(|f| (f.name.clone(), f.ty.subst(&args))));
+                    fs
+                })
+                .collect()
+        }
+        Ty::Sum { ctors, .. } => ctors.into_iter().map(|(_, fs)| fs).collect(),
+        t => panic!("{t:?} is not a sum"),
+    }
+}
+
+/// Returns whether `ty`, a type no newtype wraps, is a declared record.
+pub fn is_record(schema: &Schema, ty: &Ty) -> bool {
+    match ty {
+        Ty::Data { def, .. } => {
+            matches!(schema.ty(*def).kind, TypeDefKind::Sum { record: true, .. })
+        }
+        _ => false,
+    }
+}
+
+/// Returns the type of the values of `Key rel`.
+///
+/// A relation a later operator of the migration adds has no key yet and no row refers to it, so
+/// its values are the empty record.
+pub fn key_value_ty(schema: &Schema, rel: RelRef) -> Ty {
+    let rel = match rel {
+        RelRef::Declared(rel) => rel,
+        RelRef::Ahead(_) => return Ty::Record(Vec::new()),
+    };
+    match schema.relation(rel).key.as_slice() {
+        [k] => key_field_ty(schema, rel, k),
+        _ => Ty::Record(
+            key_names(schema, rel)
+                .into_iter()
+                .map(|n| (n.clone(), key_field_ty(schema, rel, &n)))
+                .collect(),
+        ),
+    }
+}
+
+pub fn scalar(b: Base) -> Scalar {
+    match b {
+        Base::I8 => Scalar::I8,
+        Base::I16 => Scalar::I16,
+        Base::I32 => Scalar::I32,
+        Base::I64 => Scalar::I64,
+        Base::Decimal(s) => Scalar::Decimal(s),
+        Base::F32 => Scalar::F32,
+        Base::F64 => Scalar::F64,
+        Base::Text => Scalar::Text,
+        Base::Bytes => Scalar::Bytes,
+        Base::SortKey => Scalar::SortKey,
+        Base::Instant => Scalar::Instant,
+        Base::Date => Scalar::Date,
+        Base::Time => Scalar::Time,
+        Base::DateTime => Scalar::DateTime,
+        Base::ZonedDateTime => Scalar::ZonedDateTime,
+        Base::Duration => Scalar::Duration,
+        Base::Period => Scalar::Period,
+    }
+}
+
+/// Returns how a heap stores a field of type `ty`.
+pub fn field_type(schema: &Schema, ty: &Ty) -> FieldType {
+    match repr(schema, ty) {
+        Ty::Base(b) => FieldType::Scalar(scalar(b)),
+        Ty::Key { rel, .. } => field_type(schema, &key_value_ty(schema, rel)),
+        Ty::Record(fs) => {
+            FieldType::Record(fs.iter().map(|(_, t)| field_type(schema, t)).collect())
+        }
+        t if is_record(schema, &t) => FieldType::Record(
+            ctors(schema, &t)[0]
+                .1
+                .iter()
+                .map(|(_, f)| field_type(schema, f))
+                .collect(),
+        ),
+        t => FieldType::Sum(
+            ctors(schema, &t)
+                .into_iter()
+                .map(|(id, fs)| heap::CtorType {
+                    id: CtorId(id),
+                    fields: fs.iter().map(|(_, f)| field_type(schema, f)).collect(),
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// Returns the type of a batch column holding values of type `ty`: as a heap stores it, with
+/// each set a list. `None` for a type no column holds: a function, a type parameter, a group or
+/// a change.
+pub fn batch_type(schema: &Schema, ty: &Ty) -> Option<batch::Type> {
+    let all = |fs: &[(String, Ty)]| -> Option<Vec<batch::Type>> {
+        fs.iter().map(|(_, f)| batch_type(schema, f)).collect()
+    };
+    Some(match repr(schema, ty) {
+        Ty::Base(b) => batch::Type::Scalar(scalar(b)),
+        Ty::Key { rel, .. } => batch_type(schema, &key_value_ty(schema, rel))?,
+        Ty::Record(fs) => batch::Type::Record(all(&fs)?),
+        Ty::Unit => batch::Type::Record(Vec::new()),
+        Ty::Set(e) | Ty::NonEmpty(e) => batch::Type::List(Box::new(batch_type(schema, &e)?)),
+        Ty::Fn(..) | Ty::Param(_) | Ty::Group(..) | Ty::Change => return None,
+        t if is_record(schema, &t) => batch::Type::Record(all(&ctors(schema, &t)[0].1)?),
+        t => batch::Type::Sum(
+            ctors(schema, &t)
+                .into_iter()
+                .map(|(id, fs)| {
+                    Some(batch::Ctor {
+                        id: CtorId(id),
+                        fields: all(&fs)?,
+                    })
+                })
+                .collect::<Option<_>>()?,
+        ),
+    })
+}
+
+/// Returns the type of an index key component of type `ty`, each declared sum's constructors
+/// encoded by their order keys in `keys`.
+///
+/// Precondition: `ty.key_form()` is `Some(KeyForm::Value)`.
+pub fn key_type(schema: &Schema, keys: &OrderKeys, ty: &Ty) -> KeyType {
+    match repr(schema, ty) {
+        Ty::Base(b) => KeyType::Scalar(scalar(b)),
+        Ty::Unit => KeyType::Record(Vec::new()),
+        Ty::Key { rel, .. } => key_type(schema, keys, &key_value_ty(schema, rel)),
+        Ty::Record(fs) => KeyType::AnonRecord(
+            AnonRecordType::new(
+                fs.iter()
+                    .map(|(n, t)| (n.clone(), key_type(schema, keys, t)))
+                    .collect(),
+            )
+            .expect("a record's fields have distinct names"),
+        ),
+        Ty::Sum { ctors, .. } => KeyType::AnonSum(
+            AnonSumType::new(
+                ctors
+                    .iter()
+                    .map(|(n, fs)| {
+                        let r = fs
+                            .iter()
+                            .map(|(f, t)| (f.clone(), key_type(schema, keys, t)))
+                            .collect();
+                        let r = AnonRecordType::new(r).expect("fields have distinct names");
+                        (n.clone(), r)
+                    })
+                    .collect(),
+            )
+            .expect("a sum's constructors have distinct names"),
+        ),
+        t if is_record(schema, &t) => KeyType::Record(
+            ctors(schema, &t)[0]
+                .1
+                .iter()
+                .map(|(_, f)| key_type(schema, keys, f))
+                .collect(),
+        ),
+        t => KeyType::Sum(
+            SumType::new(
+                ctors(schema, &t)
+                    .into_iter()
+                    .map(|(id, fs)| key::CtorType {
+                        order_key: keys
+                            .get(&u64::from(id))
+                            .unwrap_or_else(|| panic!("constructor {id} has an order key"))
+                            .clone(),
+                        fields: fs.iter().map(|(_, f)| key_type(schema, keys, f)).collect(),
+                    })
+                    .collect(),
+            )
+            .expect("order keys follow declaration order"),
+        ),
+    }
+}
+
+/// Returns the fields of a row of constructor `ctor` of relation `rel`, the header's first.
+pub fn row(schema: &Schema, rel: RelId, ctor: u32) -> Vec<(String, Ty)> {
+    ctor_fields(schema, &schema.relation(rel).elem).swap_remove(ctor as usize)
+}

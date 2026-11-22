@@ -1,0 +1,42 @@
+[package]
+name = "adtb-exec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+adtb-heap.workspace = true
+adtb-lang.workspace = true
+adtb-reference = { workspace = true, optional = true }
+adtb-store.workspace = true
+adtb-sys.workspace = true
+adtb-testkit = { workspace = true, optional = true }
+icu_casemap = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+icu_collator = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "2.4.0", default-features = false }
+icu_segmenter = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
+unicode-normalization = { version = "0.1.26", default-features = false }
+
+[features]
+testing = [
+    "adtb-heap/testing",
+    "adtb-lang/testing",
+    "adtb-store/testing",
+    "dep:adtb-reference",
+    "dep:adtb-testkit",
+]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+adtb-heap-cap.workspace = true
+adtb-lang = { workspace = true, features = ["test-heap-cap", "testing"] }
+adtb-heap = { workspace = true, features = ["testing"] }
+adtb-reference.workspace = true
+adtb-store = { workspace = true, features = ["testing"] }
+adtb-sim.workspace = true
+adtb-testkit = { workspace = true, features = ["sim"] }

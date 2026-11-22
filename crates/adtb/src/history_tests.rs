@@ -11,7 +11,7 @@ use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{Past, PastError, Pinned, Scope, Transactions, Writers};
 use crate::runtime::{Runtime, Threads};
 use crate::storage::{Options, PageError, Pager, Pid, Position};
-use crate::vacuum::{self, Error, Report, Sum};
+use crate::vacuum::{self, Error, Report, Sum, Vacuuming};
 use crate::verify::{self, Inventory};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
@@ -210,7 +210,7 @@ impl Db {
                     .delete(&self.pager, tid, x)
                     .kept(&crate::heap::Tested)
                     .expect("delete")
-                    .unchecked(crate::heap::Unchecked::Test);
+                    .unchecked(&crate::heap::Tested);
             }
             if let Some(v) = v {
                 let row = vec![Value::I64(k), Value::I64(v)];
@@ -293,7 +293,7 @@ impl Db {
     fn vacuum_keeping_by(&self, budget: usize) -> Report {
         let history = self.history();
         vacuum::vacuum_keeping(
-            &crate::write::Vacuuming::unheld(&self.pager, &self.txns),
+            &Vacuuming::unheld(&self.pager, &self.txns),
             &self.sum(),
             &history,
             budget,
@@ -305,7 +305,7 @@ impl Db {
 
     fn vacuum_in_place(&self) -> Report {
         vacuum::vacuum(
-            &crate::write::Vacuuming::unheld(&self.pager, &self.txns),
+            &Vacuuming::unheld(&self.pager, &self.txns),
             &self.sum(),
             usize::MAX,
             &vacuum::Progress::new(),
@@ -320,7 +320,7 @@ impl Db {
             indexes: vec![&self.past_index],
         };
         vacuum::expire(
-            &crate::write::Vacuuming::unheld(&self.pager, &self.txns),
+            &Vacuuming::unheld(&self.pager, &self.txns),
             &past,
             usize::MAX,
             &vacuum::Progress::new(),
@@ -787,11 +787,7 @@ fn a_vacuum_retry_indexes_a_copy_a_crash_left_without_its_entry() {
             panic!("one dead version: {dead:?}");
         };
         db.past_heap
-            .copy_version(
-                &crate::write::Vacuuming::unheld(&db.pager, &db.txns),
-                db.heap(),
-                version,
-            )
+            .copy_version(&Vacuuming::unheld(&db.pager, &db.txns), db.heap(), version)
             .expect("copy")
             .expect("the first copy of a version");
         db.pager.flush_log();
@@ -1039,7 +1035,7 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
                         let version = heap.read(&db.pager, tid).expect("read").expect("version");
                         assert!(
                             past.copy_version(
-                                &crate::write::Vacuuming::unheld(&db.pager, &db.txns),
+                                &Vacuuming::unheld(&db.pager, &db.txns),
                                 &heap,
                                 &version
                             )
@@ -1216,7 +1212,7 @@ impl crate::exec::Reads for VacuumOnFetch {
             indexes: vec![&self.db.index],
         };
         let report = vacuum::vacuum_keeping(
-            &crate::write::Vacuuming::unheld(&self.db.pager, &self.db.txns),
+            &Vacuuming::unheld(&self.db.pager, &self.db.txns),
             &sum,
             &self.db.history(),
             usize::MAX,
@@ -1254,7 +1250,7 @@ fn fetch_beside_vacuum(
                 .delete(&db.pager, tid, x)
                 .kept(&crate::heap::Tested)
                 .expect("delete")
-                .unchecked(crate::heap::Unchecked::Test);
+                .unchecked(&crate::heap::Tested);
         }
         let tid = db.heap().insert(&db.pager, x, &row).expect("insert");
         let entry = Entry {
@@ -1408,7 +1404,7 @@ fn insert_then_delete(db: &Db, keys: std::ops::Range<i64>) {
             .delete(&db.pager, tid, x)
             .kept(&crate::heap::Tested)
             .expect("delete")
-            .unchecked(crate::heap::Unchecked::Test);
+            .unchecked(&crate::heap::Tested);
     }
     db.pager
         .wait_durable(db.txns.commit(&db.pager, begun).expect("commit").lsn());

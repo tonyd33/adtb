@@ -1,0 +1,20 @@
+-- capability_renames: `Abandons`, `UncheckedWriter` or `StopsEarly` imported, re-exported or
+-- aliased under another name.
+
+capability = r"(^|::)(Abandons|UncheckedWriter|StopsEarly)$";
+
+renamed_uses = do {
+  u <- descendants_of_kind :use_as_clause;
+  p <- pure u | #path;
+  guard $ text p ~ capability;
+  return u;
+};
+
+aliases = do {
+  t <- descendants_of_kind :type_item;
+  v <- pure t | #type;
+  guard $ text v ~ capability;
+  return t;
+};
+
+main = (renamed_uses `alt` aliases) | arr (\n -> ("capability_renames", range n));

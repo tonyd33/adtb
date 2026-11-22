@@ -48,8 +48,10 @@ Rulings: substrate/new-engine, encoding/native, engine/guarantees-only, engine/o
 
 ## 3. Crates and boundaries
 
-The implementation is split into crates only where a part has
-different dependencies, consumers or stability promises:
+The implementation is split into crates where a part has different
+dependencies, consumers or stability promises, or where a cut keeps an
+edit from rebuilding what does not depend on it. Each crate's unit
+tests live in it:
 
 | Crate | Contents | Depends on |
 | --- | --- | --- |
@@ -57,7 +59,10 @@ different dependencies, consumers or stability promises:
 | `adtb-file` | The readers of CSV and NDJSON files at a declared row type, over any value type of the textual syntax, and the files a path names ([oracle.md §1](oracle.md#1-evaluation-contract)) | `adtb-lang`, Unicode normalisation |
 | `adtb-reference` | The reference interpreter ([oracle.md](oracle.md)) | `adtb-lang`, `adtb-file`, Unicode, collation, regular expression and zone tables |
 | `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads, the CRC-32C instruction ([sys.md](sys.md)); the runtime interfaces: I/O, clock, threads, entropy ([runtime.md](runtime.md)) | `libc` and allowlisted system crates |
-| `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-file`, `adtb-sys`; `testing` only the `scripts` feature of `adtb-conformance` and the tests of `adtb-sim`, `adtb-testkit` and `adtb-shell` enable, and it exists in its own unit tests; its unit tests run over `adtb-sim` and `adtb-testkit` |
+| `adtb-store` | The store: keys and their encoding, the file, its pages, log and recovery, transactions and the commit log, B-link trees ([storage.md](storage.md), [mvcc.md](mvcc.md), [indexes.md](indexes.md)), over the I/O interface of [runtime.md](runtime.md); its `testing` feature adds the pager and transaction probes and the pager test world | `adtb-lang`, `adtb-sys`, the hashing, sealing and key derivation crates, Unicode normalisation and the zone tables; its unit tests run over `adtb-sim` and `adtb-testkit` |
+| `adtb-heap` | Heaps of row versions, their history and vacuum, structural verification ([mvcc.md](mvcc.md), [verify.md](verify.md)); its `testing` feature adds the component test world | `adtb-store`, `adtb-lang`, `adtb-sys`; its unit tests as `adtb-store`'s |
+| `adtb-exec` | Physical plans, batches and the executor ([execution.md](execution.md)) | `adtb-heap`, `adtb-store`, `adtb-lang`, `adtb-sys`, the collation, segmentation, case mapping and zone tables; its unit tests as `adtb-store`'s |
+| `adtb` | The engine: catalog, write path, constraint and view maintenance, the in-process API; it re-exports what callers name of the crates below it | `adtb-exec`, `adtb-heap`, `adtb-store`, `adtb-lang`, `adtb-file`, `adtb-sys`; `testing` only the `scripts` feature of `adtb-conformance` and the tests of `adtb-sim`, `adtb-testkit` and `adtb-shell` enable, and it exists in its own unit tests, turning on the `testing` feature of each crate below; its unit tests run over `adtb-sim` and `adtb-testkit` |
 | `adtb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection ([runtime.md §5](runtime.md#5-simulated-storage)), and the tests that run the engine over them; only tests and the `adtb-conformance` runner depend on it | `adtb-sys`; its tests `adtb` |
 | `adtb-testkit` | The helpers the tests share that name no engine type: fixtures, generators and sweep sizes, crash loop, failure searches, byte damage ([testing.md §5](testing.md#5-harness)), and the isolation checker over list-append histories with its scripted anomaly scenarios ([runtime.md §6](runtime.md#6-isolation-histories)); only tests depend on it, `adtb`'s unit tests among them, and it never depends on `adtb` | `adtb-sim`, `adtb-sys`, `adtb-lang`, `adtb-reference`, `adtb-script` |
 | `adtb-simkit` | The helpers the simulator's test binaries share that name the engine; only tests and the `adtb-conformance` runner depend on it | `adtb`, `adtb-sim`, `adtb-lang`, `adtb-reference`, `adtb-testkit` |
@@ -67,9 +72,10 @@ different dependencies, consumers or stability promises:
 | `adtb-codegen` | Rust code generation from a migration log and bundle files ([kernel.md §8](kernel.md#8-code-generators)) | `adtb-lang` |
 | `adtb-codegen-tests` | The code generated from fixture schemas and bundles, compiled and called over the simulator, and the Rust examples of the user manual, each run as a test; one build script writes both | `adtb`, `adtb-codegen` at build time |
 
-Layers inside `adtb` (catalog, planner, transactions, storage) are
-modules, not crates. Their boundaries are still contracts and have
-design files of their own.
+The engine's layers are the crates `adtb-store`, `adtb-heap`,
+`adtb-exec` and `adtb`, and modules inside them. Each boundary is a
+contract with a design file of its own, whether a crate or a module
+draws it.
 
 | Boundary | Provider | Consumers | Design file | Entry point |
 | --- | --- | --- | --- | --- |
@@ -78,14 +84,14 @@ design files of their own.
 | File records | `adtb-file` | `adtb`, `adtb-reference` | [oracle.md §1](oracle.md#1-evaluation-contract) | `adtb_file`: `Files`, `records` |
 | Safe page memory and I/O buffers | `adtb-sys` | `adtb` | [sys.md](sys.md) | `adtb_sys::pages`: `PageMemory`; `adtb_sys::buf`: `AlignedBuf` |
 | I/O, time, threads, randomness | I/O backends, `adtb-sim` | `adtb` | [runtime.md](runtime.md) | `adtb_sys::runtime`: `Runtime`, `Io`; `adtb_sim`: `Sim`, `SimRuntime` |
-| File, pages, log, recovery | pager and log | heaps, indexes, replication, backup, verify | [storage.md](storage.md) | `adtb::storage`: `Pager` |
-| Structural verification | `verify` | catalog, maintenance commands, test harnesses | [verify.md](verify.md) | `adtb::verify`: `Inventory`, `Problem` |
-| Row versions and isolation | transactions | heaps, indexes, executor, vacuum | [mvcc.md](mvcc.md) | `adtb::mvcc`: `Transactions`, `Snapshot`, `Serializer` |
-| Index entries and keys | indexes | heaps, transactions, planner | [indexes.md](indexes.md) | `adtb::btree`: `BTree`, `Index`; `adtb::key`: `Entry`, `KeySchema` |
-| Physical plans and batches | planner | executor, catalog | [execution.md](execution.md) | `adtb::plan`: `Plan`; `adtb::batch`: `Schema`, `Column`; `adtb::exec`: `Program` |
+| File, pages, log, recovery | pager and log | heaps, indexes, replication, backup, verify | [storage.md](storage.md) | `adtb_store::storage`: `Pager` |
+| Structural verification | `verify` | catalog, maintenance commands, test harnesses | [verify.md](verify.md) | `adtb_heap::verify`: `Inventory`, `Problem` |
+| Row versions and isolation | transactions | heaps, indexes, executor, vacuum | [mvcc.md](mvcc.md) | `adtb_store::mvcc`: `Transactions`, `Snapshot`, `Serializer` |
+| Index entries and keys | indexes | heaps, transactions, planner | [indexes.md](indexes.md) | `adtb_store::btree`: `BTree`, `Index`; `adtb_store::key`: `Entry`, `KeySchema` |
+| Physical plans and batches | planner | executor, catalog | [execution.md](execution.md) | `adtb_exec::plan`: `Plan`; `adtb_exec::batch`: `Schema`, `Column`; `adtb_exec::exec`: `Program` |
 | Constraint and view maintenance | constraint and view compiler | transactions | [maintenance.md](maintenance.md) | `adtb::write`: `CheckPlan` |
 | Staged schema changes | evolution | catalog, planner | [schema-change.md](schema-change.md) | `adtb_lang::evolve`: `State`; `adtb::catalog`: `Rewrite` |
-| Log stream and replicas | primary | replicas, embedded replicas, backups | [replication.md](replication.md) | `adtb`: `Database`; `adtb::storage`: `Pager` |
+| Log stream and replicas | primary | replicas, embedded replicas, backups | [replication.md](replication.md) | `adtb`: `Database`; `adtb_store::storage`: `Pager` |
 | Calls over the wire | `adtb-server` | `adtb` | [server.md](server.md) | `adtb_server::wire`: `Reassembler`; `adtb`: `Database` |
 | Typed bundles | `adtb` | generated code | [server.md §4.5](server.md#45-typed-bundles) | `adtb::typed`: `BundleDef`, `Callable` |
 | Histories and anomalies | test harnesses | `adtb-testkit` | [runtime.md §6](runtime.md#6-isolation-histories) | `adtb_testkit::isolation`: `check`, `run`, `Scenario` |
@@ -94,7 +100,7 @@ design files of their own.
 | Crash loop, failure searches and byte damage | `adtb-testkit` | the tests of `adtb-sim` and `adtb` | [testing.md §5](testing.md#5-harness) | `adtb_testkit`: `crash::crash_loop`, `search`, `damage::DataFile` |
 | Opens and rows | `adtb-simkit` | the tests of `adtb-sim` | [testing.md §5](testing.md#5-harness) | `adtb_simkit`: `open`, `load` |
 
-Rulings: project/arch/crates/by-boundary
+Rulings: project/arch/crates/by-boundary-and-build
 
 ## 4. Errors
 

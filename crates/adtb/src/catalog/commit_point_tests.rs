@@ -14,7 +14,7 @@ use super::root::{Changing, Root};
 use super::{Catalog, Read, Reader, Transactions};
 use crate::faults::Step;
 use crate::faults::armed::{self, Run, Site};
-use crate::heap::{self, Heap, Tested, Unchecked, Undo};
+use crate::heap::{self, Heap, Tested, Undo};
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{Fate, Writers, Xid};
 use crate::storage::{self, Pager};
@@ -429,7 +429,7 @@ fn pruned(fail: Option<(Site, usize)>) -> Ran {
                 heap.delete(&pager, tid, WRITER)
                     .kept(&Tested)
                     .expect("the row deletes")
-                    .unchecked(Unchecked::Test);
+                    .unchecked(&Tested);
             }
         }
         let judge = |w: &Writers| {
@@ -561,7 +561,7 @@ fn swept(rt: &SimRuntime) -> usize {
     catalog
         .large
         .sweep(
-            &crate::write::Vacuuming::unheld(&pager, &txns),
+            &crate::vacuum::Vacuuming::unheld(&pager, &txns),
             |x| txns.resolved(&pager, x),
             &mut || true,
         )
@@ -703,12 +703,12 @@ const HEAP_WRITES: &[(&str, HeapWrite)] = &[
             Ok(Fate::Keep)
         });
         let (_, old) = put.record(list, (), ())?;
-        old.unchecked(Unchecked::Test);
+        old.unchecked(&Tested);
         Ok(())
     }),
     ("delete", |heap, pager, tid, list| {
         let old = heap.delete(pager, tid, WRITER).record(list, (), ())?;
-        old.unchecked(Unchecked::Test);
+        old.unchecked(&Tested);
         Ok(())
     }),
 ];

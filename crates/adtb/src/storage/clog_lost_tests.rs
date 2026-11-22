@@ -664,7 +664,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
             ..storage::Options::new(harness::NAME)
         };
         let (pager, _) = Pager::open(rt, &options).unwrap();
-        let (_pin, mut img) = pager.load_log().unwrap();
+        let (_pin, mut img) = pager.load_log_tested().unwrap();
         img.batch_start(Lsn(segment))
             .expect("a batch holds the segment's first block")
     });

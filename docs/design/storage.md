@@ -184,7 +184,7 @@ Rulings: layout/checksum/in-page-32, layout/endian/little, layout/format-version
 ### 2.3 Page access
 
 Heaps, indexes and every other page layout reach pages only through
-the pager, `adtb::storage::Pager`. Every operation takes the pager by
+the pager, `adtb_store::storage::Pager`. Every operation takes the pager by
 `&self`, and any number of threads share it; the latches behind this
 section's calls are §2.4.
 

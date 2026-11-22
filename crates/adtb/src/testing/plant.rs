@@ -153,7 +153,7 @@ impl<R: Runtime> Testing<'_, R> {
                 return Ok(Planted::Page(pager.allocate(1, kind, owner)?));
             }
             Plant::Insert { heap, rows } => return self.insert(heap, &rows).map(Planted::Tids),
-            Plant::LoadMarks(page) => pager.load_marks(page)?,
+            Plant::LoadMarks(page) => pager.load_marks_tested(page)?,
             Plant::FailOn(e) => {
                 let w = self.db.tested_db();
                 return Ok(Planted::Refused(

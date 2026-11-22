@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use adtb_lang::ids::CatCtorId;
 
-use crate::heap::{Unchecked, WriteTarget};
+use crate::heap::WriteTarget;
 use crate::mvcc::{Scope, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -183,7 +183,7 @@ impl Catalog {
             self.roots
                 .delete(pager, WriteTarget::checked(tid, header), x)
                 .kept(&super::Abandoning(()))?
-                .unchecked(Unchecked::Catalog(super::Abandoning(())));
+                .unchecked(&super::Abandoning(()));
         }
         for r in rows {
             let row = roots::kept(r);

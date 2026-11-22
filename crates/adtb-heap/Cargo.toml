@@ -1,0 +1,26 @@
+[package]
+name = "adtb-heap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+adtb-lang.workspace = true
+adtb-store.workspace = true
+adtb-sys.workspace = true
+
+[features]
+latch-checks = ["adtb-sys/latch-checks"]
+testing = ["adtb-lang/testing", "adtb-store/testing"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+adtb-heap-cap.workspace = true
+adtb-lang = { workspace = true, features = ["test-heap-cap", "testing"] }
+adtb-store = { workspace = true, features = ["testing"] }
+adtb-sim.workspace = true
+adtb-testkit = { workspace = true, features = ["sim"] }

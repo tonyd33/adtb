@@ -275,3 +275,14 @@ pub(super) fn row_key(
         other => broken(other),
     })
 }
+
+impl exec::RowKeys for IndexKeys {
+    fn key(
+        &self,
+        c: u32,
+        row: &[Value],
+        types: &[KeyType],
+    ) -> Result<Option<Vec<Value>>, exec::Error> {
+        IndexKeys::key(self, c, row, types)
+    }
+}

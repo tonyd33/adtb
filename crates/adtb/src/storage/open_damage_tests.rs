@@ -7,7 +7,7 @@ use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{IoError, OpKind};
-use crate::storage::order::ordered_for_test;
+use crate::storage::ordered_for_test;
 use crate::storage::{Damage, HEADER_LEN, Lsn, Options, PageError, Pager, Pid, Quarantine};
 use crate::test_world::api;
 use crate::test_world::load as open;
@@ -1004,7 +1004,7 @@ fn an_open_whose_walk_of_the_roots_heap_cannot_read_its_damaged_page_marks_nothi
         };
         assert_eq!(format!("Page({refused:?})"), detail);
     });
-    let marked = crate::storage::quarantine::decode(DATA.page(&sim.files(), marks));
+    let marked = crate::storage::decode(DATA.page(&sim.files(), marks));
     assert_eq!(Some(BTreeSet::new()), marked);
 }
 
@@ -1117,9 +1117,7 @@ impl Checkpointed {
 
 /// Returns the log block size, segment size, checkpoint and redo LSN of `FILE` in `files`.
 fn checkpoint_of(files: &Files) -> Checkpointed {
-    use crate::storage::block::{InMemory, LogImage, batch_at};
-    use crate::storage::header::{FileHeader, choose};
-    use crate::storage::record::Record;
+    use crate::storage::{FileHeader, InMemory, LogImage, Record, batch_at, choose};
     let file = &files[FILE];
     let (_, h) = choose(
         FileHeader::decode(0, &file[..PAGE]),

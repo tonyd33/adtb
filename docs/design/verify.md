@@ -1,6 +1,6 @@
 # Structural verification
 
-`adtb::verify` checks a whole database file for structural damage: the
+`adtb_heap::verify` checks a whole database file for structural damage: the
 pages and the log as the pager checks them, every heap, large-value
 store, B-link tree and commit log, the routing from index entries to
 heap slots, and the allocation bitmap against what refers to each page.

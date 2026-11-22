@@ -1,0 +1,1404 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ops::{Bound, ControlFlow, RangeBounds};
+use std::sync::Arc;
+
+use adtb_lang::schema::Schema;
+use adtb_lang::textual::key_names;
+use adtb_lang::types::{RelRef, Ty};
+
+use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
+use crate::btree::{self, Index, prefix_end};
+use crate::heap::{FieldType, Heap, HeapNo, Link, Slots, Version, refuse_named, walk};
+use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
+use crate::mvcc::{Logged, Reader, ScanId, SerialId, SerializationFailure, Serializer, Writers};
+use crate::plan::{self, HeapId, IndexId};
+use crate::runtime::Runtime;
+use crate::steps::{Step, Steps};
+use crate::storage::{Pager, Pid, Quarantine};
+use adtb_sys::lock::Ranked;
+
+use super::memory::{Arena, Grant};
+use super::types::{ctors, repr};
+use super::value::{F32, F64, Val};
+use super::{Broken, Error, Rot};
+use crate::mvcc::StopsEarly;
+
+/// An index entry a probe found: the constructor position and TID it names, and the entry when an
+/// index rather than a heap scan answered.
+#[derive(Clone, Debug)]
+pub struct Named {
+    pub ctor: u32,
+    pub tid: Tid,
+    entry: Option<(IndexId, Entry)>,
+}
+
+/// What a query's reads see and record: the visibility of versions at its snapshot, and the
+/// SIREAD locks its transaction takes.
+pub trait Reads: Send + Sync {
+    /// Returns whether the version on page `at` written by `writers` is visible at the reader's
+    /// snapshot. Record that what the reader saw depends on the writer the read is before: the
+    /// inserter of a version it missed or the deleter of one it saw, when its snapshot does not
+    /// count that writer as committed and that writer did not abort. Refuse page `at` of heap
+    /// `heap` when a writer it looks up is not reserved.
+    fn saw(&self, at: (Pid, HeapNo), writers: &Writers) -> Result<bool, Error>;
+
+    /// Record that a scan of heap `heap` began, covering every version of the heap until
+    /// [`Reads::scanned`] ends it. Returns the scan, `None` when it records none.
+    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure>;
+
+    /// Record that `scan`, a scan of heap `heap`, ended having read every version of the heap,
+    /// or, when it stopped early, only those on the pages it read.
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<(StopsEarly, &[Pid])>);
+
+    /// Record that the encoded keys of the index rooted at `index` between `lo` and `hi` were
+    /// read, for rows of `ctors`.
+    fn probed(
+        &self,
+        index: Pid,
+        lo: Bound<Vec<u8>>,
+        hi: Bound<Vec<u8>>,
+        ctors: BTreeSet<CtorId>,
+    ) -> Result<(), SerializationFailure>;
+
+    /// Record that the version at `tid` of heap `heap` was read.
+    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure>;
+
+    /// Returns whether a read of heap `heap` sees what the reader's snapshot sees.
+    fn covers(&self, heap: HeapNo) -> bool;
+
+    /// Call the step hook of a serializable reader with `step`.
+    fn reached(&self, _: Step) {}
+}
+
+/// The reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
+/// is given.
+struct AtSnapshot<R: Runtime> {
+    rt: R,
+    reader: Reader<Logged<R>>,
+    serial: Option<(Arc<Ranked<Serializer>>, SerialId)>,
+    steps: Arc<Steps>,
+}
+
+impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AtSnapshot")
+            .field("reader", &self.reader)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: Runtime> Reads for AtSnapshot<R> {
+    fn saw(&self, (at, heap): (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
+        let at = (at, Slots::Versions(heap.0));
+        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
+        let seen = self.reader.sees(writers).map_err(refuse)?;
+        if let Some((s, id)) = &self.serial
+            && let Some(writer) = self.reader.before(seen).map_err(refuse)?
+        {
+            s.lock(&self.rt)
+                .read_from(*id, writer)
+                .map_err(Error::Serialization)?;
+        }
+        Ok(seen.visible())
+    }
+
+    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+        match &self.serial {
+            Some((s, id)) => s.lock(&self.rt).read_scan(*id, heap.0),
+            None => Ok(None),
+        }
+    }
+
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<(StopsEarly, &[Pid])>) {
+        if let Some((s, id)) = &self.serial {
+            let read = read.map(|(early, r)| (early, r.iter().map(|p| p.0).collect::<Vec<_>>()));
+            let read = read.as_ref().map(|(early, r)| (early, r.as_slice()));
+            s.lock(&self.rt).end_scan(*id, heap.0, scan, read);
+        }
+    }
+
+    fn probed(
+        &self,
+        index: Pid,
+        lo: Bound<Vec<u8>>,
+        hi: Bound<Vec<u8>>,
+        ctors: BTreeSet<CtorId>,
+    ) -> Result<(), SerializationFailure> {
+        match &self.serial {
+            Some((s, id)) => s.lock(&self.rt).read_range(*id, index, lo, hi, ctors),
+            None => Ok(()),
+        }
+    }
+
+    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
+        match &self.serial {
+            Some((s, id)) => s.lock(&self.rt).read_tuple(*id, heap.0, tid),
+            None => Ok(()),
+        }
+    }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.reader.covers(heap.0)
+    }
+
+    fn reached(&self, step: Step) {
+        if self.serial.is_some() {
+            self.steps.at(step);
+        }
+    }
+}
+
+/// What a read of the past sees: the versions the snapshot of a pinned marker sees, taking no
+/// SIREAD locks.
+struct AtMarker<R: Runtime> {
+    reader: Reader<Logged<R>>,
+}
+
+impl<R: Runtime> Reads for AtMarker<R> {
+    fn saw(&self, (at, heap): (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
+        let seen = self.reader.sees(writers);
+        let at = (at, Slots::Versions(heap.0));
+        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
+        Ok(seen.map_err(refuse)?.visible())
+    }
+
+    fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+        Ok(None)
+    }
+
+    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<(StopsEarly, &[Pid])>) {}
+
+    fn probed(
+        &self,
+        _: Pid,
+        _: Bound<Vec<u8>>,
+        _: Bound<Vec<u8>>,
+        _: BTreeSet<CtorId>,
+    ) -> Result<(), SerializationFailure> {
+        Ok(())
+    }
+
+    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
+        Ok(())
+    }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.reader.covers(heap.0)
+    }
+}
+
+/// The heap of each constructor position an index probe reads, by position.
+pub type Routes = BTreeMap<u32, HeapId>;
+
+/// A heap a plan names, with the field types of its rows.
+#[derive(Clone, Debug)]
+pub struct StoredHeap {
+    pub heap: Arc<Heap>,
+    pub row: Vec<FieldType>,
+    /// The heap of every constructor of its relation, its own among them.
+    pub sum: Vec<Arc<Heap>>,
+}
+
+/// An index a plan names, with the constructor position of each constructor id it holds.
+#[derive(Clone, Debug)]
+pub struct StoredIndex {
+    pub index: Index,
+    pub ctors: BTreeMap<CtorId, u32>,
+    /// What answers a probe from the heaps while the index is quarantined; a probe of a
+    /// quarantined index without it reads the index.
+    pub rows: Option<IndexedRows>,
+}
+
+/// How the rows of a relation's constructors are keyed in one index.
+pub trait RowKeys: std::fmt::Debug + Send + Sync {
+    /// Returns the key of stored row `row` of constructor `c`, its components of types `types`,
+    /// or `None` when the index holds no entry for it.
+    fn key(&self, c: u32, row: &[Value], types: &[KeyType]) -> Result<Option<Vec<Value>>, Error>;
+}
+
+/// How the rows of a heap give the entries of an index over them.
+#[derive(Clone, Debug)]
+pub struct IndexedRows {
+    pub keys: Arc<dyn RowKeys>,
+    /// The heap of each constructor position the index holds.
+    pub heaps: BTreeMap<u32, HeapId>,
+}
+
+/// What bounds a probe answered from the heaps while its index is quarantined.
+#[derive(Clone, Copy)]
+pub struct ProbeBounds<'a> {
+    /// The grant holding the versions it scans.
+    pub grant: &'a Arc<Grant>,
+    /// Fail when the call is cancelled or its deadline has passed.
+    pub check: &'a dyn Fn() -> Result<(), Error>,
+}
+
+impl std::fmt::Debug for ProbeBounds<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProbeBounds")
+            .field("grant", self.grant)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The history heap of each heap and the history key index of each key index, which a read of
+/// the past reads besides them.
+#[derive(Clone, Debug, Default)]
+pub struct Histories {
+    heaps: BTreeMap<HeapId, StoredHeap>,
+    indexes: BTreeMap<IndexId, Index>,
+}
+
+impl Histories {
+    /// Returns the history heaps of `heaps` and history key indexes of `indexes` of the heaps and
+    /// indexes `listed` lists.
+    pub fn of(
+        heaps: &BTreeMap<HeapId, StoredHeap>,
+        indexes: &BTreeMap<IndexId, Index>,
+        listed: &plan::Reads,
+    ) -> Histories {
+        Histories {
+            heaps: (listed.heaps.iter())
+                .filter_map(|h| Some((*h, heaps.get(h)?.clone())))
+                .collect(),
+            indexes: (listed.indexes.iter())
+                .filter_map(|i| Some((*i, indexes.get(i)?.clone())))
+                .collect(),
+        }
+    }
+}
+
+/// The heaps and indexes of a database's relation variables, shared by the stores that read
+/// them.
+#[derive(Clone, Debug, Default)]
+pub struct Bindings {
+    heaps: Arc<BTreeMap<HeapId, StoredHeap>>,
+    indexes: Arc<BTreeMap<IndexId, StoredIndex>>,
+    every: Arc<plan::Reads>,
+}
+
+impl Bindings {
+    pub fn new(
+        heaps: Arc<BTreeMap<HeapId, StoredHeap>>,
+        indexes: Arc<BTreeMap<IndexId, StoredIndex>>,
+    ) -> Bindings {
+        let every = Arc::new(plan::Reads {
+            heaps: heaps.keys().copied().collect(),
+            indexes: indexes.keys().copied().collect(),
+        });
+        Bindings {
+            heaps,
+            indexes,
+            every,
+        }
+    }
+
+    pub fn heaps(&self) -> &BTreeMap<HeapId, StoredHeap> {
+        &self.heaps
+    }
+
+    pub fn indexes(&self) -> &BTreeMap<IndexId, StoredIndex> {
+        &self.indexes
+    }
+}
+
+/// The reads of the past a statement makes.
+pub trait PastReads<R: Runtime>: Send + Sync {
+    /// Returns the store that reads the state `at` names, a `Position` or, when `instant`, an
+    /// `Instant`, for a block reading `heaps` and typed at version `pins`, or at the version of
+    /// that state for `None`. The state stays readable while the store lives.
+    ///
+    /// Fail with [`Error::HistoryUnavailable`] when the state is outside the retention window,
+    /// after the reader's snapshot, or before history of a heap read begins, with
+    /// [`Error::WrongVersion`] when a heap read is stored otherwise at that state than at `pins`,
+    /// and with `Internal` when a heap or index of `reads` is not bound.
+    fn store(
+        &self,
+        at: &Val,
+        instant: bool,
+        pins: Option<u64>,
+        reads: &Arc<plan::Reads>,
+    ) -> Result<Arc<Store<R>>, Error>;
+}
+
+/// The heaps and indexes a plan's reads go to, and what those reads see.
+///
+/// Invariants: `bindings` binds every heap and index `listed` lists, and the store reads no
+/// other. When `history` holds a heap, the store reads the past: a scan of that heap reads its
+/// history heap too, a key lookup falls back to its history key index, and no plan probes
+/// another index.
+pub struct Store<R: Runtime> {
+    pager: Pager<R>,
+    reads: Arc<dyn Reads>,
+    bindings: Bindings,
+    listed: Arc<plan::Reads>,
+    history: Histories,
+    /// The reads of the past the store's statement may make; `None` once it reads the past.
+    past: Option<Arc<dyn PastReads<R>>>,
+}
+
+impl<R: Runtime> std::fmt::Debug for Store<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store")
+            .field("heaps", &self.listed.heaps)
+            .field("indexes", &self.listed.indexes)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: Runtime> Store<R> {
+    /// Returns the store of a serializable transaction's statements: it reads every heap and
+    /// index of `bindings` at `reader`'s snapshot, records SIREAD locks as `serial` in its
+    /// serializer, calls the step hook of `steps`, and reads the past through `past`.
+    pub fn serializable(
+        reader: Reader<Logged<R>>,
+        serial: (Arc<Ranked<Serializer>>, SerialId),
+        steps: Arc<Steps>,
+        bindings: Bindings,
+        past: Option<Arc<dyn PastReads<R>>>,
+    ) -> Store<R> {
+        let mut store = Store::at_snapshot(reader, Some(serial), steps, bindings);
+        store.past = past;
+        store
+    }
+
+    /// Returns the store of a read at the safe snapshot of `reader`: it reads every heap and
+    /// index of `bindings` and records no SIREAD lock.
+    pub fn safe(reader: Reader<Logged<R>>, bindings: Bindings) -> Store<R> {
+        Store::at_snapshot(reader, None, Arc::default(), bindings)
+    }
+
+    /// Returns the store of a migration's validation at `reader`'s snapshot: it reads every
+    /// heap and index of `bindings` and records no SIREAD lock.
+    pub fn migrating(reader: Reader<Logged<R>>, bindings: Bindings) -> Store<R> {
+        Store::at_snapshot(reader, None, Arc::default(), bindings)
+    }
+
+    /// Returns the store of a read of the past through `reader`, built at a pinned marker,
+    /// recording nothing: it reads the heaps and indexes `listed` lists of `bindings`, and the
+    /// history heaps and indexes of `history` besides.
+    ///
+    /// Fail with `Internal` naming a heap or index `listed` lists that `bindings` does not bind.
+    pub fn past(
+        reader: Reader<Logged<R>>,
+        bindings: Bindings,
+        listed: &Arc<plan::Reads>,
+        history: Histories,
+    ) -> Result<Store<R>, Error> {
+        let pager = reader.pager().clone();
+        Store::listing(
+            pager,
+            Arc::new(AtMarker { reader }),
+            bindings,
+            listed,
+            history,
+        )
+    }
+
+    /// Returns the store reading what `listed` lists of `bindings` through `reads`, and the
+    /// history heaps and indexes of `history` besides.
+    ///
+    /// Fail with `Internal` naming a heap or index `listed` lists that `bindings` does not bind.
+    fn listing(
+        pager: Pager<R>,
+        reads: Arc<dyn Reads>,
+        bindings: Bindings,
+        listed: &Arc<plan::Reads>,
+        history: Histories,
+    ) -> Result<Store<R>, Error> {
+        if let Some(&h) = (listed.heaps.iter()).find(|h| !bindings.heaps.contains_key(h)) {
+            return Err(Broken::UnboundHeap(h).into());
+        }
+        if let Some(&i) = (listed.indexes.iter()).find(|i| !bindings.indexes.contains_key(i)) {
+            return Err(Broken::UnboundIndex(i).into());
+        }
+        Ok(Store {
+            pager,
+            reads,
+            bindings,
+            listed: listed.clone(),
+            history,
+            past: None,
+        })
+    }
+
+    fn at_snapshot(
+        reader: Reader<Logged<R>>,
+        serial: Option<(Arc<Ranked<Serializer>>, SerialId)>,
+        steps: Arc<Steps>,
+        bindings: Bindings,
+    ) -> Store<R> {
+        let pager = reader.pager().clone();
+        let reads = AtSnapshot {
+            rt: pager.rt().clone(),
+            reader,
+            serial,
+            steps,
+        };
+        Store {
+            pager,
+            reads: Arc::new(reads),
+            listed: bindings.every.clone(),
+            bindings,
+            history: Histories::default(),
+            past: None,
+        }
+    }
+
+    /// Returns this store reading only what `listed` lists.
+    ///
+    /// Fail with `Internal` naming a heap or index `listed` lists that this store's bindings do
+    /// not bind, or that this store does not list.
+    pub fn narrowed(&self, listed: &Arc<plan::Reads>) -> Result<Store<R>, Error> {
+        if let Some(&h) = listed.heaps.difference(&self.listed.heaps).next() {
+            return Err(if self.bindings.heaps.contains_key(&h) {
+                Broken::UnlistedHeap(h).into()
+            } else {
+                Broken::UnboundHeap(h).into()
+            });
+        }
+        if let Some(&i) = listed.indexes.difference(&self.listed.indexes).next() {
+            return Err(if self.bindings.indexes.contains_key(&i) {
+                Broken::UnlistedIndex(i).into()
+            } else {
+                Broken::UnboundIndex(i).into()
+            });
+        }
+        Ok(Store {
+            pager: self.pager.clone(),
+            reads: self.reads.clone(),
+            bindings: self.bindings.clone(),
+            listed: listed.clone(),
+            history: Histories::of(&self.history.heaps, &self.history.indexes, listed),
+            past: self.past.clone(),
+        })
+    }
+
+    /// Returns the reads of the past the store's statement may make; `None` once it reads the
+    /// past.
+    pub fn past_reads(&self) -> Option<&Arc<dyn PastReads<R>>> {
+        self.past.as_ref()
+    }
+
+    pub fn pager(&self) -> &Pager<R> {
+        &self.pager
+    }
+}
+
+/// The pages of a heap a scan lists, in directory order, with the scan's record that it reads
+/// the heap. Dropping it records that the scan read every version of the heap.
+pub struct Listing {
+    reads: Arc<dyn Reads>,
+    heap: HeapNo,
+    scan: Option<ScanId>,
+    pub pages: Vec<Pid>,
+}
+
+impl Listing {
+    /// Record that the scan, stopped early, read only the versions on the pages of `read`.
+    pub fn stopped(mut self, early: StopsEarly, read: &[Pid]) {
+        if let Some(scan) = self.scan.take() {
+            self.reads.reached(Step::ScanStopped);
+            self.reads.scanned(self.heap, scan, Some((early, read)));
+        }
+    }
+}
+
+impl Drop for Listing {
+    fn drop(&mut self) {
+        if let Some(scan) = self.scan.take() {
+            self.reads.reached(Step::ScanRead);
+            self.reads.scanned(self.heap, scan, None);
+        }
+    }
+}
+
+impl std::fmt::Debug for Listing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listing")
+            .field("heap", &self.heap)
+            .field("scan", &self.scan)
+            .field("pages", &self.pages)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The batch a scan is filling, its rows held in an arena of the call's grant.
+struct Filling {
+    schema: BatchSchema,
+    rows: usize,
+    batch: BatchBuilder,
+    held: Arena,
+}
+
+impl Filling {
+    fn new(row: &[FieldType], rows: usize, grant: &Arc<Grant>) -> Filling {
+        let schema = BatchSchema::of_heap(row);
+        Filling {
+            batch: BatchBuilder::new(schema.clone()),
+            schema,
+            rows,
+            held: grant.arena(),
+        }
+    }
+
+    /// Append `row`. Returns the batch once it holds its `rows` rows, with the arena holding it.
+    fn push(&mut self, row: &[Value]) -> Result<Option<(Batch, Arena)>, Error> {
+        self.batch.push_row(row);
+        self.held.grow(self.batch.bytes() - self.held.bytes())?;
+        Ok((self.batch.len() == self.rows).then(|| self.take()))
+    }
+
+    fn take(&mut self) -> (Batch, Arena) {
+        let fresh = BatchBuilder::new(self.schema.clone());
+        let arena = self.held.grant().arena();
+        (
+            std::mem::replace(&mut self.batch, fresh).finish(),
+            std::mem::replace(&mut self.held, arena),
+        )
+    }
+
+    /// Returns the rows appended since the last full batch, with the arena holding them.
+    fn rest(mut self) -> Option<(Batch, Arena)> {
+        (!self.batch.is_empty()).then(|| self.take())
+    }
+}
+
+/// The deleted versions a read of the past passed from a current heap, by inserter and deleter,
+/// held in an arena of the call's grant.
+struct Passed {
+    versions: HashMap<Writers, HashSet<Vec<Value>>>,
+    held: Arena,
+}
+
+impl Passed {
+    fn new(grant: &Arc<Grant>) -> Passed {
+        Passed {
+            versions: HashMap::new(),
+            held: grant.arena(),
+        }
+    }
+
+    fn hold(&mut self, v: &Version) -> Result<(), Error> {
+        self.held.grow(Writers::LEN + row_size(&v.row))?;
+        self.versions
+            .entry(v.header.writers)
+            .or_default()
+            .insert(v.row.clone());
+        Ok(())
+    }
+
+    /// Returns whether a version with `v`'s inserter, deleter and row was passed.
+    fn holds(&self, v: &Version) -> bool {
+        self.versions
+            .get(&v.header.writers)
+            .is_some_and(|rows| rows.contains(v.row.as_slice()))
+    }
+}
+
+/// Returns an estimate of the bytes `row` occupies.
+fn row_size(row: &[Value]) -> usize {
+    row.iter().map(value_size).sum()
+}
+
+fn value_size(v: &Value) -> usize {
+    size_of::<Value>()
+        + match v {
+            Value::Text(t) | Value::ZonedDateTime { zone: t, .. } => t.len(),
+            Value::Bytes(b) | Value::SortKey(b) => b.len(),
+            Value::Record(fs) | Value::Sum { fields: fs, .. } => row_size(fs),
+            _ => 0,
+        }
+}
+
+fn index_error(e: btree::Error) -> Error {
+    match e {
+        btree::Error::Page(p) => Error::Page(p),
+        other => Rot::Index(other).into(),
+    }
+}
+
+impl<R: Runtime> Store<R> {
+    /// Returns heap `id`, refused unless the store lists it and its reads cover it.
+    fn heap(&self, id: HeapId) -> Result<&StoredHeap, Error> {
+        if !self.listed.heaps.contains(&id) {
+            return Err(Broken::UnlistedHeap(id).into());
+        }
+        let stored = (self.bindings.heaps.get(&id)).ok_or(Broken::UnboundHeap(id))?;
+        self.covered(&stored.heap)?;
+        Ok(stored)
+    }
+
+    /// Returns the history heap of heap `id`, `None` when the store does not read its past,
+    /// refused unless the store lists the heap and its reads cover the history heap.
+    fn past_heap(&self, id: HeapId) -> Result<Option<&StoredHeap>, Error> {
+        if !self.listed.heaps.contains(&id) {
+            return Err(Broken::UnlistedHeap(id).into());
+        }
+        let Some(stored) = self.history.heaps.get(&id) else {
+            return Ok(None);
+        };
+        self.covered(&stored.heap)?;
+        Ok(Some(stored))
+    }
+
+    fn covered(&self, heap: &Heap) -> Result<(), Error> {
+        if self.reads.covers(heap.id()) {
+            Ok(())
+        } else {
+            Err(Broken::OutsideScope(heap.id()).into())
+        }
+    }
+
+    /// Returns index `id`, refused unless the store lists it.
+    fn index(&self, id: IndexId) -> Result<&StoredIndex, Error> {
+        if !self.listed.indexes.contains(&id) {
+            return Err(Broken::UnlistedIndex(id).into());
+        }
+        Ok((self.bindings.indexes.get(&id)).ok_or(Broken::UnboundIndex(id))?)
+    }
+
+    /// Pass the visible rows on the pages of `listing`, a listing of heap `id`, to `each` as
+    /// batches of at most `rows` rows each, as [`Store::scan_pages`] does, and then those of its
+    /// history heap when the store reads the past.
+    pub fn scan(
+        &self,
+        id: HeapId,
+        listing: Listing,
+        rows: usize,
+        grant: &Arc<Grant>,
+        each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
+    ) -> Result<(), Error> {
+        if let Some(past) = self.past_heap(id)? {
+            return self.scan_past(id, &listing.pages, past, rows, grant, each);
+        }
+        let flow = self.scan_pages(id, &listing.pages, rows, grant, each)?;
+        if let ControlFlow::Break((early, n)) = flow {
+            let read = listing.pages[..n].to_vec();
+            listing.stopped(early, &read);
+        }
+        Ok(())
+    }
+
+    /// Pass the visible rows on `pages` of heap `id` and then on every page of `past`, its
+    /// history heap, to `each` as [`Store::scan_pages`] does, each version once though vacuum has
+    /// copied it to `past` and not yet freed it. Hold every deleted version passed from `pages`
+    /// in `grant` until the scan ends.
+    fn scan_past(
+        &self,
+        id: HeapId,
+        pages: &[Pid],
+        past: &StoredHeap,
+        rows: usize,
+        grant: &Arc<Grant>,
+        mut each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
+    ) -> Result<(), Error> {
+        let h = self.heap(id)?;
+        let mut b = Filling::new(&h.row, rows, grant);
+        let mut deleted = Passed::new(grant);
+        for now in [true, false] {
+            let history;
+            let (heap, pages) = if now {
+                (&h.heap, pages)
+            } else {
+                history = past.heap.pages(&self.pager)?;
+                (&past.heap, history.as_slice())
+            };
+            for &pid in pages {
+                let mut versions = Vec::new();
+                heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                for v in versions {
+                    if !self
+                        .reads
+                        .saw((Pid(v.tid.page()), heap.id()), &v.header.writers)?
+                    {
+                        continue;
+                    }
+                    if v.header.writers.deleted() {
+                        if now {
+                            deleted.hold(&v)?;
+                        } else if deleted.holds(&v) {
+                            continue;
+                        }
+                    }
+                    if let Some((full, _held)) = b.push(&v.row)?
+                        && each(full)?.is_break()
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        match b.rest() {
+            Some((last, _held)) => each(last).map(|_last| ()),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns the version the history key index of key index `index` names for `key` and
+    /// the store's snapshot sees, from the history heap of the heap its route in `routes`, by
+    /// constructor, names; `None` when there is none or the store does not read the past.
+    /// While the key index is quarantined, scan those history heaps within `bounds`. Refuse the
+    /// read unless the store lists `index` and every route's heap, and its reads cover each such
+    /// heap and its history heap.
+    pub fn fetch_past(
+        &self,
+        index: IndexId,
+        key: &[Value],
+        routes: &[(u32, HeapId)],
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
+        let ix = self.index(index)?;
+        let Some(past) = self.history.indexes.get(&index) else {
+            return Ok(None);
+        };
+        for &(_, heap) in routes {
+            self.heap(heap)?;
+            self.past_heap(heap)?;
+        }
+        if let Some(rows) = &ix.rows
+            && self.pager.any_quarantined()
+            && self
+                .pager
+                .is_quarantined(Quarantine::Index(ix.index.tree().owner()))
+        {
+            return self.past_from_heaps(index, rows, key, routes, bounds);
+        }
+        for e in past.probe(&self.pager, key).map_err(index_error)? {
+            let c = self.mapped(past, &ix.ctors, &e)?;
+            let Some(&(_, heap)) = routes.iter().find(|(r, _)| *r == c) else {
+                continue;
+            };
+            let Some(stored) = self.past_heap(heap)? else {
+                continue;
+            };
+            let Some(v) = stored.heap.read(&self.pager, e.tid)? else {
+                let at = (&*stored.heap, e.tid);
+                refuse_named(&self.pager, at, ix.index.tree().owner(), || {
+                    let found = past.probe(&self.pager, key).map_err(index_error)?;
+                    Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))
+                })?;
+                continue;
+            };
+            if self
+                .reads
+                .saw((Pid(v.tid.page()), stored.heap.id()), &v.header.writers)?
+            {
+                return Ok(Some((heap, v.row)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Returns what [`Store::fetch_past`] returns, found in the history heaps of `routes`.
+    fn past_from_heaps(
+        &self,
+        index: IndexId,
+        rows: &IndexedRows,
+        key: &[Value],
+        routes: &[(u32, HeapId)],
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
+        let schema = self.index(index)?.index.schema();
+        let wanted = schema.encode(key);
+        let types = self.key_types(index)?;
+        for &(c, heap) in routes {
+            let Some(stored) = self.past_heap(heap)? else {
+                continue;
+            };
+            for pid in stored.heap.pages(&self.pager)? {
+                (bounds.check)()?;
+                let mut versions = Vec::new();
+                stored
+                    .heap
+                    .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
+                let _page = bounds.grant.take(size)?;
+                for v in versions {
+                    if rows
+                        .keys
+                        .key(c, &v.row, &types)?
+                        .is_some_and(|k| schema.encode(&k) == wanted)
+                        && self
+                            .reads
+                            .saw((Pid(v.tid.page()), stored.heap.id()), &v.header.writers)?
+                    {
+                        return Ok(Some((heap, v.row)));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Returns the pages of heap `id` in directory order, recording that a scan of the heap
+    /// began.
+    pub fn pages(&self, id: HeapId) -> Result<Listing, Error> {
+        let heap = &self.heap(id)?.heap;
+        let scan = self
+            .reads
+            .scanning(heap.id())
+            .map_err(Error::Serialization)?;
+        let mut listing = Listing {
+            reads: self.reads.clone(),
+            heap: heap.id(),
+            scan,
+            pages: Vec::new(),
+        };
+        listing.pages = heap.pages(&self.pager)?;
+        Ok(listing)
+    }
+
+    /// Pass the visible rows on `pages`, a range of what [`Store::pages`] returned for heap `id`,
+    /// to `each` as batches of at most `rows` rows each, reading a page only once the batches
+    /// before it are passed, each batch held in `grant` from its first row until `each` returns.
+    /// Stop when `each` breaks. Returns the judgement `each` broke with and the number of pages
+    /// read.
+    ///
+    /// Postconditions: the versions recorded with [`Reads::saw`] are those read before the last
+    /// batch passed, and every version on `pages` when `each` never breaks.
+    pub fn scan_pages(
+        &self,
+        id: HeapId,
+        pages: &[Pid],
+        rows: usize,
+        grant: &Arc<Grant>,
+        mut each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
+    ) -> Result<ControlFlow<(StopsEarly, usize)>, Error> {
+        let h = self.heap(id)?;
+        let mut b = Filling::new(&h.row, rows, grant);
+        for (read, pid) in (1..).zip(pages) {
+            let mut versions = Vec::new();
+            h.heap
+                .scan_pages(&self.pager, std::slice::from_ref(pid), |v| versions.push(v))?;
+            for v in versions {
+                if !self
+                    .reads
+                    .saw((Pid(v.tid.page()), h.heap.id()), &v.header.writers)?
+                {
+                    continue;
+                }
+                if let Some((full, _held)) = b.push(&v.row)?
+                    && let ControlFlow::Break(early) = each(full)?
+                {
+                    return Ok(ControlFlow::Break((early, read)));
+                }
+            }
+        }
+        let flow = match b.rest() {
+            Some((last, _held)) => each(last)?,
+            None => ControlFlow::Continue(()),
+        };
+        Ok(flow.map_break(|early| (early, pages.len())))
+    }
+
+    /// Returns the version of heap `id` visible from the chain starting at the TID `at` names,
+    /// with its TID. Fail unless the store lists, and its reads cover, the heap of every
+    /// constructor of `id`'s relation.
+    pub fn fetch(&self, id: HeapId, at: &Named) -> Result<Option<(Tid, Vec<Value>)>, Error> {
+        let tid = at.tid;
+        let StoredHeap { heap, sum, .. } = self.heap(id)?;
+        for h in sum {
+            let listed = HeapId(u64::from(h.id().0));
+            if !self.listed.heaps.contains(&listed) {
+                return Err(Broken::UnlistedHeap(listed).into());
+            }
+            self.covered(h)?;
+        }
+        let saw = |l: &Link, _: &[Value]| {
+            self.reads
+                .saw((Pid(l.tid.page()), heap.id()), &l.header.writers)
+        };
+        let walked = walk(&self.pager, heap.id(), sum, tid, saw)?;
+        if walked.is_none()
+            && let Some((index, entry)) = &at.entry
+        {
+            let ix = &self.index(*index)?.index;
+            refuse_named(&self.pager, (heap, tid), ix.tree().owner(), || {
+                let found = ix.probe(&self.pager, &entry.key).map_err(index_error)?;
+                Ok::<_, Error>(
+                    found
+                        .iter()
+                        .any(|f| (f.ctor, f.tid) == (entry.ctor, entry.tid)),
+                )
+            })?;
+        }
+        let Some((link, row)) = walked.filter(|(l, _)| l.heap == heap.id()) else {
+            return Ok(None);
+        };
+        self.reads.reached(Step::VersionRead);
+        self.reads
+            .fetched(link.heap, link.tid)
+            .map_err(Error::Serialization)?;
+        // Read the version again under its lock: a write that changed it before the lock records
+        // its rw-antidependency here.
+        walk(&self.pager, heap.id(), sum, link.tid, saw)?;
+        Ok(Some((link.tid, row)))
+    }
+
+    /// Returns the entries of index `id` whose leading key fields are `prefix`, each with its
+    /// constructor position, for the constructors of `routes`. Refuse the probe unless the
+    /// store's reads cover the heap of every route.
+    pub fn probe(
+        &self,
+        id: IndexId,
+        prefix: &[Value],
+        routes: &Routes,
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Vec<Named>, Error> {
+        let bytes = self.encode_prefix(id, prefix)?;
+        let end = prefix_end(&bytes);
+        self.entries(id, Bound::Included(bytes), end, routes, bounds)
+    }
+
+    /// Returns the entries of index `id` whose leading key fields are `prefix` and whose next
+    /// field lies within `lo` and `hi` in the language's order, each bound its value and whether
+    /// it is included, as [`Store::probe`] does.
+    ///
+    /// Preconditions: the index has a field after `prefix`, and the field's type is ordered.
+    pub fn range(
+        &self,
+        id: IndexId,
+        prefix: &[Value],
+        lo: Option<(Value, bool)>,
+        hi: Option<(Value, bool)>,
+        routes: &Routes,
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Vec<Named>, Error> {
+        let base = self.encode_prefix(id, prefix)?;
+        let next = self.index(id)?.index.schema().components()[prefix.len()].clone();
+        let dir = next.1;
+        let field = KeySchema::new(vec![next]);
+        let at = |v: &Value| {
+            let mut b = base.clone();
+            field.encode_into(std::slice::from_ref(v), &mut b);
+            b
+        };
+        let (lo, hi) = match dir {
+            Dir::Asc => (lo, hi),
+            Dir::Desc => (hi, lo),
+        };
+        let start = match lo {
+            None => Bound::Included(base.clone()),
+            Some((v, true)) => Bound::Included(at(&v)),
+            Some((v, false)) => match prefix_end(&at(&v)) {
+                Bound::Excluded(end) => Bound::Included(end),
+                _ => return Ok(Vec::new()),
+            },
+        };
+        let end = match hi {
+            None => prefix_end(&base),
+            Some((v, true)) => prefix_end(&at(&v)),
+            Some((v, false)) => Bound::Excluded(at(&v)),
+        };
+        self.entries(id, start, end, routes, bounds)
+    }
+
+    fn encode_prefix(&self, id: IndexId, prefix: &[Value]) -> Result<Vec<u8>, Error> {
+        let components = self.index(id)?.index.schema().components();
+        Ok(KeySchema::new(components[..prefix.len()].to_vec()).encode(prefix))
+    }
+
+    /// Returns the entries of index `id` whose encodings lie between `lo` and `hi`, each with
+    /// its constructor position, for the constructors of `routes`.
+    fn entries(
+        &self,
+        id: IndexId,
+        lo: Bound<Vec<u8>>,
+        hi: Bound<Vec<u8>>,
+        routes: &Routes,
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Vec<Named>, Error> {
+        for &heap in routes.values() {
+            self.heap(heap)?;
+        }
+        let ix = self.index(id)?;
+        if let Some(rows) = &ix.rows
+            && self.pager.any_quarantined()
+            && self
+                .pager
+                .is_quarantined(Quarantine::Index(ix.index.tree().owner()))
+        {
+            return self.entries_from_heaps(id, rows, (&lo, &hi), routes, bounds);
+        }
+        let ctors: BTreeSet<CtorId> = ix
+            .ctors
+            .iter()
+            .filter(|(_, c)| routes.contains_key(c))
+            .map(|(id, _)| *id)
+            .collect();
+        self.reads
+            .probed(ix.index.tree().root(), lo.clone(), hi.clone(), ctors)
+            .map_err(Error::Serialization)?;
+        let entries = ix
+            .index
+            .scan(
+                &self.pager,
+                lo.as_ref().map(Vec::as_slice),
+                hi.as_ref().map(Vec::as_slice),
+            )
+            .map_err(index_error)?;
+        let mut named = Vec::new();
+        for e in entries {
+            let c = self.mapped(&ix.index, &ix.ctors, &e)?;
+            if routes.contains_key(&c) {
+                named.push(Named {
+                    ctor: c,
+                    tid: e.tid,
+                    entry: Some((id, e)),
+                });
+            }
+        }
+        Ok(named)
+    }
+
+    /// Returns the constructor position `ctors` maps the constructor of `e`, an entry of `index`,
+    /// to. Refuse the leaf of `index` holding `e` when `ctors` maps none.
+    fn mapped(
+        &self,
+        index: &Index,
+        ctors: &BTreeMap<CtorId, u32>,
+        e: &Entry,
+    ) -> Result<u32, Error> {
+        match ctors.get(&e.ctor) {
+            Some(&c) => Ok(c),
+            None => Err(index_error(index.refuse_stray(&self.pager, e))),
+        }
+    }
+
+    /// Returns the entries [`Store::entries`] returns, computed from the visible rows of the
+    /// heaps of `routes`, in index order. Each entry names the version the store sees. Hold each
+    /// page's versions and the entries found in the grant of `bounds`, and check `bounds` at
+    /// each page.
+    fn entries_from_heaps(
+        &self,
+        id: IndexId,
+        rows: &IndexedRows,
+        range: (&Bound<Vec<u8>>, &Bound<Vec<u8>>),
+        routes: &Routes,
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Vec<Named>, Error> {
+        let schema = self.index(id)?.index.schema();
+        let types = self.key_types(id)?;
+        let (lo, hi) = range;
+        let mut found = Vec::new();
+        let mut held = bounds.grant.arena();
+        for (&c, &heap) in rows.heaps.iter().filter(|(c, _)| routes.contains_key(c)) {
+            let listing = self.pages(heap)?;
+            for &pid in &listing.pages {
+                (bounds.check)()?;
+                let mut versions = Vec::new();
+                self.heap(heap)?
+                    .heap
+                    .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
+                let _page = bounds.grant.take(size)?;
+                for v in versions {
+                    if self.reads.saw(
+                        (Pid(v.tid.page()), self.heap(heap)?.heap.id()),
+                        &v.header.writers,
+                    )? && let Some(key) = rows.keys.key(c, &v.row, &types)?
+                    {
+                        let bytes = schema.encode(&key);
+                        let span = (
+                            lo.as_ref().map(Vec::as_slice),
+                            hi.as_ref().map(Vec::as_slice),
+                        );
+                        if span.contains(bytes.as_slice()) {
+                            held.grow(bytes.len() + size_of::<(u32, Tid)>())?;
+                            found.push((bytes, c, v.tid));
+                        }
+                    }
+                }
+            }
+        }
+        found.sort();
+        let named = |(_, ctor, tid)| Named {
+            ctor,
+            tid,
+            entry: None,
+        };
+        Ok(found.into_iter().map(named).collect())
+    }
+
+    /// Returns the key types of index `id`'s fields.
+    pub fn key_types(&self, id: IndexId) -> Result<Vec<KeyType>, Error> {
+        Ok(self
+            .index(id)?
+            .index
+            .schema()
+            .components()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect())
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl<R: Runtime> Store<R> {
+    /// Returns the store reading what `listed` lists of `bindings` through `reads`, and the
+    /// history heaps and indexes of `history` besides, as [`Store::past`] does.
+    pub fn over(
+        pager: Pager<R>,
+        reads: Arc<dyn Reads>,
+        bindings: Bindings,
+        listed: &Arc<plan::Reads>,
+        history: Histories,
+    ) -> Result<Store<R>, Error> {
+        Store::listing(pager, reads, bindings, listed, history)
+    }
+
+    pub fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+
+    pub fn listed(&self) -> &Arc<plan::Reads> {
+        &self.listed
+    }
+
+    pub fn history(&self) -> &Histories {
+        &self.history
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl<R: Runtime> Store<R> {
+    pub fn reads(&self) -> &Arc<dyn Reads> {
+        &self.reads
+    }
+
+    /// Returns the binding of heap `id`, listed or not.
+    pub fn stored(&self, id: HeapId) -> &StoredHeap {
+        &self.bindings.heaps[&id]
+    }
+}
+
+/// How a stored value of one kernel type becomes a [`Val`].
+#[derive(Clone, Debug)]
+pub enum Conv {
+    Scalar,
+    /// A declared sum or record, by constructor.
+    Decl(Vec<Vec<Conv>>),
+    AnonRecord(Vec<Conv>),
+}
+
+/// Returns how a stored value of type `ty` converts.
+pub fn conv(schema: &Schema, ty: &Ty) -> Conv {
+    let t = repr(schema, ty);
+    match &t {
+        Ty::Base(_) => Conv::Scalar,
+        Ty::Record(fs) => Conv::AnonRecord(fs.iter().map(|(_, f)| conv(schema, f)).collect()),
+        Ty::Key {
+            rel: RelRef::Ahead(_),
+            ..
+        } => Conv::AnonRecord(Vec::new()),
+        Ty::Key {
+            rel: RelRef::Declared(rel),
+            ..
+        } => {
+            let r = schema.relation(*rel);
+            let row = ctors(schema, &r.elem).expect("a relation's element type is a sum");
+            let field_ty = |n: &str| {
+                row[0]
+                    .iter()
+                    .find(|(f, _)| f == n)
+                    .unwrap_or_else(|| panic!("a row of `{}` has key field `{n}`", r.name))
+                    .1
+                    .clone()
+            };
+            match r.key.as_slice() {
+                [k] => match field_ty(k) {
+                    Ty::Key { rel: own, .. } if own == RelRef::Declared(*rel) => Conv::Scalar,
+                    f => conv(schema, &f),
+                },
+                _ => Conv::AnonRecord(
+                    key_names(schema, *rel)
+                        .iter()
+                        .map(|n| conv(schema, &field_ty(n)))
+                        .collect(),
+                ),
+            }
+        }
+        _ => match ctors(schema, &t) {
+            Some(cs) => Conv::Decl(
+                cs.iter()
+                    .map(|fs| fs.iter().map(|(_, f)| conv(schema, f)).collect())
+                    .collect(),
+            ),
+            None => panic!("a stored value has no type {t:?}"),
+        },
+    }
+}
+
+/// Returns stored value `v` of a type converting by `c`.
+pub fn from_stored(c: &Conv, v: &Value) -> Val {
+    let all = |cs: &[Conv], fs: &[Value]| -> Vec<Val> {
+        cs.iter().zip(fs).map(|(c, v)| from_stored(c, v)).collect()
+    };
+    match (c, v) {
+        (Conv::Decl(cs), Value::Record(fs)) => Val::ctor(0, all(&cs[0], fs)),
+        (Conv::Decl(cs), Value::Sum { ctor, fields }) => {
+            Val::ctor(*ctor, all(&cs[*ctor as usize], fields))
+        }
+        (Conv::AnonRecord(cs), Value::Record(fs)) => Val::record(all(cs, fs)),
+        (_, v) => scalar(v),
+    }
+}
+
+fn scalar(v: &Value) -> Val {
+    match v {
+        Value::I8(x) => Val::Int(i64::from(*x)),
+        Value::I16(x) => Val::Int(i64::from(*x)),
+        Value::I32(x) => Val::Int(i64::from(*x)),
+        Value::I64(x) => Val::Int(*x),
+        Value::F32(x) => Val::F32(F32::new(x.get())),
+        Value::F64(x) => Val::F64(F64::new(x.get())),
+        Value::Decimal(d) => Val::Decimal(*d),
+        Value::Text(t) => Val::text(t),
+        Value::Bytes(b) => Val::Bytes(Arc::from(b.as_slice())),
+        Value::SortKey(b) => Val::SortKey(Arc::from(b.as_slice())),
+        Value::Instant(x) => Val::Instant(*x),
+        Value::Date(x) => Val::Date(*x),
+        Value::Time(x) => Val::Time(*x),
+        Value::DateTime(x) => Val::DateTime(*x),
+        Value::ZonedDateTime { local, zone } => Val::Zoned {
+            local: *local,
+            zone: Arc::from(zone.as_str()),
+        },
+        Value::Duration(x) => Val::Duration(*x),
+        Value::Period { months, days } => Val::Period {
+            months: *months,
+            days: *days,
+        },
+        other => panic!("a scalar conversion of {other:?}"),
+    }
+}
+
+/// Returns `v` as a heap stores a field of type `t`.
+pub fn to_stored(t: &FieldType, v: &Val) -> Result<Value, Error> {
+    let not = || {
+        Error::from(Broken::NotStored {
+            value: v.clone(),
+            ty: t.clone(),
+        })
+    };
+    Ok(match (t, v) {
+        (FieldType::Scalar(s), v) => scalar_key(*s, v)?,
+        (FieldType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
+            ts.iter()
+                .zip(fs.iter())
+                .map(|(t, v)| to_stored(t, v))
+                .collect::<Result<_, _>>()?,
+        ),
+        (FieldType::Sum(cs), Val::Ctor(c, fs)) => Value::Sum {
+            ctor: *c,
+            fields: cs
+                .get(*c as usize)
+                .ok_or_else(not)?
+                .fields
+                .iter()
+                .zip(fs.iter())
+                .map(|(t, v)| to_stored(t, v))
+                .collect::<Result<_, _>>()?,
+        },
+        _ => return Err(not()),
+    })
+}
+
+/// Returns `v` as a value of key type `t`.
+pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
+    let not = || {
+        Error::from(Broken::NotKeyed {
+            value: v.clone(),
+            ty: t.clone(),
+        })
+    };
+    Ok(match (t, v) {
+        (KeyType::Scalar(s), v) => scalar_key(*s, v)?,
+        (KeyType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
+            ts.iter()
+                .zip(fs.iter())
+                .map(|(t, v)| to_key(t, v))
+                .collect::<Result<_, _>>()?,
+        ),
+        (KeyType::AnonRecord(r), Val::Record(fs)) => Value::Record(
+            r.fields()
+                .iter()
+                .zip(fs.iter())
+                .map(|((_, t), v)| to_key(t, v))
+                .collect::<Result<_, _>>()?,
+        ),
+        (KeyType::Sum(s), Val::Ctor(c, fs)) => Value::Sum {
+            ctor: *c,
+            fields: s
+                .ctors()
+                .get(*c as usize)
+                .ok_or_else(not)?
+                .fields
+                .iter()
+                .zip(fs.iter())
+                .map(|(t, v)| to_key(t, v))
+                .collect::<Result<_, _>>()?,
+        },
+        (KeyType::AnonSum(s), Val::Ctor(c, fs)) => Value::Sum {
+            ctor: *c,
+            fields: s
+                .ctors()
+                .get(*c as usize)
+                .ok_or_else(not)?
+                .1
+                .fields()
+                .iter()
+                .zip(fs.iter())
+                .map(|((_, t), v)| to_key(t, v))
+                .collect::<Result<_, _>>()?,
+        },
+        _ => return Err(not()),
+    })
+}
+
+fn scalar_key(s: Scalar, v: &Val) -> Result<Value, Error> {
+    let outside = || -> Error {
+        Broken::OutsideDomain {
+            value: v.clone(),
+            scalar: s,
+        }
+        .into()
+    };
+    let value = match (s, v) {
+        (Scalar::I8, Val::Int(x)) => Value::I8(i8::try_from(*x).map_err(|_| outside())?),
+        (Scalar::I16, Val::Int(x)) => Value::I16(i16::try_from(*x).map_err(|_| outside())?),
+        (Scalar::I32, Val::Int(x)) => Value::I32(i32::try_from(*x).map_err(|_| outside())?),
+        (Scalar::I64, Val::Int(x)) => Value::I64(*x),
+        (Scalar::F32, Val::F32(x)) => Value::F32(crate::key::F32::new(x.get())),
+        (Scalar::F64, Val::F64(x)) => Value::F64(crate::key::F64::new(x.get())),
+        (Scalar::Decimal(_), Val::Decimal(d)) => Value::Decimal(*d),
+        (Scalar::Text, Val::Text(t)) => Value::Text(t.to_string()),
+        (Scalar::Bytes, Val::Bytes(b)) => Value::Bytes(b.to_vec()),
+        (Scalar::SortKey, Val::SortKey(b)) => Value::SortKey(b.to_vec()),
+        (Scalar::Instant, Val::Instant(x)) => Value::Instant(*x),
+        (Scalar::Date, Val::Date(x)) => Value::Date(*x),
+        (Scalar::Time, Val::Time(x)) => Value::Time(*x),
+        (Scalar::DateTime, Val::DateTime(x)) => Value::DateTime(*x),
+        (Scalar::ZonedDateTime, Val::Zoned { local, zone }) => Value::ZonedDateTime {
+            local: *local,
+            zone: zone.to_string(),
+        },
+        (Scalar::Duration, Val::Duration(x)) => Value::Duration(*x),
+        (Scalar::Period, Val::Period { months, days }) => Value::Period {
+            months: *months,
+            days: *days,
+        },
+        (scalar, v) => {
+            return Err(Broken::NotScalar {
+                value: v.clone(),
+                scalar,
+            }
+            .into());
+        }
+    };
+    if !value.in_domain() {
+        return Err(outside());
+    }
+    Ok(value)
+}
