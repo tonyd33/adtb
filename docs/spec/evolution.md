@@ -261,7 +261,7 @@ every failure, not only the first:
 | Live bundles | a query or transaction of a live bundle cannot be served at its pinned version across the migration (§7.2) |
 | Readers-first | an `enable` has a reader that forbids it (§8.1) |
 | Lifecycle | a `remove` meets a constructor that is not deprecated or not empty (§4.4); a `disable` meets one that has rows or a live writer, or a `deprecate` one that is not enabled (§4.3); a `drop field` meets a field of an old key whose drop is pending (§4.10) |
-| Row size | a constructor relation whose smallest row's stored form is larger than the engine's row limit, named in the report ([writes.md §1.6](writes.md#16-rows-too-large)) |
+| Row size | a constructor relation whose smallest row's stored form is larger than the engine's row limit, or a row the migration writes whose stored form is larger than the row limit or one of whose fields is larger than the value limit ([writes.md §1.6](writes.md#16-rows-too-large)), each named in the report with its relation, constructor, size and limit |
 | Code identity | a host function is redefined while a live bundle pins a version with a different code for it (§7.1) |
 | Privilege | the principal may not append the operators ([security.md](security.md#3-grants)) |
 
@@ -379,7 +379,7 @@ that version is older than the current version, its reads and writes
 are translated through the operators between the two (§7). A staged
 migration runs while bundles pinned earlier keep being served.
 
-Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse, spec/schema-siread/version-item, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/staged-meaning/one-transaction, spec/txn/one-version/one-pair, spec/evolution/forward-refs/later-key, spec/evolution/forward-sets/same-migration, spec/row-too-large/refuse-at-write
+Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse, spec/schema-siread/version-item, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/staged-meaning/one-transaction, spec/txn/one-version/one-pair, spec/evolution/forward-refs/later-key, spec/evolution/forward-sets/same-migration, spec/row-too-large/refuse-at-write, spec/row-too-large/migrated/refuse-in-report
 
 ## 4. Operators
 

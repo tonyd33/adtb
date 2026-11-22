@@ -186,8 +186,8 @@ large fails with `RowTooLarge` whatever key or constraint it would
 violate or fault in
 ([semantics.md §6.6](semantics.md#66-statements)).
 
-A migration that declares a constructor whose smallest row's stored
-form is larger than the limit is refused ([evolution.md §3.2](evolution.md#32-checks-at-apply)).
+A migration is checked against these limits by its Row size check
+([evolution.md §3.2](evolution.md#32-checks-at-apply)).
 
 Rulings: spec/row-too-large/refuse-at-write, spec/row-too-large/value-limit/row-reason-value-limit
 

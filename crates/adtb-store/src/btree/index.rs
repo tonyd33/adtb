@@ -71,15 +71,7 @@ impl Index {
             self.ctors.contains(&ctor),
             "the constructor belongs to the index"
         );
-        let mut encoded = self.schema.encode(key);
-        ovarint::encode(ctor.0, &mut encoded);
-        let len = encoded.len() + 8;
-        let max = BTree::max_entry_len(page_size);
-        if len > max {
-            Err(Error::TooLong { len, max })
-        } else {
-            Ok(())
-        }
+        check_key(&self.schema, page_size, key, ctor)
     }
 
     fn encode(&self, entry: &Entry) -> Vec<u8> {
@@ -244,5 +236,24 @@ impl Index {
             hi.as_ref().map(Vec::as_slice),
         );
         self.decode_all(pager, cursor)
+    }
+}
+
+/// Refuse with `TooLong` key `key` of constructor `ctor` when its entry in an index whose key
+/// schema is `schema`, on pages of `page_size` bytes, passes the entry limit.
+pub fn check_key(
+    schema: &KeySchema,
+    page_size: usize,
+    key: &[Value],
+    ctor: CtorId,
+) -> Result<(), Error> {
+    let mut encoded = schema.encode(key);
+    ovarint::encode(ctor.0, &mut encoded);
+    let len = encoded.len() + 8;
+    let max = BTree::max_entry_len(page_size);
+    if len > max {
+        Err(Error::TooLong { len, max })
+    } else {
+        Ok(())
     }
 }

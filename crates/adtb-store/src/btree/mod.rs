@@ -12,7 +12,7 @@ mod btree_threads_tests;
 #[cfg(test)]
 mod tests;
 
-pub use index::Index;
+pub use index::{Index, check_key};
 #[cfg(test)]
 pub use node::FORMAT;
 #[cfg(any(test, feature = "testing"))]

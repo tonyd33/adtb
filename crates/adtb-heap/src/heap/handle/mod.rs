@@ -11,22 +11,25 @@ use crate::vacuum::Vacuuming;
 use super::blame::unchanged;
 use super::dir::{Space, max_fanout, need_category, page_category};
 use super::large::{self, LargeStore};
-use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot, align8};
+use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
 use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored, value_limit};
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
 use super::write::{HeapWrite, Rank, Took, release_each};
-use super::{Error, Refused, Superseded, Undo, Undoable, WriteTarget, fixed, slotted};
+use super::{Error, Refused, Superseded, Undo, Undoable, WriteTarget};
 use super::{chain, prune};
 
 mod decode;
 mod deleters;
+mod limits;
 mod put;
 
 use decode::Bad;
 #[cfg(test)]
 pub(in crate::heap) use decode::before_next_row_refusal;
+pub use limits::{Oversize, RowLimits};
+use limits::{arrangement_of, oversize, smallest};
 
 #[cfg(any(test, feature = "testing"))]
 mod observe;
@@ -233,33 +236,6 @@ impl std::fmt::Debug for Heap {
             .field("formats", &self.formats.len())
             .finish_non_exhaustive()
     }
-}
-
-/// Returns the arrangement of the pages of a heap of `layout`, or `TooLarge` when even its
-/// smallest version does not fit a page of `page_size` bytes.
-fn arrangement_of(layout: &Layout, page_size: usize) -> Result<Arrangement, Error> {
-    if !layout.is_fixed() {
-        let len = HEADER_LEN + layout.least_body_len();
-        let limit = slotted::max_version(page_size);
-        if len > limit {
-            return Err(Error::TooLarge { len, limit });
-        }
-        return Ok(Arrangement::Slotted);
-    }
-    let width = HEADER_LEN + align8(layout.fixed_width());
-    if fixed::capacity(page_size, width) == 0 {
-        return Err(Error::TooLarge {
-            len: width,
-            limit: fixed::max_width(page_size),
-        });
-    }
-    Ok(Arrangement::Fixed { width })
-}
-
-/// Refuse with `TooLarge` a heap of fields `row` whose smallest version does not fit a page
-/// of `page_size` bytes.
-pub fn fits(page_size: usize, row: Vec<FieldType>) -> Result<(), Error> {
-    arrangement_of(&Layout::new(row), page_size).map(|_| ())
 }
 
 fn version_bytes(header: Header, body: &[u8]) -> Vec<u8> {
@@ -617,34 +593,24 @@ impl Heap {
         Ok((f.layout.assemble(&fixed_part, &stored), held))
     }
 
-    /// Refuse with `TooLarge` a row with a field whose whole value's stored length passes the
-    /// value limit, `len` that length, or else a row whose smallest version, every value it can move out of line
-    /// moved, passes the largest version a page holds.
+    /// Refuse with `TooLarge` a row past a limit, as [`RowLimits::check`] judges it in the
+    /// heap's newest format, `len` the length past the limit.
     pub fn check_row(&self, row: &[Value]) -> Result<(), Error> {
-        let layout = &self.current().layout;
-        let (_, vars) = layout.encode(row);
-        let limit = self.value_limit;
-        let mut lengths = layout.field_lengths(&vars);
-        if let Some(len) = lengths.find(|&len| len as u64 > limit) {
-            return Err(Error::TooLarge {
-                len,
-                limit: limit as usize,
-            });
-        }
-        self.check_lengths(vars.iter().map(Vec::len))
+        let f = self.current();
+        let checked = oversize(
+            &f.layout,
+            f.arrangement,
+            self.page_size,
+            self.value_limit,
+            row,
+        );
+        Ok(checked?)
     }
 
     fn check_lengths(&self, lengths: impl Iterator<Item = usize>) -> Result<(), Error> {
-        let limit = match self.current().arrangement {
-            Arrangement::Fixed { width } => width,
-            Arrangement::Slotted => slotted::max_version(self.page_size),
-        };
-        let base = HEADER_LEN + self.current().layout.least_body_len();
-        let len = base + lengths.map(|len| len.min(POINTER_LEN)).sum::<usize>();
-        if len > limit {
-            return Err(Error::TooLarge { len, limit });
-        }
-        Ok(())
+        let f = self.current();
+        let least = smallest(&f.layout, f.arrangement, self.page_size, lengths);
+        Ok(least.map_err(|(len, limit)| Oversize::Row { len, limit })?)
     }
 
     /// Returns `page`, in row format `from`, with every version on it in the newest format, at the

@@ -40,7 +40,7 @@ pub use dir::max_fanout;
 pub use handle::Laid;
 #[cfg(any(test, feature = "testing"))]
 pub use handle::Pruned;
-pub use handle::{Heap, HeapNo, Link, Slots, Version, fits};
+pub use handle::{Heap, HeapNo, Link, Oversize, RowLimits, Slots, Version};
 pub use large::LargeStore;
 #[cfg(any(test, feature = "testing"))]
 pub use named::before_next_refusal;

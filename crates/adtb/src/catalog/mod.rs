@@ -1,5 +1,6 @@
 //! Hold the catalog: relations, deployments, grants and their rows, and open and migrate them.
 
+mod admit;
 pub mod arrows;
 mod broken;
 mod change;
@@ -38,6 +39,8 @@ pub(crate) use structures::index_holder;
 #[cfg(any(test, feature = "testing"))]
 pub(crate) use structures::relation_holder;
 
+#[cfg(test)]
+mod admit_tests;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
@@ -104,6 +107,7 @@ pub use rows::{ElementTexts, IndexSpec, Rows, indexed_fields, indexes};
 pub use rows::{applied, declared};
 pub use validate::Denial;
 
+use admit::{Admitted, Indexing};
 use change::Data;
 use history::{Kept, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
@@ -666,17 +670,20 @@ impl Catalog {
             made: Default::default(),
             top: Default::default(),
         };
-        let built = empty.build(
-            &m,
-            &Built {
-                next,
-                data: &Data::new(),
-                rewritten: &every,
-                readers: None,
-                old: &Rows::new(),
-                operators: &[],
-            },
-        );
+        let built = Indexing::new(&empty, &next, None).and_then(|indexing| {
+            let data = admit::admit(pager, &next.schema, &every, &indexing, Data::new())?;
+            empty.build(
+                &m,
+                &Built {
+                    next: &next,
+                    indexing: &indexing,
+                    data: &data,
+                    rewritten: &every,
+                    old: &Rows::new(),
+                    operators: &[],
+                },
+            )
+        });
         drop(hold);
         let catalog = match built {
             Ok(catalog) => catalog,
@@ -1254,12 +1261,11 @@ impl Catalog {
 
 /// What [`Catalog::build`] makes a catalog of.
 struct Built<'a> {
-    next: Checked,
-    data: &'a Data,
+    next: &'a Checked,
+    indexing: &'a Indexing<'a>,
+    data: &'a Admitted,
     /// The ids of the relations whose heaps and indexes are made again.
     rewritten: &'a BTreeSet<CatRelId>,
-    /// The readers after the migration, whose pending drops the indexes keep.
-    readers: Option<&'a Readers>,
     /// The catalog rows of the catalog before the migration, by its relations.
     old: &'a Rows,
     operators: &'a [oplog::OperatorRow],

@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
@@ -7,7 +6,7 @@ use adtb_lang::check::Program;
 use adtb_lang::depends;
 use adtb_lang::evolve::{Code, Listed, Recorded, Resolved, RowMap, Source};
 use adtb_lang::kernel;
-use adtb_lang::norm::{self, NormalProgram, Root};
+use adtb_lang::norm::{self, Root};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Committed, Schema, Stage};
 use adtb_lang::textual::{self, Form, key_names};
@@ -16,7 +15,7 @@ use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::Index;
 use crate::exec::{self, conv, from_stored};
-use crate::heap::{self, FieldType};
+use crate::heap::FieldType;
 use crate::key::{CtorId, Value};
 use crate::mvcc::{Scope, Transactions};
 use crate::plan::HeapId;
@@ -24,6 +23,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::Rot;
+use super::admit::{self, Indexing};
 use super::codec::{Codec, MigrationRow};
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
@@ -34,11 +34,10 @@ use super::roots::RootsRow;
 use super::steps::Stepped;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
-    Hash, IndexKeys, IndexSpec, Migrating, OrderKeys, Readers, VersionHash, change, ctor_count,
-    ctor_id, ctor_index, ctor_relations, delete_keyed, delete_rows, element_types, heap_root,
-    index_ctors, index_keys, index_program, indexes, key_schema, layout, moved, oplog, owner,
-    pending, planned, reasons, rel_id, relation, row_key, row_type, rows, steps, update_root,
-    visible,
+    Hash, Migrating, Readers, VersionHash, change, ctor_count, ctor_id, ctor_index, ctor_relations,
+    delete_keyed, delete_rows, element_types, heap_root, index_ctors, index_keys, indexes, layout,
+    moved, oplog, owner, pending, planned, reasons, rel_id, relation, row_key, row_type, rows,
+    steps, update_root, visible,
 };
 
 impl Catalog {
@@ -307,20 +306,28 @@ impl Catalog {
                 blamed = Some(operator_text(text, &op));
             }
         }
-        why.extend(oversized(m.pager.page_size(), &next.schema, rewritten));
-        if !why.is_empty() {
+        let indexing = Indexing::new(self, &next, Some(&readers))?;
+        let admitted = match admit::admit(m.pager, &next.schema, rewritten, &indexing, data) {
+            Ok(admitted) => Some(admitted),
+            Err(Error::Refused(w)) => {
+                why.extend(w);
+                None
+            }
+            Err(e) => return Err(e),
+        };
+        let Some(data) = admitted.filter(|_| why.is_empty()) else {
             return Err(match blamed {
                 Some(operator) => Error::RefusedBy { operator, why },
                 None => Error::Refused(why),
             });
-        }
+        };
         let mut built = self.build(
             m,
             &Built {
-                next,
+                next: &next,
+                indexing: &indexing,
                 data: &data,
                 rewritten,
-                readers: Some(&readers),
                 old: self.objects(),
                 operators: &operators,
             },
@@ -499,9 +506,6 @@ impl Catalog {
     ) -> Result<Catalog, Error> {
         let pager = m.pager;
         let schema = b.next.schema.clone();
-        let mut keys = self.keys.clone();
-        let fresh = layout::new_order_keys(&schema, &keys);
-        keys.extend(fresh.clone());
         let (heap_ids, next_heap) = self.heap_ids(&schema, b.rewritten)?;
         let mut next = Catalog {
             source: b.next.source.clone(),
@@ -514,7 +518,7 @@ impl Catalog {
             roots: self.roots.clone(),
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
-            keys,
+            keys: b.indexing.keys().clone(),
             next_heap,
             sequences: self.sequences,
             query_memory: self.query_memory,
@@ -524,20 +528,8 @@ impl Catalog {
             held: BTreeSet::new(),
             objects: b.next.objects.clone(),
         };
-        let (held, held_program, held_texts) = b
-            .readers
-            .and_then(Readers::enforced)
-            .map_or((&b.next.schema, &b.next.program, &b.next.texts), |e| {
-                (&e.schema, &e.program, &e.texts)
-            });
-        let pending = b.readers.map_or(&[][..], |r| &r.pending);
-        let specs = pending::kept_indexes(held, held_texts, pending).map_err(Error::Internal)?;
-        let normal = index_program(held, held_program, specs.values()).map_err(Error::Internal)?;
-        let mut keyed = BTreeMap::new();
-        for (id, spec) in &specs {
-            keyed.insert(*id, index_keys(held, normal.as_ref(), spec, &self.hosts)?);
-        }
-        duplicates(held, &next.keys, normal.as_ref(), &specs, &keyed, b)?;
+        let held = b.indexing.held();
+        duplicates(b)?;
         let old: BTreeMap<(CatRelId, CatCtorId), (RelId, u32)> = self
             .heaps
             .keys()
@@ -568,26 +560,26 @@ impl Catalog {
                 gone.push(heap_root(rid, cid, &self.heaps[rc]));
             }
         }
-        for (id, spec) in specs {
+        for (&id, spec) in b.indexing.specs() {
             let rid = rel_id(&next.schema, spec.relation);
-            let keys = keyed.remove(&id).expect("every index is keyed");
+            let keys = b.indexing.keyed(id).clone();
             if !b.rewritten.contains(&rid) {
                 let (_, index, _) = &self.indexes[&id];
                 let index = index.clone();
-                next.indexes.insert(id, (spec, index, keys));
+                next.indexes.insert(id, (spec.clone(), index, keys));
                 continue;
             }
             let index = Index::create(
                 pager,
                 owner(id),
-                key_schema(held, normal.as_ref(), &next.keys, &spec)?,
-                index_ctors(held, &spec),
+                b.indexing.key_schema(spec)?,
+                index_ctors(held, spec),
             )?;
             named.push(RootsRow::IndexRoot {
                 index: id,
                 at: index.tree().root(),
             });
-            next.indexes.insert(id, (spec, index, keys));
+            next.indexes.insert(id, (spec.clone(), index, keys));
         }
         for (&id, (spec, index, _)) in &self.indexes {
             if b.rewritten.contains(&rel_id(&self.schema, spec.relation)) {
@@ -608,7 +600,7 @@ impl Catalog {
             .kept
             .rebuilt(&rebuilding, &mut next.next_heap, &mut named, &mut gone)?;
         next.kept = kept;
-        for (c, key) in &fresh {
+        for (c, key) in b.indexing.fresh() {
             named.push(RootsRow::OrderKey {
                 ctor: *c,
                 key: key.clone(),
@@ -624,13 +616,7 @@ impl Catalog {
         delete_rows(m, &self.roots, &gone)?;
         let named: Vec<Vec<Value>> = named.iter().map(RootsRow::encode).collect();
         m.insert_all(&self.roots, named.iter().map(Ok), |_, _| Ok(()))?;
-        for (&rid, ctors) in b.data {
-            let r = relation(&next.schema, rid).expect("data holds relations of the result");
-            for (&cid, rows) in ctors {
-                let c = ctor_index(&next.schema, r, cid).expect("a constructor of the result");
-                next.insert_all(m, r, c, rows)?;
-            }
-        }
+        next.insert_all(m, b.data)?;
         self.write_rows(m, &next, b)?;
         Ok(next)
     }
@@ -690,7 +676,7 @@ impl Catalog {
             let had: HashSet<&(u32, Vec<Value>)> = before.iter().collect();
             let fresh = rows.iter().filter(|&row| !had.contains(row));
             for (c, rows) in by_ctor(fresh) {
-                next.insert_all(m, r, c, &rows)?;
+                next.insert_all(m, &next.admitted(pager, r, c, rows.into_iter().cloned())?)?;
             }
             let held: HashSet<&(u32, Vec<Value>)> = rows.iter().collect();
             let mut gone: BTreeMap<u32, Vec<Vec<Value>>> = BTreeMap::new();
@@ -719,7 +705,7 @@ impl Catalog {
             micros(pager.wall()),
         ) {
             for (c, rows) in by_ctor(&rows) {
-                next.insert_all(m, r, c, &rows)?;
+                next.insert_all(m, &next.admitted(pager, r, c, rows.into_iter().cloned())?)?;
             }
         }
         Ok(())
@@ -752,33 +738,29 @@ fn by_ctor<'a>(
 }
 
 /// Refuse the rows `b.data` gives the relations `b.rewritten` names when two of them share a key
-/// of a unique of `specs`, each keyed by `keyed`: each unique and the keys rows share.
-fn duplicates(
-    schema: &Schema,
-    keys: &OrderKeys,
-    normal: Option<&NormalProgram>,
-    specs: &BTreeMap<u64, IndexSpec>,
-    keyed: &BTreeMap<u64, Arc<IndexKeys>>,
-    b: &Built,
-) -> Result<(), Error> {
+/// of a unique of `b.indexing`: each unique and the keys rows share.
+fn duplicates(b: &Built) -> Result<(), Error> {
+    let schema = b.indexing.held();
+    let normal = b.indexing.normal();
     let mut why = Vec::new();
-    for (id, spec) in specs {
+    for (id, spec) in b.indexing.specs() {
         let rid = rel_id(schema, spec.relation);
         let Some(ctors) = b
             .data
+            .rows()
             .get(&rid)
             .filter(|_| spec.unique && b.rewritten.contains(&rid))
         else {
             continue;
         };
-        let ks = key_schema(schema, normal, keys, spec)?;
+        let ks = b.indexing.key_schema(spec)?;
         let mut seen = BTreeSet::new();
         let mut shared = Vec::new();
         for &c in &spec.ctors {
             let types =
                 element_types(schema, normal, spec.relation, c, &spec.elements).map_err(broken)?;
             for row in &ctors[&ctor_id(schema, spec.relation, c)] {
-                if let Some(key) = row_key(&keyed[id], &ks, c, row)?
+                if let Some(key) = row_key(b.indexing.keyed(*id), &ks, c, row)?
                     && !seen.insert(ks.encode(&key))
                 {
                     shared.push(shown_key(schema, &types, &key)?);
@@ -854,28 +836,6 @@ fn carried(maps: &[RowMap], def: TypeId, c: u32) -> bool {
         RowMap::Unnest { def: d, from } => *d == def && *from == c,
         _ => false,
     })
-}
-
-/// Returns why each constructor relation of `schema` that `rewritten` names cannot store its
-/// smallest row on a page of `page_size` bytes.
-fn oversized(page_size: usize, schema: &Schema, rewritten: &BTreeSet<CatRelId>) -> Vec<String> {
-    let mut why = Vec::new();
-    for (r, c) in ctor_relations(schema) {
-        if !rewritten.contains(&rel_id(schema, r)) {
-            continue;
-        }
-        if let Err(heap::Error::TooLarge { len, limit }) =
-            heap::fits(page_size, row_type(schema, r, c))
-        {
-            let rel = schema.relation(r);
-            let ctor = &schema.ty(rel.elem_def).ctors()[c as usize].name;
-            why.push(format!(
-                "constructor relation {}.{ctor} stores its smallest row in {len} bytes, over the row limit of {limit}",
-                rel.name
-            ));
-        }
-    }
-    why
 }
 
 /// Returns the operators `recorded` resolves of the migration that left `source`, refusing
