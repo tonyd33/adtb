@@ -1,3 +1,4 @@
+use super::call::Callee;
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind, Lit};
 use crate::kernel::{FileFormat, Prim, Transition};
@@ -175,7 +176,7 @@ impl Checker<'_> {
                 let t = self
                     .span_arg(&x.ty)
                     .ok_or_else(|| self.wrong(name, &[&x.ty], span))?;
-                let y = if name == "covers" && !matches!(self.span_arg_expr(b), Some(true)) {
+                let y = if name == "covers" && !self.calls_span(b) {
                     let o = self.synth(b)?;
                     if self.span_arg(&o.ty).is_some() {
                         self.subsume(o, &x.ty, b.span)?
@@ -858,16 +859,10 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether an argument is visibly a span, before checking it.
-    fn span_arg_expr(&self, e: &Expr) -> Option<bool> {
-        match &e.kind {
-            ExprKind::Call { callee, .. }
-                if callee.module.is_none() && callee.name.text == "span" =>
-            {
-                Some(true)
-            }
-            _ => None,
-        }
+    /// Returns whether `e` is a call of the prelude's `span`, before checking it.
+    fn calls_span(&self, e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::Call { callee, .. }
+            if callee.name.text == "span" && matches!(self.callee(callee), Callee::Prelude))
     }
 
     pub(super) fn type_call(

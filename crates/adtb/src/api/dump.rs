@@ -988,7 +988,7 @@ fn dormant_grants(
             out.push(Dormant {
                 id: g.id(),
                 grantee: row.grantee.to_owned(),
-                privilege: row.privilege.to_owned(),
+                privilege: row.privilege,
                 target: row.target?.to_owned(),
             });
         }

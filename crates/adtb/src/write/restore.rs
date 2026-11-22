@@ -90,8 +90,8 @@ impl<R: Runtime> Restoring<'_, R> {
         let mut duplicated = Vec::new();
         for r in rels {
             for (id, ix) in &db.rels[r].indexes {
-                if self.build(*r, *id, ix)? {
-                    duplicated.push((*r, *id, ix));
+                if let Some(name) = self.build(*r, *id, ix)? {
+                    duplicated.push((*r, *id, ix, name));
                 }
             }
         }
@@ -100,18 +100,24 @@ impl<R: Runtime> Restoring<'_, R> {
         let stmt = Stmt::reader(db, &tx);
         let checked = duplicated
             .iter()
-            .try_for_each(|&(r, id, ix)| duplicates(&stmt, r, id, ix, &mut viol))
+            .try_for_each(|&(r, id, ix, name)| duplicates(&stmt, r, (id, ix, name), &mut viol))
             .and_then(|()| self.check(&stmt, rels, &mut viol));
         drop(stmt);
         db.abort_returning(tx, checked)?;
         refuse(viol)
     }
 
-    /// Build index `id` of `rel` from its heaps into its tree. Returns whether it is unique and
-    /// two rows share one of its keys, the tree then built without that check.
+    /// Build index `id` of `rel` from its heaps into its tree. Returns the name of the key or
+    /// unique it holds when two rows share one of its keys, the tree then built without that
+    /// check.
     ///
     /// Precondition: the index's tree holds only its root.
-    fn build(&self, rel: RelId, id: IndexId, ix: &Indexed) -> Result<bool, Error> {
+    fn build<'i>(
+        &self,
+        rel: RelId,
+        id: IndexId,
+        ix: &'i Indexed,
+    ) -> Result<Option<&'i str>, Error> {
         let db = self.db;
         let scan = Scan {
             db,
@@ -125,9 +131,10 @@ impl<R: Runtime> Restoring<'_, R> {
             db.abort_returning(tx, runs)
         };
         let stop = || false;
-        let (entries, duplicated) = match merge_runs(runs()?, ix.desc.unique, &stop) {
-            Ok(entries) => (entries, false),
-            Err(BuildError::Duplicate(_)) => (merge_runs(runs()?, false, &stop)?, true),
+        let unique = ix.unique.as_deref();
+        let (entries, duplicated) = match merge_runs(runs()?, unique.is_some(), &stop) {
+            Ok(entries) => (entries, None),
+            Err(BuildError::Duplicate(_)) => (merge_runs(runs()?, false, &stop)?, unique),
             Err(e) => return Err(e.into()),
         };
         let tree = db.bindings.indexes()[&id].index.tree();
@@ -191,13 +198,12 @@ impl<R: Runtime> Restoring<'_, R> {
     }
 }
 
-/// Record the violation of unique index `id`, `ix`, of `rel`: each key two rows share for its
-/// key index, else each pair of rows that share one of its keys.
+/// Record the violation of unique index `id`, `ix`, of `rel`, holding the key or unique `name`:
+/// each key two rows share for its key index, else each pair of rows that share one of its keys.
 fn duplicates<R: Runtime>(
     stmt: &Stmt<'_, R>,
     rel: RelId,
-    id: IndexId,
-    ix: &Indexed,
+    (id, ix, name): (IndexId, &Indexed, &str),
     viol: &mut Violations,
 ) -> Result<(), Error> {
     let r = stmt.rel(rel);
@@ -219,10 +225,6 @@ fn duplicates<R: Runtime>(
         }
     }
     groups.retain(|_, g| g.len() > 1);
-    let Some(name) = ix.name.as_deref() else {
-        let key = groups.into_keys().next().unwrap_or_default();
-        return Err(Broken::DuplicateKey(key).into());
-    };
     if id == r.key_index {
         for row in groups.values().filter_map(|g| g.values().next()) {
             violate_key(viol, name, rel, stmt.key_of(rel, row)?);

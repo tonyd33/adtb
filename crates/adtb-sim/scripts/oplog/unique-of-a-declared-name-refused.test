@@ -1,0 +1,28 @@
+# A constraint's name is unique among the constraints of the schema: a unique whose canonical
+# name another unique of its relation has is refused, written again with an `in` naming every
+# constructor or twice in one migration, and two field orders are two names; so is a second
+# constraint of one name.
+seed 0
+
+migrate
+  module app
+  add module app
+  add type Item { id: Key items, a: Text, b: Text } = Big | Small
+  add relation items : Item key id generate sequence
+  add unique (a) in items
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`app::items.unique(a)` is declared twice\n`app::items.unique(b)` is declared twice" } } }
+  module app
+  add unique (a) in items.(Big | Small)
+  add unique (b) in items
+  add unique (b) in items
+
+migrate
+  module app
+  add unique (a, b) in items
+  add unique (b, a) in items
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `app` already declares constraint `short`" } } }
+  module app
+  add constraint short = from i in items where i.a == "" select i
+  add constraint short = from i in items where i.b == "" select i

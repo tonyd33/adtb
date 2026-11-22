@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::evolve::{DeployedGrant, GrantRow, LogGrant, NoCalls, closes_option_cycle};
+use adtb_lang::evolve::{
+    DeployedGrant, GrantRow, LogGrant, NoCalls, Privilege, closes_option_cycle,
+};
 use adtb_lang::ids::engine_ctor as k;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
@@ -28,7 +30,7 @@ use super::{Broken, Catalog, Error, Migrating, OWNER_ROLE, delete_rows};
 pub struct Dormant {
     pub id: i64,
     pub grantee: String,
-    pub privilege: String,
+    pub privilege: Privilege,
     pub target: String,
 }
 
@@ -83,7 +85,7 @@ impl Shape {
                 (GRANT_KIND.field(), kind),
                 (
                     GRANT_PRIVILEGE,
-                    Value::Text(g.privilege.privilege_name().to_owned()),
+                    Value::Text(g.privilege.privilege().name().to_owned()),
                 ),
                 (GRANT_TARGET, values::some(Value::Text(target(schema, g)?))),
                 (GRANT_GRANTEE, Value::Text(g.role.clone())),
@@ -109,7 +111,7 @@ fn log_grant_row<'a>(g: &'a LogGrant, target: &'a str) -> GrantRow<'a> {
     GrantRow {
         grantor: OWNER_ROLE,
         grantee: &g.role,
-        privilege: g.privilege.privilege_name(),
+        privilege: g.privilege.privilege(),
         target: Some(target),
         grant_option: g.grant_option,
         dormant: g.dormant,
@@ -384,7 +386,7 @@ impl Catalog {
             Grantees::Dormant => {
                 let mut marked = BTreeSet::new();
                 for (i, g) in grants.iter_mut().enumerate() {
-                    let privilege = g.privilege.privilege_name().to_owned();
+                    let privilege = g.privilege.privilege();
                     let held = !self.held.is_empty()
                         && self
                             .held
@@ -455,7 +457,7 @@ impl Catalog {
                 Ok(Dormant {
                     id: g.row.expect("every grant has a row once written"),
                     grantee,
-                    privilege: g.privilege.privilege_name().to_owned(),
+                    privilege: g.privilege.privilege(),
                     target: target(schema, g)?,
                 })
             })

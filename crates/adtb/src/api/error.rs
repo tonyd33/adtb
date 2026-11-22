@@ -964,7 +964,9 @@ impl fmt::Display for OpenError {
 
 fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
     match r {
-        Rejection::Violated { constraint, report } => RejectReason::Violated {
+        Rejection::Violated {
+            constraint, report, ..
+        } => RejectReason::Violated {
             constraint,
             report: report.into_iter().collect(),
             redacted: 0,

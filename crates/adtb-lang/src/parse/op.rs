@@ -1,6 +1,7 @@
 use super::{PResult, Parser};
 use crate::ast::*;
 use crate::lex::{Kw, Tok};
+use crate::privilege::Capability;
 use crate::span::Span;
 
 impl Parser<'_> {
@@ -798,7 +799,7 @@ impl Parser<'_> {
             }
             Tok::Kw(Kw::Schema) => {
                 let t = self.bump();
-                Ok(Privilege::Capability(self.ident(t)))
+                Ok(Privilege::Capability(Capability::Schema, t.span))
             }
             Tok::Lower => {
                 let t = self.tok();
@@ -834,10 +835,9 @@ impl Parser<'_> {
                         }
                         Ok(Privilege::Call(target, query))
                     }
-                    "adhoc" | "assert" | "monitor" | "cancel" | "maintain" | "configure"
-                    | "read_files" | "write_files" => {
+                    name if let Some(c) = Capability::named(name) => {
                         self.bump();
-                        Ok(Privilege::Capability(self.ident(t)))
+                        Ok(Privilege::Capability(c, t.span))
                     }
                     _ => Err(self.error_here("expected a privilege")),
                 }

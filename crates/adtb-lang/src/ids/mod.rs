@@ -15,7 +15,7 @@ mod key;
 mod named;
 mod objects;
 mod reach;
-pub use fixed::{FixedType, RELATIONS, TYPES, engine_ctor, engine_rel, engine_type};
+pub use fixed::{FixedType, RELATIONS, TYPES, engine_ctor, engine_field, engine_rel, engine_type};
 pub use key::{KeyKind, ObjectKey, Owner, Path, PathStep, forget};
 pub use named::{is_named, named_ids};
 pub use objects::{Object, assign, objects};
@@ -630,6 +630,9 @@ pub(crate) fn engine(schema: &Schema) -> CatalogIds {
     }
     for (i, r) in schema.relations.iter().enumerate() {
         let m = &schema.module(r.module).name;
+        if !schema.module(r.module).engine {
+            continue;
+        }
         if let Some((_, _, id)) = RELATIONS
             .iter()
             .find(|(rm, rn, _)| rm == m && *rn == r.name)
@@ -648,8 +651,7 @@ pub(crate) fn engine(schema: &Schema) -> CatalogIds {
                 ids.ctor_id(c)
                     .expect("every constructor of a fixed engine type has a fixed id")
             });
-            // Constructors from 471 extend the original engine field-id allocation.
-            if let Some(ctor) = ctor.filter(|ctor| ctor.raw() >= 471) {
+            if let Some(ctor) = ctor.filter(|ctor| *ctor >= fixed::FIRST_ADDED_CTOR) {
                 added.push((ctor, Slot::Field(f)));
                 continue;
             }

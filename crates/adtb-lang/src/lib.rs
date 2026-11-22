@@ -20,6 +20,7 @@ pub mod norm;
 pub mod parse;
 pub mod pattern;
 pub mod permission;
+pub mod privilege;
 pub mod resolve;
 pub mod schema;
 pub mod signature;

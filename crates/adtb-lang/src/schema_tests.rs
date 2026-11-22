@@ -664,6 +664,24 @@ fn engine_only_relation_forms_name_both_refusals() {
     );
 }
 
+/// No user file names a module the prelude or the engine declares.
+#[test]
+fn a_module_the_engine_source_declares_is_an_engine_module_no_user_file_may_name() {
+    let engine =
+        format!("{ENGINE_SRC}\ntype Probe = {{ id: I64 }}\nrelation ops::probes : Probe key id\n");
+    let user = parse_schema("module ops\ntype A = { k: I64 }\n", Options::default())
+        .ok()
+        .unwrap();
+    let got = build_over(
+        &built_in::built_in(PRELUDE_SRC, &engine),
+        &[(FileId(0), user)],
+        &[],
+    )
+    .map(drop)
+    .map_err(|ds| ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>());
+    assert_eq!(Err(vec!["no module may be named `ops`".to_owned()]), got);
+}
+
 #[test]
 fn the_engine_declares_the_catalog_and_sys_modules() {
     let s = build_src(&[]).unwrap();

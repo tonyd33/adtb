@@ -58,9 +58,9 @@ fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
                     schema.relation(*relation).name
                 ))
             }
-            WRejection::Violated { constraint, report } => {
-                (format!("Violated {constraint}"), report.clone())
-            }
+            WRejection::Violated {
+                constraint, report, ..
+            } => (format!("Violated {constraint}"), report.clone()),
             WRejection::KeyChanged { relation } => {
                 plain(format!("KeyChanged {}", schema.relation(*relation).name))
             }

@@ -611,6 +611,11 @@ const fn fixed_ctor(module: &str, ty: &str, ctor: &str) -> super::CatCtorId {
     panic!("`engine_ctor` names a constructor `TYPES` holds")
 }
 
+/// The first constructor whose fields take ids after the fields of every engine type, in the
+/// order of its id.
+pub(super) const FIRST_ADDED_CTOR: super::CatCtorId =
+    fixed_ctor("prelude", "RejectReason", "KeyTooLarge");
+
 /// Returns the fixed id of type `module::ty` in [`TYPES`]. Fails to compile when [`TYPES`] has no
 /// such type.
 const fn fixed_type(module: &str, ty: &str) -> super::CatTypeId {
@@ -692,8 +697,35 @@ pub mod engine_rel {
             CONFLICTS "conflicts",
             JOBS "jobs",
             PROCESS_OPTIONS "process_options",
-            VERIFY_FINDINGS "verify_findings"
+            VERIFY_FINDINGS "verify_findings",
+            VACUUMS "vacuums",
+            COMMIT_TIMES "commit_times",
+            SAFE_SNAPSHOTS "safe_snapshots"
         }
+    }
+}
+
+macro_rules! engine_fields {
+    ($($module:literal $rel:literal { $($name:ident $field:literal $id:literal),* $(,)? })*) => {
+        $($(pub const $name: CatFieldId = CatFieldId::from_raw($id);)*)*
+
+        /// Every constant of this module with its module's, relation's and field's names.
+        #[cfg(test)]
+        pub(crate) const NAMED: &[(&str, &str, &str, CatFieldId)] =
+            &[$($(($module, $rel, $field, $name),)*)*];
+    };
+}
+
+/// The ids the engine's declarations give the fields of engine relations the engine names.
+pub mod engine_field {
+    use super::super::CatFieldId;
+
+    engine_fields! {
+        "sys" "field_values" { FIELD_VALUES_VALUE "value" 271 }
+        "sys" "conflicts" { CONFLICTS_KEYS "keys" 345 }
+        "sys" "verify_findings" { VERIFY_FINDINGS_WITNESS "witness" 386 }
+        "catalog" "plans" { PLANS_TEXT "text" 201, PLANS_DOCUMENT "document" 202 }
+        "catalog" "audit" { AUDIT_CHANGES "changes" 249 }
     }
 }
 

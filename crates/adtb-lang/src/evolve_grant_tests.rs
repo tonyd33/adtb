@@ -1640,7 +1640,12 @@ fn each_target_form_is_granted_reprinted_in_id_order_and_revoked_by_its_text() {
         let schema = s.schema().unwrap();
         assert_eq!(
             Some(&s.grants[0].privilege),
-            Granted::read_target(&schema, privilege, &got[0]).as_ref(),
+            Granted::read_target(
+                &schema,
+                Privilege::named(privilege).expect("a privilege"),
+                &got[0]
+            )
+            .as_ref(),
             "{written}"
         );
         let regrant = applies(
@@ -1831,38 +1836,44 @@ fn a_target_covers_its_queries_and_the_same_or_fewer_constructors_and_fields() {
     let s = grants();
     let schema = s.schema().unwrap();
     let covers = |p, a, b| target_covers(&schema, &NoCalls, p, Some(a), Some(b));
-    assert!(covers("call", "web-2.4", "web-2.4::q"));
-    assert!(!covers("call", "web-2.4", "web-2.5::q"));
+    assert!(covers(Privilege::Call, "web-2.4", "web-2.4::q"));
+    assert!(!covers(Privilege::Call, "web-2.4", "web-2.5::q"));
     assert!(!covers(
-        "call",
+        Privilege::Call,
         "web::q at 1 (x: I64) -> Text",
         "web::q at 2 (x: Text) -> Text"
     ));
     assert!(!covers(
-        "call",
+        Privilege::Call,
         "web::q at 1 () -> Text",
         "web::r at 1 () -> Text"
     ));
     assert!(covers(
-        "read",
+        Privilege::Read,
         "auth::identities frozen (id, user, Google.gid)",
         "auth::identities.Google (user, Google.gid)"
     ));
     assert!(!covers(
-        "read",
+        Privilege::Read,
         "auth::identities.Google (user)",
         "auth::identities.Google (user, Google.gid)"
     ));
     assert!(!covers(
-        "insert",
+        Privilege::Insert,
         "auth::identities.Google",
         "auth::identities.(Google | Apple)"
     ));
-    assert!(target_covers(&schema, &NoCalls, "monitor", None, None));
+    assert!(target_covers(
+        &schema,
+        &NoCalls,
+        Privilege::Capability(Capability::Monitor),
+        None,
+        None
+    ));
     assert!(!target_covers(
         &schema,
         &NoCalls,
-        "call",
+        Privilege::Call,
         None,
         Some("web-2.4")
     ));
@@ -1880,7 +1891,7 @@ fn a_family_revoke_without_a_signature_matches_whatever_signature_the_row_record
         };
         deployment_revoke(&schema, text, &r.privileges[0])
             .expect("a deployment privilege")
-            .matches(&schema, &NoCalls, "call", Some(row))
+            .matches(&schema, &NoCalls, Privilege::Call, Some(row))
     };
     let row = "web::login_key at 41 (u: Key auth::users) -> Text";
     assert!(matches("revoke call web::login_key from app", row));
@@ -1921,7 +1932,8 @@ fn constructors_print_in_id_order_when_a_split_places_later_ids_first() {
 #[test]
 fn a_target_reads_back_with_its_excepted_pairs_sorted_and_each_side_on_its_relation() {
     let schema = grants().schema().unwrap();
-    let read = |text| Granted::read_target(&schema, "retag", text).expect("the target reads");
+    let read =
+        |text| Granted::read_target(&schema, Privilege::Retag, text).expect("the target reads");
     assert_eq!(
         read("auth::identities -> auth::identities except (Apple -> Google, Google -> Apple)"),
         read("auth::identities -> auth::identities except (Google -> Apple, Apple -> Google)"),
@@ -1929,7 +1941,7 @@ fn a_target_reads_back_with_its_excepted_pairs_sorted_and_each_side_on_its_relat
     assert!(
         Granted::read_target(
             &schema,
-            "retag",
+            Privilege::Retag,
             "auth::identities -> auth::users except (Google -> User)"
         )
         .is_some()
@@ -1952,7 +1964,7 @@ fn an_update_revoke_without_a_field_list_takes_every_frozen_set() {
 #[test]
 fn a_retag_target_covers_a_retag_between_fewer_constructors() {
     let schema = grants().schema().unwrap();
-    let covers = |a, b| target_covers(&schema, &NoCalls, "retag", Some(a), Some(b));
+    let covers = |a, b| target_covers(&schema, &NoCalls, Privilege::Retag, Some(a), Some(b));
     let whole = "auth::identities -> auth::identities";
     let part = "auth::identities.Google -> auth::identities.Apple";
     assert!(covers(whole, part));
@@ -1965,7 +1977,7 @@ fn an_option_closes_a_cycle_when_its_grantee_reaches_its_grantor() {
     let edge = |grantor, grantee, target| GrantRow {
         grantor,
         grantee,
-        privilege: "call",
+        privilege: Privilege::Call,
         target,
         grant_option: true,
         dormant: false,
@@ -1993,7 +2005,7 @@ fn monitor_row<'a>(grantor: &'a str, grantee: &'a str) -> GrantRow<'a> {
     GrantRow {
         grantor,
         grantee,
-        privilege: "monitor",
+        privilege: Privilege::Capability(Capability::Monitor),
         target: None,
         grant_option: true,
         dormant: false,
@@ -2019,7 +2031,7 @@ fn an_option_supports_a_row_its_grantee_gave_of_the_same_privilege_on_a_covered_
     let other_grantor = monitor_row("cal", "bob");
     assert!(!option.supports(&schema, &NoCalls, &other_grantor));
     let other_privilege = GrantRow {
-        privilege: "cancel",
+        privilege: Privilege::Capability(Capability::Cancel),
         ..given
     };
     assert!(!option.supports(&schema, &NoCalls, &other_privilege));
@@ -2229,7 +2241,7 @@ fn a_family_target_covers_by_ids_and_counts_an_unread_one_as_supported_only() {
     let int = Ids::of(&schema, &[Ty::Base(Base::I64)], &Ty::Base(Base::Text));
     let calls = FamilyAt(vec![(1, schema.clone()), (2, schema.clone())], int);
     let family = "web::q at 1 (x: I64) -> Text";
-    let covers = |by, row| target_covers(&schema, &calls, "call", Some(by), Some(row));
+    let covers = |by, row| target_covers(&schema, &calls, Privilege::Call, Some(by), Some(row));
     assert!(covers(family, "web::q at 2 (y: I64) -> Text"));
     assert!(!covers(family, "web::q at 2 (x: Text) -> Text"));
     assert!(covers(family, "web-2.4::q"));
@@ -2243,7 +2255,7 @@ fn a_family_target_covers_by_ids_and_counts_an_unread_one_as_supported_only() {
     let row = |grantor, grantee, target| GrantRow {
         grantor,
         grantee,
-        privilege: "call",
+        privilege: Privilege::Call,
         target: Some(target),
         grant_option: true,
         dormant: false,
@@ -2262,7 +2274,7 @@ fn a_whole_bundle_row_is_a_known_shape_to_a_family_row() {
     let row = |grantor, grantee, target| GrantRow {
         grantor,
         grantee,
-        privilege: "call",
+        privilege: Privilege::Call,
         target: Some(target),
         grant_option: true,
         dormant: false,

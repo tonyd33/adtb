@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use adtb_lang::evolve::{DeployedGrant, GrantRow};
+use adtb_lang::evolve::{DeployedGrant, GrantRow, Privilege};
 use adtb_lang::ids::{CatCtorId, engine_ctor as k, engine_rel};
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{Form, print};
@@ -37,7 +37,7 @@ pub(super) struct Grant {
     pub(super) grantor: String,
     pub(super) grant_option: bool,
     pub(super) kind: GrantKind,
-    pub(super) privilege: String,
+    pub(super) privilege: Privilege,
     pub(super) target: Option<String>,
     pub(super) dormant: bool,
     pub(super) value: Val,
@@ -48,7 +48,7 @@ impl Grant {
         GrantRow {
             grantor: &self.grantor,
             grantee: &self.grantee,
-            privilege: &self.privilege,
+            privilege: self.privilege,
             target: self.target.as_deref(),
             grant_option: self.grant_option,
             dormant: self.dormant,
@@ -59,7 +59,7 @@ impl Grant {
     pub(super) fn deployed(&self) -> Option<DeployedGrant> {
         (self.kind == GrantKind::Deployment).then(|| DeployedGrant {
             grantee: self.grantee.clone(),
-            privilege: self.privilege.clone(),
+            privilege: self.privilege,
             target: self.target.clone(),
             grant_option: self.grant_option,
             dormant: self.dormant,
@@ -80,18 +80,23 @@ impl Grant {
 
     pub(super) fn capability(&self, capability: Capability, name: &str) -> bool {
         self.kind == GrantKind::Deployment
-            && self.privilege == capability.name()
+            && self.privilege == Privilege::Capability(capability)
             && self.target.is_none()
             && self.grantee == name
             && !self.dormant
     }
 }
 
+/// Returns what the `Deployment` rows of `grants` give.
+pub(super) fn deployed<'g>(grants: impl IntoIterator<Item = &'g Grant>) -> Vec<DeployedGrant> {
+    grants.into_iter().filter_map(Grant::deployed).collect()
+}
+
 /// A deployment grant being given: the identity of its row.
 pub(super) struct Given<'a> {
     pub(super) grantor: &'a str,
     pub(super) grantee: &'a str,
-    pub(super) privilege: &'a str,
+    pub(super) privilege: Privilege,
     pub(super) target: Option<&'a str>,
 }
 
@@ -114,7 +119,7 @@ impl<'s> Tables<'s> {
             grantor: given.grantor.to_owned(),
             grant_option,
             kind: GrantKind::Deployment,
-            privilege: given.privilege.to_owned(),
+            privilege: given.privilege,
             target: given.target.map(str::to_owned),
             dormant: false,
             value: self.grant_value(
@@ -293,7 +298,7 @@ impl<'s> Tables<'s> {
                     grantor: row.grantor.to_owned(),
                     grant_option: row.grant_option,
                     kind: g.kind(),
-                    privilege: row.privilege.to_owned(),
+                    privilege: row.privilege,
                     target: row.target.map(str::to_owned),
                     dormant: row.dormant,
                     value,
@@ -306,7 +311,7 @@ impl<'s> Tables<'s> {
         &self,
         id: i64,
         role: &str,
-        privilege: &str,
+        privilege: Privilege,
         target: Option<&str>,
         grantor: &str,
         grant_option: bool,
@@ -318,7 +323,7 @@ impl<'s> Tables<'s> {
             [
                 (GRANT_ID, Val::Int(id)),
                 (GRANT_KIND.field(), Val::ctor(kind, Vec::new())),
-                (GRANT_PRIVILEGE, Val::text(privilege)),
+                (GRANT_PRIVILEGE, Val::text(privilege.name())),
                 (
                     GRANT_TARGET,
                     target.map_or_else(Val::none, |t| Val::some(Val::text(t))),

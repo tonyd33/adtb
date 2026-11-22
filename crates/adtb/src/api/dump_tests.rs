@@ -1,3 +1,4 @@
+use adtb_lang::evolve::Privilege;
 use adtb_lang::ids::CatCtorId;
 use adtb_lang::schema::prelude::ctor;
 
@@ -134,7 +135,7 @@ fn a_restore_reads_each_dormant_grant_and_refuses_one_with_no_target() {
     let want = Dormant {
         id: 3,
         grantee: "web".into(),
-        privilege: "read".into(),
+        privilege: Privilege::Read,
         target: "app::t".into(),
     };
     assert_eq!(Some(vec![want]), dormant_grants(&schema, &codec, &rows));

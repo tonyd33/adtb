@@ -56,7 +56,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adtb_file::Disk;
 use adtb_lang::check::{Bundles, Program};
-use adtb_lang::evolve::{Logged, Source};
+use adtb_lang::evolve::{Logged, Privilege, Source};
 use adtb_lang::ids::engine_rel;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
@@ -133,7 +133,7 @@ pub struct CreateOptions {
     pub(crate) after: Option<storage::Position>,
     /// Whether open replays as a restore, and the grantee, privilege and target of each grant
     /// it keeps dormant though its role exists. A grant to a role that does not exist is dormant.
-    pub(crate) replay: Option<BTreeSet<(String, String, String)>>,
+    pub(crate) replay: Option<BTreeSet<(String, Privilege, String)>>,
 }
 
 /// The settings fixed while a handle is open.
@@ -1363,11 +1363,7 @@ impl<R: Runtime> Engine<R> {
         bounds: Bounds,
     ) -> Result<(Vec<DynRows>, Position), Failure> {
         let (cancel, deadline) = (bounds.cancel.clone(), bounds.deadline);
-        let past_commands = |error| Failure {
-            error,
-            ends: true,
-            commanded: !p.commands().is_empty(),
-        };
+        let past_commands = |error| Failure::new(error, true, !p.commands().is_empty());
         let rows = self
             .statements(id, &tx, p, &mut Local::default(), bounds)
             .and_then(|rows| {

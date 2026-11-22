@@ -65,7 +65,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use adtb_lang::check::Program;
-use adtb_lang::evolve::{Refusal, Source};
+use adtb_lang::evolve::{Privilege, Refusal, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Committed, Schema};
@@ -205,7 +205,7 @@ pub struct Catalog {
     hosts: Arc<exec::Hosts>,
     kept: Kept,
     /// The grantee, privilege and target of each grant [`Catalog::replay_holding`] keeps dormant.
-    held: BTreeSet<(String, String, String)>,
+    held: BTreeSet<(String, Privilege, String)>,
     /// The catalog rows of the objects of `source`, once read.
     objects: Arc<OnceLock<Rows>>,
 }
@@ -1087,8 +1087,7 @@ impl Catalog {
         pages.extend(self.sequences());
         pages.extend(self.roots.owned_pages(pager)?);
         for (&(r, _), heap) in &self.heaps {
-            let module = &self.schema.module(self.schema.relation(r).module).name;
-            if schema::ENGINE_MODULES.contains(&module.as_str()) {
+            if self.schema.module(self.schema.relation(r).module).engine {
                 pages.extend(heap.owned_pages(pager)?);
             }
         }

@@ -83,7 +83,6 @@
 "crates/adtb/src/catalog/codec.rs" = 38
 
 [engine_names]
-"crates/adtb-lang/src/evolve/cx.rs" = 1
 "crates/adtb-lang/src/schema/engine.rs" = 5
 "crates/adtb-lang/src/types.rs" = 1
 "crates/adtb/src/api/server/task.rs" = 1

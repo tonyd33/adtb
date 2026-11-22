@@ -339,7 +339,7 @@ impl Cx<'_> {
     }
 
     fn reserved_module(&self, m: &ast::Ident) -> R<()> {
-        if m.text == "prelude" || ENGINE_MODULES.contains(&m.text.as_str()) {
+        if schema::reserved_module(&m.text) {
             return self.err_at(m.span, format!("no module may be named `{}`", m.text));
         }
         if self.src.modules.contains(&m.text) {

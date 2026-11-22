@@ -368,6 +368,14 @@ fn store_broken_rows() -> Vec<Row> {
             c,
             "unique 1 of relation r has an index",
         ),
+        broken_row(
+            B::UniqueUnnamed {
+                index: 7,
+                relation: "r".into(),
+            },
+            c,
+            "unique index 7 of relation r holds a named unique",
+        ),
         broken_row(B::KeyNotFields("r".into()), c, "the key of r is fields"),
     ]
 }
@@ -524,7 +532,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 70;
+const SLOTS: usize = 71;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -608,6 +616,7 @@ fn slot(e: &write::Error) -> usize {
             B::DeploymentRefused => 67,
             B::NoDenial(_) => 68,
             B::Unadmitted { .. } => 69,
+            B::UniqueUnnamed { .. } => 70,
         },
     }
 }

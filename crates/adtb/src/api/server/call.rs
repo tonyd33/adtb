@@ -132,6 +132,8 @@ pub(super) struct Call<R: Runtime> {
     /// Set once an abort record of the call's transaction failed: that failure is then the
     /// call's reply, and no request of its owner replaces it.
     unrecorded: Cell<bool>,
+    /// What the statement whose failure the call last met violated.
+    violated: Option<write::Violated>,
 }
 
 /// How a phase of a step ended.
@@ -169,6 +171,7 @@ impl<R: Runtime> Call<R> {
             grant: None,
             phase: Phase::Start,
             unrecorded: Cell::new(false),
+            violated: None,
         }
     }
 
@@ -222,7 +225,7 @@ impl<R: Runtime> Call<R> {
             .as_ref()
             .and_then(|i| i.holds.as_ref())
         {
-            Some(holds) => holds.redact(e, shown),
+            Some(holds) => holds.redact(e, shown, self.violated),
             None => shown,
         };
         if matches!(
@@ -517,6 +520,7 @@ impl<R: Runtime> Call<R> {
                     }
                 }
                 Err(Halted::Failed(f)) => {
+                    self.violated = f.violated();
                     let err = self.abandon(e, id, tx, || f.error)?;
                     self.retry(e, &mut w, err, f.commanded)?;
                 }
@@ -559,6 +563,7 @@ impl<R: Runtime> Call<R> {
                     };
                 }
                 Err(Halted::Failed(f)) => {
+                    self.violated = f.violated();
                     return Err(either(self.abandon(e, id, tx, || f.error)));
                 }
                 Err(Halted::Blocked { on, rerun, .. }) => {

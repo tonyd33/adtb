@@ -388,7 +388,7 @@ fn a_document_states_its_edition_and_version() {
     let printed = textual::print_document(&f.schema, &d).expect("the document prints");
     assert_eq!(
         format!(
-            "text 2026-10 pins 42 ({HASH})\ndata users\nUser {{ id: users.key(3), name: \"ann\" }}\nUser {{ id: users.key(4), name: \"bo\" }}\n"
+            "text 2026-10 pins 42 ({HASH})\ndata app::users\nUser {{ id: users.key(3), name: \"ann\" }}\nUser {{ id: users.key(4), name: \"bo\" }}\n"
         ),
         printed
     );
@@ -412,7 +412,7 @@ fn a_document_without_a_header_is_at_the_readers_version() {
     };
     let printed = textual::print_document(&f.schema, &d).expect("the document prints");
     assert_eq!(
-        "data users\nUser { id: users.key(1), name: \"a\" }\n",
+        "data app::users\nUser { id: users.key(1), name: \"a\" }\n",
         printed
     );
     assert_eq!(Ok(d), textual::read_document(&f.schema, &printed));
@@ -423,7 +423,7 @@ fn a_malformed_document_is_refused() {
     let f = fixture();
     for (doc, offset, message) in [
         ("", 0, "expected a name"),
-        ("data nowhere\n", 4, "no relation `nowhere`"),
+        ("data nowhere\n", 4, "no `nowhere` in scope"),
         (
             "text 2026-10 pins 42 (c7f2)\ndata users\n",
             22,

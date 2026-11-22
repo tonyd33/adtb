@@ -243,7 +243,7 @@ fn a_dump_by_a_role_without_schema_restores_the_owner_alone_and_its_log_grants_d
         let dormant: Vec<_> = report
             .dormant
             .iter()
-            .map(|d| (d.grantee.as_str(), d.privilege.as_str(), d.target.as_str()))
+            .map(|d| (d.grantee.as_str(), d.privilege.name(), d.target.as_str()))
             .collect();
         assert_eq!(
             vec![

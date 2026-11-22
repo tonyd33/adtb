@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
 use adtb_lang::depends;
-use adtb_lang::evolve::{Code, Listed, Recorded, Resolved, RowMap, Source};
+use adtb_lang::evolve::{Code, Listed, Privilege, Recorded, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, Root};
 use adtb_lang::parse::{Options, parse_migration};
@@ -96,7 +96,7 @@ impl Catalog {
         &mut self,
         (pager, txns): (&Pager<R>, &Transactions<R>),
         text: &str,
-        held: &BTreeSet<(String, String, String)>,
+        held: &BTreeSet<(String, Privilege, String)>,
     ) -> Result<Vec<Dormant>, Error> {
         self.held.clone_from(held);
         let replayed = self.replay(pager, txns, text);

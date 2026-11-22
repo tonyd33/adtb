@@ -265,7 +265,7 @@ impl Checker<'_> {
                 )),
                 Err(e) => Err(diag(f.span(), e)),
             },
-            Privilege::Call(..) | Privilege::CallAt(_) | Privilege::Capability(_) => Ok(()),
+            Privilege::Call(..) | Privilege::CallAt(_) | Privilege::Capability(..) => Ok(()),
         }
     }
 

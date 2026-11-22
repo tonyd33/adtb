@@ -420,6 +420,25 @@ fn a_violation_redacts_what_the_role_cannot_read() {
     });
 }
 
+/// A key violation's key is shown to a role reading every row of its relation and hidden from
+/// one that does not.
+#[test]
+fn a_key_violation_shows_its_key_only_to_a_role_reading_its_relation() {
+    scenario(819, |rt, db| {
+        let again = r#"insert docs.Draft { id: docs.key(1), owner: "x", body: "b" }"#;
+        let rejected = |key: &str| {
+            Err(Error::Rejected {
+                reason: RejectReason::KeyViolation {
+                    relation: "shop::docs".into(),
+                    key: key.into(),
+                },
+            })
+        };
+        assert_eq!(rejected("docs.key(1)"), send(&rt, &db, "upserter", again));
+        assert_eq!(rejected(""), send(&rt, &db, "writer", again));
+    });
+}
+
 #[test]
 fn a_check_violation_shows_its_row_to_a_role_reading_it() {
     scenario(618, |rt, db| {

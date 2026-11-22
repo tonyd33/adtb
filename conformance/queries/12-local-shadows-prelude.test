@@ -1,0 +1,21 @@
+# A local binder shadows a prelude function of its name: a call of a parameter named `span` is that parameter's call, so `covers` takes its point form, and a call of a parameter named `read_csv` is no file scan, so it takes no `pins`.
+schema
+  module test
+  type Slot = { id: Key slots, during: Span I64 }
+  relation slots : Slot key id generate sequence
+  fn holds (span: I64 -> I64 -> I64, s: Span I64) -> Bool = covers(s, span(1, 2))
+  fn on (f: (Text -> Set I64) -> Set I64) -> Set I64 = f(fn (t: Text) -> [1])
+run
+  insert slots from [Slot { id: slots.key(1), during: span(0, 4) },
+                     Slot { id: slots.key(2), during: span(3, 9) }]
+query rowsort
+  from s in slots select { id: key s, by_point: holds(fn (a: I64, b: I64) -> a + b, s.during), by_span: covers(s.during, span(1, 2)) }
+----
+{ id: slots.key(1), by_point: true, by_span: true }
+{ id: slots.key(2), by_point: true, by_span: false }
+query
+  on(fn (read_csv: Text -> Set I64) -> read_csv("f.csv"))
+----
+1
+error Invalid
+  on(fn (read_csv: Text -> Set I64) -> read_csv("f.csv") pins 1 (abababababababababababababababababababababababababababababababab))

@@ -142,7 +142,7 @@ impl Resolver<'_> {
         let mut terms = privileges.iter().map(|p| {
             let (name, span) = privilege_term(p)?;
             let target = self.term(span);
-            Some((name.to_owned(), target))
+            Some((name.name().to_owned(), target))
         });
         let first = terms.next()??;
         for t in terms {
@@ -230,23 +230,23 @@ impl Resolver<'_> {
 
 /// Returns the name of a privilege of a log grant or revoke and the span of its target; `None`
 /// for a privilege a log operator cannot hold.
-pub(in crate::evolve) fn privilege_term(p: &ast::Privilege) -> Option<(&'static str, Span)> {
+pub(in crate::evolve) fn privilege_term(p: &ast::Privilege) -> Option<(Privilege, Span)> {
     let listed = |r: &ast::RelationRef, fs: &Option<ast::GrantFieldList>| {
         fs.as_ref().map_or(r.span, |fs| r.span.to(fs.span))
     };
     Some(match p {
-        ast::Privilege::Read(r, fs) => ("read", listed(r, fs)),
-        ast::Privilege::Update(r, fs) => ("update", listed(r, fs)),
-        ast::Privilege::Insert(r) => ("insert", r.span),
-        ast::Privilege::Delete(r) => ("delete", r.span),
+        ast::Privilege::Read(r, fs) => (Privilege::Read, listed(r, fs)),
+        ast::Privilege::Update(r, fs) => (Privilege::Update, listed(r, fs)),
+        ast::Privilege::Insert(r) => (Privilege::Insert, r.span),
+        ast::Privilege::Delete(r) => (Privilege::Delete, r.span),
         ast::Privilege::Retag(a, b, except) => (
-            "retag",
+            Privilege::Retag,
             except
                 .as_ref()
                 .map_or(a.span.to(b.span), |e| a.span.to(e.span)),
         ),
-        ast::Privilege::CallFn(f) => ("call", f.span()),
-        ast::Privilege::Call(..) | ast::Privilege::CallAt(_) | ast::Privilege::Capability(_) => {
+        ast::Privilege::CallFn(f) => (Privilege::Call, f.span()),
+        ast::Privilege::Call(..) | ast::Privilege::CallAt(_) | ast::Privilege::Capability(..) => {
             return None;
         }
     })

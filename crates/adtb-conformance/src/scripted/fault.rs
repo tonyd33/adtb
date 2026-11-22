@@ -635,7 +635,10 @@ impl State {
                 let dormant = |d: &adtb::Dormant| {
                     format!(
                         "dormant {{ id: {}, grantee: {:?}, privilege: {:?}, target: {:?} }}",
-                        d.id, d.grantee, d.privilege, d.target
+                        d.id,
+                        d.grantee,
+                        d.privilege.name(),
+                        d.target
                     )
                 };
                 Ok(r.dormant.iter().map(dormant).collect())

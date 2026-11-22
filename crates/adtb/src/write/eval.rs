@@ -62,6 +62,25 @@ pub enum Violator {
     Domain(TypeId),
 }
 
+/// What a refused statement violated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Violated {
+    /// The key of a relation.
+    Key(RelId),
+    Other(Violator),
+}
+
+impl Rejection {
+    /// Returns what the statement violated, when it is refused for a violation.
+    pub fn violated(&self) -> Option<Violated> {
+        match self {
+            Rejection::Violated { violator, .. } => Some(Violated::Other(*violator)),
+            Rejection::KeyViolation { relation, .. } => Some(Violated::Key(*relation)),
+            _ => None,
+        }
+    }
+}
+
 /// The violations a statement found, each with the name its refusal prints.
 #[derive(Debug, Default)]
 pub struct Violations {
@@ -118,10 +137,14 @@ pub fn refuse(viol: Violations) -> Result<(), Error> {
         .keys
         .into_iter()
         .min_by(|(_, (a, _)), (_, (b, _))| a.cmp(b));
-    let other = viol.others.into_values().min_by(|(a, _), (b, _)| a.cmp(b));
+    let other = viol
+        .others
+        .into_iter()
+        .min_by(|(_, (a, _)), (_, (b, _))| a.cmp(b));
     let rejection = match (key, other) {
         (None, None) => return Ok(()),
-        (Some((_, (k, _))), Some((o, report))) if o < k => Rejection::Violated {
+        (Some((_, (k, _))), Some((violator, (o, report)))) if o < k => Rejection::Violated {
+            violator,
             constraint: o,
             report,
         },
@@ -129,7 +152,11 @@ pub fn refuse(viol: Violations) -> Result<(), Error> {
             relation,
             key: keys.into_iter().next().expect("a key violation has a key"),
         },
-        (None, Some((constraint, report))) => Rejection::Violated { constraint, report },
+        (None, Some((violator, (constraint, report)))) => Rejection::Violated {
+            violator,
+            constraint,
+            report,
+        },
     };
     Err(Error::Rejected(rejection))
 }

@@ -832,7 +832,7 @@ pub enum Privilege {
     /// A family call target written with its signature: `call web::q at 41 (x: I64) -> Text`.
     CallAt(CallSignature),
     CallFn(QName),
-    Capability(Ident),
+    Capability(crate::privilege::Capability, Span),
 }
 
 /// The field list of a `read` or `update` privilege.

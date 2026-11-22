@@ -29,6 +29,10 @@ fn undo_failure(e: heap::Error) -> Error {
 /// A heap change a failed statement takes back, with the heap it changed.
 pub type Undo = (HeapId, heap::Undo);
 
+/// The rows of a statement sharing a key of a unique index, by relation, index and encoded key,
+/// with the unique's name.
+type Groups = BTreeMap<(RelId, IndexId, Vec<u8>), (String, BTreeMap<Val, Val>)>;
+
 /// A version the statement wrote that needs entries in the indexes over its constructor.
 struct Written {
     rel: RelId,
@@ -274,17 +278,12 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
             }
         }
-        let mut groups: BTreeMap<(RelId, IndexId, Vec<u8>), BTreeMap<Val, Val>> = BTreeMap::new();
+        let mut groups = Groups::new();
         for w in &written {
             self.entries(w, viol, &mut groups)?;
         }
-        for ((rel, ix, _), group) in &groups {
-            let found = self.rel(*rel).indexes.iter().find(|(i, _)| i == ix);
-            if let Some((_, indexed)) = found
-                && let Some(name) = &indexed.name
-            {
-                violate(viol, Violator::Unique(*ix), name, pairs([group]));
-            }
+        for ((_, ix, _), (name, group)) in &groups {
+            violate(viol, Violator::Unique(*ix), name, pairs([group]));
         }
         Ok(())
     }
@@ -329,7 +328,7 @@ impl<R: Runtime> Stmt<'_, R> {
         &self,
         w: &Written,
         viol: &mut Violations,
-        groups: &mut BTreeMap<(RelId, IndexId, Vec<u8>), BTreeMap<Val, Val>>,
+        groups: &mut Groups,
     ) -> Result<(), Error> {
         let r = self.rel(w.rel);
         let xid = self.tx.writer()?;
@@ -351,9 +350,9 @@ impl<R: Runtime> Stmt<'_, R> {
             let encoded = stored.index.schema().encode(&key);
             let latch = 'probe: loop {
                 let latch = self.db.latches[id].lock(&self.db.rt);
-                if !ix.desc.unique {
+                let Some(name) = &ix.unique else {
                     break latch;
-                }
+                };
                 let mut conflicts = Vec::new();
                 let mut wait = None;
                 for e in stored.index.probe(pager, &key)? {
@@ -406,11 +405,12 @@ impl<R: Runtime> Stmt<'_, R> {
                     break latch;
                 }
                 if ix.desc.id == r.key_index {
-                    let name = ix.name.as_deref().expect("a key index has a name");
                     let key = self.key_of(w.rel, &w.row)?;
                     violate_key(viol, name, w.rel, key);
                 } else {
-                    let group = groups.entry((w.rel, *id, encoded.clone())).or_default();
+                    let (_, group) = groups
+                        .entry((w.rel, *id, encoded.clone()))
+                        .or_insert_with(|| (name.clone(), BTreeMap::new()));
                     group.insert(self.key_of(w.rel, &w.row)?, w.row.clone());
                     for (c, heap, tid) in conflicts {
                         let v = self

@@ -36,7 +36,7 @@ fn privileges(
         let Some((name, span)) = privilege_term(p) else {
             return broken("a log privilege the layer resolves to no term");
         };
-        terms.push((name.to_string(), canonical(run, schema, refs, span)));
+        terms.push((name.name().to_string(), canonical(run, schema, refs, span)));
     }
     let mut terms = terms.into_iter();
     let Some((privilege, target)) = terms.next() else {

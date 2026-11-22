@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adtb_lang::evolve::Privilege;
 use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::types::RelId;
 use adtb_sim::SimRuntime;
@@ -325,7 +326,14 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
                     let id = t.next_grant_id(e, tx)?;
                     changes.insert(
                         t.grants,
-                        t.grant_value(id, "web", "assert", None, "owner", true),
+                        t.grant_value(
+                            id,
+                            "web",
+                            Privilege::Capability(Capability::Assert),
+                            None,
+                            "owner",
+                            true,
+                        ),
                     );
                     t.audit(
                         e,
@@ -834,7 +842,7 @@ fn a_bundle_with_no_text_cannot_be_read_until_it_is_presented_or_retired() {
             let grants = t.grants(e, tx)?;
             let deleted = grants
                 .iter()
-                .filter(|g| g.privilege == "read_files")
+                .filter(|g| g.privilege == Privilege::Capability(Capability::ReadFiles))
                 .map(|g| g.id)
                 .collect();
             super::super::grant::Calls::new(e).refuse_lacking(

@@ -20,7 +20,10 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{AdhocItem, OperatorKind, Revoke};
-use adtb_lang::evolve::{GrantRow, NoCalls, Source, closes_option_cycle, deployment_revoke};
+pub use adtb_lang::evolve::Capability;
+use adtb_lang::evolve::{
+    GrantRow, NoCalls, Privilege, Source, closes_option_cycle, deployment_revoke,
+};
 use adtb_lang::lex::{Tok, lex};
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
@@ -41,52 +44,6 @@ pub use result::{Completion, Format, Layout, ResultBatch};
 pub use session::RoleSession;
 pub(super) use task::Running;
 pub use task::{Observation, Task, TaskOptions};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Capability {
-    Adhoc,
-    Assert,
-    Schema,
-    Monitor,
-    Cancel,
-    Maintain,
-    Configure,
-    ReadFiles,
-    WriteFiles,
-}
-
-impl Capability {
-    /// Returns the capability of name `name`.
-    fn named(name: &str) -> Option<Capability> {
-        [
-            Self::Adhoc,
-            Self::Assert,
-            Self::Schema,
-            Self::Monitor,
-            Self::Cancel,
-            Self::Maintain,
-            Self::Configure,
-            Self::ReadFiles,
-            Self::WriteFiles,
-        ]
-        .into_iter()
-        .find(|c| c.name() == name)
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Adhoc => "adhoc",
-            Self::Assert => "assert",
-            Self::Schema => "schema",
-            Self::Monitor => "monitor",
-            Self::Cancel => "cancel",
-            Self::Maintain => "maintain",
-            Self::Configure => "configure",
-            Self::ReadFiles => "read_files",
-            Self::WriteFiles => "write_files",
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct RoleAuthority<R: Runtime = adtb_sys::os::OsRuntime> {
@@ -308,7 +265,7 @@ impl<R: Runtime> RoleAuthority<R> {
                         g.kind == GrantKind::Deployment
                             && g.grantee == statement.from.text
                             && (issuer == OWNER_ROLE || g.grantor == issuer)
-                            && revoke.matches(&e.schema, &calls, &g.privilege, g.target.as_deref())
+                            && revoke.matches(&e.schema, &calls, g.privilege, g.target.as_deref())
                     })
                     .map(|g| g.id)
                     .collect();
@@ -409,7 +366,7 @@ fn refuse_relation_revoke(grants: &[Grant], issuer: &str, statement: &Revoke) ->
     let gave = |g: &Grant| {
         g.kind == GrantKind::Deployment
             && g.grantor == issuer
-            && g.privilege != "call"
+            && g.privilege != Privilege::Call
             && g.target.is_some()
     };
     if !statement.privileges.iter().any(grant::on_relation)
@@ -461,7 +418,7 @@ fn give_capability<R: Runtime>(
     let new = GrantRow {
         grantor,
         grantee,
-        privilege: capability.name(),
+        privilege: Privilege::Capability(capability),
         target: None,
         grant_option: true,
         dormant: false,
@@ -476,7 +433,7 @@ fn give_capability<R: Runtime>(
     let given = Given {
         grantor,
         grantee,
-        privilege: capability.name(),
+        privilege: Privilege::Capability(capability),
         target: None,
     };
     t.give_row(e, tx, rows, &given, grant_option)

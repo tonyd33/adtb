@@ -14,8 +14,13 @@ pub const PRELUDE_SRC: &str = include_str!("../prelude.adt");
 /// The engine's declarations of its `catalog` and `sys` modules.
 pub const ENGINE_SRC: &str = include_str!("../catalog.adt");
 
-/// The modules the engine declares, which no user file may name.
-pub const ENGINE_MODULES: [&str; 2] = ["catalog", "sys"];
+/// The modules the prelude and the engine declare, which no user file may name.
+const RESERVED_MODULES: [&str; 3] = ["prelude", "catalog", "sys"];
+
+/// Returns whether no user module may be named `name`.
+pub fn reserved_module(name: &str) -> bool {
+    RESERVED_MODULES.contains(&name)
+}
 
 #[cfg(test)]
 #[path = "../schema_tests.rs"]

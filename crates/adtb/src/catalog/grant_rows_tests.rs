@@ -13,7 +13,7 @@ use crate::key::Value;
 use crate::mvcc::Transactions;
 use crate::storage::Pager;
 use crate::verify::{self, Depth};
-use adtb_lang::evolve::Granted;
+use adtb_lang::evolve::{Granted, Privilege};
 use adtb_lang::ids::engine_ctor;
 use adtb_sim::{Config, Sim, SimRuntime};
 
@@ -561,13 +561,13 @@ rename relation customers to clients
         for (g, t) in &texts {
             assert_eq!(
                 Some(g.clone()),
-                Granted::read_target(schema, g.privilege_name(), t),
+                Granted::read_target(schema, g.privilege(), t),
                 "{t}"
             );
         }
         let retag = texts
             .iter()
-            .find(|(g, _)| g.privilege_name() == "retag")
+            .find(|(g, _)| g.privilege() == Privilege::Retag)
             .map(|(_, t)| t.as_str());
         assert_eq!(
             Some(

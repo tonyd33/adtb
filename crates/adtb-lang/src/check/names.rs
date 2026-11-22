@@ -104,20 +104,31 @@ impl Checker<'_> {
     }
 
     pub(crate) fn lookup_value(&self, name: &ast::QName) -> Result<ValueDef, String> {
+        let v = self.find_value(name)?;
+        self.record_value(name, v);
+        Ok(v)
+    }
+
+    /// Returns the declaration `name` denotes, recording nothing.
+    pub(super) fn find_value(&self, name: &ast::QName) -> Result<ValueDef, String> {
         let v = crate::resolve::lookup_value(self.schema, &self.vis, name);
         if let Ok(ValueDef::Relation(r)) = v
             && self.hidden.contains(&r)
         {
             return Err(format!("no `{}` in scope", name.name.text));
         }
+        v
+    }
+
+    /// Record that `name` denotes `v`.
+    pub(super) fn record_value(&self, name: &ast::QName, v: ValueDef) {
         let at = name.name.span;
         match v {
-            Ok(ValueDef::Relation(r)) => self.refs.push(at, Ref::Relation(r)),
-            Ok(ValueDef::Function(f)) => self.refs.push(at, Ref::Function(f)),
-            Ok(ValueDef::Aggregate(a)) => self.refs.push(at, Ref::Aggregate(a)),
+            ValueDef::Relation(r) => self.refs.push(at, Ref::Relation(r)),
+            ValueDef::Function(f) => self.refs.push(at, Ref::Function(f)),
+            ValueDef::Aggregate(a) => self.refs.push(at, Ref::Aggregate(a)),
             _ => {}
         }
-        v
     }
 
     /// Returns the constructors a selection over `def` names.

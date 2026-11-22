@@ -17,7 +17,7 @@ use crate::ids::{
 };
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
-use crate::schema::{self, Committed, ENGINE_MODULES, Schema, TypeDefKind, ValueDef};
+use crate::schema::{self, Committed, Schema, TypeDefKind, ValueDef};
 use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
 
@@ -57,6 +57,7 @@ mod tests;
 #[path = "../evolve_memo_tests.rs"]
 mod memo_tests;
 
+pub use crate::privilege::{Capability, Privilege};
 pub use crate::schema::{Adder, Stage};
 pub use expected::{Expected, Listed};
 use grant::HeldGrant;

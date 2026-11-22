@@ -7,18 +7,24 @@ impl Schema {
     ///
     /// Precondition: `index` identifies a declared unique of `rel` in this schema.
     pub fn unique_name(&self, rel: RelId, index: usize) -> String {
+        self.field_unique_name(rel, index).unwrap_or_else(|| {
+            let r = self.relation(rel);
+            let id = crate::ids::held_id(self.ids.index_id(rel, index));
+            format!("{}::{}.unique#{id}", self.module(r.module).name, r.name)
+        })
+    }
+
+    /// Returns the canonical constraint name of the unique at `index` of `rel`, `None` when an
+    /// element is not a field path.
+    pub(crate) fn field_unique_name(&self, rel: RelId, index: usize) -> Option<String> {
         let r = self.relation(rel);
         let name = format!("{}::{}", self.module(r.module).name, r.name);
         let ix = &r.indexes[index];
-        let paths: Option<Vec<_>> = ix.fields.iter().map(field_path).collect();
-        let Some(paths) = paths else {
-            let id = crate::ids::held_id(self.ids.index_id(rel, index));
-            return format!("{name}.unique#{id}");
-        };
+        let paths: Vec<_> = ix.fields.iter().map(field_path).collect::<Option<_>>()?;
         let name = format!("{name}.unique({})", paths.join(", "));
         let ctors = self.ty(r.elem_def).ctors();
         let Some(scope) = ix.scope.as_ref().filter(|scope| scope.len() != ctors.len()) else {
-            return name;
+            return Some(name);
         };
         let mut names: Vec<_> = scope
             .iter()
@@ -29,7 +35,7 @@ impl Schema {
             [one] => (*one).to_owned(),
             many => format!("({})", many.join(" | ")),
         };
-        format!("{name} in {set}")
+        Some(format!("{name} in {set}"))
     }
 }
 

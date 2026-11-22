@@ -1,15 +1,14 @@
 use super::*;
 
 impl Granted {
-    /// Returns the name of the privilege, as `catalog::grants` writes it.
-    pub fn privilege_name(&self) -> &'static str {
+    pub fn privilege(&self) -> Privilege {
         match self {
-            Granted::Read(..) => "read",
-            Granted::Insert(_) => "insert",
-            Granted::Update(..) => "update",
-            Granted::Delete(_) => "delete",
-            Granted::Retag(..) => "retag",
-            Granted::CallFn(_) => "call",
+            Granted::Read(..) => Privilege::Read,
+            Granted::Insert(_) => Privilege::Insert,
+            Granted::Update(..) => Privilege::Update,
+            Granted::Delete(_) => Privilege::Delete,
+            Granted::Retag(..) => Privilege::Retag,
+            Granted::CallFn(_) => Privilege::Call,
         }
     }
 
@@ -58,29 +57,29 @@ impl Granted {
         })
     }
 
-    /// Returns the privilege named `privilege` on the target `text`, as
+    /// Returns the privilege `privilege` on the target `text`, as
     /// [`Granted::target_text`] writes it over `schema`; `None` when `text` is not of that form
     /// or names an object `schema` lacks.
-    pub fn read_target(schema: &Schema, privilege: &str, text: &str) -> Option<Granted> {
+    pub fn read_target(schema: &Schema, privilege: Privilege, text: &str) -> Option<Granted> {
         let mut r = Reader {
             toks: tokens(text)?,
             at: 0,
         };
         let out = match privilege {
-            "read" | "update" => {
+            Privilege::Read | Privilege::Update => {
                 let (rel, t) = r.target(schema)?;
                 let listed = !r.eat("frozen");
                 let ids = r.fields(schema, rel)?;
                 let fs = GrantFields { ids, listed };
-                if privilege == "read" {
+                if privilege == Privilege::Read {
                     Granted::Read(t, fs)
                 } else {
                     Granted::Update(t, fs)
                 }
             }
-            "insert" => Granted::Insert(r.target(schema)?.1),
-            "delete" => Granted::Delete(r.target(schema)?.1),
-            "retag" => {
+            Privilege::Insert => Granted::Insert(r.target(schema)?.1),
+            Privilege::Delete => Granted::Delete(r.target(schema)?.1),
+            Privilege::Retag => {
                 let (rel, a) = r.target(schema)?;
                 r.expect("->")?;
                 let (to, b) = r.target(schema)?;
@@ -101,7 +100,7 @@ impl Granted {
                 }
                 Granted::Retag(a, b, except)
             }
-            "call" => {
+            Privilege::Call => {
                 let word = r.word()?;
                 let (module, name) = qualified(&word)?;
                 let (_, id) = schema.ids().function_ids().find(|&(f, _)| {
@@ -110,7 +109,7 @@ impl Granted {
                 })?;
                 Granted::CallFn(id.raw())
             }
-            _ => return None,
+            Privilege::Capability(_) => return None,
         };
         (r.at == r.toks.len()).then_some(out)
     }

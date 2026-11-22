@@ -8,7 +8,7 @@ use super::super::registered::{self, Checked, Over, Registration};
 use super::super::text::DynRows;
 use super::super::{Engine, Error, OWNER_ID};
 use super::store;
-use super::tables::{Grant, Tables};
+use super::tables::{self, Tables};
 use super::{RoleAuthority, RoleSession, denied};
 
 impl<R: Runtime> RoleAuthority<R> {
@@ -60,7 +60,7 @@ impl<R: Runtime> RoleAuthority<R> {
             if claim.owner != OWNER_ID {
                 let runs_as = name(claim.owner, &format!("bundle {bundle}"))?;
                 let rows = t.grants(e, tx)?;
-                let deployed: Vec<_> = rows.iter().filter_map(Grant::deployed).collect();
+                let deployed = tables::deployed(&rows);
                 let lacks =
                     registered::Lacking::new(&e.source.grants, &deployed).of(&checked, &runs_as)?;
                 if !lacks.is_empty() {

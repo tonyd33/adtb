@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::ast::{AdhocItem, Grant as Statement, Privilege};
+use adtb_lang::ast::{self, AdhocItem, Grant as Statement};
 use adtb_lang::evolve::{
-    CallSignatures, DeploymentGrant, GrantRow, Stated, closes_option_cycle, deployment_grant,
-    family_query,
+    CallSignatures, DeploymentGrant, GrantRow, Privilege, Stated, closes_option_cycle,
+    deployment_grant, family_query,
 };
 use adtb_lang::ids::held_id;
 use adtb_lang::parse::{Options, parse_adhoc};
@@ -21,7 +21,7 @@ use super::super::cause::Broken;
 use super::super::registered::{self, Checked, Lacking, Over};
 use super::super::{Engine, Error, OWNER_ID};
 use super::store::{self, Changes};
-use super::tables::{Given, Grant, Tables};
+use super::tables::{self, Given, Grant, Tables};
 use super::{
     Capability, RoleAuthority, RoleSession, denied, diagnosed, give_capability, require, role_name,
 };
@@ -139,16 +139,13 @@ impl<R: Runtime> Calls<'_, R> {
     ) -> Result<(), Error> {
         let (name, id) = grantee;
         let counts = |g: &Grant| {
-            g.privilege == "read_files" || (g.privilege != "call" && g.target.is_some())
+            g.privilege == Privilege::Capability(Capability::ReadFiles)
+                || (g.privilege != Privilege::Call && g.target.is_some())
         };
         if !grants.iter().any(|g| deleted.contains(&g.id) && counts(g)) {
             return Ok(());
         }
-        let after: Vec<_> = grants
-            .iter()
-            .filter(|g| !deleted.contains(&g.id))
-            .filter_map(Grant::deployed)
-            .collect();
+        let after = tables::deployed(grants.iter().filter(|g| !deleted.contains(&g.id)));
         let mut lacking = Lacking::new(&self.e.source.grants, &after);
         let s = *self.e.settings.lock(&self.e.rt);
         let mut lines = Vec::new();
@@ -225,14 +222,14 @@ impl<R: Runtime> CallSignatures for Calls<'_, R> {
 }
 
 /// Returns whether `p` names a relation, whether or not one of that name exists.
-pub(super) fn on_relation(p: &Privilege) -> bool {
+pub(super) fn on_relation(p: &ast::Privilege) -> bool {
     matches!(
         p,
-        Privilege::Read(..)
-            | Privilege::Insert(_)
-            | Privilege::Update(..)
-            | Privilege::Delete(_)
-            | Privilege::Retag(..)
+        ast::Privilege::Read(..)
+            | ast::Privilege::Insert(_)
+            | ast::Privilege::Update(..)
+            | ast::Privilege::Delete(_)
+            | ast::Privilege::Retag(..)
     )
 }
 
@@ -270,7 +267,7 @@ impl<R: Runtime> Giving<'_, R> {
         GrantRow {
             grantor: &self.session.name,
             grantee: self.grantee,
-            privilege: "call",
+            privilege: Privilege::Call,
             target: Some(target),
             grant_option: self.grant_option,
             dormant: false,
@@ -294,9 +291,7 @@ impl<R: Runtime> Giving<'_, R> {
         Ok(())
     }
 
-    fn capability(&self, rows: &mut Vec<Grant>, name: &str, text: &str) -> Result<(), Error> {
-        let capability = Capability::named(name)
-            .ok_or_else(|| Error::invalid(format!("`{text}` names no capability `{name}`")))?;
+    fn capability(&self, rows: &mut Vec<Grant>, capability: Capability) -> Result<(), Error> {
         require(rows, self.session, Capability::Schema, false)
             .or_else(|_| require(rows, self.session, capability, true))?;
         self.t.grantee(self.e, self.tx, self.grantee)?;
@@ -323,13 +318,13 @@ impl<R: Runtime> Giving<'_, R> {
                 self.session.name
             )));
         }
-        let privilege = stated.privilege_name();
+        let privilege = stated.privilege();
         let target = stated.target_text(&self.e.schema).ok_or_else(|| {
             Error::internal(Broken::UnresolvedGrant {
-                privilege: privilege.to_owned(),
+                privilege: privilege.name().to_owned(),
             })
         })?;
-        if privilege != "read" {
+        if privilege != Privilege::Read {
             return Err(Error::invalid(format!(
                 "`{privilege}` on system relation `{target}`: a system relation grants only `read`"
             )));
@@ -402,7 +397,7 @@ impl<R: Runtime> Giving<'_, R> {
         let given = Given {
             grantor: &self.session.name,
             grantee: self.grantee,
-            privilege: "call",
+            privilege: Privilege::Call,
             target: Some(&target),
         };
         self.t
@@ -422,7 +417,7 @@ impl<R: Runtime> Giving<'_, R> {
         let holds = rows.iter().any(|g| {
             g.grantee == self.session.name
                 && g.grantor != g.grantee
-                && g.privilege == "call"
+                && g.privilege == Privilege::Call
                 && g.grant_option
                 && !g.dormant
                 && g.target.as_deref().and_then(family_query) == Some(named.as_str())
@@ -449,7 +444,7 @@ impl<R: Runtime> Giving<'_, R> {
             g.kind == GrantKind::Deployment
                 && g.grantee == self.grantee
                 && g.grantor == self.session.name
-                && g.privilege == "call"
+                && g.privilege == Privilege::Call
                 && g.target.as_deref().and_then(family_query) == Some(named.as_str())
         });
         let same = held
@@ -461,7 +456,7 @@ impl<R: Runtime> Giving<'_, R> {
         let given = Given {
             grantor: &self.session.name,
             grantee: self.grantee,
-            privilege: "call",
+            privilege: Privilege::Call,
             target: Some(&target),
         };
         if let Some(i) = held
@@ -558,7 +553,7 @@ impl<R: Runtime> RoleAuthority<R> {
             match deployment_grant(&e.schema, text, p)
                 .map_err(|ds| Error::invalid(diagnosed(&ds)))?
             {
-                DeploymentGrant::Capability(c) => giving.capability(&mut rows, &c, text)?,
+                DeploymentGrant::Capability(c) => giving.capability(&mut rows, c)?,
                 DeploymentGrant::Bundle(b) => giving.bundle(&mut rows, &b, None)?,
                 DeploymentGrant::Query(b, q) => giving.bundle(&mut rows, &b, Some(&q))?,
                 DeploymentGrant::Family {

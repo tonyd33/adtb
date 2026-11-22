@@ -3,6 +3,14 @@ use super::*;
 use crate::ast::{CallArgs, Expr};
 use crate::kernel::{Agg, FileFormat, Prim};
 
+/// What the callee of a call denotes.
+pub(super) enum Callee {
+    Local(Local),
+    Declared(ValueDef),
+    Prelude,
+    Unknown(String),
+}
+
 impl Checker<'_> {
     /// Check arguments against parameter types over `n` type parameters of a callee, solving those parameters from the synthesized arguments, then from `result` against `expected`.
     pub(super) fn solve_args(
@@ -140,57 +148,73 @@ impl Checker<'_> {
             _ => None,
         };
         if let Some(v) = pins
-            && (format.is_none() || callee.module.is_some())
+            && (format.is_none() || !matches!(self.callee(callee), Callee::Prelude))
         {
             return Err(diag(v.span, "only a file scan takes `pins`"));
         }
         if text.starts_with(|c: char| c.is_ascii_uppercase()) {
             return self.newtype_call(callee, args, span);
         }
+        let def = match self.callee(callee) {
+            Callee::Local(local) => return self.apply_local(local, args, span),
+            Callee::Declared(def) => def,
+            Callee::Unknown(e) => return Err(diag(callee.span(), e)),
+            Callee::Prelude => return self.prelude_callee(text, args, format, pins, span),
+        };
+        self.record_value(callee, def);
+        match def {
+            ValueDef::Function(f) => self.call_fn(f, args, expected, span),
+            ValueDef::Aggregate(a) => match args {
+                CallArgs::Aggregate {
+                    expr,
+                    generators,
+                    filter,
+                } => {
+                    self.scope.push();
+                    let r =
+                        self.aggregate_in(Agg::User(a), text, expr, generators, filter.as_deref());
+                    self.scope.pop();
+                    r
+                }
+                CallArgs::List(_) => Err(diag(
+                    span,
+                    format!("`{text}` is an aggregate: `{text}(e for x in q)`"),
+                )),
+            },
+            ValueDef::Relation(_) => Err(diag(
+                span,
+                format!("`{text}` is a relation, not a function"),
+            )),
+            _ => Err(diag(span, format!("`{text}` is not a function"))),
+        }
+    }
+
+    /// Returns what `callee` denotes: a local binder, else a declaration in scope, else the
+    /// prelude's function of that name.
+    pub(super) fn callee(&self, callee: &ast::QName) -> Callee {
+        let text = callee.name.text.as_str();
         if callee.module.is_none()
             && let Some(local) = self.scope.lookup(text).cloned()
         {
-            return self.apply_local(local, args, span);
+            return Callee::Local(local);
         }
-        match self.lookup_value(callee) {
-            Ok(ValueDef::Function(f)) => return self.call_fn(f, args, expected, span),
-            Ok(ValueDef::Aggregate(a)) => {
-                return match args {
-                    CallArgs::Aggregate {
-                        expr,
-                        generators,
-                        filter,
-                    } => {
-                        self.scope.push();
-                        let r = self.aggregate_in(
-                            Agg::User(a),
-                            text,
-                            expr,
-                            generators,
-                            filter.as_deref(),
-                        );
-                        self.scope.pop();
-                        r
-                    }
-                    CallArgs::List(_) => Err(diag(
-                        span,
-                        format!("`{text}` is an aggregate: `{text}(e for x in q)`"),
-                    )),
-                };
+        match self.find_value(callee) {
+            Ok(def) => Callee::Declared(def),
+            Err(e) if callee.module.is_some() || !PRELUDE_FUNCTIONS.contains(&text) => {
+                Callee::Unknown(e)
             }
-            Ok(ValueDef::Relation(_)) => {
-                return Err(diag(
-                    span,
-                    format!("`{text}` is a relation, not a function"),
-                ));
-            }
-            Ok(_) => return Err(diag(span, format!("`{text}` is not a function"))),
-            Err(e) => {
-                if callee.module.is_some() || !PRELUDE_FUNCTIONS.contains(&text) {
-                    return Err(diag(callee.span(), e));
-                }
-            }
+            Err(_) => Callee::Prelude,
         }
+    }
+
+    fn prelude_callee(
+        &mut self,
+        text: &str,
+        args: &CallArgs,
+        format: Option<FileFormat>,
+        pins: Option<&ast::Version>,
+        span: Span,
+    ) -> R<Out> {
         match (args, format) {
             (
                 CallArgs::Aggregate {

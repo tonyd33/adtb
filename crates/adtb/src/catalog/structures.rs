@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use adtb_lang::schema::{ENGINE_MODULES, Schema};
+use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
 use crate::btree::{BTree, Index};
@@ -22,10 +22,9 @@ use super::{Catalog, roots};
 
 /// Returns the holder of the pages of a heap or tree of relation `r`, named `object`.
 pub fn relation_holder(schema: &Schema, r: RelId, object: Quarantine) -> Holder {
-    let module = &schema.module(schema.relation(r).module).name;
     Holder::Relation {
         object,
-        engine_module: ENGINE_MODULES.contains(&module.as_str()),
+        engine_module: schema.module(schema.relation(r).module).engine,
     }
 }
 

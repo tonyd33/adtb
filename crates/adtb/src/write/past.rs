@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use adtb_lang::ids::held_id;
+use adtb_lang::ids::{engine_rel, held_id};
 use adtb_lang::types::RelId;
 
 use crate::btree::Index;
@@ -22,9 +22,6 @@ use crate::vacuum;
 use super::reindex::VacuumHold;
 use super::schema::Rel;
 use super::{Database, Error};
-
-const COMMIT_TIMES: u64 = 370;
-const SAFE_SNAPSHOTS: u64 = 371;
 
 /// The structures a database keeps history in, and the schema version each heap and each
 /// migration's transaction belongs to.
@@ -190,11 +187,11 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
 
 impl<R: Runtime> Database<R> {
     pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
-        let id = held_id(self.schema.ids().relation_id(rel)).raw();
-        if id == super::vacuums::VACUUMS {
+        let id = held_id(self.schema.ids().relation_id(rel));
+        if id == engine_rel::VACUUMS {
             return Ok(self.vacuum_rows());
         }
-        if id != COMMIT_TIMES && id != SAFE_SNAPSHOTS {
+        if id != engine_rel::COMMIT_TIMES && id != engine_rel::SAFE_SNAPSHOTS {
             return Ok(self
                 .volatile
                 .lock(&self.rt)
@@ -206,7 +203,7 @@ impl<R: Runtime> Database<R> {
         else {
             return Ok(BTreeSet::new());
         };
-        if id == COMMIT_TIMES {
+        if id == engine_rel::COMMIT_TIMES {
             Ok(past
                 .commits(&self.pager)?
                 .into_iter()

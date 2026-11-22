@@ -559,13 +559,53 @@ fn a_document_reads_back_as_printed() {
     let printed = print_document(&s, &doc).expect("the document prints");
     assert_eq!(
         format!(
-            "text 2026-10 pins 3 ({hash})\ndata members\n{}\n{}\n",
+            "text 2026-10 pins 3 ({hash})\ndata app::members\n{}\n{}\n",
             r#"Member { user: users.key(1), team: "a" }"#,
             r#"Member { user: users.key(2), team: "b" }"#,
         ),
         printed
     );
     assert_eq!(Ok(doc), read_document(&s, &printed));
+}
+
+/// A document's `data` line names one relation: a name declared in two modules is refused
+/// unqualified and reads qualified.
+#[test]
+fn a_document_names_its_relation_as_ad_hoc_text_does() {
+    let file = |text: &str| {
+        parse_schema(text, Options::default())
+            .ok()
+            .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"))
+    };
+    let s = build(&[
+        (FileId(0), file(SCHEMA)),
+        (
+            FileId(1),
+            file(
+                "module ops\ntype Member = { id: Key members }\nrelation members : Member key id\n",
+            ),
+        ),
+    ])
+    .unwrap_or_else(|ds| panic!("the schema does not build: {ds:?}"));
+    refused_as(
+        read_document::<Tree>(&s, "data members\n"),
+        &ParseError {
+            offset: 4,
+            message: "`members` is declared in modules `app` and `ops`; qualify it".into(),
+        },
+        "at byte 4: `members` is declared in modules `app` and `ops`; qualify it",
+    );
+    refused_as(
+        read_document::<Tree>(&s, "data settings\n"),
+        &ParseError {
+            offset: 4,
+            message: "no `settings` in scope".into(),
+        },
+        "at byte 4: no `settings` in scope",
+    );
+    let doc: Document<Tree> =
+        read_document(&s, "data app::members\n").expect("the qualified name reads");
+    assert_eq!(rel(&s, "members"), doc.relation);
 }
 
 #[test]

@@ -22,6 +22,11 @@ pub enum Broken {
         position: usize,
         relation: String,
     },
+    /// A unique index of the catalog holds neither the key, a declared unique nor an old key.
+    UniqueUnnamed {
+        index: u64,
+        relation: String,
+    },
     KeyNotFields(String),
     ReadOnly,
     ScanPathNotText,
@@ -124,6 +129,12 @@ impl fmt::Display for Broken {
             Broken::DenialNotSet(v) => write!(f, "a denial query returns a set, found {v:?}"),
             Broken::UniqueUnindexed { position, relation } => {
                 write!(f, "unique {position} of relation {relation} has an index")
+            }
+            Broken::UniqueUnnamed { index, relation } => {
+                write!(
+                    f,
+                    "unique index {index} of relation {relation} holds a named unique"
+                )
             }
             Broken::KeyNotFields(relation) => write!(f, "the key of {relation} is fields"),
             Broken::ReadOnly => f.write_str("a read-only transaction runs no write"),

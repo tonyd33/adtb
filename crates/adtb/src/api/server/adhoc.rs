@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use adtb_lang::check::Command;
-use adtb_lang::evolve::{DeployedGrant, Granted};
-use adtb_lang::ids::{CatFunctionId, CatRelId, engine_rel};
+use adtb_lang::evolve::{DeployedGrant, Granted, Privilege};
+use adtb_lang::ids::{CatFieldId, CatFunctionId, CatRelId, engine_field, engine_rel};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{DenialIdx, FnId, RelId};
@@ -16,11 +16,10 @@ use crate::write;
 
 use super::super::cause::Broken;
 use super::super::dump::read_by_dump;
-use super::super::error::qualified;
 use super::super::text::{Issuer, Prepared};
 use super::super::{Engine, Error, RejectReason};
 use super::session::RoleSession;
-use super::tables::{CallOrigin, CallRow, Grant, Tables};
+use super::tables::{CallOrigin, CallRow, Grant, Tables, deployed};
 use super::{Capability, RoleAuthority, denied};
 
 /// The catalog relations the printed schema states.
@@ -42,14 +41,14 @@ const SCHEMA_RELATIONS: [CatRelId; 15] = [
     engine_rel::GRANTS,
 ];
 
-/// The columns whose values reveal rows of constructor relations, each by relation and field.
-const REVEALING: [(CatRelId, &str); 6] = [
-    (engine_rel::FIELD_VALUES, "value"),
-    (engine_rel::CONFLICTS, "keys"),
-    (engine_rel::VERIFY_FINDINGS, "witness"),
-    (engine_rel::PLANS, "text"),
-    (engine_rel::PLANS, "document"),
-    (engine_rel::AUDIT, "changes"),
+/// The columns whose values reveal rows of constructor relations.
+const REVEALING: [CatFieldId; 6] = [
+    engine_field::FIELD_VALUES_VALUE,
+    engine_field::CONFLICTS_KEYS,
+    engine_field::VERIFY_FINDINGS_WITNESS,
+    engine_field::PLANS_TEXT,
+    engine_field::PLANS_DOCUMENT,
+    engine_field::AUDIT_CHANGES,
 ];
 
 /// What a role held when its text was last checked.
@@ -82,7 +81,7 @@ pub(super) fn refused_text(role: &str) -> Error {
 
 impl Holds {
     fn of<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> Result<Holds, Error> {
-        let deployed: Vec<_> = grants.iter().filter_map(Grant::deployed).collect();
+        let deployed = deployed(grants);
         let held = EffectiveGrants::of(&e.schema, &e.source.grants, &deployed, name);
         let covers = |relations: Vec<RelId>| {
             Requirements::whole(&e.schema, relations)
@@ -115,7 +114,6 @@ impl Holds {
     /// stands for a read of a `sys::` relation or `catalog::plans`, and a column revealing rows
     /// needs a read of every row.
     fn lacking(&self, schema: &Schema, needs: &Requirements) -> Vec<Requirement> {
-        let revealing = revealing(schema);
         let mut out: Vec<_> = needs
             .missing(&self.grants, Mode::Ordinary)
             .into_iter()
@@ -125,9 +123,7 @@ impl Holds {
             out.extend(
                 needs
                     .iter()
-                    .filter(
-                        |r| matches!(r, Requirement::ReadField(_, f) if revealing.contains(&f.raw())),
-                    )
+                    .filter(|r| matches!(r, Requirement::ReadField(_, f) if REVEALING.contains(f)))
                     .cloned(),
             );
         }
@@ -165,8 +161,14 @@ impl Holds {
         )
     }
 
-    /// Returns `err` with what the role may not read taken out of a violation's report.
-    pub(super) fn redact<R: Runtime>(&self, e: &Engine<R>, err: Error) -> Error {
+    /// Returns `err` with what the role may not read taken out of a violation's report, the
+    /// statement refused having violated `violated`.
+    pub(super) fn redact<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        err: Error,
+        violated: Option<write::Violated>,
+    ) -> Error {
         let Error::Rejected { reason } = err else {
             return err;
         };
@@ -176,11 +178,14 @@ impl Holds {
                 report,
                 redacted,
             } => {
-                let named = e.db.denial_named(&constraint);
-                let visible = match named.map(|d| self.reads_denial(e, d)) {
-                    Some(Ok(visible)) => visible,
-                    Some(Err(b)) => return Error::internal(Broken::Write(b)),
-                    None => false,
+                let visible = match violated {
+                    Some(write::Violated::Other(write::Violator::Denial(d))) => {
+                        match self.reads_denial(e, d) {
+                            Ok(visible) => visible,
+                            Err(b) => return Error::internal(Broken::Write(b)),
+                        }
+                    }
+                    _ => false,
                 };
                 if visible {
                     RejectReason::Violated {
@@ -198,11 +203,11 @@ impl Holds {
                 }
             }
             RejectReason::KeyViolation { relation, key } => {
-                let held = (0..e.schema.relations.len() as u32)
-                    .map(RelId)
-                    .find(|r| qualified(&e.schema, *r) == relation)
-                    .and_then(|r| Requirements::whole(&e.schema, [r]).ok())
-                    .is_some_and(|needs| self.lacking(&e.schema, &needs).is_empty());
+                let held = match violated {
+                    Some(write::Violated::Key(r)) => Requirements::whole(&e.schema, [r])
+                        .is_ok_and(|needs| self.lacking(&e.schema, &needs).is_empty()),
+                    _ => false,
+                };
                 RejectReason::KeyViolation {
                     relation,
                     key: if held { key } else { String::new() },
@@ -219,16 +224,19 @@ fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTr
     grants
         .iter()
         .filter(|g| {
-            g.grantee == name && g.privilege == "call" && !g.dormant && g.kind == GrantKind::Log
+            g.grantee == name
+                && g.privilege == Privilege::Call
+                && !g.dormant
+                && g.kind == GrantKind::Log
         })
-        .filter_map(
-            |g| match Granted::read_target(&e.schema, "call", g.target.as_deref()?) {
+        .filter_map(|g| {
+            match Granted::read_target(&e.schema, Privilege::Call, g.target.as_deref()?) {
                 Some(Granted::CallFn(id)) => {
                     e.schema.ids().function_of(CatFunctionId::from_raw(id))
                 }
                 _ => None,
-            },
-        )
+            }
+        })
         .collect()
 }
 
@@ -243,7 +251,7 @@ fn no_identity(e: permission::Error) -> Error {
 pub(in super::super) fn holds_monitor(deployed: &[DeployedGrant], role: &str) -> bool {
     deployed.iter().any(|g| {
         g.grantee == role
-            && g.privilege == Capability::Monitor.name()
+            && g.privilege == Privilege::Capability(Capability::Monitor)
             && g.target.is_none()
             && !g.dormant
     })
@@ -265,23 +273,6 @@ pub(in super::super) fn monitored(schema: &Schema, r: &Requirement) -> bool {
             .relation(engine_relation(schema, engine_rel::SESSIONS))
             .module
             == schema.relation(rel).module
-}
-
-/// Returns the ids of the fields of [`REVEALING`].
-fn revealing(schema: &Schema) -> BTreeSet<u64> {
-    let mut out = BTreeSet::new();
-    for (relation, field) in REVEALING {
-        let rel = engine_relation(schema, relation);
-        let td = schema.ty(schema.relation(rel).elem_def);
-        out.extend(
-            schema
-                .ids()
-                .type_field_ids(td.id())
-                .filter(|(f, _)| td.field_def(*f).name == *field)
-                .map(|(_, id)| id.raw()),
-        );
-    }
-    out
 }
 
 impl<R: Runtime> RoleAuthority<R> {

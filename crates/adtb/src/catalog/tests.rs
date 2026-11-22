@@ -57,6 +57,7 @@ fn a_stored_migration_that_does_not_apply_is_not_accepted() {
             "module `app` already declares set `shapes.Round`",
             "module `app` already declares fn `area`",
             "module `app` already declares fn `stamp`",
+            "`app::shapes.unique(r) in Circle` is declared twice",
         ],
         why
     );

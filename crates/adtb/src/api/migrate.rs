@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use adtb_lang::evolve::Privilege;
+
 use crate::catalog::{self, Catalog};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
@@ -17,7 +19,7 @@ pub(super) fn migrate<R: Runtime>(
     (pager, txns): (&Pager<R>, &Transactions<R>),
     log: &Log,
     live: &[registered::Live],
-    replay: Option<&BTreeSet<(String, String, String)>>,
+    replay: Option<&BTreeSet<(String, Privilege, String)>>,
 ) -> Result<(), OpenError> {
     let stored = catalog.source().log.len();
     let deployed = catalog.committed_deployed(pager, txns).map_err(corrupt)?;

@@ -28,6 +28,24 @@ pub(super) struct Failure {
     ///
     /// Precondition on a command: one that fails with a serialization failure has taken no effect.
     pub(super) commanded: bool,
+    violated: Option<write::Violated>,
+}
+
+impl Failure {
+    /// Returns the failure `error`, which no violation refused.
+    pub(super) fn new(error: Error, ends: bool, commanded: bool) -> Failure {
+        Failure {
+            error,
+            ends,
+            commanded,
+            violated: None,
+        }
+    }
+
+    /// Returns what the statement violated, when a violation refused it.
+    pub(super) fn violated(&self) -> Option<write::Violated> {
+        self.violated
+    }
 }
 
 /// The failure of a command a call of text runs: the client error, and whether it ends the
@@ -133,18 +151,19 @@ impl<R: Runtime> Engine<R> {
             .db
             .statements_with(tx, text, local, items, &mut between);
         let commanded = !ran.is_empty();
-        let failed = |error, ends| {
+        let failed = |error, ends, violated| {
             Halted::Failed(Failure {
                 error,
                 ends,
                 commanded,
+                violated,
             })
         };
         match (done, refused) {
-            (Err(f), Some(r)) if !f.ends() => Err(failed(r.error, r.ends)),
+            (Err(f), Some(r)) if !f.ends() => Err(failed(r.error, r.ends, None)),
             (Ok(outcomes), _) => p
                 .results(schema, outcomes, ran)
-                .map_err(|e| failed(e, true)),
+                .map_err(|e| failed(e, true, None)),
             (
                 Err(write::Failed {
                     error: write::Error::Blocked { on, heap, rerun },
@@ -154,8 +173,16 @@ impl<R: Runtime> Engine<R> {
             ) => Err(Halted::Blocked { on, heap, rerun }),
             (Err(f), _) => {
                 let ends = f.ends();
+                let violated = match &f.error {
+                    write::Error::Rejected(r) => r.violated(),
+                    _ => None,
+                };
                 let mapped = self.db.fail(f.error);
-                Err(failed(Error::of_write(&self.db, schema, id, mapped), ends))
+                Err(failed(
+                    Error::of_write(&self.db, schema, id, mapped),
+                    ends,
+                    violated,
+                ))
             }
         }
     }

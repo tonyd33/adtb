@@ -1,4 +1,4 @@
-use crate::evolve::{DeployedGrant, GrantTarget, Granted, LogGrant};
+use crate::evolve::{Capability, DeployedGrant, GrantTarget, Granted, LogGrant, Privilege};
 
 use super::*;
 
@@ -17,18 +17,26 @@ impl EffectiveGrants {
             rights(schema, &g.privilege, g.grant_option, &mut relations);
         }
         let deployed = || deployed.iter().filter(|g| g.grantee == role && !g.dormant);
-        for g in deployed().filter(|g| g.privilege != "call") {
-            let held = g
-                .target
-                .as_deref()
-                .and_then(|t| Granted::read_target(schema, &g.privilege, t));
-            if let Some(privilege) = held {
+        for g in deployed() {
+            let (
+                Privilege::Read
+                | Privilege::Insert
+                | Privilege::Update
+                | Privilege::Delete
+                | Privilege::Retag,
+                Some(target),
+            ) = (g.privilege, &g.target)
+            else {
+                continue;
+            };
+            if let Some(privilege) = Granted::read_target(schema, g.privilege, target) {
                 rights(schema, &privilege, g.grant_option, &mut relations);
             }
         }
+        let read_files = Privilege::Capability(Capability::ReadFiles);
         EffectiveGrants {
             relations,
-            read_files: deployed().any(|g| g.privilege == "read_files" && g.target.is_none()),
+            read_files: deployed().any(|g| g.privilege == read_files && g.target.is_none()),
         }
     }
 }

@@ -3,7 +3,7 @@
 
 use std::marker::PhantomData;
 
-use adtb_lang::evolve::{DeployedGrant, GrantRow};
+use adtb_lang::evolve::{DeployedGrant, GrantRow, Privilege};
 use adtb_lang::ids::{engine_ctor as k, engine_rel};
 use adtb_lang::schema::Schema;
 use adtb_lang::schema::prelude::ctor;
@@ -1080,6 +1080,16 @@ impl Decode for RoleRow {
     })];
 }
 
+/// Returns the privilege a row of `catalog::grants` names `name`.
+///
+/// Fail with [`Rot::CatalogRow`] when `name` names none.
+fn privilege(name: &str) -> Result<Privilege, Rot> {
+    Privilege::named(name).ok_or_else(|| Rot::CatalogRow {
+        row: "catalog::grants".into(),
+        detail: format!("names no privilege `{name}`"),
+    })
+}
+
 /// What wrote a row of `catalog::grants`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrantKind {
@@ -1092,7 +1102,7 @@ pub enum GrantKind {
 pub struct RoleGrant {
     id: i64,
     kind: GrantKind,
-    privilege: String,
+    privilege: Privilege,
     target: Option<String>,
     grantee: String,
     grantor: String,
@@ -1114,7 +1124,7 @@ impl RoleGrant {
         GrantRow {
             grantor: &self.grantor,
             grantee: &self.grantee,
-            privilege: &self.privilege,
+            privilege: self.privilege,
             target: self.target.as_deref(),
             grant_option: self.grant_option,
             dormant: self.dormant,
@@ -1183,7 +1193,7 @@ impl Decode for RoleGrant {
                 k::GRANT_DEPLOYMENT => GrantKind::Deployment,
                 other => unlisted(other),
             },
-            privilege: r.text(GRANT_PRIVILEGE).to_owned(),
+            privilege: privilege(r.text(GRANT_PRIVILEGE))?,
             target: r.optional_text(GRANT_TARGET).map(str::to_owned),
             grantee: r.text(GRANT_GRANTEE).to_owned(),
             grantor: r.text(GRANT_GRANTOR).to_owned(),

@@ -173,3 +173,23 @@ fn each_engine_constructor_constant_is_the_engine_constructor_of_its_name() {
         );
     }
 }
+
+#[test]
+fn each_engine_field_constant_is_the_one_field_of_its_name_in_its_relation() {
+    let s = build(&[]).expect("the engine's schema builds");
+    for &(module, relation, field, id) in engine_field::NAMED {
+        let rel = s
+            .relations
+            .iter()
+            .position(|r| r.name == relation && s.module(r.module).name == module)
+            .unwrap_or_else(|| panic!("{module}::{relation} is an engine relation"));
+        let td = s.ty(s.relation(RelId(rel as u32)).elem_def);
+        let named: Vec<CatFieldId> = s
+            .ids()
+            .type_field_ids(td.id())
+            .filter(|(f, _)| td.field_def(*f).name == field)
+            .map(|(_, id)| id)
+            .collect();
+        assert_eq!(vec![id], named, "{module}::{relation}.{field}");
+    }
+}

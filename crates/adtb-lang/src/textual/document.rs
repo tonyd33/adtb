@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use super::read::{ParseError, Reader};
 use super::{Form, PrintError, Textual, print};
+use crate::ast::{Ident, QName};
+use crate::resolve::{Visible, lookup_relation};
 use crate::schema::Schema;
+use crate::span::Span;
 use crate::types::RelId;
 
 /// The first line of a versioned document: the edition of the textual syntax and the schema
@@ -67,7 +70,8 @@ impl Reader<'_> {
 }
 
 /// Read a document: an optional header line `text EDITION pins VERSION (HASH)`, then
-/// `data RELATION`, then the rows of the relation in the textual syntax, in any order.
+/// `data RELATION`, then the rows of the relation in the textual syntax, in any order. An
+/// unqualified relation name resolves as in ad hoc text.
 pub fn read_document<V: Textual>(schema: &Schema, text: &str) -> Result<Document<V>, ParseError> {
     let mut r = Reader::new(text);
     r.ws();
@@ -82,20 +86,30 @@ pub fn read_document<V: Textual>(schema: &Schema, text: &str) -> Result<Document
         return r.fail("expected `data`");
     }
     let at = r.pos;
-    let first = r.ident()?;
-    let (module, name) = if r.src[r.pos..].starts_with("::") {
+    let ident = |text: &str| Ident {
+        text: text.to_string(),
+        span: Span::default(),
+    };
+    let first = ident(r.ident()?);
+    let name = if r.src[r.pos..].starts_with("::") {
         r.pos += 2;
-        (Some(first), r.ident()?)
+        QName {
+            module: Some(first),
+            name: ident(r.ident()?),
+        }
     } else {
-        (None, first)
+        QName {
+            module: None,
+            name: first,
+        }
     };
-    let Some(i) = schema.relations.iter().position(|d| {
-        d.name == name && module.is_none_or(|m| schema.modules[d.module.0 as usize].name == m)
-    }) else {
-        r.pos = at;
-        return r.fail(format!("no relation `{name}`"));
+    let rel = match lookup_relation(schema, &Visible::all(schema), &name) {
+        Ok(rel) => rel,
+        Err(e) => {
+            r.pos = at;
+            return r.fail(e);
+        }
     };
-    let rel = RelId(i as u32);
     let form = Form::of(schema, &schema.relation(rel).elem);
     let mut rows = BTreeSet::new();
     while !r.at_end() {
@@ -122,7 +136,11 @@ pub fn print_document<V: Textual>(
             h.edition, h.version, h.hash
         ));
     }
-    out.push_str(&format!("data {}\n", r.name));
+    out.push_str(&format!(
+        "data {}::{}\n",
+        schema.module(r.module).name,
+        r.name
+    ));
     for row in &doc.rows {
         out.push_str(&print(row, &form)?);
         out.push('\n');

@@ -8,7 +8,7 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 use crate::catalog::{IndexKeys, IndexSpec};
 use crate::exec::types::ctors;
 use crate::exec::{Conv, Routes, conv};
-use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, declared_elements};
+use crate::plan::{Catalog, HeapId, IndexDesc, IndexId};
 
 use super::{Broken, Error, Rot};
 
@@ -46,8 +46,8 @@ pub struct Indexed {
     pub desc: IndexDesc,
     pub clause: String,
     pub keys: IndexKeys,
-    /// The canonical name of the unique it holds, or of the key.
-    pub name: Option<String>,
+    /// The canonical name of the key or unique it holds; `None` for an index that holds none.
+    pub unique: Option<String>,
 }
 
 /// A declared unique of a relation variable.
@@ -170,12 +170,11 @@ pub fn rels(
                 .scope
                 .clone()
                 .unwrap_or_else(|| (0..cs.len() as u32).collect());
-            let elements = declared_elements(i, ix);
-            let index = desc
-                .indexes
-                .iter()
-                .find(|d| d.unique && d.ctors == scope && d.elements == elements)
-                .map(|d| d.id)
+            let index = schema
+                .ids()
+                .index_id(*rel, i)
+                .map(|id| IndexId(id.raw()))
+                .filter(|id| desc.indexes.iter().any(|d| d.unique && d.id == *id))
                 .ok_or_else(|| Broken::UniqueUnindexed {
                     position: i,
                     relation: r.name.clone(),
@@ -190,32 +189,37 @@ pub fn rels(
         let mut indexes = Vec::new();
         for d in &desc.indexes {
             let keys = IndexKeys::new(schema, Some(normal), *rel, &d.ctors, &d.elements)?;
-            let mut name = if d.id == desc.key_index {
-                Some(format!("{}.key", qualified(schema, *rel)))
-            } else {
-                uniques
-                    .iter()
-                    .find(|u| u.index == d.id)
-                    .map(|u| u.name.clone())
-            };
-            let clause = match (specs.get(&d.id.0), d.fields()) {
-                (Some(spec), _) => spec.clause.clone(),
+            let (clause, old_key) = match (specs.get(&d.id.0), d.fields()) {
+                (Some(spec), _) => (spec.clause.clone(), false),
                 (None, Some(fields)) if d.unique => {
                     let fields = fields.into_iter().map(str::to_string).collect();
-                    let clause = IndexSpec::key(schema, *rel, d.id.0, fields).clause;
-                    name = Some(format!("{}.{clause}", qualified(schema, *rel)));
-                    clause
+                    (IndexSpec::key(schema, *rel, d.id.0, fields).clause, true)
                 }
                 (None, _) => panic!(
                     "index {} of relation {} is neither declared nor an old key",
                     d.id.0, r.name
                 ),
             };
+            let unique = if d.id == desc.key_index {
+                Some(format!("{}.key", qualified(schema, *rel)))
+            } else if let Some(u) = uniques.iter().find(|u| u.index == d.id) {
+                Some(u.name.clone())
+            } else if !d.unique {
+                None
+            } else if old_key {
+                Some(format!("{}.{clause}", qualified(schema, *rel)))
+            } else {
+                return Err(Broken::UniqueUnnamed {
+                    index: d.id.0,
+                    relation: r.name.clone(),
+                }
+                .into());
+            };
             let indexed = Indexed {
                 desc: d.clone(),
                 clause,
                 keys,
-                name,
+                unique,
             };
             indexes.push((d.id, indexed));
         }

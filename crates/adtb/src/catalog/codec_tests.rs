@@ -1,3 +1,4 @@
+use adtb_lang::evolve::Privilege;
 use adtb_lang::ids::{CatCtorId, engine_ctor as k};
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::schema::{self, ENGINE_SRC};
@@ -388,7 +389,7 @@ impl Sampled for RoleGrant {
             let want = RoleGrant {
                 id: 5,
                 kind,
-                privilege: "read".into(),
+                privilege: Privilege::Read,
                 target: target.map(str::to_owned),
                 grantee: "web".into(),
                 grantor: "owner".into(),

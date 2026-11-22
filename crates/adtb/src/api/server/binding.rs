@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use adtb_lang::evolve::{Granted, target_covers};
+use adtb_lang::evolve::{Granted, Privilege, target_covers};
 use adtb_lang::types::Ty;
 
 use crate::catalog::codec::GrantKind;
@@ -83,18 +83,18 @@ fn holds_call<R: Runtime>(
     let call = format!("{}::{}", target.bundle, target.query);
     grants
         .iter()
-        .filter(|g| g.grantee == role && g.privilege == "call" && !g.dormant)
+        .filter(|g| g.grantee == role && g.privilege == Privilege::Call && !g.dormant)
         .any(|g| {
             let row = g.target.as_deref();
             match target.function {
                 Some(id) => {
                     g.kind == GrantKind::Log
-                        && row.and_then(|t| Granted::read_target(&e.schema, "call", t))
+                        && row.and_then(|t| Granted::read_target(&e.schema, Privilege::Call, t))
                             == Some(Granted::CallFn(id))
                 }
                 None => {
                     g.kind == GrantKind::Deployment
-                        && target_covers(&e.schema, calls, "call", row, Some(&call))
+                        && target_covers(&e.schema, calls, Privilege::Call, row, Some(&call))
                 }
             }
         })

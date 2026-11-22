@@ -50,7 +50,7 @@ use adtb_lang::ids::held_id;
 use adtb_lang::kernel::{Terms, Tm, ValidTerms, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Committed;
-use adtb_lang::types::{DenialIdx, RelId};
+use adtb_lang::types::RelId;
 use adtb_sys::lock::{Lock, Ranked};
 
 use crate::catalog::{IndexSpec, Structures};
@@ -74,6 +74,7 @@ pub use adtb_lang::schema::Stage;
 pub use adtb_store::panic_text;
 pub use broken::{Broken, TermKind, detail};
 pub use delta::{CheckPlan, Part};
+pub use eval::{Violated, Violator};
 pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
@@ -98,6 +99,7 @@ pub(crate) use sequence::full_counter_page;
 pub enum Rejection {
     /// `constraint` is the violated constraint's name; `report` the rows its query returns.
     Violated {
+        violator: Violator,
         constraint: String,
         report: BTreeSet<Val>,
     },
@@ -801,14 +803,6 @@ impl<R: Runtime> Database<R> {
     /// Returns the normal program of the schema the database runs.
     pub fn normal(&self) -> &NormalProgram {
         &self.normal
-    }
-
-    /// Returns the constraint or check whose violation's refusal names it `name`.
-    pub fn denial_named(&self, name: &str) -> Option<DenialIdx> {
-        self.denials
-            .iter()
-            .find(|d| d.name == name)
-            .map(check::Denial::of)
     }
 
     /// Returns the files file scans read and exports write.

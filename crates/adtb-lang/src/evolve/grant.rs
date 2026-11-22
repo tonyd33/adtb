@@ -336,9 +336,8 @@ impl Stated {
         (self.privilege, self.covered)
     }
 
-    /// Returns the name of the privilege, as `catalog::grants` writes it.
-    pub fn privilege_name(&self) -> &'static str {
-        self.privilege.privilege_name()
+    pub fn privilege(&self) -> Privilege {
+        self.privilege.privilege()
     }
 
     /// Returns whether the privilege names the relation of catalog id `relation`.
@@ -619,12 +618,12 @@ impl Resolving<'_> {
                     "a bundle call grant is deployment state, an ad hoc statement, never an operator in a migration",
                 )]);
             }
-            ast::Privilege::Capability(c) => {
+            ast::Privilege::Capability(c, span) => {
                 return Err(vec![Diag::new(
-                    c.span,
+                    *span,
                     format!(
                         "the capability grant `{}` is deployment state, an ad hoc statement, never an operator in a migration",
-                        c.text
+                        c.name()
                     ),
                 )]);
             }
@@ -668,7 +667,7 @@ impl CallSignatures for NoCalls {
 /// What a deployment grant gives.
 #[derive(Clone, Debug)]
 pub enum DeploymentGrant {
-    Capability(String),
+    Capability(Capability),
     /// A call grant on a bundle, by its name.
     Bundle(String),
     /// A call grant on a query of a bundle, by its bundle and query names.
@@ -688,7 +687,7 @@ pub enum DeploymentGrant {
 /// Fail when `p` is an operator privilege or names a family and no query.
 pub fn deployment_grant(schema: &Schema, text: &str, p: &ast::Privilege) -> R<DeploymentGrant> {
     Ok(match p {
-        ast::Privilege::Capability(c) => DeploymentGrant::Capability(c.text.clone()),
+        ast::Privilege::Capability(c, _) => DeploymentGrant::Capability(*c),
         ast::Privilege::Call(ast::CallTarget::Bundle(b), query) => {
             let bundle = format!("{}-{}", b.family, b.version);
             match query {
@@ -742,7 +741,7 @@ fn system_privilege(
 /// What a deployment revoke matches among rows of `catalog::grants`.
 #[derive(Clone, Debug)]
 pub enum DeploymentRevoke {
-    Capability(String),
+    Capability(Capability),
     /// A call grant on a bundle or one of its queries, by its target text.
     Call(String),
     /// A family call grant written without a signature, by `FAMILY::q`.
@@ -765,7 +764,7 @@ fn lexed(text: &str) -> Vec<String> {
 /// Fail when `p` is an operator privilege.
 pub fn deployment_revoke(schema: &Schema, text: &str, p: &ast::Privilege) -> R<DeploymentRevoke> {
     Ok(match p {
-        ast::Privilege::Capability(c) => DeploymentRevoke::Capability(c.text.clone()),
+        ast::Privilege::Capability(c, _) => DeploymentRevoke::Capability(*c),
         ast::Privilege::Call(ast::CallTarget::Bundle(b), query) => {
             let bundle = format!("{}-{}", b.family, b.version);
             DeploymentRevoke::Call(
@@ -794,14 +793,13 @@ pub fn deployment_revoke(schema: &Schema, text: &str, p: &ast::Privilege) -> R<D
 }
 
 impl DeploymentRevoke {
-    /// Returns the name of the privilege this revoke names.
-    pub fn privilege(&self) -> &str {
+    pub fn privilege(&self) -> Privilege {
         match self {
-            DeploymentRevoke::Capability(c) => c,
+            DeploymentRevoke::Capability(c) => Privilege::Capability(*c),
             DeploymentRevoke::Call(_)
             | DeploymentRevoke::Family(_)
-            | DeploymentRevoke::FamilyAt(..) => "call",
-            DeploymentRevoke::Relation(s) => s.privilege.privilege_name(),
+            | DeploymentRevoke::FamilyAt(..) => Privilege::Call,
+            DeploymentRevoke::Relation(s) => s.privilege.privilege(),
         }
     }
 
@@ -812,7 +810,7 @@ impl DeploymentRevoke {
         &self,
         schema: &Schema,
         calls: &dyn CallSignatures,
-        privilege: &str,
+        privilege: Privilege,
         target: Option<&str>,
     ) -> bool {
         if privilege != self.privilege() {
@@ -886,7 +884,7 @@ fn bundle_declares(calls: &dyn CallSignatures, family: &str, bundle: &str) -> bo
 pub fn target_covers(
     schema: &Schema,
     calls: &dyn CallSignatures,
-    privilege: &str,
+    privilege: Privilege,
     by: Option<&str>,
     row: Option<&str>,
 ) -> bool {
@@ -896,7 +894,7 @@ pub fn target_covers(
 fn covering(
     schema: &Schema,
     calls: &dyn CallSignatures,
-    privilege: &str,
+    privilege: Privilege,
     by: Option<&str>,
     row: Option<&str>,
 ) -> Option<bool> {
@@ -906,7 +904,7 @@ fn covering(
     if by == row {
         return Some(true);
     }
-    if privilege == "call" {
+    if privilege == Privilege::Call {
         if row.strip_prefix(by).is_some_and(|q| q.starts_with("::")) {
             return Some(true);
         }
@@ -943,7 +941,7 @@ pub const OWNER_ROLE: &str = "owner";
 pub struct GrantRow<'a> {
     pub grantor: &'a str,
     pub grantee: &'a str,
-    pub privilege: &'a str,
+    pub privilege: Privilege,
     pub target: Option<&'a str>,
     pub grant_option: bool,
     pub dormant: bool,
@@ -953,7 +951,7 @@ pub struct GrantRow<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeployedGrant {
     pub grantee: String,
-    pub privilege: String,
+    pub privilege: Privilege,
     pub target: Option<String>,
     pub grant_option: bool,
     pub dormant: bool,
@@ -1001,7 +999,7 @@ pub fn closes_option_cycle(
     let overlaps = |e: &GrantRow<'_>| {
         let either = |by, row| covering(schema, calls, new.privilege, by, row).unwrap_or(true);
         let whole = |family: Option<&str>, bundle: Option<&str>| {
-            new.privilege == "call"
+            new.privilege == Privilege::Call
                 && family
                     .zip(bundle)
                     .is_some_and(|(f, b)| bundle_declares(calls, f, b))

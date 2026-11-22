@@ -16,7 +16,7 @@ use crate::{
     ArchiveTarget, CallOptions, Called, Capability, Database, Error, FatalReason, Log, OpenOptions,
     Position, Registration, RejectReason, RestorePoint, TxnOptions, restore_in, restore_report_in,
 };
-use adtb_lang::evolve::Source;
+use adtb_lang::evolve::{Privilege, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime, Struck};
 use adtb_testkit::corpus;
@@ -481,7 +481,7 @@ fn assert_dormant(rt: &SimRuntime, (from, to): (&str, &str), owner: bool) {
     let dormant = Dormant {
         id: id["grants.key(".len()..id.len() - 1].parse().unwrap(),
         grantee: "web".to_owned(),
-        privilege: "read".to_owned(),
+        privilege: Privilege::Read,
         target: "app::users frozen (id, name)".to_owned(),
     };
     assert_eq!(vec![dormant], got.unwrap().dormant, "{from}");

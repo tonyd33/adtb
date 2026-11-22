@@ -17,8 +17,6 @@ use crate::vacuum::{Pacer, Phase, Progress, Step};
 
 use super::{Database, Error, Stop, VacuumHold};
 
-pub(super) const VACUUMS: u64 = 334;
-
 /// The longest a vacuum sleeps before it looks again at what stops it.
 const NAP: Duration = Duration::from_millis(100);
 

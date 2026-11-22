@@ -8,11 +8,11 @@ impl Builder<'_> {
         });
     }
 
-    fn module_id(&mut self, name: &str) -> ModuleId {
+    /// Returns the module `name`, declaring it, an engine module when `engine`, if it is new.
+    fn module_id(&mut self, name: &str, engine: bool) -> ModuleId {
         if let Some(m) = self.schema.module_named(name) {
             return m;
         }
-        let engine = self.schema.modules.is_empty() || ENGINE_MODULES.contains(&name);
         self.schema.defs_mut().modules.push(ModuleDef {
             name: name.to_string(),
             engine,
@@ -60,6 +60,31 @@ impl Builder<'_> {
         self.check_recursion();
         self.check_references();
         self.check_ordered();
+        self.check_unique_names();
+    }
+
+    /// Refuse a unique whose canonical name an earlier unique of its relation has.
+    fn check_unique_names(&mut self) {
+        let mut errs = Vec::new();
+        for (r, rel) in self.schema.relations.iter().enumerate() {
+            let mut seen = BTreeSet::new();
+            for (i, ix) in rel.indexes.iter().enumerate() {
+                let Some(name) = ix
+                    .unique
+                    .then(|| self.schema.field_unique_name(RelId(r as u32), i))
+                    .flatten()
+                else {
+                    continue;
+                };
+                if !seen.insert(name.clone()) {
+                    let span = ix.fields.first().map_or(Span::default(), |f| f.span);
+                    errs.push((rel.file, span, format!("`{name}` is declared twice")));
+                }
+            }
+        }
+        for (file, span, msg) in errs {
+            self.err(file, span, msg);
+        }
     }
 
     fn declare_ahead(&mut self) {
@@ -548,8 +573,8 @@ impl<'a> Builder<'a> {
         for (file, sf) in self.files {
             let file = *file;
             let engine = file.is_engine();
-            let module = self.module_id(&sf.module.text);
-            if !engine && self.schema.module(module).engine {
+            let module = self.module_id(&sf.module.text, engine);
+            if !engine && (self.schema.module(module).engine || reserved_module(&sf.module.text)) {
                 let msg = format!("no module may be named `{}`", sf.module.text);
                 self.err(file, sf.module.span, msg);
             }
@@ -661,7 +686,7 @@ impl<'a> Builder<'a> {
         let engine = file.is_engine();
         let id = RelId(d.relations.len() as u32);
         let home = match &r.name.module {
-            Some(m) if engine => self.module_id(&m.text),
+            Some(m) if engine => self.module_id(&m.text, true),
             Some(_) => {
                 self.err(
                     file,

@@ -58,6 +58,7 @@ impl Broken {
             | Broken::DuplicateKey(_)
             | Broken::DenialNotSet(_)
             | Broken::UniqueUnindexed { .. }
+            | Broken::UniqueUnnamed { .. }
             | Broken::KeyNotFields(_)
             | Broken::ReadOnly
             | Broken::ScanPathNotText
