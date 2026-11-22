@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::check::ty::subtype;
-use crate::evolve::Resolved;
+use crate::evolve::{Failed, Resolved};
 use crate::ids::{CatFunctionId, CatIndexId, CatRelId};
 use crate::kernel::{Agg, Build, Conflict, Kind, Prim, Terms, Tm, Var};
 use crate::schema::{DefaultValue, Schema};
@@ -1180,9 +1180,11 @@ impl<'p, 'a> Walk<'p, 'a> {
                 format!("it writes no `{name}`, which has no default and no fill"),
             ));
         };
-        let blamed = |u: super::Untranslatable| super::Untranslatable {
-            operator: u.operator.or_else(|| Some(op.clone())),
-            ..u
+        let blamed = |f: Failed<super::Untranslatable>| {
+            f.map_refused(|u| super::Untranslatable {
+                operator: u.operator.or_else(|| Some(op.clone())),
+                ..u
+            })
         };
         let at = self.p.over(&fun.schema, Some(&written), ahead);
         let mut w = Walk::new(&at, fun.query.terms());

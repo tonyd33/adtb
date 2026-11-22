@@ -1,12 +1,16 @@
 use super::*;
 
 impl Cx<'_> {
-    pub(super) fn err<T>(&self, msg: impl Into<String>) -> R<T> {
-        Err(vec![Diag::new(self.span, msg)])
+    pub(super) fn err<T, E: From<Vec<Diag>>>(&self, msg: impl Into<String>) -> Result<T, E> {
+        Err(vec![Diag::new(self.span, msg)].into())
     }
 
-    pub(super) fn err_at<T>(&self, span: Span, msg: impl Into<String>) -> R<T> {
-        Err(vec![Diag::new(span, msg)])
+    pub(super) fn err_at<T, E: From<Vec<Diag>>>(
+        &self,
+        span: Span,
+        msg: impl Into<String>,
+    ) -> Result<T, E> {
+        Err(vec![Diag::new(span, msg)].into())
     }
 
     pub(super) fn slice(&self, span: Span) -> &str {

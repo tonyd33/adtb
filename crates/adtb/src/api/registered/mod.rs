@@ -814,7 +814,8 @@ pub(super) fn readers(
 /// `live` has no translation to the version it gives, or when the owner of a
 /// bundle, other than the schema owner, lacks after it, among its grants and `deployed`, a grant
 /// the translation uses. The refusal names every blocking bundle, in name order. A migration
-/// that does not apply or check is left for the catalog to refuse.
+/// that does not apply or check is left for the catalog to refuse; fail with an internal error
+/// when the migration model fails on it.
 pub(super) fn recheck(
     catalog: &Catalog,
     text: &str,
@@ -827,8 +828,11 @@ pub(super) fn recheck(
     let Ok(file) = parse_migration(text, Options::default()).ok() else {
         return Ok(());
     };
-    let Ok(next) = catalog.source().migrate(&file, text) else {
-        return Ok(());
+    let next = match catalog.source().migrate(&file, text) {
+        Ok(next) => next,
+        Err(f) => {
+            return catalog::model_fault(&f).map_or(Ok(()), |b| Err(internal(Broken::Catalog(b))));
+        }
     };
     let Ok((schema, program)) = next.check() else {
         return Ok(());
@@ -907,7 +911,11 @@ fn translations(
     let hides = c.header.as_ref().is_some_and(|h| h.hides_new);
     let p = match Pinned::new(&c.schema, pin, now, now_source, program, hides) {
         Ok(p) => p,
-        Err(u) => return Ok(Err((first.name.clone(), u))),
+        Err(Refused::Untranslatable(u)) => return Ok(Err((first.name.clone(), u))),
+        Err(Refused::Broken(n)) => return Err(Box::new(Broken::TranslationNotNormal(n))),
+        Err(Refused::Model(why)) => {
+            return Err(Box::new(Broken::Catalog(catalog::Broken::Model(why))));
+        }
     };
     let mut out = Vec::with_capacity(c.entries.len());
     for e in &c.entries {
@@ -922,11 +930,17 @@ fn translations(
             Ok(q) => q,
             Err(Refused::Untranslatable(u)) => return Ok(Err((e.name.clone(), u))),
             Err(Refused::Broken(n)) => return Err(Box::new(Broken::CallNotNormal(n))),
+            Err(Refused::Model(why)) => {
+                return Err(Box::new(Broken::Catalog(catalog::Broken::Model(why))));
+            }
         };
         let (terms, params, body) = match p.query(&q) {
             Ok(q) => q.into_parts(),
             Err(Refused::Untranslatable(u)) => return Ok(Err((e.name.clone(), u))),
             Err(Refused::Broken(n)) => return Err(Box::new(Broken::TranslationNotNormal(n))),
+            Err(Refused::Model(why)) => {
+                return Err(Box::new(Broken::Catalog(catalog::Broken::Model(why))));
+            }
         };
         let mut vars = params.into_iter();
         let mut next = || vars.next().expect("a translation keeps every parameter");

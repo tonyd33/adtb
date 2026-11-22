@@ -482,10 +482,13 @@ fn migrated(s: &Source, text: &str) -> Result<Source, String> {
     let file = parse_migration(text, Options::default())
         .ok()
         .map_err(|ds| format!("{ds:?}"))?;
-    s.migrate(&file, text).map_err(|r| {
-        let ops = r.operators.iter().map(|d| d.message.clone());
-        let recheck = r.recheck.iter().map(|d| d.diag.message.clone());
-        ops.chain(recheck).collect::<Vec<_>>().join("\n")
+    s.migrate(&file, text).map_err(|f| match f {
+        adtb_lang::evolve::Failed::Refused(r) => {
+            let ops = r.operators.iter().map(|d| d.message.clone());
+            let recheck = r.recheck.iter().map(|d| d.diag.message.clone());
+            ops.chain(recheck).collect::<Vec<_>>().join("\n")
+        }
+        adtb_lang::evolve::Failed::Broken(d) => format!("the model fails: {}", d.message),
     })
 }
 

@@ -84,8 +84,8 @@ use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Problem, Report};
 
-pub use broken::Broken;
 use broken::refusal;
+pub use broken::{Broken, model_fault, refused_by, unresolved};
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
@@ -111,7 +111,7 @@ pub use rows::{ElementTexts, IndexSpec, Rows, indexed_fields, indexes};
 pub use rows::{applied, declared};
 pub use validate::Denial;
 
-use admit::{Admitted, Indexing};
+use admit::{Admitted, Indexing, RootsAdmitted, admit_roots};
 use change::Data;
 use history::{Kept, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
@@ -1339,9 +1339,14 @@ struct Freed {
 }
 
 impl<R: Runtime> Migrating<'_, R> {
-    /// Insert `row` into `heap` as `self.x`, as [`insert_row`] does.
-    fn insert(&self, heap: &Heap, row: &[Value]) -> Result<Tid, Error> {
-        insert_row(self.pager, self.txns, heap, self.x, row)
+    /// Insert `rows` into the roots heap `roots` as `self.x`, as [`insert_roots`] does.
+    fn insert_roots(&self, roots: &Heap, rows: &RootsAdmitted) -> Result<(), Error> {
+        insert_roots(self.pager, self.txns, roots, self.x, rows)
+    }
+
+    /// Insert the rows of `rows` into the roots heap `roots` as [`Migrating::insert_all`] does.
+    fn insert_roots_all(&self, roots: &Heap, rows: &RootsAdmitted) -> Result<(), Error> {
+        self.insert_all(roots, rows.rows().iter().map(Ok), |_, _| Ok(()))
     }
 
     /// Insert the rows of `rows` into `heap` as `self.x`, in order, as
@@ -1397,18 +1402,21 @@ impl heap::Abandons for Abandoning {}
 
 impl heap::UncheckedWriter for Abandoning {}
 
-/// Insert `row` into `heap` as transaction `x`, pruning a page found without room before
-/// looking further. Returns its TID.
-fn insert_row<R: Runtime>(
+/// Insert `rows` into the roots heap `roots` as transaction `x`, in order, pruning a page found
+/// without room before looking further.
+fn insert_roots<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
-    heap: &Heap,
+    roots: &Heap,
     x: Xid,
-    row: &[Value],
-) -> Result<Tid, Error> {
-    let mut judge = txns.judge_now(pager, heap.id().0);
-    let put = heap.insert_pruning(pager, x, row, &mut judge);
-    Ok(put.kept(&Abandoning(()))?)
+    rows: &RootsAdmitted,
+) -> Result<(), Error> {
+    for row in rows.rows() {
+        let mut judge = txns.judge_now(pager, roots.id().0);
+        let put = roots.insert_pruning(pager, x, row, &mut judge);
+        put.kept(&Abandoning(()))?;
+    }
+    Ok(())
 }
 
 /// Returns the heap of every constructor of relation `r` among `heaps`.

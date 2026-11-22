@@ -295,3 +295,45 @@ fn a_migration_writing_a_row_past_a_limit_is_refused_in_its_report_and_commits_n
     }
     assert_eq!(6, ran);
 }
+
+/// The length of the stored form of a roots row holding a migration's text of `len` bytes: the
+/// sum's 1-byte tag, the version's 8 bytes, then the text's 2-byte length and its bytes.
+fn roots_migration_row(len: usize) -> usize {
+    1 + 8 + 2 + len
+}
+
+/// A migration whose text passes the value limit where the roots heap stores it is refused,
+/// naming that row, its size and the limit, and commits nothing.
+#[test]
+fn a_migration_whose_text_passes_the_value_limit_is_refused_in_its_report() {
+    let f = Fixture::new("type U = { id: I64 }\nrelation us : U key id");
+    let mut sim = Sim::new(7, Config::default());
+    finished(&mut sim, |rt| {
+        let w = WritePath::of_value_limit(&rt, &f, VALUE_LIMIT as u64);
+        let pager = w.db().pager().clone();
+        drop(w);
+        pager.close();
+        let (pager, _) = Pager::open(rt.clone(), &options(256)).expect("the file opens");
+        pager.steps().lower_value_limit(VALUE_LIMIT as u64);
+        let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).expect("the catalog opens");
+        let version = catalog.source().version;
+        let text = format!(
+            "module app\n-- {}\nadd type W = W1 | W2\n",
+            "y".repeat(VALUE_LIMIT)
+        );
+        let expected = format!(
+            "the roots row holding the text of migration {} is stored in {} bytes, over the value limit of {VALUE_LIMIT}",
+            version + 1,
+            roots_migration_row(text.len())
+        );
+        assert_eq!(
+            Err(Error::Refused(vec![expected])),
+            catalog.migrate(&pager, &txns, &text)
+        );
+        pager.close();
+        let (pager, _) = Pager::open(rt.clone(), &options(256)).expect("the file opens");
+        let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
+        assert_eq!(version, catalog.source().version);
+        pager.close();
+    });
+}

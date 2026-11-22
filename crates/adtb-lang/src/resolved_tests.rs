@@ -460,7 +460,9 @@ fn an_adopted_release_holds_its_data() {
 fn an_adopted_release_whose_data_is_missing_is_refused_at_its_span() {
     let text = "module auth\nadopt tzdb \"2026b\" from \"tz-2026b.tzif\"\n";
     let src = migrated(&first(), text);
-    let ds = src.resolved(2).expect_err("the release data is missing");
+    let Err(Failed::Refused(ds)) = src.resolved(2) else {
+        panic!("the release data is missing");
+    };
     assert_eq!(1, ds.len(), "{ds:?}");
     assert_eq!(
         "the release data `tz-2026b.tzif` is not available",
@@ -488,10 +490,10 @@ fn a_script_holds_its_write_in_canonical_form() {
 #[test]
 fn resolving_a_migration_the_log_lacks_is_refused() {
     assert_eq!(
-        Err(vec![Diag::new(
+        Err(Failed::Refused(vec![Diag::new(
             Span::default(),
             "migration 3 is not in the log"
-        )]),
+        )])),
         first().resolved(3)
     );
 }
@@ -1058,11 +1060,16 @@ fn a_type_naming_what_the_migration_adds_later_is_stored_qualified_in_every_posi
                 let file = parse_migration(&text, Options::default())
                     .ok()
                     .map_err(|e| format!("{e:?}"))?;
-                let src = Source::default().migrate(&file, &text).map_err(|r| {
-                    let refused: Vec<&str> =
-                        r.operators.iter().map(|d| d.message.as_str()).collect();
-                    format!("{refused:?}")
-                })?;
+                let src = Source::default()
+                    .migrate(&file, &text)
+                    .map_err(|f| match f {
+                        Failed::Refused(r) => {
+                            let refused: Vec<&str> =
+                                r.operators.iter().map(|d| d.message.as_str()).collect();
+                            format!("{refused:?}")
+                        }
+                        Failed::Broken(d) => format!("the model fails: {}", d.message),
+                    })?;
                 let ops = src.resolved(1).map_err(|e| format!("{e:?}"))?;
                 Ok::<_, String>(
                     ops[4..4 + operators.len()]

@@ -1,5 +1,5 @@
 use adtb_lang::check::Program;
-use adtb_lang::evolve::Refusal;
+use adtb_lang::evolve::Failed;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::schema::Schema;
 use adtb_lang::span::{Diag, DiagKind, FileDiag};
@@ -33,14 +33,16 @@ pub(crate) fn not_normal(
     }
 }
 
-/// Returns the refusal of stored migration `version` that `r` makes: [`Error::PastLimits`] for a
+/// Returns the refusal of stored migration `version` that `f` makes: [`Error::PastLimits`] for a
 /// body past this build's limits, the model's failure through [`refusal`].
-pub(super) fn unaccepted(version: u64, r: Refusal) -> Error {
-    let ds = r.operators.iter().chain(r.recheck.iter().map(|d| &d.diag));
-    match past_limits(ds) {
-        Some(e) if r.broken().is_none() => e,
-        _ => refusal(r, |why| Error::Unaccepted(version, why)),
-    }
+pub(super) fn unaccepted(version: u64, f: Failed) -> Error {
+    let limits = match &f {
+        Failed::Refused(r) => {
+            past_limits(r.operators.iter().chain(r.recheck.iter().map(|d| &d.diag)))
+        }
+        Failed::Broken(_) => None,
+    };
+    limits.unwrap_or_else(|| refusal(f, |why| Error::Unaccepted(version, why)))
 }
 
 /// Returns the refusal of the stored source at `version` that the checker refuses with `ds`:

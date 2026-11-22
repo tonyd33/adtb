@@ -4,7 +4,7 @@ use super::*;
 use crate::schema::FieldRef;
 
 /// The names of a migration's text, each operand naming an object tied to its id, computed once.
-pub(super) type Spelling = OnceCell<Result<Names, Vec<Diag>>>;
+pub(super) type Spelling = OnceCell<Replaying<Names>>;
 
 /// An operator of migration `logged` being inverted against `before`, the source before it,
 /// `after`, the source it gives, and `start`, the source before the run of operators it ends or
@@ -98,7 +98,7 @@ impl Inverting<'_> {
             .spelling
             .get_or_init(|| self.logged.spelling())
             .as_ref()
-            .map_err(|ds| unresolved(self.op.span, ds))?;
+            .map_err(|f| f.clone().map_refused(|ds| unresolved(self.op.span, &ds)))?;
         let mut out = Spelled::default();
         out.copy(&self.logged.text, range, names, 0);
         Ok(out)
@@ -142,7 +142,8 @@ impl Inverting<'_> {
                         return Err(vec![Diag::new(
                             self.op.span,
                             "the log does not resolve the names of the declaration the operator changes",
-                        )]);
+                        )]
+                        .into());
                     }
                 }
             }
@@ -179,7 +180,7 @@ impl Inverting<'_> {
             .find("type", &m, &p.ty.name.text)
             .ok_or_else(missing)?;
         let Some(Decl::Type(t)) = self.before.parsed(i) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let record = matches!(t.body, ast::TypeBody::Record(_));
         decl_fields(&t)
@@ -194,7 +195,7 @@ impl Inverting<'_> {
                 here && f.name.text == p.field.text
             })
             .map(|(_, f)| (i, f.clone()))
-            .ok_or_else(missing)
+            .ok_or_else(|| missing().into())
     }
 
     /// Returns the whole text of declaration `i` of `before` as [`Inverting::decl_range`] does.
@@ -240,6 +241,7 @@ impl Inverting<'_> {
                 self.op.span,
                 "the log does not hold the declaration the operator removes",
             )]
+            .into()
         })
     }
 
@@ -369,6 +371,7 @@ impl Cx<'_> {
                 self.span,
                 "the log does not hold the object the operator names",
             )]
+            .into()
         })
     }
 
@@ -437,7 +440,9 @@ impl Cx<'_> {
                     return self.err(format!("migration {migration} is not in the log"));
                 };
                 let logged = &self.src.log[k];
-                let names = logged.spelling().map_err(|ds| unresolved(op.span, &ds))?;
+                let names = logged
+                    .spelling()
+                    .map_err(|f| f.map_refused(|ds| unresolved(op.span, &ds)))?;
                 let mut text = Spelled::default();
                 text.copy(&logged.text, 0..logged.text.len(), &names, 0);
                 Ok(vec![Inverse::Replay {
@@ -797,7 +802,7 @@ impl Cx<'_> {
             .find("relation", &m, &relation.name.text)
             .ok_or_else(missing)?;
         let Some(Decl::Relation(rd)) = before.parsed(i) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let ranges =
             clause_ranges(&before.decls[i].text, header(&m).len(), &rd).ok_or_else(missing)?;
@@ -805,7 +810,7 @@ impl Cx<'_> {
             RelationClause::Key(fields, _) => Some((k, fields)),
             _ => None,
         }) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let key = ObjectKey::named(KeyKind::Relation, Owner::Module(m), &relation.name.text);
         let rel = before.ids.get(&key).copied().ok_or_else(missing)?;
@@ -896,13 +901,13 @@ impl Cx<'_> {
             .find("relation", &m, &relation.name.text)
             .ok_or_else(missing)?;
         let Some(Decl::Relation(rd)) = before.parsed(i) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let Some((t, e)) = rd.clauses.iter().find_map(|c| match c {
             RelationClause::Computed(n, t, e) if n.text == field.text => Some((t.span, e.span)),
             _ => None,
         }) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let verb = if matches!(op.kind, OperatorKind::DropComputed(..)) {
             "add"

@@ -39,7 +39,7 @@ fn migration_term(src: &Source, text: &str, from: &str, to: &str) -> String {
         .unwrap_or_else(|e| panic!("{text}\ndoes not parse: {e:?}"));
     let after = src
         .migrate(&m, text)
-        .unwrap_or_else(|r| panic!("{text}\nrefused: {:?} {:?}", r.operators, r.recheck));
+        .unwrap_or_else(|f| panic!("{text}\nrefused: {f:?}"));
     let names = after
         .log
         .last()

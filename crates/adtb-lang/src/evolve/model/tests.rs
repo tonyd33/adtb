@@ -1,5 +1,5 @@
 use super::*;
-use crate::evolve::SourceDecl;
+use crate::evolve::{Failed, SourceDecl};
 use crate::parse::{Options, parse_migration};
 use crate::span::{Diag, Span};
 
@@ -267,7 +267,10 @@ fn recorded(src: &Source, text: &str) -> Recorded {
                 .map(|d| (d.module, flat(&d.text)))
                 .collect()
         })
-        .map_err(|r| r.operators)
+        .map_err(|f| match f {
+            Failed::Refused(r) => r.operators,
+            Failed::Broken(d) => panic!("{text}\nthe model fails: {}", d.message),
+        })
 }
 
 fn arms_source() -> Source {
@@ -388,10 +391,9 @@ fn a_rekey_to_a_key_no_field_holds_is_refused_at_the_recheck() {
     let m = parse_migration(text, Options::default())
         .ok()
         .expect("the migration parses");
-    let refusal = src
-        .record(&m, text, false)
-        .map(|_| ())
-        .expect_err("the rekey is refused");
+    let Err(Failed::Refused(refusal)) = src.record(&m, text, false).map(|_| ()) else {
+        panic!("the rekey is refused");
+    };
     assert_eq!(
         (
             refusal.operators,
@@ -409,49 +411,4 @@ fn a_rekey_to_a_key_no_field_holds_is_refused_at_the_recheck() {
             ],
         )
     );
-}
-
-/// Each clause, rekey and computed field redefinition made while the declarations do not build
-/// is resolved once a later operator makes them build, as that build gives it when a later
-/// operator drops its relation variable, and the migration is accepted.
-#[test]
-fn an_operator_over_declarations_that_do_not_build_resolves_once_they_build() {
-    let src = source(&[
-        ("app", "type T = { id: I64, n: I64 }"),
-        ("app", "relation ts : T key id\n  computed c: I64 = 1"),
-    ]);
-    let fixed = "add field T.zz : I64 fill 0";
-    let cases = [
-        "rekey relation ts key zz",
-        "add unique (zz) in ts",
-        "add index (zz) in ts",
-        "add default ts.zz = 1",
-        "add unique (zz) in ts\nadd computed ts.d : I64 = 1",
-        "add unique (zz) in ts\nredefine computed ts.c : I64 = 2",
-    ];
-    let cases: Vec<String> = cases
-        .iter()
-        .flat_map(|case| {
-            [
-                case.to_string(),
-                format!("{case}\n{fixed}\ndrop relation ts"),
-            ]
-        })
-        .collect();
-    let got: Vec<_> = cases
-        .iter()
-        .map(|case| {
-            let (case, fixed) = match case.strip_suffix("\ndrop relation ts") {
-                Some(_) => (case.as_str(), ""),
-                None => (case.as_str(), fixed),
-            };
-            let text = format!("module app\n{case}\n{fixed}\n");
-            let m = parse_migration(&text, Options::default())
-                .ok()
-                .expect("the migration parses");
-            (case.to_string(), src.record(&m, &text, false).is_ok())
-        })
-        .collect();
-    let want: Vec<_> = cases.iter().map(|case| (case.clone(), true)).collect();
-    assert_eq!(got, want);
 }

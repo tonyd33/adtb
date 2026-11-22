@@ -519,7 +519,13 @@ fn judged(source: &Source, m: &Migration) -> Result<Option<adtb_lang::evolve::Re
     let file = parse_migration(&text, Options::default())
         .ok()
         .map_err(|ds| found("the migration does not parse", format!("{ds:?}")))?;
-    Ok(source.migrate(&file, &text).err())
+    match source.migrate(&file, &text) {
+        Ok(_) => Ok(None),
+        Err(adtb_lang::evolve::Failed::Refused(r)) => Ok(Some(r)),
+        Err(adtb_lang::evolve::Failed::Broken(d)) => {
+            Err(found("the migration model fails", d.message))
+        }
+    }
 }
 
 /// Returns whether the checker admits `m` over `source`, or why its judgement breaks the rule

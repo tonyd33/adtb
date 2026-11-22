@@ -746,7 +746,7 @@ fn a_logged_revert_with_a_fill_no_inverse_takes_folds_and_resolves() {
         .expect("the revert parses");
     let s = s
         .migrate(&m, text)
-        .unwrap_or_else(|r| panic!("a logged revert folds: {:?}", r.operators));
+        .unwrap_or_else(|f| panic!("a logged revert folds: {f:?}"));
     let x = s
         .field_key_id("auth", "T", Some("A"), "x")
         .expect("the field is restored");

@@ -217,12 +217,8 @@ fn migrated(from: &Source, text: &str) -> Source {
     let file = adtb_lang::parse::parse_migration(text, adtb_lang::parse::Options::default())
         .ok()
         .unwrap_or_else(|_| panic!("the migration parses: {text}"));
-    from.migrate(&file, text).unwrap_or_else(|r| {
-        panic!(
-            "the migration applies: {text}\n{:?}\n{:?}",
-            r.operators, r.recheck
-        )
-    })
+    from.migrate(&file, text)
+        .unwrap_or_else(|f| panic!("the migration applies: {text}\n{f:?}"))
 }
 
 fn hex(h: [u8; 32]) -> String {

@@ -18,7 +18,7 @@ use crate::ids::{
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
 use crate::schema::{self, Committed, Schema, TypeDefKind, ValueDef};
-use crate::span::{Diag, DiagKind, FileDiag, FileId, Span};
+use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
 
 mod carry;
@@ -216,23 +216,48 @@ pub struct Refusal {
     pub recheck_from: Vec<Option<Span>>,
     /// The result, whose files `recheck` points into.
     pub result: Option<Box<Source>>,
+    unstepped: Option<usize>,
 }
 
 impl Refusal {
-    /// Returns the refusal of a migration the engine fails on internally, for `d`.
-    fn broken_by(d: Diag) -> Refusal {
-        Refusal {
-            operators: vec![d],
-            ..Refusal::default()
-        }
-    }
-
-    /// Returns the internal failure that stands for this refusal, when the engine failed on the
-    /// migration rather than refusing it.
-    pub fn broken(&self) -> Option<&Diag> {
-        self.operators.iter().find(|d| d.kind == DiagKind::Internal)
+    /// Returns the index of the operator whose steps over the rows fail, when one does.
+    pub fn unstepped(&self) -> Option<usize> {
+        self.unstepped
     }
 }
+
+/// Why a migration, or a migration of the log applied again, does not apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failed<R = Refusal> {
+    Refused(R),
+    /// The migration model fails on the migration: an internal error.
+    Broken(Diag),
+}
+
+impl<R> Failed<R> {
+    /// Returns this failure with `f` applied to its refusal.
+    pub fn map_refused<S>(self, f: impl FnOnce(R) -> S) -> Failed<S> {
+        match self {
+            Failed::Refused(r) => Failed::Refused(f(r)),
+            Failed::Broken(d) => Failed::Broken(d),
+        }
+    }
+}
+
+impl From<String> for Failed<String> {
+    fn from(why: String) -> Failed<String> {
+        Failed::Refused(why)
+    }
+}
+
+impl From<Vec<Diag>> for Failed<Vec<Diag>> {
+    fn from(ds: Vec<Diag>) -> Failed<Vec<Diag>> {
+        Failed::Refused(ds)
+    }
+}
+
+/// The result of applying a migration of the log again, or of what reads it.
+pub type Replaying<T> = Result<T, Failed<Vec<Diag>>>;
 
 fn header(module: &str) -> String {
     format!("module {module}\n")

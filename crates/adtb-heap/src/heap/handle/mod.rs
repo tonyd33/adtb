@@ -598,15 +598,19 @@ impl Heap {
     /// Refuse with `TooLarge` a row past a limit, as [`RowLimits::check`] judges it in the
     /// heap's newest format, `len` the length past the limit.
     pub fn check_row(&self, row: &[Value]) -> Result<(), Error> {
+        Ok(self.oversize(row)?)
+    }
+
+    /// Refuse a row past a limit, as [`RowLimits::check`] judges it in the heap's newest format.
+    pub fn oversize(&self, row: &[Value]) -> Result<(), Oversize> {
         let f = self.current();
-        let checked = oversize(
+        oversize(
             &f.layout,
             f.arrangement,
             self.page_size,
             self.value_limit,
             row,
-        );
-        Ok(checked?)
+        )
     }
 
     fn check_lengths(&self, lengths: impl Iterator<Item = usize>) -> Result<(), Error> {

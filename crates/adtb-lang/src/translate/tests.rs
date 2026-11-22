@@ -3,6 +3,8 @@ use crate::parse::{Options, parse_bundle_body};
 use crate::schema::Committed;
 use crate::signature::{self, Item};
 
+type R<T> = Result<T, Untranslatable>;
+
 const V1: &str = r"module auth
 add module auth
 add type Tier = Free | Paid
@@ -110,11 +112,13 @@ fn translated_to(
     let p = Pinned::new(from, from_source, to, to_source, to_program, hide_new);
     queries
         .iter()
-        .map(|q| match p.as_ref().map_err(Clone::clone)?.query(q) {
-            Ok(n) => Ok(n),
-            Err(Refused::Untranslatable(u)) => Err(u),
-            Err(Refused::Broken(e)) => panic!("the translation of a query is broken: {e:?}"),
-        })
+        .map(
+            |q| match p.as_ref().map_err(Clone::clone).and_then(|p| p.query(q)) {
+                Ok(n) => Ok(n),
+                Err(Refused::Untranslatable(u)) => Err(u),
+                Err(e) => panic!("the translation of a query fails: {e:?}"),
+            },
+        )
         .collect()
 }
 
@@ -1058,10 +1062,10 @@ add relation later : L key id generate sequence
 ";
     let m3 = "module auth\ndrop fn isnone\ndrop relation later\ndrop type L\n";
     assert_eq!(
-        Err(refused(
-            Some("add field User.m: Bool fill isnone(None)".to_string()),
-            "it reaches `later`, which the current version lacks",
-        )),
+        Err(Untranslatable {
+            operator: Some("add field User.m: Bool fill isnone(None)".to_string()),
+            reason: "it reaches `later`, which the current version lacks".to_string(),
+        }),
         translated(&[V1, m2, m3], 1, INSERT_USER).map(drop)
     );
 }

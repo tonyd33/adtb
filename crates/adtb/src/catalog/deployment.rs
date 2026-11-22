@@ -160,10 +160,8 @@ impl Deployment {
         x: Xid,
         facts: &[Fact],
     ) -> Result<(), Error> {
-        for f in facts {
-            let row = RootsRow::Deployment(f.clone());
-            super::insert_row(pager, txns, &self.roots, x, &row.encode())?;
-        }
-        Ok(())
+        let rows = facts.iter().map(|f| RootsRow::Deployment(f.clone()));
+        let rows = super::admit_roots(&self.roots, rows)?;
+        super::insert_roots(pager, txns, &self.roots, x, &rows)
     }
 }

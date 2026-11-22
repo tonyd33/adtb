@@ -1,20 +1,19 @@
 use std::sync::{Arc, OnceLock};
 
 use adtb_lang::evolve::{
-    ArmTarget, Clause, IndexKind, Place, Resolved, ResolvedOp, Source, Target,
+    ArmTarget, Clause, IndexKind, Place, Replaying, Resolved, ResolvedOp, Source, Target,
 };
 use adtb_lang::ids::engine_ctor as k;
 use adtb_lang::schema::Schema;
-use adtb_lang::span::Diag;
 
 use crate::heap::{FieldType, put_uvarint};
 use crate::key::Value;
 
+use super::Error;
 use super::codec::{Codec, Field, Nested, Payload, nullary};
 use super::operators::{
     self as o, MIGRATION_OP_OP, MigrationOpRow, OP_CLAUSE_BODY, OpClauseRow, flag, optional,
 };
-use super::{Broken, Error};
 
 /// A BLAKE3-256 hash.
 pub type Hash = [u8; 32];
@@ -33,7 +32,7 @@ impl VersionHash {
         if let Some(h) = self.0.get() {
             return Ok(*h);
         }
-        let h = version_hash(schema, source).map_err(Broken::Unresolved)?;
+        let h = version_hash(schema, source).map_err(super::unresolved)?;
         Ok(*self.0.get_or_init(|| h))
     }
 
@@ -50,8 +49,9 @@ pub type OperatorRow = (Value, Vec<Value>);
 /// Returns the hash of the version `source` is at: `h(0)` is 32 zero bytes, and `h(n)` the hash
 /// of `h(n - 1)` followed by the encoding of migration `n`'s resolved operators.
 ///
-/// Fail with the diagnostics of the first migration of the log that does not resolve.
-pub fn version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Diag>> {
+/// Fail with the diagnostics of the first migration of the log that does not resolve, or the
+/// migration model's failure on it.
+pub fn version_hash(schema: &Schema, source: &Source) -> Replaying<Hash> {
     chain(schema, source, |_, _| {})
 }
 
@@ -61,7 +61,7 @@ pub fn chain(
     schema: &Schema,
     source: &Source,
     mut each: impl FnMut(&[OperatorRow], Hash),
-) -> Result<Hash, Vec<Diag>> {
+) -> Replaying<Hash> {
     let log = Log::new(schema);
     let mut h = [0; 32];
     for l in &source.log {

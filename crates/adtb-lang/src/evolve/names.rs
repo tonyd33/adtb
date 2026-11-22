@@ -39,18 +39,18 @@ impl Logged {
     /// declaration writes, else in the migration's result. The fields of a dropped unique or index
     /// resolve in the clause they match before the operator. A fill or a routing resolves as the
     /// operator checks it.
-    pub fn names(&self) -> Result<Names, Vec<Diag>> {
-        model::replay(self)?.1
+    pub fn names(&self) -> Replaying<Names> {
+        Ok(model::replay(self)?.1?)
     }
 
     /// Returns the source before this migration's first operator and after each.
-    pub fn states(&self) -> Result<Vec<Source>, Vec<Diag>> {
+    pub fn states(&self) -> Replaying<Vec<Source>> {
         Ok(model::replay(self)?.0)
     }
 
     /// Returns the names of this migration's text as [`Logged::names`] does, with each operand
     /// that names an object tied to its catalog id as [`operands::tie_operands`] resolves it.
-    pub(super) fn spelling(&self) -> Result<Names, Vec<Diag>> {
+    pub(super) fn spelling(&self) -> Replaying<Names> {
         let (states, names, _) = model::replay(self)?;
         let mut names = names?;
         for (k, op) in self.operators.iter().enumerate() {
@@ -63,7 +63,7 @@ impl Logged {
     /// from it, as [`Recorded::steps`] gives them.
     ///
     /// Fail with the refusals of the operators that do not apply, or why the steps fail.
-    pub fn stepped(&self, k: usize) -> Result<(Source, Vec<Step>), Vec<Diag>> {
+    pub fn stepped(&self, k: usize) -> Replaying<(Source, Vec<Step>)> {
         let (mut states, _, mut got) = model::replay(self)?;
         let m = model::logged_file(self);
         let steps = got.op_steps(&m, &self.text).into_iter().nth(k);

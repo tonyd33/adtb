@@ -128,7 +128,10 @@ fn migrate(src: &Source, text: &str) -> Result<Source, Vec<String>> {
     let m = parse_migration(text, Options::default())
         .ok()
         .unwrap_or_else(|e| panic!("{text}\ndoes not parse: {e:?}"));
-    src.accept(&m, text).map_err(|r| {
+    src.accept(&m, text).map_err(|f| {
+        let Failed::Refused(r) = f else {
+            panic!("{text}\nthe model fails: {f:?}");
+        };
         let mut out: Vec<String> = r.operators.into_iter().map(|d| d.message).collect();
         out.extend(r.recheck.into_iter().map(|d| d.diag.message));
         out
@@ -3708,7 +3711,9 @@ add relation teams : Team key id generate sequence";
     assert_eq!(
         (
             Err(Uncommitted::Migrating),
-            Err("a migration is being applied to the source".to_string())
+            Err(Failed::Refused(
+                "a migration is being applied to the source".to_string()
+            ))
         ),
         (
             s.committed().map(drop),
@@ -3774,13 +3779,17 @@ add constructor Identity.Corp { domain: Text, name: Text }
   arm login_present: Corp c -> false
 drop field Identity.Corp.name";
     let m = parse_migration(text, Options::default()).ok().unwrap();
-    let r = running().migrate(&m, text).unwrap_err();
+    let Err(Failed::Refused(r)) = running().migrate(&m, text) else {
+        panic!("the drop is refused");
+    };
     let at = text.find("c.name").unwrap() + 2;
     assert_eq!(1, r.recheck.len(), "{:?}", r.recheck);
     assert_eq!(vec![Some(Span::new(at, at + "name".len()))], r.recheck_from);
     let text = "module auth\ndrop field Identity.Google.gid";
     let m = parse_migration(text, Options::default()).ok().unwrap();
-    let r = running().migrate(&m, text).unwrap_err();
+    let Err(Failed::Refused(r)) = running().migrate(&m, text) else {
+        panic!("the drop is refused");
+    };
     assert!(!r.recheck.is_empty());
     assert_eq!(vec![None; r.recheck.len()], r.recheck_from);
 }
@@ -4150,4 +4159,74 @@ add set Lived of regions = Wild | Town
 define fn f (u: I64) -> Set (Key regions) = from r in regions.Lived select r.p
 add set Every of regions = Wild | Town | Ghost";
     assert_eq!(Ok(()), migrate(&Source::default(), text).map(drop));
+}
+
+/// A failure of the migration model replaying a log is an internal error, never a refusal.
+#[test]
+fn a_failure_of_the_migration_model_is_an_internal_error() {
+    let mut src = Source::default();
+    src.modules.insert("auth".to_string());
+    src.decls.push(SourceDecl {
+        module: "auth".to_string(),
+        text: "type T = { x: Nope }".to_string(),
+    });
+    assert_eq!(
+        Err(crate::signature::ReplayError::Broken {
+            migration: 1,
+            message: "the migration model fails: the source does not lift: no type `Nope`"
+                .to_string(),
+        }),
+        crate::signature::replay_one(&src, 1, "module auth\nadd type U = A").map(drop)
+    );
+}
+
+/// An operator whose steps over the rows fail is refused at its span, wherever the model applies
+/// a migration.
+#[test]
+fn an_operator_whose_steps_over_the_rows_fail_is_refused() {
+    let src = [
+        "module auth
+add module auth
+add type T { id: Key ts } = A { z: Text } | B { z: Text } | C { z: Text, y: Text }
+add relation ts : T key id generate sequence
+add set S of ts = A | B
+add index (z) in ts.S",
+        "module auth\nadd set R2 of ts = B | C\nadd index (z) in ts.R2",
+    ]
+    .into_iter()
+    .fold(Source::default(), |s, text| {
+        migrate(&s, text).unwrap_or_else(|e| panic!("{text}\n{e:?}"))
+    });
+    let text = "module auth\ndrop field T.B.z\nadd field T.B.z: Text fill \"q\"";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let refused = |f: Failed| {
+        let Failed::Refused(r) = f else {
+            panic!("the model fails: {f:?}");
+        };
+        let ops: Vec<(&str, String)> = r
+            .operators
+            .iter()
+            .map(|d| (&text[d.span.range()], d.message.clone()))
+            .collect();
+        (ops, r.recheck.len())
+    };
+    let want = (
+        vec![(
+            "add field T.B.z: Text fill \"q\"",
+            "the operator checks against the schema the operators before it produce, which does \
+             not check: no `z` in scope"
+                .to_string(),
+        )],
+        0,
+    );
+    assert_eq!(
+        [Some(want.clone()), Some(want.clone()), Some(want)],
+        [
+            src.accept(&m, text).err().map(refused),
+            src.migrate(&m, text).err().map(refused),
+            src.record(&m, text, true).err().map(refused),
+        ]
+    );
 }

@@ -194,13 +194,14 @@ impl Source {
     }
 
     /// Apply a migration, numbered one past the current version, and recheck the result.
-    pub fn migrate(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
+    /// Refuse an operator whose steps over the rows fail.
+    pub fn migrate(&self, m: &MigrationFile, text: &str) -> Result<Source, Failed> {
         self.migrate_keeping(m, text, &[])
     }
 
     /// Apply migration text the log does not hold yet as [`Source::migrate`] does, and refuse
     /// what only new text may not state: a `revert` fill no inverse takes.
-    pub fn accept(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
+    pub fn accept(&self, m: &MigrationFile, text: &str) -> Result<Source, Failed> {
         self.migrating(m, text, &[], true, false).map(|(s, ..)| s)
     }
 
@@ -211,7 +212,7 @@ impl Source {
         m: &MigrationFile,
         text: &str,
         kept: &[Kept],
-    ) -> Result<Source, Refusal> {
+    ) -> Result<Source, Failed> {
         self.migrating(m, text, kept, false, false).map(|(s, ..)| s)
     }
 
@@ -225,9 +226,9 @@ impl Source {
         kept: &[Kept],
         accepting: bool,
         naming: bool,
-    ) -> Result<(Source, (Schema, Program), model::Migrated), Refusal> {
+    ) -> Result<(Source, (Schema, Program), model::Migrated), Failed> {
         let got =
-            model::migrated(self, m, text, kept, accepting, naming).map_err(Refusal::broken_by)?;
+            model::migrated(self, m, text, kept, accepting, naming).map_err(Failed::Broken)?;
         let mut refusal = Refusal {
             operators: got.refusals(m),
             ..Refusal::default()
@@ -235,7 +236,9 @@ impl Source {
         let mut next = got.source();
         next.settled();
         let checked = next.check();
+        let failing = got.applies().then(|| got.failing_steps(m)).flatten();
         if got.applies()
+            && failing.is_none()
             && let Ok(checked) = checked
         {
             next.log.push(Logged {
@@ -246,6 +249,10 @@ impl Source {
                 before: Arc::new(self.clone()),
             });
             return Ok((next, checked, got));
+        }
+        if let Some((k, why)) = failing {
+            refusal.unstepped = Some(k);
+            refusal.operators.push(why);
         }
         if let Err(ds) = checked {
             let reported: BTreeSet<String> = refusal
@@ -266,7 +273,7 @@ impl Source {
             refusal.operators.push(got.unchecked(last));
         }
         refusal.result = Some(Box::new(next));
-        Err(refusal)
+        Err(Failed::Refused(refusal))
     }
 }
 

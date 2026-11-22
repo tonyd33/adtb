@@ -20,7 +20,7 @@ use super::readers::{Kind, Pending, Readers, enforcing};
 use super::root::{self, Changing};
 use super::roots::RootsRow;
 use super::rows::{ElementTexts, IndexSpec};
-use super::{Broken, Catalog, Error, Migrating, ROOTS, delete_rows, indexes};
+use super::{Broken, Catalog, Error, Migrating, ROOTS, admit_roots, delete_rows, indexes};
 
 /// The first index id of an old key held pending. The log allocates index ids below it.
 const HELD_KEY_INDEXES: u64 = 1 << 31;
@@ -166,18 +166,17 @@ pub(super) fn add(
 }
 
 /// Returns the roots rows holding each drop of `pending` for each of its holders.
-fn stored(pending: &[Pending]) -> Vec<Vec<Value>> {
+fn stored(pending: &[Pending]) -> Vec<RootsRow> {
     let mut out = Vec::new();
     for p in pending {
         for holder in &p.blocking {
-            let row = RootsRow::Held {
+            out.push(RootsRow::Held {
                 dropped: p.dropped,
                 module: p.module.clone(),
                 name: p.name.clone(),
                 holder: holder.clone(),
                 kind: p.kind.clone(),
-            };
-            out.push(row.encode());
+            });
         }
     }
     out
@@ -195,13 +194,11 @@ pub(super) fn rewrite<R: Runtime>(
     let gone: Vec<Vec<Value>> = before
         .iter()
         .filter(|r| !after.contains(r))
-        .cloned()
+        .map(RootsRow::encode)
         .collect();
     delete_rows(m, roots, &gone)?;
-    for row in after.iter().filter(|r| !before.contains(r)) {
-        m.insert(roots, row)?;
-    }
-    Ok(())
+    let added = after.into_iter().filter(|r| !before.contains(r));
+    m.insert_roots(roots, &admit_roots(roots, added)?)
 }
 
 impl Readers {

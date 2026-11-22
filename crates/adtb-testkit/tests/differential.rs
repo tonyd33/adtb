@@ -1340,12 +1340,15 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
         let p = adtb_lang::translate::Pinned::new(
             &schema, &source, &later.1, &later.0, &later.2, false,
         );
-        p.is_ok_and(|p| {
-            normal(&schema, &program, body).is_some_and(|q| match p.query(&q) {
-                Ok(_) => true,
-                Err(Refused::Untranslatable(_)) => false,
-                Err(Refused::Broken(e)) => panic!("`{body}` translates to a broken term: {e:?}"),
-            })
+        let p = match p {
+            Ok(p) => p,
+            Err(Refused::Untranslatable(_)) => return false,
+            Err(e) => panic!("the translation to the later version fails: {e:?}"),
+        };
+        normal(&schema, &program, body).is_some_and(|q| match p.query(&q) {
+            Ok(_) => true,
+            Err(Refused::Untranslatable(_)) => false,
+            Err(e) => panic!("`{body}` fails to translate: {e:?}"),
         })
     };
     let hash: String = adtb::version_hash(&schema, &source)

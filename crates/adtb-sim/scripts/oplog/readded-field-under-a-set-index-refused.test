@@ -1,0 +1,33 @@
+# A field dropped and added again under an index over a set holding another constructor with
+# that field is refused naming the operator whose rows do not map from the schema the drop leaves.
+seed 52
+
+migrate
+  module auth
+  add module auth
+  add type U = { id: Key us, label: Text }
+  add type Q = Q1 | Q2
+  add type T { id: Key ts, n: Text, o: Text, h: Key us }
+    = A { x: Text, z: Text, q: Q }
+    | B { x: Text, z: Text, q: Q }
+    | C { z: Text, y: Text }
+  add relation us : U key id generate sequence
+  add relation ts : T
+    key id generate sequence
+    unique (x) in A
+    unique (z) in A
+    unique (n) in B
+    index (n) in (A | B)
+    default A.x = "a"
+  add set S of ts = A | B
+  add index (z) in ts.S
+
+migrate
+  module auth
+  add set R2 of ts = B | C
+  add index (z) in ts.R2
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "add field T.B.z: Text fill \"q\"", detail: "the operator checks against the schema the operators before it produce, which does not check: no `z` in scope" } } }
+  module auth
+  drop field T.B.z
+  add field T.B.z: Text fill "q"

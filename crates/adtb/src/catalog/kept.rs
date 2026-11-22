@@ -11,7 +11,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::roots::{self, RootsRow};
-use super::{Catalog, Error, ROOTS, insert_row, visible};
+use super::{Catalog, Error, ROOTS, admit_roots, insert_roots, visible};
 
 /// The only encoding of a kept row's constructor and fields this engine reads.
 pub(super) const ROW_FORMAT: u64 = 2;
@@ -185,10 +185,7 @@ impl Catalog {
                 .kept(&super::Abandoning(()))?
                 .unchecked(&super::Abandoning(()));
         }
-        for r in rows {
-            let row = roots::kept(r);
-            insert_row(pager, txns, &self.roots, x, &row.encode())?;
-        }
-        Ok(())
+        let rows = admit_roots(&self.roots, rows.iter().map(roots::kept))?;
+        insert_roots(pager, txns, &self.roots, x, &rows)
     }
 }

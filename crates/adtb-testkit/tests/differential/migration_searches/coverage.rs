@@ -615,10 +615,13 @@ fn refused(source: &Source, m: &Migration) -> Option<String> {
         .ok()
         .ok()
         .and_then(|f| source.migrate(&f, &m.text()).err())
-        .map(|r| {
-            let ops = r.operators.iter().map(|d| d.message.clone());
-            let recheck = r.recheck.iter().map(|d| d.diag.message.clone());
-            ops.chain(recheck).collect::<Vec<_>>().join("; ")
+        .map(|f| match f {
+            adtb_lang::evolve::Failed::Refused(r) => {
+                let ops = r.operators.iter().map(|d| d.message.clone());
+                let recheck = r.recheck.iter().map(|d| d.diag.message.clone());
+                ops.chain(recheck).collect::<Vec<_>>().join("; ")
+            }
+            adtb_lang::evolve::Failed::Broken(d) => format!("the model fails: {}", d.message),
         });
     Some(format!(
         "the checker refuses `{}`, which the model admits: {why:?}",

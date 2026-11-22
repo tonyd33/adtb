@@ -252,12 +252,6 @@ add relation ws : W
             Case::new("grant read us to support with grant option"),
             Case::new("revert {first}").after("add type W = W1 | W2"),
             Case::new("revert {first}").after("rename field T.A.x to x2"),
-            Case::new("drop field T.B.z\nadd field T.B.z: Text fill \"q\"")
-                .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
-                .fill("T.B.z = \"z\""),
-            Case::new("revert {first}\n  fill T.B.z = \"z\"")
-                .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
-                .after("drop field T.B.z\nadd field T.B.z: Text fill \"q\""),
         ];
         out.extend(self.removing());
         out.extend(self.structural());
@@ -768,20 +762,6 @@ fn restoring() -> Vec<Case> {
                 "the inverse of `drop index (z) in ts.S` names a field a later migration dropped",
             )
             .labelled(DROPPED),
-        Case::new("drop index (z) in ts.R2")
-            .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
-            .then("drop field T.B.z\nadd field T.B.z: Text fill \"q\"", None)
-            .refused(
-                "the inverse of `drop index (z) in ts.R2` names a field a later migration dropped",
-            )
-            .labelled(READDED_UNBUILT),
-        Case::new("drop index (z) in ts.R2")
-            .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
-            .then("drop field T.C.z\nadd field T.C.z: Text fill \"q\"", None)
-            .refused(
-                "the inverse of `drop index (z) in ts.R2` names a field a later migration dropped",
-            )
-            .labelled(READDED_BUILT),
         Case::new("drop fn g")
             .after(G_SHADOWING)
             .then("rename field Inner.A.x to x9", Some("rename field Inner.A.x to x9"))
@@ -938,14 +918,6 @@ const OTHER_MODULE: &str = "objects of another module";
 
 /// The label of a case whose revert follows a drop of its object.
 const DROPPED: &str = "object dropped";
-
-/// The label of a case whose revert follows a drop and re-add of a field it names, the source
-/// between them not building.
-const READDED_UNBUILT: &str = "field re-added through a source that does not build";
-
-/// The label of a case whose revert follows a drop and re-add of a field it names, the source
-/// between them building.
-const READDED_BUILT: &str = "field re-added through a source that builds";
 
 const SPLIT: &str = "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text }
   by match
@@ -1534,12 +1506,18 @@ fn differences(
 }
 
 /// A disagreement the search finds today: the case it shows in, the operator kind it is
-/// filed under, and each difference it shows over every shape.
+/// filed under, and each difference it shows with the bits of every shape it shows in.
 struct Known {
     kind: &'static str,
     case: &'static str,
-    differences: &'static [&'static str],
+    differences: &'static [(&'static str, &'static [u64])],
 }
+
+/// The bits of every shape.
+const ALL: &[u64] = &[0, 1, 2, 3, 4, 5, 6, 7];
+
+/// The bits of every shape that grants `update` on `ts` to `support`.
+const GRANTED: &[u64] = &[2, 3, 6, 7];
 
 /// The disagreements main shows.
 const KNOWN: &[Known] = &[
@@ -1548,8 +1526,11 @@ const KNOWN: &[Known] = &[
         kind: "Merge",
         case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q } [default A.x kept]",
         differences: &[
-            "Unapplied: `A` is not a constructor of `T`",
-            "Unapplied: the merge of `A`, `B` into `M` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.M` to `support` in the same migration",
+            ("Unapplied: `A` is not a constructor of `T`", ALL),
+            (
+                "Unapplied: the merge of `A`, `B` into `M` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.M` to `support` in the same migration",
+                GRANTED,
+            ),
         ],
     },
     // The operator refuses a default or check naming a constructor it replaces.
@@ -1557,8 +1538,14 @@ const KNOWN: &[Known] = &[
         kind: "Nest",
         case: "nest constructor T.(A | B) into N { inner: Inner } [check on ts.A]",
         differences: &[
-            "Unapplied: `N` is neither a constructor of `T` nor a named set of `ts`",
-            "Unapplied: the nest is refused: `ts.A` names some but not all of its constructors",
+            (
+                "Unapplied: `N` is neither a constructor of `T` nor a named set of `ts`",
+                GRANTED,
+            ),
+            (
+                "Unapplied: the nest is refused: `ts.A` names some but not all of its constructors",
+                ALL,
+            ),
         ],
     },
     // The operator refuses a default or check naming a constructor it replaces.
@@ -1566,15 +1553,18 @@ const KNOWN: &[Known] = &[
         kind: "Nest",
         case: "nest constructor T.(A | B) into N { inner: Inner } [default A.x kept]",
         differences: &[
-            "Unapplied: `A` is not a constructor of `T`",
-            "Unapplied: the nest of `A`, `B` into `N` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.N` to `support` in the same migration",
+            ("Unapplied: `A` is not a constructor of `T`", ALL),
+            (
+                "Unapplied: the nest of `A`, `B` into `N` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.N` to `support` in the same migration",
+                GRANTED,
+            ),
         ],
     },
     // The operator refuses a default or check naming a constructor it replaces.
     Known {
         kind: "Split",
         case: "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text } [default A.x kept]",
-        differences: &["Unapplied: `A` is not a constructor of `T`"],
+        differences: &[("Unapplied: `A` is not a constructor of `T`", ALL)],
     },
 ];
 
@@ -1652,40 +1642,44 @@ struct Found {
     first_stated: usize,
 }
 
-/// Run the cases of the first `count` shapes: every case of each when `every`, else case `i` of
-/// the cases every shape runs in shape `i % count` only, and each case a shape's bits add. Then
-/// run again, in each shape, each case every shape runs whose kinds that shape has not reached.
-fn search(count: usize, every: bool) -> Found {
-    let shapes: Vec<(u64, Source, Vec<Case>)> = SHAPES
-        .into_iter()
-        .take(count)
-        .map(|bits| {
-            let shape = Shape::of(bits);
-            (bits, shape.source(), shape.cases())
-        })
-        .collect();
+/// Returns whether shape `k` of the first `count` runs case `i` of its cases first: every case
+/// when `every`, else case `i` of the cases every shape runs when `i % count == k`, and each case a
+/// shape's bits add.
+fn runs_first(k: usize, count: usize, every: bool, i: usize) -> bool {
+    every || i >= CASES.0 || i % count == k
+}
+
+/// Returns the kinds of the operators of `case`.
+fn case_kinds(case: &Case) -> BTreeSet<&'static str> {
+    let text = case.text.replace("{first}", "0001");
+    let m = parse_migration(&text, Options::default())
+        .ok()
+        .expect("the case parses");
+    m.operators.iter().map(|o| kind_name(&o.kind)).collect()
+}
+
+/// Run in shape `k` of the first `count` the cases [`runs_first`] gives it. Then run again each
+/// case every shape runs whose kinds that shape has not reached.
+fn search(k: usize, count: usize, every: bool) -> Found {
+    let bits = SHAPES[k];
+    let shape = Shape::of(bits);
+    let (start, cases) = (shape.source(), shape.cases());
     let mut found = Found::default();
     let mut ran = BTreeSet::new();
-    for (k, (bits, start, cases)) in shapes.iter().enumerate() {
-        for (i, case) in cases.iter().enumerate() {
-            if every || i >= CASES.0 || i % count == k {
-                ran.insert((*bits, i));
-                found.ran += 1;
-                found.case(*bits, start, case);
-            }
+    for (i, case) in cases.iter().enumerate() {
+        if runs_first(k, count, every, i) {
+            ran.insert(i);
+            found.ran += 1;
+            found.case(bits, &start, case);
         }
     }
     found.first_stated = found.stated.len();
-    for (bits, start, cases) in &shapes {
-        for (i, case) in cases.iter().enumerate().take(CASES.0) {
-            let unreached = found.cases.get(&case.name()).is_some_and(|o| {
-                o.kinds
-                    .iter()
-                    .any(|k| !UNINVERTED.contains(k) && !found.reached.contains(&(*k, *bits)))
-            });
-            if unreached && !ran.contains(&(*bits, i)) {
-                found.case(*bits, start, case);
-            }
+    for (i, case) in cases.iter().enumerate().take(CASES.0) {
+        let unreached = case_kinds(case)
+            .iter()
+            .any(|k| !UNINVERTED.contains(k) && !found.reached.contains(&(*k, bits)));
+        if unreached && !ran.contains(&i) {
+            found.case(bits, &start, case);
         }
     }
     found
@@ -1791,14 +1785,16 @@ impl Found {
                         }),
                 );
             }
-            Err(ds) => self
+            Err(Failed::Refused(ds)) => self
                 .unresolved
                 .extend(ds.into_iter().map(|d| (Aspect::Unresolved, d.message))),
+            Err(Failed::Broken(d)) => panic!("{}", d.message),
         }
         match next.resolved(logged.number) {
-            Err(ds) => self
+            Err(Failed::Refused(ds)) => self
                 .unresolved
                 .extend(ds.into_iter().map(|d| (Aspect::Unresolved, d.message))),
+            Err(Failed::Broken(d)) => panic!("{}", d.message),
             Ok(ops) => self.unresolved.extend(
                 outside(logged, &next, &ops)
                     .into_iter()
@@ -1827,93 +1823,153 @@ impl Found {
     }
 }
 
-/// Returns, for case `name` and what the search found of it, why its known row does not hold,
-/// when it does not. Unless the case ran in every shape, a row's differences need only include
-/// the case's.
-fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
-    let shown = || {
-        o.differences
-            .iter()
-            .map(|(d, bits)| format!("    {d:?}, {bits:?}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+/// Returns, for case `name` and what the search found of it in the shape of bits `bits`, why its
+/// known row does not hold, when it does not: the row's differences in that shape are the case's.
+fn unknown(name: &str, bits: u64, o: &Outcome) -> Option<String> {
     let got: BTreeSet<&str> = o.differences.keys().map(String::as_str).collect();
-    let Some(k) = KNOWN.iter().find(|k| k.case == name) else {
-        return (!got.is_empty()).then(|| format!("`{name}` differs:\n{}", shown()));
-    };
-    let want: BTreeSet<&str> = k.differences.iter().copied().collect();
-    if !o.kinds.contains(k.kind) {
+    let known = KNOWN.iter().find(|k| k.case == name);
+    if let Some(k) = known
+        && !o.kinds.contains(k.kind)
+    {
         return Some(format!(
             "`{name}` is known under {}, not one of its kinds {:?}",
             k.kind, o.kinds
         ));
     }
-    if got.is_empty() {
-        return Some(format!(
-            "`{name}` now restores the source; delete its known row"
-        ));
-    }
-    let holds = if every_shape {
-        got == want
-    } else {
-        got.is_subset(&want)
-    };
-    (!holds).then(|| {
+    let want: BTreeSet<&str> = known
+        .into_iter()
+        .flat_map(|k| k.differences)
+        .filter(|(_, shapes)| shapes.contains(&bits))
+        .map(|&(d, _)| d)
+        .collect();
+    (got != want).then(|| {
         format!(
-            "`{name}` differs otherwise than its known row:\n{}",
-            shown()
+            "`{name}` in {bits:03b} differs otherwise than its known row:\n  got {got:#?}\n  known {want:#?}"
         )
     })
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (172, 2, 5);
+const CASES: (usize, usize, usize) = (168, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
-const REFUSED: usize = 18;
+const REFUSED: usize = 16;
 
-/// Unless the profile is `deep`, each case runs in one of the first two shapes, which set each bit
-/// both ways, and again in the other when that shape has not reached one of its kinds; `deep` runs
-/// every case in every shape.
-#[test]
-fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
-    let count = adtb_testkit::profile::count(2).min(SHAPES.len() as u64) as usize;
+/// The number of shapes the search runs in: every shape under the `deep` profile, else the first
+/// two, which set each bit both ways.
+fn shapes_searched() -> usize {
+    adtb_testkit::profile::count(2).min(SHAPES.len() as u64) as usize
+}
+
+/// Run the search in shape `k`: unless the profile is `deep`, each case every shape runs runs in
+/// one of the first two shapes, and again in the other when that shape has not reached one of
+/// its kinds; `deep` runs every case in every shape. Every invertible kind applies in the shape,
+/// and each case's revert restores the source before it or is refused for the reason it states.
+fn search_shape(k: usize) {
+    let count = shapes_searched();
+    if k >= count {
+        return;
+    }
     let every = adtb_testkit::profile::every_case();
-    let found = search(count, every);
+    let found = search(k, count, every);
     let mut failures = found.unapplied.clone();
     for (name, o) in &found.cases {
-        failures.extend(unknown(name, o, every));
-    }
-    for k in KNOWN {
-        if !found.cases.contains_key(k.case) {
-            failures.push(format!("known `{}` is no case of the search", k.case));
-        }
+        failures.extend(unknown(name, SHAPES[k], o));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    let shared = if every { count * CASES.0 } else { CASES.0 };
-    let ran: usize = SHAPES
-        .into_iter()
-        .take(count)
-        .map(Shape::of)
-        .map(|s| usize::from(s.declared) * CASES.1 + usize::from(s.granted) * CASES.2)
-        .sum();
-    assert_eq!(shared + ran, found.ran);
-    let runs_of_each = if every { count } else { 1 };
+    let bits = SHAPES[k];
+    let cases = Shape::of(bits).cases();
+    let first: Vec<&Case> = cases
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| runs_first(k, count, every, i))
+        .map(|(_, c)| c)
+        .collect();
+    assert_eq!(first.len(), found.ran);
     assert_eq!(
-        runs_of_each * REFUSED,
+        first.iter().filter(|c| c.refused.is_some()).count(),
         found.first_stated,
         "{:?}",
         found.stated
     );
-    let reachable: BTreeSet<(&str, u64)> = invertible()
-        .into_iter()
-        .flat_map(|k| SHAPES.into_iter().take(count).map(move |bits| (k, bits)))
-        .collect();
+    let reachable: BTreeSet<(&str, u64)> = invertible().into_iter().map(|k| (k, bits)).collect();
     assert_eq!(
         reachable, found.reached,
-        "the search applies every invertible kind in every shape"
+        "the search applies every invertible kind in the shape"
     );
+}
+
+/// A shard searches each shape, and the shards together run each case every shape runs in one of
+/// the shapes searched, every one of them under `deep`, and each case a shape's bits add in that
+/// shape; the known rows and the stated refusals are cases of the search.
+#[test]
+fn the_search_shards_run_every_case() {
+    assert_eq!(
+        (0..SHAPES.len()).collect::<Vec<_>>(),
+        SHARDS,
+        "a test searches each shape"
+    );
+    let count = shapes_searched();
+    let every = adtb_testkit::profile::every_case();
+    let mut shared: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut names = BTreeSet::new();
+    let mut refused = 0;
+    for (k, bits) in SHAPES.into_iter().enumerate().take(count) {
+        let shape = Shape::of(bits);
+        let cases = shape.cases();
+        let added = usize::from(shape.declared) * CASES.1 + usize::from(shape.granted) * CASES.2;
+        assert_eq!(CASES.0 + added, cases.len(), "{bits:03b}");
+        for (i, case) in cases.iter().enumerate() {
+            names.insert(case.name());
+            if i < CASES.0 && k == 0 && case.refused.is_some() {
+                refused += 1;
+            }
+            match (i < CASES.0, runs_first(k, count, every, i)) {
+                (true, true) => *shared.entry(i).or_default() += 1,
+                (false, false) => panic!("{bits:03b} skips its own case {i}"),
+                _ => {}
+            }
+        }
+    }
+    let runs_of_each = if every { count } else { 1 };
+    assert_eq!(
+        (0..CASES.0)
+            .map(|i| (i, runs_of_each))
+            .collect::<BTreeMap<_, _>>(),
+        shared
+    );
+    assert_eq!(REFUSED, refused);
+    for k in KNOWN {
+        assert!(
+            names.contains(k.case),
+            "known `{}` is no case of the search",
+            k.case
+        );
+    }
+}
+
+/// Declare a test searching each shape `k` named, and `SHARDS`, the shapes they search.
+macro_rules! shards {
+    ($($name:ident = $k:literal),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                search_shape($k);
+            }
+        )*
+        const SHARDS: &[usize] = &[$($k),*];
+    };
+}
+
+shards! {
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_0 = 0,
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_1 = 1,
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_2 = 2,
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_3 = 3,
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_4 = 4,
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_5 = 5,
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_6 = 6,
+    every_invertible_operator_and_its_revert_restore_the_source_before_it_in_shape_7 = 7,
 }
 
 /// Returns each script under the engine's script corpus, as its path and text.
@@ -1991,7 +2047,7 @@ fn token_form(text: &str) -> String {
 /// The laws:
 /// - Ids are fresh: `next` of each space never falls, and an id the result holds that `src` did
 ///   not is drawn from `src`'s `next` of its space and is below the result's.
-/// - Each step of a `revert` whose steps state their row maps resolves against the step before
+/// - Each step of an applied `revert` states its row maps and resolves against the step before
 ///   it, and its last step leaves the source the revert leaves.
 /// - Each recheck failure in text an operator copied points to text whose tokens are those of
 ///   the span of the migration it names.
@@ -2036,9 +2092,9 @@ fn lawful(src: &Source, text: &str, seen: &mut Seen) -> Option<Source> {
                 if !matches!(op.kind, OperatorKind::Revert { .. }) {
                     continue;
                 }
-                let Ok(steps) = steps else {
-                    continue;
-                };
+                let steps = steps
+                    .as_ref()
+                    .unwrap_or_else(|ds| panic!("{text}\nan applied revert's steps fail: {ds:?}"));
                 let mut before = src.clone();
                 for s in steps {
                     seen.revert_steps += 1;
@@ -2072,12 +2128,10 @@ fn lawful(src: &Source, text: &str, seen: &mut Seen) -> Option<Source> {
             }
             Some(next)
         }
-        Err(r) => {
+        Err(Failed::Broken(d)) => panic!("{text}\nthe model fails: {}", d.message),
+        Err(Failed::Refused(r)) => {
             seen.refused += 1;
             for d in &r.operators {
-                if d.kind == DiagKind::Internal {
-                    panic!("{text}\nthe model fails: {}", d.message);
-                }
                 assert!(
                     m.operators
                         .iter()
@@ -2195,5 +2249,171 @@ fn the_migrations_of_the_cases_and_the_script_corpus_keep_their_laws() {
         seen.refused,
         seen.revert_steps,
         seen.copied_rechecks
+    );
+}
+
+/// Returns each operator that is refused alone on `start`, in module `auth`, with no recheck
+/// failure, with the messages of its refusal and whether a refusal of it poisons the name it
+/// adds, as an added type, function or relation variable's does: each operator of the unlabelled
+/// cases of `shape` that need no migration before them, a merge stating none of the grants it
+/// cannot carry, and added declarations with several failures.
+fn failing_alone(start: &Source, shape: Shape) -> Vec<(String, Vec<String>, bool)> {
+    let merge = shape.merge();
+    let merge = merge.trim_end_matches("\ngrant update ts.M to support");
+    let mut texts: Vec<String> = vec![
+        merge.to_string(),
+        "add type Bad = { a: Nope, b: Nada }".to_string(),
+        "add type Worse = W1 { a: Nope } | W2 { b: Nada, c: Gone }".to_string(),
+    ];
+    for case in shape.cases() {
+        if case.label.is_some() || !case.first.is_empty() || !case.text.starts_with("module auth\n")
+        {
+            continue;
+        }
+        let m = parse_migration(&case.text, Options::default())
+            .ok()
+            .expect("the case parses");
+        texts.extend(
+            m.operators
+                .iter()
+                .map(|op| case.text[op.span.range()].to_string())
+                .filter(|t| !t.contains("{first}")),
+        );
+    }
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for op in texts {
+        if !seen.insert(op.clone()) {
+            continue;
+        }
+        let text = format!("module auth\n{op}\n");
+        let Ok(m) = parse_migration(&text, Options::default()).ok() else {
+            continue;
+        };
+        match start.migrate(&m, &text) {
+            Err(Failed::Broken(d)) => panic!("{text}\nthe model fails: {}", d.message),
+            Err(Failed::Refused(r)) if r.recheck.is_empty() => {
+                assert!(!r.operators.is_empty(), "{text}\nrefused listing nothing");
+                let kind = &m.operators[0].kind;
+                let poisons = expected::poisons(kind).is_some()
+                    || matches!(kind, OperatorKind::AddRelation(_));
+                let why = r.operators.into_iter().map(|d| d.message).collect();
+                out.push((op, why, poisons));
+            }
+            Ok(_) | Err(Failed::Refused(_)) => {}
+        }
+    }
+    out
+}
+
+/// How many migrations of operators each refused alone the refusal list law checks.
+const COMBINED: usize = 300;
+
+/// A migration of 2 to 4 operators, each refused alone on the source of the first shape with
+/// `ts.A`'s default dropped and its delete granted, is
+/// refused listing the refusals of each, in order, each within its operator's span: every
+/// operator that does not apply, every grant a merge cannot carry and every failure of an added
+/// declaration's own text. At most one added declaration whose refusal poisons its name is
+/// among them, at any position.
+#[test]
+fn a_migration_of_operators_each_refused_alone_lists_every_refusal_in_order() {
+    let shape = Shape::of(SHAPES[0]);
+    let start = migrate(
+        &shape.source(),
+        "module auth\ndrop default ts.A.x\ngrant delete ts.A to support",
+    )
+    .expect("the start applies");
+    let pool = failing_alone(&start, shape);
+    assert!(
+        pool.iter()
+            .any(|(op, why, _)| op.starts_with("merge ") && why.len() > 1),
+        "the pool holds a merge refused for several grants: {pool:?}"
+    );
+    assert!(
+        pool.iter()
+            .any(|(op, why, _)| op.starts_with("add type") && why.len() > 1),
+        "the pool holds an added declaration refused several times: {pool:?}"
+    );
+    assert!(pool.len() >= 8, "the pool holds few operators: {pool:?}");
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut draw = |n: usize| {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as usize % n
+    };
+    let failure = |p: usize| match &pool[p] {
+        (op, why, _) if op.starts_with("merge ") && why.len() > 1 => "a merge's grants",
+        (_, why, _) if why.len() > 1 => "a declaration's several failures",
+        _ => "one failure",
+    };
+    let mut failures = BTreeSet::new();
+    let mut poisoned_at = BTreeSet::new();
+    let mut ran = 0;
+    for i in 0..COMBINED {
+        let k = 2 + i % 3;
+        let mut picked: Vec<usize> = Vec::new();
+        while picked.len() < k {
+            let j = draw(pool.len());
+            let poisoning = pool[j].2 && picked.iter().any(|&p| pool[p].2);
+            if !picked.contains(&j) && !poisoning {
+                picked.push(j);
+            }
+        }
+        failures.extend(picked.iter().map(|&p| failure(p)));
+        if let Some(at) = picked.iter().position(|&p| pool[p].2) {
+            poisoned_at.insert(match at {
+                0 => "first",
+                _ if at == k - 1 => "last",
+                _ => "between",
+            });
+        }
+        let mut text = String::from("module auth\n");
+        let mut spans = Vec::new();
+        let mut want = Vec::new();
+        for &p in &picked {
+            let start = text.len();
+            text.push_str(&pool[p].0);
+            spans.push(start..text.len());
+            text.push('\n');
+            want.extend(pool[p].1.iter().cloned().map(|w| (spans.len() - 1, w)));
+        }
+        let m = parse_migration(&text, Options::default())
+            .ok()
+            .expect("the combined migration parses");
+        let r = match start.migrate(&m, &text) {
+            Ok(_) => panic!("{text}\napplies"),
+            Err(Failed::Broken(d)) => panic!("{text}\nthe model fails: {}", d.message),
+            Err(Failed::Refused(r)) => r,
+        };
+        let got: Vec<(usize, String)> = r
+            .operators
+            .into_iter()
+            .map(|d| {
+                let at = spans
+                    .iter()
+                    .position(|s| s.contains(&(d.span.start as usize)))
+                    .unwrap_or_else(|| panic!("{text}\nrefusal outside every operator: {d:?}"));
+                (at, d.message)
+            })
+            .collect();
+        assert_eq!(want, got, "{text}");
+        assert!(r.recheck.is_empty(), "{text}\nrechecked: {:?}", r.recheck);
+        ran += 1;
+    }
+    assert_eq!(COMBINED, ran);
+    assert_eq!(
+        BTreeSet::from([
+            "a declaration's several failures",
+            "a merge's grants",
+            "one failure"
+        ]),
+        failures,
+        "the draws reach each kind of failure"
+    );
+    assert_eq!(
+        BTreeSet::from(["between", "first", "last"]),
+        poisoned_at,
+        "the draws place a poisoning declaration at each position"
     );
 }

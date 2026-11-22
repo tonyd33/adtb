@@ -7,7 +7,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::check::Program;
-use crate::evolve::{Clause, Code, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
+use crate::evolve::{Clause, Code, Failed, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
 use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, NormalProgram, NormalQuery};
@@ -47,6 +47,17 @@ pub enum Refused {
     Untranslatable(Untranslatable),
     /// The translation breaks an invariant of the kernel.
     Broken(norm::Error),
+    /// The migration model fails on a migration of the log.
+    Model(String),
+}
+
+impl From<Failed<Untranslatable>> for Refused {
+    fn from(f: Failed<Untranslatable>) -> Refused {
+        match f {
+            Failed::Refused(u) => Refused::Untranslatable(u),
+            Failed::Broken(d) => Refused::Model(d.message),
+        }
+    }
 }
 
 impl From<norm::Error> for Refused {
@@ -111,13 +122,13 @@ pub struct Pinned<'a> {
     normal: Rc<RefCell<Option<Rc<NormalProgram>>>>,
 }
 
-type R<T> = Result<T, Untranslatable>;
+type R<T> = Result<T, Failed<Untranslatable>>;
 
-fn refused(operator: Option<String>, reason: impl Into<String>) -> Untranslatable {
-    Untranslatable {
+fn refused(operator: Option<String>, reason: impl Into<String>) -> Failed<Untranslatable> {
+    Failed::Refused(Untranslatable {
         operator,
         reason: reason.into(),
-    }
+    })
 }
 
 impl<'a> Pinned<'a> {
@@ -131,24 +142,15 @@ impl<'a> Pinned<'a> {
         to_source: &'a Source,
         to_program: &'a Program,
         hide_new: bool,
-    ) -> R<Pinned<'a>> {
+    ) -> Result<Pinned<'a>, Refused> {
         let mut ops = Vec::new();
         for (i, logged) in to_source.log.iter().enumerate() {
             if logged.number <= from_source.version {
                 continue;
             }
-            let resolved = to_source.resolved(logged.number).map_err(|ds| {
-                let first = logged
-                    .operators
-                    .first()
-                    .map(|op| operator_text(&logged.text, op));
-                refused(
-                    first,
-                    ds.into_iter()
-                        .map(|d| d.message)
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                )
+            let resolved = to_source.resolved(logged.number).map_err(|f| {
+                let first = logged.operators.first();
+                failed(first.map(|op| operator_text(&logged.text, op)), f)
             })?;
             for (k, (op, r)) in logged.operators.iter().zip(resolved).enumerate() {
                 let text = operator_text(&logged.text, op);
@@ -233,7 +235,7 @@ impl<'a> Pinned<'a> {
     }
 
     /// Returns the refusal of a value that `what` a type that does not carry whole.
-    fn lost(&self, l: &Loss, what: &str) -> Untranslatable {
+    fn lost(&self, l: &Loss, what: &str) -> Failed<Untranslatable> {
         let from = self.map.from;
         match l {
             Loss::Type(def) => {
@@ -298,7 +300,7 @@ impl<'a> Pinned<'a> {
         }
     }
 
-    fn gone_relation(&self, rel: RelId) -> Untranslatable {
+    fn gone_relation(&self, rel: RelId) -> Failed<Untranslatable> {
         let id = self.map.from.ids().relation_id(rel).map(CatRelId::raw);
         refused(
             self.blame(
@@ -583,7 +585,9 @@ impl<'a> Pinned<'a> {
         let found = match &o.from {
             Origin::Logged(i, k) => {
                 let logged = &self.to_source.log[*i];
-                let (_, steps) = logged.stepped(*k).map_err(|ds| failed(&o.text, ds))?;
+                let (_, steps) = logged
+                    .stepped(*k)
+                    .map_err(|f| failed(Some(o.text.clone()), f))?;
                 let after = steps.last().map(|s| s.after.clone());
                 filled(steps.into_iter().flat_map(|s| s.maps)).zip(after)
             }
@@ -653,14 +657,15 @@ impl<'a> Pinned<'a> {
     }
 }
 
-fn failed(text: &str, ds: Vec<crate::span::Diag>) -> Untranslatable {
-    refused(
-        Some(text.to_string()),
-        ds.into_iter()
+fn failed(operator: Option<String>, f: Failed<Vec<crate::span::Diag>>) -> Failed<Untranslatable> {
+    f.map_refused(|ds| Untranslatable {
+        operator,
+        reason: ds
+            .into_iter()
             .map(|d| d.message)
             .collect::<Vec<_>>()
             .join("; "),
-    )
+    })
 }
 
 fn filled(maps: impl IntoIterator<Item = RowMap>) -> Option<Rc<RowFn>> {
@@ -673,13 +678,15 @@ fn filled(maps: impl IntoIterator<Item = RowMap>) -> Option<Rc<RowFn>> {
 /// Returns each operator that revert `k` of `logged`, whose text is `text`, applies, resolved
 /// against the source before and after it.
 fn reverted(logged: &Logged, k: usize, text: &str) -> R<Vec<Op>> {
-    let (mut before, steps) = logged.stepped(k).map_err(|ds| failed(text, ds))?;
+    let (mut before, steps) = logged
+        .stepped(k)
+        .map_err(|f| failed(Some(text.to_string()), f))?;
     let mut out = Vec::new();
     for s in steps {
         if let Some(a) = &s.applied {
             let r = a
                 .resolved(&before, &s.after)
-                .map_err(|ds| failed(text, ds))?;
+                .map_err(|ds| failed(Some(text.to_string()), Failed::Refused(ds)))?;
             let fill = match r.op {
                 Resolved::AddField { .. } => filled(s.maps).map(|f| (f, Rc::new(s.after.clone()))),
                 _ => None,

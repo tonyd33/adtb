@@ -8,6 +8,7 @@ mod names;
 use std::fmt::{self, Write};
 use std::path::Path;
 
+use adtb_lang::evolve::Failed;
 use adtb_lang::signature::{self, CallKind, Signature};
 use adtb_lang::types::Ty;
 
@@ -54,12 +55,7 @@ pub struct BundleSource<'a> {
 /// another edition than [`EDITION`], a signature holds a type with no host type, or two items
 /// of one module take one Rust name.
 pub fn generate(log: &[&str], bundles: &[BundleSource<'_>]) -> Result<String, Error> {
-    let source = signature::replay(log.iter().copied()).map_err(|e| {
-        Error::new(format!(
-            "migration {} does not apply: {}",
-            e.migration, e.message
-        ))
-    })?;
+    let source = signature::replay(log.iter().copied()).map_err(|e| Error::new(unreplayed(&e)))?;
     let latest = source.committed().map_err(|e| Error::new(e.to_string()))?;
     let mut schema = Module::new(&latest);
     schema.declare("LOG", "the log")?;
@@ -93,6 +89,18 @@ pub fn read_log(dir: &Path) -> std::io::Result<Vec<String>> {
     paths.iter().map(std::fs::read_to_string).collect()
 }
 
+/// Returns the message of a log that does not replay.
+fn unreplayed(e: &signature::ReplayError) -> String {
+    match e {
+        signature::ReplayError::Refused { migration, message } => {
+            format!("migration {migration} does not apply: {message}")
+        }
+        signature::ReplayError::Broken { migration, message } => {
+            format!("the engine fails internally on migration {migration}: {message}")
+        }
+    }
+}
+
 /// Returns the items of the module of bundle `b`: re-exporting `schema` when it pins the
 /// version `log` ends at, else with a module `types` of the types at the version it pins.
 fn bundle(log: &[&str], schema: &Module<'_>, b: &BundleSource<'_>) -> Result<String, Error> {
@@ -117,9 +125,14 @@ fn bundle(log: &[&str], schema: &Module<'_>, b: &BundleSource<'_>) -> Result<Str
                 log.len()
             ))
         })?;
-    let source = signature::replay(log[..at].iter().copied())
-        .map_err(|e| failed(format!("migration {}: {}", e.migration, e.message)))?;
-    let checked = signature::bundle(&source, b.text).map_err(failed)?;
+    let source =
+        signature::replay(log[..at].iter().copied()).map_err(|e| failed(unreplayed(&e)))?;
+    let checked = signature::bundle(&source, b.text).map_err(|f| {
+        failed(match f {
+            Failed::Refused(why) => why,
+            Failed::Broken(d) => format!("the engine fails internally: {}", d.message),
+        })
+    })?;
     let name = format!("{}-{}", header.name.family, header.name.version);
     let mut out = String::new();
     let mut m = if at == log.len() {

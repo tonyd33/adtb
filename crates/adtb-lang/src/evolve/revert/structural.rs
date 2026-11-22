@@ -205,7 +205,7 @@ impl Inverting<'_> {
         };
         let i = before.find("type", &m, &ty.name.text).ok_or_else(missing)?;
         let Some(Decl::Type(t)) = before.parsed(i) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let ctors = ctor_extents(&before.decls[i].text, header(&m).len(), &t);
         let k = ctors.iter().position(|x| x.0 == c).ok_or_else(missing)?;
@@ -313,7 +313,7 @@ impl Cx<'_> {
                 ..
             }) = a.patterns.first()
             else {
-                return Err(lossy());
+                return Err(lossy().into());
             };
             let ast::ExprKind::Ctor {
                 path: bp,
@@ -321,7 +321,7 @@ impl Cx<'_> {
                 record,
             } = &a.body.kind
             else {
-                return Err(lossy());
+                return Err(lossy().into());
             };
             let product = bc.as_ref().unwrap_or(&bp.name).text.clone();
             let given: Vec<(String, &Expr)> = match record {
@@ -329,7 +329,7 @@ impl Cx<'_> {
                     fs.iter().map(|(g, e)| (g.text.clone(), e)).collect()
                 }
                 None => Vec::new(),
-                _ => return Err(lossy()),
+                _ => return Err(lossy().into()),
             };
             let mut vars: BTreeMap<String, String> = BTreeMap::new();
             let mut fixed: BTreeMap<String, Span> = BTreeMap::new();
@@ -378,7 +378,7 @@ impl Cx<'_> {
                 });
                 match target {
                     Some(g) => inverse_arms.push(format!("{f}: r.{g}")),
-                    None => return Err(lossy()),
+                    None => return Err(lossy().into()),
                 }
             }
             inverse_arms.push(" }");
@@ -469,7 +469,7 @@ impl Cx<'_> {
                 };
                 match g {
                     Some(g) => given.push(format!("{f}: {g}")),
-                    None => return Err(lossy()),
+                    None => return Err(lossy().into()),
                 }
             }
             let value = schema
@@ -556,7 +556,7 @@ impl Cx<'_> {
             .and_then(|c| td.ctor_def(c).fields.first())
             .map(|f| &f.ty)
         else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let names: Vec<String> = sel_idents(sel).iter().map(|x| x.text.clone()).collect();
         let mut arms = at.restored_arms(clauses, ty, &names)?;
@@ -784,7 +784,7 @@ impl Cx<'_> {
         };
         let i = before.find("type", &m, t).ok_or_else(missing)?;
         let Some(Decl::Type(td)) = before.parsed(i) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let ctors = ctor_extents(&before.decls[i].text, header(&m).len(), &td);
         let k = ctors

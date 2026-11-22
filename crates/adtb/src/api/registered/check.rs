@@ -12,6 +12,8 @@ use adtb_lang::schema::{Committed as CommittedSchema, Schema};
 use adtb_lang::signature::{self, Item};
 use adtb_lang::types::{FnId, Ty};
 
+use crate::catalog;
+
 use super::super::bundle::CallRow;
 use super::super::cause::Broken;
 use super::super::error::Error;
@@ -30,7 +32,10 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
         })
         .collect();
     let extended = signature::with_functions(over.source, over.schema, &vis, &fns, &r.text)
-        .map_err(Error::invalid)?
+        .map_err(|f| match catalog::refused_by(f) {
+            Ok(why) => Error::invalid(why),
+            Err(b) => Error::internal(Broken::Catalog(*b)),
+        })?
         .map(|(s, p)| {
             Ok::<_, Error>((
                 Arc::new(super::settled(s).map_err(Error::rejected)?),

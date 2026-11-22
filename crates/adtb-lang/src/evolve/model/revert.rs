@@ -8,10 +8,10 @@ use crate::evolve::revert::Replayed;
 use crate::evolve::revert::{
     DeclOf, Inverse, Late as Gone, NamedId, Recreated, Spelled, dropped, holding, recreate, word,
 };
-use crate::evolve::{Clause, Cx, Logged, Resolved, StateOf, Written};
+use crate::evolve::{Clause, Cx, Failed, Logged, Resolved, StateOf, Written};
 use crate::ids::KeyKind;
 use crate::parse::{Options, parse_migration};
-use crate::span::{Diag, DiagKind, Span};
+use crate::span::{Diag, Span};
 
 /// How a step of an inverse applies an operator of its text.
 #[derive(Clone, Copy)]
@@ -125,15 +125,16 @@ pub(in crate::evolve) fn logged_file(logged: &Logged) -> MigrationFile {
 ///
 /// Fail with an internal diagnostic when the source before it does not lift or the model fails
 /// on it.
-pub(in crate::evolve) fn replay(logged: &Logged) -> Result<Replay, Vec<Diag>> {
+pub(in crate::evolve) fn replay(logged: &Logged) -> crate::evolve::Replaying<Replay> {
     let m = logged_file(logged);
-    let got = migrated(&logged.before, &m, &logged.text, &[], false, true).map_err(|d| vec![d])?;
+    let got =
+        migrated(&logged.before, &m, &logged.text, &[], false, true).map_err(Failed::Broken)?;
     let refused = got.refusals(&m);
     if !refused.is_empty() || got.ops().iter().any(Result::is_err) {
-        return Err(refused);
+        return Err(Failed::Refused(refused));
     }
-    let mut first =
-        of(&logged.before).map_err(|e| vec![fault(format!("the source does not lift: {e}"))])?;
+    let mut first = of(&logged.before)
+        .map_err(|e| Failed::Broken(fault(format!("the source does not lift: {e}"))))?;
     first.version += 1;
     first.expecting(&m);
     let states: Vec<Source> = std::iter::once(first.replay_source())
@@ -155,10 +156,8 @@ pub(in crate::evolve) fn replay(logged: &Logged) -> Result<Replay, Vec<Diag>> {
 fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
     let (states, names, _) = match replay(logged) {
         Ok(r) => r,
-        Err(ds) => {
-            if let Some(d) = ds.iter().find(|d| d.kind == DiagKind::Internal) {
-                return Err(Fail::Broken(d.message.clone()));
-            }
+        Err(Failed::Broken(d)) => return Err(Fail::Broken(d.message)),
+        Err(Failed::Refused(ds)) => {
             let why = ds
                 .first()
                 .map_or("an operator does not apply", |d| d.message.as_str());
@@ -177,7 +176,10 @@ fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
         }
         names
     });
-    Ok(Replayed::new(states, Some(spelling)))
+    Ok(Replayed::new(
+        states,
+        Some(spelling.map_err(Failed::Refused)),
+    ))
 }
 
 /// Returns the refusal of the first of `ds`.
@@ -213,7 +215,7 @@ impl Model {
             let inverted = cx.inverted_with(migration, fills, |logged| {
                 replayed(logged, run.span()).map_err(|e| {
                     failed.replace(Some(e));
-                    Vec::new()
+                    Failed::Refused(Vec::new())
                 })
             });
             if let Some(e) = failed.into_inner() {
@@ -223,7 +225,8 @@ impl Model {
         };
         let (steps, gone, linked, filled) = match inverted {
             Ok(i) => i.into_parts(),
-            Err(ds) => return refused(&ds),
+            Err(Failed::Broken(d)) => return Err(Fail::Broken(d.message)),
+            Err(Failed::Refused(ds)) => return refused(&ds),
         };
         let number = number.expect("a reverted migration is in the log");
         let restoring: Vec<AheadM> = linked
@@ -246,10 +249,9 @@ impl Model {
         let applied = self.undo_all(run, steps, &gone, &mut undone);
         self.ahead = ahead;
         applied?;
-        let maps = match &undone.steps {
-            Ok(_) => Ok(Vec::new()),
-            Err(why) => Err(why.clone()),
-        };
+        if let Err(why) = &undone.steps {
+            return refuse(why.clone());
+        }
         let after = self.ids().unwrap_or_else(|_| self.named_keys());
         let mut clauses = Vec::new();
         for key in &filled {
@@ -266,7 +268,11 @@ impl Model {
             });
         }
         run.reverted(undone.steps);
-        Ok((Resolved::Revert { migration: number }, clauses, maps))
+        Ok((
+            Resolved::Revert { migration: number },
+            clauses,
+            Ok(Vec::new()),
+        ))
     }
 
     /// Apply the steps of the inverse of each run of operators of a migration, last run first,

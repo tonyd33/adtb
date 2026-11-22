@@ -1,20 +1,20 @@
 use super::*;
 
-/// The range of the braces that open at the first character after `at` that is not white space.
+/// The range of the braces that open at the first token after `at`, matched by the brace and
+/// parenthesis tokens after it.
 pub(super) fn braces_at(text: &str, at: usize) -> Option<Range<usize>> {
-    let rest = &text[at..];
-    let open = at + rest.find(|c: char| !c.is_whitespace())?;
-    if !text[open..].starts_with('{') {
+    let toks = tokens(&text[at..]);
+    let (Tok::LBrace, open) = toks.first()? else {
         return None;
-    }
+    };
     let mut depth = 0;
-    for (k, c) in text[open..].char_indices() {
-        match c {
-            '{' | '(' => depth += 1,
-            '}' | ')' => {
+    for (t, r) in &toks {
+        match t {
+            Tok::LBrace | Tok::LParen => depth += 1,
+            Tok::RBrace | Tok::RParen => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(open..open + k + 1);
+                    return Some(at + open.start..at + r.end);
                 }
             }
             _ => {}

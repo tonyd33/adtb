@@ -76,6 +76,20 @@ impl Migrated {
     }
 
     /// Returns whether every operator applied and the result checks.
+    /// Returns the index of the first operator whose steps fail, and why they do at its span.
+    pub(in crate::evolve) fn failing_steps(&self, m: &MigrationFile) -> Option<(usize, Diag)> {
+        m.operators
+            .iter()
+            .zip(self.maps.iter().zip(&self.steps))
+            .enumerate()
+            .find_map(|(k, (op, step))| match step {
+                (_, Some(Err(why))) | (Err(why), None) => {
+                    Some((k, Diag::new(op.span, why.clone())))
+                }
+                _ => None,
+            })
+    }
+
     pub(in crate::evolve) fn applies(&self) -> bool {
         self.checks && self.ops.iter().all(Result::is_ok)
     }

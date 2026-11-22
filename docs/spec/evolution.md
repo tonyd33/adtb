@@ -1070,6 +1070,11 @@ object id that `n` created: reverting `0011` at version 19 of §4.3 is
 refused, since `0012` and `0019` enable and deprecate the `Apple` it
 added.
 
+A revert whose inverse holds an operator that does not apply, to the
+schema or to the rows before it, is refused naming that operator as
+the inverse spells it and its own refusal; nothing of the revert
+applies.
+
 Rulings: evolution/smo, evolution/revert, evolution/merge-tag/discriminator, evolution/hoist/default, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-identity/by-id, spec/evolution/product-position/first-source, spec/evolution/revert-fill/per-field, spec/evolution/field-action/field-type-and-alter
 
 ## 6. Constraints and grants under evolution

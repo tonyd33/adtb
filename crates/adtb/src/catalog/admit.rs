@@ -8,12 +8,13 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
 use crate::btree;
-use crate::heap::{Oversize, RowLimits};
+use crate::heap::{Heap, Oversize, RowLimits};
 use crate::key::{KeySchema, Value};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::change::Data;
+use super::roots::RootsRow;
 use super::{
     CatRelId, Catalog, Checked, Error, IndexKeys, IndexSpec, OrderKeys, Readers, ctor_id,
     ctor_relations, index_keys, index_program, key_schema, layout, pending, rel_id, row_key,
@@ -28,6 +29,46 @@ pub struct Admitted(Data);
 impl Admitted {
     pub fn rows(&self) -> &Data {
         &self.0
+    }
+}
+
+/// Rows of the roots heap, each within its row and value limits. Only this module builds one.
+#[derive(Debug)]
+pub struct RootsAdmitted(Vec<Vec<Value>>);
+
+impl RootsAdmitted {
+    pub fn rows(&self) -> &[Vec<Value>] {
+        &self.0
+    }
+}
+
+/// Admit `rows` to the row and value limits of the roots heap `roots`.
+///
+/// Fail with [`Error::Refused`] naming each row past one.
+pub fn admit_roots(
+    roots: &Heap,
+    rows: impl IntoIterator<Item = RootsRow>,
+) -> Result<RootsAdmitted, Error> {
+    let mut why = Vec::new();
+    let mut out = Vec::new();
+    for row in rows {
+        let encoded = row.encode();
+        match roots.oversize(&encoded) {
+            Ok(()) => out.push(encoded),
+            Err(Oversize::Value { len, limit }) => why.push(format!(
+                "the roots row holding {} is stored in {len} bytes, over the value limit of {limit}",
+                row.what()
+            )),
+            Err(Oversize::Row { len, limit }) => why.push(format!(
+                "the roots row holding {} is stored in {len} bytes, over the row limit of {limit}",
+                row.what()
+            )),
+        }
+    }
+    if why.is_empty() {
+        Ok(RootsAdmitted(out))
+    } else {
+        Err(Error::Refused(why))
     }
 }
 

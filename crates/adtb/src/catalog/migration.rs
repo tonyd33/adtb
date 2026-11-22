@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
 use adtb_lang::depends;
-use adtb_lang::evolve::{Code, Listed, Privilege, Recorded, Resolved, RowMap, Source};
+use adtb_lang::evolve::{self, Code, Listed, Privilege, Recorded, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, Root};
 use adtb_lang::parse::{Options, parse_migration};
@@ -120,7 +120,19 @@ impl Catalog {
         };
         let (next, (schema, program), recorded) = match self.source.record(&file, text, new) {
             Ok(migrated) => migrated,
-            Err(r) => return Err(refusal(r, Error::Refused)),
+            Err(f) => {
+                let unstepped = match &f {
+                    evolve::Failed::Refused(r) => r.unstepped(),
+                    evolve::Failed::Broken(_) => None,
+                };
+                return Err(match unstepped {
+                    Some(k) => {
+                        let operator = operator_text(text, &file.operators[k]);
+                        refusal(f, |why| Error::RefusedBy { operator, why })
+                    }
+                    None => refusal(f, Error::Refused),
+                });
+            }
         };
         if next.grants.iter().any(|g| g.row.is_none()) {
             self.counters(pager)?;
@@ -612,8 +624,8 @@ impl Catalog {
         }
         let gone: Vec<Vec<Value>> = gone.iter().map(RootsRow::encode).collect();
         delete_rows(m, &self.roots, &gone)?;
-        let named: Vec<Vec<Value>> = named.iter().map(RootsRow::encode).collect();
-        m.insert_all(&self.roots, named.iter().map(Ok), |_, _| Ok(()))?;
+        let named = admit::admit_roots(&self.roots, named)?;
+        m.insert_roots_all(&self.roots, &named)?;
         next.insert_all(m, b.data)?;
         self.write_rows(m, &next, b)?;
         Ok(next)
@@ -840,7 +852,7 @@ fn carried(maps: &[RowMap], def: TypeId, c: u32) -> bool {
 fn recordable<'a>(
     source: &Source,
     recorded: &'a Recorded,
-) -> Result<&'a [adtb_lang::evolve::ResolvedOp], Vec<String>> {
+) -> Result<&'a [evolve::ResolvedOp], Vec<String>> {
     let mut why = Vec::new();
     let ops = match recorded.resolved() {
         Err(ds) => {

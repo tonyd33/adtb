@@ -56,12 +56,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adtb_file::Disk;
 use adtb_lang::check::{Bundles, Program};
-use adtb_lang::evolve::{Logged, Privilege, Source};
+use adtb_lang::evolve::{Logged, Privilege, Replaying, Source};
 use adtb_lang::ids::engine_rel;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::{Committed as CommittedSchema, Schema};
-use adtb_lang::span::Diag;
 use adtb_lang::types::Ty;
 use adtb_sys::lock::{Lock, RwLock};
 
@@ -1464,20 +1463,18 @@ fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
 ///
 /// Fail when the log up to `m` does not resolve or the migration model fails on either text.
 fn same_hash(m: &Logged, text: &str) -> Result<bool, OpenError> {
-    let refused = |ds| OpenError::MigrationRefused {
+    let broken = |b| OpenError::MigrationRefused {
         version: m.number,
-        reason: Error::internal(Broken::Catalog(catalog::Broken::Unresolved(ds))),
+        reason: Error::internal(Broken::Catalog(b)),
     };
-    let hash = |text: &str| -> Result<Option<Result<catalog::Hash, Vec<Diag>>>, OpenError> {
+    let hash = |text: &str| -> Result<Option<Replaying<catalog::Hash>>, OpenError> {
         let Ok(file) = parse_migration(text, ParseOptions::default()).ok() else {
             return Ok(None);
         };
         let source = match m.before.migrate(&file, text) {
             Ok(source) => source,
-            Err(r) => {
-                return r
-                    .broken()
-                    .map_or(Ok(None), |d| Err(refused(vec![d.clone()])));
+            Err(f) => {
+                return catalog::model_fault(&f).map_or(Ok(None), |b| Err(broken(b)));
             }
         };
         let Ok(schema) = source.schema() else {
@@ -1490,7 +1487,7 @@ fn same_hash(m: &Logged, text: &str) -> Result<bool, OpenError> {
     };
     match hash(&m.text)? {
         Some(Ok(h)) => Ok(h == shipped),
-        Some(Err(ds)) => Err(refused(ds)),
+        Some(Err(f)) => Err(broken(catalog::unresolved(f))),
         None => Ok(false),
     }
 }

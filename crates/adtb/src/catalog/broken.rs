@@ -1,7 +1,7 @@
 use std::fmt;
 
 use adtb_lang::canon::Unnamed;
-use adtb_lang::evolve::{LogGrant, Refusal};
+use adtb_lang::evolve::{self, LogGrant};
 use adtb_lang::kernel::Invalid;
 use adtb_lang::norm;
 use adtb_lang::span::{Diag, FileDiag};
@@ -213,13 +213,37 @@ impl fmt::Display for Broken {
     }
 }
 
-/// Returns the error of refusal `r`: [`Broken::Model`] when the migration model failed on the
-/// migration, else `refused` of the message of each operator `r` refuses, then of each file its
-/// recheck refuses.
-pub(super) fn refusal(r: Refusal, refused: impl FnOnce(Vec<String>) -> Error) -> Error {
-    if let Some(d) = r.broken() {
-        return Broken::Model(d.message.clone()).into();
+/// Returns [`Broken::Model`] when the migration model failed on the migration `f` stands for.
+pub fn model_fault<R>(f: &evolve::Failed<R>) -> Option<Broken> {
+    match f {
+        evolve::Failed::Refused(_) => None,
+        evolve::Failed::Broken(d) => Some(Broken::Model(d.message.clone())),
     }
+}
+
+/// Returns the refusal of failure `f`, or [`Broken::Model`] when the migration model failed on
+/// the migration.
+pub fn refused_by<R>(f: evolve::Failed<R>) -> Result<R, Box<Broken>> {
+    match f {
+        evolve::Failed::Refused(r) => Ok(r),
+        evolve::Failed::Broken(d) => Err(Box::new(Broken::Model(d.message))),
+    }
+}
+
+/// Returns what a log failing to resolve with `f` breaks: [`Broken::Model`] when the migration
+/// model failed on a migration, else [`Broken::Unresolved`].
+pub fn unresolved(f: evolve::Failed<Vec<Diag>>) -> Broken {
+    refused_by(f).map_or_else(|b| *b, Broken::Unresolved)
+}
+
+/// Returns the error of failure `f`: [`Broken::Model`] when the migration model failed on the
+/// migration, else `refused` of the message of each operator it refuses, then of each file its
+/// recheck refuses.
+pub(super) fn refusal(f: evolve::Failed, refused: impl FnOnce(Vec<String>) -> Error) -> Error {
+    let r = match refused_by(f) {
+        Ok(r) => r,
+        Err(b) => return (*b).into(),
+    };
     let ops = r.operators.into_iter().map(|d| d.message);
     refused(
         ops.chain(r.recheck.into_iter().map(|d| d.diag.message))

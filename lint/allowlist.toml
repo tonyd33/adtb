@@ -145,7 +145,7 @@
 "crates/adtb-lang/src/permission/value.rs" = 17
 "crates/adtb-lang/src/resolve.rs" = 1
 "crates/adtb-lang/src/schema/mod.rs" = 94
-"crates/adtb-lang/src/signature.rs" = 12
+"crates/adtb-lang/src/signature.rs" = 10
 "crates/adtb-lang/src/span.rs" = 8
 "crates/adtb-lang/src/textual/document.rs" = 6
 "crates/adtb-lang/src/textual/form.rs" = 2

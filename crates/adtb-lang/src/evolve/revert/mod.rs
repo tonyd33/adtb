@@ -1,6 +1,8 @@
 use super::*;
 use crate::ids::{KeyKind, Owner, Space};
 
+type R<T> = Replaying<T>;
+
 mod by_id;
 mod inverse;
 mod spelled;
@@ -202,7 +204,7 @@ impl Source {
     /// before it names it.
     ///
     /// Fail with the diagnostics of a later migration that does not resolve.
-    pub(super) fn dependants(&self, pos: usize) -> Result<Vec<(u64, String)>, Vec<Diag>> {
+    pub(super) fn dependants(&self, pos: usize) -> R<Vec<(u64, String)>> {
         let made = self.created(pos);
         if made.is_empty() {
             return Ok(Vec::new());
@@ -382,14 +384,14 @@ impl<'a> Spelling<'a> {
 /// gives them.
 pub(in crate::evolve) struct Replayed {
     states: Vec<Source>,
-    spelling: Option<Result<Names, Vec<Diag>>>,
+    spelling: Option<Replaying<Names>>,
 }
 
 impl Replayed {
     /// Returns the replay that passes through `states`, with `spelling` the names of its text.
     pub(in crate::evolve) fn new(
         states: Vec<Source>,
-        spelling: Option<Result<Names, Vec<Diag>>>,
+        spelling: Option<Replaying<Names>>,
     ) -> Replayed {
         Replayed { states, spelling }
     }
@@ -453,7 +455,9 @@ impl Cx<'_> {
         let dependants = if self.replaying {
             Vec::new()
         } else {
-            self.src.dependants(pos).map_err(unresolved)?
+            self.src
+                .dependants(pos)
+                .map_err(|f| f.map_refused(unresolved))?
         };
         if let Some((later, object)) = dependants.first() {
             return self.err(format!(
@@ -599,7 +603,7 @@ impl Cx<'_> {
             .ok_or_else(missing)?;
         let i = before.find("type", &m, t).ok_or_else(missing)?;
         let Some(Decl::Type(td)) = before.parsed(i) else {
-            return Err(missing());
+            return Err(missing().into());
         };
         let record = matches!(td.body, ast::TypeBody::Record(_));
         let part = if record { Some(t.clone()) } else { ctor };

@@ -4,8 +4,10 @@ use adtb_lang::ids::CatCtorId;
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::process::finished;
 
+use crate::heap::Heap;
 use crate::key::{OrderKey, Value};
-use crate::mvcc::{Scope, Transactions};
+use crate::mvcc::{Scope, Transactions, Xid};
+use crate::runtime::Runtime;
 use crate::storage::{Damage, Pager, Pid};
 use crate::test_world::options;
 
@@ -14,8 +16,23 @@ use super::super::ids::{CatConstraintId, CatFieldId, CatIndexId, CatRelId};
 use super::super::kept::{KeptField, KeptRow};
 use super::super::readers::Kind;
 use super::super::roots;
-use super::super::{Catalog, Error, ROOTS, insert_row, visible};
+use super::super::{Abandoning, Catalog, Error, ROOTS, visible};
 use super::{RootsRow, Rot};
+
+/// Insert `row`, unadmitted, into the roots heap `roots` as transaction `x`.
+fn insert_row<R: Runtime>(
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    roots: &Heap,
+    x: Xid,
+    row: &[Value],
+) -> Result<(), Error> {
+    let mut judge = txns.judge_now(pager, roots.id().0);
+    roots
+        .insert_pruning(pager, x, row, &mut judge)
+        .kept(&Abandoning(()))?;
+    Ok(())
+}
 
 fn int(n: i64) -> Value {
     Value::I64(n)

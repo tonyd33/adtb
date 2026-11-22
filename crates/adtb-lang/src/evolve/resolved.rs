@@ -471,7 +471,7 @@ impl Source {
     ///
     /// Fail with the operators whose data the source lacks, at their spans, or with the operands
     /// whose names do not resolve, or when the log holds no migration `number`.
-    pub fn resolved(&self, number: u64) -> Result<Vec<ResolvedOp>, Vec<Diag>> {
+    pub fn resolved(&self, number: u64) -> Replaying<Vec<ResolvedOp>> {
         self.resolving(number).map(|(ops, _)| ops)
     }
 
@@ -480,7 +480,7 @@ impl Source {
     /// created.
     ///
     /// Fail as [`Source::resolved`] does.
-    pub(super) fn named_by(&self, number: u64) -> Result<BTreeSet<Reached>, Vec<Diag>> {
+    pub(super) fn named_by(&self, number: u64) -> Replaying<BTreeSet<Reached>> {
         let (ops, names) = self.resolving(number)?;
         let mut out: BTreeSet<Reached> = ops
             .iter()
@@ -518,11 +518,11 @@ impl Source {
 
     /// Resolve migration `number` as [`Source::resolved`] does. Returns its operators resolved and
     /// the names of its text.
-    fn resolving(&self, number: u64) -> Result<(Vec<ResolvedOp>, Names), Vec<Diag>> {
+    fn resolving(&self, number: u64) -> Replaying<(Vec<ResolvedOp>, Names)> {
         let logged = &self.log[self.at(number)?];
         let unavailable = self.unavailable(&logged.operators);
         if !unavailable.is_empty() {
-            return Err(unavailable);
+            return Err(Failed::Refused(unavailable));
         }
         let (_, names, got) = model::replay(logged)?;
         Ok((got.resolved(), names?))

@@ -38,7 +38,7 @@ impl Source {
         m: &MigrationFile,
         text: &str,
         accepting: bool,
-    ) -> Result<Migrated, Refusal> {
+    ) -> Result<Migrated, Failed> {
         let (next, checked, mut got) = self.migrating(m, text, &[], accepting, true)?;
         let steps = got.op_steps(m, text);
         let unavailable = next.unavailable(&m.operators);
@@ -54,32 +54,26 @@ impl Source {
     /// checking the result. Returns the steps of each operator as [`Recorded::steps`] does.
     ///
     /// Fail with the refusals of the operators that do not apply.
-    pub fn record_steps(&self, m: &MigrationFile, text: &str) -> Result<Vec<OpSteps>, Refusal> {
-        let mut got =
-            model::migrated(self, m, text, &[], false, false).map_err(Refusal::broken_by)?;
+    pub fn record_steps(&self, m: &MigrationFile, text: &str) -> Result<Vec<OpSteps>, Failed> {
+        let mut got = model::migrated(self, m, text, &[], false, false).map_err(Failed::Broken)?;
         let operators = got.refusals(m);
         if operators.is_empty() {
             return Ok(got.op_steps(m, text));
         }
         let mut result = got.source();
         result.settled();
-        Err(Refusal {
+        Err(Failed::Refused(Refusal {
             operators,
             result: Some(Box::new(result)),
             ..Refusal::default()
-        })
+        }))
     }
 
     /// Returns this source with `ops`, operators of module `module` whose text is `text`, applied
     /// in order, the result unchecked.
     ///
     /// Fail with the refusals of the operators that do not apply.
-    pub fn declaring(
-        &self,
-        module: &str,
-        ops: &[Operator],
-        text: &str,
-    ) -> Result<Source, Vec<Diag>> {
+    pub fn declaring(&self, module: &str, ops: &[Operator], text: &str) -> Replaying<Source> {
         let m = MigrationFile {
             module: ast::Ident {
                 text: module.to_string(),
@@ -87,10 +81,10 @@ impl Source {
             },
             operators: ops.to_vec(),
         };
-        let got = model::migrated(self, &m, text, &[], false, false).map_err(|d| vec![d])?;
+        let got = model::migrated(self, &m, text, &[], false, false).map_err(Failed::Broken)?;
         let refused = got.refusals(&m);
         if !refused.is_empty() {
-            return Err(refused);
+            return Err(Failed::Refused(refused));
         }
         let mut out = got.source();
         out.settled();

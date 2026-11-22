@@ -23,7 +23,7 @@ use super::codec::{
 };
 use super::roots::RootsRow;
 use super::values::{self, boolean};
-use super::{Broken, Catalog, Error, Migrating, OWNER_ROLE, delete_rows};
+use super::{Broken, Catalog, Error, Migrating, OWNER_ROLE, admit_roots, delete_rows};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -398,13 +398,11 @@ impl Catalog {
                     marked.insert(g.role.clone());
                     dormant.push((i, g.role.clone()));
                 }
-                for role in marked {
-                    let mark = RootsRow::Dormant {
-                        version: into.source.version,
-                        role,
-                    };
-                    m.insert(&self.roots, &mark.encode())?;
-                }
+                let marks = marked.into_iter().map(|role| RootsRow::Dormant {
+                    version: into.source.version,
+                    role,
+                });
+                m.insert_roots(&self.roots, &admit_roots(&self.roots, marks)?)?;
             }
         }
         let mut deleted = Vec::new();

@@ -234,7 +234,7 @@ fn replayed(body: &str) -> Result<Replayed, String> {
             .map_err(|ds| format!("{text}\ndoes not parse: {ds:?}"))?;
         source = source
             .accept(&m, &text)
-            .map_err(|r| format!("{text}\nrefused: {:?} {:?}", r.operators, r.recheck))?;
+            .map_err(|f| format!("{text}\nrefused: {f:?}"))?;
     }
     let mut decls: Vec<String> = source.decls.into_iter().map(|d| d.text).collect();
     decls.sort();

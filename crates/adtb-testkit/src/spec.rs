@@ -9,7 +9,7 @@ use adtb_lang::ast::{
     OperatorKind, QueryDecl, TxnDecl,
 };
 use adtb_lang::check::{Bundles, Checker, Program, check_feed};
-use adtb_lang::evolve::{Source, SourceDecl};
+use adtb_lang::evolve::{Failed, Source, SourceDecl};
 use adtb_lang::parse::{Options, parse_example, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Committed, Schema};
@@ -385,7 +385,11 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
     for m in &migrations {
         match src.accept(m, &b.text) {
             Ok(next) => src = next,
-            Err(refusal) => {
+            Err(Failed::Broken(d)) => {
+                errs.push(at(b, d.span, &d.message));
+                return Err(errs);
+            }
+            Err(Failed::Refused(refusal)) => {
                 errs.extend(refusal.operators.iter().map(|d| at(b, d.span, &d.message)));
                 let result = refusal.result.as_deref().unwrap_or(&src);
                 errs.extend(

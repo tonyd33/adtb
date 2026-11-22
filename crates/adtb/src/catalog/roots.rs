@@ -171,6 +171,27 @@ impl RootsRow {
         vec![Value::Sum { ctor, fields }]
     }
 
+    /// Returns what this row records, as a refusal of it names it.
+    pub(super) fn what(&self) -> String {
+        match self {
+            RootsRow::Migration { version, .. } => format!("the text of migration {version}"),
+            RootsRow::Held {
+                module,
+                name,
+                holder,
+                ..
+            } => format!("the hold of bundle {holder} on `{module}::{name}`"),
+            RootsRow::Dormant { role, .. } => format!("the dormant grants of role {role}"),
+            RootsRow::Deployment(_) => "a deployment fact".to_string(),
+            RootsRow::Kept { relation, .. } => format!("a kept row of relation {relation}"),
+            RootsRow::OrderKey { ctor, .. } => format!("the order key of constructor {ctor}"),
+            RootsRow::HeapRoot { .. }
+            | RootsRow::IndexRoot { .. }
+            | RootsRow::HistoryHeap { .. }
+            | RootsRow::HistoryIndex { .. } => "a root".to_string(),
+        }
+    }
+
     /// Returns the constructor id and the fields of this row.
     pub(super) fn parts(&self) -> (u32, Vec<Value>) {
         match self {

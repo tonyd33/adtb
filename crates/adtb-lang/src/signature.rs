@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
 use crate::check::{Program, Query, Txn, check_query_in, check_txn_in};
-use crate::evolve::{Source, Uncommitted};
+use crate::evolve::{Failed, Source, Uncommitted};
 use crate::parse::{Options, parse_adhoc, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
 use crate::schema::{
@@ -17,9 +17,16 @@ use crate::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
 
 /// A migration of a log that does not apply, numbered from 1.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReplayError {
-    pub migration: u64,
-    pub message: String,
+pub enum ReplayError {
+    Refused {
+        migration: u64,
+        message: String,
+    },
+    /// The migration model fails on the migration: an internal error.
+    Broken {
+        migration: u64,
+        message: String,
+    },
 }
 
 /// Returns the source every database that applies `log`, in order, holds.
@@ -33,14 +40,20 @@ pub fn replay<'a>(log: impl IntoIterator<Item = &'a str>) -> Result<Source, Repl
 
 /// Returns `source` after migration `text`, the `migration`th of its log, as [`replay`] applies it.
 pub fn replay_one(source: &Source, migration: u64, text: &str) -> Result<Source, ReplayError> {
-    let failed = |message: String| ReplayError { migration, message };
+    let failed = |message: String| ReplayError::Refused { migration, message };
     let file = parse_migration(text, Options::default())
         .ok()
         .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
-    source.migrate(&file, text).map_err(|r| {
-        let ops = r.operators.iter().map(|d| d.message.as_str());
-        let recheck = r.recheck.iter().map(|d| d.diag.message.as_str());
-        failed(joined(ops.chain(recheck)))
+    source.migrate(&file, text).map_err(|f| match f {
+        Failed::Refused(r) => {
+            let ops = r.operators.iter().map(|d| d.message.as_str());
+            let recheck = r.recheck.iter().map(|d| d.diag.message.as_str());
+            failed(joined(ops.chain(recheck)))
+        }
+        Failed::Broken(d) => ReplayError::Broken {
+            migration,
+            message: d.message,
+        },
     })
 }
 
@@ -349,8 +362,9 @@ pub struct Bundle {
 ///
 /// Fail with the message of the first error: a file that does not parse, a module import of no
 /// user module, a function that does not check, each refusal of [`calls`], and a source a
-/// migration is being applied to.
-pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
+/// migration is being applied to. Fail with [`Failed::Broken`] when the migration model fails
+/// on a function.
+pub fn bundle(source: &Source, text: &str) -> Result<Bundle, Failed<String>> {
     let file = parse_bundle(text, Options::default())
         .ok()
         .map_err(|ds| joined(ds.iter().map(|d| d.message.as_str())))?;
@@ -478,19 +492,21 @@ pub fn visible(schema: &Schema, imports: &[Import]) -> Result<Visible, String> {
 /// functions `fns` of `text` added to the first module of `vis`; `None` when there are none.
 ///
 /// Refuse a function whose name is that of a schema function `vis` sees, and one that fails to
-/// check.
+/// check. Fail with [`Failed::Broken`] when the migration model fails on a function.
 pub fn with_functions(
     source: &Source,
     schema: &Schema,
     vis: &Visible,
     fns: &[&FnDecl],
     text: &str,
-) -> Result<Option<(Schema, Program)>, String> {
+) -> Result<Option<(Schema, Program)>, Failed<String>> {
     if fns.is_empty() {
         return Ok(None);
     }
     let Some(&home) = vis.modules.first() else {
-        return Err("a registration with functions imports a module".into());
+        return Err(Failed::Refused(
+            "a registration with functions imports a module".into(),
+        ));
     };
     let module = &schema.module(home).name;
     let mut source = source.clone();
@@ -501,9 +517,9 @@ pub fn with_functions(
             name: f.name.clone(),
         };
         if let Ok(ValueDef::Function(_)) = lookup_value(schema, vis, &name) {
-            return Err(failed(
+            return Err(Failed::Refused(failed(
                 "a bundle function has the name of a schema function".into(),
-            ));
+            )));
         }
         let op = Operator {
             kind: OperatorKind::DefineFn((*f).clone()),
@@ -511,9 +527,14 @@ pub fn with_functions(
         };
         source = source
             .declaring(module, std::slice::from_ref(&op), text)
-            .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
+            .map_err(|f| {
+                f.map_refused(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))
+            })?;
     }
-    source.check().map(Some).map_err(file_diags)
+    source
+        .check()
+        .map(Some)
+        .map_err(|ds| Failed::Refused(file_diags(ds)))
 }
 
 /// Returns the call of the schema function `f` a bundle seeing `vis` imports.

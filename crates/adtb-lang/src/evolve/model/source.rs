@@ -1,5 +1,5 @@
 use super::*;
-use crate::evolve::expected::Added as Layer;
+use crate::evolve::expected;
 use crate::ids::{CatCtorId, CatRelId, KeyKind, Owner, keyed};
 
 impl Model {
@@ -39,10 +39,10 @@ impl Model {
             .iter()
             .map(|a| {
                 let added = match a.added {
-                    Added::Not => Layer::Not,
-                    Added::Applying => Layer::Applying,
-                    Added::Refused => Layer::Refused,
-                    Added::As(r) => Layer::As(CatRelId::from_raw(r)),
+                    Added::Not => expected::Added::Not,
+                    Added::Applying => expected::Added::Applying,
+                    Added::Refused => expected::Added::Refused,
+                    Added::As(r) => expected::Added::As(CatRelId::from_raw(r)),
                 };
                 crate::evolve::Expected::added(
                     a.module.clone(),
