@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::runtime::Runtime;
 use crate::storage::{
-    Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, PageShared, Pager, Pid,
-    Resolutions, Shape, StaleCopy, flags, format, header_edit, kind, kind_fault, lsn,
+    Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Resolutions, Shape,
+    StaleCopy, flags, format, header_edit, kind, kind_fault, lsn,
 };
 
 use super::{Status, StatusError, Writers, Xid};
@@ -47,7 +47,9 @@ const DIRECTORY_ENTRIES: usize = HEADER_LEN + 16;
 const ENTRY: usize = 16;
 
 fn u64_at(page: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(page[at..at + 8].try_into().unwrap())
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&page[at..at + 8]);
+    u64::from_le_bytes(bytes)
 }
 
 fn put_u64(page: &mut [u8], at: usize, v: u64) {
@@ -63,20 +65,20 @@ fn set_role(page: &mut [u8], role: u16) {
     ));
 }
 
-/// Returns the commit log page `pid` under a shared latch. Refuses it, from then on, when it is not
-/// a commit log page of `role`.
-fn read_role<R: Runtime>(
+/// Returns what `judge` decodes of page `pid`. Refuses the page, from then on, when `judge` finds
+/// it out of shape under the exclusive latch too.
+fn decode<R: Runtime, T>(
     pager: &Pager<R>,
     pid: Pid,
-    role: u16,
-) -> Result<PageShared<'_>, PageError> {
+    judge: impl Fn(&[u8]) -> Result<T, Shape>,
+) -> Result<T, PageError> {
     loop {
         let page = pager.read(pid)?;
-        if has_role(&page, role) {
-            return Ok(page);
+        if let Ok(decoded) = judge(&page) {
+            return Ok(decoded);
         }
         drop(page);
-        if let Some(e) = pager.refuse_if(pid, |p| role_fault(p, role)) {
+        if let Some(e) = pager.refuse_if(pid, |p| judge(p).err()) {
             return Err(e);
         }
     }
@@ -93,13 +95,38 @@ fn role_fault(page: &[u8], role: u16) -> Option<Shape> {
     }
 }
 
-fn has_role(page: &[u8], role: u16) -> bool {
-    role_fault(page, role).is_none()
-}
+/// A page read as status page `n`.
+#[derive(Clone, Copy, Debug)]
+pub struct StatusPage<'p>(&'p [u8]);
 
-/// Returns whether `page` is status page `n`.
-fn is_status_page(page: &[u8], n: u64) -> bool {
-    has_role(page, 0) && u64_at(page, STATUS_NUMBER) == n
+impl<'p> StatusPage<'p> {
+    /// Returns `page` as status page `n`, or how it is out of shape as one.
+    pub fn of(page: &'p [u8], n: u64) -> Result<StatusPage<'p>, Shape> {
+        if let Some(fault) = role_fault(page, 0) {
+            return Err(fault);
+        }
+        if u64_at(page, STATUS_NUMBER) != n {
+            return Err(Shape::Frame);
+        }
+        Ok(StatusPage(page))
+    }
+
+    /// Returns the status of the id at `index`.
+    pub fn status(self, index: usize) -> Result<Status, Shape> {
+        status_at(self.0, index)
+    }
+
+    /// Returns the ids from `base` on in `ids` that are in progress, `base` being the page's
+    /// first id.
+    fn in_progress(self, base: u64, ids: std::ops::Range<u64>) -> Result<Vec<u64>, Shape> {
+        let mut open = Vec::new();
+        for x in ids {
+            if self.status((x - base) as usize)? == Status::InProgress {
+                open.push(x);
+            }
+        }
+        Ok(open)
+    }
 }
 
 /// Returns the number of transaction ids one status page of a `page_size` page holds.
@@ -117,27 +144,24 @@ pub fn locate(x: Xid, per_page: u64) -> (u64, usize) {
     (x.0 / per_page, (x.0 % per_page) as usize)
 }
 
-pub fn status_at(page: &[u8], index: usize) -> Status {
+/// Returns the status the bits of the id at `index` of a status page record, or
+/// [`Shape::Frame`] when they name none.
+pub fn status_at(page: &[u8], index: usize) -> Result<Status, Shape> {
     let byte = page[STATUSES + index / 4];
-    Status::from_bits(byte >> (index % 4 * 2) & 0b11)
+    Status::from_bits(byte >> (index % 4 * 2) & 0b11).ok_or(Shape::Frame)
 }
 
 /// Record `status` for the id at `index`.
 ///
+/// Preconditions: the id's bits read in progress.
+///
 /// Panics:
-/// - The id has resolved already.
 /// - `status` is in progress.
 pub(crate) fn set_status(page: &mut [u8], index: usize, status: Status) {
     assert_ne!(
         Status::InProgress,
         status,
         "a status is set only once resolved"
-    );
-    let old = status_at(page, index);
-    assert_eq!(
-        Status::InProgress,
-        old,
-        "status {index} resolved twice, from {old:?} to {status:?}"
     );
     page[STATUSES + index / 4] |= (status as u8) << (index % 4 * 2);
 }
@@ -159,12 +183,23 @@ impl Root {
         self.resolved
     }
 
-    pub fn read(page: &[u8]) -> Root {
-        Root {
+    /// Returns the root `page` holds, or [`Shape::Frame`] when its bounds do not lie in order
+    /// from the first id to the reservation or it names no directory.
+    pub fn read(page: &[u8]) -> Result<Root, Shape> {
+        let root = Root {
             reserved: Xid(u64_at(page, ROOT_RESERVED)),
             resolved: Xid(u64_at(page, ROOT_RESOLVED)),
             bound: Xid(u64_at(page, ROOT_BOUND)),
             first_directory: Pid(u64_at(page, ROOT_FIRST_DIRECTORY)),
+        };
+        let ordered = Xid::FIRST <= root.bound
+            && root.bound <= root.reserved
+            && Xid::FIRST <= root.resolved
+            && root.resolved <= root.reserved;
+        if ordered && root.first_directory != Pid(0) {
+            Ok(root)
+        } else {
+            Err(Shape::Frame)
         }
     }
 
@@ -186,24 +221,26 @@ pub(crate) struct Directory {
 }
 
 impl Directory {
-    pub(crate) fn read(pid: Pid, page: &[u8]) -> Directory {
+    /// Returns directory page `pid` as `page` holds it, or [`Shape::Frame`] when its count passes
+    /// its capacity.
+    pub(crate) fn read(pid: Pid, page: &[u8]) -> Result<Directory, Shape> {
         let next = u64_at(page, DIRECTORY_NEXT);
-        let count = u64_at(page, DIRECTORY_COUNT) as usize;
-        assert!(
-            count <= directory_capacity(page.len()),
-            "{pid:?} names {count} status pages"
-        );
+        let count = u64_at(page, DIRECTORY_COUNT);
+        let count = match usize::try_from(count) {
+            Ok(c) if c <= directory_capacity(page.len()) => c,
+            _ => return Err(Shape::Frame),
+        };
         let entries = (0..count)
             .map(|i| {
                 let at = DIRECTORY_ENTRIES + i * ENTRY;
                 (u64_at(page, at), Pid(u64_at(page, at + 8)))
             })
             .collect();
-        Directory {
+        Ok(Directory {
             pid,
             next: (next != 0).then_some(Pid(next)),
             entries,
-        }
+        })
     }
 
     pub(crate) fn write(&self, page: &mut [u8]) {
@@ -218,6 +255,36 @@ impl Directory {
             put_u64(page, at + 8, pid.0);
         }
     }
+}
+
+/// Returns the index in `dirs`, the directories of `root` in chain order, of the one out of
+/// shape: one holding an entry not past the entry before it or naming a status page outside those
+/// from the bound's to the reservation's; else, for the first status page an id below the
+/// reservation and not below the bound needs that no entry names, the directory holding the next
+/// entry, the one before it when that entry starts its directory, or the last when none follows.
+fn misshapen(root: &Root, dirs: &[Directory], per_page: u64) -> Option<usize> {
+    let (first, _) = locate(root.bound, per_page);
+    let (end, _) = locate(Xid(root.bound.0.max(root.reserved.0 - 1)), per_page);
+    let mut named = BTreeMap::new();
+    let mut last = None;
+    for (i, d) in dirs.iter().enumerate() {
+        for &(n, _) in &d.entries {
+            if last.is_some_and(|l| n <= l) || !(first..=end).contains(&n) {
+                return Some(i);
+            }
+            last = Some(n);
+            named.insert(n, i);
+        }
+    }
+    if root.bound >= root.reserved {
+        return None;
+    }
+    let missing = (first..=end).find(|n| !named.contains_key(n))?;
+    Some(match named.range(missing..).next() {
+        None => dirs.len() - 1,
+        Some((&n, &i)) if i > 0 && dirs[i].entries.first().map(|e| e.0) == Some(n) => i - 1,
+        Some((_, &i)) => i,
+    })
 }
 
 /// The commit status of every reserved transaction id, on commit log pages.
@@ -297,30 +364,59 @@ impl CommitLog {
     }
 
     /// Read the commit log rooted at `root`: its root and directories, and no status page.
+    ///
+    /// Refuse, from then on, the root or a directory page out of shape, or the directory that a
+    /// chain of directories returning to a page names, that holds an entry not past the one
+    /// before it, or that lost the entry of a status page an id below the reservation and not
+    /// below the bound needs.
     pub fn load<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
-        let page = read_role(pager, root, ROOT_PAGE)?;
-        let state = Root::read(&page);
-        drop(page);
-        let mut directories = Vec::new();
-        let mut at = Some(state.first_directory);
-        while let Some(pid) = at {
-            let page = read_role(pager, pid, DIRECTORY_PAGE)?;
-            let dir = Directory::read(pid, &page);
-            at = dir.next;
-            directories.push(dir);
+        let per_page = per_page(pager.page_size());
+        loop {
+            let state = decode(pager, root, |p| match role_fault(p, ROOT_PAGE) {
+                Some(fault) => Err(fault),
+                None => Root::read(p),
+            })?;
+            let mut directories: Vec<Directory> = Vec::new();
+            let mut at = Some(state.first_directory);
+            let mut looped = false;
+            while let Some(pid) = at {
+                if directories.iter().any(|d| d.pid == pid) {
+                    looped = true;
+                    break;
+                }
+                let dir = decode(pager, pid, |p| match role_fault(p, DIRECTORY_PAGE) {
+                    Some(fault) => Err(fault),
+                    None => Directory::read(pid, p),
+                })?;
+                at = dir.next;
+                directories.push(dir);
+            }
+            let blamed = if looped {
+                Some(directories.len() - 1)
+            } else {
+                misshapen(&state, &directories, per_page)
+            };
+            if let Some(i) = blamed {
+                let dir = &directories[i];
+                let same = |p: &[u8]| Directory::read(dir.pid, p).as_ref() == Ok(dir);
+                match pager.refuse_if(dir.pid, |p| same(p).then_some(Shape::Frame)) {
+                    Some(e) => return Err(e),
+                    None => continue,
+                }
+            }
+            let pages = directories
+                .iter()
+                .flat_map(|d| d.entries.iter().copied())
+                .collect();
+            return Ok(CommitLog {
+                root_pid: root,
+                root: state,
+                per_page,
+                directory_capacity: directory_capacity(pager.page_size()),
+                directories,
+                pages,
+            });
         }
-        let pages = directories
-            .iter()
-            .flat_map(|d| d.entries.iter().copied())
-            .collect();
-        Ok(CommitLog {
-            root_pid: root,
-            root: state,
-            per_page: per_page(pager.page_size()),
-            directory_capacity: directory_capacity(pager.page_size()),
-            directories,
-            pages,
-        })
     }
 
     /// Record every reserved id still in progress as committed when the retained log holds its
@@ -368,10 +464,12 @@ impl CommitLog {
     /// past which lies every commit record changing them.
     ///
     /// Fail with the refusal of a status page that cannot be read, other than one that lost a
-    /// write. Fail with [`Damage::LogUnproven`], naming the page of that LSN, when the log from
-    /// there to the end recovery kept is not whole and readable. Fail with the refusal of a page
-    /// that lost a write when the file's copy is not the status page the directory names there,
-    /// or when the copy holds an id in progress and the retained log holds no record of the page
+    /// write, refusing from then on the directory page naming a page that is no status page, or
+    /// a status page of another number or holding bits of an id that name no status. Fail with [`Damage::LogUnproven`], naming the
+    /// page of that LSN, when the log from there to the end recovery kept is not whole and
+    /// readable. Fail with the refusal of a page that lost a write when the file's copy is not
+    /// the status page the directory names there or holds bits of an id that name no status, or
+    /// when the copy holds an id in progress and the retained log holds no record of the page
     /// continuing from the copy.
     pub fn unresolved<'p, R: Runtime>(
         &self,
@@ -382,14 +480,20 @@ impl CommitLog {
         let mut oldest: Option<(Lsn, Pid)> = None;
         for (&n, &pid) in &self.pages {
             let base = n * self.per_page;
-            let (page, refused) = pager.read_stale(pid, &Settling(()))?;
-            let refused = match refused {
-                Some(stale) if !is_status_page(&page, n) => return Err(stale.refuse()),
-                refused => refused,
+            let range = from.0.max(base)..to.0.min(base + self.per_page);
+            let judge = |p: &[u8]| StatusPage::of(p, n)?.in_progress(base, range.clone());
+            let (page, refused, ids) = loop {
+                let (page, refused) = pager.read_stale(pid, &Settling(()))?;
+                match (judge(&page), refused) {
+                    (Ok(ids), refused) => break (page, refused, ids),
+                    (Err(_), Some(stale)) => return Err(stale.refuse()),
+                    (Err(_), None) => {
+                        if let Some(e) = self.refuse_status(pager, (n, pid), judge) {
+                            return Err(e);
+                        }
+                    }
+                }
             };
-            let ids: Vec<u64> = (from.0.max(base)..to.0.min(base + self.per_page))
-                .filter(|&x| status_at(&page, (x - base) as usize) == Status::InProgress)
-                .collect();
             if !ids.is_empty() || refused.is_some() {
                 if oldest.is_none_or(|(at, _)| lsn(&page) < at) {
                     oldest = Some((lsn(&page), pid));
@@ -544,7 +648,57 @@ impl CommitLog {
             return Ok(Status::Committed);
         }
         let (n, i) = locate(x, self.per_page);
-        Ok(status_at(&pager.read_formatted(self.page(n))?, i))
+        Ok(self.read_status(pager, n, |p| p.status(i))?)
+    }
+
+    /// Returns what `judge` decodes of status page `n`. Refuses, from then on, the directory
+    /// page naming it when the page it names is no status page, else the page when it is out of
+    /// shape as status page `n` or `judge` refuses it, under the exclusive latch too.
+    fn read_status<R: Runtime, T>(
+        &self,
+        pager: &Pager<R>,
+        n: u64,
+        judge: impl Fn(StatusPage<'_>) -> Result<T, Shape>,
+    ) -> Result<T, PageError> {
+        let pid = self.page(n);
+        let judge = |p: &[u8]| judge(StatusPage::of(p, n)?);
+        loop {
+            let page = pager.read(pid)?;
+            if let Ok(decoded) = judge(&page) {
+                return Ok(decoded);
+            }
+            drop(page);
+            if let Some(e) = self.refuse_status(pager, (n, pid), judge) {
+                return Err(e);
+            }
+        }
+    }
+
+    /// Refuse, from then on, the directory page naming `pid` as status page `n` when `pid` is no
+    /// status page under its exclusive latch, else `pid` when `judge` refuses it there. Returns
+    /// `None` when neither still holds: the caller reads again.
+    fn refuse_status<R: Runtime, T>(
+        &self,
+        pager: &Pager<R>,
+        (n, pid): (u64, Pid),
+        judge: impl Fn(&[u8]) -> Result<T, Shape>,
+    ) -> Option<PageError> {
+        let misnamed = std::cell::Cell::new(false);
+        let refused = pager.refuse_if(pid, |p| match role_fault(p, 0) {
+            Some(Shape::Kind | Shape::Blank) => {
+                misnamed.set(true);
+                None
+            }
+            _ => judge(p).err(),
+        });
+        if refused.is_some() || !misnamed.get() {
+            return refused;
+        }
+        let Some(dir) = (self.directories.iter()).find(|d| d.entries.contains(&(n, pid))) else {
+            return pager.refuse_if(pid, |p| role_fault(p, 0));
+        };
+        let names = |p: &[u8]| Directory::read(dir.pid, p).is_ok_and(|d| d.entries == dir.entries);
+        pager.refuse_if(dir.pid, |p| names(p).then_some(Shape::Frame))
     }
 
     /// Returns what a version written as `w` that names a successor is owed: a version its
@@ -570,13 +724,13 @@ impl CommitLog {
     /// Returns the LSN of the commit record.
     ///
     /// Errors:
-    /// - The status page is damaged, recording nothing.
+    /// - The status page is damaged, or does not read `x` in progress, recording nothing.
     ///
     /// Panics:
-    /// - `x` is not reserved or has resolved.
+    /// - `x` is not reserved above the bound.
     #[cfg(any(test, feature = "testing"))]
     pub fn commit<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
-        let (pid, i) = self.slot(x);
+        let (pid, i) = self.slot(pager, x)?;
         pager.commit(x.0, &[pid], |p| set_status(p[0], i, Status::Committed))
     }
 
@@ -590,7 +744,7 @@ impl CommitLog {
         time: u64,
         (pids, f): (&[Pid], impl FnOnce(&mut [&mut [u8]])),
     ) -> Result<Lsn, PageError> {
-        let (pid, i) = self.slot(x);
+        let (pid, i) = self.slot(pager, x)?;
         let pages: Vec<Pid> = std::iter::once(pid).chain(pids.iter().copied()).collect();
         pager.commit_at(x.0, time, &pages, |p| {
             set_status(p[0], i, Status::Committed);
@@ -600,7 +754,7 @@ impl CommitLog {
 
     /// Record that `x` aborted and log its abort record, in one batch.
     pub(super) fn abort<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
-        let (pid, i) = self.slot(x);
+        let (pid, i) = self.slot(pager, x)?;
         pager.abort(x.0, &[pid], |p| set_status(p[0], i, Status::Aborted))
     }
 
@@ -610,14 +764,22 @@ impl CommitLog {
         self.abort(pager, x)
     }
 
-    /// Returns the status page holding `x` and its index there.
-    fn slot(&self, x: Xid) -> (Pid, usize) {
+    /// Returns the status page holding `x` and its index there. Refuses the page, from then on,
+    /// when it is not that status page or does not read `x` in progress.
+    ///
+    /// Panics:
+    /// - `x` is not reserved above the bound.
+    fn slot<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<(Pid, usize), PageError> {
         assert!(
             self.root.bound <= x && x < self.root.reserved,
             "{x:?} is not a reserved id above the bound"
         );
         let (n, i) = locate(x, self.per_page);
-        (self.page(n), i)
+        self.read_status(pager, n, |p| match p.status(i)? {
+            Status::InProgress => Ok(()),
+            Status::Committed | Status::Aborted => Err(Shape::Frame),
+        })?;
+        Ok((self.page(n), i))
     }
 
     /// Drop the status of every id below `bound`, which then counts as committed, and free the

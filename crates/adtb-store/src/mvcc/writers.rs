@@ -89,11 +89,14 @@ impl Writers {
 
     /// Returns the writers `bytes` encodes.
     pub fn decode(bytes: &[u8; Writers::LEN]) -> Writers {
-        let (inserter, deleter) = bytes.split_at(8);
-        let word = |b: &[u8]| Xid(u64::from_le_bytes(b.try_into().expect("8 bytes")));
-        let deleter = word(deleter);
+        let word = |at: usize| {
+            let mut word = [0; 8];
+            word.copy_from_slice(&bytes[at..at + 8]);
+            Xid(u64::from_le_bytes(word))
+        };
+        let deleter = word(8);
         Writers {
-            inserter: word(inserter),
+            inserter: word(0),
             deleter: (deleter != Xid::NONE).then_some(deleter),
         }
     }

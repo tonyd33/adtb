@@ -7,7 +7,9 @@ use crate::heap::handle::before_next_row_refusal;
 use crate::heap::large::before_next_tail;
 use crate::heap::page::{HeapPage, Slot};
 use crate::heap::version::tid_bits;
-use crate::heap::{CtorType, Error, FieldType, HEADER_LEN, Heap, LargeStore, Refused, walk};
+use crate::heap::{
+    CtorType, Error, FieldType, HEADER_LEN, Heap, HeapNo, LargeStore, Refused, walk,
+};
 use crate::key::{CtorId, Scalar, Tid, Value};
 use crate::mvcc::{Fate, Transactions, Xid};
 use crate::storage::{Damage, PageError, Pager, Pid, Shape, Undecoded, Walk};
@@ -779,7 +781,9 @@ fn a_sweep_refuses_a_touched_page_out_of_frame() {
             let pager = Pager::create(rt.clone(), &options(FRAMES)).unwrap();
             let txns = Transactions::create(rt, &pager).unwrap();
             let large = LargeStore::create(&pager, 9).unwrap();
-            let pointer = large.write(&pager, Xid(1), b"sweepmark").unwrap();
+            let pointer = large
+                .write(&pager, (Xid(1), HeapNo(10)), b"sweepmark")
+                .unwrap();
             let pid = Pid(pointer.first.page());
             pager.update(&[pid], |p| edit(p[0])).unwrap();
             let blamed = if shape == Shape::Kind {
@@ -794,10 +798,10 @@ fn a_sweep_refuses_a_touched_page_out_of_frame() {
                 &mut || true,
             );
             assert_eq!(
-                Err::<Walk, _>(Refused::Page(PageError {
+                Err::<Walk, _>(PageError {
                     pid: blamed,
                     damage
-                })),
+                }),
                 got,
                 "{what}"
             );
@@ -822,7 +826,7 @@ fn a_chunk_insert_refuses_the_page_of_a_tail_it_cannot_find() {
             page[40 + 8 * usize::from(t.slot()) + 4] = 9;
             seen.set(Some(t));
         });
-        let got = large.write(&pager, Xid(1), &[7; 5000]);
+        let got = large.write(&pager, (Xid(1), HeapNo(10)), &[7; 5000]);
         let pid = Pid(tail.get().expect("the hook ran").page());
         let damage = Damage::Shape(Shape::Frame);
         assert_eq!(Err(Error::Page(PageError { pid, damage })), got.map(|_| ()));

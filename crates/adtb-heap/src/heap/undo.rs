@@ -2,8 +2,8 @@ use crate::consumed::Consumed;
 use crate::key::Tid;
 use crate::mvcc::Xid;
 
-use super::Error;
 use super::write::Failed;
+use super::{Error, HeapNo};
 
 /// A change a write made to one version, which taking the write back undoes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,19 +65,19 @@ impl<T> Undoable<T> {
         }
     }
 
-    /// Returns the write `committed` reports: `done` with the changes `old` and `new` that take
-    /// it back, or the commit's failure with them when the update wrote the pages. Fails with the
-    /// commit's failure when the update did not.
+    /// Returns the write `committed` reports of heap `heap`: `done` with the changes `old` and
+    /// `new` that take it back, or the commit's failure with them when the update wrote the pages.
+    /// Fail with the commit's failure when the update did not.
     pub(super) fn committed(
-        committed: Result<(), Failed>,
+        (committed, heap): (Result<(), Failed>, HeapNo),
         done: T,
         old: Option<Undo>,
         new: Option<Undo>,
     ) -> Result<Undoable<T>, Error> {
         let done = match committed {
             Ok(()) => Ok(done),
-            Err(f) if f.written() => Err(f.into()),
-            Err(f) => return Err(f.into()),
+            Err(f) if f.written() => Err(f.of_heap(heap)),
+            Err(f) => return Err(f.of_heap(heap)),
         };
         Ok(Undoable {
             done,

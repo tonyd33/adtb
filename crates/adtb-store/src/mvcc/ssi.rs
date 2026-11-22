@@ -4,7 +4,8 @@ use std::ops::{Bound, RangeBounds};
 use crate::key::{CtorId, Tid};
 use crate::storage::Pid;
 
-use super::{Cause, SerializationFailure, Xid};
+use super::conflict::dangerous;
+use super::{Conflict, Xid};
 
 /// The judgement that one value decided a query's sink and no remaining row could abort it, so
 /// what a scan of the query read it for depends on no version it did not read.
@@ -146,11 +147,12 @@ struct Sxact {
     /// The commit's position in the order of commits, counting from 1.
     commit: Option<u64>,
     /// The failure it reports once chosen to abort.
-    doomed: Option<SerializationFailure>,
+    doomed: Option<Conflict>,
     safe: bool,
     unsafe_: bool,
-    /// Transactions that read before this one wrote.
-    ins: BTreeSet<SerialId>,
+    /// Transactions that read before this one wrote, each with the heap of the version or entry
+    /// the first such edge is on.
+    ins: BTreeMap<SerialId, Option<u32>>,
     /// Transactions this one read before they wrote.
     outs: BTreeSet<SerialId>,
     /// The earliest commit of a transaction in `outs`, kept after that transaction is forgotten.
@@ -240,7 +242,7 @@ impl Serializer {
                 doomed: None,
                 safe,
                 unsafe_: false,
-                ins: BTreeSet::new(),
+                ins: BTreeMap::new(),
                 outs: BTreeSet::new(),
                 earliest_out: None,
                 pending,
@@ -283,25 +285,20 @@ impl Serializer {
 
     /// Errors:
     /// - `id` has been chosen to abort.
-    pub fn check(&self, id: SerialId) -> Result<(), SerializationFailure> {
+    pub fn check(&self, id: SerialId) -> Result<(), Conflict> {
         match &self.get(id).doomed {
             Some(f) => Err(f.clone()),
             None => Ok(()),
         }
     }
 
-    fn records(&self, id: SerialId) -> Result<bool, SerializationFailure> {
+    fn records(&self, id: SerialId) -> Result<bool, Conflict> {
         self.check(id)?;
         Ok(!self.get(id).safe)
     }
 
     /// Record that `id` read the version at `tid` of `heap`.
-    pub fn read_tuple(
-        &mut self,
-        id: SerialId,
-        heap: u32,
-        tid: Tid,
-    ) -> Result<(), SerializationFailure> {
+    pub fn read_tuple(&mut self, id: SerialId, heap: u32, tid: Tid) -> Result<(), Conflict> {
         if !self.records(id)? || self.holds_tuple(id, heap, tid) {
             return Ok(());
         }
@@ -364,7 +361,7 @@ impl Serializer {
 
     /// Record that `id` scanned all of `heap`.
     #[cfg(test)]
-    pub fn read_heap(&mut self, id: SerialId, heap: u32) -> Result<(), SerializationFailure> {
+    pub fn read_heap(&mut self, id: SerialId, heap: u32) -> Result<(), Conflict> {
         if self.records(id)? {
             self.lock_heap(id, heap);
         }
@@ -374,11 +371,7 @@ impl Serializer {
     /// Record that `id` began a scan of `heap`, covering every version of the heap as a heap
     /// lock does until [`Serializer::end_scan`] ends it. Returns the scan, `None` when it takes
     /// no lock.
-    pub fn read_scan(
-        &mut self,
-        id: SerialId,
-        heap: u32,
-    ) -> Result<Option<ScanId>, SerializationFailure> {
+    pub fn read_scan(&mut self, id: SerialId, heap: u32) -> Result<Option<ScanId>, Conflict> {
         if !self.records(id)? || self.get(id).points.contains(&Point::Heap(heap)) {
             return Ok(None);
         }
@@ -422,7 +415,7 @@ impl Serializer {
 
     /// Record that `id` ran a statement at schema version `version`.
     #[cfg(test)]
-    pub fn read_schema(&mut self, id: SerialId, version: u64) -> Result<(), SerializationFailure> {
+    pub fn read_schema(&mut self, id: SerialId, version: u64) -> Result<(), Conflict> {
         if self.records(id)? {
             self.lock(id, Point::Schema(version));
         }
@@ -441,7 +434,7 @@ impl Serializer {
         lo: Bound<Vec<u8>>,
         hi: Bound<Vec<u8>>,
         ctors: BTreeSet<CtorId>,
-    ) -> Result<(), SerializationFailure> {
+    ) -> Result<(), Conflict> {
         if !self.records(id)? {
             return Ok(());
         }
@@ -565,28 +558,23 @@ impl Serializer {
 
     /// Record that `id` read a version whose state depends on `writer`, a writer its snapshot
     /// does not count as committed: an inserter of a version it misses, or the deleter of one it
-    /// sees.
+    /// sees, of heap `heap`.
     ///
     /// Errors:
     /// - The rw-antidependency completes a dangerous structure that only `id` can break.
-    pub fn read_from(&mut self, id: SerialId, writer: Xid) -> Result<(), SerializationFailure> {
+    pub fn read_from(&mut self, id: SerialId, writer: Xid, heap: u32) -> Result<(), Conflict> {
         if !self.records(id)? {
             return Ok(());
         }
         match self.by_xid.get(&writer) {
-            Some(&w) => self.conflict(id, w, id),
+            Some(&w) => self.conflict(id, w, id, Some(heap)),
             None => Ok(()),
         }
     }
 
     /// Record the write by `id` of the version at `tid` of heap `heap`, its change in its page: an
     /// update, delete or retag.
-    pub fn write_at(
-        &mut self,
-        id: SerialId,
-        heap: u32,
-        tid: Tid,
-    ) -> Result<(), SerializationFailure> {
+    pub fn write_at(&mut self, id: SerialId, heap: u32, tid: Tid) -> Result<(), Conflict> {
         let points = [
             Point::Tuple(heap, tid),
             Point::Page(heap, tid.page()),
@@ -597,22 +585,22 @@ impl Serializer {
 
     /// Record the insert by `id` of a version into `heap`, including the successor an update or
     /// retag writes.
-    pub fn insert_heap(&mut self, id: SerialId, heap: u32) -> Result<(), SerializationFailure> {
+    pub fn insert_heap(&mut self, id: SerialId, heap: u32) -> Result<(), Conflict> {
         self.conflict_in(id, heap, &[Point::Heap(heap)])
     }
 
     /// Record the insert by `id` of an entry with encoded key `key` for constructor `ctor` into
-    /// `index`.
+    /// `index`, naming its version in heap `heap`.
     pub fn insert_entry(
         &mut self,
         id: SerialId,
         index: Pid,
-        key: &[u8],
-        ctor: CtorId,
-    ) -> Result<(), SerializationFailure> {
+        (key, ctor): (&[u8], CtorId),
+        heap: u32,
+    ) -> Result<(), Conflict> {
         self.check(id)?;
         let readers = self.range_readers(index, |r| r.covers(key, ctor), |c| c.contains(&ctor));
-        self.conflicts_in(id, readers)
+        self.conflicts_in(id, readers, Some(heap))
     }
 
     /// Record a bulk load by `id` that fills `heaps` and adds entries for the constructors given
@@ -623,7 +611,7 @@ impl Serializer {
         id: SerialId,
         heaps: &[u32],
         indexes: &[(Pid, BTreeSet<CtorId>)],
-    ) -> Result<(), SerializationFailure> {
+    ) -> Result<(), Conflict> {
         self.check(id)?;
         let mut readers = self.point_readers(heaps.iter().map(|&h| Point::Heap(h)));
         for &h in heaps {
@@ -636,19 +624,19 @@ impl Serializer {
                 |c| !c.is_disjoint(filled),
             ));
         }
-        self.conflicts_in(id, readers)
+        self.conflicts_in(id, readers, None)
     }
 
     /// Record a migration by `id` that produces schema version `version`.
     #[cfg(test)]
-    pub fn migrate(&mut self, id: SerialId, version: u64) -> Result<(), SerializationFailure> {
+    pub fn migrate(&mut self, id: SerialId, version: u64) -> Result<(), Conflict> {
         self.check(id)?;
         let readers = self
             .points
             .range(Point::Schema(0)..Point::Schema(version))
             .flat_map(|(_, h)| h.iter().copied())
             .collect();
-        self.conflicts_in(id, readers)
+        self.conflicts_in(id, readers, None)
     }
 
     /// Replace every tuple, page and heap lock on `heaps` and every lock on `indexes` by heap
@@ -741,25 +729,21 @@ impl Serializer {
 
     /// Record a write by `id` into `heap` that the locks on `points` and the open scans of the
     /// heap cover.
-    fn conflict_in(
-        &mut self,
-        id: SerialId,
-        heap: u32,
-        points: &[Point],
-    ) -> Result<(), SerializationFailure> {
+    fn conflict_in(&mut self, id: SerialId, heap: u32, points: &[Point]) -> Result<(), Conflict> {
         self.check(id)?;
         let mut readers = self.point_readers(points.iter().copied());
         readers.extend(self.scan_readers(heap));
-        self.conflicts_in(id, readers)
+        self.conflicts_in(id, readers, Some(heap))
     }
 
     fn conflicts_in(
         &mut self,
         id: SerialId,
         readers: BTreeSet<SerialId>,
-    ) -> Result<(), SerializationFailure> {
+        heap: Option<u32>,
+    ) -> Result<(), Conflict> {
         for r in readers {
-            self.conflict(r, id, id)?;
+            self.conflict(r, id, id, heap)?;
         }
         Ok(())
     }
@@ -769,13 +753,15 @@ impl Serializer {
         !before(a, b) && !before(b, a)
     }
 
-    /// Add the rw-antidependency `reader` to `writer`, found by `me`, one of them.
+    /// Add the rw-antidependency `reader` to `writer` on a version or entry of `heap`, found by
+    /// `me`, one of them.
     fn conflict(
         &mut self,
         reader: SerialId,
         writer: SerialId,
         me: SerialId,
-    ) -> Result<(), SerializationFailure> {
+        heap: Option<u32>,
+    ) -> Result<(), Conflict> {
         if reader == writer {
             return Ok(());
         }
@@ -792,7 +778,7 @@ impl Serializer {
             } else {
                 writer
             };
-            let failure = self.failure(victim, members);
+            let failure = self.failure(victim, members, heap);
             if victim == me {
                 return Err(failure);
             }
@@ -803,7 +789,7 @@ impl Serializer {
         if let Some(c) = wc {
             r.earliest_out = earlier(r.earliest_out, c);
         }
-        self.get_mut(writer).ins.insert(reader);
+        self.get_mut(writer).ins.entry(reader).or_insert(heap);
         Ok(())
     }
 
@@ -823,7 +809,7 @@ impl Serializer {
             return None;
         }
         r.ins
-            .iter()
+            .keys()
             .map(|t0| self.get(*t0))
             .find(|t0| {
                 t0.doomed.is_none()
@@ -833,8 +819,9 @@ impl Serializer {
             .map(|t0| vec![t0.xid, r.xid, w.xid])
     }
 
-    /// Returns the failure `victim` reports for breaking a conflict among `members`.
-    fn failure(&self, victim: SerialId, members: Vec<Option<Xid>>) -> SerializationFailure {
+    /// Returns the failure `victim` reports for breaking a conflict among `members`, its edge on
+    /// `heap`.
+    fn failure(&self, victim: SerialId, members: Vec<Option<Xid>>, heap: Option<u32>) -> Conflict {
         let own = self.get(victim).xid;
         let mut with: Vec<Xid> = Vec::new();
         for x in members.into_iter().flatten() {
@@ -842,7 +829,7 @@ impl Serializer {
                 with.push(x);
             }
         }
-        SerializationFailure::new(Cause::Dangerous, with)
+        dangerous(with, heap)
     }
 
     /// Check that `id` may commit, choosing to abort any transaction its commit would leave
@@ -850,21 +837,21 @@ impl Serializer {
     ///
     /// Errors:
     /// - `id` has been chosen to abort.
-    pub fn precommit(&mut self, id: SerialId) -> Result<(), SerializationFailure> {
+    pub fn precommit(&mut self, id: SerialId) -> Result<(), Conflict> {
         self.check(id)?;
         let mut doom = Vec::new();
-        for near in &self.get(id).ins {
+        for (near, &heap) in &self.get(id).ins {
             let n = self.get(*near);
             if !n.active() || n.doomed.is_some() {
                 continue;
             }
-            let far_live = n.ins.iter().find(|far| {
+            let far_live = n.ins.keys().find(|far| {
                 let f = self.get(**far);
                 **far == id || (f.active() && !f.read_only && f.doomed.is_none())
             });
             if let Some(far) = far_live {
                 let members = vec![self.get(*far).xid, n.xid, self.get(id).xid];
-                doom.push((*near, self.failure(*near, members)));
+                doom.push((*near, self.failure(*near, members, heap)));
             }
         }
         for (n, failure) in doom {
@@ -884,7 +871,7 @@ impl Serializer {
             commit: c,
             xid: s.xid,
         };
-        let ins: Vec<SerialId> = s.ins.iter().copied().collect();
+        let ins: Vec<SerialId> = s.ins.keys().copied().collect();
         let earliest_out = s.earliest_out;
         for r in ins {
             let r = self.get_mut(r);
@@ -977,7 +964,7 @@ impl Serializer {
         if let Some(x) = s.xid {
             self.by_xid.remove(&x);
         }
-        for o in s.ins.iter().chain(&s.outs) {
+        for o in s.ins.keys().chain(&s.outs) {
             if let Some(o) = self.sxacts.get_mut(o) {
                 o.ins.remove(&id);
                 o.outs.remove(&id);
@@ -1015,7 +1002,7 @@ impl Serializer {
     /// Returns the transactions that read before `id` wrote.
     #[cfg(test)]
     pub fn readers_before(&self, id: SerialId) -> BTreeSet<SerialId> {
-        self.get(id).ins.clone()
+        self.get(id).ins.keys().copied().collect()
     }
 
     /// Returns the number of transactions the serializer still tracks, running or committed.

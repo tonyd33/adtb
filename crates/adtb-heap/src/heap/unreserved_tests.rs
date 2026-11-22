@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use adtb_testkit::process;
 
-use super::{Error as HeapError, FieldType, Heap, LargeStore, Refused};
+use super::{Error as HeapError, FieldType, Heap, LargeStore};
 use crate::key::{Scalar, Value};
 use crate::mvcc::{StatusError, Transactions, Xid};
 use crate::storage::{Damage, Options, PageError, Pager, Pid, Shape, Walk};
@@ -111,7 +111,7 @@ fn a_sweep_meeting_a_chunk_of_an_unreserved_writer_refuses_its_page() {
             resolved,
             &mut || true,
         );
-        assert_eq!(Err::<Walk, _>(Refused::Page(refused_page(page))), got);
+        assert_eq!(Err::<Walk, _>(refused_page(page)), got);
         assert_eq!(BTreeMap::from([(page, FRAME)]), pager.damaged());
         pager.close();
     });

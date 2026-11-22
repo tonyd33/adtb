@@ -142,7 +142,7 @@ struct Gate<R: Runtime> {
 impl<R: Runtime> Resumable for Gate<R> {
     fn run(&mut self, waker: &Waker) -> Step {
         self.log.push(Event::Ran(self.name));
-        match self.waits.watch(None, self.on, waker).unwrap() {
+        match self.waits.watch(None, self.on, None, waker).unwrap() {
             Watch::Ended => {
                 self.log.push(Event::Done(self.name));
                 Step::Done
@@ -446,7 +446,7 @@ fn a_registration_racing_the_end_is_woken<R: Runtime>(rt: &R, rounds: usize) {
             let waits = waits.clone();
             rt.spawn("ender", move || waits.ended_tested(X))
         };
-        if waits.watch(None, X, &waker).unwrap() == Watch::Pending {
+        if waits.watch(None, X, None, &waker).unwrap() == Watch::Pending {
             while !flag.set.load(Ordering::Acquire) {
                 rt.park();
             }
@@ -454,7 +454,7 @@ fn a_registration_racing_the_end_is_woken<R: Runtime>(rt: &R, rounds: usize) {
         rt.join(ender);
         assert_eq!(
             Watch::Ended,
-            waits.watch(None, X, &waker).unwrap(),
+            waits.watch(None, X, None, &waker).unwrap(),
             "round {round}"
         );
     }
@@ -908,11 +908,11 @@ impl<R: Runtime> Resumable for Write<R> {
                     return Step::Done;
                 }
                 Err(Failed {
-                    error: write::Error::Blocked { on, rerun },
+                    error: write::Error::Blocked { on, heap, rerun },
                     ..
                 }) => {
                     self.bounds.rerun = Some(rerun);
-                    match items.db.watch(tx.xid(), on, waker) {
+                    match items.db.watch(tx.xid(), (on, heap), waker) {
                         Ok(Watch::Ended) => {}
                         Ok(Watch::Pending) => {
                             self.watched = Some((on, waker.clone()));
@@ -1383,7 +1383,7 @@ fn a_deadlock_fails_the_second_waiter<R: Holds>(rt: &R, suspend: bool, settle: D
             [
                 Event::Failed("second", write::Error::Exec(exec::Error::Serialization(f))),
                 Event::Done("first"),
-            ] if f.cause == Cause::Deadlock
+            ] if f.cause() == Cause::Deadlock
         ),
         "{ends:?}"
     );
@@ -1444,7 +1444,7 @@ impl Resumable for Defer {
                 }
                 Deferral::Wait { tx, on } => {
                     self.tx = Some(tx);
-                    if db.watch(None, on, waker).unwrap() == Watch::Pending {
+                    if db.watch(None, (on, None), waker).unwrap() == Watch::Pending {
                         self.watched = Some((on, waker.clone()));
                         self.log.push(Event::Waiting("defer"));
                         return Step::Wait;

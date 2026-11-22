@@ -917,7 +917,7 @@ wire's 32-bit epoch and 64-bit log position.
 
 | Reason | When | Defined in |
 | --- | --- | --- |
-| `Serialization` | the transaction lost a serialization conflict, or conflicted with, waited on, or collided on a key with a row committed after its snapshot; `txn` is the caller's aborted transaction, which names the conflict's row in `sys::conflicts`, and `on` the constructor relation of the caller's own read or write on the conflicting edge | [transactions.md](transactions.md#61-serialization-failures), §6.4 |
+| `Serialization` | the transaction lost a serialization conflict, or conflicted with, waited on, or collided on a key with a row committed after its snapshot; `txn` is the caller's aborted transaction, which names the conflict's row in `sys::conflicts`, and `on` a constructor relation of the caller's own read or write on an edge of the conflict that aborted it, empty when a migration has since retired that constructor | [transactions.md](transactions.md#61-serialization-failures), §6.4 |
 | `SafePointTimeout` | a replica read given a position waited the `ReplicaWait` setting without the replica reaching a safe point at or after it | [replication.md](replication.md#12-reads-on-a-replica) |
 | `Overloaded` | a connection, stream or admission queue bound was reached | [wire.md](wire.md#8-admission-and-overload), §8.1 |
 | `StreamIdle` | a result stream was given no credit for longer than the limit; never sent after the call's commit | [wire.md](wire.md#55-credit) |

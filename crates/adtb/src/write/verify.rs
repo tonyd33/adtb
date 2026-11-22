@@ -9,7 +9,7 @@ use crate::btree::{self, Index};
 #[cfg(any(test, feature = "testing"))]
 use crate::catalog::relation_holder;
 use crate::exec::Store;
-use crate::heap::Heap;
+use crate::heap::{Heap, Refused};
 use crate::key::{CtorId, Tid};
 use crate::mvcc::Safety;
 #[cfg(any(test, feature = "testing"))]
@@ -186,7 +186,7 @@ impl<R: Runtime> Database<R> {
                     tx = self.session.begin_reader(true)?;
                 }
                 Safety::Pending(writers) => match writers.first() {
-                    Some(w) => self.session.waits().wait(None, *w)?,
+                    Some(w) => self.session.waits().wait(None, *w, None)?,
                     None => self.rt.yield_now(),
                 },
             }
@@ -482,17 +482,34 @@ impl<R: Runtime> Database<R> {
             }
         };
         for pid in pages {
-            let mut versions = Vec::new();
-            if let Err(e) = heap.scan_rooted(&self.pager, pid, |v, roots| versions.push((v, roots)))
-            {
-                out.push(Found::of_page(e));
-                continue;
-            }
-            for (v, roots) in versions {
-                let seen = reader.sees(&v.header.writers);
-                if !seen.map_err(|e| v.refuse(&self.pager, e))?.visible() {
+            let visible = 'read: loop {
+                let mut versions = Vec::new();
+                if let Err(e) =
+                    heap.scan_rooted(&self.pager, pid, |v, roots| versions.push((v, roots)))
+                {
+                    break Err(e);
+                }
+                let mut visible = Vec::new();
+                for (v, roots) in versions {
+                    match reader.sees(&v.header.writers) {
+                        Ok(seen) if seen.visible() => visible.push((v, roots)),
+                        Ok(_) => {}
+                        Err(e) => match v.refuse(&self.pager, e) {
+                            Refused::Page(e) => return Err(e.into()),
+                            Refused::Gone => continue 'read,
+                        },
+                    }
+                }
+                break Ok(visible);
+            };
+            let visible = match visible {
+                Ok(visible) => visible,
+                Err(e) => {
+                    out.push(Found::of_page(e));
                     continue;
                 }
+            };
+            for (v, roots) in visible {
                 let Some(key) = ix.keys.key(c, &v.row, &types)? else {
                     continue;
                 };

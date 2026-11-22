@@ -921,7 +921,7 @@ fn a_guard_dropped_when_its_abort_record_fails_takes_its_id_out_of_running() {
     });
     let files = sim.files();
     let page = DataFile::new(&options(FRAMES).name, PAGE).page(&files, status);
-    assert_eq!(Status::InProgress, super::clog::status_at(page, i));
+    assert_eq!(Ok(Status::InProgress), super::clog::status_at(page, i));
 }
 
 #[test]
@@ -949,10 +949,11 @@ fn a_guard_dropped_in_a_panic_bounds_the_next_reservation_and_its_id_recovers_as
         }
         pager.flush_log();
         let page = pager.read(root).expect("the root page");
-        (x, (got, super::clog::Root::read(&page).resolved()))
+        let resolved = super::clog::Root::read(&page).map(|r| r.resolved());
+        (x, (got, resolved))
     });
     let unresolved = (true, BTreeSet::new(), Ok(Status::InProgress), 1);
-    assert_eq!((unresolved, x), before);
+    assert_eq!((unresolved, Ok(x)), before);
     let after = with_open(&mut sim, root, |pager, txns| txns.recorded(pager, x));
     assert_eq!(Ok(Status::Aborted), after);
 }

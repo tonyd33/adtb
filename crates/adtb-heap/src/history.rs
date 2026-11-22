@@ -11,7 +11,7 @@ use crate::storage::{PageError, Pager};
 use crate::vacuum::Vacuuming;
 
 /// Why versions could not be kept in history.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Page(PageError),
     Index(btree::Error),

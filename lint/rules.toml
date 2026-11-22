@@ -18,6 +18,7 @@ include = [
   "crates/adtb-heap/src/heap/**/*.rs",
   "crates/adtb/src/catalog/codec.rs",
   "crates/adtb-exec/src/exec/layout.rs",
+  "crates/adtb-store/src/mvcc/**/*.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs"]
 rows = { decode_panics = "ratchet" }
@@ -155,4 +156,4 @@ rows = { capability_renames = "zero" }
 query = "serializer.tql"
 include = ["crates/**/*.rs"]
 exclude = ["crates/adtb-lang/**", "**/tests.rs", "**/*_tests.rs", "**/tests/**"]
-rows = { serializer_writes = "zero" }
+rows = { serializer_writes = "zero", changed_conflicts = "zero" }

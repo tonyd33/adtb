@@ -337,7 +337,8 @@ impl Error {
         txn: TxnId,
         e: write::Mapped,
     ) -> Error {
-        Error::of_mapped(schema, txn, e, |objects| db.quarantined_names(objects))
+        let names = |objects: &BTreeMap<_, _>| db.quarantined_names(objects);
+        Error::of_mapped(schema, txn, e, (names, |heap| db.relation_of(heap)))
     }
 
     /// Returns the failure of a call that `db`'s whole-database mark refuses, `None` when
@@ -351,12 +352,16 @@ impl Error {
     }
 
     /// Returns the client error of write-path failure `e`, met by transaction `txn` of a
-    /// database of `schema`, each quarantined object named by `names`.
+    /// database of `schema`, each quarantined object named by `names` and each heap's relation
+    /// and constructor position given by `relation`.
     fn of_mapped(
         schema: &Schema,
         txn: TxnId,
         e: write::Mapped,
-        names: impl FnOnce(&BTreeMap<Quarantine, Option<MarkFailure>>) -> String,
+        (names, relation): (
+            impl FnOnce(&BTreeMap<Quarantine, Option<MarkFailure>>) -> String,
+            impl FnOnce(u32) -> Option<(RelId, u32)>,
+        ),
     ) -> Error {
         match e.into_error() {
             write::Error::Rejected(r) => Error::rejected(rejection(schema, r)),
@@ -375,7 +380,7 @@ impl Error {
                 Error::invalid("the generated counter exhausted its integer range")
             }
             write::Error::Internal(b) => Error::internal(Broken::Write(*b)),
-            write::Error::Exec(e) => Error::of_exec(schema, txn, e),
+            write::Error::Exec(e) => Error::of_exec(schema, txn, e, relation),
             write::Error::Blocked { .. } => unreachable!("no caller maps a suspension"),
             write::Error::FileChanged(path) => Error::Retry {
                 reason: RetryReason::FileChanged { path },
@@ -392,8 +397,13 @@ impl Error {
     }
 
     /// Returns the client error of executor failure `e`, met by transaction `txn` of a database
-    /// of `schema`.
-    fn of_exec(schema: &Schema, txn: TxnId, e: exec::Error) -> Error {
+    /// of `schema` whose heaps' relations and constructor positions `relation` gives.
+    fn of_exec(
+        schema: &Schema,
+        txn: TxnId,
+        e: exec::Error,
+        relation: impl FnOnce(u32) -> Option<(RelId, u32)>,
+    ) -> Error {
         match e {
             exec::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
             exec::Error::StatementLimit(x) => Error::rejected(RejectReason::StatementLimit {
@@ -412,11 +422,14 @@ impl Error {
             exec::Error::Serialization(f) => Error::Retry {
                 reason: RetryReason::Serialization {
                     txn,
-                    on: f.on().map_or_else(String::new, |(rel, ctor)| {
-                        let r = schema.relation(rel);
-                        let name = &schema.ty(r.elem_def).ctors()[ctor as usize].name;
-                        format!("{}.{name}", qualified(schema, rel))
-                    }),
+                    on: f
+                        .heap()
+                        .and_then(relation)
+                        .map_or_else(String::new, |(rel, ctor)| {
+                            let r = schema.relation(rel);
+                            let name = &schema.ty(r.elem_def).ctors()[ctor as usize].name;
+                            format!("{}.{name}", qualified(schema, rel))
+                        }),
                 },
             },
             exec::Error::Page(p) => Error::storage(format!("{p:?}")),
@@ -1047,7 +1060,12 @@ mod tests {
         };
         let client = |e: catalog::Error| {
             let mapped = write::Mapped::unmapped_for_test(e.into());
-            Error::of_mapped(&schema, TxnId(7), mapped, |_| String::new())
+            Error::of_mapped(
+                &schema,
+                TxnId(7),
+                mapped,
+                (|_: &BTreeMap<_, _>| String::new(), |_| None),
+            )
         };
         for e in [
             catalog::Error::Page(damaged),
@@ -1078,7 +1096,12 @@ mod tests {
         let schema = catalog::engine_schema();
         let client = |e: catalog::Error| {
             let mapped = write::Mapped::unmapped_for_test(e.into());
-            Error::of_mapped(&schema, TxnId(7), mapped, |_| String::new())
+            Error::of_mapped(
+                &schema,
+                TxnId(7),
+                mapped,
+                (|_: &BTreeMap<_, _>| String::new(), |_| None),
+            )
         };
         let malformed = btree::Error::Malformed(crate::storage::Pid(3));
         assert_eq!(

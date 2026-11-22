@@ -73,6 +73,13 @@
 "crates/adtb-heap/src/heap/version.rs" = 3
 "crates/adtb-heap/src/heap/vm.rs" = 1
 "crates/adtb-heap/src/heap/write.rs" = 4
+"crates/adtb-store/src/mvcc/clog.rs" = 11
+"crates/adtb-store/src/mvcc/snapshot.rs" = 2
+"crates/adtb-store/src/mvcc/ssi.rs" = 6
+"crates/adtb-store/src/mvcc/txn.rs" = 7
+"crates/adtb-store/src/mvcc/wait.rs" = 1
+"crates/adtb-store/src/mvcc/watermark.rs" = 1
+"crates/adtb-store/src/mvcc/writers.rs" = 1
 "crates/adtb/src/catalog/codec.rs" = 38
 
 [engine_names]
@@ -154,7 +161,7 @@
 "crates/adtb-store/src/btree/node.rs" = 9
 "crates/adtb-store/src/key/entry.rs" = 4
 "crates/adtb-store/src/key/value.rs" = 2
-"crates/adtb-store/src/mvcc/mod.rs" = 3
+"crates/adtb-store/src/mvcc/mod.rs" = 1
 "crates/adtb-store/src/mvcc/past.rs" = 6
 "crates/adtb-store/src/mvcc/ssi.rs" = 4
 "crates/adtb-store/src/storage/archive.rs" = 2

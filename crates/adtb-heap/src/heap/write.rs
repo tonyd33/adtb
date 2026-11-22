@@ -10,7 +10,7 @@ use super::large::LargeStore;
 use super::page::{HeapPage, HeapPageMut, PageCopy};
 use super::row::Pointer;
 use super::stage::Stage;
-use super::{Error, Refused};
+use super::{Error, HeapNo, Refused};
 
 /// A latch's place in the one order every thread takes latches in, shared or exclusive: heap
 /// pages by page id, then large-value store pages by page id, then directory pages by level, the
@@ -108,9 +108,10 @@ impl From<Failed> for Refused {
     }
 }
 
-impl From<Failed> for Error {
-    fn from(f: Failed) -> Error {
-        f.refused.into()
+impl Failed {
+    /// Returns this failure as the failure of a write to heap `heap`.
+    pub(super) fn of_heap(self, heap: HeapNo) -> Error {
+        self.refused.of_heap(heap)
     }
 }
 

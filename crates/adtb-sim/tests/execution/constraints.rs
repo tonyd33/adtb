@@ -106,21 +106,29 @@ fn interleave(
     (ids, ra, rb)
 }
 
-/// Assert that `got`, how transaction `txn` ended, is a success, its serialization failure, or
-/// the violation of constraint `app::name` by the one row `report`.
-fn serial_or_violated(got: &Result<(), Error>, txn: TxnId, name: &str, report: &Val, ctx: &str) {
+/// Assert that `got`, how transaction `txn` ended, is a success, its serialization failure on
+/// one of the constructor relations `on`, or the violation of constraint `app::name` by the one
+/// row `report`.
+fn serial_or_violated(
+    got: &Result<(), Error>,
+    (txn, on): (TxnId, &[&str]),
+    name: &str,
+    report: &Val,
+    ctx: &str,
+) {
     let Err(e) = got else { return };
-    let serialization = Error::Retry {
+    let serialization = |on: &str| Error::Retry {
         reason: RetryReason::Serialization {
             txn,
-            on: String::new(),
+            on: on.to_owned(),
         },
     };
-    if *e == serialization {
+    if let Some(on) = on.iter().find(|on| serialization(on) == *e) {
         let reason = format!(
-            "transaction {} conflicts with a concurrent transaction; retry",
+            "transaction {} conflicts with a concurrent transaction on `{on}`; retry",
             txn.0
         );
+        let serialization = serialization(on);
         refused_as(got.clone(), &serialization, &reason);
         return;
     }
@@ -145,9 +153,16 @@ fn serial_or_violated(got: &Result<(), Error>, txn: TxnId, name: &str, report: &
 /// Assert that after `setup`, two transactions running `a` and `b`, each of which keeps the
 /// constraint whose query is `denial` alone, never both commit in any order of their
 /// statements and commits, that a failure is the failing transaction's serialization failure
-/// or the constraint's violation by the one row `report`, and that the constraint holds
-/// afterwards.
-fn serial(name: &str, src: &str, setup: &str, a: &str, b: &str, denial: &str, report: &Val) {
+/// on one of the constructor relations `on`, or the constraint's violation by the one row
+/// `report`, and that the constraint holds afterwards.
+fn serial(
+    (name, on): (&str, &[&str]),
+    src: &str,
+    setup: &str,
+    (a, b): (&str, &str),
+    denial: &str,
+    report: &Val,
+) {
     for order in ["abAB", "abBA", "aAbB", "baAB", "baBA", "bBaA"] {
         for seed in 0..2 {
             let ([ta, tb], ra, rb, left) = with_engine(seed, src, |db| {
@@ -165,8 +180,8 @@ fn serial(name: &str, src: &str, setup: &str, a: &str, b: &str, denial: &str, re
             } else {
                 assert_ne!(0, failed.len(), "{ctx}: both commit");
             }
-            serial_or_violated(&ra, ta, name, report, &ctx);
-            serial_or_violated(&rb, tb, name, report, &ctx);
+            serial_or_violated(&ra, (ta, on), name, report, &ctx);
+            serial_or_violated(&rb, (tb, on), name, report, &ctx);
             assert_eq!(BTreeSet::new(), left, "{ctx}: the constraint is violated");
         }
     }
@@ -175,14 +190,16 @@ fn serial(name: &str, src: &str, setup: &str, a: &str, b: &str, denial: &str, re
 #[test]
 fn concurrent_deletes_of_two_identities_cannot_jointly_violate_at_least_one() {
     serial(
-        "has_identity",
+        ("has_identity", &["app::identities.Google"]),
         &format!("{PEOPLE}{HAS_ONE}"),
         r#"transact
   insert users { id: users.key(1), name: "ann" }
   insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g1" }
   insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g2" }"#,
-        "delete i in identities where key i == identities.key(1)",
-        "delete i in identities where key i == identities.key(2)",
+        (
+            "delete i in identities where key i == identities.key(1)",
+            "delete i in identities where key i == identities.key(2)",
+        ),
         "from u in users where not exists i in identities where i.user == key u select u",
         &Val::Ctor(0, [Val::Int(1), Val::Text("ann".into())].into()),
     );
@@ -199,13 +216,15 @@ constraint identity_limit =
 "
     );
     serial(
-        "identity_limit",
+        ("identity_limit", &["app::identities.Google"]),
         &src,
         r#"transact
   insert users { id: users.key(1), name: "ann" }
   insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g1" }"#,
-        r#"insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g2" }"#,
-        r#"insert identities.Google { id: identities.key(3), user: users.key(1), gid: "g3" }"#,
+        (
+            r#"insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g2" }"#,
+            r#"insert identities.Google { id: identities.key(3), user: users.key(1), gid: "g3" }"#,
+        ),
         "from u in users where count(i for i in identities where i.user == key u) > 2 select u",
         &Val::Ctor(0, [Val::Int(1), Val::Text("ann".into())].into()),
     );
@@ -214,11 +233,16 @@ constraint identity_limit =
 #[test]
 fn a_concurrent_delete_and_insert_cannot_jointly_violate_an_inclusion() {
     serial(
-        "assigned_member",
+        (
+            "assigned_member",
+            &["app::memberships.Membership", "app::assignments.Assignment"],
+        ),
         ROSTER,
         r#"insert memberships { id: memberships.key(1), user: "u", org: "o1" }"#,
-        r#"delete m in memberships where m.user == "u""#,
-        r#"insert assignments { id: assignments.key(1), user: "u", org: "o1", task: "t" }"#,
+        (
+            r#"delete m in memberships where m.user == "u""#,
+            r#"insert assignments { id: assignments.key(1), user: "u", org: "o1", task: "t" }"#,
+        ),
         "from a in assignments where not exists m in memberships where m.user == a.user and m.org == a.org select a",
         &Val::Ctor(
             0,

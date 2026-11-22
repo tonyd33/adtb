@@ -932,7 +932,7 @@ impl Catalog {
     }
 
     /// Lower each head `report` finds counting more versions than point at it to the number
-    /// that do.
+    /// that do, leaving a head whose change is abandoned as it is.
     ///
     /// Precondition: `report` is complete, found over this catalog's structures, and no write
     /// ran since.
@@ -952,9 +952,10 @@ impl Catalog {
                 .find(|s| s.id() == owner)
                 .expect("an overcounted head lies in a store the catalog names");
             let head = Tid::new(f.pid.0, slot).expect("a page id fits 48 bits");
-            store
-                .recount(pager, head, versions)
-                .map_err(heap::Error::from)?;
+            match store.recount(pager, head, versions) {
+                Ok(()) | Err(heap::Refused::Gone) => {}
+                Err(heap::Refused::Page(e)) => return Err(e.into()),
+            }
         }
         Ok(())
     }

@@ -30,4 +30,4 @@ in w run
 
 commit r
 
-commit w retry Serialization { txn: $W, on: "" }
+commit w retry Serialization { txn: $W, on: "app::stock.Item" }

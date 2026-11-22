@@ -17,7 +17,7 @@ use super::slotted;
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, tid_bits, tid_from_bits};
 use super::write::{HeapWrite, Rank};
-use super::{Error, Heap, Refused, Slots};
+use super::{Error, Heap, HeapNo, Refused, Slots};
 
 const NEXT: usize = 0;
 const WRITER: usize = 8;
@@ -283,14 +283,15 @@ impl LargeStore {
         self.space.pages(pager)
     }
 
-    /// Store `bytes`, written by `xid`, and return the pointer to them, its head of count 0.
+    /// Store `bytes`, written by `xid` to a version of heap `heap`, and return the pointer to them,
+    /// its head of count 0.
     ///
     /// Chunks are written last first, each in an update of its own that also makes the chunk
     /// written before it a tail, so a crash leaves a head of count 0 on a touched page.
     pub fn write<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        xid: Xid,
+        (xid, heap): (Xid, HeapNo),
         bytes: &[u8],
     ) -> Result<Pointer, Error> {
         let limit = value_limit(pager);
@@ -314,7 +315,7 @@ impl LargeStore {
                 },
             );
             tuple.extend_from_slice(piece);
-            next = Some(self.insert(pager, &tuple, next)?);
+            next = Some(self.insert(pager, &tuple, next, heap)?);
         }
         Ok(Pointer {
             len: bytes.len() as u64,
@@ -322,12 +323,14 @@ impl LargeStore {
         })
     }
 
-    /// Insert `tuple` on some page, making the chunk at `tail` a tail in the same update.
+    /// Insert `tuple` on some page, making the chunk at `tail` a tail in the same update, for a
+    /// version of heap `heap`.
     fn insert<R: Runtime>(
         &self,
         pager: &Pager<R>,
         tuple: &[u8],
         tail: Option<Tid>,
+        heap: HeapNo,
     ) -> Result<Tid, Error> {
         let size = pager.page_size();
         let need = need_category(Arrangement::Slotted.need(tuple.len()), size);
@@ -356,7 +359,7 @@ impl LargeStore {
             let mut page = HeapPageMut::any(copy).expect("a page of the store is a heap page");
             let Some(slot) = page.insert(tuple, Flags::NONE) else {
                 drop(write);
-                self.refused(pager, pid)?;
+                self.refused(pager, pid).map_err(|e| e.of_heap(heap))?;
                 continue;
             };
             if let Some(t) = tail {
@@ -369,8 +372,11 @@ impl LargeStore {
                     true
                 })?;
             }
-            let above = self.space.reflect(stage, pager, pid, FORMAT, Fit::Chunk)?;
-            write.commit_store(pager.reserve(), above)?;
+            let above = (self.space.reflect(stage, pager, pid, FORMAT, Fit::Chunk))
+                .map_err(|e| e.of_heap(heap))?;
+            write
+                .commit_store(pager.reserve(), above)
+                .map_err(|f| f.of_heap(heap))?;
             return Ok(tid(pid, slot));
         }
     }
@@ -597,15 +603,31 @@ impl LargeStore {
     ///
     /// Each step frees one chunk and makes the next one a head of count 0, in one update, so a
     /// crash leaves the rest of the value for the next sweep.
+    ///
+    /// End the sweep where a change of it is abandoned, leaving the rest to the next sweep.
     pub fn sweep<R: Runtime>(
+        &self,
+        held: &Vacuuming<'_, R>,
+        resolved: impl FnMut(Xid) -> Result<bool, StatusError>,
+        between: &mut dyn FnMut() -> bool,
+    ) -> Result<Walk, PageError> {
+        let mut freed = 0;
+        match self.sweep_counting(held, resolved, between, &mut freed) {
+            Ok(walk) => Ok(walk),
+            Err(Refused::Page(e)) => Err(e),
+            Err(Refused::Gone) => Ok(Walk::Done(freed)),
+        }
+    }
+
+    fn sweep_counting<R: Runtime>(
         &self,
         held: &Vacuuming<'_, R>,
         mut resolved: impl FnMut(Xid) -> Result<bool, StatusError>,
         between: &mut dyn FnMut() -> bool,
+        freed: &mut usize,
     ) -> Result<Walk, Refused> {
         let pager = held.pager();
         self.space.settle(pager)?;
-        let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {
             let page = PageCopy::of(&pager.read_formatted(pid)?);
             let Some(store) = store_page(&page, self.id()) else {
@@ -635,18 +657,18 @@ impl LargeStore {
                     continue;
                 }
                 match self.free_value(pager, tid(pid, slot), c.writer, between)? {
-                    Walk::Done(n) => freed += n,
-                    Walk::Stopped(n) => return Ok(Walk::Stopped(freed + n)),
+                    Walk::Done(n) => *freed += n,
+                    Walk::Stopped(n) => return Ok(Walk::Stopped(*freed + n)),
                 }
             }
             if !pending {
                 self.settle(pager, pid, position)?;
             }
             if !between() {
-                return Ok(Walk::Stopped(freed));
+                return Ok(Walk::Stopped(*freed));
             }
         }
-        Ok(Walk::Done(freed))
+        Ok(Walk::Done(*freed))
     }
 
     /// Free the value whose head is at `at`, written by `writer`, one chunk at a time, calling

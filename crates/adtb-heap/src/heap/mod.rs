@@ -63,16 +63,15 @@ pub use version::HEADER_LEN;
 pub use version::{Flags, Header};
 
 use crate::key::Tid;
-use crate::mvcc::{SerialId, SerializationFailure, Serializer};
+use crate::mvcc::{Conflict, SerialId, Serializer};
 use crate::steps::Change;
 use crate::storage::PageError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Page(PageError),
-    Changed {
-        current: Option<Header>,
-    },
+    /// The version a write targets changed between its write check and its exclusive latch.
+    Changed(Conflict),
     /// A version of `len` bytes is longer than the `limit` a page holds, even with its large
     /// values out of line.
     TooLarge {
@@ -105,11 +104,13 @@ impl From<PageError> for Refused {
     }
 }
 
-impl From<Refused> for Error {
-    fn from(e: Refused) -> Error {
-        match e {
+impl Refused {
+    /// Returns this refusal as the failure of a write to heap `heap`: a gone version as a write
+    /// whose version changed.
+    pub fn of_heap(self, heap: HeapNo) -> Error {
+        match self {
             Refused::Page(e) => Error::Page(e),
-            Refused::Gone => Error::Changed { current: None },
+            Refused::Gone => Error::Changed(Conflict::changed(heap.0, Vec::new())),
         }
     }
 }
@@ -129,7 +130,7 @@ impl Superseded {
     }
 
     /// Record the write by `id` of this version against the SIREAD locks on it.
-    pub fn check(self, ser: &mut Serializer, id: SerialId) -> Result<(), SerializationFailure> {
+    pub fn check(self, ser: &mut Serializer, id: SerialId) -> Result<(), Conflict> {
         ser.write_at(id, self.heap.0, self.tid)
     }
 
@@ -161,12 +162,17 @@ impl WriteTarget {
         }
     }
 
-    fn check(self, current: Option<Header>) -> Result<(), Error> {
+    /// Fail as changed, a write of heap `heap`, unless the version holds the header required.
+    fn check(self, heap: HeapNo, current: Option<Header>) -> Result<(), Error> {
         if self
             .expected
             .is_some_and(|expected| Some(expected) != current)
         {
-            Err(Error::Changed { current })
+            let deleters = current.and_then(|h| h.writers.deleter());
+            Err(Error::Changed(Conflict::changed(
+                heap.0,
+                deleters.into_iter().collect(),
+            )))
         } else {
             Ok(())
         }

@@ -57,8 +57,8 @@ use crate::catalog::{IndexSpec, Structures};
 use crate::exec::{self, Budget, Scheduler, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
-    Begun, Hold, Limits, Safety, SerialId, SerializationFailure, Serializer, Snapshot, Taken,
-    Transactions, Watch, Xid,
+    Begun, Conflict, Hold, Limits, Safety, SerialId, Serializer, Snapshot, Taken, Transactions,
+    Watch, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -170,26 +170,14 @@ pub enum Error {
     FileChanged(String),
     /// The engine closed while the statement waited for a transaction.
     Closed,
-    /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end. A rerun
-    /// of the statements passes `rerun` as [`Bounds::rerun`].
+    /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end, to write
+    /// a version of `heap`, or at a gate for `None`. A rerun of the statements passes `rerun` as
+    /// [`Bounds::rerun`].
     Blocked {
         on: Xid,
+        heap: Option<u32>,
         rerun: Rerun,
     },
-}
-
-impl Error {
-    /// Returns this error, a serialization failure naming no constructor relation given
-    /// constructor `ctor` of `rel` as the one the caller's write is on.
-    #[must_use]
-    pub(super) fn on(self, rel: RelId, ctor: u32) -> Error {
-        match self {
-            Error::Exec(exec::Error::Serialization(f)) => {
-                Error::Exec(exec::Error::Serialization(f.at(rel, ctor)))
-            }
-            other => other,
-        }
-    }
 }
 
 impl From<PageError> for Error {
@@ -204,8 +192,8 @@ impl From<crate::heap::OrphanEntry> for Error {
     }
 }
 
-impl From<SerializationFailure> for Error {
-    fn from(f: SerializationFailure) -> Error {
+impl From<Conflict> for Error {
+    fn from(f: Conflict) -> Error {
         Error::Exec(exec::Error::Serialization(f))
     }
 }
@@ -214,14 +202,7 @@ impl From<crate::heap::Error> for Error {
     fn from(e: crate::heap::Error) -> Error {
         match e {
             crate::heap::Error::Page(p) => p.into(),
-            crate::heap::Error::Changed { current } => SerializationFailure::new(
-                crate::mvcc::Cause::ConcurrentWrite,
-                current
-                    .into_iter()
-                    .filter_map(|h| h.writers.deleter())
-                    .collect(),
-            )
-            .into(),
+            crate::heap::Error::Changed(c) => c.into(),
             crate::heap::Error::TooLarge { len, limit } => {
                 Error::Internal(Box::new(Broken::Unadmitted { len, limit }))
             }
@@ -229,12 +210,6 @@ impl From<crate::heap::Error> for Error {
                 panic!("a heap the write path writes has a directory")
             }
         }
-    }
-}
-
-impl From<crate::heap::Refused> for Error {
-    fn from(e: crate::heap::Refused) -> Error {
-        Error::from(crate::heap::Error::from(e))
     }
 }
 
@@ -870,7 +845,7 @@ impl<R: Runtime> Database<R> {
             match self.defer(tx)? {
                 Deferral::Safe(t) => return Ok(t),
                 Deferral::Wait { tx: t, on } => {
-                    self.session.waits().wait(None, on)?;
+                    self.session.waits().wait(None, on, None)?;
                     tx = t;
                 }
             }
@@ -901,15 +876,32 @@ impl<R: Runtime> Database<R> {
         }
     }
 
+    /// Returns the relation and constructor position whose heap, or whose history heap, is
+    /// numbered `heap`, `None` when no relation of the database has it.
+    pub fn relation_of(&self, heap: u32) -> Option<(RelId, u32)> {
+        let history = self.retained.as_ref().and_then(|r| {
+            r.heaps
+                .iter()
+                .find(|(_, h)| h.heap.id().0 == heap)
+                .map(|(current, _)| *current)
+        });
+        let id = history.unwrap_or(HeapId(u64::from(heap)));
+        self.rels.iter().find_map(|(r, rel)| {
+            let c = rel.ctors.iter().position(|c| c.heap == id)?;
+            Some((*r, u32::try_from(c).ok()?))
+        })
+    }
+
     /// Register `waker` to be woken once transaction `on` has ended, as [`Waits::watch`] does.
-    /// `me` is the waiting transaction, if it has an xid.
+    /// `me` is the waiting transaction, if it has an xid, waiting to write a version of `heap`,
+    /// or at a gate for `None`.
     pub fn watch(
         &self,
         me: Option<Xid>,
-        on: Xid,
+        (on, heap): (Xid, Option<u32>),
         waker: &Waker,
-    ) -> Result<Watch, SerializationFailure> {
-        self.session.waits().watch(me, on, waker)
+    ) -> Result<Watch, Conflict> {
+        self.session.waits().watch(me, on, heap, waker)
     }
 
     /// Withdraw the registration of `waker` on `on` made as `me`, if `on` has not ended.

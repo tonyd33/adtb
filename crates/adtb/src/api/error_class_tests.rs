@@ -4,7 +4,7 @@ use super::*;
 use crate::btree;
 use crate::catalog;
 use crate::exec::{self, Class, Exceeded};
-use crate::mvcc::{self, Cause, SerializationFailure, Xid};
+use crate::mvcc::{self, Conflict, Xid};
 use crate::runtime::IoError;
 use crate::storage::{self, Damage, Lsn, PageError, Pid, Quarantine};
 use crate::write::{By, Rerun, Rot};
@@ -18,8 +18,8 @@ fn page() -> PageError {
     }
 }
 
-fn serialization() -> SerializationFailure {
-    SerializationFailure::new(Cause::LaterCommit, Vec::new())
+fn serialization() -> Conflict {
+    Conflict::changed(0, Vec::new())
 }
 
 fn quarantined(by: By) -> write::Error {
@@ -192,6 +192,7 @@ fn write_rows() -> Vec<Row> {
         Row {
             error: write::Error::Blocked {
                 on: Xid(5),
+                heap: None,
                 rerun: Rerun::at_start(),
             },
             class: Class::Suspended,
@@ -637,7 +638,7 @@ fn each_failure_is_of_its_class_and_ends_and_replies_as_its_row_states() {
                 &schema,
                 TxnId(7),
                 write::Mapped::unmapped_for_test(error),
-                |_| NAMES.into(),
+                (|_: &BTreeMap<_, _>| NAMES.into(), |_| None),
             )
         });
         if got_class != class || got_ends != ends || got != reply {

@@ -10,6 +10,7 @@ mod join;
 pub mod layout;
 mod memory;
 mod prim;
+mod reads;
 mod rot;
 mod run;
 mod sched;
@@ -34,12 +35,12 @@ pub use host::{HostBody, HostError, Hosts};
 pub use ir::{Bound, Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub use prim::print;
+#[cfg(any(test, feature = "testing"))]
+pub use reads::Reads;
 pub use rot::{Rot, detail};
 #[cfg(any(test, feature = "testing"))]
 pub use sched::{Admission, Task};
 pub use sched::{Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped};
-#[cfg(any(test, feature = "testing"))]
-pub use store::Reads;
 pub use store::{
     Bindings, Histories, IndexedRows, Named, PastReads, ProbeBounds, Routes, RowKeys, Store,
     StoredHeap, StoredIndex,
@@ -60,7 +61,7 @@ use adtb_lang::schema::prelude::ctor;
 use adtb_lang::textual::PrintError;
 
 use crate::batch::{self, Batch, BatchBuilder, Datum};
-use crate::mvcc::SerializationFailure;
+use crate::mvcc::Conflict;
 use crate::runtime::{Instant, IoError, Runtime};
 use crate::storage::{PageError, Position};
 
@@ -150,7 +151,7 @@ pub enum Error {
     Fault(Fault),
     /// The statement is rejected with `StatementLimit`.
     StatementLimit(Exceeded),
-    Serialization(SerializationFailure),
+    Serialization(Conflict),
     Page(PageError),
     /// An entry of the index with this owner names an unused slot of a page its heap holds.
     OrphanEntry(u32),
@@ -189,18 +190,6 @@ pub enum Error {
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Page(e)
-    }
-}
-
-impl From<crate::heap::Refused> for Error {
-    fn from(e: crate::heap::Refused) -> Error {
-        match e {
-            crate::heap::Refused::Page(e) => Error::Page(e),
-            crate::heap::Refused::Gone => Error::Serialization(SerializationFailure::new(
-                crate::mvcc::Cause::ConcurrentWrite,
-                Vec::new(),
-            )),
-        }
     }
 }
 

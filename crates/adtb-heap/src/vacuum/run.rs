@@ -15,7 +15,7 @@ use crate::vacuum::Vacuuming;
 
 use super::dead::DeadSet;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Page(PageError),
     Index(btree::Error),
@@ -28,12 +28,6 @@ pub enum Error {
 impl From<heap::Error> for Error {
     fn from(e: heap::Error) -> Error {
         Error::Heap(e)
-    }
-}
-
-impl From<heap::Refused> for Error {
-    fn from(e: heap::Refused) -> Error {
-        Error::Heap(e.into())
     }
 }
 
@@ -495,7 +489,9 @@ fn clean<R: Runtime>(
         let w = marks.of(txns, id);
         for (pid, slots) in dead.pages(id) {
             pass.step(Vacuum::Prune)?;
-            let done = heap.prune(pager, pid, txns.judge(pager, w), &slots, true)?;
+            let done = heap
+                .prune(pager, pid, txns.judge(pager, w), &slots, true)
+                .map_err(|e| e.of_heap(heap.id()))?;
             report.freed += done.freed;
             report.cleared += done.cleared;
             report.all_visible += usize::from(done.all_visible);

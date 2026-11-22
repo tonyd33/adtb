@@ -1,7 +1,21 @@
-use super::{Cause, SerializationFailure, Xid};
+use super::{Cause, Conflict, Xid};
 
-pub(super) fn later(x: Xid) -> SerializationFailure {
-    SerializationFailure::new(Cause::LaterCommit, vec![x])
+/// Returns the conflict of a write of a version of heap `heap` that `x` wrote and committed
+/// after the writer's snapshot.
+pub(super) fn later(x: Xid, heap: u32) -> Conflict {
+    Conflict::new(Cause::LaterCommit, vec![x], Some(heap))
+}
+
+/// Returns the conflict of a transaction whose wait for others in `cycle` would close it, its
+/// write of a version of `heap`, or of none for a wait at a gate.
+pub(super) fn deadlock(cycle: Vec<Xid>, heap: Option<u32>) -> Conflict {
+    Conflict::new(Cause::Deadlock, cycle, heap)
+}
+
+/// Returns the conflict of a transaction chosen to break a dangerous structure among `with`,
+/// its read or write on the new edge of `heap`.
+pub(super) fn dangerous(with: Vec<Xid>, heap: Option<u32>) -> Conflict {
+    Conflict::new(Cause::Dangerous, with, heap)
 }
 
 /// What a uniqueness probe does about one version it found under the probed key.
@@ -13,7 +27,7 @@ pub enum Probe {
     Conflict,
     /// Wait for the transaction to end, then probe the version again.
     Wait(Xid),
-    Fail(SerializationFailure),
+    Fail(Conflict),
 }
 
 /// What a write does about the version it updates, deletes or retags.
@@ -22,5 +36,5 @@ pub enum Write {
     Proceed,
     /// Wait for the transaction to end, then check the version again.
     Wait(Xid),
-    Fail(SerializationFailure),
+    Fail(Conflict),
 }

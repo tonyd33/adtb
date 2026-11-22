@@ -1174,17 +1174,20 @@ impl crate::exec::Reads for VacuumOnFetch {
         &self,
         (at, heap): (Pid, HeapNo),
         writers: &Writers,
-    ) -> Result<bool, crate::exec::Error> {
-        let seen = self.reader.sees(writers);
-        let at = (at, Slots::Versions(heap.0));
-        let refuse = |e| Heap::refuse_unreserved(&self.db.pager, at, (), e);
-        Ok(seen.map_err(refuse)?.visible())
+    ) -> Result<Option<bool>, crate::exec::Error> {
+        match self.reader.sees(writers) {
+            Ok(seen) => Ok(Some(seen.visible())),
+            Err(e) => {
+                match Heap::refuse_unreserved(&self.db.pager, (at, Slots::Versions(heap.0)), (), e)
+                {
+                    Refused::Page(e) => Err(e.into()),
+                    Refused::Gone => Ok(None),
+                }
+            }
+        }
     }
 
-    fn scanning(
-        &self,
-        _: HeapNo,
-    ) -> Result<Option<crate::mvcc::ScanId>, crate::mvcc::SerializationFailure> {
+    fn scanning(&self, _: HeapNo) -> Result<Option<crate::mvcc::ScanId>, crate::mvcc::Conflict> {
         Ok(None)
     }
 
@@ -1202,11 +1205,11 @@ impl crate::exec::Reads for VacuumOnFetch {
         _: std::ops::Bound<Vec<u8>>,
         _: std::ops::Bound<Vec<u8>>,
         _: BTreeSet<CtorId>,
-    ) -> Result<(), crate::mvcc::SerializationFailure> {
+    ) -> Result<(), crate::mvcc::Conflict> {
         Ok(())
     }
 
-    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), crate::mvcc::SerializationFailure> {
+    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), crate::mvcc::Conflict> {
         let sum = Sum {
             heaps: vec![(CTOR, &*self.heap)],
             indexes: vec![&self.db.index],

@@ -4,7 +4,8 @@ use std::task::{Wake, Waker};
 
 use crate::runtime::{Runtime, ThreadId};
 
-use super::{Cause, SerializationFailure, Xid};
+use super::conflict::deadlock;
+use super::{Conflict, Xid};
 use adtb_sys::lock::Ranked;
 
 #[derive(Debug, Default)]
@@ -163,7 +164,7 @@ impl<R: Runtime> Waits<R> {
     }
 
     /// Register `waker` to be woken once `on` has ended. `me` is the waiting transaction, if it
-    /// has an xid.
+    /// has an xid, waiting to write a version of `heap`, or at a gate for `None`.
     ///
     /// Fail, registering nothing, if `on` already waits for `me` directly or through others.
     ///
@@ -173,8 +174,9 @@ impl<R: Runtime> Waits<R> {
         &self,
         me: Option<Xid>,
         on: Xid,
+        heap: Option<u32>,
         waker: &Waker,
-    ) -> Result<Watch, SerializationFailure> {
+    ) -> Result<Watch, Conflict> {
         let mut st = self.state.lock(&self.rt);
         if !st.running.contains(&on) {
             return Ok(Watch::Ended);
@@ -183,7 +185,7 @@ impl<R: Runtime> Waits<R> {
             let mut cycle = vec![on];
             while let Some(&next) = st.waits_for.get(cycle.last().expect("starts at `on`")) {
                 if next == me {
-                    return Err(SerializationFailure::new(Cause::Deadlock, cycle));
+                    return Err(deadlock(cycle, heap));
                 }
                 cycle.push(next);
             }
@@ -210,12 +212,12 @@ impl<R: Runtime> Waits<R> {
     }
 
     /// Block until `on` has ended, failing as [`watch`](Waits::watch) does.
-    pub fn wait(&self, me: Option<Xid>, on: Xid) -> Result<(), SerializationFailure> {
+    pub fn wait(&self, me: Option<Xid>, on: Xid, heap: Option<u32>) -> Result<(), Conflict> {
         let waker = Waker::from(Arc::new(Unpark {
             rt: self.rt.clone(),
             thread: self.rt.current(),
         }));
-        if self.watch(me, on, &waker)? == Watch::Ended {
+        if self.watch(me, on, heap, &waker)? == Watch::Ended {
             return Ok(());
         }
         while self.state.lock(&self.rt).running.contains(&on) {
@@ -226,14 +228,15 @@ impl<R: Runtime> Waits<R> {
 
     /// Wait as `me` until `on` has ended, running `pause` between looks. Fail as
     /// [`watch`](Waits::watch) does, or with the failure of `pause`, which withdraws the wait.
-    pub fn wait_pausing<E: From<SerializationFailure>>(
+    pub fn wait_pausing<E: From<Conflict>>(
         &self,
         me: Xid,
         on: Xid,
+        heap: Option<u32>,
         mut pause: impl FnMut() -> Result<(), E>,
     ) -> Result<(), E> {
         let waker = Waker::noop();
-        if self.watch(Some(me), on, waker)? == Watch::Ended {
+        if self.watch(Some(me), on, heap, waker)? == Watch::Ended {
             return Ok(());
         }
         while self.state.lock(&self.rt).running.contains(&on) {

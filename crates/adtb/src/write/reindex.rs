@@ -20,7 +20,7 @@ use adtb_sys::lock::HeldRank;
 use crate::btree::build::{BuildError, RunEntry, merge_runs, retire};
 use crate::btree::{self, BTree};
 use crate::exec;
-use crate::heap::Heap;
+use crate::heap::{Heap, Refused};
 use crate::key::{CtorId, Entry};
 use crate::mvcc::{Gate, Gated};
 use crate::plan::IndexId;
@@ -211,19 +211,27 @@ impl<R: Runtime> Scan<'_, R> {
             {
                 continue;
             }
-            let mut versions = Vec::new();
-            heap.scan_rooted(&db.pager, pid, |v, roots| versions.push((v, roots)))?;
-            for (v, roots) in versions {
-                let Some(key) = self.ix.keys.key(c, &v.row, &types)? else {
-                    continue;
-                };
-                let counted = match &reader {
-                    Some(r) => r
-                        .sees(&v.header.writers)
-                        .map_err(|e| v.refuse(&db.pager, e))?
-                        .visible(),
-                    None => false,
-                };
+            let on_page = 'read: loop {
+                let mut versions = Vec::new();
+                heap.scan_rooted(&db.pager, pid, |v, roots| versions.push((v, roots)))?;
+                let mut on_page = Vec::new();
+                for (v, roots) in versions {
+                    let Some(key) = self.ix.keys.key(c, &v.row, &types)? else {
+                        continue;
+                    };
+                    let counted = match reader.as_ref().map(|r| r.sees(&v.header.writers)) {
+                        Some(Ok(seen)) => seen.visible(),
+                        Some(Err(e)) => match v.refuse(&db.pager, e) {
+                            Refused::Page(e) => return Err(e.into()),
+                            Refused::Gone => continue 'read,
+                        },
+                        None => false,
+                    };
+                    on_page.push((key, roots, counted));
+                }
+                break on_page;
+            };
+            for (key, roots, counted) in on_page {
                 let key_len = schema.encode(&key).len();
                 for root in roots {
                     let entry = schema.encode_entry(&Entry {
@@ -392,6 +400,7 @@ impl<R: Runtime> Database<R> {
             if let Some(rerun) = stop.suspend {
                 return Err(Error::Blocked {
                     on: Gate::VacuumHolder.xid(),
+                    heap: None,
                     rerun,
                 });
             }

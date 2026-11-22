@@ -1,8 +1,8 @@
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use super::{Error, FieldType, Heap, LargeStore, Undo, WriteTarget};
+use super::{Error, FieldType, Heap, HeapNo, LargeStore, Undo, WriteTarget};
 use crate::key::{Scalar, Tid, Value};
-use crate::mvcc::Xid;
+use crate::mvcc::{Conflict, Xid};
 use crate::runtime::Threads;
 use crate::storage::{Damage, FIRST_EDITABLE, Options, PageError, Pager, Pid, Shape};
 
@@ -41,16 +41,14 @@ fn rejected_changes(cross_page: bool) {
             let header = heap.read(&pager, old).unwrap().unwrap().header;
             assert_eq!(header, super::tests::header(1, 2, Some(next.tid)));
             let unchanged = heap.headers(&pager).unwrap();
-            let expected = Error::Changed {
-                current: Some(header),
-            };
+            let expected = Error::Changed(Conflict::changed(41, vec![Xid(2)]));
             assert_eq!(
                 heap.update(&pager, stale, Xid(3), &[Value::I64(3)], &[]),
-                Err(expected)
+                Err(expected.clone())
             );
             assert_eq!(
                 heap.delete(&pager, stale, Xid(3)).kept(&super::Tested),
-                Err(expected)
+                Err(expected.clone())
             );
             assert_eq!(
                 heap.retag(&pager, stale, Xid(3), &other, &[Value::I64(3)]),
@@ -158,7 +156,10 @@ fn a_checked_delete_of_a_version_whose_page_another_heap_now_owns_is_changed() {
     let (answer, kept, _) =
         foreign_target(|h, p, t, _| h.delete(p, t, Xid(3)).kept(&super::Tested).map(drop));
     assert_eq!(
-        (Err(Error::Changed { current: None }), Some(true)),
+        (
+            Err(Error::Changed(Conflict::changed(41, Vec::new()))),
+            Some(true)
+        ),
         (answer, kept)
     );
 }
@@ -186,7 +187,7 @@ fn a_checked_update_or_retag_of_a_version_whose_page_another_heap_now_owns_is_ch
     ];
     for (what, write) in writes {
         let (answer, kept, _) = foreign_target(write);
-        let changed = Err(Error::Changed { current: None });
+        let changed = Err(Error::Changed(Conflict::changed(41, Vec::new())));
         assert_eq!((changed, Some(true)), (answer, kept), "{what}");
     }
 }
@@ -258,7 +259,9 @@ fn a_store_page_found_refused_leaves_a_page_no_longer_of_the_store_alone() {
         let pager = Pager::create(rt, &options()).unwrap();
         let large = LargeStore::create(&pager, 40).unwrap();
         let other = Heap::create(&pager, 42, fields(), large).unwrap();
-        large.write(&pager, Xid(1), &[1; 100]).unwrap();
+        large
+            .write(&pager, (Xid(1), HeapNo(42)), &[1; 100])
+            .unwrap();
         let pages = large.pages(&pager).unwrap();
         assert_eq!(1, pages.len(), "one store page");
         plant(&pager, pages[0], other.root());

@@ -1,0 +1,20 @@
+# A read by key that walks a retag chain into the heap of another constructor and meets there a
+# version whose deleter is past the reservation refuses that heap's page, and that constructor's
+# relation is quarantined.
+use pages
+
+run
+  insert docs.Draft { id: 1, text: "a" }
+
+run
+  update d in docs.Draft where d.id == 1 set Final { text: "b" }
+
+scribble heap app::docs Final
+  slot 0 deleter unreserved
+
+fatal Quarantined { what: "app::docs.Final" }
+  from d in docs where d.id == 1 select d.id
+
+probe damage
+----
+heap app::docs Final: Shape(Frame)

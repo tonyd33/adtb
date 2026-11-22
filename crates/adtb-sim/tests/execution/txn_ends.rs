@@ -159,7 +159,7 @@ fn refused(
     let refusal = Error::Retry {
         reason: RetryReason::Serialization {
             txn: tx.id(),
-            on: String::new(),
+            on: "elle::cells.Even".to_owned(),
         },
     };
     assert_eq!(Err(refusal), tx.commit(None).map(drop));

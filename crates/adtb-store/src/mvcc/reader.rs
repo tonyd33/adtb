@@ -202,8 +202,9 @@ impl<S: Statuses> Reader<S> {
     /// `writers` wrote, found under the key it inserts into a unique index.
     ///
     /// A version `me` inserted and has not deleted is a conflict; whether it came from the same
-    /// statement is the caller's, from its command ids.
-    pub fn probe_unique(&self, me: Xid, writers: &Writers) -> Result<Probe, S::Error> {
+    /// statement is the caller's, from its command ids. A failure names `heap`, the heap of the
+    /// version `me` inserts.
+    pub fn probe_unique(&self, me: Xid, writers: &Writers, heap: u32) -> Result<Probe, S::Error> {
         let status = |x| Ok(self.statuses.status(x)?.counted());
         let (xmin, xmax) = (writers.inserter(), writers.deleter());
         let inserter = if xmin == me {
@@ -218,32 +219,32 @@ impl<S: Statuses> Reader<S> {
         if let Some(xmax) = xmax {
             match status(xmax)? {
                 Status::Committed if in_snapshot(xmax)? => return Ok(Probe::Skip),
-                Status::Committed => return Ok(Probe::Fail(later(xmax))),
+                Status::Committed => return Ok(Probe::Fail(later(xmax, heap))),
                 Status::InProgress if inserter == Status::InProgress => {
                     return Ok(Probe::Wait(xmin));
                 }
                 Status::InProgress if in_snapshot(xmin)? => return Ok(Probe::Wait(xmax)),
-                Status::InProgress => return Ok(Probe::Fail(later(xmin))),
+                Status::InProgress => return Ok(Probe::Fail(later(xmin, heap))),
                 Status::Aborted => {}
             }
         }
         Ok(match inserter {
             Status::InProgress => Probe::Wait(xmin),
             _ if in_snapshot(xmin)? => Probe::Conflict,
-            _ => Probe::Fail(later(xmin)),
+            _ => Probe::Fail(later(xmin, heap)),
         })
     }
 
     /// Returns what a write by `me` does about the version it found visible at its snapshot,
-    /// whose writers are now `writers`.
-    pub fn check_write(&self, me: Xid, writers: &Writers) -> Result<Write, S::Error> {
+    /// whose writers are now `writers`, in heap `heap`.
+    pub fn check_write(&self, me: Xid, writers: &Writers, heap: u32) -> Result<Write, S::Error> {
         let Some(xmax) = writers.deleter().filter(|&x| x != me) else {
             return Ok(Write::Proceed);
         };
         Ok(match self.statuses.status(xmax)?.counted() {
             Status::Aborted => Write::Proceed,
             Status::InProgress => Write::Wait(xmax),
-            Status::Committed => Write::Fail(later(xmax)),
+            Status::Committed => Write::Fail(later(xmax, heap)),
         })
     }
 }

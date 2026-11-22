@@ -7,8 +7,8 @@ use super::StopsEarly;
 use super::clog::{Directory, Root, directory_capacity, locate, per_page, set_status, status_at};
 use super::txn::{Assign, assign, extend};
 use super::{
-    Access, Cause, Holds, Limits, Probe, RESERVATION, Reader, Safety, Scope, SerialId,
-    SerializationFailure, Serializer, Snapshot, Status, Write, Writers, Xid,
+    Access, Conflict, Holds, Limits, Probe, RESERVATION, Reader, Safety, Scope, SerialId,
+    Serializer, Snapshot, Status, Write, Writers, Xid,
 };
 use crate::key::{CtorId, Tid};
 use crate::storage::{HEADER_LEN, Pid};
@@ -46,21 +46,13 @@ fn status_bits_round_trip_without_disturbing_neighbours() {
             1 => Status::Aborted,
             _ => Status::InProgress,
         };
-        assert_eq!(want, status_at(&page, i), "index {i}");
+        assert_eq!(Ok(want), status_at(&page, i), "index {i}");
     }
     assert_eq!(
         [0; HEADER_LEN + 8],
         page[..HEADER_LEN + 8],
         "the header and page number"
     );
-}
-
-#[test]
-#[should_panic(expected = "resolved twice")]
-fn a_status_resolves_once() {
-    let mut page = vec![0; 4096];
-    set_status(&mut page, 9, Status::Committed);
-    set_status(&mut page, 9, Status::Aborted);
 }
 
 #[test]
@@ -73,7 +65,7 @@ fn root_and_directory_round_trip() {
         first_directory: Pid(9),
     };
     root.write(&mut page);
-    assert_eq!(root, Root::read(&page));
+    assert_eq!(Ok(root), Root::read(&page));
     let cap = directory_capacity(page.len());
     assert_eq!((4096 - 40) / 16, cap);
     let dir = Directory {
@@ -82,14 +74,14 @@ fn root_and_directory_round_trip() {
         entries: (0..cap as u64).map(|n| (n * 3, Pid(100 + n))).collect(),
     };
     dir.write(&mut page);
-    assert_eq!(dir, Directory::read(Pid(9), &page));
+    assert_eq!(Ok(dir), Directory::read(Pid(9), &page));
     let empty = Directory {
         pid: Pid(9),
         next: None,
         entries: Vec::new(),
     };
     empty.write(&mut page);
-    assert_eq!(empty, Directory::read(Pid(9), &page));
+    assert_eq!(Ok(empty), Directory::read(Pid(9), &page));
 }
 
 #[test]
@@ -328,7 +320,7 @@ fn probe(xmin: u64, xmax: u64) -> Probe {
         (10, Status::InProgress),
     ];
     Reader::over(statuses(&table), snapshot, Some(Xid(10)))
-        .probe_unique(Xid(10), &writers(xmin, xmax))
+        .probe_unique(Xid(10), &writers(xmin, xmax), HEAP)
         .unwrap()
 }
 
@@ -364,7 +356,7 @@ fn a_write_waits_for_a_running_deleter_and_fails_on_a_committed_one() {
     ];
     let snapshot = Snapshot::new(Xid(5), Xid(9), vec![Xid(5)]);
     let r = Reader::over(statuses(&table), snapshot, Some(Xid(10)));
-    let check = |xmax| r.check_write(Xid(10), &writers(1, xmax)).unwrap();
+    let check = |xmax| r.check_write(Xid(10), &writers(1, xmax), HEAP).unwrap();
     assert_eq!(Write::Proceed, check(0));
     assert_eq!(Write::Proceed, check(10));
     assert_eq!(Write::Proceed, check(8));
@@ -420,15 +412,15 @@ fn rw(s: &mut Serializer, x: u64) -> SerialId {
     s.begin(Access::ReadWrite(Xid(x)))
 }
 
-fn later(x: u64) -> SerializationFailure {
-    SerializationFailure::new(Cause::LaterCommit, vec![Xid(x)])
+fn later(x: u64) -> Conflict {
+    super::conflict::later(Xid(x), HEAP)
 }
 
-fn dangerous(with: &[u64]) -> SerializationFailure {
-    SerializationFailure::new(Cause::Dangerous, with.iter().map(|&x| Xid(x)).collect())
+fn dangerous(with: &[u64], heap: u32) -> Conflict {
+    super::conflict::dangerous(with.iter().map(|&x| Xid(x)).collect(), Some(heap))
 }
 
-fn commit(s: &mut Serializer, id: SerialId) -> Result<(), SerializationFailure> {
+fn commit(s: &mut Serializer, id: SerialId) -> Result<(), Conflict> {
     s.precommit(id)?;
     s.committed(id);
     Ok(())
@@ -499,7 +491,7 @@ fn a_split_turns_locks_on_the_rewritten_heaps_into_heap_locks_on_the_new_ones() 
     read_key(&mut s, r, 1, &[G]);
     s.rewrite(&[HEAP], &[INDEX], &[20, 21]);
     assert_eq!(2, s.locks(r));
-    s.insert_entry(w, INDEX, &key(1), G).unwrap();
+    s.insert_entry(w, INDEX, (&key(1), G), HEAP).unwrap();
     assert!(s.writers_after(r).is_empty());
     s.insert_heap(w, 21).unwrap();
     assert_eq!(BTreeSet::from([w]), s.writers_after(r));
@@ -512,9 +504,9 @@ fn a_writer_that_began_after_the_reader_committed_does_not_conflict() {
     read_key(&mut s, r, 1, &[E]);
     commit(&mut s, r).unwrap();
     let w = rw(&mut s, 3);
-    s.insert_entry(w, INDEX, &key(1), E).unwrap();
+    s.insert_entry(w, INDEX, (&key(1), E), HEAP).unwrap();
     assert!(s.readers_before(w).is_empty());
-    s.insert_entry(keep, INDEX, &key(1), E).unwrap();
+    s.insert_entry(keep, INDEX, (&key(1), E), HEAP).unwrap();
     assert_eq!(BTreeSet::from([r]), s.readers_before(keep));
 }
 
@@ -534,11 +526,11 @@ fn a_failure_names_the_other_transactions_of_its_conflict() {
     let mut s = Serializer::default();
     let (t1, t2, t3) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3));
     read_key(&mut s, t1, 1, &[E]);
-    s.insert_entry(t2, INDEX, &key(1), E).unwrap();
+    s.insert_entry(t2, INDEX, (&key(1), E), HEAP).unwrap();
     read_key(&mut s, t2, 2, &[E]);
-    s.insert_entry(t3, INDEX, &key(2), E).unwrap();
+    s.insert_entry(t3, INDEX, (&key(2), E), HEAP + 1).unwrap();
     commit(&mut s, t3).unwrap();
-    assert_eq!(Err(dangerous(&[1, 3])), commit(&mut s, t2));
+    assert_eq!(Err(dangerous(&[1, 3], HEAP + 1)), commit(&mut s, t2));
 }
 
 #[test]
@@ -589,7 +581,7 @@ fn the_total_budget_promotes_the_largest_holders_locks() {
         read_key(&mut s, big, k, &[G]);
     }
     assert!(s.held() <= 4, "{} locks held", s.held());
-    s.insert_entry(w, INDEX, &key(200), G).unwrap();
+    s.insert_entry(w, INDEX, (&key(200), G), HEAP).unwrap();
     s.write_at(w, HEAP, tid(6, 9)).unwrap();
     assert_eq!(BTreeSet::from([big]), s.readers_before(w));
 }

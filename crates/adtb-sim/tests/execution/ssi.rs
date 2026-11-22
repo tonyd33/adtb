@@ -476,24 +476,18 @@ fn random_txn(e: &Elems, rt: &SimRuntime, id: u64) -> iso::Txn {
     for step in 0..steps {
         rt.yield_now();
         let key = (rt.next_u64() % KEYS as u64) as i64;
-        let (r, on) = if kind != Kind::ReadWrite || rt.next_u64().is_multiple_of(2) {
-            (
-                e.read(&mut tx, key).map(|list| iso::Op::Read { key, list }),
-                elle::READ,
-            )
+        let r = if kind != Kind::ReadWrite || rt.next_u64().is_multiple_of(2) {
+            e.read(&mut tx, key).map(|list| iso::Op::Read { key, list })
         } else {
             let elem = (id * 10 + step) as i64;
-            (
-                e.append(&mut tx, key, elem)
-                    .map(|()| iso::Op::Append { key, elem }),
-                elle::APPEND,
-            )
+            e.append(&mut tx, key, elem)
+                .map(|()| iso::Op::Append { key, elem })
         };
         match r {
             Ok(op) => ops.push(op),
             Err(f) => {
                 assert_ne!(Kind::Deferrable, kind, "a deferrable transaction failed");
-                elle::aborted(tx.id(), on)(f);
+                elle::aborted(tx.id(), elle::ELEMS)(f);
                 return iso::Txn::new(id, Ended::Aborted, ops);
             }
         }
@@ -504,7 +498,7 @@ fn random_txn(e: &Elems, rt: &SimRuntime, id: u64) -> iso::Txn {
         Ok(_) => Ended::Committed,
         Err(f) => {
             assert_ne!(Kind::Deferrable, kind, "a deferrable commit failed: {f:?}");
-            elle::aborted(txn, elle::READ)(f);
+            elle::aborted(txn, elle::ELEMS)(f);
             Ended::Aborted
         }
     };

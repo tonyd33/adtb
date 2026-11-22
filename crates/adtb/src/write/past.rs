@@ -10,7 +10,7 @@ use adtb_lang::types::RelId;
 
 use crate::btree::Index;
 use crate::exec::{self, Histories, PastReads, Store, StoredHeap, Val};
-use crate::heap::{Heap, Slots};
+use crate::heap::{Heap, Refused, Slots};
 use crate::history::History;
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{Marker, Past, PastError, Pinned, Transactions, Xid};
@@ -107,9 +107,13 @@ impl<R: Runtime> Pasts<R> {
     /// version at `at`.
     fn sees_commit(&self, marker: &Marker, (x, at): (Xid, Tid)) -> Result<bool, exec::Error> {
         let at = (Pid(at.page()), Slots::Versions(crate::catalog::ROOTS));
-        let refuse = |e| Heap::refuse_unreserved(&self.pager, at, (), e);
-        let counted = self.txns.counts_committed(&self.pager, &marker.snapshot, x);
-        Ok(counted.map_err(refuse)?)
+        match self.txns.counts_committed(&self.pager, &marker.snapshot, x) {
+            Ok(counted) => Ok(counted),
+            Err(e) => match Heap::refuse_unreserved(&self.pager, at, (), e) {
+                Refused::Page(e) => Err(e.into()),
+                Refused::Gone => Err(exec::Rot::MigrationWriter(x.0).into()),
+            },
+        }
     }
 
     /// Returns the schema version at the state `marker` reads.

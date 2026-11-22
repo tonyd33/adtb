@@ -8,9 +8,11 @@ use super::{Engine, Error, TxnId};
 
 /// Why [`Engine::resumable`] stopped short.
 pub(super) enum Halted {
-    /// A statement must wait for transaction `on` to end; a rerun passes `rerun`.
+    /// A statement must wait for transaction `on` to end, to write a version of `heap`, or at a
+    /// gate for `None`; a rerun passes `rerun`.
     Blocked {
         on: Xid,
+        heap: Option<u32>,
         rerun: write::Rerun,
     },
     Failed(Failure),
@@ -145,11 +147,11 @@ impl<R: Runtime> Engine<R> {
                 .map_err(|e| failed(e, true)),
             (
                 Err(write::Failed {
-                    error: write::Error::Blocked { on, rerun },
+                    error: write::Error::Blocked { on, heap, rerun },
                     ..
                 }),
                 None,
-            ) => Err(Halted::Blocked { on, rerun }),
+            ) => Err(Halted::Blocked { on, heap, rerun }),
             (Err(f), _) => {
                 let ends = f.ends();
                 let mapped = self.db.fail(f.error);

@@ -16,8 +16,6 @@ mod wait;
 mod watermark;
 mod writers;
 
-use adtb_lang::types::RelId;
-
 use crate::storage::PageError;
 
 #[cfg(test)]
@@ -61,12 +59,13 @@ pub enum Status {
 }
 
 impl Status {
-    fn from_bits(bits: u8) -> Status {
+    /// Returns the status two bits of a status page record, `None` for bits naming none.
+    fn from_bits(bits: u8) -> Option<Status> {
         match bits {
-            0 => Status::InProgress,
-            1 => Status::Committed,
-            2 => Status::Aborted,
-            _ => panic!("commit log status bits {bits:#b} name no status"),
+            0 => Some(Status::InProgress),
+            1 => Some(Status::Committed),
+            2 => Some(Status::Aborted),
+            _ => None,
         }
     }
 }
@@ -134,38 +133,41 @@ pub enum Error {
     Closed,
 }
 
-/// The transaction must abort, and may be retried at a new snapshot.
+/// A conflict the serializer, the waits or a write check found: the transaction must abort, and
+/// may be retried at a new snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SerializationFailure {
-    pub cause: Cause,
-    /// The other transactions in the conflict that have xids, in order. A read-only transaction
-    /// has none and is not named.
-    pub with: Vec<Xid>,
-    on: Option<(RelId, u32)>,
+pub struct Conflict {
+    cause: Cause,
+    with: Vec<Xid>,
+    heap: Option<u32>,
 }
 
-impl SerializationFailure {
-    pub fn new(cause: Cause, with: Vec<Xid>) -> SerializationFailure {
-        SerializationFailure {
-            cause,
-            with,
-            on: None,
-        }
+impl Conflict {
+    fn new(cause: Cause, with: Vec<Xid>, heap: Option<u32>) -> Conflict {
+        Conflict { cause, with, heap }
     }
 
-    /// Returns the relation and constructor position of the caller's read or write on the
-    /// conflicting edge, `None` when not known.
-    pub fn on(&self) -> Option<(RelId, u32)> {
-        self.on
+    /// Returns the conflict of a write to heap `heap` of a version whose header changed between
+    /// its write check and its exclusive latch, the version's deleters now `with`.
+    pub fn changed(heap: u32, with: Vec<Xid>) -> Conflict {
+        Conflict::new(Cause::ConcurrentWrite, with, Some(heap))
     }
 
-    /// Returns this failure on constructor `ctor` of `rel`, unless it names one already.
-    #[must_use]
-    pub fn at(self, rel: RelId, ctor: u32) -> SerializationFailure {
-        SerializationFailure {
-            on: self.on.or(Some((rel, ctor))),
-            ..self
-        }
+    pub fn cause(&self) -> Cause {
+        self.cause
+    }
+
+    /// Returns the other transactions in the conflict that have xids, in order. A read-only
+    /// transaction has none and is not named.
+    pub fn with(&self) -> &[Xid] {
+        &self.with
+    }
+
+    /// Returns the heap of the version or entry the caller's read or write on the conflicting
+    /// edge is of: `None` for a wait at a gate or a conflict on a schema version, which no heap
+    /// holds.
+    pub fn heap(&self) -> Option<u32> {
+        self.heap
     }
 }
 

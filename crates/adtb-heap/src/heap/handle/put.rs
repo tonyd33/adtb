@@ -8,7 +8,7 @@ use super::super::row::Pointer;
 use super::super::stage::Stage;
 use super::super::version::{Flags, Header};
 use super::super::write::{Failed, HeapWrite, Rank, Took};
-use super::super::{Abandons, Error};
+use super::super::{Abandons, Error, Refused};
 use super::{Heap, Judge, Put, tid, version_bytes};
 
 /// A version ready to put, and the pointers of its out-of-line values.
@@ -49,7 +49,7 @@ impl Heap {
                 return Ok(());
             };
             let (tids, committed) = self.put_run(pager, xid, first, rest, Some(&mut *judge))?;
-            committed.map_err(Error::from)?;
+            committed.map_err(|f| f.of_heap(self.id()))?;
             ready.drain(..tids.len());
             for (row, t) in waiting.drain(..tids.len()).zip(tids) {
                 placed(row, t)?;
@@ -87,7 +87,7 @@ impl Heap {
                     }
                     let took = Took::Found(self, pid);
                     return match write.commit(took, &retain, &c.dropped) {
-                        Err(f) if !f.written() => Err(f.into()),
+                        Err(f) if !f.written() => Err(f.of_heap(self.id())),
                         committed => Ok((tids, committed)),
                     };
                 }
@@ -95,10 +95,14 @@ impl Heap {
                 Put::Full => {}
             }
             drop(write);
-            if self.prune_full(pager, pid, judge.as_deref_mut())? {
+            let gone = |e: Refused| e.of_heap(self.id());
+            if self
+                .prune_full(pager, pid, judge.as_deref_mut())
+                .map_err(gone)?
+            {
                 continue;
             }
-            self.refused(pager, pid)?;
+            self.refused(pager, pid).map_err(gone)?;
         }
     }
 }

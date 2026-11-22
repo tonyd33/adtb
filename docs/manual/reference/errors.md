@@ -137,7 +137,7 @@ fn main() -> Result<(), adtb::Error> {
 ```
 
 ```text
-transaction N conflicts with a concurrent transaction; retry
+transaction N conflicts with a concurrent transaction on `shelter::pets.Cat`; retry
 true
 ```
 

@@ -8,16 +8,17 @@ use adtb_lang::types::{RelRef, Ty};
 
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
-use crate::heap::{FieldType, Heap, HeapNo, Link, Slots, Version, refuse_named, walk};
+use crate::heap::{FieldType, Heap, HeapNo, Link, Version, refuse_named, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{Logged, Reader, ScanId, SerialId, SerializationFailure, Serializer, Writers};
+use crate::mvcc::{Logged, Reader, ScanId, SerialId, Serializer, Writers};
 use crate::plan::{self, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::steps::{Step, Steps};
-use crate::storage::{Pager, Pid, Quarantine};
+use crate::storage::{PageError, Pager, Pid, Quarantine};
 use adtb_sys::lock::Ranked;
 
 use super::memory::{Arena, Grant};
+use super::reads::{AtMarker, AtSnapshot, Reads};
 use super::types::{ctors, repr};
 use super::value::{F32, F64, Val};
 use super::{Broken, Error, Rot};
@@ -30,161 +31,6 @@ pub struct Named {
     pub ctor: u32,
     pub tid: Tid,
     entry: Option<(IndexId, Entry)>,
-}
-
-/// What a query's reads see and record: the visibility of versions at its snapshot, and the
-/// SIREAD locks its transaction takes.
-pub trait Reads: Send + Sync {
-    /// Returns whether the version on page `at` written by `writers` is visible at the reader's
-    /// snapshot. Record that what the reader saw depends on the writer the read is before: the
-    /// inserter of a version it missed or the deleter of one it saw, when its snapshot does not
-    /// count that writer as committed and that writer did not abort. Refuse page `at` of heap
-    /// `heap` when a writer it looks up is not reserved.
-    fn saw(&self, at: (Pid, HeapNo), writers: &Writers) -> Result<bool, Error>;
-
-    /// Record that a scan of heap `heap` began, covering every version of the heap until
-    /// [`Reads::scanned`] ends it. Returns the scan, `None` when it records none.
-    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure>;
-
-    /// Record that `scan`, a scan of heap `heap`, ended having read every version of the heap,
-    /// or, when it stopped early, only those on the pages it read.
-    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<(StopsEarly, &[Pid])>);
-
-    /// Record that the encoded keys of the index rooted at `index` between `lo` and `hi` were
-    /// read, for rows of `ctors`.
-    fn probed(
-        &self,
-        index: Pid,
-        lo: Bound<Vec<u8>>,
-        hi: Bound<Vec<u8>>,
-        ctors: BTreeSet<CtorId>,
-    ) -> Result<(), SerializationFailure>;
-
-    /// Record that the version at `tid` of heap `heap` was read.
-    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure>;
-
-    /// Returns whether a read of heap `heap` sees what the reader's snapshot sees.
-    fn covers(&self, heap: HeapNo) -> bool;
-
-    /// Call the step hook of a serializable reader with `step`.
-    fn reached(&self, _: Step) {}
-}
-
-/// The reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
-/// is given.
-struct AtSnapshot<R: Runtime> {
-    rt: R,
-    reader: Reader<Logged<R>>,
-    serial: Option<(Arc<Ranked<Serializer>>, SerialId)>,
-    steps: Arc<Steps>,
-}
-
-impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AtSnapshot")
-            .field("reader", &self.reader)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<R: Runtime> Reads for AtSnapshot<R> {
-    fn saw(&self, (at, heap): (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
-        let at = (at, Slots::Versions(heap.0));
-        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
-        let seen = self.reader.sees(writers).map_err(refuse)?;
-        if let Some((s, id)) = &self.serial
-            && let Some(writer) = self.reader.before(seen).map_err(refuse)?
-        {
-            s.lock(&self.rt)
-                .read_from(*id, writer)
-                .map_err(Error::Serialization)?;
-        }
-        Ok(seen.visible())
-    }
-
-    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
-        match &self.serial {
-            Some((s, id)) => s.lock(&self.rt).read_scan(*id, heap.0),
-            None => Ok(None),
-        }
-    }
-
-    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<(StopsEarly, &[Pid])>) {
-        if let Some((s, id)) = &self.serial {
-            let read = read.map(|(early, r)| (early, r.iter().map(|p| p.0).collect::<Vec<_>>()));
-            let read = read.as_ref().map(|(early, r)| (early, r.as_slice()));
-            s.lock(&self.rt).end_scan(*id, heap.0, scan, read);
-        }
-    }
-
-    fn probed(
-        &self,
-        index: Pid,
-        lo: Bound<Vec<u8>>,
-        hi: Bound<Vec<u8>>,
-        ctors: BTreeSet<CtorId>,
-    ) -> Result<(), SerializationFailure> {
-        match &self.serial {
-            Some((s, id)) => s.lock(&self.rt).read_range(*id, index, lo, hi, ctors),
-            None => Ok(()),
-        }
-    }
-
-    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
-        match &self.serial {
-            Some((s, id)) => s.lock(&self.rt).read_tuple(*id, heap.0, tid),
-            None => Ok(()),
-        }
-    }
-
-    fn covers(&self, heap: HeapNo) -> bool {
-        self.reader.covers(heap.0)
-    }
-
-    fn reached(&self, step: Step) {
-        if self.serial.is_some() {
-            self.steps.at(step);
-        }
-    }
-}
-
-/// What a read of the past sees: the versions the snapshot of a pinned marker sees, taking no
-/// SIREAD locks.
-struct AtMarker<R: Runtime> {
-    reader: Reader<Logged<R>>,
-}
-
-impl<R: Runtime> Reads for AtMarker<R> {
-    fn saw(&self, (at, heap): (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
-        let seen = self.reader.sees(writers);
-        let at = (at, Slots::Versions(heap.0));
-        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
-        Ok(seen.map_err(refuse)?.visible())
-    }
-
-    fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
-        Ok(None)
-    }
-
-    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<(StopsEarly, &[Pid])>) {}
-
-    fn probed(
-        &self,
-        _: Pid,
-        _: Bound<Vec<u8>>,
-        _: Bound<Vec<u8>>,
-        _: BTreeSet<CtorId>,
-    ) -> Result<(), SerializationFailure> {
-        Ok(())
-    }
-
-    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
-        Ok(())
-    }
-
-    fn covers(&self, heap: HeapNo) -> bool {
-        self.reader.covers(heap.0)
-    }
 }
 
 /// The heap of each constructor position an index probe reads, by position.
@@ -388,7 +234,7 @@ impl<R: Runtime> Store<R> {
         let pager = reader.pager().clone();
         Store::listing(
             pager,
-            Arc::new(AtMarker { reader }),
+            Arc::new(AtMarker::new(reader)),
             bindings,
             listed,
             history,
@@ -429,12 +275,7 @@ impl<R: Runtime> Store<R> {
         bindings: Bindings,
     ) -> Store<R> {
         let pager = reader.pager().clone();
-        let reads = AtSnapshot {
-            rt: pager.rt().clone(),
-            reader,
-            serial,
-            steps,
-        };
+        let reads = AtSnapshot::new(reader, serial, steps);
         Store {
             pager,
             reads: Arc::new(reads),
@@ -520,6 +361,19 @@ impl std::fmt::Debug for Listing {
             .field("scan", &self.scan)
             .field("pages", &self.pages)
             .finish_non_exhaustive()
+    }
+}
+
+/// Why a walk of a chain stopped before a version it accepts.
+enum Unseen {
+    /// A version of the chain is gone under its latch.
+    Gone,
+    Failed(Error),
+}
+
+impl From<PageError> for Unseen {
+    fn from(e: PageError) -> Unseen {
+        Unseen::Failed(e.into())
     }
 }
 
@@ -658,6 +512,65 @@ impl<R: Runtime> Store<R> {
         Ok((self.bindings.indexes.get(&id)).ok_or(Broken::UnboundIndex(id))?)
     }
 
+    /// Pass each version on page `pid` of `heap` that the store's reads see to `each`, until it
+    /// breaks. Read the page again while a version on it is gone under its latch, passing no
+    /// version twice.
+    fn each_seen<B>(
+        &self,
+        heap: &Heap,
+        pid: Pid,
+        mut each: impl FnMut(Version) -> Result<ControlFlow<B>, Error>,
+    ) -> Result<ControlFlow<B>, Error> {
+        let mut judged = BTreeSet::new();
+        'read: loop {
+            let mut versions = Vec::new();
+            heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+            for v in versions {
+                if !judged.insert(v.tid) {
+                    continue;
+                }
+                match self.reads.saw((pid, heap.id()), &v.header.writers)? {
+                    Some(true) => {
+                        if let ControlFlow::Break(b) = each(v)? {
+                            return Ok(ControlFlow::Break(b));
+                        }
+                    }
+                    Some(false) => {}
+                    None => {
+                        judged.remove(&v.tid);
+                        continue 'read;
+                    }
+                }
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
+    }
+
+    /// Returns the version of the chain from `start` through the heaps of `sum` that the store's
+    /// reads see, walking the chain again while a version of it is gone under its latch.
+    fn walk_seen(
+        &self,
+        heap: &Heap,
+        sum: &[Arc<Heap>],
+        start: Tid,
+    ) -> Result<Option<(Link, Vec<Value>)>, Error> {
+        let saw = |l: &Link, _: &[Value]| match self
+            .reads
+            .saw((Pid(l.tid.page()), l.heap), &l.header.writers)
+        {
+            Ok(Some(visible)) => Ok(visible),
+            Ok(None) => Err(Unseen::Gone),
+            Err(e) => Err(Unseen::Failed(e)),
+        };
+        loop {
+            match walk(&self.pager, heap.id(), sum, start, saw) {
+                Ok(walked) => return Ok(walked),
+                Err(Unseen::Gone) => {}
+                Err(Unseen::Failed(e)) => return Err(e),
+            }
+        }
+    }
+
     /// Pass the visible rows on the pages of `listing`, a listing of heap `id`, to `each` as
     /// batches of at most `rows` rows each, as [`Store::scan_pages`] does, and then those of its
     /// history heap when the store reads the past.
@@ -705,27 +618,23 @@ impl<R: Runtime> Store<R> {
                 (&past.heap, history.as_slice())
             };
             for &pid in pages {
-                let mut versions = Vec::new();
-                heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
-                for v in versions {
-                    if !self
-                        .reads
-                        .saw((Pid(v.tid.page()), heap.id()), &v.header.writers)?
-                    {
-                        continue;
-                    }
+                let flow = self.each_seen(heap, pid, |v| {
                     if v.header.writers.deleted() {
                         if now {
                             deleted.hold(&v)?;
                         } else if deleted.holds(&v) {
-                            continue;
+                            return Ok(ControlFlow::Continue(()));
                         }
                     }
                     if let Some((full, _held)) = b.push(&v.row)?
                         && each(full)?.is_break()
                     {
-                        return Ok(());
+                        return Ok(ControlFlow::Break(()));
                     }
+                    Ok(ControlFlow::Continue(()))
+                })?;
+                if flow.is_break() {
+                    return Ok(());
                 }
             }
         }
@@ -772,18 +681,21 @@ impl<R: Runtime> Store<R> {
             let Some(stored) = self.past_heap(heap)? else {
                 continue;
             };
-            let Some(v) = stored.heap.read(&self.pager, e.tid)? else {
-                let at = (&*stored.heap, e.tid);
-                refuse_named(&self.pager, at, ix.index.tree().owner(), || {
-                    let found = past.probe(&self.pager, key).map_err(index_error)?;
-                    Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))
-                })?;
-                continue;
+            let seen = loop {
+                let Some(v) = stored.heap.read(&self.pager, e.tid)? else {
+                    let at = (&*stored.heap, e.tid);
+                    refuse_named(&self.pager, at, ix.index.tree().owner(), || {
+                        let found = past.probe(&self.pager, key).map_err(index_error)?;
+                        Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))
+                    })?;
+                    break None;
+                };
+                let at = (Pid(v.tid.page()), stored.heap.id());
+                if let Some(visible) = self.reads.saw(at, &v.header.writers)? {
+                    break visible.then_some(v);
+                }
             };
-            if self
-                .reads
-                .saw((Pid(v.tid.page()), stored.heap.id()), &v.header.writers)?
-            {
+            if let Some(v) = seen {
                 return Ok(Some((heap, v.row)));
             }
         }
@@ -807,24 +719,29 @@ impl<R: Runtime> Store<R> {
                 continue;
             };
             for pid in stored.heap.pages(&self.pager)? {
-                (bounds.check)()?;
-                let mut versions = Vec::new();
-                stored
-                    .heap
-                    .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
-                let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
-                let _page = bounds.grant.take(size)?;
-                for v in versions {
-                    if rows
-                        .keys
-                        .key(c, &v.row, &types)?
-                        .is_some_and(|k| schema.encode(&k) == wanted)
-                        && self
-                            .reads
-                            .saw((Pid(v.tid.page()), stored.heap.id()), &v.header.writers)?
-                    {
-                        return Ok(Some((heap, v.row)));
+                'read: loop {
+                    (bounds.check)()?;
+                    let mut versions = Vec::new();
+                    stored
+                        .heap
+                        .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                    let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
+                    let _page = bounds.grant.take(size)?;
+                    for v in versions {
+                        if !rows
+                            .keys
+                            .key(c, &v.row, &types)?
+                            .is_some_and(|k| schema.encode(&k) == wanted)
+                        {
+                            continue;
+                        }
+                        match self.reads.saw((pid, stored.heap.id()), &v.header.writers)? {
+                            Some(true) => return Ok(Some((heap, v.row))),
+                            Some(false) => {}
+                            None => continue 'read,
+                        }
                     }
+                    break;
                 }
             }
         }
@@ -867,22 +784,17 @@ impl<R: Runtime> Store<R> {
     ) -> Result<ControlFlow<(StopsEarly, usize)>, Error> {
         let h = self.heap(id)?;
         let mut b = Filling::new(&h.row, rows, grant);
-        for (read, pid) in (1..).zip(pages) {
-            let mut versions = Vec::new();
-            h.heap
-                .scan_pages(&self.pager, std::slice::from_ref(pid), |v| versions.push(v))?;
-            for v in versions {
-                if !self
-                    .reads
-                    .saw((Pid(v.tid.page()), h.heap.id()), &v.header.writers)?
-                {
-                    continue;
-                }
+        for (read, &pid) in (1..).zip(pages) {
+            let flow = self.each_seen(&h.heap, pid, |v| {
                 if let Some((full, _held)) = b.push(&v.row)?
                     && let ControlFlow::Break(early) = each(full)?
                 {
-                    return Ok(ControlFlow::Break((early, read)));
+                    return Ok(ControlFlow::Break(early));
                 }
+                Ok(ControlFlow::Continue(()))
+            })?;
+            if let ControlFlow::Break(early) = flow {
+                return Ok(ControlFlow::Break((early, read)));
             }
         }
         let flow = match b.rest() {
@@ -905,11 +817,7 @@ impl<R: Runtime> Store<R> {
             }
             self.covered(h)?;
         }
-        let saw = |l: &Link, _: &[Value]| {
-            self.reads
-                .saw((Pid(l.tid.page()), heap.id()), &l.header.writers)
-        };
-        let walked = walk(&self.pager, heap.id(), sum, tid, saw)?;
+        let walked = self.walk_seen(heap, sum, tid)?;
         if walked.is_none()
             && let Some((index, entry)) = &at.entry
         {
@@ -932,7 +840,7 @@ impl<R: Runtime> Store<R> {
             .map_err(Error::Serialization)?;
         // Read the version again under its lock: a write that changed it before the lock records
         // its rw-antidependency here.
-        walk(&self.pager, heap.id(), sum, link.tid, saw)?;
+        self.walk_seen(heap, sum, link.tid)?;
         Ok(Some((link.tid, row)))
     }
 
@@ -1085,30 +993,38 @@ impl<R: Runtime> Store<R> {
         let mut held = bounds.grant.arena();
         for (&c, &heap) in rows.heaps.iter().filter(|(c, _)| routes.contains_key(c)) {
             let listing = self.pages(heap)?;
+            let stored = &self.heap(heap)?.heap;
             for &pid in &listing.pages {
-                (bounds.check)()?;
-                let mut versions = Vec::new();
-                self.heap(heap)?
-                    .heap
-                    .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
-                let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
-                let _page = bounds.grant.take(size)?;
-                for v in versions {
-                    if self.reads.saw(
-                        (Pid(v.tid.page()), self.heap(heap)?.heap.id()),
-                        &v.header.writers,
-                    )? && let Some(key) = rows.keys.key(c, &v.row, &types)?
-                    {
+                let on_page = 'read: loop {
+                    (bounds.check)()?;
+                    let mut versions = Vec::new();
+                    stored.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                    let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
+                    let _page = bounds.grant.take(size)?;
+                    let mut on_page = Vec::new();
+                    for v in versions {
+                        match self.reads.saw((pid, stored.id()), &v.header.writers)? {
+                            Some(true) => {}
+                            Some(false) => continue,
+                            None => continue 'read,
+                        }
+                        let Some(key) = rows.keys.key(c, &v.row, &types)? else {
+                            continue;
+                        };
                         let bytes = schema.encode(&key);
                         let span = (
                             lo.as_ref().map(Vec::as_slice),
                             hi.as_ref().map(Vec::as_slice),
                         );
                         if span.contains(bytes.as_slice()) {
-                            held.grow(bytes.len() + size_of::<(u32, Tid)>())?;
-                            found.push((bytes, c, v.tid));
+                            on_page.push((bytes, c, v.tid));
                         }
                     }
+                    break on_page;
+                };
+                for (bytes, c, tid) in on_page {
+                    held.grow(bytes.len() + size_of::<(u32, Tid)>())?;
+                    found.push((bytes, c, tid));
                 }
             }
         }

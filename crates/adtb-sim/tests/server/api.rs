@@ -550,11 +550,11 @@ fn a_write_skew_between_interactive_transactions_does_not_commit_both() {
                 let serialization = Error::Retry {
                     reason: RetryReason::Serialization {
                         txn,
-                        on: String::new(),
+                        on: "shop::notes.Note".to_owned(),
                     },
                 };
                 let reason = format!(
-                    "transaction {} conflicts with a concurrent transaction; retry",
+                    "transaction {} conflicts with a concurrent transaction on `shop::notes.Note`; retry",
                     txn.0
                 );
                 adtb_testkit::refused_as(got, &serialization, &reason);

@@ -17,6 +17,9 @@ pub enum Rot {
     StoredPath(Vec<Step>),
     RetentionWindow(btree::Error),
     Markers(btree::Error),
+    /// A migration the record of the retention window holds names a writer that is not reserved
+    /// and that no slot of its page names.
+    MigrationWriter(u64),
 }
 
 impl From<Rot> for Error {
@@ -46,6 +49,11 @@ impl fmt::Display for Rot {
             Rot::RetentionWindow(e) => {
                 write!(f, "the record of the retention window is damaged: {e:?}")
             }
+            Rot::MigrationWriter(x) => write!(
+                f,
+                "a migration the retention window records names transaction {x}, which is not \
+                 reserved"
+            ),
         }
     }
 }

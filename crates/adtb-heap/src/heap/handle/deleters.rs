@@ -41,7 +41,12 @@ impl Heap {
         )?;
         let committed = write.commit_in_place();
         let old = self.superseded(target.tid, Change::Delete);
-        Undoable::committed(committed, old, Some(Undo::Restore(target.tid, xid)), None)
+        Undoable::committed(
+            (committed, self.id()),
+            old,
+            Some(Undo::Restore(target.tid, xid)),
+            None,
+        )
     }
 
     /// Take back `undo`, a change the caller's running transaction made to a version of this
@@ -76,7 +81,7 @@ impl Heap {
                 self.supersede(stage, pager, target, Writers::cleared, None, Flags::NONE)?;
             }
         }
-        write.commit_in_place()?;
+        write.commit_in_place().map_err(|f| f.of_heap(self.id()))?;
         Ok(())
     }
 

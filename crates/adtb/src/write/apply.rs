@@ -4,7 +4,7 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_stored};
-use crate::heap::{self, Heap, Slots, Superseded, WriteTarget};
+use crate::heap::{self, Heap, Refused, Slots, Superseded, WriteTarget};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
@@ -89,26 +89,32 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
             };
             let header = version.header;
-            let checked = reader.check_write(xid, &header.writers);
-            match checked.map_err(|e| version.refuse(&self.db.pager, e))? {
+            let checked = match reader.check_write(xid, &header.writers, heap.id().0) {
+                Ok(checked) => checked,
+                Err(e) => match version.refuse(&self.db.pager, e) {
+                    Refused::Page(e) => return Err(e.into()),
+                    Refused::Gone => continue,
+                },
+            };
+            match checked {
                 Write::Proceed => return Ok((c, WriteTarget::checked(tid, header))),
-                Write::Wait(x) => self.wait(xid, x)?,
+                Write::Wait(x) => self.wait(xid, x, Some(heap.id().0))?,
                 Write::Fail(f) => return Err(f.into()),
             }
         }
     }
 
-    /// Wait, as `xid`, for transaction `on` to end, or fail with `Blocked` when the statement
-    /// suspends instead. Fail with `Closed` once the engine closes, else with what stops the
-    /// statement.
-    fn wait(&self, xid: Xid, on: Xid) -> Result<(), Error> {
+    /// Wait, as `xid` writing a version of `heap`, for transaction `on` to end, or fail with
+    /// `Blocked` when the statement suspends instead. Fail with `Closed` once the engine closes,
+    /// else with what stops the statement.
+    fn wait(&self, xid: Xid, on: Xid, heap: Option<u32>) -> Result<(), Error> {
         if let Some(rerun) = self.stop.suspend {
-            return Err(Error::Blocked { on, rerun });
+            return Err(Error::Blocked { on, heap, rerun });
         }
         self.db
             .session
             .waits()
-            .wait_pausing(xid, on, || -> Result<(), Error> {
+            .wait_pausing(xid, on, heap, || -> Result<(), Error> {
                 self.db.rebuild_stopped().map_err(|_| Error::Closed)?;
                 self.stopped()?;
                 self.db.pause_a_poll();
@@ -125,6 +131,7 @@ impl<R: Runtime> Stmt<'_, R> {
             if let Some(rerun) = self.stop.suspend {
                 return Err(Error::Blocked {
                     on: crate::mvcc::Gate::Offline.xid(),
+                    heap: None,
                     rerun,
                 });
             }
@@ -183,9 +190,9 @@ impl<R: Runtime> Stmt<'_, R> {
         let mut written = Vec::new();
         for ((rel, key), (old, news)) in &ops {
             let r = self.rel(*rel);
-            let Some(&(ctor, _)) = old.as_ref().or(news.first()) else {
+            if old.is_none() && news.is_empty() {
                 continue;
-            };
+            }
             let target = |(c, row): &(u32, Val)| self.writable(*rel, key, *c, row);
             let mut write = || -> Result<(), Error> {
                 match (old, news.first()) {
@@ -251,9 +258,9 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 Ok(())
             };
-            write().map_err(|e| e.on(*rel, ctor))?;
+            write()?;
             for (d, n) in news.iter().skip(1) {
-                written.push(self.insert(*rel, *d, n, xid).map_err(|e| e.on(*rel, *d))?);
+                written.push(self.insert(*rel, *d, n, xid)?);
             }
         }
         for ((r, _), rows) in plus {
@@ -269,8 +276,7 @@ impl<R: Runtime> Stmt<'_, R> {
         }
         let mut groups: BTreeMap<(RelId, IndexId, Vec<u8>), BTreeMap<Val, Val>> = BTreeMap::new();
         for w in &written {
-            self.entries(w, viol, &mut groups)
-                .map_err(|e| e.on(w.rel, w.ctor))?;
+            self.entries(w, viol, &mut groups)?;
         }
         for ((rel, ix, _), group) in &groups {
             let found = self.rel(*rel).indexes.iter().find(|(i, _)| i == ix);
@@ -329,6 +335,7 @@ impl<R: Runtime> Stmt<'_, R> {
         let xid = self.tx.writer()?;
         let reader = self.reader_as(xid);
         let pager = &self.db.pager;
+        let own = self.heap(r.ctors[w.ctor as usize].heap).id().0;
         for (id, ix) in &r.indexes {
             let types = self.store.key_types(*id)?;
             let Some(key) = ix.keys.key(w.ctor, &w.stored, &types)? else {
@@ -370,22 +377,16 @@ impl<R: Runtime> Stmt<'_, R> {
                         continue 'probe;
                     }
                     for link in run {
-                        let probe = match reader.probe_unique(xid, &link.header.writers) {
+                        let probe = match reader.probe_unique(xid, &link.header.writers, own) {
                             Ok(probe) => probe,
                             Err(e) => {
                                 let at = Pid(link.tid.page());
-                                return Err(Heap::refuse_unreserved(
-                                    pager,
-                                    (
-                                        at,
-                                        Slots::Versions(
-                                            self.db.bindings.heaps()[&heap].heap.id().0,
-                                        ),
-                                    ),
-                                    latch,
-                                    e,
-                                )
-                                .into());
+                                let slots =
+                                    Slots::Versions(self.db.bindings.heaps()[&heap].heap.id().0);
+                                match Heap::refuse_unreserved(pager, (at, slots), latch, e) {
+                                    Refused::Page(e) => return Err(e.into()),
+                                    Refused::Gone => continue 'probe,
+                                }
                             }
                         };
                         match probe {
@@ -398,7 +399,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 if let Some(x) = wait {
                     drop(latch);
-                    self.wait(xid, x)?;
+                    self.wait(xid, x, Some(own))?;
                     continue;
                 }
                 if conflicts.is_empty() {
@@ -433,8 +434,8 @@ impl<R: Runtime> Stmt<'_, R> {
             self.db.session.ser.lock(&self.db.rt).insert_entry(
                 self.tx.sid,
                 stored.index.tree().root(),
-                &encoded,
-                ctor_id,
+                (&encoded, ctor_id),
+                own,
             )?;
             drop(latch);
         }

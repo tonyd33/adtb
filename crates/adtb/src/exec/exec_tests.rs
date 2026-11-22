@@ -13,7 +13,7 @@ use crate::exec::{
 };
 use crate::heap::{FieldType, HeapNo};
 use crate::key::{CtorId, Tid};
-use crate::mvcc::{ScanId, Scope, SerializationFailure, Writers};
+use crate::mvcc::{Conflict, ScanId, Scope, Writers};
 use crate::plan::{Error as PlanError, HeapId, IndexId, Options as PlanOptions, Rewrites, plan};
 use crate::runtime::{IoError, OpKind};
 use crate::storage::Pid;
@@ -529,12 +529,12 @@ impl Counted {
 }
 
 impl Reads for Counted {
-    fn saw(&self, at: (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
+    fn saw(&self, at: (Pid, HeapNo), writers: &Writers) -> Result<Option<bool>, Error> {
         self.seen.fetch_add(1, Ordering::Relaxed);
         self.inner.saw(at, writers)
     }
 
-    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, Conflict> {
         self.inner.scanning(heap)
     }
 
@@ -548,11 +548,11 @@ impl Reads for Counted {
         lo: Bound<Vec<u8>>,
         hi: Bound<Vec<u8>>,
         ctors: BTreeSet<CtorId>,
-    ) -> Result<(), SerializationFailure> {
+    ) -> Result<(), Conflict> {
         self.inner.probed(index, lo, hi, ctors)
     }
 
-    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
+    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), Conflict> {
         self.inner.fetched(heap, tid)
     }
 

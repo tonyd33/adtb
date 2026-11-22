@@ -5,3 +5,13 @@ fn early(ser: &mut Ser, id: SerialId, tid: Tid) {
     let check = Ser::write_at;
     check(ser, id, 0, tid).unwrap();
 }
+
+impl Refused {
+    fn of_heap(self, heap: HeapNo) -> Error {
+        Error::Changed(Conflict::changed(heap.0, Vec::new()))
+    }
+}
+
+fn forged(heap: u32) -> Conflict {
+    Conflict::changed(heap, Vec::new())
+}

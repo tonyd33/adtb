@@ -34,7 +34,7 @@ in b run
 
 commit a
 
-commit b retry Serialization { txn: $B, on: "" }
+commit b retry Serialization { txn: $B, on: "app::items.Item" }
 
 query
   from i in items select i.value

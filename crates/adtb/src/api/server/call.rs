@@ -333,7 +333,7 @@ impl<R: Runtime> Call<R> {
                     self.phase = Phase::Output(self.read(e, id, safe)?);
                     return Ok(Then::Next);
                 }
-                Deferral::Wait { tx: waiting, on } => match e.db.watch(None, on, waker) {
+                Deferral::Wait { tx: waiting, on } => match e.db.watch(None, (on, None), waker) {
                     Ok(Watch::Ended) => tx = waiting,
                     Ok(Watch::Pending) => {
                         self.phase = Phase::Deferring(Deferring {
@@ -486,7 +486,7 @@ impl<R: Runtime> Call<R> {
             let p = self.work.prepared();
             match e.resumable(id, &tx, p, &mut Local::default(), bounds) {
                 Ok(rows) => return self.commit(e, w, id, tx, rows),
-                Err(Halted::Blocked { on, rerun }) => {
+                Err(Halted::Blocked { on, heap, rerun }) => {
                     w.rerun = Some(rerun);
                     let until = self.opts.call.limit.map(|l| (l, rerun.limit_at(l)));
                     if let Some((after, at)) = until
@@ -498,7 +498,7 @@ impl<R: Runtime> Call<R> {
                             }));
                         return Err(either(self.abandon(e, id, tx, || e.write_error(id, limit))));
                     }
-                    match e.db.watch(tx.xid(), on, waker) {
+                    match e.db.watch(tx.xid(), (on, heap), waker) {
                         Ok(Watch::Ended) => w.tx = Some((id, tx)),
                         Ok(Watch::Pending) => {
                             w.watched = Some((on, waker.clone()));
@@ -561,7 +561,7 @@ impl<R: Runtime> Call<R> {
                 Err(Halted::Failed(f)) => {
                     return Err(either(self.abandon(e, id, tx, || f.error)));
                 }
-                Err(Halted::Blocked { on, rerun }) => {
+                Err(Halted::Blocked { on, rerun, .. }) => {
                     #[expect(
                         clippy::disallowed_methods,
                         reason = "permanent: a read blocked on a wait ends with no failure and reruns"
@@ -579,7 +579,7 @@ impl<R: Runtime> Call<R> {
                     write::Error::from(exec::Error::StatementLimit(Exceeded::Time { after }));
                 return Err(e.write_error(id, limit));
             }
-            match e.db.watch(None, on, waker) {
+            match e.db.watch(None, (on, None), waker) {
                 Ok(Watch::Ended) => {}
                 Ok(Watch::Pending) => {
                     c.watched = Some((on, waker.clone()));

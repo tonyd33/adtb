@@ -175,19 +175,14 @@ fn int(v: &Value) -> i64 {
     }
 }
 
-/// The `on` of a serialization failure that names no constructor relation.
-const UNNAMED: &str = "";
+/// The `on` a serialization failure over `elems` reports, at a read, an append or a commit: the
+/// one constructor relation every conflict of the workload is on.
+pub const ELEMS: &[&str] = &["elle::elems.Elem"];
 
-/// The `on` a serialization failure at a read or a commit reports.
-pub const READ: &[&str] = &[UNNAMED];
-
-/// The `on` a serialization failure at an append reports: the constructor relation it writes, or
-/// none when the transaction fails before or after its write.
-pub const APPEND: &[&str] = &["elle::elems.Elem", UNNAMED];
-
-/// The `on` a serialization failure at a write of a cell its setup inserted reports: the
-/// constructor relation it writes, or none when the transaction fails before or after its write.
-pub const CELL_WRITE: &[&str] = &["elle::cells.Even", UNNAMED];
+/// The `on` a serialization failure over `cells` reports, at a read, a write or a commit: the
+/// constructor relation of the version or entry its conflict is on, a retag's successor in
+/// `Odd`.
+pub const CELLS: &[&str] = &["elle::cells.Even", "elle::cells.Odd"];
 
 /// Returns `Aborted` for an error that aborts workload transaction `txn`: its serialization
 /// failure on one of `on`, or a violation of `unique (k, pos)` by two appends at one position.
@@ -222,17 +217,17 @@ impl<'d> adtb_testkit::isolation::Database for Client<'d> {
 
     fn append(&mut self, txn: &mut Txn<'d>, key: i64, elem: i64) -> Result<(), Aborted> {
         let id = txn.id();
-        self.0.append(txn, key, elem).map_err(aborted(id, APPEND))
+        self.0.append(txn, key, elem).map_err(aborted(id, ELEMS))
     }
 
     fn read(&mut self, txn: &mut Txn<'d>, key: i64) -> Result<Vec<i64>, Aborted> {
         let id = txn.id();
-        self.0.read(txn, key).map_err(aborted(id, READ))
+        self.0.read(txn, key).map_err(aborted(id, ELEMS))
     }
 
     fn commit(&mut self, txn: Txn<'d>) -> Result<(), Aborted> {
         let id = txn.id();
-        txn.commit(None).map(drop).map_err(aborted(id, READ))
+        txn.commit(None).map(drop).map_err(aborted(id, ELEMS))
     }
 
     fn abort(&mut self, txn: Txn<'d>) {

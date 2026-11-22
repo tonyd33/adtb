@@ -99,10 +99,11 @@ fn versions(
                     .saw(at, &v.header.writers)
                     .expect("a visibility check"),
             ) {
-                (true, true) => panic!("both snapshots see {:?}", v.row),
-                (true, false) => Seen::Later,
-                (false, true) => Seen::Running,
-                (false, false) => Seen::Neither,
+                (Some(true), Some(true)) => panic!("both snapshots see {:?}", v.row),
+                (Some(true), Some(false)) => Seen::Later,
+                (Some(false), Some(true)) => Seen::Running,
+                (Some(false), Some(false)) => Seen::Neither,
+                gone => panic!("a version this test reads keeps its writer: {gone:?}"),
             };
             *out.entry((format!("{:?}", v.row), seen)).or_default() += 1;
         })

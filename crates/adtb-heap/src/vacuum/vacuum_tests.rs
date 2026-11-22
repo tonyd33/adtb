@@ -875,7 +875,9 @@ fn a_value_no_version_points_at_waits_for_its_writer_then_goes() {
         let large = db.heaps[EMAIL].large();
         let begun = db.txns.begin(&db.pager).unwrap();
         let x = begun.xid();
-        large.write(&db.pager, x, &vec![5; 30_000]).unwrap();
+        large
+            .write(&db.pager, (x, db.heaps[EMAIL].id()), &vec![5; 30_000])
+            .unwrap();
         let report = db.vacuum(usize::MAX);
         assert_eq!(0, report.chunks, "{report:?}");
         assert!(!large.touched(&db.pager).unwrap().is_empty());

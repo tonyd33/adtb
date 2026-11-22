@@ -189,12 +189,12 @@ impl Side {
         }
     }
 
-    /// Returns the rows of `r`, `None` when it failed with a serialization failure on one of `on`.
-    fn failed(&mut self, r: Reply, on: &'static [&'static str]) -> Option<Vec<i64>> {
+    /// Returns the rows of `r`, `None` when it failed with a serialization failure over `cells`.
+    fn failed(&mut self, r: Reply) -> Option<Vec<i64>> {
         match r {
             Ok(v) => Some(v),
             Err(f) => {
-                elle::aborted(self.worker.id(), on)(f);
+                elle::aborted(self.worker.id(), elle::CELLS)(f);
                 self.aborted = true;
                 None
             }
@@ -211,7 +211,7 @@ impl Side {
 
     /// Record the reply of a read of row `key` by `read`, the other side writing `elem` to it.
     fn was_read(&mut self, reply: Reply, read: Read, key: i64, elem: i64) {
-        if let Some(v) = self.failed(reply, elle::READ) {
+        if let Some(v) = self.failed(reply) {
             let list = list(&read.values(key, v), self.write, elem);
             self.ops.push(iso::Op::Read { key, list });
         }
@@ -219,7 +219,7 @@ impl Side {
 
     /// Record the reply of a write of row `key`.
     fn wrote(&mut self, reply: Reply, key: i64) {
-        if self.failed(reply, elle::CELL_WRITE).is_some() {
+        if self.failed(reply).is_some() {
             let elem = self.id as i64;
             self.ops.push(iso::Op::Append { key, elem });
         }
@@ -235,7 +235,7 @@ impl Side {
     fn end(mut self, rt: &SimRuntime) -> iso::Txn {
         if !self.aborted {
             let reply = self.worker.call(rt, Req::Commit);
-            self.failed(reply, elle::READ);
+            self.failed(reply);
         }
         rt.join(self.worker.thread());
         let outcome = if self.aborted {

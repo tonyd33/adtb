@@ -62,4 +62,4 @@ in w2 run
 
 commit r2
 
-commit w2 retry Serialization { txn: $W2, on: "" }
+commit w2 retry Serialization { txn: $W2, on: "app::marks.Mark" }

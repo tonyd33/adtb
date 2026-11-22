@@ -36,7 +36,7 @@ in t3 query
 100
 210
 
-in t2 retry Serialization { txn: $T2, on: "" }
+in t2 retry Serialization { txn: $T2, on: "app::items.Item" }
   from i in items select i.value
 
 rollback t2

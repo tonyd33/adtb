@@ -377,6 +377,8 @@ impl Heap {
     /// chunk on page `pid`, whose slots hold `slots`: the damage of a status page as it is, and
     /// for a writer not reserved, page `pid` refused as out of frame while, under its exclusive
     /// latch, a slot of it names that writer. Returns [`Refused::Gone`] when no slot does.
+    /// No write of the engine names a writer that is not reserved, so a caller reading the page
+    /// again meets `Gone` at most once for each slot naming one that the page held.
     ///
     /// Precondition: `held` is every latch or lock the caller holds.
     pub fn refuse_unreserved<R: Runtime>(
@@ -581,7 +583,7 @@ impl Heap {
             let Stored::Inline(bytes) = &stored[j] else {
                 unreachable!()
             };
-            stored[j] = Stored::Out(self.large.write(pager, xid, bytes)?);
+            stored[j] = Stored::Out(self.large.write(pager, (xid, self.id()), bytes)?);
         }
         let held = stored
             .iter()
@@ -810,11 +812,11 @@ impl Heap {
             }
         });
         let Some((mut page, flags, range)) = held else {
-            target.check(None)?;
+            target.check(self.id(), None)?;
             panic!("{at:?} holds no version of heap {}", self.id);
         };
         let mut header = Header::read(&page.view()[range.clone()]);
-        target.check(Some(header))?;
+        target.check(self.id(), Some(header))?;
         header.writers = writers(header.writers);
         header.next = next;
         header.write(page.version_mut(range));
@@ -1073,17 +1075,22 @@ impl Heap {
             match self.try_put(write.stage(), pager, n, &version, Flags::NONE, pre)? {
                 Put::Done(t, c) => {
                     let retain = [&held[..], &c.gained].concat();
-                    write.commit(Took::Found(self, n), &retain, &c.dropped)?;
+                    write
+                        .commit(Took::Found(self, n), &retain, &c.dropped)
+                        .map_err(|e| e.of_heap(self.id()))?;
                     return Ok(Some(t));
                 }
                 Put::Stale => continue,
                 Put::Full => {}
             }
             drop(write);
-            if self.prune_full(pager, n, judge.as_deref_mut())? {
+            if self
+                .prune_full(pager, n, judge.as_deref_mut())
+                .map_err(|e| e.of_heap(self.id()))?
+            {
                 continue;
             }
-            self.refused(pager, n)?;
+            self.refused(pager, n).map_err(|e| e.of_heap(self.id()))?;
         }
     }
 
@@ -1121,7 +1128,12 @@ impl Heap {
         let (body, held) = self.body(pager, xid, row, &[])?;
         let ready = (version_bytes(Header::new(xid), &body), held);
         let (tids, committed) = self.put_run(pager, xid, &ready, &[], judge)?;
-        Undoable::committed(committed, tids[0], None, Some(Undo::Kill(tids[0], xid)))
+        Undoable::committed(
+            (committed, self.id()),
+            tids[0],
+            None,
+            Some(Undo::Kill(tids[0], xid)),
+        )
     }
 
     /// Prune `pid` by `judge`, if there is one and the page is in the newest format. Returns
@@ -1176,10 +1188,10 @@ impl Heap {
         let (format, old_row, pointers) = loop {
             let raw = self.raw(pager, at)?;
             let Some((format, _, old)) = raw else {
-                target.check(None)?;
+                target.check(self.id(), None)?;
                 panic!("{at:?} holds no version of heap {}", self.id);
             };
-            target.check(Some(Header::read(&old)))?;
+            target.check(self.id(), Some(Header::read(&old)))?;
             match self.decode(pager, format, &old)? {
                 Ok((row, pointers)) => break (format, row, pointers),
                 Err(bad) => self.refuse_bad(pager, Pid(at.page()), (), bad)?,
@@ -1213,7 +1225,7 @@ impl Heap {
                     };
                     let change = Change::Update { heap_only: true };
                     return Undoable::committed(
-                        committed,
+                        (committed, self.id()),
                         (updated, self.superseded(at, change)),
                         Some(Undo::Restore(at, xid)),
                         Some(Undo::Kill(t, xid)),
@@ -1223,7 +1235,10 @@ impl Heap {
                 Put::Full => tries += 1,
             }
             drop(write);
-            if !self.prune_full(pager, o, judge.as_deref_mut())? {
+            if !self
+                .prune_full(pager, o, judge.as_deref_mut())
+                .map_err(|e| e.of_heap(self.id()))?
+            {
                 break;
             }
         }
@@ -1250,7 +1265,7 @@ impl Heap {
                     };
                     let change = Change::Update { heap_only: false };
                     return Undoable::committed(
-                        committed,
+                        (committed, self.id()),
                         (updated, self.superseded(at, change)),
                         Some(Undo::Restore(at, xid)),
                         Some(Undo::Kill(t, xid)),
@@ -1260,10 +1275,14 @@ impl Heap {
                 Put::Full => {}
             }
             drop(write);
-            if n != o && self.prune_full(pager, n, judge.as_deref_mut())? {
+            if n != o
+                && self
+                    .prune_full(pager, n, judge.as_deref_mut())
+                    .map_err(|e| e.of_heap(self.id()))?
+            {
                 continue;
             }
-            self.refused(pager, n)?;
+            self.refused(pager, n).map_err(|e| e.of_heap(self.id()))?;
         }
     }
 
@@ -1314,10 +1333,10 @@ impl Heap {
         let pointers = loop {
             let raw = self.raw(pager, at)?;
             let Some((format, _, old)) = raw else {
-                target.check(None)?;
+                target.check(self.id(), None)?;
                 panic!("{at:?} holds no version of heap {}", self.id);
             };
-            target.check(Some(Header::read(&old)))?;
+            target.check(self.id(), Some(Header::read(&old)))?;
             match self.pointers(format, &old) {
                 Ok(pointers) => break pointers,
                 Err(_) => self.refuse_row(pager, Pid(at.page()), ())?,
@@ -1344,7 +1363,7 @@ impl Heap {
                     let retain = [&held[..], &c.gained].concat();
                     let committed = write.commit(Took::Found(to, n), &retain, &c.dropped);
                     return Undoable::committed(
-                        committed,
+                        (committed, self.id()),
                         (t, self.superseded(at, Change::Retag)),
                         Some(Undo::Restore(at, xid)),
                         Some(Undo::Kill(t, xid)),
@@ -1354,10 +1373,13 @@ impl Heap {
                 Put::Full => {}
             }
             drop(write);
-            if to.prune_full(pager, n, judge.as_deref_mut())? {
+            if to
+                .prune_full(pager, n, judge.as_deref_mut())
+                .map_err(|e| e.of_heap(self.id()))?
+            {
                 continue;
             }
-            to.refused(pager, n)?;
+            to.refused(pager, n).map_err(|e| e.of_heap(self.id()))?;
         }
     }
 

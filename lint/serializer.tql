@@ -1,5 +1,7 @@
 -- serializer_writes: a use of `write_at`, which checks a write against the SIREAD locks on its
 -- version, outside `Superseded::check`, which a heap write returns only after its page change.
+-- changed_conflicts: a use of `Conflict::changed` outside `Refused::of_heap` and
+-- `WriteTarget::check`, the heap's latch checks, each naming the heap it writes.
 
 uses = do {
   n <- descendants_of_kind :field_identifier `alt` descendants_of_kind :identifier;
@@ -26,9 +28,41 @@ checked = do {
   return n;
 };
 
+changes = do {
+  n <- descendants_of_kind :scoped_identifier;
+  guard $ text n == "Conflict::changed";
+  return n;
+};
+
+gone_checks = do {
+  i <- descendants_of_kind :impl_item;
+  t <- pure i | #type;
+  guard $ text t == "Refused";
+  f <- pure i | descendants_of_kind :function_item;
+  name <- pure f | #name;
+  guard $ text name == "of_heap";
+  n <- pure f | descendants_of_kind :scoped_identifier;
+  guard $ text n == "Conflict::changed";
+  return n;
+};
+
+target_checks = do {
+  i <- descendants_of_kind :impl_item;
+  t <- pure i | #type;
+  guard $ text t == "WriteTarget";
+  f <- pure i | descendants_of_kind :function_item;
+  name <- pure f | #name;
+  guard $ text name == "check";
+  n <- pure f | descendants_of_kind :scoped_identifier;
+  guard $ text n == "Conflict::changed";
+  return n;
+};
+
 main = do {
   a <- collect uses | arr length;
   d <- collect definitions | arr length;
   c <- collect checked | arr length;
-  return (("serializer_writes", (a - d - c)));
+  u <- collect changes | arr length;
+  l <- collect (gone_checks `alt` target_checks) | arr length;
+  return (("serializer_writes", (a - d - c)), ("changed_conflicts", (u - l)));
 };

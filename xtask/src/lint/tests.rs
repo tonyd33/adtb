@@ -248,7 +248,13 @@ fn capability_sites(name: &str) -> Vec<String> {
             "capability-names.tql",
             &[("capability_renames", Kind::Zero)],
         ),
-        rule("serializer.tql", &[("serializer_writes", Kind::Zero)]),
+        rule(
+            "serializer.tql",
+            &[
+                ("serializer_writes", Kind::Zero),
+                ("changed_conflicts", Kind::Zero),
+            ],
+        ),
     ];
     let files = fixture_paths(&[name]);
     let mut tally = Tally::default();
@@ -286,7 +292,10 @@ fn every_renamed_aliased_or_macro_made_capability_and_every_serializer_write_is_
                 " stops_early_judgements: 1",
             ],
         ),
-        ("cap_serializer.rs.txt", vec![" serializer_writes: 2 sites"]),
+        (
+            "cap_serializer.rs.txt",
+            vec![" serializer_writes: 2 sites", " changed_conflicts: 1 sites"],
+        ),
     ] {
         let mut expected: Vec<String> = expected
             .into_iter()
