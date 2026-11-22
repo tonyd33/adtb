@@ -14,8 +14,10 @@ type Slot<'a> = Option<&'a Datum>;
 /// Write `batches` to `out` as one Arrow IPC stream of `file`'s columns.
 ///
 /// Preconditions:
-/// - Every batch's schema is `file`'s.
 /// - Each column of each batch holds under 2^31 elements and under 2^31 value bytes.
+///
+/// Errors:
+/// - `InvalidInput` when a batch's schema is not `file`'s, the stream then cut before it.
 pub fn write<'a>(
     file: &FileSchema,
     batches: impl IntoIterator<Item = &'a Batch>,
@@ -41,11 +43,12 @@ pub fn write<'a>(
         message(out, 2, d, &b.data)?;
     }
     for batch in batches {
-        assert_eq!(
-            batch.schema(),
-            file.schema(),
-            "a stream's batches have its schema"
-        );
+        if batch.schema() != file.schema() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a batch's schema is not the stream's",
+            ));
+        }
         let mut b = Body::default();
         for (i, f) in file.fields.iter().enumerate() {
             let ds: Vec<Datum> = (0..batch.len()).map(|r| batch.datum(i, r)).collect();

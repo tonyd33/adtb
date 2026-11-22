@@ -24,6 +24,7 @@ mod names;
 mod order;
 mod pat;
 mod prelude;
+pub(crate) mod prim_ty;
 mod query;
 mod record;
 pub(crate) mod rel;
@@ -364,6 +365,22 @@ impl<'a> Checker<'a> {
         Out::of(tm, self.terms.ty(tm).clone())
     }
 
+    /// Returns `p` over `args` at the type the primitive's signature gives, `target` naming the
+    /// result where its operands do not.
+    fn prim(
+        &mut self,
+        p: crate::kernel::Prim,
+        args: Vec<Tm>,
+        target: Option<Ty>,
+        span: Span,
+    ) -> R<Out> {
+        let bounds = prim_ty::Bounds::Declared(&self.tparams);
+        let ty = prim_ty::prim_ty(self.schema, &self.terms, bounds, p, &args, target.as_ref())
+            .map_err(|m| diag(span, m))?;
+        let tm = self.b().prim(p, args, ty);
+        Ok(self.out(tm))
+    }
+
     fn constant(&mut self, c: crate::kernel::Const, ty: Ty) -> Out {
         let tm = self.b().constant(c, ty);
         self.out(tm)
@@ -536,7 +553,14 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
         diags = crate::analysis::schema_diags(schema, &program);
     }
     if diags.is_empty() && !poisoned {
-        crate::kernel::assert_valid(schema, &program.terms, &program.body_terms());
+        for (root, t, free) in program.bodies() {
+            crate::kernel::assert_valid_bounded(
+                schema,
+                &program.terms,
+                &[(t, free)],
+                root.bounds(schema),
+            );
+        }
         Ok(program)
     } else {
         Err(diags)

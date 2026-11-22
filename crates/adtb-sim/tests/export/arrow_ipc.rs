@@ -514,7 +514,9 @@ fn elements(d: &Datum) -> usize {
 
 fn engine_stream(file: &FileSchema, rows: &[Vec<Datum>]) -> Vec<u8> {
     let mut b = BatchBuilder::new(file.schema().clone());
-    rows.iter().for_each(|r| b.push_datums(r));
+    for r in rows {
+        b.push_datums(r).expect("a test row fits a batch");
+    }
     let mut bytes = Vec::new();
     ipc::write(file, [&b.finish()], &mut bytes).unwrap();
     bytes

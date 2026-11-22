@@ -21,7 +21,8 @@ fn val(schema: &Schema, r: RelId, c: u32, stored: &[Value]) -> Val {
         .iter()
         .zip(stored)
         .map(|((_, t), v)| exec::from_stored(&exec::conv(schema, t), v))
-        .collect();
+        .collect::<Result<_, _>>()
+        .expect("a stored row converts");
     Val::ctor(c, fields)
 }
 

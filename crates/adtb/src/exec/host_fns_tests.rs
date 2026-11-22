@@ -35,7 +35,8 @@ fn texts(b: &Batch, f: impl Fn(&str) -> String) -> Batch {
         let Stored::Text(t) = b.value(0, i) else {
             panic!("a text argument");
         };
-        out.push_row(&[Stored::Text(f(&t))]);
+        out.push_row(&[Stored::Text(f(&t))])
+            .expect("a test row fits a batch");
     }
     out.finish()
 }

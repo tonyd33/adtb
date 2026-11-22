@@ -196,7 +196,8 @@ fn load(db: &Database<SimRuntime>, t: Target) -> Result<(), Error> {
         _ => Value::Text("s".into()),
     };
     let mut b = BatchBuilder::new(schema.batch_schema());
-    b.push_row(&[Value::I64(9), own]);
+    b.push_row(&[Value::I64(9), own])
+        .expect("a test row fits a batch");
     a.push(&RecordBatch::new(schema, b.finish()).unwrap())?;
     load.commit().map(drop)
 }

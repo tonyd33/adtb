@@ -11,7 +11,7 @@ use adtb_lang::schema::{Committed, Generator, OnDelete, Schema, Stage};
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
-use crate::exec::{self, Val, from_stored, to_key};
+use crate::exec::{self, Val, from_stored_row, to_key};
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
@@ -933,7 +933,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     };
                     let found = ix.keys.key(d, &stored, &types)?;
                     if found.is_some_and(|k| schema.encode(&k) == want) {
-                        let o = self.row(rel, d, &stored);
+                        let o = self.row(rel, d, &stored)?;
                         out.insert(self.key_of(rel, &o)?, o);
                     }
                 }
@@ -958,16 +958,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     }
 
     /// Returns stored row `stored` of constructor `c` of `rel`.
-    pub fn row(&self, rel: RelId, c: u32, stored: &[crate::key::Value]) -> Val {
+    pub fn row(
+        &self,
+        rel: RelId,
+        c: u32,
+        stored: &[crate::key::Value],
+    ) -> Result<Val, exec::Error> {
         let ctor = &self.rel(rel).ctors[c as usize];
-        Val::ctor(
-            c,
-            ctor.convs
-                .iter()
-                .zip(stored)
-                .map(|(conv, v)| from_stored(conv, v))
-                .collect(),
-        )
+        Ok(Val::ctor(c, from_stored_row(&ctor.convs, stored)?))
     }
 
     /// Returns the statement's grant, else an unlimited one.
@@ -1015,7 +1013,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             let morsel = self.db.options.morsel_rows;
             self.store.scan(ctor.heap, listing, morsel, &grant, |b| {
                 for i in 0..b.len() {
-                    out.push((c, self.row(rel, c, &b.row(i))));
+                    out.push((c, self.row(rel, c, &b.row(i))?));
                 }
                 Ok(ControlFlow::Continue(()))
             })?;
@@ -1117,7 +1115,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         else {
                             continue;
                         };
-                        let v = self.row(rel, d, &stored);
+                        let v = self.row(rel, d, &stored)?;
                         if Self::names(f, &v)?.as_ref() == Some(k) {
                             out.insert(self.key_of(rel, &v)?, (d, v));
                         }

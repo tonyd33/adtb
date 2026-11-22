@@ -14,7 +14,7 @@ use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::Index;
-use crate::exec::{self, conv, from_stored};
+use crate::exec::{self, conv, from_stored_row};
 use crate::heap::FieldType;
 use crate::key::{CtorId, Value};
 use crate::mvcc::{Scope, Transactions};
@@ -794,13 +794,12 @@ fn shown_key(schema: &Schema, types: &[Ty], key: &[Value]) -> Result<String, Err
             .into(),
         ));
     }
-    let parts = types
+    let convs: Vec<_> = types.iter().map(|t| conv(schema, t)).collect();
+    let parts = from_stored_row(&convs, key)
+        .map_err(broken)?
         .iter()
-        .zip(key)
-        .map(|(t, v)| {
-            textual::print(&from_stored(&conv(schema, t), v), &Form::of(schema, t))
-                .map_err(|e| broken(e.into()))
-        })
+        .zip(types)
+        .map(|(v, t)| textual::print(v, &Form::of(schema, t)).map_err(|e| broken(e.into())))
         .collect::<Result<Vec<String>, Error>>()?;
     Ok(match parts.as_slice() {
         [one] => one.clone(),

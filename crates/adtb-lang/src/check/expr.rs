@@ -247,9 +247,7 @@ impl Checker<'_> {
                 ExprKind::Lit(l) => (true, l),
                 _ => {
                     let inner = self.literal(x, expected)?;
-                    let ty = inner.ty.clone();
-                    let tm = self.b().prim(Prim::Neg, vec![inner.tm], ty);
-                    return Ok(self.out(tm));
+                    return self.prim(Prim::Neg, vec![inner.tm], None, e.span);
                 }
             },
             _ => unreachable!("literal() is called on literals"),
@@ -535,8 +533,7 @@ impl Checker<'_> {
                         format!("`-` does not apply to {}", self.show(&o.ty)),
                     ));
                 }
-                let tm = self.b().prim(Prim::Neg, vec![o.tm], o.ty);
-                Ok(self.out(tm))
+                self.prim(Prim::Neg, vec![o.tm], None, e.span)
             }
             UnOp::Not => {
                 let b = self.bool_ty();
@@ -730,18 +727,14 @@ impl Checker<'_> {
                     BinOp::Gt => Prim::Gt,
                     _ => Prim::Ge,
                 };
-                let bt = self.bool_ty();
-                let tm = self.b().prim(prim, vec![x.tm, y.tm], bt);
-                Ok(self.out(tm))
+                self.prim(prim, vec![x.tm, y.tm], None, span)
             }
             BinOp::Concat => {
                 let (x, y) = self.operands(a, b, expected)?;
                 match (&x.ty, &y.ty) {
                     (Ty::Base(Base::Text), Ty::Base(Base::Text))
                     | (Ty::Base(Base::Bytes), Ty::Base(Base::Bytes)) => {
-                        let ty = x.ty.clone();
-                        let tm = self.b().prim(Prim::Concat, vec![x.tm, y.tm], ty);
-                        Ok(self.out(tm))
+                        self.prim(Prim::Concat, vec![x.tm, y.tm], None, span)
                     }
                     _ => Err(diag(
                         span,
@@ -755,7 +748,6 @@ impl Checker<'_> {
             }
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                 let (x, y) = self.operator_operands(op, a, b, expected)?;
-                let ty = self.arith_result(op, &x.ty, &y.ty, span)?;
                 let prim = match op {
                     BinOp::Add => Prim::Add,
                     BinOp::Sub => Prim::Sub,
@@ -763,8 +755,9 @@ impl Checker<'_> {
                     BinOp::Div => Prim::Div,
                     _ => Prim::Rem,
                 };
-                let tm = self.b().prim(prim, vec![x.tm, y.tm], ty);
-                Ok(self.out(tm))
+                let (xt, yt) = (x.ty.clone(), y.ty.clone());
+                self.prim(prim, vec![x.tm, y.tm], None, span)
+                    .map_err(|_| self.arith_refusal(op, &xt, &yt, span))
             }
         }
     }
@@ -825,10 +818,29 @@ impl Checker<'_> {
         }
     }
 
-    fn arith_result(&self, op: BinOp, a: &Ty, b: &Ty, span: Span) -> R<Ty> {
-        use Base::*;
-        let none = || {
-            diag(
+    /// Returns the refusal of `op` over `a` and `b`, which its signature does not admit.
+    fn arith_refusal(&self, op: BinOp, a: &Ty, b: &Ty, span: Span) -> Diag {
+        match (a, b) {
+            (Ty::Base(Base::Decimal(s)), Ty::Base(Base::Decimal(t))) if op == BinOp::Mul => diag(
+                span,
+                format!(
+                    "`*` of `Decimal {s}` and `Decimal {t}` has scale {} above 38; rescale an operand first",
+                    u32::from(*s) + u32::from(*t)
+                ),
+            ),
+            (Ty::Base(Base::Decimal(_)), Ty::Base(Base::Decimal(_)))
+                if matches!(op, BinOp::Div | BinOp::Rem) =>
+            {
+                diag(
+                    span,
+                    "decimals have no `/` and no `%`; use `div` with a scale and a rounding",
+                )
+            }
+            (Ty::Param(i), Ty::Param(j)) if i == j && self.param_has(*i, Bound::Num) => diag(
+                span,
+                "a generic body applies only `+` and `-` to a `Num` type; `*` and division are defined per concrete type",
+            ),
+            _ => diag(
                 span,
                 format!(
                     "`{}` does not apply to {} and {}",
@@ -842,64 +854,8 @@ impl Checker<'_> {
                     self.show(a),
                     self.show(b)
                 ),
-            )
-        };
-        let r = match (a, b) {
-            (Ty::Base(x), Ty::Base(y)) if is_int(a) && x == y => *x,
-            (Ty::Base(Decimal(s)), Ty::Base(Decimal(t))) => match op {
-                BinOp::Add | BinOp::Sub => Decimal((*s).max(*t)),
-                BinOp::Mul => {
-                    if u32::from(*s) + u32::from(*t) > 38 {
-                        return Err(diag(
-                            span,
-                            format!(
-                                "`*` of `Decimal {s}` and `Decimal {t}` has scale {} above 38; rescale an operand first",
-                                u32::from(*s) + u32::from(*t)
-                            ),
-                        ));
-                    }
-                    Decimal(s + t)
-                }
-                _ => {
-                    return Err(diag(
-                        span,
-                        "decimals have no `/` and no `%`; use `div` with a scale and a rounding",
-                    ));
-                }
-            },
-            (Ty::Base(x @ (F32 | F64)), Ty::Base(y)) if x == y && op != BinOp::Rem => *x,
-            (Ty::Base(Duration), Ty::Base(Duration)) if matches!(op, BinOp::Add | BinOp::Sub) => {
-                Duration
-            }
-            (Ty::Base(Duration), Ty::Base(I64)) if matches!(op, BinOp::Mul | BinOp::Div) => {
-                Duration
-            }
-            (Ty::Base(Period), Ty::Base(Period)) if matches!(op, BinOp::Add | BinOp::Sub) => Period,
-            (Ty::Base(Period), Ty::Base(I64)) if op == BinOp::Mul => Period,
-            (Ty::Base(t @ (Instant | DateTime | ZonedDateTime)), Ty::Base(Duration))
-                if matches!(op, BinOp::Add | BinOp::Sub) =>
-            {
-                *t
-            }
-            (Ty::Base(Instant), Ty::Base(Instant))
-            | (Ty::Base(DateTime), Ty::Base(DateTime))
-            | (Ty::Base(Date), Ty::Base(Date))
-                if op == BinOp::Sub =>
-            {
-                Duration
-            }
-            (Ty::Param(i), Ty::Param(j)) if i == j && self.param_has(*i, Bound::Num) => {
-                if matches!(op, BinOp::Add | BinOp::Sub) {
-                    return Ok(a.clone());
-                }
-                return Err(diag(
-                    span,
-                    "a generic body applies only `+` and `-` to a `Num` type; `*` and division are defined per concrete type",
-                ));
-            }
-            _ => return Err(none()),
-        };
-        Ok(Ty::Base(r))
+            ),
+        }
     }
 
     fn field(&mut self, x: &Expr, f: &ast::Ident) -> R<Out> {
@@ -1232,8 +1188,7 @@ impl Checker<'_> {
         } else {
             kappa.tm
         };
-        let bt = self.bool_ty();
-        let test = self.b().prim(Prim::Eq, vec![field, rhs], bt);
+        let test = self.b().prim_typed(Prim::Eq, vec![field, rhs], None);
         let set_ty = Ty::Set(Box::new(elem));
         let xt = self.var_tm(xi);
         let one = self.b().singleton(xt, set_ty.clone());

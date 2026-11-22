@@ -108,7 +108,7 @@ fn host_fns<R: Runtime>(rt: &R, seen: &Arc<Seen>, gate: &Arc<Gate>) -> HostFns {
             gate.pass(&grt);
             let mut out = BatchBuilder::new(batch::Schema::new(vec![Type::Scalar(Scalar::I64)]));
             for i in 0..b.len() {
-                out.push_row(&[b.value(0, i)]);
+                out.push_row(&[b.value(0, i)])?;
             }
             Ok(out.finish())
         },
@@ -123,7 +123,7 @@ fn host_fns<R: Runtime>(rt: &R, seen: &Arc<Seen>, gate: &Arc<Gate>) -> HostFns {
             seen.threads.lock().unwrap().insert(rt.current());
             let mut out = BatchBuilder::new(batch::Schema::new(vec![Type::Scalar(Scalar::I64)]));
             for i in 0..b.len() {
-                out.push_row(&[b.value(0, i)]);
+                out.push_row(&[b.value(0, i)])?;
             }
             Ok(out.finish())
         },

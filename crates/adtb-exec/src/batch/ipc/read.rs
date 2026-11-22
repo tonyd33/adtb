@@ -216,7 +216,10 @@ fn record_batch(
     }
     d.end()?;
     let mut b = BatchBuilder::new(file.schema.clone());
-    transpose(cols, n).iter().for_each(|row| b.push_datums(row));
+    for row in transpose(cols, n) {
+        b.push_datums(&row)
+            .map_err(|_| IpcError::OverBudget("elements or value bytes in a column"))?;
+    }
     Ok(b.finish())
 }
 

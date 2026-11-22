@@ -36,22 +36,17 @@ impl Walk<'_, '_> {
         let k = self.tm(out, k, None)?;
         let order = self.map.key_layout(self.map.read_through(rel));
         let order = order.map_err(|l| self.p.lost(&l, "reads a key of"))?;
+        let v = self.b(out).prim_typed(Prim::KeyValue, vec![k], None);
         let (Some(order), Ty::Record(fs)) = (order, &ty) else {
-            return Ok(self.b(out).prim(Prim::KeyValue, vec![k], ty));
+            return Ok(v);
         };
         if order
             .iter()
             .enumerate()
             .all(|(i, (p, n))| i == *p && fs[*p].0 == *n)
         {
-            return Ok(self.b(out).prim(Prim::KeyValue, vec![k], ty));
+            return Ok(v);
         }
-        let mut now: Vec<_> = order
-            .iter()
-            .map(|(p, n)| (n.clone(), fs[*p].1.clone()))
-            .collect();
-        now.sort_by(|a, b| a.0.cmp(&b.0));
-        let v = self.b(out).prim(Prim::KeyValue, vec![k], Ty::Record(now));
         let mut back = order;
         back.sort();
         let back: Vec<_> = back

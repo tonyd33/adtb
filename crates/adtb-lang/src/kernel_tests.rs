@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
+use crate::check::prim_ty::Bounds;
 use crate::schema::Committed;
 
 fn int() -> Ty {
@@ -104,6 +105,14 @@ fn f (n: I64) -> I64 = n";
             def: self.t,
             args: Vec::new(),
             ctors,
+        }
+    }
+
+    fn option(&self, t: Ty) -> Ty {
+        Ty::Data {
+            def: self.schema.prelude().option(),
+            args: vec![t],
+            ctors: None,
         }
     }
 
@@ -352,7 +361,7 @@ fn value_refusals() -> Vec<(&'static str, Build)> {
             let t = terms.add(Kind::Prim(Prim::Add, vec![c]), int());
             (t, Vec::new(), t)
         }),
-        ("a comparison is not `Bool`", |_, terms| {
+        ("`Eq` is `Bool`, not a subtype of `I64`", |_, terms| {
             let c = one(terms);
             let t = terms.add(Kind::Prim(Prim::Eq, vec![c, c]), int());
             (t, Vec::new(), t)
@@ -997,26 +1006,34 @@ fn operand_refusals() -> Vec<(&'static str, Build)> {
             let t = terms.add(ctor, sum);
             (t, Vec::new(), t)
         }),
-        (
-            "`Eq` compares `I64` and `Text`, which do not join",
-            |fx, terms| {
-                let (a, b) = (one(terms), word(terms));
-                let t = terms.add(Kind::Prim(Prim::Eq, vec![a, b]), fx.bool());
-                (t, Vec::new(), t)
-            },
-        ),
-        ("the operand is `Text`, not `I64`", |_, terms| {
+        ("`Eq` does not take `I64` and `Text`", |fx, terms| {
+            let (a, b) = (one(terms), word(terms));
+            let t = terms.add(Kind::Prim(Prim::Eq, vec![a, b]), fx.bool());
+            (t, Vec::new(), t)
+        }),
+        ("`Micros` does not take `Text`", |_, terms| {
             let w = word(terms);
             let t = terms.add(Kind::Prim(Prim::Micros, vec![w]), Ty::Base(Base::Duration));
             (t, Vec::new(), t)
         }),
         (
-            "the scale of `Rescale` is not the constant 2",
+            "`Rescale` is `Decimal 1`, not a subtype of `Decimal 2`",
             |_, terms| {
                 let d = terms.add(Kind::Const(Const::Int(5)), Ty::Base(Base::Decimal(0)));
                 let scale = one(terms);
                 let t = terms.add(
                     Kind::Prim(Prim::Rescale, vec![d, scale]),
+                    Ty::Base(Base::Decimal(2)),
+                );
+                (t, Vec::new(), t)
+            },
+        ),
+        (
+            "`Convert { checked: false }` takes no `I64` to `Decimal 2`",
+            |_, terms| {
+                let x = one(terms);
+                let t = terms.add(
+                    Kind::Prim(Prim::Convert { checked: false }, vec![x]),
                     Ty::Base(Base::Decimal(2)),
                 );
                 (t, Vec::new(), t)
@@ -1091,6 +1108,26 @@ fn validate_placed_refuses_each_term_out_of_place() {
         got(param, Body::Generic(0))
     );
     assert_eq!(Ok(()), got(param, Body::Generic(1)));
+}
+
+#[test]
+fn validate_refuses_arithmetic_over_a_type_parameter_without_its_num_bound() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let x = terms.var("x", Ty::Param(0));
+    let a = terms.add(Kind::Var(x), Ty::Param(0));
+    let b = terms.add(Kind::Var(x), Ty::Param(0));
+    let sum = terms.add(Kind::Prim(Prim::Add, vec![a, b]), Ty::Param(0));
+    let roots = [(sum, vec![x])];
+    let got = |bounds: Vec<Bound>| {
+        let params = [("T".to_string(), bounds)];
+        validate_bounded(&fx.schema, &terms, &roots, Bounds::Declared(&params))
+            .map(drop)
+            .map_err(|e| (e.at(), e.reason().to_string()))
+    };
+    let refused = "`Add` does not take `t0` and `t0`".to_string();
+    assert_eq!(Err((sum, refused)), got(vec![Bound::Ord]));
+    assert_eq!(Ok(()), got(vec![Bound::Num]));
 }
 
 #[test]
@@ -1184,7 +1221,216 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         }
     }
     assert_eq!(Vec::<String>::new(), differ);
-    assert_eq!(86, cases.len());
+    assert_eq!(87, cases.len());
+}
+
+/// Returns each primitive with the number of operands it takes.
+/// Returns the primitive after `p` in a walk over every primitive, the first when `p` is `None`.
+fn after(p: Option<Prim>) -> Option<Prim> {
+    let file = |format| Prim::ReadFile { format, pins: None };
+    match p {
+        None => Some(Prim::Add),
+        Some(Prim::Add) => Some(Prim::Sub),
+        Some(Prim::Sub) => Some(Prim::Mul),
+        Some(Prim::Mul) => Some(Prim::Div),
+        Some(Prim::Div) => Some(Prim::Rem),
+        Some(Prim::Rem) => Some(Prim::Neg),
+        Some(Prim::Neg) => Some(Prim::Concat),
+        Some(Prim::Concat) => Some(Prim::Eq),
+        Some(Prim::Eq) => Some(Prim::Ne),
+        Some(Prim::Ne) => Some(Prim::Lt),
+        Some(Prim::Lt) => Some(Prim::Le),
+        Some(Prim::Le) => Some(Prim::Gt),
+        Some(Prim::Gt) => Some(Prim::Ge),
+        Some(Prim::Ge) => Some(Prim::CheckedAdd),
+        Some(Prim::CheckedAdd) => Some(Prim::CheckedSub),
+        Some(Prim::CheckedSub) => Some(Prim::CheckedMul),
+        Some(Prim::CheckedMul) => Some(Prim::CheckedDiv),
+        Some(Prim::CheckedDiv) => Some(Prim::CheckedRem),
+        Some(Prim::CheckedRem) => Some(Prim::CheckedNeg),
+        Some(Prim::CheckedNeg) => Some(Prim::DecimalDiv),
+        Some(Prim::DecimalDiv) => Some(Prim::Round),
+        Some(Prim::Round) => Some(Prim::Rescale),
+        Some(Prim::Rescale) => Some(Prim::Abs),
+        Some(Prim::Abs) => Some(Prim::Convert { checked: false }),
+        Some(Prim::Convert { checked: false }) => Some(Prim::Convert { checked: true }),
+        Some(Prim::Convert { checked: true }) => Some(Prim::Wrap),
+        Some(Prim::Wrap) => Some(Prim::Unwrap),
+        Some(Prim::Unwrap) => Some(Prim::KeyValue),
+        Some(Prim::KeyValue) => Some(Prim::ParseUuid),
+        Some(Prim::ParseUuid) => Some(Prim::ToText),
+        Some(Prim::ToText) => Some(Prim::BytesLen),
+        Some(Prim::BytesLen) => Some(Prim::ScalarLen),
+        Some(Prim::ScalarLen) => Some(Prim::GraphemeLen),
+        Some(Prim::GraphemeLen) => Some(Prim::StartsWith),
+        Some(Prim::StartsWith) => Some(Prim::EndsWith),
+        Some(Prim::EndsWith) => Some(Prim::Contains),
+        Some(Prim::Contains) => Some(Prim::Matches),
+        Some(Prim::Matches) => Some(Prim::Lower),
+        Some(Prim::Lower) => Some(Prim::Upper),
+        Some(Prim::Upper) => Some(Prim::Fold),
+        Some(Prim::Fold) => Some(Prim::Collate),
+        Some(Prim::Collate) => Some(Prim::Utf8),
+        Some(Prim::Utf8) => Some(Prim::Bytes),
+        Some(Prim::Bytes) => Some(Prim::Micros),
+        Some(Prim::Micros) => Some(Prim::Millis),
+        Some(Prim::Millis) => Some(Prim::Seconds),
+        Some(Prim::Seconds) => Some(Prim::Minutes),
+        Some(Prim::Minutes) => Some(Prim::Hours),
+        Some(Prim::Hours) => Some(Prim::Days),
+        Some(Prim::Days) => Some(Prim::Weeks),
+        Some(Prim::Weeks) => Some(Prim::Months),
+        Some(Prim::Months) => Some(Prim::Years),
+        Some(Prim::Years) => Some(Prim::AddPeriod),
+        Some(Prim::AddPeriod) => Some(Prim::Zoned),
+        Some(Prim::Zoned) => Some(Prim::InZone),
+        Some(Prim::InZone) => Some(Prim::ToInstant),
+        Some(Prim::ToInstant) => Some(Prim::Span),
+        Some(Prim::Span) => Some(Prim::Start),
+        Some(Prim::Start) => Some(Prim::End),
+        Some(Prim::End) => Some(Prim::Overlaps),
+        Some(Prim::Overlaps) => Some(Prim::Covers),
+        Some(Prim::Covers) => Some(Prim::Parse),
+        Some(Prim::Parse) => Some(Prim::Print),
+        Some(Prim::Print) => Some(file(FileFormat::Csv)),
+        Some(Prim::ReadFile { format, .. }) => match format {
+            FileFormat::Csv => Some(file(FileFormat::Ndjson)),
+            FileFormat::Ndjson => Some(file(FileFormat::Parquet)),
+            FileFormat::Parquet => Some(file(FileFormat::Arrow)),
+            FileFormat::Arrow => None,
+        },
+    }
+}
+
+fn every_prim() -> Vec<(Prim, usize)> {
+    let prims = std::iter::successors(after(None), |p| after(Some(*p)));
+    prims
+        .map(|p| {
+            let n = match p {
+                Prim::Neg
+                | Prim::Abs
+                | Prim::CheckedNeg
+                | Prim::Convert { .. }
+                | Prim::Wrap
+                | Prim::Unwrap
+                | Prim::KeyValue
+                | Prim::ParseUuid
+                | Prim::ToText
+                | Prim::BytesLen
+                | Prim::ScalarLen
+                | Prim::GraphemeLen
+                | Prim::Lower
+                | Prim::Upper
+                | Prim::Fold
+                | Prim::Utf8
+                | Prim::Bytes
+                | Prim::Micros
+                | Prim::Millis
+                | Prim::Seconds
+                | Prim::Minutes
+                | Prim::Hours
+                | Prim::Days
+                | Prim::Weeks
+                | Prim::Months
+                | Prim::Years
+                | Prim::ToInstant
+                | Prim::Start
+                | Prim::End
+                | Prim::Parse
+                | Prim::Print
+                | Prim::ReadFile { .. } => 1,
+                Prim::Add
+                | Prim::Sub
+                | Prim::Mul
+                | Prim::Div
+                | Prim::Rem
+                | Prim::Concat
+                | Prim::Eq
+                | Prim::Ne
+                | Prim::Lt
+                | Prim::Le
+                | Prim::Gt
+                | Prim::Ge
+                | Prim::CheckedAdd
+                | Prim::CheckedSub
+                | Prim::CheckedMul
+                | Prim::CheckedDiv
+                | Prim::CheckedRem
+                | Prim::Rescale
+                | Prim::StartsWith
+                | Prim::EndsWith
+                | Prim::Contains
+                | Prim::Matches
+                | Prim::Collate
+                | Prim::InZone
+                | Prim::Span
+                | Prim::Overlaps
+                | Prim::Covers => 2,
+                Prim::Round | Prim::AddPeriod | Prim::Zoned => 3,
+                Prim::DecimalDiv => 4,
+            };
+            (p, n)
+        })
+        .collect()
+}
+
+#[test]
+fn validate_refuses_every_primitive_over_operands_of_a_function_type() {
+    let fx = Fixture::new();
+    let f = "`I64 -> I64`";
+    let want = |p: Prim| match p {
+        Prim::Eq | Prim::Ne | Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge => {
+            format!("`{p:?}` compares functions")
+        }
+        Prim::Convert { checked: false } => format!("`{p:?}` takes no {f} to `I64`"),
+        Prim::Convert { checked: true } => format!("`{p:?}` takes no {f} to `Option I64`"),
+        Prim::Span => format!("`Span` orders {f}, which has no order"),
+        Prim::Add
+        | Prim::Sub
+        | Prim::Mul
+        | Prim::Div
+        | Prim::Rem
+        | Prim::Concat
+        | Prim::CheckedAdd
+        | Prim::CheckedSub
+        | Prim::CheckedMul
+        | Prim::CheckedDiv
+        | Prim::CheckedRem
+        | Prim::DecimalDiv
+        | Prim::StartsWith
+        | Prim::EndsWith
+        | Prim::Contains
+        | Prim::Matches
+        | Prim::Collate
+        | Prim::AddPeriod
+        | Prim::Zoned
+        | Prim::InZone
+        | Prim::Overlaps
+        | Prim::Covers => format!("`{p:?}` does not take {f} and {f}"),
+        _ => format!("`{p:?}` does not take {f}"),
+    };
+    let mut differ = Vec::new();
+    for (p, n) in every_prim() {
+        let mut terms = Terms::default();
+        let fn_ty = Ty::Fn(Box::new(int()), Box::new(int()));
+        let x = terms.var("f", fn_ty.clone());
+        let args: Vec<Tm> = (0..n)
+            .map(|_| terms.add(Kind::Var(x), fn_ty.clone()))
+            .collect();
+        let ty = match p {
+            Prim::Convert { checked: true } => fx.option(int()),
+            _ => int(),
+        };
+        let t = terms.add(Kind::Prim(p, args), ty);
+        let got = validate(&fx.schema, &terms, &[(t, vec![x])])
+            .map(drop)
+            .map_err(|e| (e.at(), e.reason().to_string()));
+        if got != Err((t, want(p))) {
+            differ.push(format!("{p:?}: {got:?}"));
+        }
+    }
+    assert_eq!(Vec::<String>::new(), differ);
+    assert_eq!(67, every_prim().len());
 }
 
 #[test]

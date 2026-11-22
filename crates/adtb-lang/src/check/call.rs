@@ -251,8 +251,7 @@ impl Checker<'_> {
             args: Vec::new(),
             ctors: None,
         };
-        let tm = self.b().prim(Prim::Wrap, vec![o.tm], ty);
-        Ok(self.out(tm))
+        self.prim(Prim::Wrap, vec![o.tm], Some(ty), span)
     }
 
     fn apply_local(&mut self, local: Local, args: &CallArgs, span: Span) -> R<Out> {

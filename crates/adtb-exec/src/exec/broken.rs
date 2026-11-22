@@ -7,7 +7,7 @@ use adtb_lang::types::Ty;
 use super::layout::Step;
 use crate::batch;
 use crate::heap::{FieldType, HeapNo};
-use crate::key::{KeyType, Scalar};
+use crate::key::{KeyType, Scalar, Value};
 use crate::plan::{HeapId, IndexId};
 
 use super::{Error, Val};
@@ -40,6 +40,10 @@ pub enum Broken {
         value: Val,
         ty: KeyType,
     },
+    NotConverted(Value),
+    /// A row whose value in one column passes 2^31 elements or value bytes alone, which no row
+    /// within the value limit of 2^31 - 1 bytes holds.
+    PastOffsets,
     NotScalar {
         value: Val,
         scalar: Scalar,
@@ -133,6 +137,12 @@ impl fmt::Display for Broken {
             }
             Broken::NotStored { value, ty } => write!(f, "{value:?} is not a value of {ty:?}"),
             Broken::NotKeyed { value, ty } => write!(f, "{value:?} is not a value of {ty:?}"),
+            Broken::NotConverted(value) => {
+                write!(f, "{value:?} is not a value of its field's type")
+            }
+            Broken::PastOffsets => {
+                f.write_str("a row passes 2^31 elements or value bytes in one column alone")
+            }
             Broken::NotScalar { value, scalar } => {
                 write!(f, "{value:?} is not a value of {scalar:?}")
             }

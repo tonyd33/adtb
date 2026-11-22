@@ -516,7 +516,7 @@ fn main() -> Result<(), adtb::Error> {
         fields: vec![lives],
     });
     let mut rows = BatchBuilder::new(only_lives.batch_schema());
-    rows.push_row(&[Cell::I64(9)]);
+    rows.push_row(&[Cell::I64(9)]).expect("the row fits a batch");
     let batch = RecordBatch::new(only_lives, rows.finish()).expect("the batch fits");
     if let Err(e) = cats.push(&batch) {
         println!("{e}");

@@ -326,7 +326,7 @@ impl<R: Runtime> Ctx<R> {
                     .as_chunks::<2>()
                     .0
                     .iter()
-                    .map(|[v, x]| Ok((u32::try_from(v.int()?).map_err(|_| bad_row())?, x.clone())))
+                    .map(|[v, x]| Ok((spilled_var(v, self.program.vars)?, x.clone())))
                     .collect::<Result<Vec<_>, Error>>()?;
                 bound.push(row);
             }
@@ -347,6 +347,10 @@ impl<R: Runtime> Ctx<R> {
     }
 }
 
-fn bad_row() -> Error {
-    Rot::DeferredNoVariable.into()
+/// Returns the variable a spilled row names, refused when it is not one of the plan's `vars`.
+pub(super) fn spilled_var(v: &Val, vars: usize) -> Result<u32, Error> {
+    u32::try_from(v.int()?)
+        .ok()
+        .filter(|v| (*v as usize) < vars)
+        .ok_or_else(|| Rot::DeferredNoVariable.into())
 }

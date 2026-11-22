@@ -7,7 +7,7 @@ use crate::batch::Batch;
 use crate::batch::ipc::{
     self, Budget, FileCtor, FileField, FileSchema, FileType, IpcError, SumKind,
 };
-use crate::exec::{Val, conv, from_stored, to_stored};
+use crate::exec::{Val, conv, from_stored, from_stored_row, to_stored};
 use crate::key::{CtorId, Value};
 
 use super::layout::{ctors, field_type, is_record, key_value_ty, repr, row, scalar};
@@ -114,7 +114,8 @@ pub fn write_rows<'a>(
     }
     batches.push(batch(&stored[start..]));
     let mut out = Vec::new();
-    ipc::write(&file, &batches, &mut out).expect("a Vec takes any bytes");
+    ipc::write(&file, &batches, &mut out)
+        .expect("a Vec takes any bytes and each batch has the file's schema");
     out
 }
 
@@ -150,26 +151,28 @@ pub fn read_rows(
     bytes: &[u8],
 ) -> Result<Vec<Val>, IpcError> {
     let file = file_schema(schema, rel, ctor);
-    let convs: Vec<_> = row(schema, rel, ctor)
-        .iter()
-        .map(|(_, t)| conv(schema, t))
-        .collect();
+    let fields = row(schema, rel, ctor);
+    let convs: Vec<_> = fields.iter().map(|(_, t)| conv(schema, t)).collect();
     let mut budget = Budget::new(row_budget(&file, bytes.len()));
     let batches = ipc::read(bytes, &file, &mut budget)?;
-    Ok(batches
+    batches
         .iter()
         .flat_map(|b| (0..b.len()).map(|i| b.row(i)))
         .map(|r| {
-            Val::ctor(
-                ctor,
-                convs
+            let vs = from_stored_row(&convs, &r).map_err(|_| {
+                let at = convs
                     .iter()
                     .zip(&r)
-                    .map(|(c, v)| from_stored(c, v))
-                    .collect(),
-            )
+                    .position(|(c, v)| from_stored(c, v).is_err());
+                IpcError::BadValue {
+                    column: at.map_or_else(String::new, |i| fields[i].0.clone()),
+                    row: None,
+                    what: "is not of its field's type",
+                }
+            })?;
+            Ok(Val::ctor(ctor, vs))
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]

@@ -2038,7 +2038,7 @@ fn named_host_fns(names: &[&str]) -> adtb::HostFns {
                     adtb::batch::Type::Scalar(adtb::key::Scalar::Text),
                 ]));
                 for _ in 0..b.len() {
-                    out.push_row(&[adtb::key::Value::Text(reply.clone())]);
+                    out.push_row(&[adtb::key::Value::Text(reply.clone())])?;
                 }
                 Ok(out.finish())
             },

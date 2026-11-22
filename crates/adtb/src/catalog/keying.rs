@@ -6,7 +6,7 @@ use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
-use crate::exec::{self, Conv, Val, conv, from_stored, to_key};
+use crate::exec::{self, Conv, Val, conv, from_stored_row, to_key};
 use crate::key::{KeySchema, KeyType, Value};
 use crate::plan::Element;
 
@@ -131,10 +131,10 @@ impl IndexKeys {
                     None => return Ok(None),
                 },
                 Part::Expr(scalar) => {
-                    let v = value.get_or_insert_with(|| {
-                        let fields = ctor.convs.iter().zip(row).map(|(c, v)| from_stored(c, v));
-                        Val::ctor(c, fields.collect())
-                    });
+                    let v = match &value {
+                        Some(v) => v,
+                        None => value.insert(Val::ctor(c, from_stored_row(&ctor.convs, row)?)),
+                    };
                     out.push(to_key(t, &scalar.eval(v.clone())?)?);
                 }
             }

@@ -1365,8 +1365,7 @@ impl Checker<'_> {
             } => self.let_binder(cx, n, y, k),
             Pat::Lit { .. } if settled || k == f => k,
             Pat::Lit { tm, .. } => {
-                let bt = self.bool_ty();
-                let test = self.b().prim(Prim::Eq, vec![y, *tm], bt);
+                let test = self.b().prim_typed(Prim::Eq, vec![y, *tm], None);
                 if self.is_bool(k, true) && self.is_bool(f, false) {
                     return test;
                 }

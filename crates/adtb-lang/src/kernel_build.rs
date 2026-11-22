@@ -1,4 +1,5 @@
 use super::{Agg, Conflict, Const, Kind, Prim, Terms, Tm, Transition, TxnOptions, Var};
+use crate::check::prim_ty::{Bounds, prim_ty};
 use crate::check::ty::{elem, fields, restrict};
 use crate::schema::{Generator, Schema};
 use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty};
@@ -332,6 +333,17 @@ impl<'a> Build<'a> {
 
     pub fn prim(&mut self, p: Prim, args: Vec<Tm>, ty: Ty) -> Tm {
         self.put(Kind::Prim(p, args), ty)
+    }
+
+    /// Returns `p` over `args` at the type its signature gives, `target` naming the result where
+    /// its operands do not, or at `Unit` with the arena recording it as broken when the operands
+    /// are not its own.
+    pub fn prim_typed(&mut self, p: Prim, args: Vec<Tm>, target: Option<&Ty>) -> Tm {
+        let ty = prim_ty(self.schema, self.terms, Bounds::Unknown, p, &args, target);
+        match ty {
+            Ok(ty) => self.put(Kind::Prim(p, args), ty),
+            Err(reason) => self.untypable(Kind::Prim(p, args), reason),
+        }
     }
 
     pub fn record(&mut self, mut fields: Vec<(String, Tm)>, ty: Ty) -> Tm {

@@ -635,7 +635,8 @@ fn main() -> Result<(), queries::Error> {
     println!("fields: {names:?}");
     let mut rows = BatchBuilder::new(fields.batch_schema());
     for (name, lives) in [("tom", 9), ("kit", 3), ("tab", 7)] {
-        rows.push_row(&[Cell::Text(name.into()), Cell::I64(lives)]);
+        rows.push_row(&[Cell::Text(name.into()), Cell::I64(lives)])
+            .expect("the rows fit a batch");
     }
     let batch = RecordBatch::new(Arc::clone(&fields), rows.finish()).expect("the batch fits");
     cats.push(&batch)?;
@@ -687,7 +688,7 @@ fn shout(args: &Batch) -> Result<Batch, HostError> {
         let Cell::Text(t) = args.value(0, row) else {
             return Err(HostError("shout takes text".into()));
         };
-        out.push_row(&[Cell::Text(t.to_uppercase())]);
+        out.push_row(&[Cell::Text(t.to_uppercase())])?;
     }
     Ok(out.finish())
 }

@@ -11,13 +11,17 @@ use adtb_lang::types::{Base, CtorSet, Ty};
 use super::code::{Compiler, Shared};
 use super::frame::Frame;
 use super::ir::AggOp;
+use super::join::spilled_var;
 use super::prim::{Arith, Op, Width, apply};
 use super::sink::aggregate;
 use super::spill::{put, record};
 use super::value::{F32, F64, Val};
-use super::{Broken, Budget, Error, Exceeded, Fault, Rot, to_key, to_stored};
+use super::{
+    Broken, Budget, Conv, Error, Exceeded, Fault, Rot, from_stored, from_stored_row, to_key,
+    to_stored,
+};
 use crate::heap::FieldType;
-use crate::key::{KeyType, Scalar};
+use crate::key::{KeyType, Scalar, Value};
 
 fn run(op: Op, xs: &[Val]) -> Result<Val, Fault> {
     let refs: Vec<&Val> = xs.iter().collect();
@@ -250,6 +254,39 @@ fn a_stored_or_key_value_of_another_type_is_an_internal_error() {
     let ty = FieldType::Sum(Vec::new());
     let what = broken(to_stored(&ty, &tag));
     assert_eq!(Broken::NotStored { value: tag, ty }, what);
+}
+
+#[test]
+fn a_stored_value_not_of_its_conversion_is_an_internal_error_naming_the_outer_value() {
+    let one = || Value::I64(1);
+    let row = Value::Record(vec![one(), one()]);
+    let not = |v: &Value| Error::from(Broken::NotConverted(v.clone()));
+    assert_eq!(
+        Err(not(&row)),
+        from_stored_row(&[Conv::Scalar], &[one(), one()])
+    );
+    let decl = Conv::Decl(vec![vec![Conv::Scalar]]);
+    let past = Value::Sum {
+        ctor: 1,
+        fields: vec![one()],
+    };
+    assert_eq!(Err(not(&past)), from_stored(&decl, &past));
+    let short = Value::Sum {
+        ctor: 0,
+        fields: Vec::new(),
+    };
+    assert_eq!(Err(not(&short)), from_stored(&decl, &short));
+    assert_eq!(Err(not(&one())), from_stored(&decl, &one()));
+}
+
+#[test]
+fn a_spilled_row_naming_no_variable_of_the_plan_is_rot() {
+    let var = |i: i64| spilled_var(&Val::Int(i), 3);
+    let rot = Err(Error::Corrupt(Rot::DeferredNoVariable));
+    assert_eq!(Ok(2), var(2));
+    assert_eq!(rot, var(3));
+    assert_eq!(rot, var(-1));
+    assert_eq!(rot, var(1 << 32));
 }
 
 #[test]

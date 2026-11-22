@@ -15,6 +15,12 @@ use super::{Error, Fault, Val, datum};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostError(pub String);
 
+impl From<batch::TooLarge> for HostError {
+    fn from(_: batch::TooLarge) -> HostError {
+        HostError("a batch column passes 2^31 elements or value bytes".into())
+    }
+}
+
 /// A host function's body. It takes a batch of one column per parameter and returns a batch of
 /// one column of the result type, with as many rows.
 pub type HostBody = dyn Fn(&Batch) -> Result<Batch, HostError> + Send + Sync;
@@ -82,7 +88,7 @@ impl HostCall {
                 .zip(row)
                 .map(|(t, v)| datum(t, v))
                 .collect::<Result<Vec<_>, _>>()?;
-            b.push_datums(&ds);
+            b.push_datums(&ds)?;
         }
         let args = b.finish();
         let ran = catch_unwind(AssertUnwindSafe(|| {
@@ -104,8 +110,12 @@ impl HostCall {
 }
 
 /// Returns the value of stored value `v` at `conv` with every text normalized to NFC, as
-/// construction normalizes it, or `None` when it lies outside its type's domain.
+/// construction normalizes it, or `None` when it lies outside its type's domain or is not of
+/// its shape.
 pub fn admit(conv: &Conv, v: Value) -> Option<Val> {
     let v = v.normalized();
-    v.in_domain().then(|| from_stored(conv, &v))
+    if !v.in_domain() {
+        return None;
+    }
+    from_stored(conv, &v).ok()
 }

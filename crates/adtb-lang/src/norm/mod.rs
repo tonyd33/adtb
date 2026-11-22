@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use crate::analysis::Totality;
 use crate::capability::{self, RootKind};
+use crate::check::prim_ty::Bounds;
 use crate::check::{Adhoc, AdhocCommand, Program, Query, Txn};
 use crate::kernel::{Agg, Build, Frees, Invalid, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
@@ -33,6 +34,16 @@ pub enum Root {
     /// A term of the command at this position among the text's commands.
     Command(usize),
     Query,
+}
+
+impl Root {
+    /// Returns the bounds of the type parameters a body of this root names.
+    pub(crate) fn bounds(self, schema: &Schema) -> Bounds<'_> {
+        match self {
+            Root::Function(f) => Bounds::Declared(&schema.functions[f.0 as usize].type_params),
+            _ => Bounds::Declared(&[]),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

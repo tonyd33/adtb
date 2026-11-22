@@ -20,6 +20,7 @@ pub use valid::{
     Body, Invalid, Valid, ValidTerms, assert_normal, assert_valid, validate, validate_node,
     validate_normal, validate_placed, validate_typed,
 };
+pub(crate) use valid::{assert_valid_bounded, validate_bounded};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Tm(pub u32);

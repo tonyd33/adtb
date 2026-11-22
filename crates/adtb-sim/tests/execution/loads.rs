@@ -70,7 +70,7 @@ fn batch(full: &ArrowSchema, names: &[&str], rows: &[Vec<Stored>]) -> RecordBatc
     let schema = Arc::new(ArrowSchema { fields });
     let mut b = BatchBuilder::new(schema.batch_schema());
     for r in rows {
-        b.push_row(r);
+        b.push_row(r).expect("a test row fits a batch");
     }
     RecordBatch::new(schema, b.finish()).expect("the batch is of its schema")
 }
@@ -331,7 +331,8 @@ fn a_batch_of_another_schema_is_refused_at_push_and_stages_nothing() {
             }],
         });
         let mut b = BatchBuilder::new(wrong_type.batch_schema());
-        b.push_row(&[Stored::I64(1)]);
+        b.push_row(&[Stored::I64(1)])
+            .expect("a test row fits a batch");
         let wrong_type = RecordBatch::new(wrong_type, b.finish()).expect("a batch");
         let refused = [
             batch(&full, &["tag"], &[vec![text("x")]]),

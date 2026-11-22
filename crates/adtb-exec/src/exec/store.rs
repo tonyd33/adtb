@@ -385,6 +385,17 @@ struct Filling {
     held: Arena,
 }
 
+/// Grow or release `held` to `built` bytes.
+fn settle(held: &mut Arena, built: usize) -> Result<(), Error> {
+    let now = held.bytes();
+    if built > now {
+        held.grow(built - now)?;
+    } else {
+        held.release(now - built);
+    }
+    Ok(())
+}
+
 impl Filling {
     fn new(row: &[FieldType], rows: usize, grant: &Arc<Grant>) -> Filling {
         let schema = BatchSchema::of_heap(row);
@@ -396,10 +407,18 @@ impl Filling {
         }
     }
 
-    /// Append `row`. Returns the batch once it holds its `rows` rows, with the arena holding it.
+    /// Append `row`. Returns the batch once it holds its `rows` rows, or once `row` would take
+    /// a column of it past 2^31 elements or value bytes, with the arena holding it.
     fn push(&mut self, row: &[Value]) -> Result<Option<(Batch, Arena)>, Error> {
-        self.batch.push_row(row);
-        self.held.grow(self.batch.bytes() - self.held.bytes())?;
+        self.held.grow(row_size(row))?;
+        if let Some(full) = self.batch.push_row_or_cut(row)? {
+            let fresh = self.held.grant().arena();
+            let mut held = std::mem::replace(&mut self.held, fresh);
+            settle(&mut held, full.bytes())?;
+            settle(&mut self.held, self.batch.bytes())?;
+            return Ok(Some((full, held)));
+        }
+        settle(&mut self.held, self.batch.bytes())?;
         Ok((self.batch.len() == self.rows).then(|| self.take()))
     }
 
@@ -1144,23 +1163,49 @@ pub fn conv(schema: &Schema, ty: &Ty) -> Conv {
     }
 }
 
-/// Returns stored value `v` of a type converting by `c`.
-pub fn from_stored(c: &Conv, v: &Value) -> Val {
-    let all = |cs: &[Conv], fs: &[Value]| -> Vec<Val> {
-        cs.iter().zip(fs).map(|(c, v)| from_stored(c, v)).collect()
-    };
+/// Returns stored value `v` of a type converting by `c`, refused when `v` is not of its shape.
+pub fn from_stored(c: &Conv, v: &Value) -> Result<Val, Error> {
+    let fields = |cs: &[Conv], fs: &[Value]| from_stored_row(cs, fs).map_err(|_| unconverted(v));
     match (c, v) {
-        (Conv::Decl(cs), Value::Record(fs)) => Val::ctor(0, all(&cs[0], fs)),
-        (Conv::Decl(cs), Value::Sum { ctor, fields }) => {
-            Val::ctor(*ctor, all(&cs[*ctor as usize], fields))
+        (Conv::Decl(cs), Value::Record(fs)) => {
+            let first = cs.first().ok_or_else(|| unconverted(v))?;
+            Ok(Val::ctor(0, fields(first, fs)?))
         }
-        (Conv::AnonRecord(cs), Value::Record(fs)) => Val::record(all(cs, fs)),
-        (_, v) => scalar(v),
+        (Conv::Decl(cs), Value::Sum { ctor, fields: fs }) => {
+            let at = cs.get(*ctor as usize).ok_or_else(|| unconverted(v))?;
+            Ok(Val::ctor(*ctor, fields(at, fs)?))
+        }
+        (Conv::AnonRecord(cs), Value::Record(fs)) => Ok(Val::record(fields(cs, fs)?)),
+        (Conv::Scalar, v) => scalar(v).ok_or_else(|| unconverted(v)),
+        (Conv::Decl(_) | Conv::AnonRecord(_), v) => Err(unconverted(v)),
     }
 }
 
-fn scalar(v: &Value) -> Val {
-    match v {
+/// Returns the stored fields `fs`, each converting by its conversion in `cs`.
+pub fn from_stored_row(cs: &[Conv], fs: &[Value]) -> Result<Vec<Val>, Error> {
+    paired(cs, fs, || unconverted(&Value::Record(fs.to_vec())))?
+        .map(|(c, v)| from_stored(c, v))
+        .collect()
+}
+
+fn unconverted(v: &Value) -> Error {
+    Broken::NotConverted(v.clone()).into()
+}
+
+/// Returns the pairs of `ts` and `vs`, refused as `not` when their lengths differ.
+fn paired<'a, T, V>(
+    ts: &'a [T],
+    vs: &'a [V],
+    not: impl FnOnce() -> Error,
+) -> Result<std::iter::Zip<std::slice::Iter<'a, T>, std::slice::Iter<'a, V>>, Error> {
+    if ts.len() != vs.len() {
+        return Err(not());
+    }
+    Ok(ts.iter().zip(vs))
+}
+
+fn scalar(v: &Value) -> Option<Val> {
+    Some(match v {
         Value::I8(x) => Val::Int(i64::from(*x)),
         Value::I16(x) => Val::Int(i64::from(*x)),
         Value::I32(x) => Val::Int(i64::from(*x)),
@@ -1184,8 +1229,8 @@ fn scalar(v: &Value) -> Val {
             months: *months,
             days: *days,
         },
-        other => panic!("a scalar conversion of {other:?}"),
-    }
+        _ => return None,
+    })
 }
 
 /// Returns `v` as a heap stores a field of type `t`.
@@ -1199,8 +1244,7 @@ pub fn to_stored(t: &FieldType, v: &Val) -> Result<Value, Error> {
     Ok(match (t, v) {
         (FieldType::Scalar(s), v) => scalar_key(*s, v)?,
         (FieldType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
-            ts.iter()
-                .zip(fs.iter())
+            paired(ts, fs, not)?
                 .map(|(t, v)| to_stored(t, v))
                 .collect::<Result<_, _>>()?,
         ),
@@ -1208,10 +1252,8 @@ pub fn to_stored(t: &FieldType, v: &Val) -> Result<Value, Error> {
             ctor: *c,
             fields: cs
                 .get(*c as usize)
-                .ok_or_else(not)?
-                .fields
-                .iter()
-                .zip(fs.iter())
+                .map(|c| paired(&c.fields, fs, not))
+                .ok_or_else(not)??
                 .map(|(t, v)| to_stored(t, v))
                 .collect::<Result<_, _>>()?,
         },
@@ -1230,15 +1272,12 @@ pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
     Ok(match (t, v) {
         (KeyType::Scalar(s), v) => scalar_key(*s, v)?,
         (KeyType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
-            ts.iter()
-                .zip(fs.iter())
+            paired(ts, fs, not)?
                 .map(|(t, v)| to_key(t, v))
                 .collect::<Result<_, _>>()?,
         ),
         (KeyType::AnonRecord(r), Val::Record(fs)) => Value::Record(
-            r.fields()
-                .iter()
-                .zip(fs.iter())
+            paired(r.fields(), fs, not)?
                 .map(|((_, t), v)| to_key(t, v))
                 .collect::<Result<_, _>>()?,
         ),
@@ -1247,10 +1286,8 @@ pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
             fields: s
                 .ctors()
                 .get(*c as usize)
-                .ok_or_else(not)?
-                .fields
-                .iter()
-                .zip(fs.iter())
+                .map(|c| paired(&c.fields, fs, not))
+                .ok_or_else(not)??
                 .map(|(t, v)| to_key(t, v))
                 .collect::<Result<_, _>>()?,
         },
@@ -1259,11 +1296,8 @@ pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
             fields: s
                 .ctors()
                 .get(*c as usize)
-                .ok_or_else(not)?
-                .1
-                .fields()
-                .iter()
-                .zip(fs.iter())
+                .map(|(_, c)| paired(c.fields(), fs, not))
+                .ok_or_else(not)??
                 .map(|((_, t), v)| to_key(t, v))
                 .collect::<Result<_, _>>()?,
         },

@@ -450,7 +450,7 @@ fn gated_options(rt: &SimRuntime, gate: &Arc<Gate>) -> OpenOptions {
             g.pass(&grt);
             let mut out = BatchBuilder::new(batch::Schema::new(vec![Type::Scalar(Scalar::I64)]));
             for i in 0..b.len() {
-                out.push_row(&[b.value(0, i)]);
+                out.push_row(&[b.value(0, i)])?;
             }
             Ok(out.finish())
         },

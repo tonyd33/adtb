@@ -355,7 +355,9 @@ fn typed_wrappers_and_arrow_loads_share_the_program_boundary() {
             let mut appender = load.appender("items").expect("user target");
             let schema = appender.schema().clone();
             let mut builder = adtb::batch::BatchBuilder::new(schema.batch_schema());
-            builder.push_row(&[adtb::key::Value::I64(11)]);
+            builder
+                .push_row(&[adtb::key::Value::I64(11)])
+                .expect("a test row fits a batch");
             let batch =
                 adtb::RecordBatch::new(schema, builder.finish()).expect("batch of user rows");
             appender.push(&batch).expect("stage user row");

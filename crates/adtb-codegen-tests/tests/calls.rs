@@ -568,7 +568,7 @@ fn batch(full: &ArrowSchema, names: &[&str], rows: &[Vec<Stored>]) -> RecordBatc
     let schema = Arc::new(ArrowSchema { fields });
     let mut b = BatchBuilder::new(schema.batch_schema());
     for r in rows {
-        b.push_row(r);
+        b.push_row(r).expect("a test row fits a batch");
     }
     RecordBatch::new(schema, b.finish()).expect("the batch is of its schema")
 }

@@ -23,7 +23,7 @@ use super::join::{Deferred, Probed, Table};
 use super::memory::Grant;
 use super::sched::Scheduler;
 use super::spill::{Distinct, Spill};
-use super::store::{Listing, Named, ProbeBounds, Routes, Store, from_stored, to_key};
+use super::store::{Listing, Named, ProbeBounds, Routes, Store, from_stored_row, to_key};
 use super::value::Val;
 use super::{Broken, Error, Exceeded, Fault, Options};
 
@@ -124,30 +124,19 @@ impl<R: Runtime> Ctx<R> {
         self.eval_env(&program.root, env, true)
     }
 
-    fn row(&self, heap: HeapId, fields: &[Value]) -> Val {
+    fn row(&self, heap: HeapId, fields: &[Value]) -> Result<Val, Error> {
         let info = &self.program.heaps[&heap];
-        Val::ctor(
-            info.ctor,
-            info.fields
-                .iter()
-                .zip(fields)
-                .map(|(c, v)| from_stored(c, v))
-                .collect(),
-        )
+        Ok(Val::ctor(info.ctor, from_stored_row(&info.fields, fields)?))
     }
 
-    fn batch_rows(&self, heap: HeapId, b: &Batch) -> Vec<Val> {
+    fn batch_rows(&self, heap: HeapId, b: &Batch) -> Result<Vec<Val>, Error> {
         let info = &self.program.heaps[&heap];
         (0..b.len())
             .map(|i| {
-                Val::ctor(
+                Ok(Val::ctor(
                     info.ctor,
-                    info.fields
-                        .iter()
-                        .enumerate()
-                        .map(|(c, conv)| from_stored(conv, &b.value(c, i)))
-                        .collect(),
-                )
+                    from_stored_row(&info.fields, &b.row(i))?,
+                ))
             })
             .collect()
     }
@@ -370,7 +359,7 @@ impl<R: Runtime> Ctx<R> {
         }
         let heaps: Vec<(u32, HeapId)> = l.routes.iter().map(|r| (r.ctor, r.heap)).collect();
         if let Some((heap, row)) = self.store.fetch_past(l.index, &k, &heaps, bounds)? {
-            return Ok(self.row(heap, &row));
+            return self.row(heap, &row);
         }
         Err(Error::Fault(Fault::NoSuchRow))
     }
@@ -387,7 +376,7 @@ impl<R: Runtime> Ctx<R> {
         let Some((at, row)) = self.store.fetch(route.heap, named)? else {
             return Ok(None);
         };
-        let v = self.row(route.heap, &row);
+        let v = self.row(route.heap, &row)?;
         let fields = v.fields()?;
         let same = key
             .iter()
@@ -703,7 +692,7 @@ impl<R: Runtime> Ctx<R> {
         let Source::Scan { heap, var } = &p.source else {
             unreachable!("a morsel is of a scan")
         };
-        let rows = self.batch_rows(*heap, b);
+        let rows = self.batch_rows(*heap, b)?;
         let _held = self.grant.take(rows.iter().map(Val::size).sum())?;
         let mut f = env.widen(rows.len());
         f.bind_all(*var, rows);

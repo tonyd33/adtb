@@ -49,7 +49,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 let Some(v) = heap.read(pager, link.tid)? else {
                     continue;
                 };
-                if self.row(rel, c, &v.row) != *row {
+                if self.row(rel, c, &v.row)? != *row {
                     continue;
                 }
                 return match v.refuse_frame(pager) {
@@ -94,7 +94,7 @@ impl<R: Runtime> Stmt<'_, R> {
             let Some((at, stored)) = self.store.fetch(r.ctors[c as usize].heap, &n)? else {
                 continue;
             };
-            let v = self.row(rel, c, &stored);
+            let v = self.row(rel, c, &stored)?;
             if self.key_of(rel, &v)? == *key {
                 out.insert((c, at), v);
             }

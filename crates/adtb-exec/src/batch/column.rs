@@ -1,5 +1,6 @@
 use crate::key::{F32, F64, Scalar, Value};
 
+use super::TooLarge;
 use super::buffer::Buffer;
 use super::types::{Cell, Ctor, Shape, Type, shape, tag_width, union_group};
 
@@ -57,9 +58,31 @@ fn offsets() -> Buffer {
     b
 }
 
-fn push_offset(offsets: &mut Buffer, at: usize) {
-    let at = i32::try_from(at).expect("a batch column holds fewer than 2^31 elements or bytes");
+#[cfg(not(test))]
+fn offset_limit() -> usize {
+    i32::MAX as usize
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The largest offset a column of this thread's batches takes.
+    pub(super) static OFFSET_LIMIT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(i32::MAX as usize) };
+}
+
+#[cfg(test)]
+fn offset_limit() -> usize {
+    OFFSET_LIMIT.get()
+}
+
+/// Append offset `at`, refused when it is past what an `i32` offset addresses.
+pub(super) fn push_offset(offsets: &mut Buffer, at: usize) -> Result<(), TooLarge> {
+    if at > offset_limit() {
+        return Err(TooLarge);
+    }
+    let at = i32::try_from(at).map_err(|_| TooLarge)?;
     offsets.extend(&at.to_le_bytes());
+    Ok(())
 }
 
 fn i32_at(b: &Buffer, i: usize) -> usize {
@@ -191,13 +214,14 @@ impl Column {
         *len += 1;
     }
 
-    fn push_binary(&mut self, bytes: &[u8]) {
+    fn push_binary(&mut self, bytes: &[u8]) -> Result<(), TooLarge> {
         let Column::Binary { len, offsets, data } = self else {
             panic!("column {self:?} is not binary");
         };
+        push_offset(offsets, data.len() + bytes.len())?;
         data.extend(bytes);
-        push_offset(offsets, data.len());
         *len += 1;
+        Ok(())
     }
 
     fn children_mut(&mut self) -> &mut [Column] {
@@ -208,14 +232,15 @@ impl Column {
         children
     }
 
-    fn push_fields<C: Cell>(&mut self, types: &[Type], fields: &[C]) {
+    fn push_fields<C: Cell>(&mut self, types: &[Type], fields: &[C]) -> Result<(), TooLarge> {
         assert_eq!(types.len(), fields.len(), "a record of the wrong arity");
         for ((col, t), v) in self.children_mut().iter_mut().zip(types).zip(fields) {
-            col.push(t, v);
+            col.push(t, v)?;
         }
+        Ok(())
     }
 
-    fn push_scalar(&mut self, s: Scalar, v: &Value) {
+    fn push_scalar(&mut self, s: Scalar, v: &Value) -> Result<(), TooLarge> {
         match (s, v) {
             (Scalar::I8, Value::I8(x)) => self.push_fixed(&x.to_le_bytes()),
             (Scalar::I16, Value::I16(x)) => self.push_fixed(&x.to_le_bytes()),
@@ -230,16 +255,16 @@ impl Column {
             (Scalar::F32, Value::F32(x)) => self.push_fixed(&x.get().to_bits().to_le_bytes()),
             (Scalar::F64, Value::F64(x)) => self.push_fixed(&x.get().to_bits().to_le_bytes()),
             (Scalar::Decimal(_), Value::Decimal(x)) => self.push_fixed(&x.to_le_bytes()),
-            (Scalar::Text, Value::Text(x)) => self.push_binary(x.as_bytes()),
+            (Scalar::Text, Value::Text(x)) => self.push_binary(x.as_bytes())?,
             (Scalar::Bytes, Value::Bytes(x)) | (Scalar::SortKey, Value::SortKey(x)) => {
-                self.push_binary(x);
+                self.push_binary(x)?;
             }
             (Scalar::ZonedDateTime, Value::ZonedDateTime { local, zone }) => {
                 let [l, z] = self.children_mut() else {
                     unreachable!()
                 };
                 l.push_fixed(&local.to_le_bytes());
-                z.push_binary(zone.as_bytes());
+                z.push_binary(zone.as_bytes())?;
             }
             (Scalar::Period, Value::Period { months, days }) => {
                 let [m, d] = self.children_mut() else {
@@ -250,10 +275,12 @@ impl Column {
             }
             _ => panic!("value {v:?} is not of type {s:?}"),
         }
+        Ok(())
     }
 
-    /// Append `v`, a value of `t`, the type this column was made for.
-    pub(super) fn push<C: Cell>(&mut self, t: &Type, v: &C) {
+    /// Append `v`, a value of `t`, the type this column was made for, refused when an offset of
+    /// the column would pass what an `i32` addresses.
+    pub(super) fn push<C: Cell>(&mut self, t: &Type, v: &C) -> Result<(), TooLarge> {
         match t {
             Type::Scalar(s) => self.push_scalar(*s, v.as_scalar()),
             Type::Record(ts) => self.push_fields(ts, v.as_record()),
@@ -267,26 +294,28 @@ impl Column {
                     panic!("column {self:?} is not a list");
                 };
                 for x in v.as_list() {
-                    child.push(e, x);
+                    child.push(e, x)?;
                 }
-                push_offset(offsets, child.len());
+                push_offset(offsets, child.len())?;
                 *len += 1;
+                Ok(())
             }
             Type::Sum(cs) => {
                 let (ctor, fields) = v.as_sum();
                 let at = ctor as usize;
                 assert!(at < cs.len(), "constructor {ctor} of a sum of {}", cs.len());
-                self.push_sum(cs, at, fields);
+                self.push_sum(cs, at, fields)
             }
         }
     }
 
-    fn push_sum<C: Cell>(&mut self, cs: &[Ctor], at: usize, fields: &[C]) {
+    fn push_sum<C: Cell>(&mut self, cs: &[Ctor], at: usize, fields: &[C]) -> Result<(), TooLarge> {
         match shape(cs) {
             Shape::Payload => self.push_fields(&cs[0].fields, fields),
             Shape::Tag => {
                 let width = tag_width(cs.len());
                 self.push_fixed(&at.to_le_bytes()[..width]);
+                Ok(())
             }
             Shape::Option { none } => {
                 let Column::Nullable { validity, inner } = self else {
@@ -297,7 +326,7 @@ impl Column {
                     validity.extend(&[0]);
                 }
                 if at == none {
-                    inner.push_default();
+                    inner.push_default()
                 } else {
                     *validity.last_mut() |= 1 << (row % 8);
                     match cs[at].fields.as_slice() {
@@ -310,7 +339,12 @@ impl Column {
         }
     }
 
-    fn push_union<C: Cell>(&mut self, cs: &[Ctor], at: usize, fields: &[C]) {
+    fn push_union<C: Cell>(
+        &mut self,
+        cs: &[Ctor],
+        at: usize,
+        fields: &[C],
+    ) -> Result<(), TooLarge> {
         let Column::Union {
             len,
             type_ids,
@@ -322,36 +356,92 @@ impl Column {
         };
         let group = union_group(cs.len());
         let id = at / group;
+        push_offset(offsets, children[id].len())?;
         type_ids.extend(&[id as u8]);
-        push_offset(offsets, children[id].len());
         *len += 1;
         let child = &mut children[id];
         if group == 1 {
-            child.push_fields(&cs[at].fields, fields);
+            child.push_fields(&cs[at].fields, fields)
         } else {
             let first = id * group;
             let members = &cs[first..cs.len().min(first + group)];
-            child.push_union(members, at - first, fields);
+            child.push_union(members, at - first, fields)
         }
     }
 
-    fn push_default(&mut self) {
+    /// Keep the first `rows` rows, dropping whatever was appended after them, a row partly
+    /// appended among it.
+    ///
+    /// Preconditions:
+    /// - The column held `rows` whole rows before anything after them was appended.
+    pub(super) fn truncate(&mut self, rows: usize) {
         match self {
-            Column::Fixed { width, .. } => {
-                let zeros = vec![0; *width];
-                self.push_fixed(&zeros);
+            Column::Fixed { len, width, data } => {
+                data.truncate(rows * *width);
+                *len = rows;
             }
-            Column::Binary { .. } => self.push_binary(&[]),
-            Column::Struct { .. } => self
-                .children_mut()
-                .iter_mut()
-                .for_each(Column::push_default),
+            Column::Binary { len, offsets, data } => {
+                data.truncate(i32_at(offsets, rows));
+                offsets.truncate(4 * (rows + 1));
+                *len = rows;
+            }
+            Column::Struct { len, children } => {
+                for c in children {
+                    c.truncate(rows);
+                }
+                *len = rows;
+            }
             Column::List {
                 len,
                 offsets,
                 child,
             } => {
-                push_offset(offsets, child.len());
+                child.truncate(i32_at(offsets, rows));
+                offsets.truncate(4 * (rows + 1));
+                *len = rows;
+            }
+            Column::Union {
+                len,
+                type_ids,
+                offsets,
+                children,
+            } => {
+                let ids = &type_ids.as_slice()[..rows];
+                for (id, c) in children.iter_mut().enumerate() {
+                    c.truncate(ids.iter().filter(|&&i| usize::from(i) == id).count());
+                }
+                type_ids.truncate(rows);
+                offsets.truncate(4 * rows);
+                *len = rows;
+            }
+            Column::Nullable { validity, inner } => {
+                inner.truncate(rows);
+                validity.truncate(rows.div_ceil(8));
+                if !rows.is_multiple_of(8) {
+                    *validity.last_mut() &= (1u8 << (rows % 8)) - 1;
+                }
+            }
+        }
+    }
+
+    fn push_default(&mut self) -> Result<(), TooLarge> {
+        match self {
+            Column::Fixed { width, .. } => {
+                let zeros = vec![0; *width];
+                self.push_fixed(&zeros);
+            }
+            Column::Binary { .. } => self.push_binary(&[])?,
+            Column::Struct { .. } => {
+                for c in self.children_mut() {
+                    c.push_default()?;
+                }
+            }
+            Column::List {
+                len,
+                offsets,
+                child,
+            } => {
+                push_offset(offsets, child.len())?;
                 *len += 1;
             }
             Column::Union {
@@ -360,18 +450,19 @@ impl Column {
                 offsets,
                 children,
             } => {
+                push_offset(offsets, children[0].len())?;
                 type_ids.extend(&[0]);
-                push_offset(offsets, children[0].len());
                 *len += 1;
-                children[0].push_default();
+                children[0].push_default()?;
             }
             Column::Nullable { validity, inner } => {
                 if inner.len().is_multiple_of(8) {
                     validity.extend(&[0]);
                 }
-                inner.push_default();
+                inner.push_default()?;
             }
         }
+        Ok(())
     }
 
     fn fixed_at(&self, row: usize) -> &[u8] {

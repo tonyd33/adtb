@@ -150,7 +150,9 @@ impl Frame {
     /// Returns a frame of `vars` variables binding `fixed` at every row and, at each row of
     /// `rows`, its values.
     ///
-    /// Every row of `rows` binds the same variables.
+    /// Preconditions:
+    /// - Every row of `rows` binds the same variables.
+    /// - Every variable of `fixed` and `rows` is below `vars`.
     pub fn rebuild(vars: usize, fixed: &[(u32, Val)], rows: Vec<Vec<(u32, Val)>>) -> Frame {
         let mut cols = vec![Col::Unset; vars];
         for (v, x) in fixed {

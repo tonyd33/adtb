@@ -417,7 +417,7 @@ impl<R: Runtime> Stmt<'_, R> {
                             .heap(heap)
                             .read(pager, tid)?
                             .expect("a conflicting version is there");
-                        let row = self.row(w.rel, c, &v.row);
+                        let row = self.row(w.rel, c, &v.row)?;
                         group.insert(self.key_of(w.rel, &row)?, row);
                     }
                 }

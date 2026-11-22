@@ -204,7 +204,7 @@ pub(super) fn host(options: &mut OpenOptions, name: &str) {
     let answer = move |b: &Batch| {
         let mut out = BatchBuilder::new(Schema::new(vec![Type::Scalar(Scalar::Text)]));
         for _ in 0..b.len() {
-            out.push_row(&[adtb::key::Value::Text(reply.clone())]);
+            out.push_row(&[adtb::key::Value::Text(reply.clone())])?;
         }
         Ok(out.finish())
     };

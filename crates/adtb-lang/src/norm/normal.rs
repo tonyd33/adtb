@@ -430,7 +430,7 @@ fn normal(
         | Root::Command(_) => Body::Plain,
     };
     let tops: Vec<Tm> = roots.iter().map(|(t, _)| *t).collect();
-    kernel::validate(schema, terms, roots)
+    kernel::validate_bounded(schema, terms, roots, root.bounds(schema))
         .and_then(|_| kernel::validate_normal(schema, terms, roots))
         .and_then(|()| kernel::validate_placed(terms, &tops, at))
         .map_err(|e: Invalid| Error::invalid(schema, root, terms, e))

@@ -3,8 +3,9 @@ use std::rc::Rc;
 
 use super::{Agg, Const, Kind, Prim, Terms, Tm, Var};
 use crate::ast::FnBody;
+use crate::check::prim_ty::{Bounds, prim_ty};
 use crate::check::rel::key_value_ty;
-use crate::check::ty::{ctor_fields, ctor_names, elem, fields, join_adhoc, restrict, subtype};
+use crate::check::ty::{ctor_fields, ctor_names, elem, fields, restrict, subtype};
 use crate::schema::{Generator, Schema};
 use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty, TypeId};
 
@@ -87,16 +88,27 @@ impl std::ops::Deref for ValidTerms {
 
 /// Check every term reachable from `roots` against the typing invariants of its kind, and that
 /// every variable it reads is bound by an enclosing term or is one of the root's parameters.
-/// Fail at the node a builder recorded as broken, when `terms` records one.
+/// Fail at the node a builder recorded as broken, when `terms` records one. A type parameter
+/// has every bound.
 pub fn validate<'a>(
     schema: &Schema,
     terms: &'a Terms,
     roots: &[(Tm, Vec<Var>)],
 ) -> Result<Valid<'a>, Invalid> {
+    validate_bounded(schema, terms, roots, Bounds::Unknown)
+}
+
+/// Check `roots` as [`validate`] does, a type parameter having the bounds `bounds` gives it.
+pub(crate) fn validate_bounded<'a>(
+    schema: &Schema,
+    terms: &'a Terms,
+    roots: &[(Tm, Vec<Var>)],
+    bounds: Bounds<'_>,
+) -> Result<Valid<'a>, Invalid> {
     if let Some(e) = terms.broken() {
         return Err(e.clone());
     }
-    typed(schema, terms, roots.iter().map(|(t, _)| *t))?;
+    typed(schema, terms, bounds, roots.iter().map(|(t, _)| *t))?;
     let mut frees = HashMap::new();
     for (root, params) in roots {
         if let Some(x) = free(terms, *root, &mut frees)
@@ -275,6 +287,23 @@ pub fn assert_valid(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) {
     }
 }
 
+/// Panic naming the first term reachable from `roots` that fails [`validate_bounded`] under
+/// `bounds`, when built with debug assertions or the `testing` feature.
+pub(crate) fn assert_valid_bounded(
+    schema: &Schema,
+    terms: &Terms,
+    roots: &[(Tm, Vec<Var>)],
+    bounds: Bounds<'_>,
+) {
+    if cfg!(any(debug_assertions, feature = "testing")) {
+        refused(
+            schema,
+            terms,
+            validate_bounded(schema, terms, roots, bounds),
+        );
+    }
+}
+
 /// Panic naming the first term reachable from `roots` that fails [`validate`] or
 /// [`validate_normal`], when built with debug assertions or the `testing` feature.
 pub fn assert_normal(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) {
@@ -287,7 +316,7 @@ pub fn assert_normal(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) {
 /// Check every term reachable from `roots` against the typing invariants of its kind, its
 /// variables bound by whatever runs it.
 pub fn validate_typed(schema: &Schema, terms: &Terms, roots: &[Tm]) -> Result<(), Invalid> {
-    typed(schema, terms, roots.iter().copied())
+    typed(schema, terms, Bounds::Unknown, roots.iter().copied())
 }
 
 fn refused<T>(schema: &Schema, terms: &Terms, r: Result<T, Invalid>) {
@@ -304,7 +333,12 @@ fn refused<T>(schema: &Schema, terms: &Terms, r: Result<T, Invalid>) {
 
 /// Check `t` against the typing invariant of its kind, its children taken as they are.
 pub(super) fn node(schema: &Schema, terms: &Terms, t: Tm) -> Result<(), String> {
-    Validator { schema, terms }.node(t)
+    Validator {
+        schema,
+        terms,
+        bounds: Bounds::Unknown,
+    }
+    .node(t)
 }
 
 /// Check `t` against the typing invariant of its kind, its children taken as they are.
@@ -313,8 +347,17 @@ pub fn validate_node(schema: &Schema, terms: &Terms, t: Tm) -> Result<(), Invali
 }
 
 /// Check every term reachable from `roots` against the typing invariants of its kind.
-fn typed(schema: &Schema, terms: &Terms, roots: impl Iterator<Item = Tm>) -> Result<(), Invalid> {
-    let v = Validator { schema, terms };
+fn typed(
+    schema: &Schema,
+    terms: &Terms,
+    bounds: Bounds<'_>,
+    roots: impl Iterator<Item = Tm>,
+) -> Result<(), Invalid> {
+    let v = Validator {
+        schema,
+        terms,
+        bounds,
+    };
     let mut seen = HashSet::new();
     let mut todo: Vec<Tm> = roots.collect();
     while let Some(t) = todo.pop() {
@@ -355,6 +398,7 @@ fn free(terms: &Terms, t: Tm, memo: &mut HashMap<Tm, Rc<BTreeSet<Var>>>) -> Rc<B
 struct Validator<'a> {
     schema: &'a Schema,
     terms: &'a Terms,
+    bounds: Bounds<'a>,
 }
 
 fn expect(holds: bool, what: impl FnOnce() -> String) -> Checked {
@@ -890,141 +934,8 @@ impl Validator<'_> {
     }
 
     fn prim(&self, p: Prim, args: &[Tm], ty: &Ty) -> Checked {
-        let arity = |n: usize| {
-            expect(args.len() == n, || {
-                format!("`{p:?}` takes {n} arguments, given {}", args.len())
-            })
-        };
-        let text = Ty::Base(Base::Text);
-        match p {
-            Prim::Eq | Prim::Ne | Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge => {
-                arity(2)?;
-                let (a, b) = (self.ty(args[0]), self.ty(args[1]));
-                let decimals = matches!(
-                    (a, b),
-                    (Ty::Base(Base::Decimal(_)), Ty::Base(Base::Decimal(_)))
-                );
-                expect(decimals || join_adhoc(self.schema, a, b).is_some(), || {
-                    format!(
-                        "`{p:?}` compares `{}` and `{}`, which do not join",
-                        self.schema.show_ty(a),
-                        self.schema.show_ty(b)
-                    )
-                })?;
-                expect(self.is_bool(ty), || "a comparison is not `Bool`".into())
-            }
-            Prim::StartsWith
-            | Prim::EndsWith
-            | Prim::Contains
-            | Prim::Matches
-            | Prim::Overlaps
-            | Prim::Covers => {
-                arity(2)?;
-                expect(self.is_bool(ty), || format!("`{p:?}` is not `Bool`"))
-            }
-            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Rem => arity(2),
-            Prim::Neg | Prim::Abs => {
-                arity(1)?;
-                self.within("the operand", self.ty(args[0]), ty)
-            }
-            Prim::Concat => {
-                arity(2)?;
-                expect(matches!(ty, Ty::Base(Base::Text | Base::Bytes)), || {
-                    "`++` is not of text or bytes".into()
-                })?;
-                args.iter()
-                    .try_for_each(|a| self.within("an operand of `++`", self.ty(*a), ty))
-            }
-            Prim::CheckedAdd
-            | Prim::CheckedSub
-            | Prim::CheckedMul
-            | Prim::CheckedDiv
-            | Prim::CheckedRem
-            | Prim::Parse
-            | Prim::Convert { checked: true } => {
-                expect(Self::is_data(self.schema.prelude().option(), ty), || {
-                    format!("`{p:?}` is not an `Option`")
-                })
-            }
-            Prim::CheckedNeg => {
-                arity(1)?;
-                expect(Self::is_data(self.schema.prelude().option(), ty), || {
-                    "`CheckedNeg` is not an `Option`".into()
-                })
-            }
-            Prim::DecimalDiv | Prim::Round | Prim::Rescale => self.rescaled(p, args, ty),
-            Prim::ToText | Prim::Print | Prim::Lower | Prim::Upper | Prim::Fold => {
-                self.same(&format!("`{p:?}`"), ty, &text)
-            }
-            Prim::ParseUuid => {
-                arity(1)?;
-                expect(Self::is_data(self.schema.prelude().uuid(), ty), || {
-                    "`ParseUuid` is not a `Uuid`".into()
-                })
-            }
-            Prim::Wrap | Prim::Unwrap | Prim::KeyValue => arity(1),
-            Prim::Micros
-            | Prim::Millis
-            | Prim::Seconds
-            | Prim::Minutes
-            | Prim::Hours
-            | Prim::Days
-            | Prim::Weeks
-            | Prim::Months
-            | Prim::Years => {
-                arity(1)?;
-                self.same("the operand", self.ty(args[0]), &Ty::Base(Base::I64))?;
-                expect(
-                    matches!(ty, Ty::Base(Base::Duration | Base::Period)),
-                    || format!("`{p:?}` is not a duration or a period"),
-                )
-            }
-            Prim::ReadFile { .. } => {
-                arity(1)?;
-                self.same("the path", self.ty(args[0]), &text)?;
-                expect(matches!(ty, Ty::Set(_)), || {
-                    "a file scan is not a set".into()
-                })
-            }
-            Prim::Convert { checked: false }
-            | Prim::BytesLen
-            | Prim::ScalarLen
-            | Prim::GraphemeLen
-            | Prim::Collate
-            | Prim::Utf8
-            | Prim::Bytes
-            | Prim::AddPeriod
-            | Prim::Zoned
-            | Prim::InZone
-            | Prim::ToInstant
-            | Prim::Span
-            | Prim::Start
-            | Prim::End => Ok(()),
-        }
-    }
-
-    /// Check a decimal division, round or rescale: decimal operands, then a scale that is an
-    /// `I64` constant giving the result's scale.
-    fn rescaled(&self, p: Prim, args: &[Tm], ty: &Ty) -> Checked {
-        let operands = if p == Prim::DecimalDiv { 2 } else { 1 };
-        let n = if p == Prim::Rescale { 2 } else { operands + 2 };
-        expect(args.len() == n, || {
-            format!("`{p:?}` takes {n} arguments, given {}", args.len())
-        })?;
-        for a in &args[..operands] {
-            expect(matches!(self.ty(*a), Ty::Base(Base::Decimal(_))), || {
-                format!("an operand of `{p:?}` is not a decimal")
-            })?;
-        }
-        let scale = args[operands];
-        self.same("the scale", self.ty(scale), &Ty::Base(Base::I64))?;
-        let Ty::Base(Base::Decimal(s)) = ty else {
-            return Err(format!("`{p:?}` is not a decimal"));
-        };
-        expect(
-            matches!(self.terms.kind(scale), Kind::Const(Const::Int(u)) if *u == i128::from(*s)),
-            || format!("the scale of `{p:?}` is not the constant {s}"),
-        )
+        let want = prim_ty(self.schema, self.terms, self.bounds, p, args, Some(ty))?;
+        self.within(&format!("`{p:?}`"), &want, ty)
     }
 
     fn record(&self, fs: &[(String, Tm)], ty: &Ty) -> Checked {

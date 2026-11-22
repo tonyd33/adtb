@@ -8,7 +8,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::textual::key_names;
 use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
 
-use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, to_stored};
+use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, from_stored_row, to_stored};
 use crate::heap::FieldType;
 use crate::key::Value;
 
@@ -109,15 +109,8 @@ fn row_convs(schema: &Schema, r: RelId, c: u32) -> Vec<Conv> {
         .collect()
 }
 
-fn row_val(c: u32, convs: &[Conv], row: &[Value]) -> Val {
-    Val::ctor(
-        c,
-        convs
-            .iter()
-            .zip(row)
-            .map(|(k, v)| from_stored(k, v))
-            .collect(),
-    )
+fn row_val(c: u32, convs: &[Conv], row: &[Value]) -> Result<Val, Failed> {
+    Ok(Val::ctor(c, from_stored_row(convs, row).map_err(shown)?))
 }
 
 /// Returns the constructor of relation `r` named `name`.
@@ -450,7 +443,7 @@ impl Mapping<'_> {
                 let convs = row_convs(&fill.schema, ra, c);
                 let f = f.clone();
                 let fill: Box<Fill<'static>> = Box::new(move |_, row| {
-                    let v = f.eval(row_val(c, &convs, row)).map_err(shown)?;
+                    let v = f.eval(row_val(c, &convs, row)?).map_err(shown)?;
                     to_stored(&ty, &v).map_err(shown)
                 });
                 self.out.fills.insert((rid, ctor_id(b, rb, cb), id), fill);
@@ -499,7 +492,7 @@ impl Mapping<'_> {
                 .collect();
             let f = f.clone();
             let fill: Box<Fill<'static>> = Box::new(move |_, vals| {
-                let v = f.eval(row_val(c, &convs, vals)).map_err(shown)?;
+                let v = f.eval(row_val(c, &convs, vals)?).map_err(shown)?;
                 to_stored(&ty, &v).map_err(shown)
             });
             self.out
@@ -545,7 +538,8 @@ impl Mapping<'_> {
                 let cid = ctor_id(a, ra, c);
                 let convs = row_convs(&routing.schema, ra, c);
                 for row in rows.get(&cid).into_iter().flatten() {
-                    let Val::Ctor(k, vals) = f.eval(row_val(c, &convs, row)).map_err(shown)? else {
+                    let Val::Ctor(k, vals) = f.eval(row_val(c, &convs, row)?).map_err(shown)?
+                    else {
                         return Err(Failed::from(Broken::RoutedNotCtor));
                     };
                     let name = ctor_name(&routing.schema, def, k);
@@ -628,7 +622,7 @@ impl Mapping<'_> {
                 let record = layout::is_record(b, &data(db, ab));
                 let f = f.clone();
                 Ok(Box::new(move |_, vals| {
-                    let held = row_val(c, &routed[c as usize].convs, vals);
+                    let held = row_val(c, &routed[c as usize].convs, vals)?;
                     let Val::Ctor(k, out) = f.eval(held).map_err(shown)? else {
                         return Err(Failed::from(Broken::RoutedNotCtor));
                     };
@@ -732,11 +726,8 @@ impl Mapping<'_> {
                         .iter()
                         .map(|p| p.value(vals, &[]))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let inner = convs
-                        .iter()
-                        .zip(&vals[header..])
-                        .map(|(k, v)| from_stored(k, v));
-                    fields.push(to_stored(&held, &Val::ctor(k, inner.collect())).map_err(shown)?);
+                    let inner = from_stored_row(&convs, &vals[header..]).map_err(shown)?;
+                    fields.push(to_stored(&held, &Val::ctor(k, inner)).map_err(shown)?);
                     Ok(shaped(record, n, fields))
                 }))
             });
@@ -788,7 +779,8 @@ impl Mapping<'_> {
             let held = conv(a, held);
             let record = layout::is_record(b, &data(db, ab));
             Ok(Box::new(move |_, vals| {
-                let Some(Val::Ctor(k, inner)) = vals.last().map(|v| from_stored(&held, v)) else {
+                let last = vals.last().map(|v| from_stored(&held, v)).transpose();
+                let Some(Val::Ctor(k, inner)) = last.map_err(shown)? else {
                     return Err(Failed::from(Broken::UnnestedNotCtor));
                 };
                 let (p, parts) = &lifted[k as usize];
@@ -888,11 +880,7 @@ impl Mapping<'_> {
                         .iter()
                         .map(|t| carried(&from_fields, row, t))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let inner = convs[header..]
-                        .iter()
-                        .zip(&row[header..])
-                        .map(|(k, v)| from_stored(k, v))
-                        .collect();
+                    let inner = from_stored_row(&convs[header..], &row[header..]).map_err(shown)?;
                     nested.push(to_stored(&held.ty, &Val::ctor(k, inner)).map_err(shown)?);
                     self.out
                         .routed
@@ -923,7 +911,8 @@ impl Mapping<'_> {
                 )));
             };
             for row in rows.get(&cid).into_iter().flatten() {
-                let Some(Val::Ctor(k, vals)) = row.last().map(|v| from_stored(held, v)) else {
+                let last = row.last().map(|v| from_stored(held, v)).transpose();
+                let Some(Val::Ctor(k, vals)) = last.map_err(shown)? else {
                     return Err(Failed::from(Broken::UnnestedNotCtor));
                 };
                 let inner = &a.ty(s).ctors()[k as usize];

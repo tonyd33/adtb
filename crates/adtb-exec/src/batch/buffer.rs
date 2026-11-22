@@ -53,6 +53,14 @@ impl Buffer {
         self.len += bytes.len();
     }
 
+    /// Keep the first `len` bytes, zeroing the rest.
+    pub(super) fn truncate(&mut self, len: usize) {
+        if len < self.len {
+            self.bytes[self.start + len..self.start + self.len].fill(0);
+            self.len = len;
+        }
+    }
+
     pub(super) fn last_mut(&mut self) -> &mut u8 {
         &mut self.bytes[self.start + self.len - 1]
     }

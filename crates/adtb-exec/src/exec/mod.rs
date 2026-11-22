@@ -45,7 +45,7 @@ pub use store::{
     Bindings, Histories, IndexedRows, Named, PastReads, ProbeBounds, Routes, RowKeys, Store,
     StoredHeap, StoredIndex,
 };
-pub use store::{Conv, conv, from_stored, to_key, to_stored};
+pub use store::{Conv, conv, from_stored, from_stored_row, to_key, to_stored};
 pub use stream::{Produced, Production, produce};
 #[cfg(any(test, feature = "testing"))]
 pub use value::F32;
@@ -185,6 +185,12 @@ pub enum Error {
     WrongVersion {
         version: u64,
     },
+}
+
+impl From<batch::TooLarge> for Error {
+    fn from(_: batch::TooLarge) -> Error {
+        Broken::PastOffsets.into()
+    }
 }
 
 impl From<PageError> for Error {
@@ -407,7 +413,9 @@ pub enum Rows {
     Whole,
 }
 
-/// Returns the elements of the set or list `v` as batches of `schema`, at most `per` rows each.
+/// Returns the elements of the set or list `v` as batches of `schema`, at most `per` rows each,
+/// a batch cut sooner where the next element would take a column of it past 2^31 elements or
+/// value bytes.
 ///
 /// Returns `Error::Internal` if `v` is not a set or list or an element is not of the schema's
 /// types.
@@ -424,20 +432,22 @@ pub fn batches(
             return Err(Broken::NotBatchable(other.clone()).into());
         }
     };
-    elems
-        .chunks(per.max(1))
-        .map(|chunk| {
-            let mut b = BatchBuilder::new(schema.clone());
-            for e in chunk {
-                let row = match rows {
-                    Rows::Fields => data(schema.fields(), e.fields()?)?,
-                    Rows::Whole => vec![datum(&schema.fields()[0], e)?],
-                };
-                b.push_datums(&row);
-            }
-            Ok(b.finish())
-        })
-        .collect()
+    let mut out = Vec::new();
+    let mut b = BatchBuilder::new(schema.clone());
+    for e in elems {
+        let row = match rows {
+            Rows::Fields => data(schema.fields(), e.fields()?)?,
+            Rows::Whole => vec![datum(&schema.fields()[0], e)?],
+        };
+        out.extend(b.push_datums_or_cut(&row)?);
+        if b.len() == per.max(1) {
+            out.push(std::mem::replace(&mut b, BatchBuilder::new(schema.clone())).finish());
+        }
+    }
+    if !b.is_empty() {
+        out.push(b.finish());
+    }
+    Ok(out)
 }
 
 fn mistyped(v: &Val, t: &batch::Type) -> Error {

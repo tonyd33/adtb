@@ -48,7 +48,8 @@ fn texts(b: &Batch, f: impl Fn(&str) -> String) -> Batch {
         let Stored::Text(t) = b.value(0, i) else {
             panic!("a text argument");
         };
-        out.push_row(&[Stored::Text(f(&t))]);
+        out.push_row(&[Stored::Text(f(&t))])
+            .expect("a test row fits a batch");
     }
     out.finish()
 }
@@ -288,7 +289,7 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
                 let mut out =
                     BatchBuilder::new(batch::Schema::new(vec![Type::Scalar(Scalar::I64)]));
                 for _ in 0..b.len() {
-                    out.push_row(&[Stored::I64(1)]);
+                    out.push_row(&[Stored::I64(1)])?;
                 }
                 Ok(out.finish())
             }),

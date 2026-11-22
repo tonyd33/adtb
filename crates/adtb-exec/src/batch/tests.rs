@@ -454,7 +454,9 @@ fn random_nested_rows_round_trip() {
             })
             .collect();
         let mut b = BatchBuilder::new(schema);
-        rows.iter().for_each(|r| b.push_datums(r));
+        for r in &rows {
+            b.push_datums(r).expect("a test row fits a batch");
+        }
         let batch = b.finish();
         check_batch(&batch);
         for (i, r) in rows.iter().enumerate() {
@@ -554,4 +556,83 @@ fn a_sum_past_127_squared_constructors_nests_three_deep() {
     };
     assert_eq!(2, children.len());
     assert_eq!(&[1, 0, 0], type_ids.as_slice());
+}
+
+#[test]
+fn an_offset_is_appended_up_to_i32_max_and_refused_past_it() {
+    let mut offsets = Buffer::new();
+    assert_eq!(Ok(()), column::push_offset(&mut offsets, i32::MAX as usize));
+    assert_eq!(Err(TooLarge), column::push_offset(&mut offsets, 1 << 31));
+    assert_eq!(i32::MAX.to_le_bytes().as_slice(), offsets.as_slice());
+}
+
+#[test]
+fn a_batch_is_cut_before_the_row_that_would_pass_an_offset_and_not_at_it() {
+    column::OFFSET_LIMIT.set(10);
+    let schema = Schema::new(vec![s(Scalar::I64), s(Scalar::Text)]);
+    let row = |i: i64, t: &str| vec![Value::I64(i), Value::Text(t.into())];
+    let rows = [row(1, "abcd"), row(2, "efgh"), row(3, "ab"), row(4, "c")];
+    let mut b = BatchBuilder::new(schema.clone());
+    let mut cuts = Vec::new();
+    for r in &rows {
+        cuts.push(
+            b.push_row_or_cut(r)
+                .map(|c| c.map(|c| (0..c.len()).map(|i| c.row(i)).collect::<Vec<_>>())),
+        );
+    }
+    assert_eq!(
+        vec![Ok(None), Ok(None), Ok(None), Ok(Some(rows[..3].to_vec()))],
+        cuts
+    );
+    let rest = b.finish();
+    check_batch(&rest);
+    assert_eq!(
+        vec![rows[3].clone()],
+        (0..rest.len()).map(|i| rest.row(i)).collect::<Vec<_>>()
+    );
+    let mut alone = BatchBuilder::new(schema);
+    let empty = alone.bytes();
+    assert_eq!(Err(TooLarge), alone.push_row_or_cut(&row(5, "abcdefghijk")));
+    assert_eq!((0, empty), (alone.len(), alone.bytes()));
+}
+
+#[test]
+fn a_cut_batch_and_the_rows_after_it_hold_every_row_of_every_column_shape_in_order() {
+    let mut rng = Rng(3);
+    let (mut cut, mut alone) = (0, 0);
+    for _ in 0..400 {
+        let limit = 8 + rng.below(56);
+        column::OFFSET_LIMIT.set(limit);
+        let schema = random_schema(&mut rng, true);
+        let mut b = BatchBuilder::new(schema.clone());
+        let (mut batches, mut kept) = (Vec::new(), Vec::new());
+        for _ in 0..rng.below(30) {
+            let r: Vec<Datum> = schema
+                .fields()
+                .iter()
+                .map(|t| random_datum(&mut rng, t))
+                .collect();
+            let held = (b.len(), b.bytes());
+            match b.push_datums_or_cut(&r) {
+                Ok(full) => {
+                    cut += usize::from(full.is_some());
+                    batches.extend(full);
+                    kept.push(r);
+                }
+                Err(TooLarge) => {
+                    alone += 1;
+                    assert_eq!(held, (b.len(), b.bytes()));
+                }
+            }
+        }
+        batches.push(b.finish());
+        let mut got = Vec::new();
+        for batch in &batches {
+            check_batch(batch);
+            got.extend((0..batch.len()).map(|i| batch.datums(i)));
+        }
+        assert_eq!(kept, got);
+    }
+    assert!(cut > 100, "only {cut} batches were cut");
+    assert!(alone > 10, "only {alone} rows passed the limit alone");
 }

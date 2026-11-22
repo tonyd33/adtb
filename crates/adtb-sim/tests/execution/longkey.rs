@@ -59,8 +59,12 @@ fn oversized_append_aborts_the_whole_load() {
         let mut appender = load.appender("items").expect("appender");
         let arrow = appender.schema().clone();
         let mut builder = BatchBuilder::new(arrow.batch_schema());
-        builder.push_row(&[Value::I64(1), Value::Text("small".into())]);
-        builder.push_row(&[Value::I64(2), Value::Text("x".repeat(20_000))]);
+        builder
+            .push_row(&[Value::I64(1), Value::Text("small".into())])
+            .expect("a test row fits a batch");
+        builder
+            .push_row(&[Value::I64(2), Value::Text("x".repeat(20_000))])
+            .expect("a test row fits a batch");
         appender
             .push(&RecordBatch::new(arrow, builder.finish()).expect("batch"))
             .expect("stage");
