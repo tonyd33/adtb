@@ -45,6 +45,12 @@ pub enum Rot {
         row: String,
         detail: String,
     },
+    /// Field `field` of a row of a catalog relation, `row` naming the relation and its
+    /// constructor, holds a value outside the field's range.
+    OutOfRange {
+        row: String,
+        field: &'static str,
+    },
     UntaggedGrant(i64),
     KeptRow(Vec<Value>),
     KeptFormat(u64),
@@ -110,6 +116,9 @@ impl fmt::Display for Rot {
             Rot::KeptIndexes(b) => write!(f, "{b}"),
             Rot::IndexKeying(e) => f.write_str(&detail(e)),
             Rot::CatalogRow { row, detail } => write!(f, "a row of {row} {detail}"),
+            Rot::OutOfRange { row, field } => {
+                write!(f, "a row of {row} holds `{field}` outside its range")
+            }
             Rot::UntaggedGrant(id) => write!(f, "grant row {id} records no grant of the log"),
             Rot::KeptRow(fields) => write!(f, "a kept row holds {fields:?}"),
             Rot::KeptFormat(format) => write!(

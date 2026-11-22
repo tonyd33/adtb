@@ -1,0 +1,45 @@
+# A count or duration setting is refused below 0, and a fraction of VacuumBudget outside 0 to 1,
+# naming the setting and the value; the setting keeps its value. The bounds are in range.
+
+reopen
+
+run
+  set setting RetryLimit = { retries: 0 }
+  set setting RetentionWindow = { length: 0s }
+  set setting ScrubInterval = { every: Some { value: 0s } }
+  set setting VacuumBudget = { io: 0.0, cpu: 1.0 }
+
+error Invalid { detail: "the `retries` of setting RetryLimit is -1, outside its range" }
+  set setting RetryLimit = { retries: -1 }
+
+error Invalid { detail: "the `length` of setting RetentionWindow is -1s, outside its range" }
+  set setting RetentionWindow = { length: -1s }
+
+error Invalid { detail: "the `every` of setting ScrubInterval is Some { value: -1us }, outside its range" }
+  set setting ScrubInterval = { every: Some { value: -1us } }
+
+error Invalid { detail: "the `cpu` of setting VacuumBudget is 1.5, outside its range" }
+  set setting VacuumBudget = { io: 0.5, cpu: 1.5 }
+
+error Invalid { detail: "the `io` of setting VacuumBudget is -0.1, outside its range" }
+  set setting VacuumBudget = { io: -0.1, cpu: 0.5 }
+
+query
+  from s in catalog::settings.RetryLimit select s.retries
+----
+0
+
+query
+  from s in catalog::settings.RetentionWindow select s.length
+----
+0s
+
+query
+  from s in catalog::settings.ScrubInterval select s.every
+----
+Some { value: 0s }
+
+query
+  from s in catalog::settings.VacuumBudget select { io: s.io, cpu: s.cpu }
+----
+{ io: 0.0, cpu: 1.0 }

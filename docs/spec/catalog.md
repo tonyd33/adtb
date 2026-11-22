@@ -1993,7 +1993,10 @@ set setting StatementLimit = { limit: Some { value: 5s } }
 set setting VacuumBudget = { io: 0.2, cpu: 0.5 }
 ```
 
-A limit of `None` is no limit. A new value applies to calls that start
+A limit of `None` is no limit. A duration or count is at least 0, and each
+fraction of `VacuumBudget` is from 0 to 1; `set setting` with a value
+outside its range is refused with `Invalid`, naming the setting and the
+value. A new value applies to calls that start
 after the `set setting` command completes. Listener peer mappings are
 not settings: they are rows of `catalog::peer_mappings` (§2.6),
 changed by `map peer` and `unmap peer`

@@ -7,7 +7,9 @@ use crate::key::{F64, Value};
 
 use super::super::{engine_schema, layout};
 use super::testing::{Sample, Sampled, position, reversed, row, tag};
-use super::{Codec, Decode, GrantKind, MigrationRow, RoleGrant, RoleRow, Rot, SettingRow};
+use super::{
+    Codec, Decode, GrantKind, MigrationRow, NonNegative, RoleGrant, RoleRow, Rot, SettingRow,
+};
 
 #[test]
 #[should_panic(expected = "the codec of catalog::settings lists the fields of constructor 451")]
@@ -423,6 +425,7 @@ impl Sampled for SettingRow {
         use SettingRow as S;
         let d = |n: i64| Value::Duration(n * SECOND);
         let f = |x: f64| Value::F64(F64::new(x));
+        let nn = |n: i64| NonNegative::new(n).expect("a count of the table is from 0");
         let one = |id: CatCtorId, field: &'static str, v: Value, want: S| {
             let n = i64::try_from(id.raw()).expect("an id fits 63 bits");
             (id, vec![("id", Value::I64(n)), (field, v)], want)
@@ -439,7 +442,7 @@ impl Sampled for SettingRow {
                 k::SETTING_STATEMENT_LIMIT,
                 "limit",
                 some(d(1)),
-                S::StatementLimit(Some(SECOND)),
+                S::StatementLimit(Some(nn(SECOND))),
             ),
             one(
                 k::SETTING_TRANSACTION_LIMIT,
@@ -451,70 +454,70 @@ impl Sampled for SettingRow {
                 k::SETTING_IDLE_LIMIT,
                 "limit",
                 some(d(3)),
-                S::IdleLimit(Some(3 * SECOND)),
+                S::IdleLimit(Some(nn(3 * SECOND))),
             ),
             one(
                 k::SETTING_STREAM_IDLE_LIMIT,
                 "limit",
                 d(4),
-                S::StreamIdleLimit(4 * SECOND),
+                S::StreamIdleLimit(nn(4 * SECOND)),
             ),
             one(
                 k::SETTING_REQUEST_WINDOW,
                 "keep",
                 d(5),
-                S::RequestWindow(5 * SECOND),
+                S::RequestWindow(nn(5 * SECOND)),
             ),
             one(
                 k::SETTING_SAFE_POINT_DELAY,
                 "delay",
                 d(6),
-                S::SafePointDelay(6 * SECOND),
+                S::SafePointDelay(nn(6 * SECOND)),
             ),
             one(
                 k::SETTING_REPLICA_WAIT,
                 "wait",
                 d(7),
-                S::ReplicaWait(7 * SECOND),
+                S::ReplicaWait(nn(7 * SECOND)),
             ),
             one(
                 k::SETTING_DEFAULT_LEASE,
                 "lease",
                 d(8),
-                S::DefaultLease(8 * SECOND),
+                S::DefaultLease(nn(8 * SECOND)),
             ),
             one(
                 k::SETTING_FEED_RETENTION,
                 "keep",
                 d(9),
-                S::FeedRetention(9 * SECOND),
+                S::FeedRetention(nn(9 * SECOND)),
             ),
             one(
                 k::SETTING_STATS_WINDOW,
                 "length",
                 d(10),
-                S::StatsWindow(10 * SECOND),
+                S::StatsWindow(nn(10 * SECOND)),
             ),
             one(
                 k::SETTING_STATS_RETENTION,
                 "keep",
                 d(11),
-                S::StatsRetention(11 * SECOND),
+                S::StatsRetention(nn(11 * SECOND)),
             ),
             two(
                 k::SETTING_WAIT_SAMPLING,
                 ("every", d(12)),
                 ("keep", d(13)),
                 S::WaitSampling {
-                    every: 12 * SECOND,
-                    keep: 13 * SECOND,
+                    every: nn(12 * SECOND),
+                    keep: nn(13 * SECOND),
                 },
             ),
             one(
                 k::SETTING_CONFLICT_LOG,
                 "rows",
                 Value::I64(14),
-                S::ConflictLog(14),
+                S::ConflictLog(nn(14)),
             ),
             two(
                 k::SETTING_VACUUM_BUDGET,
@@ -529,37 +532,37 @@ impl Sampled for SettingRow {
                 k::SETTING_SCRUB_INTERVAL,
                 "every",
                 some(d(15)),
-                S::ScrubInterval(Some(15 * SECOND)),
+                S::ScrubInterval(Some(nn(15 * SECOND))),
             ),
             one(
                 k::SETTING_LEASE_GRACE,
                 "grace",
                 d(16),
-                S::LeaseGrace(16 * SECOND),
+                S::LeaseGrace(nn(16 * SECOND)),
             ),
             one(
                 k::SETTING_BLOCKING_NOTICE_PERIOD,
                 "period",
                 d(17),
-                S::BlockingNoticePeriod(17 * SECOND),
+                S::BlockingNoticePeriod(nn(17 * SECOND)),
             ),
             one(
                 k::SETTING_REPLICA_VACUUM_WAIT,
                 "wait",
                 d(18),
-                S::ReplicaVacuumWait(18 * SECOND),
+                S::ReplicaVacuumWait(nn(18 * SECOND)),
             ),
             one(
                 k::SETTING_RETRY_LIMIT,
                 "retries",
                 Value::I64(19),
-                S::RetryLimit(19),
+                S::RetryLimit(nn(19)),
             ),
             one(
                 k::SETTING_RETENTION_WINDOW,
                 "length",
                 d(20),
-                S::RetentionWindow(20 * SECOND),
+                S::RetentionWindow(nn(20 * SECOND)),
             ),
         ]
     }

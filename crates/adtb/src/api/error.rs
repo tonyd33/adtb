@@ -966,6 +966,7 @@ fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
             stage: format!("{stage:?}"),
         },
         Rejection::UserError { message } => RejectReason::UserError { message },
+        Rejection::Invalid { detail } => RejectReason::Invalid { detail },
         Rejection::BadInput {
             source,
             line,

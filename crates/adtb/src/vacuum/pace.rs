@@ -75,7 +75,7 @@ impl Pacer {
         c.busy += spent;
         c.longest = c.longest.max(spent);
         c.since = Some(c.since.map_or(began, |s| s.min(began)));
-        let budget = Some(st.budget.min(1.0)).filter(|b| *b > 0.0)?;
+        let budget = Some(st.budget).filter(|b| *b > 0.0)?;
         let from = st.next.map_or(began, |n| n.max(began));
         let next = from
             + Duration::try_from_secs_f64(spent.as_secs_f64() / budget)

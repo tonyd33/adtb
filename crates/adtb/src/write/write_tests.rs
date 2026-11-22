@@ -66,6 +66,7 @@ fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
             }
             WRejection::NotOpen { ctor, stage } => plain(format!("NotOpen {ctor} {stage:?}")),
             WRejection::UserError { message } => plain(format!("UserError {message}")),
+            WRejection::Invalid { detail } => plain(format!("Invalid {detail}")),
             WRejection::BadInput {
                 source,
                 line,

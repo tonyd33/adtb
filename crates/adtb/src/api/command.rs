@@ -13,7 +13,7 @@ use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{Base, CtorSet, DenialIdx, KeyCtors, RelId, RelRef, Ty};
 
 use crate::catalog::codec::{Codec, SettingRow};
-use crate::catalog::engine_relation;
+use crate::catalog::{Rot, engine_relation};
 use crate::exec::Val;
 use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
@@ -790,9 +790,23 @@ impl<R: Runtime> Engine<R> {
                 .ok_or_else(|| write::Broken::SettingField(name.to_owned()))
         })?;
         let row = Val::ctor(setting, fields);
-        let decoded = codec
-            .decode_val(schema, &row)
-            .map_err(|r| write::Broken::CatalogError(r.into()))?;
+        let decoded = match codec.decode_val(schema, &row) {
+            Err(Rot::OutOfRange { field, .. }) => {
+                let ctor = &schema.ty(def).ctors()[setting as usize].name;
+                let ty = names
+                    .iter()
+                    .find_map(|(n, ty)| (n == field).then_some(ty))
+                    .ok_or_else(|| write::Broken::SettingField(field.to_owned()))?;
+                let value = print(given[field], &Form::of(schema, ty))
+                    .map_err(write::Broken::Unprintable)?;
+                return Err(write::Error::Rejected(Rejection::Invalid {
+                    detail: format!(
+                        "the `{field}` of setting {ctor} is {value}, outside its range"
+                    ),
+                }));
+            }
+            decoded => decoded.map_err(|r| write::Broken::CatalogError(r.into()))?,
+        };
         let writer = self.bundle_writer();
         if matches!(
             decoded,

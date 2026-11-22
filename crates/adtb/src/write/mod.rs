@@ -114,6 +114,10 @@ pub enum Rejection {
     UserError {
         message: String,
     },
+    /// An argument of a command is outside its parameter's domain, as `detail` states.
+    Invalid {
+        detail: String,
+    },
     /// A record of the statement's source failed: record `line` of relation `source`, or `""`
     /// and 0 when the source is not one relation.
     BadInput {

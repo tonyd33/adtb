@@ -958,6 +958,41 @@ impl Row<'_> {
         }
     }
 
+    /// Returns the count in `I64` field `f`, refusing one below 0 as out of range.
+    pub fn count(&self, f: Field) -> Result<NonNegative, Rot> {
+        NonNegative::new(self.int(f)).ok_or_else(|| self.out_of_range(f))
+    }
+
+    /// Returns the duration in field `f`, refusing one below 0 as out of range.
+    pub fn length(&self, f: Field) -> Result<NonNegative, Rot> {
+        NonNegative::new(self.duration(f)).ok_or_else(|| self.out_of_range(f))
+    }
+
+    /// Returns the duration an `Option Duration` field `f` holds, refusing one below 0 as out of
+    /// range.
+    pub fn optional_length(&self, f: Field) -> Result<Option<NonNegative>, Rot> {
+        self.optional_duration(f)
+            .map(|d| NonNegative::new(d).ok_or_else(|| self.out_of_range(f)))
+            .transpose()
+    }
+
+    /// Returns the fraction in `F64` field `f`, refusing one outside 0 to 1 as out of range.
+    pub fn fraction(&self, f: Field) -> Result<F64, Rot> {
+        let x = self.float(f);
+        if (0.0..=1.0).contains(&x.get()) {
+            Ok(x)
+        } else {
+            Err(self.out_of_range(f))
+        }
+    }
+
+    fn out_of_range(&self, f: Field) -> Rot {
+        Rot::OutOfRange {
+            row: format!("{}.{}", self.relation, self.name),
+            field: f.fields[f.at],
+        }
+    }
+
     /// Returns the duration an `Option Duration` field holds, in microseconds.
     pub fn optional_duration(&self, f: Field) -> Option<i64> {
         self.optional(f, |v| match v {
@@ -1207,29 +1242,54 @@ impl Decode for MigrationRow {
     })];
 }
 
-/// A row of `catalog::settings`, each duration in microseconds.
+/// A count or duration of a setting, in microseconds for a duration: an `i64` from 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NonNegative(i64);
+
+impl NonNegative {
+    /// Returns `n`, `None` when it is below 0.
+    pub fn new(n: i64) -> Option<NonNegative> {
+        (n >= 0).then_some(NonNegative(n))
+    }
+
+    pub fn get(self) -> i64 {
+        self.0
+    }
+
+    pub fn unsigned(self) -> u64 {
+        self.0.cast_unsigned()
+    }
+}
+
+/// A row of `catalog::settings`. Each fraction of `VacuumBudget` is from 0 to 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingRow {
-    StatementLimit(Option<i64>),
-    TransactionLimit(Option<i64>),
-    IdleLimit(Option<i64>),
-    StreamIdleLimit(i64),
-    RequestWindow(i64),
-    SafePointDelay(i64),
-    ReplicaWait(i64),
-    DefaultLease(i64),
-    FeedRetention(i64),
-    StatsWindow(i64),
-    StatsRetention(i64),
-    WaitSampling { every: i64, keep: i64 },
-    ConflictLog(i64),
-    VacuumBudget { io: F64, cpu: F64 },
-    ScrubInterval(Option<i64>),
-    LeaseGrace(i64),
-    BlockingNoticePeriod(i64),
-    ReplicaVacuumWait(i64),
-    RetryLimit(i64),
-    RetentionWindow(i64),
+    StatementLimit(Option<NonNegative>),
+    TransactionLimit(Option<NonNegative>),
+    IdleLimit(Option<NonNegative>),
+    StreamIdleLimit(NonNegative),
+    RequestWindow(NonNegative),
+    SafePointDelay(NonNegative),
+    ReplicaWait(NonNegative),
+    DefaultLease(NonNegative),
+    FeedRetention(NonNegative),
+    StatsWindow(NonNegative),
+    StatsRetention(NonNegative),
+    WaitSampling {
+        every: NonNegative,
+        keep: NonNegative,
+    },
+    ConflictLog(NonNegative),
+    VacuumBudget {
+        io: F64,
+        cpu: F64,
+    },
+    ScrubInterval(Option<NonNegative>),
+    LeaseGrace(NonNegative),
+    BlockingNoticePeriod(NonNegative),
+    ReplicaVacuumWait(NonNegative),
+    RetryLimit(NonNegative),
+    RetentionWindow(NonNegative),
 }
 
 const LIMIT: Fields = &["id", "limit"];
@@ -1338,82 +1398,82 @@ impl Decode for SettingRow {
         use SettingRow as S;
         &[
             Ctor::new(k::SETTING_STATEMENT_LIMIT, LIMIT, |r| {
-                keyed(r, LIMIT_ID, S::StatementLimit(r.optional_duration(LIMIT_F)))
+                keyed(r, LIMIT_ID, S::StatementLimit(r.optional_length(LIMIT_F)?))
             }),
             Ctor::new(k::SETTING_TRANSACTION_LIMIT, LIMIT, |r| {
                 keyed(
                     r,
                     LIMIT_ID,
-                    S::TransactionLimit(r.optional_duration(LIMIT_F)),
+                    S::TransactionLimit(r.optional_length(LIMIT_F)?),
                 )
             }),
             Ctor::new(k::SETTING_IDLE_LIMIT, LIMIT, |r| {
-                keyed(r, LIMIT_ID, S::IdleLimit(r.optional_duration(LIMIT_F)))
+                keyed(r, LIMIT_ID, S::IdleLimit(r.optional_length(LIMIT_F)?))
             }),
             Ctor::new(k::SETTING_STREAM_IDLE_LIMIT, LIMIT, |r| {
-                keyed(r, LIMIT_ID, S::StreamIdleLimit(r.duration(LIMIT_F)))
+                keyed(r, LIMIT_ID, S::StreamIdleLimit(r.length(LIMIT_F)?))
             }),
             Ctor::new(k::SETTING_REQUEST_WINDOW, KEEP, |r| {
-                keyed(r, KEEP_ID, S::RequestWindow(r.duration(KEEP_F)))
+                keyed(r, KEEP_ID, S::RequestWindow(r.length(KEEP_F)?))
             }),
             Ctor::new(k::SETTING_SAFE_POINT_DELAY, DELAY, |r| {
-                keyed(r, DELAY_ID, S::SafePointDelay(r.duration(DELAY_F)))
+                keyed(r, DELAY_ID, S::SafePointDelay(r.length(DELAY_F)?))
             }),
             Ctor::new(k::SETTING_REPLICA_WAIT, WAIT, |r| {
-                keyed(r, WAIT_ID, S::ReplicaWait(r.duration(WAIT_F)))
+                keyed(r, WAIT_ID, S::ReplicaWait(r.length(WAIT_F)?))
             }),
             Ctor::new(k::SETTING_DEFAULT_LEASE, LEASE, |r| {
-                keyed(r, LEASE_ID, S::DefaultLease(r.duration(LEASE_F)))
+                keyed(r, LEASE_ID, S::DefaultLease(r.length(LEASE_F)?))
             }),
             Ctor::new(k::SETTING_FEED_RETENTION, KEEP, |r| {
-                keyed(r, KEEP_ID, S::FeedRetention(r.duration(KEEP_F)))
+                keyed(r, KEEP_ID, S::FeedRetention(r.length(KEEP_F)?))
             }),
             Ctor::new(k::SETTING_STATS_WINDOW, LENGTH, |r| {
-                keyed(r, LENGTH_ID, S::StatsWindow(r.duration(LENGTH_F)))
+                keyed(r, LENGTH_ID, S::StatsWindow(r.length(LENGTH_F)?))
             }),
             Ctor::new(k::SETTING_STATS_RETENTION, KEEP, |r| {
-                keyed(r, KEEP_ID, S::StatsRetention(r.duration(KEEP_F)))
+                keyed(r, KEEP_ID, S::StatsRetention(r.length(KEEP_F)?))
             }),
             Ctor::new(k::SETTING_WAIT_SAMPLING, SAMPLING, |r| {
                 keyed(
                     r,
                     SAMPLING_ID,
                     S::WaitSampling {
-                        every: r.duration(SAMPLING_EVERY),
-                        keep: r.duration(SAMPLING_KEEP),
+                        every: r.length(SAMPLING_EVERY)?,
+                        keep: r.length(SAMPLING_KEEP)?,
                     },
                 )
             }),
             Ctor::new(k::SETTING_CONFLICT_LOG, ROWS, |r| {
-                keyed(r, ROWS_ID, S::ConflictLog(r.int(ROWS_F)))
+                keyed(r, ROWS_ID, S::ConflictLog(r.count(ROWS_F)?))
             }),
             Ctor::new(k::SETTING_VACUUM_BUDGET, BUDGET, |r| {
                 keyed(
                     r,
                     BUDGET_ID,
                     S::VacuumBudget {
-                        io: r.float(IO),
-                        cpu: r.float(CPU),
+                        io: r.fraction(IO)?,
+                        cpu: r.fraction(CPU)?,
                     },
                 )
             }),
             Ctor::new(k::SETTING_SCRUB_INTERVAL, EVERY, |r| {
-                keyed(r, EVERY_ID, S::ScrubInterval(r.optional_duration(EVERY_F)))
+                keyed(r, EVERY_ID, S::ScrubInterval(r.optional_length(EVERY_F)?))
             }),
             Ctor::new(k::SETTING_LEASE_GRACE, GRACE, |r| {
-                keyed(r, GRACE_ID, S::LeaseGrace(r.duration(GRACE_F)))
+                keyed(r, GRACE_ID, S::LeaseGrace(r.length(GRACE_F)?))
             }),
             Ctor::new(k::SETTING_BLOCKING_NOTICE_PERIOD, PERIOD, |r| {
-                keyed(r, PERIOD_ID, S::BlockingNoticePeriod(r.duration(PERIOD_F)))
+                keyed(r, PERIOD_ID, S::BlockingNoticePeriod(r.length(PERIOD_F)?))
             }),
             Ctor::new(k::SETTING_REPLICA_VACUUM_WAIT, WAIT, |r| {
-                keyed(r, WAIT_ID, S::ReplicaVacuumWait(r.duration(WAIT_F)))
+                keyed(r, WAIT_ID, S::ReplicaVacuumWait(r.length(WAIT_F)?))
             }),
             Ctor::new(k::SETTING_RETRY_LIMIT, RETRIES, |r| {
-                keyed(r, RETRIES_ID, S::RetryLimit(r.int(RETRIES_F)))
+                keyed(r, RETRIES_ID, S::RetryLimit(r.count(RETRIES_F)?))
             }),
             Ctor::new(k::SETTING_RETENTION_WINDOW, LENGTH, |r| {
-                keyed(r, LENGTH_ID, S::RetentionWindow(r.duration(LENGTH_F)))
+                keyed(r, LENGTH_ID, S::RetentionWindow(r.length(LENGTH_F)?))
             }),
         ]
     };

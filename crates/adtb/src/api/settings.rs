@@ -70,14 +70,12 @@ impl Settings {
     pub(super) fn set(&mut self, row: &SettingRow) {
         use SettingRow as S;
         match *row {
-            S::DefaultLease(d) => self.lease = d,
-            S::LeaseGrace(d) => self.grace = d,
-            S::RetryLimit(n) => self.retries = u64::try_from(n).unwrap_or(0),
-            S::RetentionWindow(d) => {
-                self.window = Duration::from_micros(u64::try_from(d).unwrap_or(0));
-            }
+            S::DefaultLease(d) => self.lease = d.get(),
+            S::LeaseGrace(d) => self.grace = d.get(),
+            S::RetryLimit(n) => self.retries = n.unsigned(),
+            S::RetentionWindow(d) => self.window = Duration::from_micros(d.unsigned()),
             S::ScrubInterval(every) => {
-                self.scrub = every.map(|d| Duration::from_micros(u64::try_from(d).unwrap_or(0)));
+                self.scrub = every.map(|d| Duration::from_micros(d.unsigned()));
             }
             S::VacuumBudget { io, cpu } => self.budget = F64::new(io.get().min(cpu.get())),
             S::StatementLimit(_)
@@ -126,3 +124,7 @@ pub(super) fn process_options(schema: &Schema, shown: &[Shown]) -> BTreeMap<RelI
         .collect();
     BTreeMap::from([(rel, rows)])
 }
+
+#[cfg(test)]
+#[path = "settings_tests.rs"]
+mod tests;
