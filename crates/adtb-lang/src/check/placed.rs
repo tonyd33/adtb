@@ -29,14 +29,17 @@ impl Checker<'_> {
         self.placed_checked(tm, &ty)
     }
 
-    /// Returns `tm`, which the checker built for `slot`, placed in it.
-    ///
-    /// Preconditions:
-    /// - The type of `tm` is below `slot`.
+    /// Returns `tm`, which the checker built for `slot`, placed in it. Record the arena broken at
+    /// `tm` when its type is not below `slot`.
     pub(super) fn placed_checked(&mut self, tm: Tm, slot: &Ty) -> Placed {
         let out = self.out(tm);
-        self.place(out, slot, Span::default())
-            .expect("a term built for a slot has a type below it")
+        match self.place(out, slot, Span::default()) {
+            Ok(p) => p,
+            Err(d) => {
+                self.terms.break_at(tm, d.message);
+                Placed(tm)
+            }
+        }
     }
 
     /// Returns the set of `x` alone, `x` placed in an element of `set`.

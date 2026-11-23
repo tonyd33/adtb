@@ -430,7 +430,8 @@ impl Terms {
         self.broken.as_ref()
     }
 
-    fn break_at(&mut self, at: Tm, reason: String) {
+    /// Record the arena broken at `at` for `reason`, unless it already is.
+    pub(crate) fn break_at(&mut self, at: Tm, reason: String) {
         self.broken.get_or_insert(Invalid::new(at, reason));
     }
 
