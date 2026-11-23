@@ -67,7 +67,7 @@ pub struct Checks {
     /// The relation variables the query reads.
     pub reads: BTreeSet<RelId>,
     pub deltas: Vec<Delta>,
-    whole: Option<Tm>,
+    whole: Tm,
 }
 
 impl Checks {
@@ -76,9 +76,9 @@ impl Checks {
         self.of
     }
 
-    /// Returns the whole query of the constraint or check in the normal program's arena, or
-    /// `None` when it reads a transition.
-    pub fn whole(&self) -> Option<Tm> {
+    /// Returns the query that validates the constraint or check over the empty change, in the
+    /// normal program's arena with the terms admission added.
+    pub fn whole(&self) -> Tm {
         self.whole
     }
 }
@@ -173,7 +173,7 @@ pub fn compile(
             &mut found_transitions,
             &mut reads,
         );
-        let whole = found_transitions.is_empty().then_some(t);
+        let whole = unchanged(schema, terms, t);
         let mut vars = HashMap::new();
         let mut own = Vec::new();
         for (at, x, r, s) in found_transitions {

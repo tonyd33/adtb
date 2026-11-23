@@ -65,3 +65,12 @@ impl Deref for Committed {
         &self.0
     }
 }
+
+impl Schema {
+    /// Returns the first type, constructor, field, relation variable, function, aggregate,
+    /// constraint or check this schema identifies that `now` does not identify at the same
+    /// position by the same id.
+    pub(crate) fn first_moved(&self, now: &Schema) -> Option<crate::ids::Placed> {
+        self.ids().first_moved(now.ids())
+    }
+}

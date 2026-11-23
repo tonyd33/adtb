@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use adtb_lang::kernel::{Terms, Var};
+use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Committed, Schema, TypeDefKind};
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
@@ -68,8 +68,9 @@ pub fn denials(
 }
 
 /// Returns each constraint and check of `schema` without an index-bounded incremental check
-/// over the indexes `catalog` describes, or with an incremental check or a whole query reading no
-/// transition that the executor cannot compile, by qualified name, with why; empty when the schema admits every one.
+/// over the indexes `catalog` describes, or with an incremental check or a query that validates
+/// it over the empty change that the executor cannot compile, by qualified name, with why; empty
+/// when the schema admits every one.
 ///
 /// Errors:
 /// - The guarantee of the checker that compiling a check breaks.
@@ -93,12 +94,12 @@ pub fn refusals(
             out.extend(why.map(|why| (c.name.clone(), why)));
         }
     }
+    let roots: Vec<(Tm, Vec<Var>)> = checks.iter().map(|c| (c.whole(), Vec::new())).collect();
+    let terms =
+        adtb_lang::kernel::ValidTerms::new(schema, terms, &roots).map_err(Broken::IllTyped)?;
     for c in &checks {
-        let Some(t) = c.whole() else {
-            continue;
-        };
         let options = plan::Options::default();
-        let whole = plan::plan(schema, normal, catalog, normal.valid(), t, options)
+        let whole = plan::plan(schema, normal, catalog, terms.valid(), c.whole(), options)
             .map_err(Broken::WholePlan)?;
         let why = uncompiled(exec::compile(schema, catalog, &whole, None))?;
         out.extend(why.map(|why| (c.name.clone(), why)));

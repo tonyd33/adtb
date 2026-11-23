@@ -66,7 +66,20 @@ impl<S: AsSchema> Compiled<S> {
 
     /// Returns this pair with its schema borrowed.
     pub(crate) fn viewed(&self) -> Compiled<&Schema> {
-        self.extended(self.schema())
+        self.sharing(self.schema())
+    }
+
+    /// Returns `schema` with this pair's program, refused naming the first object of this pair's
+    /// schema with an id that `schema` holds at another position or not at all.
+    pub(crate) fn extended<T: AsSchema>(&self, schema: T) -> Result<Compiled<T>, String> {
+        let was = self.schema();
+        match was.first_moved(schema.as_schema()) {
+            Some(moved) => Err(format!(
+                "the {} the program names moved in the schema it is paired with",
+                moved.named(was)
+            )),
+            None => Ok(self.sharing(schema)),
+        }
     }
 }
 
@@ -87,11 +100,8 @@ impl<S> Compiled<S> {
         &self.schema
     }
 
-    /// Returns `schema` with this pair's program.
-    ///
-    /// Preconditions: every object of this pair's schema the program names sits at the same
-    /// position in `schema`.
-    pub(crate) fn extended<T>(&self, schema: T) -> Compiled<T> {
+    /// Returns `schema` paired with this pair's program, unchecked.
+    pub(super) fn sharing<T>(&self, schema: T) -> Compiled<T> {
         Compiled {
             schema: Arc::new(schema),
             program: Arc::clone(&self.program),
@@ -128,7 +138,7 @@ impl<S: AsCommitted> Compiled<S> {
     /// Returns the schema the terms of `a`, checked against this pair, name declarations of,
     /// with this pair's program, both borrowed.
     pub(crate) fn of_adhoc<'a>(&'a self, a: &'a Adhoc) -> Compiled<&'a Committed> {
-        self.extended(a.temps.as_ref().unwrap_or(self.committed()))
+        self.sharing(a.temps.as_ref().unwrap_or(self.committed()))
     }
 }
 

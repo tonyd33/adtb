@@ -1,0 +1,16 @@
+# A data map the engine cannot compile is refused naming the map. The aggregate is a known gap (ticket engine-scalar-aggregates): this pins the engine's answer, not the contract.
+
+migrate
+  module app
+  add module app
+  define aggregate total (x: I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n + 0
+  add type Item = Item { id: I64 }
+  add relation items : Item key id
+
+run
+  insert items Item { id: 1 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add field Item.n: I64 fill match", detail: "the fill of `app::Item.n` is not admitted: an aggregate in a scalar expression\nitems: field `n` has no value for existing rows" } } }
+  module app
+  add field Item.n: I64 fill match
+    | Item i -> (match total(x for x in [i.id, 1]) | None -> 0 | Some v -> v.value)

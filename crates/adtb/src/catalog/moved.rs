@@ -13,7 +13,7 @@ use crate::heap::FieldType;
 use crate::key::Value;
 
 use super::change::{Data, Failed, Field, Fill, Moved, Route, convert, fields};
-use super::hosts::classify;
+use super::hosts::{self, classify};
 use super::ids::{
     CatCtorId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation, type_ctor_id,
     type_ctor_index, type_def, type_id,
@@ -128,25 +128,49 @@ fn field_named<'f>(fs: &'f [Field], name: &str) -> Result<&'f Field, Failed> {
         .ok_or_else(|| Failed::from(Broken::NoField(name.to_owned())))
 }
 
-fn compiled(f: &RowFn, hosts: &Arc<exec::Hosts>) -> Result<Scalar, Failed> {
+/// Returns how a refusal names the fill of `field` of type `def`, or its routing with no field.
+fn map_named(schema: &Schema, def: TypeId, field: Option<&str>) -> String {
+    let t = schema.ty(def);
+    let ty = format!("{}::{}", schema.module(t.module).name, t.name);
+    match field {
+        Some(f) => format!("the fill of `{ty}.{f}`"),
+        None => format!("the routing of `{ty}`"),
+    }
+}
+
+fn compiled(f: &RowFn, object: &str, hosts: &Arc<exec::Hosts>) -> Result<Scalar, Failed> {
     let [var] = f.query.params() else {
         return Err(Failed::from(Broken::RowParams(f.query.params().len())));
     };
-    let mut scalar =
-        Scalar::new(&f.schema, f.query.valid(), *var, f.query.body()).map_err(shown)?;
-    scalar.set_hosts(hosts.clone());
-    Ok(scalar)
+    hosts::scalar(
+        object,
+        (&f.schema, f.query.valid()),
+        (*var, f.query.body()),
+        hosts,
+        Broken::Map,
+    )
+    .map_err(failed)
 }
 
 fn shown(e: exec::Error) -> Failed {
+    evaluated("the map", e)
+}
+
+/// Returns `e`, a failure of the map `object` names on a row, as the failure of the data map.
+fn evaluated(object: &str, e: exec::Error) -> Failed {
     match e {
-        exec::Error::Fault(f) => Failed::Refused(format!("the map faults with {}", f.name())),
-        exec::Error::Rejected(why) => Failed::Refused(format!("the map rejects: {why}")),
-        other => match classify("the map", other, Broken::Map) {
-            Error::Refused(why) => Failed::Refused(why.concat()),
-            Error::Internal(b) => Failed::Internal(b),
-            e => Failed::Aborted(e),
-        },
+        exec::Error::Fault(f) => Failed::Refused(format!("{object} faults with {}", f.name())),
+        exec::Error::Rejected(why) => Failed::Refused(format!("{object} rejects: {why}")),
+        other => failed(classify(object, other, Broken::Map)),
+    }
+}
+
+/// Returns `e`, a catalog failure of a data map, as the failure of the data map.
+fn failed(e: Error) -> Failed {
+    match e {
+        Error::Refused(why) => Failed::Refused(why.concat()),
+        Error::Internal(b) => Failed::Internal(b),
+        e => Failed::Aborted(e),
     }
 }
 
@@ -429,7 +453,8 @@ impl Mapping<'_> {
         fill: &RowFn,
     ) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
-        let f = Arc::new(compiled(fill, self.hosts)?);
+        let object = map_named(a, def, Some(field));
+        let f = Arc::new(compiled(fill, &object, self.hosts)?);
         for (ra, rid, rb) in relations_of(a, b, def) {
             for &c in ctors {
                 let Some(cb) = ctor_index(b, rb, ctor_id(a, ra, c)) else {
@@ -441,9 +466,11 @@ impl Mapping<'_> {
                 };
                 let ty = field_named(&to, field)?.ty.clone();
                 let convs = row_convs(&fill.schema, ra, c);
-                let f = f.clone();
+                let (f, object) = (f.clone(), object.clone());
                 let fill: Box<Fill<'static>> = Box::new(move |_, row| {
-                    let v = f.eval(row_val(c, &convs, row)?).map_err(shown)?;
+                    let v = f
+                        .eval(row_val(c, &convs, row)?)
+                        .map_err(|e| evaluated(&object, e))?;
                     to_stored(&ty, &v).map_err(shown)
                 });
                 self.out.fills.insert((rid, ctor_id(b, rb, cb), id), fill);
@@ -490,9 +517,11 @@ impl Mapping<'_> {
                 .iter()
                 .map(|(_, t)| conv(&fill.schema, t))
                 .collect();
-            let f = f.clone();
+            let (f, object) = (f.clone(), map_named(a, def, Some(field)));
             let fill: Box<Fill<'static>> = Box::new(move |_, vals| {
-                let v = f.eval(row_val(c, &convs, vals)?).map_err(shown)?;
+                let v = f
+                    .eval(row_val(c, &convs, vals)?)
+                    .map_err(|e| evaluated(&object, e))?;
                 to_stored(&ty, &v).map_err(shown)
             });
             self.out
@@ -528,7 +557,8 @@ impl Mapping<'_> {
 
     fn route(&mut self, def: TypeId, from: &[u32], routing: &RowFn) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
-        let f = Arc::new(compiled(routing, self.hosts)?);
+        let object = map_named(a, def, None);
+        let f = Arc::new(compiled(routing, &object, self.hosts)?);
         self.held_routes(def, from, routing, &f);
         for (ra, rid, rb) in relations_of(a, b, def) {
             let Some(rows) = self.data.get(&rid) else {
@@ -538,8 +568,8 @@ impl Mapping<'_> {
                 let cid = ctor_id(a, ra, c);
                 let convs = row_convs(&routing.schema, ra, c);
                 for row in rows.get(&cid).into_iter().flatten() {
-                    let Val::Ctor(k, vals) = f.eval(row_val(c, &convs, row)?).map_err(shown)?
-                    else {
+                    let routed = f.eval(row_val(c, &convs, row)?);
+                    let Val::Ctor(k, vals) = routed.map_err(|e| evaluated(&object, e))? else {
                         return Err(Failed::from(Broken::RoutedNotCtor));
                     };
                     let name = ctor_name(&routing.schema, def, k);
@@ -593,8 +623,9 @@ impl Mapping<'_> {
                 .tags
                 .insert((tid, type_ctor_id(self.a, def, c)), tag);
         }
+        let object = map_named(self.a, def, None);
         for &c in from {
-            let (f, schema) = (f.clone(), schema.clone());
+            let (f, schema, object) = (f.clone(), schema.clone(), object.clone());
             let route: Box<Route> = Box::new(move |a, b, aa, ab| {
                 unreached(a, def, aa)?;
                 let d = schema.ty(def);
@@ -620,10 +651,10 @@ impl Mapping<'_> {
                     })
                     .collect();
                 let record = layout::is_record(b, &data(db, ab));
-                let f = f.clone();
+                let (f, object) = (f.clone(), object.clone());
                 Ok(Box::new(move |_, vals| {
                     let held = row_val(c, &routed[c as usize].convs, vals)?;
-                    let Val::Ctor(k, out) = f.eval(held).map_err(shown)? else {
+                    let Val::Ctor(k, out) = f.eval(held).map_err(|e| evaluated(&object, e))? else {
                         return Err(Failed::from(Broken::RoutedNotCtor));
                     };
                     let to = &routed[k as usize];

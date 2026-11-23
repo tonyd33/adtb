@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::exec;
+use adtb_lang::kernel::{Tm, Valid, Var};
+use adtb_lang::schema::Schema;
+
+use crate::{exec, plan};
 
 use super::{Broken, Catalog, Error, Rot};
 
@@ -15,6 +18,39 @@ impl Catalog {
         }
         self.hosts = hosts;
     }
+}
+
+/// Returns the scalar of `body` over `var`, calling the host function bodies of `hosts`.
+///
+/// Fail as [`classify`] does, naming `object`, when the executor cannot compile it.
+pub(super) fn scalar(
+    object: &str,
+    (schema, terms): (&Schema, Valid<'_>),
+    (var, body): (Var, Tm),
+    hosts: &Arc<exec::Hosts>,
+    internal: fn(exec::Error) -> Broken,
+) -> Result<exec::Scalar, Error> {
+    let mut scalar =
+        exec::Scalar::new(schema, terms, var, body).map_err(|e| classify(object, e, internal))?;
+    scalar.set_hosts(hosts.clone());
+    Ok(scalar)
+}
+
+/// Returns the program of `p`, planned against `schema` and `catalog`, calling the host function
+/// bodies of `hosts`.
+///
+/// Fail as [`classify`] does, naming `object`, when the executor cannot compile it.
+pub(super) fn program(
+    object: &str,
+    (schema, catalog): (&Schema, &plan::Catalog),
+    p: &plan::Plan,
+    hosts: &Arc<exec::Hosts>,
+    internal: fn(exec::Error) -> Broken,
+) -> Result<exec::Program, Error> {
+    let mut program =
+        exec::compile(schema, catalog, p, None).map_err(|e| classify(object, e, internal))?;
+    program.shared.hosts = hosts.clone();
+    Ok(program)
 }
 
 /// Returns the error of a migration whose evaluation `e` reached a host function with no body

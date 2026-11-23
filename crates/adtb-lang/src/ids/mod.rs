@@ -211,6 +211,47 @@ pub fn held_id<T>(id: Option<T>) -> T {
     id.expect("every such object of a committed schema outside the temp module has a catalog id")
 }
 
+/// A schema object a program names, by its position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Placed {
+    Type(TypeId),
+    Ctor(CtorRef),
+    Field(FieldRef),
+    Relation(RelId),
+    Function(FnId),
+    Aggregate(usize),
+    Constraint(usize),
+    Check(usize),
+}
+
+impl Placed {
+    /// Returns how `schema`, the schema that places it, names this object.
+    pub(crate) fn named(self, schema: &Schema) -> String {
+        match self {
+            Placed::Type(t) => format!("type `{}`", schema.ty(t).name),
+            Placed::Ctor(c) => {
+                let t = schema.ty(c.def());
+                let ctor = t.ctors().get(c.index() as usize);
+                format!(
+                    "constructor `{}.{}`",
+                    t.name,
+                    ctor.map_or(&t.name, |k| &k.name)
+                )
+            }
+            Placed::Field(f) => format!(
+                "field `{}` of type `{}`",
+                schema.ty(f.def()).field_def(f).name,
+                schema.ty(f.def()).name
+            ),
+            Placed::Relation(r) => format!("relation `{}`", schema.relation(r).name),
+            Placed::Function(f) => format!("function `{}`", schema.functions[f.0 as usize].name),
+            Placed::Aggregate(i) => format!("aggregate `{}`", schema.aggregates[i].name),
+            Placed::Constraint(i) => format!("constraint `{}`", schema.constraints[i].name),
+            Placed::Check(i) => format!("check `{}`", schema.checks[i].name),
+        }
+    }
+}
+
 impl CatalogIds {
     pub fn type_id(&self, def: TypeId) -> Option<CatTypeId> {
         self.types.get(&def).copied()
@@ -282,6 +323,29 @@ impl CatalogIds {
 
     pub fn check_id(&self, c: CheckIdx) -> Option<CatConstraintId> {
         self.checks.get(&c.index()).copied()
+    }
+
+    /// Returns the first type, constructor, field, relation variable, function, aggregate,
+    /// constraint or check identified here that `later` does not identify at the same position
+    /// by the same id.
+    pub(crate) fn first_moved(&self, later: &CatalogIds) -> Option<Placed> {
+        fn first<K: Ord + Copy, V: PartialEq>(
+            was: &BTreeMap<K, V>,
+            now: &BTreeMap<K, V>,
+        ) -> Option<K> {
+            was.iter()
+                .find(|(k, v)| now.get(k) != Some(v))
+                .map(|(&k, _)| k)
+        }
+        first(&self.types, &later.types)
+            .map(Placed::Type)
+            .or_else(|| first(&self.ctors, &later.ctors).map(Placed::Ctor))
+            .or_else(|| first(&self.fields, &later.fields).map(Placed::Field))
+            .or_else(|| first(&self.relations, &later.relations).map(Placed::Relation))
+            .or_else(|| first(&self.functions, &later.functions).map(Placed::Function))
+            .or_else(|| first(&self.aggregates, &later.aggregates).map(Placed::Aggregate))
+            .or_else(|| first(&self.constraints, &later.constraints).map(Placed::Constraint))
+            .or_else(|| first(&self.checks, &later.checks).map(Placed::Check))
     }
 
     /// Returns the id of the relation variable stored view `f` holds.

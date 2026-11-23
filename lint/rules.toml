@@ -139,6 +139,18 @@ exclude = [
 rows = { catalog_reads = "zero" }
 
 [[rule]]
+query = "catalog-compiles.tql"
+include = ["crates/adtb/src/catalog/**/*.rs"]
+exclude = [
+  "**/tests.rs",
+  "**/*_tests.rs",
+  "**/tests/**",
+  "crates/adtb/src/catalog/hosts.rs",
+  "crates/adtb/src/catalog/keying.rs",
+]
+rows = { catalog_compiles = "zero" }
+
+[[rule]]
 query = "defs-only.tql"
 include = [
   "crates/adtb-lang/src/check/**/*.rs",

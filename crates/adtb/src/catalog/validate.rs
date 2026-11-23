@@ -12,7 +12,7 @@ use crate::plan;
 use crate::runtime::Runtime;
 use crate::storage::PageError;
 
-use super::hosts::classify;
+use super::hosts::{self, classify};
 use super::ids::{CatConstraintId, CatRelId};
 use super::read::Judged;
 use super::{Broken, Catalog, Error, Migrating, Rot, Snapshot, not_normal};
@@ -324,11 +324,7 @@ impl<R: Runtime> Query<'_, R> {
         let (store, budget, hosts) = (self.store, self.budget, self.hosts);
         let p = plan::plan(schema, normal, catalog, terms, t, plan::Options::default())
             .map_err(|e| Error::from(Broken::Plan(e)))?;
-        let mut program = match exec::compile(schema, catalog, &p, None) {
-            Ok(program) => program,
-            Err(e) => return damaged(object, e).map(Err),
-        };
-        program.shared.hosts = hosts.clone();
+        let program = hosts::program(object, (schema, catalog), &p, hosts, Broken::Validation)?;
         store.admit(program.reads())?;
         let store = store.store();
         let program = Arc::new(program);
@@ -388,10 +384,10 @@ impl<R: Runtime> Query<'_, R> {
         let mut checks = BTreeMap::new();
         for t in domains {
             if let Some((v, body)) = self.normal.domains().get(t) {
-                let compiled = exec::Scalar::new(schema, self.normal.valid(), *v, *body);
                 let object = format!("constraint {}", name(*t));
-                let mut scalar = compiled.map_err(|e| classify(&object, e, Broken::Validation))?;
-                scalar.set_hosts(self.hosts.clone());
+                let terms = (schema, self.normal.valid());
+                let scalar =
+                    hosts::scalar(&object, terms, (*v, *body), self.hosts, Broken::Validation)?;
                 checks.insert(*t, scalar);
             }
         }

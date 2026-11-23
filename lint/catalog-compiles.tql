@@ -1,0 +1,12 @@
+-- catalog_compiles: a compile of a plan, a scalar or index keys in the catalog, outside the
+-- functions that refuse a form the executor does not run as a refusal naming its object, and the
+-- module of index keys, whose one compile refuses so.
+
+compiling = r"(^|::)(Scalar::new|IndexKeys::new|compile)$";
+
+main = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ compiling;
+  return c;
+} | arr range;

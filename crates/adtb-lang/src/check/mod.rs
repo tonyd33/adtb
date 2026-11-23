@@ -875,8 +875,8 @@ pub fn check_adhoc_in(
     let vis = Visible::all(schema).scoped(scope.cloned());
     let temps = adhoc::temp_relations(schema, &vis, items, &mut diags);
     let (checked, declared) = match &temps {
-        Some((s, d)) => (c.extended(s), d.clone()),
-        None => (c.extended(schema), Vec::new()),
+        Some((s, d)) => (c.sharing(s), d.clone()),
+        None => (c.sharing(schema), Vec::new()),
     };
     let text = Text {
         scope,
