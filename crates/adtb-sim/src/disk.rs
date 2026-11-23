@@ -9,6 +9,7 @@ use adtb_sys::runtime::{
     decide_force, decide_read, decide_unforced, decide_write,
 };
 
+use crate::Trace;
 use crate::rng::Rng;
 
 pub(crate) type Ino = usize;
@@ -180,7 +181,7 @@ pub struct Recording {
 pub(crate) struct Ctx<'a> {
     pub(crate) rng: &'a mut Rng,
     pub(crate) faults: &'a Faults,
-    pub(crate) trace: &'a mut String,
+    pub(crate) trace: &'a mut Trace,
 }
 
 fn parent(path: &str) -> &str {
@@ -347,14 +348,15 @@ impl Disk {
         Ok(())
     }
 
-    pub(crate) fn remove(&mut self, path: &str) -> Result<(), IoError> {
+    /// Remove the name `path` and return the inode it named.
+    pub(crate) fn remove(&mut self, path: &str) -> Result<Ino, IoError> {
         if self.dirs.contains(path) {
             return Err(IoError::Failed);
         }
         self.below_a_file(parent(path))?;
-        if self.names.remove(path).is_none() {
+        let Some(ino) = self.names.remove(path) else {
             return Err(IoError::NotFound);
-        }
+        };
         self.pending_names
             .push((self.seq, NameOp::Remove(path.to_owned())));
         self.note(Event::Remove {
@@ -362,7 +364,20 @@ impl Disk {
             seq: self.seq,
         });
         self.seq += 1;
-        Ok(())
+        Ok(ino)
+    }
+
+    /// Drop the bytes of `ino` when no name holds it: its visible bytes and its unforced
+    /// writes, which a crash that gives it back its name then finds lost.
+    ///
+    /// Preconditions:
+    /// - No handle holds `ino` open.
+    pub(crate) fn release(&mut self, ino: Ino) {
+        if !self.names.values().any(|&i| i == ino) {
+            let inode = &mut self.inodes[ino];
+            inode.visible = Vec::new();
+            inode.unsynced = Vec::new();
+        }
     }
 
     pub(crate) fn rename(&mut self, from: &str, to: &str, replace: bool) -> Result<(), IoError> {

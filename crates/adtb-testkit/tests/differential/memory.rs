@@ -68,7 +68,7 @@ fn options(grant: Option<usize>, spill: Option<usize>) -> OpenOptions {
     OpenOptions {
         create: Some(CreateOptions::default()),
         query_memory_bytes: grant.map(|g| g as u64),
-        testing: Knobs::default()
+        testing: Knobs::without_background_vacuum()
             .with_morsel_rows(Some(MORSEL))
             .with_spill_bytes(spill),
         ..OpenOptions::default()
@@ -146,40 +146,43 @@ fn both(case: &Case, position: &str) -> Vec<String> {
 /// Returns the runs of `case` under the default grant and at every point of the grid.
 fn grid(seed: u64, case: &Case) -> Grid {
     let log = vec![case.migration.clone()];
-    process(&mut Sim::new(seed, Config::default()), |rt| {
-        let open = |grant, spill| {
-            Database::open_in(
-                rt.clone(),
-                "grid.adt",
-                &Log::new(log.clone()),
-                &options(grant, spill),
-            )
-            .unwrap_or_else(|e| panic!("the engine does not open: {e:?}"))
-        };
-        let db = open(None, None);
-        write(
-            &db,
-            &["set setting RetentionWindow = { length: 1h }".to_owned()],
-        );
-        write(&db, &case.load);
-        let mut txn = db
-            .begin(&TxnOptions::default())
-            .expect("a transaction begins");
-        txn.query_text("count(x for x in [1])", &[], &TxnCallOptions::default())
-            .expect("a read runs");
-        let p = txn.commit(None).expect("a transaction commits");
-        let texts = both(case, &format!("{{ epoch: {}, lsn: {} }}", p.epoch, p.lsn));
-        let want: Vec<Run> = texts.iter().map(|t| run(&db, t)).collect();
-        close(db);
-        let mut at = Vec::new();
-        for (g, spill) in points() {
-            let db = open(Some(g), spill);
-            let runs = texts.iter().map(|t| run(&db, t)).collect();
-            at.push(((g, spill), runs));
+    process(
+        &mut Sim::new(seed, Config::default()).without_trace(),
+        |rt| {
+            let open = |grant, spill| {
+                Database::open_in(
+                    rt.clone(),
+                    "grid.adt",
+                    &Log::new(log.clone()),
+                    &options(grant, spill),
+                )
+                .unwrap_or_else(|e| panic!("the engine does not open: {e:?}"))
+            };
+            let db = open(None, None);
+            write(
+                &db,
+                &["set setting RetentionWindow = { length: 1h }".to_owned()],
+            );
+            write(&db, &case.load);
+            let mut txn = db
+                .begin(&TxnOptions::default())
+                .expect("a transaction begins");
+            txn.query_text("count(x for x in [1])", &[], &TxnCallOptions::default())
+                .expect("a read runs");
+            let p = txn.commit(None).expect("a transaction commits");
+            let texts = both(case, &format!("{{ epoch: {}, lsn: {} }}", p.epoch, p.lsn));
+            let want: Vec<Run> = texts.iter().map(|t| run(&db, t)).collect();
             close(db);
-        }
-        Grid { texts, want, at }
-    })
+            let mut at = Vec::new();
+            for (g, spill) in points() {
+                let db = open(Some(g), spill);
+                let runs = texts.iter().map(|t| run(&db, t)).collect();
+                at.push(((g, spill), runs));
+                close(db);
+            }
+            Grid { texts, want, at }
+        },
+    )
 }
 
 /// Returns the first disagreement of `grid`.

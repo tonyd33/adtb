@@ -14,6 +14,7 @@ use adtb_sys::runtime::{
     Runtime, ThreadId, Threads, Ticket,
 };
 
+use crate::Trace;
 use crate::disk::{Ctx, Disk, InFlight, Ino, Recording};
 use crate::plan::{Action, Count, Match, Numbered, OpLog, Plan, Planner};
 use crate::rng::Rng;
@@ -130,7 +131,7 @@ struct State {
     switches: Rng,
     now: u64,
     disk: Disk,
-    trace: String,
+    trace: Trace,
     crash_at: Option<u64>,
     process: u64,
     phase: Phase,
@@ -219,7 +220,7 @@ impl Sim {
             switches: root.split(),
             now: 0,
             disk: Disk::default(),
-            trace: String::new(),
+            trace: Trace(Some(String::new())),
             crash_at: None,
             process: 0,
             phase: Phase::Idle,
@@ -247,7 +248,15 @@ impl Sim {
 
     /// Returns every line the runs so far wrote: schedule decisions, ops, completions and faults.
     pub fn trace(&self) -> String {
-        lock(&self.shared.state).trace.clone()
+        lock(&self.shared.state).trace.0.clone().unwrap_or_default()
+    }
+
+    /// Stop recording the trace, so that it holds no heap as the runs go on. [`Sim::trace`]
+    /// then returns nothing.
+    #[must_use]
+    pub fn without_trace(self) -> Self {
+        lock(&self.shared.state).trace = Trace(None);
+        self
     }
 
     /// Returns the contents of every file as a reader would see it now.
@@ -707,7 +716,13 @@ impl State {
                 None,
                 self.disk.list(&dir, &mut self.faults).map(Done::Listed),
             ),
-            Op::Remove { path } => (None, self.disk.remove(&path).map(|()| Done::Removed)),
+            Op::Remove { path } => (
+                None,
+                self.disk.remove(&path).map(|ino| {
+                    self.release(ino);
+                    Done::Removed
+                }),
+            ),
             Op::RemoveDir { path } => (None, self.disk.remove_dir(&path).map(|()| Done::Removed)),
             Op::Rename { from, to, replace } => (
                 None,
@@ -730,7 +745,7 @@ impl State {
     }
 
     fn close(&mut self, file: FileId) {
-        self.ino(file);
+        let ino = self.ino(file);
         let busy = self.events.values().chain(&self.held).any(|e| match &e.op {
             Op::Read { file: f, .. }
             | Op::Write { file: f, .. }
@@ -742,6 +757,13 @@ impl State {
         });
         assert!(!busy, "{file:?} is closed with an op on it in flight");
         self.handles[file.0 as usize] = None;
+        self.release(ino);
+    }
+
+    fn release(&mut self, ino: Ino) {
+        if !self.handles.iter().flatten().any(|(i, _)| *i == ino) {
+            self.disk.release(ino);
+        }
     }
 
     fn unpark(&mut self, t: usize) {
