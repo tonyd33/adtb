@@ -60,18 +60,10 @@ pub enum RowMap {
 }
 
 /// One step of applying an operator: the source after it, how it moves rows, and the operator
-/// it applies when it applies one.
+/// it applies, as applying it resolved it, when it applies one.
 #[derive(Debug)]
 pub struct Step {
     pub after: Source,
     pub maps: Vec<RowMap>,
-    pub applied: Option<Applied>,
-}
-
-/// An operator of a migration of `module` whose text is `text`.
-#[derive(Debug)]
-pub struct Applied {
-    pub(super) module: String,
-    pub(super) text: String,
-    pub(super) op: Operator,
+    pub applied: Option<ResolvedOp>,
 }

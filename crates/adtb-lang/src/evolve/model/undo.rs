@@ -28,7 +28,7 @@ impl Model {
     /// apply the operators that add the replacements.
     pub(super) fn restructure(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         (drops, op, adds, how, checks): Restructuring,
         of: &str,
         gone: &Gone,
@@ -149,7 +149,7 @@ impl Model {
     /// those of `record` first in that order.
     pub(super) fn unadd(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         ctor: u64,
         record: Option<Vec<crate::ids::CatFieldId>>,
         of: &str,
@@ -194,7 +194,7 @@ impl Model {
     /// arms in each constraint of `arms`.
     pub(super) fn readd(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         (ty, ctor, name): (u64, u64, &str),
         text: &str,
         (after, joins, arms): (Option<CatCtorId>, Vec<CatSetId>, Vec<PlacedArms>),
@@ -408,7 +408,7 @@ impl Model {
     /// constructor.
     pub(super) fn move_up_from(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         path: &ast::FieldPath,
         from: &[u64],
         fill: Option<&Fill>,

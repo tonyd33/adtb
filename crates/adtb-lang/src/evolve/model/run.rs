@@ -22,21 +22,31 @@ pub(super) struct Run<'a> {
     /// The operator being applied, and its span.
     at: usize,
     span: Span,
-    /// Each declaration or field an operator wrote naming what only the migration's end
+    /// What the operator being applied wrote beside the model.
+    wrote: Wrote,
+    /// Each declaration or field an applied operator wrote naming what only the migration's end
     /// resolves, by the operator.
-    late: RefCell<Vec<(usize, Late)>>,
+    late: Vec<(usize, Late)>,
     /// Whether the log does not yet hold the migration.
     accepting: bool,
     /// Whether the run applies the migration's own operators, whose copies of its text are
     /// named; false for the operators of an inverse.
     copying: bool,
-    /// The names the fills, routings, grants and scripts of its operators resolve, by span of
-    /// the text.
-    noted: RefCell<Names>,
+    /// The names the fills, routings, grants and scripts of its applied operators resolve, by
+    /// span of the text.
+    noted: Names,
     /// The copies of the text whose names do not resolve.
-    missed: RefCell<Vec<Diag>>,
-    /// The steps of the `revert` just applied, until the operator applying it takes them.
-    reverted: RefCell<Option<revert::Steps>>,
+    missed: Vec<Diag>,
+}
+
+/// What one operator wrote beside the model it applies to.
+#[derive(Default)]
+struct Wrote {
+    late: Vec<Late>,
+    noted: Names,
+    missed: Vec<Diag>,
+    /// The steps of the operator, a `revert`.
+    reverted: Option<revert::Steps>,
 }
 
 /// What an operator wrote naming what only the migration's end resolves.
@@ -100,12 +110,12 @@ impl<'a> Run<'a> {
             text,
             at: 0,
             span: Span { start: 0, end: 0 },
-            late: RefCell::default(),
+            wrote: Wrote::default(),
+            late: Vec::new(),
             accepting: false,
             copying: true,
-            noted: RefCell::default(),
-            missed: RefCell::default(),
-            reverted: RefCell::default(),
+            noted: Names::default(),
+            missed: Vec::new(),
         }
     }
 
@@ -123,31 +133,30 @@ impl<'a> Run<'a> {
     }
 
     /// Record the names `refs` resolve in the text, `schema` holding what they name.
-    pub(super) fn note(&self, schema: &Schema, refs: &[(Span, check::Ref)]) {
-        let mut noted = self.noted.borrow_mut();
+    pub(super) fn note(&mut self, schema: &Schema, refs: &[(Span, check::Ref)]) {
         for (span, r) in refs {
-            noted.note(schema, *span, r);
+            self.wrote.noted.note(schema, *span, r);
         }
     }
 
     /// Record `names`, of the text.
-    pub(super) fn note_names(&self, names: Names) {
-        self.noted.borrow_mut().extend(names);
+    pub(super) fn note_names(&mut self, names: Names) {
+        self.wrote.noted.extend(names);
     }
 
     /// Record `missed`, copies of the text whose names do not resolve.
-    pub(super) fn miss(&self, missed: Vec<Diag>) {
-        self.missed.borrow_mut().extend(missed);
+    pub(super) fn miss(&mut self, missed: Vec<Diag>) {
+        self.wrote.missed.extend(missed);
     }
 
     /// Returns the names the run recorded.
-    pub(super) fn take_noted(&self) -> Names {
-        self.noted.take()
+    pub(super) fn take_noted(&mut self) -> Names {
+        std::mem::take(&mut self.noted)
     }
 
     /// Returns the copies of the text the run recorded whose names do not resolve.
-    pub(super) fn take_missed(&self) -> Vec<Diag> {
-        self.missed.take()
+    pub(super) fn take_missed(&mut self) -> Vec<Diag> {
+        std::mem::take(&mut self.missed)
     }
 
     /// Returns the run, applying text the log does not yet hold when `accepting`.
@@ -162,8 +171,8 @@ impl<'a> Run<'a> {
 
     /// Note that the operator being applied wrote `late`. Returns the empty text its canonical
     /// form holds until the migration's end gives it.
-    pub(super) fn late(&self, late: Late) -> String {
-        self.late.borrow_mut().push((self.at, late));
+    pub(super) fn late(&mut self, late: Late) -> String {
+        self.wrote.late.push(late);
         String::new()
     }
 
@@ -171,37 +180,39 @@ impl<'a> Run<'a> {
     pub(super) fn begin(&mut self, at: usize, span: Span) {
         self.at = at;
         self.span = span;
+        self.wrote = Wrote::default();
     }
 
-    /// Returns the operator being applied.
-    pub(super) fn at(&self) -> usize {
-        self.at
+    /// Keep what the operator being applied wrote, it having applied. Returns its steps when it
+    /// is a `revert`.
+    pub(super) fn keep(&mut self) -> Option<revert::Steps> {
+        let wrote = std::mem::take(&mut self.wrote);
+        let at = self.at;
+        self.late.extend(wrote.late.into_iter().map(|l| (at, l)));
+        self.noted.extend(wrote.noted);
+        self.missed.extend(wrote.missed);
+        wrote.reverted
     }
 
-    /// Returns what the operators wrote naming what only the migration's end resolves so far.
-    pub(super) fn lates(&self) -> Vec<(usize, Late)> {
-        self.late.borrow().clone()
+    /// Forget what the operator being applied wrote, it being refused.
+    pub(super) fn discard(&mut self) {
+        self.wrote = Wrote::default();
     }
 
-    /// Forget what operator `at` wrote naming what only the migration's end resolves.
-    pub(super) fn forget_late(&self, at: usize) {
-        self.late.borrow_mut().retain(|(k, _)| *k != at);
+    /// Returns what the operator being applied wrote naming what only the migration's end
+    /// resolves so far.
+    pub(super) fn lates(&self) -> &[Late] {
+        &self.wrote.late
     }
 
     /// Returns what the operators wrote naming what only the migration's end resolves.
-    pub(super) fn take_late(&self) -> Vec<(usize, Late)> {
-        self.late.take()
+    pub(super) fn take_late(&mut self) -> Vec<(usize, Late)> {
+        std::mem::take(&mut self.late)
     }
 
     /// Hold `steps`, those of the `revert` just applied.
-    pub(super) fn reverted(&self, steps: revert::Steps) {
-        *self.reverted.borrow_mut() = Some(steps);
-    }
-
-    /// Returns the steps of the `revert` just applied, taking them; `None` after any other
-    /// operator.
-    pub(super) fn take_reverted(&self) -> Option<revert::Steps> {
-        self.reverted.take()
+    pub(super) fn reverted(&mut self, steps: revert::Steps) {
+        self.wrote.reverted = Some(steps);
     }
 
     /// Returns the module of the migration.
@@ -401,14 +412,16 @@ impl Built {
 
     /// Returns the errors of checking the schema in file `file`.
     pub(super) fn errors_in(&self, file: FileId) -> Vec<Diag> {
-        match check::check_schema(&self.schema) {
-            Ok(_) => Vec::new(),
-            Err(ds) => ds
-                .into_iter()
-                .filter(|d| d.file == file)
-                .map(|d| d.diag)
-                .collect(),
-        }
+        self.errors()
+            .into_iter()
+            .filter(|d| d.file == file)
+            .map(|d| d.diag)
+            .collect()
+    }
+
+    /// Returns the errors of checking the schema.
+    pub(super) fn errors(&self) -> Vec<FileDiag> {
+        check::check_schema(&self.schema).err().unwrap_or_default()
     }
 }
 
@@ -722,14 +735,14 @@ impl Model {
     }
 
     /// Build as `build_adopting` does, refusing the operator when the declarations do not build.
-    pub(super) fn built_for(&mut self, run: &Run) -> Res<Built> {
+    pub(super) fn built_for(&mut self, run: &mut Run) -> Res<Built> {
         let ahead = run.ahead(self);
         self.build_adopting(&[], &ahead).or_else(|ds| unbuilt(&ds))
     }
 
     /// Returns the schema the model builds now, for an operator's preconditions, refusing the
     /// operator when the declarations do not build.
-    pub(super) fn schema_now(&self, run: &Run) -> Res<Built> {
+    pub(super) fn schema_now(&self, run: &mut Run) -> Res<Built> {
         match self.built(&[], &run.ahead(self)) {
             Ok((b, _)) => Ok(b),
             Err(ds) => unbuilt(&ds),

@@ -2,7 +2,7 @@ use super::field::{Applied, Maps};
 use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
 use super::run::{Built, Late, Run};
 use super::*;
-use crate::ast::{self, CtorSel, Fill, QName};
+use crate::ast::{self, CtorSel, Fill};
 use crate::canon::{Names, canonical_term};
 use crate::evolve::ctor::fill_image;
 use crate::evolve::field::{carried_fields, path_text};
@@ -20,28 +20,13 @@ fn sel_names(sel: &CtorSel) -> Vec<&ast::Ident> {
 impl Model {
     pub(super) fn move_field(
         &mut self,
-        run: &Run,
+        run: &mut Run,
+        (f, (t, ctor)): (u64, (u64, Option<u64>)),
         path: &ast::FieldPath,
-        to: &QName,
         sel: Option<&CtorSel>,
         fill: Option<&Fill>,
     ) -> Res<Applied> {
-        let resolving = Resolving::new(self, run.module());
-        resolving.ty(&path.ty)?;
-        if to.name.text != path.ty.name.text
-            || resolving.module_of(to) != resolving.module_of(&path.ty)
-        {
-            return refuse_at(to.span(), "a field moves within its own type");
-        }
-        let (t, ctor) = self.part_of(run, path)?;
-        let name = path.field.text.clone();
         let tname = self.types[&t].name.clone();
-        let Some(f) = self.field_of(t, ctor, &name) else {
-            return refuse_at(
-                path.field.span,
-                format!("`{}` has no field `{name}`", self.shown_part(t, ctor)),
-            );
-        };
         let TypeBody::Ctors(ctors) = self.types[&t].body.clone() else {
             return refuse_at(
                 path.ty.span(),
@@ -100,7 +85,7 @@ impl Model {
 
     /// Move header field `f` of `t` down to each of `targets`, the first by declaration order
     /// keeping its id.
-    fn move_down(&mut self, run: &Run, t: u64, f: u64, targets: &[u64]) -> Res<Applied> {
+    fn move_down(&mut self, run: &mut Run, t: u64, f: u64, targets: &[u64]) -> Res<Applied> {
         let before = self.clone();
         let schema = self.schema_now(run)?.into_schema();
         let def = self.def_in(&schema, t).expect("the type");
@@ -165,7 +150,14 @@ impl Model {
 
     /// Move field `f` of constructor `c` of `t` to the header, the other constructors taking
     /// `fill`.
-    fn move_up(&mut self, run: &Run, t: u64, c: u64, f: u64, fill: Option<&Fill>) -> Res<Applied> {
+    fn move_up(
+        &mut self,
+        run: &mut Run,
+        t: u64,
+        c: u64,
+        f: u64,
+        fill: Option<&Fill>,
+    ) -> Res<Applied> {
         let before = self.clone();
         let name = self.fields[&f].name.clone();
         let tname = self.types[&t].name.clone();
@@ -241,7 +233,7 @@ impl Model {
     /// header over the declarations now, the constructors `others` taking `fill`.
     pub(super) fn up_maps(
         &self,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         from: &[u64],
         others: &[u64],
@@ -332,15 +324,14 @@ impl Model {
 
     pub(super) fn rekey(
         &mut self,
-        run: &Run,
-        relation: &QName,
+        run: &mut Run,
+        r: u64,
         key: &[ast::Ident],
         carry: &[ast::FieldPath],
     ) -> Res<Applied> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
         let resolving = Resolving::new(self, run.module());
-        let r = resolving.relation(relation)?;
         let rel = schema
             .ids()
             .relation_of(CatRelId::from_raw(r))

@@ -2,12 +2,12 @@ use std::ops::Range;
 
 use super::split::kind_word;
 use super::{ctor_in, def_in, sel_idents};
-use crate::ast::{self, CtorSel, QName};
+use crate::ast::{self, CtorSel};
 use crate::check::{self, Ref};
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head};
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Res, Resolving, broken, refuse, refuse_at};
+use crate::evolve::model::op::{Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
@@ -227,8 +227,8 @@ impl Model {
     /// fix tell the merged constructors apart, and no field need be a discriminator.
     pub(in crate::evolve::model) fn merge(
         &mut self,
-        run: &Run,
-        (ty, sel): (&QName, &CtorSel),
+        run: &mut Run,
+        (t, sel): (u64, &CtorSel),
         into: &ast::CtorDef,
         arms: Option<&[ast::Arm]>,
         given: &[ast::ArmClause],
@@ -236,7 +236,6 @@ impl Model {
     ) -> Res<Applied> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
-        let t = Resolving::new(self, run.module()).ty(ty)?;
         let sources = self.sources(t, sel)?;
         self.fresh_ctor(t, into)?;
         let m = into.name.text.clone();
@@ -378,7 +377,7 @@ impl Model {
     /// `names`, and its discriminator.
     fn merged_shape(
         &self,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         into: &ast::CtorDef,
         names: &[String],

@@ -1,6 +1,6 @@
 use super::field::Applied;
 use super::lift::Lifting;
-use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
+use super::op::{Fail, Res, broken, refuse, refuse_at, refuse_diag};
 use super::run::{Built, Decls, Late, Run};
 use super::*;
 use crate::ast::{self, Expr, RelationClause};
@@ -97,7 +97,7 @@ impl Model {
 
     /// Give each object the declarations now hold without an id, such as an index a reference
     /// field implies once no clause covers it, its id, when they build.
-    pub(super) fn settle_ids(&mut self, run: &Run) {
+    pub(super) fn settle_ids(&mut self, run: &mut Run) {
         let ahead = run.ahead(self);
         self.build_adopting(&[], &ahead).ok();
     }
@@ -111,7 +111,7 @@ impl Model {
     }
 
     /// Append `clause` to relation variable `r` and build as [`Model::rebuilt_relation`] does.
-    fn appended(&mut self, run: &Run, r: u64, clause: ClauseM) -> Res<Option<(Built, FileId)>> {
+    fn appended(&mut self, run: &mut Run, r: u64, clause: ClauseM) -> Res<Option<(Built, FileId)>> {
         self.relations
             .get_mut(&r)
             .expect("a resolved relation variable")
@@ -123,7 +123,7 @@ impl Model {
     /// Build after an operator changed the clauses of relation variable `r`. Returns the build
     /// and the file of the relation's declaration, its clauses lifted from the build; `None` when
     /// the declarations do not build, the relation then lifted again at the next build.
-    fn rebuilt_relation(&mut self, run: &Run, r: u64) -> Res<Option<(Built, FileId)>> {
+    fn rebuilt_relation(&mut self, run: &mut Run, r: u64) -> Res<Option<(Built, FileId)>> {
         let Ok(built) = self.build_adopting(&[], &run.ahead(self)) else {
             if !self.unlifted.contains(&Item::Relation(r)) {
                 self.unlifted.push(Item::Relation(r));
@@ -151,7 +151,7 @@ impl Model {
 
     /// Returns the canonical form of `span` of `file` in `built`, empty with a note that it
     /// names what only the migration's end resolves.
-    pub(super) fn canonical_at(built: &Built, run: &Run, file: FileId, span: Span) -> String {
+    pub(super) fn canonical_at(built: &Built, run: &mut Run, file: FileId, span: Span) -> String {
         canonical_term(built.text(file), span, &built.names(file))
             .unwrap_or_else(|_| run.late(Late::Unresolved))
     }
@@ -159,15 +159,14 @@ impl Model {
     /// Add a unique or index over `fields` to the relation variable `on` names.
     pub(super) fn add_index(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         kind: IndexKind,
+        r: u64,
         fields: &[Expr],
         on: &ast::RelationRef,
     ) -> Res<Applied> {
-        let resolving = Resolving::new(self, run.module());
-        let r = if let Some(sel) = &on.sel {
+        if let Some(sel) = &on.sel {
             let built = self.schema_now(run)?;
-            let r = resolving.relation(&on.relation)?;
             let rel = Self::rel_in(built.schema(), r)?;
             if let Err(e) = built.schema().relation_sel(rel, sel) {
                 return refuse_at(on.span, e);
@@ -175,10 +174,7 @@ impl Model {
             if kind == IndexKind::Unique {
                 self.members_declare(built.schema(), r, sel, fields)?;
             }
-            r
-        } else {
-            resolving.relation(&on.relation)?
-        };
+        }
         let (Some(first), Some(last)) = (fields.first(), fields.last()) else {
             return broken("an index of no field");
         };
@@ -375,13 +371,13 @@ impl Model {
     /// scope is the one `on` writes.
     pub(super) fn drop_index(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         kind: IndexKind,
+        r: u64,
         fields: &[Expr],
         on: &ast::RelationRef,
     ) -> Res<Applied> {
         let built = self.schema_now(run)?;
-        let r = Resolving::new(self, run.module()).relation(&on.relation)?;
         let schema = built.schema();
         let rel = Self::rel_in(schema, r)?;
         let want_scope = schema
@@ -473,13 +469,12 @@ impl Model {
 
     pub(super) fn add_default(
         &mut self,
-        run: &Run,
-        relation: &ast::QName,
+        run: &mut Run,
+        r: u64,
         ctor: Option<&ast::Ident>,
         field: &ast::Ident,
         value: &ast::DefaultValue,
     ) -> Res<Applied> {
-        let r = Resolving::new(self, run.module()).relation(relation)?;
         let value = match value {
             ast::DefaultValue::Generate(g) => Term::text(&format!("generate {}", g.text)),
             ast::DefaultValue::Expr(e) => Term::text(&run.text()[e.span.range()]),
@@ -493,6 +488,7 @@ impl Model {
         };
         let Some((built, file)) = self.appended(run, r, clause)? else {
             let k = self.relations[&r].clauses.len() - 1;
+            self.clause_typed(run, r, k, None)?;
             let pending = self.pend(r, k);
             let value = run.late(Late::AddedDefault {
                 relation: r,
@@ -523,6 +519,7 @@ impl Model {
             ast::DefaultValue::Expr(e) => e.span.end,
         };
         let span = after_eq(built.text(file), written.span.end as usize, end as usize);
+        self.clause_typed(run, r, k, Some(&built))?;
         let ClauseM::Default { ids, .. } = &self.relations[&r].clauses[k] else {
             return broken("an added default lifted as another clause");
         };
@@ -564,12 +561,11 @@ impl Model {
 
     pub(super) fn drop_default(
         &mut self,
-        run: &Run,
-        relation: &ast::QName,
+        run: &mut Run,
+        r: u64,
         ctor: Option<&ast::Ident>,
         field: &ast::Ident,
     ) -> Res<Applied> {
-        let r = Resolving::new(self, run.module()).relation(relation)?;
         let found = self.relations[&r].clauses.iter().position(|c| {
             matches!(c, ClauseM::Default { ctor: c, field: f, .. }
                 if f.print(self) == field.text
@@ -580,7 +576,7 @@ impl Model {
                 field.span,
                 format!(
                     "`{}` has no default for `{}`",
-                    relation.name.text, field.text
+                    self.relations[&r].name, field.text
                 ),
             );
         };
@@ -601,7 +597,7 @@ impl Model {
     }
 
     /// Returns the position of computed field `field` among relation variable `r`'s clauses.
-    fn computed_at(&self, r: u64, relation: &ast::QName, field: &ast::Ident) -> Res<usize> {
+    fn computed_at(&self, r: u64, field: &ast::Ident) -> Res<usize> {
         let found = self.relations[&r]
             .clauses
             .iter()
@@ -612,7 +608,7 @@ impl Model {
                 field.span,
                 format!(
                     "`{}` has no computed field `{}`",
-                    relation.name.text, field.text
+                    self.relations[&r].name, field.text
                 ),
             ),
         }
@@ -623,7 +619,7 @@ impl Model {
     fn computed_written(
         &self,
         built: &Built,
-        run: &Run,
+        run: &mut Run,
         file: FileId,
         r: u64,
         k: usize,
@@ -631,6 +627,7 @@ impl Model {
         let RelationClause::Computed(n, _, e) = Self::clause_written(built, file, k)? else {
             return broken("a computed field the model printed as another clause");
         };
+        self.clause_typed(run, r, k, Some(built))?;
         let ClauseM::Computed { id: Some(id), .. } = &self.relations[&r].clauses[k] else {
             return broken("a computed field the build gave no id");
         };
@@ -690,13 +687,12 @@ impl Model {
 
     pub(super) fn add_computed(
         &mut self,
-        run: &Run,
-        relation: &ast::QName,
+        run: &mut Run,
+        r: u64,
         field: &ast::Ident,
         ty: &ast::Type,
         expr: &Expr,
     ) -> Res<Applied> {
-        let r = Resolving::new(self, run.module()).relation(relation)?;
         let clause = ClauseM::Computed {
             id: None,
             name: field.text.clone(),
@@ -704,8 +700,9 @@ impl Model {
             expr: Term::text(&run.text()[expr.span.range()]),
         };
         let Some((built, file)) = self.appended(run, r, clause)? else {
-            let computed = self.fresh(Space::Computed);
             let k = self.relations[&r].clauses.len() - 1;
+            self.clause_typed(run, r, k, None)?;
+            let computed = self.fresh(Space::Computed);
             if let ClauseM::Computed { id, .. } = &mut self
                 .relations
                 .get_mut(&r)
@@ -746,14 +743,13 @@ impl Model {
 
     pub(super) fn redefine_computed(
         &mut self,
-        run: &Run,
-        relation: &ast::QName,
+        run: &mut Run,
+        r: u64,
         field: &ast::Ident,
         ty: &ast::Type,
         expr: &Expr,
     ) -> Res<Applied> {
-        let r = Resolving::new(self, run.module()).relation(relation)?;
-        let k = self.computed_at(r, relation, field)?;
+        let k = self.computed_at(r, field)?;
         if let ClauseM::Computed {
             ty: held_ty,
             expr: held_expr,
@@ -768,6 +764,7 @@ impl Model {
             *held_expr = Term::text(&run.text()[expr.span.range()]);
         }
         let Some((built, file)) = self.rebuilt_relation(run, r)? else {
+            self.clause_typed(run, r, k, None)?;
             let ClauseM::Computed {
                 id: Some(computed), ..
             } = self.relations[&r].clauses[k]
@@ -795,12 +792,11 @@ impl Model {
 
     pub(super) fn drop_computed(
         &mut self,
-        run: &Run,
-        relation: &ast::QName,
+        run: &mut Run,
+        r: u64,
         field: &ast::Ident,
     ) -> Res<Applied> {
-        let r = Resolving::new(self, run.module()).relation(relation)?;
-        let k = self.computed_at(r, relation, field)?;
+        let k = self.computed_at(r, field)?;
         let ClauseM::Computed {
             id: Some(computed), ..
         } = self
@@ -818,5 +814,58 @@ impl Model {
             Vec::new(),
             Ok(Vec::new()),
         ))
+    }
+}
+
+impl Model {
+    /// Refuse the operator with the first failure of the declarations within the text it wrote
+    /// in clause `k` of relation variable `r`, a default or a computed field: of checking `built`,
+    /// the declarations as they build, else of building them.
+    fn clause_typed(&self, run: &mut Run, r: u64, k: usize, built: Option<&Built>) -> Res<()> {
+        let Some(i) = self.decl_at(Item::Relation(r)) else {
+            return broken("a relation variable with a clause and no declaration");
+        };
+        let file = FileId(i as u32);
+        let (span, ds) = match built {
+            Some(b) => (written_span(b, file, k)?, b.errors_in(file)),
+            None => {
+                let Err(ds) = self.built(&[], &run.ahead(self)) else {
+                    return Ok(());
+                };
+                let ds = ds
+                    .into_iter()
+                    .filter(|d| d.file == file)
+                    .map(|d| d.diag)
+                    .collect::<Vec<_>>();
+                (written_span(&self.parsed(), file, k)?, ds)
+            }
+        };
+        match ds
+            .iter()
+            .find(|d| span.start <= d.span.start && d.span.end <= span.end)
+        {
+            Some(d) => refuse_diag(d),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Returns the span of the text an operator writes in clause `k` of the relation declaration of
+/// `file`: a default's value, or a computed field from its name through its expression.
+fn written_span(decls: &impl Decls, file: FileId, k: usize) -> Res<Span> {
+    match Model::clause_written(decls, file, k)? {
+        RelationClause::Default { field, value, .. } => {
+            let end = match &value {
+                ast::DefaultValue::Generate(g) => g.span.end,
+                ast::DefaultValue::Expr(e) => e.span.end,
+            };
+            Ok(after_eq(
+                decls.text(file),
+                field.span.end as usize,
+                end as usize,
+            ))
+        }
+        RelationClause::Computed(n, _, e) => Ok(n.span.to(e.span)),
+        _ => broken("a default or computed field the model printed as another clause"),
     }
 }

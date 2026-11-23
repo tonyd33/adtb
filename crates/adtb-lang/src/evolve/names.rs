@@ -66,7 +66,7 @@ impl Logged {
     pub fn stepped(&self, k: usize) -> Replaying<(Source, Vec<Step>)> {
         let (mut states, _, mut got) = model::replay(self)?;
         let m = model::logged_file(self);
-        let steps = got.op_steps(&m, &self.text).into_iter().nth(k);
+        let steps = got.op_steps(&m).into_iter().nth(k);
         let steps = steps.ok_or_else(|| {
             vec![Diag::new(
                 self.operators[k].span,

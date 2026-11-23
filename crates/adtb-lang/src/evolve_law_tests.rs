@@ -2095,16 +2095,7 @@ fn lawful(src: &Source, text: &str, seen: &mut Seen) -> Option<Source> {
                 let steps = steps
                     .as_ref()
                     .unwrap_or_else(|ds| panic!("{text}\nan applied revert's steps fail: {ds:?}"));
-                let mut before = src.clone();
-                for s in steps {
-                    seen.revert_steps += 1;
-                    if let Some(a) = &s.applied {
-                        a.resolved(&before, &s.after).unwrap_or_else(|ds| {
-                            panic!("{text}\na revert step does not resolve: {ds:?}")
-                        });
-                    }
-                    before = s.after.clone();
-                }
+                seen.revert_steps += steps.len();
                 if m.operators.len() == 1 {
                     let last = &steps.last().expect("a revert takes a step").after;
                     assert_eq!(

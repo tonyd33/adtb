@@ -1,4 +1,4 @@
-use super::op::{self, Fail, Res, broken, refuse, refuse_at, unchecked};
+use super::op::{Fail, Res, broken, refuse_at, unchecked};
 use super::run::{Built, Decls, Late, Run};
 use super::*;
 use crate::ast::{self, Fill};
@@ -6,7 +6,7 @@ use crate::canon::{Names, canonical_term};
 use crate::capability::RootKind;
 use crate::check::{self, RowBody};
 use crate::evolve::{Clause, Resolved, RowFn, RowMap};
-use crate::schema::{CtorRef, Schema, TypeDefKind};
+use crate::schema::{CtorRef, Schema};
 use crate::span::{FileId, Span};
 use crate::types::{Ty, TypeId};
 
@@ -36,7 +36,7 @@ impl Model {
 
     /// Returns the schema the model builds now and its program, refusing the operator as one
     /// that checks against a schema that does not check when they do not build or check.
-    pub(super) fn checked(&self, run: &Run) -> Res<check::Compiled<Schema>> {
+    pub(super) fn checked(&self, run: &mut Run) -> Res<check::Compiled<Schema>> {
         let schema = match self.schema(&run.ahead(self)) {
             Ok(s) => s,
             Err(ds) => return unchecked(&ds),
@@ -128,7 +128,7 @@ impl Model {
     /// declarations now, the whole sum when `None`. Returns its row function and canonical form.
     pub(super) fn fill(
         &self,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         ctors: Option<Vec<u32>>,
         field_ty: &Ty,
@@ -146,8 +146,9 @@ impl Model {
             args: (0..td.params.len() as u32).map(Ty::Param).collect(),
             ctors: ctors.and_then(|cs| schema.normalize_ctors(def, cs)),
         };
+        let span = run.span();
         let body = || match fill {
-            Fill::Match(arms) => RowBody::Match(arms, run.span()),
+            Fill::Match(arms) => RowBody::Match(arms, span),
             Fill::Expr(e) => RowBody::Expr(e),
         };
         let refs = check::check_row(
@@ -192,13 +193,13 @@ impl Model {
     /// `path` names, every existing row taking `fill`.
     pub(super) fn add_field(
         &mut self,
-        run: &Run,
+        run: &mut Run,
+        (t, ctor): (u64, Option<u64>),
         path: &ast::FieldPath,
         ty: Span,
         action: Option<Span>,
         fill: &Fill,
     ) -> Res<Applied> {
-        let (t, ctor) = self.part_of(run, path)?;
         let name = path.field.text.clone();
         if !self.field_free(t, ctor, &name) {
             return refuse_at(
@@ -277,7 +278,7 @@ impl Model {
     /// whole sum when `None`, their fill, over the declarations now.
     pub(super) fn fill_map(
         &self,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         at: Option<Vec<u32>>,
         fty: &Ty,
@@ -339,18 +340,7 @@ impl Model {
         self.fields.remove(&f);
     }
 
-    pub(super) fn drop_field(&mut self, run: &Run, path: &ast::FieldPath) -> Res<Applied> {
-        let (t, ctor) = self.part_of(run, path)?;
-        let Some(f) = self.field_of(t, ctor, &path.field.text) else {
-            return refuse_at(
-                path.field.span,
-                format!(
-                    "`{}` has no field `{}`",
-                    self.shown_part(t, ctor),
-                    path.field.text
-                ),
-            );
-        };
+    pub(super) fn drop_field(&mut self, f: u64) -> Res<Applied> {
         self.remove_field(f);
         Ok((Resolved::DropField { field: f }, Vec::new(), Ok(Vec::new())))
     }
@@ -358,21 +348,11 @@ impl Model {
     /// Give the field `path` names the delete action written at `action`.
     pub(super) fn alter_field(
         &mut self,
-        run: &Run,
+        run: &mut Run,
+        (f, (_, ctor)): (u64, (u64, Option<u64>)),
         path: &ast::FieldPath,
         action: Span,
     ) -> Res<Applied> {
-        let (t, ctor) = self.part_of(run, path)?;
-        let Some(f) = self.field_of(t, ctor, &path.field.text) else {
-            return refuse_at(
-                path.field.span,
-                format!(
-                    "`{}` has no field `{}`",
-                    self.shown_part(t, ctor),
-                    path.field.text
-                ),
-            );
-        };
         self.fields.get_mut(&f).expect("the field").action =
             Some(Term::text(&run.text()[action.range()]));
         let built = self.built_for(run)?;
@@ -391,19 +371,5 @@ impl Model {
             Vec::new(),
             Ok(Vec::new()),
         ))
-    }
-
-    /// Returns the type and constructor a field path names, refusing a newtype and a type whose
-    /// kind has no fields.
-    pub(super) fn part_of(&self, run: &Run, path: &ast::FieldPath) -> Res<(u64, Option<u64>)> {
-        let r = op::Resolving::new(self, run.module());
-        let (t, c) = r.part(path)?;
-        if let Ok(b) = self.schema_now(run)
-            && let Some(def) = self.def_in(b.schema(), t)
-            && matches!(b.schema().ty(def).kind, TypeDefKind::Newtype { .. })
-        {
-            return refuse(format!("newtype `{}` has no fields", self.types[&t].name));
-        }
-        Ok((t, c))
     }
 }

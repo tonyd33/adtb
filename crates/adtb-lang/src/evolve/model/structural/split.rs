@@ -8,7 +8,7 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
+use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::unbuilt;
 use crate::evolve::model::run::{Built, Late, Run};
@@ -135,7 +135,7 @@ impl Image<'_> {
 }
 
 /// Returns the replacements `given` states, each with its text, and its arms.
-fn replacements(run: &Run, given: &[SplitClause]) -> (Vec<Added>, Vec<ast::ArmClause>) {
+fn replacements(run: &mut Run, given: &[SplitClause]) -> (Vec<Added>, Vec<ast::ArmClause>) {
     let mut out = Vec::new();
     let mut arms = Vec::new();
     for cl in given {
@@ -169,7 +169,7 @@ impl Model {
     /// a check retyped to them declares, `built` resolving the declarations now.
     pub(super) fn routing(
         &self,
-        run: &Run,
+        run: &mut Run,
         built: &Built,
         t: u64,
         sources: &[u64],
@@ -210,7 +210,8 @@ impl Model {
         let prod: Vec<u32> = made.iter().map(|&c| ctor_in(schema, c)).collect();
         let row = Cx::row_ty(schema, def, Some(src));
         let result = Cx::row_ty(schema, def, Some(prod));
-        let body = || RowBody::Match(arms, run.span());
+        let span = run.span();
+        let body = || RowBody::Match(arms, span);
         let refs = check::check_row(
             &compiled,
             module,
@@ -262,7 +263,7 @@ impl Model {
     /// - `made` are constructors of `t` that its body does not yet list.
     pub(super) fn reselect_products(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         sources: &[u64],
         made: &[u64],
@@ -303,24 +304,10 @@ impl Model {
         Ok(())
     }
 
-    /// Returns the constructor of type `t` that `path` names.
-    fn ctor_at(&self, run: &Run, path: &ast::CtorPath) -> Res<(u64, u64)> {
-        let t = Resolving::new(self, run.module()).ty(&path.ty)?;
-        match self.ctor_named(t, &path.ctor.text) {
-            Some(c) => Ok((t, c)),
-            None => refuse_at(
-                path.ctor.span,
-                format!(
-                    "`{}` is not a constructor of `{}`",
-                    path.ctor.text, path.ty.name.text
-                ),
-            ),
-        }
-    }
-
-    pub(super) fn split(
+    pub(in crate::evolve::model) fn split(
         &mut self,
-        run: &Run,
+        run: &mut Run,
+        (t, c): (u64, u64),
         path: &ast::CtorPath,
         into: &[ast::CtorDef],
         arms: &[ast::Arm],
@@ -328,7 +315,6 @@ impl Model {
     ) -> Res<Applied> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
-        let (t, c) = self.ctor_at(run, path)?;
         for d in into {
             self.fresh_ctor(t, d)?;
         }
@@ -563,7 +549,7 @@ impl Model {
     /// replacement with the next new index, `before` and `after` the split, and each of `arms`.
     fn split_resolved(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         (before, after): (&Schema, &Built),
         (t, arms): (u64, Vec<Clause>),
         given: &[SplitClause],
@@ -610,7 +596,7 @@ impl Model {
     fn products_canonical(
         &self,
         built: &Built,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         made: &[u64],
         record: bool,
@@ -623,7 +609,13 @@ impl Model {
 
     /// Returns the canonical form of the elements of clause `at` of relation variable `r` as
     /// `built` declares it.
-    fn elems_canonical(&self, built: &Built, run: &Run, r: Option<u64>, at: usize) -> Res<String> {
+    fn elems_canonical(
+        &self,
+        built: &Built,
+        run: &mut Run,
+        r: Option<u64>,
+        at: usize,
+    ) -> Res<String> {
         let Some(r) = r else {
             return broken("a split's replacement with no relation variable");
         };

@@ -86,3 +86,14 @@ impl Source {
         Ok(out)
     }
 }
+
+/// Returns the span from the first token after the first `=` at or after `from` to `end`.
+fn after_eq(text: &str, from: u32, end: u32) -> Span {
+    let toks = tokens(&text[from as usize..end as usize]);
+    let at = toks
+        .iter()
+        .position(|(t, _)| *t == Tok::Eq)
+        .and_then(|i| toks.get(i + 1))
+        .map_or(end as usize, |(_, r)| from as usize + r.start);
+    Span::new(at, end as usize)
+}

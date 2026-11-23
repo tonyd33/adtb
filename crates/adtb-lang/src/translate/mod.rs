@@ -674,18 +674,16 @@ fn filled(maps: impl IntoIterator<Item = RowMap>) -> Option<Rc<RowFn>> {
     })
 }
 
-/// Returns each operator that revert `k` of `logged`, whose text is `text`, applies, resolved
-/// against the source before and after it.
+/// Returns each operator that revert `k` of `logged`, whose text is `text`, applies, as applying
+/// it resolved it.
 fn reverted(logged: &Logged, k: usize, text: &str) -> R<Vec<Op>> {
-    let (mut before, steps) = logged
+    let (_, steps) = logged
         .stepped(k)
         .map_err(|f| failed(Some(text.to_string()), f))?;
     let mut out = Vec::new();
     for s in steps {
         if let Some(a) = &s.applied {
-            let r = a
-                .resolved(&before, &s.after)
-                .map_err(|ds| failed(Some(text.to_string()), Failed::Refused(ds)))?;
+            let r = a.clone();
             let fill = match r.op {
                 Resolved::AddField { .. } => filled(s.maps).map(|f| (f, Rc::new(s.after.clone()))),
                 _ => None,
@@ -697,7 +695,6 @@ fn reverted(logged: &Logged, k: usize, text: &str) -> R<Vec<Op>> {
                 clauses: r.clauses,
             });
         }
-        before = s.after;
     }
     Ok(out)
 }

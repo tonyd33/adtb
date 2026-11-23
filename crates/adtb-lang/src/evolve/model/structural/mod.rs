@@ -2,12 +2,11 @@ mod merge;
 mod nest;
 mod split;
 
-use super::field::Applied;
 use super::op::{Res, refuse, refuse_at};
 use super::reselect::{Edit, reselected, sel_range};
 use super::run::{Built, Run};
 use super::*;
-use crate::ast::{self, CtorSel, OperatorKind};
+use crate::ast::{self, CtorSel};
 use crate::check::{self, Ref};
 use crate::evolve::RowFn;
 use crate::evolve::carry::{self, Carry, Plan, Structural};
@@ -104,33 +103,6 @@ impl Model {
             }
         }
         out
-    }
-
-    /// Apply `op` when it splits, merges, nests or unnests constructors.
-    pub(super) fn restructuring(&mut self, run: &Run, op: &OperatorKind) -> Res<Option<Applied>> {
-        Ok(Some(match op {
-            OperatorKind::NestConstructor {
-                ty,
-                sel,
-                into,
-                clauses,
-            } => self.nest(run, ty, sel, into, clauses)?,
-            OperatorKind::SplitConstructor {
-                path,
-                into,
-                arms,
-                clauses,
-            } => self.split(run, path, into, arms, clauses)?,
-            OperatorKind::MergeConstructor {
-                ty,
-                sel,
-                into,
-                arms,
-                clauses,
-            } => self.merge(run, (ty, sel), into, arms.as_deref(), clauses, false)?,
-            OperatorKind::UnnestConstructor(path, clauses) => self.unnest(run, path, clauses)?,
-            _ => return Ok(None),
-        }))
     }
 
     /// Returns the constructors of type `t` that `sel` names, in declaration order.
@@ -266,7 +238,7 @@ impl Model {
     /// constructors only. Returns its id.
     pub(super) fn new_ctor(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         name: &str,
         fields: Option<&[ast::FieldType]>,
@@ -307,7 +279,7 @@ impl Model {
     /// all by name, carries grants, as `built`, before it, resolves the declarations.
     pub(super) fn carry_plan(
         &self,
-        run: &Run,
+        run: &mut Run,
         built: &Built,
         what: Structural,
         t: u64,

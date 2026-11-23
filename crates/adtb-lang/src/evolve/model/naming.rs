@@ -235,7 +235,7 @@ impl Model {
     /// Name the copies of the migration's text operator `op` made, resolved as `resolved`, in the
     /// declarations it leaves, and those of earlier operators still unnamed once those
     /// declarations resolve every name the copy's declaration writes.
-    pub(super) fn name_copies(&mut self, run: &Run, op: &Operator, resolved: &ResolvedOp) {
+    pub(super) fn name_copies(&mut self, run: &mut Run, op: &Operator, resolved: &ResolvedOp) {
         let mut unpaired = Vec::new();
         let made = self.copies_of(run, op, resolved, &mut unpaired);
         self.naming.missing.extend(unpaired);
@@ -267,7 +267,7 @@ impl Model {
     }
 
     /// Name the copies still unnamed in the declarations the migration leaves.
-    pub(super) fn name_late(&mut self, run: &Run) {
+    pub(super) fn name_late(&mut self, run: &mut Run) {
         if self.naming.pending.is_empty() {
             return;
         }
@@ -491,13 +491,13 @@ impl Model {
     /// unknown.
     pub(super) fn copies_of(
         &self,
-        run: &Run,
+        run: &mut Run,
         op: &Operator,
         resolved: &ResolvedOp,
         missing: &mut Vec<Diag>,
     ) -> Vec<(Range<usize>, At)> {
         let text = run.text();
-        let held = run.held_by(run.at());
+        let held = run.held();
         let range = |s: Span| s.range();
         let decl = |span: Span| -> Vec<(Range<usize>, At)> {
             let at = match held {
@@ -634,7 +634,7 @@ impl Model {
     /// resolved to one for one.
     fn made_copies(
         &self,
-        run: &Run,
+        run: &mut Run,
         op: &Operator,
         resolved: &ResolvedOp,
         missing: &mut Vec<Diag>,
@@ -761,7 +761,7 @@ impl Run<'_> {
     /// Record the names `built` gives each of `held`, expressions of file `file`, onto the
     /// expression of `written`, of the migration's text, at the same place.
     pub(super) fn read(
-        &self,
+        &mut self,
         built: &Built,
         file: FileId,
         held: &[ast::Expr],
@@ -782,10 +782,10 @@ impl Run<'_> {
         self.miss(missing);
     }
 
-    /// Returns the key of the declaration operator `at` held, when it held one.
-    pub(super) fn held_by(&self, at: usize) -> Option<u64> {
-        self.lates().into_iter().find_map(|(k, l)| match l {
-            Late::Held(key) if k == at => Some(key),
+    /// Returns the key of the declaration the operator being applied held, when it held one.
+    pub(super) fn held(&self) -> Option<u64> {
+        self.lates().iter().find_map(|&l| match l {
+            Late::Held(key) => Some(key),
             _ => None,
         })
     }

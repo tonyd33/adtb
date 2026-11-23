@@ -14,7 +14,7 @@ use crate::span::Span;
 impl Model {
     /// Make record `t` a sum of its one constructor, the key fields of its relation variables
     /// moving to the header.
-    fn record_to_sum(&mut self, run: &Run, t: u64) -> Res<()> {
+    fn record_to_sum(&mut self, run: &mut Run, t: u64) -> Res<()> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
         let Some(def) = schema.ids().type_of(crate::ids::CatTypeId::from_raw(t)) else {
@@ -53,14 +53,13 @@ impl Model {
 
     pub(super) fn add_constructor(
         &mut self,
-        run: &Run,
-        path: &ast::CtorPath,
+        run: &mut Run,
+        (t, path): (u64, &ast::CtorPath),
         record: Option<&[ast::FieldType]>,
         place: Option<&CtorPlace>,
         joins: &[ast::RelationRef],
         arms: &[ast::ArmClause],
     ) -> Res<Applied> {
-        let t = Resolving::new(self, run.module()).ty(&path.ty)?;
         let name = path.ctor.text.clone();
         let tname = self.types[&t].name.clone();
         match self.types[&t].body {
@@ -213,7 +212,7 @@ impl Model {
     pub(super) fn ctor_canonical(
         &self,
         built: &Built,
-        run: &Run,
+        run: &mut Run,
         file: FileId,
         c: u64,
         record: bool,
@@ -318,7 +317,7 @@ impl Model {
     /// computed field the position of its clause.
     pub(super) fn arm_target(
         &self,
-        run: &Run,
+        run: &mut Run,
         a: &ast::ArmClause,
     ) -> Res<(Item, ArmTarget, Option<usize>)> {
         let resolving = Resolving::new(self, run.module());

@@ -1,10 +1,10 @@
 use super::split::kind_word;
 use super::{ctor_in, def_in, sel_idents};
-use crate::ast::{self, CtorSel, QName};
+use crate::ast::{self, CtorSel};
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::element_head;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Res, Resolving, broken, refuse, refuse_at};
+use crate::evolve::model::op::{Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
@@ -101,7 +101,7 @@ impl Model {
     /// `rels` again from the build. Returns the failures when the declarations do not build.
     pub(super) fn rebuilt(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         t: u64,
         rels: &[u64],
     ) -> Res<Result<Built, Vec<FileDiag>>> {
@@ -128,17 +128,16 @@ impl Model {
         }
     }
 
-    pub(super) fn nest(
+    pub(in crate::evolve::model) fn nest(
         &mut self,
-        run: &Run,
-        ty: &QName,
+        run: &mut Run,
+        t: u64,
         sel: &CtorSel,
         into: &ast::CtorDef,
         arms: &[ast::ArmClause],
     ) -> Res<Applied> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
-        let t = Resolving::new(self, run.module()).ty(ty)?;
         let sources = self.sources(t, sel)?;
         self.fresh_ctor(t, into)?;
         let n = into.name.text.clone();
@@ -246,23 +245,17 @@ impl Model {
         Ok((Resolved::Nest { ctor: c, decl }, clauses, Ok(maps)))
     }
 
-    pub(super) fn unnest(
+    pub(in crate::evolve::model) fn unnest(
         &mut self,
-        run: &Run,
+        run: &mut Run,
+        (t, c): (u64, u64),
         path: &ast::CtorPath,
         arms: &[ast::ArmClause],
     ) -> Res<Applied> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
-        let t = Resolving::new(self, run.module()).ty(&path.ty)?;
         let tname = self.types[&t].name.clone();
-        let n = path.ctor.text.clone();
-        let Some(c) = self.ctor_named(t, &n) else {
-            return refuse(format!(
-                "`{n}` is not a constructor of `{}`",
-                path.ty.name.text
-            ));
-        };
+        let n = self.ctors[&c].name.clone();
         let def = def_in(schema, t);
         let ci = ctor_in(schema, c);
         let td = schema.ty(def);

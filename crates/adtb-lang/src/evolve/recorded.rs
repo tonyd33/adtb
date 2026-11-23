@@ -40,7 +40,7 @@ impl Source {
         accepting: bool,
     ) -> Result<Migrated, Failed> {
         let (next, checked, mut got) = self.migrating(m, text, &[], accepting, true)?;
-        let steps = got.op_steps(m, text);
+        let steps = got.op_steps(m);
         let unavailable = next.unavailable(&m.operators);
         let resolved = match got.names() {
             _ if !unavailable.is_empty() => Err(unavailable),
@@ -58,7 +58,7 @@ impl Source {
         let mut got = model::migrated(self, m, text, &[], false, false).map_err(Failed::Broken)?;
         let (blame, operators): (Vec<usize>, Vec<Diag>) = got.refusals(m).into_iter().unzip();
         if blame.is_empty() {
-            return Ok(got.op_steps(m, text));
+            return Ok(got.op_steps(m));
         }
         let mut result = got.source();
         result.settled();

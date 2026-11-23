@@ -64,7 +64,7 @@ impl Model {
 
     pub(super) fn add(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         kind: Kind,
         name: &str,
         span: Span,
@@ -132,7 +132,13 @@ impl Model {
 
     /// Hold declaration `text` of kind `kind` named `name`, added while the declarations do not
     /// build, until they build. Returns the operator resolved as the migration's end resolves it.
-    fn hold(&mut self, run: &Run, kind: Kind, name: &str, text: String) -> (Resolved, Vec<Clause>) {
+    fn hold(
+        &mut self,
+        run: &mut Run,
+        kind: Kind,
+        name: &str,
+        text: String,
+    ) -> (Resolved, Vec<Clause>) {
         let key = self.hold_text(run.module(), kind, name, text, true);
         let decl = run.late(Late::Held(key));
         (Resolved::AddModule { module: decl }, Vec::new())
@@ -258,7 +264,7 @@ impl Model {
 
     pub(super) fn redefine_fn(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         function: u64,
         span: Span,
         op: &OperatorKind,
@@ -316,7 +322,7 @@ impl Model {
         ))
     }
 
-    pub(super) fn drop(&mut self, run: &Run, item: Item) -> Res<(Resolved, Vec<Clause>)> {
+    pub(super) fn drop(&mut self, run: &mut Run, item: Item) -> Res<(Resolved, Vec<Clause>)> {
         let resolved = match item {
             Item::Type(t) => {
                 self.drop_type_allowed(run, t)?;
@@ -409,7 +415,7 @@ impl Model {
 
     /// Refuse dropping type `t` while a declaration uses it. While the declarations do not
     /// build, allow it only when they build without it.
-    fn drop_type_allowed(&self, run: &Run, t: u64) -> Res<()> {
+    fn drop_type_allowed(&self, run: &mut Run, t: u64) -> Res<()> {
         let built = match self.schema_now(run) {
             Ok(b) => b,
             Err(e) => {
@@ -466,7 +472,7 @@ impl Model {
         Ok(())
     }
 
-    fn drop_relation_allowed(&self, run: &Run, r: u64) -> Res<()> {
+    fn drop_relation_allowed(&self, run: &mut Run, r: u64) -> Res<()> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
         let Some(rel) = schema.ids().relation_of(crate::ids::CatRelId::from_raw(r)) else {
@@ -510,7 +516,7 @@ impl Model {
     /// them, declarations that do not build.
     pub(super) fn rename(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         (space, id): Obj,
         to: &ast::Ident,
     ) -> Res<(Resolved, Vec<Clause>)> {
@@ -640,7 +646,7 @@ impl Model {
 
     pub(super) fn stage(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         key: StateKey,
         to: Stage,
         verb: &str,

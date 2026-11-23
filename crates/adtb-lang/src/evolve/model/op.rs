@@ -1,5 +1,6 @@
 use super::*;
-use crate::ast::{self, CtorSel, CtorTarget, OperatorKind, QName};
+use crate::ast::{self, CtorPlace, CtorSel, CtorTarget, Expr, OperatorKind, QName};
+use crate::lex::{Tok, lex};
 use crate::schema::Stage;
 use crate::span::{Diag, DiagKind, FileDiag, Span};
 
@@ -72,7 +73,7 @@ pub(super) enum StateKey {
 /// An operator with every name it writes resolved to the object it names in the model it
 /// applies to. Text it adds stays at its span of the migration's text.
 #[derive(Clone, Debug)]
-pub(super) enum Op {
+pub(super) enum Op<'o> {
     AddModule(ast::Ident),
     DropModule(ast::Ident),
     /// A declaration of kind `kind` named `name`, at `span`.
@@ -95,6 +96,133 @@ pub(super) enum Op {
         to: Stage,
         verb: &'static str,
         shown: String,
+    },
+    /// A field `path` names added to `part`, a type and the constructor whose fields it names,
+    /// `None` for the header; with its type and delete action at their spans.
+    AddField {
+        part: (u64, Option<u64>),
+        path: &'o ast::FieldPath,
+        ty: Span,
+        action: Option<Span>,
+        fill: &'o ast::Fill,
+    },
+    DropField(u64),
+    /// Field `field` of `part`, as `path` names it, given the delete action at `action`.
+    AlterField {
+        field: u64,
+        part: (u64, Option<u64>),
+        path: &'o ast::FieldPath,
+        action: Span,
+    },
+    AddIndex {
+        kind: IndexKind,
+        relation: u64,
+        fields: &'o [Expr],
+        on: &'o ast::RelationRef,
+    },
+    DropIndex {
+        kind: IndexKind,
+        relation: u64,
+        fields: &'o [Expr],
+        on: &'o ast::RelationRef,
+    },
+    AddDefault {
+        relation: u64,
+        ctor: Option<&'o ast::Ident>,
+        field: &'o ast::Ident,
+        value: &'o ast::DefaultValue,
+    },
+    DropDefault {
+        relation: u64,
+        ctor: Option<&'o ast::Ident>,
+        field: &'o ast::Ident,
+    },
+    AddComputed {
+        relation: u64,
+        field: &'o ast::Ident,
+        ty: &'o ast::Type,
+        expr: &'o Expr,
+    },
+    RedefineComputed {
+        relation: u64,
+        field: &'o ast::Ident,
+        ty: &'o ast::Type,
+        expr: &'o Expr,
+    },
+    DropComputed {
+        relation: u64,
+        field: &'o ast::Ident,
+    },
+    /// A constructor `path` names added to type `ty`.
+    AddConstructor {
+        ty: u64,
+        path: &'o ast::CtorPath,
+        record: Option<&'o [ast::FieldType]>,
+        place: Option<&'o CtorPlace>,
+        joins: &'o [ast::RelationRef],
+        arms: &'o [ast::ArmClause],
+    },
+    RemoveConstructor {
+        ty: u64,
+        ctor: u64,
+    },
+    Split {
+        ty: u64,
+        ctor: u64,
+        path: &'o ast::CtorPath,
+        into: &'o [ast::CtorDef],
+        arms: &'o [ast::Arm],
+        clauses: &'o [ast::SplitClause],
+    },
+    Merge {
+        ty: u64,
+        sel: &'o CtorSel,
+        into: &'o ast::CtorDef,
+        arms: Option<&'o [ast::Arm]>,
+        clauses: &'o [ast::ArmClause],
+    },
+    Nest {
+        ty: u64,
+        sel: &'o CtorSel,
+        into: &'o ast::CtorDef,
+        clauses: &'o [ast::ArmClause],
+    },
+    Unnest {
+        ty: u64,
+        ctor: u64,
+        path: &'o ast::CtorPath,
+        clauses: &'o [ast::ArmClause],
+    },
+    /// Field `field` of `part`, as `path` names it, moved to the constructors `sel` selects, or
+    /// to the header.
+    MoveField {
+        field: u64,
+        part: (u64, Option<u64>),
+        path: &'o ast::FieldPath,
+        sel: Option<&'o CtorSel>,
+        fill: Option<&'o ast::Fill>,
+    },
+    Rekey {
+        relation: u64,
+        key: &'o [ast::Ident],
+        carry: &'o [ast::FieldPath],
+    },
+    Grant(&'o ast::Grant),
+    Revoke(&'o ast::Revoke),
+    Script(&'o ast::Write),
+    Install {
+        name: &'o ast::Ident,
+        version: &'o str,
+        from: &'o str,
+    },
+    Uninstall(&'o ast::Ident),
+    AdoptTzdb {
+        release: &'o str,
+        from: &'o str,
+    },
+    Revert {
+        migration: &'o str,
+        fills: &'o [(ast::FieldPath, ast::Fill)],
     },
 }
 
@@ -383,11 +511,26 @@ impl Model {
 pub(super) struct Resolving<'a> {
     model: &'a Model,
     module: &'a str,
+    /// The migration's text.
+    text: &'a str,
 }
 
 impl<'a> Resolving<'a> {
     pub(super) fn new(model: &'a Model, module: &'a str) -> Resolving<'a> {
-        Resolving { model, module }
+        Resolving {
+            model,
+            module,
+            text: "",
+        }
+    }
+
+    /// Returns the resolving of the operators of migration text `text`.
+    pub(super) fn of(model: &'a Model, module: &'a str, text: &'a str) -> Resolving<'a> {
+        Resolving {
+            model,
+            module,
+            text,
+        }
     }
 
     pub(super) fn module_of(&self, q: &QName) -> String {
@@ -552,8 +695,28 @@ impl<'a> Resolving<'a> {
         }
     }
 
+    /// Returns the type and constructor a field path names and the field of them it names.
+    fn field_at(&self, path: &ast::FieldPath) -> Res<((u64, Option<u64>), u64)> {
+        let (t, c) = self.part(path)?;
+        match self.model.field_of(t, c, &path.field.text) {
+            Some(f) => Ok(((t, c), f)),
+            None => refuse_at(
+                path.field.span,
+                format!(
+                    "`{}` has no field `{}`",
+                    self.model.shown_part(t, c),
+                    path.field.text
+                ),
+            ),
+        }
+    }
+
     /// Returns `op` with the names it writes resolved, or why it does not apply.
-    pub(super) fn op(&self, op: &OperatorKind) -> Res<Op> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per operator kind; a split by family would need a catch-all arm in each part"
+    )]
+    pub(super) fn op<'o>(&self, op: &'o OperatorKind) -> Res<Op<'o>> {
         let add = |kind: Kind, name: &str, span: Span| {
             Ok(Op::Add {
                 kind,
@@ -627,70 +790,256 @@ impl<'a> Resolving<'a> {
             OperatorKind::Enable(t) => stage(t, "enable", Stage::Enabled),
             OperatorKind::Disable(t) => stage(t, "disable", Stage::Declared),
             OperatorKind::Deprecate(t) => stage(t, "deprecate", Stage::Deprecated),
-            other => broken(format!(
-                "an operator applied before its names resolve: {}",
-                operator_name(other)
-            )),
+            OperatorKind::AddField {
+                path,
+                ty,
+                on_delete,
+                decl,
+                fill,
+            } => Ok(Op::AddField {
+                part: self.part(path)?,
+                path,
+                ty: ty.span,
+                action: on_delete
+                    .as_ref()
+                    .map(|_| action_span(self.text, ty.span, *decl)),
+                fill,
+            }),
+            OperatorKind::DropField(path) => Ok(Op::DropField(self.field_at(path)?.1)),
+            OperatorKind::AlterField { path, span, .. } => {
+                let (part, field) = self.field_at(path)?;
+                Ok(Op::AlterField {
+                    field,
+                    part,
+                    path,
+                    action: *span,
+                })
+            }
+            OperatorKind::AddUnique(fields, on) => Ok(Op::AddIndex {
+                kind: IndexKind::Unique,
+                relation: self.relation(&on.relation)?,
+                fields,
+                on,
+            }),
+            OperatorKind::AddIndex {
+                interval,
+                fields,
+                on,
+            } => Ok(Op::AddIndex {
+                kind: index_kind(*interval),
+                relation: self.relation(&on.relation)?,
+                fields,
+                on,
+            }),
+            OperatorKind::DropUnique(fields, on) => Ok(Op::DropIndex {
+                kind: IndexKind::Unique,
+                relation: self.relation(&on.relation)?,
+                fields,
+                on,
+            }),
+            OperatorKind::DropIndex {
+                interval,
+                fields,
+                on,
+            } => Ok(Op::DropIndex {
+                kind: index_kind(*interval),
+                relation: self.relation(&on.relation)?,
+                fields,
+                on,
+            }),
+            OperatorKind::AddDefault {
+                relation,
+                ctor,
+                field,
+                value,
+            } => Ok(Op::AddDefault {
+                relation: self.relation(relation)?,
+                ctor: ctor.as_ref(),
+                field,
+                value,
+            }),
+            OperatorKind::DropDefault {
+                relation,
+                ctor,
+                field,
+            } => Ok(Op::DropDefault {
+                relation: self.relation(relation)?,
+                ctor: ctor.as_ref(),
+                field,
+            }),
+            OperatorKind::AddComputed {
+                relation,
+                field,
+                ty,
+                expr,
+            } => Ok(Op::AddComputed {
+                relation: self.relation(relation)?,
+                field,
+                ty,
+                expr,
+            }),
+            OperatorKind::RedefineComputed {
+                relation,
+                field,
+                ty,
+                expr,
+            } => Ok(Op::RedefineComputed {
+                relation: self.relation(relation)?,
+                field,
+                ty,
+                expr,
+            }),
+            OperatorKind::DropComputed(relation, field) => Ok(Op::DropComputed {
+                relation: self.relation(relation)?,
+                field,
+            }),
+            OperatorKind::AddConstructor {
+                path,
+                record,
+                place,
+                joins,
+                arms,
+            } => Ok(Op::AddConstructor {
+                ty: self.ty(&path.ty)?,
+                path,
+                record: record.as_deref(),
+                place: place.as_ref(),
+                joins,
+                arms,
+            }),
+            OperatorKind::RemoveConstructor(path) => {
+                let t = self.ty(&path.ty)?;
+                match self.model.ctor_named(t, &path.ctor.text) {
+                    Some(ctor) => Ok(Op::RemoveConstructor { ty: t, ctor }),
+                    None => refuse(format!(
+                        "`{}` is not a constructor of `{}`",
+                        path.ctor.text, self.model.types[&t].name
+                    )),
+                }
+            }
+            OperatorKind::SplitConstructor {
+                path,
+                into,
+                arms,
+                clauses,
+            } => {
+                let (ty, ctor) = self.ctor(path)?;
+                Ok(Op::Split {
+                    ty,
+                    ctor,
+                    path,
+                    into,
+                    arms,
+                    clauses,
+                })
+            }
+            OperatorKind::MergeConstructor {
+                ty,
+                sel,
+                into,
+                arms,
+                clauses,
+            } => Ok(Op::Merge {
+                ty: self.ty(ty)?,
+                sel,
+                into,
+                arms: arms.as_deref(),
+                clauses,
+            }),
+            OperatorKind::NestConstructor {
+                ty,
+                sel,
+                into,
+                clauses,
+            } => Ok(Op::Nest {
+                ty: self.ty(ty)?,
+                sel,
+                into,
+                clauses,
+            }),
+            OperatorKind::UnnestConstructor(path, clauses) => {
+                let t = self.ty(&path.ty)?;
+                match self.model.ctor_named(t, &path.ctor.text) {
+                    Some(ctor) => Ok(Op::Unnest {
+                        ty: t,
+                        ctor,
+                        path,
+                        clauses,
+                    }),
+                    None => refuse(format!(
+                        "`{}` is not a constructor of `{}`",
+                        path.ctor.text, self.model.types[&t].name
+                    )),
+                }
+            }
+            OperatorKind::MoveField {
+                path,
+                to,
+                sel,
+                fill,
+            } => {
+                self.ty(&path.ty)?;
+                if to.name.text != path.ty.name.text
+                    || self.module_of(to) != self.module_of(&path.ty)
+                {
+                    return refuse_at(to.span(), "a field moves within its own type");
+                }
+                let (part, field) = self.field_at(path)?;
+                Ok(Op::MoveField {
+                    field,
+                    part,
+                    path,
+                    sel: sel.as_ref(),
+                    fill: fill.as_ref(),
+                })
+            }
+            OperatorKind::Rekey {
+                relation,
+                key,
+                carry,
+            } => Ok(Op::Rekey {
+                relation: self.relation(relation)?,
+                key,
+                carry,
+            }),
+            OperatorKind::Grant(g) => Ok(Op::Grant(g)),
+            OperatorKind::Revoke(r) => Ok(Op::Revoke(r)),
+            OperatorKind::Script(w) => Ok(Op::Script(w)),
+            OperatorKind::Install {
+                name,
+                version,
+                from,
+            } => Ok(Op::Install {
+                name,
+                version,
+                from,
+            }),
+            OperatorKind::Uninstall(m) => Ok(Op::Uninstall(m)),
+            OperatorKind::AdoptTzdb { release, from } => Ok(Op::AdoptTzdb { release, from }),
+            OperatorKind::Revert { migration, fills } => Ok(Op::Revert { migration, fills }),
         }
     }
 }
 
-/// Returns the name of an operator's kind, as a skip is counted under.
-pub(super) fn operator_name(op: &OperatorKind) -> &'static str {
-    match op {
-        OperatorKind::AddModule(_) => "add module",
-        OperatorKind::DropModule(_) => "drop module",
-        OperatorKind::AddType(_) => "add type",
-        OperatorKind::DropType(_) => "drop type",
-        OperatorKind::RenameType(..) => "rename type",
-        OperatorKind::AddRelation(_) => "add relation",
-        OperatorKind::DropRelation(_) => "drop relation",
-        OperatorKind::RenameRelation(..) => "rename relation",
-        OperatorKind::AddSet(_) => "add set",
-        OperatorKind::DropSet(..) => "drop set",
-        OperatorKind::RenameSet(..) => "rename set",
-        OperatorKind::AddConstructor { .. } => "add constructor",
-        OperatorKind::RemoveConstructor(_) => "remove constructor",
-        OperatorKind::RenameConstructor(..) => "rename constructor",
-        OperatorKind::SplitConstructor { .. } => "split",
-        OperatorKind::MergeConstructor { .. } => "merge",
-        OperatorKind::NestConstructor { .. } => "nest",
-        OperatorKind::UnnestConstructor(..) => "unnest",
-        OperatorKind::AddField { .. } => "add field",
-        OperatorKind::AlterField { .. } => "alter field",
-        OperatorKind::DropField(_) => "drop field",
-        OperatorKind::RenameField(..) => "rename field",
-        OperatorKind::MoveField { .. } => "move field",
-        OperatorKind::AddUnique(..) => "add unique",
-        OperatorKind::DropUnique(..) => "drop unique",
-        OperatorKind::AddIndex { .. } => "add index",
-        OperatorKind::DropIndex { .. } => "drop index",
-        OperatorKind::Rekey { .. } => "rekey",
-        OperatorKind::AddDefault { .. } => "add default",
-        OperatorKind::DropDefault { .. } => "drop default",
-        OperatorKind::DefineFn(_) => "define fn",
-        OperatorKind::RedefineFn(_) => "redefine fn",
-        OperatorKind::DropFn(_) => "drop fn",
-        OperatorKind::AddConstraint(_) => "add constraint",
-        OperatorKind::DropConstraint(_) => "drop constraint",
-        OperatorKind::AddCheck(_) => "add check",
-        OperatorKind::DropCheck(_) => "drop check",
-        OperatorKind::Store(_) => "store",
-        OperatorKind::Unstore(_) => "unstore",
-        OperatorKind::AddComputed { .. } => "add computed",
-        OperatorKind::RedefineComputed { .. } => "redefine computed",
-        OperatorKind::DropComputed(..) => "drop computed",
-        OperatorKind::DefineAggregate(_) => "define aggregate",
-        OperatorKind::DropAggregate(_) => "drop aggregate",
-        OperatorKind::Enable(_) => "enable",
-        OperatorKind::Disable(_) => "disable",
-        OperatorKind::Deprecate(_) => "deprecate",
-        OperatorKind::Revert { .. } => "revert",
-        OperatorKind::Script(_) => "script",
-        OperatorKind::Install { .. } => "install",
-        OperatorKind::Uninstall(_) => "uninstall",
-        OperatorKind::AdoptTzdb { .. } => "adopt tzdb",
-        OperatorKind::Grant(_) => "grant",
-        OperatorKind::Revoke(_) => "revoke",
+fn index_kind(interval: bool) -> IndexKind {
+    if interval {
+        IndexKind::Interval
+    } else {
+        IndexKind::Plain
     }
+}
+
+/// Returns the span of a field's delete action, after its type at `ty` within its declaration
+/// `decl` of `text`.
+fn action_span(text: &str, ty: Span, decl: Span) -> Span {
+    let from = ty.end as usize;
+    let toks: Vec<_> = lex(&text[from..decl.end as usize])
+        .0
+        .into_iter()
+        .filter(|t| t.tok != Tok::Eof)
+        .collect();
+    let start = toks
+        .get(2)
+        .map_or(decl.end as usize, |t| from + t.span.start as usize);
+    Span::new(start, decl.end as usize)
 }

@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use super::field::Applied;
-use super::op::{Fail, Res, Resolving, broken, refuse};
+use super::op::{Fail, Res, broken, refuse};
 use super::run::{Built, Run};
 use super::*;
 use crate::ast::{self, Decl as AstDecl, QName};
@@ -398,15 +398,8 @@ impl Model {
         }
     }
 
-    pub(super) fn remove_constructor(&mut self, run: &Run, path: &ast::CtorPath) -> Res<Applied> {
+    pub(super) fn remove_constructor(&mut self, run: &mut Run, t: u64, c: u64) -> Res<Applied> {
         self.schema_now(run)?;
-        let resolving = Resolving::new(self, run.module());
-        let t = resolving.ty(&path.ty)?;
-        let tname = self.types[&t].name.clone();
-        let name = path.ctor.text.clone();
-        let Some(c) = self.ctor_named(t, &name) else {
-            return refuse(format!("`{name}` is not a constructor of `{tname}`"));
-        };
         self.remove_ctor(run, t, c, false)?;
         Ok((
             Resolved::RemoveConstructor { ctor: c },
@@ -417,7 +410,7 @@ impl Model {
 
     /// Remove constructor `c` of type `t` with its arms, as the inverse of adding it when
     /// `inverse`: then it need not be deprecated, and its arms leave every declaration.
-    pub(super) fn remove_ctor(&mut self, run: &Run, t: u64, c: u64, inverse: bool) -> Res<()> {
+    pub(super) fn remove_ctor(&mut self, run: &mut Run, t: u64, c: u64, inverse: bool) -> Res<()> {
         let built = self.schema_now(run)?;
         let tname = self.types[&t].name.clone();
         let name = self.ctors[&c].name.clone();

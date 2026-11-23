@@ -7,15 +7,19 @@ use crate::ast;
 use crate::canon::{Names, canonical_term};
 use crate::check::{self, Ref};
 use crate::evolve::grant::{StatedRefs, Statement, log_privileges};
-use crate::evolve::resolved::derived::privilege_term;
-use crate::evolve::{Clause, LogGrant, Resolved, SourceDecl};
+use crate::evolve::{Clause, LogGrant, Privilege, Resolved, SourceDecl};
 use crate::parse::{Options, parse_schema};
 use crate::schema::Schema;
 use crate::span::{FileId, Span};
 
 /// Returns the canonical form of `span` of the migration, `refs` naming what it writes, empty
 /// with a note when a name of it is not among them.
-pub(super) fn canonical(run: &Run, schema: &Schema, refs: &[(Span, Ref)], span: Span) -> String {
+pub(super) fn canonical(
+    run: &mut Run,
+    schema: &Schema,
+    refs: &[(Span, Ref)],
+    span: Span,
+) -> String {
     run.note(schema, refs);
     let mut names = Names::default();
     for (s, r) in refs {
@@ -27,7 +31,7 @@ pub(super) fn canonical(run: &Run, schema: &Schema, refs: &[(Span, Ref)], span: 
 /// Returns the name and canonical target of the first of `privileges`, and a `Privilege` clause
 /// for each later one.
 fn privileges(
-    run: &Run,
+    run: &mut Run,
     schema: &Schema,
     refs: &[(Span, Ref)],
     privileges: &[ast::Privilege],
@@ -53,7 +57,7 @@ impl Model {
     /// Resolve `privileges` of a grant or revoke against the declarations now.
     fn stated(
         &self,
-        run: &Run,
+        run: &mut Run,
         privileges: &[ast::Privilege],
         statement: Statement,
     ) -> Res<(Schema, StatedRefs)> {
@@ -63,7 +67,7 @@ impl Model {
         Ok((schema, stated))
     }
 
-    pub(super) fn grant(&mut self, run: &Run, g: &ast::Grant) -> Res<Applied> {
+    pub(super) fn grant(&mut self, run: &mut Run, g: &ast::Grant) -> Res<Applied> {
         let (schema, (stated, refs)) = self.stated(run, &g.privileges, Statement::Grant)?;
         for st in stated {
             let (privilege, covered) = st.into_covered();
@@ -101,7 +105,7 @@ impl Model {
         ))
     }
 
-    pub(super) fn revoke(&mut self, run: &Run, r: &ast::Revoke) -> Res<Applied> {
+    pub(super) fn revoke(&mut self, run: &mut Run, r: &ast::Revoke) -> Res<Applied> {
         let (schema, (gone, refs)) = self.stated(run, &r.privileges, Statement::Revoke)?;
         let role = &r.from.text;
         for st in &gone {
@@ -130,7 +134,7 @@ impl Model {
         ))
     }
 
-    pub(super) fn script(&mut self, run: &Run, w: &ast::Write) -> Res<Applied> {
+    pub(super) fn script(&mut self, run: &mut Run, w: &ast::Write) -> Res<Applied> {
         let compiled = self.checked(run)?;
         let schema = compiled.schema();
         let mut refs = Vec::new();
@@ -141,7 +145,7 @@ impl Model {
 
     pub(super) fn install(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         name: &ast::Ident,
         version: &str,
         from: &str,
@@ -320,4 +324,27 @@ impl Model {
         }
         terms.into_iter().flat_map(Term::objects).collect()
     }
+}
+/// Returns the name of a privilege of a log grant or revoke and the span of its target; `None`
+/// for a privilege a log operator cannot hold.
+fn privilege_term(p: &ast::Privilege) -> Option<(Privilege, Span)> {
+    let listed = |r: &ast::RelationRef, fs: &Option<ast::GrantFieldList>| {
+        fs.as_ref().map_or(r.span, |fs| r.span.to(fs.span))
+    };
+    Some(match p {
+        ast::Privilege::Read(r, fs) => (Privilege::Read, listed(r, fs)),
+        ast::Privilege::Update(r, fs) => (Privilege::Update, listed(r, fs)),
+        ast::Privilege::Insert(r) => (Privilege::Insert, r.span),
+        ast::Privilege::Delete(r) => (Privilege::Delete, r.span),
+        ast::Privilege::Retag(a, b, except) => (
+            Privilege::Retag,
+            except
+                .as_ref()
+                .map_or(a.span.to(b.span), |e| a.span.to(e.span)),
+        ),
+        ast::Privilege::CallFn(f) => (Privilege::Call, f.span()),
+        ast::Privilege::Call(..) | ast::Privilege::CallAt(_) | ast::Privilege::Capability(..) => {
+            return None;
+        }
+    })
 }

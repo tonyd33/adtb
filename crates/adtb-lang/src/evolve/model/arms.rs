@@ -35,7 +35,7 @@ impl Model {
     /// that match each arm naming one of `removed`; with the arms as written.
     pub(super) fn arm_writes(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         built: &Built,
         t: u64,
         (cs, removed): (&[u64], &[u64]),
@@ -139,7 +139,7 @@ impl Model {
     /// declarations before them. Returns their clauses.
     pub(super) fn arms_added(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         built: &Built,
         (t, c): (u64, u64),
         arms: &[ast::ArmClause],
@@ -158,7 +158,7 @@ impl Model {
     /// an arm of `written`.
     pub(super) fn arm_clauses(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         after: Result<&Built, &[FileDiag]>,
         written: Vec<ArmM>,
     ) -> Res<Vec<Clause>> {
@@ -171,6 +171,7 @@ impl Model {
         let mut out = Vec::new();
         match after {
             Ok(after) => {
+                self.arms_refused(&after.errors(), &written)?;
                 for w in written {
                     let arm = match self.arms_written.remove(&w.key) {
                         Some(Ok(Some(arm))) => arm,
@@ -204,7 +205,8 @@ impl Model {
         Ok(out)
     }
 
-    /// Refuse the operator with the first of `ds` inside an arm of `written`.
+    /// Refuse the operator with the first of `ds`, the failures of building or checking the
+    /// declarations, inside an arm of `written`.
     fn arms_refused(&self, ds: &[FileDiag], written: &[ArmM]) -> Res<()> {
         for d in ds {
             let i = d.file.0 as usize;

@@ -8,7 +8,6 @@ use crate::canon::Names;
 use crate::evolve::grant::IdKind;
 use crate::evolve::source::rekey_leaves_no_old_reference;
 use crate::evolve::{Clause, Kept, Resolved, ResolvedOp};
-use crate::lex::{Tok, lex};
 use crate::span::{Diag, FileDiag, FileId, Span};
 
 /// A migration applied to a model.
@@ -162,16 +161,12 @@ impl Migrated {
         self.ops.iter().flatten().cloned().collect()
     }
 
-    /// Returns the steps of each operator of `m`, whose text is `text`, in order, ending at the
-    /// first operator whose steps fail.
+    /// Returns the steps of each operator of `m` in order, ending at the first operator whose
+    /// steps fail.
     ///
     /// Preconditions:
     /// - Every operator of `m` applied.
-    pub(in crate::evolve) fn op_steps(
-        &mut self,
-        m: &MigrationFile,
-        text: &str,
-    ) -> Vec<crate::evolve::OpSteps> {
+    pub(in crate::evolve) fn op_steps(&mut self, m: &MigrationFile) -> Vec<crate::evolve::OpSteps> {
         let mut out = Vec::new();
         let maps = std::mem::take(&mut self.maps);
         let steps = std::mem::take(&mut self.steps);
@@ -193,15 +188,14 @@ impl Migrated {
                         .collect())
                 }
                 (Some(Err(why)), _) | (None, Err(why)) => failed(why),
-                (None, Ok(maps)) => Ok(vec![crate::evolve::Step {
-                    after: after.replay_source(),
-                    maps,
-                    applied: Some(crate::evolve::Applied {
-                        module: m.module.text.clone(),
-                        text: text.to_string(),
-                        op: op.clone(),
-                    }),
-                }]),
+                (None, Ok(maps)) => match &self.ops[k] {
+                    Ok(resolved) => Ok(vec![crate::evolve::Step {
+                        after: after.replay_source(),
+                        maps,
+                        applied: Some(resolved.clone()),
+                    }]),
+                    Err(r) => failed(r.why().to_string()),
+                },
             };
             let stop = stepped.is_err();
             out.push(stepped);
@@ -313,17 +307,15 @@ impl Model {
                     | OperatorKind::RenameConstructor(..)
                     | OperatorKind::RenameField(..)
             );
-            let applied = next.operator(&run, &op.kind).and_then(|x| {
+            let applied = next.operator(&mut run, &op.kind).and_then(|x| {
                 if renames {
-                    next.faithful(&model, &run).map(|()| x)
+                    next.faithful(&model, &mut run).map(|()| x)
                 } else {
                     Ok(x)
                 }
             });
-            let reverted = run.take_reverted();
             match applied {
                 Ok((r, m)) => {
-                    steps.push(reverted);
                     if let OperatorKind::Rekey { relation, .. } = &op.kind {
                         rekeyed.push((k, relation.clone(), op.span));
                     }
@@ -334,17 +326,18 @@ impl Model {
                     }
                     next.keep(&model, kept);
                     next.rebind(&model);
-                    copies.extend(next.copies_of(&run, op, &r, &mut Vec::new()));
+                    copies.extend(next.copies_of(&mut run, op, &r, &mut Vec::new()));
                     if naming {
-                        next.name_copies(&run, op, &r);
+                        next.name_copies(&mut run, op, &r);
                     }
+                    steps.push(run.keep());
                     model = next;
                     ops.push(Ok(r));
                 }
                 Err(Fail::Refused(why)) => {
                     maps.push(Ok(Vec::new()));
                     steps.push(None);
-                    run.forget_late(k);
+                    run.discard();
                     model.mark(by, Added::Refused);
                     if let Some((name, kind)) = crate::evolve::expected::poisons(&op.kind) {
                         model.ahead.push(AheadM {
@@ -400,7 +393,7 @@ impl Model {
             });
         }
         let names = (naming && checks).then(|| {
-            model.name_late(&run);
+            model.name_late(&mut run);
             let missed = run.take_missed();
             if !missed.is_empty() {
                 return Err(missed);
@@ -668,109 +661,7 @@ impl Model {
     }
 
     /// Apply one operator. Returns it resolved.
-    pub(super) fn operator(&mut self, run: &Run, op: &OperatorKind) -> Res<(ResolvedOp, Maps)> {
-        let structural = match op {
-            OperatorKind::AddField {
-                path,
-                ty,
-                on_delete,
-                decl,
-                fill,
-            } => {
-                let action = on_delete
-                    .as_ref()
-                    .map(|_| action_span(run.text(), ty.span, *decl));
-                Some(self.add_field(run, path, ty.span, action, fill)?)
-            }
-            OperatorKind::DropField(path) => Some(self.drop_field(run, path)?),
-            OperatorKind::AlterField { path, span, .. } => {
-                Some(self.alter_field(run, path, *span)?)
-            }
-            OperatorKind::AddUnique(fields, on) => {
-                Some(self.add_index(run, IndexKind::Unique, fields, on)?)
-            }
-            OperatorKind::AddIndex {
-                interval,
-                fields,
-                on,
-            } => Some(self.add_index(run, index_kind(*interval), fields, on)?),
-            OperatorKind::DropUnique(fields, on) => {
-                Some(self.drop_index(run, IndexKind::Unique, fields, on)?)
-            }
-            OperatorKind::DropIndex {
-                interval,
-                fields,
-                on,
-            } => Some(self.drop_index(run, index_kind(*interval), fields, on)?),
-            OperatorKind::AddDefault {
-                relation,
-                ctor,
-                field,
-                value,
-            } => Some(self.add_default(run, relation, ctor.as_ref(), field, value)?),
-            OperatorKind::DropDefault {
-                relation,
-                ctor,
-                field,
-            } => Some(self.drop_default(run, relation, ctor.as_ref(), field)?),
-            OperatorKind::AddComputed {
-                relation,
-                field,
-                ty,
-                expr,
-            } => Some(self.add_computed(run, relation, field, ty, expr)?),
-            OperatorKind::RedefineComputed {
-                relation,
-                field,
-                ty,
-                expr,
-            } => Some(self.redefine_computed(run, relation, field, ty, expr)?),
-            OperatorKind::DropComputed(relation, field) => {
-                Some(self.drop_computed(run, relation, field)?)
-            }
-            OperatorKind::AddConstructor {
-                path,
-                record,
-                place,
-                joins,
-                arms,
-            } => Some(self.add_constructor(
-                run,
-                path,
-                record.as_deref(),
-                place.as_ref(),
-                joins,
-                arms,
-            )?),
-            OperatorKind::MoveField {
-                path,
-                to,
-                sel,
-                fill,
-            } => Some(self.move_field(run, path, to, sel.as_ref(), fill.as_ref())?),
-            OperatorKind::Rekey {
-                relation,
-                key,
-                carry,
-            } => Some(self.rekey(run, relation, key, carry)?),
-            OperatorKind::RemoveConstructor(p) => Some(self.remove_constructor(run, p)?),
-            OperatorKind::Grant(g) => Some(self.grant(run, g)?),
-            OperatorKind::Revoke(r) => Some(self.revoke(run, r)?),
-            OperatorKind::Script(w) => Some(self.script(run, w)?),
-            OperatorKind::Install {
-                name,
-                version,
-                from,
-            } => Some(self.install(run, name, version, from)?),
-            OperatorKind::Uninstall(m) => Some(self.uninstall(m)?),
-            OperatorKind::AdoptTzdb { release, from } => Some(self.adopt_tzdb(release, from)?),
-            OperatorKind::Revert { migration, fills } => Some(self.revert(run, migration, fills)?),
-            op => self.restructuring(run, op)?,
-        };
-        if let Some((op, clauses, maps)) = structural {
-            self.settle();
-            return Ok((ResolvedOp { op, clauses }, maps));
-        }
+    pub(super) fn operator(&mut self, run: &mut Run, op: &OperatorKind) -> Res<(ResolvedOp, Maps)> {
         if matches!(
             op,
             OperatorKind::RenameConstructor(..)
@@ -780,29 +671,133 @@ impl Model {
         ) {
             self.schema_now(run)?;
         }
-        let resolved = Resolving::new(self, run.module()).op(op)?;
-        let out = match resolved {
-            Op::AddModule(m) => self.add_module(&m)?,
-            Op::DropModule(m) => self.drop_module(&m)?,
-            Op::Add { kind, name, span } => self.add(run, kind, &name, span)?,
-            Op::RedefineFn { function, span } => self.redefine_fn(run, function, span, op)?,
-            Op::Drop(item) => self.drop(run, item)?,
-            Op::Rename { obj, to } => self.rename(run, obj, &to)?,
+        let resolved = Resolving::of(self, run.module(), run.text()).op(op)?;
+        let plain = |(op, clauses): (Resolved, Vec<Clause>)| (op, clauses, Ok(Vec::new()));
+        let (out, clauses, maps) = match resolved {
+            Op::AddModule(m) => plain(self.add_module(&m)?),
+            Op::DropModule(m) => plain(self.drop_module(&m)?),
+            Op::Add { kind, name, span } => plain(self.add(run, kind, &name, span)?),
+            Op::RedefineFn { function, span } => plain(self.redefine_fn(run, function, span, op)?),
+            Op::Drop(item) => plain(self.drop(run, item)?),
+            Op::Rename { obj, to } => plain(self.rename(run, obj, &to)?),
             Op::Stage {
                 key,
                 to,
                 verb,
                 shown,
-            } => self.stage(run, key, to, verb, &shown)?,
+            } => plain(self.stage(run, key, to, verb, &shown)?),
+            Op::AddField {
+                part,
+                path,
+                ty,
+                action,
+                fill,
+            } => self.add_field(run, part, path, ty, action, fill)?,
+            Op::DropField(f) => self.drop_field(f)?,
+            Op::AlterField {
+                field,
+                part,
+                path,
+                action,
+            } => self.alter_field(run, (field, part), path, action)?,
+            Op::AddIndex {
+                kind,
+                relation,
+                fields,
+                on,
+            } => self.add_index(run, kind, relation, fields, on)?,
+            Op::DropIndex {
+                kind,
+                relation,
+                fields,
+                on,
+            } => self.drop_index(run, kind, relation, fields, on)?,
+            Op::AddDefault {
+                relation,
+                ctor,
+                field,
+                value,
+            } => self.add_default(run, relation, ctor, field, value)?,
+            Op::DropDefault {
+                relation,
+                ctor,
+                field,
+            } => self.drop_default(run, relation, ctor, field)?,
+            Op::AddComputed {
+                relation,
+                field,
+                ty,
+                expr,
+            } => self.add_computed(run, relation, field, ty, expr)?,
+            Op::RedefineComputed {
+                relation,
+                field,
+                ty,
+                expr,
+            } => self.redefine_computed(run, relation, field, ty, expr)?,
+            Op::DropComputed { relation, field } => self.drop_computed(run, relation, field)?,
+            Op::AddConstructor {
+                ty,
+                path,
+                record,
+                place,
+                joins,
+                arms,
+            } => self.add_constructor(run, (ty, path), record, place, joins, arms)?,
+            Op::RemoveConstructor { ty, ctor } => self.remove_constructor(run, ty, ctor)?,
+            Op::Split {
+                ty,
+                ctor,
+                path,
+                into,
+                arms,
+                clauses,
+            } => self.split(run, (ty, ctor), path, into, arms, clauses)?,
+            Op::Merge {
+                ty,
+                sel,
+                into,
+                arms,
+                clauses,
+            } => self.merge(run, (ty, sel), into, arms, clauses, false)?,
+            Op::Nest {
+                ty,
+                sel,
+                into,
+                clauses,
+            } => self.nest(run, ty, sel, into, clauses)?,
+            Op::Unnest {
+                ty,
+                ctor,
+                path,
+                clauses,
+            } => self.unnest(run, (ty, ctor), path, clauses)?,
+            Op::MoveField {
+                field,
+                part,
+                path,
+                sel,
+                fill,
+            } => self.move_field(run, (field, part), path, sel, fill)?,
+            Op::Rekey {
+                relation,
+                key,
+                carry,
+            } => self.rekey(run, relation, key, carry)?,
+            Op::Grant(g) => self.grant(run, g)?,
+            Op::Revoke(r) => self.revoke(run, r)?,
+            Op::Script(w) => self.script(run, w)?,
+            Op::Install {
+                name,
+                version,
+                from,
+            } => self.install(run, name, version, from)?,
+            Op::Uninstall(m) => self.uninstall(m)?,
+            Op::AdoptTzdb { release, from } => self.adopt_tzdb(release, from)?,
+            Op::Revert { migration, fills } => self.revert(run, migration, fills)?,
         };
         self.settle();
-        Ok((
-            ResolvedOp {
-                op: out.0,
-                clauses: out.1,
-            },
-            Ok(Vec::new()),
-        ))
+        Ok((ResolvedOp { op: out, clauses }, maps))
     }
 
     /// Forget the write states and grants of objects that are gone.
@@ -823,14 +818,6 @@ impl Model {
             IdKind::Function => self.functions.contains_key(&x),
         };
         self.grants = crate::evolve::carry::pruned(&self.grants, &live);
-    }
-}
-
-fn index_kind(interval: bool) -> IndexKind {
-    if interval {
-        IndexKind::Interval
-    } else {
-        IndexKind::Plain
     }
 }
 
@@ -857,21 +844,6 @@ fn set_decl(op: &mut Resolved, decl: String) {
         | Resolved::AddDefault { value: d, .. } => *d = decl,
         _ => {}
     }
-}
-
-/// Returns the span of the delete action of a field written at `decl` whose type is at `ty`: from
-/// the token after `on delete` to the end.
-fn action_span(text: &str, ty: Span, decl: Span) -> Span {
-    let from = ty.end as usize;
-    let toks: Vec<_> = lex(&text[from..decl.end as usize])
-        .0
-        .into_iter()
-        .filter(|t| t.tok != Tok::Eof)
-        .collect();
-    let start = toks
-        .get(2)
-        .map_or(decl.end as usize, |t| from + t.span.start as usize);
-    Span::new(start, decl.end as usize)
 }
 
 /// Returns why the model does not resolve `what` an operator wrote while the declarations did not
@@ -942,7 +914,7 @@ impl Model {
     /// naming the declaration and the binder. Accept declarations that do not build.
     ///
     /// Fail with a model fault on such a name the build resolves to other objects.
-    fn faithful(&self, before: &Model, run: &Run) -> Res<()> {
+    fn faithful(&self, before: &Model, run: &mut Run) -> Res<()> {
         let all = self.named();
         let was: Vec<&(String, Vec<Obj>)> = all
             .iter()

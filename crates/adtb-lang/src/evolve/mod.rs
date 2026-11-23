@@ -69,7 +69,6 @@ use resolved::Reached;
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,
 };
-use rowmap::Applied;
 pub use rowmap::{RowFn, RowMap, Step};
 
 /// A stage and the version whose migration set it.

@@ -37,7 +37,7 @@ pub(super) struct Undone {
 pub(super) struct Stepped {
     after: Model,
     maps: Vec<crate::evolve::RowMap>,
-    applied: Option<(String, String, ast::Operator)>,
+    applied: Option<crate::evolve::ResolvedOp>,
 }
 
 impl Stepped {
@@ -46,9 +46,7 @@ impl Stepped {
         crate::evolve::Step {
             after: after.unwrap_or(&self.after).replay_source(),
             maps: self.maps,
-            applied: self
-                .applied
-                .map(|(module, text, op)| crate::evolve::Applied { module, text, op }),
+            applied: self.applied,
         }
     }
 }
@@ -69,12 +67,7 @@ impl Default for Undone {
 impl Undone {
     /// Add a step leaving `after` that moves rows as `maps` and applies `applied`; keep the
     /// first failure.
-    fn step(
-        &mut self,
-        after: &Model,
-        maps: Maps,
-        applied: Option<(String, String, ast::Operator)>,
-    ) {
+    fn step(&mut self, after: &Model, maps: Maps, applied: Option<crate::evolve::ResolvedOp>) {
         let Ok(steps) = &mut self.steps else {
             return;
         };
@@ -195,7 +188,7 @@ impl Model {
     /// operators, last first, through the model's own operators.
     pub(super) fn revert(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         migration: &str,
         fills: &[(ast::FieldPath, Fill)],
     ) -> Res<Applied> {
@@ -279,7 +272,7 @@ impl Model {
     /// `gone` holding the objects of the source after the reverted migration.
     fn undo_all(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         steps: Vec<crate::evolve::revert::Undoing>,
         gone: &Gone,
         undone: &mut Undone,
@@ -354,7 +347,7 @@ impl Model {
 
     /// Apply one step of an inverse, `gone` holding the objects of the source after the reverted
     /// migration.
-    fn undo(&mut self, run: &Run, inv: Inverse, gone: &Gone, undone: &mut Undone) -> Res<()> {
+    fn undo(&mut self, run: &mut Run, inv: Inverse, gone: &Gone, undone: &mut Undone) -> Res<()> {
         match inv {
             Inverse::Restructure {
                 drops,
@@ -525,7 +518,7 @@ impl Model {
     /// step, before that operator first builds.
     pub(super) fn undo_ops(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         module: &str,
         written: Written,
         how: How,
@@ -568,38 +561,37 @@ impl Model {
                         clauses,
                     },
                     How::Derived,
-                ) => self
-                    .merge(&sub, (ty, sel), into, arms.as_deref(), clauses, true)
+                ) => op::Resolving::new(self, module)
+                    .ty(ty)
+                    .and_then(|t| {
+                        self.merge(&mut sub, (t, sel), into, arms.as_deref(), clauses, true)
+                    })
                     .map(|(op, clauses, maps)| (crate::evolve::ResolvedOp { op, clauses }, maps)),
                 (OperatorKind::MoveField { path, fill, .. }, How::UpFrom(from)) => self
-                    .move_up_from(&sub, path, from, fill.as_ref())
+                    .move_up_from(&mut sub, path, from, fill.as_ref())
                     .map(|(op, clauses, maps)| (crate::evolve::ResolvedOp { op, clauses }, maps)),
-                (kind, _) => self.operator(&sub, kind),
+                (kind, _) => self.operator(&mut sub, kind),
             };
             let (resolved, maps) = match applied {
                 Ok(x) => x,
                 Err(Fail::Refused(r)) => return refuse(wrap(r.why())),
                 Err(other) => return Err(other),
             };
-            sub.take_reverted();
-            match resolved.op {
+            sub.keep();
+            match &resolved.op {
                 Resolved::AddField { field, fill, .. }
                 | Resolved::MoveField {
                     field,
                     fill: Some(fill),
                     ..
                 } => {
-                    undone.fills.insert(field, fill);
+                    undone.fills.insert(*field, fill.clone());
                 }
                 _ => {}
             }
             self.restate_held()?;
             self.rebind(&before);
-            undone.step(
-                self,
-                maps.map_err(|why| wrap(&why)),
-                Some((module.to_string(), full.clone(), op.clone())),
-            );
+            undone.step(self, maps.map_err(|why| wrap(&why)), Some(resolved));
         }
         let noted = sub.take_noted();
         let mut copied = Names::default();
@@ -615,7 +607,7 @@ impl Model {
     /// the inverse of `of` when a later migration dropped one.
     fn add_set_back(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         relation: crate::ids::CatRelId,
         name: &str,
         members: Vec<crate::ids::CatCtorId>,
@@ -679,7 +671,7 @@ impl Model {
     /// module declares that name.
     fn restore(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         (module, kind, name): (&str, &str, &str),
         text: &Spelled,
         of: &str,
@@ -699,7 +691,7 @@ impl Model {
     /// lifted when the declarations build with it, else held.
     fn push_decl(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         module: &str,
         kind: Option<op::Kind>,
         name: &str,
@@ -767,7 +759,7 @@ impl Model {
     /// inverse of adding, dropping, installing or uninstalling it.
     fn restore_module(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         name: &str,
         present: bool,
         installed: bool,
@@ -807,7 +799,7 @@ impl Model {
     /// created it again under.
     fn replay(
         &mut self,
-        run: &Run,
+        run: &mut Run,
         text: &str,
         again: Recreated,
         of: &str,
@@ -831,20 +823,17 @@ impl Model {
         for (k, op) in m.operators.iter().enumerate() {
             sub.begin(k, op.span);
             let before = self.clone();
-            match self.operator(&sub, &op.kind) {
+            match self.operator(&mut sub, &op.kind) {
                 Ok((r, maps)) => {
-                    if let Resolved::AddRelation { relation, .. } = r.op {
+                    if let Resolved::AddRelation { relation, .. } = &r.op {
+                        let relation = *relation;
                         self.mark(Adder::Operator(k), Added::As(relation));
                         self.terms_mut(&mut |t| t.added(Adder::Operator(k), relation));
                     }
                     self.rebind(&before);
-                    match sub.take_reverted() {
+                    match sub.keep() {
                         Some(steps) => undone.append(steps),
-                        None => undone.step(
-                            self,
-                            maps,
-                            Some((m.module.text.clone(), text.to_string(), op.clone())),
-                        ),
+                        None => undone.step(self, maps, Some(r)),
                     }
                 }
                 Err(e) => {

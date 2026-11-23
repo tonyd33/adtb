@@ -697,13 +697,13 @@ fn a_revert_gives_each_dropped_field_the_fill_that_names_it_by_module() {
     let filled: Vec<(String, String)> = steps
         .iter()
         .filter_map(|step| {
-            let a = step.applied.as_ref()?;
-            let OperatorKind::AddField { path, fill, .. } = &a.op.kind else {
+            let Resolved::AddField { field, fill, .. } = &step.applied.as_ref()?.op else {
                 return None;
             };
-            let module = path.ty.module.as_ref().map_or("auth", |m| m.text.as_str());
-            let Fill::Expr(e) = fill else { return None };
-            Some((module.to_string(), a.text[e.span.range()].to_string()))
+            let schema = ids_of(&step.after);
+            let def = schema.ids().field_of(CatFieldId::from_raw(*field))?.def();
+            let module = &schema.module(schema.ty(def).module).name;
+            Some((module.clone(), fill.clone()))
         })
         .collect();
     assert_eq!(
