@@ -23,6 +23,6 @@ fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.valu
 --- expect
 refuse
 --- errors
-expected I32, found Text
+the type argument `a` of `or_else` has no solution: no type is above both I32 and Text
 --- phase
 check

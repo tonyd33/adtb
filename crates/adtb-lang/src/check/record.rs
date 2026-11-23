@@ -450,10 +450,10 @@ impl Checker<'_> {
         let (tms, sol) = match &args {
             Some(a) => {
                 let params: Vec<Ty> = params.iter().map(|p| p.subst(a)).collect();
-                let (tms, _) = self.solve_args(&params, &es, 0, None)?;
+                let (tms, _) = self.solve_args((&t.name, &[]), &params, &es, None, shape.span)?;
                 (tms, a.iter().cloned().map(Some).collect())
             }
-            None => self.solve_args(&params, &es, t.params.len(), None)?,
+            None => self.solve_args((&t.name, &t.params), &params, &es, None, shape.span)?,
         };
         let mut args_out = Vec::new();
         for (i, a) in sol.into_iter().enumerate() {

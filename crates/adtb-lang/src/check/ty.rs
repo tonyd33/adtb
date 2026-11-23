@@ -2,7 +2,7 @@ use crate::schema::{FN_FIELD, FN_SET_ELEMENT, FN_TYPE_ARGUMENT, Schema, TypeDefK
 use crate::types::*;
 
 /// Returns whether type parameter `i` of `def` occurs in a field, so is covariant; otherwise it is bivariant.
-fn occurs_in_field(schema: &Schema, def: TypeId, i: u32) -> bool {
+pub(super) fn occurs_in_field(schema: &Schema, def: TypeId, i: u32) -> bool {
     let t = schema.ty(def);
     match &t.kind {
         TypeDefKind::Newtype { .. } => false,
@@ -257,6 +257,10 @@ pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
                 ctors: key_union(schema, def, c1, c2),
             })
         }
+        (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => Some(Ty::Fn(
+            Box::new(meet(schema, p1, p2)?),
+            Box::new(join(schema, r1, r2)?),
+        )),
         (Ty::NonEmpty(x), Ty::NonEmpty(y)) => Some(Ty::NonEmpty(Box::new(join(schema, x, y)?))),
         (Ty::Set(x) | Ty::NonEmpty(x), Ty::Set(y) | Ty::NonEmpty(y)) => {
             Some(Ty::Set(Box::new(join(schema, x, y)?)))
@@ -272,6 +276,103 @@ pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
             })
         }
         _ => None,
+    }
+}
+
+/// The greatest lower bound of `a` and `b`, where one exists.
+pub fn meet(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
+    if subtype(schema, a, b) {
+        return Some(a.clone());
+    }
+    if subtype(schema, b, a) {
+        return Some(b.clone());
+    }
+    match (a, b) {
+        (
+            Ty::Data {
+                def: d1,
+                args: a1,
+                ctors: c1,
+            },
+            Ty::Data {
+                def: d2,
+                args: a2,
+                ctors: c2,
+            },
+        ) if d1 == d2 => {
+            let mut args = Vec::new();
+            for (i, (x, y)) in a1.iter().zip(a2).enumerate() {
+                if occurs_in_field(schema, *d1, i as u32) {
+                    args.push(meet(schema, x, y)?);
+                } else {
+                    args.push(x.clone());
+                }
+            }
+            Some(Ty::Data {
+                def: *d1,
+                args,
+                ctors: intersection(schema, *d1, c1, c2)?,
+            })
+        }
+        (
+            Ty::Key {
+                rel: RelRef::Declared(r1),
+                ctors: c1,
+            },
+            Ty::Key {
+                rel: RelRef::Declared(r2),
+                ctors: c2,
+            },
+        ) if r1 == r2 => {
+            let def = schema.relation(*r1).elem_def;
+            let row = |c: &KeyCtors| match c {
+                KeyCtors::Only(cs) => Some(cs.clone()),
+                KeyCtors::All | KeyCtors::Late(_) => None,
+            };
+            Some(Ty::Key {
+                rel: RelRef::Declared(*r1),
+                ctors: KeyCtors::of_row(intersection(schema, def, &row(c1), &row(c2))?),
+            })
+        }
+        (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => Some(Ty::Fn(
+            Box::new(join(schema, p1, p2)?),
+            Box::new(meet(schema, r1, r2)?),
+        )),
+        (Ty::Set(x), Ty::Set(y)) => Some(Ty::Set(Box::new(meet(schema, x, y)?))),
+        (Ty::Set(x) | Ty::NonEmpty(x), Ty::Set(y) | Ty::NonEmpty(y)) => {
+            Some(Ty::NonEmpty(Box::new(meet(schema, x, y)?)))
+        }
+        (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 })
+            if same_ctors(schema, x, y) =>
+        {
+            let theirs = sum_selected(y, s2);
+            let names: Vec<&str> = sum_selected(x, s1)
+                .into_iter()
+                .filter(|c| theirs.contains(c))
+                .collect();
+            (!names.is_empty()).then(|| Ty::Sum {
+                ctors: x.clone(),
+                sel: sum_sel(x, &names),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Returns the constructors of `def` both `a` and `b` admit, `None` of the outer option when
+/// they share none.
+fn intersection(
+    schema: &Schema,
+    def: TypeId,
+    a: &Option<CtorSet>,
+    b: &Option<CtorSet>,
+) -> Option<Option<CtorSet>> {
+    match (a, b) {
+        (None, c) | (c, None) => Some(c.clone()),
+        (Some(a), Some(b)) => {
+            let both: CtorSet = a.iter().filter(|c| b.contains(c)).copied().collect();
+            (!both.is_empty()).then(|| schema.normalize_ctors(def, both))
+        }
     }
 }
 

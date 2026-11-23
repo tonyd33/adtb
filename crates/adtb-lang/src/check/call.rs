@@ -13,52 +13,83 @@ pub(super) enum Callee {
 }
 
 impl Checker<'_> {
-    /// Check arguments against parameter types over `n` type parameters of a callee, solving those parameters from the synthesized arguments, then from `result` against `expected`.
+    /// Check arguments against parameter types over `n` type parameters of a callee. Each
+    /// parameter takes, by its variance in `result`'s callee type, the join of the lower bounds
+    /// its arguments give or the meet of the upper bounds they and `result`'s expected type give;
+    /// every argument is then placed at its parameter's type under that solution.
     pub(super) fn solve_args(
         &mut self,
+        callee: (&str, &[String]),
         params: &[Ty],
         es: &[&Expr],
-        n: usize,
         result: Option<(&Ty, &Ty)>,
+        span: Span,
     ) -> R<(Vec<Tm>, Vec<Option<Ty>>)> {
-        let mut sol: Vec<Option<Ty>> = vec![None; n];
+        let n = callee.1.len();
+        let mut bounds: Vec<Bounds> = vec![Bounds::default(); n];
         let mut outs: Vec<Option<Out>> = vec![None; es.len()];
         if n > 0 {
             for (i, (e, pty)) in es.iter().zip(params).enumerate() {
                 if !wants_expected(e) && mentions_any_param(pty, n) {
                     let o = self.synth(e)?;
-                    unify(self, pty, &o.ty, &mut sol);
+                    bound(self.schema, pty, &o.ty, Side::Lower, false, &mut bounds);
                     outs[i] = Some(o);
                 }
             }
-            if let Some((res, exp)) = result
-                && sol.iter().any(Option::is_none)
-            {
-                let mut from_result = vec![None; n];
-                unify(self, res, exp, &mut from_result);
-                for (s, r) in sol.iter_mut().zip(from_result) {
-                    if s.is_none() {
-                        *s = r;
-                    }
+            for (i, (e, pty)) in es.iter().zip(params).enumerate() {
+                let open = (0..n).any(|j| bounds[j].is_empty() && mentions(pty, j as u32));
+                if outs[i].is_none() && open {
+                    let o = self.synth(e)?;
+                    bound(self.schema, pty, &o.ty, Side::Lower, true, &mut bounds);
+                    outs[i] = Some(o);
                 }
             }
+            if let Some((res, exp)) = result {
+                bound(self.schema, res, exp, Side::Upper, false, &mut bounds);
+            }
         }
+        for (b, name) in bounds.iter().zip(callee.1) {
+            let say = |t: &Ty| self.show(t);
+            let refused = match (&b.clash, &b.lower, &b.upper) {
+                (Some((Side::Lower, x, y)), ..) => {
+                    Some(format!("no type is above both {} and {}", say(x), say(y)))
+                }
+                (Some((Side::Upper, x, y)), ..) => {
+                    Some(format!("no type is below both {} and {}", say(x), say(y)))
+                }
+                (None, Some(l), Some(u)) if !subtype(self.schema, l, u) => Some(format!(
+                    "its lower bound {} is not below its upper bound {}",
+                    say(l),
+                    say(u)
+                )),
+                _ => None,
+            };
+            if let Some(why) = refused {
+                return Err(diag(
+                    span,
+                    format!(
+                        "the type argument `{name}` of `{}` has no solution: {why}",
+                        callee.0
+                    ),
+                ));
+            }
+        }
+        let sol: Vec<Option<Ty>> = bounds
+            .iter()
+            .enumerate()
+            .map(|(j, b)| {
+                b.chosen(result.and_then(|(res, _)| variance(self.schema, res, j as u32)))
+            })
+            .collect();
         let mut tms = Vec::new();
         for (i, (e, pty)) in es.iter().zip(params).enumerate() {
+            let want = pty.subst(&solved(&sol));
             let o = match outs[i].take() {
-                Some(o) => {
-                    let want = pty.subst(&solved(&sol));
-                    self.subsume(o, &want, e.span)?
-                }
-                None if (0..n).any(|j| sol[j].is_none() && mentions(pty, j as u32)) => {
-                    let o = self.synth(e)?;
-                    unify(self, pty, &o.ty, &mut sol);
-                    o
-                }
-                None => {
-                    let want = pty.subst(&solved(&sol));
+                Some(o) if wants_expected(e) && !subtype(self.schema, &o.ty, &want) => {
                     self.check(e, &want)?
                 }
+                Some(o) => self.subsume(o, &want, e.span)?,
+                None => self.check(e, &want)?,
             };
             tms.push(o.tm);
         }
@@ -318,8 +349,14 @@ impl Checker<'_> {
         }
         let params: Vec<Ty> = def.params.iter().map(|(_, t)| t.clone()).collect();
         let es: Vec<&Expr> = es.iter().collect();
-        let n = def.type_params.len();
-        let (tms, sol) = self.solve_args(&params, &es, n, expected.map(|e| (&def.result, e)))?;
+        let names: Vec<String> = def.type_params.iter().map(|(n, _)| n.clone()).collect();
+        let (tms, sol) = self.solve_args(
+            (&def.name, &names),
+            &params,
+            &es,
+            expected.map(|e| (&def.result, e)),
+            span,
+        )?;
         let mut type_args = Vec::new();
         for (j, (name, bounds)) in def.type_params.iter().enumerate() {
             let Some(t) = sol[j].clone() else {
@@ -388,16 +425,86 @@ pub(super) fn mentions(t: &Ty, i: u32) -> bool {
     }
 }
 
-/// Collect lower bounds for the callee's type parameters in `pattern` from `actual`.
-fn unify(c: &Checker, pattern: &Ty, actual: &Ty, sol: &mut [Option<Ty>]) {
+/// The bounds the arguments and the expected result give one type parameter.
+#[derive(Clone, Default)]
+struct Bounds {
+    lower: Option<Ty>,
+    upper: Option<Ty>,
+    clash: Option<(Side, Ty, Ty)>,
+}
+
+impl Bounds {
+    fn is_empty(&self) -> bool {
+        self.lower.is_none() && self.upper.is_none() && self.clash.is_none()
+    }
+
+    /// Returns the parameter's type: the lower bound where it occurs only covariantly in the
+    /// result, the upper bound where only contravariantly, else the lower bound if any.
+    fn chosen(&self, variance: Option<Variance>) -> Option<Ty> {
+        match variance {
+            Some(Variance {
+                co: false,
+                contra: true,
+            }) => self.upper.clone().or_else(|| self.lower.clone()),
+            _ => self.lower.clone().or_else(|| self.upper.clone()),
+        }
+    }
+}
+
+/// Whether an actual type stands below or above the pattern it is matched against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Side {
+    Lower,
+    Upper,
+}
+
+impl Side {
+    fn flipped(self) -> Side {
+        match self {
+            Side::Lower => Side::Upper,
+            Side::Upper => Side::Lower,
+        }
+    }
+}
+
+/// Add to `bounds` what matching `actual` on `side` of `pattern` gives each type parameter.
+/// `literal` takes the fields of records and sums as covariant, as a literal checks them.
+fn bound(
+    schema: &Schema,
+    pattern: &Ty,
+    actual: &Ty,
+    side: Side,
+    literal: bool,
+    bounds: &mut [Bounds],
+) {
+    let both = |p: &Ty, a: &Ty, bounds: &mut [Bounds]| {
+        if literal {
+            bound(schema, p, a, side, literal, bounds);
+        } else {
+            bound(schema, p, a, Side::Lower, literal, bounds);
+            bound(schema, p, a, Side::Upper, literal, bounds);
+        }
+    };
     match (pattern, actual) {
         (Ty::Param(i), t) => {
-            let i = *i as usize;
-            if i < sol.len() {
-                sol[i] = match &sol[i] {
-                    None => Some(t.clone()),
-                    Some(s) => Some(c.join(s, t).unwrap_or_else(|| s.clone())),
-                };
+            let Some(b) = bounds.get_mut(*i as usize) else {
+                return;
+            };
+            let slot = match side {
+                Side::Lower => &mut b.lower,
+                Side::Upper => &mut b.upper,
+            };
+            let combined = slot.as_ref().map(|s| match side {
+                Side::Lower => join(schema, s, t),
+                Side::Upper => ty::meet(schema, s, t),
+            });
+            match combined {
+                None => *slot = Some(t.clone()),
+                Some(Some(c)) => *slot = Some(c),
+                Some(None) => {
+                    let had = slot.clone().expect("a bound to combine with");
+                    b.clash.get_or_insert((side, had, t.clone()));
+                }
             }
         }
         (
@@ -408,28 +515,97 @@ fn unify(c: &Checker, pattern: &Ty, actual: &Ty, sol: &mut [Option<Ty>]) {
                 def: d2, args: a2, ..
             },
         ) if d1 == d2 => {
-            for (p, a) in a1.iter().zip(a2) {
-                unify(c, p, a, sol);
+            for (i, (p, a)) in a1.iter().zip(a2).enumerate() {
+                if ty::occurs_in_field(schema, *d1, i as u32) {
+                    bound(schema, p, a, side, literal, bounds);
+                }
             }
         }
-        (Ty::Set(p) | Ty::NonEmpty(p), Ty::Set(a) | Ty::NonEmpty(a)) | (Ty::Tag(p), Ty::Tag(a)) => {
-            unify(c, p, a, sol);
+        (Ty::Set(p) | Ty::NonEmpty(p), Ty::Set(a) | Ty::NonEmpty(a)) => {
+            bound(schema, p, a, side, literal, bounds);
+        }
+        (Ty::Tag(p), Ty::Tag(a)) => {
+            bound(schema, p, a, Side::Lower, false, bounds);
+            bound(schema, p, a, Side::Upper, false, bounds);
         }
         (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => {
-            unify(c, p1, p2, sol);
-            unify(c, r1, r2, sol);
+            bound(schema, p1, p2, side.flipped(), false, bounds);
+            bound(schema, r1, r2, side, false, bounds);
         }
         (Ty::Group(k1, v1), Ty::Group(k2, v2)) => {
-            unify(c, k1, k2, sol);
-            unify(c, v1, v2, sol);
+            bound(schema, k1, k2, side, literal, bounds);
+            bound(schema, v1, v2, side, literal, bounds);
         }
         (Ty::Record(fs), Ty::Record(gs)) => {
             for (n, p) in fs {
                 if let Some((_, a)) = gs.iter().find(|(m, _)| m == n) {
-                    unify(c, p, a, sol);
+                    both(p, a, bounds);
+                }
+            }
+        }
+        (Ty::Sum { ctors: cs, .. }, Ty::Sum { ctors: ds, .. }) => {
+            for (c, fs) in cs {
+                if let Some((_, gs)) = ds.iter().find(|(d, _)| d == c) {
+                    for (n, p) in fs {
+                        if let Some((_, a)) = gs.iter().find(|(m, _)| m == n) {
+                            both(p, a, bounds);
+                        }
+                    }
                 }
             }
         }
         _ => {}
     }
+}
+
+/// Where a type parameter occurs in a type: in a covariant position, a contravariant one, or
+/// both.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Variance {
+    co: bool,
+    contra: bool,
+}
+
+/// Returns where type parameter `i` occurs in `ty`, `None` when it does not.
+fn variance(schema: &Schema, ty: &Ty, i: u32) -> Option<Variance> {
+    fn walk(schema: &Schema, ty: &Ty, i: u32, co: bool, out: &mut Variance) {
+        let both = |t: &Ty, out: &mut Variance| {
+            walk(schema, t, i, true, out);
+            walk(schema, t, i, false, out);
+        };
+        match ty {
+            Ty::Param(j) if *j == i => {
+                if co {
+                    out.co = true;
+                } else {
+                    out.contra = true;
+                }
+            }
+            Ty::Data { def, args, .. } => {
+                for (k, a) in args.iter().enumerate() {
+                    if ty::occurs_in_field(schema, *def, k as u32) {
+                        walk(schema, a, i, co, out);
+                    }
+                }
+            }
+            Ty::Set(t) | Ty::NonEmpty(t) => walk(schema, t, i, co, out),
+            Ty::Group(k, t) => {
+                walk(schema, k, i, co, out);
+                walk(schema, t, i, co, out);
+            }
+            Ty::Fn(p, r) => {
+                walk(schema, p, i, !co, out);
+                walk(schema, r, i, co, out);
+            }
+            Ty::Tag(t) => both(t, out),
+            Ty::Record(fs) => fs.iter().for_each(|(_, t)| both(t, out)),
+            Ty::Sum { ctors, .. } => ctors
+                .iter()
+                .for_each(|(_, fs)| fs.iter().for_each(|(_, t)| both(t, out))),
+            _ => {}
+        }
+    }
+    let mut out = Variance::default();
+    walk(schema, ty, i, true, &mut out);
+    (out != Variance::default()).then_some(out)
 }

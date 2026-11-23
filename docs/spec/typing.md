@@ -260,7 +260,13 @@ exists:
 | `Key r.S` and `Key r.S'` | `Key r.(S \| S')` |
 | `Set A` and `Set B` | `Set` of the join of `A` and `B` |
 | `F A1 ... An` and `F B1 ... Bn` | each parameter that occurs in a field joined; one that occurs in no field taken from either |
+| `A -> B` and `A' -> B'` | the meet of `A` and `A'` to the join of `B` and `B'` |
 | Any other pair, anonymous records included | the type, when the two are equal |
+
+The meet of two types is their greatest lower bound under §3, where one
+exists. It is the join with each union of constructors read as their
+intersection, which must be nonempty, and each function's parameters
+joined and results met.
 
 Anonymous records join only when their types are equal: the same
 field names at equal field types. Arms of record type whose field
