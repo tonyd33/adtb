@@ -120,6 +120,26 @@ const SHAPES: &[Shape] = &[
         outside: &[],
     },
     Shape {
+        name: "exists with a filter beside its correlation",
+        constraint: "from u in users where exists i in idents.Mail where i.owner == u.name and i.address == \"\" select u",
+        needs: &[
+            Need {
+                relation: "idents",
+                index: "index (owner) in Mail",
+                refusals: &[
+                    "changes to app::users: index (owner, address) in app::idents.Mail is missing",
+                    "changes to app::idents.Mail: index (owner, address) in app::idents.Mail is missing",
+                ],
+            },
+            Need {
+                relation: "users",
+                index: "index (name)",
+                refusals: &["changes to app::idents.Mail: index (name) in app::users is missing"],
+            },
+        ],
+        outside: &[],
+    },
+    Shape {
         name: "sum by a group key",
         constraint: "from u in users where sum(l.amount for l in lines where l.entry == u.name) > 10 select u",
         needs: &[
@@ -182,7 +202,7 @@ const SHAPES: &[Shape] = &[
                 relation: "users",
                 index: "index (name)",
                 refusals: &[
-                    "changes to app::grants: index (name) in app::users is missing",
+                    "changes to app::grants.ToUser: index (name) in app::users is missing",
                     "changes to app::users: index (name) in app::users is missing",
                 ],
             },
@@ -195,6 +215,34 @@ const SHAPES: &[Shape] = &[
         outside: &[],
     },
     Shape {
+        name: "a correlation through a match",
+        constraint: "from g in grants where exists u in users where u.org != g.org and u.name == (match g | ToUser t -> t.user | ToIdent t -> t.ident) select g",
+        needs: &[
+            Need {
+                relation: "users",
+                index: "index (name)",
+                refusals: &[
+                    "changes to app::grants.ToIdent: index (name) in app::users is missing",
+                    "changes to app::grants.ToUser: index (name) in app::users is missing",
+                    "changes to app::users: index (name) in app::users is missing",
+                ],
+            },
+            Need {
+                relation: "grants",
+                index: "index (user) in ToUser",
+                refusals: &["changes to app::users: index (user) in app::grants.ToUser is missing"],
+            },
+            Need {
+                relation: "grants",
+                index: "index (ident) in ToIdent",
+                refusals: &[
+                    "changes to app::users: index (ident) in app::grants.ToIdent is missing",
+                ],
+            },
+        ],
+        outside: &[],
+    },
+    Shape {
         name: "reads in top-level match arms",
         constraint: "from g in grants, x in (match g | ToUser t -> (from u in users where u.name == t.user and u.org != t.org select u.name) | ToIdent t -> (from i in idents where i.owner == t.ident select i.owner)) select x",
         needs: &[
@@ -202,7 +250,7 @@ const SHAPES: &[Shape] = &[
                 relation: "users",
                 index: "index (name)",
                 refusals: &[
-                    "changes to app::grants: index (name) in app::users is missing",
+                    "changes to app::grants.ToUser: index (name) in app::users is missing",
                     "changes to app::users: index (name) in app::users is missing",
                 ],
             },
@@ -210,7 +258,7 @@ const SHAPES: &[Shape] = &[
                 relation: "idents",
                 index: "index (owner)",
                 refusals: &[
-                    "changes to app::grants: index (owner) in app::idents is missing",
+                    "changes to app::grants.ToIdent: index (owner) in app::idents is missing",
                     "changes to app::idents: index (owner) in app::idents is missing",
                 ],
             },

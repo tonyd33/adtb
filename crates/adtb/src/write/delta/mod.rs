@@ -12,6 +12,7 @@ use crate::plan::{self, Catalog, Facts, Plan};
 
 use super::Broken;
 
+mod arms;
 mod reads;
 #[cfg(test)]
 mod tests;
@@ -364,6 +365,8 @@ struct Within {
     guards: Vec<Tm>,
     /// The arms enclosing it, each a case and the position of the arm, outermost first.
     arms: Vec<(Tm, usize)>,
+    /// The alternatives of the query's top level on the path to the expression.
+    choices: Choices,
 }
 
 #[derive(Clone, Debug)]
@@ -564,6 +567,7 @@ impl Compiler<'_> {
     /// Returns the delta queries of the constraint `name` with query `q`, or every reason it is
     /// outside the bound.
     fn constraint(&mut self, q: Tm) -> Result<Vec<Delta>, Outside> {
+        let q = self.arm_queries(q);
         let mut binders = HashMap::new();
         let mut occurrences = Vec::new();
         self.top(q, &mut binders, &mut Vec::new(), &mut occurrences);
@@ -733,6 +737,35 @@ impl Compiler<'_> {
         self.b().rebuild_kept(t, &children)
     }
 
+    /// Returns `t` of the query's top level with each alternative off `choices` empty.
+    fn pruned(&mut self, t: Tm, choices: &[(Tm, usize)]) -> Tm {
+        let Some(&(at_node, at)) = choices.first() else {
+            return t;
+        };
+        let mut children = self.terms.children(t);
+        match self.kind(t) {
+            Kind::For(..) | Kind::Let(..) if t != at_node => {
+                let body = children.len() - 1;
+                children[body] = self.pruned(children[body], choices);
+            }
+            Kind::Union(a, b) => {
+                let chosen = if at == 0 { a } else { b };
+                return self.pruned(chosen, &choices[1..]);
+            }
+            _ => {
+                let ty = self.ty(t);
+                for (i, c) in children.iter_mut().enumerate().skip(1) {
+                    *c = if i == at {
+                        self.pruned(*c, &choices[1..])
+                    } else {
+                        self.b().empty_set(ty.clone())
+                    };
+                }
+            }
+        }
+        self.b().rebuild_kept(t, &children)
+    }
+
     /// Returns `q` restricted to the bindings of its top level that a changed row of the nested
     /// read `o` can affect, and the input of those rows.
     fn nested_delta(
@@ -807,6 +840,7 @@ impl Compiler<'_> {
             })
             .collect();
         prefix.retain(|(v, src)| src.is_none() || used.contains(v));
+        let q = self.pruned(q, &within.choices);
         let (top, _) = self.chain(q);
         let chained: BTreeSet<Var> = top
             .iter()

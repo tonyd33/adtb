@@ -9,6 +9,16 @@ use super::{
     At, Binder, BinderTm, Choices, Compiler, ForTm, Occurrence, Origin, Row, Source, Within,
 };
 
+impl Within {
+    /// Returns what encloses an expression of the query's top level reached through `choices`.
+    fn in_top(choices: &Choices) -> Within {
+        Within {
+            choices: choices.clone(),
+            ..Within::default()
+        }
+    }
+}
+
 impl Compiler<'_> {
     /// Collect the reads of the query's top level `t`, reached through `choices`, recording each
     /// variable it binds.
@@ -46,18 +56,18 @@ impl Compiler<'_> {
                             choices.clone(),
                         ),
                     }),
-                    None => self.nested(src, &mut Within::default(), out),
+                    None => self.nested(src, &mut Within::in_top(choices), out),
                 }
                 bind(binders, x, BinderTm::For { node: t, src, body });
                 self.top(body, binders, choices, out);
             }
             Kind::If(c, a, b) => {
-                self.nested(c, &mut Within::default(), out);
+                self.nested(c, &mut Within::in_top(choices), out);
                 self.top_choice(t, 1, a, binders, choices, out);
                 self.top_choice(t, 2, b, binders, choices, out);
             }
             Kind::Let(x, e, b) => {
-                self.nested(e, &mut Within::default(), out);
+                self.nested(e, &mut Within::in_top(choices), out);
                 bind(
                     binders,
                     x,
@@ -74,12 +84,12 @@ impl Compiler<'_> {
                 self.top_choice(t, 1, b, binders, choices, out);
             }
             Kind::Case { scrutinee, arms } => {
-                self.nested(scrutinee, &mut Within::default(), out);
+                self.nested(scrutinee, &mut Within::in_top(choices), out);
                 for (i, (_, _, a)) in arms.iter().enumerate() {
                     self.top_choice(t, i + 1, *a, binders, choices, out);
                 }
             }
-            _ => self.nested(t, &mut Within::default(), out),
+            _ => self.nested(t, &mut Within::in_top(choices), out),
         }
     }
 
