@@ -352,9 +352,12 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
 
 #[test]
 fn a_write_load_keeps_what_recovery_reads_and_the_dirty_page_table_bounded() {
-    for atomic in [false, true] {
-        load_keeps_recovery_and_the_dirty_page_table_bounded(atomic);
-    }
+    load_keeps_recovery_and_the_dirty_page_table_bounded(false);
+}
+
+#[test]
+fn atomic_page_writes_under_a_write_load_keep_what_recovery_reads_and_the_dirty_table_bounded() {
+    load_keeps_recovery_and_the_dirty_page_table_bounded(true);
 }
 
 fn crash_in_a_cycle_loses_nothing(atomic: bool) {
