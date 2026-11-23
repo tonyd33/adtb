@@ -9,6 +9,7 @@ mod adhoc;
 mod binding_sites;
 mod call_cycles;
 mod capability;
+mod computed_scope;
 mod elaboration;
 mod generic_solving;
 mod or_patterns;

@@ -710,9 +710,7 @@ fn engine_refusal(m: &Migration, operator: &str, detail: &str) -> Option<Finding
     let reading: Vec<&schemas::Op> = m.ops().iter().filter(|o| o.reads()).collect();
     let by = |o: &&schemas::Op, l: &str| reasons::data(o.kind(), l);
     let stated = lines.split_first().is_some_and(|(first, rest)| {
-        reading
-            .iter()
-            .any(|o| (operator.is_empty() || o.names(operator)) && by(o, first))
+        reading.iter().any(|o| o.names(operator) && by(o, first))
             && rest.iter().all(|l| reading.iter().any(|o| by(o, l)))
     });
     (!stated).then(|| {

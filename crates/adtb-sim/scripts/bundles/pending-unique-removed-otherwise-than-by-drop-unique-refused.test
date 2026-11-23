@@ -13,7 +13,7 @@ reopen
 bundle web-2.0 pins 2 edition "2026-10"
   import auth
   query count () -> I64 = count(key s for s in sessions)
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "the drop of `unique (note)` in accounts is refused: bundle web-2.0, pinned at version 2, relies on it, and only a `drop unique` holds a unique pending; it applies once the bundle is released" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "revert 0002", detail: "the drop of `unique (note)` in accounts is refused: bundle web-2.0, pinned at version 2, relies on it, and only a `drop unique` holds a unique pending; it applies once the bundle is released" } } }
   module auth
   revert 0002
 

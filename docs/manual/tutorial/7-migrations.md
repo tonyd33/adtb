@@ -216,7 +216,7 @@ add check grown on pets (age >= 2)
 <!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated.adt --schema mobile.adt --schema bird.adt --schema enable-bird.adt --schema grown.adt shelter.db
-shelter.db: migration 6 is refused: constraint shelter::grown is violated by Cat { name: "kit", age: 1, size: Small, diet: Special { food: "kitten" }, lives: 9, indoor: False, vaccinated: False }, Rabbit { name: "bun", age: 1, size: Small, diet: Normal }, Bird { name: "tweety", age: 1, size: Small, diet: Normal, sings: True }
+shelter.db: migration 6 is refused: `add check grown on pets (age >= 2)`: constraint shelter::grown is violated by Cat { name: "kit", age: 1, size: Small, diet: Special { food: "kitten" }, lives: 9, indoor: False, vaccinated: False }, Rabbit { name: "bun", age: 1, size: Small, diet: Normal }, Bird { name: "tweety", age: 1, size: Small, diet: Normal, sings: True }
 ```
 
 ## Revert

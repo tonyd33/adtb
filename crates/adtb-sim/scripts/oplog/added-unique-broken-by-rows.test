@@ -5,7 +5,7 @@ use customers
 run
   insert customers { name: "ann" }
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of customers share the key \"ann\" of `unique (name)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (name) in customers", detail: "rows of customers share the key \"ann\" of `unique (name)`" } } }
   module shop
   add unique (name) in customers
 

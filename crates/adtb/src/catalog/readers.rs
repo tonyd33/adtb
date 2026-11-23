@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Compiled;
-use adtb_lang::evolve::{Kept, Source};
+use adtb_lang::evolve::{self, Kept, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Schema, Stage, ValueDef};
 use adtb_lang::span::Diag;
+use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use super::Rot;
@@ -200,22 +201,27 @@ struct DroppedUnique {
     name: String,
 }
 
-/// What the steps of a migration do to write states and constraints, by catalog id.
+/// What the steps of a migration do to write states and constraints, by catalog id, each with
+/// the position of the first operator whose step does it.
 #[derive(Debug, Default)]
 struct Changes {
     /// The constructor relations a step makes writable.
-    enabled: BTreeSet<(CatRelId, CatCtorId)>,
+    enabled: BTreeMap<(CatRelId, CatCtorId), usize>,
     /// The value-level constructors a step makes writable.
-    value_enabled: BTreeSet<CatCtorId>,
-    /// The constructor relations a step stops writes into, with the operator that does so.
-    stopped: BTreeSet<(CatRelId, CatCtorId, &'static str)>,
+    value_enabled: BTreeMap<CatCtorId, usize>,
+    /// The constructor relations a step stops writes into, with the verb that does so.
+    stopped: BTreeMap<(CatRelId, CatCtorId, &'static str), usize>,
     dropped: Vec<Dropped>,
     uniques: Vec<DroppedUnique>,
+    /// The uniques a step removes.
+    lost_uniques: BTreeMap<CatIndexId, usize>,
+    /// The constraints and checks a step adds, by module and name.
+    added: BTreeMap<(String, String), usize>,
 }
 
 impl Changes {
-    /// Record what the step from `a` to `b` changes.
-    fn add(&mut self, a: &Schema, b: &Schema) {
+    /// Record what the step from `a` to `b` of operator `op` changes.
+    fn add(&mut self, op: usize, a: &Schema, b: &Schema) {
         for (r, rid) in b.ids().relation_ids() {
             let Some(was) = relation(a, rid) else {
                 continue;
@@ -227,13 +233,13 @@ impl Changes {
                 };
                 match (a.stage(was, k), b.stage(r, c)) {
                     (Stage::Enabled, Stage::Deprecated) => {
-                        self.stopped.insert((rid, cid, "deprecate"));
+                        self.stopped.entry((rid, cid, "deprecate")).or_insert(op);
                     }
                     (Stage::Enabled, Stage::Declared) => {
-                        self.stopped.insert((rid, cid, "disable"));
+                        self.stopped.entry((rid, cid, "disable")).or_insert(op);
                     }
                     (Stage::Declared | Stage::Deprecated, Stage::Enabled) => {
-                        self.enabled.insert((rid, cid));
+                        self.enabled.entry((rid, cid)).or_insert(op);
                     }
                     _ => {}
                 }
@@ -244,7 +250,7 @@ impl Changes {
                 && a.value_stage(ac.def(), ac.index()) != Stage::Enabled
                 && b.value_stage(bc.def(), bc.index()) == Stage::Enabled
             {
-                self.value_enabled.insert(id);
+                self.value_enabled.entry(id).or_insert(op);
             }
         }
         let kept: BTreeSet<CatConstraintId> = b
@@ -253,6 +259,21 @@ impl Changes {
             .map(|(_, id)| id)
             .chain(b.ids().check_ids().map(|(_, id)| id))
             .collect();
+        let kept_uniques = unique_ids(b);
+        for id in unique_ids(a).difference(&kept_uniques) {
+            self.lost_uniques.entry(*id).or_insert(op);
+        }
+        let names = |s: &Schema| -> BTreeSet<(String, String)> {
+            let constraints = s.constraints.iter().map(|c| (c.module, c.name.clone()));
+            let checks = s.checks.iter().map(|c| (c.module, c.name.clone()));
+            constraints
+                .chain(checks)
+                .map(|(m, n)| (s.module(m).name.clone(), n))
+                .collect()
+        };
+        for name in names(b).difference(&names(a)) {
+            self.added.entry(name.clone()).or_insert(op);
+        }
         let named = |m, name: &str, id, check| Dropped {
             id,
             module: a.module(m).name.clone(),
@@ -310,7 +331,7 @@ fn changes(source: &Source, schema: &Schema, stepped: &Stepped) -> Result<Change
     let mut changes = Changes::default();
     for (i, (op, steps)) in stepped.ops().enumerate() {
         for (step, schema) in steps {
-            changes.add(before, schema);
+            changes.add(i, before, schema);
             if matches!(op.kind, OperatorKind::DropUnique(..)) {
                 changes.drop_uniques(i, before_source, before, schema)?;
             }
@@ -319,6 +340,24 @@ fn changes(source: &Source, schema: &Schema, stepped: &Stepped) -> Result<Change
         }
     }
     Ok(changes)
+}
+
+/// Returns the position of the operator of `stepped`, applied to `before`, whose step last leaves
+/// an old key of `pending` without an image it had, or 0 when `before` leaves one without.
+fn imaging(before: &Schema, stepped: &Stepped, pending: &[Pending]) -> usize {
+    let lost = |s: &Schema| !super::pending::imageless_keys(s, pending).is_empty();
+    let mut had = !lost(before);
+    let mut at = 0;
+    for (i, (_, steps)) in stepped.ops().enumerate() {
+        for (_, schema) in steps {
+            let has = !lost(schema);
+            if had && !has {
+                at = i;
+            }
+            had = has;
+        }
+    }
+    at
 }
 
 /// Returns `file` without the operators `skipped` names by position.
@@ -548,9 +587,9 @@ impl Catalog {
     /// operators take `stepped`: the live readers, the drops they hold back, and the source that
     /// keeps every pending-dropped object.
     ///
-    /// Fail with [`Error::Refused`] when a live reader refuses the migration, naming the
+    /// Fail with [`Error::RefusedBy`] when a live reader refuses the migration, naming the
     /// reader, or when the migration leaves a pending-dropped object without an image, naming
-    /// the object.
+    /// the object; each names the first operator whose step it refuses.
     pub(super) fn held(
         &self,
         file: &MigrationFile,
@@ -559,39 +598,53 @@ impl Catalog {
         stepped: &Stepped,
     ) -> Result<Readers, Error> {
         let changes = changes(&self.source, self.schema(), stepped)?;
+        let operators: Vec<String> = stepped
+            .ops()
+            .map(|(op, _)| operator_text(text, &op))
+            .collect();
+        let refused_by = |at: usize, why: Vec<String>| Error::RefusedBy {
+            operator: operators.get(at).cloned().unwrap_or_default(),
+            why,
+        };
         let now = &next.schema();
-        let mut refused = Vec::new();
-        for &(rid, cid) in &changes.enabled {
+        let mut refused: Vec<(usize, String)> = Vec::new();
+        let at = |op: usize| move |why: String| (op, why);
+        for (&(rid, cid), &op) in &changes.enabled {
             if let Some((r, c)) = ctor_of(now, rid, cid) {
-                refused.extend(self.enabling(now, r, c));
+                refused.extend(self.enabling(now, r, c).into_iter().map(at(op)));
             }
         }
-        for &cid in &changes.value_enabled {
+        for (&cid, &op) in &changes.value_enabled {
             if let Some((def, c)) = value_ctor(now, cid) {
-                refused.extend(self.enabling_value(now, def, c));
+                refused.extend(self.enabling_value(now, def, c).into_iter().map(at(op)));
             }
         }
-        for &(rid, cid, verb) in &changes.stopped {
+        for (&(rid, cid, verb), &op) in &changes.stopped {
             if let Some((r, c)) = ctor_of(now, rid, cid) {
-                refused.extend(self.writing(now, r, c, verb));
+                refused.extend(self.writing(now, r, c, verb).into_iter().map(at(op)));
             }
         }
-        refused.extend(self.uniques_held(now, &changes.uniques));
+        refused.extend(self.uniques_held(now, &changes));
         let dropped: Vec<Pending> = changes
             .dropped
             .into_iter()
             .filter_map(|d| self.dropping(next, d))
             .collect();
-        refused.extend(names_held(now, self.readers.pending.iter().chain(&dropped)));
-        if !refused.is_empty() {
-            return Err(Error::Refused(refused));
+        let held = self.readers.pending.iter().chain(&dropped);
+        refused.extend(names_held(now, &changes.added, held));
+        if let Some(first) = refused.iter().map(|(op, _)| *op).min() {
+            return Err(refused_by(
+                first,
+                refused.into_iter().map(|(_, why)| why).collect(),
+            ));
         }
         let mut pending = self.readers.pending.clone();
         let keys = self.relaxed_keys(next, &pending);
         pending.extend(keys);
         let lost = super::pending::imageless_keys(now, &pending);
         if !lost.is_empty() {
-            return Err(Error::Refused(lost));
+            let at = imaging(self.schema(), stepped, &pending);
+            return Err(refused_by(at, lost));
         }
         pending.extend(dropped);
         let mut skipped = BTreeSet::new();
@@ -618,8 +671,16 @@ impl Catalog {
         let source = base
             .migrate_keeping(&skipping(file, &skipped), text, &kept)
             .map_err(|r| {
+                let blamed = match &r {
+                    evolve::Failed::Refused(r) => r.unstepped().or(r.blamed()),
+                    evolve::Failed::Broken(_) => None,
+                };
+                let at = (0..file.operators.len())
+                    .filter(|i| !skipped.contains(i))
+                    .nth(blamed.unwrap_or_default())
+                    .unwrap_or_default();
                 super::refusal(r, |why| {
-                    Error::Refused(why.iter().map(|w| no_image(w)).collect())
+                    refused_by(at, why.iter().map(|w| no_image(w)).collect())
                 })
             })?;
         let enforced = checked(source, |ds| {
@@ -732,12 +793,16 @@ impl Catalog {
     }
 
     /// Returns why the live readers refuse a migration whose result is `next` for each unique
-    /// a reader's version holds that it drops otherwise than by a `drop unique` of `dropped`.
-    fn uniques_held(&self, next: &Schema, dropped: &[DroppedUnique]) -> Vec<String> {
+    /// a reader's version holds that a step of `changes` drops otherwise than by a
+    /// `drop unique`, with the position of the operator whose step drops it.
+    fn uniques_held(&self, next: &Schema, changes: &Changes) -> Vec<(usize, String)> {
         let kept = unique_ids(next);
         let mut why = Vec::new();
         for (id, (r, clause)) in uniques(self.schema(), &self.texts) {
-            if kept.contains(&id) || dropped.iter().any(|u| u.id == id) {
+            let Some(&op) = changes.lost_uniques.get(&id) else {
+                continue;
+            };
+            if kept.contains(&id) || changes.uniques.iter().any(|u| u.id == id) {
                 continue;
             }
             for (bundle, p) in self
@@ -746,13 +811,13 @@ impl Catalog {
                 .iter()
                 .filter(|(_, p)| p.uniques.contains(&id))
             {
-                why.push(format!(
+                why.push((op, format!(
                     "the drop of `{clause}` in {} is refused: bundle {bundle}, pinned at version {}, \
                      relies on it, and only a `drop unique` holds a unique pending; it applies \
                      once the bundle is released",
                     self.schema().relation(r).name,
                     p.version
-                ));
+                )));
             }
         }
         why
@@ -980,7 +1045,7 @@ fn uniques(schema: &Schema, texts: &ElementTexts) -> BTreeMap<CatIndexId, (RelId
 }
 
 /// Returns the catalog id of each declared unique of `schema`.
-fn unique_ids(schema: &Schema) -> BTreeSet<CatIndexId> {
+pub(super) fn unique_ids(schema: &Schema) -> BTreeSet<CatIndexId> {
     schema
         .ids()
         .index_ids()
@@ -990,10 +1055,16 @@ fn unique_ids(schema: &Schema) -> BTreeSet<CatIndexId> {
 }
 
 /// Returns why a migration whose result is `next` is refused for each constraint or check it
-/// declares under the name of a constraint or check of `pending`.
-fn names_held<'p>(next: &Schema, pending: impl Iterator<Item = &'p Pending>) -> Vec<String> {
+/// declares under the name of a constraint or check of `pending`, with the position of the
+/// operator that `adding` names as adding it.
+fn names_held<'p>(
+    next: &Schema,
+    adding: &BTreeMap<(String, String), usize>,
+    pending: impl Iterator<Item = &'p Pending>,
+) -> Vec<(usize, String)> {
     pending
         .filter_map(|p| {
+            let &op = adding.get(&(p.module.clone(), p.name.clone()))?;
             let held = match p.kind {
                 Kind::Constraint(_) => "constraint",
                 Kind::Check(_) => "check",
@@ -1008,12 +1079,15 @@ fn names_held<'p>(next: &Schema, pending: impl Iterator<Item = &'p Pending>) -> 
                 return None;
             };
             let holders: Vec<&str> = p.blocking.iter().map(String::as_str).collect();
-            Some(format!(
-                "adding {added} {} is refused: pending-dropped {held} {}, held by {}, keeps its \
-                 name until its drop takes effect",
-                p.object(),
-                p.object(),
-                holders.join(", ")
+            Some((
+                op,
+                format!(
+                    "adding {added} {} is refused: pending-dropped {held} {}, held by {}, keeps \
+                     its name until its drop takes effect",
+                    p.object(),
+                    p.object(),
+                    holders.join(", ")
+                ),
             ))
         })
         .collect()

@@ -4,7 +4,7 @@ use customers
 
 option query_memory_bytes 1
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::named is violated by its validation needs more than the query memory of 1 bytes" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add constraint named = from c in customers where c.name == \"\" select c", detail: "constraint shop::named is violated by its validation needs more than the query memory of 1 bytes" } } }
   module shop
   add constraint named = from c in customers where c.name == "" select c
 

@@ -35,7 +35,7 @@ error Violated { constraint: "auth::named", report: 1 rows, redacted: 0 }
 bundle web-3.0 pins 3 edition "2026-10"
   import auth
   query count () -> I64 = count(key u for u in users)
-migrate refused MigrationRefused { version: 6, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::named, auth::no_blank has no image: no `name` in scope" } } }
+migrate refused MigrationRefused { version: 6, reason: Rejected { reason: SchemaRefused { operator: "drop field User.name", detail: "pending-dropped auth::named, auth::no_blank has no image: no `name` in scope" } } }
   module auth
   drop field User.name
 

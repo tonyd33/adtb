@@ -220,19 +220,19 @@ fn write(db: &Database<SimRuntime>, text: &str) {
         .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
 }
 
-/// Returns the refusal of a migration with `detail`.
-fn refusal(detail: &str) -> Error {
+/// Returns the refusal of a migration naming `operator`, with `detail`.
+fn refusal(operator: &str, detail: &str) -> Error {
     Error::Rejected {
         reason: RejectReason::SchemaRefused {
-            operator: String::new(),
+            operator: operator.to_string(),
             detail: detail.to_string(),
         },
     }
 }
 
-/// Assert that `got` is the refusal with `detail`.
-fn refused(got: Error, detail: &str) {
-    let want = refusal(detail);
+/// Assert that `got` is the refusal naming `operator`, with `detail`.
+fn refused(got: Error, operator: &str, detail: &str) {
+    let want = refusal(operator, detail);
     refused_as(Err::<(), _>(got), &want, &want.to_string());
 }
 
@@ -379,7 +379,9 @@ fn a_changed_body_rebuilds_or_validates_each_dependent_reaching_it() {
             case(seed + 1, d, via, Body::Breaks, &options(1)),
         ) {
             (Some(detail), (_, Outcome::Refused(e))) => {
-                refused(e, &detail);
+                let second = redefined(via, Body::Breaks);
+                let operator = second.lines().nth(1).expect("the migration's operator");
+                refused(e, operator, &detail);
                 reached.insert((d, via));
             }
             (None, (before, Outcome::Applied { heaps, rows })) => {

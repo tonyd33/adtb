@@ -710,7 +710,9 @@ const CASES: &[Case] = &[
     Case {
         name: "aborted migration",
         run: aborted,
-        refused: Some(r#"constraint app::unranked is violated by "t0", "t1", "t2", "t3""#),
+        refused: Some(
+            r#"`add constraint unranked = from n in notes where n.rank == 7 select n.title`: constraint app::unranked is violated by "t0", "t1", "t2", "t3""#,
+        ),
         failed: "page 0 is unreadable",
     },
     Case {
@@ -913,8 +915,10 @@ add field Note.rank: I64 fill 7
 add constraint unranked = from n in notes where n.rank == 7 select n.title
 ";
 
-const UNRANKED: &[&str] =
-    &["constraint app::unranked is violated by \"t0\", \"t1\", \"t2\", \"t3\""];
+const UNRANKED: (&str, &[&str]) = (
+    "add constraint unranked = from n in notes where n.rank == 7 select n.title",
+    &["constraint app::unranked is violated by \"t0\", \"t1\", \"t2\", \"t3\""],
+);
 
 /// Sweep the store of the closed file. Returns the pages it holds after.
 fn swept(rt: &SimRuntime) -> usize {
@@ -939,7 +943,7 @@ struct Freeing {
     before: &'static [&'static str],
     writes: fn() -> Vec<String>,
     changes: &'static [&'static str],
-    refused: Option<&'static [&'static str]>,
+    refused: Option<(&'static str, &'static [&'static str])>,
     kept: bool,
 }
 
@@ -1023,7 +1027,10 @@ fn a_change_freeing_a_heap_counts_its_versions_off_every_value_they_point_at() {
             let got = catalog.migrate(&pager, &txns, last);
             match (f.refused, got) {
                 (None, Ok(())) => {}
-                (Some(why), Err(super::Error::Refused(got))) => assert_eq!(why, got, "{what}"),
+                (Some((by, why)), Err(super::Error::RefusedBy { operator, why: got })) => {
+                    assert_eq!(by, operator, "{what}");
+                    assert_eq!(why, got, "{what}");
+                }
                 (_, got) => panic!("{what}: {got:?}"),
             }
             pager.close();

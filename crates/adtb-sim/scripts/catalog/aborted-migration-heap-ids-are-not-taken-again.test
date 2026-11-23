@@ -19,7 +19,7 @@ app::notes.Note heap 0
 app::notes index (title) over Note
 app::notes key id over Note
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::unranked is violated by \"t0\", \"t1\"" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add constraint unranked = from n in notes where n.rank == 7 select n.title", detail: "constraint app::unranked is violated by \"t0\", \"t1\"" } } }
   module app
   add field Note.rank: I64 fill 7
   add constraint unranked = from n in notes where n.rank == 7 select n.title

@@ -1,0 +1,32 @@
+# A computed field ranges over every constructor of its relation, beside a unique scoped to one
+# of them, whether the relation declares it or a later migration adds it, and read through a row
+# narrowed to one constructor it gives that row's value.
+migrate
+  module app
+  add module app
+  add type Zy { id: Key zys } = Z1 { a: Text } | Z2 { b: Text } | Z3
+  add relation zys : Zy key id generate sequence
+    unique (a) in Z1
+    computed zzk: Text = match self | Z1 p -> p.a | Z2 p -> p.b | Z3 _ -> "z3"
+
+migrate
+  module app
+  add computed zys.tag: Text = match self | Z1 p -> "one" | Z2 p -> "two" | Z3 _ -> "three"
+
+run
+  transact
+    insert zys.Z1 { a: "x" }
+    insert zys.Z2 { b: "y" }
+    insert zys.Z3 {}
+
+query rowsort
+  from z in zys select { zzk: z.zzk, tag: z.tag }
+----
+{ tag: "one", zzk: "x" }
+{ tag: "three", zzk: "z3" }
+{ tag: "two", zzk: "y" }
+
+query rowsort
+  from z in zys.Z1 select { zzk: z.zzk, tag: z.tag }
+----
+{ tag: "one", zzk: "x" }

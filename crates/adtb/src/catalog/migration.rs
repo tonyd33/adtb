@@ -28,7 +28,8 @@ use super::codec::{Codec, MigrationRow};
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::hosts::classify;
-use super::ids::{stored, type_ctor_id};
+use super::ids::{CatConstraintId, CatIndexId, stored, type_ctor_id};
+use super::readers::unique_ids;
 use super::roots::RootsRow;
 use super::steps::Stepped;
 use super::{
@@ -46,12 +47,14 @@ impl Catalog {
     /// the migration is durable.
     ///
     /// Fail with [`Error::Refused`], changing nothing, if the migration does not apply to the
-    /// schema, if a constraint of the result has no index-bounded incremental check, or if a
-    /// constraint or check it adds, or one reading a relation it rewrites, has violating rows in
-    /// the final state. Fail with [`Error::RefusedBy`], changing nothing and naming the first
-    /// operator the data refuses, if the data contradicts an operator: a constructor or relation
-    /// it removes holds rows, a unique or key it adds finds a duplicate, a constructor it
-    /// disables holds rows, or a fill, routing or index expression faults on a row. Fail with
+    /// schema or if a constraint of the result has no index-bounded incremental check. Fail with
+    /// [`Error::RefusedBy`], changing nothing and naming the first operator the data refuses, if
+    /// the data contradicts an operator: a constructor or relation it removes holds rows, a
+    /// unique or key it adds finds a duplicate, a constructor it disables holds rows, a fill,
+    /// routing or index expression faults on a row, or a constraint or check it adds, or one
+    /// reading a relation it rewrites, has violating rows in the final state. A violation of a
+    /// declaration the migration adds names the operator that adds it; any other names the first
+    /// operator whose step maps rows, or else the first operator. Fail with
     /// [`Error::Internal`] when admitting or validating a constraint breaks a guarantee of the
     /// checker. On any other failure the transaction is aborted, and the catalog must be opened
     /// again.
@@ -184,9 +187,9 @@ impl Catalog {
         if next.grants.iter().any(|g| g.row.is_none()) && self.sequences().is_none() {
             self.sequences = self.counter_page(m.pager)?;
         }
-        let operators = match recordable(&next, &recorded) {
+        let operators = match recordable(&next, &recorded, &file) {
             Ok(ops) => oplog::Log::new(compiled.schema()).rows(ops),
-            Err(why) => return refused(why),
+            Err(why) => return Err(refused_at(&file, text, why)),
         };
         let next = Checked::new(next, compiled)?;
         let stepped = steps::stepped(recorded.steps(), &file, text)?;
@@ -284,6 +287,11 @@ impl Catalog {
             }
             data.insert(rid, ctors);
         }
+        let carrying = stepped
+            .ops()
+            .position(|(_, steps)| steps.iter().any(|(s, _)| !s.maps.is_empty()))
+            .unwrap_or_default();
+        let added = Added::by(self.schema(), stepped);
         let mut before: &Schema = self.schema();
         let mut why = Vec::new();
         let mut blamed = None;
@@ -325,22 +333,26 @@ impl Catalog {
             Err(e) => return Err(e),
         };
         let Some(data) = admitted.filter(|_| why.is_empty()) else {
-            return Err(match blamed {
-                Some(operator) => Error::RefusedBy { operator, why },
-                None => Error::Refused(why),
+            return Err(Error::RefusedBy {
+                operator: blamed.unwrap_or_else(|| nth_operator(file, text, carrying)),
+                why,
             });
         };
-        let mut built = self.build(
-            m,
-            &Built {
-                next: &next,
-                indexing: &indexing,
-                data: &data,
-                rewritten,
-                old: self.objects(),
-                operators: &operators,
-            },
-        )?;
+        let b = Built {
+            next: &next,
+            indexing: &indexing,
+            data: &data,
+            rewritten,
+            old: self.objects(),
+            operators: &operators,
+        };
+        let shared = duplicates(&b)?;
+        if !shared.is_empty() {
+            let at = |id| added.uniques.get(&id).copied().unwrap_or(carrying);
+            let why = shared.into_iter().map(|(id, w)| (at(id), w)).collect();
+            return Err(refused_at(file, text, why));
+        }
+        let mut built = self.build(m, &b)?;
         let mut grants = std::mem::take(&mut built.source.grants);
         let named: BTreeSet<String> = file
             .operators
@@ -367,7 +379,11 @@ impl Catalog {
         built.readers = readers;
         let why = built.violations(m, self.checking().committed(), rewritten, &changed)?;
         if !why.is_empty() {
-            return Err(Error::Refused(why));
+            let at = |id: Option<_>| id.and_then(|id| added.constraints.get(&id).copied());
+            let why = why
+                .into_iter()
+                .map(|(id, w)| (at(id).unwrap_or(carrying), w));
+            return Err(refused_at(file, text, why.collect()));
         }
         Ok((built, dormant))
     }
@@ -536,7 +552,6 @@ impl Catalog {
             objects: b.next.objects.clone(),
         };
         let held = b.indexing.held();
-        duplicates(b)?;
         let old: BTreeMap<(CatRelId, CatCtorId), (RelId, u32)> = self
             .heaps
             .keys()
@@ -741,9 +756,65 @@ fn by_ctor<'a>(
     out
 }
 
-/// Refuse the rows `b.data` gives the relations `b.rewritten` names when two of them share a key
-/// of a unique of `b.indexing`: each unique and the keys rows share.
-fn duplicates(b: &Built) -> Result<(), Error> {
+/// The position of the operator of a migration whose step first adds each constraint, check and
+/// unique of its result.
+#[derive(Debug, Default)]
+struct Added {
+    constraints: BTreeMap<CatConstraintId, usize>,
+    uniques: BTreeMap<CatIndexId, usize>,
+}
+
+impl Added {
+    /// Returns what each operator of `stepped`, applied to `before`, adds.
+    fn by(before: &Schema, stepped: &Stepped) -> Added {
+        let constraints = |s: &Schema| -> BTreeSet<CatConstraintId> {
+            let ids = s.ids();
+            let checks = ids.check_ids().map(|(_, id)| id);
+            ids.constraint_ids()
+                .map(|(_, id)| id)
+                .chain(checks)
+                .collect()
+        };
+        let mut added = Added::default();
+        let mut a = before;
+        for (k, (_, steps)) in stepped.ops().enumerate() {
+            for (_, b) in steps {
+                for id in constraints(b).difference(&constraints(a)) {
+                    added.constraints.entry(*id).or_insert(k);
+                }
+                for id in unique_ids(b).difference(&unique_ids(a)) {
+                    added.uniques.entry(*id).or_insert(k);
+                }
+                a = b;
+            }
+        }
+        added
+    }
+}
+
+/// Returns the refusal of migration `file`, whose text is `text`, for each reason of `why`,
+/// naming the first operator, by position, any of them is blamed on.
+fn refused_at(file: &MigrationFile, text: &str, why: Vec<(usize, String)>) -> Error {
+    let first = why.iter().map(|(k, _)| *k).min().unwrap_or_default();
+    Error::RefusedBy {
+        operator: nth_operator(file, text, first),
+        why: why.into_iter().map(|(_, w)| w).collect(),
+    }
+}
+
+/// Returns the text of operator `k` of migration `file`, whose text is `text`, or nothing when
+/// it has none.
+fn nth_operator(file: &MigrationFile, text: &str, k: usize) -> String {
+    file.operators
+        .get(k)
+        .map(|op| operator_text(text, op))
+        .unwrap_or_default()
+}
+
+/// Returns why the rows `b.data` gives the relations `b.rewritten` names break a unique of
+/// `b.indexing`: each unique two of them share a key of, by its catalog id, and the keys they
+/// share.
+fn duplicates(b: &Built) -> Result<Vec<(CatIndexId, String)>, Error> {
     let schema = b.indexing.held();
     let normal = b.indexing.normal();
     let mut why = Vec::new();
@@ -772,19 +843,18 @@ fn duplicates(b: &Built) -> Result<(), Error> {
             }
         }
         if !shared.is_empty() {
-            why.push(format!(
-                "rows of {} share the key {} of `{}`",
-                schema.relation(spec.relation).name,
-                shared.join(", "),
-                spec.clause
+            why.push((
+                *id,
+                format!(
+                    "rows of {} share the key {} of `{}`",
+                    schema.relation(spec.relation).name,
+                    shared.join(", "),
+                    spec.clause
+                ),
             ));
         }
     }
-    if why.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::Refused(why))
-    }
+    Ok(why)
 }
 
 /// Returns the components of index key `key`, of types `types`, in the textual syntax of values.
@@ -842,29 +912,39 @@ fn carried(maps: &[RowMap], def: TypeId, c: u32) -> bool {
     })
 }
 
-/// Returns the operators `recorded` resolves of the migration that left `source`, refusing
-/// scripts and unavailable function code.
+/// Returns the operators `recorded` resolves of `file`, the migration that left `source`,
+/// refusing scripts and unavailable function code, each reason with the position of the operator
+/// it is blamed on: a script's first `script` operator, else the first operator.
 fn recordable<'a>(
     source: &Source,
     recorded: &'a Recorded,
-) -> Result<&'a [evolve::ResolvedOp], Vec<String>> {
+    file: &MigrationFile,
+) -> Result<&'a [evolve::ResolvedOp], Vec<(usize, String)>> {
     let mut why = Vec::new();
     let ops = match recorded.resolved() {
         Err(ds) => {
-            why.extend(ds.iter().map(|d| d.message.clone()));
+            why.extend(ds.iter().map(|d| (0, d.message.clone())));
             &[]
         }
         Ok(ops) => ops,
     };
     if ops.iter().any(|o| matches!(o.op, Resolved::Script { .. })) {
-        why.push("the engine does not run a `script` yet".to_string());
+        let at = file
+            .operators
+            .iter()
+            .position(|op| matches!(op.kind, OperatorKind::Script(_)))
+            .unwrap_or_default();
+        why.push((at, "the engine does not run a `script` yet".to_string()));
     }
     match source.functions() {
-        Err(ds) => why.extend(ds.into_iter().map(|d| d.diag.message)),
+        Err(ds) => why.extend(ds.into_iter().map(|d| (0, d.diag.message))),
         Ok(fs) => why.extend(fs.iter().filter_map(|f| match &f.code {
-            Code::Wasm { module, .. } => Some(format!(
-                "function `{}` names Wasm module `{module}`: the engine does not run Wasm functions yet",
-                f.name
+            Code::Wasm { module, .. } => Some((
+                0,
+                format!(
+                    "function `{}` names Wasm module `{module}`: the engine does not run Wasm functions yet",
+                    f.name
+                ),
             )),
             _ => None,
         })),

@@ -12,6 +12,6 @@ run
     let c = insert customers { name: "dup" }
     insert payments.Held { customer: key c, method: Card { last4: "4242" } }
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of payments share the key \"4242\" of `unique (method.Card.last4) in Held`" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "add unique (method.Card.last4) in payments.Held", detail: "rows of payments share the key \"4242\" of `unique (method.Card.last4) in Held`" } } }
   module shop
   add unique (method.Card.last4) in payments.Held

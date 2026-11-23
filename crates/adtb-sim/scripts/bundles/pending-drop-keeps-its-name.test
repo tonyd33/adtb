@@ -8,7 +8,7 @@ run
   insert users { name: "x", tier: Free }
 
 bundle web-1.0 pins 2 edition "2026-10" use names
-migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "adding constraint auth::no_blank is refused: pending-dropped constraint auth::no_blank, held by web-1.0, keeps its name until its drop takes effect" } } }
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "add constraint no_blank = from u in users where u.name == \"x\" select u", detail: "adding constraint auth::no_blank is refused: pending-dropped constraint auth::no_blank, held by web-1.0, keeps its name until its drop takes effect" } } }
   module auth
   add constraint no_blank = from u in users where u.name == "x" select u
 
@@ -20,7 +20,7 @@ error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
 
 reopen
 
-migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint auth::no_blank is violated by User { id: users.key(1), name: \"x\", tier: Free }" } } }
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "add constraint no_blank = from u in users where u.name == \"x\" select u", detail: "constraint auth::no_blank is violated by User { id: users.key(1), name: \"x\", tier: Free }" } } }
   module auth
   add constraint no_blank = from u in users where u.name == "x" select u
 

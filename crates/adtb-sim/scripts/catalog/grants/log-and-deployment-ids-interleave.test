@@ -114,7 +114,7 @@ run
 run
   insert clients from (from g in catalog::grants select { name: "grant " ++ print(value(key g)) ++ " " ++ g.privilege ++ " " ++ g.grantee })
 
-migrate refused MigrationRefused { version: 8, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::paid is violated by Customer { id: clients.key(1), name: \"ann\" }" } } }
+migrate refused MigrationRefused { version: 8, reason: Rejected { reason: SchemaRefused { operator: "add constraint paid =", detail: "constraint shop::paid is violated by Customer { id: clients.key(1), name: \"ann\" }" } } }
   module shop
   grant delete clients to web
   add constraint paid =

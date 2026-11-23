@@ -11,7 +11,7 @@ migrate
 run
   insert items { id: 1, text: long::x20000() }
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index `app::items.index (id, text)` needs a key payload of 20010 bytes; the limit is 1607 bytes" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "add index (id, text) in items", detail: "index `app::items.index (id, text)` needs a key payload of 20010 bytes; the limit is 1607 bytes" } } }
   module app
   add index (id, text) in items
 

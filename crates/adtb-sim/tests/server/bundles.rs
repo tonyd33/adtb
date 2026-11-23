@@ -2518,10 +2518,10 @@ fn the_refusal_of_a_host_change_names_its_operator_past_others_in_the_migration(
 #[test]
 fn wasm_and_extensions_change_no_pinned_code_because_the_engine_refuses_them() {
     let cases: [(&[&str], &str, &str); 4] = [
-        (&[BARE, CODED, TO_WASM], "", WASM_LINE),
+        (&[BARE, CODED, TO_WASM], REDEFINED_WASM, WASM_LINE),
         (
             &[BARE, CODED, DEFINE_WASM],
-            "",
+            "define fn w (t: Text) -> Text = wasm \"m\" export \"e\"",
             "function `w` names Wasm module `m`: the engine does not run Wasm functions yet",
         ),
         (

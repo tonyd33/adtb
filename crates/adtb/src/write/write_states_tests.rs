@@ -242,10 +242,13 @@ fn field(relation: &str, name: &str) -> Read {
     }
 }
 
-/// Returns the reasons a migration of `text` is refused for.
-fn refused(got: Result<(), CatalogError>) -> Vec<String> {
+/// Returns the reasons a migration is refused for, asserting the refusal names `operator`.
+fn refused(got: Result<(), CatalogError>, operator: &str) -> Vec<String> {
     match got {
-        Err(CatalogError::Refused(why)) => why,
+        Err(CatalogError::RefusedBy { operator: by, why }) => {
+            assert_eq!(operator, by, "the operator the refusal names");
+            why
+        }
         other => panic!("the migration is not refused: {other:?}"),
     }
 }
@@ -434,7 +437,7 @@ fn blockers(seed: u64, add: &str, enable: &str, readers: &[Reader]) -> [Vec<Stri
         }
         let why = match catalog.migrate(pager, txns, enable) {
             Ok(()) => Vec::new(),
-            Err(e) => refused(Err(e)),
+            Err(e) => refused(Err(e), enable.lines().nth(1).expect("the enable")),
         };
         let migration = readers
             .iter()

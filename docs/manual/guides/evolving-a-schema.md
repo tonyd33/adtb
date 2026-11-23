@@ -344,7 +344,7 @@ add unique (total) in orders
 ```console
 $ adtb orders.db -c 'insert orders.Shipped { id: 3, total: 400, carrier: "post" }'
 $ adtb --schema orders.adt --schema split.adt --schema merge.adt --schema unique.adt orders.db -c 'from o in orders select o.id'
-orders.db: migration 4 is refused: rows of orders share the key 400 of `unique (total)`
+orders.db: migration 4 is refused: `add unique (total) in orders`: rows of orders share the key 400 of `unique (total)`
 ```
 
 A unique added over data that breaks it is refused, as is a

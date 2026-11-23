@@ -9,7 +9,7 @@ migrate
 run
   insert rs { n: -1 }
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::was_negative is violated by R { id: rs.key(1), n: -1 }" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add constraint was_negative = from r in rs, o in prior(rs) where key o == key r and o.n < 0 select r", detail: "constraint app::was_negative is violated by R { id: rs.key(1), n: -1 }" } } }
   module app
   add constraint was_negative = from r in rs, o in prior(rs) where key o == key r and o.n < 0 select r
 

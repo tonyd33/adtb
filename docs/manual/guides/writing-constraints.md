@@ -257,7 +257,7 @@ add check big on rooms (seats > 10)
 <!-- exit 1 -->
 ```console
 $ adtb --schema rooms.adt --schema busy-indexed.adt --schema big.adt rooms.db -c '1'
-rooms.db: migration 3 is refused: constraint rooms::big is violated by Room { name: "loft", seats: 6 }
+rooms.db: migration 3 is refused: `add check big on rooms (seats > 10)`: constraint rooms::big is violated by Room { name: "loft", seats: 6 }
 ```
 
 Repair the data first, with ordinary writes, then apply the

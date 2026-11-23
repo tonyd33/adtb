@@ -23,6 +23,6 @@ error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
 bundle web-2.0 pins 2 edition "2026-10"
   import auth
   query count () -> I64 = count(key u for u in users)
-migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::no_blank has no image: User has no field `full_name`" } } }
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "drop field User.full_name", detail: "pending-dropped auth::no_blank has no image: User has no field `full_name`" } } }
   module auth
   drop field User.full_name

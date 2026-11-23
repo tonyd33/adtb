@@ -38,7 +38,7 @@ probe holding verify
 bundle web-2.0 pins 2 edition "2026-10"
   import auth
   query count () -> I64 = count(key s for s in sessions)
-migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::labels key name, held by web-2.0, has no image: the migration drops its relation or a field of it" } } }
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "drop field Label.title", detail: "pending-dropped auth::labels key name, held by web-2.0, has no image: the migration drops its relation or a field of it" } } }
   module auth
   rekey relation labels key lang
   drop field Label.title

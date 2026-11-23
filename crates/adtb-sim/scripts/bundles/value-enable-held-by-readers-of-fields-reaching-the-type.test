@@ -44,7 +44,7 @@ bundle ranges-1.0 pins 1 edition "2026-10"
 bundle after-1.0 pins 2 edition "2026-10"
   import auth
   query providers () -> Set Provider = from a in accounts select a.provider
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable Provider.Okta` is refused: bundle hiding-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released\n`enable Provider.Okta` is refused: bundle option-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released\n`enable Provider.Okta` is refused: bundle provider-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "enable Provider.Okta", detail: "`enable Provider.Okta` is refused: bundle hiding-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released\n`enable Provider.Okta` is refused: bundle option-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released\n`enable Provider.Okta` is refused: bundle provider-1.0, pinned at version 1, reads a field whose type reaches Provider; a bundle stops blocking only when it is released" } } }
   module auth
   enable Provider.Okta
 

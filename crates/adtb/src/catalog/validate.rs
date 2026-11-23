@@ -21,7 +21,8 @@ impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks, whose root is in
     /// `roots`, the roots [`adtb_lang::depends::changed`] finds changed from `old` to this
     /// catalog, or that reads a relation whose catalog id is in `rewritten`, why the rows
-    /// transaction `m.x` sees at the snapshot of `m.hold` violate it.
+    /// transaction `m.x` sees at the snapshot of `m.hold` violate it, with its catalog id; then
+    /// why they violate each domain.
     ///
     /// A constraint that reads a transition is validated over the empty change.
     ///
@@ -33,7 +34,7 @@ impl Catalog {
         old: &Schema,
         rewritten: &BTreeSet<CatRelId>,
         roots: &BTreeSet<Root>,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Result<Vec<(Option<CatConstraintId>, String)>, Error> {
         let compiled = self.checking();
         let schema = compiled.committed();
         let changed: BTreeSet<CatConstraintId> = roots
@@ -87,9 +88,9 @@ impl Catalog {
             }
             let found = violating(&q, &(t, format!("constraint {name}")))?;
             if !found.is_empty() {
-                why.push(format!(
-                    "constraint {name} is violated by {}",
-                    found.join(", ")
+                why.push((
+                    Some(id),
+                    format!("constraint {name} is violated by {}", found.join(", ")),
                 ));
             }
         }
@@ -111,7 +112,7 @@ impl Catalog {
             budget: &budget,
             hosts: &self.hosts,
         };
-        why.extend(q.domains(&rels, &domains)?);
+        why.extend(q.domains(&rels, &domains)?.into_iter().map(|w| (None, w)));
         Ok(why)
     }
 }

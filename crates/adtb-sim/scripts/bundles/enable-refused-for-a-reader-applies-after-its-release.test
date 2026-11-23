@@ -13,7 +13,7 @@ reopen
 bundle web-1.0 pins 1 edition "2026-10"
   import auth
   query count () -> I64 = count(key i for i in identities)
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable identities.Apple` is refused: bundle web-1.0, pinned at version 1, reads identities whole; a bundle stops blocking only when it is released" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "enable identities.Apple", detail: "`enable identities.Apple` is refused: bundle web-1.0, pinned at version 1, reads identities whole; a bundle stops blocking only when it is released" } } }
   module auth
   enable identities.Apple
 

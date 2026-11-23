@@ -278,8 +278,16 @@ fn a_migration_writing_a_row_past_a_limit_is_refused_in_its_report_and_commits_n
                 ),
             };
             assert!(!before.1.is_empty(), "{name}: the rows are written");
+            let operator = case
+                .migration
+                .lines()
+                .nth(1)
+                .expect("the migration's operator");
             assert_eq!(
-                Err(Error::Refused(vec![expected])),
+                Err(Error::RefusedBy {
+                    operator: operator.to_owned(),
+                    why: vec![expected],
+                }),
                 catalog.migrate(&pager, &txns, &case.migration),
                 "{name}"
             );

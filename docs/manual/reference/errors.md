@@ -644,7 +644,7 @@ $ adtb missing.db -c 'count(p for p in pets)'
 missing.db: the file does not exist
 $ adtb --create --schema migrations/0001.adt --schema migrations/0002.adt open.db -c 'insert pets.Cat { name: "tom", lives: 9 }'
 $ adtb --schema migrations/0001.adt --schema migrations/0002.adt --schema no-toms.adt open.db -c 'count(p for p in pets)'
-open.db: migration 3 is refused: constraint shelter::no_toms is violated by Cat { name: "tom", lives: 9 }
+open.db: migration 3 is refused: `add check no_toms on pets (name != "tom")`: constraint shelter::no_toms is violated by Cat { name: "tom", lives: 9 }
 $ adtb --schema migrations/0002.adt open.db -c 'count(p for p in pets)'
 open.db: the file's migration 1 differs from the log's
 ```

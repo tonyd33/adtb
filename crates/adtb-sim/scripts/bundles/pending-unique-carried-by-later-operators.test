@@ -33,6 +33,6 @@ error Violated { constraint: "auth::users.unique(full_name)", report: 2 rows, re
 bundle web-2.0 pins 2 edition "2026-10"
   import auth
   query count () -> I64 = count(key s for s in sessions)
-migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::users unique (name) has no image: no `full_name` in scope" } } }
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "drop field User.full_name", detail: "pending-dropped auth::users unique (name) has no image: no `full_name` in scope" } } }
   module auth
   drop field User.full_name

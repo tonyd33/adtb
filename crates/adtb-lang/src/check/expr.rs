@@ -953,9 +953,10 @@ impl Checker<'_> {
                 .find(|c| c.name == f.text)
                 .cloned()
         {
+            let elem = self.schema.relation(rel).elem.clone();
             let (v, body) = self.in_relation(rel, |x| {
                 x.scope.push();
-                let v = x.bind("self", o.ty.clone(), Some(rel), o.provenance);
+                let v = x.bind("self", elem, Some(rel), o.provenance);
                 let body = x.check(&c.expr, &c.ty);
                 x.scope.pop();
                 (v, body)

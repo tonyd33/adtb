@@ -17,6 +17,6 @@ reopen
 bundle web-1.0 pins 1 edition "2026-10"
   import auth
   query keys () -> Set (Key p) = from x in qs select x.o
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable Tier.Gold` is refused: bundle web-1.0, pinned at version 1, reads a field whose type reaches Tier; a bundle stops blocking only when it is released" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "enable Tier.Gold", detail: "`enable Tier.Gold` is refused: bundle web-1.0, pinned at version 1, reads a field whose type reaches Tier; a bundle stops blocking only when it is released" } } }
   module auth
   enable Tier.Gold

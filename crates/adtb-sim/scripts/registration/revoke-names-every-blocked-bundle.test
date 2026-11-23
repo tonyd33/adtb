@@ -1,7 +1,7 @@
 seed 330
 use deployed
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "bundle admin-1.0 pins 2: names reads customers.Customer; ops lacks read with grant option\nbundle admin-1.0 pins 2: names reads customers.Customer (id); ops lacks read with grant option\nbundle admin-1.0 pins 2: names reads customers.Customer (name); ops lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer; web lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer (id); web lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer (name); web lacks read with grant option" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "revoke read customers from ops", detail: "bundle admin-1.0 pins 2: names reads customers.Customer; ops lacks read with grant option\nbundle admin-1.0 pins 2: names reads customers.Customer (id); ops lacks read with grant option\nbundle admin-1.0 pins 2: names reads customers.Customer (name); ops lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer; web lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer (id); web lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer (name); web lacks read with grant option" } } }
   module shop
   revoke read customers from web
   revoke read customers from ops

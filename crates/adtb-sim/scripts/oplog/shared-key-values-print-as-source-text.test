@@ -23,87 +23,87 @@ run
     from at in (match Instant.parse("2026-10-25T01:02:03Z") | Some s -> [s.value] | None -> []), day in (match Date.parse("2026-10-25") | Some s -> [s.value] | None -> []), time in (match Time.parse("09:30:00") | Some s -> [s.value] | None -> []), dt in (match DateTime.parse("2026-10-25T09:30:00") | Some s -> [s.value] | None -> []), per in (match Period.parse("P1M2D") | Some s -> [s.value] | None -> []), bytes in (match Bytes.parse("0x00ff") | Some s -> [s.value] | None -> [])
     select { i8: -8, i16: 16, i32: 32, i64: 64, f32: 1.5e0, f64: 2.25e0, dec: 3.5, text: "a\"b", bytes: bytes, at: at, day: day, time: time, dt: dt, zoned: in_zone(at, "Europe/Lisbon"), dur: 90s, per: per, mood: Loud { level: 3 }, pair: { a: 7, b: "p" }, ref: items.key(1) })
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key -8 of `unique (i8)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (i8) in items", detail: "rows of items share the key -8 of `unique (i8)`" } } }
   module k
   add unique (i8) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 16 of `unique (i16)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (i16) in items", detail: "rows of items share the key 16 of `unique (i16)`" } } }
   module k
   add unique (i16) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 32 of `unique (i32)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (i32) in items", detail: "rows of items share the key 32 of `unique (i32)`" } } }
   module k
   add unique (i32) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 64 of `unique (i64)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (i64) in items", detail: "rows of items share the key 64 of `unique (i64)`" } } }
   module k
   add unique (i64) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 1.5 of `unique (f32)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (f32) in items", detail: "rows of items share the key 1.5 of `unique (f32)`" } } }
   module k
   add unique (f32) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 2.25 of `unique (f64)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (f64) in items", detail: "rows of items share the key 2.25 of `unique (f64)`" } } }
   module k
   add unique (f64) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 3.50 of `unique (dec)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (dec) in items", detail: "rows of items share the key 3.50 of `unique (dec)`" } } }
   module k
   add unique (dec) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key \"a\\\"b\" of `unique (text)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (text) in items", detail: "rows of items share the key \"a\\\"b\" of `unique (text)`" } } }
   module k
   add unique (text) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 0x00ff of `unique (bytes)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (bytes) in items", detail: "rows of items share the key 0x00ff of `unique (bytes)`" } } }
   module k
   add unique (bytes) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 2026-10-25T01:02:03.000000Z of `unique (at)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (at) in items", detail: "rows of items share the key 2026-10-25T01:02:03.000000Z of `unique (at)`" } } }
   module k
   add unique (at) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 2026-10-25 of `unique (day)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (day) in items", detail: "rows of items share the key 2026-10-25 of `unique (day)`" } } }
   module k
   add unique (day) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 09:30:00.000000 of `unique (time)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (time) in items", detail: "rows of items share the key 09:30:00.000000 of `unique (time)`" } } }
   module k
   add unique (time) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 2026-10-25T09:30:00.000000 of `unique (dt)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (dt) in items", detail: "rows of items share the key 2026-10-25T09:30:00.000000 of `unique (dt)`" } } }
   module k
   add unique (dt) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 2026-10-25T01:02:03.000000[Europe/Lisbon] of `unique (zoned)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (zoned) in items", detail: "rows of items share the key 2026-10-25T01:02:03.000000[Europe/Lisbon] of `unique (zoned)`" } } }
   module k
   add unique (zoned) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 90s of `unique (dur)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (dur) in items", detail: "rows of items share the key 90s of `unique (dur)`" } } }
   module k
   add unique (dur) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key P1M2D of `unique (per)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (per) in items", detail: "rows of items share the key P1M2D of `unique (per)`" } } }
   module k
   add unique (per) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key Loud { level: 3 } of `unique (mood)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (mood) in items", detail: "rows of items share the key Loud { level: 3 } of `unique (mood)`" } } }
   module k
   add unique (mood) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key Pair { a: 7, b: \"p\" } of `unique (pair)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (pair) in items", detail: "rows of items share the key Pair { a: 7, b: \"p\" } of `unique (pair)`" } } }
   module k
   add unique (pair) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key items.key(1) of `unique (ref)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (ref) in items", detail: "rows of items share the key items.key(1) of `unique (ref)`" } } }
   module k
   add unique (ref) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key (-8, \"a\\\"b\") of `unique (i8, text)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (i8, text) in items", detail: "rows of items share the key (-8, \"a\\\"b\") of `unique (i8, text)`" } } }
   module k
   add unique (i8, text) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of items share the key 0x2b09762d01070107 of `unique (collate ( text , \"und@cldr-49\" ))`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (collate(text, \"und@cldr-49\")) in items", detail: "rows of items share the key 0x2b09762d01070107 of `unique (collate ( text , \"und@cldr-49\" ))`" } } }
   module k
   add unique (collate(text, "und@cldr-49")) in items
 
@@ -114,6 +114,6 @@ run
     insert people.Staff { email: Email("m"), desk: 1 }
     insert people.Guest { email: Email("m"), host: "h" }
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of people share the key Email(\"m\") of `unique (email)`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (email) in people", detail: "rows of people share the key Email(\"m\") of `unique (email)`" } } }
   module k
   add unique (email) in people

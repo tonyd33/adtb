@@ -24,7 +24,7 @@ migrate
 bundle web-2.0 pins 2 edition "2026-10"
   import auth
   query count () -> I64 = count(key i for i in identities)
-migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::no_blank_login has no image: match does not cover `Apple _`" } } }
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "add constructor Identity.Apple { sub: Text }", detail: "pending-dropped auth::no_blank_login has no image: match does not cover `Apple _`" } } }
   module auth
   add constructor Identity.Apple { sub: Text }
     joins identities.OAuth

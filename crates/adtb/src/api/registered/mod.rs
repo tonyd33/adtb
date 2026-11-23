@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use adtb_lang::ast::{BundleItem, Import};
+use adtb_lang::ast::{BundleItem, Import, OperatorKind};
 use adtb_lang::check::{Bundles, Compiled};
 use adtb_lang::evolve::{DeployedGrant, LogGrant, Source};
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
@@ -15,7 +15,9 @@ use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirement, Requiremen
 use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::schema::Schema;
 use adtb_lang::signature;
-use adtb_lang::translate::{Pinned, Refused, Untranslatable, held_other_code, host_conflict};
+use adtb_lang::translate::{
+    Pinned, Refused, Untranslatable, held_other_code, host_conflict, operator_text,
+};
 use adtb_lang::types::Ty;
 
 use crate::catalog::{self, Catalog, VersionHash};
@@ -815,8 +817,10 @@ pub(super) fn readers(
 /// function's code from what a bundle of `live` pins, when a query or transaction of a bundle of
 /// `live` has no translation to the version it gives, or when the owner of a
 /// bundle, other than the schema owner, lacks after it, among its grants and `deployed`, a grant
-/// the translation uses. The refusal names every blocking bundle, in name order. A migration
-/// that does not apply or check is left for the catalog to refuse; fail with an internal error
+/// the translation uses. The refusal names every blocking bundle, in name order, and the operator
+/// the first bundle of `live` that blocks it is blocked by: the one its translation fails across, or the first
+/// `revoke` from its owner, or else the migration's first operator. A migration that does not
+/// apply or check is left for the catalog to refuse; fail with an internal error
 /// when the migration model fails on it.
 pub(super) fn recheck(
     catalog: &Catalog,
@@ -860,7 +864,9 @@ pub(super) fn recheck(
         let served = match translations(c, &l.source, &compiled, &next).map_err(|b| internal(*b))? {
             Ok(served) => served,
             Err((query, u)) => {
-                operator.get_or_insert_with(|| u.operator.clone().unwrap_or_default());
+                if let Some(op) = &u.operator {
+                    operator.get_or_insert_with(|| op.clone());
+                }
                 lines.push(format!(
                     "bundle {} pins {pins}: `{query}` has no translation: {}",
                     c.name, u.reason
@@ -876,6 +882,15 @@ pub(super) fn recheck(
             Error::Rejected { reason } => reason,
             other => internal(Broken::Lacking(other)),
         })?;
+        if !lacks.is_empty() {
+            let revoking = file.operators.iter().find(|op| match &op.kind {
+                OperatorKind::Revoke(r) => r.from.text == *owner,
+                _ => false,
+            });
+            if let Some(op) = revoking.or(file.operators.first()) {
+                operator.get_or_insert_with(|| operator_text(text, op));
+            }
+        }
         lines.extend(
             lacks
                 .into_iter()
@@ -887,7 +902,12 @@ pub(super) fn recheck(
         return Ok(());
     }
     Err(RejectReason::SchemaRefused {
-        operator: operator.unwrap_or_default(),
+        operator: operator.unwrap_or_else(|| {
+            file.operators
+                .first()
+                .map(|op| operator_text(text, op))
+                .unwrap_or_default()
+        }),
         detail: lines.join("\n"),
     })
 }

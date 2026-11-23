@@ -10,7 +10,7 @@ reopen
 bundle web-1.0 pins 1 edition "2026-10"
   import auth
   query count () -> I64 = count(key s for s in sessions)
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "pending-dropped auth::users key id, held by web-1.0, has no image: the migration drops its relation or a field of it" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop field User.id", detail: "pending-dropped auth::users key id, held by web-1.0, has no image: the migration drops its relation or a field of it" } } }
   module auth
   rekey relation users key name
     carry Identity.user
