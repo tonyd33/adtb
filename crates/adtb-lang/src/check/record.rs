@@ -35,7 +35,7 @@ impl Checker<'_> {
         match r {
             RecordExpr::Fields(fs, _) => {
                 let want: Option<Vec<(String, Ty)>> = match expected {
-                    Some(Ty::Record(ws)) => Some(ws.clone()),
+                    Some(Ty::Record(ws)) => Some(ws.to_vec()),
                     _ => None,
                 };
                 let mut out: Vec<(String, Tm)> = Vec::new();
@@ -60,8 +60,7 @@ impl Checker<'_> {
                     out.push((name.text.clone(), o.tm));
                     tys.push((name.text.clone(), o.ty));
                 }
-                tys.sort_by(|a, b| a.0.cmp(&b.0));
-                let tm = self.b().record(out, Ty::Record(tys));
+                let tm = self.b().record(out, Ty::Record(Fields::new(tys)));
                 Ok(self.out(tm))
             }
             RecordExpr::With(base, fs, _) => {
@@ -99,7 +98,7 @@ impl Checker<'_> {
                         format!("the record has no field `{}`", n.text),
                     ));
                 }
-                let tm = self.b().record(out, Ty::Record(tys));
+                let tm = self.b().record(out, Ty::Record(Fields::new(tys)));
                 Ok(self.out(tm))
             }
             RecordExpr::Elided(s) => Err(diag(*s, "an elided record cannot be checked")),
@@ -261,9 +260,8 @@ impl Checker<'_> {
             tms.push((n.text.clone(), o.tm));
             tys.push((n.text.clone(), o.ty));
         }
-        tys.sort_by(|a, b| a.0.cmp(&b.0));
         let ty = Ty::Sum {
-            ctors: vec![(name.to_string(), tys)],
+            ctors: Ctors::new([(name.to_string(), Fields::new(tys))]),
             sel: None,
         };
         let tm = self.b().ctor(0, tms, ty);

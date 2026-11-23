@@ -1,4 +1,4 @@
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::types::{Base, Ctors, Fields, Ty};
 use adtb_reference::Value;
 use adtb_testkit::fixture::{Fixture, int, key, set, text};
 use adtb_testkit::inhabit::{Judge, Mismatch, inhabits};
@@ -211,13 +211,13 @@ fn a_declared_record_is_its_one_constructor() {
 #[test]
 fn an_anonymous_sum_holds_its_selected_constructors() {
     let f = fixture();
-    let ctors = vec![
+    let ctors = Ctors::new([
         (
             "A".to_string(),
-            vec![("x".to_string(), Ty::Base(Base::I64))],
+            Fields::new([("x".to_string(), Ty::Base(Base::I64))]),
         ),
-        ("B".to_string(), vec![]),
-    ];
+        ("B".to_string(), Fields::default()),
+    ]);
     let ty = Ty::Sum {
         ctors: ctors.clone(),
         sel: None,

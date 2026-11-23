@@ -357,7 +357,7 @@ pub fn path_steps(
         let fs = match fields.take() {
             Some(fs) => fs,
             None => match layout::repr(schema, &ty) {
-                Ty::Record(fs) => fs,
+                Ty::Record(fs) => fs.into(),
                 t => match layout::ctors(schema, &t).into_iter().next() {
                     Some((_, fs)) => fs,
                     None => return Err(reached(name).into()),

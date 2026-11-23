@@ -2146,7 +2146,7 @@ fn a_printed_family_target_reads_back_as_the_same_ids() {
         rel: RelRef::Declared(RelId(rel as u32)),
         ctors: KeyCtors::All,
     };
-    let result = Ty::Set(Box::new(Ty::Record(vec![
+    let result = Ty::Set(Box::new(Ty::Record(Fields::new([
         (
             "i".to_owned(),
             Ty::Data {
@@ -2156,7 +2156,7 @@ fn a_printed_family_target_reads_back_as_the_same_ids() {
             },
         ),
         ("k".to_owned(), key.clone()),
-    ])));
+    ]))));
     let params = vec![("u".to_owned(), key.clone())];
     let target = crate::signature::family_target(&schema, "web", "q", 1, &params, &result);
     assert_eq!(

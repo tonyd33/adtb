@@ -16,7 +16,7 @@ use adtb::{
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{ValueDef, build};
 use adtb_lang::span::FileId;
-use adtb_lang::types::{Base, KeyCtors, RelId, RelRef, Ty, TypeId};
+use adtb_lang::types::{Base, Ctors, Fields, KeyCtors, RelId, RelRef, Ty, TypeId};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api::query;
 use adtb_simkit::open::options;
@@ -808,7 +808,7 @@ fn an_out_of_range_constructor_in_a_parameter_type_panics_nothing() {
                 ctors: None,
             },
             Ty::Sum {
-                ctors: vec![("A".to_owned(), Vec::new())],
+                ctors: Ctors::new([("A".to_owned(), Fields::default())]),
                 sel: Some(vec![5]),
             },
         ];

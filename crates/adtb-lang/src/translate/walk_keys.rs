@@ -74,10 +74,9 @@ pub(super) fn relaid(
         let v = given.unwrap_or_else(|| Build::new(schema, out).field(x, f.clone()));
         parts.push((n.clone(), v));
     }
-    let mut ty: Vec<_> = fields
+    let ty: Fields = fields
         .iter()
         .map(|(_, n, t)| (n.clone(), t.clone()))
         .collect();
-    ty.sort_by(|a, b| a.0.cmp(&b.0));
     Build::new(schema, out).record(parts, Ty::Record(ty))
 }

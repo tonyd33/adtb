@@ -6,7 +6,7 @@ use std::fmt::Write;
 
 use adtb_lang::schema::{Committed, FieldDef, TypeDefKind};
 use adtb_lang::textual::{key_field_ty, key_names};
-use adtb_lang::types::{Base, RelId, Ty, TypeId};
+use adtb_lang::types::{Base, Ctors, Fields, RelId, Ty, TypeId};
 
 use crate::Error;
 use crate::names::{camel, ident};
@@ -265,12 +265,7 @@ impl<'s> Module<'s> {
         Ok(())
     }
 
-    fn anon_sum(
-        &mut self,
-        name: &str,
-        ctors: &[(String, Vec<(String, Ty)>)],
-        params: &[String],
-    ) -> Result<(), Error> {
+    fn anon_sum(&mut self, name: &str, ctors: &Ctors, params: &[String]) -> Result<(), Error> {
         self.declare(name, &format!("the anonymous sum `{name}`"))?;
         let mut variants = Vec::new();
         for (c, fs) in ctors {
@@ -392,7 +387,7 @@ impl<'s> Module<'s> {
         let key = match r.key.as_slice() {
             [k] => self.host_ty(&key_field_ty(schema, rel, k), &format!("{marker}Key"), &[])?,
             _ => {
-                let fs: Vec<(String, Ty)> = key_names(schema, rel)
+                let fs: Fields = key_names(schema, rel)
                     .into_iter()
                     .map(|k| {
                         let ty = key_field_ty(schema, rel, &k);

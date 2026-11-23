@@ -450,7 +450,7 @@ fn shape(schema: &Committed, ty: &Ty) -> Shape {
         Ty::Base(Base::Text) => Shape::Text,
         Ty::Base(_) | Ty::Unit => Shape::Scalar,
         Ty::Key { rel, .. } => Shape::Key(schema.declared(*rel)),
-        Ty::Record(fs) => Shape::Record(fs.clone(), false),
+        Ty::Record(fs) => Shape::Record(fs.to_vec(), false),
         Ty::Tag(inner) => {
             let names = match inner.as_ref() {
                 Ty::Data { def, .. } => schema
@@ -464,7 +464,14 @@ fn shape(schema: &Committed, ty: &Ty) -> Shape {
             };
             Shape::Names(names, None)
         }
-        Ty::Sum { ctors, sel } => sum_shape(Vec::new(), ctors.clone(), sel.clone()),
+        Ty::Sum { ctors, sel } => sum_shape(
+            Vec::new(),
+            ctors
+                .iter()
+                .map(|(c, fs)| (c.clone(), fs.to_vec()))
+                .collect(),
+            sel.clone(),
+        ),
         Ty::Data { def, args, ctors } => {
             let d = schema.ty(*def);
             let p = schema.prelude();

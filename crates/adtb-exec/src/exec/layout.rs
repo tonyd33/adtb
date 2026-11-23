@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::{key_field_ty, key_names};
-use adtb_lang::types::{Base, RelId, RelRef, Ty, TypeId};
+use adtb_lang::types::{Base, Fields, RelId, RelRef, Ty, TypeId};
 
 use crate::batch;
 use crate::heap::{self, FieldType};
@@ -131,7 +131,7 @@ pub fn ctor_fields(schema: &Schema, ty: &Ty) -> Vec<Vec<(String, Ty)>> {
                 })
                 .collect()
         }
-        Ty::Sum { ctors, .. } => ctors.into_iter().map(|(_, fs)| fs).collect(),
+        Ty::Sum { ctors, .. } => ctors.iter().map(|(_, fs)| fs.to_vec()).collect(),
         t => panic!("{t:?} is not a sum"),
     }
 }
@@ -153,7 +153,7 @@ pub fn is_record(schema: &Schema, ty: &Ty) -> bool {
 pub fn key_value_ty(schema: &Schema, rel: RelRef) -> Ty {
     let rel = match rel {
         RelRef::Declared(rel) => rel,
-        RelRef::Ahead(_) => return Ty::Record(Vec::new()),
+        RelRef::Ahead(_) => return Ty::Record(Fields::default()),
     };
     match schema.relation(rel).key.as_slice() {
         [k] => key_field_ty(schema, rel, k),

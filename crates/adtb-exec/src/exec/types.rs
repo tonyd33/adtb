@@ -38,7 +38,7 @@ pub fn ctors(schema: &Schema, ty: &Ty) -> Option<Vec<Vec<(String, Ty)>>> {
                     .collect(),
             )
         }
-        Ty::Sum { ctors, .. } => Some(ctors.into_iter().map(|(_, fs)| fs).collect()),
+        Ty::Sum { ctors, .. } => Some(ctors.iter().map(|(_, fs)| fs.to_vec()).collect()),
         Ty::Tag(t) => Some(ctors(schema, &t)?.into_iter().map(|_| Vec::new()).collect()),
         _ => None,
     }

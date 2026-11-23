@@ -181,11 +181,6 @@ fn binding_refusals() -> Vec<(&'static str, Build)> {
                 (r, Vec::new(), r)
             },
         ),
-        ("record type fields are not sorted by name", |_, terms| {
-            let ty = set(Ty::Record(vec![("b".into(), int()), ("a".into(), int())]));
-            let e = terms.add(Kind::EmptySet, ty);
-            (e, Vec::new(), e)
-        }),
         ("the relation is `Set I64`, not `Set T`", |fx, terms| {
             let r = terms.add(Kind::Rel(fx.ts, None), set(int()));
             (r, Vec::new(), r)
@@ -247,7 +242,7 @@ fn data_refusals() -> Vec<(&'static str, Build)> {
     vec![
         ("the record's fields are not sorted by name", |_, terms| {
             let c = one(terms);
-            let ty = Ty::Record(vec![("a".into(), int()), ("b".into(), int())]);
+            let ty = Ty::Record(Fields::new([("a".into(), int()), ("b".into(), int())]));
             let t = terms.add(Kind::Record(vec![("b".into(), c), ("a".into(), c)]), ty);
             (t, Vec::new(), t)
         }),
@@ -257,7 +252,7 @@ fn data_refusals() -> Vec<(&'static str, Build)> {
         }),
         ("the record's labels are not its type's", |_, terms| {
             let c = one(terms);
-            let ty = Ty::Record(vec![("b".into(), int())]);
+            let ty = Ty::Record(Fields::new([("b".into(), int())]));
             let t = terms.add(Kind::Record(vec![("a".into(), c)]), ty);
             (t, Vec::new(), t)
         }),
@@ -639,10 +634,10 @@ fn group_refusals() -> Vec<(&'static str, Build)> {
                 source: c,
                 by: c,
             };
-            let ty = set(Ty::Record(vec![
+            let ty = set(Ty::Record(Fields::new([
                 ("key".into(), int()),
                 ("rows".into(), Ty::NonEmpty(Box::new(int()))),
-            ]));
+            ])));
             let t = terms.add(group, ty);
             (t, Vec::new(), t)
         }),
@@ -657,10 +652,10 @@ fn group_refusals() -> Vec<(&'static str, Build)> {
                     source,
                     by: c,
                 };
-                let ty = set(Ty::Record(vec![
+                let ty = set(Ty::Record(Fields::new([
                     ("key".into(), int()),
                     ("rows".into(), Ty::NonEmpty(Box::new(int()))),
-                ]));
+                ])));
                 let t = terms.add(group, ty);
                 (t, Vec::new(), t)
             },
@@ -691,10 +686,10 @@ fn group_refusals() -> Vec<(&'static str, Build)> {
                     source,
                     by: c,
                 };
-                let ty = Ty::NonEmpty(Box::new(Ty::Record(vec![
+                let ty = Ty::NonEmpty(Box::new(Ty::Record(Fields::new([
                     ("key".into(), int()),
                     ("rows".into(), Ty::NonEmpty(Box::new(int()))),
-                ])));
+                ]))));
                 let t = terms.add(group, ty);
                 (t, Vec::new(), t)
             },
@@ -706,10 +701,10 @@ fn group_refusals() -> Vec<(&'static str, Build)> {
                 let by = word(terms);
                 let source = terms.add(Kind::EmptySet, set(int()));
                 let group = Kind::Group { var: x, source, by };
-                let ty = set(Ty::Record(vec![
+                let ty = set(Ty::Record(Fields::new([
                     ("key".into(), int()),
                     ("rows".into(), Ty::NonEmpty(Box::new(int()))),
-                ]));
+                ])));
                 let t = terms.add(group, ty);
                 (t, Vec::new(), t)
             },
@@ -723,10 +718,10 @@ fn group_refusals() -> Vec<(&'static str, Build)> {
                 source,
                 by: c,
             };
-            let ty = set(Ty::Record(vec![
+            let ty = set(Ty::Record(Fields::new([
                 ("key".into(), int()),
                 ("rows".into(), Ty::NonEmpty(Box::new(text()))),
-            ]));
+            ])));
             let t = terms.add(group, ty);
             (t, Vec::new(), t)
         }),
@@ -767,7 +762,7 @@ fn shape_refusals() -> Vec<(&'static str, Build)> {
         ),
         ("the sum has no constructor 1", |_, terms| {
             let sum = Ty::Sum {
-                ctors: vec![("P".into(), vec![("a".into(), int())])],
+                ctors: Ctors::new([("P".into(), Fields::new([("a".into(), int())]))]),
                 sel: None,
             };
             let ctor = Kind::Ctor {
@@ -779,7 +774,7 @@ fn shape_refusals() -> Vec<(&'static str, Build)> {
         }),
         ("field `a` is `Text`, not a subtype of `I64`", |_, terms| {
             let sum = Ty::Sum {
-                ctors: vec![("P".into(), vec![("a".into(), int())])],
+                ctors: Ctors::new([("P".into(), Fields::new([("a".into(), int())]))]),
                 sel: None,
             };
             let w = word(terms);
@@ -996,7 +991,10 @@ fn operand_refusals() -> Vec<(&'static str, Build)> {
         }),
         ("constructor 0 is not one of the node's type", |_, terms| {
             let sum = Ty::Sum {
-                ctors: vec![("A".into(), Vec::new()), ("B".into(), Vec::new())],
+                ctors: Ctors::new([
+                    ("A".into(), Fields::default()),
+                    ("B".into(), Fields::default()),
+                ]),
                 sel: Some(vec![1]),
             };
             let ctor = Kind::Ctor {
@@ -1221,7 +1219,7 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         }
     }
     assert_eq!(Vec::<String>::new(), differ);
-    assert_eq!(87, cases.len());
+    assert_eq!(86, cases.len());
 }
 
 /// Returns each primitive with the number of operands it takes.
@@ -1456,10 +1454,10 @@ fn validate_accepts_a_grouping_at_a_wider_key_than_its_by() {
     let source = terms.add(Kind::EmptySet, set(int()));
     let x = terms.var("x", int());
     let group = Kind::Group { var: x, source, by };
-    let ty = set(Ty::Record(vec![
+    let ty = set(Ty::Record(Fields::new([
         ("key".into(), key(fx.ts, None)),
         ("rows".into(), Ty::NonEmpty(Box::new(int()))),
-    ]));
+    ])));
     let t = terms.add(group, ty);
     assert_eq!(
         Ok(()),

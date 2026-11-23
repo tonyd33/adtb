@@ -4,7 +4,7 @@ use adtb_lang::check::check_schema;
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{Committed, build};
 use adtb_lang::span::FileId;
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::types::{Base, Ctors, Fields, Ty};
 
 use super::valid;
 use crate::exec::{F32, F64, Val};
@@ -113,7 +113,7 @@ fn exact_fields_constructor_restrictions_and_nonempty_sets_are_enforced() {
     assert!(valid(&schema, &option, &Val::some(Val::Int(127))));
     assert!(!valid(&schema, &option, &Val::some(Val::Int(128))));
     assert!(!valid(&schema, &option, &Val::ctor(1, vec![])));
-    let record = Ty::Record(vec![("a".into(), option), ("b".into(), boolean)]);
+    let record = Ty::Record(Fields::new([("a".into(), option), ("b".into(), boolean)]));
     assert!(valid(
         &schema,
         &record,
@@ -188,10 +188,13 @@ fn shared_value_dags_are_validated_without_expanding_every_path() {
 fn anonymous_sum_restrictions_and_all_fields_are_checked() {
     let schema = crate::catalog::engine_schema();
     let ty = Ty::Sum {
-        ctors: vec![
-            ("A".into(), vec![]),
-            ("B".into(), vec![("number".into(), Ty::Base(Base::I8))]),
-        ],
+        ctors: Ctors::new([
+            ("A".into(), Fields::default()),
+            (
+                "B".into(),
+                Fields::new([("number".into(), Ty::Base(Base::I8))]),
+            ),
+        ]),
         sel: Some(vec![1]),
     };
     assert!(valid(&schema, &ty, &Val::ctor(1, vec![Val::Int(127)])));

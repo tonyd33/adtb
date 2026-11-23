@@ -27,7 +27,7 @@ fn ctors_of(schema: &Schema, ty: &Ty) -> Vec<(String, Vec<(String, Ty)>)> {
                 })
                 .collect()
         }
-        Ty::Sum { ctors, .. } => ctors,
+        Ty::Sum { ctors, .. } => ctors.into_iter().map(|(c, fs)| (c, fs.into())).collect(),
         Ty::Tag(t) => ctors_of(schema, &t)
             .into_iter()
             .map(|(n, _)| (n, Vec::new()))

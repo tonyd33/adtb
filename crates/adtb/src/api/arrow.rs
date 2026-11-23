@@ -156,7 +156,7 @@ fn columns(schema: &Schema, elem: &Ty) -> Result<(Vec<Field>, exec::Rows), Error
         })
     };
     let fields: Option<Vec<(String, Ty)>> = match (&t, ctor_set(schema, &t).as_slice()) {
-        (Ty::Record(fs), _) => Some(fs.clone()),
+        (Ty::Record(fs), _) => Some(fs.to_vec()),
         (t, _) if is_record(schema, t) => Some(layout::ctors(schema, t).swap_remove(0).1),
         (Ty::Data { .. }, &[c]) => Some(layout::ctors(schema, &t).swap_remove(c as usize).1),
         _ => None,

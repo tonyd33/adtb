@@ -844,7 +844,7 @@ impl Validator<'_> {
         self.within("the grouping's element", se, vt)?;
         if let Ty::Set(el) = ty
             && let Ty::Record(fs) = el.as_ref()
-            && let [(k, key), (r, Ty::NonEmpty(rows))] = fs.as_slice()
+            && let [(k, key), (r, Ty::NonEmpty(rows))] = &fs[..]
             && k == "key"
             && r == "rows"
         {
@@ -943,7 +943,7 @@ impl Validator<'_> {
             "the record's fields are not sorted by name".into()
         })?;
         let want = match ty {
-            Ty::Record(want) => want.as_slice(),
+            Ty::Record(want) => &want[..],
             Ty::Unit => &[],
             _ => return Err("a record is not typed by a record".into()),
         };
@@ -1053,7 +1053,7 @@ impl Validator<'_> {
                     .get(ctor as usize)
                     .ok_or_else(|| format!("the sum has no constructor {ctor}"))?
                     .1
-                    .clone()
+                    .to_vec()
             }
             Ty::Tag(inner) => {
                 let Ty::Data { def, .. } = inner.as_ref() else {

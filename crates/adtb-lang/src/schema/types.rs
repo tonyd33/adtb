@@ -381,9 +381,8 @@ impl Resolver<'_> {
                             .to_string(),
                     ));
                 }
-                let mut out = self.fields(fs, fns, ordered_args)?;
-                out.sort_by(|a, b| a.0.cmp(&b.0));
-                Ok(Ty::Record(out))
+                let out = self.fields(fs, fns, ordered_args)?;
+                Ok(Ty::Record(Fields::new(out)))
             }
             ast::TypeKind::Sum(cs) => self.sum(t, cs, fns, ordered_args),
             ast::TypeKind::Key(_, r) => self.key(r),
@@ -429,7 +428,7 @@ impl Resolver<'_> {
                 "a declared field's type is a named type; declare a sum type for it".to_string(),
             ));
         }
-        let mut out: Vec<(String, Vec<(String, Ty)>)> = Vec::new();
+        let mut out: Vec<(String, Fields)> = Vec::new();
         for c in cs {
             if out.iter().any(|(n, _)| *n == c.name.text) {
                 return Err(Diag::new(
@@ -437,14 +436,11 @@ impl Resolver<'_> {
                     format!("constructor `{}` is written twice", c.name.text),
                 ));
             }
-            let mut fields =
-                self.fields(c.record.as_deref().unwrap_or_default(), fns, ordered_args)?;
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
-            out.push((c.name.text.clone(), fields));
+            let fields = self.fields(c.record.as_deref().unwrap_or_default(), fns, ordered_args)?;
+            out.push((c.name.text.clone(), Fields::new(fields)));
         }
-        out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(Ty::Sum {
-            ctors: out,
+            ctors: Ctors::new(out),
             sel: None,
         })
     }

@@ -234,11 +234,10 @@ impl Builder<'_> {
                 .unwrap_or(Ty::Unit);
             fields.push((f.name.text.clone(), ty));
         }
-        fields.sort_by(|x, y| x.0.cmp(&y.0));
         let def = &mut self.schema.defs_mut().aggregates[i];
         def.params = params;
         def.result = result;
-        def.state = Ty::Record(fields);
+        def.state = Ty::Record(Fields::new(fields));
     }
 
     fn fn_signature(&mut self, file: FileId, module: ModuleId, id: FnId, f: &ast::FnDecl) {

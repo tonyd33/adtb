@@ -375,7 +375,7 @@ impl Checker<'_> {
         let ty = self.resolve_type(&t.ty, FnTypes::Refused(FN_RELATION))?;
         let (row, candidates): (TempRow, Vec<String>) = match &ty {
             Ty::Record(fs) => {
-                let mut fields = fs.clone();
+                let mut fields = fs.to_vec();
                 if let ast::TypeKind::Record(written) = &t.ty.kind {
                     fields
                         .sort_by_key(|(name, _)| written.iter().position(|f| f.name.text == *name));
@@ -488,12 +488,11 @@ impl Checker<'_> {
                 format!("`{}` is not a constructor of `catalog::Setting`", name.text),
             )
         })?;
-        let mut fields: Vec<(String, Ty)> = setting.ctors()[c as usize]
+        let fields: Fields = setting.ctors()[c as usize]
             .fields
             .iter()
             .map(|f| (f.name.clone(), f.ty.clone()))
             .collect();
-        fields.sort_by(|a, b| a.0.cmp(&b.0));
         let value = self.check(value, &Ty::Record(fields))?.tm;
         Ok(Command::SetSetting { setting: c, value })
     }
@@ -797,7 +796,7 @@ fn renumbers(from: &Ty, to: &Ty) -> bool {
     }
 }
 
-fn index_in(ctors: &[(String, Vec<(String, Ty)>)], name: &str) -> u32 {
+fn index_in(ctors: &Ctors, name: &str) -> u32 {
     ctors
         .iter()
         .position(|(c, _)| c == name)

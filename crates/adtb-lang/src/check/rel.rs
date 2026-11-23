@@ -128,7 +128,7 @@ pub(crate) fn key_value_ty(schema: &Schema, rel: RelId) -> Result<Ty, String> {
                 let ty = field_ty(&k)?;
                 fs.push((k, ty));
             }
-            Ok(Ty::Record(fs))
+            Ok(Ty::Record(Fields::new(fs)))
         }
     }
 }

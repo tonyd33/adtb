@@ -324,11 +324,7 @@ impl Positions {
     /// none.
     fn ty(&self, t: &Ty) -> Option<Ty> {
         let boxed = |x: &Ty| self.ty(x).map(Box::new);
-        let fields = |fs: &[(String, Ty)]| {
-            fs.iter()
-                .map(|(n, t)| Some((n.clone(), self.ty(t)?)))
-                .collect::<Option<Vec<_>>>()
-        };
+        let fields = |fs: &crate::types::Fields| fs.try_map(|t| self.ty(t).ok_or(())).ok();
         Some(match t {
             Ty::Data { def, args, ctors } => Ty::Data {
                 def: *self.types.get(def)?,
@@ -353,10 +349,7 @@ impl Positions {
             Ty::Fn(x, y) => Ty::Fn(boxed(x)?, boxed(y)?),
             Ty::Record(fs) => Ty::Record(fields(fs)?),
             Ty::Sum { ctors, sel } => Ty::Sum {
-                ctors: ctors
-                    .iter()
-                    .map(|(n, fs)| Some((n.clone(), fields(fs)?)))
-                    .collect::<Option<_>>()?,
+                ctors: ctors.try_map(|t| self.ty(t).ok_or(())).ok()?,
                 sel: sel.clone(),
             },
             Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => t.clone(),

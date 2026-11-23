@@ -10,7 +10,7 @@ use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Committed, Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::textual::*;
-use adtb_lang::types::{Base, RelId, Ty};
+use adtb_lang::types::{Base, Fields, RelId, Ty};
 use adtb_testkit::Rng;
 use adtb_testkit::draw::{ZONES, draw};
 use adtb_testkit::refused_as;
@@ -227,7 +227,7 @@ fn ty(schema: &Schema, text: &str) -> Ty {
 /// Returns `{ f: I64 -> I64 }`, a type no text writes.
 fn fn_field() -> Ty {
     let i64 = || Box::new(Ty::Base(Base::I64));
-    Ty::Record(vec![("f".to_string(), Ty::Fn(i64(), i64()))])
+    Ty::Record(Fields::new([("f".to_string(), Ty::Fn(i64(), i64()))]))
 }
 
 fn form(schema: &Schema, text: &str) -> Form {

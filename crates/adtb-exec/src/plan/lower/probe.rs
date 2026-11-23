@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use adtb_lang::kernel::{Kind, PathStep, Prim, Tm, Var};
 use adtb_lang::textual::key_names;
-use adtb_lang::types::{CtorSet, RelId, RelRef, Ty};
+use adtb_lang::types::{CtorSet, Fields, RelId, RelRef, Ty};
 
 use super::{
     Access, BuildKey, Fixed, Fixes, HEAP_ROWS, IndexProbe, Limit, Movable, Moved, PROBE_COST,
@@ -76,7 +76,7 @@ impl Planner<'_> {
                 vec![(f.clone(), self.b().prim(Prim::KeyValue, vec![k], ty))]
             }
             fs => {
-                let tys: Vec<(String, Ty)> = key_names(self.schema, rel)
+                let tys: Fields = key_names(self.schema, rel)
                     .into_iter()
                     .map(|f| {
                         let ty = field_ty(&f);

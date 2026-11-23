@@ -7,7 +7,7 @@ use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{self, Agg, Kind, PathStep, Terms, Tm, Valid, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{CtorSet, KeyCtors, RelId, Ty};
+use adtb_lang::types::{CtorSet, Fields, KeyCtors, RelId, Ty};
 
 use super::catalog::{Catalog, IndexDesc};
 use super::terms::Facts;
@@ -1035,10 +1035,10 @@ impl Planner<'_> {
         let one = self.b().singleton(one, set_ty.clone());
         let picked = self.guarded(&filters, one, &set_ty);
         let picked = self.b().for_(y, src, picked, set_ty.clone());
-        let group_ty = Ty::Record(vec![
+        let group_ty = Ty::Record(Fields::new([
             ("key".into(), self.ty(by)),
             ("rows".into(), Ty::NonEmpty(Box::new(row_ty))),
-        ]);
+        ]));
         let sink = Sink::Group {
             var: y,
             by: Eval::Expr(by),

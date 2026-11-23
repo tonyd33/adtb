@@ -530,7 +530,7 @@ fn ordered_fields_do_not_reuse_another_instantiation_or_schema_state() {
     assert_eq!((true, true), stage(" ordered"));
     assert_eq!((false, false), stage(""));
     let schema = build_src(&[&module("type Stage ordered = A | B")]).unwrap();
-    assert!(!is_ordered(&schema, &Ty::Record(vec![])));
+    assert!(!is_ordered(&schema, &Ty::Record(Fields::new([]))));
     assert!(!is_ordered(&schema, &Ty::Unit));
 }
 
@@ -1469,10 +1469,10 @@ relation qs : Q (Key later) key k",
         ),
         (
             "nested record",
-            Ty::Record(vec![(
+            Ty::Record(Fields::new([(
                 "a".to_string(),
-                Ty::Record(vec![("b".to_string(), later.clone())]),
-            )]),
+                Ty::Record(Fields::new([("b".to_string(), later.clone())])),
+            )])),
             refused.clone(),
         ),
         (

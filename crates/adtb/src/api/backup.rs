@@ -3,7 +3,7 @@
 use adtb_lang::check::Command;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::print;
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::types::{Base, Fields, Ty};
 
 use crate::catalog::Dormant;
 use crate::exec::{self, Val};
@@ -96,7 +96,7 @@ pub(super) fn refused(e: BackupError) -> Error {
 }
 
 fn manifest_row(schema: &Schema, manifest: &str) -> DynRows {
-    let ty = Ty::Record(vec![("manifest".into(), Ty::Base(Base::Text))]);
+    let ty = Ty::Record(Fields::new([("manifest".into(), Ty::Base(Base::Text))]));
     let row = Val::record(vec![Val::text(manifest)]);
     rows(schema, ty, vec![row])
 }

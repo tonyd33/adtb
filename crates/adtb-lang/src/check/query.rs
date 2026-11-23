@@ -133,8 +133,7 @@ impl Checker<'_> {
             fields.push((l.clone(), t));
             tys.push((l.clone(), self.terms.var_info(*v).ty.clone()));
         }
-        tys.sort_by(|a, b| a.0.cmp(&b.0));
-        let ty = Ty::Record(tys);
+        let ty = Ty::Record(Fields::new(tys));
         let tm = self.b().record(fields, ty.clone());
         (labels, tm, ty)
     }
@@ -178,10 +177,10 @@ impl Checker<'_> {
             let lam = self.b().lam(row, of_row, fn_ty.clone());
             let value_fn = self.fresh(fn_ty);
             let rows_ty = Ty::NonEmpty(Box::new(rec_ty));
-            let zeta_ty = Ty::Record(vec![
+            let zeta_ty = Ty::Record(Fields::new([
                 ("key".into(), key.ty),
                 ("rows".into(), rows_ty.clone()),
-            ]);
+            ]));
             let group_tm = self.b().group(xi, b_tm, by);
             self.scope.pop();
             self.scope.push();
@@ -498,10 +497,10 @@ impl Checker<'_> {
             Ty::Data { def, args, .. } if *def == self.schema.prelude().option() => {
                 match args.as_slice() {
                     [Ty::Record(fs)] => fs.clone(),
-                    _ => Vec::new(),
+                    _ => Fields::default(),
                 }
             }
-            _ => Vec::new(),
+            _ => Fields::default(),
         };
         if fields.len() != keys.len() {
             return Err(diag(

@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use adtb_lang::kernel::{Agg, Kind, Tm, Var};
-use adtb_lang::types::Ty;
+use adtb_lang::types::{Fields, Ty};
 
 use super::{Planner, QueryCx, SET_ROWS, Scope, prepend};
 use crate::plan::{Broken, Chain, Error, GroupAgg, Sink, Step};
@@ -67,8 +67,7 @@ impl Planner<'_> {
             if rows_used {
                 fields.push(("rows".into(), field_ty("rows")?));
             }
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
-            let rec_ty = Ty::Record(fields);
+            let rec_ty = Ty::Record(Fields::new(fields));
             let g2 = self.fresh("%group", rec_ty.clone());
             let g2_tm = self.var_tm(g2);
             let mut map: HashMap<Tm, Tm> = HashMap::new();

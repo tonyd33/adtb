@@ -73,8 +73,6 @@ fn key_union(schema: &Schema, def: TypeId, a: &KeyCtors, b: &KeyCtors) -> KeyCto
     }
 }
 
-type Ctors = [(String, Vec<(String, Ty)>)];
-
 /// Returns the names of the constructors `sel` selects, every one for `None`.
 pub fn sum_selected<'c>(ctors: &'c Ctors, sel: &Option<CtorSet>) -> Vec<&'c str> {
     match sel {
@@ -99,19 +97,19 @@ fn equiv(schema: &Schema, a: &Ty, b: &Ty) -> bool {
     subtype(schema, a, b) && subtype(schema, b, a)
 }
 
-fn same_fields(schema: &Schema, a: &[(String, Ty)], b: &[(String, Ty)]) -> bool {
+fn same_fields(schema: &Schema, a: &Fields, b: &Fields) -> bool {
     a.len() == b.len()
         && a.iter()
-            .all(|(n, t)| b.iter().any(|(m, u)| n == m && equiv(schema, t, u)))
+            .zip(b)
+            .all(|((n, t), (m, u))| n == m && equiv(schema, t, u))
 }
 
-/// Returns whether two anonymous sums have the same constructors, in any order, with equivalent fields.
+/// Returns whether two anonymous sums have the same constructors with equivalent fields.
 fn same_ctors(schema: &Schema, a: &Ctors, b: &Ctors) -> bool {
     a.len() == b.len()
-        && a.iter().all(|(c, fs)| {
-            b.iter()
-                .any(|(d, gs)| c == d && same_fields(schema, fs, gs))
-        })
+        && a.iter()
+            .zip(b)
+            .all(|((c, fs), (d, gs))| c == d && same_fields(schema, fs, gs))
 }
 
 /// Returns why no value has type `ty`: a function type inside a set element, a field or a type
@@ -269,7 +267,7 @@ pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
             let mut names = sum_selected(x, s1);
             names.extend(sum_selected(y, s2));
             Some(Ty::Sum {
-                ctors: x.to_vec(),
+                ctors: x.clone(),
                 sel: sum_sel(x, &names),
             })
         }
@@ -284,7 +282,7 @@ pub fn join_adhoc(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
     }
     match (a, b) {
         (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 }) => {
-            let mut out = x.clone();
+            let mut out = x.to_vec();
             for (c, fs) in y {
                 match out.iter().find(|(d, _)| d == c) {
                     Some((_, gs)) if !same_fields(schema, gs, fs) => return None,
@@ -292,7 +290,7 @@ pub fn join_adhoc(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
                     None => out.push((c.clone(), fs.clone())),
                 }
             }
-            out.sort_by(|a, b| a.0.cmp(&b.0));
+            let out = Ctors::new(out);
             let mut names = sum_selected(x, s1);
             names.extend(sum_selected(y, s2));
             let sel = sum_sel(&out, &names);
@@ -316,14 +314,14 @@ pub fn elem(ty: &Ty) -> Option<&Ty> {
 /// Every field a value of `ty` has, in field-access order: header fields, then the fields every constructor shares.
 pub fn fields(schema: &Schema, ty: &Ty) -> Vec<(String, Ty)> {
     match ty {
-        Ty::Record(fs) => fs.clone(),
+        Ty::Record(fs) => fs.to_vec(),
         Ty::Sum { ctors, sel } => {
             let names = sum_selected(ctors, sel);
             let mut chosen = ctors.iter().filter(|(c, _)| names.contains(&c.as_str()));
             let Some((_, first)) = chosen.next() else {
                 return Vec::new();
             };
-            let rest: Vec<&Vec<(String, Ty)>> = chosen.map(|(_, fs)| fs).collect();
+            let rest: Vec<&Fields> = chosen.map(|(_, fs)| fs).collect();
             first
                 .iter()
                 .filter(|(n, t)| {

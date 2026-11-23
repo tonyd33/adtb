@@ -10,7 +10,7 @@ use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Committed, Schema};
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{Base, CtorSet, DenialIdx, KeyCtors, RelId, RelRef, Ty};
+use adtb_lang::types::{Base, CtorSet, DenialIdx, Fields, KeyCtors, RelId, RelRef, Ty};
 
 use crate::catalog::codec::{Codec, SettingRow};
 use crate::catalog::{Rot, engine_relation};
@@ -213,7 +213,7 @@ fn export_csv<'v>(
 /// constructor.
 fn columns(schema: &Schema, ty: &Ty) -> Option<Vec<(String, Ty)>> {
     match ty {
-        Ty::Record(fields) => Some(fields.clone()),
+        Ty::Record(fields) => Some(fields.to_vec()),
         Ty::Data { def, args, .. } => match schema.ty(*def).ctors() {
             [only] => Some(
                 schema
@@ -385,10 +385,10 @@ impl<R: Runtime> Engine<R> {
                 if let Some(holds) = p.issuer.as_ref().and_then(|i| i.holds.as_ref()) {
                     node.hide(holds.monitor, holds.schema);
                 }
-                let ty = Ty::Record(vec![
+                let ty = Ty::Record(Fields::new([
                     ("document".into(), Ty::Base(Base::Text)),
                     ("text".into(), Ty::Base(Base::Text)),
-                ]);
+                ]));
                 let mut shown = node.text();
                 for a in &extra {
                     shown.push_str(&format!("{} {}\n", a.name, a.line));
@@ -420,7 +420,7 @@ impl<R: Runtime> Engine<R> {
             }
             Command::CancelCall(key) => self.cancel_call(tx, p, *key, local, bounds),
             Command::PrintSchema => {
-                let ty = Ty::Record(vec![("text".into(), Ty::Base(Base::Text))]);
+                let ty = Ty::Record(Fields::new([("text".into(), Ty::Base(Base::Text))]));
                 let row = Val::record(vec![Val::text(&self.printed_schema()?)]);
                 Ok(rows(schema, ty, vec![row]))
             }
@@ -510,13 +510,13 @@ impl<R: Runtime> Engine<R> {
         }
         calls.stop(id);
         drop(calls);
-        let ty = Ty::Record(vec![(
+        let ty = Ty::Record(Fields::new([(
             "call".into(),
             Ty::Key {
                 rel: RelRef::Declared(engine_relation(schema, engine_rel::CALLS)),
                 ctors: KeyCtors::All,
             },
-        )]);
+        )]));
         let stopped = session.map(|_| Val::record(vec![Val::Int(id)]));
         Ok(rows(schema, ty, stopped.into_iter().collect()))
     }
@@ -562,10 +562,10 @@ impl<R: Runtime> Engine<R> {
                     })
                 }
             })?;
-        let ty = Ty::Record(vec![
+        let ty = Ty::Record(Fields::new([
             ("path".into(), Ty::Base(Base::Text)),
             ("rows".into(), Ty::Base(Base::I64)),
-        ]);
+        ]));
         let count = i64::try_from(found.len()).unwrap_or(i64::MAX);
         let row = Val::record(vec![Val::text(path), Val::Int(count)]);
         Ok(rows(schema, ty, vec![row]))
@@ -721,7 +721,7 @@ impl<R: Runtime> Engine<R> {
         waiting: HoldWait<'_>,
     ) -> Result<DynRows, write::Error> {
         let ctors = engine_relation(schema, engine_rel::CONSTRUCTORS);
-        let ty = Ty::Record(vec![
+        let ty = Ty::Record(Fields::new([
             (
                 "ctor".into(),
                 Ty::Key {
@@ -731,7 +731,7 @@ impl<R: Runtime> Engine<R> {
             ),
             ("freed".into(), Ty::Base(Base::Text)),
             ("removed".into(), Ty::Base(Base::I64)),
-        ]);
+        ]));
         let done = self.db.vacuum(rel, waiting)?;
         let chunks = done.report.chunks;
         let out = (done.ctors.into_iter())

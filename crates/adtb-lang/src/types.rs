@@ -364,6 +364,140 @@ pub enum KeyForm {
     Entries,
 }
 
+/// The fields of an anonymous record or of a constructor of an anonymous sum, in name order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Fields(Vec<(String, Ty)>);
+
+impl Fields {
+    /// Returns `fields` in name order.
+    pub fn new(fields: impl IntoIterator<Item = (String, Ty)>) -> Fields {
+        let mut fields: Vec<(String, Ty)> = fields.into_iter().collect();
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        Fields(fields)
+    }
+
+    /// Returns the fields with each type mapped by `f`, in the same order.
+    #[must_use]
+    pub fn map(&self, mut f: impl FnMut(&Ty) -> Ty) -> Fields {
+        Fields(self.0.iter().map(|(n, t)| (n.clone(), f(t))).collect())
+    }
+
+    /// Returns the fields with each type mapped by `f`, failing as the first failing type fails.
+    pub fn try_map<E>(&self, mut f: impl FnMut(&Ty) -> Result<Ty, E>) -> Result<Fields, E> {
+        let out = self
+            .0
+            .iter()
+            .map(|(n, t)| Ok((n.clone(), f(t)?)))
+            .collect::<Result<_, E>>()?;
+        Ok(Fields(out))
+    }
+}
+
+impl std::ops::Deref for Fields {
+    type Target = [(String, Ty)];
+
+    fn deref(&self) -> &[(String, Ty)] {
+        &self.0
+    }
+}
+
+impl FromIterator<(String, Ty)> for Fields {
+    fn from_iter<I: IntoIterator<Item = (String, Ty)>>(fields: I) -> Fields {
+        Fields::new(fields)
+    }
+}
+
+impl IntoIterator for Fields {
+    type Item = (String, Ty);
+    type IntoIter = std::vec::IntoIter<(String, Ty)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Fields {
+    type Item = &'a (String, Ty);
+    type IntoIter = std::slice::Iter<'a, (String, Ty)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+/// The constructors of an anonymous sum, in name order, each with its fields.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Ctors(Vec<(String, Fields)>);
+
+impl Ctors {
+    /// Returns `ctors` in name order.
+    pub fn new(ctors: impl IntoIterator<Item = (String, Fields)>) -> Ctors {
+        let mut ctors: Vec<(String, Fields)> = ctors.into_iter().collect();
+        ctors.sort_by(|a, b| a.0.cmp(&b.0));
+        Ctors(ctors)
+    }
+
+    /// Returns the constructors with each field type mapped by `f`, in the same order.
+    #[must_use]
+    pub fn map(&self, mut f: impl FnMut(&Ty) -> Ty) -> Ctors {
+        Ctors(
+            self.0
+                .iter()
+                .map(|(c, fs)| (c.clone(), fs.map(&mut f)))
+                .collect(),
+        )
+    }
+
+    /// Returns the constructors with each field type mapped by `f`, failing as the first failing
+    /// type fails.
+    pub fn try_map<E>(&self, mut f: impl FnMut(&Ty) -> Result<Ty, E>) -> Result<Ctors, E> {
+        let out = self
+            .0
+            .iter()
+            .map(|(c, fs)| Ok((c.clone(), fs.try_map(&mut f)?)))
+            .collect::<Result<_, E>>()?;
+        Ok(Ctors(out))
+    }
+}
+
+impl std::ops::Deref for Ctors {
+    type Target = [(String, Fields)];
+
+    fn deref(&self) -> &[(String, Fields)] {
+        &self.0
+    }
+}
+
+impl IntoIterator for Ctors {
+    type Item = (String, Fields);
+    type IntoIter = std::vec::IntoIter<(String, Fields)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl From<Fields> for Vec<(String, Ty)> {
+    fn from(fields: Fields) -> Vec<(String, Ty)> {
+        fields.0
+    }
+}
+
+impl FromIterator<(String, Fields)> for Ctors {
+    fn from_iter<I: IntoIterator<Item = (String, Fields)>>(ctors: I) -> Ctors {
+        Ctors::new(ctors)
+    }
+}
+
+impl<'a> IntoIterator for &'a Ctors {
+    type Item = &'a (String, Fields);
+    type IntoIter = std::slice::Iter<'a, (String, Fields)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
     Base(Base),
@@ -384,11 +518,10 @@ pub enum Ty {
     NonEmpty(Box<Ty>),
     Group(Box<Ty>, Box<Ty>),
     Tag(Box<Ty>),
-    /// Fields sorted by name.
-    Record(Vec<(String, Ty)>),
-    /// An anonymous sum: constructors sorted by name, each with its fields sorted by name; `sel` restricts it to a constructor-set row type.
+    Record(Fields),
+    /// An anonymous sum; `sel` restricts it to a constructor-set row type.
     Sum {
-        ctors: Vec<(String, Vec<(String, Ty)>)>,
+        ctors: Ctors,
         sel: Option<CtorSet>,
     },
     Fn(Box<Ty>, Box<Ty>),
@@ -492,19 +625,9 @@ impl Ty {
             Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(t.subst(args))),
             Ty::Group(k, t) => Ty::Group(Box::new(k.subst(args)), Box::new(t.subst(args))),
             Ty::Tag(t) => Ty::Tag(Box::new(t.subst(args))),
-            Ty::Record(fs) => {
-                Ty::Record(fs.iter().map(|(n, t)| (n.clone(), t.subst(args))).collect())
-            }
+            Ty::Record(fs) => Ty::Record(fs.map(|t| t.subst(args))),
             Ty::Sum { ctors, sel } => Ty::Sum {
-                ctors: ctors
-                    .iter()
-                    .map(|(c, fs)| {
-                        (
-                            c.clone(),
-                            fs.iter().map(|(n, t)| (n.clone(), t.subst(args))).collect(),
-                        )
-                    })
-                    .collect(),
+                ctors: ctors.map(|t| t.subst(args)),
                 sel: sel.clone(),
             },
             Ty::Fn(a, b) => Ty::Fn(Box::new(a.subst(args)), Box::new(b.subst(args))),

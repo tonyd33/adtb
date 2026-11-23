@@ -2,7 +2,7 @@ use super::{Agg, Conflict, Const, Kind, Prim, Terms, Tm, Transition, TxnOptions,
 use crate::check::prim_ty::{Bounds, prim_ty};
 use crate::check::ty::{elem, fields, restrict};
 use crate::schema::{Generator, Schema};
-use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty};
+use crate::types::{Base, CtorSet, Fields, FnId, KeyCtors, RelId, RelRef, Ty};
 
 /// Build kernel terms into one arena, typing each node from its children where its kind's rule
 /// fixes the type and at a given type where the rule leaves it open. Sort record and constructor
@@ -224,13 +224,13 @@ impl<'a> Build<'a> {
             Kind::IsEmpty(_) | Kind::Exists(_) => {
                 Some(self.data(self.schema.prelude().bool(), Vec::new()))
             }
-            Kind::Group { var, by, .. } => Some(Ty::Set(Box::new(Ty::Record(vec![
+            Kind::Group { var, by, .. } => Some(Ty::Set(Box::new(Ty::Record(Fields::new([
                 ("key".into(), ty(by).clone()),
                 (
                     "rows".into(),
                     Ty::NonEmpty(Box::new(self.terms.var_info(*var).ty.clone())),
                 ),
-            ])))),
+            ]))))),
             Kind::Insert(..)
             | Kind::Delete(..)
             | Kind::Replace(..)

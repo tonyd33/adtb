@@ -5,7 +5,7 @@ use std::sync::Weak;
 
 use adtb_lang::ids::engine_rel;
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{KeyCtors, RelId, RelRef, Ty};
+use adtb_lang::types::{Fields, KeyCtors, RelId, RelRef, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::catalog::{self, engine_relation};
@@ -80,13 +80,13 @@ impl<R: Runtime> Engine<R> {
             }
         });
         self.reindexing.threads.lock(&self.rt).push(thread);
-        let ty = Ty::Record(vec![(
+        let ty = Ty::Record(Fields::new([(
             "job".into(),
             Ty::Key {
                 rel: RelRef::Declared(table),
                 ctors: KeyCtors::All,
             },
-        )]);
+        )]));
         Ok(rows(schema, ty, vec![Val::record(vec![Val::Int(run)])]))
     }
 

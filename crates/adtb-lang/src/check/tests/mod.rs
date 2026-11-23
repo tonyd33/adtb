@@ -12,6 +12,7 @@ mod or_patterns;
 mod principal;
 mod row_provenance;
 mod runtime;
+mod type_laws;
 mod writes;
 
 fn source(extra: &str) -> String {
