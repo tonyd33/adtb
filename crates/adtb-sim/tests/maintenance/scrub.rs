@@ -782,6 +782,15 @@ fn attempt(db: &Database, query: &str, done: &AtomicU64) {
     }
 }
 
+/// The flag the writers watch, set when dropped, a failed assertion's unwinding included.
+struct Stopping<'a>(&'a AtomicBool);
+
+impl Drop for Stopping<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 #[test]
 fn scrubbing_under_real_writers_finds_nothing() {
     let dir = scratch("stress");
@@ -799,6 +808,7 @@ fn scrubbing_under_real_writers_finds_nothing() {
     let stop = AtomicBool::new(false);
     let writes = AtomicU64::new(0);
     std::thread::scope(|scope| {
+        let stopping = Stopping(&stop);
         for w in 0..3i64 {
             let (db, stop, writes) = (&db, &stop, &writes);
             scope.spawn(move || {
@@ -835,7 +845,7 @@ fn scrubbing_under_real_writers_finds_nothing() {
             std::thread::sleep(Duration::from_millis(50));
             assert_eq!(Vec::<String>::new(), text(&db, FINDINGS), "round {round}");
         }
-        stop.store(true, Ordering::Relaxed);
+        drop(stopping);
     });
     assert!(writes.load(Ordering::Relaxed) > 100, "the writers wrote");
     awaited("the worker ends a pass", || db.testing().scrub());

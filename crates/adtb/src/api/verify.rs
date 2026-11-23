@@ -522,14 +522,15 @@ impl<R: Runtime> Verifier<R> {
         if !self.keeps() {
             return false;
         }
-        let kept = self.in_kept_transaction(|w| {
+        let mut held = self.findings.lock(&self.rt);
+        let kept = self.in_kept_transaction(&held, |w| {
             let txns = self.db.txns();
             let group = (row.relation, CURSOR);
             self.catalog
                 .replace_kept(&self.pager, txns, w, group, std::slice::from_ref(&row))
         });
         if kept.is_ok() {
-            self.findings.lock(&self.rt).cursor = Some(cursor);
+            held.cursor = Some(cursor);
         }
         kept.is_ok()
     }
@@ -612,7 +613,7 @@ impl<R: Runtime> Verifier<R> {
             fields: vec![KeptField::Int(held.next_run), KeptField::Int(held.next_id)],
         };
         let kept = if keep {
-            self.keep_findings(id, group, &written, &gone, &counters)
+            self.keep_findings(&held, id, group, &written, &gone, &counters)
         } else {
             Ok(())
         };
@@ -636,13 +637,14 @@ impl<R: Runtime> Verifier<R> {
 
     fn keep_findings(
         &self,
+        held: &Findings,
         id: u64,
         group: &str,
         written: &[KeptRow],
         gone: &BTreeSet<String>,
         counters: &KeptRow,
     ) -> Result<(), String> {
-        self.in_kept_transaction(|w| {
+        self.in_kept_transaction(held, |w| {
             let txns = self.db.txns();
             self.catalog
                 .replace_kept(&self.pager, txns, w, (id, group), written)?;
@@ -665,8 +667,11 @@ impl<R: Runtime> Verifier<R> {
     }
 
     /// Run `write`, a change of kept rows, as one transaction of the write path.
+    ///
+    /// Precondition: the caller holds the findings, the one lock of every write of kept rows.
     fn in_kept_transaction(
         &self,
+        _held: &Findings,
         write: impl FnOnce(catalog::Writer<'_>) -> Result<(), catalog::Error>,
     ) -> Result<(), String> {
         let tx = self.db.begin().map_err(|e| self.db.detail(&e))?;
