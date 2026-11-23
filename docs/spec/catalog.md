@@ -2152,6 +2152,18 @@ be read, is refused as [embedding.md §2.1](embedding.md#21-open) states. An
 names. A file with neither copy of its header intact, or a log that
 recovery refuses, does not open.
 
+A page the device cannot read is a storage failure and quarantines
+nothing. When the device fails a read the open needs to check pages
+against the log, or to read its record of damage, every call but a
+`verify` alone and a `dump` alone tries that read again and fails with
+`Fatal { reason: Storage {..} }` naming the failure. Once the read
+succeeds, those calls fail with `Fatal { reason: Storage {..} }` saying
+the database must be reopened, and only the next open runs normally.
+Meanwhile the open writes nothing, a `dump` checks pages as on a
+database quarantined whole and fails with that same failure when the
+check cannot read what it needs, and an open given migrations beyond
+the file's log fails with `OpenError::Io` naming the failure.
+
 A `dump` of a database quarantined whole first checks every page of
 the commit log and the catalog as `verify` does (§11.1), by checksum
 and by log position. Any finding fails the dump with `Fatal { reason:

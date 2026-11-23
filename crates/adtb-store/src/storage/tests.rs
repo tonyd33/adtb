@@ -4,8 +4,10 @@ use adtb_sys::os::{Backend, Faults, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
 use super::alloc::diff;
+use super::arming::Unarmed;
 use super::block::{
-    InMemory, LogFinding, LogImage, LogProblem, Mode, batch_at, frame, resolutions_from, scan,
+    InMemory, LogFinding, LogImage, LogProblem, Mode, Unsettled, batch_at, frame, resolutions_from,
+    scan,
 };
 use super::crc::{crc32c, crc32c_skipping};
 use super::error::{Damage, OpenError};
@@ -635,28 +637,28 @@ fn commits_from_a_log_are_those_from_the_batch_holding_the_start_or_fail_at_its_
             unreadable,
             block_at(2),
             48,
-            Err(block_at(16)),
+            Err(Unsettled::Unread(Unarmed::LogBlock(block_at(16)))),
         ),
         (
             "middle missing",
             without(SEGMENT),
             block_at(2),
             48,
-            Err(block_at(16)),
+            Err(Unsettled::At(block_at(16))),
         ),
         (
             "middle missing, from it",
             without(SEGMENT),
             block_at(18),
             48,
-            Err(block_at(18)),
+            Err(Unsettled::At(block_at(18))),
         ),
         (
             "last missing",
             without(2 * SEGMENT),
             block_at(2),
             48,
-            Err(block_at(32)),
+            Err(Unsettled::At(block_at(32))),
         ),
         (
             "last missing, to it",
@@ -665,7 +667,13 @@ fn commits_from_a_log_are_those_from_the_batch_holding_the_start_or_fail_at_its_
             32,
             Ok((2..32).collect()),
         ),
-        ("undecodable", undecoded, block_at(2), 48, Err(block_at(20))),
+        (
+            "undecodable",
+            undecoded,
+            block_at(2),
+            48,
+            Err(Unsettled::At(block_at(20))),
+        ),
         (
             "straddling",
             straddled,
@@ -676,7 +684,7 @@ fn commits_from_a_log_are_those_from_the_batch_holding_the_start_or_fail_at_its_
     ];
     for (name, segments, since, to, want) in rows {
         let mut img = LogImage::in_memory(BLOCK, SEGMENT, segments);
-        let got: Result<Vec<u64>, Lsn> =
+        let got: Result<Vec<u64>, Unsettled> =
             resolutions_from(&mut img, since, block_at(to), &BTreeSet::new())
                 .map(|r| r.commits.into_iter().collect());
         assert_eq!(want, got, "{name}");

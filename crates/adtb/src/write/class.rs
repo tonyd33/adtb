@@ -14,6 +14,7 @@ impl Error {
             | Error::Closed => Class::Reject,
             Error::Corrupt(_) => Class::Damage,
             Error::Transactions(_) => Class::Transactions,
+            Error::Unarmed(_) => Class::Refused,
             Error::Quarantined { by, .. } => by.class(),
             Error::Internal(b) => b.class(),
             Error::Blocked { .. } => Class::Suspended,

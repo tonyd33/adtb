@@ -44,8 +44,8 @@ pub enum Fault {
     Page(Damage),
     /// The damage list overflowed: every record maps alike.
     Full,
-    /// Recovery could not read the retained log or a page LSN map page whole, so the expected
-    /// LSNs of the open are unknown.
+    /// Recovery could not prove the expected LSNs of the open: a page LSN map page out of shape,
+    /// or a gap in the retained log.
     Unarmed,
     /// An `Order`, `Orphan` or `Missing` finding of verify, or an index entry naming an unused
     /// slot, on the index it names.
@@ -115,7 +115,6 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
         Fault::Page(damage) => damage,
     };
     match holder {
-        Holder::DamageList if damage == Damage::Unreadable && phase == Phase::Opening => Mark::HELD,
         _ if damage == Damage::Unreadable => Mark::NOTHING,
         Holder::Relation {
             object,

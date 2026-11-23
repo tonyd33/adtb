@@ -9,3 +9,4 @@ mod latches;
 mod recycle_interleavings;
 mod replay;
 mod truncated_open;
+mod unarmed;

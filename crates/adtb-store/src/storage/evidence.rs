@@ -6,7 +6,8 @@ use crate::runtime::{AlignedBuf, Runtime};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::marker::PhantomData;
 
-use super::block::{LogFinding, LogImage, LogSource, Mode, scan};
+use super::arming::{Arming, Unarmed};
+use super::block::{LogFinding, LogImage, LogProblem, LogSource, Mode, scan};
 use super::damage_log::Recorded;
 use super::error::Damage;
 use super::log::Log;
@@ -15,7 +16,7 @@ use super::pager::{Appending, Held, PageError, Pager, Wrote};
 use super::policy::Fault;
 use super::quarantine::Quarantine;
 use super::record::Record;
-use super::recovery::{Armed, Replaying};
+use super::recovery::Replaying;
 use super::{Lsn, Pid};
 
 /// What a page read in from the file is checked against.
@@ -24,8 +25,7 @@ enum Gate {
     /// Recovery is replaying the log; no page has an expected LSN until it ends.
     Recovering,
     Armed(Expected),
-    /// The open could not read the retained log: the database is held quarantined and no page is
-    /// checked.
+    /// The open could not read the retained log or the page LSN map: no page is checked.
     Off,
 }
 
@@ -560,6 +560,8 @@ pub(super) use self::tally::Unmapped;
 pub(super) struct Evidence {
     pages: BTreeMap<Pid, PageEvidence>,
     gate: Gate,
+    /// Why the gate is not armed for this open, once an arm failed.
+    unarmed: Option<Unarmed>,
     /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
     recovered: Lsn,
     /// Whether a detection logs its record. Off until the open's recovery ends.
@@ -602,6 +604,7 @@ impl Evidence {
         Evidence {
             pages: BTreeMap::new(),
             gate: Gate::Recovering,
+            unarmed: None,
             recovered: Lsn(0),
             logging: false,
             named,
@@ -1188,10 +1191,10 @@ impl Evidence {
         }
     }
 
-    /// Returns whether the open read the page LSN map and proved the retained log, so the gate
-    /// checks every page and the marks and list pages are written.
+    /// Returns whether the open read the page LSN map and the damage list and proved the retained
+    /// log, so the gate checks every page and the marks and list pages are written.
     pub(super) fn proven(&self) -> bool {
-        matches!(&self.gate, Gate::Armed(e) if e.proven)
+        matches!(&self.gate, Gate::Armed(e) if e.proven) && self.unarmed.is_none()
     }
 
     pub(super) fn recovered(&self) -> Lsn {
@@ -1350,23 +1353,35 @@ impl<R: Runtime> Pager<R> {
 
     /// End recovery: set each page's expected LSN from the page LSN map, then the retained log,
     /// a record before a gap or a damaged batch as a least LSN. Turn the gate off, setting none,
-    /// when the log cannot be read. Fail with the map page refused, or when the log cannot prove a
-    /// record before the end recovery kept.
-    pub(super) fn arm(&self) -> Armed {
+    /// when a map page, the log directory, a segment or a block of the retained log cannot be
+    /// read. Unproven with the map page refused, or when the log cannot prove a record before the
+    /// end recovery kept.
+    pub(super) fn arm(&self) -> Arming {
+        match self.expected() {
+            Ok((expected, arming)) => {
+                self.evidence().gate = Gate::Armed(expected);
+                arming
+            }
+            Err(why) => self.unarmed_by(why),
+        }
+    }
+
+    /// Returns the expected LSNs [`arm`](Self::arm) sets and what it returns, or the read that
+    /// failed.
+    fn expected(&self) -> Result<(Expected, Arming), Unarmed> {
         let (folded, map) = match self.map_entries() {
             Ok(folded) => (folded, Ok(())),
+            Err(e) if e.damage == Damage::Unreadable => return Err(Unarmed::Page(e)),
             Err(e) => (Vec::new(), Err(e)),
         };
         let end = self.evidence().recovered();
-        let log = self
-            .load_log()
-            .ok()
-            .map(|(_pin, mut img)| retained(&mut img, end));
-        let mut e = self.evidence();
-        let Some(log) = log else {
-            e.gate = Gate::Off;
-            return Err(map.err());
+        let log = match self.load_log() {
+            Ok((_pin, mut img)) => retained(&mut img, end),
+            Err((path, error)) => return Err(Unarmed::Log { path, error }),
         };
+        if let Some(lsn) = log.unreadable {
+            return Err(Unarmed::LogBlock(lsn));
+        }
         let gapless = log.gap.is_none();
         let mut expected = Expected {
             folded,
@@ -1378,12 +1393,52 @@ impl<R: Runtime> Pager<R> {
         for (pid, lsn) in log.last {
             expected.raise(pid, read_past(log.gap, lsn));
         }
-        e.gate = Gate::Armed(expected);
-        match map {
-            Err(err) => Err(Some(err)),
-            Ok(()) if gapless => Ok(()),
-            Ok(()) => Err(None),
+        let arming = match map {
+            Err(err) => Arming::Unproven(Some(err)),
+            Ok(()) if gapless => Arming::Proven,
+            Ok(()) => Arming::Unproven(None),
+        };
+        Ok((expected, arming))
+    }
+
+    fn unarmed_by(&self, why: Unarmed) -> Arming {
+        self.evidence().gate = Gate::Off;
+        Arming::Failed(why)
+    }
+
+    /// Keep `why` as the reason the gate is not armed for this open, unless one is kept, and
+    /// write neither the marks nor the damage list from now on.
+    pub(crate) fn keep_unarmed(&self, why: Unarmed) {
+        self.evidence().unarmed.get_or_insert(why);
+        self.marks().unverify(self.rt());
+    }
+
+    /// Returns why every call but `verify` and `dump` fails on this open, `None` once the open
+    /// armed the read-in gate and read the damage list.
+    pub fn unarmed(&self) -> Option<Unarmed> {
+        self.evidence().unarmed.clone()
+    }
+
+    /// Returns [`Pager::unarmed`] after one more attempt at what failed: the reads of the arm, or
+    /// the read of the damage list. A page whose read failed is read from the file again. An
+    /// attempt that succeeds leaves [`Unarmed::Late`] and the gate off.
+    pub fn rearm(&self) -> Option<Unarmed> {
+        let failed = self.unarmed()?;
+        if let Unarmed::Page(e) = failed
+            && self.refusal(e.pid) == Some(Damage::Unreadable)
+        {
+            self.evidence().lift(e.pid);
         }
+        let again = match failed {
+            Unarmed::Late => return Some(Unarmed::Late),
+            Unarmed::Page(e) if e.pid == self.damage_list_page() => {
+                self.read(e.pid).err().map(Unarmed::Page)
+            }
+            _ => self.expected().err(),
+        };
+        let now = again.unwrap_or(Unarmed::Late);
+        self.evidence().unarmed = Some(now.clone());
+        Some(now)
     }
 }
 
@@ -1394,9 +1449,11 @@ struct Retained {
     last: BTreeMap<Pid, Lsn>,
     /// The LSN of the first batch.
     first: Option<Lsn>,
-    /// The last LSN before the end that the log cannot prove: a gap, an unreadable or missing
-    /// block, or a batch whose records do not decode.
+    /// The last LSN before the end that the log cannot prove: a gap, a missing or damaged block,
+    /// or a batch whose records do not decode.
     gap: Option<Lsn>,
+    /// The first LSN before the end in a block the device could not read.
+    unreadable: Option<Lsn>,
 }
 
 /// Returns what the retained log of `img` holds before `end`, the end of the log recovery kept,
@@ -1410,6 +1467,7 @@ fn retained<S: LogSource>(img: &mut LogImage<S>, end: Lsn) -> Retained {
             last,
             first: None,
             gap,
+            unreadable: None,
         };
     };
     let block = img.block;
@@ -1423,11 +1481,14 @@ fn retained<S: LogSource>(img: &mut LogImage<S>, end: Lsn) -> Retained {
             Err(_) => undecoded = Some(batch.start),
         }
     });
-    let found = s.findings.iter().map(|f| f.lsn).filter(|&at| at < end);
+    let before = || s.findings.iter().filter(|f| f.lsn < end);
+    let unreadable = |f: &&LogFinding| f.problem == LogProblem::Unreadable;
+    let found = before().filter(|f| !unreadable(f)).map(|f| f.lsn);
     let short = (s.end < end).then_some(s.end);
     Retained {
         last,
         first: Some(first),
         gap: found.chain(short).chain(undecoded).max(),
+        unreadable: before().filter(unreadable).map(|f| f.lsn).min(),
     }
 }

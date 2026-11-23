@@ -3,6 +3,7 @@
 mod alloc;
 mod appending;
 mod archive;
+mod arming;
 mod backup;
 mod block;
 mod checkpoint;
@@ -51,6 +52,7 @@ pub use alloc::Reservation;
 #[cfg(any(test, feature = "testing"))]
 pub use archive::Status as ArchiveStatus;
 pub use archive::{Archiver, recycle_at_open};
+pub use arming::Unarmed;
 pub use backup::{
     BackupError, BackupRun, Envelope, Manifest, Proved, check_backup, make_scratch, manifest_hash,
     read_manifest, read_proof, remove_scratch, restore_file, scratch_file, withdraw_proof,
@@ -58,7 +60,7 @@ pub use backup::{
 };
 #[cfg(any(test, feature = "testing"))]
 pub use backup::{MANIFEST, PROOF, Part};
-pub use block::{LogFinding, LogProblem, Resolutions};
+pub use block::{LogFinding, LogProblem, Resolutions, Unsettled};
 #[cfg(any(test, feature = "testing"))]
 pub use crc::Crc32c;
 pub use create::creating;

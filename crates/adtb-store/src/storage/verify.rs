@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::Runtime;
 
-use super::block::{LogFinding, LogProblem, Mode, Resolutions, resolutions_from, scan};
+use super::arming::Unarmed;
+use super::block::{LogFinding, LogProblem, Mode, Resolutions, Unsettled, resolutions_from, scan};
 use super::error::Damage;
 use super::evidence::Judged;
 use super::log::parse_segment;
@@ -188,14 +189,17 @@ impl<R: Runtime> Pager<R> {
     /// `since`, or from its first whole batch when that batch begins before its first
     /// segment, and what each record there of one of `pages` continues from.
     ///
-    /// Fail with the LSN of the first damage before the end of the log recovery kept: a segment
-    /// it cannot list, open or read, a batch whose records do not decode, or a block missing.
+    /// Fail with what the device could not read before the end of the log recovery kept: the
+    /// listing, a segment or a block; or else with the LSN of the first damage before it: a batch
+    /// whose records do not decode, or a block missing.
     pub fn logged_resolutions_since(
         &self,
         since: Lsn,
         pages: &BTreeSet<Pid>,
-    ) -> Result<Resolutions, Lsn> {
-        let (_pin, mut img) = self.load_log().map_err(|_| since)?;
+    ) -> Result<Resolutions, Unsettled> {
+        let (_pin, mut img) = self
+            .load_log()
+            .map_err(|(path, error)| Unsettled::Unread(Unarmed::Log { path, error }))?;
         let recovered = self.evidence().recovered();
         resolutions_from(&mut img, since, recovered, pages)
     }

@@ -74,7 +74,8 @@ pub enum Class {
     Settled,
     /// A damage list that ran out of room.
     Full,
-    /// An LSN map page the open's recovery cannot read, leaving the expected LSNs unknown.
+    /// An open whose recovery cannot prove the expected LSNs: an LSN map page out of shape, or a
+    /// gap in the retained log.
     Unarmed,
     /// An `Order`, `Orphan` or `Missing` finding of verify, or an index entry naming an unused
     /// slot, on the index it names.
@@ -101,7 +102,7 @@ const RUNNING: &[Phase] = &[Phase::Running];
 pub type Row = (Class, &'static [Held], &'static [Phase], Stated);
 
 /// The marks the storage design states. No two rows share a class, holder and phase.
-pub const ROWS: [Row; 15] = [
+pub const ROWS: [Row; 13] = [
     (Class::Damaged, &[Held::Relation], BOTH, Stated::Own),
     (
         Class::Damaged,
@@ -146,8 +147,6 @@ pub const ROWS: [Row; 15] = [
         Stated::Nothing,
     ),
     (Class::Unproven, &[Held::CommitLog], OPENING, Stated::Open),
-    (Class::Unread, &[Held::DamageList], OPENING, Stated::Open),
-    (Class::Unread, &[Held::DamageList], RUNNING, Stated::Nothing),
     (
         Class::Unread,
         &[
@@ -161,6 +160,7 @@ pub const ROWS: [Row; 15] = [
             Held::CommitTimes,
             Held::Bitmap,
             Held::MarksPage,
+            Held::DamageList,
             Held::LsnMap,
             Held::Log,
             Held::Retired,

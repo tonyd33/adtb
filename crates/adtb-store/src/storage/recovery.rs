@@ -3,6 +3,7 @@ use std::collections::btree_map::Entry;
 
 use crate::runtime::{IoError, Runtime};
 
+use super::arming::Arming;
 use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
 use super::create::check_options;
 use super::driver::{Driver, Failed};
@@ -58,10 +59,6 @@ struct Replay {
     settled: BTreeMap<Pid, Damage>,
     applied: usize,
 }
-
-/// Whether recovery armed the read-in gate: an error holds the map page refused, if that is why
-/// it did not.
-pub(crate) type Armed = Result<(), Option<super::PageError>>;
 
 fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
     OpenError::Log(LogFinding { lsn, problem })
@@ -129,6 +126,9 @@ impl<R: Runtime> Pager<R> {
 
     fn recover_and_mark(&self, opening: &Opening) -> Result<Recovery, OpenError> {
         let (recovery, pages, armed) = self.recover()?;
+        if let Arming::Failed(why) = &armed {
+            self.keep_unarmed(why.clone());
+        }
         self.refuse_cut_pages(pages);
         let marks = self.quarantine_page();
         if marks == Pid(0) {
@@ -143,7 +143,7 @@ impl<R: Runtime> Pager<R> {
         if let Err(e) = self.check_map() {
             self.map_open_fault(e, Holder::LsnMap, opening);
         }
-        if let Err(map) = armed {
+        if let Arming::Unproven(map) = armed {
             let holder = map.map_or(Holder::Log, |_| Holder::LsnMap);
             if let Some(e) = map {
                 self.map_open_fault(e, holder, opening);
@@ -158,7 +158,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Postconditions: the stale blocks past the log's end are in the file header before the
     /// log's tail is cleared.
-    pub(crate) fn recover(&self) -> Result<(Recovery, u64, Armed), OpenError> {
+    pub(crate) fn recover(&self) -> Result<(Recovery, u64, Arming), OpenError> {
         let mut img = {
             let mut segments = self.segments().lock(self.rt());
             self.io(|d| segments.load(d))

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::runtime::Runtime;
 use crate::storage::{
     Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Resolutions, Shape,
-    StaleCopy, flags, format, header_edit, kind, kind_fault, lsn,
+    StaleCopy, Unsettled, flags, format, header_edit, kind, kind_fault, lsn,
 };
 
 use super::{Status, StatusError, Writers, Xid};
@@ -508,12 +508,19 @@ impl CommitLog {
             .iter()
             .filter_map(|(pid, _, _, copy)| copy.as_ref().map(|_| *pid))
             .collect();
-        let logged = pager
-            .logged_resolutions_since(since, &stale)
-            .map_err(|at| PageError {
+        let logged = pager.logged_resolutions_since(since, &stale).map_err(|e| {
+            let at = match e {
+                Unsettled::At(at) => at,
+                Unsettled::Unread(why) => {
+                    pager.keep_unarmed(why);
+                    since
+                }
+            };
+            PageError {
                 pid,
                 damage: Damage::LogUnproven { at },
-            })?;
+            }
+        })?;
         let unproven = open.iter().position(|(pid, _, ids, copy)| {
             copy.as_ref().is_some_and(|(copy, _)| {
                 !ids.is_empty() && !logged.continued.contains(&(*pid, lsn(copy)))

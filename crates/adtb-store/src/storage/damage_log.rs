@@ -7,6 +7,7 @@ use crate::mvcc::Settling;
 use crate::runtime::Runtime;
 use crate::steps::{Map, Step};
 
+use super::arming::Unarmed;
 use super::block::{LogFinding, LogProblem};
 use super::error::{Damage, Shape};
 use super::evidence::{Begun, Cause, Mapping, Met, meet_recorded};
@@ -368,8 +369,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Read the list page into memory, then what replay met past it and the log findings the
     /// header holds, during `opening`. Create the page when the file has none and is not
-    /// quarantined whole. Map a refused list page as the open: a damaged one quarantines the
-    /// database, an unreadable one for this open only.
+    /// quarantined whole or unarmed. Map a damaged list page as the open, which quarantines the
+    /// database; keep an unreadable one as why the open is unarmed.
     ///
     /// Fail if the page cannot be created.
     pub(super) fn load_damage_list(&self, opening: &Opening) -> Result<(), PageError> {
@@ -391,10 +392,14 @@ impl<R: Runtime> Pager<R> {
             };
             read.inspect_err(|e| {
                 self.refuse_list();
-                self.map_open_fault(*e, Holder::DamageList, opening);
+                if e.damage == Damage::Unreadable {
+                    self.keep_unarmed(Unarmed::Page(*e));
+                } else {
+                    self.map_open_fault(*e, Holder::DamageList, opening);
+                }
             })
             .ok()
-        } else if self.is_quarantined(Quarantine::Database) {
+        } else if self.is_quarantined(Quarantine::Database) || self.unarmed().is_some() {
             None
         } else {
             list = self.format_damage_list()?;

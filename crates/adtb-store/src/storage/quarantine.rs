@@ -402,6 +402,14 @@ mod marks {
             m.state.set = read.unwrap_or_else(|(_, set)| set);
         }
 
+        /// Stop every write of the marks, as a page read with no check of its LSN does.
+        pub(in crate::storage) fn unverify<R: Runtime>(&self, rt: &R) {
+            let mut m = self.lock(rt);
+            if let MarksPage::Writable(page) = m.state.page {
+                m.state.page = MarksPage::Unwritable(Unwritable::Unverified(page));
+            }
+        }
+
         /// Hold the marks on page `page`, formatted empty.
         pub(in crate::storage) fn formatted<R: Runtime>(&self, rt: &R, page: Pid) {
             self.lock(rt).state.page = MarksPage::Writable(page);
@@ -567,6 +575,12 @@ impl<R: Runtime> Pager<R> {
     /// the commit log that refuses every transaction.
     pub fn refused_whole(&self) -> bool {
         self.whole_cause().is_some() || self.is_quarantined(Quarantine::Database)
+    }
+
+    /// Returns whether this open writes nothing past recovery and its checkpoint: the database is
+    /// refused whole, or the read-in gate is unarmed.
+    pub fn opens_unwritten(&self) -> bool {
+        self.refused_whole() || self.unarmed().is_some()
     }
 
     /// Returns whether the database is marked, set or held, with no regard to damage of the

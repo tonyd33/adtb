@@ -10,7 +10,8 @@ use std::time::Duration;
 use crate::runtime::{Done, IoError, Op, OpKind, Runtime};
 use crate::storage::order::ordered_for_test;
 use crate::storage::{
-    self, Damage, Finding, HEADER_LEN, Lsn, Options, PageKind, Pager, Pid, Quarantine,
+    self, Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
+    Unarmed,
 };
 use crate::test_world as harness;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
@@ -496,7 +497,7 @@ fn a_damage_record_the_list_cannot_fold_keeps_its_segment_and_reaches_every_late
         let reads = Match::kind(OpKind::Read).offset(PAGER.range(list).start as u64);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
         let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        let held = Probe::of(&pager).marks();
+        let held = (Probe::of(&pager).marks(), pager.unarmed());
         load(&pager, loaded, 3 * EVERY);
         pager.checkpoint();
         out = Some((
@@ -505,12 +506,17 @@ fn a_damage_record_the_list_cannot_fold_keeps_its_segment_and_reaches_every_late
         ));
         pager.close();
     });
-    let held = BTreeSet::from([Quarantine::Database]);
+    let unread = PageError {
+        pid: list,
+        damage: Damage::Unreadable,
+    };
+    let held = (BTreeSet::new(), Some(Unarmed::Page(unread)));
     let recorded = Some(Damage::Checksum);
     assert_eq!(
         Some((held, recorded)),
         out,
-        "the next open, which cannot read the list, holds the database and replays the record"
+        "the next open, which cannot read the list, marks nothing, is unarmed by the list and \
+         replays the record"
     );
     let recorded = session(&mut sim, false, |pager, _| {
         Probe::of(pager).records().pages().get(&damaged).copied()
@@ -541,11 +547,14 @@ fn a_free_the_list_cannot_fold_clears_its_page_for_every_later_open() {
         let reads = Match::kind(OpKind::Read).offset(PAGER.range(list).start as u64);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
         let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        let held = BTreeSet::from([Quarantine::Database]);
+        let unread = PageError {
+            pid: list,
+            damage: Damage::Unreadable,
+        };
         assert_eq!(
-            held,
-            Probe::of(&pager).marks(),
-            "the open cannot read the list"
+            (BTreeSet::new(), Some(Unarmed::Page(unread))),
+            (Probe::of(&pager).marks(), pager.unarmed()),
+            "the open cannot read the list: it marks nothing and is unarmed by the list"
         );
         let replayed = Probe::of(&pager).records().pages().get(&freed).copied();
         assert_eq!(None, replayed, "the open replays the free");

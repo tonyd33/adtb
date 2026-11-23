@@ -205,7 +205,7 @@ fn classes(fault: Fault) -> &'static [Class] {
             &[Class::Damaged, Class::Settled]
         }
         Fault::Flipped => &[Class::Damaged],
-        Fault::UnreadableOnce | Fault::UnreadableLasting => &[Class::Unread, Class::Unarmed],
+        Fault::UnreadableOnce | Fault::UnreadableLasting => &[Class::Unread],
         Fault::Torn => &[],
     }
 }
@@ -238,9 +238,11 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         (Class::Settled, h) if h != Held::CommitLog => {
             return Some(Unasked::Never("only a commit log status page settles"));
         }
-        (Class::Unarmed, h) if h != Held::LsnMap => {
+        (Class::Unarmed, _) => {
             return Some(Unasked::Never(
-                "only an LSN map page the open's recovery cannot read leaves it unarmed",
+                "only a gap in the retained log or an LSN map page out of shape leaves the open \
+                 unproven, and the search judges such a map page by its damage, which marks the \
+                 database",
             ));
         }
         (_, Held::Retired) => {
@@ -314,17 +316,10 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         (_, Class::Settled, Held::CommitLog, Running) => Some(Unasked::Never(
             "only the open of the commit log settles a status page",
         )),
-        (Fault::UnreadableOnce, Class::Unarmed, Held::LsnMap, _) => Some(Unasked::Never(
-            "whether the open met the page is observed only for a failure that lasts",
-        )),
         (
             Fault::UnreadableOnce,
             Class::Unread,
-            Held::CatalogRoot
-            | Held::CatalogRows
-            | Held::MarksPage
-            | Held::DamageList
-            | Held::LsnMap,
+            Held::CatalogRoot | Held::CatalogRows | Held::MarksPage | Held::DamageList,
             Running,
         ) => Some(Unasked::Never(
             "the faulted run reads this page only while it opens, and the read that failed once \
@@ -338,10 +333,7 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         (Fault::UnreadableOnce, Class::Unread, _, Opening) => Some(Unasked::AtTier(
             "at the damage tier a read failure that does not last leaves no record the open holds",
         )),
-        (Fault::UnreadableLasting, Class::Unarmed, Held::LsnMap, Running) => Some(Unasked::Never(
-            "an LSN map page unreadable for good is met by the open's recovery",
-        )),
-        (Fault::UnreadableLasting, Class::Unread, Held::LsnMap, _) => Some(Unasked::Never(
+        (Fault::UnreadableLasting, Class::Unread, Held::LsnMap, Running) => Some(Unasked::Never(
             "the open's recovery reads every LSN map page, so it meets one unreadable for good",
         )),
         (
@@ -1080,7 +1072,7 @@ type Pinned = (Fault, Kind, u64, usize, Row);
 /// lost write past a recycle and past the map's entry of its page.
 #[rustfmt::skip]
 const PINNED: &[Pinned] = {
-    use Class::{Damaged, Settled, Unarmed};
+    use Class::{Damaged, Settled, Unread};
     use Fault::{Flipped, LostCurrent, Recycled, UnreadableLasting};
     use Held::{Bitmap, CatalogRoot, CommitLog, CommitTimes, Counters, LsnMap, MarksPage, Relation};
     use Phase::{Opening, Running};
@@ -1099,7 +1091,7 @@ const PINNED: &[Pinned] = {
         (Recycled, Kind::Heap, 1001, 624, (Damaged, Relation, Running)),
         (Flipped, Kind::Heap, 3, 620, (Damaged, Relation, Opening)),
         (Flipped, Kind::CommitLog, 5, 608, (Damaged, CommitLog, Opening)),
-        (UnreadableLasting, Kind::LsnMap, 5, 660, (Unarmed, LsnMap, Opening)),
+        (UnreadableLasting, Kind::LsnMap, 5, 660, (Unread, LsnMap, Opening)),
     ]
 };
 

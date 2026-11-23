@@ -117,6 +117,7 @@ pub(super) fn detail_naming(e: &Error, name: impl Fn(Quarantine) -> String) -> S
             format!("{} is quarantined", super::quarantine::named(objects, name))
         }
         Error::Transactions(e) => e.to_string(),
+        Error::Unarmed(why) => why.to_string(),
         Error::Corrupt(r) => r.to_string(),
         Error::Denied(detail) => detail.clone(),
         Error::SequenceExhausted => "the generated counter exhausted its integer range".to_owned(),

@@ -174,15 +174,15 @@ impl<R: Runtime> Transactions<R> {
     /// - If a status page is damaged, or the retained log is too damaged to settle an id in
     ///   progress or does not prove the status of one on a status page that lost a write, the
     ///   database is quarantined.
-    /// - A file with a damaged status page, a log that cannot settle an id in progress, or the
-    ///   database's mark has nothing written, and an id running at the crash still reads as in
-    ///   progress.
+    /// - A file with a damaged status page, a log that cannot settle an id in progress, the
+    ///   database's mark or an unarmed read-in gate has nothing written, and an id running at
+    ///   the crash still reads as in progress.
     ///
     /// Fail if the commit log's root or a directory page is damaged, or a status page cannot
     /// be read.
     pub fn open(rt: R, pager: &Pager<R>, root: Pid) -> Result<Transactions<R>, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
-        let damage = if pager.database_marked() {
+        let damage = if pager.database_marked() || pager.unarmed().is_some() {
             clog.unresolved(pager).err()
         } else {
             clog.settle_unresolved(pager).err()
@@ -190,7 +190,9 @@ impl<R: Runtime> Transactions<R> {
         if let Some(e) = damage.filter(|e| e.damage == Damage::Unreadable) {
             return Err(e);
         }
-        let damage = damage.or_else(|| recorded_damage(pager, &clog));
+        let damage = damage
+            .or_else(|| recorded_damage(pager, &clog))
+            .filter(|_| pager.unarmed().is_none());
         let txns = Transactions::over(rt, pager, clog);
         if let Some(e) = damage {
             txns.damaged(e);

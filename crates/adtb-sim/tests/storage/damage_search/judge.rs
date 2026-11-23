@@ -138,9 +138,9 @@ struct Facts<'a> {
     /// database's where a walk of the mapping can meet a second damaged page before its record,
     /// or where the open quarantines the database for itself alone.
     allowed_marks: BTreeSet<Quarantine>,
-    /// The marks a case may show for the consumers' open alone: the database's, under a list
-    /// page the device cannot read. No later open and no marks page holds them.
-    open_marks: BTreeSet<Quarantine>,
+    /// The pages whose failed read at the first open left it unarmed: an LSN map page or the
+    /// damage list the device cannot read.
+    unarmed: BTreeSet<Pid>,
     lasting: bool,
     unreadable: bool,
     /// Whether the first open met an unreadable page whose loss quarantines the database for
@@ -195,6 +195,8 @@ struct Judged {
     may: BTreeSet<Quarantine>,
     /// Whether the page's damage quarantines the database for the first open alone.
     open: bool,
+    /// Whether the first open met the page unreadable while arming its read-in gate.
+    unarmed: bool,
     /// The row of the phase the page's mapping surely ran in.
     row: Option<Row>,
 }
@@ -224,7 +226,6 @@ fn judged(
         Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled | Fault::Flipped => {
             Class::Damaged
         }
-        _ if met_in_open && end.0 == Held::LsnMap => Class::Unarmed,
         Fault::UnreadableOnce | Fault::UnreadableLasting => Class::Unread,
     };
     let earlier = case.ran.recorded.contains(&w.pid);
@@ -267,6 +268,7 @@ fn judged(
             })
             .collect(),
         open: met_in_open && stated::stated(class, end.0, Phase::Opening) == Stated::Open,
+        unarmed: met_in_open && class == Class::Unread && end.0 == Held::LsnMap,
         row: surely.map(|p| (class, end.0, p)).filter(|_| !unknown),
     }
 }
@@ -358,6 +360,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     let ids = &plan.ids;
     let mut pages = Vec::new();
     let mut open_only = false;
+    let mut unarmed = BTreeSet::new();
     let end = case.ran.cut.unwrap_or(usize::MAX);
     let follows = followed(case);
     for hit in &case.hits {
@@ -407,6 +410,9 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
             let settles = settles(case, &w, hit.fault);
             let judged = judged(case, &w, hit.fault, placed.0, settles);
             open_only |= judged.open;
+            if judged.unarmed {
+                unarmed.insert(w.pid);
+            }
             pages.push(Page {
                 pid: w.pid,
                 kind,
@@ -444,10 +450,12 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         .filter(|p| p.must_report)
         .filter_map(|p| p.mark)
         .collect();
-    let list_unreadable = case
-        .hits
-        .iter()
-        .any(|h| h.fault == Fault::UnreadableLasting && h.kind == Kind::DamageList);
+    unarmed.extend(
+        case.hits
+            .iter()
+            .filter(|h| h.fault == Fault::UnreadableLasting && h.kind == Kind::DamageList)
+            .map(|h| h.written.pid),
+    );
     let lasting = case.lost_log.as_ref().is_some_and(|l| !l.tail || l.named)
         || case
             .hits
@@ -470,10 +478,6 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     if open_only {
         allowed_marks.insert(Quarantine::Database);
     }
-    let mut open_marks = BTreeSet::new();
-    if list_unreadable && !allowed_marks.contains(&Quarantine::Database) {
-        open_marks.insert(Quarantine::Database);
-    }
     if let Some(lost) = &case.lost_log {
         allowed_marks.extend(past_lost_log(case, lost));
     }
@@ -488,7 +492,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         pages,
         expected,
         allowed_marks,
-        open_marks,
+        unarmed,
         lasting,
         unreadable,
         open_only,
@@ -850,6 +854,17 @@ fn judge_read(
     }
 }
 
+/// Returns the failure a call returns on an open a read of `pid` left unarmed.
+fn unreadable(pid: Pid) -> String {
+    let detail = format!("page {} is unreadable", pid.0);
+    format!(
+        "{:?}",
+        adtb::Error::Fatal {
+            reason: adtb::FatalReason::Storage { detail },
+        }
+    )
+}
+
 /// Returns whether `at`, the place of a finding, names page `pid`.
 fn names(at: &str, pid: Pid) -> bool {
     let page = format!("\"page {}", pid.0);
@@ -894,22 +909,34 @@ fn judge_findings(f: &Facts<'_>, found: &Result<Vec<Finding>, String>) -> Vec<(S
 }
 
 /// Returns the violations of the marks the file holds. Under unreadable pages alone: no mark
-/// beyond those the stated table gives the pages, but the open's own quarantine of the database, which the next open with the page readable no
-/// longer holds while it serves every row. Else every mark the stale pages map to, unless the
+/// beyond those the stated table gives the pages, but the open's own quarantine of the database;
+/// a read refused by that quarantine, or failing as a storage failure naming a page that left the
+/// open unarmed; and the next open with the page readable holding neither while it serves every
+/// row. Else every mark the stale pages map to, unless the
 /// database's mark, which covers every object, is set and allowed, or an unreadable page leaves
 /// the mapping incomplete; and no mark beyond those the case may show.
 fn judge_marks(f: &Facts<'_>) -> Vec<(String, String)> {
     let marks = f.marks();
     let mut out = Vec::new();
     if f.unreadable && !f.case.hits.iter().any(|h| damages_file(h.fault)) {
-        if f.open_only {
+        if f.open_only || !f.unarmed.is_empty() {
             let o = f.case.observed;
+            let unarmed: BTreeSet<String> = f.unarmed.iter().map(|p| unreadable(*p)).collect();
             let refused = o
                 .reads
                 .values()
                 .chain(o.lookups.values().map(|l| &l.read))
-                .all(|r| matches!(r, Read::Refused(what) if what == "the database"));
-            if marks != BTreeSet::from([Quarantine::Database]) || !refused {
+                .all(|r| match r {
+                    Read::Failed(e) => unarmed.contains(e),
+                    Read::Refused(what) => unarmed.is_empty() && what == "the database",
+                    Read::Rows(_) | Read::Garbage(_) => false,
+                });
+            let held = if f.open_only {
+                BTreeSet::from([Quarantine::Database])
+            } else {
+                BTreeSet::new()
+            };
+            if marks != held || !refused {
                 out.push((
                     "an open that cannot read the page serves past it".into(),
                     format!("marks {marks:?}; reads {:?}", o.reads),
@@ -970,24 +997,7 @@ fn judge_marks(f: &Facts<'_>) -> Vec<(String, String)> {
             format!("missing {missing:?}, marks {marks:?}"),
         ));
     }
-    let allowed: BTreeSet<Quarantine> = f.allowed_marks.union(&f.open_marks).copied().collect();
-    let over: BTreeSet<_> = marks.difference(&allowed).collect();
-    let durable = ledger::evidence(&f.case.observed.files).and_then(|e| e.marks);
-    let reopened = f.case.observed.reopened.as_ref().map(|r| &r.marks);
-    let outlived: BTreeSet<_> = f
-        .open_marks
-        .iter()
-        .filter(|m| {
-            reopened.is_some_and(|r| r.contains(m))
-                || durable.as_ref().is_some_and(|d| d.contains(m))
-        })
-        .collect();
-    if !outlived.is_empty() {
-        out.push((
-            "an unreadable list page leaves a mark past its open".into(),
-            format!("{outlived:?}; reopened {reopened:?}; marks page {durable:?}"),
-        ));
-    }
+    let over: BTreeSet<_> = marks.difference(&f.allowed_marks).collect();
     if !over.is_empty() {
         let shape = if !over.contains(&Quarantine::Database) {
             "a mark the faults do not map to"
@@ -1026,6 +1036,7 @@ fn judge_backup(f: &Facts<'_>, b: &Backup) -> Vec<(String, String)> {
     if let Err(e) = &b.made
         && !f.lasting
         && !marks.contains(&Quarantine::Database)
+        && !matches!(e, Read::Failed(e) if f.unarmed.iter().any(|p| *e == unreadable(*p)))
     {
         out.push(("the backup fails".into(), format!("{e:?}")));
     }

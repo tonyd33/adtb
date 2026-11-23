@@ -832,8 +832,9 @@ page repaired outside the engine, such as by copying its bytes back,
 stays reported until an image or a free. Past the page's capacity the
 list records the whole file as damaged and lists no more pages. A list
 page that fails its checksum or is no list page quarantines the
-database (§8). One the device cannot read at the open quarantines it for
-that open only, and the open's records then live in memory only. A
+database (§8). One the device cannot read at the open marks nothing and
+leaves the open unarmed (§8), and the open's records then live in memory
+only. A
 checkpoint that cannot latch the list page folds nothing into it from
 then on, and marks nothing. A record no fold has taken holds the redo LSN
 of every later checkpoint at or below it, so no recycle removes it and
@@ -982,8 +983,8 @@ database, since the visibility of every relation reads the commit log.
 A status page the retained log cannot prove, when the open settles the
 ids a crash left in progress, holds the database for that open only and
 writes no mark, whatever stopped the proof: a gap or undecodable batch
-that left the read-in gate unarmed, a log that cannot load, or no batch
-starting at the status page's LSN. A mark held so stops every recycle,
+that left the read-in gate unproven, or no batch starting at the status
+page's LSN. A mark held so stops every recycle,
 so the next open finds the same log and proves again. Under either,
 every transaction is refused with the corruption fault, and the
 database opens for `verify` and `dump` only
@@ -1034,9 +1035,23 @@ Opening a file under that mark, postconditions:
 - A failed open that found no damaged page, or an unreadable one, still fails.
   So do a file header with neither copy valid, a file that is no adtb file, a
   retained log recovery refuses, and a row that fails to decode on a page
-  that verifies. A damage list page the device cannot read at the open holds
-  the database for that open only and counts as neither: the open fails when
-  it is the only damaged page, and otherwise the other damaged pages decide.
+  that verifies.
+
+An open the device stopped from arming the read-in gate (§10.3), from
+reading the damage list (§6), or from reading the retained log to settle
+the ids a crash left in progress, is unarmed. The failure marks nothing. The
+open writes nothing past recovery and its checkpoint: it resolves no id,
+frees no page, allocates no counters page and applies no migration, and
+writes neither the marks page nor the damage list. An open given a log
+longer than the file's fails `OpenError::Io` naming the failure. Every call
+but one `verify` alone and one `dump` alone first attempts the reads of
+arming again, or the read of the damage list, and fails with `Storage`
+naming the failure while it still fails.
+Once an attempt succeeds, every such call fails with `Storage` saying the
+database must be reopened: the pages the open read with the gate off were
+never checked, so that open never runs normally, and the next open does.
+`verify` keeps no findings, and `dump` checks the commit log and the
+catalog first, as under a mark held for an open.
 
 Quarantine is a mark the storage layer sets on one heap, one index or
 the whole database, and keeps until the object is repaired. The mapper is
@@ -1297,16 +1312,17 @@ a hash table of one entry per page those records name. Recovery builds
 both as its last step, before the open reads any page recovery did not
 replay: it reads the whole map, then scans the retained log to the end
 recovery kept, decoding only the page and LSN of each record, past a
-gap as well. A segment
-it cannot list, open or read, a block missing or a batch whose records
-do not decode before that end quarantines the whole database for that
-open and writes no mark for it; a map page the open cannot
-read does the same. While the database is held quarantined this way,
-no page read in is checked against an expected LSN, `verify` and scrub
-check every page against the expected LSNs the open could read, a
-record before a gap as a least one, and the marks page,
-read with no check, is never written: a mark set in that open, and a
-damage record it maps, live in memory for that open only (§8). Damaging a page
+gap as well. A block missing or a batch whose records do not decode
+before that end, or a map page out of shape, quarantines the whole
+database for that open and writes no mark for it. A read the device
+fails instead, of the log directory, a segment, a block of the retained
+log before that end or a map page, leaves the gate off and the open
+unarmed (§8), and marks nothing. While the gate is off no page read in
+is checked against an expected LSN. While the database is held
+quarantined this way or the open is unarmed, `verify` and scrub check
+every page against the expected LSNs the open could read, a record
+before a gap as a least one, and the marks page is never written: a
+mark set in that open, and a damage record it maps, live in memory for that open only (§8). Damaging a page
 outside recovery writes its memory first when it holds changes the file
 lacks, then drops it, so its entry leaves the dirty page table at the
 next force. On a file quarantined whole the memory is dropped unwritten

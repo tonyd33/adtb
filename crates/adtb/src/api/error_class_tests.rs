@@ -156,6 +156,12 @@ fn write_rows() -> Vec<Row> {
             closed(),
         ),
         row(
+            write::Error::Unarmed(storage::Unarmed::LogBlock(Lsn(3))),
+            Class::Refused,
+            false,
+            storage_failure("the log block holding LSN 3 cannot be read"),
+        ),
+        row(
             write::Error::Corrupt(Rot::NoKeyIndex("r".into())),
             Class::Damage,
             true,
@@ -549,7 +555,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 74;
+const SLOTS: usize = 75;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -570,6 +576,7 @@ fn slot(e: &write::Error) -> usize {
             mvcc::Error::Closed => 8,
         },
         write::Error::Corrupt(_) => 9,
+        write::Error::Unarmed(_) => 74,
         write::Error::Denied(_) => 10,
         write::Error::SequenceExhausted => 11,
         write::Error::Refused(_) => 12,

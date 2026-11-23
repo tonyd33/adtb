@@ -372,6 +372,7 @@ impl Error {
                 Error::closed()
             }
             write::Error::Transactions(e) => Error::storage(Failure::Transactions(e)),
+            write::Error::Unarmed(why) => Error::storage(Failure::Unarmed(why)),
             write::Error::Corrupt(r) => Error::storage(Failure::Write(r)),
             write::Error::SequenceExhausted => {
                 Error::invalid("the generated counter exhausted its integer range")

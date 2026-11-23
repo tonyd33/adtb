@@ -166,6 +166,8 @@ pub enum Error {
     },
     /// The transactions layer refuses the call.
     Transactions(crate::mvcc::Error),
+    /// The open could not arm the read-in gate, so it refuses the call.
+    Unarmed(crate::storage::Unarmed),
     Corrupt(Rot),
     /// The role the statement runs for lacks a privilege, as this text states.
     Denied(String),

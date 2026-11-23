@@ -969,7 +969,7 @@ impl<R: Runtime> Engine<R> {
             &parts.settings,
         )?
         .vacuuming(options.background_vacuum())
-        .owing(owed, !pager.refused_whole());
+        .owing(owed, !pager.opens_unwritten());
         let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
         Ok(Engine {
             rt,
@@ -1025,7 +1025,7 @@ impl<R: Runtime> Engine<R> {
 
     /// Returns the failure of every call but `verify` and `dump` on a database quarantined whole.
     fn refusal(&self) -> Option<Error> {
-        let refused = self.db.admit_database().err()?;
+        let refused = self.db.admit_call().err()?;
         Some(self.write_error(TxnId(0), refused))
     }
 
@@ -1052,9 +1052,12 @@ impl<R: Runtime> Engine<R> {
     ) -> Result<Opened<R>, OpenError> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         *unapplied = migrate::unapplied(&catalog, log);
+        if let (Some(why), Some(_)) = (pager.unarmed(), *unapplied) {
+            return Err(cause::unarmed(why));
+        }
         mark_open_damage(&pager, opening, &catalog, &txns);
         let clog_damaged = pager.whole_cause().is_some();
-        let writable = !pager.refused_whole();
+        let writable = !pager.opens_unwritten();
         catalog.set_query_memory(query_memory(options));
         diverged(&catalog, log)?;
         let (mut stored, settings) = deployed_state(&catalog, &pager, &txns, clog_damaged)?;

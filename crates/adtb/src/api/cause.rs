@@ -121,6 +121,8 @@ pub(super) enum Failure {
     /// A page that cannot be handed out, its damage mapped to no mark.
     Page(storage::PageError),
     Transactions(mvcc::Error),
+    /// The open could not arm the read-in gate.
+    Unarmed(storage::Unarmed),
     /// A stored structure a statement reads does not decode.
     Write(write::Rot),
     /// A stored structure or spill file a plan reads does not decode.
@@ -152,6 +154,7 @@ impl fmt::Display for Failure {
         match self {
             Failure::Page(e) => write!(f, "{e}"),
             Failure::Transactions(e) => write!(f, "{e}"),
+            Failure::Unarmed(why) => write!(f, "{why}"),
             Failure::Write(r) => write!(f, "{r}"),
             Failure::Exec(r) => write!(f, "{r}"),
             Failure::OrphanEntry(index) => write!(f, "an entry of index {index} names no version"),
@@ -304,6 +307,11 @@ pub(super) fn past_limits(e: &permission::Error) -> bool {
                 ..
             })
     )
+}
+
+/// Returns the failure of an open given migrations while it could not arm the read-in gate.
+pub(super) fn unarmed(why: storage::Unarmed) -> OpenError {
+    OpenError::Io(std::io::Error::other(Io(Failure::Unarmed(why))))
 }
 
 /// Returns the refusal of a file that `cause` makes: [`OpenError::PastLimits`] for a stored body

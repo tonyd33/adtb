@@ -475,9 +475,10 @@ impl<R: Runtime> Verifier<R> {
         held.next_run - 1
     }
 
-    /// Returns whether a run may write to the file: a database quarantined whole keeps nothing.
+    /// Returns whether a run may write to the file: a database quarantined whole or unarmed keeps
+    /// nothing.
     pub(super) fn keeps(&self) -> bool {
-        !self.pager.refused_whole()
+        !self.pager.opens_unwritten()
     }
 
     /// Returns the row of `sys::jobs` of a new pass of the scrub, and its run number and start.
@@ -785,9 +786,12 @@ impl<R: Runtime> Engine<R> {
         }
         let keep = self.verifier.keeps();
         if !keep {
+            let why = match self.verifier.pager.unarmed() {
+                Some(why) => why.to_string(),
+                None => "quarantined whole".to_owned(),
+            };
             found.insert(Found::Structure {
-                at: "the database: quarantined whole, so the findings of this run are not kept"
-                    .to_owned(),
+                at: format!("the database: {why}, so the findings of this run are not kept"),
             });
         }
         let group = group(scope, schema);

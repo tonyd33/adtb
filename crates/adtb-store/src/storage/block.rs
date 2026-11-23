@@ -2,6 +2,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use super::arming::Unarmed;
 use super::crc::crc32c_skipping;
 #[cfg(any(test, feature = "testing"))]
 use super::log::CHUNK;
@@ -577,19 +578,25 @@ pub struct Resolutions {
 /// `since`, or from its first whole batch when that batch begins before its first segment, and
 /// what each record there of one of `pages` continues from.
 ///
-/// Fail with the LSN of the first damage before `end`: a block it cannot read, a batch that
-/// does not decode, or a block missing.
+/// Fail with the first block before `end` the device cannot read, or else with the LSN of the
+/// first damage before `end`: a batch that does not decode, or a block missing.
 pub fn resolutions_from<S: LogSource>(
     img: &mut LogImage<S>,
     since: Lsn,
     end: Lsn,
     pages: &BTreeSet<Pid>,
-) -> Result<Resolutions, Lsn> {
-    let base = img.first().ok_or(since)?;
+) -> Result<Resolutions, Unsettled> {
+    let base = img.first().ok_or(Unsettled::At(since))?;
     let from = match (since >= base).then(|| img.batch_start(since)) {
-        Some(None) => return Err(since),
+        Some(None) => {
+            let block = Lsn(since.0 - since.0 % img.block as u64);
+            return Err(match img.slot(block) {
+                Slot::Unreadable => Unsettled::Unread(Unarmed::LogBlock(block)),
+                _ => Unsettled::At(since),
+            });
+        }
         Some(Some(at)) if at >= base => at,
-        _ => img.first_batch().ok_or(since)?,
+        _ => img.first_batch().ok_or(Unsettled::At(since))?,
     };
     let block = img.block;
     let mut out = Resolutions::default();
@@ -602,14 +609,25 @@ pub fn resolutions_from<S: LogSource>(
             }
         }
     });
-    let undecoded = s
-        .findings
-        .iter()
-        .filter(|f| f.problem == LogProblem::Malformed && f.lsn < end)
+    let before = || s.findings.iter().filter(|f| f.lsn < end);
+    if let Some(f) = before().find(|f| f.problem == LogProblem::Unreadable) {
+        return Err(Unsettled::Unread(Unarmed::LogBlock(f.lsn)));
+    }
+    let undecoded = before()
+        .filter(|f| f.problem == LogProblem::Malformed)
         .map(|f| f.lsn);
     let short = (s.end < end).then_some(s.end);
     match undecoded.chain(short).min() {
-        Some(at) => Err(at),
+        Some(at) => Err(Unsettled::At(at)),
         None => Ok(out),
     }
+}
+
+/// Why the retained log settles nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unsettled {
+    /// The device failed a read of the log.
+    Unread(Unarmed),
+    /// The log cannot prove a record from this LSN.
+    At(Lsn),
 }

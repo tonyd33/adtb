@@ -668,7 +668,7 @@ impl Catalog {
     /// next open to free.
     pub fn open<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let (mut catalog, txns) = Catalog::load(rt, pager)?;
-        if pager.refused_whole() {
+        if pager.opens_unwritten() {
             return Ok((catalog, txns));
         }
         let changing = Root::read(&pager.read(catalog.root)?).changing();
@@ -697,7 +697,7 @@ impl Catalog {
         let pid = pager.catalog_root();
         let refused = || Error::from(Rot::MarkedNoCatalog);
         if pid == Pid(0) {
-            if pager.refused_whole() {
+            if pager.opens_unwritten() {
                 return Err(refused());
             }
             for p in pager.allocated()? {
@@ -717,7 +717,7 @@ impl Catalog {
             Root::read(&page)
         };
         let txns = Transactions::open(rt, pager, root.commit_log)?;
-        let marked = pager.refused_whole();
+        let marked = pager.opens_unwritten();
         if root.roots.1 == Pid(0) {
             if marked {
                 return Err(refused());
