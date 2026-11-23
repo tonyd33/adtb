@@ -25,7 +25,7 @@ pub(super) fn wants_expected(e: &Expr) -> bool {
     }
 }
 
-fn every_ctor(ty: &Ty) -> Ty {
+pub(super) fn every_ctor(ty: &Ty) -> Ty {
     match ty {
         Ty::Data { def, args, .. } => Ty::Data {
             def: *def,
@@ -100,6 +100,13 @@ impl Checker<'_> {
 
     /// Check `e` against `expected`.
     pub fn check(&mut self, e: &Expr, expected: &Ty) -> R<Out> {
+        #[cfg(test)]
+        tests::step();
+        if let Some(o) = self.solved_parts.remove(&std::ptr::from_ref(e))
+            && (!wants_expected(e) || self.subtype(&o.ty, expected))
+        {
+            return self.subsume(o, expected, e.span);
+        }
         let out = match &e.kind {
             ExprKind::Lit(Lit::Int(_) | Lit::Decimal(_) | Lit::Float(_)) => {
                 self.literal(e, Some(expected))?
@@ -182,6 +189,8 @@ impl Checker<'_> {
 
     /// Synthesize the type of `e`.
     pub fn synth(&mut self, e: &Expr) -> R<Out> {
+        #[cfg(test)]
+        tests::step();
         let mut out = self.synthesized(e)?;
         out.ty = self.current(&out.ty);
         self.sized(out, e.span)

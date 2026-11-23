@@ -1,4 +1,4 @@
-use super::expr::wants_expected;
+use super::expr::{every_ctor, wants_expected};
 use super::placed::Placed;
 use super::*;
 use crate::ast::{CallArgs, Expr, ExprKind};
@@ -26,61 +26,79 @@ impl Checker<'_> {
         result: Option<(&Ty, &Ty)>,
         span: Span,
     ) -> R<(Vec<Placed>, Vec<Option<Ty>>)> {
+        let mut mine = Vec::new();
+        let solved = self.solve_args_with(callee, params, es, result, span, &mut mine);
+        for e in mine {
+            self.solved_parts.remove(&e);
+        }
+        solved
+    }
+
+    fn solve_args_with(
+        &mut self,
+        callee: (&str, &[String]),
+        params: &[Ty],
+        es: &[&Expr],
+        result: Option<(&Ty, &Ty)>,
+        span: Span,
+        mine: &mut Vec<*const Expr>,
+    ) -> R<(Vec<Placed>, Vec<Option<Ty>>)> {
         let n = callee.1.len();
         let mut bounds: Vec<Bounds> = vec![Bounds::default(); n];
         let mut literals: Vec<Bounds> = vec![Bounds::default(); n];
-        let mut outs: Vec<Option<Out>> = vec![None; es.len()];
+        let mut deferred: Vec<(&Expr, usize)> = Vec::new();
         if n > 0 {
-            for (i, (e, pty)) in es.iter().zip(params).enumerate() {
+            for (e, pty) in es.iter().zip(params) {
                 if !mentions_any_param(pty, n) || matches!(e.kind, ExprKind::Lambda(..)) {
                     continue;
                 }
-                if !wants_expected(e) {
+                if wants_expected(e) {
+                    self.literal_parts(e, pty, n, &mut literals, &mut deferred, mine)?;
+                } else {
                     let o = self.synth(e)?;
                     bound(self.schema, pty, &o.ty, Side::Lower, false, &mut bounds);
-                    outs[i] = Some(o);
-                } else if self.synthesizes(e) {
-                    let o = self.synth(e)?;
-                    bound(self.schema, pty, &o.ty, Side::Lower, true, &mut literals);
-                    outs[i] = Some(o);
+                    self.keep_part(e, o, mine);
                 }
             }
             let unbounded: Vec<bool> = (0..n)
                 .map(|j| bounds[j].is_empty() && literals[j].is_empty())
                 .collect();
-            for (i, (e, pty)) in es.iter().zip(params).enumerate() {
+            for (e, pty) in es.iter().zip(params) {
                 let open = (0..n).any(|j| unbounded[j] && mentions(pty, j as u32));
-                if outs[i].is_none() && open {
+                if open && !self.solved_parts.contains_key(&std::ptr::from_ref(*e)) {
                     let o = self.synth(e)?;
                     bound(self.schema, pty, &o.ty, Side::Lower, true, &mut bounds);
-                    outs[i] = Some(o);
+                    self.keep_part(e, o, mine);
                 }
             }
             if let Some((res, exp)) = result {
                 bound(self.schema, res, exp, Side::Upper, false, &mut bounds);
             }
         }
-        let mut sol: Vec<Option<Ty>> = Vec::new();
-        for (j, (b, name)) in bounds.iter().zip(callee.1).enumerate() {
-            let refused = |why: String| {
-                diag(
-                    span,
-                    format!(
-                        "the type argument `{name}` of `{}` has no solution: {why}",
-                        callee.0
-                    ),
-                )
-            };
+        let refused = |j: usize, why: String| {
+            diag(
+                span,
+                format!(
+                    "the type argument `{}` of `{}` has no solution: {why}",
+                    callee.1[j], callee.0
+                ),
+            )
+        };
+        let mut lowers: Vec<Option<Ty>> = Vec::new();
+        for (j, b) in bounds.iter().enumerate() {
             let mut lower: Option<Ty> = None;
             for t in &b.lower {
                 lower = Some(match lower {
                     None => t.clone(),
                     Some(l) => self.join(&l, t, span)?.ok_or_else(|| {
-                        refused(format!(
-                            "no type is above both {} and {}",
-                            self.show(&l),
-                            self.show(t)
-                        ))
+                        refused(
+                            j,
+                            format!(
+                                "no type is above both {} and {}",
+                                self.show(&l),
+                                self.show(t)
+                            ),
+                        )
                     })?,
                 });
             }
@@ -90,6 +108,27 @@ impl Checker<'_> {
                     Some(l) => Some(self.join(&l, t, span)?.unwrap_or(l)),
                 };
             }
+            lowers.push(lower);
+        }
+        for (e, j) in deferred {
+            let Some(lower) = lowers[j].clone() else {
+                continue;
+            };
+            let whole = every_ctor(&lower);
+            let Ty::Data { def, .. } = whole else {
+                continue;
+            };
+            if self.ctor_named(e).is_none_or(|(d, _)| d != def) {
+                continue;
+            }
+            let o = self.check(e, &whole)?;
+            lowers[j] = Some(self.join(&lower, &o.ty, span)?.unwrap_or(whole));
+            self.keep_part(e, o, mine);
+        }
+        let mut sol: Vec<Option<Ty>> = Vec::new();
+        for (j, (b, name)) in bounds.iter().zip(callee.1).enumerate() {
+            let refused = |why: String| refused(j, why);
+            let lower = lowers[j].take();
             let mut upper: Option<Ty> = None;
             for t in &b.upper {
                 let t = self.current(t);
@@ -144,17 +183,77 @@ impl Checker<'_> {
             });
         }
         let mut tms = Vec::new();
-        for (i, (e, pty)) in es.iter().zip(params).enumerate() {
-            let want = pty.subst(&solved(&sol));
-            let placed = match outs[i].take() {
-                Some(o) if !wants_expected(e) || self.subtype(&o.ty, &want) => {
-                    self.place(o, &want, e.span)?
-                }
-                _ => self.check_placed(e, &want)?,
-            };
-            tms.push(placed);
+        for (e, pty) in es.iter().zip(params) {
+            tms.push(self.check_placed(e, &pty.subst(&solved(&sol)))?);
         }
         Ok((tms, sol))
+    }
+
+    /// Bound each type parameter `pty` mentions by the parts of literal `e` that have a type
+    /// without an expected one, and add to `deferred` each constructor at a bare parameter that
+    /// has none.
+    fn literal_parts<'e>(
+        &mut self,
+        e: &'e Expr,
+        pty: &Ty,
+        n: usize,
+        literals: &mut [Bounds],
+        deferred: &mut Vec<(&'e Expr, usize)>,
+        mine: &mut Vec<*const Expr>,
+    ) -> R<()> {
+        if !mentions_any_param(pty, n) || matches!(e.kind, ExprKind::Lambda(..)) {
+            return Ok(());
+        }
+        if !wants_expected(e) || self.synthesizes(e) {
+            let o = self.synth(e)?;
+            bound(self.schema, pty, &o.ty, Side::Lower, true, literals);
+            self.keep_part(e, o, mine);
+            return Ok(());
+        }
+        match (&e.kind, pty) {
+            (ExprKind::Ctor { .. }, Ty::Param(j)) => deferred.push((e, *j as usize)),
+            (ExprKind::Record(ast::RecordExpr::Fields(fs, _)), Ty::Record(ftys)) => {
+                for (name, f) in fs {
+                    if let Some((_, t)) = ftys.iter().find(|(m, _)| *m == name.text) {
+                        self.literal_parts(f, t, n, literals, deferred, mine)?;
+                    }
+                }
+            }
+            (ExprKind::Set(xs), Ty::Set(t) | Ty::NonEmpty(t)) => {
+                for x in xs {
+                    self.literal_parts(x, t, n, literals, deferred, mine)?;
+                }
+            }
+            (
+                ExprKind::Ctor {
+                    record: Some(ast::RecordExpr::Fields(fs, _)),
+                    ..
+                },
+                Ty::Data { def, args, .. },
+            ) => {
+                let Some((d, c)) = self.ctor_named(e) else {
+                    return Ok(());
+                };
+                if d != *def {
+                    return Ok(());
+                }
+                let ftys = ty::ctor_fields(self.schema, d, args, c);
+                for (name, f) in fs {
+                    if let Some((_, t, _)) = ftys.iter().find(|(m, _, _)| *m == name.text) {
+                        self.literal_parts(f, t, n, literals, deferred, mine)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Keep `o`, the elaboration of `e`, for the check that places `e`.
+    fn keep_part(&mut self, e: &Expr, o: Out, mine: &mut Vec<*const Expr>) {
+        let k = std::ptr::from_ref(e);
+        self.solved_parts.insert(k, o);
+        mine.push(k);
     }
 
     /// Returns whether literal `e` and each literal it holds has a type without an expected one.

@@ -260,6 +260,8 @@ pub struct Checker<'a> {
     /// The `at` bodies around the expression being checked.
     at_bodies: u32,
     sums: sums::Sums,
+    /// The arguments of the calls being solved already elaborated, each taken by its check.
+    solved_parts: std::collections::HashMap<*const ast::Expr, Out>,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -318,6 +320,7 @@ impl<'a> Checker<'a> {
             late_writer: None,
             at_bodies: 0,
             sums: sums::Sums::default(),
+            solved_parts: std::collections::HashMap::new(),
         }
     }
 

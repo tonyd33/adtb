@@ -43,18 +43,25 @@ impl Reached {
     }
 }
 
-/// An argument: a parameter of a drawn type, or a literal and the least drawn type it checks
-/// against.
+/// An argument: a parameter of a drawn type, a literal and the least drawn type it checks
+/// against, or a constructor of a declared type that fixes none of its type arguments.
+#[derive(Debug)]
 enum Arg<'t> {
     Param(&'t Ty),
     Literal(&'static str, Ty),
+    Open(&'static str, TypeId, u32),
 }
 
 impl Arg<'_> {
-    fn ty(&self) -> &Ty {
-        match self {
-            Arg::Param(t) => t,
-            Arg::Literal(_, t) => t,
+    /// Returns whether the argument checks against `t`.
+    fn checks_against(&self, c: &Calls, t: &Ty) -> bool {
+        match (self, t) {
+            (Arg::Param(a), t) => c.sub(a, t),
+            (Arg::Literal(_, a), t) => c.sub(a, t),
+            (Arg::Open(_, d, k), Ty::Data { def, ctors, .. }) => {
+                d == def && ctors.as_ref().is_none_or(|cs| cs.contains(k))
+            }
+            (Arg::Open(..), _) => false,
         }
     }
 }
@@ -77,7 +84,7 @@ impl Calls {
                     params.insert(name.to_string(), (*t).clone());
                     name
                 }
-                Arg::Literal(l, _) => l,
+                Arg::Literal(l, _) | Arg::Open(l, ..) => l,
             };
             text = text.replace(&format!("${name}"), written);
         }
@@ -93,8 +100,7 @@ impl Calls {
         assert_eq!(
             got.as_ref().map(drop).map_err(drop) == Ok(()),
             oracle,
-            "{text} at {:?}: {got:?}, but the table {}",
-            args.iter().map(|a| a.ty()).collect::<Vec<_>>(),
+            "{text} at {args:?}: {got:?}, but the table {}",
             if oracle { "admits it" } else { "refuses it" }
         );
         reached.count(oracle);
@@ -168,6 +174,7 @@ fn literals(c: &Calls) -> Vec<Arg<'static>> {
     };
     vec![
         Arg::Literal("1", i64()),
+        Arg::Open("None", c.schema.prelude().option(), 0),
         Arg::Literal("Draft", status.clone()),
         Arg::Literal("Some { value: Draft }", option(status)),
         Arg::Literal("Some { value: 1 }", option(i64())),
@@ -224,16 +231,13 @@ fn a_covariant_type_argument_is_the_least_type_above_its_arguments_and_below_the
     }
     for p in &args {
         for q in &args {
-            if matches!((p, q), (Arg::Literal(..), Arg::Literal(..))) {
-                continue;
-            }
-            let above = c.all(|t| c.sub(p.ty(), t) && c.sub(q.ty(), t));
+            let above = c.all(|t| p.checks_against(&c, t) && q.checks_against(&c, t));
             let least = c.least(&above);
             assert!(
-                above.is_empty() || least.is_some(),
-                "the drawn types hold no least type above {:?} and {:?}",
-                p.ty(),
-                q.ty()
+                above.is_empty()
+                    || least.is_some()
+                    || matches!((p, q), (Arg::Open(..), Arg::Open(..))),
+                "the drawn types hold no least type above {p:?} and {q:?}"
             );
             c.agrees("same($p, $q)", &[p, q], least.is_some(), &mut same);
             c.agrees(
@@ -245,16 +249,12 @@ fn a_covariant_type_argument_is_the_least_type_above_its_arguments_and_below_the
             let got = c.outcome("first($p, $q)", &[p, q]);
             match (least, &got) {
                 (Some(l), Ok(t)) => assert!(
-                    c.sub(l, t) && c.sub(t, l),
-                    "first(p, q) at {:?} and {:?} is {t:?}, not the least {l:?}",
-                    p.ty(),
-                    q.ty()
+                    c.sub(t, l) && p.checks_against(&c, t) && q.checks_against(&c, t),
+                    "first(p, q) at {p:?} and {q:?} is {t:?}, not above both and below the least drawn {l:?}"
                 ),
                 (None, Err(_)) => {}
                 _ => panic!(
-                    "first(p, q) at {:?} and {:?}: {got:?}, the least type above both {least:?}",
-                    p.ty(),
-                    q.ty()
+                    "first(p, q) at {p:?} and {q:?}: {got:?}, the least type above both {least:?}"
                 ),
             }
             first.count(least.is_some());
@@ -308,4 +308,40 @@ fn a_contravariant_type_argument_is_the_greatest_type_below_its_arguments_and_ab
     }
     pick.assert_both("pick");
     idf.assert_both("idf");
+}
+
+#[test]
+fn nested_calls_with_literal_arguments_take_work_linear_in_their_depth() {
+    let c = calls();
+    let shapes = [
+        "first($, 1)",
+        "first(None, $)",
+        "first($, None)",
+        "same($, Some { value: 1 })",
+        "both({ x: $, y: None })",
+        "first({ x: $ }, { x: 1 })",
+        "first([$], [None])",
+        "Some { value: $ }",
+        "first(Some { value: $ }, None)",
+    ];
+    let bottoms = ["1", "None", "Some { value: 1 }", "nosuch"];
+    let work = |shape: &str, bottom: &str, depth: usize| {
+        let text = (0..depth).fold(bottom.to_string(), |t, _| shape.replace('$', &t));
+        let before = steps();
+        let got = c.outcome(&text, &[]);
+        (steps() - before, got.is_ok())
+    };
+    let mut reached = Reached::default();
+    for shape in shapes {
+        for bottom in bottoms {
+            let (once, admitted) = work(shape, bottom, 8);
+            let (twice, _) = work(shape, bottom, 16);
+            assert!(
+                once > 8 && twice <= 2 * once,
+                "{shape} over {bottom}: {once} steps 8 deep and {twice} 16 deep"
+            );
+            reached.count(admitted);
+        }
+    }
+    reached.assert_both("nested calls");
 }

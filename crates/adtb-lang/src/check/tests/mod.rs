@@ -17,6 +17,20 @@ mod runtime;
 mod type_laws;
 mod writes;
 
+thread_local! {
+    static STEPS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Count one check or synthesis of an expression.
+pub(super) fn step() {
+    STEPS.with(|s| s.set(s.get() + 1));
+}
+
+/// Returns how many checks and syntheses of expressions this thread has made.
+pub(super) fn steps() -> u64 {
+    STEPS.with(Cell::get)
+}
+
 fn source(extra: &str) -> String {
     let running = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),

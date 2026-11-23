@@ -973,23 +973,10 @@ impl Checker<'_> {
     }
 
     pub(super) fn ctor_synthesizes(&self, e: &Expr) -> bool {
-        let ExprKind::Ctor { path, ctor, record } = &e.kind else {
+        let ExprKind::Ctor { record, .. } = &e.kind else {
             return false;
         };
-        let name = &ctor.as_ref().unwrap_or(&path.name).text;
-        let def = if ctor.is_some() {
-            match self.lookup_type(path) {
-                Ok(TypeName::Decl(d)) => d,
-                _ => return true,
-            }
-        } else {
-            match self.ctors_named(name).as_slice() {
-                [(d, _)] => *d,
-                _ => return true,
-            }
-        };
-        let t = self.schema.ty(def);
-        let Some(c) = t.ctor_index(name) else {
+        let Some((def, c)) = self.ctor_named(e) else {
             return true;
         };
         let given: Vec<&str> = match record {
@@ -999,13 +986,35 @@ impl Checker<'_> {
             }
             Some(_) => return true,
         };
-        let params: Vec<Ty> = (0..t.params.len() as u32).map(Ty::Param).collect();
+        let n = self.schema.ty(def).params.len() as u32;
+        let params: Vec<Ty> = (0..n).map(Ty::Param).collect();
         let fields = ty::ctor_fields(self.schema, def, &params, c);
-        (0..params.len() as u32).all(|i| {
+        (0..n).all(|i| {
             fields
                 .iter()
                 .any(|(f, fty, _)| given.contains(&f.as_str()) && call::mentions(fty, i))
         })
+    }
+
+    /// Returns the declared type and index of the constructor literal `e` names, where it names
+    /// one.
+    pub(super) fn ctor_named(&self, e: &Expr) -> Option<(TypeId, u32)> {
+        let ExprKind::Ctor { path, ctor, .. } = &e.kind else {
+            return None;
+        };
+        let name = &ctor.as_ref().unwrap_or(&path.name).text;
+        let def = if ctor.is_some() {
+            match self.lookup_type(path) {
+                Ok(TypeName::Decl(d)) => d,
+                _ => return None,
+            }
+        } else {
+            match self.ctors_named(name).as_slice() {
+                [(d, _)] => *d,
+                _ => return None,
+            }
+        };
+        Some((def, self.schema.ty(def).ctor_index(name)?))
     }
 
     /// Elaborate an arm with no expected type: synthesized, or checked against `joined` when it takes its type from the other arms.
