@@ -3,7 +3,7 @@ use adtb_lang::evolve::{Listed, OpSteps, Step};
 use adtb_lang::schema::Schema;
 use adtb_lang::translate::operator_text;
 
-use super::Error;
+use super::{Broken, Error};
 
 /// Returns the schema `step` of operator `op` leaves, `text` the migration's text, or `None`
 /// when that schema does not build and the step moves no rows; refuses the migration, naming the
@@ -30,20 +30,37 @@ pub fn built(step: &Step, op: &Operator, text: &str) -> Result<Option<Schema>, E
     }
 }
 
-/// The steps of each operator of a migration in order, each step with the schema [`built`]
+/// Each operator of a migration in order with its steps, each step with the schema [`built`]
 /// returns for it, a step it folds left out.
-pub type Stepped<'a> = Vec<Vec<(&'a Step, Schema)>>;
+pub struct Stepped<'a> {
+    ops: Vec<(Listed<'a>, Vec<(&'a Step, Schema)>)>,
+}
+
+impl<'a> Stepped<'a> {
+    /// Returns each operator in order with its steps.
+    pub fn ops(&self) -> impl Iterator<Item = (Listed<'a>, &[(&'a Step, Schema)])> + '_ {
+        self.ops.iter().map(|(op, steps)| (*op, steps.as_slice()))
+    }
+}
 
 /// Returns `steps`, the steps of each operator of `file` in order, `text` its text, each with
 /// its schema.
 ///
-/// Fail as [`built`] does, and with [`Error::Refused`] at the first operator whose steps fail.
+/// Fail as [`built`] does, with [`Error::Refused`] at the first operator whose steps fail, and
+/// with [`Broken::Unstepped`] unless `steps` holds one entry for each operator.
 pub fn stepped<'a>(
     steps: &'a [OpSteps],
-    file: &MigrationFile,
+    file: &'a MigrationFile,
     text: &str,
 ) -> Result<Stepped<'a>, Error> {
-    Listed::all(&file.operators)
+    if steps.len() != file.operators.len() {
+        return Err(Broken::Unstepped {
+            operators: file.operators.len(),
+            stepped: steps.len(),
+        }
+        .into());
+    }
+    let ops = Listed::all(&file.operators)
         .zip(steps)
         .map(|(op, steps)| {
             let steps = steps
@@ -55,9 +72,10 @@ pub fn stepped<'a>(
                     out.push((step, schema));
                 }
             }
-            Ok(out)
+            Ok((op, out))
         })
-        .collect()
+        .collect::<Result<_, Error>>()?;
+    Ok(Stepped { ops })
 }
 
 #[cfg(test)]

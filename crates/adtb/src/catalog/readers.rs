@@ -284,18 +284,13 @@ impl Changes {
     }
 }
 
-/// Returns what `stepped`, the steps of the operators of `file` applied to `source`, whose schema
-/// is `schema`, do to write states, constraints and uniques.
-fn changes(
-    source: &Source,
-    schema: &Schema,
-    file: &MigrationFile,
-    stepped: &Stepped,
-) -> Result<Changes, Error> {
+/// Returns what `stepped`, the steps of a migration's operators applied to `source`, whose
+/// schema is `schema`, do to write states, constraints and uniques.
+fn changes(source: &Source, schema: &Schema, stepped: &Stepped) -> Result<Changes, Error> {
     let mut before = schema;
     let mut before_source = source;
     let mut changes = Changes::default();
-    for (i, (op, steps)) in file.operators.iter().zip(stepped).enumerate() {
+    for (i, (op, steps)) in stepped.ops().enumerate() {
         for (step, schema) in steps {
             changes.add(before, schema);
             if matches!(op.kind, OperatorKind::DropUnique(..)) {
@@ -363,7 +358,7 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
                 .record_steps(&file, &l.text)
                 .map_err(|r| super::refusal(r, Error::Refused))?;
             let stepped = super::steps::stepped(&steps, &file, &l.text)?;
-            let drops = changes(&l.before, &before, &file, &stepped)?.uniques;
+            let drops = changes(&l.before, &before, &stepped)?.uniques;
             let skipped: BTreeSet<usize> = drops
                 .iter()
                 .filter(|u| held.contains(&u.id))
@@ -481,7 +476,7 @@ impl Catalog {
         next: &Checked,
         stepped: &Stepped,
     ) -> Result<Readers, Error> {
-        let changes = changes(&self.source, &self.schema, file, stepped)?;
+        let changes = changes(&self.source, &self.schema, stepped)?;
         let now = &next.schema;
         let mut refused = Vec::new();
         for &(rid, cid) in &changes.enabled {

@@ -52,6 +52,11 @@ pub enum Broken {
     GrantId(write::Error),
     /// A grant row id is drawn with no page of id counters named.
     NoSequences,
+    /// The model gave steps for a number of operators other than the migration's.
+    Unstepped {
+        operators: usize,
+        stepped: usize,
+    },
     /// A log grant names an object the schema lacks.
     GrantTarget(LogGrant),
     /// A relation kept across a migration lacks an id for one of its constructors.
@@ -166,6 +171,10 @@ impl fmt::Display for Broken {
             Broken::KeyCounter(e) => write!(f, "advancing a key counter: {}", write::detail(e)),
             Broken::GrantId(e) => write!(f, "drawing a grant id: {}", write::detail(e)),
             Broken::NoSequences => f.write_str("a grant row id needs a named page of id counters"),
+            Broken::Unstepped { operators, stepped } => write!(
+                f,
+                "the model gave steps for {stepped} of a migration's {operators} operators"
+            ),
             Broken::GrantTarget(g) => write!(f, "a log grant names live objects: {g:?}"),
             Broken::KeptCtor(r, c) => write!(f, "relation {r} keeps constructor {c}"),
             Broken::PendingRelations => {

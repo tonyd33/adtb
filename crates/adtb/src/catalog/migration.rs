@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
 use adtb_lang::depends;
-use adtb_lang::evolve::{self, Code, Listed, Privilege, Recorded, Resolved, RowMap, Source};
+use adtb_lang::evolve::{self, Code, Privilege, Recorded, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, Root};
 use adtb_lang::parse::{Options, parse_migration};
@@ -283,7 +283,7 @@ impl Catalog {
         let mut before: &Schema = &self.schema;
         let mut why = Vec::new();
         let mut blamed = None;
-        for (op, steps) in Listed::all(&file.operators).zip(stepped) {
+        for (op, steps) in stepped.ops() {
             let held = why.len();
             for (step, schema) in steps {
                 why.extend(self.emptied(m, before, schema, &step.maps, &data)?);
