@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
 use adtb_lang::canon::canonical_term;
 use adtb_lang::evolve::{Code, Source};
-use adtb_lang::ids::{engine_ctor as k, engine_rel};
+use adtb_lang::ids::{CatIndexId, engine_ctor as k, engine_rel};
 use adtb_lang::kernel::PathStep;
 use adtb_lang::lex::lex;
 use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, field_path};
@@ -134,7 +134,7 @@ pub(super) fn recorded(
 /// One index of a relation, as the engine stores it.
 #[derive(Clone, Debug)]
 pub struct IndexSpec {
-    pub id: u64,
+    pub id: CatIndexId,
     pub relation: RelId,
     pub unique: bool,
     /// Constructor indexes, in order.
@@ -147,7 +147,7 @@ pub struct IndexSpec {
 
 impl IndexSpec {
     /// Returns the key index `id` of relation `r` of `schema` over `fields`.
-    pub fn key(schema: &Schema, r: RelId, id: u64, fields: Vec<String>) -> IndexSpec {
+    pub fn key(schema: &Schema, r: RelId, id: CatIndexId, fields: Vec<String>) -> IndexSpec {
         let clause = if let [k] = fields.as_slice() {
             format!("key {k}")
         } else {
@@ -218,17 +218,15 @@ impl ElementTexts {
 /// Returns every index of the relations of `schema` with catalog ids, by index id: the key
 /// indexes, the declared uniques and indexes, and the implied indexes, each element that is not a
 /// field path as `texts` holds it.
-pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec> {
+pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<CatIndexId, IndexSpec> {
     let mut out = BTreeMap::new();
     for (r, id) in schema.ids().key_ids() {
-        let id = id.raw();
         out.insert(
             id,
             IndexSpec::key(schema, r, id, schema.relation(r).key.clone()),
         );
     }
     for ((r, i), id) in schema.ids().index_ids() {
-        let id = id.raw();
         let def = &schema.relation(r).indexes[i];
         let fields: Vec<String> = def
             .fields
@@ -254,7 +252,6 @@ pub fn indexes(schema: &Schema, texts: &ElementTexts) -> BTreeMap<u64, IndexSpec
     }
     for (r, f, id) in schema.ids().implied_ids() {
         let (ctor, field) = (f.ctor(), &schema.ty(f.def()).field_def(f).name);
-        let id = id.raw();
         let ctors = ctor.map_or_else(|| all_ctors(schema, r), |c| vec![c]);
         let clause = match ctor {
             None => format!("index ({field})"),
@@ -766,7 +763,7 @@ impl Builder<'_> {
         let ctors = Codec::<IndexCtorRow>::new(self.schema);
         for (id, spec) in indexes(self.schema, texts) {
             let fields = vec![
-                (INDEX_ID, key(id)),
+                (INDEX_ID, key(id.raw())),
                 (
                     INDEX_RELATION,
                     key(held_id(self.schema.ids().relation_id(spec.relation)).raw()),
@@ -782,7 +779,7 @@ impl Builder<'_> {
                 self.put(
                     &ctors,
                     k::INDEX_CTOR,
-                    vec![(INDEX_CTOR_INDEX, key(id)), (INDEX_CTOR_CTOR, ctor)],
+                    vec![(INDEX_CTOR_INDEX, key(id.raw())), (INDEX_CTOR_CTOR, ctor)],
                 );
             }
         }

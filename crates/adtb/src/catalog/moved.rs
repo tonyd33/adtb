@@ -10,7 +10,7 @@ use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
 
 use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, from_stored_row, to_stored};
 use crate::heap::FieldType;
-use crate::key::Value;
+use crate::key::{Value, catalog};
 
 use super::change::{Data, Failed, Field, Fill, Moved, Route, convert, fields};
 use super::hosts::{self, classify};
@@ -524,9 +524,7 @@ impl Mapping<'_> {
                     .map_err(|e| evaluated(&object, e))?;
                 to_stored(&ty, &v).map_err(shown)
             });
-            self.out
-                .values
-                .insert((tid, CatCtorId::from_raw(u64::from(*cid)), id), fill);
+            self.out.values.insert((tid, catalog(*cid), id), fill);
         }
         Ok(())
     }

@@ -786,7 +786,7 @@ impl Catalog {
                 continue;
             }
             let index = super::pending::held_key_index(&[pending, &out].concat());
-            let spec = super::IndexSpec::key(self.schema(), r, index.raw(), rel.key.clone());
+            let spec = super::IndexSpec::key(self.schema(), r, index, rel.key.clone());
             let named = (
                 self.schema().module(rel.module).name.clone(),
                 format!("{} {}", rel.name, spec.clause),
@@ -974,8 +974,8 @@ fn uniques(schema: &Schema, texts: &ElementTexts) -> BTreeMap<CatIndexId, (RelId
     let declared = unique_ids(schema);
     super::indexes(schema, texts)
         .into_values()
-        .filter(|s| declared.contains(&CatIndexId::from_raw(s.id)))
-        .map(|s| (CatIndexId::from_raw(s.id), (s.relation, s.clause)))
+        .filter(|s| declared.contains(&s.id))
+        .map(|s| (s.id, (s.relation, s.clause)))
         .collect()
 }
 

@@ -1,3 +1,4 @@
+use adtb_lang::ids::Stored;
 use std::collections::BTreeSet;
 
 use adtb_lang::ids::CatCtorId;
@@ -201,13 +202,13 @@ fn samples() -> Vec<RootsRow> {
     };
     vec![
         RootsRow::HeapRoot {
-            rel: CatRelId::from_raw(11),
-            ctor: CatCtorId::from_raw(12),
+            rel: Stored::<CatRelId>::new(11).id(),
+            ctor: Stored::<CatCtorId>::new(12).id(),
             heap: u32::MAX,
             at: Pid(13),
         },
         RootsRow::IndexRoot {
-            index: 1 << 40,
+            index: Stored::new(1 << 40).id(),
             at: Pid(14),
         },
         RootsRow::OrderKey {
@@ -219,23 +220,26 @@ fn samples() -> Vec<RootsRow> {
             text: "migration 16".into(),
         },
         RootsRow::HistoryHeap {
-            rel: CatRelId::from_raw(17),
-            ctor: CatCtorId::from_raw(18),
+            rel: Stored::<CatRelId>::new(17).id(),
+            ctor: Stored::<CatCtorId>::new(18).id(),
             heap: 19,
             at: Pid(20),
         },
         RootsRow::HistoryIndex {
-            rel: CatRelId::from_raw(21),
+            rel: Stored::<CatRelId>::new(21).id(),
             owner: 22,
             at: Pid(23),
         },
-        held(Kind::Constraint(CatConstraintId::from_raw(24))),
-        held(Kind::Check(CatConstraintId::from_raw(25))),
-        held(Kind::Unique(CatIndexId::from_raw(26))),
+        held(Kind::Constraint(Stored::<CatConstraintId>::new(24).id())),
+        held(Kind::Check(Stored::<CatConstraintId>::new(25).id())),
+        held(Kind::Unique(Stored::<CatIndexId>::new(26).id())),
         held(Kind::Key {
-            index: CatIndexId::from_raw(27),
-            relation: CatRelId::from_raw(28),
-            fields: vec![CatFieldId::from_raw(29), CatFieldId::from_raw(1 << 50)],
+            index: Stored::<CatIndexId>::new(27).id(),
+            relation: Stored::<CatRelId>::new(28).id(),
+            fields: vec![
+                Stored::<CatFieldId>::new(29).id(),
+                Stored::<CatFieldId>::new(1 << 50).id(),
+            ],
         }),
         RootsRow::Dormant {
             version: 30,
@@ -246,7 +250,7 @@ fn samples() -> Vec<RootsRow> {
         RootsRow::Deployment(Fact::Registered(32, mark(Origin::Open))),
         RootsRow::Deployment(Fact::Registered(33, mark(Origin::Command))),
         kept(None),
-        kept(Some(CatCtorId::from_raw(318))),
+        kept(Some(Stored::<CatCtorId>::new(318).id())),
         RootsRow::Deployment(Fact::Expired(-34, 35)),
     ]
 }
@@ -307,8 +311,8 @@ fn born_after(seed: u64) -> (BTreeSet<u64>, Option<Error>) {
         let versions = retained.born.values().copied().collect();
         let begun = txns.begin(&pager).expect("a transaction");
         let stray = RootsRow::HeapRoot {
-            rel: CatRelId::from_raw(1 << 20),
-            ctor: CatCtorId::from_raw(1 << 20),
+            rel: Stored::<CatRelId>::new(1 << 20).id(),
+            ctor: Stored::<CatCtorId>::new(1 << 20).id(),
             heap: 4242,
             at: Pid(7),
         };
@@ -462,7 +466,7 @@ fn a_kept_row_holding_a_value_it_refuses_is_refused_whole() {
 
 #[test]
 fn a_kept_row_reads_back_its_constructor_and_fields() {
-    for ctor in [None, Some(CatCtorId::from_raw(318))] {
+    for ctor in [None, Some(Stored::<CatCtorId>::new(318).id())] {
         let RootsRow::Kept {
             relation,
             group,

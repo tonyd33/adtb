@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::evolve::Source;
+use adtb_lang::ids::Stored;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -28,11 +29,11 @@ pub(super) fn held_key_index(pending: &[Pending]) -> CatIndexId {
     let last = pending
         .iter()
         .filter_map(|p| match &p.kind {
-            Kind::Key { index, .. } => Some(index.raw()),
+            Kind::Key { index, .. } => Some(*index),
             _ => None,
         })
         .max();
-    CatIndexId::from_raw(last.map_or(HELD_KEY_INDEXES, |id| id + 1))
+    last.map_or(Stored::new(HELD_KEY_INDEXES).id(), CatIndexId::next)
 }
 
 /// Returns the catalog ids of the fields `names` of relation `r` of `schema`, `None` when one of
@@ -99,7 +100,7 @@ pub(super) fn kept_indexes(
     schema: &Schema,
     texts: &ElementTexts,
     pending: &[Pending],
-) -> Result<BTreeMap<u64, IndexSpec>, Box<Broken>> {
+) -> Result<BTreeMap<CatIndexId, IndexSpec>, Box<Broken>> {
     let mut out = indexes(schema, texts);
     for p in pending {
         let Kind::Key { index, .. } = &p.kind else {
@@ -112,7 +113,7 @@ pub(super) fn kept_indexes(
                 index: *index,
             })
         })?;
-        out.insert(index.raw(), IndexSpec::key(schema, r, index.raw(), fields));
+        out.insert(*index, IndexSpec::key(schema, r, *index, fields));
     }
     Ok(out)
 }
@@ -280,7 +281,7 @@ impl Catalog {
         let (held, texts) = readers.checking(self.version());
         let stored =
             kept_indexes(held.committed(), texts, &readers.pending).map_err(Error::Internal)?;
-        let freed: Vec<u64> = self
+        let freed: Vec<CatIndexId> = self
             .indexes
             .keys()
             .filter(|id| !stored.contains_key(id))

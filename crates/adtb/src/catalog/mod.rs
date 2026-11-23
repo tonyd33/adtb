@@ -73,6 +73,7 @@ use std::sync::{Arc, LazyLock, OnceLock};
 
 use adtb_lang::check::Compiled;
 use adtb_lang::evolve::{Privilege, Source};
+use adtb_lang::ids::CatIndexId;
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Committed, Schema};
@@ -230,7 +231,7 @@ pub struct Catalog {
     large: LargeStore,
     roots: Roots,
     heaps: BTreeMap<(RelId, u32), Arc<Heap>>,
-    indexes: BTreeMap<u64, (IndexSpec, Index, Arc<IndexKeys>)>,
+    indexes: BTreeMap<CatIndexId, (IndexSpec, Index, Arc<IndexKeys>)>,
     keys: OrderKeys,
     next_heap: u32,
     sequences: Pid,
@@ -317,8 +318,8 @@ fn index_ctors(schema: &Schema, spec: &IndexSpec) -> BTreeSet<CtorId> {
 
 /// Returns the owner of the pages of index `index`: its id, when the id lies below the heap ids
 /// or at or above [`HEAP_IDS_END`], among the held key indexes, and fits 32 bits.
-fn owner(index: u64) -> Option<u32> {
-    u32::try_from(index)
+fn owner(index: CatIndexId) -> Option<u32> {
+    u32::try_from(index.raw())
         .ok()
         .filter(|o| !(LARGE..HEAP_IDS_END).contains(o))
 }
@@ -350,7 +351,7 @@ fn planned<'s>(
             .clone()
             .filter(|s| s.relation == r)
             .map(|s| IndexDesc {
-                id: IndexId(s.id),
+                id: IndexId(s.id.raw()),
                 ctors: s.ctors.clone(),
                 elements: s.elements.clone(),
                 unique: s.unique,
@@ -388,7 +389,7 @@ fn update_root<R: Runtime>(
 struct Named {
     /// The heap id and root of each constructor relation, by relation id and constructor id.
     heaps: BTreeMap<(CatRelId, CatCtorId), (u32, Pid)>,
-    indexes: BTreeMap<u64, Pid>,
+    indexes: BTreeMap<CatIndexId, Pid>,
     keys: OrderKeys,
     /// The text of each migration, by version.
     migrations: BTreeMap<u64, String>,
@@ -766,7 +767,7 @@ impl Catalog {
                 return Err(Error::Missing(format!("index {id}")));
             };
             let index = Index::open(
-                BTree::open(at, owner(id).ok_or(Rot::IndexOwner(id))?),
+                BTree::open(at, owner(id).ok_or(Rot::IndexOwner(id.raw()))?),
                 key_schema(held, normal.as_ref(), &named.keys, &spec)
                     .map_err(|e| Rot::IndexKeying(Box::new(e)))?,
                 index_ctors(held, &spec),
@@ -1004,7 +1005,7 @@ impl Catalog {
     }
 
     /// Returns every index of the schema [`Catalog::checking`] returns, by index id.
-    pub fn declared_indexes(&self) -> BTreeMap<u64, IndexSpec> {
+    pub fn declared_indexes(&self) -> BTreeMap<CatIndexId, IndexSpec> {
         indexes(self.checking().committed(), self.checking_texts())
     }
 
@@ -1046,7 +1047,7 @@ impl Catalog {
     }
 
     #[cfg(test)]
-    pub fn index_of(&self, id: u64) -> &Index {
+    pub fn index_of(&self, id: CatIndexId) -> &Index {
         &self
             .indexes
             .get(&id)
@@ -1119,7 +1120,7 @@ impl Catalog {
                     })
                     .collect();
                 (
-                    IndexId(spec.id),
+                    IndexId(spec.id.raw()),
                     StoredIndex {
                         index: index.clone(),
                         ctors,

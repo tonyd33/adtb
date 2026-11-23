@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use adtb_lang::ids::CatIndexId;
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
@@ -78,8 +79,8 @@ pub struct Indexing<'a> {
     keys: OrderKeys,
     fresh: OrderKeys,
     normal: Option<NormalProgram>,
-    specs: BTreeMap<u64, IndexSpec>,
-    keyed: BTreeMap<u64, Arc<IndexKeys>>,
+    specs: BTreeMap<CatIndexId, IndexSpec>,
+    keyed: BTreeMap<CatIndexId, Arc<IndexKeys>>,
 }
 
 impl<'a> Indexing<'a> {
@@ -134,11 +135,11 @@ impl<'a> Indexing<'a> {
         self.normal.as_ref()
     }
 
-    pub fn specs(&self) -> &BTreeMap<u64, IndexSpec> {
+    pub fn specs(&self) -> &BTreeMap<CatIndexId, IndexSpec> {
         &self.specs
     }
 
-    pub fn keyed(&self, id: u64) -> &Arc<IndexKeys> {
+    pub fn keyed(&self, id: CatIndexId) -> &Arc<IndexKeys> {
         &self.keyed[&id]
     }
 

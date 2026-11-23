@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
 use adtb_lang::check::{Command, Compiled, Explained};
-use adtb_lang::ids::{CatConstraintId, engine_rel};
+use adtb_lang::ids::engine_rel;
 use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Committed, Schema};
@@ -670,7 +670,7 @@ impl<R: Runtime> Engine<R> {
             let Some(violated) = violated else {
                 return false;
             };
-            let at = schema.ids().denial_of(CatConstraintId::from_raw(violated));
+            let at = schema.ids().denial_of(violated);
             match readable_set() {
                 Ok(set) => !at.is_some_and(|c| set.contains(&c)),
                 Err(_) => true,

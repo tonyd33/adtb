@@ -1,4 +1,4 @@
-use adtb_lang::ids::CatCtorId;
+use adtb_lang::ids::{CatCtorId, Stored};
 
 use super::codec::{DecodeError, EncodeError, KeySchema, Reader};
 use super::ovarint;
@@ -12,6 +12,11 @@ pub struct CtorId(pub u32);
 /// Preconditions: `id` fits 32 bits.
 pub fn stored(id: CatCtorId) -> CtorId {
     CtorId(u32::try_from(id.raw()).expect("a constructor id fits 32 bits"))
+}
+
+/// Returns the catalog id of the declared constructor heaps and keys store under `id`.
+pub fn catalog(id: CtorId) -> CatCtorId {
+    Stored::new(u64::from(id.0)).id()
 }
 
 /// A row version's address: a 48-bit page id and a slot.

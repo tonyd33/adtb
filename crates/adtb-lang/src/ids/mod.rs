@@ -24,6 +24,34 @@ pub use objects::{Object, assign, objects};
 pub use objects::{keyed, placing};
 pub use reach::Replacement;
 
+/// A catalog id of one kind.
+pub trait CatalogId: Copy {
+    /// Returns the id a column of this kind stores.
+    fn stored(column: Stored<Self>) -> Self;
+}
+
+/// The value of a column that stores catalog ids of kind `K`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stored<K> {
+    raw: u64,
+    kind: std::marker::PhantomData<K>,
+}
+
+impl<K: CatalogId> Stored<K> {
+    /// Returns the value `raw` of a column storing ids of kind `K`.
+    pub const fn new(raw: u64) -> Stored<K> {
+        Stored {
+            raw,
+            kind: std::marker::PhantomData,
+        }
+    }
+
+    /// Returns the id the column holds.
+    pub fn id(self) -> K {
+        K::stored(self)
+    }
+}
+
 macro_rules! catalog_id {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
         $(#[$doc])*
@@ -31,14 +59,20 @@ macro_rules! catalog_id {
         pub struct $name(u64);
 
         impl $name {
-            /// Returns the id whose stored form is `raw`.
-            pub const fn from_raw(raw: u64) -> Self {
-                Self(raw)
+            /// Returns the id after this one in its space.
+            pub const fn next(self) -> Self {
+                Self(self.0 + 1)
             }
 
             /// Returns the id's stored form.
             pub const fn raw(self) -> u64 {
                 self.0
+            }
+        }
+
+        impl CatalogId for $name {
+            fn stored(column: Stored<Self>) -> Self {
+                Self(column.raw)
             }
         }
 
@@ -76,6 +110,28 @@ catalog_id!(
     /// The catalog id of a function or an aggregate.
     CatFunctionId,
     /// The catalog id of a constraint or a check.
+    CatConstraintId,
+);
+
+macro_rules! from_raw {
+    ($($name:ident),* $(,)?) => {$(
+        impl $name {
+            /// Returns the id whose stored form is `raw`.
+            pub(crate) const fn from_raw(raw: u64) -> Self {
+                Self(raw)
+            }
+        }
+    )*};
+}
+
+from_raw!(
+    CatTypeId,
+    CatCtorId,
+    CatRelId,
+    CatFieldId,
+    CatSetId,
+    CatIndexId,
+    CatFunctionId,
     CatConstraintId,
 );
 

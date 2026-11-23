@@ -1,3 +1,4 @@
+use adtb_lang::ids::Stored;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::root::{self, Changing, Root};
@@ -422,7 +423,10 @@ fn frees_a_migration(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Pid)
         let constructors = rel(&catalog, "catalog", "constructors");
         let key = catalog.plan().relations()[&constructors].key_index;
         let frees = catalog.source().version == 0 && after < before;
-        out = Some((frees, catalog.index_of(key.0).tree().root()));
+        out = Some((
+            frees,
+            catalog.index_of(Stored::new(key.0).id()).tree().root(),
+        ));
     });
     out.expect("the run finished")
 }
@@ -684,7 +688,10 @@ fn crashed_naming(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
         let orphan = crate::write::full_counter_page(&pager, 0).expect("a page of counters");
         let constructors = rel(&catalog, "catalog", "constructors");
         let key = catalog.plan().relations()[&constructors].key_index;
-        made = Some((orphan, catalog.index_of(key.0).tree().root()));
+        made = Some((
+            orphan,
+            catalog.index_of(Stored::new(key.0).id()).tree().root(),
+        ));
         pager.flush_log();
     });
     let (orphan, index) = made.expect("the run finished");

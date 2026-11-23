@@ -601,7 +601,7 @@ const fn fixed_ctor(module: &str, ty: &str, ctor: &str) -> super::CatCtorId {
             let mut c = 0;
             while c < ctors.len() {
                 if same(ctors[c].0, ctor) {
-                    return super::CatCtorId::from_raw(ctors[c].1);
+                    return super::CatCtorId(ctors[c].1);
                 }
                 c += 1;
             }
@@ -623,7 +623,7 @@ const fn fixed_type(module: &str, ty: &str) -> super::CatTypeId {
     while t < TYPES.len() {
         let (m, name, id, _) = TYPES[t];
         if same(m, module) && same(name, ty) {
-            return super::CatTypeId::from_raw(id);
+            return super::CatTypeId(id);
         }
         t += 1;
     }
@@ -637,7 +637,7 @@ const fn fixed_rel(module: &str, name: &str) -> EngineRel {
     while r < RELATIONS.len() {
         let (m, n, id) = RELATIONS[r];
         if same(m, module) && same(n, name) {
-            return EngineRel(super::CatRelId::from_raw(id));
+            return EngineRel(super::CatRelId(id));
         }
         r += 1;
     }
@@ -716,7 +716,7 @@ pub mod engine_rel {
 
 macro_rules! engine_fields {
     ($($module:literal $rel:literal { $($name:ident $field:literal $id:literal),* $(,)? })*) => {
-        $($(pub const $name: CatFieldId = CatFieldId::from_raw($id);)*)*
+        $($(pub const $name: CatFieldId = CatFieldId($id);)*)*
 
         /// Every constant of this module with its module's, relation's and field's names.
         #[cfg(test)]

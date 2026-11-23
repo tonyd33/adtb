@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow, Privilege};
-use adtb_lang::ids::{engine_ctor as k, engine_rel};
+use adtb_lang::ids::{CatalogId, Stored, engine_ctor as k, engine_rel};
 use adtb_lang::schema::Schema;
 use adtb_lang::schema::prelude::ctor;
 use adtb_lang::types::{RelId, Ty};
@@ -62,6 +62,30 @@ impl Field {
     /// Returns the position of this field among [`Field::fields`].
     pub fn at(self) -> usize {
         self.at
+    }
+}
+
+/// A field of a constructor that stores catalog ids of kind `K`.
+pub struct IdField<K> {
+    field: Field,
+    kind: PhantomData<K>,
+}
+
+impl<K> Clone for IdField<K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K> Copy for IdField<K> {}
+
+impl<K> IdField<K> {
+    /// Returns field `field`, declared to store ids of kind `K`.
+    pub const fn new(field: Field) -> IdField<K> {
+        IdField {
+            field,
+            kind: PhantomData,
+        }
     }
 }
 
@@ -472,6 +496,13 @@ impl Row<'_> {
     /// from.
     fn read<'v, T>(&'v self, f: Field, read: impl Fn(&'v Value) -> Option<T>) -> Result<T, Rot> {
         read(self.get(f)?).ok_or_else(|| self.bad(f))
+    }
+
+    /// Returns the catalog id field `f` stores, of the kind the field is declared to store.
+    pub fn id<K: CatalogId>(&self, f: IdField<K>) -> Result<K, Rot> {
+        let n = self.int(f.field)?;
+        let raw = u64::try_from(n).map_err(|_| self.bad(f.field))?;
+        Ok(Stored::new(raw).id())
     }
 
     pub fn int(&self, f: Field) -> Result<i64, Rot> {

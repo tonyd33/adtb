@@ -308,7 +308,7 @@ impl Catalog {
     pub(super) fn counter_page<R: Runtime>(&self, pager: &Pager<R>) -> Result<Pid, Error> {
         let ids = &self.schema().ids();
         crate::write::counter_page(pager, self.schema(), |r| {
-            ids.key_id(r).map(|k| &self.indexes[&k.raw()].1)
+            ids.key_id(r).map(|k| &self.indexes[&k].1)
         })
         .map_err(|e| match e {
             crate::write::Error::Exec(crate::exec::Error::Page(e)) => Error::Page(e),

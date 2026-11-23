@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ids::{CatRelId, EngineRel, engine_ctor as k, engine_rel, held_id};
+use adtb_lang::ids::{CatRelId, EngineRel, Stored, engine_ctor as k, engine_rel, held_id};
 use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::schema::{Committed, Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
@@ -236,12 +236,12 @@ fn read_log(text: &str, e: &Envelope) -> Option<Vec<String>> {
 }
 
 /// Returns the next value of each key generator of a `generators` entry, by catalog relation id.
-fn read_generators(text: &str, e: &Envelope) -> Option<Vec<(u64, i64)>> {
+fn read_generators(text: &str, e: &Envelope) -> Option<Vec<(CatRelId, i64)>> {
     let rest = text.strip_prefix(&header_line(e))?;
     rest.lines()
         .map(|l| {
             let (rel, next) = l.strip_prefix("generator ")?.split_once(' ')?;
-            Some((rel.parse().ok()?, next.parse().ok()?))
+            Some((Stored::new(rel.parse().ok()?).id(), next.parse().ok()?))
         })
         .collect()
 }
@@ -867,7 +867,7 @@ fn fill<R: Runtime>(
     manifest: &DumpManifest,
     entries: &BTreeMap<String, Vec<u8>>,
     parsed: Parsed,
-    generators: &[(u64, i64)],
+    generators: &[(CatRelId, i64)],
 ) -> Result<Vec<Dormant>, Error> {
     let engine = &*db.engine;
     let e = &manifest.envelope;
@@ -913,7 +913,7 @@ fn fill<R: Runtime>(
     deployed.insert(grants, kept);
     let resumed: BTreeMap<RelId, i64> = generators
         .iter()
-        .filter_map(|&(id, next)| Some((schema.ids().relation_of(CatRelId::from_raw(id))?, next)))
+        .filter_map(|&(id, next)| Some((schema.ids().relation_of(id)?, next)))
         .collect();
     if resumed.len() != generators.len()
         || !resumed

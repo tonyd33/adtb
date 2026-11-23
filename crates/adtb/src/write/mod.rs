@@ -49,6 +49,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use adtb_file::Disk;
+use adtb_lang::ids::CatIndexId;
 use adtb_lang::ids::held_id;
 use adtb_lang::kernel::{Terms, Tm, ValidTerms, Var};
 use adtb_lang::norm::NormalProgram;
@@ -669,7 +670,7 @@ impl<R: Runtime> Database<R> {
     pub fn new(
         rt: R,
         setup: Setup<R>,
-        declared: &BTreeMap<u64, IndexSpec>,
+        declared: &BTreeMap<CatIndexId, IndexSpec>,
     ) -> Result<Database<R>, Error> {
         let mut program = setup.normal.terms().clone();
         let mut program_fresh = fresh::Occurrences::new();

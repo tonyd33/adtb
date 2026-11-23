@@ -4,13 +4,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::ids::{CatCtorId, CatRelId, engine_ctor, engine_rel, held_id};
+use adtb_lang::ids::{
+    CatConstraintId, CatCtorId, CatRelId, Stored, engine_ctor, engine_rel, held_id,
+};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::catalog::codec::{
-    Codec, Ctor, Decode, Field, Fields, Relation, Row, field, listed, relation,
+    Codec, Ctor, Decode, Field, Fields, IdField, Relation, Row, field, listed, relation,
 };
 use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, Rot, engine_relation};
 use crate::exec::{F64, Val};
@@ -80,11 +82,11 @@ pub(crate) struct FindingRow {
     id: i64,
     run: i64,
     /// The catalog id of the constraint a `Violation` names.
-    violated: Option<u64>,
+    violated: Option<CatConstraintId>,
 }
 
 impl FindingRow {
-    pub(super) fn violated(self) -> Option<u64> {
+    pub(super) fn violated(self) -> Option<CatConstraintId> {
         self.violated
     }
 }
@@ -145,11 +147,10 @@ impl Decode for FindingRow {
             Ctor::new(FINDING_ORPHAN, ORPHAN, |row| finding(row, ORPHAN_HEAD)),
             Ctor::new(FINDING_MISSING, MISSING, |row| finding(row, MISSING_HEAD)),
             Ctor::new(FINDING_VIOLATION, VIOLATION, |row| {
-                const CONSTRAINT: Field = field(VIOLATION, "constraint");
-                let constraint = row.int(CONSTRAINT)?;
-                let violated = u64::try_from(constraint).map_err(|_| row.bad(CONSTRAINT))?;
+                const CONSTRAINT: IdField<CatConstraintId> =
+                    IdField::new(field(VIOLATION, "constraint"));
                 Ok(FindingRow {
-                    violated: Some(violated),
+                    violated: Some(row.id(CONSTRAINT)?),
                     ..finding(row, VIOLATION_HEAD)?
                 })
             }),
@@ -291,7 +292,10 @@ fn removed(group: &str, schema: &Schema) -> bool {
     group
         .strip_prefix("relation ")
         .and_then(|id| id.parse::<u64>().ok())
-        .is_some_and(|id| schema.ids().relation_of(CatRelId::from_raw(id)).is_none())
+        .is_some_and(|id| {
+            let id: CatRelId = Stored::new(id).id();
+            schema.ids().relation_of(id).is_none()
+        })
 }
 
 impl Findings {

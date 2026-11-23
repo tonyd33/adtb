@@ -84,7 +84,7 @@ pub fn declared_sums(schema: &Schema) -> Vec<Vec<u64>> {
 /// Returns the constructors of the sum `ty`, each with its catalog id and its fields, the header
 /// fields first. An anonymous sum's constructors have their positions for ids. The constructors
 /// of `Tag T` are those of `T` without fields.
-pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
+pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(CtorId, Vec<(String, Ty)>)> {
     let fields = ctor_fields(schema, ty);
     match repr(schema, ty) {
         Ty::Tag(t) => ctors(schema, &t)
@@ -102,11 +102,15 @@ pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
                         .ids()
                         .ctor_id(k)
                         .unwrap_or_else(|| panic!("constructor {} has a catalog id", c.name));
-                    (stored(id).0, fs)
+                    (stored(id), fs)
                 })
                 .collect()
         }
-        _ => fields.into_iter().zip(0..).map(|(fs, i)| (i, fs)).collect(),
+        _ => fields
+            .into_iter()
+            .zip(0..)
+            .map(|(fs, i)| (CtorId(i), fs))
+            .collect(),
     }
 }
 
@@ -207,7 +211,7 @@ pub fn field_type(schema: &Schema, ty: &Ty) -> FieldType {
             ctors(schema, &t)
                 .into_iter()
                 .map(|(id, fs)| heap::CtorType {
-                    id: CtorId(id),
+                    id,
                     fields: fs.iter().map(|(_, f)| field_type(schema, f)).collect(),
                 })
                 .collect(),
@@ -235,7 +239,7 @@ pub fn batch_type(schema: &Schema, ty: &Ty) -> Option<batch::Type> {
                 .into_iter()
                 .map(|(id, fs)| {
                     Some(batch::Ctor {
-                        id: CtorId(id),
+                        id,
                         fields: all(&fs)?,
                     })
                 })
@@ -290,8 +294,8 @@ pub fn key_type(schema: &Schema, keys: &OrderKeys, ty: &Ty) -> KeyType {
                     .into_iter()
                     .map(|(id, fs)| key::CtorType {
                         order_key: keys
-                            .get(&u64::from(id))
-                            .unwrap_or_else(|| panic!("constructor {id} has an order key"))
+                            .get(&u64::from(id.0))
+                            .unwrap_or_else(|| panic!("constructor {} has an order key", id.0))
                             .clone(),
                         fields: fs.iter().map(|(_, f)| key_type(schema, keys, f)).collect(),
                     })

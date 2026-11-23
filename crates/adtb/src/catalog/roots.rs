@@ -1,7 +1,7 @@
 //! The rows of the roots heap: each a value of one sum whose constructor ids are the file
 //! format's, written and read only through [`RootsRow`].
 
-use adtb_lang::ids::CatCtorId;
+use adtb_lang::ids::{CatCtorId, CatalogId, Stored};
 
 use crate::heap::{CtorType, FieldType};
 use crate::key::{CtorId, OrderKey, Scalar, Value};
@@ -9,7 +9,7 @@ use crate::storage::Pid;
 
 use super::Rot;
 use super::deployment::{Fact, Mark, Origin};
-use super::ids::{CatConstraintId, CatFieldId, CatIndexId, CatRelId};
+use super::ids::{CatIndexId, CatRelId};
 use super::int;
 use super::kept::{self, KeptRow, ROW_FORMAT};
 use super::readers::Kind;
@@ -103,7 +103,7 @@ pub(super) enum RootsRow {
         at: Pid,
     },
     IndexRoot {
-        index: u64,
+        index: CatIndexId,
         at: Pid,
     },
     OrderKey {
@@ -155,20 +155,9 @@ fn id(v: &Value) -> Result<u64, Rot> {
     }
 }
 
-fn rel_id(v: &Value) -> Result<CatRelId, Rot> {
-    Ok(CatRelId::from_raw(id(v)?))
-}
-
-fn ctor_id(v: &Value) -> Result<CatCtorId, Rot> {
-    Ok(CatCtorId::from_raw(id(v)?))
-}
-
-fn index_id(v: &Value) -> Result<CatIndexId, Rot> {
-    Ok(CatIndexId::from_raw(id(v)?))
-}
-
-fn constraint_id(v: &Value) -> Result<CatConstraintId, Rot> {
-    Ok(CatConstraintId::from_raw(id(v)?))
+/// Returns the id the id column `v` stores, of the kind of the field it decodes into.
+fn stored<K: CatalogId>(v: &Value) -> Result<K, Rot> {
+    Ok(Stored::new(id(v)?).id())
 }
 
 fn heap_id(v: &Value) -> Result<u32, Rot> {
@@ -225,7 +214,7 @@ impl RootsRow {
                     int(at.0),
                 ],
             ),
-            RootsRow::IndexRoot { index, at } => (INDEX_ROOT, vec![int(*index), int(at.0)]),
+            RootsRow::IndexRoot { index, at } => (INDEX_ROOT, vec![int(index.raw()), int(at.0)]),
             RootsRow::OrderKey { ctor, key } => (
                 ORDER_KEY,
                 vec![int(*ctor), Value::Bytes(key.as_bytes().to_vec())],
@@ -344,13 +333,13 @@ impl RootsRow {
         let ctor = *ctor;
         Ok(match (ctor, fields.as_slice()) {
             (HEAP_ROOT, [rel, c, heap, at]) => RootsRow::HeapRoot {
-                rel: rel_id(rel)?,
-                ctor: ctor_id(c)?,
+                rel: stored(rel)?,
+                ctor: stored(c)?,
                 heap: heap_id(heap)?,
                 at: pid(at)?,
             },
             (INDEX_ROOT, [index, at]) => RootsRow::IndexRoot {
-                index: id(index)?,
+                index: stored(index)?,
                 at: pid(at)?,
             },
             (ORDER_KEY, [c, Value::Bytes(key)]) => RootsRow::OrderKey {
@@ -362,13 +351,13 @@ impl RootsRow {
                 text: text.clone(),
             },
             (HISTORY_HEAP, [rel, c, heap, at]) => RootsRow::HistoryHeap {
-                rel: rel_id(rel)?,
-                ctor: ctor_id(c)?,
+                rel: stored(rel)?,
+                ctor: stored(c)?,
                 heap: heap_id(heap)?,
                 at: pid(at)?,
             },
             (HISTORY_INDEX, [rel, owner, at]) => RootsRow::HistoryIndex {
-                rel: rel_id(rel)?,
+                rel: stored(rel)?,
                 owner: heap_id(owner)?,
                 at: pid(at)?,
             },
@@ -425,20 +414,20 @@ fn held(ctor: u32, fields: &[Value]) -> Result<RootsRow, Rot> {
         return Err(corrupt());
     };
     let kind = match (ctor, index) {
-        (HELD_CONSTRAINT, [n]) => Kind::Constraint(constraint_id(n)?),
-        (HELD_CHECK, [n]) => Kind::Check(constraint_id(n)?),
-        (HELD_UNIQUE, [n]) => Kind::Unique(index_id(n)?),
+        (HELD_CONSTRAINT, [n]) => Kind::Constraint(stored(n)?),
+        (HELD_CHECK, [n]) => Kind::Check(stored(n)?),
+        (HELD_UNIQUE, [n]) => Kind::Unique(stored(n)?),
         (HELD_KEY, [index, rel, Value::Bytes(key)]) => {
             let (chunks, rest) = key.as_chunks::<8>();
             if !rest.is_empty() {
                 return Err(corrupt());
             }
             Kind::Key {
-                index: index_id(index)?,
-                relation: rel_id(rel)?,
+                index: stored(index)?,
+                relation: stored(rel)?,
                 fields: chunks
                     .iter()
-                    .map(|c| CatFieldId::from_raw(u64::from_le_bytes(*c)))
+                    .map(|c| Stored::new(u64::from_le_bytes(*c)).id())
                     .collect(),
             }
         }
@@ -527,9 +516,9 @@ pub(super) fn kept_row(
     Ok(KeptRow {
         relation: id(&Value::I64(relation))?,
         group: group.into(),
-        ctor: match ctor_id(&Value::I64(ctor))? {
-            id if id.raw() == 0 => None,
-            id => Some(id),
+        ctor: match id(&Value::I64(ctor))? {
+            0 => None,
+            _ => Some(stored(&Value::I64(ctor))?),
         },
         fields: kept::decode(row).ok_or_else(bad)?,
     })

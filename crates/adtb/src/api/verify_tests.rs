@@ -1,3 +1,4 @@
+use adtb_lang::ids::Stored;
 use adtb_lang::ids::{CatCtorId, engine_ctor, engine_rel, held_id};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::types::RelId;
@@ -213,7 +214,11 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
             r"a kept row of group `database` and constructor 297 holds (7, 3, instant 11, `page 9`): a row of sys::verify_findings names no constructor 297",
         ),
         (
-            row(&schema, Some(CatCtorId::from_raw(1_000_000)), vec![page()]),
+            row(
+                &schema,
+                Some(Stored::<CatCtorId>::new(1_000_000).id()),
+                vec![page()],
+            ),
             r"a kept row of group `database` and constructor 1000000 holds (7, 3, instant 11, `page 9`): a row of sys::verify_findings names no constructor 1000000",
         ),
         (
@@ -309,7 +314,7 @@ impl Sampled for FindingRow {
                 FindingRow {
                     id: 6,
                     run: 106,
-                    violated: Some(51),
+                    violated: Some(Stored::new(51).id()),
                 },
             ),
             plain(FINDING_STRUCTURE, 7),

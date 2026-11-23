@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use adtb_lang::evolve::{DeployedGrant, Granted, Privilege};
-use adtb_lang::ids::{CatFieldId, CatFunctionId, EngineRel, engine_field, engine_rel};
+use adtb_lang::ids::{CatFieldId, CatFunctionId, EngineRel, Stored, engine_field, engine_rel};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{DenialIdx, FnId, RelId};
@@ -233,9 +233,10 @@ fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTr
         })
         .filter_map(|g| {
             match Granted::read_target(e.schema(), Privilege::Call, g.target.as_deref()?) {
-                Some(Granted::CallFn(id)) => {
-                    e.schema().ids().function_of(CatFunctionId::from_raw(id))
-                }
+                Some(Granted::CallFn(id)) => e
+                    .schema()
+                    .ids()
+                    .function_of(Stored::<CatFunctionId>::new(id).id()),
                 _ => None,
             }
         })

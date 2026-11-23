@@ -7,7 +7,7 @@ use adtb_lang::types::Ty;
 
 use crate::exec::Val;
 use crate::heap::FieldType;
-use crate::key::Value;
+use crate::key::{Value, catalog};
 
 use super::super::Rot;
 use super::super::ids::{CatCtorId, ctor_id, engine_relation};
@@ -180,7 +180,7 @@ impl Table {
         let mut variants = Vec::new();
         let mut have = Vec::new();
         for (c, (_, fields)) in cs.iter().zip(declared) {
-            let id = CatCtorId::from_raw(u64::from(c.id.0));
+            let id = catalog(c.id);
             have.push(id);
             let Some(&p) = ctors.iter().find(|p| p.id == id) else {
                 continue;

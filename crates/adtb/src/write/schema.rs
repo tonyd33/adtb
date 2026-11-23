@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use adtb_lang::ids::{CatIndexId, Stored};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Committed, Generator, OnDelete, ReferenceIndex, Schema};
 use adtb_lang::textual::key_names;
@@ -135,7 +136,7 @@ pub fn rels(
     schema: &Committed,
     normal: &NormalProgram,
     catalog: &Catalog,
-    specs: &BTreeMap<u64, IndexSpec>,
+    specs: &BTreeMap<CatIndexId, IndexSpec>,
 ) -> Result<Rels, Error> {
     let mut out = Rels::new();
     for (rel, desc) in catalog.relations() {
@@ -189,11 +190,12 @@ pub fn rels(
         let mut indexes = Vec::new();
         for d in &desc.indexes {
             let keys = IndexKeys::new(schema, Some(normal), *rel, &d.ctors, &d.elements)?;
-            let (clause, old_key) = match (specs.get(&d.id.0), d.fields()) {
+            let id: CatIndexId = Stored::new(d.id.0).id();
+            let (clause, old_key) = match (specs.get(&id), d.fields()) {
                 (Some(spec), _) => (spec.clause.clone(), false),
                 (None, Some(fields)) if d.unique => {
                     let fields = fields.into_iter().map(str::to_string).collect();
-                    (IndexSpec::key(schema, *rel, d.id.0, fields).clause, true)
+                    (IndexSpec::key(schema, *rel, id, fields).clause, true)
                 }
                 (None, _) => panic!(
                     "index {} of relation {} is neither declared nor an old key",

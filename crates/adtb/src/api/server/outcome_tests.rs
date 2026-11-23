@@ -1,3 +1,4 @@
+use adtb_lang::ids::Stored;
 use std::time::Duration;
 
 use adtb_lang::ids::{CatCtorId, TYPES};
@@ -676,7 +677,11 @@ fn ids() -> Vec<CatCtorId> {
     TYPES
         .iter()
         .filter(|(m, t, ..)| *m == "prelude" && SUMS.contains(t))
-        .flat_map(|(.., ctors)| ctors.iter().map(|(_, id)| CatCtorId::from_raw(*id)))
+        .flat_map(|(.., ctors)| {
+            ctors
+                .iter()
+                .map(|(_, id)| Stored::<CatCtorId>::new(*id).id())
+        })
         .collect()
 }
 

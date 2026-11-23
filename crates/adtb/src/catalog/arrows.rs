@@ -8,7 +8,7 @@ use crate::batch::ipc::{
     self, Budget, FileCtor, FileField, FileSchema, FileType, IpcError, SumKind,
 };
 use crate::exec::{Val, conv, from_stored, from_stored_row, to_stored};
-use crate::key::{CtorId, Value};
+use crate::key::Value;
 
 use super::layout::{ctors, field_type, is_record, key_value_ty, repr, row, scalar};
 
@@ -40,7 +40,7 @@ fn file_type(schema: &Schema, ty: &Ty) -> FileType {
                 .into_iter()
                 .zip(ctors(schema, &t))
                 .map(|(name, (id, fs))| FileCtor {
-                    id: CtorId(id),
+                    id,
                     name,
                     fields: fields(schema, &fs),
                 })

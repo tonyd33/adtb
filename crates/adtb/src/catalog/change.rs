@@ -6,7 +6,7 @@ use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
 
 use crate::heap::FieldType;
-use crate::key::Value;
+use crate::key::{CtorId, Value, catalog};
 
 use super::ids::{
     CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
@@ -465,7 +465,7 @@ fn held<'m>(types: &Types<'m>, ra: &Ty, rb: &Ty) -> Result<Option<Plan<'m>>, Fai
         .into_iter()
         .enumerate()
         .map(|(ca, (cid, fields_a))| {
-            let id = CatCtorId::from_raw(u64::from(cid));
+            let id = catalog(cid);
             let Some(cb) = ctors_b.iter().position(|(c, _)| *c == cid) else {
                 return Ok(match types.routes.get(&(tid, id)) {
                     Some(route) => match route(a, b, aa, ab) {
@@ -474,7 +474,8 @@ fn held<'m>(types: &Types<'m>, ra: &Ty, rb: &Ty) -> Result<Option<Plan<'m>>, Fai
                         Err(e) => return Err(e),
                     },
                     None => Image::Gone(format!(
-                        "a stored value holds constructor {cid} of a sum that no longer has it"
+                        "a stored value holds constructor {} of a sum that no longer has it",
+                        cid.0
                     )),
                 });
             };
@@ -512,7 +513,7 @@ fn tagged<'m>(types: &Types<'m>, ta: &Ty, tb: &Ty) -> Option<Plan<'m>> {
     let (ra, rb) = (layout::repr(a, ta), layout::repr(b, tb));
     let (tid, (da, _), _) = same_type(a, &ra, b, &rb)?;
     let ctors_b = layout::ctors(b, &rb);
-    let at = |id: u32| ctors_b.iter().position(|(c, _)| *c == id).map(|k| k as u32);
+    let at = |id: CtorId| ctors_b.iter().position(|(c, _)| *c == id).map(|k| k as u32);
     let images = layout::ctors(a, &ra)
         .into_iter()
         .enumerate()
@@ -522,8 +523,8 @@ fn tagged<'m>(types: &Types<'m>, ta: &Ty, tb: &Ty) -> Option<Plan<'m>> {
             }
             let d = a.ty(da);
             let name = format!("{}.{}", d.name, d.ctors()[k].name);
-            match types.tags.get(&(tid, CatCtorId::from_raw(u64::from(cid)))) {
-                Some(Some(to)) => at(stored(*to).0).ok_or_else(|| {
+            match types.tags.get(&(tid, catalog(cid))) {
+                Some(Some(to)) => at(stored(*to)).ok_or_else(|| {
                     format!("a stored tag names `{name}`, which the operator replaces by no one constructor")
                 }),
                 Some(None) => Err(format!(

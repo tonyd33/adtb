@@ -112,19 +112,16 @@
 "crates/adtb-lang/src/evolve/revert/by_id.rs" = 14
 "crates/adtb-lang/src/evolve/revert/mod.rs" = 3
 "crates/adtb-lang/src/evolve/revert/structural.rs" = 9
-"crates/adtb-lang/src/ids/fixed.rs" = 3
 "crates/adtb-lang/src/permission/grants.rs" = 2
 "crates/adtb-lang/src/translate/mod.rs" = 5
-"crates/adtb/src/api/command.rs" = 1
+"crates/adtb-store/src/key/entry.rs" = 1
 "crates/adtb/src/api/dump.rs" = 1
 "crates/adtb/src/api/server/adhoc.rs" = 1
 "crates/adtb/src/api/verify.rs" = 1
-"crates/adtb/src/catalog/change.rs" = 2
-"crates/adtb/src/catalog/codec/encode.rs" = 1
-"crates/adtb/src/catalog/moved.rs" = 1
+"crates/adtb/src/catalog/codec/mod.rs" = 1
 "crates/adtb/src/catalog/pending.rs" = 1
-"crates/adtb/src/catalog/readers.rs" = 2
-"crates/adtb/src/catalog/roots.rs" = 5
+"crates/adtb/src/catalog/roots.rs" = 2
+"crates/adtb/src/write/schema.rs" = 1
 
 [owner_authorities]
 "crates/adtb/src/api/mod.rs" = 1

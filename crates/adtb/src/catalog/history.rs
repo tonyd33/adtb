@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use adtb_lang::ids::CatIndexId;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -248,12 +249,12 @@ impl Kept {
 /// Returns the key index of each relation of `schema` among `indexes`, by index id.
 pub(super) fn key_indexes<'a>(
     schema: &Schema,
-    indexes: &'a BTreeMap<u64, (IndexSpec, Index, Arc<IndexKeys>)>,
+    indexes: &'a BTreeMap<CatIndexId, (IndexSpec, Index, Arc<IndexKeys>)>,
 ) -> BTreeMap<RelId, &'a Index> {
     schema
         .ids()
         .key_ids()
-        .filter_map(|(r, id)| Some((r, &indexes.get(&id.raw())?.1)))
+        .filter_map(|(r, id)| Some((r, &indexes.get(&id)?.1)))
         .collect()
 }
 
