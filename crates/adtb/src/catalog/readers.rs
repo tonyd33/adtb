@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::ast::{MigrationFile, OperatorKind};
+use adtb_lang::ast::{Decl, MigrationFile, OperatorKind};
 use adtb_lang::check::Compiled;
 use adtb_lang::evolve::{self, Kept, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Schema, Stage, ValueDef};
-use adtb_lang::span::Diag;
+use adtb_lang::span::{Diag, FileDiag, Span};
 use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -360,6 +360,38 @@ fn imaging(before: &Schema, stepped: &Stepped, pending: &[Pending]) -> usize {
     at
 }
 
+/// Returns, for each failure of `f`, its operators' then its recheck's, the pending object of
+/// `pending` whose kept declaration in the result holds the failure's span, when one does.
+fn owners(f: &evolve::Failed, pending: &[Pending]) -> Vec<Option<String>> {
+    let evolve::Failed::Refused(r) = f else {
+        return Vec::new();
+    };
+    let files = r
+        .result
+        .as_ref()
+        .and_then(|s| s.files().ok())
+        .unwrap_or_default();
+    let owner = |d: &FileDiag| {
+        let (_, file) = files.iter().find(|(id, _)| *id == d.file)?;
+        let within = |s: Span| s.start <= d.diag.span.start && d.diag.span.end <= s.end;
+        let (name, check) = file.decls.iter().find_map(|decl| match decl {
+            Decl::Constraint(c) if within(c.span) => Some((&c.name.text, false)),
+            Decl::Check(c) if within(c.span) => Some((&c.name.text, true)),
+            _ => None,
+        })?;
+        pending
+            .iter()
+            .find(|p| {
+                p.module == file.module.text
+                    && p.name == *name
+                    && p.kept().is_some_and(|k| k.check == check)
+            })
+            .map(Pending::object)
+    };
+    let ops = r.operators.iter().map(|_| None);
+    ops.chain(r.recheck.iter().map(owner)).collect()
+}
+
 /// Returns `file` without the operators `skipped` names by position.
 fn skipping(file: &MigrationFile, skipped: &BTreeSet<usize>) -> MigrationFile {
     MigrationFile {
@@ -679,8 +711,13 @@ impl Catalog {
                     .filter(|i| !skipped.contains(i))
                     .nth(blamed.unwrap_or_default())
                     .unwrap_or_default();
+                let owners = owners(&r, &readers.pending);
                 super::refusal(r, |why| {
-                    refused_by(at, why.iter().map(|w| no_image(w)).collect())
+                    let line = |(i, w): (usize, &String)| match owners.get(i).cloned().flatten() {
+                        Some(o) => format!("pending-dropped {o} has no image: {w}"),
+                        None => no_image(w),
+                    };
+                    refused_by(at, why.iter().enumerate().map(line).collect())
                 })
             })?;
         let enforced = checked(source, |ds| {

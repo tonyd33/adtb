@@ -1414,17 +1414,12 @@ fn build_over(
     if !b.diags.is_empty() {
         return Err(b.diags);
     }
-    let names = crate::resolve::check_schema(&b.schema);
-    if names.is_empty() {
-        let id = TypeId(b.schema.types.len() as u32);
-        b.schema.defs_mut().types.push(tag_former(id));
-        b.schema.defs_mut().engine_ctors = Some(EngineCtors::of(&b.schema));
-        b.schema.defs_mut().engine_ids = Some(Arc::new(crate::ids::engine(&b.schema)));
-        b.schema.ids = crate::ids::declared(&b.schema, files);
-        Ok(b.schema)
-    } else {
-        Err(names)
-    }
+    let id = TypeId(b.schema.types.len() as u32);
+    b.schema.defs_mut().types.push(tag_former(id));
+    b.schema.defs_mut().engine_ctors = Some(EngineCtors::of(&b.schema));
+    b.schema.defs_mut().engine_ids = Some(Arc::new(crate::ids::engine(&b.schema)));
+    b.schema.ids = crate::ids::declared(&b.schema, files);
+    Ok(b.schema)
 }
 
 /// Returns the error for type name `text`, naming the prelude type that another language's

@@ -16,4 +16,4 @@ refuse
 --- errors
 every alternative of an or-pattern binds the same names
 --- phase
-schema
+check

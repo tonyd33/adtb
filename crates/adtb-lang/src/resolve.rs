@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::ast::*;
 use crate::schema::{Schema, Scope as RoleScope, TypeDefKind, TypeName, ValueDef};
-use crate::span::{Diag, FileDiag, FileId, Span};
+use crate::span::{Diag, Span};
 use crate::types::{ModuleId, PRELUDE_FUNCTIONS, RelId, TypeId};
 
 #[cfg(test)]
@@ -266,107 +266,6 @@ struct Resolver<'a> {
     scope: Scope<()>,
     diags: Vec<Diag>,
     params: BTreeSet<String>,
-}
-
-/// Check the names in every expression the schema declares.
-pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
-    let mut out = Vec::new();
-    let mut run = |file: FileId, vis: Visible, ctx: Context, binds: &[String], e: &Expr| {
-        let mut r = Resolver::new(schema, vis, ctx);
-        for b in binds {
-            r.scope.bind(b, ());
-        }
-        r.expr(e);
-        out.extend(r.diags.into_iter().map(|diag| FileDiag { file, diag }));
-    };
-    for t in &schema.types {
-        if let TypeDefKind::Newtype {
-            domain: Some(d), ..
-        } = &t.kind
-        {
-            run(
-                t.file,
-                Visible::module(t.module),
-                Context::Schema,
-                &["self".into()],
-                d,
-            );
-        }
-    }
-    for f in &schema.functions {
-        if let FnBody::Expr(e) = &f.body {
-            let names: Vec<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
-            run(
-                f.file,
-                Visible::module(f.module),
-                Context::Schema,
-                &names,
-                e,
-            );
-        }
-    }
-    for c in &schema.constraints {
-        run(
-            c.file,
-            Visible::module(c.module),
-            Context::Schema,
-            &[],
-            &c.query,
-        );
-    }
-    for c in &schema.checks {
-        let mut names = row_fields(schema, c.relation, c.ctors.as_deref());
-        names.push("self".into());
-        run(
-            c.file,
-            Visible::module(c.module),
-            Context::Schema,
-            &names,
-            &c.predicate,
-        );
-    }
-    for (i, r) in schema.relations.iter().enumerate() {
-        let vis = Visible::module(r.module);
-        for ix in &r.indexes {
-            let names = row_fields(schema, RelId(i as u32), ix.scope.as_deref());
-            for e in &ix.fields {
-                run(r.file, vis.clone(), Context::Schema, &names, e);
-            }
-        }
-        for d in &r.defaults {
-            if let crate::schema::DefaultValue::Expr(e) = &d.value {
-                run(r.file, vis.clone(), Context::Schema, &[], e);
-            }
-        }
-        for c in &r.computed {
-            run(
-                r.file,
-                vis.clone(),
-                Context::Schema,
-                &["self".into()],
-                &c.expr,
-            );
-        }
-    }
-    for a in &schema.aggregates {
-        let vis = Visible::module(a.module);
-        let params: Vec<String> = a.decl.params.iter().map(|p| p.name.text.clone()).collect();
-        let with = |extra: &[&Ident]| -> Vec<String> {
-            params
-                .iter()
-                .cloned()
-                .chain(extra.iter().map(|i| i.text.clone()))
-                .collect()
-        };
-        run(a.file, vis.clone(), Context::Schema, &params, &a.decl.init);
-        let (s, x, e) = &a.decl.step;
-        run(a.file, vis.clone(), Context::Schema, &with(&[s, x]), e);
-        let (l, r, e) = &a.decl.merge;
-        run(a.file, vis.clone(), Context::Schema, &with(&[l, r]), e);
-        let (f, e) = &a.decl.finish;
-        run(a.file, vis, Context::Schema, &with(&[f]), e);
-    }
-    out
 }
 
 /// Check the names of ad hoc text, returning its free names, which are its parameters.

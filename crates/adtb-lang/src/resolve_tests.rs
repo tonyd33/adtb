@@ -1,6 +1,7 @@
 use super::*;
 use crate::parse::{Options, parse_adhoc, parse_schema};
 use crate::schema::build;
+use crate::span::FileId;
 
 const RUNNING: &str = r"
 module auth
@@ -22,9 +23,9 @@ fn display_name (i: Identity) -> Text = match i
 fn schema_errors(extra: &str) -> Vec<String> {
     let src = format!("{RUNNING}\n{extra}");
     let file = parse_schema(&src, Options::default()).ok().unwrap();
-    match build(&[(FileId(0), file)]) {
-        Ok(_) => Vec::new(),
-        Err(ds) => ds.into_iter().map(|d| d.diag.message).collect(),
+    match build(&[(FileId(0), file)]).map(crate::check::check_schema) {
+        Ok(Ok(_)) => Vec::new(),
+        Ok(Err(ds)) | Err(ds) => ds.into_iter().map(|d| d.diag.message).collect(),
     }
 }
 
@@ -94,7 +95,7 @@ fn match_arms_bind_their_patterns() {
     );
     refuses(
         "fn f (i: Identity) -> I64 = match i | Identity.Apple a -> 1",
-        "not a constructor of `Identity`",
+        "`Apple` is not a constructor of Identity",
     );
 }
 
@@ -112,7 +113,7 @@ fn backlinks_name_a_field_of_the_relation() {
     accepts("fn f () -> Set User = from u in users where exists i in u.<identities.user select u");
     refuses(
         "fn f () -> Set User = from u in users where exists i in u.<identities.owner select u",
-        "not a field",
+        "no row of `identities` has a field `owner`",
     );
 }
 
