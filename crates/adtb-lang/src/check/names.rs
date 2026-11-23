@@ -125,6 +125,13 @@ impl Checker<'_> {
     /// Record that `name` denotes `v`.
     pub(super) fn record_value(&self, name: &ast::QName, v: ValueDef) {
         let at = name.name.span;
+        if let Some(d) = &self.demand {
+            match v {
+                ValueDef::Function(f) => d.named(Demanded::Function(f)),
+                ValueDef::Aggregate(a) => d.named(Demanded::Aggregate(a)),
+                _ => {}
+            }
+        }
         match v {
             ValueDef::Relation(r) => self.refs.push(at, Ref::Relation(r)),
             ValueDef::Function(f) => self.refs.push(at, Ref::Function(f)),

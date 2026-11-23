@@ -618,27 +618,6 @@ fn a_function_calling_a_nondeterministic_host_function_is_nondeterministic_trans
 }
 
 #[test]
-fn a_cycle_of_functions_is_deterministic_unless_it_reaches_a_nondeterministic_one() {
-    let det = determinism(&[
-        "fn even (x: I64) -> Bool = if x == 0 then True else odd(x - 1)",
-        "fn odd (x: I64) -> Bool = if x == 0 then False else even(x - 1)",
-        r#"fn clock (x: I64) -> I64 = host "clock" version "1""#,
-        "fn ping (x: I64) -> I64 = if x == 0 then clock(x) else pong(x - 1)",
-        "fn pong (x: I64) -> I64 = ping(x)",
-    ]);
-    assert_eq!(
-        BTreeMap::from([
-            ("clock".to_string(), false),
-            ("even".to_string(), true),
-            ("odd".to_string(), true),
-            ("ping".to_string(), false),
-            ("pong".to_string(), false),
-        ]),
-        det
-    );
-}
-
-#[test]
 fn an_aggregate_calling_a_nondeterministic_function_is_nondeterministic() {
     let det = determinism(&[
         r#"fn clock (x: I64) -> I64 = host "clock" version "1""#,

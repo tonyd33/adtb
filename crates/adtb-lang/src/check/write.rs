@@ -1255,14 +1255,14 @@ impl Checker<'_> {
 
 /// Check the `on delete` actions of every declared type and elaborate each relation's `retag` action.
 pub(super) fn delete_actions(b: &mut Bodies) -> BTreeMap<RelId, Tm> {
-    let schema = b.schema;
+    let schema = b.schema();
     let mut out = BTreeMap::new();
     for (i, t) in schema.types.iter().enumerate() {
         let TypeDefKind::Sum { header, ctors, .. } = &t.kind else {
             continue;
         };
         let mut err = |span: Span, msg: String| {
-            b.diags.push(FileDiag {
+            b.refuse(FileDiag {
                 file: t.file,
                 diag: diag(span, msg),
             });

@@ -5,7 +5,8 @@ impl Source {
     pub fn functions(&self) -> Result<Vec<Function>, Vec<FileDiag>> {
         let schema = self.schema()?;
         let names = self.names()?;
-        let deterministic = deterministic_functions(&schema);
+        let checked = check::check_schema(&schema)?;
+        let judge = crate::capability::Judge::new(&checked);
         let mut out = Vec::new();
         for (file, f) in self.files()? {
             let Some(module) = schema.module_named(&f.module.text) else {
@@ -48,7 +49,7 @@ impl Source {
                             schema.ids().function_id(fid),
                             &fd.name,
                             fd.result.span,
-                            deterministic[fid.0 as usize],
+                            judge.deterministic_function(fid),
                             code,
                         )
                     }
@@ -63,9 +64,7 @@ impl Source {
                             id,
                             &a.name,
                             a.result.span,
-                            crate::resolve::aggregate_refs(&schema, i as usize)
-                                .iter()
-                                .all(|g| deterministic[g.0 as usize]),
+                            judge.deterministic_aggregate(i as usize),
                             Code::Aggregate { body, canonical },
                         )
                     }
@@ -86,36 +85,4 @@ impl Source {
         }
         Ok(out)
     }
-}
-
-/// Returns, for each function of `schema`, whether every function it calls, transitively, is
-/// deterministic.
-fn deterministic_functions(schema: &Schema) -> Vec<bool> {
-    let calls: Vec<BTreeSet<FnId>> = (0..schema.functions.len() as u32)
-        .map(|i| crate::resolve::function_refs(schema, FnId(i)))
-        .collect();
-    let mut det: Vec<bool> = schema
-        .functions
-        .iter()
-        .map(|f| {
-            !matches!(
-                f.body,
-                ast::FnBody::Host {
-                    deterministic: false,
-                    ..
-                }
-            )
-        })
-        .collect();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (i, gs) in calls.iter().enumerate() {
-            if det[i] && gs.iter().any(|g| !det[g.0 as usize]) {
-                det[i] = false;
-                changed = true;
-            }
-        }
-    }
-    det
 }

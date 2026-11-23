@@ -7,6 +7,7 @@ use crate::schema::{Committed, build};
 
 mod adhoc;
 mod binding_sites;
+mod call_cycles;
 mod capability;
 mod elaboration;
 mod generic_solving;

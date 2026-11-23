@@ -323,6 +323,24 @@ impl<'a> Judge<'a> {
         admit(root, &self.reaches(terms, t))
     }
 
+    /// Returns whether function `f` reaches nothing nondeterministic through everything it calls.
+    pub(crate) fn deterministic_function(&self, f: FnId) -> bool {
+        self.deterministic(Callee::Function(f))
+    }
+
+    /// Returns whether the aggregate at position `i` reaches nothing nondeterministic through
+    /// everything it calls.
+    pub(crate) fn deterministic_aggregate(&self, i: usize) -> bool {
+        self.deterministic(Callee::Aggregate(i as u32))
+    }
+
+    fn deterministic(&self, c: Callee) -> bool {
+        !self
+            .closed
+            .get(&c)
+            .is_some_and(|r| r.contains(&Reach::Nondeterministic))
+    }
+
     /// Returns everything `t` of `terms` reaches.
     pub fn reaches(&self, terms: &Terms, t: Tm) -> BTreeSet<Reach> {
         let Scan { mut reaches, calls } = scan(self.schema, terms, &[t]);

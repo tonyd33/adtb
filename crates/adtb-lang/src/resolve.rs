@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use crate::ast::*;
 use crate::schema::{Schema, Scope as RoleScope, TypeDefKind, TypeName, ValueDef};
 use crate::span::{Diag, FileDiag, FileId, Span};
-use crate::types::{FnId, ModuleId, PRELUDE_FUNCTIONS, RelId, TypeId};
+use crate::types::{ModuleId, PRELUDE_FUNCTIONS, RelId, TypeId};
 
 #[cfg(test)]
 #[path = "resolve_tests.rs"]
@@ -266,45 +266,6 @@ struct Resolver<'a> {
     scope: Scope<()>,
     diags: Vec<Diag>,
     params: BTreeSet<String>,
-    functions: BTreeSet<FnId>,
-}
-
-/// Returns the functions the body of `f` names, called or passed as values.
-pub fn function_refs(schema: &Schema, f: FnId) -> BTreeSet<FnId> {
-    let def = schema.function(f);
-    let FnBody::Expr(body) = &def.body else {
-        return BTreeSet::new();
-    };
-    let mut r = Resolver::new(schema, Visible::module(def.module), Context::Schema);
-    for (name, _) in &def.params {
-        r.scope.bind(name, ());
-    }
-    r.expr(body);
-    r.functions
-}
-
-/// Returns the functions the expressions of aggregate `a` name, called or passed as values.
-pub fn aggregate_refs(schema: &Schema, a: usize) -> BTreeSet<FnId> {
-    let def = &schema.aggregates[a];
-    let params: Vec<&Ident> = def.decl.params.iter().map(|p| &p.name).collect();
-    let (s, x, step) = &def.decl.step;
-    let (l, r, merge) = &def.decl.merge;
-    let (f, finish) = &def.decl.finish;
-    let mut out = BTreeSet::new();
-    for (extra, e) in [
-        (vec![], &def.decl.init),
-        (vec![s, x], step),
-        (vec![l, r], merge),
-        (vec![f], finish),
-    ] {
-        let mut res = Resolver::new(schema, Visible::module(def.module), Context::Schema);
-        for name in params.iter().chain(&extra) {
-            res.scope.bind(&name.text, ());
-        }
-        res.expr(e);
-        out.append(&mut res.functions);
-    }
-    out
 }
 
 /// Check the names in every expression the schema declares.
@@ -472,7 +433,6 @@ impl<'a> Resolver<'a> {
             scope: Scope::default(),
             diags: Vec::new(),
             params: BTreeSet::new(),
-            functions: BTreeSet::new(),
         }
     }
 
@@ -501,10 +461,7 @@ impl<'a> Resolver<'a> {
             }
         }
         match lookup_value(self.schema, &self.vis, q) {
-            Ok(ValueDef::Relation(_)) => {}
-            Ok(ValueDef::Function(f)) => {
-                self.functions.insert(f);
-            }
+            Ok(ValueDef::Relation(_) | ValueDef::Function(_)) => {}
             Ok(ValueDef::Aggregate(_)) if as_call => {}
             Ok(_) => self.err(
                 q.span(),

@@ -17,6 +17,7 @@ use crate::span::{Diag, DiagKind, FileDiag, FileId, Span};
 use crate::types::*;
 
 mod adhoc;
+mod bodies;
 mod body;
 mod call;
 mod compiled;
@@ -41,6 +42,7 @@ mod write;
 #[cfg(test)]
 pub(crate) mod tests;
 
+use bodies::{Bodies, Demand, Demanded, bodies};
 use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
@@ -232,6 +234,8 @@ pub struct Checker<'a> {
     tparams: Vec<(String, Vec<Bound>)>,
     /// Relations whose rows each checked function returns, for `key` over a view's rows.
     fn_rows: Vec<Option<RelId>>,
+    /// The functions and aggregates of the schema being checked whose checks began.
+    demand: Option<Rc<Demand>>,
     /// Ad hoc parameters, typed by their descriptors.
     params: BTreeMap<String, (Var, Ty)>,
     /// Whether `reject` may appear: in the source query of an insert.
@@ -306,6 +310,7 @@ impl<'a> Checker<'a> {
             scope: Scope::default(),
             tparams: Vec::new(),
             fn_rows,
+            demand: None,
             params: BTreeMap::new(),
             reject_ok: false,
             hoist: Vec::new(),
@@ -508,58 +513,12 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// Function ids in an order where each function follows the functions it calls.
-fn call_order(schema: &Schema) -> Result<Vec<FnId>, FileDiag> {
-    let n = schema.functions.len();
-    let calls: Vec<BTreeSet<FnId>> = (0..n as u32)
-        .map(|i| crate::resolve::function_refs(schema, FnId(i)))
-        .collect();
-    let mut order = Vec::new();
-    let mut state = vec![0u8; n];
-    fn visit(
-        i: usize,
-        calls: &[BTreeSet<FnId>],
-        state: &mut [u8],
-        order: &mut Vec<FnId>,
-    ) -> Result<(), usize> {
-        match state[i] {
-            2 => return Ok(()),
-            1 => return Err(i),
-            _ => {}
-        }
-        state[i] = 1;
-        for g in &calls[i] {
-            visit(g.0 as usize, calls, state, order)?;
-        }
-        state[i] = 2;
-        order.push(FnId(i as u32));
-        Ok(())
-    }
-    for i in 0..n {
-        if let Err(j) = visit(i, &calls, &mut state, &mut order) {
-            let f = &schema.functions[j];
-            return Err(FileDiag {
-                file: f.file,
-                diag: diag(
-                    f.span,
-                    format!(
-                        "function `{}` calls itself; recursion is written with `fix`",
-                        f.name
-                    ),
-                ),
-            });
-        }
-    }
-    Ok(order)
-}
-
 /// Type checks every body of `schema` and elaborates it to the kernel, returning the two together.
 ///
 /// Fail with no diagnostic of a body that names a relation variable a refused operator left
 /// poisoned.
 pub fn check_schema<S: AsSchema>(schema: S) -> Result<Compiled<S>, Vec<FileDiag>> {
-    let order = call_order(schema.as_schema()).map_err(|d| vec![d])?;
-    let (program, mut diags) = bodies(schema.as_schema(), &order, None);
+    let (program, mut diags) = bodies(schema.as_schema(), None);
     let poisoned = diags.iter().any(|d| d.diag.kind == DiagKind::Poisoned);
     diags.retain(|d| d.diag.kind != DiagKind::Poisoned);
     if !diags.is_empty() || poisoned {
@@ -587,213 +546,9 @@ pub fn check_schema<S: AsSchema>(schema: S) -> Result<Compiled<S>, Vec<FileDiag>
 /// A body that does not check contributes the names resolved before its first error; a match that misses
 /// constructors is not an error here.
 pub fn schema_refs(schema: &Schema) -> Vec<(FileId, Span, Ref)> {
-    let order = call_order(schema)
-        .unwrap_or_else(|_| (0..schema.functions.len() as u32).map(FnId).collect());
     let mut refs = Vec::new();
-    bodies(schema, &order, Some(&mut refs));
+    bodies(schema, Some(&mut refs));
     refs
-}
-
-fn bodies(
-    schema: &Schema,
-    order: &[FnId],
-    record: Option<&mut Vec<(FileId, Span, Ref)>>,
-) -> (Program, Vec<FileDiag>) {
-    let mut b = Bodies {
-        schema,
-        record,
-        program: Program {
-            terms: Terms::default(),
-            functions: vec![None; schema.functions.len()],
-            constraints: BTreeMap::new(),
-            checks: BTreeMap::new(),
-            domains: BTreeMap::new(),
-            retags: BTreeMap::new(),
-            defaults: BTreeMap::new(),
-            computed: BTreeMap::new(),
-            index_fields: BTreeMap::new(),
-            aggregates: vec![None; schema.aggregates.len()],
-            fn_rows: Vec::new(),
-        },
-        diags: Vec::new(),
-        fn_rows: vec![None; schema.functions.len()],
-        terms: Terms::default(),
-    };
-    b.functions(order);
-    b.aggregates();
-    b.constraints();
-    b.checks();
-    b.domains();
-    for (i, r) in schema.relations.iter().enumerate() {
-        b.relation(RelId(i as u32), r);
-    }
-    b.finish()
-}
-
-struct Bodies<'s, 'r> {
-    schema: &'s Schema,
-    record: Option<&'r mut Vec<(FileId, Span, Ref)>>,
-    program: Program,
-    diags: Vec<FileDiag>,
-    fn_rows: Vec<Option<RelId>>,
-    terms: Terms,
-}
-
-impl Bodies<'_, '_> {
-    fn run<T>(
-        &mut self,
-        module: ModuleId,
-        ctx: Context,
-        file: FileId,
-        f: &mut dyn FnMut(&mut Checker) -> R<T>,
-    ) -> Option<T> {
-        let mut c = Checker::with_rows(
-            self.schema,
-            Visible::module(module),
-            ctx,
-            self.fn_rows.clone(),
-        );
-        c.terms = std::mem::take(&mut self.terms);
-        if self.record.is_some() {
-            c.coverage = false;
-        }
-        let r = f(&mut c);
-        self.terms = std::mem::take(&mut c.terms);
-        if let Some(out) = self.record.as_deref_mut() {
-            out.extend(c.refs.take_in(file));
-        }
-        match r {
-            Ok(t) => Some(t),
-            Err(d) => {
-                self.diags.push(FileDiag { file, diag: d });
-                None
-            }
-        }
-    }
-
-    fn functions(&mut self, order: &[FnId]) {
-        let schema = self.schema;
-        for &id in order {
-            let def = schema.function(id);
-            let ast::FnBody::Expr(body) = &def.body else {
-                continue;
-            };
-            let mut rows = None;
-            let tm = self.run(def.module, Context::Schema, def.file, &mut |c| {
-                let (tm, r) = c.function(def, body)?;
-                rows = r;
-                Ok(tm)
-            });
-            self.fn_rows[id.0 as usize] = rows;
-            self.program.functions[id.0 as usize] = tm;
-        }
-    }
-
-    fn aggregates(&mut self) {
-        let schema = self.schema;
-        for (i, def) in schema.aggregates.iter().enumerate() {
-            let mut parts = None;
-            self.run(def.module, Context::Schema, def.file, &mut |c| {
-                let p = c.aggregate_decl(def)?;
-                parts = Some(p);
-                Ok(p.init)
-            });
-            self.program.aggregates[i] = parts;
-        }
-    }
-
-    fn constraints(&mut self) {
-        let schema = self.schema;
-        for (i, con) in schema.constraint_defs() {
-            if let Some(tm) = self.run(con.module, Context::Schema, con.file, &mut |c| {
-                c.constraint(&con.query)
-            }) {
-                self.program.constraints.insert(i, tm);
-            }
-        }
-    }
-
-    fn checks(&mut self) {
-        let schema = self.schema;
-        for (i, chk) in schema.check_defs() {
-            if let Some(tm) = self.run(chk.module, Context::Schema, chk.file, &mut |c| {
-                c.check_clause(chk.relation, chk.ctors.clone(), &chk.predicate)
-            }) {
-                self.program.checks.insert(i, tm);
-            }
-        }
-    }
-
-    fn domains(&mut self) {
-        let schema = self.schema;
-        for (i, t) in schema.types.iter().enumerate() {
-            if let TypeDefKind::Newtype {
-                base,
-                domain: Some(d),
-            } = &t.kind
-            {
-                let mut var = None;
-                if let Some(tm) = self.run(t.module, Context::Schema, t.file, &mut |c| {
-                    c.scope.push();
-                    let v = c.bind("self", base.clone(), None, Provenance::Built);
-                    var = Some(v);
-                    let ty = c.bool_ty();
-                    let out = c.check(d, &ty)?;
-                    Ok(out.tm)
-                }) {
-                    self.program
-                        .domains
-                        .insert(TypeId(i as u32), (var.expect("bound"), tm));
-                }
-            }
-        }
-    }
-
-    fn relation(&mut self, rel: RelId, r: &crate::schema::RelationDef) {
-        for (j, d) in r.defaults.iter().enumerate() {
-            if let DefaultValue::Expr(e) = &d.value
-                && let Some(tm) = self.run(r.module, Context::Schema, r.file, &mut |c| {
-                    c.default_clause(rel, d.ctor, &d.field, e)
-                })
-            {
-                self.program.defaults.insert((rel, j), tm);
-            }
-        }
-        for (j, comp) in r.computed.iter().enumerate() {
-            let mut var = None;
-            if let Some(tm) = self.run(r.module, Context::Schema, r.file, &mut |c| {
-                c.scope.push();
-                var = Some(c.bind("self", r.elem.clone(), Some(rel), Provenance::Snapshot));
-                Ok(c.check(&comp.expr, &comp.ty)?.tm)
-            }) {
-                self.program
-                    .computed
-                    .insert((rel, j), (var.expect("bound"), tm));
-            }
-        }
-        for (j, ix) in r.indexes.iter().enumerate() {
-            for (k, e) in ix.fields.iter().enumerate() {
-                let mut path = Vec::new();
-                if let Some(value) = self.run(r.module, Context::Schema, r.file, &mut |c| {
-                    let (f, ty) = c.index_field(rel, ix.scope.clone(), e)?;
-                    c.keyable(rel, ix, k, &ty)?;
-                    path = f.path;
-                    Ok(f.value)
-                }) {
-                    self.program
-                        .index_fields
-                        .insert((rel, j, k), IndexField { value, path });
-                }
-            }
-        }
-    }
-
-    fn finish(mut self) -> (Program, Vec<FileDiag>) {
-        self.program.retags = write::delete_actions(&mut self);
-        self.program.terms = self.terms;
-        self.program.fn_rows = self.fn_rows;
-        (self.program, self.diags)
-    }
 }
 
 /// Checked ad hoc text: one kernel term per statement and one checked form per command.
