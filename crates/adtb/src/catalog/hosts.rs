@@ -39,6 +39,7 @@ pub(super) fn classify(object: &str, e: exec::Error, internal: fn(exec::Error) -
             Error::Refused(vec![format!("{object} is not admitted: {why}")])
         }
         exec::Error::Page(e) => Error::Page(e),
+        exec::Error::Spill(e) => Error::Spill(e),
         exec::Error::Corrupt(rot) => Rot::Exec(rot).into(),
         exec::Error::OrphanEntry(index) => Rot::Orphaned(index).into(),
         other => Error::from(internal(other)),

@@ -1383,3 +1383,35 @@ fn a_check_reports_a_log_it_cannot_list() {
         db.close().unwrap();
     });
 }
+
+/// Space: a constraint whose validation joins every user, every spill write failing.
+#[test]
+fn a_spill_write_failing_during_validation_fails_the_open_as_an_io_failure() {
+    let mut sim = Sim::new(64, Config::default());
+    finished(&mut sim, |rt| {
+        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
+        for i in 1..=12000 {
+            let name = format!("n{i}");
+            api::results(
+                &db,
+                &format!(r#"insert users {{ id: users.key({i}), name: "{name}" }}"#),
+            );
+        }
+        db.close().unwrap();
+    });
+    let unique = "module app\nadd index (name) in users\nadd constraint shared = from a in users, b in users where a.name == b.name and key a != key b select a\n";
+    finished(&mut sim, |rt| {
+        let spills = Match::kind(OpKind::Write).prefixed("spill/");
+        rt.plan(Plan::new().rule(spills, Action::Fail(IoError::Failed)));
+        let options = OpenOptions {
+            query_memory_bytes: Some(512 << 10),
+            ..open::options(2)
+        };
+        let failed = match open::open_in(&rt, FILE, &Log::new([APP, unique]), &options) {
+            Err(OpenError::Io(e)) => (e.kind(), e.to_string()),
+            other => panic!("not an I/O failure: {:?}", other.map(drop)),
+        };
+        let want = "the spill file failed: the device refused the operation";
+        assert_eq!((std::io::ErrorKind::Other, want.to_owned()), failed);
+    });
+}

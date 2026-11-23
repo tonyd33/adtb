@@ -305,16 +305,20 @@ pub(super) fn past_limits(e: &permission::Error) -> bool {
 }
 
 /// Returns the refusal of a file that `cause` makes: [`OpenError::PastLimits`] for a stored body
-/// past this build's limits, and [`OpenError::Io`] for a page the device refused to read.
+/// past this build's limits, and [`OpenError::Io`] for a page the device refused to read and for
+/// a spill file that failed.
 pub(super) fn corrupt(cause: impl Into<Corruption>) -> OpenError {
     match cause.into() {
         Corruption::Catalog(catalog::Error::PastLimits(object)) => OpenError::PastLimits { object },
         Corruption::Catalog(catalog::Error::FormatTooOld(format)) => {
             OpenError::FormatTooOld { format }
         }
+        Corruption::Catalog(catalog::Error::Spill(io)) => {
+            OpenError::Io(std::io::Error::other(Io(Failure::Spill(io))))
+        }
         cause => match cause.page() {
             Some(e) if e.damage == storage::Damage::Unreadable => {
-                OpenError::Io(std::io::Error::other(Unreadable(e)))
+                OpenError::Io(std::io::Error::other(Io(Failure::Page(e))))
             }
             _ => OpenError::Corrupt {
                 detail: cause.to_string(),
@@ -323,17 +327,17 @@ pub(super) fn corrupt(cause: impl Into<Corruption>) -> OpenError {
     }
 }
 
-/// A page the device refused to read, as the I/O failure of an open.
+/// A storage failure as the I/O failure of an open.
 #[derive(Debug)]
-struct Unreadable(storage::PageError);
+struct Io(Failure);
 
-impl fmt::Display for Unreadable {
+impl fmt::Display for Io {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl std::error::Error for Unreadable {}
+impl std::error::Error for Io {}
 
 impl Corruption {
     /// Returns the page whose refusal this is, `None` when it is no page's.

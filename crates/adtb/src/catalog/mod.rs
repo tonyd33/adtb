@@ -85,7 +85,7 @@ use crate::heap::{self, FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, KeySchema, OrderKey, Tid, Value};
 use crate::mvcc::{self, Hold, Scope, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
-use crate::runtime::Runtime;
+use crate::runtime::{IoError, Runtime};
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Problem, Report};
 
@@ -176,6 +176,8 @@ pub enum Error {
     FormatTooOld(u16),
     /// Another transaction wrote a key of keyed storage the transaction writes.
     Conflict(mvcc::Conflict),
+    /// The spill file of a query the catalog ran could not be made, written or read.
+    Spill(IoError),
 }
 
 impl From<PageError> for Error {

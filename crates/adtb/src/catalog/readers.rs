@@ -430,7 +430,8 @@ pub(super) fn unaccepted_at(version: u64, e: Error) -> Error {
         | Error::Unchecked(..)
         | Error::PastLimits(_)
         | Error::FormatTooOld(_)
-        | Error::Conflict(_)) => e,
+        | Error::Conflict(_)
+        | Error::Spill(_)) => e,
     }
 }
 
