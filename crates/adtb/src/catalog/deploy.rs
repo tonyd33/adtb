@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use adtb_lang::ids::engine_rel;
 use adtb_lang::types::RelId;
 
 use crate::key::Value;
@@ -10,7 +11,16 @@ use crate::runtime::Runtime;
 use crate::storage::{Pager, Position};
 
 use super::codec::{Codec, Decode};
-use super::{Catalog, Change, Error, Fact, Writer, delete_rows};
+use super::ids::{CatRelId, rel_id};
+use super::{Broken, Catalog, Change, Error, Fact, Writer, delete_rows};
+
+/// The relations of deployment state, the only relations a deploy writes.
+const DEPLOYED: [CatRelId; 4] = [
+    engine_rel::ROLES,
+    engine_rel::GRANTS,
+    engine_rel::BUNDLES,
+    engine_rel::REGISTERED,
+];
 
 /// The rows of one relation [`Catalog::deploy`] deletes and inserts, each a constructor and its
 /// stored fields.
@@ -51,10 +61,10 @@ impl Catalog {
     /// Delete and insert the rows of `writes` as one transaction. Returns its commit position,
     /// once it is durable.
     ///
-    /// Preconditions:
-    /// - Every relation `writes` names is a relation of deployment state, whose rows no
-    ///   migration writes.
-    /// - Every deleted row is a row the latest commit holds.
+    /// Fail as broken, writing nothing, when `writes` names a relation other than the engine's
+    /// `roles`, `grants`, `bundles` and `registered`.
+    ///
+    /// Precondition: every deleted row is a row the latest commit holds.
     pub fn deploy<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -68,6 +78,34 @@ impl Catalog {
     /// transaction, under the preconditions of [`Catalog::deploy`]. Returns its commit position,
     /// once it is durable.
     pub fn deploy_with<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        writes: &[Rewrite],
+        facts: &[Fact],
+    ) -> Result<Position, Error> {
+        for w in writes {
+            let id = rel_id(&self.schema, w.relation);
+            if !DEPLOYED.contains(&id) {
+                return Err(Broken::Undeployed(id).into());
+            }
+        }
+        self.rewrite(pager, txns, writes, facts)
+    }
+
+    /// Write the rows of `writes` and the facts `facts` as [`Catalog::deploy_with`] does, into
+    /// any relation, for a test that forges what no deploy writes.
+    #[cfg(test)]
+    pub(crate) fn forge<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        writes: &[Rewrite],
+    ) -> Result<Position, Error> {
+        self.rewrite(pager, txns, writes, &[])
+    }
+
+    fn rewrite<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,

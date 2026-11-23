@@ -53,7 +53,7 @@ fn deploy<R: Runtime>(
 ) {
     let (relation, c) = catalog_relation(catalog.schema(), name, ctor);
     catalog
-        .deploy(
+        .forge(
             pager,
             txns,
             &[Rewrite {

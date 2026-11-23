@@ -830,3 +830,40 @@ fn a_rebuild_joins_only_a_change_no_running_transaction_holds() {
         pager.close();
     });
 }
+
+#[test]
+fn a_deploy_writes_only_roles_grants_bundles_and_registered() {
+    let mut refused = BTreeMap::new();
+    let mut sim = Sim::new(31, Config::default());
+    finished(&mut sim, |rt: SimRuntime| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let schema = catalog.schema();
+        for (r, id) in schema.ids().relation_ids() {
+            let rewrite = crate::catalog::Rewrite {
+                relation: r,
+                deleted: Vec::new(),
+                inserted: Vec::new(),
+            };
+            let name = format!(
+                "{}::{}",
+                schema.module(schema.relation(r).module).name,
+                schema.relation(r).name
+            );
+            let got = catalog.deploy(&pager, &txns, &[rewrite]).err();
+            refused.insert(name, (id, got));
+        }
+    });
+    let deployed = [
+        "catalog::roles",
+        "catalog::grants",
+        "catalog::bundles",
+        "catalog::registered",
+    ];
+    assert!(refused.len() > deployed.len(), "{refused:?}");
+    for (name, (id, got)) in refused {
+        let want = (!deployed.contains(&name.as_str()))
+            .then(|| Error::Internal(Box::new(super::Broken::Undeployed(id))));
+        assert_eq!(want, got, "{name}");
+    }
+}
