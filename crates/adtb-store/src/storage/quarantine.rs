@@ -101,7 +101,7 @@ pub enum Quarantine {
 }
 
 /// The removal of marks a commit makes: the page holding the marks and the marks it removes.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Release {
     page: Pid,
     gone: BTreeSet<Quarantine>,
@@ -877,21 +877,26 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    /// Returns the removal of the marks of `gone` that are set, for a commit to make in its batch;
-    /// `None` when none is set, or when the page holding the marks is refused or was loaded at
-    /// this open with no check of its LSN.
-    pub fn releasing(&self, gone: &BTreeSet<Quarantine>) -> Option<Release> {
+    /// Returns the removal of the marks of `gone` that are set, for a commit to make in its batch,
+    /// `None` when none is set.
+    ///
+    /// Fail with the first mark of `gone` that is set and why the page holding the marks takes
+    /// no write: it is refused, or was loaded at this open with no check of its LSN.
+    pub fn releasing(
+        &self,
+        gone: &BTreeSet<Quarantine>,
+    ) -> Result<Option<Release>, (Quarantine, MarkFailure)> {
         let gone: BTreeSet<Quarantine> = self
             .quarantined()
             .intersection(gone)
             .filter(|o| **o != Quarantine::Database)
             .copied()
             .collect();
-        if gone.is_empty() {
-            return None;
-        }
-        let page = self.marks_page().ok()?;
-        Some(Release { page, gone })
+        let Some(&first) = gone.first() else {
+            return Ok(None);
+        };
+        let page = self.marks_page().map_err(|why| (first, why))?;
+        Ok(Some(Release { page, gone }))
     }
 
     /// Remove the marks of `r` in memory and write the marks left to `page`, the contents of the

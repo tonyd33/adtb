@@ -931,6 +931,28 @@ impl Catalog {
         self.heaps.values().chain(self.kept.heaps())
     }
 
+    /// Returns the name a client sees of the heap or index of this catalog that `mark` marks, and
+    /// "the database" for any other.
+    fn mark_named(&self, mark: Quarantine) -> String {
+        let schema = &self.schema;
+        let relation = |r: RelId| {
+            let relation = schema.relation(r);
+            format!("{}::{}", schema.module(relation.module).name, relation.name)
+        };
+        for (&(r, c), heap) in &self.heaps {
+            if mark == Quarantine::Heap(heap.id().0) {
+                let ctor = &schema.ty(schema.relation(r).elem_def).ctors()[c as usize].name;
+                return format!("{}.{ctor}", relation(r));
+            }
+        }
+        for (spec, index, _) in self.indexes.values() {
+            if mark == Quarantine::Index(index.tree().owner()) {
+                return format!("{} {}", relation(spec.relation), spec.clause);
+            }
+        }
+        "the database".to_owned()
+    }
+
     /// Returns the mark of each heap and index of this catalog that `next` does not hold, and of
     /// each index whose tree `next` holds in place of this catalog's.
     fn marks_gone_in(&self, next: &Catalog) -> BTreeSet<Quarantine> {

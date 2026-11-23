@@ -1,14 +1,13 @@
 //! The one write transaction of the catalog: its id, its snapshot hold, the structures it makes,
 //! its mark on the catalog root, and its commit or abandon.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::faults;
 use crate::heap::Heap;
 use crate::mvcc::{Begun, Committed, Scope, Transactions};
 use crate::runtime::Runtime;
-use crate::storage::{Lsn, Pager, Pid, Quarantine};
+use crate::storage::{Lsn, Pager, Pid, Release};
 
 use super::root::{self, Changing, Root};
 use super::{Broken, Catalog, Error, Migrating, update_root};
@@ -111,19 +110,19 @@ impl<'a, R: Runtime> Change<'a, R> {
     }
 
     /// Release the snapshot and commit, changing the catalog root page `root` through `also` and
-    /// removing the mark of each heap and index of `gone` in the log batch of the commit record.
-    /// Returns the commit, its mark still recorded.
+    /// removing the marks of `release` in the log batch of the commit record. Returns the commit,
+    /// its mark still recorded.
     ///
-    /// Precondition: the transaction drops each heap and index of `gone`, or builds it again
-    /// whole.
+    /// Precondition: the transaction drops each heap and index `release` names, or builds it
+    /// again whole.
     ///
     /// Fail as [`Transactions::commit`] does, the transaction aborted, its mark and every mark of
-    /// `gone` kept.
+    /// `release` kept.
     pub(super) fn commit_naming(
         self,
         root: Pid,
         also: impl FnOnce(&mut Root),
-        gone: &BTreeSet<Quarantine>,
+        release: Option<Release>,
     ) -> Result<Landed<'a>, Error> {
         let Change { begun, m, mark } = self;
         let (pager, txns) = (m.pager, m.txns);
@@ -133,7 +132,7 @@ impl<'a, R: Runtime> Change<'a, R> {
             also(&mut named);
             named.write(p);
         };
-        let Some(release) = pager.releasing(gone) else {
+        let Some(release) = release else {
             let committed = txns.commit_changing(pager, begun, root, name)?;
             return Ok(Landed { committed, mark });
         };

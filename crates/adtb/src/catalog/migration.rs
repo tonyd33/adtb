@@ -122,8 +122,15 @@ impl Catalog {
             }
         };
         let sequences = c.sequences;
-        let marks = self.marks_gone_in(&c);
-        let landed = match change.commit_naming(self.root, |r| r.sequences = sequences, &marks) {
+        let release = match pager.releasing(&self.marks_gone_in(&c)) {
+            Ok(release) => release,
+            Err((mark, _)) => {
+                (self.source.grants, self.sequences) = before;
+                let what = self.mark_named(mark);
+                return Err(change.fail(self, Error::Quarantined(what)));
+            }
+        };
+        let landed = match change.commit_naming(self.root, |r| r.sequences = sequences, release) {
             Ok(landed) => landed,
             Err(e) => {
                 (self.source.grants, self.sequences) = before;

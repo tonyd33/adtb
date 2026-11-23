@@ -2203,11 +2203,13 @@ may hold a value of a constructor it disables or removes, and each
 constructor relation read by a constraint it validates. When these
 include a quarantined constructor relation, open fails with
 `MigrationRefused`, its `reason` the `Fatal { reason: Quarantined {..}
-}` naming that relation, and the migration changes nothing. A
-quarantined index refuses no migration. A migration that drops an
-index, drops its relation or rewrites its relation removes the index's
-quarantine in its commit: once the migration commits, no index it
-dropped or built again is quarantined, across a crash too. A quarantined constructor relation stays
+}` naming that relation, and the migration changes nothing. A migration that drops an index, drops its relation or rewrites its
+relation removes the index's quarantine in its commit: once the
+migration commits, no index it dropped or built again is quarantined,
+across a crash too. When the open cannot record that removal, open
+fails with `MigrationRefused`, its `reason` the `Fatal { reason:
+Quarantined {..} }` naming that index, and the migration changes
+nothing. A quarantined index refuses no other migration. A quarantined constructor relation stays
 quarantined through every migration that applies.
 
 A quarantined index is restored by `reindex` (§11.4). A quarantined

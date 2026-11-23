@@ -1053,7 +1053,8 @@ pager.map_fault(fault, holder, order)
 pager.replace_contents(page, from, Option<object>) -> Result<(), PageError>
                                                   // page takes from's contents, from is freed
                                                   // and any object's mark goes, in one batch
-pager.releasing(gone) -> Option<Release>          // the marks of `gone` a commit removes
+pager.releasing(gone) -> Result<Option<Release>, (Quarantine, MarkFailure)>
+                                                  // the marks of `gone` a commit removes
 pager.release_on(release, page)                   // in the commit's batch, under its latch
 pager.unrelease(release)                          // the commit failed: set them again in memory
 pager.release_gone(gone) -> Result<(), MarkFailure>
@@ -1076,11 +1077,12 @@ restart and are read back at open. A heap or index stays quarantined
 across restarts until a repair removes its mark, or a schema change that
 drops it or builds it again whole removes the mark in the log batch of its
 commit record, with the marks page latched for that commit: the mark goes
-exactly when the commit is durable. A marks page the open read with no
-check of its LSN is not written by a commit; the catalog then removes the
-marks of the heaps and indexes no structure holds whenever it frees what
-a schema change left unreached, and the mark of an index built again
-under the same owner stays. A marks page that fails
+exactly when the commit is durable. A marks page that is refused, or that
+the open read with no check of its LSN, is not written by a commit:
+`releasing` then fails naming a mark the change would remove, and the
+catalog refuses the change before its commit. The catalog also removes
+the marks of the heaps and indexes no structure holds whenever it frees
+what a schema change left unreached. A marks page that fails
 verification at open quarantines the database, and every mark then fails
 with its damage.
 

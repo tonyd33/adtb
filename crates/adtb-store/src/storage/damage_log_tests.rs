@@ -9,8 +9,8 @@ use crate::runtime::{IoError, OpKind, Runtime};
 use crate::storage::order::ordered_for_test;
 use crate::storage::policy::Holder;
 use crate::storage::{
-    self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, Options,
-    PageKind, Pager, Pid, Quarantine, Shape, Undecoded,
+    self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, MarkFailure,
+    Options, PageKind, Pager, Pid, Quarantine, Shape, Undecoded,
 };
 use crate::test_world as harness;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimIo, SimRuntime};
@@ -1047,4 +1047,30 @@ fn an_image_or_a_free_of_a_damaged_page_removes_its_record_unless_the_free_copy_
     }
     assert_eq!(14, got.len());
     assert_eq!(want, got);
+}
+
+/// Space: a mark on an index, the page holding the marks loaded by an open that proved its log
+/// and again as one that did not; a release of the mark with an index not marked, and of that
+/// index alone.
+#[test]
+fn a_release_of_a_set_mark_takes_the_marks_page_and_fails_once_it_was_loaded_unchecked() {
+    let (files, _) = created(false);
+    let (marked, unmarked) = (Quarantine::Index(5), Quarantine::Index(6));
+    let both = BTreeSet::from([marked, unmarked]);
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options(false)).unwrap();
+        pager.quarantine(marked, &ordered_for_test()).unwrap();
+        let page = pager.quarantine_page();
+        let release = pager.releasing(&both).unwrap().unwrap();
+        assert_eq!(page, release.page());
+        assert_eq!(Ok(None), pager.releasing(&BTreeSet::from([unmarked])));
+        pager
+            .evidence()
+            .arm_for_test(Vec::new(), &[], Some(Lsn(1)), None, false);
+        pager.load_marks_tested(page).unwrap();
+        let unverified = MarkFailure::Unverified { page };
+        assert_eq!(Err((marked, unverified)), pager.releasing(&both));
+        pager.close();
+    });
 }
