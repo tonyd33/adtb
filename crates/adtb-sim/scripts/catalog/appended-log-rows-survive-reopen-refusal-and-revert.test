@@ -26,7 +26,7 @@ query
 ----
 { hashes: 3, versions: 3 }
 
-migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `app` declares no relation `missing`" } } }
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "drop relation missing", detail: "module `app` declares no relation `missing`" } } }
   module app
   drop relation missing
 

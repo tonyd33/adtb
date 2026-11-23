@@ -2526,12 +2526,12 @@ fn wasm_and_extensions_change_no_pinned_code_because_the_engine_refuses_them() {
         ),
         (
             &[BARE, CODED, INSTALL],
-            "",
+            "install geo \"1.2\" from \"geo.adtx\"",
             "the package `geo.adtx` is not available",
         ),
         (
             &[BARE, CODED, UNINSTALL],
-            "",
+            "uninstall geo",
             "`geo` is not an installed extension",
         ),
     ];

@@ -1,7 +1,7 @@
 # A refused `add type` or `define fn` reports its own refusal: a declaration naming the refused
 # type or function reports nothing more.
 
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "no type `Zz`" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add type Item = { id: Key items, n: Zz }", detail: "no type `Zz`" } } }
   module app
   add module app
   add type Item = { id: Key items, n: Zz }
@@ -11,7 +11,7 @@ migrate refused MigrationRefused { version: 1, reason: Rejected { reason: Schema
   define fn first () -> Set Item = from x in items select x
   define fn make () -> Item = Item { id: 1, n: 2 }
 
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`+` does not apply to I64 and Text" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "define fn bad () -> I64 = 1 + \"a\"", detail: "`+` does not apply to I64 and Text" } } }
   module app
   add module app
   define fn bad () -> I64 = 1 + "a"

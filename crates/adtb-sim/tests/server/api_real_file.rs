@@ -289,7 +289,7 @@ fn a_refused_open_of_an_existing_file_keeps_it() {
     assert_eq!(
         adtb::Error::Rejected {
             reason: adtb::RejectReason::SchemaRefused {
-                operator: String::new(),
+                operator: "drop relation missing".to_string(),
                 detail: "module `shop` declares no relation `missing`".into(),
             },
         },

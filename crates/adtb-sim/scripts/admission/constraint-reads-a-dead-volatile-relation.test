@@ -1,5 +1,5 @@
 # A constraint is refused a volatile read its normal form drops as dead.
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a constraint must not read a volatile relation" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add constraint c = from u in users where { a: count(s for s in sys::sessions), b: true }.b select u", detail: "a constraint must not read a volatile relation" } } }
   module app
   add module app
   add type User = { id: Key users, name: Text }

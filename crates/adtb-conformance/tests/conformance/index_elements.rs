@@ -157,7 +157,8 @@ fn migration(body: &str) -> String {
 /// Returns the detail of the engine's refusal of the migration of `text`.
 fn engine_refusal(text: &str) -> Result<String, String> {
     let body: String = text.lines().map(|l| format!("{}\n", &l[2..])).collect();
-    let log = Log::new([migration(&body)]);
+    let text = migration(&body);
+    let log = Log::new([text.as_str()]);
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
         ..OpenOptions::default()
@@ -171,7 +172,7 @@ fn engine_refusal(text: &str) -> Result<String, String> {
                     Error::Rejected {
                         reason: RejectReason::SchemaRefused { operator, detail },
                     },
-            }) if operator.is_empty() => Ok(detail),
+            }) if operator.is_empty() || text.lines().any(|l| l.trim() == operator) => Ok(detail),
             Err(other) => Err(format!("refused with {other:?}")),
             Ok(db) => {
                 drop(db.close());

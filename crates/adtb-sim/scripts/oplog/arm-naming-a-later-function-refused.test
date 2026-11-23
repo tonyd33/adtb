@@ -8,7 +8,7 @@ migrate
 run
   insert ts.A { x: "a" }
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "no `h` in scope" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: Text } | A2 { x: Text }", detail: "no `h` in scope" } } }
   module m
   split constructor T.A into A1 { x: Text } | A2 { x: Text }
     by match
@@ -17,7 +17,7 @@ migrate refused MigrationRefused { version: 2, reason: Rejected { reason: Schema
     arm f: A2 a -> a.x
   define fn h (x: Text) -> Text = x
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "no `h` in scope" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add constructor T.D { x: Text }", detail: "no `h` in scope" } } }
   module m
   add constructor T.D { x: Text }
     arm f: D d -> h(d.x)

@@ -168,11 +168,11 @@ impl Catalog {
         let (next, compiled, recorded) = match self.source.record(&file, text, new) {
             Ok(migrated) => migrated,
             Err(f) => {
-                let unstepped = match &f {
-                    evolve::Failed::Refused(r) => r.unstepped(),
+                let blamed = match &f {
+                    evolve::Failed::Refused(r) => r.unstepped().or(r.blamed()),
                     evolve::Failed::Broken(_) => None,
                 };
-                return Err(match unstepped {
+                return Err(match blamed {
                     Some(k) => {
                         let operator = operator_text(text, &file.operators[k]);
                         refusal(f, |why| Error::RefusedBy { operator, why })

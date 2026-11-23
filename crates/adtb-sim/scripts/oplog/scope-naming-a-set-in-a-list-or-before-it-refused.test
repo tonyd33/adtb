@@ -9,11 +9,11 @@ migrate
   add relation notes : Note key id generate sequence
   add set Shared of notes = Draft | Plain
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`Shared` is not a constructor of `Note`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (slug) in notes.(Other | Shared)", detail: "`Shared` is not a constructor of `Note`" } } }
   module notes
   add unique (slug) in notes.(Other | Shared)
 
-migrate at 2 refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`Late` is neither a constructor of `Note` nor a named set of `notes`" } } }
+migrate at 2 refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (slug) in notes.Late", detail: "`Late` is neither a constructor of `Note` nor a named set of `notes`" } } }
   module notes
   add index (slug) in notes.Late
   add set Late of notes = Other

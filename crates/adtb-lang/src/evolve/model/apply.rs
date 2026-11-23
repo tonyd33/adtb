@@ -9,10 +9,12 @@ use crate::evolve::grant::IdKind;
 use crate::evolve::source::rekey_leaves_no_old_reference;
 use crate::evolve::{Clause, Kept, Resolved, ResolvedOp};
 use crate::lex::{Tok, lex};
-use crate::span::{Diag, FileId, Span};
+use crate::span::{Diag, FileDiag, FileId, Span};
 
 /// A migration applied to a model.
 pub(in crate::evolve) struct Migrated {
+    /// The model before the migration's first operator.
+    start: Model,
     model: Model,
     /// For each operator applied, its resolved form, or why it was refused.
     ops: Vec<Result<ResolvedOp, Refused>>,
@@ -51,23 +53,79 @@ impl Migrated {
         self.names.as_ref()
     }
 
-    /// Returns why each operator of `m` that does not apply is refused, at its span.
-    pub(in crate::evolve) fn refusals(&self, m: &MigrationFile) -> Vec<Diag> {
+    /// Returns why each operator of `m` that does not apply is refused, at its span, with the
+    /// operator's index.
+    pub(in crate::evolve) fn refusals(&self, m: &MigrationFile) -> Vec<(usize, Diag)> {
         self.ops
             .iter()
             .zip(&m.operators)
             .enumerate()
-            .flat_map(|(k, (o, op))| match (o, self.uncarried.get(&k)) {
-                (Err(_), Some(ds)) => ds.clone(),
-                (Err(r), None) if r.reported() => {
-                    let first = r.diag(op.span);
-                    let more = r.more().iter();
-                    let more = more.map(|(at, why)| Diag::new(at.unwrap_or(op.span), why.clone()));
-                    std::iter::once(first).chain(more).collect()
-                }
-                _ => Vec::new(),
+            .flat_map(|(k, (o, op))| {
+                let ds = match (o, self.uncarried.get(&k)) {
+                    (Err(_), Some(ds)) => ds.clone(),
+                    (Err(r), None) if r.reported() => {
+                        let first = r.diag(op.span);
+                        let more = r.more().iter();
+                        let more =
+                            more.map(|(at, why)| Diag::new(at.unwrap_or(op.span), why.clone()));
+                        std::iter::once(first).chain(more).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                ds.into_iter().map(move |d| (k, d))
             })
             .collect()
+    }
+
+    /// Returns the index of the operator each of `refusals` is blamed on, and for each of
+    /// `recheck`, failures of the declarations the migration leaves, the index of the operator it
+    /// is blamed on, or `None` when a refusal already reports it.
+    ///
+    /// Postconditions:
+    /// - A refusal of operator `k` reports a failure of another declaration when that
+    ///   declaration failed with its message in the model before `k`; it is blamed as that
+    ///   failure is. Any other refusal is blamed on `k`.
+    /// - A recheck failure is reported by a refusal giving its message when its declaration
+    ///   failed with that message in the model before the refused operator.
+    /// - A failure is blamed on the first operator from which every model after it holds it, or
+    ///   on the first operator when the model before the migration holds it too.
+    pub(in crate::evolve) fn ledger(
+        &self,
+        refusals: &[(usize, Diag)],
+        recheck: &[FileDiag],
+    ) -> (Vec<usize>, Vec<Option<usize>>) {
+        let held: Vec<BTreeSet<(Item, String)>> = std::iter::once(&self.start)
+            .chain(&self.afters)
+            .map(failures)
+            .collect();
+        let last = self.ops.len().saturating_sub(1);
+        let blame = |key: &(Item, String)| {
+            let since = held.iter().rposition(|f| !f.contains(key));
+            since.unwrap_or(0).min(last)
+        };
+        let refused = refusals
+            .iter()
+            .map(|(k, d)| {
+                held[*k]
+                    .iter()
+                    .find(|(_, why)| *why == d.message)
+                    .map_or(*k, blame)
+            })
+            .collect();
+        let rechecked = recheck
+            .iter()
+            .map(|d| {
+                let Some(item) = self.model.decls.get(d.file.0 as usize).map(|x| x.item) else {
+                    return Some(last);
+                };
+                let key = (item, d.diag.message.clone());
+                let reported = refusals
+                    .iter()
+                    .any(|(k, r)| r.message == d.diag.message && held[*k].contains(&key));
+                (!reported).then(|| blame(&key))
+            })
+            .collect();
+        (refused, rechecked)
     }
 
     /// Returns the diagnostic at `at` of why the declarations the migration leaves do not check.
@@ -160,7 +218,7 @@ impl Migrated {
     pub(in crate::evolve) fn copied_from(
         &self,
         text: &str,
-        diags: &[crate::span::FileDiag],
+        diags: &[FileDiag],
     ) -> Vec<Option<Span>> {
         let parsed = self.model.parsed();
         diags
@@ -339,6 +397,7 @@ impl Model {
             Ok(names)
         });
         Ok(Migrated {
+            start: self.clone(),
             model,
             ops,
             maps,
@@ -839,4 +898,16 @@ fn given(op: &mut ResolvedOp, gave: Gave) -> Result<Option<String>, String> {
         }
         _ => Err("a late clause of another operator".into()),
     }
+}
+
+/// Returns each failure of the declarations `model` holds, by the declaration it is in and its
+/// message.
+fn failures(model: &Model) -> BTreeSet<(Item, String)> {
+    let Err(ds) = model.replay_source().check() else {
+        return BTreeSet::new();
+    };
+    ds.into_iter()
+        .filter(|d| d.diag.kind != crate::span::DiagKind::Poisoned)
+        .filter_map(|d| Some((model.decls.get(d.file.0 as usize)?.item, d.diag.message)))
+        .collect()
 }

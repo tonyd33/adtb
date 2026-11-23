@@ -56,14 +56,15 @@ impl Source {
     /// Fail with the refusals of the operators that do not apply.
     pub fn record_steps(&self, m: &MigrationFile, text: &str) -> Result<Vec<OpSteps>, Failed> {
         let mut got = model::migrated(self, m, text, &[], false, false).map_err(Failed::Broken)?;
-        let operators = got.refusals(m);
-        if operators.is_empty() {
+        let (blame, operators): (Vec<usize>, Vec<Diag>) = got.refusals(m).into_iter().unzip();
+        if blame.is_empty() {
             return Ok(got.op_steps(m, text));
         }
         let mut result = got.source();
         result.settled();
         Err(Failed::Refused(Refusal {
             operators,
+            blame,
             result: Some(Box::new(result)),
             ..Refusal::default()
         }))
@@ -82,7 +83,7 @@ impl Source {
             operators: ops.to_vec(),
         };
         let got = model::migrated(self, &m, text, &[], false, false).map_err(Failed::Broken)?;
-        let refused = got.refusals(&m);
+        let refused: Vec<Diag> = got.refusals(&m).into_iter().map(|(_, d)| d).collect();
         if !refused.is_empty() {
             return Err(Failed::Refused(refused));
         }

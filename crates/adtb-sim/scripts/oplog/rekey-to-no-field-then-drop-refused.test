@@ -7,7 +7,7 @@ migrate
   add type T = { id: Key ts, n: I64 }
   add relation ts : T key id generate sequence
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "key field `zz` is not a header field or a field of the only constructor of `T`\nkey field `zz` is not a header field or a field of the only constructor of `T`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "rekey relation ts key zz", detail: "key field `zz` is not a header field or a field of the only constructor of `T`\nkey field `zz` is not a header field or a field of the only constructor of `T`" } } }
   module app
   rekey relation ts key zz
   drop relation ts

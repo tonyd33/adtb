@@ -688,7 +688,7 @@ fn engine_refusal(m: &Migration, operator: &str, detail: &str) -> Option<Finding
     let lines: Vec<&str> = detail.lines().collect();
     if let Some(b) = m.broken() {
         let op = &m.ops()[b];
-        let named = operator.is_empty() || op.text().lines().any(|l| l.trim() == operator);
+        let named = op.text().lines().any(|l| l.trim() == operator);
         return match reasons::stated(op.kind(), &lines, &[]) {
             Ok(()) if named => None,
             Ok(()) => Some(found(

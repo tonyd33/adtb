@@ -173,7 +173,7 @@ struct Decl {
 }
 
 /// A declaration, by the id of the object it declares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Item {
     Type(u64),
     Relation(u64),

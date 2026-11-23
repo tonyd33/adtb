@@ -353,8 +353,24 @@ fn past_limits(name: Option<&str>) -> String {
 const PAST_LIMITS: &str = "the text expands past this build's limits";
 
 /// The refusal of a migration whose definitions expand past this build's limits.
-fn migration_past_limits() -> String {
-    format!("Rejected {{ reason: SchemaRefused {{ operator: \"\", detail: {PAST_LIMITS:?} }} }}")
+fn migration_past_limits(operator: &str) -> String {
+    format!(
+        "Rejected {{ reason: SchemaRefused {{ operator: {operator:?}, detail: {PAST_LIMITS:?} }} }}"
+    )
+}
+
+/// Returns the first line of the operator of `body` whose text calls `f`.
+fn calling<'a>(body: &'a str, f: &str) -> &'a str {
+    let mut op = "";
+    for line in body.lines() {
+        if !line.starts_with(' ') {
+            op = line;
+        }
+        if line.contains(&format!("{f}(")) {
+            return op;
+        }
+    }
+    op
 }
 
 /// Assert that a bundle importing function `last`, pinned at `pins`, is refused past this build's
@@ -470,7 +486,10 @@ fn a_function_too_deep_to_run_is_refused_at_its_definition() {
             },
         ) {
             Err(OpenError::MigrationRefused { version: 3, reason }) => {
-                assert_eq!(migration_past_limits(), format!("{reason:?}"));
+                assert_eq!(
+                    migration_past_limits("define fn d43 (x: I64) -> I64 = (d42(x) + 1) + 1"),
+                    format!("{reason:?}")
+                );
             }
             Err(other) => panic!("{other:?}"),
             Ok(_) => panic!("d43 is defined"),
@@ -563,7 +582,9 @@ fn a_planned_body_past_the_run_bound_is_refused_at_its_definition() {
                     Err(OpenError::MigrationRefused { reason, .. }) => {
                         let got = format!("{reason:?}");
                         assert!(!passes, "{body} at d{k}: {got}");
-                        assert_eq!(migration_past_limits(), got, "{body} at d{k}");
+                        let body = body.replace("DEEP", &format!("d{k}"));
+                        let want = migration_past_limits(calling(&body, &format!("d{k}")));
+                        assert_eq!(want, got, "{body} at d{k}");
                     }
                     Err(other) => panic!("{other:?}"),
                 }
@@ -627,7 +648,7 @@ fn a_tall_function_chain_is_defined_up_to_its_limit() {
     opens(388, chain(31)).expect("the tallest chain");
     let refused = format!(
         "Err(MigrationRefused {{ version: 3, reason: {} }})",
-        migration_past_limits()
+        migration_past_limits("define fn d32 (x: I64) -> I64 = d31(x) + 1 + 1 + 1")
     );
     assert_eq!(refused, format!("{:?}", opens(389, chain(32))));
 }

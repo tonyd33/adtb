@@ -1,5 +1,5 @@
 # An index expression reads the row being written, so it dereferences no key.
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "an index expression must not dereference a key" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add index (owner.name) in phones", detail: "an index expression must not dereference a key" } } }
   module app
   add module app
   add type User = { id: Key users, name: Text }

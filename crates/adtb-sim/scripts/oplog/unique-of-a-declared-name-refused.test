@@ -11,7 +11,7 @@ migrate
   add relation items : Item key id generate sequence
   add unique (a) in items
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`app::items.unique(a)` is declared twice\n`app::items.unique(b)` is declared twice" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (a) in items.(Big | Small)", detail: "`app::items.unique(a)` is declared twice\n`app::items.unique(b)` is declared twice" } } }
   module app
   add unique (a) in items.(Big | Small)
   add unique (b) in items
@@ -22,7 +22,7 @@ migrate
   add unique (a, b) in items
   add unique (b, a) in items
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `app` already declares constraint `short`" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "add constraint short = from i in items where i.b == \"\" select i", detail: "module `app` already declares constraint `short`" } } }
   module app
   add constraint short = from i in items where i.a == "" select i
   add constraint short = from i in items where i.b == "" select i

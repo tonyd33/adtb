@@ -1,7 +1,7 @@
 seed 3
 use shop
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `shop` declares no relation `nothing`" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "drop relation nothing", detail: "module `shop` declares no relation `nothing`" } } }
   module shop
   add type Label = { id: Key labels, name: Text }
   add relation labels : Label key id generate sequence

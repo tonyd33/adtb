@@ -129,7 +129,7 @@ pub(in crate::evolve) fn replay(logged: &Logged) -> crate::evolve::Replaying<Rep
     let m = logged_file(logged);
     let got =
         migrated(&logged.before, &m, &logged.text, &[], false, true).map_err(Failed::Broken)?;
-    let refused = got.refusals(&m);
+    let refused: Vec<Diag> = got.refusals(&m).into_iter().map(|(_, d)| d).collect();
     if !refused.is_empty() || got.ops().iter().any(Result::is_err) {
         return Err(Failed::Refused(refused));
     }

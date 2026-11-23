@@ -211,6 +211,7 @@ impl From<&str> for Written {
 pub struct Refusal {
     pub operators: Vec<Diag>,
     pub recheck: Vec<FileDiag>,
+    blame: Vec<usize>,
     /// For each of `recheck`, in order, the span of the migration's text an operator copied the
     /// failing text from, when it copied it.
     pub recheck_from: Vec<Option<Span>>,
@@ -223,6 +224,17 @@ impl Refusal {
     /// Returns the index of the operator whose steps over the rows fail, when one does.
     pub fn unstepped(&self) -> Option<usize> {
         self.unstepped
+    }
+
+    /// Returns, for each of `operators` then each of `recheck`, in order, the index of the
+    /// operator it is blamed on.
+    pub fn blame(&self) -> &[usize] {
+        &self.blame
+    }
+
+    /// Returns the index of the operator the first failure is blamed on, when it lists one.
+    pub fn blamed(&self) -> Option<usize> {
+        self.blame.first().copied()
     }
 }
 

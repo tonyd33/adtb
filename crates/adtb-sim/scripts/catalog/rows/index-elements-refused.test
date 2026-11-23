@@ -65,7 +65,7 @@ migrate refused MigrationRefused { version: 1, reason: Rejected { reason: Schema
   add relation items : Item key id generate sequence
     index (exists x in (fix a = [n] in a) where x == n)
 
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`.C` selects constructors of a set; a single value is examined by `match`" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation items : Item key id generate sequence", detail: "`.C` selects constructors of a set; a single value is examined by `match`" } } }
   module app
   add module app
   add type Status = Draft | Sent { at: I64 }
@@ -78,7 +78,7 @@ migrate refused MigrationRefused { version: 1, reason: Rejected { reason: Schema
   add relation items : Item key id generate sequence
     index ((if n > 0 then s else Draft).Sent)
 
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`top` needs a determinate order: include the row's key, or a field a key or unique covers" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation items : Item key id generate sequence", detail: "`top` needs a determinate order: include the row's key, or a field a key or unique covers" } } }
   module app
   add module app
   add type Status = Draft | Sent { at: I64 }
@@ -91,7 +91,7 @@ migrate refused MigrationRefused { version: 1, reason: Rejected { reason: Schema
   add relation items : Item key id generate sequence
     index (exists x in (top 1 by (y) (from y in [n] select y)) where x == n)
 
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "an `at` block reads a set, found I64" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation items : Item key id generate sequence", detail: "an `at` block reads a set, found I64" } } }
   module app
   add module app
   add type Status = Draft | Sent { at: I64 }
@@ -104,7 +104,7 @@ migrate refused MigrationRefused { version: 1, reason: Rejected { reason: Schema
   add relation items : Item key id generate sequence
     index (at instant when { n })
 
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`reject` is allowed only in the source query of an insert" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation items : Item key id generate sequence", detail: "`reject` is allowed only in the source query of an insert" } } }
   module app
   add module app
   add type Status = Draft | Sent { at: I64 }
@@ -117,7 +117,7 @@ migrate refused MigrationRefused { version: 1, reason: Rejected { reason: Schema
   add relation items : Item key id generate sequence
     index (if n > 0 then n else reject "no")
 
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a write appears only where a change set is expected: in a transact block, a script or ad hoc text" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation items : Item key id generate sequence", detail: "a write appears only where a change set is expected: in a transact block, a script or ad hoc text" } } }
   module app
   add module app
   add type Status = Draft | Sent { at: I64 }

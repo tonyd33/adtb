@@ -153,7 +153,7 @@ add constructor Pet.Bird { sings: Bool }
 <!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated.adt --schema mobile.adt --schema bird.adt shelter.db
-shelter.db: migration 4 is refused: match does not cover `Bird _`
+shelter.db: migration 4 is refused: `add constructor Pet.Bird { sings: Bool }`: match does not cover `Bird _`
 ```
 
 A refused migration changes nothing, and the database stays at

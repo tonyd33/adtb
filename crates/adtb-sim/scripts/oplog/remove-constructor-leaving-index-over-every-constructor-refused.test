@@ -6,7 +6,7 @@ migrate
     key id generate sequence
     index (z) in (A | B)
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "no `z` in scope" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "remove constructor T.C", detail: "no `z` in scope" } } }
   module m
   deprecate ts.C
   module m

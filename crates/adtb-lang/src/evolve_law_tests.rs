@@ -2386,6 +2386,11 @@ fn a_migration_of_operators_each_refused_alone_lists_every_refusal_in_order() {
             Err(Failed::Broken(d)) => panic!("{text}\nthe model fails: {}", d.message),
             Err(Failed::Refused(r)) => r,
         };
+        assert_eq!(
+            want.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+            r.blame(),
+            "{text}\nthe operator each refusal names"
+        );
         let got: Vec<(usize, String)> = r
             .operators
             .into_iter()

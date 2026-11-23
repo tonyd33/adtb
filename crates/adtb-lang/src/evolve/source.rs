@@ -227,10 +227,7 @@ impl Source {
     ) -> Result<(Source, Compiled<Schema>, model::Migrated), Failed> {
         let got =
             model::migrated(self, m, text, kept, accepting, naming).map_err(Failed::Broken)?;
-        let mut refusal = Refusal {
-            operators: got.refusals(m),
-            ..Refusal::default()
-        };
+        let refusals = got.refusals(m);
         let mut next = got.source();
         next.settled();
         let checked = next.check();
@@ -248,27 +245,35 @@ impl Source {
             });
             return Ok((next, checked, got));
         }
+        let ds: Vec<FileDiag> = checked
+            .err()
+            .into_iter()
+            .flatten()
+            .filter(|d| d.diag.kind != DiagKind::Poisoned)
+            .collect();
+        let (blame, rechecked) = got.ledger(&refusals, &ds);
+        let mut refusal = Refusal {
+            operators: refusals.into_iter().map(|(_, d)| d).collect(),
+            blame,
+            ..Refusal::default()
+        };
         if let Some((k, why)) = failing {
             refusal.unstepped = Some(k);
             refusal.operators.push(why);
+            refusal.blame.push(k);
         }
-        if let Err(ds) = checked {
-            let reported: BTreeSet<String> = refusal
-                .operators
-                .iter()
-                .map(|d| d.message.clone())
-                .collect();
-            refusal.recheck = ds
-                .into_iter()
-                .filter(|d| {
-                    d.diag.kind != DiagKind::Poisoned && !reported.contains(&d.diag.message)
-                })
-                .collect();
-            refusal.recheck_from = got.copied_from(text, &refusal.recheck);
+        for (d, by) in ds.iter().zip(rechecked) {
+            if let Some(k) = by {
+                refusal.recheck.push(d.clone());
+                refusal.blame.push(k);
+            }
         }
+        refusal.recheck_from = got.copied_from(text, &refusal.recheck);
         if refusal.operators.is_empty() && refusal.recheck.is_empty() {
-            let last = m.operators.last().map_or(Span::default(), |op| op.span);
-            refusal.operators.push(got.unchecked(last));
+            let last = m.operators.len().saturating_sub(1);
+            let at = m.operators.last().map_or(Span::default(), |op| op.span);
+            refusal.operators.push(got.unchecked(at));
+            refusal.blame.push(last);
         }
         refusal.result = Some(Box::new(next));
         Err(Failed::Refused(refusal))

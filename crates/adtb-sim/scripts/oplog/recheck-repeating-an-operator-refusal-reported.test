@@ -1,0 +1,15 @@
+# A declaration failing at the recheck is reported even when a refused operator's refusal has the
+# same text, and the migration names the operator of its first failure.
+seed 1
+use empty
+
+migrate
+  module app
+  add module app
+  add type T = { id: Key ts, n: I64 }
+  add relation ts : T key id generate sequence
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add relation vs : T key zz", detail: "key field `zz` is not a header field or a field of the only constructor of `T`\ntype `T` is keyed by `Key ts`, so it is the element type of `ts` only\nkey field `zz` is not a header field or a field of the only constructor of `T`" } } }
+  module app
+  add relation vs : T key zz
+  rekey relation ts key zz

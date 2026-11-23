@@ -49,11 +49,11 @@ query rowsort
 "web retag Some { value: \"shop::payments.Late -> shop::payments.(Visa | Other)\" }"
 "web update Some { value: \"shop::payments.(Invoice | Visa | Other) (customer)\" }"
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`payments` has no constructor `Card`" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "revoke retag shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Card -> Other) from web", detail: "`payments` has no constructor `Card`" } } }
   module shop
   revoke retag shop::payments.(Visa | Other) -> shop::payments.(Invoice | Visa | Other) except (Card -> Other) from web
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`Card` is neither a constructor of `Payment` nor a named set of `payments`" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "revoke read shop::payments.Card (customer) from web", detail: "`Card` is neither a constructor of `Payment` nor a named set of `payments`" } } }
   module shop
   revoke read shop::payments.Card (customer) from web
 

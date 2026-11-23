@@ -1,10 +1,10 @@
 seed 3
 use shop
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "migration 0099 is not in the log" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "revert 0099", detail: "migration 0099 is not in the log" } } }
   module shop
   revert 0099
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "migration 99999999999999999999 is not in the log" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "revert 99999999999999999999", detail: "migration 99999999999999999999 is not in the log" } } }
   module shop
   revert 99999999999999999999

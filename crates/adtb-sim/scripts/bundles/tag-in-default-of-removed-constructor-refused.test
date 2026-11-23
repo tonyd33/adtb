@@ -1,7 +1,7 @@
 seed 1003
 use auth
 use filled
-migrate refused MigrationRefused { version: 6, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`X` is not a constructor of Tag P" } } }
+migrate refused MigrationRefused { version: 6, reason: Rejected { reason: SchemaRefused { operator: "remove constructor P.X", detail: "`X` is not a constructor of Tag P" } } }
   module auth
   add type P = X | Y | Z
   module auth

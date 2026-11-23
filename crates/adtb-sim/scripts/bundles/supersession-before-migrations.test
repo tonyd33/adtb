@@ -4,7 +4,7 @@ bundle web-1.0 pins 1 edition "2026-10" use names
 reopen
 
 bundle web-1.1 pins 1 edition "2026-10" use names
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `auth` declares no relation `nothing`" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop relation nothing", detail: "module `auth` declares no relation `nothing`" } } }
   module auth
   drop relation nothing
 

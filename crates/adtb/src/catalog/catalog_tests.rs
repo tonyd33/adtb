@@ -784,9 +784,10 @@ fn a_replayed_log_folds_a_revert_with_a_fill_no_inverse_takes() {
             catalog.migrate(&pager, &txns, text).expect("apply");
         }
         assert_eq!(
-            Err(Error::Refused(vec![
-                "the revert fills `T.A.x` more than once".to_string()
-            ])),
+            Err(Error::RefusedBy {
+                operator: "revert 0002".to_string(),
+                why: vec!["the revert fills `T.A.x` more than once".to_string()],
+            }),
             catalog.migrate(&pager, &txns, revert)
         );
         assert_eq!(Ok(Vec::new()), catalog.replay(&pager, &txns, revert));

@@ -1,12 +1,12 @@
 # A constraint or row check calling a host function not declared deterministic is refused.
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a constraint must not call a nondeterministic function" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add constraint c = from u in users where slug(u.name) == \"\" select u", detail: "a constraint must not call a nondeterministic function" } } }
   module app
   add module app
   add type User = { id: Key users, name: Text }
   add relation users : User key id generate sequence
   define fn slug (t: Text) -> Text = host "slug" version "1.0"
   add constraint c = from u in users where slug(u.name) == "" select u
-migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a row check must not call a nondeterministic function" } } }
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add check c on readings (stamp(n) == n)", detail: "a row check must not call a nondeterministic function" } } }
   module app
   add module app
   add type Reading = { id: Key readings, n: I64 }

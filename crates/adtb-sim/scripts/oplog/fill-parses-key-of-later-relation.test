@@ -9,7 +9,7 @@ migrate
 run
   insert os { n: 1 }
 
-migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`later` is added by a later operator of this migration" } } }
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add field O.u: Option (Key later) fill match W.parse(\"W { k: Some { value: {} } }\")", detail: "`later` is added by a later operator of this migration" } } }
   module m
   add type W = { k: Option (Key later) }
   add field O.u: Option (Key later) fill match W.parse("W { k: Some { value: {} } }")
