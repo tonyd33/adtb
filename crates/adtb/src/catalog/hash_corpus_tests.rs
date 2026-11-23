@@ -319,7 +319,7 @@ fn a_scope_naming_a_set_hashes_otherwise_than_one_listing_its_constructors() {
     );
     let hash = |scope: &str| {
         let src = migrated(&base, &format!("module law\nadd unique (z) in ts.{scope}"));
-        oplog::version_hash(&src.schema().expect("it builds"), &src).expect("the log resolves")
+        oplog::version_hash(&src).expect("the log resolves")
     };
     assert_ne!(hash("Only"), hash("(A)"));
 }

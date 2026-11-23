@@ -509,7 +509,7 @@ impl Catalog {
         m.ids_from(self.next_heap);
         let mut next = Catalog {
             source: b.next.source.clone(),
-            hash: VersionHash::default(),
+            hash: VersionHash::of(std::sync::Arc::new(b.next.source.clone())),
             schema,
             program: b.next.program.clone(),
             texts: b.next.texts.clone(),

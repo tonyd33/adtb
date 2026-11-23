@@ -677,8 +677,7 @@ fn version_hash(log: &[&str]) -> String {
             .expect("the migration parses");
         source = source.migrate(&file, text).expect("the migration applies");
     }
-    let schema = source.schema().expect("the source builds");
-    adtb::version_hash(&schema, &source)
+    adtb::version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))

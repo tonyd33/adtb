@@ -197,7 +197,7 @@ fn bundle(name: &str, clauses: &str, body: &str) -> Registration {
         let file = parse_migration(&text, Options::default()).ok().unwrap();
         source = source.migrate(&file, &text).unwrap();
     }
-    let hash = version_hash(&source.schema().unwrap(), &source).expect("the log resolves");
+    let hash = version_hash(&source).expect("the log resolves");
     let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     let pins = format!("pins 2 ({hash}) edition \"2026-10\"");
     Registration::bundle(format!("bundle {name} {pins}{clauses}\n{body}")).unwrap()

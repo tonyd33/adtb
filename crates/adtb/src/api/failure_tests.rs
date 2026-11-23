@@ -115,8 +115,7 @@ fn leased(name: &str) -> crate::Registration {
     let source = adtb_lang::evolve::Source::default()
         .migrate(&file, APP)
         .expect("the migration applies");
-    let schema = source.schema().expect("the schema checks");
-    let hash = crate::catalog::version_hash(&schema, &source).expect("the log resolves");
+    let hash = crate::catalog::version_hash(&source).expect("the log resolves");
     let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     crate::Registration::bundle(format!(
         "bundle {name} pins 1 ({hash}) edition \"2026-10\" lease 1h\nquery hello () -> Text = \"hi\"\n"

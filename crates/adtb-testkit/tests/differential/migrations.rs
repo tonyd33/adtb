@@ -881,9 +881,7 @@ impl Run {
         let hashed = source
             .check()
             .map_err(|e| format!("{e:?}"))
-            .and_then(|(schema, _)| {
-                adtb::version_hash(&schema, &source).map_err(|e| format!("{e:?}"))
-            });
+            .and_then(|_| adtb::version_hash(&source).map_err(|e| format!("{e:?}")));
         let want_hash = hashed.map_err(|e| found("the log does not resolve", e))?;
         if hash != Some(&Value::Bytes(want_hash.to_vec())) {
             return Err(found(

@@ -229,8 +229,7 @@ fn native_setting_commands_and_temp_user_writes_remain_legal() {
 
 fn bundled(name: &str, body: &str) -> Registration {
     let source = adtb_lang::signature::replay([SCHEMA]).expect("replay fixture");
-    let schema = source.schema().expect("build fixture schema");
-    let hash: String = adtb::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|byte| format!("{byte:02x}"))

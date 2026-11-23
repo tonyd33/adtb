@@ -38,8 +38,7 @@ fn pins(migrations: &[&str]) -> String {
             .migrate(&file, text)
             .unwrap_or_else(|r| panic!("`{text}` applies: {r:?}"));
     }
-    let schema = source.schema().expect("the source builds");
-    let hash: String = version_hash(&schema, &source)
+    let hash: String = version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))

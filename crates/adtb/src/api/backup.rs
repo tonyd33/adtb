@@ -515,7 +515,7 @@ impl<R: Runtime> Engine<R> {
             .map_or(0, |migration| migration.number);
         let hash = self
             .hash
-            .get(&self.schema, self.catalog.source())
+            .get()
             .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
         Ok(Envelope {
             release: env!("CARGO_PKG_VERSION").to_owned(),

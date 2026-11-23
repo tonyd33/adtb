@@ -1693,8 +1693,7 @@ fn value_bundle(name: &str) -> Registration {
     let source = Source::default()
         .migrate(&file, ITEMS_OF_VALUE)
         .expect("the schema applies");
-    let schema = source.schema().expect("the source builds");
-    let pins: String = version_hash(&schema, &source)
+    let pins: String = version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))

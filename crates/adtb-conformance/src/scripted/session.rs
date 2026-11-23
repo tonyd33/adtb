@@ -139,10 +139,10 @@ fn hash(migrations: &[String]) -> Result<String, String> {
             .migrate(&file, text)
             .map_err(|_| format!("migration {v} of the pin does not apply"))?;
     }
-    let schema = source
+    source
         .schema()
         .map_err(|_| "the pinned schema does not build")?;
-    Ok(version_hash(&schema, &source)
+    Ok(version_hash(&source)
         .map_err(|ds| format!("the pinned log does not resolve: {ds:?}"))?
         .iter()
         .map(|b| format!("{b:02x}"))

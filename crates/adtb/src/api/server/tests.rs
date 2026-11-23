@@ -492,7 +492,7 @@ fn a_nonempty_ownerless_roles_table_is_refused_and_releases_open_resources() {
 
 /// Returns the hex of the version hash of `db`'s schema.
 fn version_hash(db: &Db) -> String {
-    crate::catalog::version_hash(&db.engine.schema, &db.engine.source)
+    crate::catalog::version_hash(&db.engine.source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))

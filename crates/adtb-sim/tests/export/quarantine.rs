@@ -896,8 +896,7 @@ fn hash_log() -> String {
     use adtb_lang::parse::{Options as ParseOptions, parse_migration};
     let file = parse_migration(APP, ParseOptions::default()).ok().unwrap();
     let source = Source::default().migrate(&file, APP).unwrap();
-    let schema = source.schema().unwrap();
-    adtb::version_hash(&schema, &source)
+    adtb::version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))

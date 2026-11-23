@@ -143,8 +143,7 @@ impl Server {
                     .expect("the migration parses");
             source = source.migrate(&file, text).expect("the migration applies");
         }
-        let schema = source.schema().expect("the source builds");
-        let hash: String = adtb::version_hash(&schema, &source)
+        let hash: String = adtb::version_hash(&source)
             .expect("the log resolves")
             .iter()
             .map(|b| format!("{b:02x}"))

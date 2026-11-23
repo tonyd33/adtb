@@ -19,26 +19,35 @@ use super::operators::{
 pub type Hash = [u8; 32];
 
 /// The hash of one version, made at most once and shared by every clone.
-#[derive(Clone, Debug, Default)]
-pub struct VersionHash(Arc<OnceLock<Hash>>);
+#[derive(Clone, Debug)]
+pub struct VersionHash {
+    source: Arc<Source>,
+    hash: Arc<OnceLock<Hash>>,
+}
 
 impl VersionHash {
-    /// Returns the hash of the version `source` is at, as [`version_hash`] gives it, made on the
-    /// first call that succeeds.
-    ///
-    /// Preconditions:
-    /// - `schema` and `source` are those of the version this hash is of.
-    pub fn get(&self, schema: &Schema, source: &Source) -> Result<Hash, Error> {
-        if let Some(h) = self.0.get() {
+    /// Returns the hash of the version `source` is at, made on its first call that succeeds.
+    pub fn of(source: Arc<Source>) -> VersionHash {
+        VersionHash {
+            source,
+            hash: Arc::default(),
+        }
+    }
+
+    /// Returns the hash of the version, as [`version_hash`] gives it.
+    pub fn get(&self) -> Result<Hash, Error> {
+        if let Some(h) = self.hash.get() {
             return Ok(*h);
         }
-        let h = version_hash(schema, source).map_err(super::unresolved)?;
-        Ok(*self.0.get_or_init(|| h))
+        let h = version_hash(&self.source).map_err(super::unresolved)?;
+        Ok(*self.hash.get_or_init(|| h))
     }
 
     /// Hold `hash` as the version's when no hash is held yet.
+    ///
+    /// Preconditions: `hash` is the hash of the version.
     pub(super) fn made(&self, hash: Hash) {
-        self.0.get_or_init(|| hash);
+        self.hash.get_or_init(|| hash);
     }
 }
 
@@ -51,8 +60,8 @@ pub type OperatorRow = (Value, Vec<Value>);
 ///
 /// Fail with the diagnostics of the first migration of the log that does not resolve, or the
 /// migration model's failure on it.
-pub fn version_hash(schema: &Schema, source: &Source) -> Replaying<Hash> {
-    chain(schema, source, |_, _| {})
+pub fn version_hash(source: &Source) -> Replaying<Hash> {
+    chain(super::engine_declarations(), source, |_, _| {})
 }
 
 /// Returns the hash [`version_hash`] returns, giving `each` the operators of each migration

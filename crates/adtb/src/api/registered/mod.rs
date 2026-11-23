@@ -697,7 +697,7 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
     let hashed = |over: &Over<'_>| {
         let hash: String = over
             .hash
-            .get(over.schema, over.source)
+            .get()
             .map_err(|e| Error::internal(Broken::CatalogError(e)))?
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -725,11 +725,12 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
     let (schema, program) = source
         .check()
         .map_err(|ds| Error::invalid(joined(ds.iter().map(|d| d.diag.message.as_str()))))?;
+    let hash = VersionHash::of(Arc::new(source.clone()));
     let pin = Arc::new(Pin {
         source,
         schema: Arc::new(settled(schema).map_err(Error::rejected)?),
         program: Arc::new(program),
-        hash: VersionHash::default(),
+        hash,
     });
     pins.0.insert(h.pins, pin.clone());
     hashed(&pin.over())?;

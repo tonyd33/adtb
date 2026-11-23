@@ -258,9 +258,14 @@ impl std::fmt::Debug for Catalog {
 
 /// Returns the schema of the engine's own declarations: the prelude, `catalog` and `sys`.
 pub fn engine_schema() -> Committed {
+    engine_declarations().clone()
+}
+
+/// Returns the schema of the engine's own declarations, built once per process.
+fn engine_declarations() -> &'static Committed {
     static SCHEMA: LazyLock<Committed> =
         LazyLock::new(|| schema::build(&[]).expect("the engine's declarations build"));
-    SCHEMA.clone()
+    &SCHEMA
 }
 
 /// Returns `schema`, the schema of a settled source.
@@ -536,12 +541,8 @@ fn fold_from_empty(
         }
     }
     let (schema, program) = source.check().map_err(|ds| unchecked(source.version, ds))?;
-    Ok((
-        source,
-        committed(schema)?,
-        Arc::new(program),
-        VersionHash::default(),
-    ))
+    let hash = VersionHash::of(Arc::new(source.clone()));
+    Ok((source, committed(schema)?, Arc::new(program), hash))
 }
 
 /// Returns whether `keys` holds an order key for each constructor of every declared sum of
@@ -621,7 +622,7 @@ impl Catalog {
         let next = Checked::engine()?;
         let empty = Catalog {
             source: Source::default(),
-            hash: VersionHash::default(),
+            hash: VersionHash::of(Arc::default()),
             schema: engine_schema(),
             program: next.program.clone(),
             texts: next.texts.clone(),
@@ -840,7 +841,7 @@ impl Catalog {
         Ok(Catalog {
             texts: ElementTexts::of(&Source::default(), &schema)?,
             source: Source::default(),
-            hash: VersionHash::default(),
+            hash: VersionHash::of(Arc::default()),
             schema: committed(schema)?,
             program: Arc::new(program),
             root: pager.catalog_root(),

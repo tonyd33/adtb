@@ -1438,10 +1438,10 @@ fn same_hash(m: &Logged, text: &str) -> Result<bool, OpenError> {
                 return catalog::model_fault(&f).map_or(Ok(None), |b| Err(broken(b)));
             }
         };
-        let Ok(schema) = source.schema() else {
+        if source.schema().is_err() {
             return Ok(None);
-        };
-        Ok(Some(catalog::version_hash(&schema, &source)))
+        }
+        Ok(Some(catalog::version_hash(&source)))
     };
     let Some(Ok(shipped)) = hash(text)? else {
         return Ok(false);

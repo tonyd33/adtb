@@ -98,8 +98,7 @@ fn the_bundle_pins_the_hash_of_the_version_it_names() {
     let pins = usize::try_from(queries::Bundle::PINS).expect("a small version");
     let source =
         adtb_lang::signature::replay(schema::LOG[..pins].iter().copied()).expect("the log replays");
-    let schema = source.schema().expect("the source builds");
-    let hash: String = adtb::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))

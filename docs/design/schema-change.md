@@ -37,7 +37,7 @@ catalog.plan() -> plan::Catalog
 catalog.inventory(&commit_log) -> verify::Inventory
 catalog::declared(&schema, &source) -> rows by relation
 catalog::applied(&schema, &source, applied) -> rows by relation
-catalog::version_hash(&schema, &source) -> Hash
+catalog::version_hash(&source) -> Hash
 ```
 
 Preconditions:

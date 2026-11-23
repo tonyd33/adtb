@@ -216,7 +216,7 @@ impl Walk {
                 ));
             }
         }
-        match adtb::version_hash(&replayed, folded) {
+        match adtb::version_hash(folded) {
             Ok(h) if h == r => None,
             h => Some(format!(
                 "the version hash is {h:?}, chained on replay {r:?}"

@@ -846,7 +846,7 @@ fn query_bundles(log: &[String], case: &Case) -> Result<Vec<(usize, Registration
     let (schema, program) = source
         .check()
         .map_err(|e| format!("the version does not check: {e:?}"))?;
-    let hash: String = adtb::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -1353,7 +1353,7 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
             Err(e) => panic!("`{body}` fails to translate: {e:?}"),
         })
     };
-    let hash: String = adtb::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))
