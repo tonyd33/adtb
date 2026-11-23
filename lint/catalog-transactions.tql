@@ -1,0 +1,12 @@
+-- catalog_transactions: a call in the catalog that begins, commits or abandons a transaction, or
+-- marks or changes the catalog root page, outside the catalog's transaction module, which ends
+-- each transaction whole and frees what a failed one made.
+
+writer = r"(txns\.(begin|commit|commit_changing|commit_with|abandon_failed|abort)|root::begin|begin_or_join|update_root)$";
+
+main = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ writer;
+  return c;
+} | arr range;

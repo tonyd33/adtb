@@ -108,6 +108,18 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "crates/adtb/src/catal
 rows = { source_replays = "zero" }
 
 [[rule]]
+query = "catalog-transactions.tql"
+include = ["crates/adtb/src/catalog/**/*.rs"]
+exclude = [
+  "**/tests.rs",
+  "**/*_tests.rs",
+  "**/tests/**",
+  "crates/adtb/src/catalog/transaction.rs",
+  "crates/adtb/src/catalog/root.rs",
+]
+rows = { catalog_transactions = "zero" }
+
+[[rule]]
 query = "defs-only.tql"
 include = [
   "crates/adtb-lang/src/check/**/*.rs",

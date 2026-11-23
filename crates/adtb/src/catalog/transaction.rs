@@ -192,6 +192,31 @@ impl<'a, R: Runtime> Change<'a, R> {
 }
 
 impl Catalog {
+    /// Mark the catalog as rebuilding indexes, so an open after a crash frees the pages no
+    /// structure names. Returns the change begun, or `None`, marking nothing, when the root page
+    /// already records a change in progress, which an open after a crash frees as well.
+    ///
+    /// Precondition: the database is open, so no schema change is running.
+    pub fn begin_reindexing<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+    ) -> Result<Option<root::Begun>, Error> {
+        Ok(root::begin_or_join(pager, self.root, Changing::Reindexing)?)
+    }
+
+    /// End the change [`Catalog::begin_reindexing`] began.
+    ///
+    /// Fail with [`Broken::ChangeMoved`], writing nothing, when the root page records another
+    /// change in progress.
+    pub fn end_reindexing<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        began: root::Begun,
+    ) -> Result<(), Error> {
+        root::end(pager, began, |_| {})?;
+        Ok(())
+    }
+
     /// Mark the catalog whose root page is `root` as changing, before the write path allocates
     /// its page of generated counters, so an open after a crash frees that page until
     /// [`Catalog::name_sequences`] names it.

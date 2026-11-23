@@ -102,7 +102,6 @@ use memo::Memo;
 pub use oplog::chained;
 pub use oplog::{Hash, VersionHash, version_hash};
 pub use readers::{Read, Reader, source_at, stale};
-pub(crate) use root::Begun;
 pub(crate) use root::Changing;
 #[cfg(any(test, feature = "testing"))]
 pub(crate) use root::Unbegun;
@@ -1061,24 +1060,6 @@ impl Catalog {
     /// Returns the write path's page of generated counters, once one is named.
     pub fn sequences(&self) -> Option<Pid> {
         (self.sequences != Pid(0)).then_some(self.sequences)
-    }
-
-    /// Mark the catalog as rebuilding indexes, so an open after a crash frees the pages no
-    /// structure names. Returns the change begun, or `None`, marking nothing, when the root page
-    /// already records a change in progress, which an open after a crash frees as well.
-    ///
-    /// Precondition: the database is open, so no schema change is running.
-    pub fn begin_reindexing<R: Runtime>(&self, pager: &Pager<R>) -> Result<Option<Begun>, Error> {
-        Ok(root::begin_or_join(pager, self.root, Changing::Reindexing)?)
-    }
-
-    /// End the change [`Catalog::begin_reindexing`] began.
-    ///
-    /// Fail with [`Broken::ChangeMoved`], writing nothing, when the root page records another
-    /// change in progress.
-    pub fn end_reindexing<R: Runtime>(&self, pager: &Pager<R>, begun: Begun) -> Result<(), Error> {
-        root::end(pager, begun, |_| {})?;
-        Ok(())
     }
 
     /// Returns the heap of every constructor relation and every index, as the executor and the
