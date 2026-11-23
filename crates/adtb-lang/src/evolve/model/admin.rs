@@ -131,11 +131,11 @@ impl Model {
     }
 
     pub(super) fn script(&mut self, run: &Run, w: &ast::Write) -> Res<Applied> {
-        let (schema, program) = self.checked(run)?;
+        let compiled = self.checked(run)?;
+        let schema = compiled.schema();
         let mut refs = Vec::new();
-        check::check_script(&schema, &program, w, Some(&mut refs))
-            .or_else(|ds| refuse_diags(&ds))?;
-        let write = canonical(run, &schema, &refs, w.span);
+        check::check_script(&compiled, w, Some(&mut refs)).or_else(|ds| refuse_diags(&ds))?;
+        let write = canonical(run, schema, &refs, w.span);
         Ok((Resolved::Script { write }, Vec::new(), Ok(Vec::new())))
     }
 

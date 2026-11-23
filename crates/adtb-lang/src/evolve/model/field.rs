@@ -36,13 +36,13 @@ impl Model {
 
     /// Returns the schema the model builds now and its program, refusing the operator as one
     /// that checks against a schema that does not check when they do not build or check.
-    pub(super) fn checked(&self, run: &Run) -> Res<(Schema, check::Program)> {
+    pub(super) fn checked(&self, run: &Run) -> Res<check::Compiled<Schema>> {
         let schema = match self.schema(&run.ahead(self)) {
             Ok(s) => s,
             Err(ds) => return unchecked(&ds),
         };
-        match check::checked_program(&schema) {
-            Ok(p) => Ok((schema, p)),
+        match check::check_schema(schema) {
+            Ok(c) => Ok(c),
             Err(ds) => unchecked(&ds),
         }
     }
@@ -134,8 +134,9 @@ impl Model {
         field_ty: &Ty,
         fill: &Fill,
     ) -> Res<(RowFn, String)> {
-        let (schema, program) = self.checked(run)?;
-        let def = self.def_in(&schema, t).expect("a type the model holds");
+        let compiled = self.checked(run)?;
+        let schema = compiled.schema();
+        let def = self.def_in(schema, t).expect("a type the model holds");
         let module = schema
             .module_named(self.module_of((Space::Shared, t)).expect("a declared type"))
             .expect("the type's module");
@@ -150,8 +151,7 @@ impl Model {
             Fill::Expr(e) => RowBody::Expr(e),
         };
         let refs = check::check_row(
-            &schema,
-            &program,
+            &compiled,
             module,
             &row,
             body(),
@@ -159,10 +159,10 @@ impl Model {
             RootKind::Fill,
         )
         .or_else(|d| refuse_at(d.span, d.message))?;
-        run.note(&schema, &refs);
+        run.note(schema, &refs);
         let mut names = Names::default();
         for (span, r) in &refs {
-            names.note(&schema, *span, r);
+            names.note(schema, *span, r);
         }
         let span = match fill {
             Fill::Expr(e) => e.span,
@@ -174,8 +174,7 @@ impl Model {
         let text = canonical_term(run.text(), span, &names)
             .map_err(|u| Fail::Broken(format!("a fill does not resolve: {u:?}")))?;
         let q = check::row_query(
-            &schema,
-            &program,
+            &compiled,
             module,
             &row,
             body(),
@@ -183,8 +182,9 @@ impl Model {
             RootKind::Fill,
         )
         .or_else(|d| refuse_at(d.span, d.message))?;
-        let query = crate::norm::registered(&schema, &program, &q.terms, q.term, RootKind::Query)
+        let query = crate::norm::registered(&compiled, &q.terms, q.term, RootKind::Query)
             .map_err(|e| Fail::Broken(format!("a fill does not normalise: {e:?}")))?;
+        let schema = schema.clone();
         Ok((RowFn { schema, query }, text))
     }
 
@@ -284,8 +284,9 @@ impl Model {
         fill: &Fill,
         name: &str,
     ) -> Res<RowMap> {
-        let (before, _) = self.checked(run)?;
-        let def = self.def_in(&before, t).expect("a type the model holds");
+        let checked = self.checked(run)?;
+        let before = checked.schema();
+        let def = self.def_in(before, t).expect("a type the model holds");
         let all: Vec<u32> = (0..before.ty(def).ctors().len() as u32).collect();
         let (row_fn, _) = self.fill(run, t, at.clone(), fty, fill)?;
         Ok(RowMap::Fill {

@@ -176,7 +176,7 @@ impl Model {
         into: &[ast::CtorDef],
         arms: &[ast::Arm],
     ) -> Res<Routing> {
-        let (_, program) = self.checked(run)?;
+        let before = self.checked(run)?;
         let mut probe = self.clone();
         let made: Vec<u64> = into
             .iter()
@@ -198,19 +198,19 @@ impl Model {
             Ok((b, _)) => b,
             Err(ds) => return unbuilt(&ds),
         };
-        let schema: Schema = probed.schema().clone();
-        let def = def_in(&schema, t);
+        let compiled = before.extended(probed.schema().clone());
+        let schema = compiled.schema();
+        let def = def_in(schema, t);
         let module = schema
             .module_named(self.module_of((Space::Shared, t)).expect("a declared type"))
             .expect("the type's module");
-        let src: Vec<u32> = sources.iter().map(|&c| ctor_in(&schema, c)).collect();
-        let prod: Vec<u32> = made.iter().map(|&c| ctor_in(&schema, c)).collect();
-        let row = Cx::row_ty(&schema, def, Some(src));
-        let result = Cx::row_ty(&schema, def, Some(prod));
+        let src: Vec<u32> = sources.iter().map(|&c| ctor_in(schema, c)).collect();
+        let prod: Vec<u32> = made.iter().map(|&c| ctor_in(schema, c)).collect();
+        let row = Cx::row_ty(schema, def, Some(src));
+        let result = Cx::row_ty(schema, def, Some(prod));
         let body = || RowBody::Match(arms, run.span());
         let refs = check::check_row(
-            &schema,
-            &program,
+            &compiled,
             module,
             &row,
             body(),
@@ -229,14 +229,11 @@ impl Model {
             }
         }
         let text = match (arms.first(), arms.last()) {
-            (Some(a), Some(z)) => {
-                canonical(run, &schema, &refs, a.patterns[0].span.to(z.body.span))
-            }
+            (Some(a), Some(z)) => canonical(run, schema, &refs, a.patterns[0].span.to(z.body.span)),
             _ => String::new(),
         };
         let q = check::row_query(
-            &schema,
-            &program,
+            &compiled,
             module,
             &row,
             body(),
@@ -244,11 +241,14 @@ impl Model {
             RootKind::Routing,
         )
         .or_else(|d| refuse_at(d.span, d.message))?;
-        let query = crate::norm::registered(&schema, &program, &q.terms, q.term, RootKind::Query)
+        let query = crate::norm::registered(&compiled, &q.terms, q.term, RootKind::Query)
             .map_err(|e| Fail::Broken(format!("a routing does not normalise: {e:?}")))?;
         Ok(Routing {
             carries,
-            rows: RowFn { schema, query },
+            rows: RowFn {
+                schema: schema.clone(),
+                query,
+            },
             text,
         })
     }
