@@ -29,15 +29,14 @@ use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::ids::{stored, type_ctor_id};
 use super::keying::broken;
-use super::root;
 use super::roots::RootsRow;
 use super::steps::Stepped;
 use super::{
-    Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, ElementTexts, Error,
-    Hash, Migrating, Readers, VersionHash, change, ctor_count, ctor_id, ctor_index, ctor_relations,
+    Broken, Built, CatCtorId, CatRelId, Catalog, Change, Checked, Data, ElementTexts, Error, Hash,
+    Migrating, Readers, VersionHash, change, ctor_count, ctor_id, ctor_index, ctor_relations,
     delete_keyed, delete_rows, element_types, heap_root, index_ctors, index_keys, indexes, layout,
     moved, oplog, owner, pending, planned, refusal, rel_id, relation, row_key, row_type, rows,
-    steps, update_root, visible,
+    steps, visible,
 };
 
 impl Catalog {
@@ -72,13 +71,13 @@ impl Catalog {
         txns: &Transactions<R>,
         text: &str,
     ) -> Result<(), Error> {
-        self.apply(pager, txns, text, Grantees::Refuse, true)
+        self.migrate_with(pager, txns, text, Grantees::Refuse, true)
             .map(|_| ())
     }
 
     /// Apply `text` as [`Catalog::migrate`] does, except that a grant to a role
     /// `catalog::roles` does not hold is applied with a dormant row. Returns each dormant row
-    /// written, those [`Catalog::record_grants`] writes first among them.
+    /// written, those of the grants of the source that had no row first among them.
     ///
     /// Precondition: no `write::Database` holds the page of id counters.
     pub fn replay<R: Runtime>(
@@ -87,7 +86,7 @@ impl Catalog {
         txns: &Transactions<R>,
         text: &str,
     ) -> Result<Vec<Dormant>, Error> {
-        self.apply(pager, txns, text, Grantees::Dormant, false)
+        self.migrate_with(pager, txns, text, Grantees::Dormant, false)
     }
 
     /// Replay `text` as [`Catalog::replay`] does, a grant of `held`, by grantee, privilege and
@@ -104,7 +103,7 @@ impl Catalog {
         replayed
     }
 
-    fn apply<R: Runtime>(
+    fn migrate_with<R: Runtime>(
         &mut self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
@@ -112,7 +111,47 @@ impl Catalog {
         grantees: Grantees,
         new: bool,
     ) -> Result<Vec<Dormant>, Error> {
-        let mut dormant = self.record_grants(pager, txns)?;
+        let change = Change::begin(pager, txns, Scope::Every)?.mark(self.root)?;
+        let before = (self.source.grants.clone(), self.sequences);
+        let applied = self.apply(&change, text, grantees, new);
+        let (c, dormant) = match applied {
+            Ok(applied) => applied,
+            Err(e) => {
+                (self.source.grants, self.sequences) = before;
+                return Err(change.fail(self, e));
+            }
+        };
+        let sequences = c.sequences;
+        let landed = match change.commit_naming(self.root, |r| r.sequences = sequences) {
+            Ok(landed) => landed,
+            Err(e) => {
+                (self.source.grants, self.sequences) = before;
+                return Err(e);
+            }
+        };
+        let gone = self.heaps_gone_in(&c);
+        *self = c;
+        self.end_landed(pager, txns, landed, &gone);
+        Ok(dormant)
+    }
+
+    /// Returns the catalog `text` migrates this one to in the transaction of `change`, and each
+    /// dormant row it writes. First give each grant of the source with no row its row, and
+    /// allocate the page of id counters when a grant needs an id and the catalog has none: the
+    /// change commits both or neither with the migration.
+    fn apply<R: Runtime>(
+        &mut self,
+        change: &Change<'_, R>,
+        text: &str,
+        grantees: Grantees,
+        new: bool,
+    ) -> Result<(Catalog, Vec<Dormant>), Error> {
+        let m = change.writes();
+        let unrecorded = self.source.grants.iter().any(|g| g.row.is_none());
+        if unrecorded && self.sequences().is_none() {
+            self.sequences = self.counter_page(m.pager)?;
+        }
+        let mut dormant = self.record_in(m)?;
         let refused = |why: Vec<String>| Err(Error::Refused(why));
         let file = match parse_migration(text, Options::default()).ok() {
             Ok(f) => f,
@@ -134,8 +173,8 @@ impl Catalog {
                 });
             }
         };
-        if next.grants.iter().any(|g| g.row.is_none()) {
-            self.counters(pager)?;
+        if next.grants.iter().any(|g| g.row.is_none()) && self.sequences().is_none() {
+            self.sequences = self.counter_page(m.pager)?;
         }
         let operators = match recordable(&next, &recorded) {
             Ok(ops) => oplog::Log::new(&schema).rows(ops),
@@ -153,61 +192,17 @@ impl Catalog {
         let changed = depends::changed(old, old_program, schema, program);
         let rewritten = change::rewritten(old, schema, &changed);
         self.admits(schema, program, texts, &rewritten)?;
-        let begun = txns.begin(pager)?;
-        let x = begun.xid();
-        let marked = match root::begin_or_join(pager, self.root, Changing::Schema(x)) {
-            Ok(marked) => marked,
-            Err(e) => {
-                txns.abandon_failed(pager, begun)?;
-                return Err(e.into());
-            }
-        };
-        let hold = txns.take(Scope::Every)?;
-        let m = Migrating {
-            pager,
-            txns,
-            x,
-            hold,
-            made: Default::default(),
-            top: Default::default(),
-        };
         let prepared = Prepared {
             next,
             operators,
             grantees,
             changed,
         };
-        let built = self.mapped(&m, (&file, text, &stepped), prepared, &rewritten, readers);
-        let made = m.made.take();
-        let top = m.top.get();
-        drop(m);
-        let built = built.and_then(|(c, written)| {
-            update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
-            Ok((c, written))
-        });
-        match built {
-            Ok((c, written)) => {
-                let committed = txns.commit(pager, begun)?;
-                let gone = self.heaps_gone_in(&c);
-                *self = c;
-                dormant.extend(written);
-                self.end_committed(pager, txns, marked, committed, &gone);
-                Ok(dormant)
-            }
-            Err(e) => {
-                txns.abandon_failed(pager, begun)?;
-                if top > self.next_heap {
-                    update_root(pager, self.root, |r| r.next_heap = top)?;
-                    self.next_heap = top;
-                }
-                let freed = self.free_leaked(pager, txns, &made)?;
-                if freed.counted {
-                    let lsn = root::end_freed(pager, self.root, marked)?;
-                    pager.wait_durable(lsn);
-                }
-                Err(e)
-            }
-        }
+        let (c, written) =
+            self.mapped(m, (&file, text, &stepped), prepared, &rewritten, readers)?;
+        change.reserve(self, c.next_heap)?;
+        dormant.extend(written);
+        Ok((c, dormant))
     }
 
     /// Refuse `schema`, whose checked program is `program` and index element texts `texts`, when

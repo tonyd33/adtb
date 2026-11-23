@@ -11,7 +11,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
 use crate::key::Value;
-use crate::mvcc::{Hold, Scope, Transactions};
+use crate::mvcc::{Hold, Scope, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write::{self, Sequences};
@@ -130,15 +130,16 @@ fn drawn(e: write::Error) -> Error {
 }
 
 impl Catalog {
-    /// Returns the rows of `catalog::grants` that the snapshot of `hold` sees.
+    /// Returns the rows of `catalog::grants` that the snapshot of `hold` sees, with the writes
+    /// of `own` when it is a transaction.
     fn stored_grants<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        hold: &Hold,
+        seen: (&Hold, Option<Xid>),
     ) -> Result<Vec<Stored>, Error> {
         let codec = Codec::<RoleGrant>::new(&self.schema);
-        self.rows(pager, txns, hold, codec.relation())?
+        self.rows_to(pager, txns, seen, codec.relation())?
             .into_iter()
             .map(|(c, row)| {
                 Ok(Stored {
@@ -159,7 +160,7 @@ impl Catalog {
         grants: &[LogGrant],
         revoked: &BTreeSet<String>,
     ) -> Result<(), Error> {
-        let stored = self.stored_grants(m.pager, m.txns, &m.hold)?;
+        let stored = self.stored_grants(m.pager, m.txns, (&m.hold, Some(m.x)))?;
         let rows: Vec<GrantRow<'_>> = stored.iter().map(|s| s.grant.row()).collect();
         let mut why = Vec::new();
         for (s, lost) in stored.iter().zip(&rows) {
@@ -213,15 +214,16 @@ impl Catalog {
         }
     }
 
-    /// Returns the name of each role the snapshot of `hold` sees, by id.
+    /// Returns the name of each role the snapshot of `hold` sees, with the writes of `own` when
+    /// it is a transaction, by id.
     fn roles<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        hold: &Hold,
+        seen: (&Hold, Option<Xid>),
     ) -> Result<BTreeMap<i64, String>, Error> {
         let codec = Codec::<RoleRow>::new(&self.schema);
-        self.rows(pager, txns, hold, codec.relation())?
+        self.rows_to(pager, txns, seen, codec.relation())?
             .into_iter()
             .map(|(c, row)| {
                 let (id, name, _) = codec.decode(c, &row)?.into_parts();
@@ -237,7 +239,7 @@ impl Catalog {
         txns: &Transactions<R>,
     ) -> Result<BTreeMap<i64, String>, Error> {
         let hold = txns.take(Scope::Every)?;
-        let roles = self.roles(pager, txns, &hold);
+        let roles = self.roles(pager, txns, (&hold, None));
         drop(hold);
         roles
     }
@@ -249,7 +251,7 @@ impl Catalog {
         txns: &Transactions<R>,
     ) -> Result<Vec<DeployedGrant>, Error> {
         let hold = txns.take(Scope::Every)?;
-        let stored = self.stored_grants(pager, txns, &hold);
+        let stored = self.stored_grants(pager, txns, (&hold, None));
         drop(hold);
         Ok(stored?
             .into_iter()
@@ -267,7 +269,7 @@ impl Catalog {
         txns: &Transactions<R>,
     ) -> Result<(), Error> {
         let hold = txns.take(Scope::Every)?;
-        let stored = self.stored_grants(pager, txns, &hold);
+        let stored = self.stored_grants(pager, txns, (&hold, None));
         drop(hold);
         let shape = Shape::of(&self.schema);
         for s in stored?.into_iter().filter(Stored::log) {
@@ -327,16 +329,35 @@ impl Catalog {
         }
     }
 
+    /// Write as `m.x` a `Log` row of `catalog::grants` for each grant of the source that has
+    /// none, dormant when its role does not exist, and give each grant its row. Returns each
+    /// dormant row written.
+    ///
+    /// Precondition: the catalog has a page of id counters when a grant has no row.
+    pub(super) fn record_in<R: Runtime>(
+        &mut self,
+        m: &Migrating<'_, R>,
+    ) -> Result<Vec<Dormant>, Error> {
+        if self.source.grants.iter().all(|g| g.row.is_some()) {
+            return Ok(Vec::new());
+        }
+        let mut grants = self.source.grants.clone();
+        let dormant =
+            self.write_grants(m, self, &mut grants, &BTreeSet::new(), Grantees::Dormant)?;
+        self.source.grants = grants;
+        Ok(dormant)
+    }
+
     /// Write as `m.x` the `Log` rows of `grants`, the grants of `into`'s source, over those of
-    /// this catalog that the snapshot of `m.hold` sees: keep or update the row of each grant
+    /// this catalog that `m.x` sees at the snapshot of `m.hold`: keep or update the row of each grant
     /// whose id names one, delete every other `Log` row, and insert a row with a new id for each
     /// other grant, giving it that id. Each row is dormant as its grant is. When `mode` keeps
-    /// dormant rows, first make dormant each grant whose role the snapshot of `m.hold` does not
+    /// dormant rows, first make dormant each grant whose role `m.x` does not
     /// see, and record each such role at `into`'s version for [`Catalog::open`]. Returns each
     /// grant made dormant.
     ///
     /// Fail with [`Error::Refused`], having drawn no id, when `mode` refuses and a role of
-    /// `named` or of an active grant to insert is one the snapshot of `m.hold` does not see.
+    /// `named` or of an active grant to insert is one `m.x` does not see.
     pub(super) fn write_grants<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
@@ -347,7 +368,7 @@ impl Catalog {
     ) -> Result<Vec<Dormant>, Error> {
         let schema = &into.schema;
         let shape = Shape::of(schema);
-        let stored = self.stored_grants(m.pager, m.txns, &m.hold)?;
+        let stored = self.stored_grants(m.pager, m.txns, (&m.hold, Some(m.x)))?;
         let old: BTreeMap<i64, &Stored> = stored
             .iter()
             .filter(|s| s.log())
@@ -362,7 +383,7 @@ impl Catalog {
             })
             .collect();
         let roles: BTreeSet<String> = self
-            .roles(m.pager, m.txns, &m.hold)?
+            .roles(m.pager, m.txns, (&m.hold, Some(m.x)))?
             .into_values()
             .collect();
         let mut dormant = Vec::new();

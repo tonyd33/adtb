@@ -577,3 +577,54 @@ rename relation customers to clients
         );
     });
 }
+
+#[test]
+fn a_refused_migration_leaves_the_grant_rows_and_the_page_of_id_counters_as_they_were() {
+    let seed = 147;
+    let mut sim = Sim::new(seed, Config::default());
+    let mut before = None;
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt.clone(), &pager).expect("the catalog");
+        shop_with_web(&rt, &pager, &mut catalog, &txns);
+        assert_eq!(None, catalog.sequences());
+        let seen = (catalog.source().version, stored(&catalog, &pager, &txns));
+        adtb_testkit::refused_as(
+            catalog.migrate(
+                &pager,
+                &txns,
+                "module shop\ngrant read customers to web\ngrant read customers to nobody\n",
+            ),
+            &CatalogError::Refused(vec![
+                "a grant names role `nobody`, which does not exist".into(),
+            ]),
+            "a grant names role `nobody`, which does not exist",
+        );
+        assert_eq!(None, catalog.sequences());
+        assert_eq!(
+            seen,
+            (catalog.source().version, stored(&catalog, &pager, &txns))
+        );
+        before = Some(seen);
+        drop(catalog);
+        drop(txns);
+        pager.close();
+    });
+    let (version, (logged, deployed)) = before.expect("the migration ran");
+    let mut sim = Sim::with_files(seed, Config::default(), sim.files());
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &pager_options(FRAMES)).expect("reopen");
+        let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        assert_eq!(None, catalog.sequences());
+        let report = verify::verify_with(
+            &pager,
+            &catalog.structures().inventory(Some(&txns.commit_log())),
+            Depth::STRUCTURE,
+        );
+        assert_eq!(Vec::<verify::Finding>::new(), report.findings);
+        assert_eq!(
+            (version, (logged.clone(), deployed.clone())),
+            (catalog.source().version, stored(&catalog, &pager, &txns))
+        );
+    });
+}

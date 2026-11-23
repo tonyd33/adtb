@@ -2,7 +2,8 @@
 //! caller is told it succeeded and the next open finishes the step; before it, the call fails,
 //! nothing of it is seen, every release still ran, and every count of a large value equals the
 //! versions pointing at it. Damage an open meets after its migrations committed quarantines the
-//! database, and the migrations stay applied.
+//! database, and the migrations stay applied. A refused change whose cleanup fails is told its
+//! refusal and leaves its mark on the catalog root for the next open.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
@@ -700,6 +701,16 @@ fn searched(runs: &[Run]) -> BTreeSet<(Site, usize)> {
     ends(runs)
 }
 
+/// Returns whether `got`, a run of `case`, left its refusal's mark on the catalog root, failing
+/// unless it was told the refusal.
+fn refusal_kept(case: &Case, got: &Ran, what: &str) -> bool {
+    let kept = got.unmended.1 && got.durable == Some(false) && case.refused.is_some();
+    if kept {
+        assert_eq!(case.refused, got.failed.as_deref(), "{what}");
+    }
+    kept
+}
+
 /// Returns the place of `step` in [`Step::EVERY`].
 fn listed(step: Step) -> usize {
     match step {
@@ -726,6 +737,7 @@ fn a_change_tells_its_caller_success_exactly_when_it_is_durable_whatever_step_fa
     };
     let mut reached: BTreeSet<(&str, Step)> = BTreeSet::new();
     let mut lowered = 0;
+    let mut kept_refused = 0;
     let mut wrong = Vec::new();
     for case in CASES {
         let name = case.name;
@@ -767,6 +779,7 @@ fn a_change_tells_its_caller_success_exactly_when_it_is_durable_whatever_step_fa
                 assert!(durable, "{what}");
             }
             let (unmended, left) = got.unmended;
+            kept_refused += usize::from(refusal_kept(case, &got, &what));
             let skipped = usize::from(!left && site.step() == Step::Release);
             assert_eq!(skipped, got.found.overcounted, "{what}");
             if site.step() != Step::Settle {
@@ -779,6 +792,10 @@ fn a_change_tells_its_caller_success_exactly_when_it_is_durable_whatever_step_fa
         }
     }
     assert_eq!(Vec::<String>::new(), wrong);
+    assert!(
+        kept_refused > 0,
+        "no failed cleanup of a refused migration kept its mark"
+    );
     assert!(
         lowered > 0,
         "no failed read of a leaked page left a head overcounted for the open to lower"
