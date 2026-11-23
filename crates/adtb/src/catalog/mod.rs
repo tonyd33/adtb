@@ -26,6 +26,7 @@ mod oplog;
 mod pending;
 #[cfg(any(test, feature = "testing"))]
 mod probed;
+mod read;
 mod readers;
 mod root;
 mod roots;
@@ -86,7 +87,7 @@ use crate::key::{CtorId, Dir, KeySchema, OrderKey, Tid, Value};
 use crate::mvcc::{self, Hold, Scope, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::{IoError, Runtime};
-use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
+use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Problem, Report};
 
 use broken::refusal;
@@ -107,6 +108,7 @@ use memo::Memo;
 #[cfg(any(test, feature = "testing"))]
 pub use oplog::chained;
 pub use oplog::{Hash, VersionHash, version_hash};
+use read::{Snapshot, delete_keyed, delete_rows};
 pub use readers::{Read, Reader, source_at, stale};
 pub(crate) use root::Changing;
 #[cfg(any(test, feature = "testing"))]
@@ -178,6 +180,9 @@ pub enum Error {
     Conflict(mvcc::Conflict),
     /// The spill file of a query the catalog ran could not be made, written or read.
     Spill(IoError),
+    /// A heap the transaction reads is quarantined; the name a client sees of its constructor
+    /// relation.
+    Quarantined(String),
 }
 
 impl From<PageError> for Error {
@@ -459,41 +464,6 @@ fn named<R: Runtime>(
     Ok(out)
 }
 
-/// Returns the rows of the versions of `heap` visible at the snapshot of `hold`, in heap order.
-fn visible<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    hold: &Hold,
-    heap: &Heap,
-) -> Result<Vec<Vec<Value>>, PageError> {
-    visible_to(pager, txns, (hold, None), heap)
-}
-
-/// Returns the rows of `heap` the snapshot of `hold` sees, with the writes of `own` when it is a
-/// transaction.
-fn visible_to<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    (hold, own): (&Hold, Option<Xid>),
-    heap: &Heap,
-) -> Result<Vec<Vec<Value>>, PageError> {
-    let reader = txns.reader(pager, hold, own);
-    'scan: loop {
-        let mut versions = Vec::new();
-        heap.scan(pager, |v| versions.push(v))?;
-        let mut out = Vec::new();
-        for v in versions {
-            let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
-                continue 'scan;
-            };
-            if seen.visible() {
-                out.push(v.row);
-            }
-        }
-        return Ok(out);
-    }
-}
-
 /// The texts of a stored log's migrations and the roles each makes dormant, by version.
 type Log = (BTreeMap<u64, String>, BTreeMap<u64, BTreeSet<String>>);
 
@@ -701,11 +671,16 @@ impl Catalog {
         }
         let changing = Root::read(&pager.read(catalog.root)?).changing();
         if changing != Changing::None {
-            let freed = catalog.free_leaked(pager, &txns, &[]);
-            match freed.and_then(|f| catalog.lower_overcounted(pager, &f.report)) {
-                Ok(()) => {
+            let freed = catalog.free_leaked(pager, &txns, (&[], &BTreeSet::new()));
+            let lowered = freed.and_then(|f| {
+                catalog.lower_overcounted(pager, &f.report)?;
+                Ok(f.released)
+            });
+            match lowered {
+                Ok(true) => {
                     root::end_found(pager, catalog.root)?;
                 }
+                Ok(false) => {}
                 Err(Error::Page(e)) if e.damage != storage::Damage::Unreadable => {}
                 Err(e) => return Err(e),
             }
@@ -869,23 +844,28 @@ impl Catalog {
     /// Free every page the catalog's structures do not reach, first counting each version on a
     /// page of a heap of `gone` off the large values it points at. A page whose versions it
     /// could not count off is freed with its heads left overcounted, and so is a page it cannot
-    /// read while `gone` is not empty: [`Freed::counted`] is then false.
+    /// read while `gone` is not empty: [`Freed::counted`] is then false. Then remove the mark on
+    /// each heap and index no structure holds, and on each index of `rebuilt`; [`Freed::released`]
+    /// is false when that fails.
     ///
     /// Errors:
     /// - The damage found, freeing nothing, if a damaged page keeps it from finding
     ///   every structure's pages.
     ///
-    /// Precondition: no structure reaches a heap of `gone`, no transaction reads one, and no
-    /// call counted its versions off before.
+    /// Preconditions:
+    ///
+    /// - No structure reaches a heap of `gone`, no transaction reads one, and no call counted its
+    ///   versions off before.
+    /// - Each index of `rebuilt` was built whole from its heaps since its mark was set.
     fn free_leaked<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        gone: &[Arc<Heap>],
+        (gone, rebuilt): (&[Arc<Heap>], &BTreeSet<Quarantine>),
     ) -> Result<Freed, Error> {
+        let structures = self.structures();
         let report = {
             let clog = txns.commit_log();
-            let structures = self.structures();
             verify::verify_with(pager, &structures.inventory(Some(&clog)), Depth::STRUCTURE)
         };
         if !report.complete {
@@ -912,7 +892,15 @@ impl Catalog {
             }
             pager.free(p)?;
         }
-        Ok(Freed { report, counted })
+        let objects = structures.objects();
+        let released = pager
+            .release_gone(|o| !objects.contains(&o) || rebuilt.contains(&o))
+            .is_ok();
+        Ok(Freed {
+            report,
+            counted,
+            released,
+        })
     }
 
     /// Lower each head `report` finds counting more versions than point at it to the number
@@ -947,6 +935,19 @@ impl Catalog {
     /// Returns every heap of this catalog, current and history.
     fn every_heap(&self) -> impl Iterator<Item = &Arc<Heap>> {
         self.heaps.values().chain(self.kept.heaps())
+    }
+
+    /// Returns the mark of each index whose tree `next` holds in place of this catalog's.
+    fn rebuilt_in(&self, next: &Catalog) -> BTreeSet<Quarantine> {
+        next.indexes
+            .iter()
+            .filter(|(id, (_, index, _))| {
+                self.indexes
+                    .get(id)
+                    .is_some_and(|(_, was, _)| was.tree().root() != index.tree().root())
+            })
+            .map(|(_, (_, index, _))| Quarantine::Index(index.tree().owner()))
+            .collect()
     }
 
     /// Returns each heap of this catalog, current or history, that `next` does not hold.
@@ -1108,38 +1109,6 @@ impl Catalog {
         exec::Bindings::new(Arc::new(heaps), Arc::new(indexes))
     }
 
-    /// Returns the rows of relation `r` visible at the snapshot of `hold`, each with its
-    /// constructor index, by constructor and then in heap order.
-    fn rows<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        hold: &Hold,
-        r: RelId,
-    ) -> Result<Vec<(u32, Vec<Value>)>, PageError> {
-        self.rows_to(pager, txns, (hold, None), r)
-    }
-
-    /// Returns the rows of relation `r` as [`Catalog::rows`] does, with the writes of `own` when
-    /// it is a transaction.
-    fn rows_to<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        seen: (&Hold, Option<Xid>),
-        r: RelId,
-    ) -> Result<Vec<(u32, Vec<Value>)>, PageError> {
-        let mut out = Vec::new();
-        for ((_, c), heap) in self.heaps.range((r, 0)..=(r, u32::MAX)) {
-            out.extend(
-                visible_to(pager, txns, seen, heap)?
-                    .into_iter()
-                    .map(|row| (*c, row)),
-            );
-        }
-        Ok(out)
-    }
-
     /// Returns the planner's description of every relation.
     pub fn plan(&self) -> plan::Catalog {
         if self.is_unread() {
@@ -1255,6 +1224,8 @@ struct Freed {
     report: Report,
     /// Whether every version on a page of a heap it was given was counted off.
     counted: bool,
+    /// Whether every mark it was to remove was removed.
+    released: bool,
 }
 
 impl<R: Runtime> Migrating<'_, R> {
@@ -1335,49 +1306,5 @@ fn heap_root(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> RootsRow {
         ctor: cid,
         heap: heap.id().0,
         at: heap.root(),
-    }
-}
-
-/// Delete, as `m.x`, one version the snapshot of `m.hold` sees of each row of `rows` from `heap`.
-fn delete_rows<R: Runtime>(
-    m: &Migrating<'_, R>,
-    heap: &Heap,
-    rows: &[Vec<Value>],
-) -> Result<(), Error> {
-    delete_keyed(m, heap, rows.to_vec(), <[Value]>::to_vec)
-}
-
-/// Delete, as `m.x`, one version the snapshot of `m.hold` sees from `heap` of each row whose
-/// image under `key` is one of `keys`.
-fn delete_keyed<R: Runtime>(
-    m: &Migrating<'_, R>,
-    heap: &Heap,
-    mut keys: Vec<Vec<Value>>,
-    key: impl Fn(&[Value]) -> Vec<Value>,
-) -> Result<(), Error> {
-    let pager = m.pager;
-    if keys.is_empty() {
-        return Ok(());
-    }
-    let reader = m.txns.reader(pager, &m.hold, None);
-    'scan: loop {
-        let mut versions = Vec::new();
-        heap.scan(pager, |v| versions.push(v))?;
-        for v in versions {
-            let Some(at) = keys.iter().position(|k| *k == key(&v.row)) else {
-                continue;
-            };
-            let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
-                continue 'scan;
-            };
-            if seen.visible() {
-                heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)
-                    .kept(&Abandoning(()))?
-                    .unchecked(&Abandoning(()));
-                keys.swap_remove(at);
-            }
-        }
-        assert!(keys.is_empty(), "every row deleted is visible: {keys:?}");
-        return Ok(());
     }
 }

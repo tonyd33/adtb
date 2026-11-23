@@ -120,6 +120,19 @@ exclude = [
 rows = { catalog_transactions = "zero" }
 
 [[rule]]
+query = "catalog-reads.tql"
+include = ["crates/adtb/src/catalog/**/*.rs"]
+exclude = [
+  "**/tests.rs",
+  "**/*_tests.rs",
+  "**/tests/**",
+  "crates/adtb/src/catalog/read.rs",
+  "crates/adtb/src/catalog/roots_heap.rs",
+  "crates/adtb/src/catalog/keyed.rs",
+]
+rows = { catalog_reads = "zero" }
+
+[[rule]]
 query = "defs-only.tql"
 include = [
   "crates/adtb-lang/src/check/**/*.rs",

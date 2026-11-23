@@ -864,10 +864,26 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
+    /// Remove the mark on each heap and index `gone` accepts. Durable on return.
+    ///
+    /// Precondition: each heap or index `gone` accepts is dropped, or built again whole since its
+    /// mark was set, and no structure but that new build has its id.
+    ///
+    /// Fail, removing nothing, if the page holding the marks is refused, or was loaded at this open
+    /// with no check of its LSN.
+    pub fn release_gone(&self, gone: impl Fn(Quarantine) -> bool) -> Result<(), MarkFailure> {
+        let gone = |object: &Quarantine| *object != Quarantine::Database && gone(*object);
+        if !self.any_quarantined() || !self.quarantined().iter().any(gone) {
+            return Ok(());
+        }
+        let page = self.marks_page()?;
+        self.change_marks_on(page, |set| set.retain(|object| !gone(object)))
+            .map_err(MarkFailure::Page)
+    }
+
     /// Change the marks through `f` and write them to their page `page`, durable on return.
     ///
     /// Fail, changing nothing, if the page is refused.
-    #[cfg(any(test, feature = "testing"))]
     fn change_marks_on(
         &self,
         page: Pid,

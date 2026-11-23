@@ -1,0 +1,12 @@
+-- catalog_reads: a call in the catalog that reads the versions of a heap or builds a store of
+-- queries, outside the module that judges each heap against the pager's marks first and the
+-- modules of the roots heap, which no relation mark covers.
+
+reading = r"(\.reader|\.scan|(^|::)Store::[a-z_]+)$";
+
+main = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f ~ reading;
+  return c;
+} | arr range;

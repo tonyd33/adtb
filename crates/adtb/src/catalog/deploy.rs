@@ -1,6 +1,6 @@
 //! The writes of deployment state: relations of the catalog whose rows no migration writes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ids::engine_rel;
 use adtb_lang::types::RelId;
@@ -12,7 +12,7 @@ use crate::storage::{Pager, Position};
 
 use super::codec::{Codec, Decode, GrantKind, RoleGrant};
 use super::ids::{CatRelId, rel_id};
-use super::{Broken, Catalog, Change, Error, Fact, Writer, delete_rows};
+use super::{Broken, Catalog, Change, Error, Fact, Snapshot, Writer, delete_rows};
 
 /// The relations of deployment state, the only relations a deploy writes.
 const DEPLOYED: [CatRelId; 4] = [
@@ -40,9 +40,9 @@ impl Catalog {
         r: RelId,
     ) -> Result<Vec<(u32, Vec<Value>)>, Error> {
         let hold = txns.take(Scope::Every)?;
-        let rows = self.rows(pager, txns, &hold, r);
+        let rows = self.rows(&Snapshot::new(pager, txns, (&hold, None)), r);
         drop(hold);
-        Ok(rows?)
+        rows
     }
 
     /// Returns the rows of `codec`'s relation the latest commit holds, each read by `codec`.
@@ -142,7 +142,7 @@ impl Catalog {
         if let Err(e) = done {
             return Err(change.abandon(e));
         }
-        let lsn = self.end_landed(pager, txns, change.commit()?, &[]);
+        let lsn = self.end_landed(pager, txns, change.commit()?, (&[], &BTreeSet::new()));
         Ok(pager.position(lsn))
     }
 }

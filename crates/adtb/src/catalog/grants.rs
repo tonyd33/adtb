@@ -23,7 +23,7 @@ use super::codec::{
 };
 use super::roots::RootsRow;
 use super::values::{self, boolean};
-use super::{Broken, Catalog, Change, Error, Migrating, OWNER_ROLE, delete_rows};
+use super::{Broken, Catalog, Change, Error, Migrating, OWNER_ROLE, Snapshot, delete_rows};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,7 +139,7 @@ impl Catalog {
         seen: (&Hold, Option<Xid>),
     ) -> Result<Vec<Stored>, Error> {
         let codec = Codec::<RoleGrant>::new(&self.schema);
-        self.rows_to(pager, txns, seen, codec.relation())?
+        self.rows(&Snapshot::new(pager, txns, seen), codec.relation())?
             .into_iter()
             .map(|(c, row)| {
                 Ok(Stored {
@@ -223,7 +223,7 @@ impl Catalog {
         seen: (&Hold, Option<Xid>),
     ) -> Result<BTreeMap<i64, String>, Error> {
         let codec = Codec::<RoleRow>::new(&self.schema);
-        self.rows_to(pager, txns, seen, codec.relation())?
+        self.rows(&Snapshot::new(pager, txns, seen), codec.relation())?
             .into_iter()
             .map(|(c, row)| {
                 let (id, name, _) = codec.decode(c, &row)?.into_parts();
@@ -310,7 +310,7 @@ impl Catalog {
         };
         match change.commit() {
             Ok(landed) => {
-                self.end_landed(pager, txns, landed, &[]);
+                self.end_landed(pager, txns, landed, (&[], &BTreeSet::new()));
                 Ok(dormant)
             }
             Err(e) => {

@@ -1053,6 +1053,9 @@ pager.map_fault(fault, holder, order)
 pager.replace_contents(page, from, Option<object>) -> Result<(), PageError>
                                                   // page takes from's contents, from is freed
                                                   // and any object's mark goes, in one batch
+pager.release_gone(gone) -> Result<(), MarkFailure>
+                                                  // the marks of heaps and indexes a schema
+                                                  // change dropped or built again go
 pager.scrap(page) -> Result<(), PageError>        // free a damaged page, overwriting it
 pager.is_quarantined(object) -> bool              // its own mark or the database's
 pager.quarantined() -> BTreeSet<Quarantine>
@@ -1067,7 +1070,13 @@ finding; a full list is a finding of the whole file. A settled status
 page is reported and marks nothing. A mark or release is a logged change of that page,
 durable when the call returns, so the marks survive a crash and a
 restart and are read back at open. A heap or index stays quarantined
-across restarts until a repair removes its mark. A marks page that fails
+across restarts until a repair removes its mark, or a schema change that
+drops it or builds it again whole removes the mark once it commits. The
+catalog removes the marks of the heaps and indexes no structure holds
+whenever it frees what a schema change left unreached, so a crash
+before the removal leaves them for the next open; that of an index
+built again under the same owner is removed only after the commit of
+its schema change, and a crash before it leaves the mark. A marks page that fails
 verification at open quarantines the database, and every mark then fails
 with its damage.
 

@@ -1,0 +1,45 @@
+# A quarantined index never refuses a migration, whose checks read the heaps. A migration that drops
+# the index, or rebuilds it with its relation, takes its mark with it, and the next statements
+# that write the relation run.
+use dump-app
+
+mark index app::users index (name)
+
+migrate
+  module app
+  add constraint named = from u in users where u.name == "" select u
+
+probe marks
+----
+app::users index (name)
+
+migrate
+  module app
+  drop index (name) in users
+
+probe marks
+----
+
+run
+  insert users { name: "cy" }
+
+migrate
+  module app
+  add index (name) in users
+
+mark index app::users index (name)
+
+migrate
+  module app
+  add field User.age: I64 fill 0
+
+probe marks
+----
+
+run
+  insert users { name: "di", age: 4 }
+
+query rowsort
+  from u in users where u.name == "di" select u.age
+----
+4

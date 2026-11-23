@@ -3,7 +3,7 @@ use adtb_lang::types::RelId;
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::fixture::Fixture;
 
-use crate::catalog::{Catalog, Error};
+use crate::catalog::{Catalog, Error, Snapshot};
 use crate::key::Value;
 use crate::mvcc::{Scope, Transactions};
 use crate::storage::Pager;
@@ -238,7 +238,10 @@ fn state(
 ) -> (u64, Vec<(u32, Vec<Value>)>) {
     let hold = txns.take(Scope::Every).expect("a snapshot");
     let rows = catalog
-        .rows(pager, txns, &hold, rel(catalog, "ts"))
+        .rows(
+            &Snapshot::new(pager, txns, (&hold, None)),
+            rel(catalog, "ts"),
+        )
         .expect("the rows read");
     (catalog.source().version, rows)
 }

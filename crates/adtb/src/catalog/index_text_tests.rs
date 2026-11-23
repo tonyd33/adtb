@@ -8,7 +8,7 @@ use adtb_lang::types::RelId;
 use adtb_lang::visit::each_expr;
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use crate::catalog::{Catalog, Migrating, change, delete_rows, layout};
+use crate::catalog::{Catalog, Migrating, Snapshot, change, delete_rows, layout};
 use crate::key::Value;
 use crate::mvcc::{Scope, Transactions};
 use crate::storage::Pager;
@@ -178,7 +178,10 @@ fn declared_rows(
     );
     let hold = txns.take(Scope::Every).expect("a snapshot");
     let rows = catalog
-        .rows(pager, txns, &hold, rel(catalog, "catalog", "indexes"))
+        .rows(
+            &Snapshot::new(pager, txns, (&hold, None)),
+            rel(catalog, "catalog", "indexes"),
+        )
         .expect("the rows read");
     drop(hold);
     rows.into_iter()
@@ -250,7 +253,10 @@ fn index_rows_over(
     let at = index_field(catalog, "relation");
     let hold = txns.take(Scope::Every).expect("a snapshot");
     let rows = catalog
-        .rows(pager, txns, &hold, rel(catalog, "catalog", "indexes"))
+        .rows(
+            &Snapshot::new(pager, txns, (&hold, None)),
+            rel(catalog, "catalog", "indexes"),
+        )
         .expect("the rows read");
     drop(hold);
     rows.into_iter()

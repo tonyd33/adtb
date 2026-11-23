@@ -129,6 +129,21 @@ impl Structures {
         Unopened { root, named }
     }
 
+    /// Returns the heap or index each relation's heap and index holders name, current or
+    /// history.
+    pub fn objects(&self) -> BTreeSet<Quarantine> {
+        let holders = self.sums.iter().flat_map(|s| {
+            let heaps = s.heaps.iter().map(|(_, holder, _)| holder);
+            heaps.chain(s.indexes.iter().map(|(holder, _)| holder))
+        });
+        holders
+            .filter_map(|holder| match holder {
+                Holder::Relation { object, .. } => Some(*object),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Returns the page of the database's generated counters.
     pub fn counters(&self) -> Option<Pid> {
         self.counters

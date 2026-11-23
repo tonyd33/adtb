@@ -14,7 +14,8 @@ use crate::storage::PageError;
 
 use super::hosts::classify;
 use super::ids::{CatConstraintId, CatRelId};
-use super::{Broken, Catalog, Error, Migrating, Rot, not_normal};
+use super::read::Judged;
+use super::{Broken, Catalog, Error, Migrating, Rot, Snapshot, not_normal};
 
 impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks, whose root is in
@@ -33,7 +34,6 @@ impl Catalog {
         rewritten: &BTreeSet<CatRelId>,
         roots: &BTreeSet<Root>,
     ) -> Result<Vec<String>, Error> {
-        let (pager, x) = (m.pager, m.x);
         let (schema, program) = self.checking();
         let changed: BTreeSet<CatConstraintId> = roots
             .iter()
@@ -59,11 +59,7 @@ impl Catalog {
             .chain(old.ids().check_ids().map(|(_, id)| id))
             .collect();
         let catalog = self.plan();
-        let bindings = self.bindings();
-        let store = Arc::new(Store::migrating(
-            m.txns.reader(pager, &m.hold, Some(x)),
-            bindings,
-        ));
+        let store = self.store(&Snapshot::writing(m));
         let budget = Budget::new(self.query_memory);
         let (terms, held) = unchanged(schema, &normal)?;
         let q = Query {
@@ -133,12 +129,13 @@ impl Catalog {
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
         let (terms, held) = unchanged(schema, &normal)?;
+        let store = Judged::verifying(store.clone());
         let q = Query {
             schema,
             catalog: &catalog,
             normal: &normal,
             terms: terms.valid(),
-            store,
+            store: &store,
             budget: &budget,
             hosts: &self.hosts,
         };
@@ -312,7 +309,7 @@ struct Query<'a, R: Runtime> {
     catalog: &'a plan::Catalog,
     normal: &'a NormalProgram,
     terms: Valid<'a>,
-    store: &'a Arc<Store<R>>,
+    store: &'a Judged<R>,
     budget: &'a Arc<Budget>,
     hosts: &'a Arc<exec::Hosts>,
 }
@@ -330,6 +327,8 @@ impl<R: Runtime> Query<'_, R> {
             Err(e) => return damaged(object, e).map(Err),
         };
         program.shared.hosts = hosts.clone();
+        store.admit(program.reads())?;
+        let store = store.store();
         let program = Arc::new(program);
         let grant = budget
             .admit(budget.limit())

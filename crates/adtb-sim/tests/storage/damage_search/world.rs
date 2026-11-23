@@ -339,23 +339,23 @@ pub fn log(version: u8) -> Log {
     Log::new([APP, TAGS, UNTAG].into_iter().take(1 + version as usize))
 }
 
-/// Returns the version of the file's own log when `e` is the whole-database mark refusing the
-/// migration past it.
-pub fn refused_whole(e: &OpenError) -> Option<u8> {
+/// Returns the version of the file's own log when `e` is a mark refusing the migration past it:
+/// the whole database's, or that of a constructor relation the migration reads.
+pub fn refused_marked(e: &OpenError) -> Option<u8> {
     match e {
         OpenError::MigrationRefused {
             version,
             reason:
                 Error::Fatal {
-                    reason: FatalReason::Quarantined { what },
+                    reason: FatalReason::Quarantined { .. },
                 },
-        } if what == "the database" => u8::try_from(version.checked_sub(2)?).ok(),
+        } => u8::try_from(version.checked_sub(2)?).ok(),
         _ => None,
     }
 }
 
-/// Open `FILE` with the log to `version`, and when the whole-database mark refuses a migration
-/// past the file's, with the file's own log. Under `retry`, do so once more when that open fails,
+/// Open `FILE` with the log to `version`, and when a mark refuses a migration past the file's,
+/// with the file's own log. Under `retry`, do so once more when that open fails,
 /// as an operator would after a failure that may have cleared. Returns the open and the version of
 /// its log.
 pub fn open_own<R: Runtime>(
@@ -367,7 +367,7 @@ pub fn open_own<R: Runtime>(
     let at = |v: u8| Database::open_in(rt.clone(), FILE, &log(v), options);
     let own = |v: u8| {
         let open = at(v);
-        match open.as_ref().err().and_then(refused_whole) {
+        match open.as_ref().err().and_then(refused_marked) {
             Some(own) if own < v => (at(own), own),
             _ => (open, v),
         }
@@ -419,16 +419,6 @@ pub struct Ids {
     pub marks: BTreeMap<Rel, (Quarantine, Quarantine)>,
     /// Every status page of the commit log while the clean run was observed.
     pub status: BTreeSet<Pid>,
-}
-
-impl Ids {
-    /// Returns the relation whose heap or index mark `m` is, `None` for the database's.
-    pub fn marked(&self, m: Quarantine) -> Option<Rel> {
-        self.marks
-            .iter()
-            .find(|(_, (h, i))| *h == m || *i == m)
-            .map(|(r, _)| *r)
-    }
 }
 
 /// Returns whether the schema `db` read holds the change of migration `version`: `users`, and
@@ -624,10 +614,11 @@ pub struct Ran {
     /// The migrations, by their operation's index, applied by an open of a file whose
     /// whole-database mark was durable.
     pub applied_under_mark: BTreeSet<usize>,
-    /// The migrations, by their operation's index, whose open the whole-database mark refused.
+    /// The migrations, by their operation's index, whose open a mark refused.
     pub refused_under_mark: BTreeSet<usize>,
-    /// The marks the file held when the migration that drops a relation began.
-    pub marked_before_drop: BTreeSet<Quarantine>,
+    /// The migrations a mark other than the whole database's refused, by their operation's
+    /// index: the version refused and the marks the file held.
+    pub refused_by_relation: BTreeMap<usize, (u8, BTreeSet<Quarantine>)>,
     /// The pages the damage records named after any open or operation of the run.
     pub recorded: BTreeSet<Pid>,
     /// The reads of the data file a plan failed, by process.
@@ -667,7 +658,7 @@ struct Runner<'a> {
     under_mark: BTreeSet<usize>,
     applied_under_mark: BTreeSet<usize>,
     refused_under_mark: BTreeSet<usize>,
-    marked_before_drop: BTreeSet<Quarantine>,
+    refused_by_relation: BTreeMap<usize, (u8, BTreeSet<Quarantine>)>,
     recorded: BTreeSet<Pid>,
 }
 
@@ -763,9 +754,6 @@ impl Runner<'_> {
                 Op::Damage => self.refuse_scraps(&db, i),
                 Op::Reopen | Op::Migrate => {
                     let durable = durably_whole(&db);
-                    if *op == Op::Migrate && self.acked.version + 1 == LAST {
-                        self.marked_before_drop = db.testing().probe().marks();
-                    }
                     if let Err(e) = db.close() {
                         self.failed.insert(i, format!("close: {e:?}"));
                     }
@@ -787,6 +775,10 @@ impl Runner<'_> {
                     }
                     if opened_at != version {
                         self.refused_under_mark.insert(i);
+                        if !marked_whole(&db) {
+                            let marks = db.testing().probe().marks();
+                            self.refused_by_relation.insert(i, (version, marks));
+                        }
                     }
                     let version = opened_at;
                     let marked = marked_whole(&db);
@@ -949,7 +941,7 @@ pub fn run(
         under_mark: BTreeSet::new(),
         applied_under_mark: BTreeSet::new(),
         refused_under_mark: BTreeSet::new(),
-        marked_before_drop: BTreeSet::new(),
+        refused_by_relation: BTreeMap::new(),
         recorded: BTreeSet::new(),
     };
     let reads = sim.logged(on_data(Match::kind(OpKind::Read)));
@@ -1035,7 +1027,7 @@ pub fn run(
         under_mark: runner.under_mark,
         applied_under_mark: runner.applied_under_mark,
         refused_under_mark: runner.refused_under_mark,
-        marked_before_drop: runner.marked_before_drop,
+        refused_by_relation: runner.refused_by_relation,
         recorded: runner.recorded,
         failed_reads,
         evidence,

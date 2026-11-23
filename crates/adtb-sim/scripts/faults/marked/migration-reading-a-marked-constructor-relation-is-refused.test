@@ -1,0 +1,56 @@
+# A migration that reads a quarantined constructor relation is refused with its quarantine,
+# whichever read meets it: the rewrite of its rows, the check that it is empty, the scan for a
+# stored value of a constructor, or the validation of a constraint. One that reads no quarantined
+# constructor relation applies, and the mark stays.
+migrate
+  module app
+  add module app
+  add type Tone = Red | Blue
+  add type Shape { name: Text } = Circle { r: I64, tone: Tone } | Square { side: I64 }
+  add relation shapes : Shape key name
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+
+run
+  transact
+    insert shapes.Circle { name: "c", r: 2, tone: Tone.Red }
+    insert shapes.Square { name: "s", side: 3 }
+    insert users { name: "ann" }
+
+mark heap app::shapes Square
+
+migrate refused MigrationRefused { version: 2, reason: Fatal { reason: Quarantined { what: "app::shapes.Square" } } }
+  module app
+  add field Shape.Square.border: I64 fill 0
+
+migrate refused MigrationRefused { version: 2, reason: Fatal { reason: Quarantined { what: "app::shapes.Square" } } }
+  module app
+  disable shapes.Square
+
+migrate refused MigrationRefused { version: 2, reason: Fatal { reason: Quarantined { what: "app::shapes.Square" } } }
+  module app
+  disable Tone.Blue
+
+migrate refused MigrationRefused { version: 2, reason: Fatal { reason: Quarantined { what: "app::shapes.Square" } } }
+  module app
+  add constraint small = from s in shapes.Square where s.side > 10 select s
+
+migrate
+  module app
+  add constraint round = from c in shapes.Circle where c.r > 10 select c
+
+migrate
+  module app
+  add field User.age: I64 fill 0
+
+probe marks
+----
+app::shapes.Square
+
+query
+  from c in shapes.Circle select c.name
+----
+"c"
+
+fatal Quarantined { what: "app::shapes.Square" }
+  from s in shapes select s.name

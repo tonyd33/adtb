@@ -154,24 +154,10 @@ impl Facts<'_> {
         self.case.hits[0]
     }
 
-    /// Returns the marks the file holds beyond the sequence's deliberate damage and the marks
-    /// dropped relations keep.
+    /// Returns the marks the file holds beyond the sequence's deliberate damage.
     fn marks(&self) -> BTreeSet<Quarantine> {
         let all = self.case.observed.marks.clone().unwrap_or_default();
-        all.difference(&self.baseline)
-            .filter(|m| !self.dropped_relation_keeps_its_mark(m))
-            .copied()
-            .collect()
-    }
-
-    /// Returns whether `m` is the mark of a relation the sequence dropped, set before the drop
-    /// began.
-    fn dropped_relation_keeps_its_mark(&self, m: &Quarantine) -> bool {
-        let gone = |r: Rel| {
-            !world::present(r, self.case.ran.acked.version) && !world::present(r, self.case.started)
-        };
-        self.case.plan.ids.marked(*m).is_some_and(gone)
-            && self.case.ran.marked_before_drop.contains(m)
+        all.difference(&self.baseline).copied().collect()
     }
 }
 
@@ -741,6 +727,17 @@ fn catalog(f: &Facts<'_>, v: &mut impl FnMut(Consumer, String, String)) {
             "applies a migration under a whole-database mark".into(),
             format!("operation {i}"),
         );
+    }
+    let tags = f.case.plan.ids.marks.get(&Rel::Tags).map(|(heap, _)| *heap);
+    for (i, (version, marks)) in &f.case.ran.refused_by_relation {
+        let reads = *version == world::LAST && tags.is_some_and(|heap| marks.contains(&heap));
+        if !reads {
+            v(
+                Consumer::Catalog,
+                "a migration is refused by the mark of a relation it does not read".into(),
+                format!("operation {i}, version {version}, marks {marks:?}"),
+            );
+        }
     }
     let Some(relations) = &f.case.observed.relations else {
         return;

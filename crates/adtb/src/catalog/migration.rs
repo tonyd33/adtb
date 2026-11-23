@@ -33,9 +33,10 @@ use super::roots::RootsRow;
 use super::steps::Stepped;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Change, Checked, Data, ElementTexts, Error, Hash,
-    Migrating, Readers, VersionHash, change, ctor_count, ctor_id, ctor_index, ctor_relations,
-    delete_keyed, element_types, heap_root, index_ctors, index_keys, indexes, layout, moved, oplog,
-    owner, pending, planned, refusal, rel_id, relation, row_key, row_type, rows, steps, visible,
+    Migrating, Readers, Snapshot, VersionHash, change, ctor_count, ctor_id, ctor_index,
+    ctor_relations, delete_keyed, element_types, heap_root, index_ctors, index_keys, indexes,
+    layout, moved, oplog, owner, pending, planned, refusal, rel_id, relation, row_key, row_type,
+    rows, steps,
 };
 
 impl Catalog {
@@ -129,8 +130,9 @@ impl Catalog {
             }
         };
         let gone = self.heaps_gone_in(&c);
+        let rebuilt = self.rebuilt_in(&c);
         *self = c;
-        self.end_landed(pager, txns, landed, &gone);
+        self.end_landed(pager, txns, landed, (&gone, &rebuilt));
         Ok(dormant)
     }
 
@@ -267,7 +269,7 @@ impl Catalog {
             let mut ctors: BTreeMap<CatCtorId, Vec<Vec<Value>>> = (0..ctor_count(&self.schema, r))
                 .map(|c| (ctor_id(&self.schema, r, c), Vec::new()))
                 .collect();
-            for (c, row) in self.rows(m.pager, m.txns, &m.hold, r)? {
+            for (c, row) in self.rows(&Snapshot::of(m), r)? {
                 ctors
                     .get_mut(&ctor_id(&self.schema, r, c))
                     .expect("a constructor of the relation")
@@ -456,7 +458,7 @@ impl Catalog {
                     })
                     .collect(),
                 None => match relation(&self.schema, rid) {
-                    Some(old) => self.rows(m.pager, m.txns, &m.hold, old)?,
+                    Some(old) => self.rows(&Snapshot::of(m), old)?,
                     None => continue,
                 },
             };
@@ -490,7 +492,7 @@ impl Catalog {
             return Ok(false);
         };
         let c = ctor_index(&self.schema, r, cid).expect("a constructor of the relation");
-        Ok(!visible(m.pager, m.txns, &m.hold, self.heap(r, c))?.is_empty())
+        self.holds_any(&Snapshot::of(m), r, c)
     }
 
     /// Returns the catalog of `b.next` as transaction `m.x` writes it over this one: a heap for
@@ -713,7 +715,7 @@ impl Catalog {
             return Ok([0; 32]);
         }
         let codec = Codec::<MigrationRow>::new(&self.schema);
-        for (c, row) in self.rows(m.pager, m.txns, &m.hold, codec.relation())? {
+        for (c, row) in self.rows(&Snapshot::of(m), codec.relation())? {
             let row = codec.decode(c, &row)?;
             if row.version() == self.source.version {
                 return Ok(*row.hash());

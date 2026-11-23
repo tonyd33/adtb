@@ -1,13 +1,14 @@
 //! The one write transaction of the catalog: its id, its snapshot hold, the structures it makes,
 //! its mark on the catalog root, and its commit or abandon.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::faults;
 use crate::heap::Heap;
 use crate::mvcc::{Begun, Committed, Scope, Transactions};
 use crate::runtime::Runtime;
-use crate::storage::{Lsn, Pager, Pid};
+use crate::storage::{Lsn, Pager, Pid, Quarantine};
 
 use super::root::{self, Changing, Root};
 use super::{Broken, Catalog, Error, Migrating, update_root};
@@ -181,8 +182,8 @@ impl<'a, R: Runtime> Change<'a, R> {
             Mark::Began(began) => Some(began),
             Mark::Joined => None,
         };
-        let freed = catalog.free_leaked(pager, txns, &made);
-        if freed.is_ok_and(|f| f.counted)
+        let freed = catalog.free_leaked(pager, txns, (&made, &BTreeSet::new()));
+        if freed.is_ok_and(|f| f.counted && f.released)
             && let Ok(lsn) = root::end_freed(pager, catalog.root, ended)
         {
             pager.wait_durable(lsn);
@@ -296,16 +297,18 @@ impl Catalog {
     }
 
     /// Free every page a schema change `landed` left unreached, counting the versions of the
-    /// heaps it took out of the catalog, `gone`, off their large values; then end its mark and
-    /// wait until the end is durable. Leave the mark on the root for the next open when the free
-    /// fails or leaves a version not counted off. Returns the LSN the log is durable past.
+    /// heaps it took out of the catalog, `gone.0`, off their large values, and remove the marks of
+    /// the heaps and indexes it dropped and of the indexes it rebuilt, `gone.1`; then end its mark
+    /// and wait until the end is durable. Leave the mark on the root for the next open when the
+    /// free fails or leaves a version not counted off, or a mark stays. Returns the LSN the log is
+    /// durable past.
     #[track_caller]
     pub(super) fn end_landed<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         landed: Landed<'_>,
-        gone: &[Arc<Heap>],
+        gone: (&[Arc<Heap>], &BTreeSet<Quarantine>),
     ) -> Lsn {
         let Landed { committed, mark } = landed;
         let ended = match mark {
@@ -316,7 +319,7 @@ impl Catalog {
         let freed = committed.then(faults::Step::FreeLeaked, || {
             self.free_leaked(pager, txns, gone)
         });
-        if !freed.is_some_and(|f| f.counted) {
+        if !freed.is_some_and(|f| f.counted && f.released) {
             return committed.done();
         }
         let ended = committed.then(faults::Step::EndChange, || {

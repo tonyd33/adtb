@@ -136,6 +136,7 @@ pub fn detail(e: &Error) -> String {
             "another transaction wrote a key of the catalog this one writes".into()
         }
         Error::Spill(e) => format!("the spill file failed: {}", crate::storage::io_text(*e)),
+        Error::Quarantined(what) => format!("{what} is quarantined"),
         Error::FormatTooOld(format) => format!(
             "the file is of catalog format {format}; this engine opens only format {}",
             super::root::FORMAT

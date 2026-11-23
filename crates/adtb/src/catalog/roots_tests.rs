@@ -16,7 +16,7 @@ use super::super::ids::{CatConstraintId, CatFieldId, CatIndexId, CatRelId};
 use super::super::kept::{KeptField, KeptRow};
 use super::super::readers::Kind;
 use super::super::roots;
-use super::super::{Abandoning, Catalog, Error, ROOTS, visible};
+use super::super::{Abandoning, Catalog, Error, ROOTS};
 use super::{RootsRow, Rot};
 
 /// Insert `row`, unadmitted, into the roots heap `roots` as transaction `x`.
@@ -276,12 +276,14 @@ fn a_row_of_every_roots_constructor_reads_back_through_the_roots_heap() {
         let hold = txns
             .take(Scope::Heaps(BTreeSet::from([ROOTS])))
             .expect("a snapshot");
-        read = visible(&pager, &txns, &hold, catalog.roots.heap()).expect("the roots rows");
-    });
-    let read: Vec<RootsRow> = read
-        .iter()
-        .map(|r| RootsRow::decode(r).expect("a roots row reads"))
+        read = (catalog
+            .roots
+            .rows(&pager, &txns, (&hold, None))
+            .expect("the roots rows"))
+        .into_iter()
+        .map(|(_, _, row)| row)
         .collect();
+    });
     let missing: Vec<&RootsRow> = rows.iter().filter(|r| !read.contains(r)).collect();
     assert_eq!(Vec::<&RootsRow>::new(), missing);
 }

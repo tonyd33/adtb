@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::root::{self, Changing, Root};
 use crate::catalog::transaction::Change;
-use crate::catalog::{Catalog, Error, KeptField, KeptRow, applied, declared};
+use crate::catalog::{Catalog, Error, KeptField, KeptRow, Snapshot, applied, declared};
 use crate::key::Value;
 use crate::mvcc::{CommitLog, Scope, Transactions, Xid};
 use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid, Quarantine};
@@ -67,7 +67,9 @@ fn committed(
         .ids()
         .relation_ids()
         .map(|(r, _)| {
-            let rows = catalog.rows(pager, txns, &hold, r).expect("the rows read");
+            let rows = catalog
+                .rows(&Snapshot::new(pager, txns, (&hold, None)), r)
+                .expect("the rows read");
             (r, sorted(&rows))
         })
         .collect();
@@ -83,7 +85,10 @@ fn migration_rows(
 ) -> Vec<(u32, Vec<Value>)> {
     let hold = txns.take(Scope::Every).expect("a snapshot");
     let rows = catalog
-        .rows(pager, txns, &hold, rel(catalog, "catalog", "migrations"))
+        .rows(
+            &Snapshot::new(pager, txns, (&hold, None)),
+            rel(catalog, "catalog", "migrations"),
+        )
         .expect("the rows read");
     drop(hold);
     rows

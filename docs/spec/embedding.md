@@ -124,7 +124,10 @@ performs these steps in order, and returns only when all succeed:
    at its final commit. A refused migration, one whose staged job
    fails, or one that fails a check at its final commit, fails
    open with `MigrationRefused`, leaving the file at the last migration
-   that committed and the log unchanged beyond it. On a database
+   that committed and the log unchanged beyond it. A migration that
+   must read a quarantined constructor relation is refused so, its
+   `reason` the `Fatal { reason: Quarantined {..} }` naming it, as
+   [catalog.md §11.2](catalog.md#112-quarantine) states. On a database
    quarantined whole ([catalog.md §11.2](catalog.md#112-quarantine))
    open applies no migration, and it records no bundle and supersedes
    none. When open reads the file's log, steps 4 and 7 hold as on any

@@ -7,6 +7,7 @@ mod generate;
 mod index_shape;
 mod judge;
 mod ledger;
+mod migrated;
 mod plans;
 mod pool;
 mod reshaped;
@@ -100,7 +101,6 @@ struct Known {
 }
 
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
-const UNDER_RELATION_MARK: &str = "migrate-under-relation-mark";
 const APPLIES_UNDER_MARK: &str = "migrate-applies-under-mark";
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
@@ -117,61 +117,6 @@ const KNOWN: &[Known] = &[
         then: None,
     },
     Known {
-        fault: Fault::Recycled,
-        kind: Kind::VisibilityMap,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Verify,
-        what: "verify reports nothing of a mark",
-        ticket: UNDER_RELATION_MARK,
-        seed: 114,
-        at: 652,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostEarlier,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Verify,
-        what: "verify reports nothing of a mark",
-        ticket: UNDER_RELATION_MARK,
-        seed: 3,
-        at: 650,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostEarlier,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Verify,
-        what: "verify reports nothing of a mark",
-        ticket: UNDER_RELATION_MARK,
-        seed: 3,
-        at: 639,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostEarlier,
-        kind: Kind::VisibilityMap,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Verify,
-        what: "verify reports nothing of a mark",
-        ticket: UNDER_RELATION_MARK,
-        seed: 3,
-        at: 646,
-        then: None,
-    },
-    Known {
-        fault: Fault::Flipped,
-        kind: Kind::VisibilityMap,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Verify,
-        what: "verify reports nothing of a mark",
-        ticket: UNDER_RELATION_MARK,
-        seed: 3,
-        at: 646,
-        then: None,
-    },
-    Known {
         fault: Fault::Flipped,
         kind: Kind::Engine,
         owner: None,
@@ -184,28 +129,6 @@ const KNOWN: &[Known] = &[
     },
     Known {
         fault: Fault::Flipped,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Verify,
-        what: "verify reports nothing of a mark",
-        ticket: UNDER_RELATION_MARK,
-        seed: 3,
-        at: 650,
-        then: None,
-    },
-    Known {
-        fault: Fault::Flipped,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Verify,
-        what: "verify reports nothing of a mark",
-        ticket: UNDER_RELATION_MARK,
-        seed: 3,
-        at: 639,
-        then: None,
-    },
-    Known {
-        fault: Fault::Flipped,
         kind: Kind::CommitLog,
         owner: None,
         consumer: Consumer::Catalog,
@@ -213,39 +136,6 @@ const KNOWN: &[Known] = &[
         ticket: APPLIES_UNDER_MARK,
         seed: 6,
         at: 677,
-        then: None,
-    },
-    Known {
-        fault: Fault::Flipped,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Settle,
-        what: "the open fails",
-        ticket: BLANK_OPEN,
-        seed: 3,
-        at: 647,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostEarlier,
-        kind: Kind::Heap,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Settle,
-        what: "the open fails",
-        ticket: BLANK_OPEN,
-        seed: 6,
-        at: 688,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostEarlier,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Tags),
-        consumer: Consumer::Settle,
-        what: "the open fails",
-        ticket: BLANK_OPEN,
-        seed: 3,
-        at: 647,
         then: None,
     },
     Known {
@@ -1309,13 +1199,13 @@ fn a_pinned_known_failure_still_shows() {
     let pinned = KNOWN
         .iter()
         .find(|k| {
-            k.ticket == BLANK_OPEN
-                && k.fault == Fault::LostEarlier
-                && k.kind == Kind::Heap
-                && k.consumer == Consumer::Settle
-                && (k.seed, k.at) == (6, 688)
+            k.ticket == APPLIES_UNDER_MARK
+                && k.fault == Fault::LostCurrent
+                && k.kind == Kind::Engine
+                && k.consumer == Consumer::Catalog
+                && (k.seed, k.at) == (3, 638)
         })
-        .expect("the failed open's entry is known");
+        .expect("the entry of a migration applied under the mark is known");
     rerun(pinned);
 }
 

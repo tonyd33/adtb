@@ -14,7 +14,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::cause::{Broken, corrupt, internal};
-use super::{Error, Log, OpenError, Opened, RejectReason, registered};
+use super::{Error, FatalReason, Log, OpenError, Opened, RejectReason, registered};
 
 /// An open of `pager` past its migrations, each durable once it committed. A later step of the
 /// open runs through [`Migrated::then`] and fails the open with its own failure, every migration
@@ -81,6 +81,12 @@ pub(super) fn migrate<'p, R: Runtime>(
                 },
             ),
             catalog::Error::Internal(what) => refused(version, internal(Broken::Catalog(*what))),
+            catalog::Error::Quarantined(what) => OpenError::MigrationRefused {
+                version,
+                reason: Error::Fatal {
+                    reason: FatalReason::Quarantined { what },
+                },
+            },
             catalog::Error::MissingFunction(name) => OpenError::HostFnMissing { name },
             catalog::Error::OtherVersion(name) => OpenError::HostFnMismatch { name },
             catalog::Error::Unchecked(built, ds) => refused(

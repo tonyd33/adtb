@@ -2194,6 +2194,22 @@ from i in identities.Google where i.user == u select i.gid   -- runs
 insert identities.Google { user: u, gid: "g-2" }             -- fails
 ```
 
+An open's migration
+([embedding.md §2.1](embedding.md#21-open)) reads what a call that
+reads the same constructor relations would: the rows of each relation
+it rewrites, each constructor relation whose emptiness it checks
+(`disable`, `remove`, `drop relation`), each relation a field of which
+may hold a value of a constructor it disables or removes, and each
+constructor relation read by a constraint it validates. When these
+include a quarantined constructor relation, open fails with
+`MigrationRefused`, its `reason` the `Fatal { reason: Quarantined {..}
+}` naming that relation, and the migration changes nothing. A
+quarantined index refuses no migration. A migration that drops an
+index, drops its relation or rewrites its relation removes the index's
+quarantine with it: when open returns, no index it dropped or built
+again is quarantined. A quarantined constructor relation stays
+quarantined through every migration that applies.
+
 A quarantined index is restored by `reindex` (§11.4). A quarantined
 constructor relation is restored by restoring a backup to a new file
 and swapping that file in with the database closed
