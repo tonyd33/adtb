@@ -61,7 +61,7 @@ impl Catalog {
         let catalog = self.plan();
         let bindings = self.bindings();
         let store = Arc::new(Store::migrating(
-            m.txns.reader(pager, m.hold, Some(x)),
+            m.txns.reader(pager, &m.hold, Some(x)),
             bindings,
         ));
         let budget = Budget::new(self.query_memory);

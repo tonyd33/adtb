@@ -310,7 +310,7 @@ impl Catalog {
             pager,
             txns,
             x,
-            hold: &hold,
+            hold,
             made: Default::default(),
             top: Default::default(),
         };
@@ -326,7 +326,7 @@ impl Catalog {
             .collect();
         let wrote = rewrite(&m, &self.roots, &self.readers.pending, &pending)
             .and_then(|()| delete_rows(&m, &self.roots, &roots));
-        drop(hold);
+        drop(m);
         if let Err(e) = wrote {
             txns.abandon_failed(pager, begun)?;
             if let Some(marked) = marked {

@@ -159,7 +159,7 @@ impl Catalog {
         grants: &[LogGrant],
         revoked: &BTreeSet<String>,
     ) -> Result<(), Error> {
-        let stored = self.stored_grants(m.pager, m.txns, m.hold)?;
+        let stored = self.stored_grants(m.pager, m.txns, &m.hold)?;
         let rows: Vec<GrantRow<'_>> = stored.iter().map(|s| s.grant.row()).collect();
         let mut why = Vec::new();
         for (s, lost) in stored.iter().zip(&rows) {
@@ -307,13 +307,13 @@ impl Catalog {
             pager,
             txns,
             x,
-            hold: &hold,
+            hold,
             made: Default::default(),
             top: Default::default(),
         };
         let mut grants = self.source.grants.clone();
         let done = self.write_grants(&m, self, &mut grants, &BTreeSet::new(), Grantees::Dormant);
-        drop(hold);
+        drop(m);
         match done {
             Ok(dormant) => {
                 txns.commit(pager, begun)?.done();
@@ -347,7 +347,7 @@ impl Catalog {
     ) -> Result<Vec<Dormant>, Error> {
         let schema = &into.schema;
         let shape = Shape::of(schema);
-        let stored = self.stored_grants(m.pager, m.txns, m.hold)?;
+        let stored = self.stored_grants(m.pager, m.txns, &m.hold)?;
         let old: BTreeMap<i64, &Stored> = stored
             .iter()
             .filter(|s| s.log())
@@ -361,7 +361,10 @@ impl Catalog {
                     .is_some_and(|id| old.contains_key(&id) && kept.insert(id))
             })
             .collect();
-        let roles: BTreeSet<String> = self.roles(m.pager, m.txns, m.hold)?.into_values().collect();
+        let roles: BTreeSet<String> = self
+            .roles(m.pager, m.txns, &m.hold)?
+            .into_values()
+            .collect();
         let mut dormant = Vec::new();
         match mode {
             Grantees::Refuse => {

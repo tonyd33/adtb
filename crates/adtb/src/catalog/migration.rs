@@ -167,7 +167,7 @@ impl Catalog {
             pager,
             txns,
             x,
-            hold: &hold,
+            hold,
             made: Default::default(),
             top: Default::default(),
         };
@@ -180,7 +180,7 @@ impl Catalog {
         let built = self.mapped(&m, (&file, text, &stepped), prepared, &rewritten, readers);
         let made = m.made.take();
         let top = m.top.get();
-        drop(hold);
+        drop(m);
         let built = built.and_then(|(c, written)| {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
             Ok((c, written))
@@ -277,7 +277,7 @@ impl Catalog {
             let mut ctors: BTreeMap<CatCtorId, Vec<Vec<Value>>> = (0..ctor_count(&self.schema, r))
                 .map(|c| (ctor_id(&self.schema, r, c), Vec::new()))
                 .collect();
-            for (c, row) in self.rows(m.pager, m.txns, m.hold, r)? {
+            for (c, row) in self.rows(m.pager, m.txns, &m.hold, r)? {
                 ctors
                     .get_mut(&ctor_id(&self.schema, r, c))
                     .expect("a constructor of the relation")
@@ -466,7 +466,7 @@ impl Catalog {
                     })
                     .collect(),
                 None => match relation(&self.schema, rid) {
-                    Some(old) => self.rows(m.pager, m.txns, m.hold, old)?,
+                    Some(old) => self.rows(m.pager, m.txns, &m.hold, old)?,
                     None => continue,
                 },
             };
@@ -500,7 +500,7 @@ impl Catalog {
             return Ok(false);
         };
         let c = ctor_index(&self.schema, r, cid).expect("a constructor of the relation");
-        Ok(!visible(m.pager, m.txns, m.hold, self.heap(r, c))?.is_empty())
+        Ok(!visible(m.pager, m.txns, &m.hold, self.heap(r, c))?.is_empty())
     }
 
     /// Returns the catalog of `b.next` as transaction `m.x` writes it over this one: a heap for
@@ -726,7 +726,7 @@ impl Catalog {
             return Ok([0; 32]);
         }
         let codec = Codec::<MigrationRow>::new(&self.schema);
-        for (c, row) in self.rows(m.pager, m.txns, m.hold, codec.relation())? {
+        for (c, row) in self.rows(m.pager, m.txns, &m.hold, codec.relation())? {
             let row = codec.decode(c, &row)?;
             if row.version() == self.source.version {
                 return Ok(*row.hash());

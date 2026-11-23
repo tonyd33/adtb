@@ -81,7 +81,7 @@ impl Catalog {
             pager,
             txns,
             x,
-            hold: &hold,
+            hold,
             made: Default::default(),
             top: Default::default(),
         };
@@ -100,7 +100,7 @@ impl Catalog {
                     .try_for_each(|(c, row)| self.insert(&m, w.relation, *c, row))
             })
             .and_then(|()| self.write_facts(pager, txns, x, facts));
-        drop(hold);
+        drop(m);
         match done {
             Ok(()) => {
                 let committed = txns.commit(pager, begun)?;

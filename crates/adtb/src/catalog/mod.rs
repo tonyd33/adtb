@@ -32,6 +32,7 @@ mod rot;
 mod rows;
 mod steps;
 mod structures;
+mod transaction;
 mod validate;
 pub mod values;
 
@@ -118,6 +119,7 @@ use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, s
 use readers::{Pending, Readers};
 use root::Root;
 use roots::RootsRow;
+use transaction::Change;
 
 /// The name of the schema owner's role, the grantor of every log grant.
 pub use adtb_lang::evolve::OWNER_ROLE;
@@ -636,27 +638,17 @@ impl Catalog {
             held: BTreeSet::new(),
             objects: Arc::default(),
         };
-        let begun = txns.begin(pager)?;
-        let x = begun.xid();
         let every = empty
             .schema
             .ids()
             .relation_ids()
             .map(|(_, id)| id)
             .collect();
-        let hold = txns.take(Scope::Every)?;
-        let m = Migrating {
-            pager,
-            txns,
-            x,
-            hold: &hold,
-            made: Default::default(),
-            top: Default::default(),
-        };
+        let change = Change::begin(pager, txns, Scope::Every)?;
         let built = Indexing::new(&empty, &next, None).and_then(|indexing| {
             let data = admit::admit(pager, &next.schema, &every, &indexing, Data::new())?;
             empty.build(
-                &m,
+                change.writes(),
                 &Built {
                     next: &next,
                     indexing: &indexing,
@@ -667,23 +659,20 @@ impl Catalog {
                 },
             )
         });
-        drop(hold);
         let catalog = match built {
             Ok(catalog) => catalog,
-            Err(e) => {
-                txns.abandon_failed(pager, begun)?;
-                return Err(e);
-            }
+            Err(e) => return Err(change.abandon(e)),
         };
-        txns.commit_changing(pager, begun, pid, |p| {
-            let mut root = Root::read(p);
-            root.large = (large.id(), large.root());
-            root.roots = named;
-            root.next_heap = catalog.next_heap;
-            catalog.kept.name(&mut root);
-            root.write(p);
-        })?
-        .done();
+        change
+            .commit_changing(pid, |p| {
+                let mut root = Root::read(p);
+                root.large = (large.id(), large.root());
+                root.roots = named;
+                root.next_heap = catalog.next_heap;
+                catalog.kept.name(&mut root);
+                root.write(p);
+            })?
+            .done();
         Ok(catalog)
     }
 
@@ -1330,7 +1319,7 @@ struct Migrating<'a, R: Runtime> {
     pager: &'a Pager<R>,
     txns: &'a Transactions<R>,
     x: Xid,
-    hold: &'a Hold,
+    hold: Hold,
     /// Every heap the transaction created.
     made: RefCell<Vec<Arc<Heap>>>,
     /// One past the highest heap id the transaction's structures took.
@@ -1465,7 +1454,7 @@ fn delete_keyed<R: Runtime>(
     if keys.is_empty() {
         return Ok(());
     }
-    let reader = m.txns.reader(pager, m.hold, None);
+    let reader = m.txns.reader(pager, &m.hold, None);
     'scan: loop {
         let mut versions = Vec::new();
         heap.scan(pager, |v| versions.push(v))?;

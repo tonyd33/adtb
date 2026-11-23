@@ -221,7 +221,7 @@ fn restate(
         pager,
         txns,
         x: begun.xid(),
-        hold: &hold,
+        hold,
         made: Default::default(),
         top: Default::default(),
     };
@@ -229,7 +229,7 @@ fn restate(
     let mut older = row;
     older[index_field(catalog, "clause")] = Value::Text(clause.into());
     catalog.insert(&m, indexes, c, &older).expect("inserted");
-    drop(hold);
+    drop(m);
     txns.commit(pager, begun).expect("committed").done();
 }
 

@@ -302,6 +302,51 @@ fn migrated(fail: Option<(Site, usize)>) -> Ran {
     }
 }
 
+/// Create the file at [`NOTES`], failing `fail`. Fail unless an open the failure quarantined
+/// answers the next open quarantined too. A create that leaves no file made nothing durable.
+fn created(fail: Option<(Site, usize)>) -> Ran {
+    let what = format!("create {fail:?}");
+    let mut sim = Sim::new(SEED, Config::default());
+    let (runs, failed, answered) = run(&mut sim, |rt| {
+        arm(fail);
+        let (failed, answered) = told_at(&rt, &[NOTES]);
+        (armed::reached(), failed, answered)
+    });
+    if !sim.files().contains_key(FILE) {
+        return Ran {
+            runs,
+            failed,
+            answered,
+            durable: Some(false),
+            found: Findings {
+                overcounted: 0,
+                unsettled: 0,
+            },
+            unmended: (0, false),
+        };
+    }
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let durable = run(&mut sim, |rt| version(&rt) == 1);
+    let found = if answered.is_some() {
+        let again = run(&mut sim, |rt| told_at(&rt, &[NOTES]));
+        assert_eq!((None, Some(quarantined())), again, "{what}");
+        Findings {
+            overcounted: 0,
+            unsettled: 0,
+        }
+    } else {
+        run(&mut sim, |rt| findings(&rt, &what))
+    };
+    Ran {
+        runs,
+        failed,
+        answered,
+        durable: Some(durable),
+        found,
+        unmended,
+    }
+}
+
 /// Settle at open the pending drop of a unique whose holder no open registers, failing `fail`.
 fn settled(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("pending drop {fail:?}");
@@ -571,6 +616,12 @@ struct Case {
 
 const CASES: &[Case] = &[
     Case {
+        name: "create",
+        run: created,
+        refused: None,
+        failed: "page 0 is unreadable",
+    },
+    Case {
         name: "migration",
         run: migrated,
         refused: None,
@@ -734,6 +785,10 @@ fn a_change_tells_its_caller_success_exactly_when_it_is_durable_whatever_step_fa
     );
     let steps: BTreeSet<Step> = reached.iter().map(|r| r.1).collect();
     assert_eq!(BTreeSet::from(Step::EVERY), steps);
+    assert!(
+        reached.contains(&("create", Step::Write)),
+        "create writes no page"
+    );
     for name in ["migration", "aborted migration", "mend at open"] {
         assert!(
             reached.contains(&(name, Step::ReadLeaked)),
