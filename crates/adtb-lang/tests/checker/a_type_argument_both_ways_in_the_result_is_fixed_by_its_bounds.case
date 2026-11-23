@@ -1,0 +1,18 @@
+=== 001 schema
+--- text
+fn idk [a] (x: a) -> a -> a = fn (y: a) -> y
+         fn wants (f: Key identities.Google -> Key identities) -> I64 = 1
+         fn g (k: Key identities.Google) -> I64 = wants(idk(k))
+--- expect
+refuse
+--- errors
+the type argument `a` of `idk` is not fixed by its arguments
+--- phase
+check
+=== 002 schema
+--- text
+fn idk [a] (x: a) -> a -> a = fn (y: a) -> y
+         fn wants (f: Key identities -> Key identities) -> I64 = 1
+         fn g (k: Key identities.Google) -> I64 = wants(idk(k))
+--- expect
+accept

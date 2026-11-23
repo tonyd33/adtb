@@ -55,6 +55,24 @@ impl Sums {
     }
 }
 
+/// Returns whether `a` and `b` are equal but for the constructors of the forms of the sums
+/// still being inferred they hold, each pair of one class.
+pub(super) fn forms_of_one_class(a: &Ty, b: &Ty) -> bool {
+    fn erased(ty: &Ty) -> Ty {
+        map_sums(ty, &mut |ctors, sel| match ctors.class() {
+            Some(c) => Ty::Sum {
+                ctors: Ctors::open([], Some(c)),
+                sel: None,
+            },
+            None => Ty::Sum {
+                ctors: ctors.map(erased),
+                sel: sel.clone(),
+            },
+        })
+    }
+    mentions_open(a) && erased(a) == erased(b)
+}
+
 /// Returns `ty` with each anonymous sum replaced by `sum` of its constructors and selection.
 fn map_sums(ty: &Ty, sum: &mut impl FnMut(&Ctors, &Option<CtorSet>) -> Ty) -> Ty {
     let mut go = |t: &Ty| map_sums(t, sum);
@@ -221,6 +239,62 @@ impl Checker<'_> {
                 }
                 Some(Ty::Record(Fields::new(fields)))
             }
+            (
+                Ty::Data {
+                    def: d1,
+                    args: a1,
+                    ctors: c1,
+                },
+                Ty::Data {
+                    def: d2,
+                    args: a2,
+                    ctors: c2,
+                },
+            ) if d1 == d2 => {
+                let mut args = Vec::new();
+                for (i, (x, y)) in a1.iter().zip(a2).enumerate() {
+                    if !ty::occurs_in_field(self.schema, *d1, i as u32) {
+                        args.push(x.clone());
+                        continue;
+                    }
+                    match self.joined(x, y, span)? {
+                        Some(t) => args.push(t),
+                        None => return Ok(None),
+                    }
+                }
+                let ctors = match (c1, c2) {
+                    (Some(x), Some(y)) => {
+                        let mut u: CtorSet = x.iter().chain(y).copied().collect();
+                        u.sort_unstable();
+                        u.dedup();
+                        self.schema.normalize_ctors(*d1, u)
+                    }
+                    _ => None,
+                };
+                Some(Ty::Data {
+                    def: *d1,
+                    args,
+                    ctors,
+                })
+            }
+            (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => {
+                match (
+                    self.same_or_united(p1, p2, span)?,
+                    self.joined(r1, r2, span)?,
+                ) {
+                    (Some(p), Some(r)) => Some(Ty::Fn(Box::new(p), Box::new(r))),
+                    _ => return Ok(None),
+                }
+            }
+            (Ty::Group(k1, v1), Ty::Group(k2, v2)) => {
+                match (self.joined(k1, k2, span)?, self.joined(v1, v2, span)?) {
+                    (Some(k), Some(v)) => Some(Ty::Group(Box::new(k), Box::new(v))),
+                    _ => return Ok(None),
+                }
+            }
+            (Ty::Tag(x), Ty::Tag(y)) => self
+                .same_or_united(x, y, span)?
+                .map(|t| Ty::Tag(Box::new(t))),
             _ => join(self.schema, &a, &b),
         };
         Ok(joined.map(|t| self.current(&t)))

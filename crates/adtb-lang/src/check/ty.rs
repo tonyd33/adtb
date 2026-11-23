@@ -207,7 +207,7 @@ pub fn admits_late_key(schema: &Schema, a: &Ty, b: &Ty) -> bool {
     }
 }
 
-/// The least upper bound of `a` and `b`, where one exists.
+/// Returns the least upper bound of `a` and `b`, where one exists.
 pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
     if subtype(schema, a, b) {
         return Some(b.clone());
@@ -293,8 +293,21 @@ fn both_forms(a: &Ctors, b: &Ctors) -> Ctors {
     Ctors::open(a.iter().chain(lacking).cloned(), a.class())
 }
 
-/// The greatest lower bound of `a` and `b`, where one exists.
+/// Returns the greatest lower bound of `a` and `b`, where one exists. Returns `None` when
+/// either holds a key of a selection not yet resolved.
 pub fn meet(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
+    let late = |t: &Ty| {
+        matches!(
+            t,
+            Ty::Key {
+                ctors: KeyCtors::Late(_),
+                ..
+            }
+        )
+    };
+    if a.mentions(&late) || b.mentions(&late) {
+        return None;
+    }
     if subtype(schema, a, b) {
         return Some(a.clone());
     }
@@ -340,12 +353,13 @@ pub fn meet(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
         ) if r1 == r2 => {
             let def = schema.relation(*r1).elem_def;
             let row = |c: &KeyCtors| match c {
-                KeyCtors::Only(cs) => Some(cs.clone()),
-                KeyCtors::All | KeyCtors::Late(_) => None,
+                KeyCtors::Only(cs) => Some(Some(cs.clone())),
+                KeyCtors::All => Some(None),
+                KeyCtors::Late(_) => None,
             };
             Some(Ty::Key {
                 rel: RelRef::Declared(*r1),
-                ctors: KeyCtors::of_row(intersection(schema, def, &row(c1), &row(c2))?),
+                ctors: KeyCtors::of_row(intersection(schema, def, &row(c1)?, &row(c2)?)?),
             })
         }
         (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => Some(Ty::Fn(

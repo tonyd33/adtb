@@ -766,16 +766,22 @@ impl Ty {
     }
 
     pub fn mentions_fn(&self) -> bool {
-        match self {
-            Ty::Fn(..) => true,
-            Ty::Base(_) | Ty::Param(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => false,
-            Ty::Data { args, .. } => args.iter().any(Ty::mentions_fn),
-            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => t.mentions_fn(),
-            Ty::Group(k, t) => k.mentions_fn() || t.mentions_fn(),
-            Ty::Record(fs) => fs.iter().any(|(_, t)| t.mentions_fn()),
-            Ty::Sum { ctors, .. } => ctors
-                .iter()
-                .any(|(_, fs)| fs.iter().any(|(_, t)| t.mentions_fn())),
-        }
+        self.mentions(&|t| matches!(t, Ty::Fn(..)))
+    }
+
+    /// Returns whether `part` holds of this type or of a type it holds.
+    pub fn mentions(&self, part: &impl Fn(&Ty) -> bool) -> bool {
+        part(self)
+            || match self {
+                Ty::Base(_) | Ty::Param(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => false,
+                Ty::Data { args, .. } => args.iter().any(|t| t.mentions(part)),
+                Ty::Fn(p, r) => p.mentions(part) || r.mentions(part),
+                Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => t.mentions(part),
+                Ty::Group(k, t) => k.mentions(part) || t.mentions(part),
+                Ty::Record(fs) => fs.iter().any(|(_, t)| t.mentions(part)),
+                Ty::Sum { ctors, .. } => ctors
+                    .iter()
+                    .any(|(_, fs)| fs.iter().any(|(_, t)| t.mentions(part))),
+            }
     }
 }

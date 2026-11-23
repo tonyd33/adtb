@@ -1,6 +1,10 @@
 use super::*;
+use crate::check::prim_ty::comparable;
 use crate::check::ty::{join, meet, subtype};
-use crate::types::{Base, Ctors, Fields, KeyCtors, RelRef};
+use crate::types::{Base, Ctors, Fields, KeyCtors, RelRef, SumClass};
+
+/// A declared type whose parameter occurs in no field.
+pub(super) const PHANTOM: &str = "type Phantom a = Ph\n";
 
 fn type_id(s: &Schema, name: &str) -> TypeId {
     TypeId(
@@ -11,8 +15,9 @@ fn type_id(s: &Schema, name: &str) -> TypeId {
     )
 }
 
-/// Returns the drawn types: scalars, keys and declared sums by constructor set, then sets,
-/// functions, records and anonymous sums over them, each record and sum written in both orders.
+/// Returns the drawn types: scalars, keys and declared sums by constructor set, then `Option` of
+/// each and `Phantom` of two, then sets, functions, records and anonymous sums over them, each
+/// record and sum written in both orders.
 pub(super) fn universe(s: &Schema) -> Vec<Ty> {
     let identities = RelRef::Declared(rel_id(s, "identities"));
     let key = |ctors| Ty::Key {
@@ -36,6 +41,18 @@ pub(super) fn universe(s: &Schema) -> Vec<Ty> {
         data(Some(vec![0])),
         data(Some(vec![1, 2])),
     ];
+    let option = s.prelude().option();
+    let phantom = type_id(s, "Phantom");
+    let generic = |def, arg: &Ty| Ty::Data {
+        def,
+        args: vec![arg.clone()],
+        ctors: None,
+    };
+    let mut leaves = leaves;
+    let declared: Vec<Ty> = leaves.iter().map(|t| generic(option, t)).collect();
+    leaves.extend(declared);
+    leaves.push(generic(phantom, &Ty::Base(Base::I64)));
+    leaves.push(generic(phantom, &Ty::Base(Base::Text)));
     let field = |n: &str, t: &Ty| (n.to_string(), t.clone());
     let mut out = leaves.clone();
     for t in &leaves {
@@ -74,8 +91,25 @@ fn selected(sel: &Option<CtorSet>, all: usize) -> Vec<u32> {
     sel.clone().unwrap_or_else(|| (0..all as u32).collect())
 }
 
-/// Returns whether the subtyping table admits `a <: b` for the drawn types, which hold no type
-/// parameter of variance other than covariant.
+/// Returns whether each argument of declared type `def` occurs in a field: `Option`'s does and
+/// `Phantom`'s does not.
+fn in_field(s: &Schema, def: TypeId) -> bool {
+    match s.ty(def).name.as_str() {
+        "Option" => true,
+        "Phantom" => false,
+        other => panic!("`{other}` takes no drawn argument"),
+    }
+}
+
+/// Returns whether `x` and `y` name the same fields at types each below the other.
+fn same_fields(s: &Schema, x: &Fields, y: &Fields) -> bool {
+    x.len() == y.len()
+        && x.iter()
+            .zip(y.iter())
+            .all(|((n, t), (m, u))| n == m && table(s, t, u) && table(s, u, t))
+}
+
+/// Returns whether the subtyping table admits `a <: b` for the drawn types.
 pub(super) fn table(s: &Schema, a: &Ty, b: &Ty) -> bool {
     match (a, b) {
         (
@@ -92,7 +126,10 @@ pub(super) fn table(s: &Schema, a: &Ty, b: &Ty) -> bool {
         ) => {
             let all = s.ty(*d1).ctors().len();
             d1 == d2
-                && a1 == a2
+                && a1
+                    .iter()
+                    .zip(a2)
+                    .all(|(x, y)| !in_field(s, *d1) || table(s, x, y))
                 && selected(c1, all)
                     .iter()
                     .all(|c| selected(c2, all).contains(c))
@@ -112,6 +149,7 @@ pub(super) fn table(s: &Schema, a: &Ty, b: &Ty) -> bool {
                     .all(|c| selected(&only(k2), all).contains(c))
         }
         (Ty::Set(x), Ty::Set(y)) => table(s, x, y),
+        (Ty::Record(x), Ty::Record(y)) => same_fields(s, x, y),
         (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => table(s, p2, p1) && table(s, r1, r2),
         (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 }) => {
             let names = |c: &Ctors, sel: &Option<CtorSet>| -> Vec<String> {
@@ -120,7 +158,11 @@ pub(super) fn table(s: &Schema, a: &Ty, b: &Ty) -> bool {
                     .map(|&i| c[i as usize].0.clone())
                     .collect()
             };
-            x == y && names(x, s1).iter().all(|n| names(y, s2).contains(n))
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|((c, f), (d, g))| c == d && same_fields(s, f, g))
+                && names(x, s1).iter().all(|n| names(y, s2).contains(n))
         }
         _ => a == b,
     }
@@ -128,7 +170,7 @@ pub(super) fn table(s: &Schema, a: &Ty, b: &Ty) -> bool {
 
 #[test]
 fn subtype_is_the_subtyping_table_and_join_and_meet_are_its_bounds() {
-    let s = schema("").expect("the running schema builds");
+    let s = schema(PHANTOM).expect("the running schema builds");
     let tys = universe(&s);
     let n = tys.len();
     let sub: Vec<Vec<bool>> = tys
@@ -208,5 +250,51 @@ fn subtype_is_the_subtyping_table_and_join_and_meet_are_its_bounds() {
     assert!(
         joined > n && met > n,
         "only {joined} pairs join and {met} meet"
+    );
+}
+
+#[test]
+fn a_key_of_a_selection_not_yet_resolved_has_no_meet() {
+    let s = schema("").expect("the running schema builds");
+    let key = |ctors| Ty::Key {
+        rel: RelRef::Declared(rel_id(&s, "identities")),
+        ctors,
+    };
+    let late = key(KeyCtors::Late("Google".to_string()));
+    assert_eq!(meet(&s, &late, &key(KeyCtors::All)), None);
+    assert_eq!(meet(&s, &key(KeyCtors::All), &late), None);
+    assert_eq!(
+        meet(
+            &s,
+            &Ty::Set(Box::new(key(KeyCtors::All))),
+            &Ty::Set(Box::new(late))
+        ),
+        None
+    );
+}
+
+#[test]
+fn sums_still_being_inferred_compare_only_within_one_class() {
+    let s = schema("").expect("the running schema builds");
+    let sum = |name: &str, class| Ty::Sum {
+        ctors: Ctors::open(
+            [(name.to_string(), Fields::new([]))],
+            Some(SumClass::new(class)),
+        ),
+        sel: None,
+    };
+    assert_eq!(comparable(&s, &sum("Xa", 0), &sum("Yb", 1)), None);
+    assert_eq!(
+        comparable(&s, &sum("Xa", 0), &sum("Yb", 0)),
+        Some(Ty::Sum {
+            ctors: Ctors::open(
+                [
+                    ("Xa".to_string(), Fields::new([])),
+                    ("Yb".to_string(), Fields::new([])),
+                ],
+                Some(SumClass::new(0)),
+            ),
+            sel: None,
+        })
     );
 }

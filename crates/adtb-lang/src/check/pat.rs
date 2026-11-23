@@ -972,7 +972,7 @@ impl Checker<'_> {
         }
     }
 
-    fn ctor_synthesizes(&self, e: &Expr) -> bool {
+    pub(super) fn ctor_synthesizes(&self, e: &Expr) -> bool {
         let ExprKind::Ctor { path, ctor, record } = &e.kind else {
             return false;
         };

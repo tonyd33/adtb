@@ -1,6 +1,6 @@
 use super::expr::wants_expected;
 use super::*;
-use crate::ast::{CallArgs, Expr};
+use crate::ast::{CallArgs, Expr, ExprKind};
 use crate::kernel::{Agg, Prim};
 use crate::resolve::Unbound;
 
@@ -27,16 +27,26 @@ impl Checker<'_> {
     ) -> R<(Vec<Tm>, Vec<Option<Ty>>)> {
         let n = callee.1.len();
         let mut bounds: Vec<Bounds> = vec![Bounds::default(); n];
+        let mut literals: Vec<Bounds> = vec![Bounds::default(); n];
         let mut outs: Vec<Option<Out>> = vec![None; es.len()];
         if n > 0 {
             for (i, (e, pty)) in es.iter().zip(params).enumerate() {
-                if !wants_expected(e) && mentions_any_param(pty, n) {
+                if !mentions_any_param(pty, n) || matches!(e.kind, ExprKind::Lambda(..)) {
+                    continue;
+                }
+                if !wants_expected(e) {
                     let o = self.synth(e)?;
                     bound(self.schema, pty, &o.ty, Side::Lower, false, &mut bounds);
                     outs[i] = Some(o);
+                } else if self.synthesizes(e) {
+                    let o = self.synth(e)?;
+                    bound(self.schema, pty, &o.ty, Side::Lower, true, &mut literals);
+                    outs[i] = Some(o);
                 }
             }
-            let unbounded: Vec<bool> = bounds.iter().map(Bounds::is_empty).collect();
+            let unbounded: Vec<bool> = (0..n)
+                .map(|j| bounds[j].is_empty() && literals[j].is_empty())
+                .collect();
             for (i, (e, pty)) in es.iter().zip(params).enumerate() {
                 let open = (0..n).any(|j| unbounded[j] && mentions(pty, j as u32));
                 if outs[i].is_none() && open {
@@ -73,6 +83,12 @@ impl Checker<'_> {
                     })?,
                 });
             }
+            for t in &literals[j].lower {
+                lower = match lower {
+                    None => Some(t.clone()),
+                    Some(l) => Some(self.join(&l, t, span)?.unwrap_or(l)),
+                };
+            }
             let mut upper: Option<Ty> = None;
             for t in &b.upper {
                 let t = self.current(t);
@@ -96,7 +112,26 @@ impl Checker<'_> {
                     self.show(u)
                 )));
             }
-            let contra = result.and_then(|(res, _)| variance(self.schema, res, j as u32))
+            let variance = result.and_then(|(res, _)| variance(self.schema, res, j as u32));
+            if let (
+                Some(Variance {
+                    co: true,
+                    contra: true,
+                }),
+                Some(l),
+                Some(u),
+            ) = (variance, &lower, &upper)
+                && !self.subtype(u, l)
+            {
+                return Err(diag(
+                    span,
+                    format!(
+                        "the type argument `{name}` of `{}` is not fixed by its arguments",
+                        callee.0
+                    ),
+                ));
+            }
+            let contra = variance
                 == Some(Variance {
                     co: false,
                     contra: true,
@@ -120,6 +155,22 @@ impl Checker<'_> {
             tms.push(o.tm);
         }
         Ok((tms, sol))
+    }
+
+    /// Returns whether literal `e` and each literal it holds has a type without an expected one.
+    fn synthesizes(&self, e: &Expr) -> bool {
+        let fields = |r: Option<&ast::RecordExpr>| match r {
+            Some(ast::RecordExpr::Fields(fs, _)) => fs.iter().all(|(_, f)| self.synthesizes(f)),
+            _ => true,
+        };
+        match &e.kind {
+            ExprKind::Set(es) => !es.is_empty() && es.iter().all(|x| self.synthesizes(x)),
+            ExprKind::Binary(ast::BinOp::Union, _, _) => !expr::empty_union(e),
+            ExprKind::Ctor { record, .. } => self.ctor_synthesizes(e) && fields(record.as_ref()),
+            ExprKind::Record(r) => fields(Some(r)),
+            ExprKind::Lambda(..) => false,
+            _ => true,
+        }
     }
 
     pub(super) fn lambda(
@@ -482,7 +533,7 @@ impl Side {
 }
 
 /// Add to `bounds` what matching `actual` on `side` of `pattern` gives each type parameter.
-/// `literal` takes the fields of records and sums as covariant, as a literal checks them.
+/// `literal` takes the fields of records and sums as covariant.
 fn bound(
     schema: &Schema,
     pattern: &Ty,

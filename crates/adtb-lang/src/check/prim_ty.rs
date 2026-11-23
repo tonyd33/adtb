@@ -1,4 +1,4 @@
-use super::sums::mentions_open;
+use super::sums::forms_of_one_class;
 use super::ty::{join, subtype};
 use crate::kernel::{Const, Kind, Prim, Terms, Tm};
 use crate::schema::prelude::ctor;
@@ -676,10 +676,10 @@ fn expect(holds: bool, what: impl FnOnce() -> String) -> Result<(), String> {
     if holds { Ok(()) } else { Err(what()) }
 }
 
-/// Returns the join of `a` and `b`, or `a` when both hold sums still being inferred, which the
-/// types of the closed terms judge again.
-fn comparable(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
-    join(schema, a, b).or_else(|| (mentions_open(a) && mentions_open(b)).then(|| a.clone()))
+/// Returns the join of `a` and `b`, or `a` when the two are forms of the same sums still being
+/// inferred.
+pub(super) fn comparable(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
+    join(schema, a, b).or_else(|| forms_of_one_class(a, b).then(|| a.clone()))
 }
 
 fn show_all(schema: &Schema, tys: &[&Ty]) -> String {

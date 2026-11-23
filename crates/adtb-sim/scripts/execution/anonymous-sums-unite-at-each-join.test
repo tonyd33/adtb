@@ -48,6 +48,17 @@ query
 ----
   A { x: Q { m: 2 } }
 
+query
+  from v in [A { x: P { n: 1 } }] select two(v, A { x: Q { m: 2 } })
+----
+  A { x: Q { m: 2 } }
+
+query rowsort
+  [Some { value: A { x: P { n: 1 } } }, Some { value: A { x: Q { m: 2 } } }]
+----
+  Some { value: A { x: P { n: 1 } } }
+  Some { value: A { x: Q { m: 2 } } }
+
 query rowsort
   fix s = [A { x: P { n: 1 } }] union (from a in s select A { x: Q { m: 2 } }) in s
 ----
