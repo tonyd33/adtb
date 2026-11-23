@@ -48,8 +48,8 @@ type Badge = { id: I64, name: Text }
 relation ts : T
   key id generate sequence
   unique (x) in A
-  unique (z) in A
-  unique (n) in B
+  unique (x) in B
+  unique (n) in (A | B)
   index (n) in (A | B)
   index (z) in S
   default A.x = \"a\"
@@ -172,19 +172,10 @@ add relation ws : W
                 .after(&format!("drop default ts.A.x\n{CHECK_A}"))
                 .labelled("check on ts.A"),
             Case::new(&merge).after("drop default ts.A.x"),
-            Case::new(&merge).labelled("default A.x kept"),
             Case::new(&merge)
                 .after(&format!("drop default ts.A.x\n{CHECK_A}"))
                 .labelled("check on ts.A"),
             Case::new(&nest).after("drop index (z) in ts.S\ndrop default ts.A.x"),
-            Case::new(&nest)
-                .after("drop index (z) in ts.S")
-                .labelled("default A.x kept"),
-            Case::new(&nest)
-                .after(&format!(
-                    "drop index (z) in ts.S\ndrop default ts.A.x\n{CHECK_A}"
-                ))
-                .labelled("check on ts.A"),
             Case::new("unnest constructor T.N\n  arm f: A a -> a.x\n  arm f: B b -> b.x").after(
                 &format!(
                     "drop index (z) in ts.S\ndrop default ts.A.x\n{NEST}{}",
@@ -1513,60 +1504,8 @@ struct Known {
     differences: &'static [(&'static str, &'static [u64])],
 }
 
-/// The bits of every shape.
-const ALL: &[u64] = &[0, 1, 2, 3, 4, 5, 6, 7];
-
-/// The bits of every shape that grants `update` on `ts` to `support`.
-const GRANTED: &[u64] = &[2, 3, 6, 7];
-
 /// The disagreements main shows.
-const KNOWN: &[Known] = &[
-    // The operator refuses a default or check naming a constructor it replaces.
-    Known {
-        kind: "Merge",
-        case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q } [default A.x kept]",
-        differences: &[
-            ("Unapplied: `A` is not a constructor of `T`", ALL),
-            (
-                "Unapplied: the merge of `A`, `B` into `M` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.M` to `support` in the same migration",
-                GRANTED,
-            ),
-        ],
-    },
-    // The operator refuses a default or check naming a constructor it replaces.
-    Known {
-        kind: "Nest",
-        case: "nest constructor T.(A | B) into N { inner: Inner } [check on ts.A]",
-        differences: &[
-            (
-                "Unapplied: `N` is neither a constructor of `T` nor a named set of `ts`",
-                GRANTED,
-            ),
-            (
-                "Unapplied: the nest is refused: `ts.A` names some but not all of its constructors",
-                ALL,
-            ),
-        ],
-    },
-    // The operator refuses a default or check naming a constructor it replaces.
-    Known {
-        kind: "Nest",
-        case: "nest constructor T.(A | B) into N { inner: Inner } [default A.x kept]",
-        differences: &[
-            ("Unapplied: `A` is not a constructor of `T`", ALL),
-            (
-                "Unapplied: the nest of `A`, `B` into `N` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.N` to `support` in the same migration",
-                GRANTED,
-            ),
-        ],
-    },
-    // The operator refuses a default or check naming a constructor it replaces.
-    Known {
-        kind: "Split",
-        case: "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text } [default A.x kept]",
-        differences: &[("Unapplied: `A` is not a constructor of `T`", ALL)],
-    },
-];
+const KNOWN: &[Known] = &[];
 
 /// Returns each object an operator of `logged` resolves to, `ops` in order, that neither the
 /// source before the operator nor the next source after it that builds holds, `next` being the
@@ -1850,7 +1789,7 @@ fn unknown(name: &str, bits: u64, o: &Outcome) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (168, 2, 5);
+const CASES: (usize, usize, usize) = (165, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
 const REFUSED: usize = 16;

@@ -1821,6 +1821,7 @@ add constructor Identity.Corp { sub: Text }
     let s = applies(
         &s,
         "module auth
+add unique (sub) in identities.Corp
 add type Kind = Apple | Corp
 merge constructor Identity.(Apple | Corp) into Other { kind: Kind, sub: Text }
   arm display_name: Other o -> o.sub

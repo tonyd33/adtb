@@ -369,15 +369,11 @@ rename constructor T.A1 to Z";
     let mut src = arms_source();
     src.decls[3].text = "relation ts : T key id default A.x = \"a\"".to_string();
     let src = Source::new(src.decls).expect("the source builds");
-    let text = format!("module m\n{split}\ndrop default ts.A.x");
-    let at = text.find("rename").expect("the rename");
+    let text = format!("module m\n{split}\ndrop default ts.Z.x");
     assert_eq!(
         recorded(&src, &text),
-        Err(vec![Diag::new(
-            Span::new(at, at + "rename constructor T.A1 to Z".len()),
-            "`A` is not a constructor of `T`"
-        )]),
-        "a rename while the declarations do not build is refused"
+        Ok(after("relation ts: T key id default A2.x = \"a\"")),
+        "a default the split puts on each product follows the rename of one"
     );
 }
 

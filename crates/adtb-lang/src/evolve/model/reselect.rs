@@ -251,8 +251,9 @@ impl Model {
                                 many => format!("({})", many.join(" | ")),
                             };
                             errs.push(format!(
-                                "{} is refused: `{rname}.{shown}` names some but not all of its constructors",
-                                mode.what
+                                "{} is refused: {} selects `{rname}.{shown}`, some but not all of its constructors",
+                                mode.what,
+                                self.shown_decl(j)
                             ));
                         }
                         Some(Some(out)) if out.is_empty() => {}

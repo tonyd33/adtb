@@ -92,24 +92,18 @@ impl Model {
         out
     }
 
-    /// Returns the operators adding, over constructor `c` of relation `i` alone, a clause of each
-    /// kind a switch on lets an operator of `kind` replace it under, each added to the model.
-    fn seeded(&mut self, i: usize, c: usize, kind: Kind) -> Vec<Op> {
+    /// Returns the operators adding, over constructor `c` of relation `i` alone, a unique and a
+    /// default a split of `c` takes to its products, each added to the model; the unique with a
+    /// `Bool` field to route by first when `c` has none.
+    fn seeded(&mut self, i: usize, c: usize) -> Vec<Op> {
         let r = self.rel(i).clone();
         let fields: Vec<&Field> = r.ctors[c].fields.iter().collect();
-        let ints: Vec<&Field> = fields
-            .iter()
-            .copied()
-            .chain(r.plain_header())
-            .filter(|f| f.ty == Ty::Int)
-            .collect();
-        let at = r.target(Some(&vec![c]));
+        let at = self.ctor_ref(i, c);
         let mut out = Vec::new();
         let own = fields
             .iter()
             .find(|f| f.ty.keyed() && f.ty != Ty::Bool && r.holding(&f.name, &f.ty) == [c]);
-        if super::super::SEARCH_REPLACE_UNDER_UNIQUE
-            && let Some(f) = own
+        if let Some(f) = own
             && !r
                 .uniques
                 .iter()
@@ -118,7 +112,7 @@ impl Model {
             let flagged = fields
                 .iter()
                 .any(|f| f.ty == Ty::Bool && f.action == Action::Unstated);
-            if kind == Kind::Split && !flagged {
+            if !flagged {
                 let name = self.field_name(i);
                 let text = format!(
                     "add field {}: Bool fill true",
@@ -148,62 +142,11 @@ impl Model {
         let literal_field = fields
             .iter()
             .find(|f| f.ty.literal() && !r.has_default(c, &f.name));
-        if super::super::SEARCH_REPLACE_UNDER_DEFAULT
-            && let Some(f) = literal_field
-        {
+        if let Some(f) = literal_field {
             let v = literal(&f.ty, false);
             let path = format!("{}.{}.{}", r.name, r.ctors[c].name, f.name);
             out.push(op(Kind::AddDefault, format!("add default {path} = {v}")));
             self.s.rels[i].defaults.push((c, f.name.clone(), v));
-        }
-        let check = super::super::SEARCH_NEST_UNDER_CHECK && kind == Kind::Nest;
-        let constraint =
-            super::super::SEARCH_MERGE_UNDER_CONSTRAINT && matches!(kind, Kind::Merge | Kind::Nest);
-        let int = match ints.first() {
-            Some(f) => f.name.clone(),
-            None if check || constraint => {
-                let name = self.field_name(i);
-                let text = format!(
-                    "add field {}: I64 fill {}",
-                    self.field_path(i, None, &name),
-                    literal(&Ty::Int, false)
-                );
-                let effect = Effect::AddField {
-                    rel: r.name.clone(),
-                    ctor: None,
-                    field: name.clone(),
-                    value: literal_value(&Ty::Int, false),
-                };
-                out.push(op(Kind::AddField, text).with(effect));
-                self.s.rels[i].header.push(Field::new(&name, Ty::Int));
-                name
-            }
-            None => String::new(),
-        };
-        if check {
-            let name = self.fresh("k");
-            out.push(data(
-                Kind::AddCheck,
-                format!("add check {name} on {at} ({int} >= (-2))"),
-            ));
-            self.s.rels[i].checks.push(Clause {
-                field: int.clone(),
-                ctors: Some(vec![c]),
-                name,
-            });
-        }
-        if constraint {
-            let k = Constraint {
-                rel: i,
-                ctors: vec![c],
-                field: int,
-                name: self.fresh("c"),
-            };
-            out.push(data(
-                Kind::AddConstraint,
-                format!("add {}", self.s.constraint_decl(&k)),
-            ));
-            self.s.constraints.push(k);
         }
         out
     }
@@ -232,21 +175,22 @@ impl Model {
         let can: Vec<((usize, usize), bool)> = can
             .into_iter()
             .filter_map(|(i, c)| {
-                let one = self.replaces_under(i, &[c], 1, Kind::Split)?;
-                let two = flagged(self, (i, c))
-                    && self.replaces_under(i, &[c], 2, Kind::Split) == Some(true);
-                let seeds = !self.clone().seeded(i, c, Kind::Split).is_empty();
-                Some(((i, c), one || two || seeds))
+                if !self.replaces_under(i, &[c], 1, Kind::Split) {
+                    return None;
+                }
+                let two = flagged(self, (i, c)) && self.replaces_under(i, &[c], 2, Kind::Split);
+                let seeds = !self.clone().seeded(i, c).is_empty();
+                Some(((i, c), two || seeds))
             })
             .collect();
         let can = Model::steered(can);
         let &(i, c) = rng.pick_some(&can)?;
-        let mut out = if broke {
-            Vec::new()
-        } else {
-            self.seeded(i, c, Kind::Split)
-        };
-        let steer = self.replaces_under(i, &[c], 2, Kind::Split) == Some(true);
+        let mut out = if broke { Vec::new() } else { self.seeded(i, c) };
+        let steer = self
+            .rel(i)
+            .uniques
+            .iter()
+            .any(|k| k.ctors.as_deref() == Some(&[c][..]));
         let path = self.ctor_path(i, c);
         let src = self.rel(i).ctors[c].clone();
         let decl = |m: &Model, fs: &[&Field]| -> String {
@@ -268,8 +212,7 @@ impl Model {
             .position(|f| f.ty == Ty::Bool && f.action == Action::Unstated);
         let products = match flag {
             Some(b)
-                if (steer || rng.below(2) == 0)
-                    && self.replaces_under(i, &[c], 2, Kind::Split).is_some() =>
+                if (steer || rng.below(2) == 0) && self.replaces_under(i, &[c], 2, Kind::Split) =>
             {
                 2 + b
             }
@@ -385,18 +328,12 @@ impl Model {
                     .iter()
                     .chain(&b.fields)
                     .any(|f| matches!(f.action, Action::Retag | Action::Clear));
-                let under = self.replaces_under(i, &[c, d], 1, kind);
-                if fits
-                    && !apart
-                    && !actions
-                    && let Some(switched) = under
-                {
-                    pairs.push(((i, c, d), switched));
+                if fits && !apart && !actions && self.replaces_under(i, &[c, d], 1, kind) {
+                    pairs.push((i, c, d));
                 }
             }
         }
         let mut out = Vec::new();
-        let pairs = Model::steered(pairs);
         let (i, c, d) = match rng.pick_some(&pairs) {
             Some(p) => *p,
             None => {
@@ -425,10 +362,6 @@ impl Model {
                 (i, at, at + 1 + usize::from(apart))
             }
         };
-        if !broke {
-            let seeded = self.seeded(i, c, kind);
-            out.extend(seeded);
-        }
         let ty = self.rel(i).ty.clone();
         let (cn, dn) = (
             self.rel(i).ctors[c].name.clone(),
@@ -551,9 +484,7 @@ impl Model {
                     .iter()
                     .all(|n| self.rel(i).ctors.iter().all(|d| d.name != *n))
                 && cs.iter().all(|n| *n != self.rel(i).set_name)
-                && self
-                    .replaces_under(i, &[c], cs.len(), Kind::Unnest)
-                    .is_some()
+                && self.replaces_under(i, &[c], cs.len(), Kind::Unnest)
             {
                 can.push((i, c));
             }

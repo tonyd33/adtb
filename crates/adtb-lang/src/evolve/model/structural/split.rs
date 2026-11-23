@@ -1,4 +1,4 @@
-use super::{Routing, ctor_in, def_in};
+use super::{Routing, carried, ctor_in, def_in};
 use crate::ast::{self, CtorScope, SplitClause};
 use crate::capability::RootKind;
 use crate::check::{self, RowBody};
@@ -8,9 +8,8 @@ use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head, matched_fields};
 use crate::evolve::model::admin::canonical;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
+use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at, refuse_first};
 use crate::evolve::model::reselect::Mode;
-use crate::evolve::model::run::unbuilt;
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Cx, Resolved, RowMap};
@@ -164,43 +163,41 @@ fn replacements(run: &mut Run, given: &[SplitClause]) -> (Vec<Added>, Vec<ast::A
 }
 
 impl Model {
-    /// Check routing `arms` over the rows of `sources` of type `t` against the constructors
-    /// `into`, as a schema with them after the others and every reference to `sources` outside
-    /// a check retyped to them declares, `built` resolving the declarations now.
+    /// Check routing `arms` over the rows of `sources` of type `t` against the products `made`,
+    /// in the schema the operator gives with `sources` kept: `made` after the other
+    /// constructors, every selection and reference to `sources` outside a check put to them,
+    /// with `whole` as the operator's, and the arms of `given` in the bodies, checked whole.
+    /// `built` resolves the declarations before the operator.
+    ///
+    /// Preconditions:
+    /// - `made` are constructors of `t` that its body does not yet list.
     pub(super) fn routing(
         &self,
         run: &mut Run,
         built: &Built,
-        t: u64,
-        sources: &[u64],
-        into: &[ast::CtorDef],
-        arms: &[ast::Arm],
+        (t, sources, made): (u64, &[u64], &[u64]),
+        (arms, given): (&[ast::Arm], &[ast::ArmClause]),
+        whole: bool,
     ) -> Res<Routing> {
-        let before = self.checked(run)?;
         let mut probe = self.clone();
-        let made: Vec<u64> = into
-            .iter()
-            .map(|d| probe.new_ctor(run, t, &d.name.text, d.record.as_deref()))
-            .collect();
-        probe.reselect_products(run, t, sources, &made)?;
+        probe.reselect_products(run, t, sources, made)?;
         if let TypeBody::Ctors(cs) = &mut probe.types.get_mut(&t).expect("the type").body {
-            cs.extend(&made);
+            cs.extend(made);
         }
-        let edits = probe.reselect(
+        let mut edits = probe.reselect(
             built,
             t,
             sources,
-            &made,
+            made,
             Mode::structural("the routing", false, false),
         )?;
+        edits.extend(probe.reselect_rows(built, t, (sources, made), "the routing", whole)?);
+        edits.extend(probe.arm_writes(run, built, t, (sources, &[]), given)?.0);
         probe.edit_decls(edits)?;
-        let probed = match probe.built(&[], &run.ahead(&probe)) {
-            Ok((b, _)) => b,
-            Err(ds) => return unbuilt(&ds),
+        let compiled = match probe.schema(&run.ahead(&probe)).map(check::check_schema) {
+            Ok(Ok(c)) => c,
+            Ok(Err(ds)) | Err(ds) => return refuse_first(&ds, str::to_string),
         };
-        let compiled = before
-            .extended(probed.schema().clone())
-            .map_err(Fail::Broken)?;
         let schema = compiled.schema();
         let def = def_in(schema, t);
         let module = schema
@@ -221,16 +218,6 @@ impl Model {
             RootKind::Routing,
         )
         .or_else(|d| refuse_at(d.span, d.message))?;
-        let mut carries = Vec::new();
-        for img in arms.iter().map(arm_image) {
-            if let (Some(from), Some(to)) = (&img.from, &img.to) {
-                for (g, f) in &img.given {
-                    if let Some(f) = f {
-                        carries.push((from.clone(), f.clone(), to.clone(), g.clone()));
-                    }
-                }
-            }
-        }
         let text = match (arms.first(), arms.last()) {
             (Some(a), Some(z)) => canonical(run, schema, &refs, a.patterns[0].span.to(z.body.span)),
             _ => String::new(),
@@ -246,18 +233,12 @@ impl Model {
         .or_else(|d| refuse_at(d.span, d.message))?;
         let query = crate::norm::registered(&compiled, &q.terms, q.term, RootKind::Query)
             .map_err(|e| Fail::Broken(format!("a routing does not normalise: {e:?}")))?;
-        let made = made
-            .iter()
-            .map(|c| (*c, probe.ctors[c].fields.clone()))
-            .collect();
         Ok(Routing {
-            carries,
             rows: RowFn {
                 schema: schema.clone(),
                 query,
             },
             text,
-            made,
         })
     }
 
@@ -323,24 +304,25 @@ impl Model {
         for d in into {
             self.fresh_ctor(t, d)?;
         }
-        let routing = self.routing(run, &built, t, &[c], into, arms)?;
+        self.paths_image(t, &[c], "the split")?;
         let (replacements, arm_clauses) = replacements(run, given);
+        let carries = carried(arms);
         let made: Vec<u64> = into
             .iter()
             .map(|d| self.new_ctor(run, t, &d.name.text, d.record.as_deref()))
             .collect();
-        routing.typed_for(self, &made)?;
+        self.defaults_image(&built, t, (&[c], &made), "the split", true)?;
         self.reselect_products(run, t, &[c], &made)?;
         let products: Vec<String> = into.iter().map(|d| d.name.text.clone()).collect();
         let plan = self.carry_plan(run, &built, Structural::Split, t, (&[c], &products));
         let mut edits = Vec::new();
-        edits.extend(self.reselect_rows(&built, t, &[c], &made, false));
+        edits.extend(self.reselect_rows(&built, t, (&[c], &made), "the split", false)?);
         let image = Image {
             ctor: c,
             source: path.ctor.text.clone(),
             products: into.iter().map(|d| d.name.text.clone()).collect(),
             shapes: into.iter().map(ctor_fields).collect(),
-            carries: &routing.carries,
+            carries: &carries,
             header: self.header_names(t),
         };
         let mut rewrites = self.split_clauses(&built, t, &made, &image, &replacements)?;
@@ -371,6 +353,7 @@ impl Model {
             .collect();
         let images: Vec<_> = arms.iter().map(arm_image).collect();
         let routed = carry::routed(&images, std::slice::from_ref(&image.source), &image.shapes);
+        let routing = self.routing(run, &built, (t, &[c], &made), (arms, &arm_clauses), false)?;
         let before = self.clone();
         self.edit_decls(edits)?;
         let first = self
@@ -488,13 +471,37 @@ impl Model {
             }
             let entry = out.clauses_of.entry(cl.relation).or_default();
             entry.0.insert(cl.at);
-            for p in &image.products {
-                let Some(fs) = image.image(&cl.elems, p) else {
-                    continue;
-                };
-                let text = format!("{} ({}) in {p}", kind_word(cl.kind), fs.join(", "));
+            let images: Vec<Option<Vec<String>>> = image
+                .products
+                .iter()
+                .map(|p| image.image(&cl.elems, p))
+                .collect();
+            let apart: Vec<(Vec<String>, Vec<String>)> = match images.first() {
+                Some(Some(fs)) if images.iter().all(|x| x.as_ref() == Some(fs)) => {
+                    vec![(fs.clone(), image.products.clone())]
+                }
+                _ if !replacements.is_empty() => continue,
+                _ if cl.kind != IndexKind::Unique && images.iter().all(Option::is_some) => images
+                    .into_iter()
+                    .flatten()
+                    .zip(&image.products)
+                    .map(|(fs, p)| (fs, vec![p.clone()]))
+                    .collect(),
+                _ => {
+                    return refuse(format!(
+                        "`{shown} in {source}` has no image under the split: its products do not hold its elements under one name"
+                    ));
+                }
+            };
+            for (fs, names) in apart {
+                let text = format!(
+                    "{} ({}) in {}",
+                    kind_word(cl.kind),
+                    fs.join(", "),
+                    sel_text(&names)
+                );
                 if !entry.1.iter().any(|(x, _)| *x == text) {
-                    let clause = index_clause(cl.kind, &fs, std::slice::from_ref(p));
+                    let clause = index_clause(cl.kind, &fs, &names);
                     entry.1.push((text, clause));
                 }
             }

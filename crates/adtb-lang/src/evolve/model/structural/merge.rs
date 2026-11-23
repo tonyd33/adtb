@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use super::split::kind_word;
-use super::{ctor_in, def_in, sel_idents};
+use super::{carried, ctor_in, def_in, sel_idents};
 use crate::ast::{self, CtorSel};
 use crate::check::{self, Ref};
 use crate::evolve::carry::{self, Structural};
@@ -241,8 +241,12 @@ fn carried_by_name(
 struct Rewrite {
     gone: BTreeSet<usize>,
     rescoped: Vec<(usize, Vec<Term>)>,
-    added: Vec<(String, ClauseM)>,
+    added: Vec<ClauseM>,
 }
+
+/// A clause over one merged constructor alone, by its relation variable, kind and elements as
+/// the merge maps them.
+type Alike = (u64, IndexKind, Vec<String>);
 
 impl Model {
     /// Merge constructors `sel` of `ty` into `into`. With `derived`, the values the routing's arms
@@ -264,12 +268,7 @@ impl Model {
         let names: Vec<String> = sources.iter().map(|c| self.ctors[c].name.clone()).collect();
         let def = def_in(schema, t);
         let src_ix: Vec<u32> = sources.iter().map(|&c| ctor_in(schema, c)).collect();
-        let routing = match arms {
-            Some(a) => {
-                Some(self.routing(run, &built, t, &sources, std::slice::from_ref(into), a)?)
-            }
-            None => None,
-        };
+        self.paths_image(t, &sources, "the merge")?;
         let (mfields, disc) = self.merged_shape(run, t, into, &names)?;
         let (disc, tags) = match arms {
             Some(a) if derived => (fixed_disc(run.text(), a), Vec::new()),
@@ -278,20 +277,19 @@ impl Model {
                 (Disc::named(field, &names), tags)
             }
         };
-        let carries: Carries = match (arms, &routing) {
-            (Some(_), Some(r)) if derived => r.carries.clone(),
-            (Some(a), Some(r)) => {
-                own_names(a, &disc.fields[0])?;
-                r.carries.clone()
+        let carries: Carries = match arms {
+            Some(a) => {
+                if !derived {
+                    own_names(a, &disc.fields[0])?;
+                }
+                carried(a)
             }
-            _ => carried_by_name(schema.ty(def), &names, &m, &mfields, &disc)?,
+            None => carried_by_name(schema.ty(def), &names, &m, &mfields, &disc)?,
         };
         let stages = self.restated(&built, t, &sources, true)?;
         let c = self.new_ctor(run, t, &m, into.record.as_deref());
-        if let Some(r) = &routing {
-            r.typed_for(self, &[c])?;
-        }
-        let merged = match (&routing, disc.fields.first()) {
+        self.defaults_image(&built, t, (&sources, &[c]), "the merge", false)?;
+        let merged = match (arms, disc.fields.first()) {
             (None, Some(d)) => Some(self.merged_rows(c, &sources, &src_ix, d, &tags)?),
             _ => None,
         };
@@ -311,7 +309,7 @@ impl Model {
             carries: &carries,
         };
         edits.extend(self.merged_checks(&built, t, &image)?);
-        edits.extend(self.reselect_rows(&built, t, &sources, &[c], true));
+        edits.extend(self.reselect_rows(&built, t, (&sources, &[c]), "the merge", true)?);
         let rewrites = self.merged_clauses(&built, t, &sources, c, &image)?;
         let (arm_edits, written) = self.arm_writes(run, &built, t, (&sources, &sources), given)?;
         edits.extend(arm_edits);
@@ -322,6 +320,10 @@ impl Model {
             &[c],
             Mode::structural("the merge", true, false),
         )?);
+        let routing = match arms {
+            Some(a) => Some(self.routing(run, &built, (t, &sources, &[c]), (a, given), true)?),
+            None => None,
+        };
         let shape = (m.clone(), mfields.iter().map(|f| f.name.clone()).collect());
         let (reaches, routed) = match arms {
             Some(a) => {
@@ -357,7 +359,7 @@ impl Model {
                 .map(|(_, x)| x)
                 .collect();
             rel.clauses = kept;
-            rel.clauses.extend(w.added.into_iter().map(|(_, x)| x));
+            rel.clauses.extend(w.added);
         }
         self.replace_ctors(t, &sources, &[c]);
         self.rebind(&before);
@@ -464,7 +466,9 @@ impl Model {
     }
 
     /// Returns, by relation variable, how the merge rewrites each unique and index clause over
-    /// its sources to range over merged constructor `c`.
+    /// its sources to range over merged constructor `c`: a clause over every source keeps its
+    /// rows; clauses alike over each source alone become one over `c` keyed by the
+    /// discriminator; any other clause over some sources refuses.
     fn merged_clauses(
         &self,
         built: &Built,
@@ -473,45 +477,22 @@ impl Model {
         c: u64,
         image: &Image,
     ) -> Res<BTreeMap<u64, Rewrite>> {
-        let all = self.ctors_of(t);
+        let header = self.header_names(t);
         let mut out: BTreeMap<u64, Rewrite> = BTreeMap::new();
+        let mut alone: BTreeMap<Alike, Vec<(usize, u64, String)>> = BTreeMap::new();
         for cl in self.scoped(built, t, sources, &[c]) {
             let Some(reached) = &cl.reached else { continue };
-            let mut reached = reached.clone();
-            reached.sort_by_key(|x| all.iter().position(|y| y == x));
-            let inside = reached.iter().filter(|x| sources.contains(x)).count();
-            if inside == 0 {
+            let inside: Vec<u64> = reached
+                .iter()
+                .copied()
+                .filter(|x| sources.contains(x))
+                .collect();
+            if inside.is_empty() {
                 continue;
             }
             let shown = format!("{} ({})", kind_word(cl.kind), cl.elems.join(", "));
-            if inside != reached.len() {
-                let Some(parts) = cl.rescoped else { continue };
-                if inside != sources.len() {
-                    return refuse(format!(
-                        "`{shown}` ranges over some but not all of the merged constructors and has no image under the merge"
-                    ));
-                }
-                out.entry(cl.relation)
-                    .or_default()
-                    .rescoped
-                    .push((cl.at, parts));
-                continue;
-            }
-            let written: Vec<String> = match &self.relations[&cl.relation].clauses[cl.at] {
-                ClauseM::Index { scope: Some(s), .. } => {
-                    s.parts.iter().map(|p| p.print(self)).collect()
-                }
-                _ => return broken("a scoped clause without a scope"),
-            };
-            if cl.kind == IndexKind::Unique && inside > 1 {
-                return refuse(format!(
-                    "`{shown} in {}` holds across the merged constructors; the merge would weaken it",
-                    sel_text(&written)
-                ));
-            }
             let mut fields: Option<Vec<String>> = None;
-            let header = self.header_names(t);
-            for x in &reached {
+            for x in &inside {
                 let s = &self.ctors[x].name;
                 let mut fs = Vec::new();
                 for f in &cl.elems {
@@ -534,13 +515,6 @@ impl Model {
                         }
                     }
                 }
-                if cl.kind == IndexKind::Unique {
-                    for f in image.disc.fields.iter().rev() {
-                        if !fs.contains(f) {
-                            fs.insert(0, f.clone());
-                        }
-                    }
-                }
                 match &fields {
                     None => fields = Some(fs),
                     Some(prev) if *prev == fs => {}
@@ -552,32 +526,74 @@ impl Model {
                 }
             }
             let fields = fields.unwrap_or_default();
-            let names: Vec<String> = match &cl.rescoped {
-                None if fields == cl.elems => continue,
-                None => vec![image.ctor.to_string()],
-                Some(parts) => parts.iter().map(|p| p.print(self)).collect(),
-            };
-            let text = format!(
-                "{} ({}) in {}",
-                kind_word(cl.kind),
-                fields.join(", "),
-                sel_text(&names)
-            );
-            let w = out.entry(cl.relation).or_default();
-            w.gone.insert(cl.at);
-            if !w.added.iter().any(|(x, _)| *x == text) {
-                let clause = ClauseM::Index {
-                    id: None,
-                    pending: None,
-                    kind: cl.kind,
-                    elems: fields.iter().map(|f| Term::text(f)).collect(),
-                    scope: Some(Scope {
-                        parts: names.iter().map(|n| Term::text(n)).collect(),
-                        listed: names.len() > 1,
-                    }),
-                };
-                w.added.push((text, clause));
+            if inside.len() != sources.len() {
+                if let ([one], 1) = (inside.as_slice(), reached.len()) {
+                    alone
+                        .entry((cl.relation, cl.kind, fields))
+                        .or_default()
+                        .push((cl.at, *one, shown));
+                    continue;
+                }
+                return refuse(format!(
+                    "`{shown}` ranges over some but not all of the merged constructors and has no image under the merge"
+                ));
             }
+            let parts = match cl.rescoped {
+                Some(parts) => parts,
+                None if fields == cl.elems => continue,
+                None => match &self.relations[&cl.relation].clauses[cl.at] {
+                    ClauseM::Index { scope: Some(s), .. } => s.parts.clone(),
+                    _ => return broken("a scoped clause without a scope"),
+                },
+            };
+            let w = out.entry(cl.relation).or_default();
+            if fields == cl.elems {
+                w.rescoped.push((cl.at, parts));
+                continue;
+            }
+            w.gone.insert(cl.at);
+            w.added.push(ClauseM::Index {
+                id: None,
+                pending: None,
+                kind: cl.kind,
+                elems: fields.iter().map(|f| Term::text(f)).collect(),
+                scope: Some(Scope {
+                    listed: parts.len() > 1,
+                    parts,
+                }),
+            });
+        }
+        for ((r, kind, fields), held) in alone {
+            let each = sources
+                .iter()
+                .all(|s| held.iter().any(|(_, one, _)| one == s));
+            let keyed = kind != IndexKind::Unique || !image.disc.fields.is_empty();
+            if !each || !keyed {
+                return refuse(format!(
+                    "`{} in {}` ranges over some but not all of the merged constructors and has no image under the merge",
+                    held[0].2, self.ctors[&held[0].1].name
+                ));
+            }
+            let mut fs = fields;
+            if kind == IndexKind::Unique {
+                for f in image.disc.fields.iter().rev() {
+                    if !fs.contains(f) {
+                        fs.insert(0, f.clone());
+                    }
+                }
+            }
+            let w = out.entry(r).or_default();
+            w.gone.extend(held.iter().map(|(at, _, _)| *at));
+            w.added.push(ClauseM::Index {
+                id: None,
+                pending: None,
+                kind,
+                elems: fs.iter().map(|f| Term::text(f)).collect(),
+                scope: Some(Scope {
+                    listed: false,
+                    parts: vec![Term::name((Space::Shared, c), image.ctor)],
+                }),
+            });
         }
         Ok(out)
     }

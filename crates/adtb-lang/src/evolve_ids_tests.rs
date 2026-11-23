@@ -893,13 +893,21 @@ set S of ts = A | B"
 }
 
 #[test]
-fn a_merge_is_refused_while_a_unique_holds_across_exactly_the_merged_constructors() {
-    for clause in ["unique (z) in (A | B)", "unique (z) in S"] {
+fn a_merge_keeps_a_unique_over_exactly_the_merged_constructors_over_their_product() {
+    for (clause, after, kept) in [
+        ("unique (z) in (A | B)", "unique (z) in M", false),
+        ("unique (z) in S", "unique (z) in S", true),
+    ] {
+        let before = three_ctors(clause);
+        let merged = applies(&before, &format!("module auth\n{MERGE_A_B}"));
         assert_eq!(
-            Some(vec![format!(
-                "`{clause}` holds across the merged constructors; the merge would weaken it"
-            )]),
-            migrate(&three_ctors(clause), &format!("module auth\n{MERGE_A_B}")).err(),
+            format!("relation ts: T key id generate sequence {after}"),
+            flat(&decl(&merged, "relation", "ts")),
+            "{clause}"
+        );
+        assert_eq!(
+            kept,
+            index_ids(&before, "ts") == index_ids(&merged, "ts"),
             "{clause}"
         );
     }
@@ -1005,6 +1013,7 @@ set S of ts = {set}"
             replaced: replaced.iter().map(ToString::to_string).collect(),
             rename,
             rows,
+            refuses: None,
         };
         let kept: fn(&Desc) -> Desc = Desc::clone;
         let both = || vec!["A".to_string(), b.to_string()];
@@ -1029,14 +1038,13 @@ set S of ts = {set}"
             ),
         ];
         if !self.set_one {
+            let mut alike = format!("add unique (z) in ts.{b}\nadd unique (n) in ts.A");
+            if self.dotted {
+                alike.push_str(&format!("\nadd unique (s.X.g) in ts.{b}"));
+            }
             out.push(op(
-                None,
-                format!(
-                    "merge constructor T.(A | {b}) into M {{ k: K, z: Text, s: Sm, q: Q }}
-  by match
-    | A a -> M {{ k: A, z: a.z, s: a.s, q: a.q }}
-    | {b} x -> M {{ k: {b}, z: x.z, s: x.s, q: x.q }}"
-                ),
+                Some(alike.as_str()),
+                merge(b),
                 &["A", b],
                 kept,
                 Rows::Merge(both()),
@@ -1066,15 +1074,17 @@ set S of ts = {set}"
             ));
         }
         if !self.set_one && !self.wide && !self.dotted {
+            let dropped = format!("drop unique (n) in ts.{b}");
             out.push(op(
-                None,
-                format!("nest constructor T.(A | {b}) into N {{ inner: Inner }}"),
+                Some(dropped.as_str()),
+                nest(b),
                 &["A", b],
                 kept,
                 Rows::Nest(both()),
             ));
             let nested = format!(
-                "nest constructor T.(A | {b}) into N {{ inner: Inner }}
+                "{dropped}
+nest constructor T.(A | {b}) into N {{ inner: Inner }}
 add set S2 of ts = N
 add index (inner.A.z) in ts.S2
 add index (n) in ts.S2"
@@ -1149,6 +1159,54 @@ add index (n) in ts.S2"
     }
 }
 
+/// Returns the merge of `T.A` and `T.b` into `M`.
+fn merge(b: &str) -> String {
+    format!(
+        "merge constructor T.(A | {b}) into M {{ k: K, z: Text, s: Sm, q: Q }}
+  by match
+    | A a -> M {{ k: A, z: a.z, s: a.s, q: a.q }}
+    | {b} x -> M {{ k: {b}, z: x.z, s: x.s, q: x.q }}"
+    )
+}
+
+/// Returns the nest of `T.A` and `T.b` into `N`.
+fn nest(b: &str) -> String {
+    format!("nest constructor T.(A | {b}) into N {{ inner: Inner }}")
+}
+
+impl Scoped {
+    /// The structural operators of [`Scoped::ops`] that a clause over one of the constructors
+    /// they replace refuses, with the refusal.
+    fn refusals(self) -> Vec<ScopedOp> {
+        let b = self.b();
+        let refused = |text: String, why: String| ScopedOp {
+            first: None,
+            text,
+            replaced: Vec::new(),
+            rename: Desc::clone,
+            rows: Rows::Same,
+            refuses: Some(why),
+        };
+        let mut out = Vec::new();
+        if !self.set_one {
+            out.push(refused(
+                merge(b),
+                format!(
+                    "`unique (n) in {b}` ranges over some but not all of the merged constructors and has no image under the merge"
+                ),
+            ));
+        }
+        if !self.set_one && !self.wide && !self.dotted {
+            out.push(refused(
+                nest(b),
+                "`unique (n)` ranges over some but not all of the nested constructors and has no image under the nest"
+                    .to_string(),
+            ));
+        }
+        out
+    }
+}
+
 /// A structural operator of the search over [`Scoped`] shapes.
 struct ScopedOp {
     /// A migration the operator needs applied before it.
@@ -1159,6 +1217,8 @@ struct ScopedOp {
     /// How it changes the names of the objects it does not create.
     rename: fn(&Desc) -> Desc,
     rows: Rows,
+    /// The refusal it must meet, when no rewrite of a clause covers the image of its rows.
+    refuses: Option<String>,
 }
 
 /// A row a clause covers: a constructor of `T`, the constructor its row held before a merge or
@@ -1217,6 +1277,25 @@ impl Rows {
     /// Returns rows `rs` before the operator mapped through it.
     fn mapped(&self, rs: &BTreeSet<Row>) -> BTreeSet<Row> {
         rs.iter().flat_map(|r| self.map(r)).collect()
+    }
+
+    /// Returns rows `rs` of a merge's product spread to the rows of every source, with the
+    /// discriminator `k` of each when `unique`: the rows of the one clause over the product that
+    /// clauses alike over each source alone become. Returns `rs` for any other operator.
+    fn keyed(&self, rs: &BTreeSet<Row>, unique: bool) -> BTreeSet<Row> {
+        let Rows::Merge(cs) = self else {
+            return rs.clone();
+        };
+        let mut out = BTreeSet::new();
+        for (c, _, e) in rs {
+            for p in cs {
+                out.insert((c.clone(), p.clone(), e.clone()));
+                if unique {
+                    out.insert((c.clone(), p.clone(), "k".to_string()));
+                }
+            }
+        }
+        out
     }
 
     /// Returns rows `rs` after the operator, leaving out those of a constructor it adds without
@@ -1310,33 +1389,10 @@ fn ctors_of(s: &Source) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether the search judges a unique or an index over one constructor that a split, merge or
-/// nest replaces. A split re-scopes it to each product apart, a merge or nest to the product,
-/// and no clause after covers the image of its rows.
-const SEARCH_ONE_CONSTRUCTOR_CLAUSE_REPLACED: bool = false;
-
-/// Returns whether the unique or index of catalog id `id` of relation `ts` of `s` is scoped to
-/// one constructor among `replaced`.
-fn over_one_of(s: &Source, id: u64, replaced: &[String]) -> bool {
-    let schema = ids_of(s);
-    let r = rel(&schema, "ts");
-    let rd = schema.relation(r);
-    let ctors = schema.ty(rd.elem_def).ctors();
-    rd.indexes.iter().enumerate().any(|(at, x)| {
-        schema.ids().index_id(r, at).map(u64::from) == Some(id)
-            && matches!(x.scope.as_deref(), Some([c]) if replaced.contains(&ctors[*c as usize].name))
-    })
-}
-
-/// Returns, for operator `what` taking `before` to `after`, replacing `replaced`, and its rows
-/// by `rows`, each clause whose covered rows it does not take to those of the clause after: the
-/// clause of its id, or for a clause it re-scopes, some clause it creates.
-fn uncovered(
-    what: &str,
-    (before, after): (&Source, &Source),
-    replaced: &[String],
-    rows: &Rows,
-) -> Vec<String> {
+/// Returns, for operator `what` taking `before` to `after` and its rows by `rows`, each clause
+/// whose covered rows it does not take to those of the clause after: the clause of its id, or
+/// for a clause it re-scopes, some clause it creates.
+fn uncovered(what: &str, (before, after): (&Source, &Source), rows: &Rows) -> Vec<String> {
     let was = clause_ids(before);
     let now = clause_ids(after);
     let old: BTreeSet<u64> = was.iter().map(|(_, id)| *id).collect();
@@ -1347,9 +1403,6 @@ fn uncovered(
         .collect();
     let mut out = Vec::new();
     for (text, id) in &was {
-        if !SEARCH_ONE_CONSTRUCTOR_CLAUSE_REPLACED && over_one_of(before, *id, replaced) {
-            continue;
-        }
         let want = rows.mapped(&covered(before, text));
         match now.iter().find(|(_, i)| i == id) {
             Some((t, _)) => {
@@ -1360,7 +1413,10 @@ fn uncovered(
                     ));
                 }
             }
-            None if !want.is_empty() && !made.contains(&want) => {
+            None if !want.is_empty()
+                && !made.contains(&want)
+                && !made.contains(&rows.keyed(&want, text.starts_with("unique"))) =>
+            {
                 out.push(format!("{what}: no clause re-scopes `{text}` to {want:?}"));
             }
             None => {}
@@ -1504,6 +1560,8 @@ struct Search {
     /// Each step refused, with its refusal.
     refused: Vec<String>,
     ran: usize,
+    /// The operators run that must meet a refusal.
+    refusals: usize,
     /// The operators applied, by their first three words.
     reached: BTreeSet<String>,
     /// The shapes on which moving `T.n` to every constructor was refused.
@@ -1516,6 +1574,7 @@ impl Search {
             steps: Vec::new(),
             refused: Vec::new(),
             ran: 0,
+            refusals: 0,
             reached: BTreeSet::new(),
             full_moves: 0,
         };
@@ -1536,8 +1595,11 @@ impl Search {
                     )),
                 }
             }
-            for op in shape.ops() {
-                search.ran += 1;
+            for op in shape.ops().into_iter().chain(shape.refusals()) {
+                match op.refuses {
+                    Some(_) => search.refusals += 1,
+                    None => search.ran += 1,
+                }
                 let what = format!("{bits:05b} {}", op.text.lines().next().unwrap_or_default());
                 search.operator(&start, op, &what);
             }
@@ -1546,6 +1608,14 @@ impl Search {
     }
 
     fn operator(&mut self, start: &Source, op: ScopedOp, what: &str) {
+        if let Some(why) = &op.refuses {
+            let got = migrate(start, &format!("module auth\n{}", op.text));
+            if got.as_ref().err() != Some(&vec![why.clone()]) {
+                self.refused
+                    .push(format!("{what}: refused with {:?}, not {why:?}", got.err()));
+            }
+            return;
+        }
         let base = match &op.first {
             None => start.clone(),
             Some(first) => match self.step(start, first, what) {
@@ -1663,7 +1733,7 @@ fn a_structural_operator_or_its_revert_takes_the_rows_a_clause_covers_to_those_o
     let mut found = search.refused;
     for s in &search.steps {
         let pair = (&s.before, &s.after);
-        found.extend(uncovered(&s.what, pair, &s.replaced, &s.rows));
+        found.extend(uncovered(&s.what, pair, &s.rows));
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
     assert!(
@@ -1671,6 +1741,7 @@ fn a_structural_operator_or_its_revert_takes_the_rows_a_clause_covers_to_those_o
         "ran {} steps",
         search.steps.len()
     );
+    assert!(search.refusals >= 2, "ran {} refusals", search.refusals);
 }
 
 #[test]
@@ -1679,6 +1750,7 @@ fn an_unnest_of_several_products_re_scopes_a_clause_through_one_to_its_rows_and_
     let nested = applies(
         &source(&Scoped::of(0).text()),
         "module auth
+drop unique (n) in ts.B
 nest constructor T.(A | B) into N { inner: Inner }
 add set S2 of ts = N
 add index (inner.A.z) in ts.S2

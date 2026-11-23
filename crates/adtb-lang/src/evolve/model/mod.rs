@@ -302,7 +302,7 @@ impl ClauseM {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexKind {
     Unique,
     Plain,

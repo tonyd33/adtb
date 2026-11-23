@@ -101,11 +101,13 @@ split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text }
   arm f: A2 a -> a.x",
     "module law
 add type K2 = A1 | A2
+drop unique (z) in ts.A1
+drop index (z) in ts.A2
+drop interval index (x) in ts.A2
 merge constructor T.(A1 | A2) into A { k: K2, x: Text, z: Text }
   arm f: A a -> a.x",
     "module law
-drop unique (k, x) in ts.A
-drop unique (k, z) in ts.A
+drop unique (x) in ts.A
 merge constructor T.(A | B) into M { k: K, x: Text, z: Text }
   by match
     | A a -> M { k: A, x: a.x, z: a.z }
@@ -190,35 +192,40 @@ const HASHES: &[&str] = &[
     "62dda785a4de364cb361ea0536f1b09e0356457dba2e3c6fc265dae7963a96d7",
     "68f6d58a2b80886dc554fd1a9aeaab714a15c074548c9a0e9a3e6c72d68e4d74",
     "8183a5f4f67e6db96c09d89134e289cfd6676f0f23e370f801e67357139647f9",
-    "014996022d01915ce585ad952070f53cdff6c659c6df2104fa52619bf80cbc81",
-    "8f2813d9beab237a21cea2b1f8e4ad4ede8f25aeb08ae8b4d2502e2b4d45e2e6",
-    "4edb3a7796dc435d2b5a9b6fb9cda3f036b07576117edf50d351c8adf785ae17",
-    "c079edb9cec983480654fcff87718a5552ef3fd298318ff092517e6a9d456fa4",
-    "d2c6c46f5141cbbdfc757f7930936cbb4ca4ce638daa8aeea2ed364c3eeb84be",
-    "e5920a6799e3a7eafc10699055b34a658575f50adb9dec1ef9cd45070b976bb6",
-    "45b7d9f96a230163139ff16f861f99ac97b598e0e20fab20f79a0619e2cf88db",
-    "9692ad2fbeeac56f8f388e8b72038318868b82a6dfda2a3cba540d661e88a585",
-    "ae188d8b01efed5e2a7f4789efd8bc131f070fbac2666a35724bda8b962299be",
-    "c05962d1a0c835a9a1703abeda448ce25faca0433966c15ffdd3eada0bb13e7f",
-    "0c8b933a5217ab7b783067618532cfef0a61eacba78bb2ddf679df457aafd0fe",
-    "56cea2cee373c224bbc7d91f766c5b390566ab6c5caa8f205a19b15bf49a46df",
-    "a7190ab50554225fd1da574d9c1c11b5de9f27ab1bc417ffd581cf1ab9ea9cb1",
-    "0421d3880790c96ed819d46304e1ce4a87f52f49d114c42dd6f19e24e9e30f96",
-    "2c515741c1d07d382a1f6b7f478e056c9bd74a450ab867db3df344aab1e765d3",
-    "689cc44b9aeee5ef6629d558ae87d3dd2228f3a6e1e64b8a8f602aa358b4366d",
-    "eabedc5b06846ab9b2c8fcf3ae8f5f086765eee93b837c5ae8a3378983fe7d1b",
-    "479a90e50ba23127d034a42162b51ed68743985d0be14deb0f864dd4e6a695f4",
-    "23142a66a8e7b01400bec2cf6c8dd36a8845adf54cf9d6b4529992cb4229b92c",
-    "b054526b7798d88d639688f18c39b24142b1b5ff3ada655714ca6bc82025db45",
-    "14f5945adb2b15b9517780cc35e19e711af87aabe18fc5d98734d044edd863b5",
+    "aba4459c5e4f8071a9d276f5f4f56700ee79438250680a83feb71c74a5cd05f8",
+    "f7770335b3e8935aacb7353d3432c7681aa1c6746a21422b45a7320d563d0932",
+    "3f78a01a2c2c1604b846f8548351b7431ba5c5e689cf68fda165f27c98575c2d",
+    "7f2d0e4a98f8178787a303140078b171c2f7dab66afebe73deac4d729fde0f39",
+    "66d3a34384c1273ca3849e0270e91da005e9ccecb61ee55f0519b32b386ff84e",
+    "33495f6947a9a917fefc1fef720cbfe9faf7a1acf5133031aee639ab6e82fb01",
+    "8c4ab67305c8fdebeabf014e26b7ae8874dcf58cac67eaa9a17eb6c45ff3fecd",
+    "bdc466207ff4fd71511890ac3588aa1b209f2e098d34b43c23076ea8aa25803f",
+    "f54bfc2841b66d5d7f92d4d09f9468154899e4e2ed90c8eec7ef52d48aa1aa29",
+    "5f9465789f5ee47bb10f10085b8f946364940f33bb352636f7779548dd75e42c",
+    "6ec64d7b0c6a0a37c38d522362c8734f4b76cc12f00ce1b1d0cb30bac1e24dbf",
+    "0af2684c4c637d6d7c4a78da98e8ec63166f88064fed27295653039999097399",
+    "a2cdf638a371e4d7574f9f01846337ab760f1b3e49d08a26b2d73d68b7b30db7",
+    "2561a5be6b5d69fd8074bdd3f71eeedb88cbec03ade535683129a878d536e152",
+    "bf0d45b834eb480be45fb07c26f4d66639635d7ce12664a9d28feb95e056a700",
+    "1f520b47708820a8a531f9fa754eb81d2d59ca418e4768c167839b126ede8f78",
+    "71caad47400a537f6e712725681dfbeb878045f64ce17038a6a5fb87079862b8",
+    "516cff03ab627b5246644d1356aeabe46fc7309bd2e644b587cf53c4573c48e0",
+    "da91467d8fdd99e316de6da4715c99dd19854de6979d32553cea68c2ea31dac8",
+    "be7795d20b005430a21e0d6a6752f0d4b235ec16460caa23b7ce88baf95b428f",
+    "30c65d47466dccae36ef9bbbb47f8cab9737e88be47a17c1efb2b90fe374652d",
 ];
 
 fn migrated(from: &Source, text: &str) -> Source {
     let file = adtb_lang::parse::parse_migration(text, adtb_lang::parse::Options::default())
         .ok()
         .unwrap_or_else(|_| panic!("the migration parses: {text}"));
-    from.migrate(&file, text)
-        .unwrap_or_else(|f| panic!("the migration applies: {text}\n{f:?}"))
+    from.migrate(&file, text).unwrap_or_else(|f| match f {
+        adtb_lang::evolve::Failed::Refused(r) => panic!(
+            "the migration applies: {text}\n{:?}\n{:?}",
+            r.operators, r.recheck
+        ),
+        adtb_lang::evolve::Failed::Broken(d) => panic!("the migration applies: {text}\n{d:?}"),
+    })
 }
 
 fn hex(h: [u8; 32]) -> String {

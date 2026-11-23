@@ -3,7 +3,7 @@
 //! states, so that the model of the schema after it is known, or breaking one stated
 //! precondition, so that the migration is refused naming it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::draw::{Draw, Keys};
 use super::{Action, Case, Field, Schema, Scope, Stage, Ty, literal};
@@ -351,6 +351,51 @@ impl Migration {
                 "`{field}` of `{rel}` takes the names `{a}` and `{b}` across {ctors:?}"
             )),
         }
+    }
+
+    /// Returns the name field `field` of the constructors `ctors` of relation `rel` takes after
+    /// the migration on each constructor it reaches.
+    pub fn fields(
+        &self,
+        rel: &str,
+        ctors: &BTreeSet<String>,
+        field: &str,
+    ) -> Result<BTreeMap<String, String>, String> {
+        let mut out = BTreeMap::new();
+        for c in ctors {
+            let mut at = vec![(
+                rel.to_owned(),
+                BTreeSet::from([c.clone()]),
+                field.to_owned(),
+            )];
+            for o in &self.ops {
+                let mut next = Vec::new();
+                for (mut rel, mut cs, mut name) in at {
+                    o.effect.rename_field(&rel, &cs, &mut name);
+                    o.effect.ctors(&mut rel, &mut cs)?;
+                    if cs.is_empty() {
+                        next.push((rel, cs, name));
+                        continue;
+                    }
+                    for p in cs {
+                        next.push((rel.clone(), BTreeSet::from([p]), name.clone()));
+                    }
+                }
+                at = next;
+            }
+            for (_, cs, name) in at {
+                if cs.is_empty() {
+                    out.insert(c.clone(), name.clone());
+                }
+                for p in cs {
+                    out.insert(p, name.clone());
+                }
+            }
+        }
+        if out.is_empty() {
+            return Err(format!("`{field}` of `{rel}` names no constructor"));
+        }
+        Ok(out)
     }
 
     /// Returns each split, merge, nest and unnest of the migration: its kind, relation, the

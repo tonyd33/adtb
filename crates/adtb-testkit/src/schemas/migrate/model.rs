@@ -67,22 +67,20 @@ impl Model {
     }
 
     /// Returns whether an operator of `kind` may replace constructors `cs` of relation `i` by
-    /// `products` constructors under the clauses, constraints and defaults naming them: `None`
-    /// when not, `Some(true)` when only a switch on admits it.
+    /// `products` constructors under the clauses, constraints and defaults naming them.
     pub(super) fn replaces_under(
         &self,
         i: usize,
         cs: &[usize],
         products: usize,
         kind: Kind,
-    ) -> Option<bool> {
-        let off = self.blocked(i, cs, products, kind, false);
-        (!self.blocked(i, cs, products, kind, true)).then_some(off)
+    ) -> bool {
+        !self.blocked(i, cs, products, kind)
     }
 
     /// Returns whether a clause, constraint or default naming constructors `cs` of relation `i`
-    /// refuses an operator of `kind` replacing them by `products`, each switch read when `on`.
-    fn blocked(&self, i: usize, cs: &[usize], products: usize, kind: Kind, on: bool) -> bool {
+    /// refuses an operator of `kind` replacing them by `products`: one with no exact image.
+    fn blocked(&self, i: usize, cs: &[usize], products: usize, kind: Kind) -> bool {
         let r = self.rel(i);
         let all: Vec<usize> = (0..r.ctors.len()).collect();
         let scope = |k: &Clause| k.ctors.clone().unwrap_or_else(|| all.clone());
@@ -90,43 +88,50 @@ impl Model {
         let within = |s: &[usize]| s.iter().all(|c| cs.contains(c));
         let holds = |s: &[usize]| cs.iter().all(|c| s.contains(c));
         let joining = cs.len() > 1;
+        let header = |f: &str| r.plain_header().iter().any(|h| h.name == f);
         let no_image = |s: &[usize]| joining && meets(s) && !holds(s) && !within(s);
-        let unique = |k: &Clause| {
+        let some = |s: &[usize]| joining && meets(s) && within(s) && !holds(s);
+        let clause = |k: &Clause| {
             let s = scope(k);
-            let alone = if joining {
-                meets(&s) && within(&s) && !holds(&s)
-            } else {
-                s == cs && products > 1
-            };
-            no_image(&s)
-                || (joining && within(&s) && holds(&s))
-                || (alone && !(on && super::super::SEARCH_REPLACE_UNDER_UNIQUE))
+            let nest = kind == Kind::Nest
+                && meets(&s)
+                && if header(&k.field) {
+                    some(&s)
+                } else {
+                    s.len() > 1
+                };
+            no_image(&s) || nest || (kind == Kind::Merge && some(&s))
         };
-        let index = |k: &Clause| no_image(&scope(k));
         let check = |k: &Clause| {
             let s = scope(k);
-            let partly = joining && meets(&s) && !holds(&s);
-            match kind {
-                Kind::Nest => partly && !(on && super::super::SEARCH_NEST_UNDER_CHECK),
-                _ => partly,
-            }
+            joining && meets(&s) && !holds(&s)
         };
         let constraint = |k: &super::super::Constraint| {
-            k.rel == i
-                && joining
-                && meets(&k.ctors)
-                && !holds(&k.ctors)
-                && !(on && super::super::SEARCH_MERGE_UNDER_CONSTRAINT)
+            k.rel == i && joining && meets(&k.ctors) && !holds(&k.ctors)
         };
-        let default = r.defaults.iter().any(|(d, _, _)| cs.contains(d));
-        r.uniques.iter().any(unique)
-            || r.indexes.iter().any(index)
-            || r.checks.iter().any(check)
+        let flag = (kind == Kind::Split && products > 1)
+            .then(|| {
+                r.ctors[cs[0]]
+                    .fields
+                    .iter()
+                    .find(|f| f.ty == Ty::Bool && f.action == Action::Unstated)
+            })
+            .flatten()
+            .map(|f| f.name.as_str());
+        let dropped = |k: &Clause| Some(k.field.as_str()) == flag && meets(&scope(k));
+        let folds = matches!(kind, Kind::Merge | Kind::Nest | Kind::Unnest);
+        let default = r
+            .defaults
+            .iter()
+            .any(|(d, f, _)| cs.contains(d) && (folds || Some(f.as_str()) == flag));
+        r.uniques.iter().any(|k| clause(k) || dropped(k))
+            || r.indexes.iter().any(|k| clause(k) || dropped(k))
+            || r.checks.iter().any(|k| check(k) || dropped(k))
             || self.s.constraints.iter().any(constraint)
-            || (default && !(on && super::super::SEARCH_REPLACE_UNDER_DEFAULT))
+            || default
     }
 
-    /// Returns the candidates of `can` a switch on admits, or all of `can` when none.
+    /// Returns the candidates of `can` marked steered, or all of `can` when none is.
     pub(super) fn steered<T>(can: Vec<(T, bool)>) -> Vec<T> {
         let switched = can.iter().any(|(_, s)| *s);
         can.into_iter()
@@ -282,9 +287,17 @@ impl Model {
                 None => true,
             });
         }
-        r.defaults = std::mem::take(&mut r.defaults)
+        let defaults = std::mem::take(&mut r.defaults);
+        r.defaults = defaults
             .into_iter()
-            .filter_map(|(c, f, v)| map[c].first().map(|d| (*d, f, v)))
+            .flat_map(|(c, f, v)| {
+                let held: Vec<usize> = map[c]
+                    .iter()
+                    .copied()
+                    .filter(|&d| r.ctors[d].field(&f).is_some())
+                    .collect();
+                held.into_iter().map(move |d| (d, f.clone(), v.clone()))
+            })
             .collect();
         self.s.constraints.retain_mut(|k| {
             if k.rel != i {

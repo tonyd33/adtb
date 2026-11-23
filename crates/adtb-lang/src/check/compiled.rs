@@ -68,19 +68,6 @@ impl<S: AsSchema> Compiled<S> {
     pub(crate) fn viewed(&self) -> Compiled<&Schema> {
         self.sharing(self.schema())
     }
-
-    /// Returns `schema` with this pair's program, refused naming the first object of this pair's
-    /// schema with an id that `schema` holds at another position or not at all.
-    pub(crate) fn extended<T: AsSchema>(&self, schema: T) -> Result<Compiled<T>, String> {
-        let was = self.schema();
-        match was.first_moved(schema.as_schema()) {
-            Some(moved) => Err(format!(
-                "the {} the program names moved in the schema it is paired with",
-                moved.named(was)
-            )),
-            None => Ok(self.sharing(schema)),
-        }
-    }
 }
 
 impl<S> Compiled<S> {

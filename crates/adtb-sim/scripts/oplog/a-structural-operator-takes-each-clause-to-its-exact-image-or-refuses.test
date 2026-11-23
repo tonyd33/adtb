@@ -1,0 +1,88 @@
+# A split, merge or nest rewrites each unique, index, default, check and constraint naming a
+# constructor it replaces to one that covers exactly the image of the rows it covered, or is
+# refused naming it.
+seed 1
+use empty
+
+migrate
+  module app
+  add module app
+  add type K = A | B
+  add type L = B | C
+  add type Inner = A { x: I64 } | B { x: I64 }
+  add type Outer = B { x: I64 } | C { x: I64 }
+  add type T { id: Key ts, n: I64 } = A { x: I64 } | B { x: I64 } | C { x: I64 }
+  add relation ts : T key id generate sequence
+  add default ts.A.x = 7
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "merge constructor T.(A | B) into M { k: K, x: I64 }", detail: "the merge is refused: the default of `ts.A.x` has no image under it" } } }
+  module app
+  merge constructor T.(A | B) into M { k: K, x: I64 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "nest constructor T.(A | B) into N { inner: Inner }", detail: "the nest is refused: the default of `ts.A.x` has no image under it" } } }
+  module app
+  nest constructor T.(A | B) into N { inner: Inner }
+
+migrate
+  module app
+  split constructor T.A into A1 { x: I64 } | A2 { x: I64 }
+    by match
+      | A { x } -> if x > 0 then A1 { x: x } else A2 { x: x }
+
+run
+  insert ts.A1 { n: 1 }
+  insert ts.A2 { n: 2 }
+
+query rowsort
+  from t in ts select { n: t.n, x: match t | A1 a -> a.x | A2 a -> a.x | B b -> b.x | C c -> c.x }
+----
+{ n: 1, x: 7 }
+{ n: 2, x: 7 }
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "merge constructor T.(B | C) into M { k: L, x: I64 }", detail: "`unique (x) in B` ranges over some but not all of the merged constructors and has no image under the merge" } } }
+  module app
+  add unique (x) in ts.B
+  merge constructor T.(B | C) into M { k: L, x: I64 }
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "merge constructor T.(B | C) into M { k: L, x: I64 }", detail: "the merge is refused: constraint `small` selects `C`, some but not all of its constructors" } } }
+  module app
+  add constraint small = from t in ts.C where t.n > 100 select t
+  merge constructor T.(B | C) into M { k: L, x: I64 }
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "nest constructor T.(B | C) into N { inner: Outer }", detail: "the nest is refused: check `positive` selects `ts.B`, some but not all of its constructors" } } }
+  module app
+  add check positive on ts.B (x > 0)
+  nest constructor T.(B | C) into N { inner: Outer }
+
+migrate
+  module app
+  add unique (x) in ts.B
+  add unique (x) in ts.C
+  merge constructor T.(B | C) into M { k: L, x: I64 }
+
+run
+  insert ts.M { n: 3, k: B, x: 1 }
+  insert ts.M { n: 4, k: C, x: 1 }
+
+error Violated { constraint: "app::ts.unique(k, x) in M", report: 2 rows, redacted: 0 }
+  insert ts.M { n: 5, k: B, x: 1 }
+
+migrate
+  module app
+  add type P = X { g: I64 } | Y
+  add type U = { id: Key us, p: P }
+  add relation us : U key id generate sequence
+  add index (p.X.g) in us
+
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "split constructor P.X into X1 { g: I64 } | X2 { g: I64 }", detail: "the split is refused: `index (p.X.g)` of `us` names `P.X` in its element `p.X.g`, which has no image under it" } } }
+  module app
+  split constructor P.X into X1 { g: I64 } | X2 { g: I64 }
+    by match
+      | X { g } -> if g > 0 then X1 { g: g } else X2 { g: g }
+
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "merge constructor P.(X | Y) into Z { g: I64 }", detail: "the merge is refused: `index (p.X.g)` of `us` names `P.X` in its element `p.X.g`, which has no image under it" } } }
+  module app
+  merge constructor P.(X | Y) into Z { g: I64 }
+    by match
+      | X { g } -> Z { g: g }
+      | Y -> Z { g: 0 }

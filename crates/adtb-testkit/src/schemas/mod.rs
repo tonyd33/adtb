@@ -63,25 +63,6 @@ const SEARCH_REVERT_OF_REVERTED_REVOKE: bool = false;
 /// reverted. The second revert is refused: the later operator names the object by its old name.
 const SEARCH_REVERT_OF_REVERTED_RENAME: bool = false;
 
-/// Whether a split into two products or more, a merge or a nest replaces a constructor a unique
-/// names alone, a split adding the unique and a `Bool` field to route by first when missing. The
-/// uniques after it cover other rows than the image of those it covered.
-const SEARCH_REPLACE_UNDER_UNIQUE: bool = false;
-
-/// Whether a split, merge, nest or unnest replaces a constructor a default names, a split, merge
-/// or nest adding the default first. The checker refuses it, naming the constructor as no
-/// constructor of its type.
-const SEARCH_REPLACE_UNDER_DEFAULT: bool = false;
-
-/// Whether a nest replaces a constructor a check names without the other, adding the check
-/// first. The checker refuses it: the check names some but not all of its constructors.
-const SEARCH_NEST_UNDER_CHECK: bool = false;
-
-/// Whether a merge or nest replaces a constructor a constraint selects without the other, adding
-/// the constraint first. The checker refuses it, naming the constructor as neither a constructor
-/// nor a named set.
-const SEARCH_MERGE_UNDER_CONSTRAINT: bool = false;
-
 /// Whether a `drop relation` takes a relation whose own type references its named set, dropping
 /// the set, the relation and the type in one migration. The checker refuses it: the type names a
 /// set no longer declared.

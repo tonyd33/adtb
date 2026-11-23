@@ -90,7 +90,7 @@ impl Model {
     }
 
     /// Returns whether constructor `c` has a field named `name`.
-    fn has_field(&self, c: u64, name: &str) -> bool {
+    pub(super) fn has_field(&self, c: u64, name: &str) -> bool {
         self.ctors[&c]
             .fields
             .iter()
@@ -203,8 +203,10 @@ impl Model {
             );
         }
         let tags = nested_tags(schema, ps, def, &src_ix, inner)?;
+        self.paths_image(t, &sources, "the nest")?;
         let stages = self.restated(&built, t, &sources, true)?;
         let c = self.new_ctor(run, t, &n, Some(fields));
+        self.defaults_image(&built, t, (&sources, &[c]), "the nest", false)?;
         let plan = self.carry_plan(
             run,
             &built,
@@ -217,6 +219,7 @@ impl Model {
         let rewrites = self.nest_clauses(&built, t, (&sources, c), &f)?;
         let (arm_edits, written) = self.arm_writes(run, &built, t, (&sources, &sources), arms)?;
         edits.extend(arm_edits);
+        edits.extend(self.reselect_rows(&built, t, (&sources, &[c]), "the nest", true)?);
         edits.extend(self.reselect(
             &built,
             t,
@@ -353,11 +356,14 @@ impl Model {
             .zip(&made)
             .map(|(&ic, &p)| (cat_ctor(ic), cat_ctor(p)))
             .collect();
+        self.paths_image(t, &[c], "the unnest")?;
+        self.defaults_image(&built, t, (&[c], &made), "the unnest", true)?;
         let plan = self.carry_plan(run, &built, Structural::Unnest, t, (&[c], &products));
         let mut edits = Vec::new();
         let rewrites = self.unnest_clauses(&built, t, (c, &made), &products, &f)?;
         let (arm_edits, written) = self.arm_writes(run, &built, t, (&[c], &[c]), arms)?;
         edits.extend(arm_edits);
+        edits.extend(self.reselect_rows(&built, t, (&[c], &made), "the unnest", false)?);
         edits.extend(self.reselect(
             &built,
             t,
@@ -446,7 +452,7 @@ impl Model {
                 None if same => continue,
                 None => scope.as_ref().expect("a scoped clause").parts.clone(),
                 Some(parts) => {
-                    if reached.len() != inside.len() && inside.len() != sources.len() {
+                    if same && inside.len() != sources.len() {
                         return refuse(format!(
                             "`{shown}` ranges over some but not all of the nested constructors and has no image under the nest"
                         ));

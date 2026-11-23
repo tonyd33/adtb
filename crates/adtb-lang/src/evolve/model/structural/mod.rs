@@ -2,7 +2,7 @@ mod merge;
 mod nest;
 mod split;
 
-use super::op::{Res, broken, refuse, refuse_at};
+use super::op::{Res, refuse, refuse_at};
 use super::reselect::{Edit, reselected, sel_range};
 use super::run::{Built, Run};
 use super::*;
@@ -102,6 +102,125 @@ impl Model {
             }
         }
         out
+    }
+
+    /// Put each default of a relation variable of `t` on a constructor of `sources` on each of
+    /// `made` holding its field. With `apart` each product takes the default of its source;
+    /// otherwise defaults alike on every source become one. Refuse any other default as the
+    /// operator `what`.
+    pub(super) fn defaults_image(
+        &mut self,
+        built: &Built,
+        t: u64,
+        (sources, made): (&[u64], &[u64]),
+        what: &str,
+        apart: bool,
+    ) -> Res<()> {
+        let header = self.header_names(t);
+        for (r, _, rname) in self.rels_of(built, t) {
+            let mut on: Vec<(usize, u64, String, String)> = Vec::new();
+            for (k, c) in self.relations[&r].clauses.iter().enumerate() {
+                if let ClauseM::Default {
+                    ctor: Some(x),
+                    field,
+                    value,
+                    ..
+                } = c
+                    && let Some((Space::Shared, s)) = x.objects().next()
+                    && sources.contains(&s)
+                {
+                    on.push((k, s, field.print(self), value.print(self)));
+                }
+            }
+            let mut images: Vec<(usize, Vec<ClauseM>)> = Vec::new();
+            let mut gone: BTreeSet<usize> = BTreeSet::new();
+            for (k, s, f, v) in &on {
+                if gone.contains(k) {
+                    continue;
+                }
+                let holding: Vec<u64> = made
+                    .iter()
+                    .copied()
+                    .filter(|&p| header.contains(f) || self.has_field(p, f))
+                    .collect();
+                let alike: Vec<usize> = on
+                    .iter()
+                    .filter(|(_, _, g, w)| g == f && w == v)
+                    .map(|x| x.0)
+                    .collect();
+                let each = sources
+                    .iter()
+                    .all(|x| on.iter().any(|(j, y, ..)| y == x && alike.contains(j)));
+                if holding.is_empty() || !(apart || each) {
+                    return refuse(format!(
+                        "{what} is refused: the default of `{rname}.{}.{f}` has no image under it",
+                        self.ctors[s].name
+                    ));
+                }
+                let held = &self.relations[&r].clauses[*k];
+                let put = holding
+                    .iter()
+                    .map(|&p| {
+                        let mut d = held.clone();
+                        if let ClauseM::Default { ctor, ids, .. } = &mut d {
+                            *ctor = Some(Term::name((Space::Shared, p), &self.ctors[&p].name));
+                            ids.clear();
+                        }
+                        d
+                    })
+                    .collect();
+                if apart {
+                    gone.insert(*k);
+                } else {
+                    gone.extend(alike);
+                }
+                images.push((*k, put));
+            }
+            let rel = self.relations.get_mut(&r).expect("a relation variable");
+            let mut out = Vec::new();
+            for (k, c) in rel.clauses.drain(..).enumerate() {
+                match images.iter().position(|(j, _)| *j == k) {
+                    Some(i) => out.append(&mut images[i].1),
+                    None if gone.contains(&k) => {}
+                    None => out.push(c),
+                }
+            }
+            rel.clauses = out;
+        }
+        Ok(())
+    }
+
+    /// Refuse as the operator `what` replacing the constructors `sources` of type `t` a unique
+    /// or index of any relation variable with an element path through one of them.
+    pub(super) fn paths_image(&self, t: u64, sources: &[u64], what: &str) -> Res<()> {
+        for rel in self.relations.values() {
+            for c in &rel.clauses {
+                let ClauseM::Index { kind, elems, .. } = c else {
+                    continue;
+                };
+                let through = elems.iter().find_map(|e| {
+                    e.objects()
+                        .find(|o| o.0 == Space::Shared && sources.contains(&o.1))
+                        .map(|o| (e, o.1))
+                });
+                if let Some((e, s)) = through {
+                    return refuse(format!(
+                        "{what} is refused: `{} ({})` of `{}` names `{}.{}` in its element `{}`, which has no image under it",
+                        split::kind_word(*kind),
+                        elems
+                            .iter()
+                            .map(|x| x.print(self))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        rel.name,
+                        self.types[&t].name,
+                        self.ctors[&s].name,
+                        e.print(self)
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns the constructors of type `t` that `sel` names, in declaration order.
@@ -363,16 +482,16 @@ impl Model {
 
     /// Returns the edits that put `by` in place of `gone` of type `t` in every selection an
     /// expression or a row type makes, such as `from l in places.Location` or
-    /// `(p: Place.Location)`, as `built` resolves the declarations. With `whole`, a selection
-    /// of only some of `gone` is left as it is.
+    /// `(p: Place.Location)`, as `built` resolves the declarations. With `whole`, refuse a
+    /// selection of only some of `gone` as the operator `what`.
     pub(super) fn reselect_rows(
         &self,
         built: &Built,
         t: u64,
-        gone: &[u64],
-        by: &[u64],
+        (gone, by): (&[u64], &[u64]),
+        what: &str,
         whole: bool,
-    ) -> Vec<Edit> {
+    ) -> Res<Vec<Edit>> {
         let schema = built.schema();
         let def = def_in(schema, t);
         let gone_ix: Vec<u32> = gone.iter().map(|&c| ctor_in(schema, c)).collect();
@@ -426,18 +545,28 @@ impl Model {
                 else {
                     continue;
                 };
-                if let Some(Some(sel)) = reselected(&names, gone, by, whole)
-                    && !sel.is_empty()
-                {
-                    let range = sel_range(built.text(file), &idents);
-                    let edit = Edit::new(j, range.start - h..range.end - h, self.selection(&sel));
-                    if !out.iter().any(|e| e.same_place(&edit)) {
-                        out.push(edit);
+                match reselected(&names, gone, by, whole) {
+                    Some(None) => {
+                        let shown: Vec<&str> = idents.iter().map(|x| x.text.as_str()).collect();
+                        return refuse(format!(
+                            "{what} is refused: {} selects `{}`, some but not all of its constructors",
+                            self.shown_decl(j),
+                            shown.join(" | ")
+                        ));
                     }
+                    Some(Some(sel)) if !sel.is_empty() => {
+                        let range = sel_range(built.text(file), &idents);
+                        let edit =
+                            Edit::new(j, range.start - h..range.end - h, self.selection(&sel));
+                        if !out.iter().any(|e| e.same_place(&edit)) {
+                            out.push(edit);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -452,26 +581,24 @@ struct Scoped {
     rescoped: Option<Vec<Term>>,
 }
 
-/// What a routing gives: what it carries whole, its function of a row and its canonical form.
+/// What a routing gives: its function of a row and its canonical form.
 pub(super) struct Routing {
-    carries: Carries,
     rows: RowFn,
     text: String,
-    made: Vec<(u64, Option<Vec<u64>>)>,
 }
 
-impl Routing {
-    /// Refuse as broken unless `made`, the products of `model`, have the ids of the products
-    /// the routing was typed against.
-    fn typed_for(&self, model: &Model, made: &[u64]) -> Res<()> {
-        let held: Vec<(u64, Option<Vec<u64>>)> = made
-            .iter()
-            .map(|c| (*c, model.ctors[c].fields.clone()))
-            .collect();
-        if held == self.made {
-            Ok(())
-        } else {
-            broken("a routing typed against products of other ids")
+/// Returns what routing `arms` carry whole: each source field an arm binds and gives a product
+/// field, with the source and the product.
+pub(super) fn carried(arms: &[ast::Arm]) -> Carries {
+    let mut carries = Vec::new();
+    for img in arms.iter().map(crate::evolve::ctor::arm_image) {
+        if let (Some(from), Some(to)) = (&img.from, &img.to) {
+            for (g, f) in &img.given {
+                if let Some(f) = f {
+                    carries.push((from.clone(), f.clone(), to.clone(), g.clone()));
+                }
+            }
         }
     }
+    carries
 }
