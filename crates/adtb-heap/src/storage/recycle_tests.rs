@@ -151,7 +151,11 @@ fn an_archive_holding_nothing_keeps_every_segment_and_one_bounds_the_recycle() {
         pager.set_archive(Arc::new(|| Some(Lsn(SEGMENT))));
         pager.recycle_log()
     });
-    assert_eq!((1, before[1..].to_vec()), (removed, segments(&sim.files())));
+    let kept: Vec<u64> = segments(&sim.files())
+        .into_iter()
+        .filter(|s| before.contains(s))
+        .collect();
+    assert_eq!((1, before[1..].to_vec()), (removed, kept));
 }
 
 fn envelope() -> Envelope {

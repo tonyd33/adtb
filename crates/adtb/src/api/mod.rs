@@ -487,7 +487,7 @@ impl<R: Runtime> Engine<R> {
         }
         self.stop_reindexing();
         if was_open {
-            self.pager.close();
+            self.pager.close_owing(self.background.owes_mend());
             if let Some(a) = &self.archiver {
                 a.archive();
             }
@@ -924,6 +924,7 @@ impl<R: Runtime> Engine<R> {
         opening: Opening,
         options: &OpenOptions,
     ) -> Result<Engine<R>, OpenError> {
+        let owed = opening.unclean();
         drop(opening);
         let Opened {
             rt,
@@ -945,7 +946,8 @@ impl<R: Runtime> Engine<R> {
         });
         let background =
             maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)?
-                .vacuuming(options.background_vacuum());
+                .vacuuming(options.background_vacuum())
+                .owing(owed, !pager.refused_whole());
         let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
         Ok(Engine {
             rt,

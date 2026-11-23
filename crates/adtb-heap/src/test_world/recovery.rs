@@ -2,28 +2,18 @@
 
 use crate::runtime::Runtime;
 use crate::storage::Pager;
-use crate::verify::{Inventory, repair, verify};
+use crate::verify::{Inventory, Problem, verify};
 
-/// Returns what `verify` finds wrong with the file after a crash: every finding `repair` does not
-/// mend, then, once it has mended the rest, every finding of a second pass.
+/// Returns what `verify` finds wrong with the file after a crash: every finding but a leaked page,
+/// which an open frees, and what the mend pass mends.
 pub fn verify_after_crash<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Vec<String> {
     let report = verify(pager, inventory);
     let mut problems: Vec<String> = report
-        .unrepairable()
+        .unmended()
         .iter()
+        .filter(|f| f.problem != Problem::Leaked)
         .map(|f| format!("{f:?}"))
         .collect();
     problems.extend(report.log.iter().map(|l| format!("{l:?}")));
-    if !problems.is_empty() {
-        return problems;
-    }
-    repair(pager, inventory, &report).expect("repair");
-    let again = verify(pager, inventory);
-    let mut problems: Vec<String> = again
-        .findings
-        .iter()
-        .map(|f| format!("after repair: {f:?}"))
-        .collect();
-    problems.extend(again.log.iter().map(|l| format!("after repair: {l:?}")));
     problems
 }

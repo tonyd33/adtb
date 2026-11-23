@@ -883,7 +883,7 @@ impl Catalog {
         let report = {
             let clog = txns.commit_log();
             let structures = self.structures();
-            verify::verify_with(pager, &structures.inventory(&clog), Depth::STRUCTURE)
+            verify::verify_with(pager, &structures.inventory(Some(&clog)), Depth::STRUCTURE)
         };
         if !report.complete {
             return Err(unfinished(&report));

@@ -456,9 +456,8 @@ Postconditions of `Storage`:
   world made them.
 - `verify`, and `Parts::verify` over the same structures held
   elsewhere, run `verify` over every structure of the world, heap `i`
-  as constructor `i` of one sum that every index ranges over, then
-  `repair` and a second pass, and answer what either pass finds that
-  is not mended.
+  as constructor `i` of one sum that every index ranges over, and
+  answer what it finds but a leaked page and what the mend pass mends.
 
 Postconditions of `DataFile`: a page's bytes are the page-size run at
 its id in the data file ([storage.md §1](storage.md#1-the-file));

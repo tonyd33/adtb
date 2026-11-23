@@ -1,5 +1,6 @@
 //! Check a file's structures against each other and report each problem.
 
+mod mend;
 #[cfg(test)]
 mod scrub_tests;
 
@@ -12,6 +13,8 @@ use crate::key::{CtorId, Tid, listed};
 use crate::mvcc::{CommitLog, Owes, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
+
+pub use mend::{Mended, finish_splits, mend_store};
 
 /// The heaps and indexes of one sum, as the caller knows them.
 #[derive(Debug)]
@@ -64,13 +67,10 @@ pub enum Problem {
 }
 
 impl Problem {
-    /// Returns whether [`repair`] mends the problem.
+    /// Returns whether [`mend_store`] mends the problem.
     #[cfg(any(test, feature = "testing"))]
-    pub fn repairable(&self) -> bool {
-        matches!(
-            self,
-            Problem::Leaked | Problem::Overcounted { .. } | Problem::Unsettled(_)
-        )
+    pub fn mended(&self) -> bool {
+        matches!(self, Problem::Overcounted { .. } | Problem::Unsettled(_))
     }
 }
 
@@ -159,12 +159,12 @@ impl Report {
             .collect()
     }
 
-    /// Returns the findings [`repair`] does not mend.
+    /// Returns the findings [`mend_store`] does not mend.
     #[cfg(any(test, feature = "testing"))]
-    pub fn unrepairable(&self) -> Vec<&Finding> {
+    pub fn unmended(&self) -> Vec<&Finding> {
         self.findings
             .iter()
-            .filter(|f| !f.problem.repairable())
+            .filter(|f| !f.problem.mended())
             .collect()
     }
 }
@@ -523,6 +523,43 @@ pub(crate) fn entries<R: Runtime>(
     Ok(problems)
 }
 
+/// Returns each large-value store the heaps of `inventory` name, with those heaps.
+pub fn stores<'a>(inventory: &Inventory<'a>) -> Vec<(LargeStore, Vec<&'a Heap>)> {
+    let mut stores: Vec<(LargeStore, Vec<&Heap>)> = Vec::new();
+    for (_, heap) in inventory.sums.iter().flat_map(|s| &s.heaps) {
+        match stores.iter_mut().find(|(s, _)| *s == heap.large()) {
+            Some((_, hs)) => hs.push(heap),
+            None => stores.push((heap.large(), vec![heap])),
+        }
+    }
+    stores
+}
+
+/// Check `store` and `heaps` alone: each heap's pages, rows and directory, and the store's
+/// chunks, directory and counts against the versions of `heaps`. Reports no page leaked.
+pub fn verify_store<R: Runtime>(pager: &Pager<R>, store: LargeStore, heaps: &[&Heap]) -> Report {
+    let mut walk = Walk {
+        pager,
+        findings: Vec::new(),
+        owners: BTreeMap::new(),
+        complete: true,
+        indexes: false,
+    };
+    for heap in heaps {
+        walk.heap(heap);
+    }
+    walk.large(store, heaps);
+    let mut findings = walk.findings;
+    findings.sort();
+    findings.dedup();
+    Report {
+        findings,
+        log: Vec::new(),
+        commits: Vec::new(),
+        complete: walk.complete,
+    }
+}
+
 /// Check the whole file against `inventory`: every page and the retained log as the pager checks
 /// them, every structure's own pages, every heap row's decoding, every index entry against the
 /// heap it names, and the allocation bitmap against the pages the structures refer to.
@@ -565,7 +602,6 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
     if let Some(clog) = inventory.commit_log {
         walk.commit_log(clog);
     }
-    let mut stores: Vec<(LargeStore, Vec<&Heap>)> = Vec::new();
     for sum in &inventory.sums {
         walk.sum(sum);
         let heaps: Vec<&Heap> = sum.heaps.iter().map(|(_, h)| *h).collect();
@@ -573,13 +609,9 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
             if let Some(clog) = inventory.commit_log {
                 walk.chains(heap, &heaps, clog);
             }
-            match stores.iter_mut().find(|(s, _)| *s == heap.large()) {
-                Some((_, hs)) => hs.push(heap),
-                None => stores.push((heap.large(), vec![heap])),
-            }
         }
     }
-    for (store, heaps) in stores {
+    for (store, heaps) in stores(inventory) {
         walk.large(store, &heaps);
     }
     for (i, &tree) in inventory.trees.iter().enumerate() {
@@ -596,74 +628,4 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
         commits,
         complete: walk.complete,
     }
-}
-
-/// Free every page `report` found leaked, set every head it found overcounted to the number of
-/// versions that point at it, and settle every directory it found unsettled. Returns the number
-/// of findings mended.
-///
-/// Preconditions: `report` is complete and was made by [`verify`] against `inventory` with no
-/// write since.
-///
-/// Panics:
-/// - `report` is not complete.
-#[cfg(any(test, feature = "testing"))]
-pub fn repair<R: Runtime>(
-    pager: &Pager<R>,
-    inventory: &Inventory,
-    report: &Report,
-) -> Result<usize, PageError> {
-    assert!(
-        report.complete,
-        "a report that did not read every structure whole cannot name leaks"
-    );
-    let stores: Vec<LargeStore> = inventory
-        .sums
-        .iter()
-        .flat_map(|s| s.heaps.iter().map(|(_, h)| h.large()))
-        .collect();
-    let mut mended = 0;
-    let mut unsettled = BTreeSet::new();
-    for f in &report.findings {
-        match f.problem {
-            Problem::Unsettled(_) => {
-                unsettled.insert(pager.read(f.pid)?.owner());
-            }
-            Problem::Leaked => {
-                pager.free(f.pid)?;
-            }
-            Problem::Overcounted { slot, versions, .. } => {
-                let owner = pager.read(f.pid)?.owner();
-                let store = stores
-                    .iter()
-                    .find(|s| s.id() == owner)
-                    .expect("an overcounted head lies in a store of the inventory");
-                let head = Tid::new(f.pid.0, slot).expect("48-bit page id");
-                store.recount(pager, head, versions).map_err(|e| match e {
-                    crate::heap::Refused::Page(e) => e,
-                    crate::heap::Refused::Gone => panic!(
-                        "a recount changes only a store page, which ranks below every directory page"
-                    ),
-                })?;
-            }
-            _ => continue,
-        }
-        mended += 1;
-    }
-    for owner in unsettled {
-        let heap = inventory
-            .sums
-            .iter()
-            .flat_map(|s| s.heaps.iter().map(|(_, h)| *h))
-            .find(|h| h.id().0 == owner);
-        match heap {
-            Some(h) => h.settle_directory(pager)?,
-            None => stores
-                .iter()
-                .find(|s| s.id() == owner)
-                .expect("an unsettled directory belongs to a structure of the inventory")
-                .settle_directory(pager)?,
-        }
-    }
-    Ok(mended)
 }

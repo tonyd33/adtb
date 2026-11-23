@@ -29,6 +29,14 @@ pub struct Recovery {
     pub log: Vec<LogFinding>,
     /// Pages replay could not bring up to date.
     pub damaged: Vec<(Pid, Damage)>,
+    closed: bool,
+}
+
+impl Recovery {
+    /// Returns whether the log ends at a close that owed the file nothing.
+    pub fn closed(&self) -> bool {
+        self.closed
+    }
 }
 
 /// The replay of the log at an open.
@@ -60,6 +68,15 @@ fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
 }
 
 impl<R: Runtime> Pager<R> {
+    /// Write every changed page, take a checkpoint, log a closed record, and close the data file
+    /// and every log segment.
+    ///
+    /// Preconditions: every other call on the pager has returned, and none follows but
+    /// [`Pager::is_closed`].
+    pub fn close(&self) {
+        self.close_owing(false);
+    }
+
     /// Open an existing database and recover it from its log. Returns the pager and its open.
     pub fn open(rt: R, options: &Options) -> Result<(Pager<R>, Opening), OpenError> {
         check_options(options)?;
@@ -185,6 +202,7 @@ impl<R: Runtime> Pager<R> {
         let end = s.end;
         let (mut map, mut since) = (map, ck);
         let mut unproven = None;
+        let mut closed = false;
         scan(&mut img, from, Mode::Recovery, |batch, _| {
             if batch.start >= end {
                 return;
@@ -202,6 +220,7 @@ impl<R: Runtime> Pager<R> {
                         None => unproven = Some((root, lsn)),
                     }
                 }
+                closed = record == Record::Closed;
                 self.replay(&mut replay, lsn, record);
             }
         });
@@ -236,6 +255,7 @@ impl<R: Runtime> Pager<R> {
             applied: replay.applied,
             log: s.findings,
             damaged: self.damaged().into_iter().collect(),
+            closed,
         };
         Ok((recovery, pages, armed))
     }

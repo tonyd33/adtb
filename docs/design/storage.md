@@ -319,9 +319,12 @@ Postconditions:
 - `wall` returns the wall-clock time of the runtime the pager was
   created or opened with, the clock commit records carry.
 - `close` makes every record logged before it durable, writes every
-  changed page and forces the data file, takes a checkpoint, then
-  closes the data file and every log segment the pager opened. An open
-  after it replays no page record.
+  changed page and forces the data file, takes a checkpoint, logs and
+  forces a closed record, then closes the data file and every log
+  segment the pager opened. An open after it replays no page record.
+  `close_owing(true)` closes the same way but logs no closed record.
+- An open's `unclean` is true exactly when its recovery found the log
+  ending at a record other than a closed record.
 - A `create` or `open` that fails leaves no file of the database open.
 - When every frame stays latched past the options' stall bound, the
   page-in waiting for a frame panics, reporting a stalled pool.
@@ -534,6 +537,7 @@ describes a change to one page, or a transaction or system event:
 | checkpoint | redo LSN and dirty page table (§6) |
 | damage | page id and its damage, other than a page the device cannot read (§8) |
 | freed | page id of a page a batch frees |
+| closed | nothing: the process closed the file owing it no mend pass ([verify.md §3](verify.md#3-the-mend-pass)) |
 
 A damage or freed record is no page record: it changes no page,
 continues no page's chain of records and gives no page an expected LSN.

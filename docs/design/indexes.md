@@ -456,8 +456,11 @@ Postconditions:
   adds that page's downlink, the left sibling's high key as separator,
   to the parent level, then descends again.
 - A repair pass walks each level below the root by its right links and
-  finishes each flagged page it meets. After recovery and one repair
-  pass, every page but the root has its downlink.
+  finishes each flagged page it meets. The mend pass runs it after an
+  unclean shutdown, holding the index's latch around each finish
+  ([verify.md](verify.md#3-the-mend-pass)). After
+  recovery and one repair pass, every page but the root has its
+  downlink.
 - `verify` refuses a page that lacks a downlink without carrying the
   flag, or carries the flag and has one. It reads each page on its own,
   so it judges the tree only while no writer runs; a repair pass may

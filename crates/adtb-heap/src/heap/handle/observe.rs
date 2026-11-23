@@ -156,11 +156,6 @@ impl Heap {
             .collect())
     }
 
-    /// Set every inner directory entry to what its child holds, each in an update of its own.
-    pub fn settle_directory<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), PageError> {
-        self.space.settle(pager)
-    }
-
     /// Returns the number of positions of the heap's directory that name no page.
     pub fn holes<R: Runtime>(&self, pager: &Pager<R>) -> Result<usize, PageError> {
         let check = self.space.check(pager)?;

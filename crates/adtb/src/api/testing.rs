@@ -49,6 +49,11 @@ impl<R: Runtime> Database<R> {
         self.engine.reindexing.threads.lock(&self.engine.rt).clone()
     }
 
+    /// Returns what the mend pass of this process did, `None` until it has run.
+    pub(crate) fn mended(&self) -> Option<crate::verify::Mended> {
+        self.engine.background.mended()
+    }
+
     /// Returns the next page of the background scrub's pass as last saved in the file: the page,
     /// `None` between passes, and `None` of the outer option when nothing has been saved.
     pub(crate) fn saved_scrub_page(&self) -> Option<Option<Pid>> {

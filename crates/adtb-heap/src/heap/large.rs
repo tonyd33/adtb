@@ -5,12 +5,13 @@ use crate::key::Tid;
 use crate::mvcc::{StatusError, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{
-    LATCHES_PER_THREAD, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Undecoded, Walk,
-    kind_fault,
+    LATCHES_PER_THREAD, Lsn, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Undecoded, Walk,
+    kind_fault, lsn,
 };
 use crate::vacuum::Vacuuming;
 
-use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
+use super::dir::planted::fanout;
+use super::dir::{Above, Fit, Space, need_category, page_category};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
 use super::row::{Pointer, value_limit};
 use super::slotted;
@@ -256,7 +257,7 @@ pub struct LargeStore {
 impl LargeStore {
     /// Create an empty store; `id` comes from the heap id space.
     pub fn create<R: Runtime>(pager: &Pager<R>, id: u32) -> Result<LargeStore, PageError> {
-        let fanout = max_fanout(pager.page_size());
+        let fanout = fanout(pager.page_size());
         Ok(LargeStore {
             space: Space::create(pager, id, fanout, None)?,
         })
@@ -788,21 +789,68 @@ impl LargeStore {
         head: Tid,
         count: u32,
     ) -> Result<(), Refused> {
+        let pid = Pid(head.page());
+        self.set_counts(HeapWrite::new(pager), pager, pid, &[(head.slot(), count)])
+    }
+
+    /// Lower the count of each head on page `pid` that `heads` names by its slot to the count
+    /// it gives, in one update, unless an update of the page was logged at or after `since`.
+    /// Returns how many heads it lowered, none of a head that counts no more than its count, or
+    /// `None` when the page changed. Refuses the page when no head is at a slot of `heads`.
+    pub fn lower_unchanged<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        heads: &[(u16, u32)],
+        since: Lsn,
+    ) -> Result<Option<usize>, Refused> {
         let mut write = HeapWrite::new(pager);
+        let page = write.stage().page(pager, Rank::Store(pid))?;
+        if lsn(page) >= since {
+            return Ok(None);
+        }
+        let mut lower = Vec::new();
+        for &(slot, count) in heads {
+            let Some(chunk) = chunk_at(page, self.id(), usize::from(slot)) else {
+                let shape = chunk_fault(page, self.id(), usize::from(slot));
+                return Err(write
+                    .stage()
+                    .refuse(pid, shape.unwrap_or(Shape::Frame))
+                    .into());
+            };
+            if chunk.head && chunk.count > count {
+                lower.push((slot, count));
+            }
+        }
+        if lower.is_empty() {
+            return Ok(Some(0));
+        }
+        self.set_counts(write, pager, pid, &lower)?;
+        Ok(Some(lower.len()))
+    }
+
+    fn set_counts<'p, R: Runtime>(
+        &self,
+        mut write: HeapWrite<'p, '_, R>,
+        pager: &'p Pager<R>,
+        pid: Pid,
+        heads: &[(u16, u32)],
+    ) -> Result<(), Refused> {
         let stage = write.stage();
-        self.update(stage, pager, head, |c| {
-            c.count = count;
-            c.head
-        })?;
-        let page = stage.page(pager, Rank::Store(Pid(head.page())))?;
+        for &(slot, count) in heads {
+            let head = tid(pid, usize::from(slot));
+            self.update(stage, pager, head, |c| {
+                c.count = count;
+                c.head
+            })?;
+        }
+        let page = stage.page(pager, Rank::Store(pid))?;
         let mut above = Above::default();
-        if count == 0 {
+        if heads.iter().any(|&(_, count)| count == 0) {
             let position = HeapPage::any(page)
                 .expect("a page holding a chunk")
                 .position();
-            above = self
-                .space
-                .touch(stage, pager, Pid(head.page()), position, true)?;
+            above = self.space.touch(stage, pager, pid, position, true)?;
         }
         Ok(write.commit_store(pager.reserve(), above)?)
     }
@@ -917,8 +965,14 @@ impl LargeStore {
         Ok(self.space.check(pager)?.unsettled)
     }
 
-    /// Set every inner directory entry to what its child holds, each in an update of its own.
+    /// Leave an inner directory entry promising less than its child holds, as
+    /// [`Space::unsettle`] does. Returns whether it found one to change.
     #[cfg(any(test, feature = "testing"))]
+    pub fn unsettle<R: Runtime>(&self, pager: &Pager<R>) -> Result<bool, PageError> {
+        self.space.unsettle(pager)
+    }
+
+    /// Set every inner directory entry to what its child holds, each in an update of its own.
     pub fn settle_directory<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), PageError> {
         self.space.settle(pager)
     }

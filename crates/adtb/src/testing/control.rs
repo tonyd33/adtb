@@ -75,6 +75,12 @@ impl<'a, R: Runtime> Testing<'a, R> {
             .collect()
     }
 
+    /// Returns what the mend pass of this process did, `None` until it has run: an open schedules
+    /// one when the log shows the last process did not close the file.
+    pub fn mended(self) -> Option<crate::verify::Mended> {
+        self.db.mended()
+    }
+
     /// Write the log.
     pub fn flush_log(self) {
         self.db.tested_pager().flush_log();

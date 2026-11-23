@@ -65,6 +65,12 @@ impl Opening {
         self.recovery = Some(recovery);
     }
 
+    /// Returns whether the open recovered a log that does not end at a close owing the file
+    /// nothing.
+    pub fn unclean(&self) -> bool {
+        self.recovery.as_ref().is_some_and(|r| !r.closed())
+    }
+
     /// Returns what the open's recovery found and did, `None` for a file this open created.
     #[cfg(any(test, feature = "testing"))]
     pub fn recovery(&self) -> Option<&Recovery> {

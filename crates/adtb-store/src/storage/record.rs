@@ -67,6 +67,9 @@ pub enum Record {
     Freed {
         pid: Pid,
     },
+    /// The process closed the file owing it nothing. A log ending past this record ends at a
+    /// crash, or at a close that owed the file a mend pass.
+    Closed,
 }
 
 const CHANGE: u8 = 1;
@@ -79,6 +82,7 @@ const SAFE_SNAPSHOT: u8 = 7;
 const MAP_ROOT: u8 = 8;
 const DAMAGED: u8 = 9;
 const FREED: u8 = 10;
+const CLOSED: u8 = 11;
 
 const CHECKSUM: u8 = 1;
 const STALE: u8 = 2;
@@ -293,6 +297,7 @@ impl Record {
                 put_u64(out, pid.0);
                 FREED
             }
+            Record::Closed => CLOSED,
         };
         let body = len32(out.len() - start - PREFIX);
         out[start] = tag;
@@ -386,6 +391,7 @@ impl Record {
                 }
             }
             FREED => Record::Freed { pid: Pid(b.u64()?) },
+            CLOSED => Record::Closed,
             _ => return Err(Malformed),
         };
         if !b.bytes.is_empty() {

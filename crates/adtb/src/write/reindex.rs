@@ -404,7 +404,7 @@ impl<R: Runtime> Database<R> {
     /// Returns the vacuum lock unless another holds it, else the holder's thread.
     /// [`Gate::VacuumHolder`] runs exactly while one does, so a call that watches it and finds it
     /// ended finds the lock free.
-    fn try_hold_vacuum(&self) -> Result<VacuumHold<'_, R>, ThreadId> {
+    pub(super) fn try_hold_vacuum(&self) -> Result<VacuumHold<'_, R>, ThreadId> {
         self.try_hold(Holder::Keeps {
             thread: self.rt.current(),
         })

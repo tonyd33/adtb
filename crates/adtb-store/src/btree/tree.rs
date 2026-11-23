@@ -810,6 +810,31 @@ impl BTree {
         Ok(())
     }
 
+    /// Split the leaf holding `entry` in two, leaving the new right page without its downlink as
+    /// a crash between a split and its finish leaves it. Returns the new page, or `None` when that
+    /// leaf is the root or holds fewer than two entries.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn split_unfinished<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        entry: &[u8],
+    ) -> Result<Option<Pid>, Error> {
+        let pid = self.descend(pager, self.root, entry, 0)?.pid;
+        if pid == self.root {
+            return Ok(None);
+        }
+        let mut g = pager.exclusive(pid)?;
+        let items = latched(&g, pid, self.owner)?
+            .items()
+            .map_err(|Malformed| Error::Malformed(pid))?;
+        if items.len() < 2 {
+            return Ok(None);
+        }
+        let at = items.len() / 2;
+        let split = self.split_page(pager, &mut g, 0, &items, at, None)?;
+        Ok(split.map(|(_, q)| q))
+    }
+
     /// Finish `split`, if there is one.
     fn finish_all<R: Runtime>(&self, pager: &Pager<R>, split: Option<Split>) -> Result<(), Error> {
         if let Some(s) = split {

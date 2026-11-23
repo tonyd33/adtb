@@ -99,7 +99,7 @@ fn assert_clean(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transaction
     let clog = txns.commit_log();
     let report = verify::verify_with(
         pager,
-        &catalog.structures().inventory(&clog),
+        &catalog.structures().inventory(Some(&clog)),
         Depth::STRUCTURE,
     );
     assert!(report.complete, "{:?}", report.findings);

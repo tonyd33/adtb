@@ -343,7 +343,28 @@ pub fn each_crash_image(
     workload: ArmedEvents<'_>,
     check: &mut dyn FnMut(usize, Files),
 ) {
-    let mut sim = Sim::with_files(seed, Config::default(), files.clone());
+    each_crash_image_under(
+        Config::default(),
+        files,
+        seed,
+        most,
+        images,
+        workload,
+        check,
+    );
+}
+
+/// Search as [`each_crash_image`] does, running `workload` under `config`.
+pub fn each_crash_image_under(
+    config: Config,
+    files: &Files,
+    seed: u64,
+    most: u64,
+    images: usize,
+    workload: ArmedEvents<'_>,
+    check: &mut dyn FnMut(usize, Files),
+) {
+    let mut sim = Sim::with_files(seed, config, files.clone());
     sim.record();
     let also = process::run(&mut sim, |rt| workload(&rt));
     let first = sim.numbered().armed_at();

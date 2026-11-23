@@ -12,6 +12,7 @@ mod fresh;
 mod grant;
 mod input;
 mod keyed;
+mod mend;
 mod past;
 mod polarity;
 mod quarantine;
@@ -30,6 +31,8 @@ mod writing;
 mod admit_tests;
 #[cfg(test)]
 mod calls_tests;
+#[cfg(test)]
+mod mend_tests;
 #[cfg(test)]
 mod past_tests;
 #[cfg(test)]

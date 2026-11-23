@@ -37,6 +37,8 @@ pub use chain::{successor, walk};
 #[cfg(test)]
 pub use dir::max_fanout;
 #[cfg(any(test, feature = "testing"))]
+pub use dir::planted::create_directories_with_fanout;
+#[cfg(any(test, feature = "testing"))]
 pub use handle::Laid;
 #[cfg(any(test, feature = "testing"))]
 pub use handle::Pruned;

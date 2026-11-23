@@ -52,8 +52,8 @@ Invariants:
 - An inner entry has at least the greatest category of its child, and
   is touched when an entry of its child is, except above a change not
   yet settled: a crash then may leave the entries above it promising
-  too little. `verify` reports such an entry and `repair` settles the
-  directory ([verify.md](verify.md)).
+  too little. `verify` reports such an entry and the mend pass settles
+  the directory ([verify.md](verify.md#3-the-mend-pass)).
 - A heap page stays in the directory, at its position, until vacuum
   finds it empty (§10.1) or the heap is dropped. A removed page leaves
   a hole at its position, which the next insert needing room fills
@@ -1433,7 +1433,8 @@ count 0 on a touched page whose writer has resolved, one chunk per
 update, making the next chunk a head of count 0 as it goes, and
 unmarks a page left with no head of count 0. A crash anywhere leaves a
 head of count 0 on a touched page, or a count too high: the latter
-`verify` reports and `repair` mends ([verify.md](verify.md)).
+`verify` reports and the mend pass lowers
+([verify.md](verify.md#3-the-mend-pass)).
 
 Rulings: layout/large/toast, layout/large/retag/per-sum
 

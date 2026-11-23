@@ -101,10 +101,6 @@ impl Db {
         self.with_inventory(pages, |i| verify::verify(&self.pager, i))
     }
 
-    fn repair(&self, report: &Report) -> Result<usize, crate::storage::PageError> {
-        self.with_inventory(&[], |i| verify::repair(&self.pager, i, report))
-    }
-
     fn verify(&mut self) -> Report {
         self.verify_with(&[])
     }
@@ -124,14 +120,11 @@ fn problems(report: &Report) -> Vec<(Pid, Problem)> {
 }
 
 #[test]
-fn a_page_nothing_refers_to_is_leaked_and_repair_frees_it() {
+fn a_page_nothing_refers_to_is_leaked() {
     run(2, |db| {
         let lost = db.pager.allocate(1, PageKind::HeapSlotted, 10).unwrap();
         let report = db.verify();
         assert_eq!(vec![(lost, Problem::Leaked)], problems(&report));
-        assert_eq!(Ok(1), db.repair(&report));
-        assert!(db.verify().is_clean());
-        assert_eq!(Ok(lost), db.pager.allocate(1, PageKind::HeapSlotted, 10));
         assert!(db.verify_with(&[lost]).is_clean());
     });
 }
@@ -416,7 +409,7 @@ fn a_large_value(db: &Db) -> crate::heap::Pointer {
 }
 
 #[test]
-fn a_head_counting_too_many_versions_is_repaired() {
+fn a_head_counting_too_many_versions_is_overcounted() {
     run(10, |db| {
         let p = a_large_value(db);
         db.heaps[0].large().recount(&db.pager, p.first, 3).unwrap();
@@ -432,7 +425,5 @@ fn a_head_counting_too_many_versions_is_repaired() {
             )],
             problems(&report)
         );
-        assert_eq!(Ok(1), db.repair(&report));
-        assert!(db.verify().is_clean());
     });
 }

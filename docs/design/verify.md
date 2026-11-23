@@ -103,25 +103,63 @@ Postconditions:
 - A report with no findings and no log findings means the file is
   structurally sound for the inventory given.
 
-## 3. Repair
-
-`repair(pager, inventory, report)` frees every page the report found
-`Leaked`, sets every head it found `Overcounted` to the number of
-versions that point at it, settles every directory it found
-`Unsettled`, and returns how many findings it mended.
-
-Preconditions: the report is complete and was made against `inventory`
-with no write since. `repair` panics on an incomplete report.
-
-Postcondition: a `verify` right after reports no `Leaked` page, no
-`Overcounted` head and no `Unsettled` directory page.
+## 3. The mend pass
 
 A crash between pruning a version and counting it off its values
 leaves a head counting too many versions
-([mvcc.md §12.5](mvcc.md#125-large-values)), and a crash during a
-change to a directory may leave the entries above it unsettled. After every crash and
-recovery, `verify` finds nothing that `repair` does not mend, and after
-`repair` nothing at all.
+([mvcc.md §12.5](mvcc.md#125-large-values)), a crash during a
+change to a directory may leave the entries above it unsettled, and a
+crash between a split and its parent's update leaves a page without its
+downlink ([indexes.md](indexes.md)). The mend pass sets these right.
+
+A close that owes the file no mend pass ends the log with a `Closed`
+record. An open whose recovery finds the log ending past its last
+`Closed` record, or with none, schedules one pass on the background
+worker (section 6), never in its own path; an open that finds it ending
+at one schedules none. A process that has not finished the pass it owes
+closes without the record, so the next open runs the pass again.
+
+`Database::mend` runs in two steps, checking before each page of a
+tree's walk and before each store whether the worker is stopped, so a
+close waits for at most one page's finish or one store:
+
+1. For each tree, `finish_splits(pager, tree, hold, go)` walks each
+   level by its right links and finishes each split whose page lacks its
+   downlink, as an insert finishes one. For an index's trees `hold` takes
+   the index's latch around each finish, which a rebuild's take-over also
+   holds; under it a descent from the root by the page's low key must
+   reach that page still at its level and still lacking its downlink, or
+   the page is passed over. A tree whose walk fails is left as it is.
+2. Holding vacuum off, for each large-value store and the heaps whose
+   versions point into it, `mend_store(pager, store, heaps, since,
+   settled)` checks them alone as `verify` does, lowers every head it
+   found `Overcounted` to the versions pointing at it, and settles every
+   directory it found `Unsettled`. It frees no `Leaked` page.
+
+Preconditions of `mend_store`:
+
+- No vacuum runs, and every other change to a version or a count is made
+  by a transaction.
+- Every transaction running when the log's next position was `since`
+  has ended, and `settled` returns once every transaction running when
+  it is called has ended.
+
+Postconditions:
+
+- An incomplete check mends nothing; its first finding is left to
+  `verify`.
+- A head is lowered only when no update of its page was logged at or
+  after `since`, and never below the versions that point at it.
+- A head whose page changed is skipped. A pass that skipped a head, or
+  left a structure unmended, is not finished.
+
+After every crash and recovery, `verify` finds nothing the pass does
+not mend, and after a pass that finished, no `Overcounted` head, no
+`Unsettled` directory page and no page without its downlink.
+
+No `sys::` relation states the pass. A test reads what it did through
+the testing surface, and `verify` with the checks of `Depth::FILE`
+finds what it left.
 
 ## 4. A run under writers
 
@@ -193,8 +231,9 @@ open and holds them in memory for reads.
 ## 6. The background scrub
 
 The engine has one background worker: one thread through the runtime's
-spawn, started at open unless `ScrubInterval` is `None`, stopped at close
-before the engine waits for calls, and joined there. It holds shared
+spawn, started at open when the open owes a mend pass (section 3) or
+`ScrubInterval` is not `None`, stopped at close before the engine waits
+for calls, and joined there. It runs the mend pass first, then the scrub. It holds shared
 state and no strong or weak hold on the engine, so a dropped `Database`
 releases the file once the worker's current step returns.
 

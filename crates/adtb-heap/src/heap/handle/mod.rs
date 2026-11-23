@@ -9,7 +9,8 @@ use crate::storage::{self, PageError, PageExclusive, Pager, Pid, Shape, Stopped,
 use crate::vacuum::Vacuuming;
 
 use super::blame::unchanged;
-use super::dir::{Space, max_fanout, need_category, page_category};
+use super::dir::planted::fanout;
+use super::dir::{Space, need_category, page_category};
 use super::large::{self, LargeStore};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
 use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored, value_limit};
@@ -258,8 +259,7 @@ impl Heap {
         row: Vec<FieldType>,
         large: LargeStore,
     ) -> Result<Heap, Error> {
-        let fanout = max_fanout(pager.page_size());
-        Heap::create_with_fanout(pager, id, row, large, fanout)
+        Heap::create_with_fanout(pager, id, row, large, fanout(pager.page_size()))
     }
 
     /// Create an empty heap whose directory pages hold `fanout` entries each.
@@ -1391,6 +1391,11 @@ impl Heap {
     /// what it promises too little. A crash may leave them; [`Heap::settle_directory`] mends them.
     pub fn unsettled<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         Ok(self.space.check(pager)?.unsettled)
+    }
+
+    /// Set every inner directory entry to what its child holds, each in an update of its own.
+    pub fn settle_directory<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), PageError> {
+        self.space.settle(pager)
     }
 
     /// Returns each page of the heap, its directory or its visibility map found wrong, with what

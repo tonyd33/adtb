@@ -7,14 +7,22 @@ use super::leaf;
 #[cfg(any(test, feature = "testing"))]
 use super::node;
 use super::node::{Item, Malformed, Node};
-#[cfg(any(test, feature = "testing"))]
-use super::tree::Split;
-use super::tree::{BTree, Error, node_of, visit};
+use super::tree::{BTree, Error, Split, node_of, visit};
 
 struct Page {
     incomplete: bool,
     low: Option<Vec<u8>>,
     items: Vec<Item>,
+    high: Option<Vec<u8>>,
+    right: Option<Pid>,
+}
+
+/// A page as a repair's walk sees it.
+struct Seen {
+    /// Not deleted, at the level and with the low key the walk expects.
+    live: bool,
+    /// Live and lacking its downlink.
+    incomplete: bool,
     high: Option<Vec<u8>>,
     right: Option<Pid>,
 }
@@ -411,28 +419,37 @@ impl BTree {
         Ok(())
     }
 
-    /// Finish every split whose page lacks its downlink. Returns the number
-    /// this pass finished, which leaves out any another thread finished
-    /// first.
+    /// Finish every split whose page lacks its downlink, as [`BTree::repair_with`] does with
+    /// nothing held and no stop.
     #[cfg(any(test, feature = "testing"))]
     pub fn repair<R: Runtime>(&self, pager: &Pager<R>) -> Result<usize, Error> {
+        let finished = self.repair_with(pager, || (), || true)?;
+        Ok(finished.unwrap_or_default())
+    }
+
+    /// Finish every split whose page lacks its downlink, holding what `hold` returns around the
+    /// finish of each. Returns the number this pass finished, which leaves out any another
+    /// thread finished first, or `None` once `go` fails, checked before each page.
+    ///
+    /// Postcondition: a split is finished only when, under the hold, a descent from the root by
+    /// the page's low key reaches that page still at its level and still lacking its downlink.
+    pub fn repair_with<R: Runtime, H>(
+        &self,
+        pager: &Pager<R>,
+        hold: impl Fn() -> H,
+        go: impl Fn() -> bool,
+    ) -> Result<Option<usize>, Error> {
         let height = self.height(pager)?;
         let mut finished = 0;
         for level in (0..height).rev() {
             let mut next = Some(self.descend(pager, self.root(), &[], level)?.pid);
             let mut low: Option<Vec<u8>> = None;
             while let Some(pid) = next {
-                let (live, incomplete, high, right) = visit(pager, self.owner(), pid, |n| {
-                    let live =
-                        !n.deleted() && n.level() == level && n.low()?.map(<[u8]>::to_vec) == low;
-                    Ok((
-                        live,
-                        n.incomplete(),
-                        n.high()?.map(<[u8]>::to_vec),
-                        n.right(),
-                    ))
-                })?;
-                if !live {
+                if !go() {
+                    return Ok(None);
+                }
+                let seen = self.seen(pager, pid, level, low.as_deref())?;
+                if !seen.live {
                     let key = low.clone().unwrap_or_default();
                     let found = self.descend(pager, self.root(), &key, level)?.pid;
                     low = visit(pager, self.owner(), found, |n| {
@@ -441,27 +458,65 @@ impl BTree {
                     next = Some(found);
                     continue;
                 }
-                if incomplete {
+                if seen.incomplete {
                     let low = low.ok_or(Error::Malformed(pid))?;
-                    let split = Split {
-                        pid,
-                        level,
-                        low,
-                        stack: Vec::new(),
-                    };
-                    if self.finish(pager, split)? {
-                        finished += 1;
+                    let held = hold();
+                    let reached = self.descend(pager, self.root(), &low, level)?.pid;
+                    if reached == pid && self.seen(pager, pid, level, Some(&low))?.incomplete {
+                        let split = Split {
+                            pid,
+                            level,
+                            low,
+                            stack: Vec::new(),
+                        };
+                        if self.finish(pager, split)? {
+                            finished += 1;
+                        }
                     }
+                    drop(held);
                 }
-                low = high;
-                next = right;
+                low = seen.high;
+                next = seen.right;
             }
         }
-        Ok(finished)
+        Ok(Some(finished))
+    }
+
+    /// Returns what a read of page `pid` sees of it as a page at `level` whose low key is `low`.
+    fn seen<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        level: u16,
+        low: Option<&[u8]>,
+    ) -> Result<Seen, Error> {
+        visit(pager, self.owner(), pid, |n| {
+            let live = !n.deleted() && n.level() == level && n.low()? == low;
+            Ok(Seen {
+                live,
+                incomplete: live && n.incomplete(),
+                high: n.high()?.map(<[u8]>::to_vec),
+                right: n.right(),
+            })
+        })
     }
 }
 
 impl BTree {
+    /// Returns each page of the tree that lacks its downlink in its parent.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn unfinished<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Error> {
+        let mut out = Vec::new();
+        for pid in self.pages(pager)? {
+            if visit(pager, self.owner(), pid, |n| {
+                Ok(!n.deleted() && n.incomplete())
+            })? {
+                out.push(pid);
+            }
+        }
+        Ok(out)
+    }
+
     /// Returns every page of the tree as [`BTree::pages`] does, for the mapping of a damaged page
     /// to what holds it.
     pub fn walk<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Stopped> {

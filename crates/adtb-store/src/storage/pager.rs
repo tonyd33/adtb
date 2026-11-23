@@ -1467,16 +1467,17 @@ impl<R: Runtime> Pager<R> {
         Ok(f(self, &mut refs))
     }
 
-    /// Write every changed page, take a checkpoint, and close the data file and every log segment.
-    ///
-    /// Preconditions: every other call on the pager has returned, and none follows but
-    /// [`Pager::is_closed`].
-    pub fn close(&self) {
+    /// Close as [`Pager::close`] does, logging no closed record when `owing`.
+    pub fn close_owing(&self, owing: bool) {
         self.closed.store(true, Ordering::Release);
         self.stop_checkpointer();
         self.flush_log();
         self.flush_pages(usize::MAX);
         self.checkpoint();
+        if !owing {
+            self.log().append(&Record::Closed);
+            self.flush_log();
+        }
         self.close_files();
     }
 

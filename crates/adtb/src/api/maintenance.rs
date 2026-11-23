@@ -1,5 +1,6 @@
-//! The engine's background workers, holding no engine: one thread that runs the background
-//! scrub and one that vacuums each relation as it falls due.
+//! The engine's background workers, holding no engine: one thread that runs the mend pass an
+//! unclean shutdown owes and the background scrub, and one that vacuums each relation as it falls
+//! due.
 
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -16,6 +17,7 @@ use crate::catalog::{self, Rot, engine_relation};
 use crate::exec::{self, F64};
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::storage::{Pid, RetainedLog};
+use crate::verify::Mended;
 use crate::write::{self, Due, Found, panic_text};
 
 use super::settings::Settings;
@@ -31,6 +33,9 @@ const LONGEST_WAIT: Duration = Duration::from_secs(30 * 24 * 3600);
 /// The longest the vacuum worker sleeps before it looks for a relation due.
 const VACUUM_BACKSTOP: Duration = Duration::from_secs(60);
 
+/// How long the mend pass waits between looks for a transaction's end or the vacuum lock.
+const MEND_POLL: Duration = Duration::from_millis(5);
+
 /// How long the vacuum worker waits after another call took the vacuum lock from it.
 const VACUUM_YIELD: Duration = Duration::from_millis(100);
 
@@ -45,6 +50,12 @@ struct Control {
     thread: Option<ThreadId>,
     vacuum_thread: Option<ThreadId>,
     vacuums: bool,
+    /// Whether this process owes the file a mend pass it has not finished.
+    owed: bool,
+    /// Whether the worker runs the mend pass owed.
+    mends: bool,
+    /// What the mend pass of this process did, once it has run.
+    mended: Option<Mended>,
 }
 
 /// The engine's background worker.
@@ -124,8 +135,21 @@ impl<R: Runtime> Background<R> {
                 thread: None,
                 vacuum_thread: None,
                 vacuums: true,
+                owed: false,
+                mends: false,
+                mended: None,
             }),
         }))
+    }
+
+    /// Returns the workers owing the file a mend pass when `owed`, which the worker runs first
+    /// when `mends`.
+    pub(super) fn owing(self: Arc<Self>, owed: bool, mends: bool) -> Arc<Self> {
+        let mut c = self.control.lock(&self.rt);
+        c.owed = owed;
+        c.mends = owed && mends;
+        drop(c);
+        self
     }
 
     /// Returns the workers, starting the vacuum worker only if `on`.
@@ -161,7 +185,7 @@ impl<R: Runtime> Background<R> {
         if c.stop {
             return;
         }
-        if c.every.is_some() && c.thread.is_none() {
+        if (c.every.is_some() || c.mends) && c.thread.is_none() {
             let me = self.clone();
             c.thread = Some(self.rt.spawn_daemon("background", move || me.run()));
         }
@@ -182,6 +206,29 @@ impl<R: Runtime> Background<R> {
         if let Some(t) = c.thread {
             self.rt.unpark(t);
         }
+    }
+
+    /// Returns whether this process owes the file a mend pass it has not finished.
+    pub(super) fn owes_mend(&self) -> bool {
+        self.control.lock(&self.rt).owed
+    }
+
+    /// Returns what the mend pass of this process did, once it has run.
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn mended(&self) -> Option<Mended> {
+        self.control.lock(&self.rt).mended.clone()
+    }
+
+    /// Run the mend pass the file is owed, stopping once the worker is stopped.
+    fn mend(&self) {
+        let stopped = || self.control.lock(&self.rt).stop;
+        let mut io = self.rt.io();
+        let mut pause = || self.wait(&mut io, self.rt.now() + MEND_POLL);
+        let mended = self.verifier.db.mend(&stopped, &mut pause);
+        let mut c = self.control.lock(&self.rt);
+        c.owed = !mended.finished();
+        c.mends = false;
+        c.mended = Some(mended);
     }
 
     /// Stop the worker and wait for it to save where it is. No later call starts it again.
@@ -245,6 +292,10 @@ impl<R: Runtime> Background<R> {
     /// Run the worker. A panic in its read of a page ends it and leaves a `Structure` finding, the
     /// engine running. Any other panic crashes the process.
     fn run(&self) {
+        let mends = self.control.lock(&self.rt).mends;
+        if mends {
+            self.mend();
+        }
         let mut io = self.rt.io();
         let saved = self.verifier.cursor();
         let mut cursor = saved.unwrap_or(Cursor {

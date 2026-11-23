@@ -151,7 +151,7 @@ fn findings(rt: &SimRuntime, what: &str) -> Findings {
         log: true,
         indexes: true,
     };
-    let report = verify::verify_with(&pager, &catalog.structures().inventory(&clog), depth);
+    let report = verify::verify_with(&pager, &catalog.structures().inventory(Some(&clog)), depth);
     pager.close();
     assert!(report.complete, "{what}: {:?}", report.findings);
     counted(&report.findings, what)
@@ -203,7 +203,7 @@ fn unmended(rt: &SimRuntime) -> (usize, bool) {
         log: true,
         indexes: true,
     };
-    let report = verify::verify_with(&pager, &catalog.structures().inventory(&clog), depth);
+    let report = verify::verify_with(&pager, &catalog.structures().inventory(Some(&clog)), depth);
     let left = changing(&pager);
     pager.close();
     assert!(report.complete, "{:?}", report.findings);
