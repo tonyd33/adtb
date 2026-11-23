@@ -16,6 +16,31 @@ pub enum FieldType {
     Sum(Vec<CtorType>),
 }
 
+impl std::fmt::Display for FieldType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FieldType::Scalar(s) => write!(f, "{s}"),
+            FieldType::Record(fields) => {
+                f.write_str("a record of (")?;
+                for (at, t) in fields.iter().enumerate() {
+                    if at > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                f.write_str(")")
+            }
+            FieldType::Sum(ctors) => {
+                f.write_str("a sum of constructors")?;
+                for c in ctors {
+                    write!(f, " {}", c.id.0)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CtorType {
     pub id: CtorId,

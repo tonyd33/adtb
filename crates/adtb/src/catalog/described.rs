@@ -2,6 +2,7 @@
 
 use adtb_lang::ids::engine_ctor as k;
 
+use super::Rot;
 use super::codec::{
     Ctor, Decode, Field, Fields, Payload, Relation, Row, Sum, field, nullary, relation, sum,
 };
@@ -78,15 +79,15 @@ pub struct TypeRow {
     kind: TypeKind,
 }
 
-fn type_row(r: &Row<'_>, head: TypeHead, kind: TypeKind) -> TypeRow {
-    TypeRow {
-        id: r.int(head.id),
-        module: r.text(head.module).to_owned(),
-        name: r.text(head.name).to_owned(),
-        params: r.int32(head.params),
-        dropped: r.optional_int(head.dropped),
+fn type_row(r: &Row<'_>, head: TypeHead, kind: TypeKind) -> Result<TypeRow, Rot> {
+    Ok(TypeRow {
+        id: r.int(head.id)?,
+        module: r.text(head.module)?.to_owned(),
+        name: r.text(head.name)?.to_owned(),
+        params: r.int32(head.params)?,
+        dropped: r.optional_int(head.dropped)?,
         kind,
-    }
+    })
 }
 
 impl Relation for relation::Types {
@@ -97,12 +98,12 @@ impl Decode for TypeRow {
     type Relation = relation::Types;
     const CTORS: &'static [Ctor<TypeRow>] = &[
         Ctor::new(k::TYPE_SUM, TYPE_SUM, |r| {
-            let ordered = r.flag(TYPE_ORDERED);
-            Ok(type_row(r, TYPE_SUM_HEAD, TypeKind::Sum { ordered }))
+            let ordered = r.flag(TYPE_ORDERED)?;
+            type_row(r, TYPE_SUM_HEAD, TypeKind::Sum { ordered })
         }),
         Ctor::new(k::TYPE_NEWTYPE, TYPE_NEWTYPE, |r| {
-            let over = r.text(TYPE_OVER).to_owned();
-            Ok(type_row(r, TYPE_NEWTYPE_HEAD, TypeKind::Newtype { over }))
+            let over = r.text(TYPE_OVER)?.to_owned();
+            type_row(r, TYPE_NEWTYPE_HEAD, TypeKind::Newtype { over })
         }),
     ];
 }
@@ -132,11 +133,11 @@ impl Decode for ConstructorRow {
     type Relation = relation::Constructors;
     const CTORS: &'static [Ctor<ConstructorRow>] = &[Ctor::new(k::CONSTRUCTOR, CONSTRUCTOR, |r| {
         Ok(ConstructorRow {
-            id: r.int(CONSTRUCTOR_ID),
-            sum: r.int(CONSTRUCTOR_SUM),
-            name: r.text(CONSTRUCTOR_NAME).to_owned(),
-            position: r.int32(CONSTRUCTOR_POSITION),
-            dropped: r.optional_int(CONSTRUCTOR_DROPPED),
+            id: r.int(CONSTRUCTOR_ID)?,
+            sum: r.int(CONSTRUCTOR_SUM)?,
+            name: r.text(CONSTRUCTOR_NAME)?.to_owned(),
+            position: r.int32(CONSTRUCTOR_POSITION)?,
+            dropped: r.optional_int(CONSTRUCTOR_DROPPED)?,
         })
     })];
 }
@@ -168,9 +169,9 @@ impl Decode for CtorStateRow {
     type Relation = relation::CtorStates;
     const CTORS: &'static [Ctor<CtorStateRow>] = &[Ctor::new(k::CTOR_STATE, CTOR_STATE, |r| {
         Ok(CtorStateRow {
-            relation: r.int(CTOR_STATE_RELATION),
-            ctor: r.int(CTOR_STATE_CTOR),
-            stage: r.ctor(CTOR_STATE_STAGE).0,
+            relation: r.int(CTOR_STATE_RELATION)?,
+            ctor: r.int(CTOR_STATE_CTOR)?,
+            stage: r.ctor(CTOR_STATE_STAGE)?.0,
         })
     })
     .with_sums(&[CTOR_STATE_STAGE])];
@@ -195,8 +196,8 @@ impl Decode for ValueStateRow {
     type Relation = relation::ValueStates;
     const CTORS: &'static [Ctor<ValueStateRow>] = &[Ctor::new(k::VALUE_STATE, VALUE_STATE, |r| {
         Ok(ValueStateRow {
-            ctor: r.int(VALUE_STATE_CTOR),
-            stage: r.ctor(VALUE_STATE_STAGE).0,
+            ctor: r.int(VALUE_STATE_CTOR)?,
+            stage: r.ctor(VALUE_STATE_STAGE)?.0,
         })
     })
     .with_sums(&[VALUE_STATE_STAGE])];
@@ -269,15 +270,15 @@ pub struct FieldRow {
     holder: FieldHolder,
 }
 
-fn field_row(r: &Row<'_>, head: FieldHead, holder: FieldHolder) -> FieldRow {
-    FieldRow {
-        id: r.int(head.id),
-        name: r.text(head.name).to_owned(),
-        field_type: r.text(head.field_type).to_owned(),
-        position: r.int32(head.position),
-        dropped: r.optional_int(head.dropped),
+fn field_row(r: &Row<'_>, head: FieldHead, holder: FieldHolder) -> Result<FieldRow, Rot> {
+    Ok(FieldRow {
+        id: r.int(head.id)?,
+        name: r.text(head.name)?.to_owned(),
+        field_type: r.text(head.field_type)?.to_owned(),
+        position: r.int32(head.position)?,
+        dropped: r.optional_int(head.dropped)?,
         holder,
-    }
+    })
 }
 
 impl Relation for relation::Fields {
@@ -288,16 +289,12 @@ impl Decode for FieldRow {
     type Relation = relation::Fields;
     const CTORS: &'static [Ctor<FieldRow>] = &[
         Ctor::new(k::FIELD_HEADER, FIELD_HEADER, |r| {
-            let sum = r.int(FIELD_SUM);
-            Ok(field_row(r, FIELD_HEADER_HEAD, FieldHolder::Header { sum }))
+            let sum = r.int(FIELD_SUM)?;
+            field_row(r, FIELD_HEADER_HEAD, FieldHolder::Header { sum })
         }),
         Ctor::new(k::FIELD_PAYLOAD, FIELD_PAYLOAD, |r| {
-            let ctor = r.int(FIELD_CTOR);
-            Ok(field_row(
-                r,
-                FIELD_PAYLOAD_HEAD,
-                FieldHolder::Payload { ctor },
-            ))
+            let ctor = r.int(FIELD_CTOR)?;
+            field_row(r, FIELD_PAYLOAD_HEAD, FieldHolder::Payload { ctor })
         }),
     ];
 }
@@ -337,12 +334,12 @@ impl Decode for RelationRow {
     type Relation = relation::Relations;
     const CTORS: &'static [Ctor<RelationRow>] = &[Ctor::new(k::RELATION, RELATION, |r| {
         Ok(RelationRow {
-            id: r.int(RELATION_ID),
-            module: r.text(RELATION_MODULE).to_owned(),
-            name: r.text(RELATION_NAME).to_owned(),
-            sum: r.int(RELATION_SUM),
-            kind: r.ctor(RELATION_KIND).0,
-            dropped: r.optional_int(RELATION_DROPPED),
+            id: r.int(RELATION_ID)?,
+            module: r.text(RELATION_MODULE)?.to_owned(),
+            name: r.text(RELATION_NAME)?.to_owned(),
+            sum: r.int(RELATION_SUM)?,
+            kind: r.ctor(RELATION_KIND)?.0,
+            dropped: r.optional_int(RELATION_DROPPED)?,
         })
     })
     .with_sums(&[RELATION_KIND])];
@@ -371,10 +368,10 @@ impl Decode for NamedSetRow {
     type Relation = relation::NamedSets;
     const CTORS: &'static [Ctor<NamedSetRow>] = &[Ctor::new(k::NAMED_SET, NAMED_SET, |r| {
         Ok(NamedSetRow {
-            id: r.int(NAMED_SET_ID),
-            relation: r.int(NAMED_SET_RELATION),
-            name: r.text(NAMED_SET_NAME).to_owned(),
-            dropped: r.optional_int(NAMED_SET_DROPPED),
+            id: r.int(NAMED_SET_ID)?,
+            relation: r.int(NAMED_SET_RELATION)?,
+            name: r.text(NAMED_SET_NAME)?.to_owned(),
+            dropped: r.optional_int(NAMED_SET_DROPPED)?,
         })
     })];
 }
@@ -398,8 +395,8 @@ impl Decode for SetMemberRow {
     type Relation = relation::SetMembers;
     const CTORS: &'static [Ctor<SetMemberRow>] = &[Ctor::new(k::SET_MEMBER, SET_MEMBER, |r| {
         Ok(SetMemberRow {
-            set: r.int(SET_MEMBER_SET),
-            ctor: r.int(SET_MEMBER_CTOR),
+            set: r.int(SET_MEMBER_SET)?,
+            ctor: r.int(SET_MEMBER_CTOR)?,
         })
     })];
 }
@@ -438,11 +435,11 @@ impl Decode for IndexRow {
     type Relation = relation::Indexes;
     const CTORS: &'static [Ctor<IndexRow>] = &[Ctor::new(k::INDEX, INDEX, |r| {
         Ok(IndexRow {
-            id: r.int(INDEX_ID),
-            relation: r.int(INDEX_RELATION),
-            kind: r.ctor(INDEX_KIND).0,
-            clause: r.text(INDEX_CLAUSE).to_owned(),
-            dropped: r.optional_int(INDEX_DROPPED),
+            id: r.int(INDEX_ID)?,
+            relation: r.int(INDEX_RELATION)?,
+            kind: r.ctor(INDEX_KIND)?.0,
+            clause: r.text(INDEX_CLAUSE)?.to_owned(),
+            dropped: r.optional_int(INDEX_DROPPED)?,
         })
     })
     .with_sums(&[INDEX_KIND])];
@@ -467,8 +464,8 @@ impl Decode for IndexCtorRow {
     type Relation = relation::IndexCtors;
     const CTORS: &'static [Ctor<IndexCtorRow>] = &[Ctor::new(k::INDEX_CTOR, INDEX_CTOR, |r| {
         Ok(IndexCtorRow {
-            index: r.int(INDEX_CTOR_INDEX),
-            ctor: r.int(INDEX_CTOR_CTOR),
+            index: r.int(INDEX_CTOR_INDEX)?,
+            ctor: r.int(INDEX_CTOR_CTOR)?,
         })
     })];
 }
@@ -498,11 +495,11 @@ impl Decode for ConstraintRow {
     type Relation = relation::Constraints;
     const CTORS: &'static [Ctor<ConstraintRow>] = &[Ctor::new(k::CONSTRAINT, CONSTRAINT, |r| {
         Ok(ConstraintRow {
-            id: r.int(CONSTRAINT_ID),
-            module: r.text(CONSTRAINT_MODULE).to_owned(),
-            name: r.text(CONSTRAINT_NAME).to_owned(),
-            text: r.text(CONSTRAINT_TEXT).to_owned(),
-            dropped: r.optional_int(CONSTRAINT_DROPPED),
+            id: r.int(CONSTRAINT_ID)?,
+            module: r.text(CONSTRAINT_MODULE)?.to_owned(),
+            name: r.text(CONSTRAINT_NAME)?.to_owned(),
+            text: r.text(CONSTRAINT_TEXT)?.to_owned(),
+            dropped: r.optional_int(CONSTRAINT_DROPPED)?,
         })
     })];
 }
@@ -636,17 +633,17 @@ pub struct FunctionRow {
     code: FunctionCode,
 }
 
-fn function_row(r: &Row<'_>, head: FunctionHead, code: FunctionCode) -> FunctionRow {
-    FunctionRow {
-        id: r.int(head.id),
-        module: r.text(head.module).to_owned(),
-        name: r.text(head.name).to_owned(),
-        signature: r.text(head.signature).to_owned(),
-        deterministic: r.flag(head.deterministic),
-        hash: r.bytes(head.hash).to_vec(),
-        dropped: r.optional_int(head.dropped),
+fn function_row(r: &Row<'_>, head: FunctionHead, code: FunctionCode) -> Result<FunctionRow, Rot> {
+    Ok(FunctionRow {
+        id: r.int(head.id)?,
+        module: r.text(head.module)?.to_owned(),
+        name: r.text(head.name)?.to_owned(),
+        signature: r.text(head.signature)?.to_owned(),
+        deterministic: r.flag(head.deterministic)?,
+        hash: r.bytes(head.hash)?.to_vec(),
+        dropped: r.optional_int(head.dropped)?,
         code,
-    }
+    })
 }
 
 impl Relation for relation::Functions {
@@ -657,34 +654,26 @@ impl Decode for FunctionRow {
     type Relation = relation::Functions;
     const CTORS: &'static [Ctor<FunctionRow>] = &[
         Ctor::new(k::FUNCTION_LANGUAGE, LANGUAGE, |r| {
-            let body = r.text(LANGUAGE_BODY).to_owned();
-            Ok(function_row(
-                r,
-                LANGUAGE_HEAD,
-                FunctionCode::Language { body },
-            ))
+            let body = r.text(LANGUAGE_BODY)?.to_owned();
+            function_row(r, LANGUAGE_HEAD, FunctionCode::Language { body })
         }),
         Ctor::new(k::FUNCTION_WASM, WASM, |r| {
             let code = FunctionCode::Wasm {
-                code: r.bytes(WASM_CODE).to_vec(),
-                export: r.text(WASM_EXPORT).to_owned(),
+                code: r.bytes(WASM_CODE)?.to_vec(),
+                export: r.text(WASM_EXPORT)?.to_owned(),
             };
-            Ok(function_row(r, WASM_HEAD, code))
+            function_row(r, WASM_HEAD, code)
         }),
         Ctor::new(k::FUNCTION_HOST, HOST, |r| {
             let code = FunctionCode::Host {
-                symbol: r.text(HOST_SYMBOL).to_owned(),
-                version: r.text(HOST_VERSION).to_owned(),
+                symbol: r.text(HOST_SYMBOL)?.to_owned(),
+                version: r.text(HOST_VERSION)?.to_owned(),
             };
-            Ok(function_row(r, HOST_HEAD, code))
+            function_row(r, HOST_HEAD, code)
         }),
         Ctor::new(k::FUNCTION_AGGREGATE, AGGREGATE, |r| {
-            let body = r.text(AGGREGATE_BODY).to_owned();
-            Ok(function_row(
-                r,
-                AGGREGATE_HEAD,
-                FunctionCode::Aggregate { body },
-            ))
+            let body = r.text(AGGREGATE_BODY)?.to_owned();
+            function_row(r, AGGREGATE_HEAD, FunctionCode::Aggregate { body })
         }),
     ];
 }
@@ -714,11 +703,11 @@ impl Decode for DefaultRow {
     type Relation = relation::Defaults;
     const CTORS: &'static [Ctor<DefaultRow>] = &[Ctor::new(k::DEFAULT, DEFAULT, |r| {
         Ok(DefaultRow {
-            id: r.int(DEFAULT_ID),
-            relation: r.int(DEFAULT_RELATION),
-            field: r.int(DEFAULT_FIELD),
-            text: r.text(DEFAULT_TEXT).to_owned(),
-            dropped: r.optional_int(DEFAULT_DROPPED),
+            id: r.int(DEFAULT_ID)?,
+            relation: r.int(DEFAULT_RELATION)?,
+            field: r.int(DEFAULT_FIELD)?,
+            text: r.text(DEFAULT_TEXT)?.to_owned(),
+            dropped: r.optional_int(DEFAULT_DROPPED)?,
         })
     })];
 }
@@ -750,12 +739,12 @@ impl Decode for ComputedRow {
     type Relation = relation::Computed;
     const CTORS: &'static [Ctor<ComputedRow>] = &[Ctor::new(k::COMPUTED, COMPUTED, |r| {
         Ok(ComputedRow {
-            id: r.int(COMPUTED_ID),
-            relation: r.int(COMPUTED_RELATION),
-            name: r.text(COMPUTED_NAME).to_owned(),
-            field_type: r.text(COMPUTED_FIELD_TYPE).to_owned(),
-            text: r.text(COMPUTED_TEXT).to_owned(),
-            dropped: r.optional_int(COMPUTED_DROPPED),
+            id: r.int(COMPUTED_ID)?,
+            relation: r.int(COMPUTED_RELATION)?,
+            name: r.text(COMPUTED_NAME)?.to_owned(),
+            field_type: r.text(COMPUTED_FIELD_TYPE)?.to_owned(),
+            text: r.text(COMPUTED_TEXT)?.to_owned(),
+            dropped: r.optional_int(COMPUTED_DROPPED)?,
         })
     })];
 }

@@ -543,7 +543,7 @@ pub fn convert(from: &FieldType, to: &FieldType, v: &Value) -> Result<Value, Str
     if from == to {
         return Ok(v.clone());
     }
-    let refuse = || format!("a value stored as {from:?} does not convert to {to:?}");
+    let refuse = || format!("a value stored as {from} does not convert to {to}");
     match (from, to, v) {
         (FieldType::Record(fs), FieldType::Record(ts), Value::Record(vs))
             if fs.len() == ts.len() =>

@@ -70,7 +70,7 @@ pub use dump::{
     DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside, write_dump,
 };
 pub use dump_crypt::Passphrase;
-pub use error::{Damage, OpenError, Shape, Undecoded};
+pub use error::{Damage, OpenError, Shape, Undecoded, io_text};
 #[cfg(any(test, feature = "testing"))]
 pub use evidence::Judged;
 #[cfg(any(test, feature = "testing"))]

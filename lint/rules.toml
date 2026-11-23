@@ -16,16 +16,19 @@ rows = { pub_fields = "ratchet", crate_fields = "ratchet" }
 query = "structure.tql"
 include = [
   "crates/adtb-heap/src/heap/**/*.rs",
-  "crates/adtb/src/catalog/codec.rs",
   "crates/adtb-exec/src/exec/layout.rs",
   "crates/adtb-store/src/mvcc/**/*.rs",
   "crates/adtb-store/src/key/**/*.rs",
   "crates/adtb-store/src/btree/**/*.rs",
-  "crates/adtb/src/write/past.rs",
   "crates/adtb-exec/src/exec/store.rs",
 ]
 exclude = ["**/tests.rs", "**/*_tests.rs"]
 rows = { decode_panics = "ratchet" }
+
+[[rule]]
+query = "structure.tql"
+include = ["crates/adtb/src/catalog/codec/mod.rs", "crates/adtb/src/write/past.rs"]
+rows = { adtb_decode_panics = "zero" }
 
 [[rule]]
 query = "engine.tql"
@@ -161,3 +164,9 @@ query = "serializer.tql"
 include = ["crates/**/*.rs"]
 exclude = ["crates/adtb-lang/**", "**/tests.rs", "**/*_tests.rs", "**/tests/**"]
 rows = { serializer_writes = "zero", changed_conflicts = "zero" }
+
+[[rule]]
+query = "failure-text.tql"
+include = ["crates/adtb/src/**/*.rs", "crates/adtb-heap/src/verify/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "**/testing/**", "**/testing.rs", "**/*_testing.rs"]
+rows = { debug_text = "zero" }

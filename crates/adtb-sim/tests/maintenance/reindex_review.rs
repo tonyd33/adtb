@@ -1246,7 +1246,7 @@ fn a_heap_marked_during_the_build_stops_the_swap() {
             &db,
             "from f in sys::verify_findings.Structure select f.where",
         );
-        let named = r#""reindex of app::ts index (v): Quarantined(\"app::ts.T\")""#;
+        let named = r#""reindex of app::ts index (v): app::ts.T is quarantined""#;
         assert_eq!(vec![named.to_owned()], found);
         db.close().unwrap();
     });

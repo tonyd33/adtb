@@ -190,8 +190,8 @@ fn stale_reported(page: Pid, end: Lsn) -> Vec<String> {
     let (p, end) = (page.0, end.0);
     vec![
         format!(
-            "StalePage {{ id: verify_findings.key(1), run: RunId(1), where: \"page {p}: Stale {{ \
-             expected: Lsn({end}), found: Lsn({PAST}) }}\" }}"
+            "StalePage {{ id: verify_findings.key(1), run: RunId(1), where: \"page {p}: Stale \
+             (holding LSN {PAST} where the log expects {end})\" }}"
         ),
         format!(
             "Structure {{ id: verify_findings.key(2), run: RunId(1), where: \"log at {end}: \

@@ -129,7 +129,7 @@ pub(super) enum BadRow {
 impl fmt::Display for BadRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BadRow::NotARow(v) => write!(f, "a catalog row is {v:?}"),
+            BadRow::NotARow(v) => write!(f, "a catalog row is {v}"),
         }
     }
 }
@@ -388,7 +388,7 @@ impl Decode for Row {
 
 /// Returns the bundle row `r` holds, its lease not latched.
 fn bundle_row(r: &codec::Row<'_>) -> Result<Row, Rot> {
-    let (name, family) = (r.text(BUNDLE_NAME), r.text(FAMILY));
+    let (name, family) = (r.text(BUNDLE_NAME)?, r.text(FAMILY)?);
     if !reads_as_bundle_name(name) {
         return Err(r.refused(format!(
             "names `{name}`, not a bundle name of a family, a hyphen and a version"
@@ -402,38 +402,38 @@ fn bundle_row(r: &codec::Row<'_>) -> Result<Row, Rot> {
             "names bundle `{name}` under family `{family}`, not `{named}`"
         )));
     }
-    let catalog = match r.optional_int(CATALOG) {
+    let catalog = match r.optional_int(CATALOG)? {
         Some(c) => Some(u64::try_from(c).map_err(|_| r.bad(CATALOG))?),
         None => None,
     };
-    let priority = match r.ctor(PRIORITY).0 {
+    let priority = match r.ctor(PRIORITY)?.0 {
         k::PRIORITY_AD_HOC => exec::Priority::AdHoc,
         k::PRIORITY_BACKGROUND => exec::Priority::Background,
         k::PRIORITY_REGULAR => exec::Priority::Regular,
-        other => codec::unlisted(other),
+        other => return Err(r.unlisted(PRIORITY, other)),
     };
-    let state = match r.ctor(STATE) {
+    let state = match r.ctor(STATE)? {
         (k::BUNDLE_ACTIVE, _) => State::Active,
-        (k::BUNDLE_SUPERSEDED, at) => State::Superseded(codec::payload_instant(at)),
-        (k::BUNDLE_RETIRED, at) => State::Retired(codec::payload_instant(at)),
-        (other, _) => codec::unlisted(other),
+        (k::BUNDLE_SUPERSEDED, at) => State::Superseded(r.payload_instant(STATE, at)?),
+        (k::BUNDLE_RETIRED, at) => State::Retired(r.payload_instant(STATE, at)?),
+        (other, _) => return Err(r.unlisted(STATE, other)),
     };
     Ok(Row {
-        id: r.int(BUNDLE_ID),
+        id: r.int(BUNDLE_ID)?,
         header: Header {
             name: name.to_owned(),
             family: family.to_owned(),
             version: version.to_owned(),
-            pins: u64::try_from(r.int(PINS)).map_err(|_| r.bad(PINS))?,
-            hash: r.bytes(HASH).iter().map(|x| format!("{x:02x}")).collect(),
+            pins: u64::try_from(r.int(PINS)?).map_err(|_| r.bad(PINS))?,
+            hash: r.bytes(HASH)?.iter().map(|x| format!("{x:02x}")).collect(),
             catalog,
-            edition: r.text(EDITION_F).to_owned(),
-            lease: r.optional_duration(LEASE),
-            hides_new: r.flag(HIDES_NEW),
+            edition: r.text(EDITION_F)?.to_owned(),
+            lease: r.optional_duration(LEASE)?,
+            hides_new: r.flag(HIDES_NEW)?,
             priority,
         },
-        owner: r.text(OWNER).to_owned(),
-        renewed: r.instant(RENEWED),
+        owner: r.text(OWNER)?.to_owned(),
+        renewed: r.instant(RENEWED)?,
         state,
         latched: false,
     })
@@ -491,14 +491,14 @@ impl Decode for Registered {
 /// Returns the registered call of kind `kind` that `r` holds.
 fn registered(r: &codec::Row<'_>, kind: Callable) -> Result<Registered, Rot> {
     Ok(Registered {
-        id: r.int(CALL_ID),
-        bundle: r.int(CALL_BUNDLE),
+        id: r.int(CALL_ID)?,
+        bundle: r.int(CALL_BUNDLE)?,
         call: CallRow {
             kind,
-            name: r.text(CALL_NAME).to_owned(),
-            ordinal: r.int32(ORDINAL),
-            signature: r.text(SIGNATURE).to_owned(),
-            text: r.text(TEXT).to_owned(),
+            name: r.text(CALL_NAME)?.to_owned(),
+            ordinal: r.int32(ORDINAL)?,
+            signature: r.text(SIGNATURE)?.to_owned(),
+            text: r.text(TEXT)?.to_owned(),
         },
     })
 }

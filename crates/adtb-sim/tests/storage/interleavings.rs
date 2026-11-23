@@ -604,10 +604,7 @@ fn an_incomplete_walk_marks_nothing_and_leaves_its_record_to_a_later_mapping() {
         assert_eq!(committed, c.steps(), "the commit's mapping");
         let failed = Err(Error::Fatal {
             reason: FatalReason::Storage {
-                detail: format!(
-                    "PageError {{ pid: Pid({}), damage: Unreadable }}",
-                    directory.0
-                ),
+                detail: format!("page {} is unreadable", directory.0),
             },
         });
         assert_eq!(vec![failed], mapper.replies(), "the read");

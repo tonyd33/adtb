@@ -578,7 +578,7 @@ impl Decode for CredentialRow {
     type Relation = relation::Credentials;
     const CTORS: &'static [Ctor<CredentialRow>] = &[Ctor::new(k::CREDENTIAL, CREDENTIAL, |r| {
         Ok(CredentialRow {
-            role: r.int(CREDENTIAL_ROLE),
+            role: r.int(CREDENTIAL_ROLE)?,
         })
     })];
 }
@@ -600,7 +600,7 @@ impl Decode for PeerRow {
     type Relation = relation::PeerMappings;
     const CTORS: &'static [Ctor<PeerRow>] = &[Ctor::new(k::PEER_MAPPING, PEER, |r| {
         Ok(PeerRow {
-            role: r.text(PEER_ROLE).to_owned(),
+            role: r.text(PEER_ROLE)?.to_owned(),
         })
     })];
 }
@@ -682,47 +682,47 @@ impl Decode for AuditRow {
     const CTORS: &'static [Ctor<AuditRow>] = &[
         Ctor::new(k::AUDIT_LOGIN, LOGIN, |r| {
             Ok(AuditRow {
-                seq: r.int(LOGIN_HEAD.seq),
+                seq: r.int(LOGIN_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_GRANT, GRANT, |r| {
             Ok(AuditRow {
-                seq: r.int(GRANT_HEAD.seq),
+                seq: r.int(GRANT_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_REGISTER, REGISTER, |r| {
             Ok(AuditRow {
-                seq: r.int(REGISTER_HEAD.seq),
+                seq: r.int(REGISTER_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_RETIRE, RETIRE, |r| {
             Ok(AuditRow {
-                seq: r.int(RETIRE_HEAD.seq),
+                seq: r.int(RETIRE_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_SCHEMA_OP, SCHEMA_OP, |r| {
             Ok(AuditRow {
-                seq: r.int(SCHEMA_OP_HEAD.seq),
+                seq: r.int(SCHEMA_OP_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_CALL, CALL, |r| {
             Ok(AuditRow {
-                seq: r.int(CALL_HEAD.seq),
+                seq: r.int(CALL_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_DENIED, DENIED, |r| {
             Ok(AuditRow {
-                seq: r.int(DENIED_HEAD.seq),
+                seq: r.int(DENIED_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_COMMIT, COMMIT, |r| {
             Ok(AuditRow {
-                seq: r.int(COMMIT_HEAD.seq),
+                seq: r.int(COMMIT_HEAD.seq)?,
             })
         }),
         Ctor::new(k::AUDIT_TRUNCATE, TRUNCATE, |r| {
             Ok(AuditRow {
-                seq: r.int(TRUNCATE_HEAD.seq),
+                seq: r.int(TRUNCATE_HEAD.seq)?,
             })
         }),
     ];

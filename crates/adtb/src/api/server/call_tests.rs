@@ -17,7 +17,7 @@ use super::call::{Call, Work};
 use super::result::Completion;
 use super::task::{Request, Shared, State, TaskOptions};
 use crate::exec::Stopped;
-use crate::storage::{Damage, PageError};
+use crate::storage::Damage;
 use crate::test_world::load;
 use crate::testing::Plant;
 
@@ -135,13 +135,12 @@ fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
             };
             db.testing().plant(refused).expect("planted");
         };
-        let unreadable = PageError {
-            pid: page,
-            damage: Damage::Unreadable,
-        };
         let failed = Error::Fatal {
             reason: FatalReason::Storage {
-                detail: format!("{:?}", crate::mvcc::Error::Corrupt(unreadable)),
+                detail: format!(
+                    "a commit log page is damaged: page {} is unreadable",
+                    page.0
+                ),
             },
         };
         let unrecorded = e.db.txns().unrecorded_aborts();

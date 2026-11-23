@@ -188,7 +188,7 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
     let cases = [
         (
             row(&schema, Some(engine_ctor::FINDING_ORDER), vec![page()]),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(315)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings.Order holds 4 fields, not 5"#,
+            r"a kept row of group `database` and constructor 315 holds (7, 3, instant 11, `page 9`): a row of sys::verify_findings.Order holds 4 fields, not 5",
         ),
         (
             kept(
@@ -197,7 +197,7 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
                 Some(engine_ctor::FINDING_CHECKSUM),
                 vec![Int(1), Int(2)],
             ),
-            r#"a finding holds KeptRow { relation: 339, group: "counters", ctor: Some(CatCtorId(313)), fields: [Int(1), Int(2)] }: a row of the counters of sys::verify_findings is not two integers of no constructor"#,
+            r"a kept row of group `counters` and constructor 313 holds (1, 2): a row of the counters of sys::verify_findings is not two integers of no constructor",
         ),
         (
             kept(
@@ -206,19 +206,19 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
                 Some(engine_ctor::FINDING_CHECKSUM),
                 vec![Int(1), Int(2)],
             ),
-            r#"a finding holds KeptRow { relation: 339, group: "scrub cursor", ctor: Some(CatCtorId(313)), fields: [Int(1), Int(2)] }: a row of the scrub cursor of sys::verify_findings is not two integers of no constructor"#,
+            r"a kept row of group `scrub cursor` and constructor 313 holds (1, 2): a row of the scrub cursor of sys::verify_findings is not two integers of no constructor",
         ),
         (
             row(&schema, Some(engine_ctor::JOB_VERIFY), vec![page()]),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(297)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings names no constructor 297"#,
+            r"a kept row of group `database` and constructor 297 holds (7, 3, instant 11, `page 9`): a row of sys::verify_findings names no constructor 297",
         ),
         (
             row(&schema, Some(CatCtorId::from_raw(1_000_000)), vec![page()]),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(1000000)), fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings names no constructor 1000000"#,
+            r"a kept row of group `database` and constructor 1000000 holds (7, 3, instant 11, `page 9`): a row of sys::verify_findings names no constructor 1000000",
         ),
         (
             row(&schema, None, vec![page()]),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: None, fields: [Int(7), Int(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings names no constructor"#,
+            r"a kept row of group `database` and no constructor holds (7, 3, instant 11, `page 9`): a row of sys::verify_findings names no constructor",
         ),
         (
             row(
@@ -226,11 +226,11 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
                 Some(engine_ctor::FINDING_CHECKSUM),
                 vec![page(), page()],
             ),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(313)), fields: [Int(7), Int(3), Instant(11), Text("page 9"), Text("page 9")] }: a row of sys::verify_findings.Checksum holds 5 fields, not 4"#,
+            r"a kept row of group `database` and constructor 313 holds (7, 3, instant 11, `page 9`, `page 9`): a row of sys::verify_findings.Checksum holds 5 fields, not 4",
         ),
         (
             row(&schema, Some(engine_ctor::FINDING_CHECKSUM), vec![Int(9)]),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(313)), fields: [Int(7), Int(3), Instant(11), Int(9)] }: a row of sys::verify_findings.Checksum holds I64(9) in field `where`"#,
+            r"a kept row of group `database` and constructor 313 holds (7, 3, instant 11, 9): a row of sys::verify_findings.Checksum holds 9 in field `where`",
         ),
         (
             row(
@@ -238,7 +238,7 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
                 Some(engine_ctor::FINDING_ORDER),
                 vec![page(), page()],
             ),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(315)), fields: [Int(7), Int(3), Instant(11), Text("page 9"), Text("page 9")] }: a row of sys::verify_findings.Order holds Text("page 9") in field `index`"#,
+            r"a kept row of group `database` and constructor 315 holds (7, 3, instant 11, `page 9`, `page 9`): a row of sys::verify_findings.Order holds `page 9` in field `index`",
         ),
         (
             kept(
@@ -247,7 +247,7 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
                 Some(engine_ctor::FINDING_STRUCTURE),
                 vec![Int(7), Instant(3), Instant(11), page()],
             ),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(473)), fields: [Int(7), Instant(3), Instant(11), Text("page 9")] }: a row of sys::verify_findings.Structure holds Instant(3) in field `run`"#,
+            r"a kept row of group `database` and constructor 473 holds (7, instant 3, instant 11, `page 9`): a row of sys::verify_findings.Structure holds instant 3 in field `run`",
         ),
         (
             row(
@@ -255,19 +255,19 @@ fn a_kept_row_of_another_shape_is_refused_as_damage_at_open() {
                 Some(engine_ctor::FINDING_VIOLATION),
                 vec![Int(-1), page()],
             ),
-            r#"a finding holds KeptRow { relation: 339, group: "database", ctor: Some(CatCtorId(318)), fields: [Int(7), Int(3), Instant(11), Int(-1), Text("page 9")] }: a row of sys::verify_findings.Violation holds I64(-1) in field `constraint`"#,
+            r"a kept row of group `database` and constructor 318 holds (7, 3, instant 11, -1, `page 9`): a row of sys::verify_findings.Violation holds -1 in field `constraint`",
         ),
         (
             kept(&schema, "counters", None, vec![Int(1), Int(2), Int(3)]),
-            r#"a finding holds KeptRow { relation: 339, group: "counters", ctor: None, fields: [Int(1), Int(2), Int(3)] }: a row of the counters of sys::verify_findings is not two integers of no constructor"#,
+            r"a kept row of group `counters` and no constructor holds (1, 2, 3): a row of the counters of sys::verify_findings is not two integers of no constructor",
         ),
         (
             kept(&schema, "scrub cursor", None, vec![Int(1), page()]),
-            r#"a finding holds KeptRow { relation: 339, group: "scrub cursor", ctor: None, fields: [Int(1), Text("page 9")] }: a row of the scrub cursor of sys::verify_findings is not two integers of no constructor"#,
+            r"a kept row of group `scrub cursor` and no constructor holds (1, `page 9`): a row of the scrub cursor of sys::verify_findings is not two integers of no constructor",
         ),
         (
             kept(&schema, "scrub cursor", None, vec![Int(-4), Int(2)]),
-            r#"a finding holds KeptRow { relation: 339, group: "scrub cursor", ctor: None, fields: [Int(-4), Int(2)] }: a row of the scrub cursor of sys::verify_findings names page -4"#,
+            r"a kept row of group `scrub cursor` and no constructor holds (-4, 2): a row of the scrub cursor of sys::verify_findings names page -4",
         ),
     ];
     for (row, text) in cases {

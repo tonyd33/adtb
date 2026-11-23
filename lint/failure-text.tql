@@ -1,0 +1,32 @@
+-- debug_text: a `format!`, `format_args!`, `write!` or `writeln!` with a `Debug` placeholder. Its
+-- text may reach a client in an error, a detail or a verify finding; write a value from its own
+-- `Display`. Not counted: an `impl Debug`, the `Display` of a `Broken` type, a panic's message,
+-- and a module of tests.
+
+debug_format = r"\{[A-Za-z0-9_.]*:[^{}]*\?\}";
+
+kept_impl = r"^impl(<[^{]*>)?\s+((std::)?fmt::)?(Debug\s+for\s|Display\s+for\s+Broken\b)";
+
+items = children_of_kind :function_item `alt` children_of_kind :const_item `alt` children_of_kind :static_item `alt` do {
+  i <- children_of_kind :impl_item;
+  guard $ not (text i ~ kept_impl);
+  return i;
+};
+
+modules = do {
+  m <- children_of_kind :mod_item;
+  guard $ not (text m ~ r"^mod\s+tests\b");
+  b <- pure m | #body;
+  return b;
+};
+
+scopes = items `alt` (modules | items) `alt` (modules | modules | items);
+
+main = do {
+  s <- scopes;
+  m <- pure s | descendants_of_kind :macro_invocation;
+  n <- pure m | #macro;
+  guard $ text n ~ r"^(format|format_args|write|writeln)$";
+  guard $ text m ~ debug_format;
+  return ("debug_text", range m);
+};

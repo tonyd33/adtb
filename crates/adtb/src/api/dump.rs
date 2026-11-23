@@ -21,6 +21,7 @@ use crate::write::{self, Bounds, Local, Text, Txn};
 
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
 use super::bundle::{self, EDITION, Registered};
+use super::cause::Failure;
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::{
@@ -364,8 +365,8 @@ impl Decode for FeedRow {
     type Relation = relation::Feeds;
     const CTORS: &'static [Ctor<FeedRow>] = &[Ctor::new(k::FEED, FEED, |r| {
         Ok(FeedRow {
-            id: r.int(FEED_ID),
-            bundle: r.int(FEED_BUNDLE),
+            id: r.int(FEED_ID)?,
+            bundle: r.int(FEED_BUNDLE)?,
         })
     })];
 }
@@ -387,7 +388,7 @@ impl Decode for FeedMemberRow {
     type Relation = relation::FeedMembers;
     const CTORS: &'static [Ctor<FeedMemberRow>] = &[Ctor::new(k::FEED_MEMBER, MEMBER, |r| {
         Ok(FeedMemberRow {
-            feed: r.int(MEMBER_FEED),
+            feed: r.int(MEMBER_FEED)?,
         })
     })];
 }
@@ -702,29 +703,35 @@ pub(super) fn restore_dump<R: Runtime>(
             OpenError::HostFnMissing { name } => Error::Fatal {
                 reason: FatalReason::MissingFunction { function: name },
             },
-            OpenError::Io(e) => Error::storage(format!("`{aside}`: {e}")),
-            OpenError::Corrupt { detail } => {
-                Error::storage(format!("`{aside}`: the file is corrupt: {detail}"))
-            }
+            OpenError::Io(error) => Error::storage(Failure::Open {
+                path: aside.clone(),
+                error,
+            }),
+            refused @ OpenError::Corrupt { .. } => Error::storage(Failure::Aside {
+                path: aside.clone(),
+                refused,
+            }),
+            OpenError::MigrationRefused {
+                reason:
+                    reason @ Error::Rejected {
+                        reason: RejectReason::Internal { .. },
+                    },
+                ..
+            } => reason,
             OpenError::MigrationRefused {
                 reason: Error::Rejected { .. },
                 ..
             } => damaged(LOG),
-            OpenError::MigrationRefused {
-                reason:
-                    Error::Fatal {
-                        reason: FatalReason::Quarantined { what },
-                    },
-                ..
-            } => Error::storage(format!("`{aside}`: {what} is quarantined")),
             OpenError::MigrationRefused { reason, .. } => reason,
             e @ (OpenError::Locked { .. }
             | OpenError::AlreadyOpen
             | OpenError::NotFound
             | OpenError::KeyRequired
             | OpenError::WrongKey
-            | OpenError::FormatTooNew { .. }
-            | OpenError::Diverged { .. }
+            | OpenError::FormatTooNew { .. }) => Error::invalid(format!(
+                "the file the restore builds, `{aside}`, does not open: {e}"
+            )),
+            e @ (OpenError::Diverged { .. }
             | OpenError::RegistrationRefused { .. }
             | OpenError::HostFnMismatch { .. }
             | OpenError::DowngradeRefused { .. }

@@ -43,7 +43,7 @@ fn a_migration_row_with_a_short_hash_refuses_the_open_of_a_file_with_no_scrub_cu
         Ok(_) => panic!("the open refuses"),
     };
     assert_eq!(
-        "Corrupt(\"a row of catalog::migrations.Migration holds a hash of 31 bytes, not 32\")",
+        "a row of catalog::migrations.Migration holds a hash of 31 bytes, not 32",
         detail
     );
 }

@@ -25,6 +25,16 @@ pub enum Part {
     Changed,
 }
 
+impl Part {
+    fn name(self) -> &'static str {
+        match self {
+            Part::Inserted => "Inserted",
+            Part::Deleted => "Deleted",
+            Part::Changed => "Changed",
+        }
+    }
+}
+
 /// A set parameter of a delta query: the rows of `part` of the change set in `ctors` of `rel`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
@@ -519,7 +529,7 @@ impl Compiler<'_> {
             return *v;
         }
         let v = self.terms.var(
-            &format!("%{part:?}{}", rel.0),
+            &format!("%{}{}", part.name(), rel.0),
             Ty::Set(Box::new(elem.clone())),
         );
         self.inputs.insert(k, v);

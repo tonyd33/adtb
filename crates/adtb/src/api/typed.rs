@@ -480,7 +480,7 @@ fn host<T: HostValue>(v: &Val) -> Result<T, Error> {
     T::from_value(v).ok_or_else(|| Error::Fatal {
         reason: FatalReason::Malformed {
             detail: format!(
-                "a result {v:?} is no value of the host type {}",
+                "a result {v} is no value of the host type {}",
                 std::any::type_name::<T>()
             ),
         },

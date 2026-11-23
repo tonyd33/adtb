@@ -11,7 +11,7 @@ use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphrase, Proved};
 use crate::write::{self, Bounds, Local, Stop, Txn};
 
-use super::cause::Broken;
+use super::cause::{Broken, Failure};
 use super::error::{FatalReason, RejectReason};
 use super::statements::Refusal;
 use super::text::{DynRows, Prepared, rows};
@@ -91,7 +91,7 @@ pub(super) fn refused(e: BackupError) -> Error {
         BackupError::Stopped | BackupError::Quarantined => {
             Error::invalid("the backup stopped".to_owned())
         }
-        BackupError::Io { what, error } => Error::storage(format!("`{what}`: {error:?}")),
+        BackupError::Io { what, error } => Error::storage(Failure::File { path: what, error }),
     }
 }
 
@@ -331,7 +331,12 @@ fn opened_and_verified<R: Runtime>(
     let db = match Database::open_in(rt.clone(), file, log, &opening) {
         Ok(db) => db,
         Err(OpenError::HostFnMissing { name }) => return Ok(Proved::Unproven { function: name }),
-        Err(OpenError::Io(e)) => return Err(Error::storage(format!("`{file}`: {e}"))),
+        Err(OpenError::Io(error)) => {
+            return Err(Error::storage(Failure::Open {
+                path: file.to_owned(),
+                error,
+            }));
+        }
         Err(e) => return Ok(Proved::Failed(vec![e.to_string()])),
     };
     let verdict = verified(&db, manifest);

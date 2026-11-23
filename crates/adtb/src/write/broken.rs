@@ -7,7 +7,9 @@ use crate::exec::Val;
 use crate::plan;
 use crate::{api, catalog};
 
-use super::Error;
+use crate::storage::Quarantine;
+
+use super::{Error, Rejection};
 
 /// A guarantee of the checker, the planner or the write path that does not hold.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,21 +105,62 @@ impl From<Broken> for Error {
     }
 }
 
-/// Returns `e` as its `Debug` reads, with an internal or damage cause as the `Debug` of its text
-/// and a quarantined failure as the `Debug` of its objects' names, each object named by its own
-/// `Debug`.
-pub fn detail(e: &Error) -> String {
+/// Returns `e` as a person reads it, each quarantined object named by `name`.
+pub(super) fn detail_naming(e: &Error, name: impl Fn(Quarantine) -> String) -> String {
     match e {
+        Error::Rejected(r) => rejection(r),
         Error::Quarantined { objects, .. } => {
+            format!("{} is quarantined", super::quarantine::named(objects, name))
+        }
+        Error::Transactions(e) => e.to_string(),
+        Error::Corrupt(r) => r.to_string(),
+        Error::Denied(detail) => detail.clone(),
+        Error::SequenceExhausted => "the generated counter exhausted its integer range".to_owned(),
+        Error::Internal(b) => b.to_string(),
+        Error::Exec(e) => crate::exec::detail(e),
+        Error::Refused(why) => why
+            .iter()
+            .map(|(c, d)| format!("constraint {c} is not admitted: {d}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Error::FileChanged(path) => format!("`{path}` changed since the transaction read it"),
+        Error::Closed => "the engine is closed".to_owned(),
+        Error::Blocked { on, .. } => format!("the statement waits for transaction {}", on.0),
+    }
+}
+
+/// Returns `e` as a person reads it, each quarantined object named by its kind and id.
+pub fn detail(e: &Error) -> String {
+    detail_naming(e, |o| match o {
+        Quarantine::Database => "the database".to_owned(),
+        Quarantine::Heap(id) => format!("heap {id}"),
+        Quarantine::Index(id) => format!("index {id}"),
+    })
+}
+
+fn rejection(r: &Rejection) -> String {
+    match r {
+        Rejection::Violated { constraint, .. } => format!("constraint {constraint} is violated"),
+        Rejection::KeyViolation { relation, .. } => {
+            format!("two rows of relation {} hold one key", relation.0)
+        }
+        Rejection::KeyChanged { relation } => {
             format!(
-                "Quarantined({:?})",
-                super::quarantine::named(objects, |o| format!("{o:?}"))
+                "an update gave a row of relation {} another key",
+                relation.0
             )
         }
-        Error::Internal(b) => format!("Internal({:?})", b.to_string()),
-        Error::Corrupt(r) => format!("Corrupt({:?})", r.to_string()),
-        Error::Exec(e) => crate::exec::detail(e),
-        e => format!("{e:?}"),
+        Rejection::NotOpen { ctor, stage } => {
+            format!("{ctor} takes no write while {}", stage.name())
+        }
+        Rejection::UserError { message } => message.clone(),
+        Rejection::Invalid { detail } | Rejection::BadInput { detail, .. } => detail.clone(),
+        Rejection::RowTooLarge { size, limit, .. } => {
+            format!("a row of {size} bytes is over the limit of {limit}")
+        }
+        Rejection::KeyTooLarge { size, limit, .. } => {
+            format!("an index key of {size} bytes is over the limit of {limit}")
+        }
     }
 }
 

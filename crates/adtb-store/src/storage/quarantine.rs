@@ -135,8 +135,9 @@ pub fn decode(page: &[u8]) -> Option<BTreeSet<Quarantine>> {
     if page::kind(page) != PageKind::Quarantine as u16 {
         return None;
     }
-    let n = u64::from_le_bytes(page[COUNT..COUNT + 8].try_into().unwrap()) as usize;
-    if ENTRIES + n * ENTRY > page.len() {
+    let n = u64::from_le_bytes(page[COUNT..COUNT + 8].try_into().unwrap());
+    let n = usize::try_from(n).ok()?;
+    if n > (page.len() - ENTRIES) / ENTRY {
         return None;
     }
     (0..n)
@@ -241,6 +242,17 @@ pub enum MarkFailure {
     Unverified { page: Pid },
 }
 
+impl std::fmt::Display for MarkFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MarkFailure::Page(e) => write!(f, "{e}"),
+            MarkFailure::Unverified { page } => {
+                write!(f, "page {} was loaded with no check of its LSN", page.0)
+            }
+        }
+    }
+}
+
 mod marks {
     use std::collections::BTreeSet;
     use std::sync::MutexGuard;
@@ -289,10 +301,10 @@ mod marks {
     impl MarksPage {
         fn pid(self) -> Pid {
             match self {
-                MarksPage::Writable(pid)
-                | MarksPage::Unwritable(
-                    Unwritable::Unreadable(pid) | Unwritable::Unverified(pid),
-                ) => pid,
+                MarksPage::Writable(pid) | MarksPage::Unwritable(Unwritable::Unverified(pid)) => {
+                    pid
+                }
+                MarksPage::Unwritable(Unwritable::Refused(e)) => e.pid,
             }
         }
     }
@@ -300,8 +312,8 @@ mod marks {
     /// Why the marks page takes no write.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(in crate::storage) enum Unwritable {
-        /// The page could not be read at open.
-        Unreadable(Pid),
+        /// The page was refused at open, with this damage.
+        Refused(PageError),
         /// The page was loaded with no check of its LSN against the one expected of it.
         Unverified(Pid),
     }
@@ -358,23 +370,23 @@ mod marks {
             }
         }
 
-        /// Take `read`, the marks the page `page` holds, or `Err` with the marks its damage sets
-        /// when it does not decode, which stops every write of the marks. A page read with no
+        /// Take `read`, the marks the page `page` holds, or `Err` with the page's refusal and the
+        /// marks its damage sets, which stops every write of the marks. A page read with no
         /// check of its LSN, `checked` false, stops them too.
         pub(super) fn load<R: Runtime>(
             &self,
             rt: &R,
             page: Pid,
-            read: Result<BTreeSet<Quarantine>, BTreeSet<Quarantine>>,
+            read: Result<BTreeSet<Quarantine>, (PageError, BTreeSet<Quarantine>)>,
             checked: bool,
         ) {
             let mut m = self.lock(rt);
             m.state.page = match (&read, checked) {
-                (Err(_), _) => MarksPage::Unwritable(Unwritable::Unreadable(page)),
+                (Err((e, _)), _) => MarksPage::Unwritable(Unwritable::Refused(*e)),
                 (Ok(_), false) => MarksPage::Unwritable(Unwritable::Unverified(page)),
                 (Ok(_), true) => MarksPage::Writable(page),
             };
-            m.state.set = read.unwrap_or_else(|set| set);
+            m.state.set = read.unwrap_or_else(|(_, set)| set);
         }
 
         /// Hold the marks on page `page`, formatted empty.
@@ -491,18 +503,31 @@ impl<R: Runtime> Pager<R> {
         self.load_marks(page)
     }
 
-    /// Read the marks from their page into memory. A damaged page quarantines the database.
+    /// Read the marks from their page into memory. A damaged page, or one that does not decode
+    /// under its exclusive latch, is refused and quarantines the database.
     ///
     /// Fail, marking nothing, if the page cannot be read.
     pub(crate) fn load_marks(&self, page: Pid) -> Result<(), PageError> {
-        let read = match self.read(page) {
-            Ok(p) => decode(&p).ok_or(Damage::Shape(Shape::Frame)),
-            Err(e) if e.damage == Damage::Unreadable => return Err(e),
-            Err(e) => Err(e.damage),
+        let misfit = |p: &PageExclusive<'_, R>| decode(p).is_none().then_some(Shape::Frame);
+        let read = loop {
+            match self.read(page).map(|p| decode(&p)) {
+                Ok(Some(marks)) => break Ok(marks),
+                Ok(None) => {
+                    if let Some(e) = self.refuse_if(page, misfit) {
+                        break Err(e);
+                    }
+                }
+                Err(e) => break Err(e),
+            }
         };
-        let read = read.map_err(|damage| {
-            let mark = policy::mark(Fault::Page(damage), Holder::MarksPage, Phase::Opening);
-            mark.durable().into_iter().collect()
+        if let Err(e) = read
+            && e.damage == Damage::Unreadable
+        {
+            return Err(e);
+        }
+        let read = read.map_err(|e| {
+            let mark = policy::mark(Fault::Page(e.damage), Holder::MarksPage, Phase::Opening);
+            (e, mark.durable().into_iter().collect())
         });
         let checked = self.evidence().proven();
         self.marks().load(self.rt(), page, read, checked);
@@ -724,12 +749,7 @@ impl<R: Runtime> Pager<R> {
         let contents = self.read(from)?.to_vec();
         let page = match release.map(|_| self.marks().writable_page(self.rt())) {
             Some(Ok(page)) => Some(page),
-            Some(Err(Unwritable::Unreadable(pid))) => {
-                return Err(PageError {
-                    pid,
-                    damage: Damage::Checksum,
-                });
-            }
+            Some(Err(Unwritable::Refused(e))) => return Err(e),
             Some(Err(Unwritable::Unverified(_))) | None => None,
         };
         let mut marks_page = page.map(|page| self.exclusive(page)).transpose()?;
@@ -839,12 +859,7 @@ impl<R: Runtime> Pager<R> {
     fn marks_page(&self) -> Result<Pid, MarkFailure> {
         match self.marks().writable_page(self.rt()) {
             Ok(page) => Ok(page),
-            Err(Unwritable::Unreadable(page)) => Err(MarkFailure::Page(
-                self.read(page).err().unwrap_or(PageError {
-                    pid: page,
-                    damage: Damage::Checksum,
-                }),
-            )),
+            Err(Unwritable::Refused(e)) => Err(MarkFailure::Page(e)),
             Err(Unwritable::Unverified(page)) => Err(MarkFailure::Unverified { page }),
         }
     }

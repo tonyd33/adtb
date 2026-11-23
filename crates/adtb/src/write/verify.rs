@@ -18,7 +18,7 @@ use crate::plan::IndexId;
 use crate::runtime::Runtime;
 #[cfg(any(test, feature = "testing"))]
 use crate::storage::policy::Holder;
-use crate::storage::{self, Damage, PageError, Pid};
+use crate::storage::{self, Damage, LogProblem, PageError, Pid};
 use crate::verify::{Finding, Problem};
 
 use super::schema::{Indexed, Rel};
@@ -81,9 +81,49 @@ pub enum Found {
     },
 }
 
+/// Returns the class of `damage` by name, then in parentheses what the page holds.
+fn damage_text(damage: Damage) -> String {
+    match damage {
+        Damage::Checksum => "Checksum".to_owned(),
+        Damage::Unreadable => "Unreadable".to_owned(),
+        Damage::Stale { expected, found } => format!(
+            "Stale (holding LSN {} where the log expects {})",
+            found.0, expected.0
+        ),
+        Damage::LogUnproven { at } => format!("LogUnproven (the log damaged at LSN {})", at.0),
+        Damage::Settled { expected, found } => format!(
+            "Settled (its write at LSN {} lost, settled from LSN {})",
+            expected.0, found.0
+        ),
+        Damage::Shape(shape) => format!("Shape ({shape})"),
+    }
+}
+
+/// Returns the class of `problem` by name, with the page and LSN of an unlogged one.
+fn log_text(problem: LogProblem) -> String {
+    match problem {
+        LogProblem::Damaged => "Damaged".to_owned(),
+        LogProblem::Stale => "Stale".to_owned(),
+        LogProblem::Gap => "Gap".to_owned(),
+        LogProblem::Unreadable => "Unreadable".to_owned(),
+        LogProblem::Malformed => "Malformed".to_owned(),
+        LogProblem::Foreign => "Foreign".to_owned(),
+        LogProblem::Unlogged { pid, page } => {
+            format!("Unlogged {{ pid: Pid({}), page: Lsn({}) }}", pid.0, page.0)
+        }
+    }
+}
+
+/// Returns the structure finding of page `pid`, `what` naming its problem.
+fn structure(pid: Pid, what: &str) -> Found {
+    Found::Structure {
+        at: format!("page {}: {what}", pid.0),
+    }
+}
+
 impl Found {
     fn of_damage(pid: Pid, damage: Damage) -> Found {
-        let at = format!("page {}: {damage:?}", pid.0);
+        let at = format!("page {}: {}", pid.0, damage_text(damage));
         match damage {
             Damage::Checksum | Damage::Shape(_) => Found::Checksum {
                 at,
@@ -103,7 +143,7 @@ impl Found {
                 at: format!("page {}: no record of the retained log wrote it", pid.0),
             },
             storage::Finding::Log(l) => Found::Structure {
-                at: format!("log at {}: {:?}", l.lsn.0, l.problem),
+                at: format!("log at {}: {}", l.lsn.0, log_text(l.problem)),
             },
             storage::Finding::Unlisted => Found::Structure {
                 at: "the database: the damage list is full".to_owned(),
@@ -122,9 +162,11 @@ impl Found {
         match &f.problem {
             Problem::Damaged(d) => Some(Found::of_damage(f.pid, *d)),
             Problem::Unsettled(_) | Problem::Overcounted { .. } => None,
-            other => Some(Found::Structure {
-                at: format!("page {}: {other:?}", f.pid.0),
-            }),
+            Problem::Unlogged => Some(structure(f.pid, "Unlogged")),
+            Problem::Leaked => Some(structure(f.pid, "Leaked")),
+            Problem::Unallocated => Some(structure(f.pid, "Unallocated")),
+            Problem::Shared(a, b) => Some(structure(f.pid, &format!("Shared by {a} and {b}"))),
+            Problem::Structure(what) => Some(structure(f.pid, what)),
         }
     }
 }
@@ -206,7 +248,7 @@ impl<R: Runtime> Database<R> {
                 storage::Finding::Page { pid, .. }
                 | storage::Finding::Orphan(pid)
                 | storage::Finding::Log(storage::LogFinding {
-                    problem: storage::LogProblem::Unlogged { pid, .. },
+                    problem: LogProblem::Unlogged { pid, .. },
                     ..
                 }) => Some(pid),
                 storage::Finding::Log(_) | storage::Finding::Unlisted => None,
@@ -337,7 +379,7 @@ impl<R: Runtime> Database<R> {
             btree::Error::Page(e) => out.push(Found::of_page(e)),
             e => out.push(Found::Order {
                 index,
-                at: format!("root page {}: {e:?}", tree.root().0),
+                at: format!("root page {}: {e}", tree.root().0),
             }),
         };
         let before = out.len();
@@ -451,7 +493,7 @@ impl<R: Runtime> Database<R> {
             Err(btree::Error::Page(e)) => out.push(Found::of_page(e)),
             Err(e) => out.push(Found::Order {
                 index,
-                at: format!("history root page {}: {e:?}", past.tree().root().0),
+                at: format!("history root page {}: {e}", past.tree().root().0),
             }),
         }
     }

@@ -133,6 +133,17 @@ pub enum Error {
     Closed,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Corrupt(e) => write!(f, "a commit log page is damaged: {e}"),
+            Error::Exhausted => f.write_str("every transaction id is spent"),
+            Error::History(e) => write!(f, "the record of the retention window is damaged: {e}"),
+            Error::Closed => f.write_str("the engine is closed"),
+        }
+    }
+}
+
 /// A conflict the serializer, the waits or a write check found: the transaction must abort, and
 /// may be retried at a new snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]

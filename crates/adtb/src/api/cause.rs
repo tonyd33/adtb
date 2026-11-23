@@ -7,12 +7,13 @@ use adtb_lang::span::FileDiag;
 use adtb_lang::textual::PrintError;
 use adtb_lang::types::Ty;
 
-use crate::catalog::{self, KeptRow};
+use crate::catalog::{self, KeptField, KeptRow};
 use crate::exec::{self, Val};
-use crate::{storage, write};
+use crate::runtime::IoError;
+use crate::{btree, heap, mvcc, storage, write};
 
 use super::bundle::BadRow;
-use super::error::{Error, OpenError, RejectReason};
+use super::error::{Error, FatalReason, OpenError, RejectReason};
 
 /// A guarantee of the engine that did not hold, made into the text of `RejectReason::Internal`.
 #[derive(Debug)]
@@ -112,6 +113,65 @@ impl fmt::Display for Broken {
     }
 }
 
+/// A failure of the file or the transactions layer, made into the text of `FatalReason::Storage`.
+#[derive(Debug)]
+pub(super) enum Failure {
+    /// A page that cannot be handed out, its damage mapped to no mark.
+    Page(storage::PageError),
+    Transactions(mvcc::Error),
+    /// A stored structure a statement reads does not decode.
+    Write(write::Rot),
+    /// A stored structure or spill file a plan reads does not decode.
+    Exec(exec::Rot),
+    /// An entry of this index names no version.
+    OrphanEntry(u32),
+    /// The call's spill file could not be made, written or read.
+    Spill(IoError),
+    /// A file of a backup, dump or restore, by its path, failed with this error.
+    File {
+        path: String,
+        error: IoError,
+    },
+    /// The open of a file a backup proves or a restore builds, by its path, failed with this
+    /// error.
+    Open {
+        path: String,
+        error: std::io::Error,
+    },
+    /// The file a restore built, by its path, refused its open.
+    Aside {
+        path: String,
+        refused: OpenError,
+    },
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Failure::Page(e) => write!(f, "{e}"),
+            Failure::Transactions(e) => write!(f, "{e}"),
+            Failure::Write(r) => write!(f, "{r}"),
+            Failure::Exec(r) => write!(f, "{r}"),
+            Failure::OrphanEntry(index) => write!(f, "an entry of index {index} names no version"),
+            Failure::Spill(e) => write!(f, "the spill file failed: {}", storage::io_text(*e)),
+            Failure::File { path, error } => write!(f, "`{path}`: {}", storage::io_text(*error)),
+            Failure::Open { path, error } => write!(f, "`{path}`: {error}"),
+            Failure::Aside { path, refused } => write!(f, "`{path}`: {refused}"),
+        }
+    }
+}
+
+impl Error {
+    /// Returns the failure of the file or the transactions layer that `cause` states.
+    pub(super) fn storage(cause: Failure) -> Error {
+        Error::Fatal {
+            reason: FatalReason::Storage {
+                detail: cause.to_string(),
+            },
+        }
+    }
+}
+
 /// What makes a file one the engine refuses to open, made into the text of `OpenError::Corrupt`.
 #[derive(Debug)]
 pub(super) enum Corruption {
@@ -142,14 +202,29 @@ impl fmt::Display for Corruption {
                 f,
                 "the file header has layout {layout}, not one this engine reads"
             ),
-            Corruption::Storage(e) => write!(f, "{e:?}"),
+            Corruption::Storage(e) => write!(f, "{e}"),
             Corruption::Catalog(e) => f.write_str(&catalog::detail(e)),
             Corruption::Exec(e) => f.write_str(&exec::detail(e)),
-            Corruption::Normal(e) => write!(f, "{e:?}"),
+            Corruption::Normal(e) => write!(f, "{e}"),
             Corruption::Write(e) => f.write_str(&write::detail(e)),
-            Corruption::Engine(e) => write!(f, "{e:?}"),
+            Corruption::Engine(e) => write!(f, "{e}"),
             Corruption::BundleRow(row) => write!(f, "{row}"),
-            Corruption::Finding(row, rot) => write!(f, "a finding holds {row:?}: {rot}"),
+            Corruption::Finding(row, rot) => {
+                write!(f, "a kept row of group `{}`", row.group)?;
+                match row.ctor {
+                    Some(id) => write!(f, " and constructor {id} holds (")?,
+                    None => f.write_str(" and no constructor holds (")?,
+                }
+                for (at, field) in row.fields.iter().enumerate() {
+                    let sep = if at == 0 { "" } else { ", " };
+                    match field {
+                        KeptField::Int(n) => write!(f, "{sep}{n}")?,
+                        KeptField::Instant(t) => write!(f, "{sep}instant {t}")?,
+                        KeptField::Text(t) => write!(f, "{sep}`{t}`")?,
+                    }
+                }
+                write!(f, "): {rot}")
+            }
             Corruption::NoSchemaOwner => {
                 f.write_str("a nonempty roles relation has no schema owner")
             }
@@ -230,13 +305,75 @@ pub(super) fn past_limits(e: &permission::Error) -> bool {
 }
 
 /// Returns the refusal of a file that `cause` makes: [`OpenError::PastLimits`] for a stored body
-/// past this build's limits.
+/// past this build's limits, and [`OpenError::Io`] for a page the device refused to read.
 pub(super) fn corrupt(cause: impl Into<Corruption>) -> OpenError {
     match cause.into() {
         Corruption::Catalog(catalog::Error::PastLimits(object)) => OpenError::PastLimits { object },
-        cause => OpenError::Corrupt {
-            detail: cause.to_string(),
+        cause => match cause.page() {
+            Some(e) if e.damage == storage::Damage::Unreadable => {
+                OpenError::Io(std::io::Error::other(Unreadable(e)))
+            }
+            _ => OpenError::Corrupt {
+                detail: cause.to_string(),
+            },
         },
+    }
+}
+
+/// A page the device refused to read, as the I/O failure of an open.
+#[derive(Debug)]
+struct Unreadable(storage::PageError);
+
+impl fmt::Display for Unreadable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for Unreadable {}
+
+impl Corruption {
+    /// Returns the page whose refusal this is, `None` when it is no page's.
+    fn page(&self) -> Option<storage::PageError> {
+        match self {
+            Corruption::Storage(
+                storage::OpenError::Page(e) | storage::OpenError::Unformatted(e),
+            ) => Some(*e),
+            Corruption::Catalog(e) => catalog_page(e),
+            Corruption::Exec(e) | Corruption::Write(write::Error::Exec(e)) => exec_page(e),
+            Corruption::Write(write::Error::Transactions(e)) => transactions_page(e),
+            Corruption::Storage(_)
+            | Corruption::Normal(_)
+            | Corruption::Write(_)
+            | Corruption::Engine(_)
+            | Corruption::BundleRow(_)
+            | Corruption::Finding(..)
+            | Corruption::NoSchemaOwner => None,
+        }
+    }
+}
+
+fn catalog_page(e: &catalog::Error) -> Option<storage::PageError> {
+    match e {
+        catalog::Error::Page(e)
+        | catalog::Error::Heap(heap::Error::Page(e))
+        | catalog::Error::Index(btree::Error::Page(e)) => Some(*e),
+        catalog::Error::Txn(e) => transactions_page(e),
+        _ => None,
+    }
+}
+
+fn exec_page(e: &exec::Error) -> Option<storage::PageError> {
+    match e {
+        exec::Error::Page(e) => Some(*e),
+        _ => None,
+    }
+}
+
+fn transactions_page(e: &mvcc::Error) -> Option<storage::PageError> {
+    match e {
+        mvcc::Error::Corrupt(e) | mvcc::Error::History(btree::Error::Page(e)) => Some(*e),
+        _ => None,
     }
 }
 
@@ -333,8 +470,9 @@ mod tests {
         x.is_alphanumeric() || x == '_'
     }
 
-    /// Returns how many times `text` builds or renames `Internal` or `Corrupt` outside its tests.
-    /// A macro that pastes the name together is not seen.
+    /// Returns how many times `text` builds or renames `Internal`, `Corrupt` or `Storage` outside
+    /// its tests. A pattern whose fields end in `..` builds nothing. A macro that pastes the name
+    /// together is not seen.
     fn offences(declares: bool, text: &str) -> usize {
         let c = code(text);
         let word = |at: usize, w: &str| {
@@ -346,7 +484,7 @@ mod tests {
         let next = |from: usize| (from..c.len()).find(|&j| !c[j].is_whitespace());
         let mut found = 0;
         for at in 0..c.len() {
-            let Some(len) = ["Internal", "Corrupt"]
+            let Some(len) = ["Internal", "Corrupt", "Storage"]
                 .iter()
                 .find(|w| word(at, w))
                 .map(|w| w.len())
@@ -365,8 +503,9 @@ mod tests {
                 }
                 let fields: String = c[j + 1..k].iter().filter(|x| !x.is_whitespace()).collect();
                 let declared = declares && (fields == "what:String," || fields == "detail:String");
-                let arm =
-                    next(k + 1).is_some_and(|n| c[n..].starts_with(&['=', '>']) || word(n, "if"));
+                let arm = fields.ends_with("..")
+                    || next(k + 1)
+                        .is_some_and(|n| c[n..].starts_with(&['=', '>']) || word(n, "if"));
                 found += usize::from(!declared && !arm);
             }
         }
@@ -374,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn the_search_finds_each_form_of_building_internal_or_corrupt() {
+    fn the_search_finds_each_form_of_building_internal_corrupt_or_storage() {
         for bad in [
             "fn f() -> R { R::Internal { what: w } }",
             "fn f() -> R { Internal { what } }",
@@ -383,6 +522,7 @@ mod tests {
             "use super::RejectReason::Internal as Bug;",
             "#[cfg(test)]\nmod tests {\n}\nfn f() -> O { O::Corrupt { detail: d } }",
             "fn f() -> O { O::Corrupt {\n    detail: format!(\"{x:?}\"),\n} }",
+            "fn f() -> F { F::Storage { detail: d.to_string() } }",
         ] {
             assert_eq!(1, offences(false, bad), "{bad}");
         }
@@ -391,6 +531,8 @@ mod tests {
             "enum O { Corrupt { detail: String }, }",
             "#[cfg(test)]\nmod tests { fn f() -> R { R::Internal { what: w } } }",
             "fn f(r: R) { match r { R::Internal { what } => g(what) } }",
+            "fn f(e: E) -> bool { matches!(e, E::Fatal { reason: F::Storage { .. } }) }",
+            "enum F { Storage { detail: String }, }",
             "fn f() -> &str { \"R::Internal { what }\" } /* Corrupt { detail } */",
         ] {
             assert_eq!(0, offences(true, good), "{good}");
@@ -398,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_cause_builds_internal_or_corrupt_outside_tests() {
+    fn only_a_cause_builds_internal_corrupt_or_storage_outside_tests() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
         sources(&src, &mut files);
@@ -411,6 +553,6 @@ mod tests {
             })
             .filter(|(_, n)| *n > 0)
             .collect();
-        assert_eq!(vec![(src.join("api/cause.rs"), 2)], built);
+        assert_eq!(vec![(src.join("api/cause.rs"), 3)], built);
     }
 }

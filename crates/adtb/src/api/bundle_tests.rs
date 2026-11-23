@@ -340,25 +340,21 @@ mod codecs {
     fn a_hides_new_that_is_no_bool_is_refused_as_damage() {
         let found = refusal(&[("hides_new", Value::I64(1))]);
         assert_eq!(
-            "a row of catalog::bundles.Bundle holds I64(1) in field `hides_new`",
-            damage("holds I64(1) in field `hides_new`").to_string()
+            "a row of catalog::bundles.Bundle holds 1 in field `hides_new`",
+            damage("holds 1 in field `hides_new`").to_string()
         );
-        assert_eq!(Err(damage("holds I64(1) in field `hides_new`")), found);
+        assert_eq!(Err(damage("holds 1 in field `hides_new`")), found);
     }
 
     #[test]
     fn an_option_holding_another_type_is_refused_as_damage() {
         let text = some(Value::Text("x".into()));
         assert_eq!(
-            Err(damage(
-                "holds Sum { ctor: 1, fields: [Text(\"x\")] } in field `catalog`"
-            )),
+            Err(damage("holds constructor 1 of (`x`) in field `catalog`")),
             refusal(&[("catalog", text.clone())])
         );
         assert_eq!(
-            Err(damage(
-                "holds Sum { ctor: 1, fields: [Text(\"x\")] } in field `lease`"
-            )),
+            Err(damage("holds constructor 1 of (`x`) in field `lease`")),
             refusal(&[("lease", text)])
         );
     }
@@ -366,13 +362,11 @@ mod codecs {
     #[test]
     fn a_negative_pins_or_catalog_is_refused_as_damage() {
         assert_eq!(
-            Err(damage("holds I64(-1) in field `pins`")),
+            Err(damage("holds -1 in field `pins`")),
             refusal(&[("pins", Value::I64(-1))])
         );
         assert_eq!(
-            Err(damage(
-                "holds Sum { ctor: 1, fields: [I64(-1)] } in field `catalog`"
-            )),
+            Err(damage("holds constructor 1 of (-1) in field `catalog`")),
             refusal(&[("catalog", some(Value::I64(-1)))])
         );
     }
@@ -380,7 +374,7 @@ mod codecs {
     #[test]
     fn a_nested_sum_field_holding_another_type_is_refused_as_damage() {
         assert_eq!(
-            Err(damage("holds I64(3) in field `state`")),
+            Err(damage("holds 3 in field `state`")),
             refusal(&[("state", Value::I64(3))])
         );
         let past = Value::Sum {
@@ -388,16 +382,17 @@ mod codecs {
             fields: Vec::new(),
         };
         assert_eq!(
-            Err(damage(
-                "holds Sum { ctor: 3, fields: [] } in field `priority`"
-            )),
+            Err(damage("holds constructor 3 of () in field `priority`")),
             refusal(&[("priority", past)])
         );
         let schema = engine_schema();
         let codec = Codec::<Row>::new(&schema);
         let at = (codec.relation(), position(&schema, &codec, k::BUNDLE));
         let bare = tag(&schema, at, "state", k::BUNDLE_SUPERSEDED, Vec::new());
-        let shown = format!("holds {bare:?} in field `state`");
+        let Value::Sum { ctor, .. } = &bare else {
+            panic!("a tag is a sum");
+        };
+        let shown = format!("holds constructor {ctor} of () in field `state`");
         assert_eq!(Err(damage(&shown)), refusal(&[("state", bare)]));
     }
 

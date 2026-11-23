@@ -82,7 +82,10 @@ fn first_migration<R: Runtime>(verifier: &Verifier<R>) -> Result<Option<i64>, Op
     {
         Ok(rows) => Ok(rows.iter().map(MigrationRow::applied).min()),
         Err(e @ catalog::Error::Corrupt(Rot::CatalogRow { .. })) => Err(corrupt(e)),
-        Err(_) => Ok(None),
+        Err(e) => match corrupt(e) {
+            unreadable @ OpenError::Io(_) => Err(unreadable),
+            _ => Ok(None),
+        },
     }
 }
 
@@ -90,7 +93,8 @@ impl<R: Runtime> Background<R> {
     /// Returns the workers of `verifier`'s file, not yet started, counting a file with no scrub
     /// cursor from the instant its first migration was applied.
     ///
-    /// Fail with `Corrupt` when a row of `catalog::migrations` is damaged.
+    /// Fail with `Corrupt` when a row of `catalog::migrations` is damaged, and with `Io` when a
+    /// page of it is unreadable.
     pub(super) fn new(
         verifier: Arc<Verifier<R>>,
         schema: Arc<CommittedSchema>,

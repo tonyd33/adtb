@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Schema, Stage};
 use adtb_lang::span::{Diag, DiagKind};
 use adtb_lang::textual::{Form, PrintError, print};
 use adtb_lang::types::{Base, KeyCtors, RelId, RelRef, Ty};
@@ -14,7 +14,7 @@ use crate::write::{self, Rejection};
 
 pub use crate::exec::Fault;
 
-use super::cause::{Broken, internal};
+use super::cause::{Broken, Failure, internal};
 use super::{Position, TxnId};
 
 /// A failure the engine reports to a caller, as the prelude sum `Error` gives it.
@@ -300,14 +300,6 @@ impl Error {
         Error::rejected(RejectReason::Closed)
     }
 
-    pub(super) fn storage(detail: impl Into<String>) -> Error {
-        Error::Fatal {
-            reason: FatalReason::Storage {
-                detail: detail.into(),
-            },
-        }
-    }
-
     /// Returns the error as its value of the prelude sum `Error`, on one line.
     pub fn value(&self) -> impl fmt::Display + '_ {
         Value(self)
@@ -378,8 +370,8 @@ impl Error {
             write::Error::Closed | write::Error::Transactions(crate::mvcc::Error::Closed) => {
                 Error::closed()
             }
-            write::Error::Transactions(e) => Error::storage(format!("{e:?}")),
-            write::Error::Corrupt(r) => Error::storage(r.to_string()),
+            write::Error::Transactions(e) => Error::storage(Failure::Transactions(e)),
+            write::Error::Corrupt(r) => Error::storage(Failure::Write(r)),
             write::Error::SequenceExhausted => {
                 Error::invalid("the generated counter exhausted its integer range")
             }
@@ -436,12 +428,10 @@ impl Error {
                         }),
                 },
             },
-            exec::Error::Page(p) => Error::storage(format!("{p:?}")),
-            exec::Error::OrphanEntry(index) => {
-                Error::storage(format!("an entry of index {index} names no version"))
-            }
-            exec::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
-            exec::Error::Corrupt(r) => Error::storage(r.to_string()),
+            exec::Error::Page(p) => Error::storage(Failure::Page(p)),
+            exec::Error::OrphanEntry(index) => Error::storage(Failure::OrphanEntry(index)),
+            exec::Error::Spill(io) => Error::storage(Failure::Spill(io)),
+            exec::Error::Corrupt(r) => Error::storage(Failure::Exec(r)),
             exec::Error::Unsupported(what) => Error::unsupported(&what),
             exec::Error::NoCaller => Error::unsupported("`caller` in a statement"),
             exec::Error::Rejected(detail) => Error::rejected(RejectReason::BadInput {
@@ -507,7 +497,7 @@ impl fmt::Debug for Txt<'_> {
 
 struct Dur(Duration);
 
-impl fmt::Debug for Dur {
+impl fmt::Display for Dur {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let micros = i64::try_from(self.0.as_micros()).unwrap_or(i64::MAX);
         let text = print(&Val::Duration(micros), &Form::Base(Base::Duration));
@@ -515,11 +505,23 @@ impl fmt::Debug for Dur {
     }
 }
 
+impl fmt::Debug for Dur {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 struct Rows(usize);
+
+impl fmt::Display for Rows {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} rows", self.0)
+    }
+}
 
 impl fmt::Debug for Rows {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} rows", self.0)
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -554,22 +556,18 @@ impl fmt::Display for RetryReason {
                 txn.0
             ),
             RetryReason::SafePointTimeout { waited } => {
-                write!(f, "no safe point was reached in {:?}", Dur(*waited))
+                write!(f, "no safe point was reached in {}", Dur(*waited))
             }
             RetryReason::Overloaded { retry_after } => {
-                write!(f, "the engine is overloaded for {:?}", Dur(*retry_after))
+                write!(f, "the engine is overloaded for {}", Dur(*retry_after))
             }
             RetryReason::StreamIdle { limit } => {
-                write!(f, "the result stream was idle for over {:?}", Dur(*limit))
+                write!(f, "the result stream was idle for over {}", Dur(*limit))
             }
             RetryReason::FileChanged { path } => write!(f, "file {path} changed while it was read"),
             RetryReason::Fenced => f.write_str("this node is fenced"),
             RetryReason::ReplayConflict { waited } => {
-                write!(
-                    f,
-                    "replay conflicted with the call after {:?}",
-                    Dur(*waited)
-                )
+                write!(f, "replay conflicted with the call after {}", Dur(*waited))
             }
         }
     }
@@ -620,10 +618,10 @@ impl fmt::Display for RejectReason {
             R::DeadlineExceeded => f.write_str("the call's deadline passed"),
             R::StatementLimit { limit } => write!(f, "the statement exceeded its {limit}"),
             R::TransactionExpired { limit, idle: true } => {
-                write!(f, "the transaction was idle for over {:?}", Dur(*limit))
+                write!(f, "the transaction was idle for over {}", Dur(*limit))
             }
             R::TransactionExpired { limit, idle: false } => {
-                write!(f, "the transaction ran for over {:?}", Dur(*limit))
+                write!(f, "the transaction ran for over {}", Dur(*limit))
             }
             R::TransactionBusy => f.write_str("the transaction is running another call"),
             R::MixedVersions => f.write_str("the transaction mixes schema versions"),
@@ -703,7 +701,7 @@ impl fmt::Display for RejectReason {
 impl fmt::Display for Limit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Limit::Time { after } => write!(f, "time limit of {:?}", Dur(*after)),
+            Limit::Time { after } => write!(f, "time limit of {}", Dur(*after)),
             Limit::Memory { bytes } => write!(f, "memory limit of {bytes} bytes"),
             Limit::Rounds { rounds } => write!(f, "limit of {rounds} fixpoint rounds"),
         }
@@ -995,7 +993,12 @@ fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
         },
         Rejection::NotOpen { ctor, stage } => RejectReason::NotOpen {
             ctor,
-            stage: format!("{stage:?}"),
+            stage: match stage {
+                Stage::Declared => "Declared",
+                Stage::Enabled => "Enabled",
+                Stage::Deprecated => "Deprecated",
+            }
+            .to_owned(),
         },
         Rejection::UserError { message } => RejectReason::UserError { message },
         Rejection::Invalid { detail } => RejectReason::Invalid { detail },
@@ -1065,6 +1068,14 @@ mod tests {
     use super::*;
     use crate::{catalog, heap};
 
+    fn storage(detail: &str) -> Error {
+        Error::Fatal {
+            reason: FatalReason::Storage {
+                detail: detail.into(),
+            },
+        }
+    }
+
     #[test]
     fn a_damaged_page_met_writing_catalog_rows_is_a_storage_failure() {
         let schema = catalog::engine_schema();
@@ -1086,11 +1097,7 @@ mod tests {
             catalog::Error::Heap(heap::Error::Page(damaged)),
             catalog::Error::Index(crate::btree::Error::Page(damaged)),
         ] {
-            assert_eq!(
-                Error::storage(format!("{damaged:?}")),
-                client(e.clone()),
-                "{e:?}"
-            );
+            assert_eq!(storage("page 3 is unreadable"), client(e.clone()), "{e:?}");
         }
         let too_large = heap::Error::TooLarge {
             len: 9000,
@@ -1098,7 +1105,7 @@ mod tests {
         };
         assert_eq!(
             Error::rejected(RejectReason::Internal {
-                what: "Heap(TooLarge { len: 9000, limit: 8000 })".into()
+                what: "a version of 9000 bytes is longer than the 8000 a page holds".into()
             }),
             client(catalog::Error::Heap(too_large))
         );
@@ -1119,20 +1126,20 @@ mod tests {
         };
         let malformed = btree::Error::Malformed(crate::storage::Pid(3));
         assert_eq!(
-            Error::storage("Malformed(Pid(3))"),
+            storage("page 3 is not a node of its tree"),
             client(catalog::Error::Index(malformed))
         );
         assert_eq!(
-            Error::storage("registration origin 7"),
+            storage("registration origin 7"),
             client(catalog::Error::Corrupt(catalog::Rot::Origin(7)))
         );
         assert_eq!(
-            Error::storage("the stored catalog has no root for index 7"),
+            storage("the stored catalog has no root for index 7"),
             client(catalog::Error::Missing("index 7".into()))
         );
         assert_eq!(
             Error::rejected(RejectReason::Internal {
-                what: "Index(TooLong { len: 9000, max: 4000 })".into()
+                what: "an entry of 9000 bytes is longer than the 4000 a page holds".into()
             }),
             client(catalog::Error::Index(btree::Error::TooLong {
                 len: 9000,

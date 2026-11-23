@@ -690,6 +690,32 @@ fn marked_by_hand(seed: u64) -> (Files, Pid) {
     (sim.files(), marks)
 }
 
+/// A marks page whose checksum holds and whose count overruns the page quarantines the database:
+/// the open succeeds and a query and an insert fail `Quarantined`.
+#[test]
+fn a_sealed_marks_page_that_does_not_decode_quarantines_the_database() {
+    let (files, _) = seeded(61, status_page);
+    let mut sim = Sim::with_files(61, Config::default(), files);
+    let marks = with_pager(&mut sim, Pager::quarantine_page);
+    let mut files = sim.files();
+    let page = DATA.page_mut(&mut files, marks);
+    page[HEADER_LEN..HEADER_LEN + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    crate::storage::seal(marks, page);
+    let mut sim = Sim::with_files(61, Config::default(), files);
+    finished(&mut sim, |rt| {
+        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
+        let none = CallOptions::default();
+        for text in [SELECT, INSERT] {
+            assert_eq!(
+                "the database",
+                quarantined(db.query_text(text, &[], &none)),
+                "{text}"
+            );
+        }
+        db.close().unwrap();
+    });
+}
+
 /// Space: a database marked whole with nothing damaged, verified whole, holding and of a relation,
 /// and verified as a real file; and a database with only a heap marked.
 #[test]
@@ -882,7 +908,7 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
             else {
                 panic!("round {round}: the open is refused Corrupt");
             };
-            let negative = "Corrupt(\"a roots row holds negative id -1\")";
+            let negative = "a roots row holds negative id -1";
             assert_eq!(negative, detail, "round {round}");
         });
     }
@@ -918,17 +944,14 @@ fn an_unreadable_page_fails_open_unmarked() {
         finished(&mut sim, |rt| {
             let reads = Match::kind(OpKind::Read).offset(DATA.range(pid).start as u64);
             rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
-            let detail = match open::open_in(&rt, FILE, &app(), &open::options(2)) {
-                Err(OpenError::Corrupt { detail }) => detail,
-                other => format!("not Corrupt: {:?}", other.map(drop)),
+            let failed = match open::open_in(&rt, FILE, &app(), &open::options(2)) {
+                Err(OpenError::Io(e)) => (e.kind(), e.to_string()),
+                other => panic!("{pid:?}: not an I/O failure: {:?}", other.map(drop)),
             };
-            got.push((pid, detail));
+            got.push((pid, failed));
         });
-        let unreadable = PageError {
-            pid,
-            damage: Damage::Unreadable,
-        };
-        want.push((pid, format!("Page({unreadable:?})")));
+        let unreadable = format!("page {} is unreadable", pid.0);
+        want.push((pid, (std::io::ErrorKind::Other, unreadable)));
         assert_eq!(
             DATA.page(&files, marks),
             DATA.page(&sim.files(), marks),
@@ -993,16 +1016,14 @@ fn an_open_whose_walk_of_the_roots_heap_cannot_read_its_damaged_page_marks_nothi
     finished(&mut sim, |rt| {
         let reads = Match::kind(OpKind::Read).offset(DATA.range(page).start as u64);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
-        let Err(OpenError::Corrupt { detail }) =
-            open::open_in(&rt, FILE, &app(), &open::options(2))
-        else {
+        let Err(OpenError::Io(e)) = open::open_in(&rt, FILE, &app(), &open::options(2)) else {
             panic!("the open reads the page");
         };
-        let refused = PageError {
-            pid: page,
-            damage: Damage::Unreadable,
-        };
-        assert_eq!(format!("Page({refused:?})"), detail);
+        let unreadable = format!("page {} is unreadable", page.0);
+        assert_eq!(
+            (std::io::ErrorKind::Other, unreadable),
+            (e.kind(), e.to_string())
+        );
     });
     let marked = crate::storage::decode(DATA.page(&sim.files(), marks));
     assert_eq!(Some(BTreeSet::new()), marked);
@@ -1279,7 +1300,19 @@ fn a_log_recovery_cannot_read_is_refused_as_foreign_or_damaged_where_it_failed()
         let Err(OpenError::Corrupt { detail }) = got else {
             panic!("{name}: the open answers {got:?}");
         };
-        assert_eq!(format!("{refusal:?}"), detail, "{name}");
+        assert_eq!(expected(finding), detail, "{name}");
+    }
+}
+
+/// Returns the detail of the open's refusal of a log for `finding`, foreign or damaged.
+fn expected(finding: crate::storage::LogFinding) -> String {
+    let at = finding.lsn.0;
+    match finding.problem {
+        crate::storage::LogProblem::Foreign => {
+            format!("the log block at LSN {at} was written by another file's log")
+        }
+        crate::storage::LogProblem::Damaged => format!("the log block at LSN {at} is damaged"),
+        other => panic!("no refusal of a log is stated for {other:?}"),
     }
 }
 
@@ -1325,7 +1358,10 @@ fn a_foreign_block_past_the_end_of_a_log_is_refused_as_foreign() {
     let Err(OpenError::Corrupt { detail }) = got else {
         panic!("the open is no refusal of a corrupt file");
     };
-    assert_eq!(format!("{cause:?}"), detail);
+    let crate::storage::OpenError::Log(finding) = cause else {
+        unreachable!("the cause is a log finding");
+    };
+    assert_eq!(expected(finding), detail);
 }
 
 /// Answer a log a read-only check cannot list as a finding of an unreadable log.

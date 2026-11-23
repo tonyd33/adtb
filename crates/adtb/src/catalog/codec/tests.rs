@@ -31,10 +31,10 @@ fn a_setting_field_holding_another_type_is_refused_as_damage_naming_it() {
     let found = codec.decode(at, &[Value::I64(451), Value::Text("x".into())]);
     let damage = Rot::CatalogRow {
         row: "catalog::settings.RetryLimit".into(),
-        detail: "holds Text(\"x\") in field `retries`".into(),
+        detail: "holds `x` in field `retries`".into(),
     };
     assert_eq!(
-        "a row of catalog::settings.RetryLimit holds Text(\"x\") in field `retries`",
+        "a row of catalog::settings.RetryLimit holds `x` in field `retries`",
         damage.to_string()
     );
     assert_eq!(Err(damage), found);
@@ -48,7 +48,7 @@ fn a_scrub_interval_holding_no_option_is_refused_as_damage() {
     let found = codec.decode(at, &[Value::I64(208), Value::Duration(5)]);
     let damage = Rot::CatalogRow {
         row: "catalog::settings.ScrubInterval".into(),
-        detail: "holds Duration(5) in field `every`".into(),
+        detail: "holds duration 5 in field `every`".into(),
     };
     assert_eq!(Err(damage), found);
 }
@@ -107,7 +107,7 @@ fn a_role_row_holding_another_type_is_refused() {
     };
     let damage = Rot::CatalogRow {
         row: "catalog::roles.Role".into(),
-        detail: "holds I64(4) in field `name`".into(),
+        detail: "holds 4 in field `name`".into(),
     };
     assert_eq!(Err(damage), codec.decode(0, &row(Value::I64(4))));
 }
@@ -133,17 +133,17 @@ fn a_setting_row_whose_id_is_not_its_constructors_is_refused_as_damage() {
     let other = codec.decode(at, &[Value::I64(207), Value::I64(3)]);
     let damage = Rot::CatalogRow {
         row: "catalog::settings.RetryLimit".into(),
-        detail: "holds I64(207) in field `id`".into(),
+        detail: "holds 207 in field `id`".into(),
     };
     assert_eq!(
-        "a row of catalog::settings.RetryLimit holds I64(207) in field `id`",
+        "a row of catalog::settings.RetryLimit holds 207 in field `id`",
         damage.to_string()
     );
     assert_eq!(Err(damage), other);
     let text = codec.decode(at, &[Value::Text("x".into()), Value::I64(3)]);
     let damage = Rot::CatalogRow {
         row: "catalog::settings.RetryLimit".into(),
-        detail: "holds Text(\"x\") in field `id`".into(),
+        detail: "holds `x` in field `id`".into(),
     };
     assert_eq!(Err(damage), text);
 }
@@ -164,10 +164,10 @@ fn a_role_row_holding_another_type_in_a_field_no_reader_reads_is_refused() {
     );
     let damage = Rot::CatalogRow {
         row: "catalog::roles.Role".into(),
-        detail: "holds Text(\"x\") in field `created`".into(),
+        detail: "holds `x` in field `created`".into(),
     };
     assert_eq!(
-        "a row of catalog::roles.Role holds Text(\"x\") in field `created`",
+        "a row of catalog::roles.Role holds `x` in field `created`",
         damage.to_string()
     );
     assert_eq!(Err(damage), codec.decode(0, &row));
@@ -286,7 +286,7 @@ fn a_grant_row_holding_another_type_or_constructor_is_refused_as_damage_naming_i
         (
             "target",
             some(Value::I64(3)),
-            "a row of catalog::grants.RoleGrant holds Sum { ctor: 1, fields: [I64(3)] } in field `target`",
+            "a row of catalog::grants.RoleGrant holds constructor 1 of (3) in field `target`",
         ),
         (
             "kind",
@@ -294,17 +294,17 @@ fn a_grant_row_holding_another_type_or_constructor_is_refused_as_damage_naming_i
                 ctor: 2,
                 fields: Vec::new(),
             },
-            "a row of catalog::grants.RoleGrant holds Sum { ctor: 2, fields: [] } in field `kind`",
+            "a row of catalog::grants.RoleGrant holds constructor 2 of () in field `kind`",
         ),
         (
             "dormant",
             Value::I64(1),
-            "a row of catalog::grants.RoleGrant holds I64(1) in field `dormant`",
+            "a row of catalog::grants.RoleGrant holds 1 in field `dormant`",
         ),
         (
             "grantee",
             Value::I64(1),
-            "a row of catalog::grants.RoleGrant holds I64(1) in field `grantee`",
+            "a row of catalog::grants.RoleGrant holds 1 in field `grantee`",
         ),
     ] {
         let stored = grant(&schema, k::GRANT_LOG, Some("app::t"), true, &[(field, v)]);
@@ -342,7 +342,7 @@ fn a_migration_row_with_a_short_hash_or_a_negative_version_is_refused_as_damage(
         ),
         (
             migration(&schema, -1, vec![7; 32]),
-            "a row of catalog::migrations.Migration holds I64(-1) in field `version`",
+            "a row of catalog::migrations.Migration holds -1 in field `version`",
         ),
     ] {
         let refused = codec.decode(c, &stored).map_err(|r| r.to_string());

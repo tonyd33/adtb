@@ -349,7 +349,7 @@ fn a_page_past_the_log_end_is_an_unlogged_finding_of_its_relation() {
             page.0,
             1u64 << 40
         );
-        let stale = format!("page {}: Stale {{", page.0);
+        let stale = format!("page {}: Stale (holding LSN", page.0);
         let got = verified(&db, Some("users"));
         assert_eq!(2, got.len(), "{got:?}");
         assert!(got[0].starts_with("StalePage"), "{got:?}");

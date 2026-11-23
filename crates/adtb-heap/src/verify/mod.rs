@@ -8,7 +8,7 @@ use std::ops::Bound;
 
 use crate::btree::{self, BTree, Index};
 use crate::heap::{Flags, Heap, LargeStore, Link, successor};
-use crate::key::{CtorId, Tid};
+use crate::key::{CtorId, Tid, listed};
 use crate::mvcc::{CommitLog, Owes, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
@@ -108,6 +108,29 @@ pub struct Finding {
     pub problem: Problem,
 }
 
+impl std::fmt::Display for Finding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let page = self.pid.0;
+        match &self.problem {
+            Problem::Damaged(damage) => write!(f, "page {page} {damage}"),
+            Problem::Unlogged => write!(f, "page {page} was written by no retained log record"),
+            Problem::Leaked => write!(f, "page {page} is allocated and nothing refers to it"),
+            Problem::Unallocated => write!(f, "page {page} is free and a structure refers to it"),
+            Problem::Shared(a, b) => write!(f, "page {page} is held by both {a} and {b}"),
+            Problem::Structure(what) => write!(f, "page {page}: {what}"),
+            Problem::Overcounted {
+                slot,
+                count,
+                versions,
+            } => write!(
+                f,
+                "page {page} slot {slot} counts {count} versions and {versions} point at it"
+            ),
+            Problem::Unsettled(what) => write!(f, "page {page} is unsettled: {what}"),
+        }
+    }
+}
+
 /// What [`verify`] found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
@@ -183,7 +206,7 @@ impl<R: Runtime> Walk<'_, R> {
                 self.complete = false;
                 self.structure(pid, format!("{name}: breaks the tree's structure"));
             }
-            e => self.structure(root, format!("{name}: {e:?}")),
+            e => self.structure(root, format!("{name}: {e}")),
         }
     }
 
@@ -480,13 +503,17 @@ pub(crate) fn entries<R: Runtime>(
         match heaps.get(&e.ctor) {
             None => problems.push((
                 pid,
-                format!("entry {:?} names {:?}, of no heap", e.key, e.ctor),
+                format!(
+                    "entry {} names constructor {}, of no heap",
+                    listed(&e.key),
+                    e.ctor.0
+                ),
             )),
             Some(h) if !h.holds(pager, e.tid)? => problems.push((
                 pid,
                 format!(
-                    "entry {:?} names slot {}, which holds nothing",
-                    e.key,
+                    "entry {} names slot {}, which holds nothing",
+                    listed(&e.key),
                     e.tid.slot()
                 ),
             )),

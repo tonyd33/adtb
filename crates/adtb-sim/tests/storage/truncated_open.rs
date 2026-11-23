@@ -739,8 +739,7 @@ fn a_large_value_write_over_a_zeroed_page_of_the_store_is_refused() {
 }
 
 const LOG_PRESENT: &str = "the log directory holds a log that no file here wrote";
-const NO_HEADER_CREATE: &str = "neither copy of the file header verifies";
-const NO_HEADER: &str = "NoHeader";
+const NO_HEADER: &str = "neither copy of the file header verifies";
 const HEADER_COPY: usize = 4096;
 
 fn with_create(create: bool) -> OpenOptions {
@@ -786,8 +785,7 @@ fn a_file_cut_short_beside_its_log_never_opens_as_a_new_database() {
             let got = got.unwrap();
             let expected = match (len, create) {
                 (0, _) => Some(LOG_PRESENT),
-                (..HEADER_COPY, true) => Some(NO_HEADER_CREATE),
-                (..HEADER_COPY, false) => Some(NO_HEADER),
+                (..HEADER_COPY, _) => Some(NO_HEADER),
                 _ => None,
             };
             assert_eq!(expected, refusal(&got), "{what}: {got:?}");

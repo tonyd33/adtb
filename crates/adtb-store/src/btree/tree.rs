@@ -40,6 +40,21 @@ impl From<PageError> for Error {
     }
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Page(e) => write!(f, "{e}"),
+            Error::Malformed(pid) => write!(f, "page {} is not a node of its tree", pid.0),
+            Error::TooLong { len, max } => write!(
+                f,
+                "an entry of {len} bytes is longer than the {max} a page holds"
+            ),
+            Error::Key(e) => write!(f, "{e}"),
+            Error::Entry(pid, e) => write!(f, "an entry on page {} does not decode: {e}", pid.0),
+        }
+    }
+}
+
 /// What an inserter knows of a tree's entries, consulted when a leaf fills.
 pub trait Entries {
     /// Returns whether `entry` may be deleted to make room.

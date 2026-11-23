@@ -130,9 +130,10 @@ impl<R: Runtime> Pasts<R> {
             return Ok(self.upto);
         };
         let made = self.retained.migrations.get(&v).copied();
-        let markers = record
-            .markers(&self.pager)
-            .map_err(|e| exec::Error::from(exec::Rot::Markers(e)))?;
+        let markers = record.markers(&self.pager).map_err(|e| match e {
+            crate::btree::Error::Page(p) => exec::Error::Page(p),
+            e => exec::Rot::Markers(e).into(),
+        })?;
         let mut oldest = self.upto;
         for m in markers
             .iter()
@@ -281,13 +282,14 @@ impl<R: Runtime> VacuumHold<'_, R> {
         };
         let key_index = rel.key_index;
         let ctors = &db.bindings.indexes()[&key_index].ctors;
-        let keyed = &rel
+        let keyed = rel
             .indexes
             .iter()
             .find(|(i, _)| *i == key_index)
-            .expect("a relation's key index is among its indexes")
-            .1
-            .keys;
+            .map(|(_, indexed)| &indexed.keys);
+        if let (None, Some(&(ctor, _))) = (keyed, sum.heaps.first()) {
+            return Err(vacuum::Error::Unkeyed(ctor));
+        }
         let types: Vec<_> = db.bindings.indexes()[&key_index]
             .index
             .schema()
@@ -296,7 +298,7 @@ impl<R: Runtime> VacuumHold<'_, R> {
             .map(|(t, _)| t.clone())
             .collect();
         let key = |ctor: CtorId, row: &[Value]| -> Option<Vec<Value>> {
-            keyed.key(*ctors.get(&ctor)?, row, &types).ok().flatten()
+            keyed?.key(*ctors.get(&ctor)?, row, &types).ok().flatten()
         };
         let pasts: Vec<(CtorId, &Heap)> = sum
             .heaps

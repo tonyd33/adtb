@@ -6,6 +6,9 @@
 -- returns `Result` with its damage cause. The sites left guard values the engine built in memory or
 -- checked first, a caller's latch discipline (heap/named.rs), or a surface built only for tests
 -- and the testing feature (heap/handle/observe.rs).
+-- adtb_decode_panics: the same sites, in the engine crate's decode files, where none is left. The
+-- catalog codec's builders and encoders (catalog/codec/encode.rs) guard values the engine built and
+-- are in neither file set.
 
 field_visibility = do {
   s <- descendants_of_kind :struct_item;
@@ -39,5 +42,5 @@ main = do {
   p <- pub_fields;
   c <- crate_fields;
   d <- decode_panics;
-  return (("pub_fields", p), ("crate_fields", c), ("decode_panics", d));
+  return (("pub_fields", p), ("crate_fields", c), ("decode_panics", d), ("adtb_decode_panics", d));
 };

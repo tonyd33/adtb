@@ -1248,7 +1248,12 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
         let log = Log::new([APP]);
         rt.plan(fail_reads_after_open(&rt, open_op("bk/manifest")));
         let got = restore(&rt);
-        assert_eq!(Err(storage_failure("`bk/manifest`: Failed")), got);
+        assert_eq!(
+            Err(storage_failure(
+                "`bk/manifest`: the device refused the operation"
+            )),
+            got
+        );
         rt.plan(Plan::new());
         let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
         prove_in(rt.clone(), &archive(), &log, &no_create()).unwrap();
@@ -1256,13 +1261,21 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
         rt.plan(fail_reads_after_open(&rt, pages));
         let got = prove_in(rt.clone(), &archive(), &log, &no_create());
         let pages = manifest.parts.iter().find(|p| p.name.starts_with("pages/"));
-        let part = format!("`{TARGET}/{}`: Failed", pages.unwrap().name);
+        let part = format!(
+            "`{TARGET}/{}`: the device refused the operation",
+            pages.unwrap().name
+        );
         assert_eq!(Err(storage_failure(&part)), got);
         rt.plan(Plan::new());
         assert_eq!(Proof::Proven, proof_in(&rt, &archive()).unwrap());
         rt.plan(fail_reads_after_open(&rt, open_op("bk/proof")));
         let got = proof_in(&rt, &archive());
-        assert_eq!(Err(storage_failure("`bk/proof`: Failed")), got);
+        assert_eq!(
+            Err(storage_failure(
+                "`bk/proof`: the device refused the operation"
+            )),
+            got
+        );
         rt.plan(Plan::new());
         let db = open::open_in(&rt, FILE, &log, &no_create()).unwrap();
         let restored_log = Match::kind(OpKind::Open).prefixed("copy.adt-log");
@@ -1270,7 +1283,7 @@ fn a_failed_read_of_a_backup_is_a_storage_failure_and_changes_nothing() {
         let got = restore_text(&db);
         let start = manifest.start.lsn.0;
         let first = start - start % u64::from(manifest.header.log_block);
-        let block = format!("`log block at {first}`: Failed");
+        let block = format!("`log block at {first}`: the device refused the operation");
         assert_eq!(Err(storage_failure(&block)), got);
         rt.plan(Plan::new());
         insert(&db, 2..3);
@@ -2084,7 +2097,7 @@ fn a_backup_refuses_a_block_of_another_file_in_the_log() {
         common::write(&rt, &mut io, file, last as u64, &foreign).unwrap();
         let text = format!("backup to {TARGET:?}");
         let at = super::parse_segment(name).expect("a segment name") + last as u64;
-        let detail = format!("`log block at {at}`: Failed");
+        let detail = format!("`log block at {at}`: the device refused the operation");
         adtb_testkit::refused_as(
             db.query_text(&text, &[], &CallOptions::default()),
             &Error::Fatal {
@@ -2309,7 +2322,7 @@ fn a_restore_that_fails_its_check_never_shows_a_file() {
         let (manifest, _) = storage::read_manifest(&rt, TARGET).unwrap();
         let start = manifest.start.lsn.0;
         let first = start - start % u64::from(manifest.header.log_block);
-        let detail = format!("`log block at {first}`: Failed");
+        let detail = format!("`log block at {first}`: the device refused the operation");
         adtb_testkit::refused_as(
             restore_in(rt, &archive(), COPY, RestorePoint::Latest, &no_create()),
             &Error::Fatal {

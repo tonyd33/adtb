@@ -678,7 +678,7 @@ fn verify_exits_1_on_a_finding_and_2_when_the_file_refuses_open() {
     let out = adtb(&["verify", db.to_str().unwrap()], "");
     assert_eq!(Some(2), out.status.code(), "{out:?}");
     assert_eq!(
-        "DB: the file is corrupt: NoHeader\n",
+        "DB: the file is corrupt: neither copy of the file header verifies\n",
         stderr(&out).replace(db.to_str().unwrap(), "DB")
     );
 }

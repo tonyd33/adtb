@@ -88,6 +88,22 @@ impl From<PageError> for Error {
     }
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Page(e) => write!(f, "{e}"),
+            Error::Changed(_) => {
+                f.write_str("the version a write targets changed before its exclusive latch")
+            }
+            Error::TooLarge { len, limit } => write!(
+                f,
+                "a version of {len} bytes is longer than the {limit} a page holds"
+            ),
+            Error::NoDirectory => f.write_str("the heap has no directory"),
+        }
+    }
+}
+
 /// The failure of a refusal judged again under the page's exclusive latch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {

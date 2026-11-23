@@ -245,7 +245,7 @@ fn told_at(rt: &SimRuntime, texts: &[&str]) -> (Option<String>, Option<Error>) {
             db.close().expect("the database closes");
             (None, answered)
         }
-        Err(e) => (Some(format!("{e:?}")), None),
+        Err(e) => (Some(e.to_string()), None),
     }
 }
 
@@ -327,10 +327,7 @@ fn settled(fail: Option<(Site, usize)>) -> Ran {
     let (runs, failed) = run(&mut sim, |rt| {
         let (pager, mut catalog, txns) = catalog_at(&rt);
         arm(fail);
-        let failed = catalog
-            .settle(&pager, &txns)
-            .err()
-            .map(|e| format!("{e:?}"));
+        let failed = catalog.settle(&pager, &txns).err().map(|e| e.to_string());
         let runs = armed::reached();
         pager.close();
         (runs, failed)
@@ -368,7 +365,7 @@ fn called(
             write(&db, text);
         }
         arm(fail);
-        let failed = self::call(&db, call).err().map(|e| format!("{e:?}"));
+        let failed = self::call(&db, call).err().map(|e| e.to_string());
         let runs = armed::reached();
         db.close().expect("the database closes");
         (runs, failed)
@@ -497,7 +494,7 @@ fn aborted(fail: Option<(Site, usize)>) -> Ran {
         let failed = catalog.migrate(&pager, &txns, VIOLATED).err();
         let runs = armed::reached();
         pager.close();
-        (runs, failed.map(|e| format!("{e:?}")))
+        (runs, failed.map(|e| e.to_string()))
     });
     let unmended = run(&mut sim, |rt| unmended(&rt));
     let durable = run(&mut sim, |rt| version(&rt) == 2);
@@ -547,7 +544,7 @@ fn mended(fail: Option<(Site, usize)>) -> Ran {
         let opened = Catalog::open(rt, &pager);
         let runs = armed::reached();
         pager.close();
-        (runs, opened.err().map(|e| format!("{e:?}")))
+        (runs, opened.err().map(|e| e.to_string()))
     });
     let unmended = run(&mut sim, |rt| unmended(&rt));
     assert_eq!(2, run(&mut sim, |rt| version(&rt)), "{what}");
@@ -577,51 +574,49 @@ const CASES: &[Case] = &[
         name: "migration",
         run: migrated,
         refused: None,
-        failed: r#"Corrupt { detail: "Heap(Page(PageError { pid: Pid(0), damage: Unreadable }))" }"#,
+        failed: "page 0 is unreadable",
     },
     Case {
         name: "aborted migration",
         run: aborted,
-        refused: Some(
-            r#"Refused(["constraint app::unranked is violated by \"t0\", \"t1\", \"t2\", \"t3\""])"#,
-        ),
-        failed: "Heap(Page(PageError { pid: Pid(0), damage: Unreadable }))",
+        refused: Some(r#"constraint app::unranked is violated by "t0", "t1", "t2", "t3""#),
+        failed: "page 0 is unreadable",
     },
     Case {
         name: "mend at open",
         run: mended,
         refused: None,
-        failed: "Page(PageError { pid: Pid(0), damage: Unreadable })",
+        failed: "page 0 is unreadable",
     },
     Case {
         name: "pending drop",
         run: settled,
         refused: None,
-        failed: "Heap(Page(PageError { pid: Pid(0), damage: Unreadable }))",
+        failed: "page 0 is unreadable",
     },
     Case {
         name: "insert",
         run: inserted,
         refused: None,
-        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+        failed: "fatal: storage failure: page 0 is unreadable",
     },
     Case {
         name: "vacuum",
         run: vacuumed,
         refused: None,
-        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+        failed: "fatal: storage failure: page 0 is unreadable",
     },
     Case {
         name: "update",
         run: updated,
         refused: None,
-        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+        failed: "fatal: storage failure: page 0 is unreadable",
     },
     Case {
         name: "wide insert",
         run: widened,
         refused: None,
-        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+        failed: "fatal: storage failure: page 0 is unreadable",
     },
 ];
 

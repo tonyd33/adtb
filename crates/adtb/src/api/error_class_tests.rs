@@ -133,19 +133,21 @@ fn write_rows() -> Vec<Row> {
             write::Error::Transactions(mvcc::Error::Corrupt(page())),
             Class::Transactions,
             true,
-            storage_failure("Corrupt(PageError { pid: Pid(3), damage: Checksum })"),
+            storage_failure("a commit log page is damaged: page 3 fails its checksum"),
         ),
         row(
             write::Error::Transactions(mvcc::Error::Exhausted),
             Class::Transactions,
             true,
-            storage_failure("Exhausted"),
+            storage_failure("every transaction id is spent"),
         ),
         row(
             write::Error::Transactions(mvcc::Error::History(btree::Error::Malformed(Pid(3)))),
             Class::Transactions,
             true,
-            storage_failure("History(Malformed(Pid(3)))"),
+            storage_failure(
+                "the record of the retention window is damaged: page 3 is not a node of its tree",
+            ),
         ),
         row(
             write::Error::Transactions(mvcc::Error::Closed),
@@ -233,7 +235,7 @@ fn exec_rows() -> Vec<Row> {
             exec::Error::Page(page()),
             Class::Damage,
             true,
-            storage_failure("PageError { pid: Pid(3), damage: Checksum }"),
+            storage_failure("page 3 fails its checksum"),
         ),
         exec_row(
             exec::Error::OrphanEntry(9),
@@ -245,7 +247,7 @@ fn exec_rows() -> Vec<Row> {
             exec::Error::Spill(IoError::Full),
             Class::Reject,
             false,
-            storage_failure("the spill file failed: Full"),
+            storage_failure("the spill file failed: the device is full"),
         ),
         exec_row(
             exec::Error::Corrupt(exec::Rot::SpillShort),
@@ -527,7 +529,7 @@ fn call_broken_rows() -> Vec<Row> {
         broken_row(
             B::CatalogError(catalog::Error::Refused(vec!["r".into()])),
             c,
-            "Refused([\"r\"])",
+            "r",
         ),
         broken_row(B::DeploymentRefused, c, "a deployment command was refused"),
         broken_row(

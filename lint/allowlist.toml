@@ -85,8 +85,6 @@
 "crates/adtb-store/src/mvcc/wait.rs" = 1
 "crates/adtb-store/src/mvcc/watermark.rs" = 1
 "crates/adtb-store/src/mvcc/writers.rs" = 1
-"crates/adtb/src/catalog/codec.rs" = 38
-"crates/adtb/src/write/past.rs" = 1
 
 [engine_names]
 "crates/adtb-lang/src/schema/engine.rs" = 5

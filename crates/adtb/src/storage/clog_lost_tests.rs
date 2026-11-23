@@ -146,8 +146,8 @@ fn lost_write_in(mut sim: Sim) -> (Sim, Vec<Xid>, Vec<(String, String)>) {
         db.close().unwrap();
     });
     let settled = format!(
-        "\"page {}: Settled {{ expected: {expected:?}, found: {found:?} }}\"",
-        page.0
+        "\"page {}: Settled (its write at LSN {} lost, settled from LSN {})\"",
+        page.0, expected.0, found.0
     );
     let want = [("StalePage", settled.as_str())];
     let want = want.map(|(c, a)| (c.to_owned(), a.to_owned())).into();
@@ -202,7 +202,14 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
             .into_iter()
             .filter(|(_, a)| a.starts_with(&of_page))
             .collect();
-        let want = ("StalePage".to_owned(), format!("{of_page}{damage:?}\""));
+        let Damage::Settled { expected, found } = damage else {
+            panic!("the open settles page {page:?} as {damage:?}");
+        };
+        let text = format!(
+            "Settled (its write at LSN {} lost, settled from LSN {})",
+            expected.0, found.0
+        );
+        let want = ("StalePage".to_owned(), format!("{of_page}{text}\""));
         assert_eq!(vec![want], rows);
         assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().unwrap();
@@ -270,7 +277,11 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
             .into_iter()
             .filter(|(_, a)| a.starts_with(&of_page))
             .collect();
-        let row = ("StalePage".to_owned(), format!("{of_page}{stale:?}\""));
+        let text = format!(
+            "Stale (holding LSN {} where the log expects {})",
+            found.0, expected.0
+        );
+        let row = ("StalePage".to_owned(), format!("{of_page}{text}\""));
         assert_eq!(vec![row], rows);
         let database = BTreeSet::from([Quarantine::Database]);
         assert_eq!(database, t.probe().marks());
@@ -299,7 +310,7 @@ fn calls_after_an_unreadable_status_page_refuses_every_transaction_fail_as_stora
         let storage = || {
             Some(Error::Fatal {
                 reason: FatalReason::Storage {
-                    detail: format!("{unreadable:?}"),
+                    detail: format!("page {} is unreadable", status.0),
                 },
             })
         };
@@ -316,7 +327,10 @@ fn calls_after_an_unreadable_status_page_refuses_every_transaction_fail_as_stora
         ];
         let refused = Some(Error::Fatal {
             reason: FatalReason::Storage {
-                detail: format!("{:?}", crate::mvcc::Error::Corrupt(unreadable)),
+                detail: format!(
+                    "a commit log page is damaged: page {} is unreadable",
+                    status.0
+                ),
             },
         });
         assert_eq!([refused.clone(), refused.clone(), refused], got);
@@ -747,13 +761,18 @@ fn each_lost_write_refused(
         *reached.entry(kind).or_insert(0) += 1;
         let lost = reverted(after.clone(), &before, page, DB);
         let settled = kind == "status";
-        let stale = format!(
-            "\"page {}: {} {{ expected: {:?}, found: {:?} }}\"",
-            page.0,
-            if settled { "Settled" } else { "Stale" },
-            lsn(&after, page),
-            lsn(&before, page)
-        );
+        let (expected, found) = (lsn(&after, page).0, lsn(&before, page).0);
+        let stale = if settled {
+            format!(
+                "\"page {}: Settled (its write at LSN {expected} lost, settled from LSN {found})\"",
+                page.0
+            )
+        } else {
+            format!(
+                "\"page {}: Stale (holding LSN {found} where the log expects {expected})\"",
+                page.0
+            )
+        };
         let damage = Damage::Stale {
             expected: lsn(&after, page),
             found: lsn(&before, page),

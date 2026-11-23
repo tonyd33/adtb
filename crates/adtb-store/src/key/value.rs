@@ -326,3 +326,90 @@ pub fn zone(name: &str) -> Option<TimeZone> {
         .ok()
         .filter(|tz| tz.iana_name() == Some(name))
 }
+
+impl std::fmt::Display for Scalar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Scalar::I8 => f.write_str("I8"),
+            Scalar::I16 => f.write_str("I16"),
+            Scalar::I32 => f.write_str("I32"),
+            Scalar::I64 => f.write_str("I64"),
+            Scalar::F32 => f.write_str("F32"),
+            Scalar::F64 => f.write_str("F64"),
+            Scalar::Decimal(scale) => write!(f, "Decimal of scale {scale}"),
+            Scalar::Text => f.write_str("Text"),
+            Scalar::Bytes => f.write_str("Bytes"),
+            Scalar::SortKey => f.write_str("SortKey"),
+            Scalar::Instant => f.write_str("Instant"),
+            Scalar::Date => f.write_str("Date"),
+            Scalar::Time => f.write_str("Time"),
+            Scalar::DateTime => f.write_str("DateTime"),
+            Scalar::ZonedDateTime => f.write_str("ZonedDateTime"),
+            Scalar::Duration => f.write_str("Duration"),
+            Scalar::Period => f.write_str("Period"),
+        }
+    }
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::I8(n) => write!(f, "{n}"),
+            Value::I16(n) => write!(f, "{n}"),
+            Value::I32(n) => write!(f, "{n}"),
+            Value::I64(n) => write!(f, "{n}"),
+            Value::F32(x) => write!(f, "{}", x.get()),
+            Value::F64(x) => write!(f, "{}", x.get()),
+            Value::Decimal(n) => write!(f, "decimal {n}"),
+            Value::Text(t) => write!(f, "`{t}`"),
+            Value::Bytes(b) => write!(f, "bytes {}", Hex(b)),
+            Value::SortKey(b) => write!(f, "sort key {}", Hex(b)),
+            Value::Instant(t) => write!(f, "instant {t}"),
+            Value::Date(d) => write!(f, "date {d}"),
+            Value::Time(t) => write!(f, "time {t}"),
+            Value::DateTime(t) => write!(f, "date-time {t}"),
+            Value::ZonedDateTime { local, zone } => write!(f, "date-time {local} in `{zone}`"),
+            Value::Duration(d) => write!(f, "duration {d}"),
+            Value::Period { months, days } => write!(f, "period of {months} months {days} days"),
+            Value::Record(fields) => write!(f, "{}", Listed(fields)),
+            Value::Sum { ctor, fields } => write!(f, "constructor {ctor} of {}", Listed(fields)),
+        }
+    }
+}
+
+/// Returns `values` in parentheses, each as its `Display` writes it.
+pub fn listed(values: &[Value]) -> impl std::fmt::Display + '_ {
+    Listed(values)
+}
+
+struct Listed<'a>(&'a [Value]);
+
+impl std::fmt::Display for Listed<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("(")?;
+        for (at, v) in self.0.iter().enumerate() {
+            if at > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{v}")?;
+        }
+        f.write_str(")")
+    }
+}
+
+/// Returns `bytes` in hexadecimal.
+pub fn hex(bytes: &[u8]) -> impl std::fmt::Display + '_ {
+    Hex(bytes)
+}
+
+struct Hex<'a>(&'a [u8]);
+
+impl std::fmt::Display for Hex<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("0x")?;
+        for b in self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}

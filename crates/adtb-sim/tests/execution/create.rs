@@ -602,7 +602,7 @@ fn an_empty_file_beside_its_own_published_log_is_rolled_forward() {
         Database::open_in(rt, FILE, &log(), &no_create()).map(drop)
     });
     assert!(
-        matches!(&got, Err(OpenError::Corrupt { detail }) if detail == "NoHeader"),
+        matches!(&got, Err(OpenError::Corrupt { detail }) if detail == "neither copy of the file header verifies"),
         "{got:?}"
     );
     assert_eq!(files, sim.files());

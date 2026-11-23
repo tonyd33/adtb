@@ -319,10 +319,7 @@ fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
     with_named_pager(&mut sim, |p| durable = Probe::of(p).marks());
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
-        let met = format!(
-            "Page(PageError {{ pid: {:?}, damage: Checksum }})",
-            apple(&db)
-        );
+        let met = format!("page {} fails its checksum", apple(&db).0);
         assert_eq!(met, detail);
         assert_eq!(BTreeSet::from([apple_mark(&db)]), durable);
         assert_eq!(durable, marks(&db));

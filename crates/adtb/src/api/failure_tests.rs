@@ -8,7 +8,7 @@ use adtb_sim::{Config, Sim};
 use adtb_testkit::process::run;
 
 use crate::runtime::{Runtime as _, Threads as _};
-use crate::storage::{Damage, PageError, Quarantine};
+use crate::storage::{Damage, Pid, Quarantine};
 use crate::test_world as harness;
 use crate::test_world::load::{self as open, options};
 use crate::testing::Plant;
@@ -59,13 +59,10 @@ fn a_failing_write_whose_abort_record_fails_returns_the_records_failure_and_coun
             .expect("planted");
         status = Some(page);
     });
-    let unreadable = PageError {
-        pid: status.expect("a status page"),
-        damage: Damage::Unreadable,
-    };
+    let page = status.expect("a status page").0;
     let failed = Error::Fatal {
         reason: FatalReason::Storage {
-            detail: format!("{:?}", mvcc::Error::Corrupt(unreadable)),
+            detail: format!("a commit log page is damaged: page {page} is unreadable"),
         },
     };
     assert_eq!((Err(failed), 1), got);
@@ -91,15 +88,14 @@ fn a_transaction_ended_by_a_failure_its_abort_cannot_record_answers_later_calls_
             damage: Damage::Unreadable,
         };
         db.testing().plant(refused).expect("planted");
-        let unreadable = PageError {
-            pid: page,
-            damage: Damage::Unreadable,
-        };
         let storage = |detail| Error::Fatal {
             reason: FatalReason::Storage { detail },
         };
-        let record = storage(format!("{:?}", mvcc::Error::Corrupt(unreadable)));
-        let cause = storage(format!("{unreadable:?}"));
+        let record = storage(format!(
+            "a commit log page is damaged: page {} is unreadable",
+            page.0
+        ));
+        let cause = storage(format!("page {} is unreadable", page.0));
         let unrecorded = db.engine.db.txns().unrecorded_aborts();
         let failing = txn.query_text(RENAME, &[], &opts).map(drop);
         assert_eq!(Err(record), failing, "the failing call");
@@ -154,16 +150,10 @@ fn damage_met_writing_a_lapsed_lease_fails_as_storage_and_marks_nothing() {
         let got = db
             .query_text("set setting LeaseGrace = { grace: 100h }", &[], &opts)
             .map(drop);
-        let storage = |pid| {
+        let storage = |pid: Pid| {
             Err(Error::Fatal {
                 reason: FatalReason::Storage {
-                    detail: format!(
-                        "{:?}",
-                        PageError {
-                            pid,
-                            damage: Damage::Checksum
-                        }
-                    ),
+                    detail: format!("page {} fails its checksum", pid.0),
                 },
             })
         };

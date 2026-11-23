@@ -36,6 +36,34 @@ pub enum EncodeError {
     Type,
 }
 
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DecodeError::UnexpectedEnd => "it ends before a value it holds",
+            DecodeError::TrailingBytes => "it holds bytes past its key",
+            DecodeError::BadEscape => "it holds a bad escape",
+            DecodeError::InvalidUtf8 => "its text is not UTF-8",
+            DecodeError::NonCanonicalFloat => "it holds a float not in canonical form",
+            DecodeError::OutOfDomain => "it holds a value outside its type's domain",
+            DecodeError::UnknownOrderKey => "it holds an unknown order key",
+            DecodeError::UnknownConstructor => "it names an unknown constructor",
+            DecodeError::BadVarint => "it holds a bad variable-length integer",
+        })
+    }
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncodeError::Count { expected, found } => write!(
+                f,
+                "a key holds {found} values where its type has {expected}"
+            ),
+            EncodeError::Type => f.write_str("a key value does not have the type of its place"),
+        }
+    }
+}
+
 impl KeySchema {
     pub fn new(components: Vec<(KeyType, Dir)>) -> KeySchema {
         KeySchema { components }

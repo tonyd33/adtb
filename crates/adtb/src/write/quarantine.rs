@@ -73,7 +73,7 @@ pub(super) fn named(
     for (object, failed) in objects {
         let mut name = name(*object);
         if let Some(e) = failed {
-            name.push_str(&format!(" (the mark holds only in memory: {e:?})"));
+            name.push_str(&format!(" (the mark holds only in memory: {e})"));
         }
         names.push(name);
     }
@@ -221,12 +221,7 @@ impl<R: Runtime> Database<R> {
     /// Returns `e` as [`detail`](super::detail) reads it, a quarantined failure naming its
     /// objects as a client sees them.
     pub fn detail(&self, e: &Error) -> String {
-        match e {
-            Error::Quarantined { objects, .. } => {
-                format!("Quarantined({:?})", self.quarantined_names(objects))
-            }
-            e => super::detail(e),
-        }
+        super::broken::detail_naming(e, |object| self.quarantined_name(object))
     }
 
     /// Returns `e` once the damage recorded is mapped, a failure on a damaged page turned into
@@ -314,7 +309,7 @@ impl<R: Runtime> Database<R> {
             .into_iter()
             .map(|(object, e)| Found::Structure {
                 at: format!(
-                    "the mark of {} holds only in memory: {e:?}",
+                    "the mark of {} holds only in memory: {e}",
                     self.quarantined_name(object)
                 ),
             })

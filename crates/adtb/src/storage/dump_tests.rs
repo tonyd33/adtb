@@ -1705,15 +1705,15 @@ fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
                     "{label}: nothing published"
                 ),
                 Some(Err(e)) => {
-                    assert!(
-                        matches!(
-                            e,
-                            Error::Fatal {
-                                reason: FatalReason::Storage { .. }
-                            }
-                        ),
-                        "{label}: {e:?}"
-                    );
+                    match e {
+                        Error::Fatal {
+                            reason: FatalReason::Storage { .. },
+                        } => {}
+                        Error::Fatal {
+                            reason: FatalReason::Quarantined { what },
+                        } => assert_eq!("the database", what, "{label}"),
+                        e => panic!("{label}: {e:?}"),
+                    }
                     assert!(
                         !failed.files.contains_key(COPY)
                             || (failed.struck.kind(), failed.struck.path())

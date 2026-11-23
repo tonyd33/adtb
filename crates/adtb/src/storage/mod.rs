@@ -15,6 +15,8 @@ mod commit_tests;
 #[cfg(test)]
 mod dump_tests;
 #[cfg(test)]
+mod entry_fault_tests;
+#[cfg(test)]
 mod lost_bitmap_tests;
 #[cfg(test)]
 mod open_damage_tests;

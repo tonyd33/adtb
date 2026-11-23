@@ -119,12 +119,12 @@ const MISSING_HEAD: Head = head(MISSING);
 const VIOLATION_HEAD: Head = head(VIOLATION);
 
 /// Returns the row whose header fields are `head`.
-fn finding(row: &Row<'_>, head: Head) -> FindingRow {
-    FindingRow {
-        id: row.int(head.id),
-        run: row.int(head.run),
+fn finding(row: &Row<'_>, head: Head) -> Result<FindingRow, Rot> {
+    Ok(FindingRow {
+        id: row.int(head.id)?,
+        run: row.int(head.run)?,
         violated: None,
-    }
+    })
 }
 
 impl Relation for relation::VerifyFindings {
@@ -139,25 +139,21 @@ impl Decode for FindingRow {
             FINDING_STRUCTURE, FINDING_VIOLATION,
         };
         &[
-            Ctor::new(FINDING_CHECKSUM, WHERE, |row| Ok(finding(row, WHERE_HEAD))),
-            Ctor::new(FINDING_STALE_PAGE, WHERE, |row| {
-                Ok(finding(row, WHERE_HEAD))
-            }),
-            Ctor::new(FINDING_ORDER, ORDER, |row| Ok(finding(row, ORDER_HEAD))),
-            Ctor::new(FINDING_ORPHAN, ORPHAN, |row| Ok(finding(row, ORPHAN_HEAD))),
-            Ctor::new(FINDING_MISSING, MISSING, |row| {
-                Ok(finding(row, MISSING_HEAD))
-            }),
+            Ctor::new(FINDING_CHECKSUM, WHERE, |row| finding(row, WHERE_HEAD)),
+            Ctor::new(FINDING_STALE_PAGE, WHERE, |row| finding(row, WHERE_HEAD)),
+            Ctor::new(FINDING_ORDER, ORDER, |row| finding(row, ORDER_HEAD)),
+            Ctor::new(FINDING_ORPHAN, ORPHAN, |row| finding(row, ORPHAN_HEAD)),
+            Ctor::new(FINDING_MISSING, MISSING, |row| finding(row, MISSING_HEAD)),
             Ctor::new(FINDING_VIOLATION, VIOLATION, |row| {
                 const CONSTRAINT: Field = field(VIOLATION, "constraint");
-                let constraint = row.int(CONSTRAINT);
+                let constraint = row.int(CONSTRAINT)?;
                 let violated = u64::try_from(constraint).map_err(|_| row.bad(CONSTRAINT))?;
                 Ok(FindingRow {
                     violated: Some(violated),
-                    ..finding(row, VIOLATION_HEAD)
+                    ..finding(row, VIOLATION_HEAD)?
                 })
             }),
-            Ctor::new(FINDING_STRUCTURE, WHERE, |row| Ok(finding(row, WHERE_HEAD))),
+            Ctor::new(FINDING_STRUCTURE, WHERE, |row| finding(row, WHERE_HEAD)),
         ]
     };
 }

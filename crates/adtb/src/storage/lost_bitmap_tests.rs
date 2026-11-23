@@ -360,9 +360,8 @@ fn a_zeroed_page_refuses_each_call_that_meets_it_and_marks_only_its_holder() {
             let verify = whole.then(|| {
                 let (expected, found) = (storage::lsn(DATA.page(&files, pages[0])), Lsn(0));
                 let stale = format!(
-                    "page {}: {:?}",
-                    pages[0].0,
-                    Damage::Stale { expected, found }
+                    "page {}: Stale (holding LSN {} where the log expects {})",
+                    pages[0].0, found.0, expected.0
                 );
                 let rows = [
                     ("StalePage", stale.as_str()),

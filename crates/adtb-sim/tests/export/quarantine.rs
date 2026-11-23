@@ -1,4 +1,4 @@
-use adtb::testing::{Damage, Failed, Object, PageError, Pid, Plant, Quarantine, page::HEADER_LEN};
+use adtb::testing::{Damage, Failed, Object, Pid, Plant, Quarantine, page::HEADER_LEN};
 use adtb_testkit::process;
 use adtb_testkit::scratch::Scratch;
 use std::collections::BTreeSet;
@@ -1696,13 +1696,12 @@ fn a_large_value_page_fails_as_storage_unmarked_while_its_store_walk_stops_then_
         flip();
         for attempt in 0..2 {
             let e = api::failure(&db, ROWS);
-            let Error::Fatal {
-                reason: FatalReason::Storage { detail },
-            } = &e
-            else {
-                panic!("attempt {attempt}: {e:?}");
+            let failed = Error::Fatal {
+                reason: FatalReason::Storage {
+                    detail: format!("page {} fails its checksum", page.0),
+                },
             };
-            assert!(detail.contains(&format!("{page:?}")), "{detail}");
+            assert_eq!(failed, e, "attempt {attempt}");
             assert_eq!(BTreeSet::new(), marks(&db), "attempt {attempt}");
         }
         flip();
@@ -2354,13 +2353,7 @@ fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
         assert_eq!(BTreeSet::new(), marks(&db));
         let first = walked[0] + 1;
         assert_eq!(vec![walked[0], first, first, first], walked);
-        let detail = format!(
-            "{:?}",
-            PageError {
-                pid: root,
-                damage: Damage::Unreadable
-            }
-        );
+        let detail = format!("page {} is unreadable", root.0);
         let failed = Error::Fatal {
             reason: FatalReason::Storage { detail },
         };

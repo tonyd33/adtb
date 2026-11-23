@@ -36,7 +36,9 @@ impl Catalog {
             .map_or(0, |top| top + 1);
         let changing = match Root::read(&pager.read(self.root)?).changing() {
             Changing::Schema(_) => "Schema".to_owned(),
-            c => format!("{c:?}"),
+            Changing::None => "None".to_owned(),
+            Changing::NamingSequences => "NamingSequences".to_owned(),
+            Changing::Reindexing => "Reindexing".to_owned(),
         };
         let mut out = vec![
             format!("change {changing}"),

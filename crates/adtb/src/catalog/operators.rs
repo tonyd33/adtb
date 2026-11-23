@@ -276,9 +276,9 @@ impl Decode for MigrationOpRow {
     const CTORS: &'static [Ctor<MigrationOpRow>] =
         &[Ctor::new(k::MIGRATION_OP, MIGRATION_OP, |r| {
             Ok(MigrationOpRow {
-                migration: r.int(MIGRATION_OP_MIGRATION),
-                ordinal: r.int32(MIGRATION_OP_ORDINAL),
-                op: r.nested(MIGRATION_OP_OP),
+                migration: r.int(MIGRATION_OP_MIGRATION)?,
+                ordinal: r.int32(MIGRATION_OP_ORDINAL)?,
+                op: r.nested(MIGRATION_OP_OP)?,
             })
         })
         .with_sums(&[MIGRATION_OP_OP])];
@@ -307,10 +307,10 @@ impl Decode for OpClauseRow {
     type Relation = relation::MigrationClauses;
     const CTORS: &'static [Ctor<OpClauseRow>] = &[Ctor::new(k::OP_CLAUSE, OP_CLAUSE, |r| {
         Ok(OpClauseRow {
-            migration: r.int(OP_CLAUSE_MIGRATION),
-            ordinal: r.int32(OP_CLAUSE_ORDINAL),
-            clause: r.int32(OP_CLAUSE_CLAUSE),
-            body: r.nested(OP_CLAUSE_BODY),
+            migration: r.int(OP_CLAUSE_MIGRATION)?,
+            ordinal: r.int32(OP_CLAUSE_ORDINAL)?,
+            clause: r.int32(OP_CLAUSE_CLAUSE)?,
+            body: r.nested(OP_CLAUSE_BODY)?,
         })
     })
     .with_sums(&[OP_CLAUSE_BODY])];

@@ -26,7 +26,7 @@ impl From<Rot> for Error {
 impl fmt::Display for Rot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Rot::Index(e) => write!(f, "{e:?}"),
+            Rot::Index(e) => write!(f, "{e}"),
             Rot::NoKeyIndex(relation) => write!(f, "relation {relation} has no key index"),
             Rot::Catalog(r) => write!(f, "{r}"),
             Rot::NoRoot(what) => write!(f, "the stored catalog has no root for {what}"),

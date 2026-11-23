@@ -38,7 +38,7 @@ fn a_negative_count_setting_stored_refuses_the_open_naming_the_setting_and_value
         Ok(_) => panic!("the open refuses"),
     };
     assert_eq!(
-        "Corrupt(\"a row of catalog::settings.RetryLimit holds `retries` outside its range\")",
+        "a row of catalog::settings.RetryLimit holds `retries` outside its range",
         detail
     );
 }

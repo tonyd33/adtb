@@ -14,5 +14,5 @@ pub use entry::{CtorId, Entry, Tid, stored};
 pub use hash::{hash32, hash64};
 pub use value::{
     AnonRecordType, AnonSumType, CtorType, F32, F64, KeyType, OrderKey, Scalar, SumType, Value,
-    zone,
+    hex, listed, zone,
 };

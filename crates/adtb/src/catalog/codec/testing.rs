@@ -356,7 +356,7 @@ fn nested_written<T: Decode>(
                             k.id
                         ));
                     }
-                    let read = codec.table(*s).nested(&want);
+                    let read = codec.table(*s).nested(&want).expect("a stored value reads");
                     if read != v {
                         out.push(format!(
                             "{name} {} field `{field}` reads {want:?} under {catalog} as {read:?}, not {v:?}",

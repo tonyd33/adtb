@@ -288,3 +288,48 @@ pub(crate) fn mistyped(want: &'static str, v: &Val) -> Error {
     }
     .into()
 }
+
+impl std::fmt::Display for Val {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let list = |f: &mut std::fmt::Formatter<'_>, vs: &mut dyn Iterator<Item = &Val>| {
+            f.write_str("(")?;
+            for (at, v) in vs.enumerate() {
+                if at > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{v}")?;
+            }
+            f.write_str(")")
+        };
+        match self {
+            Val::Int(n) => write!(f, "{n}"),
+            Val::F32(x) => write!(f, "{}", x.get()),
+            Val::F64(x) => write!(f, "{}", x.get()),
+            Val::Decimal(n) => write!(f, "decimal {n}"),
+            Val::Text(t) => write!(f, "`{t}`"),
+            Val::Bytes(b) => write!(f, "bytes {}", crate::key::hex(b)),
+            Val::SortKey(b) => write!(f, "sort key {}", crate::key::hex(b)),
+            Val::Instant(t) => write!(f, "instant {t}"),
+            Val::Date(d) => write!(f, "date {d}"),
+            Val::Time(t) => write!(f, "time {t}"),
+            Val::DateTime(t) => write!(f, "date-time {t}"),
+            Val::Zoned { local, zone } => write!(f, "date-time {local} in `{zone}`"),
+            Val::Duration(d) => write!(f, "duration {d}"),
+            Val::Period { months, days } => write!(f, "period of {months} months {days} days"),
+            Val::Ctor(c, fields) => {
+                write!(f, "constructor {c} of ")?;
+                list(f, &mut fields.iter())
+            }
+            Val::Record(fields) => list(f, &mut fields.iter()),
+            Val::Set(items) => {
+                f.write_str("the set ")?;
+                list(f, &mut items.iter())
+            }
+            Val::List(items) => {
+                f.write_str("the list ")?;
+                list(f, &mut items.iter())
+            }
+            Val::Placeholder { occurrence, .. } => write!(f, "fresh value {occurrence}"),
+        }
+    }
+}
