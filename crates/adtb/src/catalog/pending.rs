@@ -17,10 +17,9 @@ use crate::storage::Pager;
 use super::Rot;
 use super::ids::{CatFieldId, CatIndexId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
-use super::root::{self, Changing};
 use super::roots::RootsRow;
 use super::rows::{ElementTexts, IndexSpec};
-use super::{Broken, Catalog, Error, Migrating, ROOTS, admit_roots, delete_rows, indexes};
+use super::{Broken, Catalog, Change, Error, Migrating, ROOTS, admit_roots, delete_rows, indexes};
 
 /// The first index id of an old key held pending. The log allocates index ids below it.
 const HELD_KEY_INDEXES: u64 = 1 << 31;
@@ -292,27 +291,11 @@ impl Catalog {
             .filter(|id| !stored.contains_key(id))
             .copied()
             .collect();
-        let begun = txns.begin(pager)?;
-        let x = begun.xid();
-        let marked = if freed.is_empty() {
-            None
+        let change = Change::begin(pager, txns, Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let change = if freed.is_empty() {
+            change
         } else {
-            match root::begin_or_join(pager, self.root, Changing::Schema(x)) {
-                Ok(marked) => marked,
-                Err(e) => {
-                    txns.abandon_failed(pager, begun)?;
-                    return Err(e.into());
-                }
-            }
-        };
-        let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let m = Migrating {
-            pager,
-            txns,
-            x,
-            hold,
-            made: Default::default(),
-            top: Default::default(),
+            change.mark(self.root)?
         };
         let roots: Vec<Vec<Value>> = freed
             .iter()
@@ -324,27 +307,19 @@ impl Catalog {
                 row.encode()
             })
             .collect();
-        let wrote = rewrite(&m, &self.roots, &self.readers.pending, &pending)
-            .and_then(|()| delete_rows(&m, &self.roots, &roots));
-        drop(m);
+        let m = change.writes();
+        let wrote = rewrite(m, &self.roots, &self.readers.pending, &pending)
+            .and_then(|()| delete_rows(m, &self.roots, &roots));
         if let Err(e) = wrote {
-            txns.abandon_failed(pager, begun)?;
-            if let Some(marked) = marked {
-                root::end(pager, marked, |_| {})?;
-            }
-            return Err(e);
+            return Err(change.fail(self, e));
         }
-        let committed = txns.commit(pager, begun)?;
+        let landed = change.commit()?;
         self.readers.pending = pending;
         self.readers.enforced = enforced;
-        if freed.is_empty() {
-            committed.done();
-            return Ok(());
-        }
         for id in &freed {
             self.indexes.remove(id);
         }
-        self.end_committed(pager, txns, marked, committed, &[]);
+        self.end_landed(pager, txns, landed, &[]);
         Ok(())
     }
 }

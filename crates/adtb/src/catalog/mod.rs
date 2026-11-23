@@ -966,34 +966,6 @@ impl Catalog {
             .collect()
     }
 
-    /// Free every page a schema change left unreached once it is `committed`, counting the
-    /// versions of the heaps it took out of the catalog, `gone`, off their large values; then end
-    /// `marked`, or with none the change the root records, and wait until the end is durable.
-    /// Leave the change on the root for the next open when the free fails or leaves a version
-    /// not counted off.
-    #[track_caller]
-    fn end_committed<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        marked: Option<Begun>,
-        committed: mvcc::Committed<'_>,
-        gone: &[Arc<Heap>],
-    ) {
-        let freed = committed.then(faults::Step::FreeLeaked, || {
-            self.free_leaked(pager, txns, gone)
-        });
-        if !freed.is_some_and(|f| f.counted) {
-            return;
-        }
-        let ended = committed.then(faults::Step::EndChange, || {
-            root::end_freed(pager, self.root, marked)
-        });
-        if let Some(lsn) = ended {
-            pager.wait_durable(lsn);
-        }
-    }
-
     /// Returns the schema and program constraint checks and validation run against: the
     /// version's, with every pending-dropped object kept.
     pub fn checking(&self) -> (&Committed, &Arc<Program>) {

@@ -98,6 +98,17 @@ impl<'a, R: Runtime> Change<'a, R> {
         Ok(())
     }
 
+    /// Release the snapshot and commit. Returns the commit, its mark still recorded.
+    ///
+    /// Fail as [`Transactions::commit`] does, the transaction aborted and its mark kept.
+    pub(super) fn commit(self) -> Result<Landed<'a>, Error> {
+        let Change { begun, m, mark } = self;
+        let (pager, txns) = (m.pager, m.txns);
+        drop(m);
+        let committed = txns.commit(pager, begun)?;
+        Ok(Landed { committed, mark })
+    }
+
     /// Release the snapshot and commit, changing the catalog root page `root` through `also` in
     /// the log batch of the commit record. Returns the commit, its mark still recorded.
     ///
