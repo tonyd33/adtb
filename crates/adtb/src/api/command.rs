@@ -459,7 +459,7 @@ impl<R: Runtime> Engine<R> {
         let given = self.text_of(p, std::slice::from_ref(&t));
         let mut got = self
             .db
-            .statements(tx, given, local, bounds)
+            .statements(write::Leave::system(), tx, given, local, bounds)
             .map_err(|f| f.error)?;
         got.pop()
             .map(|o| o.result)
@@ -745,7 +745,7 @@ impl<R: Runtime> Engine<R> {
         let given = self.text_of(p, std::slice::from_ref(&value));
         let mut got = self
             .db
-            .statements(tx, given, local, bounds)
+            .statements(write::Leave::system(), tx, given, local, bounds)
             .map_err(|f| f.error)?;
         let record = got
             .pop()
@@ -844,9 +844,13 @@ impl<R: Runtime> Engine<R> {
             clock: self.clock(),
             caller: None,
         };
-        let ran = self
-            .db
-            .statements(&tx, text, &mut Local::default(), Bounds::default());
+        let ran = self.db.statements(
+            write::Leave::system(),
+            &tx,
+            text,
+            &mut Local::default(),
+            Bounds::default(),
+        );
         match ran {
             Ok(_) => self.db.commit(tx).map(drop),
             Err(f) => Err(self.db.abandoned(tx, f.error)),

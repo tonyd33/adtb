@@ -7,7 +7,7 @@ use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 use crate::write::{Local, Txn};
 
-use super::admitted::{Admitted, CALL_BYTES, Queued};
+use super::admitted::{Admitted, Authority, CALL_BYTES, Queued};
 use super::error::FatalReason;
 use super::stop::{CancelToken, Stops};
 use super::text::{DynRows, Prepared};
@@ -183,7 +183,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             opts.deadline,
             CALL_BYTES + text.len() + p.bytes(),
         );
-        let admitted = e.admit_program(p, &queued)?;
+        let admitted = e.admit_program(p, &queued, Authority::Owner)?;
         let rows = self.run(&admitted, opts, || {})?;
         self.temps = Some(compiled);
         Ok(rows)

@@ -1,7 +1,10 @@
 -- abandons_impls: an `impl` of `Abandons`, which lets a writer keep its heap writes with no
 -- take-back. unchecked_impls: an `impl` of `UncheckedWriter`, which lets a writer skip the SIREAD
 -- check of a version it supersedes. stops_early_judgements: a use of `StopsEarly::judged`, the
--- judgement that lets a scan keep page locks on only the pages it read.
+-- judgement that lets a scan keep page locks on only the pages it read. admitted_leaves: a use of
+-- `Leave::admitted`, the leave to run a call's statements, which the admission gate alone gives.
+-- system_leaves: a use of `Leave::system`, the leave to run statements for no caller.
+-- owner_authorities: a use of `Authority::Owner`, which admits a call with every privilege.
 
 impls name = do {
   i <- descendants_of_kind :impl_item;
@@ -10,15 +13,25 @@ impls name = do {
   return i;
 };
 
-judgements = do {
+paths name = do {
   p <- descendants_of_kind :scoped_identifier;
-  guard $ text p ~ r"(^|::|<)StopsEarly>?::judged$";
+  guard $ text p ~ name;
   return p;
 };
 
 main = do {
   a <- collect (impls r"(^|::)Abandons(<.*>)?$") | arr length;
   u <- collect (impls r"(^|::)UncheckedWriter(<.*>)?$") | arr length;
-  s <- collect judgements | arr length;
-  return (("abandons_impls", a), ("unchecked_impls", u), ("stops_early_judgements", s));
+  s <- collect (paths r"(^|::|<)StopsEarly>?::judged$") | arr length;
+  l <- collect (paths r"(^|::)Leave::admitted$") | arr length;
+  y <- collect (paths r"(^|::)Leave::system$") | arr length;
+  o <- collect (paths r"(^|::)Authority::Owner$") | arr length;
+  return (
+    ("abandons_impls", a),
+    ("unchecked_impls", u),
+    ("stops_early_judgements", s),
+    ("admitted_leaves", l),
+    ("system_leaves", y),
+    ("owner_authorities", o)
+  );
 };

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
-use crate::write::{Bounds, Local, Text, Txn, either};
+use crate::write::{Bounds, Leave, Local, Text, Txn, either};
 
 use super::super::{Engine, Error, TxnId};
 
@@ -66,7 +66,7 @@ impl Changes {
             grant: grant.cloned(),
             ..Bounds::default()
         };
-        e.db.statements(tx, text, &mut Local::default(), bounds)
+        e.db.statements(Leave::system(), tx, text, &mut Local::default(), bounds)
             .map(|_| ())
             .map_err(|failure| failure.error)
     }

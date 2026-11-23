@@ -1,23 +1,17 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
-use adtb_lang::ast::AdhocItem;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
 use crate::write::Txn;
 
-use super::super::admitted::Admitted;
-use super::super::bundle::{BundleWriter, bundle_name};
-use super::super::command::{Need, free_params, need};
-use super::super::text::Issuer;
-use super::super::{Engine, Error, OWNER_ROLE, RejectReason, TxnId};
-use super::adhoc::Holds;
-use super::binding::RoleBinding;
+use super::super::bundle::BundleWriter;
+use super::super::{Engine, Error, RejectReason, TxnId};
 use super::store::{self, Changes};
 use super::tables::{CallOrigin, CallRow, RoleId, Tables, service};
-use super::{Capability, RoleAuthority, denied, require};
+use super::{Capability, RoleAuthority, require};
 
 #[derive(Clone, Debug)]
 pub struct RoleSession<R: Runtime = adtb_sys::os::OsRuntime> {
@@ -68,127 +62,6 @@ impl<R: Runtime> RoleAuthority<R> {
         e.principal(Some(assertion))
     }
 
-    /// Returns the principal ad hoc text of hash `text` of `session` runs for, refusing a dropped
-    /// role and a role lacking `adhoc`, or `assert` when `assertion` is given, with `Denied`
-    /// recorded in the audit. A database quarantined whole has no grants to read, and the embedded
-    /// owner holds `adhoc` without them.
-    pub(super) fn admit_caller(
-        &self,
-        session: &RoleSession<R>,
-        text: &[u8; 32],
-        assertion: Option<&Val>,
-    ) -> Result<Val, Error> {
-        let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let service = service(e.schema(), &session.name);
-        let origin = CallOrigin::AdHoc(*text);
-        if session.name == OWNER_ROLE && assertion.is_none() && e.db.admit_database().is_err() {
-            return Ok(service);
-        }
-        self.demand(session, &service, &origin, Capability::Adhoc)?;
-        if assertion.is_some() {
-            self.demand(session, &service, &origin, Capability::Assert)?;
-        }
-        self.admit_principal(session, &service, &origin, assertion)
-    }
-
-    /// Returns the principal of `session`, recording a `Denied` refusal for `service`.
-    pub(super) fn admit_principal(
-        &self,
-        session: &RoleSession<R>,
-        service: &Val,
-        origin: &CallOrigin,
-        assertion: Option<&Val>,
-    ) -> Result<Val, Error> {
-        let got = self.principal(session, assertion);
-        self.record_refusal(session, service, origin, got)
-    }
-
-    /// Refuse parsed ad hoc `items` of `session` unless the role may issue the commands among
-    /// them and they hold no statement of management, with `Denied` recorded in the audit, before
-    /// the checker reads them. Returns the issuer of a role but the schema owner;
-    /// [`RoleAuthority::admit_prepared`] decides its queries and writes once they are checked.
-    pub(super) fn admit_items(
-        &self,
-        session: &RoleSession<R>,
-        e: &Engine<R>,
-        items: &[AdhocItem],
-        params: &[String],
-        caller: &Val,
-        text: &[u8; 32],
-    ) -> Result<Option<Issuer>, Error> {
-        if session.name == OWNER_ROLE {
-            return Ok(None);
-        }
-        let params = free_params(e.schema(), params);
-        let origin = CallOrigin::AdHoc(*text);
-        let refuse = |detail: String| -> Result<Option<Issuer>, Error> {
-            if let Some(quarantined) = e.refusal() {
-                return Err(quarantined);
-            }
-            e.audit_denied(&session.name, caller, &origin)?;
-            Err(denied(detail))
-        };
-        for item in items {
-            let c = match item {
-                AdhocItem::Command(c, _) => c,
-                AdhocItem::Expr(_)
-                | AdhocItem::Write(_)
-                | AdhocItem::Transact(_)
-                | AdhocItem::Temp(_) => continue,
-                AdhocItem::Grant(_)
-                | AdhocItem::Revoke(_)
-                | AdhocItem::Role(..)
-                | AdhocItem::Peer(..) => {
-                    return refuse(
-                        "management statements run only for the embedded owner's role".to_owned(),
-                    );
-                }
-            };
-            match need(c, &params) {
-                Need::Capabilities(capabilities) => {
-                    for capability in capabilities {
-                        self.demand(session, caller, &origin, *capability)?;
-                    }
-                }
-                Need::BundleOwner(bundle) => {
-                    let name = bundle_name(bundle);
-                    let deployed = e.deployed.read(&e.rt);
-                    let owner = deployed.bundles.get(&name).map(|r| deployed.owner_of(r));
-                    drop(deployed);
-                    if owner != Some(session.id.0) {
-                        return refuse(format!(
-                            "role `{}` does not own bundle {name}",
-                            session.name
-                        ));
-                    }
-                }
-                Need::SchemaOwner => {
-                    return refuse(
-                        "this command as written runs only for the embedded owner's role"
-                            .to_owned(),
-                    );
-                }
-            }
-        }
-        Ok(Some(Issuer {
-            role: session.name.clone(),
-            text: *text,
-            session: session.serial,
-            holds: None,
-        }))
-    }
-
-    fn demand(
-        &self,
-        session: &RoleSession<R>,
-        caller: &Val,
-        origin: &CallOrigin,
-        capability: Capability,
-    ) -> Result<(), Error> {
-        let got = self.require(session, capability, false);
-        self.record_refusal(session, caller, origin, got)
-    }
-
     pub(super) fn record_refusal<T>(
         &self,
         session: &RoleSession<R>,
@@ -209,58 +82,6 @@ impl<R: Runtime> RoleAuthority<R> {
             e.audit_denied(&session.name, caller, origin)?;
         }
         got
-    }
-}
-
-/// What a task rechecks when it leaves the queue.
-pub(super) enum Readmission<R: Runtime> {
-    Text {
-        session: RoleSession<R>,
-        text: [u8; 32],
-        items: Vec<AdhocItem>,
-        args: [u8; 32],
-        params: Vec<String>,
-        assertion: Option<Val>,
-    },
-    Registered {
-        binding: RoleBinding<R>,
-        ordinal: u32,
-        assertion: Option<Val>,
-    },
-}
-
-impl<R: Runtime> Readmission<R> {
-    /// Refuse the call with `Denied`, recorded in the audit, unless the session's role may still
-    /// make it, and a registered call whose bundle has left its lifecycle. Returns what the role
-    /// of checked text `admitted` holds now.
-    pub(super) fn check(&self, e: &Engine<R>, admitted: &Admitted) -> Result<Option<Holds>, Error> {
-        match self {
-            Readmission::Text {
-                session,
-                text,
-                items,
-                params,
-                args,
-                assertion,
-            } => {
-                let authority = session.authority();
-                let caller = authority.admit_caller(session, text, assertion.as_ref())?;
-                let issuer = authority.admit_items(session, e, items, params, &caller, text)?;
-                issuer
-                    .map(|issuer| {
-                        let p = admitted.prepared();
-                        authority.admit_prepared(session, e, p, &caller, &issuer, args)
-                    })
-                    .transpose()
-            }
-            Readmission::Registered {
-                binding,
-                ordinal,
-                assertion,
-            } => binding
-                .recheck(e, *ordinal, assertion.as_ref())
-                .map(|()| None),
-        }
     }
 }
 

@@ -8,7 +8,7 @@ use crate::exec::{Priority, Resumable, Step};
 
 use adtb_sim::SimRuntime;
 
-use super::super::admitted::{Admitted, Queued};
+use super::super::admitted::{Admitted, Authority, Queued};
 use super::super::text::Prepared;
 use super::super::{
     AdHocTransaction, CallOptions, CreateOptions, Database, Error, FatalReason, Log, OpenOptions,
@@ -180,5 +180,6 @@ fn a_write_call_released_while_its_abort_record_fails_settles_the_records_failur
 
 fn admitted<R: crate::runtime::Runtime>(e: &super::super::Engine<R>, p: Prepared) -> Admitted {
     let queued = Queued::new(Priority::AdHoc, None, None, 0);
-    e.admit_program(p, &queued).expect("it is admitted")
+    e.admit_program(p, &queued, Authority::Owner)
+        .expect("it is admitted")
 }

@@ -10,11 +10,9 @@ use crate::runtime::Runtime;
 use super::super::bundle::{Callable, EDITION, Row, Stored};
 use super::super::registered::{Callee, Registered};
 use super::super::{Engine, Error, OWNER_ID, RejectReason};
-use super::call::{RoleCall, Work};
 use super::grant::Calls;
-use super::session::Readmission;
-use super::tables::{CallOrigin, CallRow, Grant, Tables, service};
-use super::task::{Task, TaskOptions, args_hash, submit};
+use super::tables::{CallOrigin, Grant, Tables, service};
+use super::task::{Task, TaskOptions, submit};
 use super::{RoleAuthority, RoleSession, denied};
 
 /// What a handshake expects of the bundle it names. A field left `None` expects nothing.
@@ -66,14 +64,24 @@ pub struct RoleBinding<R: Runtime = adtb_sys::os::OsRuntime> {
 }
 
 /// A call of a bundle, by its ids at the bundle's pinned version.
-struct Target<'t> {
+pub(super) struct Target<'t> {
     bundle: &'t str,
     query: &'t str,
     function: Option<u64>,
 }
 
+impl<'t> Target<'t> {
+    pub(super) fn new(bundle: &'t str, query: &'t str, function: Option<u64>) -> Target<'t> {
+        Target {
+            bundle,
+            query,
+            function,
+        }
+    }
+}
+
 /// Returns whether `grants` let `role` make the call `target`.
-fn holds_call<R: Runtime>(
+pub(super) fn holds_call<R: Runtime>(
     e: &Engine<R>,
     calls: &Calls<'_, R>,
     grants: &[Grant],
@@ -101,7 +109,7 @@ fn holds_call<R: Runtime>(
 }
 
 /// Returns whether role id `by` calls bundle row `row` with no grant.
-fn owns(stored: &Stored, row: Option<&Row>, by: i64) -> bool {
+pub(super) fn owns(stored: &Stored, row: Option<&Row>, by: i64) -> bool {
     by == OWNER_ID || row.is_some_and(|r| stored.owner_of(r) == by)
 }
 
@@ -219,49 +227,6 @@ impl<R: Runtime> RoleAuthority<R> {
             Ok(declared.then_some(held))
         })
     }
-
-    /// Returns the principal of a call of `callee` of `registered`, from one observation of the
-    /// role and its grants. Refuse with one `Denied` detail, recorded in the audit, a stale
-    /// session, an assertion without `assert`, and a role holding no grant of the call.
-    fn admit_call(
-        &self,
-        session: &RoleSession<R>,
-        registered: &Registered<R>,
-        callee: &Callee<'_>,
-        origin: &CallOrigin,
-        assertion: Option<&Val>,
-    ) -> Result<Val, Error> {
-        let bundle = registered.name();
-        let observed = self.access(false, |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
-            let principal = self.derive(session, &t, e, tx, assertion)?;
-            let stored = e.deployed.read(&e.rt);
-            if owns(&stored, stored.bundles.get(bundle), session.id.0) {
-                return Ok((principal, true));
-            }
-            let target = Target {
-                bundle,
-                query: callee.name,
-                function: callee.function,
-            };
-            let grants = t.grants(e, tx)?;
-            let held = holds_call(e, &Calls::new(e), &grants, &session.name, &target);
-            Ok((principal, held))
-        });
-        let caller = match observed {
-            Ok((principal, true)) => return Ok(principal),
-            Ok((principal, false)) => principal,
-            Err(Error::Rejected {
-                reason: RejectReason::Denied { .. },
-            }) => {
-                let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-                service(e.schema(), &session.name)
-            }
-            Err(err) => return Err(err),
-        };
-        let refused = denied(format!("role `{}` may not make this call", session.name));
-        self.record_refusal(session, &caller, origin, Err(refused))
-    }
 }
 
 fn unknown(bundle: &str) -> Error {
@@ -325,66 +290,20 @@ impl<R: Runtime> RoleBinding<R> {
         args: Vec<Val>,
         opts: TaskOptions,
     ) -> Result<Task<R>, Error> {
-        let session = &self.session;
-        let e = session.engine.upgrade().ok_or_else(Error::closed)?;
-        let callee = self
-            .registered
-            .callee(ordinal)
-            .ok_or_else(|| Error::rejected(RejectReason::UnknownQuery))?;
-        let origin = self.origin(&callee, ordinal);
-        let assertion = opts.call.assert.clone();
-        let caller = session.authority().admit_call(
-            session,
-            &self.registered,
-            &callee,
-            &origin,
-            assertion.as_ref(),
-        )?;
-        let _open = e.enter()?;
-        self.registered.arguments(ordinal, &args)?;
-        let typed: Vec<_> = callee
-            .names
-            .iter()
-            .zip(callee.types.iter().zip(&args))
-            .map(|(n, (t, v))| (n.as_str(), t, v))
-            .collect();
-        let hash = args_hash(self.registered.schema(), &typed)?;
-        let (bound, p) = match self.registered.bound(&e, ordinal, &args, caller.clone()) {
-            Ok(bound) => bound,
-            Err(err) => {
-                e.audit_call(
-                    &CallRow {
-                        role: &session.name,
-                        caller: &caller,
-                        origin: &origin,
-                        args: &hash,
-                        failed: Some(&err),
-                    },
-                    None,
-                )?;
-                return Err(err);
-            }
-        };
-        let call = RoleCall {
-            role: session.name.clone(),
-            session: session.serial,
-            origin,
-            args: hash,
-            readmission: Some(Readmission::Registered {
-                binding: self.clone(),
-                ordinal,
-                assertion,
-            }),
-        };
-        let queued = self
-            .registered
-            .queued(&args, opts.call.priority, opts.call.deadline);
-        let admitted = e.admit_program(p, &queued)?;
-        let work = Work::Registered(Box::new(bound));
+        let e = self.session.engine.upgrade().ok_or_else(Error::closed)?;
+        let (admitted, work, call, _open) = self.admit_registered(&e, ordinal, &args, &opts)?;
         submit(&e, (admitted, work), Some(call), opts)
     }
 
-    fn origin(&self, callee: &Callee<'_>, ordinal: u32) -> CallOrigin {
+    pub(super) fn session(&self) -> &RoleSession<R> {
+        &self.session
+    }
+
+    pub(super) fn registered(&self) -> &Registered<R> {
+        &self.registered
+    }
+
+    pub(super) fn origin(&self, callee: &Callee<'_>, ordinal: u32) -> CallOrigin {
         if let Some(name) = callee.function_name {
             return CallOrigin::Function {
                 name: name.to_owned(),
@@ -394,27 +313,5 @@ impl<R: Runtime> RoleBinding<R> {
             bundle: self.registered.name().to_owned(),
             query: i32::try_from(ordinal).unwrap_or(i32::MAX),
         }
-    }
-
-    /// Refuse the call of `ordinal`, leaving the queue, as [`submit`](RoleBinding::submit) does.
-    pub(super) fn recheck(
-        &self,
-        e: &Engine<R>,
-        ordinal: u32,
-        assertion: Option<&Val>,
-    ) -> Result<(), Error> {
-        let callee = self
-            .registered
-            .callee(ordinal)
-            .expect("a submitted call's ordinal names a callable");
-        let origin = self.origin(&callee, ordinal);
-        self.session.authority().admit_call(
-            &self.session,
-            &self.registered,
-            &callee,
-            &origin,
-            assertion,
-        )?;
-        e.admit(self.registered.name(), callee.name).map(drop)
     }
 }

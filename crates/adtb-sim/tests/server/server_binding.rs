@@ -84,7 +84,7 @@ const BY_INT: &str =
 
 /// Holds every call of the host function `gate` until released.
 #[derive(Default)]
-struct Gate {
+pub(super) struct Gate {
     open: AtomicBool,
     entered: AtomicBool,
 }
@@ -97,14 +97,18 @@ impl Gate {
         }
     }
 
-    fn wait(&self, rt: &SimRuntime) {
+    pub(super) fn lift(&self) {
+        self.open.store(true, Ordering::Release);
+    }
+
+    pub(super) fn wait(&self, rt: &SimRuntime) {
         while !self.entered.load(Ordering::Acquire) {
             rt.yield_now();
         }
     }
 }
 
-fn gated(rt: &SimRuntime, gate: &Arc<Gate>) -> OpenOptions {
+pub(super) fn gated(rt: &SimRuntime, gate: &Arc<Gate>) -> OpenOptions {
     let mut host = HostFns::new();
     let (grt, g) = (rt.clone(), gate.clone());
     host.register(

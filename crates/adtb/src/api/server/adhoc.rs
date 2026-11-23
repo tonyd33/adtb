@@ -2,7 +2,6 @@
 
 use std::collections::BTreeSet;
 
-use adtb_lang::check::Command;
 use adtb_lang::evolve::{DeployedGrant, Granted, Privilege};
 use adtb_lang::ids::{CatFieldId, CatFunctionId, EngineRel, engine_field, engine_rel};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
@@ -14,12 +13,10 @@ use crate::catalog::engine_relation;
 use crate::runtime::Runtime;
 use crate::write;
 
-use super::super::cause::{Broken, past_limits};
-use super::super::dump::read_by_dump;
-use super::super::text::{Issuer, Prepared};
+use super::super::cause::Broken;
 use super::super::{Engine, Error, RejectReason};
 use super::session::RoleSession;
-use super::tables::{CallOrigin, CallRow, Grant, Tables, deployed};
+use super::tables::{Grant, Tables, deployed};
 use super::{Capability, RoleAuthority, denied};
 
 /// The catalog relations the printed schema states.
@@ -67,7 +64,7 @@ pub(in super::super) struct Holds {
     pub(super) names: Nameable,
 }
 
-fn schema_relations(schema: &Schema) -> Vec<RelId> {
+pub(super) fn schema_relations(schema: &Schema) -> Vec<RelId> {
     SCHEMA_RELATIONS
         .iter()
         .map(|&id| engine_relation(schema, id))
@@ -80,6 +77,10 @@ pub(super) fn refused_text(role: &str) -> Error {
 }
 
 impl Holds {
+    pub(super) fn may_call(&self, f: FnId) -> bool {
+        self.calls.contains(&f)
+    }
+
     fn of<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> Holds {
         let deployed = deployed(grants);
         let held = EffectiveGrants::of(e.schema(), &e.source.grants, &deployed, name);
@@ -113,7 +114,7 @@ impl Holds {
     /// Returns what `needs`, of text over `schema`, asks beyond what the role holds. `monitor`
     /// stands for a read of a `sys::` relation or `catalog::plans`, and a column revealing rows
     /// needs a read of every row.
-    fn lacking(&self, schema: &Schema, needs: &Requirements) -> Vec<Requirement> {
+    pub(super) fn lacking(&self, schema: &Schema, needs: &Requirements) -> Vec<Requirement> {
         let mut out: Vec<_> = needs
             .missing(&self.grants, Mode::Ordinary)
             .into_iter()
@@ -241,7 +242,7 @@ fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTr
         .collect()
 }
 
-fn unanalysed(e: permission::Error) -> Error {
+pub(super) fn unanalysed(e: permission::Error) -> Error {
     Error::unanalysed(e, Broken::AdhocNoRequirements)
 }
 
@@ -280,98 +281,6 @@ impl<R: Runtime> RoleAuthority<R> {
             let t = Tables::new(e.schema(), id);
             self.checked(session, &t, e, tx)?;
             Ok(Holds::of(e, &session.name, &t.grants(e, tx)?))
-        })
-    }
-
-    /// Refuse text `p` of `session` unless the role now holds all it reads and writes, with
-    /// `Denied` recorded in the audit, and name what it lacks only to a role that may read the
-    /// schema. Returns what the role holds.
-    pub(super) fn admit_prepared(
-        &self,
-        session: &RoleSession<R>,
-        e: &Engine<R>,
-        p: &Prepared,
-        caller: &crate::exec::Val,
-        issuer: &Issuer,
-        args: &[u8; 32],
-    ) -> Result<Holds, Error> {
-        let holds = self.holds(session)?;
-        let params: Vec<_> = p.params().iter().map(|(v, _)| *v).collect();
-        let normal = e.db.normal();
-        let origin = CallOrigin::AdHoc(issuer.text);
-        let needs = |root| {
-            permission::normal(p.schema(), normal, p.terms(), root, &params).map_err(|err| {
-                if !holds.schema && past_limits(&err) {
-                    if let Some(quarantined) = e.refusal() {
-                        return quarantined;
-                    }
-                    return e
-                        .audit_denied(&session.name, caller, &origin)
-                        .map_or_else(|audit| audit, |()| refused_text(&session.name));
-                }
-                let err = unanalysed(err);
-                e.audit_call(
-                    &CallRow {
-                        role: &session.name,
-                        caller,
-                        origin: &origin,
-                        args,
-                        failed: Some(&err),
-                    },
-                    None,
-                )
-                .map_or_else(|audit| audit, |()| err)
-            })
-        };
-        let mut lacking = Vec::new();
-        let roots = p
-            .items()
-            .iter()
-            .copied()
-            .chain(p.commands().iter().flat_map(|c| c.command.terms()));
-        for root in roots {
-            lacking.extend(holds.lacking(p.schema(), &needs(root)?));
-        }
-        if p.commands()
-            .iter()
-            .any(|c| matches!(c.command, Command::Dump { .. }))
-        {
-            let mut read = read_by_dump(p.schema());
-            read.extend(schema_relations(p.schema()));
-            let dumped = Requirements::whole(p.schema(), read);
-            lacking.extend(holds.lacking(p.schema(), &dumped));
-        }
-        let uncalled = p.functions().iter().find(|f| {
-            let def = &p.schema().functions[f.0 as usize];
-            !p.schema().module(def.module).engine && !holds.calls.contains(f)
-        });
-        let unseen = p
-            .commands()
-            .iter()
-            .any(|c| matches!(c.command, Command::PrintSchema))
-            && !holds.schema;
-        let Some(detail) = lacking
-            .first()
-            .map(|r| r.text(p.schema()))
-            .or(uncalled.map(|f| {
-                let name = &p.schema().functions[f.0 as usize].name;
-                (format!("calls `{name}`"), "call")
-            }))
-            .or(unseen.then(|| ("reads the schema".to_owned(), "read")))
-        else {
-            return Ok(holds);
-        };
-        if let Some(quarantined) = e.refusal() {
-            return Err(quarantined);
-        }
-        e.audit_denied(&session.name, caller, &origin)?;
-        Err(if holds.schema {
-            denied(format!(
-                "role `{}` {} and lacks {}",
-                session.name, detail.0, detail.1
-            ))
-        } else {
-            refused_text(&session.name)
         })
     }
 }

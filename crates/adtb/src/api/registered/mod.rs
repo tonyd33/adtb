@@ -22,7 +22,7 @@ use crate::catalog::{self, Catalog, VersionHash};
 use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 
-use super::admitted::{CALL_BYTES, Queued};
+use super::admitted::{Authority, CALL_BYTES, Queued};
 use super::arrow::{self, ArrowStream};
 use super::bundle::{self, CallRow, Callable, EDITION, Header, Passed, Stored};
 use super::cause::{Broken, internal};
@@ -1044,7 +1044,7 @@ impl<R: Runtime> Registered<R> {
             e.principal(opts.assert.as_ref())
         })?;
         let queued = self.queued(args, opts.priority, opts.deadline);
-        let admitted = e.admit_program(p, &queued)?;
+        let admitted = e.admit_program(p, &queued, Authority::Owner)?;
         let done = e.call(&admitted, opts, || {
             if due {
                 e.renew(&self.checked.name);
@@ -1151,7 +1151,11 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             Ok(self.caller.clone())
         })?;
         let e = self.engine;
-        let admitted = e.admit_program(p, &reg.queued(args, opts.priority, opts.deadline))?;
+        let admitted = e.admit_program(
+            p,
+            &reg.queued(args, opts.priority, opts.deadline),
+            Authority::Owner,
+        )?;
         let rows = self.run(&admitted, opts, || {
             if due {
                 e.renew(&reg.checked.name);

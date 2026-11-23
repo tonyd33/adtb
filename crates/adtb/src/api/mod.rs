@@ -46,7 +46,7 @@ pub mod typed;
 mod value;
 mod verify;
 
-use admitted::{Admitted, CALL_BYTES, Queued};
+use admitted::{Admitted, Authority, CALL_BYTES, Queued};
 use cause::{Broken, corrupt};
 use failed_open::{failed_create, finish_create, open_damage};
 use std::collections::BTreeSet;
@@ -578,7 +578,7 @@ impl<R: Runtime> Database<R> {
             opts.deadline,
             CALL_BYTES + text.len() + p.bytes(),
         );
-        let admitted = e.admit_program(p, &queued)?;
+        let admitted = e.admit_program(p, &queued, Authority::Owner)?;
         e.call(&admitted, opts, || {}).map(|done| done.value)
     }
 

@@ -451,6 +451,23 @@ pub struct Text<'a> {
     pub caller: Option<&'a Val>,
 }
 
+/// Leave to run statements: that of a call the admission gate admitted, or the engine's own,
+/// for no caller.
+#[derive(Debug)]
+pub struct Leave(());
+
+impl Leave {
+    /// Returns the leave of a call the admission gate admitted.
+    pub(crate) fn admitted() -> &'static Leave {
+        &Leave(())
+    }
+
+    /// Returns the leave of statements the engine runs itself, for no caller.
+    pub(crate) fn system() -> &'static Leave {
+        &Leave(())
+    }
+}
+
 /// What runs between the statements of a call: given the number of statements run so far,
 /// before the first and after each.
 pub type Between<'h> = dyn FnMut(usize, &mut Local) -> Result<(), Error> + 'h;
@@ -905,7 +922,8 @@ impl<R: Runtime> Database<R> {
             clock,
             caller: None,
         };
-        match self.statements(tx, text, &mut Local::default(), Bounds::default()) {
+        let local = &mut Local::default();
+        match self.statements(Leave::system(), tx, text, local, Bounds::default()) {
             Ok(mut done) => Ok(done.remove(0)),
             Err(f) => Err(f.error),
         }
@@ -920,12 +938,13 @@ impl<R: Runtime> Database<R> {
     /// `tx` goes on. Every file an item read stays pinned in `local` either way.
     pub fn statements(
         &self,
+        leave: &Leave,
         tx: &Txn,
         text: Text<'_>,
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<Outcome>, Failed> {
-        self.statements_with(tx, text, local, bounds, &mut |_, _| Ok(()))
+        self.statements_with(leave, tx, text, local, bounds, &mut |_, _| Ok(()))
     }
 
     /// Run the items of `text` as [`statements`](Database::statements) does, running `between`
@@ -933,6 +952,7 @@ impl<R: Runtime> Database<R> {
     /// the next item does.
     pub fn statements_with(
         &self,
+        _leave: &Leave,
         tx: &Txn,
         text: Text<'_>,
         local: &mut Local,

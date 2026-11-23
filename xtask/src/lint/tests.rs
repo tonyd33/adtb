@@ -242,6 +242,9 @@ fn capability_sites(name: &str) -> Vec<String> {
                 ("abandons_impls", Kind::Ratchet),
                 ("unchecked_impls", Kind::Ratchet),
                 ("stops_early_judgements", Kind::Ratchet),
+                ("admitted_leaves", Kind::Ratchet),
+                ("system_leaves", Kind::Ratchet),
+                ("owner_authorities", Kind::Ratchet),
             ],
         ),
         rule(

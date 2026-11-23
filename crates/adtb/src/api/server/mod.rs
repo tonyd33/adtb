@@ -3,6 +3,8 @@ mod binding;
 mod call;
 #[cfg(test)]
 mod call_tests;
+mod gate;
+pub(in crate::api) use gate::Judged;
 mod grant;
 mod initialize;
 mod register;

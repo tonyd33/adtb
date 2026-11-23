@@ -838,7 +838,13 @@ impl<R: Runtime> Engine<R> {
             .expect("a write transaction of the write path has an id");
         let written = self
             .db
-            .statements(&tx, text, &mut Local::default(), Bounds::default())
+            .statements(
+                write::Leave::system(),
+                &tx,
+                text,
+                &mut Local::default(),
+                Bounds::default(),
+            )
             .map_err(|f| f.error)
             .and_then(|_| {
                 let facts = self

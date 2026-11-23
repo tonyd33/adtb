@@ -195,7 +195,7 @@ rows = { generic_runners = "zero" }
 [[rule]]
 query = "capabilities.tql"
 include = ["crates/**/*.rs"]
-rows = { abandons_impls = "ratchet", unchecked_impls = "ratchet", stops_early_judgements = "ratchet" }
+rows = { abandons_impls = "ratchet", unchecked_impls = "ratchet", stops_early_judgements = "ratchet", admitted_leaves = "ratchet", system_leaves = "ratchet", owner_authorities = "ratchet" }
 
 [[rule]]
 query = "capability-names.tql"

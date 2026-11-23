@@ -6,8 +6,9 @@ use std::time::SystemTime;
 use crate::exec::{self, Entry, Priority};
 use crate::mvcc::Xid;
 use crate::runtime::Runtime;
-use crate::write::{Bounds, Stop};
+use crate::write::{Bounds, Leave, Stop};
 
+use super::server::Judged;
 use super::text::{Issuer, Prepared};
 use super::{Engine, Error, TxnId};
 
@@ -19,6 +20,7 @@ pub(super) const CALL_BYTES: usize = 256;
 pub(super) struct Admitted {
     prepared: Prepared,
     entry: Entry,
+    leave: &'static Leave,
 }
 
 impl Admitted {
@@ -30,9 +32,21 @@ impl Admitted {
         self.entry
     }
 
+    pub(super) fn leave(&self) -> &'static Leave {
+        self.leave
+    }
+
     pub(super) fn issuer_mut(&mut self) -> Option<&mut Issuer> {
         self.prepared.issuer.as_mut()
     }
+}
+
+/// Under whose authority a call runs.
+pub(super) enum Authority {
+    /// The embedded owner's, in process, holding every privilege.
+    Owner,
+    /// A role's, judged by the server's gate.
+    Role(Judged),
 }
 
 /// Where a call queues: its class, its rank within the class, and when it stops waiting.
@@ -61,12 +75,20 @@ impl Queued {
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Admit `p` to run as a call queued as `queued`.
+    /// Admit `p` to run as a call queued as `queued`, under `authority`.
     ///
     /// Refuse it: on a database quarantined whole with `Quarantined`, unless it is one run of
     /// `verify` or `dump` alone; and with the statement limit of the queue's byte bound when its
     /// bytes alone pass that bound.
-    pub(super) fn admit_program(&self, p: Prepared, queued: &Queued) -> Result<Admitted, Error> {
+    pub(super) fn admit_program(
+        &self,
+        mut p: Prepared,
+        queued: &Queued,
+        authority: Authority,
+    ) -> Result<Admitted, Error> {
+        if let Authority::Role(judged) = authority {
+            p.issuer = judged.issuer();
+        }
         let prepared = self.admit_text(Ok(p))?;
         self.db
             .within_byte_bound(queued.bytes)
@@ -83,7 +105,11 @@ impl<R: Runtime> Engine<R> {
             bytes: queued.bytes,
             deadline,
         };
-        Ok(Admitted { prepared, entry })
+        Ok(Admitted {
+            prepared,
+            entry,
+            leave: Leave::admitted(),
+        })
     }
 
     /// Returns `bounds` holding a grant of the call `admitted` of transaction `me`, taken from

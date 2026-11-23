@@ -2,8 +2,8 @@
 //! audit rows it leaves.
 
 use adtb::{
-    CallOptions, Called, Database, DynRows, Error, InTxn, TaskOptions, TxnCallOptions, TxnOptions,
-    Value,
+    CallOptions, Called, Capability, Database, DynRows, Error, InTxn, TaskOptions, TxnCallOptions,
+    TxnOptions, Value,
 };
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::SimRuntime;
@@ -39,9 +39,16 @@ enum Cause {
     Outside,
     /// The call alone holds more than the admission queue's byte bound.
     PastByteBound,
+    /// The role loses the privilege of the call while the call waits in the queue.
+    Revoked,
 }
 
-const CAUSES: [Cause; 3] = [Cause::Ungranted, Cause::Outside, Cause::PastByteBound];
+const CAUSES: [Cause; 4] = [
+    Cause::Ungranted,
+    Cause::Outside,
+    Cause::PastByteBound,
+    Cause::Revoked,
+];
 
 const SECRET: &str = "out/secret.csv";
 
@@ -55,10 +62,12 @@ fn denied(detail: &str) -> String {
 }
 
 /// Returns the answer `entry` gives for `cause` and the audit rows, `Denied` then `Call`, it
-/// adds; `None` where an in-process entry has no role to lack a privilege.
+/// adds, with the owner's `Call` row of the text holding the worker while a call waits; `None`
+/// where an in-process entry has no role to lack or lose a privilege.
 fn expected(entry: Entry, cause: Cause) -> Option<(String, [Vec<&'static str>; 2])> {
     let outside = denied("file `out/secret.csv` is outside file_roots");
     let role = |answer: String, role: &'static str| (answer, [vec![role], Vec::new()]);
+    let queued = |answer: String, role: &'static str| (answer, [vec![role], vec!["owner"]]);
     let unrecorded = |answer: &str| (answer.to_owned(), [Vec::new(), Vec::new()]);
     Some(match (entry, cause) {
         (Entry::RoleText, Cause::Ungranted) => role(denied("role `eve` lacks `adhoc`"), "eve"),
@@ -67,8 +76,12 @@ fn expected(entry: Entry, cause: Cause) -> Option<(String, [Vec<&'static str>; 2
         }
         (Entry::RoleText, Cause::Outside) => role(outside, "owner"),
         (Entry::RoleCall, Cause::Outside) => role(outside, "web"),
+        (Entry::RoleText, Cause::Revoked) => queued(denied("role `ann` lacks `adhoc`"), "ann"),
+        (Entry::RoleCall, Cause::Revoked) => {
+            queued(denied("role `web` may not make this call"), "web")
+        }
         (_, Cause::PastByteBound) => unrecorded(PAST_BOUND),
-        (_, Cause::Ungranted) => return None,
+        (_, Cause::Ungranted | Cause::Revoked) => return None,
         (Entry::EmbeddedText | Entry::TxnText, Cause::Outside) => {
             unrecorded(r#"Ok(["\"secret\""])"#)
         }
@@ -79,7 +92,7 @@ fn expected(entry: Entry, cause: Cause) -> Option<(String, [Vec<&'static str>; 2
 /// Returns the path argument `cause` passes.
 fn path(cause: Cause) -> String {
     match cause {
-        Cause::Ungranted => "root/in.csv".to_owned(),
+        Cause::Ungranted | Cause::Revoked => "root/in.csv".to_owned(),
         Cause::Outside => SECRET.to_owned(),
         Cause::PastByteBound => "x".repeat(64 << 20),
     }
@@ -98,22 +111,38 @@ fn run(s: &Server, rt: &SimRuntime, entry: Entry, cause: Cause) -> Result<Vec<St
     let authority = db.role_authority();
     match entry {
         Entry::RoleText => {
-            let role = if matches!(cause, Cause::Ungranted) {
-                "eve"
-            } else {
-                "owner"
+            let role = match cause {
+                Cause::Ungranted => "eve",
+                Cause::Revoked => "ann",
+                Cause::Outside | Cause::PastByteBound => "owner",
             };
+            if matches!(cause, Cause::Revoked) {
+                authority.grant_capability("ann", Capability::Adhoc, false)?;
+            }
             let session = authority.session(role)?;
+            let hold = matches!(cause, Cause::Revoked).then(|| s.hold());
             let task = session.submit_text(READ, &params, TaskOptions::default())?;
+            if let Some(hold) = hold {
+                authority.revoke_capability("ann", Capability::Adhoc)?;
+                s.release(&hold);
+            }
             finish(rt, &task)
         }
         Entry::RoleCall => {
             let bound = s.load();
-            if matches!(cause, Cause::Ungranted) {
+            let revoke = || {
                 let ann = authority.session("ann")?;
-                authority.revoke(&ann, "revoke call load-1.0 from web")?;
+                authority.revoke(&ann, "revoke call load-1.0 from web")
+            };
+            if matches!(cause, Cause::Ungranted) {
+                revoke()?;
             }
+            let hold = matches!(cause, Cause::Revoked).then(|| s.hold());
             let task = bound.submit(1, vec![Value::text(&p)], TaskOptions::default())?;
+            if let Some(hold) = hold {
+                revoke()?;
+                s.release(&hold);
+            }
             finish(rt, &task)
         }
         Entry::EmbeddedText => db
@@ -200,5 +229,5 @@ fn each_entry_answers_each_refusal_with_its_rows() {
             reached += 1;
         }
     }
-    assert_eq!(14, reached, "every applicable pair ran");
+    assert_eq!(16, reached, "every applicable pair ran");
 }

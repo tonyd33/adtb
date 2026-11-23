@@ -9,6 +9,9 @@
 "crates/adtb/src/catalog/mod.rs" = 1
 "crates/adtb/src/write/restore.rs" = 1
 
+[admitted_leaves]
+"crates/adtb/src/api/admitted.rs" = 1
+
 [crate_fields]
 "crates/adtb-codegen/src/emit.rs" = 1
 "crates/adtb-exec/src/exec/run.rs" = 4
@@ -89,7 +92,7 @@
 [engine_names]
 "crates/adtb-lang/src/schema/engine.rs" = 5
 "crates/adtb-lang/src/types.rs" = 1
-"crates/adtb/src/api/server/task.rs" = 1
+"crates/adtb/src/api/server/gate.rs" = 1
 "crates/adtb/src/catalog/readers.rs" = 1
 
 [from_raw]
@@ -108,6 +111,13 @@
 "crates/adtb/src/api/dump.rs" = 1
 "crates/adtb/src/api/verify.rs" = 1
 "crates/adtb/src/catalog/roots.rs" = 4
+
+[owner_authorities]
+"crates/adtb/src/api/mod.rs" = 1
+"crates/adtb/src/api/registered/mod.rs" = 2
+"crates/adtb/src/api/server/call_tests.rs" = 1
+"crates/adtb/src/api/server/task.rs" = 1
+"crates/adtb/src/api/txn.rs" = 1
 
 [pub_fields]
 "crates/adtb-codegen/src/lib.rs" = 3
@@ -296,6 +306,14 @@
 
 [stops_early_judgements]
 "crates/adtb-exec/src/exec/run.rs" = 1
+
+[system_leaves]
+"crates/adtb/src/api/backup.rs" = 1
+"crates/adtb/src/api/command.rs" = 3
+"crates/adtb/src/api/dump.rs" = 1
+"crates/adtb/src/api/server/store.rs" = 1
+"crates/adtb/src/write/calls_tests.rs" = 1
+"crates/adtb/src/write/mod.rs" = 1
 
 [unchecked_impls]
 "crates/adtb-heap/src/heap/undo.rs" = 1

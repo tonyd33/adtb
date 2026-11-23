@@ -822,8 +822,13 @@ impl<R: Runtime> Items<R> {
     }
 
     fn run(&self, tx: &Txn, src: &str, bounds: Bounds) -> Result<Vec<write::Outcome>, Failed> {
-        self.db
-            .statements(tx, self.text(src), &mut Local::default(), bounds)
+        self.db.statements(
+            super::Leave::system(),
+            tx,
+            self.text(src),
+            &mut Local::default(),
+            bounds,
+        )
     }
 
     fn bump(&self, tx: &Txn) {

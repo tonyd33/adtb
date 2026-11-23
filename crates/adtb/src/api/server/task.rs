@@ -6,27 +6,19 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::task::{Wake, Waker};
 use std::time::Duration;
 
-use adtb_lang::ast::{self, AdhocItem};
-use adtb_lang::schema::{ModuleDef, Schema, ValueDef};
+use adtb_lang::schema::Schema;
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::Ty;
 use adtb_sys::lock::Lock;
 
-use crate::exec::{self, Grant, Priority, Refusal, Refused, Stopped, Val};
+use crate::exec::{self, Grant, Refusal, Refused, Stopped, Val};
 use crate::runtime::Runtime;
 
-use super::super::admitted::{Admitted, CALL_BYTES, Queued};
-use super::super::text::TextError;
-use super::super::text::{Prepared, declared};
-use super::super::{
-    CallOptions, CancelToken, Engine, Error, Limit, OWNER_ROLE, RejectReason, RetryReason,
-};
-use super::adhoc::refused_text;
+use super::super::admitted::Admitted;
+use super::super::{CallOptions, CancelToken, Engine, Error, Limit, RejectReason, RetryReason};
+use super::RoleSession;
 use super::call::{Call, RoleCall, Work};
 use super::result::{Completion, Format, Layout, ResultBatch};
-use super::session::{Readmission, text_hash};
-use super::tables::{CallOrigin, CallRow};
-use super::{RoleAuthority, RoleSession};
 
 /// The options of a submitted call.
 #[derive(Clone, Debug, Default)]
@@ -386,224 +378,10 @@ impl<R: Runtime> RoleSession<R> {
         params: &[(&str, Ty, Val)],
         opts: TaskOptions,
     ) -> Result<Task<R>, Error> {
-        let authority = RoleAuthority {
-            engine: self.engine.clone(),
-        };
-        let assertion = opts.call.assert.clone();
-        let hash = text_hash(text);
-        let origin = CallOrigin::AdHoc(hash);
-        let caller = authority.admit_caller(self, &hash, assertion.as_ref())?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let names: Vec<String> = params.iter().map(|(n, ..)| (*n).to_owned()).collect();
-        let parsed = Prepared::parsed(text);
-        let mut issuer = match &parsed {
-            Ok(items) => authority.admit_items(self, &e, items, &names, &caller, &hash)?,
-            Err(_) => None,
-        };
-        let _open = e.enter()?;
-        let held = (self.name != OWNER_ROLE)
-            .then(|| authority.holds(self))
-            .transpose()?;
-        let unseen = held.as_ref().filter(|h| !h.schema);
-        let refused = || {
-            if let Some(quarantined) = e.refusal() {
-                return quarantined;
-            }
-            match e.audit_denied(&self.name, &caller, &origin) {
-                Ok(()) => refused_text(&self.name),
-                Err(err) => err,
-            }
-        };
-        let failed = |args: &[u8; 32], err: Error| {
-            e.audit_call(
-                &CallRow {
-                    role: &self.name,
-                    caller: &caller,
-                    origin: &origin,
-                    args,
-                    failed: Some(&err),
-                },
-                None,
-            )
-            .map_or_else(|audit| audit, |()| err)
-        };
-        if unseen.is_some_and(|h| {
-            params
-                .iter()
-                .any(|(_, ty, _)| !declared(e.schema(), ty) || !h.names.may_type(e.schema(), ty))
-        }) {
-            return Err(refused());
-        }
-        if let Some((name, ..)) = params.iter().find(|(_, ty, _)| !declared(e.schema(), ty)) {
-            let err = Error::invalid(format!("parameter `{name}` has no type of the schema"));
-            return Err(failed(&names_hash(&names), err));
-        }
-        let args = match parsed.as_ref().ok().and_then(|items| passphrases(items)) {
-            Some(secret) => {
-                let typed: Vec<_> = params
-                    .iter()
-                    .filter(|(n, ..)| !secret.contains(n))
-                    .map(|(n, t, v)| (*n, t, v))
-                    .collect();
-                match args_hash(e.schema(), &typed) {
-                    Ok(args) => args,
-                    Err(err) => return Err(failed(&names_hash(&names), err)),
-                }
-            }
-            None => names_hash(&names),
-        };
-        let capability_only = parsed
-            .as_ref()
-            .is_ok_and(|items| items.iter().all(is_capability_command));
-        let hides = unseen.is_some() && parsed.is_ok() && !capability_only;
-        let scope = unseen.map(|h| {
-            let commanded = match &parsed {
-                Ok(items) if capability_only => commanded(e.schema(), items),
-                _ => Vec::new(),
-            };
-            h.names.naming(commanded).scope(e.schema())
-        });
-        let checked = parsed
-            .map_err(|err| TextError::Other(e.refusal().unwrap_or(err)))
-            .and_then(|items| {
-                let p = Prepared::naming(
-                    &e.compiled,
-                    scope.as_ref(),
-                    &e.explained(),
-                    &items,
-                    params,
-                    caller.clone(),
-                )?;
-                let p = e.admit_text(Ok(p)).map_err(TextError::Other)?;
-                Ok((p, items))
-            });
-        let (mut p, items) = match checked {
-            Ok(checked) => checked,
-            Err(TextError::Checker(_)) if hides => return Err(refused()),
-            Err(TextError::Checker(err)) => {
-                let err = e.refusal().unwrap_or(err);
-                return Err(failed(&args, err));
-            }
-            Err(TextError::Other(err)) => return Err(failed(&args, err)),
-        };
-        if let Some(issuer) = &mut issuer {
-            issuer.holds = Some(authority.admit_prepared(self, &e, &p, &caller, issuer, &args)?);
-        }
-        p.issuer = issuer;
-        let readmission = (self.name != OWNER_ROLE).then(|| Readmission::Text {
-            session: self.clone(),
-            text: hash,
-            items,
-            params: names,
-            args,
-            assertion,
-        });
-        let call = RoleCall {
-            role: self.name.clone(),
-            session: self.serial,
-            origin,
-            args,
-            readmission,
-        };
-        let queued = Queued::new(
-            Priority::AdHoc,
-            opts.call.priority,
-            opts.call.deadline,
-            CALL_BYTES + text.len() + p.bytes(),
-        );
-        let admitted = e.admit_program(p, &queued)?;
+        let (admitted, call, _open) = self.admit_text(&e, text, params, &opts)?;
         submit(&e, (admitted, Work::Text), Some(call), opts)
     }
-}
-
-/// Returns whether `item` is a command a capability alone decides, holding no expression the
-/// role's grants decide.
-fn is_capability_command(item: &AdhocItem) -> bool {
-    let AdhocItem::Command(command, _) = item else {
-        return false;
-    };
-    match command {
-        ast::Command::Vacuum(_)
-        | ast::Command::Verify(_)
-        | ast::Command::Reindex { .. }
-        | ast::Command::Compact
-        | ast::Command::FinalizeUpgrade
-        | ast::Command::RetireBundle(_)
-        | ast::Command::SupersedeBundle(..)
-        | ast::Command::RegisterBundle(_)
-        | ast::Command::ApplyMigrations(_)
-        | ast::Command::PrintSchema
-        | ast::Command::RotateKek(_)
-        | ast::Command::RotateDek
-        | ast::Command::DestroyDek(_)
-        | ast::Command::Backup { .. } => true,
-        ast::Command::Explain { .. }
-        | ast::Command::PinPlan(_)
-        | ast::Command::UnpinPlan(_)
-        | ast::Command::CancelCall(_)
-        | ast::Command::TerminateSession(_)
-        | ast::Command::SetSetting(..)
-        | ast::Command::Export { .. }
-        | ast::Command::ArchiveAudit { .. }
-        | ast::Command::Dump { .. }
-        | ast::Command::Restore { .. } => false,
-    }
-}
-
-/// Returns the parameters `items` give as the passphrase of a `dump` or `restore`, or `None` when
-/// an operand is not a bare name.
-fn passphrases(items: &[AdhocItem]) -> Option<Vec<&str>> {
-    let operands = items.iter().filter_map(|item| match item {
-        AdhocItem::Command(ast::Command::Dump { encrypt, .. }, _) => encrypt.as_ref(),
-        AdhocItem::Command(ast::Command::Restore { decrypt, .. }, _) => decrypt.as_deref(),
-        _ => None,
-    });
-    let names = operands.map(|k| match &k.kind {
-        ast::ExprKind::Name(q) if q.module.is_none() => Some(q.name.text.as_str()),
-        _ => None,
-    });
-    names.collect()
-}
-
-/// Returns every relation of a user module the relation names in `items` may denote.
-fn commanded(schema: &Schema, items: &[AdhocItem]) -> Vec<RelId> {
-    let mut out = Vec::new();
-    for item in items {
-        let AdhocItem::Command(
-            ast::Command::Vacuum(name)
-            | ast::Command::Verify(Some(name))
-            | ast::Command::Reindex { relation: name, .. },
-            _,
-        ) = item
-        else {
-            continue;
-        };
-        let denoted = |module: &ModuleDef| match module.values.get(&name.name.text) {
-            Some(ValueDef::Relation(r)) if !module.engine => Some(*r),
-            _ => None,
-        };
-        match &name.module {
-            Some(m) => out.extend(
-                schema
-                    .module_named(&m.text)
-                    .and_then(|id| denoted(schema.module(id))),
-            ),
-            None => out.extend(schema.modules.iter().filter_map(denoted)),
-        }
-    }
-    out
-}
-
-/// Returns the audit's arguments hash of a text whose values do not print: that of their names.
-fn names_hash(names: &[String]) -> [u8; 32] {
-    let mut sorted: Vec<&String> = names.iter().collect();
-    sorted.sort();
-    let mut hasher = blake3::Hasher::new();
-    for name in sorted {
-        hasher.update(name.as_bytes());
-        hasher.update(&[0]);
-    }
-    *hasher.finalize().as_bytes()
 }
 
 /// Returns the BLAKE3-256 hash of the canonical text of `params`, by name.
@@ -708,11 +486,14 @@ mod tests {
 
     use adtb_sys::os::{Backend, OsRuntime};
 
+    use crate::exec::Priority;
     use crate::runtime::Threads;
 
-    use super::super::super::{CreateOptions, Database, Log, OpenOptions};
-    use super::super::session::Readmission;
-    use super::super::tables::RoleId;
+    use super::super::super::admitted::{Authority, Queued};
+    use super::super::super::text::Prepared;
+    use super::super::super::{CreateOptions, Database, Log, OWNER_ROLE, OpenOptions};
+    use super::super::gate::Readmission;
+    use super::super::tables::{CallOrigin, RoleId};
     use super::*;
 
     /// A waker counting the wakes a worker runs while the engine is held open for a call.
@@ -860,7 +641,9 @@ mod tests {
             }),
         };
         let queued = Queued::new(Priority::AdHoc, None, None, 0);
-        let admitted = e.admit_program(p, &queued).expect("it is admitted");
+        let admitted = e
+            .admit_program(p, &queued, Authority::Owner)
+            .expect("it is admitted");
         let task = submit(
             &e,
             (admitted, Work::Text),

@@ -3,7 +3,7 @@
 use crate::exec;
 use crate::runtime::{Instant, Runtime};
 
-use super::{Bounds, Database, Error, Stop, Text, Txn, fresh, input};
+use super::{Bounds, Database, Error, Leave, Stop, Text, Txn, fresh, input};
 
 /// What [`Database::produce`] made of a query.
 #[derive(Debug)]
@@ -47,6 +47,7 @@ impl<R: Runtime> Database<R> {
     /// Preconditions: `text` has exactly one item.
     pub fn produce(
         &self,
+        _leave: &Leave,
         tx: &Txn,
         text: Text<'_>,
         bounds: &Bounds,

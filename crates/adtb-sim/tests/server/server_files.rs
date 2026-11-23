@@ -15,14 +15,16 @@ use adtb::{
 };
 use adtb_sim::SimRuntime;
 
+use crate::server_binding::{Gate, gated};
 use adtb_simkit::open::options;
 use api::{printed, results};
 
-const SCHEMA: &str = "module shop
+const SCHEMA: &str = r#"module shop
 add module shop
 add type Named = { name: Text }
 add relation loaded : Named key name
-";
+define fn gate (n: I64) -> I64 = host "gate" version "1.0" deterministic
+"#;
 
 const GRANTS: &str = "module shop
 grant insert loaded, read loaded to ann with grant option
@@ -89,15 +91,17 @@ pub(super) struct Server {
     rt: SimRuntime,
     db: Database<SimRuntime>,
     owner: RoleSession<SimRuntime>,
+    gate: Arc<Gate>,
 }
 
 impl Server {
     pub(super) fn new(rt: SimRuntime, base: &Path, roots: Vec<PathBuf>) -> Server {
+        let gate = Arc::new(Gate::default());
         let open = |log: &[&str]| {
             let opts = OpenOptions {
                 file_root: Some(base.to_path_buf()),
                 file_roots: roots.clone(),
-                ..options(2)
+                ..gated(&rt, &gate)
             };
             Database::open_in(
                 rt.clone(),
@@ -118,11 +122,33 @@ impl Server {
         authority
             .grant(&owner, "grant read_files to ann")
             .expect("it grants");
-        Server { rt, db, owner }
+        Server {
+            rt,
+            db,
+            owner,
+            gate,
+        }
     }
 
     pub(super) fn db(&self) -> &Database<SimRuntime> {
         &self.db
+    }
+
+    /// Hold the one worker on the gate until `release`.
+    pub(super) fn hold(&self) -> Task<SimRuntime> {
+        let text = "from n in [1, 2] select gate(n)";
+        let hold = self
+            .owner
+            .submit_text(text, &[], TaskOptions::default())
+            .expect("the holding text is admitted");
+        hold.supply(usize::MAX);
+        self.gate.wait(&self.rt);
+        hold
+    }
+
+    pub(super) fn release(&self, hold: &Task<SimRuntime>) {
+        self.gate.lift();
+        finish(&self.rt, hold).expect("the holding text ends");
     }
 
     /// Returns the rows of a scan of `path` as ad hoc text of a role session.

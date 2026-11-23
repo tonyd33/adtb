@@ -174,7 +174,7 @@ impl<R: Runtime> Engine<R> {
         };
         let done = self
             .db
-            .statements_with(tx, text, local, items, &mut between);
+            .statements_with(admitted.leave(), tx, text, local, items, &mut between);
         let commanded = !ran.is_empty();
         let failed = |error, ends, violated| {
             Halted::Failed(Failure {

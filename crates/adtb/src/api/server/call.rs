@@ -24,8 +24,8 @@ use super::super::command::{changes_data, holds_off_vacuum};
 use super::super::registered::Bound;
 use super::super::text::{DynRows, Prepared};
 use super::super::{Closes, Engine, Error, Halted, Position, RejectReason, TxnId};
+use super::gate::Readmission;
 use super::result::{Completion, Layout};
-use super::session::Readmission;
 use super::tables::{CallOrigin, CallRow};
 use super::task::{Out, Request, Shared, TaskOptions, stopped};
 
@@ -478,7 +478,7 @@ impl<R: Runtime> Call<R> {
             && p.items().len() == 1
             && matches!(p.terms().ty(p.items()[0]), Ty::Set(_) | Ty::NonEmpty(_));
         let produced = if streams {
-            e.db.produce(&tx, self.text(e, p), &self.bounds(e))
+            e.db.produce(self.admitted.leave(), &tx, self.text(e, p), &self.bounds(e))
         } else {
             Ok(None)
         };

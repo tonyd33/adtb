@@ -463,7 +463,7 @@ impl<R: Runtime> Engine<R> {
         let failed = |e| self.met(id, e);
         let mut got = self
             .db
-            .statements(tx, text, local, bounds.clone())
+            .statements(write::Leave::system(), tx, text, local, bounds.clone())
             .map_err(|f| failed(f.error))?;
         let value = got
             .pop()
