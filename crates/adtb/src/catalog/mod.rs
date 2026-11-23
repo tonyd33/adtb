@@ -1241,7 +1241,7 @@ struct Migrating<'a, R: Runtime> {
     hold: Hold,
     /// Every heap the transaction created.
     made: RefCell<Vec<Arc<Heap>>>,
-    /// One past the highest heap id the transaction's structures took.
+    /// The next structure id the transaction gives: one past the highest it took.
     top: Cell<u32>,
 }
 
@@ -1275,33 +1275,36 @@ impl<R: Runtime> Migrating<'_, R> {
 
     /// Create an empty heap with id `id` whose rows have fields `row`, out-of-line values in
     /// `large`, and add it to `made`.
-    fn create_heap(
-        &self,
-        id: u32,
-        row: Vec<FieldType>,
-        large: LargeStore,
-    ) -> Result<Arc<Heap>, Error> {
-        self.took(id)?;
+    /// Give no structure id below `from`.
+    fn ids_from(&self, from: u32) {
+        self.top.set(self.top.get().max(from));
+    }
+
+    /// Create an empty heap of a structure id no structure has had.
+    fn create_heap(&self, row: Vec<FieldType>, large: LargeStore) -> Result<Arc<Heap>, Error> {
+        let id = self.took()?;
         let heap = Arc::new(Heap::create(self.pager, id, row, large)?);
         self.made.borrow_mut().push(heap.clone());
         Ok(heap)
     }
 
-    /// Create an empty tree owned by heap id `id`.
-    fn create_tree(&self, id: u32) -> Result<BTree, Error> {
-        self.took(id)?;
+    /// Create an empty tree owned by a structure id no structure has had.
+    fn create_tree(&self) -> Result<BTree, Error> {
+        let id = self.took()?;
         let tree = BTree::create(self.pager, id)?;
         Ok(tree)
     }
 
-    fn took(&self, id: u32) -> Result<(), Error> {
+    /// Returns the next structure id, taken.
+    fn took(&self) -> Result<u32, Error> {
+        let id = self.top.get();
         if id >= HEAP_IDS_END {
             return Err(Error::Refused(vec![
                 "the database has made every structure id it has".to_owned(),
             ]));
         }
-        self.top.set(self.top.get().max(id + 1));
-        Ok(())
+        self.top.set(id + 1);
+        Ok(id)
     }
 }
 

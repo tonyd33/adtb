@@ -867,3 +867,43 @@ fn a_deploy_writes_only_roles_grants_bundles_and_registered() {
         assert_eq!(want, got, "{name}");
     }
 }
+
+/// Returns the structure id of every heap and history structure of `catalog`.
+fn structure_ids(catalog: &Catalog) -> BTreeSet<u32> {
+    let heaps = catalog.heaps.values().map(|h| h.id().0);
+    heaps.chain(catalog.kept.ids(|_| true)).collect()
+}
+
+#[test]
+fn every_structure_id_a_rewrite_takes_is_new_and_below_next_heap_and_owns_its_pages() {
+    let mut sim = Sim::new(37, Config::default());
+    finished(&mut sim, |rt: SimRuntime| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let mut seen = structure_ids(&catalog);
+        let mut texts = vec![
+            "module m\nadd module m\nadd type T = { id: I64 }\nadd relation ts : T key id\n"
+                .to_owned(),
+        ];
+        texts.extend((0..8).map(|i| format!("module m\nadd field T.f{i}: I64 fill 0\n")));
+        for text in &texts {
+            let before = structure_ids(&catalog);
+            catalog
+                .migrate(&pager, &txns, text)
+                .expect("the migration applies");
+            let now = structure_ids(&catalog);
+            let taken: BTreeSet<u32> = now.difference(&before).copied().collect();
+            assert!(!taken.is_empty(), "{text} rewrites a relation");
+            assert!(taken.is_disjoint(&seen), "{text} reissues {taken:?}");
+            assert!(
+                now.iter().all(|id| *id < catalog.next_heap),
+                "{text}: {now:?} against {}",
+                catalog.next_heap
+            );
+            let report = verify_catalog(&pager, &catalog, &txns);
+            assert_eq!(Vec::<Finding>::new(), report.findings, "{text}");
+            assert!(report.log.is_empty() && report.complete, "{report:#?}");
+            seen.extend(now);
+        }
+    });
+}

@@ -31,14 +31,15 @@ type Migrations = (BTreeMap<u64, (Xid, Tid)>, BTreeMap<u32, u64>);
 
 /// The history structures of a catalog.
 ///
-/// Invariants: `heaps` holds a heap for every constructor relation of the catalog, and `indexes`
-/// an index for every relation with a key index, with that index's key schema and constructors.
+/// Invariants: `heaps` holds a heap for every constructor relation of the catalog, with the id
+/// of the constructor's heap, and `indexes` an index for every relation with a key index, with
+/// that index's key schema, constructors and page owner.
 #[derive(Clone, Debug)]
 pub(super) struct Kept {
     large: LargeStore,
     record: BTree,
-    heaps: BTreeMap<(RelId, u32), Arc<Heap>>,
-    indexes: BTreeMap<RelId, Index>,
+    heaps: BTreeMap<(RelId, u32), (Arc<Heap>, u32)>,
+    indexes: BTreeMap<RelId, (Index, u32)>,
 }
 
 /// What the rows of the roots heap name of the history structures.
@@ -124,15 +125,16 @@ impl Kept {
                 )));
             };
             let heap = Heap::open(pager, id, at, row_type(schema, r, c), large)?;
-            out.heaps.insert((r, c), Arc::new(heap));
+            out.heaps
+                .insert((r, c), (Arc::new(heap), heaps[&(r, c)].id().0));
         }
         for (&r, key) in keys {
             let Some(&(owner, at)) = names.indexes.get(&rel_id(schema, r)) else {
                 let name = &schema.relation(r).name;
                 return Err(Error::Missing(format!("history key index of {name}")));
             };
-            out.indexes
-                .insert(r, history_index(BTree::open(at, owner), key));
+            let index = history_index(BTree::open(at, owner), key);
+            out.indexes.insert(r, (index, key.tree().owner()));
         }
         Ok(out)
     }
@@ -144,13 +146,13 @@ impl Kept {
     }
 
     /// Returns the history structures of the catalog `b` builds: those of every relation it
-    /// does not rewrite kept, and new ones for each relation it rewrites, with heap ids and owners
-    /// from `next_heap` on. Adds the roots row of each new structure to `named` and of each
+    /// does not rewrite kept, and new ones for each relation it rewrites, with structure ids from
+    /// `b.m`, given the heap of each constructor relation of `b.next` in `heaps`. Adds the roots row of each new structure to `named` and of each
     /// replaced one to `gone`, each as its constructor and fields.
     pub(super) fn rebuilt<R: Runtime>(
         &self,
         b: &Rebuilding<'_, R>,
-        next_heap: &mut u32,
+        heaps: &BTreeMap<(RelId, u32), Arc<Heap>>,
         named: &mut Vec<RootsRow>,
         gone: &mut Vec<RootsRow>,
     ) -> Result<Kept, Error> {
@@ -160,39 +162,37 @@ impl Kept {
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
         };
-        let mut fresh = || {
-            *next_heap += 1;
-            *next_heap - 1
-        };
-        for (r, c) in super::ctor_relations(b.next) {
+        for (&(r, c), current) in heaps {
             let (rid, cid) = (rel_id(b.next, r), ctor_id(b.next, r, c));
+            let of = current.id().0;
             if !b.rewritten.contains(&rid) {
-                out.heaps.insert((r, c), self.heap_of(b.old, rid, cid));
+                out.heaps
+                    .insert((r, c), (self.heap_of(b.old, rid, cid), of));
                 continue;
             }
-            let heap =
-                b.m.create_heap(fresh(), row_type(b.next, r, c), self.large)?;
+            let heap = b.m.create_heap(row_type(b.next, r, c), self.large)?;
             named.push(heap_row(rid, cid, &heap));
-            out.heaps.insert((r, c), heap);
+            out.heaps.insert((r, c), (heap, of));
         }
         for (&r, key) in &b.keys {
             let rid = rel_id(b.next, r);
             if !b.rewritten.contains(&rid) {
                 let was = relation(b.old, rid).expect("a relation kept has a history key index");
-                out.indexes.insert(r, self.indexes[&was].clone());
+                let (index, _) = self.indexes[&was].clone();
+                out.indexes.insert(r, (index, key.tree().owner()));
                 continue;
             }
-            let index = history_index(b.m.create_tree(fresh())?, key);
+            let index = history_index(b.m.create_tree()?, key);
             named.push(index_row(rid, index.tree()));
-            out.indexes.insert(r, index);
+            out.indexes.insert(r, (index, key.tree().owner()));
         }
-        for (&(r, c), heap) in &self.heaps {
+        for (&(r, c), (heap, _)) in &self.heaps {
             let rid = rel_id(b.old, r);
             if b.rewritten.contains(&rid) {
                 gone.push(heap_row(rid, ctor_id(b.old, r, c), heap));
             }
         }
-        for (&r, index) in &self.indexes {
+        for (&r, (index, _)) in &self.indexes {
             let rid = rel_id(b.old, r);
             if b.rewritten.contains(&rid) {
                 gone.push(index_row(rid, index.tree()));
@@ -208,7 +208,7 @@ impl Kept {
 
     /// Returns every history heap.
     pub(super) fn heaps(&self) -> impl Iterator<Item = &Arc<Heap>> {
-        self.heaps.values()
+        self.heaps.values().map(|(heap, _)| heap)
     }
 
     /// Returns the heap id or page owner of each history structure of a relation `of` holds.
@@ -217,38 +217,29 @@ impl Kept {
         let heaps = self.heaps.iter().filter(|((r, _), _)| of(*r));
         let indexes = self.indexes.iter().filter(|(r, _)| of(**r));
         heaps
-            .map(|(_, h)| h.id().0)
-            .chain(indexes.map(|(_, i)| i.tree().owner()))
+            .map(|(_, (h, _))| h.id().0)
+            .chain(indexes.map(|(_, (i, _))| i.tree().owner()))
             .collect()
     }
 
     fn heap_of(&self, old: &Schema, rid: CatRelId, cid: CatCtorId) -> Arc<Heap> {
         let r = relation(old, rid).expect("a relation kept has history heaps");
         let c = ctor_index(old, r, cid).expect("a constructor kept has a history heap");
-        self.heaps[&(r, c)].clone()
+        self.heaps[&(r, c)].0.clone()
     }
 
     /// Returns the history structures of `schema`'s relations, each history heap held as its
-    /// constructor's heap among `heaps` and each history key index as its key index among `keys`,
-    /// and the record's tree.
-    pub(super) fn structures(
-        &self,
-        schema: &Schema,
-        heaps: &BTreeMap<(RelId, u32), Arc<Heap>>,
-        keys: &BTreeMap<RelId, &Index>,
-    ) -> (Vec<Listed>, BTree) {
+    /// constructor's heap and each history key index as its key index, and the record's tree.
+    pub(super) fn structures(&self, schema: &Schema) -> (Vec<Listed>, BTree) {
         let mut sums: BTreeMap<RelId, Listed> = BTreeMap::new();
-        for (&(r, c), past) in &self.heaps {
-            let heap = Quarantine::Heap(heaps[&(r, c)].id().0);
-            let holder = relation_holder(schema, r, heap);
+        for (&(r, c), (past, of)) in &self.heaps {
+            let holder = relation_holder(schema, r, Quarantine::Heap(*of));
             let sum = sums.entry(r).or_default();
             sum.heap(stored(ctor_id(schema, r, c)), holder, past.clone());
         }
-        for (r, past) in &self.indexes {
-            if let (Some(sum), Some(key)) = (sums.get_mut(r), keys.get(r)) {
-                let holder = index_holder(schema, *r, key.tree().owner());
-                sum.index(holder, past.clone());
-            }
+        for (r, (past, owner)) in &self.indexes {
+            let holder = index_holder(schema, *r, *owner);
+            sums.entry(*r).or_default().index(holder, past.clone());
         }
         (sums.into_values().collect(), self.record)
     }
@@ -298,16 +289,19 @@ impl Catalog {
         txns: &Transactions<R>,
     ) -> Result<Retained, Error> {
         let schema = &self.schema;
+        let pasts: BTreeMap<(RelId, u32), Arc<Heap>> = (self.kept.heaps.iter())
+            .map(|(&rc, (past, _))| (rc, past.clone()))
+            .collect();
         let heaps = self
             .kept
             .heaps
             .iter()
-            .map(|(&(r, c), past)| {
-                let id = HeapId(u64::from(self.heap(r, c).id().0));
+            .map(|(&(r, c), (past, of))| {
+                let id = HeapId(u64::from(*of));
                 let stored = StoredHeap {
                     row: row_type(schema, r, c),
                     heap: past.clone(),
-                    sum: super::sum_of(&self.kept.heaps, r),
+                    sum: super::sum_of(&pasts, r),
                 };
                 (id, stored)
             })
@@ -316,7 +310,7 @@ impl Catalog {
             .kept
             .indexes
             .iter()
-            .map(|(&r, index)| {
+            .map(|(&r, (index, _))| {
                 (
                     IndexId(held_id(schema.ids().key_id(r)).raw()),
                     index.clone(),

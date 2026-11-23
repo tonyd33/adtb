@@ -219,7 +219,7 @@ impl Catalog {
             .and_then(|_| kernel::validate(schema, normal.terms(), &normal.roots()))
             .and_then(|_| kernel::validate_normal(schema, normal.terms(), &normal.roots()))
             .map_err(|e| Error::from(Broken::IllTyped(e)))?;
-        let (ids, _) = self.heap_ids(schema, rewritten)?;
+        let ids = self.heap_ids(schema, rewritten)?;
         let heaps: BTreeMap<(RelId, u32), HeapId> = ids
             .into_iter()
             .map(|(rc, id)| (rc, HeapId(u64::from(id))))
@@ -506,7 +506,7 @@ impl Catalog {
     ) -> Result<Catalog, Error> {
         let pager = m.pager;
         let schema = b.next.schema.clone();
-        let (heap_ids, next_heap) = self.heap_ids(&schema, b.rewritten)?;
+        m.ids_from(self.next_heap);
         let mut next = Catalog {
             source: b.next.source.clone(),
             hash: VersionHash::default(),
@@ -519,7 +519,7 @@ impl Catalog {
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
             keys: b.indexing.keys().clone(),
-            next_heap,
+            next_heap: self.next_heap,
             sequences: self.sequences,
             query_memory: self.query_memory,
             readers: Readers::default(),
@@ -550,8 +550,7 @@ impl Catalog {
                 next.heaps.insert((r, c), self.heaps[kept].clone());
                 continue;
             }
-            let heap =
-                m.create_heap(heap_ids[&(r, c)], row_type(&next.schema, r, c), self.large)?;
+            let heap = m.create_heap(row_type(&next.schema, r, c), self.large)?;
             named.push(heap_root(rid, cid, &heap));
             next.heaps.insert((r, c), heap);
         }
@@ -600,9 +599,7 @@ impl Catalog {
             rewritten: b.rewritten,
             keys: key_indexes(&next.schema, &next.indexes),
         };
-        let kept = self
-            .kept
-            .rebuilt(&rebuilding, &mut next.next_heap, &mut named, &mut gone)?;
+        let kept = (self.kept).rebuilt(&rebuilding, &next.heaps, &mut named, &mut gone)?;
         next.kept = kept;
         for (c, key) in b.indexing.fresh() {
             named.push(RootsRow::OrderKey {
@@ -621,18 +618,15 @@ impl Catalog {
         self.roots.insert_all(m, &named)?;
         next.insert_all(m, b.data)?;
         self.write_rows(m, &next, b)?;
+        next.next_heap = m.top.get();
         Ok(next)
     }
 
     /// Returns the heap id each constructor relation of `schema` has once a migration that
-    /// rewrites the relations `rewritten` names is built over this catalog, and the id after
-    /// the last one it gives: a kept relation's heap keeps its id, and every heap of a rewritten
-    /// one takes the next free id in turn.
-    fn heap_ids(
-        &self,
-        schema: &Schema,
-        rewritten: &BTreeSet<CatRelId>,
-    ) -> Result<(HeapIds, u32), Error> {
+    /// rewrites the relations `rewritten` names is built over this catalog: a kept relation's
+    /// heap keeps its id, and every heap of a rewritten one takes the next free id in turn, as
+    /// the build draws them.
+    fn heap_ids(&self, schema: &Schema, rewritten: &BTreeSet<CatRelId>) -> Result<HeapIds, Error> {
         let old: BTreeMap<(CatRelId, CatCtorId), u32> = self
             .heaps
             .iter()
@@ -655,7 +649,7 @@ impl Catalog {
             };
             out.insert((r, c), id);
         }
-        Ok((out, next))
+        Ok(out)
     }
 
     /// Write the catalog rows of `next`'s version as `m.x` over this catalog's: delete the stored

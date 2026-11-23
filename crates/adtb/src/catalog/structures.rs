@@ -15,7 +15,6 @@ use crate::storage::policy::{Holder, Phase};
 use crate::storage::{PageError, Pager, Pid, Quarantine, Stopped};
 use crate::verify::{Inventory, Sum};
 
-use super::history::key_indexes;
 use super::ids::{ctor_id, stored};
 use super::root::Root;
 use super::{Catalog, roots};
@@ -101,8 +100,7 @@ impl Catalog {
                 .collect();
             out.sums.push(Listed { heaps, indexes });
         }
-        let keys = key_indexes(schema, &self.indexes);
-        let (past, record) = self.kept.structures(schema, &self.heaps, &keys);
+        let (past, record) = self.kept.structures(schema);
         out.sums.extend(past);
         out.trees.push((Holder::CommitTimes, record));
         out
