@@ -77,7 +77,7 @@ pub use adtb_lang::schema::Stage;
 pub use adtb_store::panic_text;
 pub use broken::{Broken, TermKind, detail};
 pub use check::refusals;
-pub use delta::{CheckPlan, Part};
+pub use delta::{CheckPlan, Part, unchanged};
 pub use eval::{Violated, Violator};
 pub use input::Local;
 pub use past::Retained;

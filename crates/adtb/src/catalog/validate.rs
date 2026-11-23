@@ -14,7 +14,7 @@ use crate::storage::PageError;
 
 use super::hosts::classify;
 use super::ids::{CatConstraintId, CatRelId};
-use super::{Broken, Catalog, Error, Migrating, not_normal};
+use super::{Broken, Catalog, Error, Migrating, Rot, not_normal};
 
 impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks, whose root is in
@@ -22,7 +22,7 @@ impl Catalog {
     /// catalog, or that reads a relation whose catalog id is in `rewritten`, why the rows
     /// transaction `m.x` sees at the snapshot of `m.hold` violate it.
     ///
-    /// A constraint that reads a transition is not validated.
+    /// A constraint that reads a transition is validated over the empty change.
     ///
     /// Fail with [`Broken::ConstraintId`] when a constraint or check has no catalog id, and with
     /// [`Broken::ConstraintTerm`] when it has no normal form.
@@ -65,13 +65,20 @@ impl Catalog {
             bindings,
         ));
         let budget = Budget::new(self.query_memory);
-        let terms = normal.terms();
+        let (terms, held) = unchanged(schema, &normal)?;
+        let q = Query {
+            schema,
+            catalog: &catalog,
+            normal: &normal,
+            terms: terms.valid(),
+            store: &store,
+            budget: &budget,
+            hosts: &self.hosts,
+        };
         let mut why = Vec::new();
-        for Held { name, id, t } in held(schema, &normal)? {
+        for Held { name, id, t } in held {
             let mut reads = BTreeSet::new();
-            if transitions(terms, t, &mut reads) {
-                continue;
-            }
+            relations(terms.valid().terms(), t, &mut reads);
             let touched = reads.iter().any(|r| {
                 schema
                     .ids()
@@ -81,7 +88,7 @@ impl Catalog {
             if existed.contains(&id) && !touched && !changed.contains(&id) {
                 continue;
             }
-            let found = violating(schema, &catalog, &normal, t, &store, &budget, &self.hosts)?;
+            let found = violating(&q, &(t, format!("constraint {name}")))?;
             if !found.is_empty() {
                 why.push(format!(
                     "constraint {name} is violated by {}",
@@ -114,7 +121,7 @@ impl Catalog {
 
 impl Catalog {
     /// Returns what the denial query of each constraint and check of this catalog found over
-    /// `store`, for those no transition reads and that `keep` accepts by the relations they read.
+    /// `store`, over the empty change, for those `keep` accepts by the relations they read.
     pub fn denied<R: Runtime>(
         &self,
         store: &Arc<Store<R>>,
@@ -125,14 +132,25 @@ impl Catalog {
             .map_err(|e| not_normal(schema, e, |e| Error::from(Broken::NotNormal(e))))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
+        let (terms, held) = unchanged(schema, &normal)?;
+        let q = Query {
+            schema,
+            catalog: &catalog,
+            normal: &normal,
+            terms: terms.valid(),
+            store,
+            budget: &budget,
+            hosts: &self.hosts,
+        };
         let mut out = Vec::new();
-        for Held { id, t, .. } in held(schema, &normal)? {
+        for Held { id, t, name } in held {
             let id = id.raw();
             let mut reads = BTreeSet::new();
-            if transitions(normal.terms(), t, &mut reads) || !keep(&reads) {
+            relations(terms.valid().terms(), t, &mut reads);
+            if !keep(&reads) {
                 continue;
             }
-            let found = run_denial(schema, &catalog, &normal, t, store, &budget, &self.hosts);
+            let found = run_denial(&q, &(t, format!("constraint {name}")));
             let denial = match found {
                 Err(Error::Page(e)) => Some(Denial::Damaged(e)),
                 Err(e) => return Err(e),
@@ -212,17 +230,32 @@ fn held(schema: &Schema, normal: &NormalProgram) -> Result<Vec<Held>, Error> {
         .collect()
 }
 
-/// Add the relations `t` reads to `reads`. Returns whether it reads a transition.
-fn transitions(terms: &Terms, t: Tm, reads: &mut BTreeSet<RelId>) -> bool {
+/// Returns every constraint, then every check, of `schema`, each over the empty change, in an
+/// arena of `normal`'s terms.
+fn unchanged(
+    schema: &Schema,
+    normal: &NormalProgram,
+) -> Result<(kernel::ValidTerms, Vec<Held>), Error> {
+    let mut terms = normal.terms().clone();
+    let mut held = held(schema, normal)?;
+    for h in &mut held {
+        h.t = crate::write::unchanged(schema, &mut terms, h.t);
+    }
+    let roots: Vec<(Tm, Vec<Var>)> = held.iter().map(|h| (h.t, Vec::new())).collect();
+    let terms = kernel::ValidTerms::new(schema, terms, &roots)
+        .map_err(|e| Error::from(Broken::IllTyped(e)))?;
+    Ok((terms, held))
+}
+
+/// Add the relations `t` reads to `reads`.
+fn relations(terms: &Terms, t: Tm, reads: &mut BTreeSet<RelId>) {
     let mut stack = vec![t];
     let mut seen = BTreeSet::new();
-    let mut found = false;
     while let Some(t) = stack.pop() {
         if !seen.insert(t) {
             continue;
         }
         match terms.kind(t) {
-            Kind::Transition(..) => found = true,
             Kind::Rel(r, _) => {
                 reads.insert(*r);
             }
@@ -239,58 +272,35 @@ fn transitions(terms: &Terms, t: Tm, reads: &mut BTreeSet<RelId>) -> bool {
         }
         stack.extend(terms.children(t));
     }
-    found
 }
 
-/// Returns each row constraint `t` returns over `store`, printed, or why it could not run,
-/// that printed as its one row.
-fn violating<R: Runtime>(
-    schema: &Schema,
-    catalog: &plan::Catalog,
-    normal: &NormalProgram,
-    t: Tm,
-    store: &Arc<Store<R>>,
-    budget: &Arc<Budget>,
-    hosts: &Arc<exec::Hosts>,
-) -> Result<Vec<String>, Error> {
-    Ok(
-        match run_denial(schema, catalog, normal, t, store, budget, hosts)? {
-            Ok(rows) => rows,
-            Err(Denied::Fault(why) | Denied::Memory(why)) => vec![why],
-            Err(Denied::Rotten(rot)) => return Err(failed(exec::Error::Corrupt(rot))),
-            Err(Denied::Orphaned(index)) => return Err(failed(exec::Error::OrphanEntry(index))),
-        },
-    )
+/// Returns each row the query of constraint `query` returns over the store of `q`, printed, or
+/// why it could not run, that printed as its one row. `query` is the query and the constraint's
+/// name.
+fn violating<R: Runtime>(q: &Query<'_, R>, query: &(Tm, String)) -> Result<Vec<String>, Error> {
+    Ok(match run_denial(q, query)? {
+        Ok(rows) => rows,
+        Err(Denied::Fault(why) | Denied::Memory(why)) => vec![why],
+        Err(Denied::Rotten(rot)) => return Err(Rot::Exec(rot).into()),
+        Err(Denied::Orphaned(index)) => return Err(Rot::Orphaned(index).into()),
+    })
 }
 
-/// Returns each row constraint `t` returns over `store`, printed, or why it could not run.
+/// Returns each row the query of constraint `query` returns over the store of `q`, printed, or
+/// why it could not run. `query` is the query and the constraint's name.
 fn run_denial<R: Runtime>(
-    schema: &Schema,
-    catalog: &plan::Catalog,
-    normal: &NormalProgram,
-    t: Tm,
-    store: &Arc<Store<R>>,
-    budget: &Arc<Budget>,
-    hosts: &Arc<exec::Hosts>,
+    q: &Query<'_, R>,
+    (t, object): &(Tm, String),
 ) -> Result<Result<Vec<String>, Denied>, Error> {
-    let q = Query {
-        schema,
-        catalog,
-        normal,
-        terms: normal.valid(),
-        store,
-        budget,
-        hosts,
-    };
-    let (rows, elem) = match q.run(t)? {
+    let (rows, elem) = match q.run(*t, object)? {
         Ok(found) => found,
         Err(d) => return Ok(Err(d)),
     };
     let mut printed = Vec::new();
     for r in &rows {
-        match exec::print(schema, &elem, r) {
+        match exec::print(q.schema, &elem, r) {
             Ok(row) => printed.push(row),
-            Err(e) => return damaged(e).map(Err),
+            Err(e) => return damaged(object, e).map(Err),
         }
     }
     Ok(Ok(printed))
@@ -309,15 +319,15 @@ struct Query<'a, R: Runtime> {
 
 impl<R: Runtime> Query<'_, R> {
     /// Returns each row set query `t` of `self.terms` returns over the store, with the type of
-    /// a row, or why it could not run.
-    fn run(&self, t: Tm) -> Result<Result<(Vec<Val>, Ty), Denied>, Error> {
+    /// a row, or why it could not run; a failure names `object`, what the query checks.
+    fn run(&self, t: Tm, object: &str) -> Result<Result<(Vec<Val>, Ty), Denied>, Error> {
         let (schema, catalog, normal, terms) = (self.schema, self.catalog, self.normal, self.terms);
         let (store, budget, hosts) = (self.store, self.budget, self.hosts);
         let p = plan::plan(schema, normal, catalog, terms, t, plan::Options::default())
             .map_err(|e| Error::from(Broken::Plan(e)))?;
         let mut program = match exec::compile(schema, catalog, &p, None) {
             Ok(program) => program,
-            Err(e) => return damaged(e).map(Err),
+            Err(e) => return damaged(object, e).map(Err),
         };
         program.shared.hosts = hosts.clone();
         let program = Arc::new(program);
@@ -352,7 +362,7 @@ impl<R: Runtime> Query<'_, R> {
                     "its validation needs more than the query memory of {limit} bytes"
                 ))));
             }
-            Err(e) => return damaged(e).map(Err),
+            Err(e) => return damaged(object, e).map(Err),
         };
         let Val::Set(rows) = &v else {
             return Err(Error::from(Broken::NotASet(v)));
@@ -398,7 +408,9 @@ impl<R: Runtime> Query<'_, R> {
             if held.is_empty() {
                 continue;
             }
-            let (rows, elem) = match self.run(t)? {
+            let names: Vec<String> = held.iter().map(|&d| name(d)).collect();
+            let object = format!("constraint {}", names.join(", "));
+            let (rows, elem) = match self.run(t, &object)? {
                 Ok(found) => found,
                 Err(Denied::Fault(w) | Denied::Memory(w)) => {
                     why.extend(
@@ -407,16 +419,15 @@ impl<R: Runtime> Query<'_, R> {
                     );
                     continue;
                 }
-                Err(Denied::Rotten(rot)) => return Err(failed(exec::Error::Corrupt(rot))),
-                Err(Denied::Orphaned(index)) => {
-                    return Err(failed(exec::Error::OrphanEntry(index)));
-                }
+                Err(Denied::Rotten(rot)) => return Err(Rot::Exec(rot).into()),
+                Err(Denied::Orphaned(index)) => return Err(Rot::Orphaned(index).into()),
             };
             for row in &rows {
                 let mut broken = BTreeSet::new();
-                breaks(schema, &checks, row, &elem, &mut broken).map_err(failed)?;
+                let fail = |e| failed(&object, e);
+                breaks(schema, &checks, row, &elem, &mut broken).map_err(fail)?;
                 for d in broken {
-                    let printed = exec::print(schema, &elem, row).map_err(failed)?;
+                    let printed = exec::print(schema, &elem, row).map_err(fail)?;
                     found.entry(d).or_default().push(printed);
                 }
             }
@@ -498,15 +509,15 @@ fn breaks(
 }
 
 /// Returns the damage a denial run met as why it could not run, any other failure as the
-/// catalog's error.
-fn damaged(e: exec::Error) -> Result<Denied, Error> {
+/// catalog's error naming `object`.
+fn damaged(object: &str, e: exec::Error) -> Result<Denied, Error> {
     match e {
         exec::Error::Corrupt(rot) => Ok(Denied::Rotten(rot)),
         exec::Error::OrphanEntry(index) => Ok(Denied::Orphaned(index)),
-        other => Err(failed(other)),
+        other => Err(failed(object, other)),
     }
 }
 
-fn failed(e: exec::Error) -> Error {
-    classify("a constraint query", e, Broken::Validation)
+fn failed(object: &str, e: exec::Error) -> Error {
+    classify(object, e, Broken::Validation)
 }

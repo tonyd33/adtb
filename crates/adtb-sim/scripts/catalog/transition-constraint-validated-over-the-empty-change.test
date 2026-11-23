@@ -1,0 +1,26 @@
+# A constraint that reads a transition is validated over the empty change: `inserted` and
+# `deleted` empty and `prior(R)` as `R`.
+migrate
+  module app
+  add module app
+  add type R = { id: Key rs, n: I64 }
+  add relation rs : R key id generate sequence
+
+run
+  insert rs { n: -1 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint app::was_negative is violated by R { id: rs.key(1), n: -1 }" } } }
+  module app
+  add constraint was_negative = from r in rs, o in prior(rs) where key o == key r and o.n < 0 select r
+
+migrate
+  module app
+  add constraint no_negative_inserts = from r in inserted(rs) where r.n < 0 select r
+
+reopen
+
+run
+  insert rs { n: 1 }
+
+error Violated { constraint: "app::no_negative_inserts", report: 1 rows, redacted: 0 }
+  insert rs { n: -2 }

@@ -1347,3 +1347,19 @@ impl Compiler<'_> {
         ))
     }
 }
+
+/// Returns `t` with every transition it reads bound to the empty change: `inserted` and
+/// `deleted` empty, and `prior(R)` as `R`.
+pub fn unchanged(schema: &Schema, terms: &mut Terms, t: Tm) -> Tm {
+    terms.substitute(schema, t, |terms, at, _| {
+        let Kind::Transition(x, r, s) = terms.kind(at).clone() else {
+            return None;
+        };
+        let ty = terms.ty(at).clone();
+        let mut b = Build::new(schema, terms);
+        Some(match x {
+            Transition::Prior => b.rel(r, s),
+            Transition::Inserted | Transition::Deleted => b.empty_set(ty),
+        })
+    })
+}

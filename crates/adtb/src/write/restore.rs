@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use adtb_lang::kernel::{Build, Kind, Terms, Tm, Transition};
+use adtb_lang::kernel::Tm;
 use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
@@ -188,21 +188,10 @@ impl<R: Runtime> Restoring<'_, R> {
         }
         let schema = &*db.schema;
         let mut terms = db.normal.terms().clone();
-        let mut unchanged = |terms: &mut Terms, t: Tm, _: &[Tm]| {
-            let Kind::Transition(x, r, s) = terms.kind(t).clone() else {
-                return None;
-            };
-            let ty = terms.ty(t).clone();
-            let mut b = Build::new(schema, terms);
-            Some(match x {
-                Transition::Prior => b.rel(r, s),
-                Transition::Inserted | Transition::Deleted => b.empty_set(ty),
-            })
-        };
         let named: Vec<(Violator, String, Tm)> = super::delta::denials(schema, &db.normal)?
             .into_iter()
             .map(|(of, name, t)| {
-                let t = terms.substitute(schema, t, &mut unchanged);
+                let t = super::delta::unchanged(schema, &mut terms, t);
                 (Violator::Denial(of), name, t)
             })
             .collect();
