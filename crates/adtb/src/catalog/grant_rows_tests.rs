@@ -94,7 +94,7 @@ fn reopened(seed: u64, files: BTreeMap<String, Vec<u8>>) -> Seen {
         );
         drop(clog);
         let (logged, deployed) = stored(&catalog, &pager, &txns);
-        let version = catalog.source().version;
+        let version = catalog.source().version();
         if version > 0 {
             catalog
                 .migrate(
@@ -603,7 +603,7 @@ fn a_refused_migration_leaves_the_grant_rows_and_the_page_of_id_counters_as_they
         let (mut catalog, txns) = Catalog::create(rt.clone(), &pager).expect("the catalog");
         shop_with_web(&rt, &pager, &mut catalog, &txns);
         assert_eq!(None, catalog.sequences());
-        let seen = (catalog.source().version, stored(&catalog, &pager, &txns));
+        let seen = (catalog.source().version(), stored(&catalog, &pager, &txns));
         adtb_testkit::refused_as(
             catalog.migrate(
                 &pager,
@@ -618,7 +618,7 @@ fn a_refused_migration_leaves_the_grant_rows_and_the_page_of_id_counters_as_they
         assert_eq!(None, catalog.sequences());
         assert_eq!(
             seen,
-            (catalog.source().version, stored(&catalog, &pager, &txns))
+            (catalog.source().version(), stored(&catalog, &pager, &txns))
         );
         before = Some(seen);
         drop(catalog);
@@ -639,7 +639,7 @@ fn a_refused_migration_leaves_the_grant_rows_and_the_page_of_id_counters_as_they
         assert_eq!(Vec::<verify::Finding>::new(), report.findings);
         assert_eq!(
             (version, (logged.clone(), deployed.clone())),
-            (catalog.source().version, stored(&catalog, &pager, &txns))
+            (catalog.source().version(), stored(&catalog, &pager, &txns))
         );
     });
 }

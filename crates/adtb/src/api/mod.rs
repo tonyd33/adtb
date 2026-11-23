@@ -1070,7 +1070,7 @@ impl<R: Runtime> Engine<R> {
             let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
             let live = registered::readers(&mut catalog, regs, &live, &stored, &roles)?;
             catalog.settle(&pager, &txns).map_err(corrupt)?;
-            let applied = catalog.source().log.len();
+            let applied = catalog.source().log().len();
             options
                 .host_fns
                 .check(catalog.schema(), &host::pending(log, applied))?;
@@ -1092,7 +1092,7 @@ impl<R: Runtime> Engine<R> {
         };
         let compiled = catalog.checking().clone();
         let normal = migrated.then(|| migrate::normal(&compiled))?;
-        let pending = host::pending(log, catalog.source().log.len());
+        let pending = host::pending(log, catalog.source().log().len());
         migrated.then(|| {
             options
                 .host_fns
@@ -1436,7 +1436,7 @@ fn commanded(
 /// Refuse a log whose migrations at or below the file's version differ from the file's by
 /// hash, naming the first that does.
 fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
-    for (m, shipped) in catalog.source().log.iter().zip(&log.migrations) {
+    for (m, shipped) in catalog.source().log().iter().zip(&log.migrations) {
         if &m.text != shipped && !same_hash(m, shipped)? {
             return Err(OpenError::Diverged { version: m.number });
         }

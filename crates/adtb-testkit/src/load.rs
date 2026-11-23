@@ -248,7 +248,7 @@ pub fn staged_source(source: &Source, from: &Schema) -> Source {
     let to = source.schema().expect("the staged source builds");
     let state = |stage| State {
         stage,
-        since: source.version,
+        since: source.version(),
     };
     let type_in = |module: &str, name: &str| {
         let m = to.module_named(module)?;

@@ -558,7 +558,7 @@ pub(super) fn registration(
     s: &Settings,
     pins: &mut Pins,
 ) -> Result<Checked, Error> {
-    let version = over.source.version;
+    let version = over.source.version();
     let Some(h) = &r.header else {
         let c = checked(over, r)?;
         pinned_within(&c, version)?;
@@ -654,7 +654,7 @@ pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), 
         compiled: catalog.compiled(),
         hash: &hash,
     };
-    let version = catalog.source().version;
+    let version = catalog.source().version();
     for r in regs {
         let Some(h) = r.header.as_ref().filter(|h| h.pins < version) else {
             continue;
@@ -697,7 +697,7 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
             h.name
         )));
     }
-    let at = now.source.version;
+    let at = now.source.version();
     let hashed = |over: &Over<'_>| {
         let hash: String = over
             .hash

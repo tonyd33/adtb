@@ -151,7 +151,7 @@ impl Pending {
             module,
             name,
             kind,
-            dropped: applying.source.version,
+            dropped: applying.source.version(),
             blocking,
         }
     }
@@ -347,12 +347,12 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
     let Some(first) = pending.iter().map(|p| p.dropped).min() else {
         return Ok(None);
     };
-    let Some(start) = source.log.iter().find(|l| l.number == first) else {
+    let Some(start) = source.log().iter().find(|l| l.number == first) else {
         return Err(Rot::DropVersion(first).into());
     };
     let mut at = (*start.before).clone();
     let mut version = first;
-    for l in source.log.iter().filter(|l| l.number >= first) {
+    for l in source.log().iter().filter(|l| l.number >= first) {
         version = l.number;
         let refused = |why: Vec<String>| Error::Unaccepted(l.number, why);
         let mut file = parse_migration(&l.text, Options::default())
@@ -852,13 +852,13 @@ fn schema_at(source: &Source, v: u64) -> Option<Schema> {
 
 /// Returns the source of the version `v` of `source`'s log.
 pub fn source_at(source: &Source, v: u64) -> Option<Source> {
-    if v == 0 || v > source.version {
+    if v == 0 || v > source.version() {
         return None;
     }
-    if v == source.version {
+    if v == source.version() {
         return Some(source.clone());
     }
-    let after = source.log.iter().find(|l| l.number == v + 1)?;
+    let after = source.log().iter().find(|l| l.number == v + 1)?;
     Some((*after.before).clone())
 }
 

@@ -614,7 +614,7 @@ impl Catalog {
                 key: key.clone(),
             });
         }
-        if let Some(m) = next.source.log.last() {
+        if let Some(m) = next.source.log().last() {
             named.push(RootsRow::Migration {
                 version: m.number,
                 text: m.text.clone(),
@@ -695,7 +695,7 @@ impl Catalog {
                 delete_keyed(m, self.heap(was, c), keys, key)?;
             }
         }
-        if next.source.log.is_empty() {
+        if next.source.log().is_empty() {
             return Ok(());
         }
         let previous = self.stored_hash(m)?;
@@ -716,17 +716,17 @@ impl Catalog {
     }
 
     fn stored_hash<R: Runtime>(&self, m: &Migrating<'_, R>) -> Result<Hash, Error> {
-        if self.source.version == 0 {
+        if self.source.version() == 0 {
             return Ok([0; 32]);
         }
         let codec = Codec::<MigrationRow>::new(self.schema());
         for (c, row) in self.rows(&Snapshot::of(m), codec.relation())? {
             let row = codec.decode(c, &row)?;
-            if row.version() == self.source.version {
+            if row.version() == self.source.version() {
                 return Ok(*row.hash());
             }
         }
-        Err(Rot::NoMigration(self.source.version).into())
+        Err(Rot::NoMigration(self.source.version()).into())
     }
 }
 

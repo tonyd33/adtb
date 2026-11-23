@@ -146,8 +146,8 @@ impl<'a> Pinned<'a> {
         let compiled = to.viewed();
         let to = to.schema();
         let mut ops = Vec::new();
-        for (i, logged) in to_source.log.iter().enumerate() {
-            if logged.number <= from_source.version {
+        for (i, logged) in to_source.log().iter().enumerate() {
+            if logged.number <= from_source.version() {
                 continue;
             }
             let resolved = to_source.resolved(logged.number).map_err(|f| {
@@ -583,7 +583,7 @@ impl<'a> Pinned<'a> {
         };
         let found = match &o.from {
             Origin::Logged(i, k) => {
-                let logged = &self.to_source.log[*i];
+                let logged = &self.to_source.log()[*i];
                 let (_, steps) = logged
                     .stepped(*k)
                     .map_err(|f| failed(Some(o.text.clone()), f))?;
@@ -746,7 +746,7 @@ pub fn held_other_code(pin: &Source, now: &Source) -> Result<Option<String>, Vec
 /// `id`, its first operator's when the migration does not resolve, and `None` when it resolves
 /// and no operator changes `id`.
 fn blamed(next: &Source, id: u64) -> Option<String> {
-    let logged = next.log.last()?;
+    let logged = next.log().last()?;
     let changes = |r: &ResolvedOp| match r.op {
         Resolved::Revert { .. } => true,
         Resolved::RedefineFn { function, .. } => function == id,

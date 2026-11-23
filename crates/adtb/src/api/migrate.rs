@@ -53,10 +53,10 @@ pub(super) fn migrate<'p, R: Runtime>(
     live: &[registered::Live],
     replay: Option<&BTreeSet<(String, Privilege, String)>>,
 ) -> Result<Migrated<'p, R>, OpenError> {
-    let stored = catalog.source().log.len();
+    let stored = catalog.source().log().len();
     let deployed = catalog.committed_deployed(pager, txns).map_err(corrupt)?;
     for text in log.migrations.iter().skip(stored) {
-        let version = catalog.source().version + 1;
+        let version = catalog.source().version() + 1;
         registered::recheck(catalog, text, live, &deployed)
             .map_err(|reason| refused(version, reason))?;
         let applied = if let Some(held) = replay {
@@ -103,7 +103,7 @@ pub(super) fn migrate<'p, R: Runtime>(
 
 /// Returns the version of the first migration of `log` past the file's, `None` when it has none.
 pub(super) fn unapplied(catalog: &Catalog, log: &Log) -> Option<u64> {
-    (log.migrations.len() > catalog.source().log.len()).then(|| catalog.source().version + 1)
+    (log.migrations.len() > catalog.source().log().len()).then(|| catalog.source().version() + 1)
 }
 
 impl<R: Runtime> Opened<R> {

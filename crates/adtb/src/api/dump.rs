@@ -578,7 +578,7 @@ impl<R: Runtime> Engine<R> {
         }
         sections.push((SETTINGS, rows_of(schema, &[engine_rel::SETTINGS], rows)?));
         sections.push((AUDIT, rows_of(schema, &[engine_rel::AUDIT], rows)?));
-        let mut entries = vec![(LOG.to_owned(), log_text(&envelope, &self.source.log))];
+        let mut entries = vec![(LOG.to_owned(), log_text(&envelope, self.source.log()))];
         for (name, rows) in sections {
             entries.push((name.to_owned(), sections_text(&envelope, schema, &rows)));
         }

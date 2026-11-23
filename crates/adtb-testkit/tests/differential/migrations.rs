@@ -505,20 +505,20 @@ fn unrestored(was: &Source, mid: &Source, now: &Source) -> Vec<String> {
         out.push(format!("modules {:?} -> {:?}", was.modules, now.modules));
     }
     let held: BTreeSet<(Space, u64)> = mid
-        .ids
+        .ids()
         .iter()
         .map(|(k, id)| (k.kind().space(), *id))
         .collect();
     let kept = |k: &ObjectKey, id: u64| held.contains(&(k.kind().space(), id));
-    for (k, id) in &was.ids {
-        if let Some(n) = now.ids.get(k)
+    for (k, id) in was.ids() {
+        if let Some(n) = now.ids().get(k)
             && n != id
             && kept(k, *id)
         {
             out.push(format!("id of {k:?}: {id} -> {n}"));
         }
     }
-    let all_kept = was.ids.iter().all(|(k, id)| kept(k, *id));
+    let all_kept = was.ids().iter().all(|(k, id)| kept(k, *id));
     if all_kept && was.grants != now.grants {
         out.push(format!("grants {:?} -> {:?}", was.grants, now.grants));
     }
@@ -1019,7 +1019,7 @@ impl Run {
                 lost.join("\n"),
             ));
         }
-        for n in 1..=now.version {
+        for n in 1..=now.version() {
             if let Err(ds) = now.resolved(n) {
                 return Err(found(
                     "a migration of the log does not resolve after a revert",

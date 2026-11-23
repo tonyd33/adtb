@@ -41,7 +41,7 @@ fn migration_term(src: &Source, text: &str, from: &str, to: &str) -> String {
         .migrate(&m, text)
         .unwrap_or_else(|f| panic!("{text}\nrefused: {f:?}"));
     let names = after
-        .log
+        .log()
         .last()
         .expect("the migration is logged")
         .names()

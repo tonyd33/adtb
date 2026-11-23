@@ -434,7 +434,7 @@ impl<R: Runtime> Engine<R> {
     fn printed_schema(&self) -> Result<String, write::Error> {
         let hash = self.hash.get()?;
         let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        let mut out = format!("-- version {} hash {hash}\n", self.source.version);
+        let mut out = format!("-- version {} hash {hash}\n", self.source.version());
         let mut module = None;
         for d in &self.source.decls {
             if module != Some(&d.module) {

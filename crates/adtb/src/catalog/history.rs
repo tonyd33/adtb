@@ -334,7 +334,7 @@ impl Catalog {
             indexes,
             migrations,
             born,
-            version: self.source.version,
+            version: self.source.version(),
         })
     }
 

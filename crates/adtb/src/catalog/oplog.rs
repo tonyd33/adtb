@@ -89,7 +89,7 @@ pub fn chain(
 ) -> Replaying<Hash> {
     let log = Log::new(schema);
     let mut h = [0; 32];
-    for l in &source.log {
+    for l in source.log() {
         let ops = log.rows(&source.resolved(l.number)?);
         h = log.chained(h, &ops);
         each(&ops, h);

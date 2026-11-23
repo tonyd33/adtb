@@ -83,7 +83,7 @@ fn migrated_database_reopens(dir: &Path, runtime: fn(&Path) -> OsRuntime) {
     let rt = runtime(&dir);
     let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
     let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
-    assert_eq!(1, catalog.source().version);
+    assert_eq!(1, catalog.source().version());
     assert!(has_relation(&catalog, "shop", "customers"));
     assert!(has_relation(&catalog, "shop", "payments"));
     let report = verify::verify(

@@ -414,7 +414,7 @@ impl Catalog {
                     dormant.push((i, g.role.clone()));
                 }
                 let marks = marked.into_iter().map(|role| RootsRow::Dormant {
-                    version: into.source.version,
+                    version: into.source.version(),
                     role,
                 });
                 (self.roots).insert(m.pager, m.txns, m.x, &self.roots.admit(marks)?)?;

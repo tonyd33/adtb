@@ -141,17 +141,34 @@ pub struct Source {
     pub states: BTreeMap<(CatRelId, CatCtorId), State>,
     /// The write state of each value-level constructor, by its id.
     pub value_states: BTreeMap<CatCtorId, State>,
-    pub version: u64,
-    pub log: Vec<Logged>,
+    version: u64,
+    log: Vec<Logged>,
     /// The catalog id of each object of the user modules, by its key.
-    pub ids: BTreeMap<ObjectKey, u64>,
+    ids: BTreeMap<ObjectKey, u64>,
     /// The next id of each space.
-    pub next: BTreeMap<crate::ids::Space, u64>,
+    next: BTreeMap<crate::ids::Space, u64>,
     /// The relation variables, by module and name, that the operators of the migration being
     /// applied add.
     pub ahead: Vec<Expected>,
     memo: memo::BuiltMemo,
     parsed: memo::ParsedMemo,
+}
+
+impl Source {
+    /// Returns the number of the last migration of the log, 0 before the first.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the log, each migration with the source before it.
+    pub fn log(&self) -> &[Logged] {
+        &self.log
+    }
+
+    /// Returns the catalog id of each object of the user modules, by its key.
+    pub fn ids(&self) -> &BTreeMap<ObjectKey, u64> {
+        &self.ids
+    }
 }
 
 /// Text an operator writes into a declaration, with the ranges of the migration's text it copies.

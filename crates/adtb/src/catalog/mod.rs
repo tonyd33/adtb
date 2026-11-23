@@ -252,7 +252,7 @@ const DEFAULT_QUERY_MEMORY: usize = 256 << 20;
 impl std::fmt::Debug for Catalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Catalog")
-            .field("version", &self.source.version)
+            .field("version", &self.source.version())
             .field("root", &self.root)
             .field("heaps", &self.heaps.len())
             .field("indexes", &self.indexes.len())
@@ -511,7 +511,9 @@ fn fold_from_empty(
             }
         }
     }
-    let compiled = source.check().map_err(|ds| unchecked(source.version, ds))?;
+    let compiled = source
+        .check()
+        .map_err(|ds| unchecked(source.version(), ds))?;
     let hash = VersionHash::of(Arc::new(source.clone()));
     Ok((source, committed(compiled)?, hash))
 }

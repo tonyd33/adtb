@@ -103,7 +103,7 @@ add constraint no_blank = from c in customers where c.name == "" select c
         let version = run(&mut sim, |rt| {
             let (pager, catalog, txns) = catalog_at(&rt);
             assert_clean(&pager, &catalog, &txns, at);
-            let version = catalog.source().version;
+            let version = catalog.source().version();
             pager.close();
             version
         });

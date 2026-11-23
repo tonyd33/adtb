@@ -219,7 +219,7 @@ fn unmended(rt: &SimRuntime) -> (usize, bool) {
 /// Returns the number of migrations the file's catalog holds.
 fn version(rt: &SimRuntime) -> usize {
     let (pager, catalog, _) = catalog_at(rt);
-    let version = catalog.source().log.len();
+    let version = catalog.source().log().len();
     pager.close();
     version
 }

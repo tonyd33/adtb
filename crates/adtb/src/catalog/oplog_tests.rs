@@ -114,7 +114,7 @@ fn reopened(seed: u64, files: std::collections::BTreeMap<String, Vec<u8>>) -> u6
         let (pager, _) = Pager::open(rt.clone(), &pager_options(FRAMES)).expect("reopen");
         let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
         assert_clean(&pager, &catalog, &txns);
-        version = Some(catalog.source().version);
+        version = Some(catalog.source().version());
     });
     version.expect("the catalog opened")
 }

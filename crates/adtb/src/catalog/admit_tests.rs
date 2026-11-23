@@ -243,7 +243,7 @@ fn state(
             rel(catalog, "ts"),
         )
         .expect("the rows read");
-    (catalog.source().version, rows)
+    (catalog.source().version(), rows)
 }
 
 /// A migration whose nest, merge or computed fill writes a row past the row limit, or a row with
@@ -319,7 +319,7 @@ fn a_migration_whose_text_passes_the_value_limit_is_refused_in_its_report() {
         let (pager, _) = Pager::open(rt.clone(), &options(256)).expect("the file opens");
         pager.steps().lower_value_limit(VALUE_LIMIT as u64);
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).expect("the catalog opens");
-        let version = catalog.source().version;
+        let version = catalog.source().version();
         let text = format!(
             "module app\n-- {}\nadd type W = W1 | W2\n",
             "y".repeat(VALUE_LIMIT)
@@ -336,7 +336,7 @@ fn a_migration_whose_text_passes_the_value_limit_is_refused_in_its_report() {
         pager.close();
         let (pager, _) = Pager::open(rt.clone(), &options(256)).expect("the file opens");
         let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
-        assert_eq!(version, catalog.source().version);
+        assert_eq!(version, catalog.source().version());
         pager.close();
     });
 }

@@ -161,7 +161,7 @@ impl Walk {
                 "modules",
                 (&a.modules, &a.installed) == (&f.modules, &f.installed),
             ),
-            ("ids", a.ids == f.ids),
+            ("ids", a.ids() == f.ids()),
             (
                 "states",
                 (&a.states, &a.value_states) == (&f.states, &f.value_states),
@@ -170,7 +170,7 @@ impl Walk {
                 "grants",
                 format!("{:?}", a.grants) == format!("{:?}", f.grants),
             ),
-            ("version", a.version == f.version),
+            ("version", a.version() == f.version()),
         ];
         if let Some((what, _)) = parts.iter().find(|(_, same)| !same) {
             return Some(format!("the replayed source differs in its {what}"));

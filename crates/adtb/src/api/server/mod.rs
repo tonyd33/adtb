@@ -479,7 +479,7 @@ fn role_name(name: &str) -> Result<String, Error> {
 
 pub(super) fn mentioned(source: &Source) -> BTreeSet<String> {
     source
-        .log
+        .log()
         .iter()
         .flat_map(|m| &m.operators)
         .filter_map(|op| match &op.kind {

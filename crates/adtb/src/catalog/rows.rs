@@ -97,7 +97,7 @@ pub fn applied(schema: &Schema, source: &Source, applied: i64) -> Rows {
 
 fn applied_hash(schema: &Schema, source: &Source, hash: oplog::Hash, applied: i64) -> Rows {
     let mut rows = Rows::new();
-    if let Some(m) = source.log.last() {
+    if let Some(m) = source.log().last() {
         let codec = Codec::<MigrationRow>::new(schema);
         let row = codec.encode(
             k::MIGRATION,
@@ -127,7 +127,7 @@ pub(super) fn recorded(
         source,
         rows,
     };
-    b.migration(&log, source.version, ops);
+    b.migration(&log, source.version(), ops);
     b.rows
 }
 
@@ -861,7 +861,7 @@ impl Builder<'_> {
     #[cfg(test)]
     fn log(&mut self) {
         let log = oplog::Log::new(self.schema);
-        for l in &self.source.log {
+        for l in self.source.log() {
             let ops = oplog::operators(&log, self.source, l.number);
             self.migration(&log, l.number, &ops);
         }

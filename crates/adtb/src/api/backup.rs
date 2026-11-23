@@ -510,7 +510,7 @@ impl<R: Runtime> Engine<R> {
         let version = self
             .catalog
             .source()
-            .log
+            .log()
             .last()
             .map_or(0, |migration| migration.number);
         let hash = self

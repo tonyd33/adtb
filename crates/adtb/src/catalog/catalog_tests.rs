@@ -141,7 +141,7 @@ fn check_whole_but(
         .iter()
         .map(|(c, row)| format!("{:?}", (c, &row[..3])))
         .collect();
-    let version = Value::I64(i64::try_from(catalog.source().version).expect("a version"));
+    let version = Value::I64(i64::try_from(catalog.source().version()).expect("a version"));
     let latest: Vec<(u32, Vec<Value>)> = migration_rows(pager, catalog, txns)
         .into_iter()
         .filter(|(_, row)| row[0] == version)
@@ -175,7 +175,7 @@ fn check_reopened_but(rt: SimRuntime, listed: Option<Pid>) -> (bool, u64) {
     let found = pager.catalog_root() != Pid(0);
     let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
     check_whole_but(&pager, &catalog, &txns, listed);
-    (found, catalog.source().version)
+    (found, catalog.source().version())
 }
 
 /// Create a database and its catalog in a fresh simulation, recording what reaches the device.
@@ -381,7 +381,7 @@ fn a_migration_after_a_crashed_one_applies() {
         finished(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
             let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
-            if catalog.source().version == 0 {
+            if catalog.source().version() == 0 {
                 catalog
                     .migrate(&pager, &txns, RUNNING)
                     .expect("the migration applies");
@@ -422,7 +422,7 @@ fn frees_a_migration(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Pid)
         let after = pager.allocated().expect("the bitmaps").len();
         let constructors = rel(&catalog, "catalog", "constructors");
         let key = catalog.plan().relations()[&constructors].key_index;
-        let frees = catalog.source().version == 0 && after < before;
+        let frees = catalog.source().version() == 0 && after < before;
         out = Some((
             frees,
             catalog.index_of(Stored::new(key.0).id()).tree().root(),
@@ -770,7 +770,7 @@ fn a_migration_over_a_kept_change_applies_and_frees_what_it_left() {
         got = Some((
             migrated,
             root.changing(),
-            catalog.source().version,
+            catalog.source().version(),
             allocated.contains(&orphan),
         ));
     });
@@ -799,7 +799,7 @@ fn a_replayed_log_folds_a_revert_with_a_fill_no_inverse_takes() {
         );
         assert_eq!(Ok(Vec::new()), catalog.replay(&pager, &txns, revert));
         check_whole(&pager, &catalog, &txns);
-        assert_eq!(3, catalog.source().log.len());
+        assert_eq!(3, catalog.source().log().len());
     });
 }
 
