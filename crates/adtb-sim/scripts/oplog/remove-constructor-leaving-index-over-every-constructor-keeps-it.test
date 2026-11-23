@@ -1,0 +1,28 @@
+# Removing the one constructor of a sum that lacks a field leaves an index over the rest, which
+# every constructor left declares, as an index over every constructor.
+seed 1
+
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { z: Text } | B { z: Text } | C
+  add relation ts : T
+    key id generate sequence
+    index (z) in (A | B)
+
+run
+  insert ts.A { id: ts.key(1), z: "a" }
+  insert ts.B { id: ts.key(2), z: "a" }
+
+migrate
+  module m
+  deprecate ts.C
+  module m
+  remove constructor T.C
+
+query
+  from r in catalog::relations, i in catalog::indexes
+    where r.name == "ts" and i.relation == r.id select i.clause
+----
+"index (z) in (A | B)"
+"key id"

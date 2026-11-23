@@ -944,10 +944,21 @@ impl Checker<'_> {
         rel: RelId,
         f: &mut dyn FnMut(&mut Self) -> R<Out>,
     ) -> R<(Var, Out)> {
+        let fields = self.fields_of(elem);
+        self.in_row_with(elem, fields, rel, f)
+    }
+
+    /// Check `f` as [`Self::in_row`] does, binding `fields` in place of the fields of `elem`.
+    fn in_row_with(
+        &mut self,
+        elem: &Ty,
+        fields: Vec<(String, Ty)>,
+        rel: RelId,
+        f: &mut dyn FnMut(&mut Self) -> R<Out>,
+    ) -> R<(Var, Out)> {
         self.scope.push();
         let x = self.bind("self", elem.clone(), Some(rel), Provenance::Snapshot);
         let mut lets = Vec::new();
-        let fields = self.fields_of(elem);
         for (name, fty) in &fields {
             let v = self.bind(name, fty.clone(), None, Provenance::Built);
             if let Ty::Data { def, ctors, .. } = elem {
@@ -1035,10 +1046,11 @@ impl Checker<'_> {
     ) -> R<(IndexField, Ty)> {
         let source = self.rel_out(rel, ctors);
         let elem = self.elem_ty(&source.ty).expect("a relation is a set");
-        let segs = ctor_path(e)
-            .filter(|(root, _)| self.fields_of(&elem).iter().any(|(n, _)| *n == root.text));
+        self.declared_by_every_member(&elem, e)?;
+        let fields = ty::held_fields(self.schema, &elem);
+        let segs = ctor_path(e).filter(|(root, _)| fields.iter().any(|(n, _)| *n == root.text));
         let Some((root, segs)) = segs else {
-            let (x, out) = self.in_row(&elem, rel, &mut |c| c.synth(e))?;
+            let (x, out) = self.in_row_with(&elem, fields, rel, &mut |c| c.synth(e))?;
             let value = self.lams(vec![x], out.tm, out.ty.clone());
             let field = IndexField {
                 value,
@@ -1059,6 +1071,47 @@ impl Checker<'_> {
         let out = self.along(out, &segs, &mut path)?;
         let value = self.lams(vec![x], out.tm, out.ty.clone());
         Ok((IndexField { value, path }, out.ty))
+    }
+
+    /// Refuse index element `e` when its root names a field some constructor of `elem` declares
+    /// and another lacks or declares at another type than the first, naming that constructor.
+    fn declared_by_every_member(&self, elem: &Ty, e: &ast::Expr) -> R<()> {
+        let (Some(root), Ty::Data { def, args, ctors }) = (path_root(e), elem) else {
+            return Ok(());
+        };
+        if ty::held_fields(self.schema, elem)
+            .iter()
+            .any(|(n, _)| *n == root.text)
+        {
+            return Ok(());
+        }
+        let t = self.schema.ty(*def);
+        let set = ctors
+            .clone()
+            .unwrap_or_else(|| (0..t.ctors().len() as u32).collect());
+        let declared: Vec<(u32, Option<Ty>)> = set
+            .iter()
+            .map(|&c| (c, t.field_named(c, &root.text).map(|f| f.ty.subst(args))))
+            .collect();
+        let Some(first) = declared.iter().find_map(|(_, ty)| ty.clone()) else {
+            return Ok(());
+        };
+        let Some((c, ty)) = declared
+            .iter()
+            .find(|(_, ty)| !ty.as_ref().is_some_and(|ty| ty.alike(&first)))
+        else {
+            return Ok(());
+        };
+        let (ctor, u) = (&t.ctors()[*c as usize].name, &root.text);
+        let why = match ty {
+            Some(ty) => format!(
+                "member `{ctor}` declares `{u}` as `{}`, not `{}`",
+                self.show(ty),
+                self.show(&first)
+            ),
+            None => format!("member `{ctor}` of `{}` has no field `{u}`", t.name),
+        };
+        Err(diag(root.span, why))
     }
 
     /// Refuse element `k` of index `ix` of `rel`, of type `ty`, when the type has no key form, or
@@ -1161,6 +1214,15 @@ enum Seg<'e> {
 }
 
 /// Returns the root field and the steps after it of `e` when it is a path of fields that selects a constructor.
+/// Returns the name a path of field and constructor steps starts from.
+fn path_root(e: &ast::Expr) -> Option<&ast::Ident> {
+    match &e.kind {
+        ast::ExprKind::Field(x, _) | ast::ExprKind::Select(x, ast::CtorSel::One(_)) => path_root(x),
+        ast::ExprKind::Name(q) if q.module.is_none() => Some(&q.name),
+        _ => None,
+    }
+}
+
 fn ctor_path(e: &ast::Expr) -> Option<(&ast::Ident, Vec<Seg<'_>>)> {
     let mut segs = Vec::new();
     let mut at = e;

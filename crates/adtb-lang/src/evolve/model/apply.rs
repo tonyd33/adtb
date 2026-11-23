@@ -82,8 +82,8 @@ impl Migrated {
     ///
     /// Postconditions:
     /// - A refusal of operator `k` reports a failure of another declaration when that
-    ///   declaration failed with its message in the model before `k`; it is blamed as that
-    ///   failure is. Any other refusal is blamed on `k`.
+    ///   declaration failed with its message, or with the failure the refusal repeats, in the
+    ///   model before `k`; it is blamed as that failure is. Any other refusal is blamed on `k`.
     /// - A recheck failure is reported by a refusal giving its message when its declaration
     ///   failed with that message in the model before the refused operator.
     /// - A failure is blamed on the first operator from which every model after it holds it, or
@@ -105,9 +105,10 @@ impl Migrated {
         let refused = refusals
             .iter()
             .map(|(k, d)| {
+                let why = self.repeated(*k, d);
                 held[*k]
                     .iter()
-                    .find(|(_, why)| *why == d.message)
+                    .find(|(_, held)| held == why)
                     .map_or(*k, blame)
             })
             .collect();
@@ -125,6 +126,14 @@ impl Migrated {
             })
             .collect();
         (refused, rechecked)
+    }
+
+    /// Returns the failure of a declaration refusal `d` of operator `k` reports.
+    fn repeated<'a>(&'a self, k: usize, d: &'a Diag) -> &'a str {
+        match &self.ops[k] {
+            Err(r) if r.why() == d.message => r.repeated(),
+            _ => &d.message,
+        }
     }
 
     /// Returns the diagnostic at `at` of why the declarations the migration leaves do not check.
@@ -258,21 +267,10 @@ impl Migrated {
 }
 
 impl Model {
-    /// Apply migration `m`, whose text is `text`, numbered one past the model's version.
-    ///
-    /// Fail with why the model does not apply it.
-    #[cfg(test)]
-    pub(in crate::evolve) fn migrate(
-        &self,
-        m: &MigrationFile,
-        text: &str,
-    ) -> Result<Migrated, String> {
-        self.migrate_keeping(m, text, &[], false, false)
-    }
-
-    /// Apply migration `m` as [`Model::migrate`] does, putting back after each operator every
-    /// constraint and check of `kept` it drops, with its catalog id, and with a `revert` refusing
-    /// a fill no inverse takes when `accepting`; naming its text when `naming`.
+    /// Apply migration `m`, whose text is `text`, numbered one past the model's version, putting
+    /// back after each operator every constraint and check of `kept` it drops, with its catalog
+    /// id, and with a `revert` refusing a fill no inverse takes when `accepting`; naming its text
+    /// when `naming`.
     pub(in crate::evolve) fn migrate_keeping(
         &self,
         m: &MigrationFile,
@@ -311,6 +309,7 @@ impl Model {
                 if renames {
                     next.faithful(&model, &mut run)?;
                 }
+                next.identify();
                 next.ids_fit().map(|()| x)
             });
             match applied {
@@ -438,38 +437,26 @@ impl Model {
         }
     }
 
-    /// Returns what `built`, the build at the migration's end, gives clause `pending` of relation
-    /// variable `relation`, written late as `late`, or what the first build after it gave the
-    /// clause when an operator removed it since.
-    fn gave(&self, built: &Built, late: Late, relation: u64, pending: u64) -> Result<Gave, String> {
+    /// Returns what `built`, the build at the migration's end, gives unique or index `index` of
+    /// relation variable `relation`, or what the first build after it gave the clause when an
+    /// operator removed it since.
+    fn gave(&self, built: &Built, relation: u64, index: u64) -> Result<Gave, String> {
         let held = self.relations.get(&relation).and_then(|x| {
             x.clauses
                 .iter()
-                .enumerate()
-                .find(|(_, c)| c.pending() == Some(pending))
+                .position(|c| matches!(c, ClauseM::Index { id: Some(x), .. } if *x == index))
         });
-        let now = match held {
-            Some((at, ClauseM::Index { id: Some(id), .. })) => Some(Gave::Index {
-                id: *id,
-                fields: self.index_canonical(built, relation, at),
-                clauses: self.index_scope(relation, at),
-            }),
-            Some((_, ClauseM::Default { ids, .. })) => {
-                ids.first().map(|&(field, default)| Gave::Default {
-                    default,
-                    field,
-                    value: self.default_canonical(built, relation, default),
-                    clauses: self.default_members(ids),
-                })
-            }
-            _ => None,
-        };
-        let what = match late {
-            Late::Index { .. } => "a unique or index",
-            _ => "a default",
-        };
-        now.or_else(|| self.gave_clauses.get(&pending).cloned())
-            .ok_or_else(|| unbuilt_gone(what))
+        match held {
+            Some(at) => Ok(Gave::new(
+                self.index_canonical(built, relation, at),
+                self.index_scope(relation, at),
+            )),
+            None => self
+                .gave_clauses
+                .get(&(Space::Index, index))
+                .cloned()
+                .ok_or_else(|| unbuilt_gone("a unique or index")),
+        }
     }
 
     /// Lift again each declaration of `late` from the declarations as the migration leaves them,
@@ -540,10 +527,11 @@ impl Model {
                             matches!(c, ClauseM::Default { ids, .. } if ids.iter().any(|&(_, d)| d == default))
                         })
                     });
-                    if !held {
-                        continue;
+                    match (held, self.gave_clauses.get(&(Space::Default, default))) {
+                        (true, _) => self.default_canonical(&built, relation, default),
+                        (false, Some(gave)) => gave.canonical().cloned(),
+                        (false, None) => continue,
                     }
-                    self.default_canonical(&built, relation, default)
                 }
                 Late::Computed { relation, computed } => {
                     let held = self.relations.get(&relation).is_some_and(|x| {
@@ -600,27 +588,14 @@ impl Model {
                     }
                     continue;
                 }
-                Late::Index { relation, pending } | Late::AddedDefault { relation, pending } => {
-                    let gave = self.gave(&built, late, relation, pending)?;
+                Late::Index { relation, index } => {
+                    let gave = self.gave(&built, relation, index)?;
                     let Some(Ok(op)) = ops.get_mut(k) else {
                         continue;
                     };
-                    given(op, gave)?
-                }
-                Late::Key { relation } => {
-                    let id = match self.relations.contains_key(&relation) {
-                        true => Self::key_id(&built, relation).map_err(broken)?,
-                        false => match self.gave_keys.get(&relation) {
-                            Some(&id) => id,
-                            None => return Err(unbuilt_gone("a rekeyed key")),
-                        },
-                    };
-                    if let Some(Ok(op)) = ops.get_mut(k)
-                        && let Resolved::Rekey { key, .. } = &mut op.op
-                    {
-                        *key = id;
-                    }
-                    continue;
+                    let (canonical, clauses) = gave.into_parts();
+                    op.clauses = clauses;
+                    canonical
                 }
                 Late::Unresolved => continue,
             };
@@ -849,40 +824,6 @@ fn set_decl(op: &mut Resolved, decl: String) {
 /// build, which a later operator removed before any build gave it an id.
 fn unbuilt_gone(what: &str) -> String {
     format!("{what} written while the declarations did not build was removed before any build")
-}
-
-/// Give `op` the ids, constructors and named sets `gave` holds. Returns the canonical form it
-/// gives the clause.
-fn given(op: &mut ResolvedOp, gave: Gave) -> Result<Option<String>, String> {
-    match (gave, &mut op.op) {
-        (
-            Gave::Index {
-                id,
-                fields,
-                clauses,
-            },
-            Resolved::AddUnique { index, .. } | Resolved::AddIndex { index, .. },
-        ) => {
-            *index = id;
-            op.clauses = clauses;
-            Ok(fields)
-        }
-        (
-            Gave::Default {
-                default: d,
-                field: f,
-                value,
-                clauses,
-            },
-            Resolved::AddDefault { default, field, .. },
-        ) => {
-            *default = d;
-            *field = f;
-            op.clauses = clauses;
-            Ok(value)
-        }
-        _ => Err("a late clause of another operator".into()),
-    }
 }
 
 /// Returns each failure of the declarations `model` holds, by the declaration it is in and its

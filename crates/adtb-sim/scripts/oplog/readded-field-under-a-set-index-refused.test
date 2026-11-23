@@ -27,7 +27,7 @@ migrate
   add set R2 of ts = B | C
   add index (z) in ts.R2
 
-migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "add field T.B.z: Text fill \"q\"", detail: "the operator checks against the schema the operators before it produce, which does not check: no `z` in scope" } } }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "add field T.B.z: Text fill \"q\"", detail: "the operator checks against the schema the operators before it produce, which does not check: member `B` of `T` has no field `z`" } } }
   module auth
   drop field T.B.z
   add field T.B.z: Text fill "q"

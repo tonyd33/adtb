@@ -1,6 +1,6 @@
 use super::field::{Applied, Maps};
 use super::op::{Fail, Res, Resolving, broken, refuse, refuse_at};
-use super::run::{Built, Late, Run};
+use super::run::Run;
 use super::*;
 use crate::ast::{self, CtorSel, Fill};
 use crate::canon::{Names, canonical_term};
@@ -374,9 +374,10 @@ impl Model {
         let names: Vec<String> = key.iter().map(|x| x.text.clone()).collect();
         let printed = |ts: &[Term]| ts.iter().map(|t| t.print(self)).collect::<Vec<_>>();
         let same = self.relations[&r].clauses.iter().find_map(|c| match c {
-            ClauseM::Key { id, fields, .. } if printed(fields) == names => Some(*id),
+            ClauseM::Key { id, fields, .. } if printed(fields) == names => *id,
             _ => None,
         });
+        let key_id = same.unwrap_or_else(|| self.fresh(Space::Index));
         let held = self.relations.get_mut(&r).expect("the relation variable");
         let Some(clause) = held
             .clauses
@@ -392,7 +393,7 @@ impl Model {
             generate,
         } = clause
         {
-            *id = same.flatten();
+            *id = Some(key_id);
             *written = key.iter().map(|x| Term::text(&x.text)).collect();
             *listed = key.len() > 1;
             *generate = None;
@@ -400,20 +401,16 @@ impl Model {
         let (Some(first), Some(last)) = (key.first(), key.last()) else {
             return broken("a rekey to no key");
         };
-        let key_id = match self.build_adopting(&[], &run.ahead(self)) {
+        match self.build_adopting(&[], &run.ahead(self)) {
             Ok(after) => {
                 self.relift(&after, Item::Relation(r))?;
-                Self::key_id(&after, r)?
             }
             Err(_) => {
                 if !self.unlifted.contains(&Item::Relation(r)) {
                     self.unlifted.push(Item::Relation(r));
                 }
-                self.rekeyed_unbuilt.insert(r);
-                run.late(Late::Key { relation: r });
-                0
             }
-        };
+        }
         Ok((
             Resolved::Rekey {
                 relation: r,
@@ -427,14 +424,5 @@ impl Model {
                 .collect(),
             maps,
         ))
-    }
-
-    /// Returns the id of the key of relation variable `r` in `built`.
-    pub(super) fn key_id(built: &Built, r: u64) -> Res<u64> {
-        let ids = built.schema().ids();
-        match ids.relation_of(cat_rel(r)).and_then(|rel| ids.key_id(rel)) {
-            Some(k) => Ok(k.raw()),
-            None => broken("a rekeyed relation variable without a key id"),
-        }
     }
 }

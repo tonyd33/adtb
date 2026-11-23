@@ -783,8 +783,26 @@ over the new constructor, replaces their arms. A dependent with no
 such clause, not redefined in the same migration, fails the recheck and
 refuses the merge (§3.2).
 
-Uniques re-scope with the discriminator: `unique (gid) in Google` and
-`unique (sub) in Apple` become `unique (provider, sub) in Social`.
+Each unique, index, default, check and constraint naming a merged
+constructor is taken to the one over `Social` that covers exactly the
+rows it covered, or the merge is refused naming it:
+
+- A unique or index over all the merged constructors ranges over the
+  new constructor in their place.
+- Uniques alike over each merged constructor alone, over fields the
+  routing carries into the same fields of the new constructor, become
+  one unique over the new constructor with the discriminator first:
+  `unique (gid) in Google` and `unique (sub) in Apple` become
+  `unique (provider, sub) in Social`. Indexes alike so become one
+  index the same way.
+- Any other unique or index over some but not all of the merged
+  constructors is refused.
+- A default on a field of a merged constructor becomes a default on
+  the new constructor's field when every merged constructor has that
+  default with the same value, and is refused otherwise.
+- A check or constraint whose scope or row selection names some but
+  not all of the merged constructors is refused.
+
 Every named set containing all merged constructors contains the new
 one; a named set containing some but not all of them is refused, and
 so is a reference type naming such a set. A reference type naming
@@ -816,8 +834,13 @@ single field holds a value of an existing sum with constructors of the
 same names and fields. The new constructor takes the position in the
 declaration order of the first nested constructor in that order. Each
 row becomes the new constructor holding its old value, under the same
-key. Uniques and indexes re-scope by path:
-`unique (gid) in Google` becomes `unique (login.Google.gid) in Social`.
+key. Uniques and indexes over a nested constructor's own fields
+re-scope by path: `unique (gid) in Google` becomes
+`unique (login.Google.gid) in Social`. A unique or index over a header
+field of some but not all of the nested constructors, a default on a
+nested constructor, and a check or constraint whose scope or row
+selection names some but not all of them are refused, naming the
+clause; each has no image that covers exactly the rows it covered.
 Matches over the outer type change shape and are rechecked: a nest
 takes `arm` clauses as a merge does (§4.7), one for every schema
 function, computed field and match-scoped constraint whose match names
@@ -829,7 +852,12 @@ constructors is refused.
 constructors of the field become relation-level constructors with new
 ids, which take the source's position in the declaration order, in
 the order of the field's sum. Every named set containing the unnested
-constructor contains every product in its place. An unnest takes `arm` clauses as a split does (§4.6), one per new
+constructor contains every product in its place. A unique or index over
+a path into the field re-scopes to the product the path names, and one
+over the header fields to every product; any other unique or index
+over the field is refused. A default on a field of the
+unnested constructor moves to each product holding that field, and is
+refused when none does. An unnest takes `arm` clauses as a split does (§4.6), one per new
 constructor for every dependent whose match names the unnested
 constructor, and is refused at the recheck without them.
 

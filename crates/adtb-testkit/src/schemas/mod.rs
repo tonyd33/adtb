@@ -47,10 +47,6 @@ const SEARCH_REVERTED_MERGE_APART: bool = false;
 /// refuses the drop: it names neither clause alone.
 const SEARCH_DROP_OF_DUPLICATE_CLAUSE: bool = false;
 
-/// Whether a migration adds a unique or an index over a field several constructors declare, not
-/// the header. The checker refuses it with "no `f` in scope".
-const SEARCH_CLAUSE_OVER_SHARED_FIELD: bool = false;
-
 /// Whether a split constructor has a field typed by a reference to a constructor set holding
 /// it. The engine refuses the split with an internal error.
 const SEARCH_SPLIT_OF_SELF_REFERENCE: bool = false;

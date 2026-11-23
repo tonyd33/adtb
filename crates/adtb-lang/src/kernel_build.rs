@@ -1,7 +1,7 @@
 use super::{Agg, Conflict, Const, Kind, Prim, Terms, Tm, Transition, TxnOptions, Var};
 use crate::check::prim_ty::{Bounds, prim_ty};
 use crate::check::sums::canonical;
-use crate::check::ty::{elem, fields, restrict};
+use crate::check::ty::{elem, held_fields, restrict};
 use crate::schema::{Generator, Schema};
 use crate::types::{Base, CtorSet, Fields, FnId, KeyCtors, RelId, RelRef, SumClass, Ty};
 
@@ -337,7 +337,7 @@ impl<'a> Build<'a> {
     }
 
     fn field_ty(&self, row: &Ty, l: &str) -> Result<Ty, String> {
-        let fs = fields(self.schema, row);
+        let fs = held_fields(self.schema, row);
         let Some((_, ft)) = fs.iter().find(|(n, _)| n == l) else {
             return Err(format!(
                 "`{}` has no field `{l}` every constructor holds",

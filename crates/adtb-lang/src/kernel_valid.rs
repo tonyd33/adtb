@@ -5,7 +5,7 @@ use super::{Agg, Const, Kind, Prim, Terms, Tm, Var};
 use crate::ast::FnBody;
 use crate::check::prim_ty::{Bounds, prim_ty};
 use crate::check::rel::key_value_ty;
-use crate::check::ty::{ctor_fields, ctor_names, elem, fields, restrict, subtype};
+use crate::check::ty::{ctor_fields, ctor_names, elem, held_fields, restrict, subtype};
 use crate::schema::{Generator, Schema};
 use crate::types::{Base, CtorSet, FnId, KeyCtors, RelId, RelRef, Ty, TypeId};
 
@@ -959,7 +959,7 @@ impl Validator<'_> {
 
     fn field(&self, e: Tm, l: &str, ty: &Ty) -> Checked {
         let row = self.ty(e);
-        let fs = fields(self.schema, row);
+        let fs = held_fields(self.schema, row);
         let Some((_, ft)) = fs.iter().find(|(n, _)| n == l) else {
             return Err(format!(
                 "`{}` has no field `{l}` every constructor holds",

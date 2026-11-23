@@ -835,9 +835,8 @@ impl Model {
         for c in &r.ctors {
             for f in c.fields.iter().filter(|f| f.ty.keyed()) {
                 let holding = r.holding(&f.name, &f.ty);
-                let shared = holding.len() > 1 && !super::super::SEARCH_CLAUSE_OVER_SHARED_FIELD;
                 let scope = (r.sum).then_some(holding);
-                if !shared && !fields.iter().any(|(n, s)| *n == f.name && *s == scope) {
+                if !fields.iter().any(|(n, s)| *n == f.name && *s == scope) {
                     fields.push((f.name.clone(), scope));
                 }
             }

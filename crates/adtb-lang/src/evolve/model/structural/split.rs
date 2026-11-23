@@ -13,7 +13,6 @@ use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Cx, Resolved, RowMap};
-use crate::ids::CatIndexId;
 use crate::schema::Schema;
 use crate::span::FileId;
 use crate::types::{KeyCtors, RelRef, Ty, TypeId};
@@ -48,7 +47,6 @@ fn sel_text(names: &[String]) -> String {
 fn index_clause(kind: IndexKind, elems: &[String], names: &[String]) -> ClauseM {
     ClauseM::Index {
         id: None,
-        pending: None,
         kind,
         elems: elems.iter().map(|e| Term::text(e)).collect(),
         scope: Some(Scope {
@@ -362,6 +360,7 @@ impl Model {
             .map(|r| r.0)
             .find(|r| rewrites.clauses_of.contains_key(r));
         let (rels, replaced_at) = self.rewrite_split(rewrites, &replacements, first);
+        self.identify();
         self.replace_ctors(t, &[c], &made);
         self.rebind(&before);
         self.restate(&made, &stages);
@@ -372,13 +371,7 @@ impl Model {
         let (decl, clauses) = match &after {
             Some(after) => (
                 self.products_canonical(after, run, t, &made, record)?,
-                self.split_resolved(
-                    run,
-                    (schema, after),
-                    (t, armed),
-                    given,
-                    (first, replaced_at),
-                )?,
+                self.split_resolved(run, after, armed, given, (first, replaced_at))?,
             ),
             None => {
                 if !replaced_at.is_empty() {
@@ -535,6 +528,8 @@ impl Model {
         }
         let mut replaced_at: Vec<usize> = Vec::new();
         for (r, (gone, added)) in rw.clauses_of {
+            let texts: Vec<String> = added.iter().map(|(x, _)| x.clone()).collect();
+            let added: Vec<ClauseM> = added.into_iter().map(|(_, c)| c).collect();
             let rel = self.relations.get_mut(&r).expect("a relation variable");
             let kept: Vec<ClauseM> = rel
                 .clauses
@@ -548,27 +543,25 @@ impl Model {
             if Some(r) == first {
                 replaced_at = replacements
                     .iter()
-                    .filter_map(|(x, _)| added.iter().position(|(y, _)| y == x))
+                    .filter_map(|(x, _)| texts.iter().position(|y| y == x))
                     .map(|k| base + k)
                     .collect();
             }
-            rel.clauses
-                .extend(added.into_iter().map(|(_, clause)| clause));
+            rel.clauses.extend(added);
         }
         (rels, replaced_at)
     }
 
     /// Returns the clauses of a split's resolved form, in the order `given` states them: each
-    /// replacement with the next new index, `before` and `after` the split, and each of `arms`.
+    /// replacement with its index, as `after` the split writes it, and each of `arms`.
     fn split_resolved(
         &mut self,
         run: &mut Run,
-        (before, after): (&Schema, &Built),
-        (t, arms): (u64, Vec<Clause>),
+        after: &Built,
+        arms: Vec<Clause>,
         given: &[SplitClause],
         (first, replaced_at): (Option<u64>, Vec<usize>),
     ) -> Res<Vec<Clause>> {
-        let mut fresh = fresh_indexes(before, after.schema(), t, replaced_at.len()).into_iter();
         let mut replaced = replaced_at.into_iter();
         let mut arms = arms.into_iter();
         let mut out = Vec::new();
@@ -582,7 +575,13 @@ impl Model {
                 SplitClause::Index { interval: true, .. } => crate::evolve::IndexKind::Interval,
                 SplitClause::Index { .. } => crate::evolve::IndexKind::Plain,
             };
-            let (Some(index), Some(at)) = (fresh.next(), replaced.next()) else {
+            let (Some(r), Some(at)) = (first, replaced.next()) else {
+                return broken("a split's replacement without a new index");
+            };
+            let ClauseM::Index {
+                id: Some(index), ..
+            } = self.relations[&r].clauses[at]
+            else {
                 return broken("a split's replacement without a new index");
             };
             out.push(Clause::Replacement {
@@ -645,35 +644,6 @@ impl Model {
         let span = fields[0].span.to(fields[fields.len() - 1].span);
         Ok(Self::canonical_at(built, run, file, span))
     }
-}
-
-/// Returns the last `n` index ids of the first relation variable over type `t` that `after`
-/// holds and `before` does not.
-fn fresh_indexes(before: &Schema, after: &Schema, t: u64, n: usize) -> Vec<u64> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let def = def_in(after, t);
-    let old: BTreeSet<CatIndexId> = before.ids().index_ids().map(|(_, id)| id).collect();
-    let Some((rel, _)) = after
-        .ids()
-        .relation_ids()
-        .find(|&(r, _)| after.relation(r).elem_def == def)
-    else {
-        return Vec::new();
-    };
-    let mut fresh: Vec<u64> = after
-        .ids()
-        .relation_index_ids(rel)
-        .map(|(_, id)| id)
-        .filter(|id| !old.contains(id))
-        .map(CatIndexId::raw)
-        .collect();
-    let Some(cut) = fresh.len().checked_sub(n) else {
-        return Vec::new();
-    };
-    fresh.drain(..cut);
-    fresh
 }
 
 /// Returns whether type `ty` names a constructor of `cs` of type `def`.

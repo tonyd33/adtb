@@ -1,0 +1,16 @@
+# An operator refused because the schema an earlier operator of the migration left does not
+# check is blamed on that earlier operator.
+seed 1
+
+migrate
+  module app
+  add module app
+  add type T0 = { id: Key r0, h0: I64 }
+  add relation r0 : T0 key id generate sequence
+  add type T1 = { id: Key r1, b: I64 }
+  add relation r1 : T1 key id generate sequence
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (zz) in r1", detail: "the operator checks against the schema the operators before it produce, which does not check: no `zz` in scope\nno `zz` in scope" } } }
+  module app
+  add index (zz) in r1
+  add field T0.g103: Bool fill true

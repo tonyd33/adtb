@@ -52,14 +52,6 @@ impl Model {
     /// it. Returns the file of the declaration.
     pub(super) fn relift(&mut self, built: &Built, item: Item) -> Res<FileId> {
         let i = self.decl_at(item).expect("a declared item");
-        let pending: Vec<Option<u64>> = match item {
-            Item::Relation(r) => self.relations[&r]
-                .clauses
-                .iter()
-                .map(ClauseM::pending)
-                .collect(),
-            _ => Vec::new(),
-        };
         let file = FileId(i as u32);
         let Some(d) = built.decl(file) else {
             return broken("a declaration the model printed does not parse");
@@ -78,19 +70,6 @@ impl Model {
         .decl(self, d)
         .map_err(Fail::Broken)?;
         self.decls.pop();
-        if let Item::Relation(r) = item {
-            let clauses = &mut self
-                .relations
-                .get_mut(&r)
-                .expect("a relifted relation")
-                .clauses;
-            if clauses.len() != pending.len() {
-                return broken("a relation lifted again with other clauses");
-            }
-            for (c, p) in clauses.iter_mut().zip(pending) {
-                c.set_pending(p);
-            }
-        }
         Ok(file)
     }
 
@@ -170,9 +149,6 @@ impl Model {
             if let Err(e) = built.schema().relation_sel(rel, sel) {
                 return refuse_at(on.span, e);
             }
-            if kind == IndexKind::Unique {
-                self.members_declare(built.schema(), r, sel, fields)?;
-            }
         }
         let (Some(first), Some(last)) = (fields.first(), fields.last()) else {
             return broken("an index of no field");
@@ -186,35 +162,26 @@ impl Model {
             parts: names.iter().map(|c| Term::text(&c.text)).collect(),
             listed: names.len() > 1,
         });
+        let index = self.fresh(Space::Index);
         let clause = ClauseM::Index {
-            id: None,
-            pending: None,
+            id: Some(index),
             kind,
             elems: vec![Term::text(&run.text()[first.span.to(last.span).range()])],
             scope,
         };
         let built = self.appended(run, r, clause)?;
         let k = self.relations[&r].clauses.len() - 1;
-        let (index, fields, clauses) = match built {
+        let (fields, clauses) = match built {
             Some((built, _)) => {
-                let ClauseM::Index {
-                    id: Some(index), ..
-                } = self.relations[&r].clauses[k]
-                else {
-                    return broken("an added index the build gave no id");
-                };
                 let fields = self
                     .index_canonical(&built, r, k)
                     .unwrap_or_else(|| run.late(Late::Unresolved));
-                (index, fields, self.index_scope(r, k))
+                (fields, self.index_scope(r, k))
             }
             None => {
-                let pending = self.pend(r, k);
-                let fields = run.late(Late::Index {
-                    relation: r,
-                    pending,
-                });
-                (0, fields, Vec::new())
+                self.unbuilt_clauses.insert((Space::Index, index));
+                let fields = run.late(Late::Index { relation: r, index });
+                (fields, Vec::new())
             }
         };
         let resolved = match kind {
@@ -231,19 +198,6 @@ impl Model {
             },
         };
         Ok((resolved, clauses, Ok(Vec::new())))
-    }
-
-    /// Mark clause `k` of relation variable `r` as added while the declarations do not build.
-    /// Returns its token.
-    fn pend(&mut self, r: u64, k: usize) -> u64 {
-        let token = self.next_pending;
-        self.next_pending += 1;
-        self.relations
-            .get_mut(&r)
-            .expect("a resolved relation variable")
-            .clauses[k]
-            .set_pending(Some(token));
-        token
     }
 
     /// Returns the canonical form of the fields of clause `k` of relation variable `r`, a unique
@@ -272,97 +226,6 @@ impl Model {
                 (Space::Set, s) => Some(Clause::Scope { set: s }),
                 (_, c) => Some(Clause::Member { ctor: c }),
             })
-            .collect()
-    }
-
-    /// Refuse a unique over a field named alone that a member of its scope `sel` of relation
-    /// variable `r` does not declare, or declares at another type than the first member does in
-    /// `schema`, at the span of the name of the member in `sel`, or of the named set holding it.
-    fn members_declare(
-        &self,
-        schema: &crate::schema::Schema,
-        r: u64,
-        sel: &ast::CtorSel,
-        fields: &[Expr],
-    ) -> Res<()> {
-        let Some(t) = self.relation_type(r) else {
-            return Ok(());
-        };
-        let Some(def) = self.def_in(schema, t) else {
-            return broken("a relation variable's type the built schema does not hold");
-        };
-        let td = schema.ty(def);
-        let tname = &self.types[&t].name;
-        let named = match sel {
-            ast::CtorSel::One(c) => std::slice::from_ref(c),
-            ast::CtorSel::Many(cs) => cs.as_slice(),
-        };
-        let mut members: Vec<(u64, Span)> = Vec::new();
-        for n in named {
-            let ctors = match self.ctor_named(t, &n.text) {
-                Some(c) => vec![c],
-                None => self
-                    .sets_of(r)
-                    .into_iter()
-                    .find(|s| self.sets[s].name == n.text)
-                    .map(|s| self.scope_ctors_of_set(s))
-                    .unwrap_or_default(),
-            };
-            for c in ctors {
-                if !members.iter().any(|(x, _)| *x == c) {
-                    members.push((c, n.span));
-                }
-            }
-        }
-        for f in fields {
-            let ast::ExprKind::Name(q) = &f.kind else {
-                continue;
-            };
-            if q.module.is_some() {
-                continue;
-            }
-            let u = &q.name.text;
-            let mut first: Option<(u64, &crate::types::Ty)> = None;
-            for &(c, at) in &members {
-                let cname = &self.ctors[&c].name;
-                let held = self
-                    .ctor_index(schema, c)
-                    .and_then(|k| td.field_named(k, u));
-                let (Some(x), Some(held)) = (
-                    self.field_of(t, Some(c), u)
-                        .or_else(|| self.field_of(t, None, u)),
-                    held,
-                ) else {
-                    return refuse_at(
-                        at,
-                        format!("member `{cname}` of `{tname}` has no field `{u}`"),
-                    );
-                };
-                match first {
-                    None => first = Some((x, &held.ty)),
-                    Some((y, b)) if !b.alike(&held.ty) => {
-                        return refuse_at(
-                            at,
-                            format!(
-                                "member `{cname}` declares `{u}` as `{}`, not `{}`",
-                                self.fields[&x].ty.print(self),
-                                self.fields[&y].ty.print(self)
-                            ),
-                        );
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns the constructors named set `s` holds.
-    fn scope_ctors_of_set(&self, s: u64) -> Vec<u64> {
-        self.sets[&s]
-            .members
-            .iter()
-            .filter_map(|m| m.objects().next().map(|o| o.1))
             .collect()
     }
 
@@ -454,6 +317,41 @@ impl Model {
         Ok((resolved, Vec::new(), Ok(Vec::new())))
     }
 
+    /// Returns a fresh default id for each field a default on `field` of relation variable `r`
+    /// fills, by the field's id: the header field of that name, else that field of `ctor`, or of
+    /// each constructor declaring it when `ctor` is `None`.
+    ///
+    /// Refuse a default that fills no field.
+    fn default_ids(
+        &mut self,
+        r: u64,
+        ctor: Option<&str>,
+        field: &ast::Ident,
+    ) -> Res<Vec<(u64, u64)>> {
+        let Some(t) = self.relation_type(r) else {
+            return broken("a relation variable of no type");
+        };
+        let fields: Vec<u64> = match self.field_of(t, None, &field.text) {
+            Some(f) => vec![f],
+            None => self
+                .ctors_of(t)
+                .into_iter()
+                .filter(|c| ctor.is_none_or(|n| self.ctors[c].name == n))
+                .filter_map(|c| self.field_of(t, Some(c), &field.text))
+                .collect(),
+        };
+        if fields.is_empty() {
+            return refuse_at(
+                field.span,
+                format!("`{}` has no field `{}`", self.types[&t].name, field.text),
+            );
+        }
+        Ok(fields
+            .into_iter()
+            .map(|f| (f, self.fresh(Space::Default)))
+            .collect())
+    }
+
     /// Returns a `Member` clause for each constructor whose field default clause `ids` fills.
     pub(super) fn default_members(&self, ids: &[(u64, u64)]) -> Vec<Clause> {
         ids.iter()
@@ -478,29 +376,30 @@ impl Model {
             ast::DefaultValue::Generate(g) => Term::text(&format!("generate {}", g.text)),
             ast::DefaultValue::Expr(e) => Term::text(&run.text()[e.span.range()]),
         };
+        let ids = self.default_ids(r, ctor.map(|c| c.text.as_str()), field)?;
         let clause = ClauseM::Default {
             ctor: ctor.map(|c| Term::text(&c.text)),
             field: Term::text(&field.text),
             value,
-            ids: Vec::new(),
-            pending: None,
+            ids: ids.clone(),
         };
         let Some((built, file)) = self.appended(run, r, clause)? else {
             let k = self.relations[&r].clauses.len() - 1;
             self.clause_typed(run, r, k, None)?;
-            let pending = self.pend(r, k);
-            let value = run.late(Late::AddedDefault {
+            let &(field, default) = ids.first().expect("a default fills a field");
+            self.unbuilt_clauses.insert((Space::Default, default));
+            let value = run.late(Late::Default {
                 relation: r,
-                pending,
+                default,
             });
             return Ok((
                 Resolved::AddDefault {
-                    default: 0,
+                    default,
                     relation: r,
-                    field: 0,
+                    field,
                     value,
                 },
-                Vec::new(),
+                self.default_members(&ids),
                 Ok(Vec::new()),
             ));
         };
@@ -692,8 +591,9 @@ impl Model {
         ty: &ast::Type,
         expr: &Expr,
     ) -> Res<Applied> {
+        let computed = self.fresh(Space::Computed);
         let clause = ClauseM::Computed {
-            id: None,
+            id: Some(computed),
             name: field.text.clone(),
             ty: Term::text(&run.text()[ty.span.range()]),
             expr: Term::text(&run.text()[expr.span.range()]),
@@ -701,15 +601,6 @@ impl Model {
         let Some((built, file)) = self.appended(run, r, clause)? else {
             let k = self.relations[&r].clauses.len() - 1;
             self.clause_typed(run, r, k, None)?;
-            let computed = self.fresh(Space::Computed);
-            if let ClauseM::Computed { id, .. } = &mut self
-                .relations
-                .get_mut(&r)
-                .expect("a resolved relation variable")
-                .clauses[k]
-            {
-                *id = Some(computed);
-            }
             self.computed_unbuilt.insert((r, computed));
             let decl = run.late(Late::Computed {
                 relation: r,

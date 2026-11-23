@@ -554,7 +554,6 @@ impl Model {
             w.gone.insert(cl.at);
             w.added.push(ClauseM::Index {
                 id: None,
-                pending: None,
                 kind: cl.kind,
                 elems: fields.iter().map(|f| Term::text(f)).collect(),
                 scope: Some(Scope {
@@ -586,7 +585,6 @@ impl Model {
             w.gone.extend(held.iter().map(|(at, _, _)| *at));
             w.added.push(ClauseM::Index {
                 id: None,
-                pending: None,
                 kind,
                 elems: fs.iter().map(|f| Term::text(f)).collect(),
                 scope: Some(Scope {

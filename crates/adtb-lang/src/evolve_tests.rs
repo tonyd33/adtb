@@ -4220,7 +4220,7 @@ add index (z) in ts.S",
         vec![(
             "add field T.B.z: Text fill \"q\"",
             "the operator checks against the schema the operators before it produce, which does \
-             not check: no `z` in scope"
+             not check: member `B` of `T` has no field `z`"
                 .to_string(),
         )],
         0,

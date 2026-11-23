@@ -413,6 +413,27 @@ pub fn elem(ty: &Ty) -> Option<&Ty> {
     }
 }
 
+/// Returns every field each value of `ty` holds: those [`fields`] gives, and on a sum over every
+/// constructor also each field every constructor declares at one type.
+pub fn held_fields(schema: &Schema, ty: &Ty) -> Vec<(String, Ty)> {
+    match ty {
+        Ty::Data {
+            def,
+            args,
+            ctors: None,
+        } => {
+            let n = schema.ty(*def).ctors().len() as u32;
+            let every = Ty::Data {
+                def: *def,
+                args: args.clone(),
+                ctors: Some((0..n).collect()),
+            };
+            fields(schema, &every)
+        }
+        _ => fields(schema, ty),
+    }
+}
+
 /// Every field a value of `ty` has, in field-access order: header fields, then the fields every constructor shares.
 pub fn fields(schema: &Schema, ty: &Ty) -> Vec<(String, Ty)> {
     match ty {

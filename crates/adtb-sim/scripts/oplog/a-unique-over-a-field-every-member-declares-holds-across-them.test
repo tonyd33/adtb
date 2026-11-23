@@ -1,0 +1,37 @@
+# A unique over a field every constructor of its scope declares at one type holds across them; a
+# field one of them lacks or declares at another type is refused naming that constructor.
+seed 1
+
+migrate
+  module app
+  add module app
+  add type T { id: Key ts }
+    = A { u: I64, v: I64, w: I64 }
+    | B { u: I64, w: Text }
+    | C { u: I64 }
+  add relation ts : T key id generate sequence
+  add set S of ts = A | C
+  add unique (u) in ts.(A | B)
+  add index (u) in ts
+  add index (u) in ts.(A | B | C)
+
+run
+  insert ts.A { id: ts.key(1), u: 1, v: 1, w: 1 }
+
+error Violated { constraint: "app::ts.unique(u) in (A | B)", report: 2 rows, redacted: 0 }
+  insert ts.B { id: ts.key(2), u: 1, w: "w" }
+
+run
+  insert ts.C { id: ts.key(3), u: 1 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (v) in ts.(A | B)", detail: "member `B` of `T` has no field `v`" } } }
+  module app
+  add unique (v) in ts.(A | B)
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (w) in ts.(A | B)", detail: "member `B` declares `w` as `Text`, not `I64`" } } }
+  module app
+  add index (w) in ts.(A | B)
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add unique (v) in ts.S", detail: "member `C` of `T` has no field `v`" } } }
+  module app
+  add unique (v) in ts.S

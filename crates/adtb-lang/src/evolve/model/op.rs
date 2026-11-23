@@ -240,6 +240,8 @@ pub(super) struct Refused {
     more: Vec<(Option<Span>, String)>,
     /// The kind of the diagnostic `why` reports.
     kind: DiagKind,
+    /// The failure of a declaration the operators before this one left that `why` reports.
+    repeats: Option<String>,
 }
 
 impl Refused {
@@ -250,6 +252,7 @@ impl Refused {
             reported: true,
             more: Vec::new(),
             kind: DiagKind::Invalid,
+            repeats: None,
         }
     }
 
@@ -261,6 +264,7 @@ impl Refused {
             reported: true,
             more: Vec::new(),
             kind: DiagKind::Invalid,
+            repeats: None,
         }
     }
 
@@ -272,7 +276,14 @@ impl Refused {
             reported: false,
             more: Vec::new(),
             kind: DiagKind::Invalid,
+            repeats: None,
         }
+    }
+
+    /// Returns the failure of a declaration the operators before this one left that the
+    /// refusal reports, else its reason.
+    pub(super) fn repeated(&self) -> &str {
+        self.repeats.as_deref().unwrap_or(&self.why)
     }
 
     pub(super) fn reported(&self) -> bool {
@@ -382,11 +393,18 @@ pub(super) fn refuse_each<T>(ds: &[FileDiag]) -> Res<T> {
 /// Refuse an operator that checks against the schema the operators before it produce, which
 /// fails with `ds`, by the first failure.
 pub(super) fn unchecked<T>(ds: &[FileDiag]) -> Res<T> {
-    refuse_first(ds, |why| {
-        format!(
-            "the operator checks against the schema the operators before it produce, which does not check: {why}"
-        )
-    })
+    match ds.iter().find(|d| d.diag.kind != DiagKind::Poisoned) {
+        Some(d) => Err(Fail::Refused(Refused {
+            kind: d.diag.kind.clone(),
+            repeats: Some(d.diag.message.clone()),
+            ..Refused::new(format!(
+                "the operator checks against the schema the operators before it produce, which \
+                 does not check: {}",
+                d.diag.message
+            ))
+        })),
+        None => Err(Fail::Refused(Refused::poisoned())),
+    }
 }
 
 /// Refuse the operator for `why`, at `at` of the migration's text.

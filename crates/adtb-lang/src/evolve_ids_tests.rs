@@ -1564,7 +1564,7 @@ struct Search {
     refusals: usize,
     /// The operators applied, by their first three words.
     reached: BTreeSet<String>,
-    /// The shapes on which moving `T.n` to every constructor was refused.
+    /// The shapes on which `T.n` moved to every constructor under a clause over every constructor.
     full_moves: usize,
 }
 
@@ -1588,7 +1588,7 @@ impl Search {
                     &format!("module auth\nmove field T.n to T.(A | {b} | C | E)"),
                 );
                 match moved {
-                    Err(e) if e == ["no `n` in scope"] => search.full_moves += 1,
+                    Ok(_) => search.full_moves += 1,
                     other => search.refused.push(format!(
                         "{bits:05b} the move of `T.n` under a clause listing every constructor gives {:?}",
                         other.err()

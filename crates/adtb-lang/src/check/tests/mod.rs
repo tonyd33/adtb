@@ -1028,8 +1028,8 @@ relation notes : Note
         ))
         .map(drop)
     };
-    assert_eq!(Err(vec!["no `body` in scope".to_string()]), declared(""));
-    assert_eq!(declared(""), declared(" in (Plain | Other)"));
+    assert_eq!(Ok(()), declared(""));
+    assert_eq!(Ok(()), declared(" in (Plain | Other)"));
 }
 
 #[test]
