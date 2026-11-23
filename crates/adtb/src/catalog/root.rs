@@ -7,11 +7,11 @@ pub const FORMAT: u16 = 1;
 
 /// The stored `changing` of a root page whose catalog is naming its page of generated counters;
 /// no transaction has this id.
-const NAMING_SEQUENCES: u64 = u64::MAX;
+const NAMING_SEQUENCES: u64 = Xid::SENTINELS[1].0;
 
 /// The stored `changing` of a root page whose catalog has rebuilds of indexes under way; no
 /// transaction has this id.
-const REINDEXING: u64 = u64::MAX - 1;
+const REINDEXING: u64 = Xid::SENTINELS[0].0;
 
 /// What a catalog is in the middle of changing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

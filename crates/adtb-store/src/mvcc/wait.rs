@@ -48,8 +48,8 @@ impl Gate {
     /// Returns the id waiters wait on.
     pub fn xid(self) -> Xid {
         match self {
-            Gate::Offline => Xid(u64::MAX),
-            Gate::VacuumHolder => Xid(u64::MAX - 1),
+            Gate::Offline => Xid::SENTINELS[1],
+            Gate::VacuumHolder => Xid::SENTINELS[0],
         }
     }
 }

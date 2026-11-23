@@ -48,6 +48,8 @@ impl Xid {
     /// The id the encoding of [`Writers`] holds for a version no transaction deleted.
     pub const NONE: Xid = Xid(0);
     pub const FIRST: Xid = Xid(1);
+    /// The ids no `begin` assigns, each free for a caller to give its own meaning.
+    pub const SENTINELS: [Xid; 2] = [Xid(u64::MAX - 1), Xid(u64::MAX)];
 }
 
 /// What the commit log records for one transaction id.

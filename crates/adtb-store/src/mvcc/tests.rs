@@ -597,8 +597,38 @@ fn begin_reserves_at_the_end_of_a_reservation_and_refuses_once_ids_are_spent() {
         Assign::Reserve(Xid(u64::MAX)),
         assign(Xid(u64::MAX - 3), Xid(u64::MAX - 3))
     );
-    assert_eq!(Assign::Next, assign(Xid(u64::MAX - 1), Xid(u64::MAX)));
+    assert_eq!(Assign::Exhausted, assign(Xid(u64::MAX - 1), Xid(u64::MAX)));
     assert_eq!(Assign::Exhausted, assign(Xid(u64::MAX), Xid(u64::MAX)));
+}
+
+#[test]
+fn begin_assigns_each_id_below_the_sentinels_once_then_refuses() {
+    let top = Xid::SENTINELS.iter().min().unwrap().0;
+    let mut runs = 0;
+    for below in 1..=2 * RESERVATION + 2 {
+        let start = Xid(top - below);
+        for ends in [start, Xid(start.0 + below / 2)] {
+            let (mut next, mut reserved) = (start, ends);
+            let mut assigned = Vec::new();
+            loop {
+                match assign(next, reserved) {
+                    Assign::Next => {
+                        assigned.push(next);
+                        next = Xid(next.0 + 1);
+                    }
+                    Assign::Reserve(upto) => reserved = upto,
+                    Assign::Exhausted => break,
+                }
+            }
+            let every: Vec<Xid> = (start.0..top).map(Xid).collect();
+            assert_eq!(
+                every, assigned,
+                "from {start:?}, a reservation ending at {ends:?}"
+            );
+            runs += 1;
+        }
+    }
+    assert_eq!(2 * (2 * RESERVATION + 2), runs);
 }
 
 #[test]

@@ -32,12 +32,12 @@ pub(crate) enum Assign {
     Next,
     /// Reserve the ids below this one first.
     Reserve(Xid),
-    /// Every id is spent; `u64::MAX` is never assigned, so `next` never overflows.
+    /// Every id below the sentinels is spent; no sentinel is assigned, so `next` never overflows.
     Exhausted,
 }
 
 pub(crate) fn assign(next: Xid, reserved: Xid) -> Assign {
-    if next.0 == u64::MAX {
+    if Xid::SENTINELS.iter().any(|s| next >= *s) {
         Assign::Exhausted
     } else if next == reserved {
         extend(reserved).map_or(Assign::Exhausted, Assign::Reserve)
@@ -306,7 +306,8 @@ impl<R: Runtime> Transactions<R> {
     /// [`Transactions::commit`] or [`Transactions::abort`], or dropped.
     ///
     /// Errors:
-    /// - [`Error::Exhausted`] once every 64-bit id is spent; snapshots and reads go on.
+    /// - [`Error::Exhausted`] once every id below [`Xid::SENTINELS`] is spent; snapshots and reads
+    ///   go on.
     pub fn begin(&self, pager: &Pager<R>) -> Result<Begun, Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
