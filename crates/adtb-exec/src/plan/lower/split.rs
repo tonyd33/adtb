@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-
-use adtb_lang::kernel::{Kind, PathStep, Prim, Tm, Var};
+use adtb_lang::kernel::{Build, Kind, PathStep, Prim, Tm, Var};
 use adtb_lang::schema::CtorRef;
 use adtb_lang::types::{CtorSet, Ty};
 
@@ -36,7 +34,11 @@ impl Planner<'_> {
                 let (k, v, arm) = (*k, *v, *arm);
                 let cs = prefix.with(slot, arm)?;
                 let inner = self.guarded(&cs, rest, &ty);
-                let inner = self.rename(inner, y, v, &mut HashMap::new());
+                let schema = self.schema;
+                let inner = self.t.substitute(schema, inner, |terms, s, _| {
+                    matches!(terms.kind(s), Kind::Var(x) if *x == y)
+                        .then(|| Build::new(schema, terms).var(v))
+                });
                 let narrowed = self.b().restrict(src, CtorSet::from([k]));
                 return Ok(Some(self.b().for_(v, narrowed, inner, ty)));
             }
@@ -194,26 +196,5 @@ impl Planner<'_> {
         let ty = self.bool_ty();
         let ctor = value.index();
         self.b().ctor(ctor, Vec::new(), ty)
-    }
-
-    /// Returns `t` with each read of variable `from` reading `to`, at `to`'s type.
-    fn rename(&mut self, t: Tm, from: Var, to: Var, memo: &mut HashMap<Tm, Tm>) -> Tm {
-        if let Some(n) = memo.get(&t) {
-            return *n;
-        }
-        let out = match self.kind(t) {
-            Kind::Var(v) if v == from => self.b().var(to),
-            _ => {
-                let cs = self.t.children(t);
-                let new: Vec<Tm> = cs.iter().map(|c| self.rename(*c, from, to, memo)).collect();
-                if new == cs {
-                    t
-                } else {
-                    self.b().rebuild_kept(t, &new)
-                }
-            }
-        };
-        memo.insert(t, out);
-        out
     }
 }

@@ -82,7 +82,9 @@ impl Planner<'_> {
                     map.insert(*t, n);
                 }
             }
-            let new_body = self.replace(body, &map, &mut HashMap::new());
+            let new_body = self
+                .t
+                .substitute(self.schema, body, |_, s, _| map.get(&s).copied());
             if fused.iter().any(|(_, t)| !t) && !self.total(new_body) {
                 fused.retain(|(_, t)| *t);
                 continue;
@@ -246,25 +248,6 @@ impl Planner<'_> {
                 _ => stack.extend(self.t.children(t)),
             }
         }
-        out
-    }
-
-    fn replace(&mut self, t: Tm, map: &HashMap<Tm, Tm>, memo: &mut HashMap<Tm, Tm>) -> Tm {
-        if let Some(n) = map.get(&t) {
-            memo.insert(t, *n);
-            return *n;
-        }
-        if let Some(n) = memo.get(&t) {
-            return *n;
-        }
-        let cs = self.t.children(t);
-        let new: Vec<Tm> = cs.iter().map(|c| self.replace(*c, map, memo)).collect();
-        let out = if new == cs {
-            t
-        } else {
-            self.b().rebuild_kept(t, &new)
-        };
-        memo.insert(t, out);
         out
     }
 }

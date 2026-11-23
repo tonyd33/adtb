@@ -461,10 +461,8 @@ impl Terms {
     /// Returns `root` with each term under it that `image` maps replaced by its image, every
     /// term above a replaced one rebuilt as `Build::rebuild_kept` rebuilds it, and every other
     /// term shared. `image` takes a term and its children as substituted, once per term, children
-    /// before parents.
-    ///
-    /// Preconditions:
-    /// - An image has the type of the term it replaces, or a subtype of it.
+    /// before parents. Record the arena broken at an image whose type is not a subtype of the
+    /// type of the term it replaces.
     pub fn substitute(
         &mut self,
         schema: &Schema,
@@ -485,7 +483,18 @@ impl Terms {
             }
             let new: Vec<Tm> = children.iter().map(|c| done[c]).collect();
             let s = match image(self, t, &new) {
-                Some(s) => s,
+                Some(s) => {
+                    let (got, want) = (&self.node(s).ty, &self.node(t).ty);
+                    if !crate::check::ty::subtype(schema, got, want) {
+                        let reason = format!(
+                            "the image of {t:?} is `{}`, not a subtype of `{}`",
+                            schema.show_ty(got),
+                            schema.show_ty(want)
+                        );
+                        self.break_at(s, reason);
+                    }
+                    s
+                }
                 None if new == children => t,
                 None => Build::new(schema, self).rebuild_kept(t, &new),
             };

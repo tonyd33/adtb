@@ -1649,6 +1649,31 @@ fn substituting_without_an_image_keeps_the_root() {
 }
 
 #[test]
+fn an_image_outside_the_type_of_the_term_it_replaces_breaks_the_arena_at_the_image() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let x = terms.var("x", int());
+    let w = terms.var("w", text());
+    let mut b = super::Build::new(&fx.schema, &mut terms);
+    let read = b.var(x);
+    let root = b.singleton(read, set(int()));
+    let mut image = None;
+    terms.substitute(&fx.schema, root, |terms, t, _| {
+        matches!(terms.kind(t), Kind::Var(v) if *v == x).then(|| {
+            let s = super::Build::new(&fx.schema, terms).var(w);
+            image = Some(s);
+            s
+        })
+    });
+    let broken = terms.broken().expect("the arena is broken");
+    assert_eq!(Some(broken.at()), image);
+    assert_eq!(
+        broken.reason(),
+        format!("the image of {read:?} is `Text`, not a subtype of `I64`")
+    );
+}
+
+#[test]
 fn a_rebuilt_transport_field_stays_a_transport() {
     let fx = Fixture::new();
     let mut terms = Terms::default();

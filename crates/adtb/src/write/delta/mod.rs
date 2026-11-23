@@ -784,7 +784,7 @@ impl Compiler<'_> {
                 && self.facts.scalar(self.terms, c)
                 && self.total.total(self.terms, c)
             {
-                kept.push(self.subst(c, &sub, &mut HashMap::new()));
+                kept.push(self.subst(c, &sub));
             }
         }
         let used: BTreeSet<Var> = kept
@@ -842,7 +842,7 @@ impl Compiler<'_> {
             let n = self.b().rebuild_kept(node, &children);
             map.insert(node, n);
         }
-        let injected = self.replace(q, &map, &mut HashMap::new());
+        let injected = self.replace(q, &map);
         let (rest, tail) = self.chain(injected);
         links.extend(rest);
         (self.ordered(links, tail, ty), input)
@@ -901,7 +901,7 @@ impl Compiler<'_> {
                 let ty = self.terms.var_info(*w).ty.clone();
                 let fresh = self.terms.var(&self.terms.var_info(*w).name.clone(), ty);
                 let body = if i == *at {
-                    self.subst(out, &HashMap::from([(v, fresh)]), &mut HashMap::new())
+                    self.subst(out, &HashMap::from([(v, fresh)]))
                 } else {
                     no
                 };
@@ -1057,43 +1057,19 @@ impl Compiler<'_> {
         out
     }
 
-    fn replace(&mut self, t: Tm, map: &HashMap<Tm, Tm>, memo: &mut HashMap<Tm, Tm>) -> Tm {
-        if let Some(n) = map.get(&t) {
-            return *n;
-        }
-        if let Some(n) = memo.get(&t) {
-            return *n;
-        }
-        let cs = self.terms.children(t);
-        let new: Vec<Tm> = cs.iter().map(|c| self.replace(*c, map, memo)).collect();
-        let out = if new == cs {
-            t
-        } else {
-            self.b().rebuild_kept(t, &new)
-        };
-        memo.insert(t, out);
-        out
+    fn replace(&mut self, t: Tm, map: &HashMap<Tm, Tm>) -> Tm {
+        self.terms
+            .substitute(self.schema, t, |_, s, _| map.get(&s).copied())
     }
 
     /// Returns `t` with each free variable of `sub` renamed.
-    fn subst(&mut self, t: Tm, sub: &HashMap<Var, Var>, memo: &mut HashMap<Tm, Tm>) -> Tm {
-        if let Some(n) = memo.get(&t) {
-            return *n;
-        }
-        let out = match self.kind(t) {
-            Kind::Var(v) if sub.contains_key(&v) => self.b().var(sub[&v]),
-            _ => {
-                let cs = self.terms.children(t);
-                let new: Vec<Tm> = cs.iter().map(|c| self.subst(*c, sub, memo)).collect();
-                if new == cs {
-                    t
-                } else {
-                    self.b().rebuild_kept(t, &new)
-                }
-            }
-        };
-        memo.insert(t, out);
-        out
+    fn subst(&mut self, t: Tm, sub: &HashMap<Var, Var>) -> Tm {
+        let schema = self.schema;
+        self.terms
+            .substitute(schema, t, |terms, s, _| match terms.kind(s) {
+                Kind::Var(v) => sub.get(v).map(|&w| Build::new(schema, terms).var(w)),
+                _ => None,
+            })
     }
 
     /// Returns `t` with each read of a `prior` relation replaced by the rows of the state after
@@ -1105,7 +1081,7 @@ impl Compiler<'_> {
         if map.is_empty() {
             return t;
         }
-        self.replace(t, &map, &mut HashMap::new())
+        self.replace(t, &map)
     }
 
     fn find_priors(&mut self, t: Tm, seen: &mut BTreeSet<Tm>, map: &mut HashMap<Tm, Tm>) {
