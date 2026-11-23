@@ -291,9 +291,9 @@ fn every_version_of_a_log_holding_each_operator_keeps_its_stored_hash() {
     );
     let (mut got, mut reached) = (Vec::new(), BTreeSet::new());
     oplog::chain(&schema, &src, |ops, h| {
-        for (op, clauses) in ops {
-            reach(&schema, &op_ty, op, &mut reached);
-            for c in clauses {
+        for row in ops {
+            reach(&schema, &op_ty, row.op(), &mut reached);
+            for c in row.clauses() {
                 reach(&schema, &clause_ty, c, &mut reached);
             }
         }

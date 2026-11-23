@@ -53,7 +53,23 @@ impl VersionHash {
 
 /// A resolved operator as a value of `catalog::Operator`, with its clauses as values of
 /// `catalog::ClauseBody` in clause order.
-pub type OperatorRow = (Value, Vec<Value>);
+///
+/// Only [`Log::rows`] builds one, from values its codecs store.
+#[derive(Clone, Debug)]
+pub struct OperatorRow {
+    op: Value,
+    clauses: Vec<Value>,
+}
+
+impl OperatorRow {
+    pub fn op(&self) -> &Value {
+        &self.op
+    }
+
+    pub fn clauses(&self) -> &[Value] {
+        &self.clauses
+    }
+}
 
 /// Returns the hash of the version `source` is at: `h(0)` is 32 zero bytes, and `h(n)` the hash
 /// of `h(n - 1)` followed by the encoding of migration `n`'s resolved operators.
@@ -139,10 +155,10 @@ impl Log {
                     .clauses
                     .iter()
                     .map(|c| self.clauses.stored(OP_CLAUSE_BODY, &clause(c)));
-                (
-                    self.ops.stored(MIGRATION_OP_OP, &operator(&op.op)),
-                    clauses.collect(),
-                )
+                OperatorRow {
+                    op: self.ops.stored(MIGRATION_OP_OP, &operator(&op.op)),
+                    clauses: clauses.collect(),
+                }
             })
             .collect()
     }
@@ -162,7 +178,7 @@ impl Log {
         let clause_ty = self.clauses.field_type(OP_CLAUSE_BODY.field());
         let mut out = Vec::new();
         put_uvarint(ops.len() as u64, &mut out);
-        for (op, clauses) in ops {
+        for OperatorRow { op, clauses } in ops {
             encode(op_ty, op, &mut out);
             put_uvarint(clauses.len() as u64, &mut out);
             for c in clauses {

@@ -872,7 +872,8 @@ impl Builder<'_> {
 
     fn migration(&mut self, log: &oplog::Log, version: u64, ops: &[oplog::OperatorRow]) {
         let number = key(version);
-        for (at, (op, clauses)) in ops.iter().enumerate() {
+        for (at, row) in ops.iter().enumerate() {
+            let (op, clauses) = (row.op(), row.clauses());
             let ordinal = Value::I32(i32::try_from(at + 1).expect("an ordinal fits 31 bits"));
             for (j, body) in clauses.iter().enumerate() {
                 let clause = Value::I32(i32::try_from(j + 1).expect("a clause fits 31 bits"));
