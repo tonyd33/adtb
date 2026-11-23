@@ -92,8 +92,12 @@ pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<At, Error> {
             })?;
         return Ok(At::Fixed(i));
     }
-    let cs = ctors(schema, ty)
-        .ok_or_else(|| Error::Unsupported(format!("field `{name}` of a value of type {ty:?}")))?;
+    let cs = ctors(schema, ty).ok_or_else(|| {
+        Error::Unsupported(format!(
+            "field `{name}` of a value of type {}",
+            schema.show_ty(ty)
+        ))
+    })?;
     let set = ctor_set(schema, ty);
     let mut at = vec![None; cs.len()];
     for &c in &set {

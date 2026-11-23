@@ -610,7 +610,7 @@ impl Lower<'_> {
                 Some(Base::Decimal(_)) => AggOp::SumDecimal,
                 Some(Base::F32) => AggOp::SumF32,
                 Some(Base::F64) => AggOp::SumF64,
-                other => return Err(Error::Unsupported(format!("`sum` at {other:?}"))),
+                _ => return Err(Error::Unsupported(format!("`sum` of {}", s.show_ty(ty)))),
             },
             Agg::Min => AggOp::Min { wrap },
             Agg::Max => AggOp::Max { wrap },

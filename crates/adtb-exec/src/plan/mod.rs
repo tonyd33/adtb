@@ -434,7 +434,8 @@ impl std::fmt::Display for Error {
             Error::Unbounded { rel, fields, .. } => {
                 write!(
                     f,
-                    "no index probe reaches {rel:?} on ({})",
+                    "no index probe reaches relation {} on ({})",
+                    rel.0,
                     fields.join(", ")
                 )
             }

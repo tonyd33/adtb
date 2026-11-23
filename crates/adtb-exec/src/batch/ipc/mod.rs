@@ -177,12 +177,19 @@ impl fmt::Display for IpcError {
             IpcError::SchemaDiffers { path, what } => {
                 write!(f, "the stream's field {path} differs in {what}")
             }
-            IpcError::BadValue { column, row, what } => {
-                write!(
-                    f,
-                    "a value of column {column} at row {row:?} does not convert: {what}"
-                )
-            }
+            IpcError::BadValue {
+                column,
+                row: Some(row),
+                what,
+            } => write!(
+                f,
+                "a value of column {column} at row {row} does not convert: {what}"
+            ),
+            IpcError::BadValue {
+                column,
+                row: None,
+                what,
+            } => write!(f, "a value of column {column} does not convert: {what}"),
             IpcError::OverBudget(what) => write!(f, "the stream holds more {what} than allowed"),
         }
     }

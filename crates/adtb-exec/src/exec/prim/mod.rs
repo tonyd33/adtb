@@ -12,6 +12,7 @@ use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal, rescaled};
 use super::{Broken, Error, Fault};
 
+mod named;
 mod num;
 mod syntax;
 
@@ -23,13 +24,14 @@ pub fn print(schema: &Schema, ty: &Ty, v: &Val) -> Result<String, Error> {
 fn form(schema: &Schema, ty: &Ty) -> Result<Form, Error> {
     let f = Form::of(schema, ty);
     if !f.has_syntax() {
-        return unsupported(format!("the textual form of {ty:?}"));
+        return unsupported(format!("the textual form of {}", schema.show_ty(ty)));
     }
     Ok(f)
 }
 mod time;
 pub(super) mod unicode;
 
+use named::{named, unsupported_on};
 use num::Rounding;
 use time::MICROS_PER_DAY;
 use unicode::{Case, Collator};
@@ -268,34 +270,34 @@ fn arith_op(schema: &Schema, p: Prim, a: Arith, args: &[Ty], result: &Ty) -> Res
             Arith::Add => Op::DecAdd { s, t, sub: false },
             Arith::Sub => Op::DecAdd { s, t, sub: true },
             Arith::Mul => Op::DecMul,
-            _ => return unsupported(format!("{p:?} on decimals")),
+            _ => return Err(unsupported_on(schema, p, args)),
         },
         (Some(Base::F32 | Base::F64), _) => Op::Float(a),
         (Some(Base::Duration), Some(Base::Duration)) => match a {
             Arith::Add => Op::DurAdd,
             Arith::Sub => Op::DurSub,
-            _ => return unsupported(format!("{p:?} on durations")),
+            _ => return Err(unsupported_on(schema, p, args)),
         },
         (Some(Base::Duration), Some(_)) => match a {
             Arith::Mul => Op::DurMul,
             Arith::Div => Op::DurDiv,
-            _ => return unsupported(format!("{p:?} on a duration")),
+            _ => return Err(unsupported_on(schema, p, args)),
         },
         (Some(Base::Period), Some(Base::Period)) => match a {
             Arith::Add => Op::PeriodAdd,
             Arith::Sub => Op::PeriodSub,
-            _ => return unsupported(format!("{p:?} on periods")),
+            _ => return Err(unsupported_on(schema, p, args)),
         },
         (Some(Base::Period), Some(_)) if a == Arith::Mul => Op::PeriodMul,
         (Some(Base::Instant | Base::DateTime), Some(Base::Duration)) => match a {
             Arith::Add => Op::PointShift { sub: false },
             Arith::Sub => Op::PointShift { sub: true },
-            _ => return unsupported(format!("{p:?} on a point in time")),
+            _ => return Err(unsupported_on(schema, p, args)),
         },
         (Some(Base::ZonedDateTime), Some(Base::Duration)) => match a {
             Arith::Add => Op::ZonedShift { sub: false },
             Arith::Sub => Op::ZonedShift { sub: true },
-            _ => return unsupported(format!("{p:?} on a zoned date-time")),
+            _ => return Err(unsupported_on(schema, p, args)),
         },
         (Some(Base::Instant), Some(Base::Instant))
         | (Some(Base::DateTime), Some(Base::DateTime))
@@ -304,11 +306,11 @@ fn arith_op(schema: &Schema, p: Prim, a: Arith, args: &[Ty], result: &Ty) -> Res
             Op::PointDiff
         }
         (Some(Base::Date), Some(Base::Date)) if a == Arith::Sub => Op::DateDiff,
-        _ => return unsupported(format!("{p:?} on {args:?}")),
+        _ => return Err(unsupported_on(schema, p, args)),
     })
 }
 
-fn sign_op(p: Prim, x: Option<Base>, args: &[Ty]) -> Result<Op, Error> {
+fn sign_op(schema: &Schema, p: Prim, x: Option<Base>, args: &[Ty]) -> Result<Op, Error> {
     let abs = p == Prim::Abs;
     Ok(match x {
         Some(x) if Width::of(x).is_some() => {
@@ -337,7 +339,7 @@ fn sign_op(p: Prim, x: Option<Base>, args: &[Ty]) -> Result<Op, Error> {
             }
         }
         Some(Base::Period) if !abs => Op::PeriodNeg,
-        _ => return unsupported(format!("{p:?} on {args:?}")),
+        _ => return Err(unsupported_on(schema, p, args)),
     })
 }
 
@@ -385,7 +387,7 @@ fn convert_op(schema: &Schema, checked: bool, x: Option<Base>, ty: &Ty) -> Resul
             s,
             single: y == Base::F32,
         },
-        (x, y) => return unsupported(format!("a conversion from {x:?} to {y:?}")),
+        _ => return unsupported(format!("a conversion to {}", schema.show_ty(&to))),
     };
     Ok(if checked {
         Op::Checked(Box::new(op))
@@ -404,7 +406,7 @@ fn other_op(
     let b = |t: &Ty| base(schema, t);
     let arg = |i: usize| args.get(i).and_then(b);
     Ok(match p {
-        Prim::Neg | Prim::CheckedNeg | Prim::Abs => sign_op(p, arg(0), args)?,
+        Prim::Neg | Prim::CheckedNeg | Prim::Abs => sign_op(schema, p, arg(0), args)?,
         Prim::Eq | Prim::Ne => match (arg(0), arg(1)) {
             (Some(Base::Decimal(s)), Some(Base::Decimal(t))) if s != t => Op::DecEq {
                 s,
@@ -441,7 +443,10 @@ fn other_op(
         Prim::Fold => Op::Case(Case::Fold),
         Prim::Matches | Prim::Collate => {
             let Some(Some(Val::Text(c))) = consts.get(1) else {
-                return unsupported(format!("{p:?} with an operand that is not a literal"));
+                return unsupported(format!(
+                    "`{}` with an operand that is not a literal",
+                    named(p)
+                ));
             };
             if p == Prim::Matches {
                 Op::Matches(Arc::new(
@@ -501,7 +506,7 @@ fn other_op(
             months: true,
             per: 12,
         },
-        other => return unsupported(format!("the primitive {other:?}")),
+        other => return unsupported(format!("`{}`", named(other))),
     })
 }
 

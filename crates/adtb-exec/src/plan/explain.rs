@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+use adtb_lang::kernel::Agg;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
@@ -443,7 +444,7 @@ impl<'a> Describe<'a> {
             Sink::Set => ("Set", String::new()),
             Sink::Exists => ("Exists", String::new()),
             Sink::IsEmpty => ("Is empty", String::new()),
-            Sink::Agg { op, .. } => ("Aggregate", format!("{op:?}").to_lowercase()),
+            Sink::Agg { op, .. } => ("Aggregate", aggregate(*op).to_owned()),
             Sink::Fold { .. } => ("Aggregate", "user-defined".to_string()),
             Sink::Group { rows, aggs, .. } => {
                 let kept = if *rows { ", keeps rows" } else { "" };
@@ -570,5 +571,16 @@ impl<'a> Describe<'a> {
                 n
             }
         }
+    }
+}
+
+fn aggregate(op: Agg) -> &'static str {
+    match op {
+        Agg::Count => "count",
+        Agg::Sum => "sum",
+        Agg::Min => "min",
+        Agg::Max => "max",
+        Agg::Avg => "avg",
+        Agg::User(_) => "user-defined",
     }
 }
