@@ -198,7 +198,9 @@ impl Model {
             Ok((b, _)) => b,
             Err(ds) => return unbuilt(&ds),
         };
-        let compiled = before.extended(probed.schema().clone());
+        let compiled = before
+            .extended(probed.schema().clone())
+            .map_err(Fail::Broken)?;
         let schema = compiled.schema();
         let def = def_in(schema, t);
         let module = schema
