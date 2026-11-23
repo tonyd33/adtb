@@ -13,8 +13,9 @@ use adtb_testkit::process::run;
 use adtb_testkit::profile;
 use adtb_testkit::search::Files;
 
+use super::codec::testing;
 use super::root::{Changing, Root};
-use super::{Catalog, Read, Reader, Transactions};
+use super::{Catalog, Read, Reader, Rewrite, Transactions};
 use crate::faults::Step;
 use crate::faults::armed::{self, Run, Site};
 use crate::heap::{self, Heap, Tested, Undo};
@@ -25,6 +26,7 @@ use crate::storage::{self, Pager};
 use crate::test_world;
 use crate::test_world::api::{printed, query};
 use crate::test_world::fixture::Storage;
+use crate::test_world::grants;
 use crate::test_world::load::{FILE, open_in, opened, options};
 use crate::test_world::rows::{EMAIL, key_of, row_type};
 use crate::verify::{self, Depth, Finding, Inventory, Problem, Sum};
@@ -348,6 +350,55 @@ fn created(fail: Option<(Site, usize)>) -> Ran {
     }
 }
 
+/// Insert a role into `catalog::roles` of a file at [`NOTES`] as a deployment write, failing
+/// `fail`.
+fn deployed(fail: Option<(Site, usize)>) -> Ran {
+    let what = format!("deploy {fail:?}");
+    let mut sim = created_at(&[NOTES]);
+    let (runs, failed) = run(&mut sim, |rt| {
+        let (pager, catalog, txns) = catalog_at(&rt);
+        let (relation, c) = grants::catalog_relation(catalog.schema(), "roles", "Role");
+        let role = testing::row(
+            catalog.schema(),
+            relation,
+            c,
+            &[
+                ("id", Value::I64(1)),
+                ("name", Value::Text("web".into())),
+                ("created", Value::Instant(0)),
+            ],
+        );
+        let rewrite = Rewrite {
+            relation,
+            deleted: Vec::new(),
+            inserted: vec![(c, role)],
+        };
+        arm(fail);
+        let failed = catalog.deploy(&pager, &txns, &[rewrite]).err();
+        let runs = armed::reached();
+        pager.close();
+        (runs, failed.map(|e| e.to_string()))
+    });
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let durable = run(&mut sim, |rt| {
+        let (pager, catalog, txns) = catalog_at(&rt);
+        let roles = catalog
+            .committed_roles(&pager, &txns)
+            .expect("the roles read");
+        pager.close();
+        roles.values().any(|name| name == "web")
+    });
+    let found = run(&mut sim, |rt| findings(&rt, &what));
+    Ran {
+        runs,
+        failed,
+        answered: None,
+        durable: Some(durable),
+        found,
+        unmended,
+    }
+}
+
 /// Settle at open the pending drop of a unique whose holder no open registers, failing `fail`.
 fn settled(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("pending drop {fail:?}");
@@ -637,6 +688,12 @@ const CASES: &[Case] = &[
     Case {
         name: "mend at open",
         run: mended,
+        refused: None,
+        failed: "page 0 is unreadable",
+    },
+    Case {
+        name: "deploy",
+        run: deployed,
         refused: None,
         failed: "page 0 is unreadable",
     },

@@ -628,3 +628,19 @@ fn a_refused_migration_leaves_the_grant_rows_and_the_page_of_id_counters_as_they
         );
     });
 }
+
+#[test]
+fn a_crash_at_every_flush_of_a_deployment_write_reopens_to_all_or_none_of_it() {
+    let seen = at_every_flush(148, shop_with_web, |pager, catalog, txns| {
+        grants::create_role(catalog, pager, txns, 2, "bob");
+        grants::deployment_grant(catalog, pager, txns, 2, "bob", "assert");
+    });
+    for (version, _, deployed) in &seen {
+        assert_eq!(1, *version);
+        assert!(
+            deployed == &vec![1] || deployed == &vec![1, 2],
+            "{deployed:?}"
+        );
+    }
+    assert_eq!(Some(&vec![1, 2]), seen.last().map(|s| &s.2));
+}

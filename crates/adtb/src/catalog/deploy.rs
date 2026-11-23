@@ -10,7 +10,7 @@ use crate::runtime::Runtime;
 use crate::storage::{Pager, Position};
 
 use super::codec::{Codec, Decode};
-use super::{Catalog, Error, Fact, Migrating, delete_rows};
+use super::{Catalog, Change, Error, Fact, delete_rows};
 
 /// The rows of one relation [`Catalog::deploy`] deletes and inserts, each a constructor and its
 /// stored fields.
@@ -74,17 +74,8 @@ impl Catalog {
         writes: &[Rewrite],
         facts: &[Fact],
     ) -> Result<Position, Error> {
-        let begun = txns.begin(pager)?;
-        let x = begun.xid();
-        let hold = txns.take(Scope::Every)?;
-        let m = Migrating {
-            pager,
-            txns,
-            x,
-            hold,
-            made: Default::default(),
-            top: Default::default(),
-        };
+        let change = Change::begin(pager, txns, Scope::Every)?;
+        let m = change.writes();
         let done = writes
             .iter()
             .try_for_each(|w| {
@@ -93,23 +84,17 @@ impl Catalog {
                     gone.entry(*c).or_default().push(row.clone());
                 }
                 for (c, rows) in gone {
-                    delete_rows(&m, self.heap(w.relation, c), &rows)?;
+                    delete_rows(m, self.heap(w.relation, c), &rows)?;
                 }
                 w.inserted
                     .iter()
-                    .try_for_each(|(c, row)| self.insert(&m, w.relation, *c, row))
+                    .try_for_each(|(c, row)| self.insert(m, w.relation, *c, row))
             })
-            .and_then(|()| self.write_facts(pager, txns, x, facts));
-        drop(m);
-        match done {
-            Ok(()) => {
-                let committed = txns.commit(pager, begun)?;
-                Ok(pager.position(committed.done()))
-            }
-            Err(e) => {
-                txns.abandon_failed(pager, begun)?;
-                Err(e)
-            }
+            .and_then(|()| self.write_facts(pager, txns, m.x, facts));
+        if let Err(e) = done {
+            return Err(change.abandon(e));
         }
+        let lsn = self.end_landed(pager, txns, change.commit()?, &[]);
+        Ok(pager.position(lsn))
     }
 }

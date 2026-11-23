@@ -7,7 +7,7 @@ use crate::faults;
 use crate::heap::Heap;
 use crate::mvcc::{Begun, Committed, Scope, Transactions};
 use crate::runtime::Runtime;
-use crate::storage::{Pager, Pid};
+use crate::storage::{Lsn, Pager, Pid};
 
 use super::root::{self, Changing, Root};
 use super::{Catalog, Error, Migrating, update_root};
@@ -195,7 +195,7 @@ impl Catalog {
     /// Free every page a schema change `landed` left unreached, counting the versions of the
     /// heaps it took out of the catalog, `gone`, off their large values; then end its mark and
     /// wait until the end is durable. Leave the mark on the root for the next open when the free
-    /// fails or leaves a version not counted off.
+    /// fails or leaves a version not counted off. Returns the LSN the log is durable past.
     #[track_caller]
     pub(super) fn end_landed<R: Runtime>(
         &self,
@@ -203,13 +203,10 @@ impl Catalog {
         txns: &Transactions<R>,
         landed: Landed<'_>,
         gone: &[Arc<Heap>],
-    ) {
+    ) -> Lsn {
         let Landed { committed, mark } = landed;
         let ended = match mark {
-            Mark::Unmarked => {
-                committed.done();
-                return;
-            }
+            Mark::Unmarked => return committed.done(),
             Mark::Began(began) => Some(began),
             Mark::Joined => None,
         };
@@ -217,7 +214,7 @@ impl Catalog {
             self.free_leaked(pager, txns, gone)
         });
         if !freed.is_some_and(|f| f.counted) {
-            return;
+            return committed.done();
         }
         let ended = committed.then(faults::Step::EndChange, || {
             root::end_freed(pager, self.root, ended)
@@ -225,5 +222,6 @@ impl Catalog {
         if let Some(lsn) = ended {
             pager.wait_durable(lsn);
         }
+        committed.done()
     }
 }
