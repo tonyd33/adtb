@@ -363,15 +363,18 @@ fn a_rebuild_does_not_overwrite_another_change_of_the_catalog() {
         let options = load::options(1);
         let pager = Pager::create(rt.clone(), &options.storage("changing.adt")).unwrap();
         let (catalog, txns) = Catalog::open(rt, &pager).unwrap();
-        let rebuild = catalog.begin_reindexing(&pager).unwrap().unwrap();
-        assert_eq!(None, catalog.begin_reindexing(&pager).unwrap().map(drop));
+        let rebuild = catalog.begin_reindexing(&pager, &txns).unwrap().unwrap();
+        assert_eq!(
+            None,
+            catalog.begin_reindexing(&pager, &txns).unwrap().map(drop)
+        );
         catalog.end_reindexing(&pager, rebuild).unwrap();
-        let rebuild = catalog.begin_reindexing(&pager).unwrap().unwrap();
+        let rebuild = catalog.begin_reindexing(&pager, &txns).unwrap().unwrap();
         catalog.end_reindexing(&pager, rebuild).unwrap();
         let naming = Catalog::naming_sequences(&pager, catalog.root()).unwrap();
         assert_eq!(
             None,
-            catalog.begin_reindexing(&pager).unwrap().map(drop),
+            catalog.begin_reindexing(&pager, &txns).unwrap().map(drop),
             "the change stays for the next open to free"
         );
         drop(naming);

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::root::Root;
+use crate::catalog::root::{self, Changing, Root};
+use crate::catalog::transaction::Change;
 use crate::catalog::{Catalog, Error, KeptField, KeptRow, applied, declared};
 use crate::key::Value;
 use crate::mvcc::{CommitLog, Scope, Transactions, Xid};
@@ -567,7 +568,7 @@ fn with_root(seed: u64, change: fn(&Pager<SimRuntime>, Pid)) -> (BTreeMap<String
 /// it, and the pages allocated before and after it.
 type RefusedCatalog = (
     Result<(), Error>,
-    Option<super::root::Changing>,
+    Option<Changing>,
     BTreeSet<Quarantine>,
     Vec<Pid>,
     Vec<Pid>,
@@ -610,9 +611,8 @@ fn refused_catalog(
 
 #[test]
 fn an_open_refused_whole_by_a_mark_or_its_commit_log_leaves_a_change_in_progress() {
-    use super::root::Changing;
     let (files, status) = with_root(31, |pager, root| {
-        let rebuild = super::root::begin(pager, root, Changing::Reindexing);
+        let rebuild = root::begin(pager, root, Changing::Reindexing);
         drop(rebuild.expect("the rebuild begins"));
     });
     let got = REFUSALS.map(|refused| {
@@ -688,7 +688,6 @@ fn crashed_naming(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
 
 #[test]
 fn naming_the_counters_over_a_crashed_naming_the_open_kept_leaves_its_page_to_the_next_open() {
-    use super::root::Changing;
     let seed = 34;
     let (files, orphan, index) = crashed_naming(seed);
     let data = DataFile::new(harness::NAME, PAGE);
@@ -745,7 +744,6 @@ fn naming_the_counters_over_a_crashed_naming_the_open_kept_leaves_its_page_to_th
 
 #[test]
 fn a_migration_over_a_kept_change_applies_and_frees_what_it_left() {
-    use super::root::Changing;
     let mut sim = Sim::new(35, Config::default());
     let mut got = None;
     finished(&mut sim, |rt| {
@@ -789,5 +787,46 @@ fn a_replayed_log_folds_a_revert_with_a_fill_no_inverse_takes() {
         assert_eq!(Ok(Vec::new()), catalog.replay(&pager, &txns, revert));
         check_whole(&pager, &catalog, &txns);
         assert_eq!(3, catalog.source().log.len());
+    });
+}
+
+#[test]
+fn a_rebuild_joins_only_a_change_no_running_transaction_holds() {
+    let mut sim = Sim::new(409, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let rebuild = |p: &Pager<SimRuntime>| catalog.begin_reindexing(p, &txns);
+        let change = Change::begin(&pager, &txns, Scope::Every)
+            .expect("a transaction")
+            .mark(catalog.root)
+            .expect("the change is marked");
+        let reason = format!(
+            "the schema change of transaction {} is in progress",
+            change.writes().x.0
+        );
+        adtb_testkit::refused_as(
+            rebuild(&pager),
+            &Error::Refused(vec![reason.clone()]),
+            &reason,
+        );
+        drop(change);
+        assert!(
+            rebuild(&pager).expect("the rebuild joins").is_none(),
+            "a change no transaction runs is joined"
+        );
+        root::end_found(&pager, catalog.root).expect("the change ends");
+        let naming = root::begin(&pager, catalog.root, Changing::NamingSequences).expect("marked");
+        assert!(rebuild(&pager).expect("the rebuild joins").is_none());
+        root::end(&pager, naming, |_| {}).expect("the naming ends");
+        let first = rebuild(&pager).expect("the rebuild begins");
+        let first = first.expect("an unmarked root takes the rebuild's mark");
+        assert!(rebuild(&pager).expect("the rebuild joins").is_none());
+        catalog
+            .end_reindexing(&pager, first)
+            .expect("the rebuild ends");
+        drop(catalog);
+        drop(txns);
+        pager.close();
     });
 }

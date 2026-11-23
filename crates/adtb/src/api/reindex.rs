@@ -138,7 +138,7 @@ impl<R: Runtime> Engine<R> {
         };
         let no_vacuum = self.db.holding_off_vacuum();
         let phase = |p: Reindex| job.phase(p.name(), p.done());
-        let marked = match self.catalog.begin_reindexing(&self.pager) {
+        let marked = match self.catalog.begin_reindexing(&self.pager, self.db.txns()) {
             Ok(marked) => marked,
             Err(e) => {
                 let at = format!("reindex of {}: {}", work.target, catalog::detail(&e));

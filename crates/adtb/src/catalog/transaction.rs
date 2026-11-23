@@ -194,14 +194,27 @@ impl<'a, R: Runtime> Change<'a, R> {
 impl Catalog {
     /// Mark the catalog as rebuilding indexes, so an open after a crash frees the pages no
     /// structure names. Returns the change begun, or `None`, marking nothing, when the root page
-    /// already records a change in progress, which an open after a crash frees as well.
+    /// records a change no transaction of `txns` runs, or another rebuild, which an open after a
+    /// crash frees as well.
     ///
-    /// Precondition: the database is open, so no schema change is running.
+    /// Fail with [`Error::Refused`], marking nothing, when the root page records the schema
+    /// change of a transaction `txns` runs.
     pub fn begin_reindexing<R: Runtime>(
         &self,
         pager: &Pager<R>,
+        txns: &Transactions<R>,
     ) -> Result<Option<root::Begun>, Error> {
-        Ok(root::begin_or_join(pager, self.root, Changing::Reindexing)?)
+        match root::begin(pager, self.root, Changing::Reindexing) {
+            Ok(began) => Ok(Some(began)),
+            Err(root::Unbegun::Kept(Changing::Schema(x))) if txns.running().contains(&x) => {
+                Err(Error::Refused(vec![format!(
+                    "the schema change of transaction {} is in progress",
+                    x.0
+                )]))
+            }
+            Err(root::Unbegun::Kept(_)) => Ok(None),
+            Err(root::Unbegun::Page(e)) => Err(e.into()),
+        }
     }
 
     /// End the change [`Catalog::begin_reindexing`] began.
