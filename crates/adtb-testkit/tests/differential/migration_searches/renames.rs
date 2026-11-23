@@ -475,6 +475,25 @@ fn binding(toks: &[(Tok, Range<usize>)], k: usize) -> bool {
     ) || matches!(after, Some(Tok::Arrow | Tok::Kw(Kw::In) | Tok::Eq))
 }
 
+/// Returns the refusal of each capture the rename `op` makes in `s`: a `rename field` to
+/// [`schemas::BOUND`] in a witness check whose `match` binds that name beside the field.
+fn captures(s: &Source, op: &str) -> Vec<String> {
+    let b = schemas::BOUND;
+    let Some(old) = op
+        .strip_prefix("rename field ")
+        .and_then(|r| r.strip_suffix(&format!(" to {b}")))
+        .and_then(|path| path.rsplit('.').next())
+    else {
+        return Vec::new();
+    };
+    s.decls
+        .iter()
+        .filter(|d| d.text.contains(&format!("| {b} -> {b} == {old})")))
+        .filter_map(|d| d.text.strip_prefix("check ")?.split_whitespace().next())
+        .map(|n| format!("`{b}` in check `{n}` would name the local binder `{b}`"))
+        .collect()
+}
+
 /// Returns the source `text` of module `app` leaves `s`, or why the checker refuses it.
 fn migrated(s: &Source, text: &str) -> Result<Source, String> {
     let file = parse_migration(text, Options::default())
@@ -545,6 +564,10 @@ fn search(
             let renames = RENAMES.contains(&o.kind());
             let after = match migrated(&walk.source, &prefix) {
                 Ok(a) => a,
+                Err(why) if captures(&before, o.text()).contains(&why) => {
+                    *seen.entry("a capture refused").or_default() += 1;
+                    break;
+                }
                 Err(why) if renames => {
                     return failed(
                         k,
@@ -607,6 +630,7 @@ fn a_rename_rewrites_exactly_the_tokens_that_resolve_to_its_object() {
             "a binder spelling the name kept",
             "another object of the name kept",
             "an object of the name in another module kept",
+            "a capture refused",
         ],
     );
 }

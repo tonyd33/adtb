@@ -1,6 +1,6 @@
 use super::field::Maps;
 use super::lift::Lifting;
-use super::op::{Fail, Op, Refused, Res, Resolving};
+use super::op::{Fail, Op, Refused, Res, Resolving, broken, refuse};
 use super::run::{Built, Decls, Gave, Late, Run};
 use super::*;
 use crate::ast::{MigrationFile, OperatorKind};
@@ -305,7 +305,21 @@ impl Model {
             model.mark(by, Added::Applying);
             run.begin(k, op.span);
             let mut next = model.clone();
-            let applied = next.operator(&run, &op.kind);
+            let renames = matches!(
+                op.kind,
+                OperatorKind::RenameType(..)
+                    | OperatorKind::RenameRelation(..)
+                    | OperatorKind::RenameSet(..)
+                    | OperatorKind::RenameConstructor(..)
+                    | OperatorKind::RenameField(..)
+            );
+            let applied = next.operator(&run, &op.kind).and_then(|x| {
+                if renames {
+                    next.faithful(&model, &run).map(|()| x)
+                } else {
+                    Ok(x)
+                }
+            });
             let reverted = run.take_reverted();
             match applied {
                 Ok((r, m)) => {
@@ -910,4 +924,70 @@ fn failures(model: &Model) -> BTreeSet<(Item, String)> {
         .filter(|d| d.diag.kind != crate::span::DiagKind::Poisoned)
         .filter_map(|d| Some((model.decls.get(d.file.0 as usize)?.item, d.diag.message)))
         .collect()
+}
+
+impl Model {
+    /// Returns each name of every declaration as the model prints it, with the objects it
+    /// holds.
+    fn named(&self) -> Vec<(String, Vec<Obj>)> {
+        let mut out = Vec::new();
+        let printing = self.clone();
+        self.clone()
+            .terms_mut(&mut |t| out.extend(t.named(&printing)));
+        out
+    }
+
+    /// Refuse when a name of an object `before` names otherwise resolves otherwise in the build
+    /// of a declaration that can bind names: a name a local binder of its spelling captures,
+    /// naming the declaration and the binder. Accept declarations that do not build.
+    ///
+    /// Fail with a model fault on such a name the build resolves to other objects.
+    fn faithful(&self, before: &Model, run: &Run) -> Res<()> {
+        let all = self.named();
+        let was: Vec<&(String, Vec<Obj>)> = all
+            .iter()
+            .filter(|(n, ids)| {
+                ids.iter()
+                    .any(|&o| before.name(o).is_some_and(|b| b != n.as_str()))
+            })
+            .collect();
+        if was.is_empty() {
+            return Ok(());
+        }
+        let Ok((built, _)) = self.built(&[], &run.ahead(self)) else {
+            return Ok(());
+        };
+        for i in 0..self.decls.len() {
+            if matches!(
+                self.decls[i].item,
+                Item::Type(_) | Item::Set(_) | Item::Held(..)
+            ) {
+                continue;
+            }
+            let mut lifted = self.clone();
+            lifted.relift(&built, self.decls[i].item)?;
+            let now = lifted.named();
+            for (name, ids) in was.iter().copied() {
+                let count = |m: &[(String, Vec<Obj>)], same: bool| {
+                    m.iter()
+                        .filter(|(n, x)| n == name && (!same || x == ids))
+                        .count()
+                };
+                if count(&now, true) >= count(&all, true) {
+                    continue;
+                }
+                if count(&now, false) >= count(&all, false) {
+                    return broken(format!(
+                        "`{name}` in {} resolves to other objects than it names",
+                        self.shown_decl(i)
+                    ));
+                }
+                return refuse(format!(
+                    "`{name}` in {} would name the local binder `{name}`",
+                    self.shown_decl(i)
+                ));
+            }
+        }
+        Ok(())
+    }
 }

@@ -1,0 +1,15 @@
+# A rename to the name a local binder holds where the renamed object is named is refused, naming
+# the declaration and the binder.
+seed 1
+use empty
+
+migrate
+  module app
+  add module app
+  add type T = { id: Key ts, n: I64, o: I64 }
+  add relation ts : T key id generate sequence
+  add check differ on ts (match n | wv -> wv != o)
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "rename field T.o to wv", detail: "`wv` in check `differ` would name the local binder `wv`" } } }
+  module app
+  rename field T.o to wv

@@ -674,8 +674,11 @@ impl Model {
         {
             return None;
         }
-        let to = if super::super::SEARCH_RENAME_TO_BOUND {
-            super::super::BOUND.to_owned()
+        let bound = super::super::BOUND;
+        let free = r.ctors.iter().all(|k| k.field(bound).is_none())
+            && r.header.iter().all(|h| h.name != bound);
+        let to = if free && rng.below(2) == 0 {
+            bound.to_owned()
         } else {
             self.field_name(i)
         };
@@ -1129,7 +1132,7 @@ impl Model {
         let mut can = Vec::new();
         for (c, ctor) in r.ctors.iter().enumerate() {
             for f in &ctor.fields {
-                if f.ty.literal() && !r.has_default(c, &f.name) {
+                if f.ty.literal() && !r.has_default(c, &f.name) && !self.retag_target(i, c) {
                     can.push((c, f.clone()));
                 }
             }

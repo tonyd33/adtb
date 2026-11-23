@@ -87,12 +87,8 @@ const SEARCH_MERGE_UNDER_CONSTRAINT: bool = false;
 /// set no longer declared.
 const SEARCH_DROP_OF_SELF_SELECTED_SET: bool = false;
 
-/// Whether a `rename field` takes the name [`BOUND`]. A pattern binding it in a body that names
-/// the field then captures the renamed name.
-const SEARCH_RENAME_TO_BOUND: bool = false;
-
-/// The name a `rename field` takes under [`SEARCH_RENAME_TO_BOUND`]; no other drawn name is spelled
-/// so.
+/// The name a `rename field` takes on half its draws when no field of its type holds it; no other
+/// drawn name is spelled so.
 pub const BOUND: &str = "wv";
 
 /// The constructor sets a reference, unique, index or check names within one relation.

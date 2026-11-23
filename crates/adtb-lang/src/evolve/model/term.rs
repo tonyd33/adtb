@@ -232,6 +232,20 @@ impl Term {
         Term(terms.into_iter().flat_map(|t| t.0).collect())
     }
 
+    /// Returns each name of the term as `model` names its objects now, with the objects it holds.
+    pub(super) fn named(&self, model: &Model) -> Vec<(String, Vec<Obj>)> {
+        self.0
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Name { ids, written, .. } => {
+                    let now = ids.iter().find_map(|&o| model.name(o)).unwrap_or(written);
+                    Some((now.to_string(), ids.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Returns whether the term holds a name of dropped objects.
     pub(super) fn dropped(&self) -> bool {
         self.0.iter().any(|p| matches!(p, Piece::Dropped { .. }))
