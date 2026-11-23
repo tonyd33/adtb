@@ -8,13 +8,13 @@ use crate::exec::{Grant, Val};
 use crate::runtime::Runtime;
 use crate::write::Txn;
 
+use super::super::admitted::Admitted;
 use super::super::bundle::{BundleWriter, bundle_name};
 use super::super::command::{Need, free_params, need};
 use super::super::text::Issuer;
 use super::super::{Engine, Error, OWNER_ROLE, RejectReason, TxnId};
 use super::adhoc::Holds;
 use super::binding::RoleBinding;
-use super::call::Work;
 use super::store::{self, Changes};
 use super::tables::{CallOrigin, CallRow, RoleId, Tables, service};
 use super::{Capability, RoleAuthority, denied, require};
@@ -232,8 +232,8 @@ pub(super) enum Readmission<R: Runtime> {
 impl<R: Runtime> Readmission<R> {
     /// Refuse the call with `Denied`, recorded in the audit, unless the session's role may still
     /// make it, and a registered call whose bundle has left its lifecycle. Returns what the role
-    /// of checked text `work` holds now.
-    pub(super) fn check(&self, e: &Engine<R>, work: &Work) -> Result<Option<Holds>, Error> {
+    /// of checked text `admitted` holds now.
+    pub(super) fn check(&self, e: &Engine<R>, admitted: &Admitted) -> Result<Option<Holds>, Error> {
         match self {
             Readmission::Text {
                 session,
@@ -246,12 +246,12 @@ impl<R: Runtime> Readmission<R> {
                 let authority = session.authority();
                 let caller = authority.admit_caller(session, text, assertion.as_ref())?;
                 let issuer = authority.admit_items(session, e, items, params, &caller, text)?;
-                match (issuer, work) {
-                    (Some(issuer), Work::Text(p)) => authority
-                        .admit_prepared(session, e, p, &caller, &issuer, args)
-                        .map(Some),
-                    _ => Ok(None),
-                }
+                issuer
+                    .map(|issuer| {
+                        let p = admitted.prepared();
+                        authority.admit_prepared(session, e, p, &caller, &issuer, args)
+                    })
+                    .transpose()
             }
             Readmission::Registered {
                 binding,

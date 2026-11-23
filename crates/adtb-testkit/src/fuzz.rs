@@ -680,6 +680,11 @@ pub fn long_case(seed: u64) -> Case {
 }
 
 /// Returns a well-typed ad hoc statement over [`SCHEMA`].
+/// Returns the ad hoc text over [`SCHEMA`] of `seed`, unmutated.
+pub fn adhoc_text(seed: u64) -> String {
+    adhoc(&mut Rng::new(seed))
+}
+
 fn adhoc(rng: &mut Rng) -> String {
     let world = World::fixed();
     let mut g = Gen {

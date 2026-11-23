@@ -37,7 +37,7 @@ txn load (p: Text) -> I64 =
 
 const OUTSIDE: &str = "is outside file_roots";
 
-fn tree(name: &str) -> Scratch {
+pub(super) fn tree(name: &str) -> Scratch {
     let at = Scratch::new("server-files", name);
     for dir in ["root/sub", "out"] {
         std::fs::create_dir_all(at.join(dir)).expect("the directory is made");
@@ -63,7 +63,7 @@ impl Wake for Unpark {
     }
 }
 
-fn finish(rt: &SimRuntime, task: &Task<SimRuntime>) -> Result<Vec<String>, Error> {
+pub(super) fn finish(rt: &SimRuntime, task: &Task<SimRuntime>) -> Result<Vec<String>, Error> {
     let waker = Waker::from(Arc::new(Unpark {
         rt: rt.clone(),
         thread: rt.current(),
@@ -85,14 +85,14 @@ fn finish(rt: &SimRuntime, task: &Task<SimRuntime>) -> Result<Vec<String>, Error
     }
 }
 
-struct Server {
+pub(super) struct Server {
     rt: SimRuntime,
     db: Database<SimRuntime>,
     owner: RoleSession<SimRuntime>,
 }
 
 impl Server {
-    fn new(rt: SimRuntime, base: &Path, roots: Vec<PathBuf>) -> Server {
+    pub(super) fn new(rt: SimRuntime, base: &Path, roots: Vec<PathBuf>) -> Server {
         let open = |log: &[&str]| {
             let opts = OpenOptions {
                 file_root: Some(base.to_path_buf()),
@@ -108,7 +108,7 @@ impl Server {
             .expect("the database opens")
         };
         let db = open(&[SCHEMA]);
-        for role in ["ann", "web"] {
+        for role in ["ann", "web", "eve"] {
             db.role_authority().create_role(role).expect("the role");
         }
         db.close().expect("close");
@@ -119,6 +119,10 @@ impl Server {
             .grant(&owner, "grant read_files to ann")
             .expect("it grants");
         Server { rt, db, owner }
+    }
+
+    pub(super) fn db(&self) -> &Database<SimRuntime> {
+        &self.db
     }
 
     /// Returns the rows of a scan of `path` as ad hoc text of a role session.
@@ -134,7 +138,7 @@ impl Server {
 
     /// Returns ann's bundle's binding for `web`, its one transaction loading the file its
     /// argument names.
-    fn load(&self) -> RoleBinding<SimRuntime> {
+    pub(super) fn load(&self) -> RoleBinding<SimRuntime> {
         let mut source = adtb_lang::evolve::Source::default();
         for text in [SCHEMA, GRANTS] {
             let file =

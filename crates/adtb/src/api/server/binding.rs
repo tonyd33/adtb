@@ -14,7 +14,7 @@ use super::call::{RoleCall, Work};
 use super::grant::Calls;
 use super::session::Readmission;
 use super::tables::{CallOrigin, CallRow, Grant, Tables, service};
-use super::task::{TASK_BYTES, Task, TaskOptions, args_hash, submit};
+use super::task::{Task, TaskOptions, args_hash, submit};
 use super::{RoleAuthority, RoleSession, denied};
 
 /// What a handshake expects of the bundle it names. A field left `None` expects nothing.
@@ -349,7 +349,7 @@ impl<R: Runtime> RoleBinding<R> {
             .map(|(n, (t, v))| (n.as_str(), t, v))
             .collect();
         let hash = args_hash(self.registered.schema(), &typed)?;
-        let bound = match self.registered.bound(&e, ordinal, &args, caller.clone()) {
+        let (bound, p) = match self.registered.bound(&e, ordinal, &args, caller.clone()) {
             Ok(bound) => bound,
             Err(err) => {
                 e.audit_call(
@@ -376,10 +376,12 @@ impl<R: Runtime> RoleBinding<R> {
                 assertion,
             }),
         };
-        let bytes = TASK_BYTES + args.iter().map(Val::size).sum::<usize>();
-        let class = bound.priority;
+        let queued = self
+            .registered
+            .queued(&args, opts.call.priority, opts.call.deadline);
+        let admitted = e.admit_program(p, &queued)?;
         let work = Work::Registered(Box::new(bound));
-        submit(&e, work, Some(call), opts, class, bytes)
+        submit(&e, (admitted, work), Some(call), opts)
     }
 
     fn origin(&self, callee: &Callee<'_>, ordinal: u32) -> CallOrigin {

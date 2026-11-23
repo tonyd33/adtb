@@ -3,10 +3,11 @@ use std::time::{Duration, SystemTime};
 use adtb_lang::check::Compiled;
 use adtb_lang::types::Ty;
 
-use crate::exec::Val;
+use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 use crate::write::{Local, Txn};
 
+use super::admitted::{Admitted, CALL_BYTES, Queued};
 use super::error::FatalReason;
 use super::stop::{CancelToken, Stops};
 use super::text::{DynRows, Prepared};
@@ -175,18 +176,27 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         if self.read_only && p.writes {
             return Err(Error::invalid("a read-only transaction does not write"));
         }
-        let rows = self.run(&p, opts, || {})?;
-        self.temps = Some(p.compiled.clone());
+        let compiled = p.compiled.clone();
+        let queued = Queued::new(
+            Priority::AdHoc,
+            opts.priority,
+            opts.deadline,
+            CALL_BYTES + text.len() + p.bytes(),
+        );
+        let admitted = e.admit_program(p, &queued)?;
+        let rows = self.run(&admitted, opts, || {})?;
+        self.temps = Some(compiled);
         Ok(rows)
     }
 
-    /// Run the items of `p` as one call of the transaction under `opts` and the transaction's
-    /// own deadline and limit. Returns the rows of each item that yields a result, in item
-    /// order. Invoke `on_ready` once after checking the open engine, transaction and call options,
-    /// while holding the engine open and before beginning execution.
+    /// Run the items of `admitted` as one call of the transaction under `opts` and the
+    /// transaction's own deadline and limit, once its grant is admitted. Returns the rows of each
+    /// item that yields a result, in item order. Invoke `on_ready` once after checking the open
+    /// engine, transaction and call options and taking the grant, while holding the engine open
+    /// and before beginning execution.
     pub(super) fn run(
         &mut self,
-        p: &Prepared,
+        admitted: &Admitted,
         opts: &TxnCallOptions,
         on_ready: impl FnOnce(),
     ) -> Result<Vec<DynRows>, Error> {
@@ -208,9 +218,9 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             limit: self.limit,
         });
         stops.check(&e.rt)?;
+        let bounds = e.granted(admitted, tx.xid(), stops.bounds(&e.rt, opts.fix_rounds))?;
         on_ready();
-        let bounds = stops.bounds(&e.rt, opts.fix_rounds);
-        let failed = match e.statements(self.id, tx, p, &mut self.local, bounds) {
+        let failed = match e.statements(self.id, tx, admitted, &mut self.local, bounds) {
             Ok(rows) => return Ok(rows),
             Err(failed) => failed,
         };

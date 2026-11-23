@@ -3,9 +3,9 @@ use std::fmt;
 use adtb_lang::kernel::{Const, Invalid, Kind};
 use adtb_lang::textual::PrintError;
 
+use crate::catalog;
 use crate::exec::{self, Val};
 use crate::plan;
-use crate::{api, catalog};
 
 use crate::storage::Quarantine;
 
@@ -65,10 +65,6 @@ pub enum Broken {
     NoSettingOutcome,
     NoPointOutcome,
     NoTrialOutcome,
-    /// Recording the refusal of a call fails.
-    RefusalUnrecorded(Box<api::Error>),
-    /// Recording the denial of a verify's witnesses fails.
-    WitnessDenialUnrecorded(Box<api::Error>),
     CallKeyNotInt,
     ExportNotSetTyped,
     ExportNotSet,
@@ -246,9 +242,6 @@ impl fmt::Display for Broken {
                 f.write_str("a statement of one item has one outcome")
             }
             Broken::NoTrialOutcome => f.write_str("a trial of one statement has one outcome"),
-            Broken::RefusalUnrecorded(e) | Broken::WitnessDenialUnrecorded(e) => {
-                write!(f, "recording a denied call: {e:?}")
-            }
             Broken::CallKeyNotInt => f.write_str("a key of `sys::calls` is an I64"),
             Broken::ExportNotSetTyped | Broken::ExportNotSet => {
                 f.write_str("an export's source is a set")

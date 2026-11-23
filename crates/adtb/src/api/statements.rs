@@ -3,7 +3,8 @@ use crate::mvcc::Xid;
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, Local, Text, Txn};
 
-use super::text::{DynRows, Prepared};
+use super::admitted::Admitted;
+use super::text::DynRows;
 use super::{Engine, Error, TxnId};
 
 /// Why [`Engine::resumable`] stopped short.
@@ -88,13 +89,13 @@ impl<R: Runtime> Engine<R> {
         self.db.abandon(tx, cause, |e| self.write_error(id, e))
     }
 
-    /// Run the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
+    /// Run the items of `admitted` as statements of `tx`, the transaction `id`, over `local`. Returns
     /// the rows of each item that yields a result, or the failure.
     pub(super) fn statements(
         &self,
         id: TxnId,
         tx: &Txn,
-        p: &Prepared,
+        admitted: &Admitted,
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<DynRows>, Failure> {
@@ -102,7 +103,7 @@ impl<R: Runtime> Engine<R> {
             suspend: false,
             ..bounds
         };
-        self.resumable(id, tx, p, local, bounds)
+        self.resumable(id, tx, admitted, local, bounds)
             .map_err(|f| match f {
                 Halted::Blocked { .. } => {
                     unreachable!("a run with `suspend: false` never suspends")
@@ -111,17 +112,18 @@ impl<R: Runtime> Engine<R> {
             })
     }
 
-    /// Run the items of `p` as [`statements`](Engine::statements) does, except that a
+    /// Run the items of `admitted` as [`statements`](Engine::statements) does, except that a
     /// statement suspending on a transaction wait halts with `Blocked`. A command after the first,
     /// and an item after a command, polls with its stops instead.
     pub(super) fn resumable(
         &self,
         id: TxnId,
         tx: &Txn,
-        p: &Prepared,
+        admitted: &Admitted,
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<DynRows>, Halted> {
+        let p = admitted.prepared();
         let schema = p.schema();
         let text = Text {
             schema,

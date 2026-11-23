@@ -19,7 +19,6 @@ use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, HoldWait, Local, Outcome, Rejection, Text, Txn, VacuumHold};
 
-use super::server::CallOrigin;
 use super::text::{DynRows, Issuer, Prepared, rows};
 use super::{Capability, Engine, Error, unsupported};
 
@@ -398,7 +397,7 @@ impl<R: Runtime> Engine<R> {
             Command::Verify(rel) => {
                 let found = self.verified(schema, *rel, HoldWait::of(&bounds, at))?;
                 if let Some(issuer) = &p.issuer {
-                    self.refuse_witnesses(schema, issuer, p.caller(), &found)?;
+                    self.refuse_witnesses(schema, issuer, &found)?;
                 }
                 Ok(found)
             }
@@ -467,19 +466,6 @@ impl<R: Runtime> Engine<R> {
             .ok_or_else(|| write::Broken::NoValueOutcome.into())
     }
 
-    /// Record that the issuer of `p` was refused while its text ran. Returns the refusal.
-    pub(super) fn refused_running(
-        &self,
-        p: &Prepared,
-        issuer: &Issuer,
-        detail: String,
-    ) -> write::Error {
-        match self.audit_denied(&issuer.role, p.caller(), &CallOrigin::AdHoc(issuer.text)) {
-            Ok(()) => write::Error::Denied(detail),
-            Err(e) => write::Broken::RefusalUnrecorded(Box::new(e)).into(),
-        }
-    }
-
     /// Stop the call of key `key`. A role without `cancel` stops only calls of its own session, and
     /// its refusal does not say whether the call exists. Returns the row of the call stopped.
     fn cancel_call(
@@ -502,7 +488,7 @@ impl<R: Runtime> Engine<R> {
         {
             drop(calls);
             let detail = format!("role `{}` lacks `cancel` for this call", issuer.role);
-            return Err(self.refused_running(p, issuer, detail));
+            return Err(write::Error::Denied(detail));
         }
         calls.stop(id);
         drop(calls);
@@ -545,12 +531,9 @@ impl<R: Runtime> Engine<R> {
         self.db
             .files()
             .write(path, &bytes, confined)
-            .map_err(|refused| match (refused, &p.issuer) {
-                (adtb_file::Refused::Outside(_), Some(issuer)) => {
-                    self.refused_running(p, issuer, outside.clone())
-                }
-                (adtb_file::Refused::Outside(_), None) => write::Error::Denied(outside.clone()),
-                (adtb_file::Refused::Unreadable(detail), _) => {
+            .map_err(|refused| match refused {
+                adtb_file::Refused::Outside(_) => write::Error::Denied(outside.clone()),
+                adtb_file::Refused::Unreadable(detail) => {
                     write::Error::Rejected(Rejection::BadInput {
                         source: path.to_owned(),
                         line: 0,
@@ -653,12 +636,11 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Refuse the rows `found` of `verify` for `issuer` when a `Violation` among them holds a
-    /// witness, which reveals field values, recording the refusal.
+    /// witness, which reveals field values.
     fn refuse_witnesses(
         &self,
         schema: &Schema,
         issuer: &Issuer,
-        caller: &Val,
         found: &DynRows,
     ) -> Result<(), write::Error> {
         let codec = self.verifier.codec();
@@ -701,8 +683,6 @@ impl<R: Runtime> Engine<R> {
         if !refused {
             return Ok(());
         }
-        self.audit_denied(&issuer.role, caller, &CallOrigin::AdHoc(issuer.text))
-            .map_err(|e| write::Broken::WitnessDenialUnrecorded(Box::new(e)))?;
         Err(write::Error::Denied(format!(
             "role `{}` lacks `read` on the rows of the `Violation` witnesses of `verify`",
             issuer.role

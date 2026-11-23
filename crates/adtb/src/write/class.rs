@@ -84,8 +84,6 @@ impl Broken {
             | Broken::NoSettingOutcome
             | Broken::NoPointOutcome
             | Broken::NoTrialOutcome
-            | Broken::RefusalUnrecorded(_)
-            | Broken::WitnessDenialUnrecorded(_)
             | Broken::CallKeyNotInt
             | Broken::ExportNotSetTyped
             | Broken::ExportNotSet

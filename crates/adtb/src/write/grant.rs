@@ -113,7 +113,18 @@ impl<R: Runtime> Database<R> {
             bytes: 0,
             deadline: None,
         };
-        let ticket = match self.request_grant(&entry)? {
+        self.admit_entry(&entry, me, stop)
+    }
+
+    /// Returns a grant of the database's per-call memory for the call `entry` describes, of
+    /// transaction `me`, waiting in the budget's queue as [`Database::admit_grant`] does.
+    pub fn admit_entry(
+        &self,
+        entry: &Entry,
+        me: Option<Xid>,
+        stop: &Stop,
+    ) -> Result<Arc<exec::Grant>, Error> {
+        let ticket = match self.request_grant(entry)? {
             Requested::Granted(g) => return Ok(g),
             Requested::Queued(t) => t,
         };
@@ -167,12 +178,26 @@ impl<R: Runtime> Database<R> {
     /// Fail, queueing nothing, with `Overloaded` when the budget's queue is full, and with the
     /// statement limit of the queue's byte bound when the call alone passes it.
     pub fn request_grant(&self, entry: &Entry) -> Result<Requested, Error> {
+        self.within_byte_bound(entry.bytes)?;
         self.budget.request(entry, self.grant).map_err(|r| match r {
             Refusal::Overloaded | Refusal::ShutDown => Error::Exec(exec::Error::Overloaded),
-            Refusal::TooLarge => Error::Exec(exec::Error::StatementLimit(exec::Exceeded::Memory {
-                limit: self.budget.queue_bytes(),
-            })),
+            Refusal::TooLarge => self.past_byte_bound(),
         })
+    }
+
+    /// Refuse a call holding `bytes` while it waits with the statement limit of the queue's byte
+    /// bound when they alone pass it.
+    pub fn within_byte_bound(&self, bytes: usize) -> Result<(), Error> {
+        if bytes > self.budget.queue_bytes() {
+            return Err(self.past_byte_bound());
+        }
+        Ok(())
+    }
+
+    fn past_byte_bound(&self) -> Error {
+        Error::Exec(exec::Error::StatementLimit(exec::Exceeded::Memory {
+            limit: self.budget.queue_bytes(),
+        }))
     }
 }
 

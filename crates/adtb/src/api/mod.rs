@@ -1,5 +1,6 @@
 //! The public interface: open a `Database`, run texts and calls, and read their results.
 
+mod admitted;
 mod arrow;
 mod backup;
 mod bundle;
@@ -45,6 +46,7 @@ pub mod typed;
 mod value;
 mod verify;
 
+use admitted::{Admitted, CALL_BYTES, Queued};
 use cause::{Broken, corrupt};
 use failed_open::{failed_create, finish_create, open_damage};
 use std::collections::BTreeSet;
@@ -64,7 +66,7 @@ use adtb_lang::types::Ty;
 use adtb_sys::lock::{Lock, RwLock};
 
 use crate::catalog::{self, Catalog, Structures};
-use crate::exec::{self, Budget, Scheduler, Val};
+use crate::exec::{self, Budget, Priority, Scheduler, Val};
 use crate::mvcc::Limits;
 use crate::mvcc::Transactions;
 use crate::runtime::{Runtime, ThreadId};
@@ -549,6 +551,10 @@ impl<R: Runtime> Database<R> {
     /// block of it is `read_only deferrable`. Text that writes is rerun on a serialization
     /// failure up to `opts.retry`, else its `retry n`, else the retry limit.
     ///
+    /// The call waits for its grant in the admission queue, failing with `Overloaded` when the
+    /// queue is full and with the statement limit of the queue's byte bound when it alone holds
+    /// more.
+    ///
     /// A database without replicas commits at `local` whatever level the options name.
     pub fn query_text(
         &self,
@@ -559,9 +565,21 @@ impl<R: Runtime> Database<R> {
         let e = &*self.engine;
         let _open = e.enter()?;
         let caller = e.principal(opts.assert.as_ref())?;
-        let p = Prepared::new(&e.compiled, &e.explained(), text, params, caller);
-        let p = e.admit_text(p)?;
-        e.call(&p, opts, || {}).map(|done| done.value)
+        let p = e.admit_text(Prepared::new(
+            &e.compiled,
+            &e.explained(),
+            text,
+            params,
+            caller,
+        ))?;
+        let queued = Queued::new(
+            Priority::AdHoc,
+            opts.priority,
+            opts.deadline,
+            CALL_BYTES + text.len() + p.bytes(),
+        );
+        let admitted = e.admit_program(p, &queued)?;
+        e.call(&admitted, opts, || {}).map(|done| done.value)
     }
 
     /// Run `verify` over relation variable `relation`, or the whole database, while the database
@@ -1217,8 +1235,8 @@ impl<R: Runtime> Engine<R> {
         micros(self.pager.wall())
     }
 
-    /// Run `p` as one transaction of its own under `opts`: read-only when `p` only reads, else
-    /// rerun on a serialization failure before any command ran, up to `opts.retry`, else `p`'s
+    /// Run `admitted` as one transaction of its own under `opts`: read-only when it only reads, else
+    /// rerun on a serialization failure before any command ran, up to `opts.retry`, else its
     /// `retry n`, else the file setting `RetryLimit`. Returns the rows of each item that yields a
     /// result, with the commit position and the attempts made.
     ///
@@ -1227,15 +1245,16 @@ impl<R: Runtime> Engine<R> {
     /// Invoke `on_ready` once after checking the call options, before beginning execution.
     fn call(
         &self,
-        p: &Prepared,
+        admitted: &Admitted,
         opts: &CallOptions,
         on_ready: impl FnOnce(),
     ) -> Result<Committed<Vec<DynRows>>, Error> {
+        let p = admitted.prepared();
         let stops = opts.stops();
         stops.check(&self.rt)?;
         self.reads_after(opts.after)?;
+        let bounds = self.granted(admitted, None, stops.bounds(&self.rt, opts.fix_rounds))?;
         on_ready();
-        let bounds = stops.bounds(&self.rt, opts.fix_rounds);
         if let Some(rows) = self.verify_without_transaction(p) {
             return rows.map(|rows| Committed {
                 value: vec![rows],
@@ -1247,7 +1266,7 @@ impl<R: Runtime> Engine<R> {
             let id = self.txn_id();
             let tx = self.begin_read(id, p.deferrable)?;
             return self
-                .run(id, tx, p, bounds)
+                .run(id, tx, admitted, bounds)
                 .map(|(value, position)| Committed {
                     value,
                     position,
@@ -1260,7 +1279,7 @@ impl<R: Runtime> Engine<R> {
             stops.check(&self.rt)?;
             let id = self.txn_id();
             let tx = self.begin(id)?;
-            match self.run(id, tx, p, bounds.clone()) {
+            match self.run(id, tx, admitted, bounds.clone()) {
                 Err(f) if self.reruns_after(p, opts.retry, attempts, &f.error, f.commanded) => {
                     attempts += 1;
                 }
@@ -1318,19 +1337,20 @@ impl<R: Runtime> Engine<R> {
         err.is_serialization() && !commanded && u64::from(attempts) <= self.reruns(p, retry)
     }
 
-    /// Run `p` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on
+    /// Run `admitted` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on
     /// any failure. Returns the rows of each item that yields a result and the commit position.
     fn run(
         &self,
         id: TxnId,
         tx: Txn,
-        p: &Prepared,
+        admitted: &Admitted,
         bounds: Bounds,
     ) -> Result<(Vec<DynRows>, Position), Failure> {
+        let p = admitted.prepared();
         let (cancel, deadline) = (bounds.cancel.clone(), bounds.deadline);
         let past_commands = |error| Failure::new(error, true, !p.commands().is_empty());
         let rows = self
-            .statements(id, &tx, p, &mut Local::default(), bounds)
+            .statements(id, &tx, admitted, &mut Local::default(), bounds)
             .and_then(|rows| {
                 if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire)) {
                     Err(past_commands(Error::rejected(RejectReason::Cancelled)))

@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 
 use adtb_lang::ast::{BundleItem, Import};
 use adtb_lang::check::{Bundles, Compiled};
@@ -21,6 +22,7 @@ use crate::catalog::{self, Catalog, VersionHash};
 use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 
+use super::admitted::{CALL_BYTES, Queued};
 use super::arrow::{self, ArrowStream};
 use super::bundle::{self, CallRow, Callable, EDITION, Header, Passed, Stored};
 use super::cause::{Broken, internal};
@@ -1034,14 +1036,16 @@ impl<R: Runtime> Registered<R> {
     ///
     /// A query or function only reads and runs as a read-only transaction. A transaction is
     /// rerun on a serialization failure up to `opts.retry`, else its `retry n`, else the retry
-    /// limit.
+    /// limit. The call passes admission as [`Database::query_text`] does.
     pub fn call(&self, ordinal: u32, args: &[Val], opts: &CallOptions) -> Result<Called, Error> {
         let e = self.engine()?;
         let _open = e.enter()?;
         let (entry, p, due) = self.admitted(&e, ordinal, args, false, || {
             e.principal(opts.assert.as_ref())
         })?;
-        let done = e.call(&p, opts, || {
+        let queued = self.queued(args, opts.priority, opts.deadline);
+        let admitted = e.admit_program(p, &queued)?;
+        let done = e.call(&admitted, opts, || {
             if due {
                 e.renew(&self.checked.name);
             }
@@ -1080,6 +1084,25 @@ impl<R: Runtime> Registered<R> {
     /// Returns the engine, refusing a call once the database is closed.
     fn engine(&self) -> Result<Arc<Engine<R>>, Error> {
         self.engine.upgrade().ok_or_else(Error::closed)
+    }
+
+    /// Returns where a call with `args` queues, ranked `rank` in the bundle's priority class and
+    /// waiting until `deadline`.
+    pub(super) fn queued(
+        &self,
+        args: &[Val],
+        rank: Option<u8>,
+        deadline: Option<SystemTime>,
+    ) -> Queued {
+        let bytes = CALL_BYTES + args.iter().map(Val::size).sum::<usize>();
+        Queued::new(self.priority(), rank, deadline, bytes)
+    }
+
+    fn priority(&self) -> Priority {
+        self.checked
+            .header
+            .as_ref()
+            .map_or(Priority::Regular, |h| h.priority)
     }
 
     fn admitted(
@@ -1128,7 +1151,8 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             Ok(self.caller.clone())
         })?;
         let e = self.engine;
-        let rows = self.run(&p, opts, || {
+        let admitted = e.admit_program(p, &reg.queued(args, opts.priority, opts.deadline))?;
+        let rows = self.run(&admitted, opts, || {
             if due {
                 e.renew(&reg.checked.name);
             }
@@ -1244,8 +1268,6 @@ impl Entry {
 
 /// A call of a registration checked against its signature, for a task to run.
 pub(super) struct Bound {
-    pub(super) prepared: Prepared,
-    pub(super) priority: Priority,
     /// Whether the call renews the bundle's lease once it starts.
     pub(super) due: bool,
     checked: Arc<Checked>,
@@ -1261,19 +1283,14 @@ impl<R: Runtime> Registered<R> {
         ordinal: u32,
         args: &[Val],
         caller: Val,
-    ) -> Result<Bound, Error> {
+    ) -> Result<(Bound, Prepared), Error> {
         let (_, prepared, due) = self.admitted(e, ordinal, args, false, || Ok(caller))?;
-        Ok(Bound {
-            prepared,
-            priority: self
-                .checked
-                .header
-                .as_ref()
-                .map_or(Priority::Regular, |h| h.priority),
+        let bound = Bound {
             due,
             entry: ordinal as usize - 1,
             checked: self.checked.clone(),
-        })
+        };
+        Ok((bound, prepared))
     }
 
     /// Returns the registration `name` the engine serves.

@@ -4,10 +4,11 @@ use std::task::Waker;
 use adtb_sys::lock::Lock;
 use adtb_sys::os::{Backend, OsRuntime};
 
-use crate::exec::{Entry, Priority, Resumable, Step};
+use crate::exec::{Priority, Resumable, Step};
 
 use adtb_sim::SimRuntime;
 
+use super::super::admitted::{Admitted, Queued};
 use super::super::text::Prepared;
 use super::super::{
     AdHocTransaction, CallOptions, CreateOptions, Database, Error, FatalReason, Log, OpenOptions,
@@ -46,8 +47,8 @@ fn a_call_dropped_holding_its_read_leaves_nothing_of_its_transaction() {
         rt: e.rt.clone(),
         state: Lock::new(State::default()),
     });
-    let work = Work::Text(Box::new(p));
-    let mut call = Call::new(&e, shared, work, None, (TaskOptions::default(), entry(&e)));
+    let work = (admitted(&e, p), Work::Text);
+    let mut call = Call::new(&e, shared, work, None, TaskOptions::default());
     assert_eq!(
         Step::Wait,
         call.run(Waker::noop()),
@@ -114,14 +115,8 @@ fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
             rt: e.rt.clone(),
             state: Lock::new(State::default()),
         });
-        let work = Work::Text(Box::new(p));
-        let call = Call::new(
-            &e,
-            shared.clone(),
-            work,
-            None,
-            (TaskOptions::default(), entry(&e)),
-        );
+        let work = (admitted(&e, p), Work::Text);
+        let call = Call::new(&e, shared.clone(), work, None, TaskOptions::default());
         let mut call = Box::new(call);
         let waits = call.run(Waker::noop());
         assert_eq!(Step::Wait, waits, "the call waits on the other");
@@ -183,12 +178,7 @@ fn a_write_call_released_while_its_abort_record_fails_settles_the_records_failur
     assert_eq!((Some(Completion::Failed(failed)), 1), left);
 }
 
-fn entry<R: crate::runtime::Runtime>(e: &super::super::Engine<R>) -> Entry {
-    Entry {
-        priority: Priority::AdHoc,
-        rank: u8::MAX,
-        start: e.rt.now(),
-        bytes: 0,
-        deadline: None,
-    }
+fn admitted<R: crate::runtime::Runtime>(e: &super::super::Engine<R>, p: Prepared) -> Admitted {
+    let queued = Queued::new(Priority::AdHoc, None, None, 0);
+    e.admit_program(p, &queued).expect("it is admitted")
 }

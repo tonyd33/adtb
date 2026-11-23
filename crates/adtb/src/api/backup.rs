@@ -417,7 +417,7 @@ impl<R: Runtime> Engine<R> {
                     .as_ref()
                     .is_none_or(|i| i.holds.as_ref().is_some_and(|h| h.schema_capability));
                 Some(
-                    self.confine(path, p, bounds)
+                    self.confine(path, bounds)
                         .map_err(Refusal::own)
                         .and_then(|()| self.passphrase(id, tx, encrypt.as_ref(), p, local, bounds))
                         .and_then(|phrase| self.dump_to(id, tx, path, secured, phrase.as_ref()))
@@ -527,24 +527,20 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Refuse `path` of a call confined to the export roots unless its directory resolves inside
-    /// one, with `Denied` recorded in the audit for a role.
-    fn confine(&self, path: &str, p: &Prepared, bounds: &Bounds) -> Result<(), Error> {
+    /// one.
+    fn confine(&self, path: &str, bounds: &Bounds) -> Result<(), Error> {
         if !bounds.confined || self.db.files().exports_beside(path) {
             return Ok(());
         }
         let outside = format!("path `{path}` is outside export_roots");
-        let e = match &p.issuer {
-            Some(issuer) => self.refused_running(p, issuer, outside),
-            None => write::Error::Denied(outside),
-        };
-        Err(self.write_error(TxnId(0), e))
+        Err(self.write_error(TxnId(0), write::Error::Denied(outside)))
     }
 
     fn backup_to(&self, path: &str, p: &Prepared, bounds: &Bounds) -> Result<DynRows, Error> {
         if let Some(refusal) = self.refusal() {
             return Err(refusal);
         }
-        self.confine(path, p, bounds)?;
+        self.confine(path, bounds)?;
         let target = self.target(path)?;
         let stop = Stop::of(bounds, Some(self.rt.now()), None);
         let mut stopped = None;

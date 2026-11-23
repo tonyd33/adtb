@@ -35,7 +35,7 @@
 "crates/adtb-testkit/src/cases/world.rs" = 31
 "crates/adtb/src/api/bundle.rs" = 34
 "crates/adtb/src/api/mod.rs" = 3
-"crates/adtb/src/api/registered/mod.rs" = 12
+"crates/adtb/src/api/registered/mod.rs" = 10
 "crates/adtb/src/api/reindex.rs" = 2
 "crates/adtb/src/api/server/adhoc.rs" = 5
 "crates/adtb/src/api/server/call.rs" = 5

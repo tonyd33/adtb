@@ -12,9 +12,10 @@ use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
-use crate::exec::{Admitted, Entry, Grant, Priority, Refusal, Refused, Stopped, Val};
+use crate::exec::{self, Grant, Priority, Refusal, Refused, Stopped, Val};
 use crate::runtime::Runtime;
 
+use super::super::admitted::{Admitted, CALL_BYTES, Queued};
 use super::super::text::TextError;
 use super::super::text::{Prepared, declared};
 use super::super::{
@@ -26,9 +27,6 @@ use super::result::{Completion, Format, Layout, ResultBatch};
 use super::session::{Readmission, text_hash};
 use super::tables::{CallOrigin, CallRow};
 use super::{RoleAuthority, RoleSession};
-
-/// The bytes a queued task's metadata counts for besides its arguments.
-pub(super) const TASK_BYTES: usize = 256;
 
 /// The options of a submitted call.
 #[derive(Clone, Debug, Default)]
@@ -181,7 +179,7 @@ impl<R: Runtime> Shared<R> {
     /// Record the owner's request `r`, and stop the call unless it has committed, settled, or
     /// produced and drained its output: cancel its running statement through `token` and
     /// withdraw it from the scheduler.
-    fn request(&self, admitted: &Admitted<R>, r: Request, token: &CancelToken) {
+    fn request(&self, admitted: &exec::Admitted<R>, r: Request, token: &CancelToken) {
         let stop = self.with(|s| {
             if (s.drained && s.produced) || (s.settled.is_some() && !s.committed) {
                 return (false, [None, None]);
@@ -214,7 +212,7 @@ impl<R: Runtime> Shared<R> {
 struct Stopper<R: Runtime> {
     shared: Weak<Shared<R>>,
     /// The call's admission, set once the scheduler admits the call.
-    admitted: OnceLock<Admitted<R>>,
+    admitted: OnceLock<exec::Admitted<R>>,
     /// The token of the call's own statements.
     cancel: CancelToken,
 }
@@ -238,7 +236,7 @@ impl<R: Runtime> Wake for Stopper<R> {
 /// and abandons its output.
 pub struct Task<R: Runtime = adtb_sys::os::OsRuntime> {
     shared: Arc<Shared<R>>,
-    admitted: Admitted<R>,
+    admitted: exec::Admitted<R>,
     /// The token of the call's own statements, cancelled with the caller's.
     cancel: CancelToken,
     /// The caller's token, and the registration on it that stops the call.
@@ -507,9 +505,14 @@ impl<R: Runtime> RoleSession<R> {
             args,
             readmission,
         };
-        let bytes = TASK_BYTES + text.len() + p.bytes();
-        let work = Work::Text(Box::new(p));
-        submit(&e, work, Some(call), opts, Priority::AdHoc, bytes)
+        let queued = Queued::new(
+            Priority::AdHoc,
+            opts.call.priority,
+            opts.call.deadline,
+            CALL_BYTES + text.len() + p.bytes(),
+        );
+        let admitted = e.admit_program(p, &queued)?;
+        submit(&e, (admitted, Work::Text), Some(call), opts)
     }
 }
 
@@ -622,25 +625,13 @@ pub(super) fn args_hash(schema: &Schema, params: &[(&str, &Ty, &Val)]) -> Result
 
 pub(super) fn submit<R: Runtime>(
     e: &Arc<Engine<R>>,
-    work: Work,
+    (admitted, work): (Admitted, Work),
     role_call: Option<RoleCall<R>>,
     mut opts: TaskOptions,
-    class: Priority,
-    bytes: usize,
 ) -> Result<Task<R>, Error> {
     let sched = e.scheduler();
     let rt = &e.rt;
-    let deadline = opts.call.deadline.map(|d| {
-        let left = d.duration_since(rt.wall()).unwrap_or(Duration::ZERO);
-        rt.now() + left
-    });
-    let entry = Entry {
-        priority: class,
-        rank: opts.call.priority.unwrap_or(u8::MAX),
-        start: rt.now(),
-        bytes,
-        deadline,
-    };
+    let entry = admitted.entry();
     let shared = Arc::new(Shared {
         rt: rt.clone(),
         state: Lock::new(State::default()),
@@ -658,7 +649,7 @@ pub(super) fn submit<R: Runtime>(
         let id = t.on_cancel(Waker::from(stopper.clone()));
         (t, id)
     });
-    let call = Call::new(e, shared.clone(), work, role_call, (opts, entry));
+    let call = Call::new(e, shared.clone(), (admitted, work), role_call, opts);
     match sched.admit(entry, Box::new(call)) {
         Ok(admitted) => {
             if stopper.admitted.set(admitted.clone()).is_err() {
@@ -868,14 +859,13 @@ mod tests {
                 assertion: None,
             }),
         };
-        let work = Work::Text(Box::new(p));
+        let queued = Queued::new(Priority::AdHoc, None, None, 0);
+        let admitted = e.admit_program(p, &queued).expect("it is admitted");
         let task = submit(
             &e,
-            work,
+            (admitted, Work::Text),
             Some(call),
             TaskOptions::default(),
-            Priority::AdHoc,
-            0,
         )
         .expect("the queue has room");
         let got = loop {

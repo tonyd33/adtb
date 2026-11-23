@@ -495,7 +495,6 @@ fn term_broken_rows() -> Vec<Row> {
 
 fn call_broken_rows() -> Vec<Row> {
     use write::Broken as B;
-    let closed_reply = || Box::new(closed());
     let c = Class::Checker;
     vec![
         broken_row(
@@ -517,16 +516,6 @@ fn call_broken_rows() -> Vec<Row> {
             B::NoTrialOutcome,
             c,
             "a trial of one statement has one outcome",
-        ),
-        broken_row(
-            B::RefusalUnrecorded(closed_reply()),
-            c,
-            "recording a denied call: Rejected { reason: Closed }",
-        ),
-        broken_row(
-            B::WitnessDenialUnrecorded(closed_reply()),
-            c,
-            "recording a denied call: Rejected { reason: Closed }",
         ),
         broken_row(B::CallKeyNotInt, c, "a key of `sys::calls` is an I64"),
         broken_row(B::ExportNotSetTyped, c, "an export's source is a set"),
@@ -560,7 +549,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 76;
+const SLOTS: usize = 74;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -605,7 +594,7 @@ fn slot(e: &write::Error) -> usize {
             exec::Error::Internal(_) => 30,
             exec::Error::HistoryUnavailable { .. } => 31,
             exec::Error::WrongVersion { .. } => 32,
-            exec::Error::Overloaded => 72,
+            exec::Error::Overloaded => 70,
         },
         write::Error::Internal(b) => match b.as_ref() {
             B::BoundedPlan(_) => 33,
@@ -634,22 +623,20 @@ fn slot(e: &write::Error) -> usize {
             B::NoSettingOutcome => 56,
             B::NoPointOutcome => 57,
             B::NoTrialOutcome => 58,
-            B::RefusalUnrecorded(_) => 59,
-            B::WitnessDenialUnrecorded(_) => 60,
-            B::CallKeyNotInt => 61,
-            B::ExportNotSetTyped => 62,
-            B::ExportNotSet => 63,
-            B::SettingNotRecord => 64,
-            B::SettingField(_) => 65,
-            B::CatalogError(_) => 66,
-            B::DeploymentRefused => 67,
-            B::NoDenial(_) => 68,
-            B::Unadmitted { .. } => 69,
-            B::UniqueUnnamed { .. } => 70,
-            B::UnsortedBuild(_) => 71,
-            B::WholePlan(_) => 73,
-            B::Compile(_) => 74,
-            B::IdleDeltaReports(_) => 75,
+            B::CallKeyNotInt => 59,
+            B::ExportNotSetTyped => 60,
+            B::ExportNotSet => 61,
+            B::SettingNotRecord => 62,
+            B::SettingField(_) => 63,
+            B::CatalogError(_) => 64,
+            B::DeploymentRefused => 65,
+            B::NoDenial(_) => 66,
+            B::Unadmitted { .. } => 67,
+            B::UniqueUnnamed { .. } => 68,
+            B::UnsortedBuild(_) => 69,
+            B::WholePlan(_) => 71,
+            B::Compile(_) => 72,
+            B::IdleDeltaReports(_) => 73,
         },
     }
 }

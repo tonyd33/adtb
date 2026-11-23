@@ -18,6 +18,7 @@ use crate::write::{
     self, Deferral, Local, Outcome, Produced, Production, Rerun, Text, Txn, either,
 };
 
+use super::super::admitted::Admitted;
 use super::super::arrow::BATCH_ROWS;
 use super::super::command::{changes_data, holds_off_vacuum};
 use super::super::registered::Bound;
@@ -31,16 +32,7 @@ use super::task::{Out, Request, Shared, TaskOptions, stopped};
 /// What a task calls.
 pub(super) enum Work {
     Registered(Box<Bound>),
-    Text(Box<Prepared>),
-}
-
-impl Work {
-    fn prepared(&self) -> &Prepared {
-        match self {
-            Work::Registered(b) => &b.prepared,
-            Work::Text(p) => p,
-        }
-    }
+    Text,
 }
 
 /// What a role's call keeps for its audit row and its recheck.
@@ -151,12 +143,11 @@ pub(super) struct Call<R: Runtime> {
     engine: Weak<Engine<R>>,
     close: Closes,
     shared: Arc<Shared<R>>,
+    admitted: Admitted,
     work: Work,
     /// A role's call not yet recorded in the audit.
     role_call: Option<RoleCall<R>>,
     opts: TaskOptions,
-    /// Where the call waits in the budget's queue for its grant.
-    entry: Entry,
     ticket: Option<Ticket>,
     grant: Option<Arc<Grant>>,
     phase: Phase<R>,
@@ -188,18 +179,18 @@ impl<R: Runtime> Call<R> {
     pub(super) fn new(
         engine: &Arc<Engine<R>>,
         shared: Arc<Shared<R>>,
-        work: Work,
+        (admitted, work): (Admitted, Work),
         role_call: Option<RoleCall<R>>,
-        (opts, entry): (TaskOptions, Entry),
+        opts: TaskOptions,
     ) -> Call<R> {
         Call {
             engine: Arc::downgrade(engine),
             close: engine.close.clone(),
             shared,
+            admitted,
             work,
             role_call,
             opts,
-            entry,
             ticket: None,
             grant: None,
             phase: Phase::Start,
@@ -217,9 +208,13 @@ impl<R: Runtime> Call<R> {
         let Some(readmission) = call.readmission.take() else {
             return Ok(());
         };
-        let holds = readmission.check(e, &self.work)?;
-        if let (Some(holds), Work::Text(p)) = (holds, &mut self.work)
-            && let Some(issuer) = &mut p.issuer
+        let holds = readmission.check(e, &self.admitted).inspect_err(|err| {
+            if is_denied(err) {
+                self.role_call = None;
+            }
+        })?;
+        if let Some(holds) = holds
+            && let Some(issuer) = self.admitted.issuer_mut()
         {
             issuer.holds = Some(holds);
         }
@@ -229,30 +224,35 @@ impl<R: Runtime> Call<R> {
     fn call_row<'c>(&'c self, call: &'c RoleCall<R>, failed: Option<&'c Error>) -> CallRow<'c> {
         CallRow {
             role: &call.role,
-            caller: self.work.prepared().caller(),
+            caller: self.admitted.prepared().caller(),
             origin: &call.origin,
             args: &call.args,
             failed,
         }
     }
 
-    /// Record a call that did not write, in a transaction of its own, unless it is recorded.
+    /// Record a call that did not write, in a transaction of its own, unless it is recorded: a
+    /// refusal for a lack of privilege as a `Denied` row, any other end as a `Call` row.
     fn audit(&mut self, e: &Engine<R>, failed: Option<&Error>) -> Result<(), Error> {
         let Some(call) = self.role_call.take() else {
             return Ok(());
         };
+        if failed.is_some_and(is_denied) {
+            let caller = self.admitted.prepared().caller();
+            return e.audit_denied(&call.role, caller, &call.origin);
+        }
         e.audit_call(&self.call_row(&call, failed), self.grant.as_ref())
     }
 
     /// Record the failure `err`, or the owner's request that replaces it. Returns the error to
-    /// settle with: a refusal has its `Denied` row and writes no `Call` row.
+    /// settle with.
     fn audited(&mut self, e: &Engine<R>, err: Error) -> Error {
         let shown = match self.shared.state.lock(&self.shared.rt).request {
             Some(r) if !self.unrecorded.get() => r.error(),
             _ => err,
         };
         let shown = match self
-            .work
+            .admitted
             .prepared()
             .issuer
             .as_ref()
@@ -261,14 +261,6 @@ impl<R: Runtime> Call<R> {
             Some(holds) => holds.redact(e, shown, self.violated),
             None => shown,
         };
-        if matches!(
-            shown,
-            Error::Rejected {
-                reason: RejectReason::Denied { .. }
-            }
-        ) {
-            self.role_call = None;
-        }
         match self.audit(e, Some(&shown)) {
             Ok(()) => shown,
             Err(failed) => failed,
@@ -281,7 +273,11 @@ impl<R: Runtime> Call<R> {
     fn advance(&mut self, e: &Engine<R>, waker: &Waker) -> Result<Step, Error> {
         loop {
             if !self.admitted(e, waker)? {
-                return Ok(self.entry.deadline.map_or(Step::Wait, Step::WaitUntil));
+                return Ok(self
+                    .admitted
+                    .entry()
+                    .deadline
+                    .map_or(Step::Wait, Step::WaitUntil));
             }
             let then = match std::mem::replace(&mut self.phase, Phase::Over) {
                 Phase::Start => self.start(e)?,
@@ -313,8 +309,8 @@ impl<R: Runtime> Call<R> {
             Some(t) => t,
             None => {
                 let entry = Entry {
-                    start: self.phase.began().unwrap_or(self.entry.start),
-                    ..self.entry
+                    start: self.phase.began().unwrap_or(self.admitted.entry().start),
+                    ..self.admitted.entry()
                 };
                 match e.db.request_grant(&entry) {
                     Ok(Requested::Granted(g)) => {
@@ -378,7 +374,7 @@ impl<R: Runtime> Call<R> {
         {
             e.renew(b.name());
         }
-        let p = self.work.prepared();
+        let p = self.admitted.prepared();
         if self.role_call.is_some()
             && p.commands().iter().any(|c| changes_data(&c.command))
             && let Some(marked) = e.audit_unwritable()
@@ -477,7 +473,7 @@ impl<R: Runtime> Call<R> {
     /// Start the output of the read `tx`, the transaction `id`: produced a unit at a time for
     /// one set-valued query, else formed whole.
     fn read(&mut self, e: &Engine<R>, id: TxnId, tx: Txn) -> Result<Output<R>, Error> {
-        let p = self.work.prepared();
+        let p = self.admitted.prepared();
         let streams = p.commands().is_empty()
             && p.items().len() == 1
             && matches!(p.terms().ty(p.items()[0]), Ty::Set(_) | Ty::NonEmpty(_));
@@ -498,7 +494,13 @@ impl<R: Runtime> Call<R> {
                     .and_then(|rows| self.whole(e, rows))
             }
             Ok(None) => e
-                .statements(id, &tx, p, &mut Local::default(), self.bounds(e))
+                .statements(
+                    id,
+                    &tx,
+                    &self.admitted,
+                    &mut Local::default(),
+                    self.bounds(e),
+                )
                 .map_err(|f| f.error)
                 .and_then(|rows| self.whole(e, rows)),
             Err(err) => Err(e.write_error(id, err)),
@@ -514,7 +516,7 @@ impl<R: Runtime> Call<R> {
     }
 
     fn stream(&self, production: Production<R>) -> Result<Results<R>, Error> {
-        let p = self.work.prepared();
+        let p = self.admitted.prepared();
         let (Ty::Set(elem) | Ty::NonEmpty(elem)) = p.terms().ty(p.items()[0]) else {
             unreachable!("a streamed result is a set")
         };
@@ -524,7 +526,7 @@ impl<R: Runtime> Call<R> {
                 let rows = b.elements(p.schema(), elem.clone(), Vec::new())?;
                 (b.schema().clone(), rows.ty().clone())
             }
-            Work::Text(p) => (p.schema().clone(), elem.clone()),
+            Work::Text => (p.schema().clone(), elem.clone()),
         };
         let layout = Arc::new(Layout::new(&schema, ty, self.opts.format)?);
         let stream = Stream {
@@ -543,7 +545,7 @@ impl<R: Runtime> Call<R> {
     fn whole(&self, e: &Engine<R>, rows: Vec<DynRows>) -> Result<Results<R>, Error> {
         let (schema, rows) = match &self.work {
             Work::Registered(b) => (b.schema().clone(), vec![b.result(e, rows)?]),
-            Work::Text(p) => (p.schema().clone(), rows),
+            Work::Text => (self.admitted.prepared().schema().clone(), rows),
         };
         let mut out = VecDeque::new();
         for r in rows {
@@ -582,8 +584,7 @@ impl<R: Runtime> Call<R> {
                 rerun: w.rerun,
                 ..self.bounds(e)
             };
-            let p = self.work.prepared();
-            match e.resumable(id, &tx, p, &mut Local::default(), bounds) {
+            match e.resumable(id, &tx, &self.admitted, &mut Local::default(), bounds) {
                 Ok(rows) => return self.commit(e, w, id, tx, rows),
                 Err(Halted::Blocked { on, heap, rerun }) => {
                     w.rerun = Some(rerun);
@@ -643,8 +644,13 @@ impl<R: Runtime> Call<R> {
             };
             let id = e.txn_id();
             let tx = e.begin_read(id, false)?;
-            let p = self.work.prepared();
-            let (on, rerun) = match e.resumable(id, &tx, p, &mut Local::default(), bounds) {
+            let (on, rerun) = match e.resumable(
+                id,
+                &tx,
+                &self.admitted,
+                &mut Local::default(),
+                bounds,
+            ) {
                 Ok(rows) => {
                     return match self.whole(e, rows) {
                         Ok(results) => {
@@ -709,7 +715,7 @@ impl<R: Runtime> Call<R> {
         if let Some(r) = requested {
             return Err(r.error());
         }
-        let p = self.work.prepared();
+        let p = self.admitted.prepared();
         if e.reruns_after(p, self.opts.call.retry, w.attempts, &err, commanded) {
             w.attempts += 1;
             Ok(())
@@ -737,7 +743,7 @@ impl<R: Runtime> Call<R> {
             Ok(r) => r,
             Err(err) => return Err(either(self.abandon(e, id, tx, || err))),
         };
-        let commanded = !self.work.prepared().commands().is_empty();
+        let commanded = !self.admitted.prepared().commands().is_empty();
         let marked = self.role_call.as_ref().and_then(|_| e.audit_unwritable());
         let row = match (&self.role_call, marked) {
             (Some(_), Some(marked)) if tx.wrote() => {
@@ -896,7 +902,7 @@ impl<R: Runtime> Call<R> {
                         Work::Registered(b) => b
                             .elements(&s.schema, s.elem.clone(), fresh)?
                             .collect::<Result<Vec<_>, _>>()?,
-                        Work::Text(_) => fresh,
+                        Work::Text => fresh,
                     };
                     for v in fresh {
                         if !s.sent.contains(&v) {
@@ -1087,4 +1093,13 @@ impl<R: Runtime> Resumable for Call<R> {
         };
         now.into_iter().for_each(Waker::wake);
     }
+}
+
+fn is_denied(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Rejected {
+            reason: RejectReason::Denied { .. }
+        }
+    )
 }
