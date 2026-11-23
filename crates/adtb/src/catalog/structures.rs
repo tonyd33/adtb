@@ -78,7 +78,7 @@ impl Catalog {
         if self.is_unread() {
             return out;
         }
-        out.rows = Some(self.roots.clone());
+        out.rows = Some(self.roots.verified());
         let schema = &self.schema;
         for (r, _) in schema.ids().relation_ids() {
             let heaps = self

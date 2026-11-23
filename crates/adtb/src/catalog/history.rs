@@ -21,6 +21,7 @@ use crate::write::Retained;
 use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
 use super::root::Root;
 use super::roots::RootsRow;
+use super::rot::Rot;
 use super::structures::{Listed, index_holder, relation_holder};
 use super::{Catalog, Error, IndexKeys, IndexSpec, Migrating, ROOTS, row_type};
 
@@ -343,37 +344,23 @@ impl Catalog {
 
     /// Returns the transaction that applied each migration, by the version it made, and the
     /// version whose migration named each heap, by heap id, from the roots rows the latest commit
-    /// holds.
+    /// holds: 0 for a heap the create named.
+    ///
+    /// Fail with damage when a heap is named by a transaction that applied no migration and is
+    /// not the create's: one transaction, earlier than every migration's.
     fn migrations<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Migrations, Error> {
         let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let seen = || -> Result<_, Error> {
-            let reader = txns.reader(pager, &hold, None);
-            'scan: loop {
-                let mut versions = Vec::new();
-                self.roots.scan(pager, |v| versions.push(v))?;
-                let mut rows = Vec::new();
-                for v in versions {
-                    let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
-                        continue 'scan;
-                    };
-                    if seen.visible() {
-                        rows.push((v.header.writers.inserter(), v.tid, v.row));
-                    }
-                }
-                return Ok(rows);
-            }
-        };
-        let rows = seen();
+        let rows = self.roots.rows(pager, txns, (&hold, None));
         drop(hold);
         let rows = rows?;
         let mut migrations = BTreeMap::new();
         let mut named = Vec::new();
         for (x, tid, row) in rows {
-            match RootsRow::decode(&row)? {
+            match row {
                 RootsRow::Migration { version, .. } => {
                     migrations.insert(version, (x, tid));
                 }
@@ -389,10 +376,21 @@ impl Catalog {
             }
         }
         let by_xid: BTreeMap<Xid, u64> = migrations.iter().map(|(v, (x, _))| (*x, *v)).collect();
-        let made = named
-            .into_iter()
-            .filter_map(|(heap, x)| Some((heap, *by_xid.get(&x)?)))
-            .collect();
+        let first = by_xid.keys().next().copied();
+        let mut created = None;
+        let mut made = BTreeMap::new();
+        for (heap, x) in named {
+            let version = match by_xid.get(&x) {
+                Some(v) => *v,
+                // The create's transaction names heaps before any migration commits.
+                None if created.is_none_or(|c| c == x) && first.is_none_or(|f| x < f) => {
+                    created = Some(x);
+                    0
+                }
+                None => return Err(Rot::Unborn(heap).into()),
+            };
+            made.insert(heap, version);
+        }
         Ok((migrations, made))
     }
 }

@@ -8,8 +8,6 @@ use adtb_lang::evolve::Source;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
-use crate::heap::Heap;
-use crate::key::Value;
 use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -18,8 +16,9 @@ use super::Rot;
 use super::ids::{CatFieldId, CatIndexId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
 use super::roots::RootsRow;
+use super::roots_heap::Roots;
 use super::rows::{ElementTexts, IndexSpec};
-use super::{Broken, Catalog, Change, Error, Migrating, ROOTS, admit_roots, delete_rows, indexes};
+use super::{Broken, Catalog, Change, Error, Migrating, ROOTS, indexes};
 
 /// The first index id of an old key held pending. The log allocates index ids below it.
 const HELD_KEY_INDEXES: u64 = 1 << 31;
@@ -184,20 +183,20 @@ fn stored(pending: &[Pending]) -> Vec<RootsRow> {
 /// Write as `m.x` the roots rows of `roots` that take the holds of `was` to those of `now`.
 pub(super) fn rewrite<R: Runtime>(
     m: &Migrating<'_, R>,
-    roots: &Heap,
+    roots: &Roots,
     was: &[Pending],
     now: &[Pending],
 ) -> Result<(), Error> {
     let before = stored(was);
     let after = stored(now);
-    let gone: Vec<Vec<Value>> = before
+    let gone: Vec<RootsRow> = before
         .iter()
         .filter(|r| !after.contains(r))
-        .map(RootsRow::encode)
+        .cloned()
         .collect();
-    delete_rows(m, roots, &gone)?;
+    roots.delete(m, &gone)?;
     let added = after.into_iter().filter(|r| !before.contains(r));
-    m.insert_roots(roots, &admit_roots(roots, added)?)
+    roots.insert(m.pager, m.txns, m.x, &roots.admit(added)?)
 }
 
 impl Readers {
@@ -297,19 +296,16 @@ impl Catalog {
         } else {
             change.mark(self.root)?
         };
-        let roots: Vec<Vec<Value>> = freed
+        let roots: Vec<RootsRow> = freed
             .iter()
-            .map(|id| {
-                let row = RootsRow::IndexRoot {
-                    index: *id,
-                    at: self.indexes[id].1.tree().root(),
-                };
-                row.encode()
+            .map(|id| RootsRow::IndexRoot {
+                index: *id,
+                at: self.indexes[id].1.tree().root(),
             })
             .collect();
         let m = change.writes();
         let wrote = rewrite(m, &self.roots, &self.readers.pending, &pending)
-            .and_then(|()| delete_rows(m, &self.roots, &roots));
+            .and_then(|()| self.roots.delete(m, &roots));
         if let Err(e) = wrote {
             return Err(change.fail(self, e));
         }

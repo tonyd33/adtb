@@ -2,17 +2,16 @@
 //! bundle family and each bundle's successful registration.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use crate::heap::Heap;
 use crate::mvcc::{Hold, Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::keyed::{self, Writer};
 use super::roots::RootsRow;
+use super::roots_heap::Roots;
 use super::rot::Rot;
-use super::{Catalog, Error, ROOTS, visible};
+use super::{Catalog, Error, ROOTS};
 
 /// Who registered a bundle: an open given it, or a role through the registration command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +56,7 @@ pub enum Fact {
 /// The writer of deployment facts into transactions of the write path.
 #[derive(Clone)]
 pub struct Deployment {
-    roots: Arc<Heap>,
+    roots: Roots,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -130,8 +129,7 @@ impl Deployment {
     ) -> Result<Deployed, Error> {
         let mut out = Deployed::default();
         let mut keys = Vec::new();
-        for row in visible(pager, txns, hold, &self.roots)? {
-            let row = RootsRow::decode(&row)?;
+        for (_, _, row) in self.roots.rows(pager, txns, (hold, None))? {
             let key = row.key();
             match row {
                 RootsRow::Deployment(f) => {
@@ -157,8 +155,8 @@ impl Deployment {
 
     #[doc(hidden)]
     #[cfg(test)]
-    pub fn roots(&self) -> &Heap {
-        &self.roots
+    pub fn roots(&self) -> &crate::heap::Heap {
+        self.roots.heap()
     }
 
     /// Write `facts` in the transaction of `w`, so that they commit or abort with it: each

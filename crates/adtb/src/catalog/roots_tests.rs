@@ -108,7 +108,7 @@ fn readers_of(seed: u64, row: &Value) -> Vec<(&'static str, Option<Error>)> {
             insert_row(
                 &pager,
                 txns,
-                &catalog.roots,
+                catalog.roots.heap(),
                 begun.xid(),
                 std::slice::from_ref(row),
             )
@@ -263,14 +263,20 @@ fn a_row_of_every_roots_constructor_reads_back_through_the_roots_heap() {
         let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
         let begun = txns.begin(&pager).expect("a transaction");
         for row in &rows {
-            insert_row(&pager, &txns, &catalog.roots, begun.xid(), &row.encode())
-                .expect("the row is written");
+            insert_row(
+                &pager,
+                &txns,
+                catalog.roots.heap(),
+                begun.xid(),
+                &row.encode(),
+            )
+            .expect("the row is written");
         }
         txns.commit(&pager, begun).expect("the commit").done();
         let hold = txns
             .take(Scope::Heaps(BTreeSet::from([ROOTS])))
             .expect("a snapshot");
-        read = visible(&pager, &txns, &hold, &catalog.roots).expect("the roots rows");
+        read = visible(&pager, &txns, &hold, catalog.roots.heap()).expect("the roots rows");
     });
     let read: Vec<RootsRow> = read
         .iter()
@@ -278,6 +284,51 @@ fn a_row_of_every_roots_constructor_reads_back_through_the_roots_heap() {
         .collect();
     let missing: Vec<&RootsRow> = rows.iter().filter(|r| !read.contains(r)).collect();
     assert_eq!(Vec::<&RootsRow>::new(), missing);
+}
+
+/// Returns the version that named each heap of a catalog after one migration, then its refusal
+/// of a heap named by a later transaction that applied no migration.
+fn born_after(seed: u64) -> (BTreeSet<u64>, Option<Error>) {
+    let mut out = None;
+    let mut sim = Sim::new(seed, Config::default());
+    finished(&mut sim, |rt: SimRuntime| {
+        let pager = Pager::create(rt.clone(), &options(64)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module m\nadd module m\nadd type T = { id: I64 }\nadd relation ts : T key id\n",
+            )
+            .expect("the migration applies");
+        let retained = catalog.retained(&pager, &txns).expect("the history");
+        let versions = retained.born.values().copied().collect();
+        let begun = txns.begin(&pager).expect("a transaction");
+        let stray = RootsRow::HeapRoot {
+            rel: CatRelId::from_raw(1 << 20),
+            ctor: CatCtorId::from_raw(1 << 20),
+            heap: 4242,
+            at: Pid(7),
+        };
+        insert_row(
+            &pager,
+            &txns,
+            catalog.roots.heap(),
+            begun.xid(),
+            &stray.encode(),
+        )
+        .expect("the row is written");
+        txns.commit(&pager, begun).expect("the commit").done();
+        out = Some((versions, catalog.retained(&pager, &txns).err()));
+    });
+    out.expect("the case ran")
+}
+
+#[test]
+fn every_heap_is_born_at_the_create_or_a_migration_and_one_named_by_neither_is_damage() {
+    let (versions, refused) = born_after(11);
+    assert_eq!(BTreeSet::from([0, 1]), versions);
+    assert_eq!(Some(Error::Corrupt(Rot::Unborn(4242))), refused);
 }
 
 #[test]
@@ -452,7 +503,7 @@ fn a_catalog_opens_over_a_kept_row_whose_fields_do_not_decode() {
         insert_row(
             &pager,
             &txns,
-            &catalog.roots,
+            catalog.roots.heap(),
             begun.xid(),
             std::slice::from_ref(&blob),
         )

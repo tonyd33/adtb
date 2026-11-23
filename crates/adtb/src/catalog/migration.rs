@@ -34,9 +34,8 @@ use super::steps::Stepped;
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Change, Checked, Data, ElementTexts, Error, Hash,
     Migrating, Readers, VersionHash, change, ctor_count, ctor_id, ctor_index, ctor_relations,
-    delete_keyed, delete_rows, element_types, heap_root, index_ctors, index_keys, indexes, layout,
-    moved, oplog, owner, pending, planned, refusal, rel_id, relation, row_key, row_type, rows,
-    steps, visible,
+    delete_keyed, element_types, heap_root, index_ctors, index_keys, indexes, layout, moved, oplog,
+    owner, pending, planned, refusal, rel_id, relation, row_key, row_type, rows, steps, visible,
 };
 
 impl Catalog {
@@ -621,10 +620,9 @@ impl Catalog {
                 text: m.text.clone(),
             });
         }
-        let gone: Vec<Vec<Value>> = gone.iter().map(RootsRow::encode).collect();
-        delete_rows(m, &self.roots, &gone)?;
-        let named = admit::admit_roots(&self.roots, named)?;
-        m.insert_roots_all(&self.roots, &named)?;
+        self.roots.delete(m, &gone)?;
+        let named = self.roots.admit(named)?;
+        self.roots.insert_all(m, &named)?;
         next.insert_all(m, b.data)?;
         self.write_rows(m, &next, b)?;
         Ok(next)

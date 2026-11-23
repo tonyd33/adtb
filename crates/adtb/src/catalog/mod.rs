@@ -29,6 +29,7 @@ mod probed;
 mod readers;
 mod root;
 mod roots;
+mod roots_heap;
 mod rot;
 mod rows;
 mod steps;
@@ -115,13 +116,14 @@ pub use rows::{ElementTexts, IndexSpec, Rows, indexed_fields, indexes};
 pub use rows::{applied, declared};
 pub use validate::Denial;
 
-use admit::{Admitted, Indexing, RootsAdmitted, admit_roots};
+use admit::{Admitted, Indexing};
 use change::Data;
 use history::{Kept, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
 use readers::{Pending, Readers};
 use root::Root;
 use roots::RootsRow;
+use roots_heap::Roots;
 use transaction::Change;
 
 /// The name of the schema owner's role, the grantor of every log grant.
@@ -220,7 +222,7 @@ pub struct Catalog {
     texts: ElementTexts,
     root: Pid,
     large: LargeStore,
-    roots: Arc<Heap>,
+    roots: Roots,
     heaps: BTreeMap<(RelId, u32), Arc<Heap>>,
     indexes: BTreeMap<u64, (IndexSpec, Index, Arc<IndexKeys>)>,
     keys: OrderKeys,
@@ -386,8 +388,8 @@ struct Named {
 
 impl Named {
     /// Add what roots row `row` names.
-    fn add(&mut self, row: &[Value]) -> Result<(), Error> {
-        match RootsRow::decode(row)? {
+    fn add(&mut self, row: RootsRow) -> Result<(), Error> {
+        match row {
             RootsRow::HeapRoot {
                 rel,
                 ctor,
@@ -432,49 +434,21 @@ impl Named {
 fn named<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
-    roots: &Heap,
+    roots: &Roots,
 ) -> Result<Named, Error> {
     let rows = if let Some(damage) = pager.whole_cause() {
-        latest_rows(pager, txns, roots, damage)?
+        roots.latest(pager, txns, damage)?
     } else {
         let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let rows = visible(pager, txns, &hold, roots);
+        let rows = roots.rows(pager, txns, (&hold, None));
         drop(hold);
-        rows?
+        rows?.into_iter().map(|(_, _, row)| row).collect()
     };
     let mut out = Named::default();
     for row in rows {
-        out.add(&row)?;
+        out.add(row)?;
     }
     Ok(out)
-}
-
-/// Returns the rows of `heap` in the latest state of a database whose commit log has `damage`.
-///
-/// Fail with `damage` when a version's writer or deleter has a damaged status page and no commit
-/// record in the retained log, so no uncommitted row reads as committed.
-fn latest_rows<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    heap: &Heap,
-    damage: PageError,
-) -> Result<Vec<Vec<Value>>, PageError> {
-    let logged = pager.logged_commits();
-    'scan: loop {
-        let mut versions = Vec::new();
-        heap.scan(pager, |v| versions.push(v))?;
-        let mut rows = Vec::new();
-        for v in versions {
-            let live = txns.latest_live(pager, &v.header.writers, &logged);
-            let Some(live) = v.looked_up(pager, live)? else {
-                continue 'scan;
-            };
-            if live.ok_or(damage)? {
-                rows.push(v.row);
-            }
-        }
-        return Ok(rows);
-    }
 }
 
 /// Returns the rows of the versions of `heap` visible at the snapshot of `hold`, in heap order.
@@ -638,9 +612,9 @@ impl Catalog {
         pid: Pid,
     ) -> Result<Catalog, Error> {
         let large = LargeStore::create(pager, LARGE)?;
-        let roots = Heap::create(pager, ROOTS, roots::row_type(), large)?;
+        let roots = Roots::create(pager, large)?;
         let kept = Kept::create(pager, FIRST_HEAP, FIRST_HEAP + 1)?;
-        let named = (roots.id().0, roots.root());
+        let named = roots.named();
         let next = Checked::engine()?;
         let empty = Catalog {
             source: Source::default(),
@@ -650,7 +624,7 @@ impl Catalog {
             texts: next.texts.clone(),
             root: pid,
             large,
-            roots: Arc::new(roots),
+            roots,
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
             keys: OrderKeys::new(),
@@ -782,7 +756,7 @@ impl Catalog {
             return Ok((catalog, txns));
         }
         let large = LargeStore::open(root.large.0, root.large.1);
-        let roots = Heap::open(pager, root.roots.0, root.roots.1, roots::row_type(), large)?;
+        let roots = Roots::open(pager, root.roots, large)?;
         let named = named(pager, &txns, &roots)?;
         let (source, schema, program, hash) = fold(&named.migrations, &named.dormant)?;
         check_order_keys(&schema, &named.keys)?;
@@ -840,7 +814,7 @@ impl Catalog {
             texts,
             root: pid,
             large,
-            roots: Arc::new(roots),
+            roots,
             heaps,
             indexes: stored,
             keys: named.keys,
@@ -871,7 +845,7 @@ impl Catalog {
             program: Arc::new(program),
             root: pager.catalog_root(),
             large,
-            roots: Arc::new(Heap::open(pager, ROOTS, Pid(0), roots::row_type(), large)?),
+            roots: Roots::open(pager, (ROOTS, Pid(0)), large)?,
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
             keys: OrderKeys::default(),
@@ -1274,16 +1248,6 @@ struct Freed {
 }
 
 impl<R: Runtime> Migrating<'_, R> {
-    /// Insert `rows` into the roots heap `roots` as `self.x`, as [`insert_roots`] does.
-    fn insert_roots(&self, roots: &Heap, rows: &RootsAdmitted) -> Result<(), Error> {
-        insert_roots(self.pager, self.txns, roots, self.x, rows)
-    }
-
-    /// Insert the rows of `rows` into the roots heap `roots` as [`Migrating::insert_all`] does.
-    fn insert_roots_all(&self, roots: &Heap, rows: &RootsAdmitted) -> Result<(), Error> {
-        self.insert_all(roots, rows.rows().iter().map(Ok), |_, _| Ok(()))
-    }
-
     /// Insert the rows of `rows` into `heap` as `self.x`, in order, as
     /// [`Heap::insert_all_pruning`] does, calling `placed` with each row and its TID.
     fn insert_all<V: AsRef<[Value]>>(
@@ -1342,23 +1306,6 @@ pub struct Abandoning(());
 impl heap::Abandons for Abandoning {}
 
 impl heap::UncheckedWriter for Abandoning {}
-
-/// Insert `rows` into the roots heap `roots` as transaction `x`, in order, pruning a page found
-/// without room before looking further.
-fn insert_roots<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    roots: &Heap,
-    x: Xid,
-    rows: &RootsAdmitted,
-) -> Result<(), Error> {
-    for row in rows.rows() {
-        let mut judge = txns.judge_now(pager, roots.id().0);
-        let put = roots.insert_pruning(pager, x, row, &mut judge);
-        put.kept(&Abandoning(()))?;
-    }
-    Ok(())
-}
 
 /// Returns the heap of every constructor of relation `r` among `heaps`.
 fn sum_of(heaps: &BTreeMap<(RelId, u32), Arc<Heap>>, r: RelId) -> Vec<Arc<Heap>> {

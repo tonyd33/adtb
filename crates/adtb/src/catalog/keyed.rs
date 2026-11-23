@@ -3,14 +3,15 @@
 
 use std::fmt;
 
-use crate::heap::{Heap, Version, WriteTarget};
+use crate::heap::Version;
 use crate::mvcc::{Conflict, Hold, Logged, Probe, Reader, Transactions, Write, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::Error;
 use super::deployment::Fact;
 use super::roots::RootsRow;
-use super::{Abandoning, Error, admit_roots, insert_roots};
+use super::roots_heap::Roots;
 
 /// A running transaction of the write path, as keyed storage writes in it: its id and the hold
 /// of its snapshot.
@@ -77,7 +78,7 @@ impl RootsRow {
 pub(super) fn put<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
-    roots: &Heap,
+    roots: &Roots,
     w: Writer<'_>,
     key: &Key,
     next: impl FnOnce(&[RootsRow]) -> Vec<RootsRow>,
@@ -90,13 +91,10 @@ pub(super) fn put<R: Runtime>(
         if after.contains(row) {
             continue;
         }
-        roots
-            .delete(pager, WriteTarget::checked(v.tid, v.header), w.x)
-            .kept(&Abandoning(()))?
-            .unchecked(&Abandoning(()));
+        roots.delete_version(pager, v, w.x)?;
     }
     let fresh = after.into_iter().filter(|r| !now.contains(r));
-    insert_roots(pager, txns, roots, w.x, &admit_roots(roots, fresh)?)?;
+    roots.insert(pager, txns, w.x, &roots.admit(fresh)?)?;
     unrivalled(pager, &reader, roots, (w.x, key))
 }
 
@@ -106,23 +104,20 @@ pub(super) fn put<R: Runtime>(
 fn seen<R: Runtime>(
     pager: &Pager<R>,
     reader: &Reader<Logged<R>>,
-    roots: &Heap,
+    roots: &Roots,
     (x, key): (Xid, &Key),
 ) -> Result<Vec<(Version, RootsRow)>, Error> {
-    let heap = roots.id().0;
+    let heap = roots.id();
     'scan: loop {
-        let mut versions = Vec::new();
-        roots.scan(pager, |v| versions.push(v))?;
         let mut out = Vec::new();
-        for v in versions {
+        for (v, row) in roots.versions(pager)? {
+            if row.key().as_ref() != Some(key) {
+                continue;
+            }
             let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
                 continue 'scan;
             };
             if !seen.visible() {
-                continue;
-            }
-            let row = RootsRow::decode(&v.row)?;
-            if row.key().as_ref() != Some(key) {
                 continue;
             }
             let checked = reader.check_write(x, &v.header.writers, heap);
@@ -144,15 +139,13 @@ fn seen<R: Runtime>(
 fn unrivalled<R: Runtime>(
     pager: &Pager<R>,
     reader: &Reader<Logged<R>>,
-    roots: &Heap,
+    roots: &Roots,
     (x, key): (Xid, &Key),
 ) -> Result<(), Error> {
-    let heap = roots.id().0;
+    let heap = roots.id();
     'scan: loop {
-        let mut versions = Vec::new();
-        roots.scan(pager, |v| versions.push(v))?;
-        for v in versions {
-            if RootsRow::decode(&v.row)?.key().as_ref() != Some(key) {
+        for (v, row) in roots.versions(pager)? {
+            if row.key().as_ref() != Some(key) {
                 continue;
             }
             let probed = reader.probe_unique(x, &v.header.writers, heap);

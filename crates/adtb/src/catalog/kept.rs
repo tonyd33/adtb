@@ -11,7 +11,7 @@ use crate::storage::Pager;
 
 use super::keyed::{self, Key, Writer};
 use super::roots::{self, RootsRow};
-use super::{Catalog, Error, ROOTS, visible};
+use super::{Catalog, Error, ROOTS};
 
 /// The only encoding of a kept row's constructor and fields this engine reads.
 pub(super) const ROW_FORMAT: u64 = 2;
@@ -101,11 +101,11 @@ impl Catalog {
         txns: &Transactions<R>,
     ) -> Result<Vec<KeptRow>, Error> {
         let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let rows = visible(pager, txns, &hold, &self.roots);
+        let rows = self.roots.rows(pager, txns, (&hold, None));
         drop(hold);
         let mut out = Vec::new();
-        for row in rows? {
-            match RootsRow::decode(&row)? {
+        for (_, _, row) in rows? {
+            match row {
                 RootsRow::Kept {
                     relation,
                     group,
