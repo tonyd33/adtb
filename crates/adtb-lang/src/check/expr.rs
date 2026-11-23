@@ -91,6 +91,9 @@ impl Checker<'_> {
         if self.adhoc() && self.type_nodes > MAX_TEXT_TYPE_NODES {
             return Err(diag(span, "the types of this text are too large"));
         }
+        if let Some(why) = ty::fn_inside_value(&out.ty) {
+            return Err(diag(span, why));
+        }
         Ok(out)
     }
 

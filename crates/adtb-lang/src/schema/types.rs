@@ -12,7 +12,8 @@ pub enum FnTypes {
 
 pub(crate) const FN_FIELD: &str = "a field never has a function type";
 pub(crate) const FN_TYPE_ARGUMENT: &str = "a type argument is a value type, never a function type";
-const FN_SET_ELEMENT: &str = "a set element never has a function type";
+pub(crate) const FN_SET_ELEMENT: &str = "a set element never has a function type";
+pub(crate) const FN_QUERY_RESULT: &str = "a query result never has a function type";
 pub(crate) const FN_RELATION: &str = "a relation never holds a function";
 pub(crate) const FN_AGGREGATE: &str = "an aggregate's input and result never have a function type";
 

@@ -1,0 +1,60 @@
+# A function value is a value of no set element, field, type argument or query result, whether it
+# is a lambda, a schema function named without a call or a choice between them.
+
+migrate
+  module app
+  add module app
+  add type R = { id: Key rs, v: I64 }
+  add relation rs : R key id generate sequence
+  define fn twice (x: I64) -> I64 = x * 2
+  define fn idf (f: I64 -> I64) -> I64 -> I64 = f
+  define fn app (f: I64 -> I64, x: I64) -> I64 = f(x)
+
+run
+  insert rs { v: 1 }
+
+error Invalid { detail: "a set element never has a function type" }
+  [fn (x: I64) -> x]
+
+error Invalid { detail: "a set element never has a function type" }
+  [twice]
+
+error Invalid { detail: "a set element never has a function type" }
+  from r in rs select fn (x: I64) -> x + r.v
+
+error Invalid { detail: "a set element never has a function type" }
+  from r in rs select (if r.v > 0 then twice else fn (x: I64) -> x)
+
+error Invalid { detail: "a field never has a function type" }
+  [{ f: fn (x: I64) -> x }]
+
+error Invalid { detail: "a field never has a function type" }
+  from r in rs select { v: r.v, g: twice }
+
+error Invalid { detail: "a field never has a function type" }
+  ({ f: fn (x: I64) -> x }.f)(1)
+
+error Invalid { detail: "a field never has a function type" }
+  [Foo { f: twice }]
+
+error Invalid { detail: "a type argument is a value type, never a function type" }
+  [Some { value: fn (x: I64) -> x }]
+
+error Invalid { detail: "a type argument is a value type, never a function type" }
+  match Some { value: twice } | Some s -> 1 | None -> 0
+
+error Invalid { detail: "a query result never has a function type" }
+  fn (x: I64) -> x
+
+error Invalid { detail: "a query result never has a function type" }
+  idf(twice)
+
+query
+  app(idf(fn (x: I64) -> x + 1), 2)
+----
+3
+
+query
+  from r in rs select app(idf(twice), r.v)
+----
+2

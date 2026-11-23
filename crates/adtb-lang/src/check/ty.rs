@@ -1,4 +1,4 @@
-use crate::schema::{Schema, TypeDefKind};
+use crate::schema::{FN_FIELD, FN_SET_ELEMENT, FN_TYPE_ARGUMENT, Schema, TypeDefKind};
 use crate::types::*;
 
 /// Returns whether type parameter `i` of `def` occurs in a field, so is covariant; otherwise it is bivariant.
@@ -112,6 +112,20 @@ fn same_ctors(schema: &Schema, a: &Ctors, b: &Ctors) -> bool {
             b.iter()
                 .any(|(d, gs)| c == d && same_fields(schema, fs, gs))
         })
+}
+
+/// Returns why no value has type `ty`: a function type inside a set element, a field or a type
+/// argument, at the top or on either side of an arrow.
+pub fn fn_inside_value(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::Fn(a, b) => fn_inside_value(a).or_else(|| fn_inside_value(b)),
+        Ty::Set(t) | Ty::NonEmpty(t) | Ty::Group(_, t) if t.mentions_fn() => Some(FN_SET_ELEMENT),
+        Ty::Group(k, _) if k.mentions_fn() => Some(FN_FIELD),
+        Ty::Record(_) | Ty::Sum { .. } if ty.mentions_fn() => Some(FN_FIELD),
+        Ty::Data { args, .. } if args.iter().any(Ty::mentions_fn) => Some(FN_TYPE_ARGUMENT),
+        Ty::Tag(t) => fn_inside_value(t),
+        _ => None,
+    }
 }
 
 /// `a <: b`.

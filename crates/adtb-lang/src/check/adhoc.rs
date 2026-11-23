@@ -5,7 +5,7 @@ use crate::ast::{
 };
 use crate::ids::{CatRelId, engine_rel, engine_type};
 use crate::kernel::alpha_equal;
-use crate::schema::{Committed, Temp, TempRow};
+use crate::schema::{Committed, FN_QUERY_RESULT, Temp, TempRow};
 
 /// The registered queries of the live bundles, by bundle and query name.
 #[derive(Clone, Debug, Default)]
@@ -208,7 +208,13 @@ impl Checker<'_> {
     /// and its checked form when it is a command.
     pub(super) fn adhoc_item(&mut self, item: &AdhocItem) -> R<Checked> {
         match item {
-            AdhocItem::Expr(e) => self.statement(e).map(|o| Checked::Statement(o.tm)),
+            AdhocItem::Expr(e) => {
+                let o = self.statement(e)?;
+                if o.ty.mentions_fn() {
+                    return Err(diag(e.span, FN_QUERY_RESULT));
+                }
+                Ok(Checked::Statement(o.tm))
+            }
             AdhocItem::Write(w) => self.write(w).map(Checked::Statement),
             AdhocItem::Transact(b) => self.transact(b, None).map(|o| Checked::Statement(o.tm)),
             AdhocItem::Command(c, span) => {

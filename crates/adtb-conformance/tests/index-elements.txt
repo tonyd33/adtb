@@ -86,5 +86,5 @@ set-of-record	bare	unique,interval index	-	{ id: $, n: 1 }	[{ a: n }]	index elem
 set-of-set	bare	index,unique,interval index	-	{ id: $, n: 1 }	[[n]]	index element `[ [ n ] ]` of `items0` has type Set (Set I64), which has no key form: its type contains a set or function type
 nonempty	record	index,unique,interval index	-	{ id: $, n: 1 }	from x in [n] group x by x into g select g	index element `from x in [ n ] group x by x into g select g` of `items0` has type Set (Set I64), which has no key form: its type contains a set or function type
 function	bare	index,unique,interval index	-	{ id: $, n: 1 }	fn (x: I64) -> x + n	index element `fn ( x : I64 ) -> x + n` of `items0` has type I64 -> I64, which has no key form: its type contains a set or function type
-function	record	index,unique,interval index	-	{ id: $, n: 1 }	{ a: fn (x: I64) -> x + n }	index element `{ a : fn ( x : I64 ) -> x + n }` of `items0` has type { a: I64 -> I64 }, which has no key form: its type contains a set or function type
-function	sum	index,unique,interval index	-	{ id: $, n: 1 }	Some { value: fn (x: I64) -> x + n }	index element `Some { value : fn ( x : I64 ) -> x + n }` of `items0` has type Option.Some (I64 -> I64), which has no key form: its type contains a set or function type
+function	record	index,unique,interval index	-	{ id: $, n: 1 }	{ a: fn (x: I64) -> x + n }	a field never has a function type
+function	sum	index,unique,interval index	-	{ id: $, n: 1 }	Some { value: fn (x: I64) -> x + n }	a type argument is a value type, never a function type

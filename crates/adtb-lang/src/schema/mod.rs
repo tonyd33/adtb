@@ -52,7 +52,9 @@ pub use refs::{CtorRef, FieldPart, FieldRef};
 pub use scope::Scope;
 pub(crate) use temps::{Temp, TempRow};
 
-pub(crate) use types::{FN_AGGREGATE, FN_FIELD, FN_RELATION, FN_TYPE_ARGUMENT};
+pub(crate) use types::{
+    FN_AGGREGATE, FN_FIELD, FN_QUERY_RESULT, FN_RELATION, FN_SET_ELEMENT, FN_TYPE_ARGUMENT,
+};
 pub use types::{FnTypes, resolve_type};
 
 #[derive(Clone, Debug)]

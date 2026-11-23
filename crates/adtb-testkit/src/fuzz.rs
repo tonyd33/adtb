@@ -184,12 +184,14 @@ fn sound<'d>(diags: impl IntoIterator<Item = &'d Diag>) {
     }
 }
 
-/// Returns how far a text whose normalisation ends in `normal` got; panic naming the kernel term
-/// when the normal form breaks a kernel invariant.
+/// Returns how far a checked text whose normalisation ends in `normal` got; panic naming the root
+/// when normalisation breaks a kernel invariant or a guarantee of the checker.
 fn reached(normal: Result<(), norm::Error>) -> Reached {
     match normal {
         Ok(()) => Reached::Normalised,
-        Err(e) if e.broken().is_some() => panic!("{:?}: {e}", e.root),
+        Err(e) if e.broken().is_some() || matches!(e.cause, norm::Cause::Stuck(_)) => {
+            panic!("{:?}: {e}", e.root)
+        }
         Err(_) => Reached::Checked,
     }
 }
