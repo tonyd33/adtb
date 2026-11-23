@@ -3,7 +3,7 @@ use crate::runtime::Runtime;
 use crate::storage::{HEADER_LEN, Lsn, PageError, Pager, Pid};
 
 /// The format of the catalog's root page.
-pub const FORMAT: u16 = 1;
+pub const FORMAT: u16 = 2;
 
 /// The stored `changing` of a root page whose catalog is naming its page of generated counters;
 /// no transaction has this id.

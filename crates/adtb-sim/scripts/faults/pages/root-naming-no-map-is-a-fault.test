@@ -8,7 +8,7 @@ scribble directory app::notes Note
 probe holding verify
 ----
 Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "a page no fault names: Leaked" }
-Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "directory app::notes Note: heap 247: names no visibility map" }
+Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "directory app::notes Note: heap 1073742070: names no visibility map" }
 
 fatal Quarantined { what: "app::notes.Note" }
   vacuum notes

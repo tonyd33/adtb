@@ -576,7 +576,11 @@ impl Catalog {
             }
             let index = Index::create(
                 pager,
-                owner(id),
+                owner(id).ok_or_else(|| {
+                    Error::Refused(vec![format!(
+                        "index id {id} is past the ids an index takes"
+                    )])
+                })?,
                 b.indexing.key_schema(spec)?,
                 index_ctors(held, spec),
             )?;

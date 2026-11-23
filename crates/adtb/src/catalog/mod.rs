@@ -123,11 +123,14 @@ use transaction::Change;
 /// The name of the schema owner's role, the grantor of every log grant.
 pub use adtb_lang::evolve::OWNER_ROLE;
 
-/// The heap id of the large-value store every heap shares.
-const LARGE: u32 = 1;
+/// The heap id of the large-value store every heap shares. Heap ids and the owners of the trees
+/// the catalog makes count up from here, above every index id and below every held key index's.
+const LARGE: u32 = 1 << 30;
 /// The heap id of the heap that names every other heap's and index's root.
-pub(crate) const ROOTS: u32 = 2;
-const FIRST_HEAP: u32 = 3;
+pub(crate) const ROOTS: u32 = LARGE + 1;
+const FIRST_HEAP: u32 = LARGE + 2;
+/// No heap or tree the catalog makes has this id or a higher one.
+const HEAP_IDS_END: u32 = 1 << 31;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -289,8 +292,12 @@ fn index_ctors(schema: &Schema, spec: &IndexSpec) -> BTreeSet<CtorId> {
         .collect()
 }
 
-fn owner(index: u64) -> u32 {
-    u32::try_from(index).expect("an index id fits 32 bits")
+/// Returns the owner of the pages of index `index`: its id, when the id lies below the heap ids
+/// or at or above [`HEAP_IDS_END`], among the held key indexes, and fits 32 bits.
+fn owner(index: u64) -> Option<u32> {
+    u32::try_from(index)
+        .ok()
+        .filter(|o| !(LARGE..HEAP_IDS_END).contains(o))
 }
 
 fn ctor_count(schema: &Schema, r: RelId) -> u32 {
@@ -737,8 +744,11 @@ impl Catalog {
         let root = {
             let page = pager.read(pid)?;
             let found = (storage::kind(&page), storage::format(&page));
-            if found != (PageKind::Catalog as u16, root::FORMAT) {
+            if found.0 != PageKind::Catalog as u16 {
                 return Err(Rot::RootPage { pid, found }.into());
+            }
+            if found.1 != root::FORMAT {
+                return Err(Rot::Format(found.1).into());
             }
             Root::read(&page)
         };
@@ -797,7 +807,7 @@ impl Catalog {
                 return Err(Error::Missing(format!("index {id}")));
             };
             let index = Index::open(
-                BTree::open(at, owner(id)),
+                BTree::open(at, owner(id).ok_or(Rot::IndexOwner(id))?),
                 key_schema(held, normal.as_ref(), &named.keys, &spec)
                     .map_err(|e| Rot::IndexKeying(Box::new(e)))?,
                 index_ctors(held, &spec),
@@ -1293,21 +1303,27 @@ impl<R: Runtime> Migrating<'_, R> {
         row: Vec<FieldType>,
         large: LargeStore,
     ) -> Result<Arc<Heap>, Error> {
+        self.took(id)?;
         let heap = Arc::new(Heap::create(self.pager, id, row, large)?);
         self.made.borrow_mut().push(heap.clone());
-        self.took(id);
         Ok(heap)
     }
 
     /// Create an empty tree owned by heap id `id`.
     fn create_tree(&self, id: u32) -> Result<BTree, Error> {
+        self.took(id)?;
         let tree = BTree::create(self.pager, id)?;
-        self.took(id);
         Ok(tree)
     }
 
-    fn took(&self, id: u32) {
+    fn took(&self, id: u32) -> Result<(), Error> {
+        if id >= HEAP_IDS_END {
+            return Err(Error::Refused(vec![
+                "the database has made every structure id it has".to_owned(),
+            ]));
+        }
         self.top.set(self.top.get().max(id + 1));
+        Ok(())
     }
 }
 

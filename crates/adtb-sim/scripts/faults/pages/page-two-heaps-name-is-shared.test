@@ -6,6 +6,6 @@ scribble directory app::shapes Square
 
 probe holding verify
 ----
-Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "heap app::shapes Circle: Shared by heap 249 and heap 250" }
-Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "heap app::shapes Circle: heap 250: is not a page of heap 250" }
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "heap app::shapes Circle: Shared by heap 1073742072 and heap 1073742073" }
+Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "heap app::shapes Circle: heap 1073742073: is not a page of heap 1073742073" }
 Structure { id: verify_findings.key(3), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "a page no fault names: Leaked" }

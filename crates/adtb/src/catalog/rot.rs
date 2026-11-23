@@ -35,6 +35,10 @@ pub enum Rot {
         pid: Pid,
         found: (u16, u16),
     },
+    /// The catalog root page is of this format, which this engine does not open.
+    Format(u16),
+    /// A stored index has this id, which no index takes.
+    IndexOwner(u64),
     /// The stored indexes do not follow from the stored schema and pending drops.
     KeptIndexes(Box<Broken>),
     /// A stored index does not key under the stored schema.
@@ -160,6 +164,12 @@ impl fmt::Display for Rot {
                 "the header's catalog root, page {}, has kind {} and format {}",
                 pid.0, found.0, found.1
             ),
+            Rot::Format(found) => write!(
+                f,
+                "the file is of catalog format {found}; this engine opens only format {}",
+                super::root::FORMAT
+            ),
+            Rot::IndexOwner(id) => write!(f, "a stored index has id {id}, which no index takes"),
             Rot::KeptIndexes(b) => write!(f, "{b}"),
             Rot::IndexKeying(e) => f.write_str(&detail(e)),
             Rot::CatalogRow { row, detail } => write!(f, "a row of {row} {detail}"),

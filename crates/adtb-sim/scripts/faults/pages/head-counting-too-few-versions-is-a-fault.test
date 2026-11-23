@@ -6,4 +6,4 @@ scribble large app::notes Note
 
 probe holding verify
 ----
-Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "large app::notes Note: large-value store 1: head 0 counts 0 versions, 1 point at it" }
+Structure { id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.015251Z, where: "large app::notes Note: large-value store 1073741824: head 0 counts 0 versions, 1 point at it" }
