@@ -541,7 +541,7 @@ impl Client {
                 w.next_key = self.next_key;
                 w.ops.insert(run.xid, run.ops.clone());
             }
-            db.txns.commit(&db.pager, run.begun).expect("commit");
+            db.txns.commit(&db.pager, run.begun).expect("commit").done();
             self.done.push(run.xid);
             for k in &run.keys {
                 match run.live.get(k) {
@@ -768,7 +768,7 @@ fn a_version_copy_clears_the_all_visible_flag_of_the_page_it_lands_on() {
                     tids.push(tid);
                 }
             }
-            db.txns.commit(&db.pager, begun).unwrap();
+            db.txns.commit(&db.pager, begun).unwrap().done();
             db.vacuum(usize::MAX);
             let before = all_visible_marks(&db);
             let tid = tids[target as usize];
@@ -778,7 +778,7 @@ fn a_version_copy_clears_the_all_visible_flag_of_the_page_it_lands_on() {
                 .kept(&crate::heap::Tested)
                 .unwrap()
                 .unchecked(&crate::heap::Tested);
-            db.txns.commit(&db.pager, begun).unwrap();
+            db.txns.commit(&db.pager, begun).unwrap().done();
             let v = db.heaps[EMAIL]
                 .read(&db.pager, tid)
                 .unwrap()
@@ -841,7 +841,7 @@ fn the_sweep_reads_only_pages_written_since_the_last() {
         let x = begun.xid();
         let kept = db.heaps[EMAIL].insert(&db.pager, x, &big(1)).unwrap();
         db.index(EMAIL, &big(1), kept);
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         assert!(!large.touched(&db.pager).unwrap().is_empty());
         let report = db.vacuum(usize::MAX);
         assert_eq!(0, report.chunks, "{report:?}");
@@ -853,7 +853,7 @@ fn the_sweep_reads_only_pages_written_since_the_last() {
             .kept(&crate::heap::Tested)
             .unwrap()
             .unchecked(&crate::heap::Tested);
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         let begun = db.txns.begin(&db.pager).unwrap();
         let x = begun.xid();
         let other = db.heaps[EMAIL].insert(&db.pager, x, &big(2)).unwrap();
@@ -861,7 +861,7 @@ fn the_sweep_reads_only_pages_written_since_the_last() {
         let report = db.vacuum(usize::MAX);
         assert!(report.chunks >= 20_000 / PAGE, "{report:?}");
         assert!(large.touched(&db.pager).unwrap().is_empty());
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         assert_eq!(Vec::<String>::new(), db.verify());
         assert_eq!(Vec::<String>::new(), db.verify_file());
     });
@@ -921,7 +921,7 @@ fn vacuum_reopens_a_page_conversion_left_full() {
             }
             old.push(t);
         }
-        db.txns.commit(pager, begun).unwrap();
+        db.txns.commit(pager, begun).unwrap().done();
         let first = old[0].page();
         heap.add_format(
             counter_type(true),
@@ -942,7 +942,7 @@ fn vacuum_reopens_a_page_conversion_left_full() {
                 .unwrap()
                 .unchecked(&crate::heap::Tested);
         }
-        db.txns.commit(pager, begun).unwrap();
+        db.txns.commit(pager, begun).unwrap().done();
         let w = db.txns.horizon_now(31);
         let mut freed = 0;
         for pid in heap.pages(pager).unwrap() {
@@ -969,7 +969,7 @@ fn vacuum_reopens_a_page_conversion_left_full() {
         let x = begun.xid();
         let t = heap.insert(pager, x, &fresh(1001)).unwrap();
         assert_eq!(first, t.page());
-        db.txns.commit(pager, begun).unwrap();
+        db.txns.commit(pager, begun).unwrap().done();
         let v = heap.read(pager, old[old.len() - 1]).unwrap().unwrap();
         assert_eq!(Value::Text("z".repeat(60)), v.row[2]);
         assert_eq!(Vec::<String>::new(), heap.verify(pager).unwrap());
@@ -997,7 +997,7 @@ fn a_walk_from_an_entry_read_before_vacuum_ends_on_a_page_the_large_store_took()
             Value::Bytes(vec![7; 3 * PAGE]),
         ];
         db.heaps[EMAIL].insert(&db.pager, x, &large).unwrap();
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         let store = db.heaps[EMAIL].large().pages(&db.pager).unwrap();
         assert!(store.contains(&Pid(t.page())), "{t:?} is not in {store:?}");
         assert_eq!(
@@ -1020,7 +1020,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         let x = begun.xid();
         let t = db.heaps[APPLE].insert(&db.pager, x, &row).unwrap();
         db.index(APPLE, &row, t);
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         let old = db
             .txns
             .take(Scope::Heaps(BTreeSet::from([db.ids[APPLE].0])))
@@ -1031,7 +1031,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         let moved_row = vec![Value::I64(1), Value::Text("m".into()), Value::Bytes(vec![])];
         let moved = apple.retag(&db.pager, t, x, email, &moved_row).unwrap();
         db.index(EMAIL, &moved_row, moved);
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         let begun = db.txns.begin(&db.pager).unwrap();
         let x = begun.xid();
         db.heaps[EMAIL]
@@ -1039,7 +1039,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
             .kept(&crate::heap::Tested)
             .unwrap()
             .unchecked(&crate::heap::Tested);
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         let report = db.vacuum(usize::MAX);
         assert!(report.freed >= 1, "{report:?}");
         assert!(db.heaps[APPLE].read(&db.pager, t).unwrap().is_some());
@@ -1049,7 +1049,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         let other = vec![Value::I64(2), Value::Text("o".into()), Value::Bytes(vec![])];
         let reused = db.heaps[EMAIL].insert(&db.pager, x, &other).unwrap();
         db.index(EMAIL, &other, reused);
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         assert_eq!(moved, reused, "the freed slot is taken again");
         assert_eq!(
             None,
@@ -1107,7 +1107,7 @@ fn a_walk_ends_at_a_retagged_in_version_of_another_sums_heap() {
             .insert(&db.pager, x, &[Value::I64(1), Value::I32(0)])
             .unwrap();
         let o = other.insert(&db.pager, x, &email_row(2)).unwrap();
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         let begun = db.txns.begin(&db.pager).unwrap();
         let x = begun.xid();
         let (apple, email) = pair(&mut db.heaps, APPLE, EMAIL);
@@ -1115,7 +1115,7 @@ fn a_walk_ends_at_a_retagged_in_version_of_another_sums_heap() {
         let stray = other
             .retag(&db.pager, o, x, other_in, &email_row(2))
             .unwrap();
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         let sum = &db.heaps;
         let start = db.ids[APPLE];
         let at = |target: Tid| move |l: &Link, _: &[Value]| Ok::<_, PageError>(l.tid == target);
@@ -1367,7 +1367,7 @@ fn dead_rows(rt: SimRuntime) -> Db {
             tids.push((heap, tid));
         }
     }
-    db.txns.commit(&db.pager, begun).unwrap();
+    db.txns.commit(&db.pager, begun).unwrap().done();
     let begun = db.txns.begin(&db.pager).unwrap();
     let x = begun.xid();
     for (heap, tid) in tids {
@@ -1377,7 +1377,7 @@ fn dead_rows(rt: SimRuntime) -> Db {
             .unwrap()
             .unchecked(&crate::heap::Tested);
     }
-    db.txns.commit(&db.pager, begun).unwrap();
+    db.txns.commit(&db.pager, begun).unwrap().done();
     db
 }
 

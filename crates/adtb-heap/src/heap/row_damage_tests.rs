@@ -538,7 +538,7 @@ fn broken(case: &Case, via: Option<Via>) -> Broken {
         let begun = txns.begin(&pager).unwrap();
         let beside = heap.insert(&pager, begun.xid(), &case.value).unwrap();
         let tid = heap.insert(&pager, begun.xid(), &case.value).unwrap();
-        txns.commit(&pager, begun).unwrap();
+        txns.commit(&pager, begun).unwrap().done();
         assert_eq!(
             Pid(tid.page()),
             Pid(beside.page()),

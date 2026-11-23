@@ -33,7 +33,7 @@ pub use ssi::Lock;
 pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer, StopsEarly};
 #[cfg(test)]
 pub use txn::RESERVATION;
-pub use txn::{Begun, DurableCommit, Hold, PastError, Pinned, Taken, Transactions};
+pub use txn::{Begun, Committed, Hold, PastError, Pinned, Taken, Transactions};
 pub use vacuuming::{Busy, Holder, Vacuuming};
 pub use wait::{Gate, Gated, Waits, Watch};
 use watermark::SnapshotId;

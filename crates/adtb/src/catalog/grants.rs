@@ -316,7 +316,7 @@ impl Catalog {
         drop(hold);
         match done {
             Ok(dormant) => {
-                txns.commit(pager, begun)?;
+                txns.commit(pager, begun)?.done();
                 self.source.grants = grants;
                 Ok(dormant)
             }

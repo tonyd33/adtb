@@ -383,7 +383,7 @@ fn writer(rt: &SimRuntime, db: &Db, world: &Mutex<World>, w: u64, mut live: Live
             db.txns.abort(&db.pager, begun).expect("abort");
         } else {
             world.lock().unwrap().ledger.submit(xid.0);
-            db.txns.commit(&db.pager, begun).expect("commit");
+            db.txns.commit(&db.pager, begun).expect("commit").done();
             live = mine;
             unacked.push(xid);
         }

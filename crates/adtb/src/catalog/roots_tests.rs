@@ -113,7 +113,7 @@ fn readers_of(seed: u64, row: &Value) -> Vec<(&'static str, Option<Error>)> {
                 std::slice::from_ref(row),
             )
             .expect("the row is written");
-            txns.commit(&pager, begun).expect("the commit");
+            txns.commit(&pager, begun).expect("the commit").done();
         };
         commit(&txns);
         out.push(("retained", catalog.retained(&pager, &txns).err()));
@@ -263,7 +263,7 @@ fn a_row_of_every_roots_constructor_reads_back_through_the_roots_heap() {
             insert_row(&pager, &txns, &catalog.roots, begun.xid(), &row.encode())
                 .expect("the row is written");
         }
-        txns.commit(&pager, begun).expect("the commit");
+        txns.commit(&pager, begun).expect("the commit").done();
         let hold = txns
             .take(Scope::Heaps(BTreeSet::from([ROOTS])))
             .expect("a snapshot");
@@ -454,7 +454,7 @@ fn a_catalog_opens_over_a_kept_row_whose_fields_do_not_decode() {
             std::slice::from_ref(&blob),
         )
         .expect("the row is written");
-        txns.commit(&pager, begun).expect("the commit");
+        txns.commit(&pager, begun).expect("the commit").done();
         pager.flush_log();
     });
     let status = status.expect("a status page");

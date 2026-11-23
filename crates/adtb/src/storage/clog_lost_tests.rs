@@ -540,7 +540,7 @@ fn lost_past_the_first_segment(commits: usize) -> (Files, Pid, Pid, Vec<(Xid, St
         let txns = Transactions::create(rt, &pager).unwrap();
         let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         let begun = txns.begin(&pager).unwrap();
-        txns.commit(&pager, begun).unwrap();
+        txns.commit(&pager, begun).unwrap().done();
         while Probe::of(&pager).appended().0 <= options.segment_size {
             pager.update(&[scratch], |p| p[0][HEADER_LEN] ^= 1).unwrap();
             pager.flush_log();
@@ -559,7 +559,7 @@ fn lost_past_the_first_segment(commits: usize) -> (Files, Pid, Pid, Vec<(Xid, St
         for _ in 0..commits {
             let begun = txns.begin(&pager).unwrap();
             let x = begun.xid();
-            txns.commit(&pager, begun).unwrap();
+            txns.commit(&pager, begun).unwrap().done();
             pager.flush_log();
             ids.push((x, Status::Committed));
         }

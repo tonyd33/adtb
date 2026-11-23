@@ -522,7 +522,7 @@ fn a_kept_row_written_into_a_full_roots_page_of_dead_versions_reuses_it() {
                     std::slice::from_ref(&row),
                 )
                 .expect("the kept row is written");
-            txns.commit(&pager, begun).expect("the commit");
+            txns.commit(&pager, begun).expect("the commit").done();
         };
         keep();
         let pages = roots.pages(&pager).expect("the roots pages");

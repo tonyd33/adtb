@@ -871,7 +871,7 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
             .unwrap()
             .insert(&pager, x, &[negative])
             .unwrap();
-        txns.commit(&pager, begun).unwrap();
+        txns.commit(&pager, begun).unwrap().done();
         pager.close();
     });
     let mut rounds = Sim::with_files(61, Config::default(), sim.files());

@@ -8,6 +8,7 @@ use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::schema::Schema;
 
 use crate::catalog::{self, Catalog};
+use crate::faults::{self, Step};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -15,15 +16,44 @@ use crate::storage::Pager;
 use super::cause::{Broken, corrupt, internal};
 use super::{Error, Log, OpenError, Opened, RejectReason, registered};
 
+/// An open of `pager` past its migrations, each durable once it committed. A later step of the
+/// open runs through [`Migrated::then`] and fails the open with its own failure, every migration
+/// still applied.
+pub(super) struct Migrated<'p, R: Runtime> {
+    pager: &'p Pager<R>,
+}
+
+impl<'p, R: Runtime> Migrated<'p, R> {
+    /// Returns the token of an open of `pager` that applies no migration to a file it does not
+    /// write.
+    pub(super) fn unwritten(pager: &'p Pager<R>) -> Migrated<'p, R> {
+        Migrated { pager }
+    }
+
+    /// Run `run`, a step of the open after its migrations. Returns its value, or fails with its
+    /// own failure.
+    #[track_caller]
+    pub(super) fn then<T>(
+        &self,
+        run: impl FnOnce() -> Result<T, OpenError>,
+    ) -> Result<T, OpenError> {
+        let root = self.pager.catalog_root();
+        match faults::damaged(Step::Opening, self.pager, root) {
+            Some(e) => Err(corrupt(catalog::Error::from(e))),
+            None => run(),
+        }
+    }
+}
+
 /// Apply the migrations of `log` beyond the file's own, each as its own schema change, stopping
 /// at the first refused one or the first across which a bundle of `live` has no translation.
-pub(super) fn migrate<R: Runtime>(
+pub(super) fn migrate<'p, R: Runtime>(
     catalog: &mut Catalog,
-    (pager, txns): (&Pager<R>, &Transactions<R>),
+    (pager, txns): (&'p Pager<R>, &Transactions<R>),
     log: &Log,
     live: &[registered::Live],
     replay: Option<&BTreeSet<(String, Privilege, String)>>,
-) -> Result<(), OpenError> {
+) -> Result<Migrated<'p, R>, OpenError> {
     let stored = catalog.source().log.len();
     let deployed = catalog.committed_deployed(pager, txns).map_err(corrupt)?;
     for text in log.migrations.iter().skip(stored) {
@@ -63,7 +93,7 @@ pub(super) fn migrate<R: Runtime>(
             other => corrupt(other),
         })?;
     }
-    Ok(())
+    Ok(Migrated { pager })
 }
 
 /// Returns the version of the first migration of `log` past the file's, `None` when it has none.

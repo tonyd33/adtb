@@ -230,7 +230,7 @@ fn restate(
     older[index_field(catalog, "clause")] = Value::Text(clause.into());
     catalog.insert(&m, indexes, c, &older).expect("inserted");
     drop(hold);
-    txns.commit(pager, begun).expect("committed");
+    txns.commit(pager, begun).expect("committed").done();
 }
 
 const LOWER: &str = "module app

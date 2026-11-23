@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::panic::Location;
 
 use super::Step;
-use crate::storage::{Damage, PageError, Pid};
+use crate::runtime::Runtime;
+use crate::storage::{Damage, PageError, Pager, Pid};
 
 /// Where a step runs: the source place of the call that runs it, and the step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -90,4 +91,11 @@ pub fn injected(step: Step) -> Option<PageError> {
         pid: Pid(0),
         damage: Damage::Unreadable,
     })
+}
+
+/// Returns the damage `pid` of `pager` is refused with from now on when a test failed this run of
+/// `step` at its caller's place, as a checksum that fails.
+#[track_caller]
+pub fn damaged<R: Runtime>(step: Step, pager: &Pager<R>, pid: Pid) -> Option<PageError> {
+    struck(step).then(|| pager.plant_damage(pid, Damage::Checksum))
 }

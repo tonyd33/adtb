@@ -114,7 +114,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                         txns.abort(pager, begun).expect("abort");
                         model.ended.insert(x, (event, Status::Aborted));
                     } else {
-                        txns.commit(pager, begun).expect("commit");
+                        txns.commit(pager, begun).expect("commit").done();
                         model.ended.insert(x, (event, Status::Committed));
                     }
                 }
@@ -386,7 +386,7 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
                     txns.abort(&pager, begun).expect("abort");
                     ledger.abort(x.0);
                 } else {
-                    txns.commit(&pager, begun).expect("commit");
+                    txns.commit(&pager, begun).expect("commit").done();
                     unacked.push(x);
                 }
             }
@@ -752,7 +752,7 @@ fn fate_matches_a_model_of_random_histories() {
                         txns.abort(pager, begun).expect("abort");
                         model.ended.insert(x, (event, Status::Aborted));
                     } else {
-                        txns.commit(pager, begun).expect("commit");
+                        txns.commit(pager, begun).expect("commit").done();
                         model.ended.insert(x, (event, Status::Committed));
                         let record = txns.history().expect("history is kept");
                         let time = record.committed_at(pager, x).expect("commit time");
@@ -840,7 +840,7 @@ fn a_dropped_hold_releases_its_heaps() {
         let hold = txns
             .take(Scope::Heaps(BTreeSet::from([1])))
             .expect("a snapshot");
-        txns.commit(pager, begun).expect("commit");
+        txns.commit(pager, begun).expect("commit").done();
         let next = TxnProbe::of(txns).next_xid();
         assert_eq!(x, txns.watermark(1));
         drop(hold);
@@ -859,7 +859,7 @@ fn a_reader_keeps_the_hold_it_was_built_from_until_it_drops() {
             .take(Scope::Heaps(BTreeSet::from([1])))
             .expect("a snapshot");
         let reader = txns.reader(pager, &hold, None);
-        txns.commit(pager, begun).expect("commit");
+        txns.commit(pager, begun).expect("commit").done();
         let next = TxnProbe::of(txns).next_xid();
         drop(hold);
         let kept = txns.watermark(1);
@@ -945,7 +945,7 @@ fn a_guard_dropped_in_a_panic_bounds_the_next_reservation_and_its_id_recovers_as
         let reserved = txns.commit_log().reserved();
         while TxnProbe::of(txns).next_xid() <= reserved {
             let later = txns.begin(pager).expect("begin");
-            txns.commit(pager, later).expect("commit");
+            txns.commit(pager, later).expect("commit").done();
         }
         pager.flush_log();
         let page = pager.read(root).expect("the root page");

@@ -40,7 +40,7 @@ fn an_update_pruning_a_full_page_refuses_it_at_an_unreserved_deleter() {
         while heap.pages(&pager).unwrap().len() == 1 {
             heap.insert(&pager, x, &[Value::I64(2)]).unwrap();
         }
-        txns.commit(&pager, begun).unwrap();
+        txns.commit(&pager, begun).unwrap().done();
         let page = Pid(dead.page());
         assert_eq!(page, Pid(target.page()), "both versions on the full page");
         heap.delete(&pager, dead, PAST)

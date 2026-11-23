@@ -47,7 +47,7 @@ mod verify;
 
 use cause::{Broken, corrupt};
 use failed_open::{failed_create, finish_create, open_damage};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -57,10 +57,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use adtb_file::Disk;
 use adtb_lang::check::{Bundles, Program};
 use adtb_lang::evolve::{Logged, Privilege, Replaying, Source};
-use adtb_lang::ids::engine_rel;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
-use adtb_lang::schema::{Committed as CommittedSchema, Schema};
+use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::types::Ty;
 use adtb_sys::lock::{Lock, RwLock};
 
@@ -814,34 +813,6 @@ fn deployed_state<R: Runtime>(
     ))
 }
 
-/// Returns what `verify` holds of the file and the rows of the volatile relations, with no kept
-/// rows when the commit log's damage leaves them unreadable.
-fn held_rows<R: Runtime>(
-    catalog: &Catalog,
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    schema: &Schema,
-    options: &OpenOptions,
-    clog_damaged: bool,
-) -> Result<
-    (
-        verify::Findings,
-        BTreeMap<adtb_lang::types::RelId, BTreeSet<Val>>,
-    ),
-    OpenError,
-> {
-    let kept = if clog_damaged {
-        Vec::new()
-    } else {
-        catalog.kept(pager, txns).map_err(corrupt)?
-    };
-    let table = catalog::engine_relation(schema, engine_rel::VERIFY_FINDINGS);
-    let findings = verify::Findings::of(kept, schema, table)?;
-    let mut volatile = settings::process_options(schema, &options.shown());
-    volatile.insert(table, findings.vals());
-    Ok((findings, volatile))
-}
-
 impl<R: Runtime> Engine<R> {
     /// Open the database `name`, or create it in a reserved directory and publish it once open,
     /// calling `hold` with each reserved file before create removes or renames it.
@@ -922,7 +893,8 @@ impl<R: Runtime> Engine<R> {
         let (schema, program) = catalog.checking();
         let (schema, program) = (Arc::new(schema.clone()), program.clone());
         let normal = migrate::normal(&schema, &program)?;
-        let (findings, volatile) = held_rows(&catalog, &pager, &txns, &schema, options, true)?;
+        let (findings, volatile) =
+            verify::held_rows(&catalog, &pager, &txns, &schema, options, true)?;
         let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
         let db = write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
             .map_err(corrupt)?
@@ -1085,25 +1057,27 @@ impl<R: Runtime> Engine<R> {
         };
         let hosts = Arc::new(options.host_fns.hosts());
         catalog.set_hosts(hosts.clone());
-        if writable {
+        let migrated = if writable {
             catalog.counters(&pager).map_err(corrupt)?;
             catalog.record_grants(&pager, &txns).map_err(corrupt)?;
             let replay = options.create.as_ref().and_then(|c| c.replay.as_ref());
             let migrated = migrate::migrate(&mut catalog, (&pager, &txns), log, &live, replay);
             *unapplied = migrate::unapplied(&catalog, log);
-            migrated?;
-        }
+            migrated?
+        } else {
+            migrate::Migrated::unwritten(&pager)
+        };
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
-        let normal = migrate::normal(&schema, &program)?;
+        let normal = migrated.then(|| migrate::normal(&schema, &program))?;
         let pending = host::pending(log, catalog.source().log.len());
-        options.host_fns.bound(&schema, &normal, &pending)?;
+        migrated.then(|| options.host_fns.bound(&schema, &normal, &pending))?;
         let schema = Arc::new(schema);
         let now = micros(pager.wall());
         let hash = catalog.version_hash();
         let over = registered::Over::new(catalog.source(), &schema, &program, &hash);
         let registered = match unapplied {
-            None => registered::register(&over, regs, &stored, now, &settings)?,
+            None => migrated.then(|| registered::register(&over, regs, &stored, now, &settings))?,
             Some(_) => Vec::new(),
         };
         let given = &options.registrations;
@@ -1113,12 +1087,17 @@ impl<R: Runtime> Engine<R> {
             .filter_map(registered::Checked::passed)
             .collect();
         let deployed = if writable {
-            let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
-            let deployed = catalog.committed_deployed(&pager, &txns).map_err(corrupt)?;
-            registered::definers(&registered, &stored, catalog.source(), &deployed, &roles)?;
+            let roles =
+                migrated.then(|| catalog.committed_roles(&pager, &txns).map_err(corrupt))?;
             let deployed =
-                bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
-            server::initialize(&catalog, &pager, &txns)?;
+                migrated.then(|| catalog.committed_deployed(&pager, &txns).map_err(corrupt))?;
+            migrated.then(|| {
+                registered::definers(&registered, &stored, catalog.source(), &deployed, &roles)
+            })?;
+            let deployed = migrated.then(|| {
+                bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)
+            })?;
+            migrated.then(|| server::initialize(&catalog, &pager, &txns))?;
             deployed
         } else {
             stored
@@ -1127,16 +1106,19 @@ impl<R: Runtime> Engine<R> {
         for c in &registered {
             c.explained(&mut bundles);
         }
-        let (findings, volatile) =
-            held_rows(&catalog, &pager, &txns, &schema, options, clog_damaged)?;
+        let (findings, volatile) = migrated
+            .then(|| verify::held_rows(&catalog, &pager, &txns, &schema, options, clog_damaged))?;
         let retained = if writable {
-            Some(catalog.retained(&pager, &txns).map_err(corrupt)?)
+            Some(migrated.then(|| catalog.retained(&pager, &txns).map_err(corrupt))?)
         } else {
             None
         };
         let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
-        let db = write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
-            .map_err(corrupt)?
+        let db = migrated
+            .then(|| {
+                write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
+                    .map_err(corrupt)
+            })?
             .with_files(
                 options
                     .file_root
@@ -1149,9 +1131,9 @@ impl<R: Runtime> Engine<R> {
             .with_hosts(hosts)
             .with_volatile(volatile);
         let db = match retained {
-            Some(retained) => db
-                .with_history(retained, settings.window)
-                .map_err(corrupt)?,
+            Some(retained) => {
+                migrated.then(|| db.with_history(retained, settings.window).map_err(corrupt))?
+            }
             None => db,
         };
         Ok(Opened {

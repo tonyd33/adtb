@@ -78,7 +78,7 @@ use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
 use crate::faults;
 use crate::heap::{self, FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, KeySchema, OrderKey, Tid, Value};
-use crate::mvcc::{self, DurableCommit, Hold, Scope, Transactions, Xid};
+use crate::mvcc::{self, Hold, Scope, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
@@ -682,7 +682,8 @@ impl Catalog {
             root.next_heap = catalog.next_heap;
             catalog.kept.name(&mut root);
             root.write(p);
-        })?;
+        })?
+        .done();
         Ok(catalog)
     }
 
@@ -875,7 +876,8 @@ impl Catalog {
 
     /// Free every page the catalog's structures do not reach, first counting each version on a
     /// page of a heap of `gone` off the large values it points at. A page whose versions it
-    /// could not count off is freed with its heads left overcounted.
+    /// could not count off is freed with its heads left overcounted, and so is a page it cannot
+    /// read while `gone` is not empty: [`Freed::counted`] is then false.
     ///
     /// Errors:
     /// - The damage found, freeing nothing, if a damaged page keeps it from finding
@@ -900,16 +902,21 @@ impl Catalog {
         let gone: BTreeMap<u32, &Heap> = gone.iter().map(|h| (h.id().0, h.as_ref())).collect();
         let mut counted = true;
         for p in report.leaked() {
-            let owner = match pager.read(p) {
-                Err(e) if e.damage != storage::Damage::Unreadable => {
-                    pager.scrap(p)?;
-                    continue;
+            let read =
+                faults::injected(faults::Step::ReadLeaked).map_or_else(|| pager.read(p), Err);
+            match read.map(|page| page.owner()) {
+                Ok(owner) => {
+                    if let Some(heap) = gone.get(&owner) {
+                        counted &= heap.release_page(pager, p);
+                    }
                 }
-                Err(_) => None,
-                Ok(page) => Some(page.owner()),
-            };
-            if let Some(heap) = owner.and_then(|o| gone.get(&o)) {
-                counted &= heap.release_page(pager, p);
+                Err(e) => {
+                    counted &= gone.is_empty();
+                    if e.damage != storage::Damage::Unreadable {
+                        pager.scrap(p)?;
+                        continue;
+                    }
+                }
             }
             pager.free(p)?;
         }
@@ -970,7 +977,7 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
         marked: Option<Begun>,
-        committed: &DurableCommit,
+        committed: mvcc::Committed<'_>,
         gone: &[Arc<Heap>],
     ) {
         let freed = committed.then(faults::Step::FreeLeaked, || {

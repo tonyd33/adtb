@@ -658,7 +658,7 @@ fn lost_status_page() -> (Files, Pid, Pid) {
         let pager = Pager::create(rt.clone(), &options).unwrap();
         let txns = Transactions::create(rt, &pager).unwrap();
         let begun = txns.begin(&pager).unwrap();
-        txns.commit(&pager, begun).unwrap();
+        txns.commit(&pager, begun).unwrap().done();
         let clog = txns.commit_log();
         out = Some((clog.root(), clog.status_pages()[&0]));
         drop(clog);
@@ -671,7 +671,7 @@ fn lost_status_page() -> (Files, Pid, Pid) {
         let txns = Transactions::open(rt, &pager, root).unwrap();
         for _ in 0..3 {
             let begun = txns.begin(&pager).unwrap();
-            txns.commit(&pager, begun).unwrap();
+            txns.commit(&pager, begun).unwrap().done();
         }
         std::mem::forget(txns.begin(&pager).unwrap());
         pager.close();

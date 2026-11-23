@@ -1,10 +1,11 @@
 //! A step that fails after its change's main update. After a transaction's durable commit the
 //! caller is told it succeeded and the next open finishes the step; before it, the call fails,
 //! nothing of it is seen, every release still ran, and every count of a large value equals the
-//! versions pointing at it.
+//! versions pointing at it. Damage an open meets after its migrations committed quarantines the
+//! database, and the migrations stay applied.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::process::run;
@@ -23,10 +24,13 @@ use crate::storage::{self, Pager};
 use crate::test_world;
 use crate::test_world::api::{printed, query};
 use crate::test_world::fixture::Storage;
-use crate::test_world::load::{FILE, opened, options};
+use crate::test_world::load::{FILE, open_in, opened, options};
 use crate::test_world::rows::{EMAIL, key_of, row_type};
 use crate::verify::{self, Depth, Finding, Inventory, Problem, Sum};
-use crate::{CallOptions, Database, Error, Log};
+use crate::{
+    CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, Registration,
+    RejectReason,
+};
 
 const SEED: u64 = 71;
 
@@ -170,29 +174,85 @@ fn counted(findings: &[Finding], what: &str) -> Findings {
     found
 }
 
-/// Fail unless an open at [`RANKED`] answers no row from verify and reads `rows` notes ranked 7.
-fn reads(rt: &SimRuntime, rows: usize, what: &str) {
+/// What one run of a change did: the runs of steps it reached, the failure the caller was told,
+/// whether a reopen finds the change, and what verify found after the reopen.
+struct Ran {
+    runs: Vec<Run>,
+    failed: Option<String>,
+    /// The failure of a read of `notes` on the database an open answered.
+    answered: Option<Error>,
+    /// `None` for a change with no commit, which fails at every failed step.
+    durable: Option<bool>,
+    found: Findings,
+    /// The heads verify finds overcounted before an open ends a change on the catalog root, and
+    /// whether the root records one.
+    unmended: (usize, bool),
+}
+
+/// Returns the heads verify finds overcounted on the closed file before any open ends a change
+/// the catalog root records, and whether it records one.
+fn unmended(rt: &SimRuntime) -> (usize, bool) {
+    let options = storage::Options {
+        page_size: 8192,
+        ..storage::Options::new(FILE)
+    };
+    let (pager, _) = Pager::open(rt.clone(), &options).expect("the file reopens");
+    let (catalog, txns) = Catalog::load(rt.clone(), &pager).expect("the catalog loads");
+    let clog = txns.commit_log();
+    let depth = Depth {
+        log: true,
+        indexes: true,
+    };
+    let report = verify::verify_with(&pager, &catalog.structures().inventory(&clog), depth);
+    let left = changing(&pager);
+    pager.close();
+    assert!(report.complete, "{:?}", report.findings);
+    let over = report.findings.iter();
+    let over = over.filter(|f| matches!(f.problem, Problem::Overcounted { .. }));
+    (over.count(), left)
+}
+
+/// Returns the number of migrations the file's catalog holds.
+fn version(rt: &SimRuntime) -> usize {
+    let (pager, catalog, _) = catalog_at(rt);
+    let version = catalog.source().log.len();
+    pager.close();
+    version
+}
+
+/// Returns the notes ranked 7 an open at [`RANKED`] reads, failing unless verify answers no row.
+fn ranked(rt: &SimRuntime, what: &str) -> usize {
     let db = opened(rt, FILE, &log(&[NOTES, RANKED]), &options(1));
     let ranked = query(&db, "from n in notes where n.rank == 7 select n.id");
-    assert_eq!(rows, ranked.len(), "{what}");
     assert_eq!(
         Vec::<String>::new(),
         printed(db.verify_holding().expect("verify runs")),
         "{what}"
     );
     db.close().expect("the database closes");
+    ranked.len()
 }
 
-/// What one run of a change did: the runs of steps it reached, whether the call succeeded, and
-/// what verify found after a reopen.
-struct Ran {
-    runs: Vec<Run>,
-    ok: bool,
-    found: Findings,
+/// The read [`told_at`] makes of the database an open answers.
+const NOTE_IDS: &str = "from n in notes select n.id";
+
+/// Open the file at the migrations `texts`. Returns the failure of the open, or of a read of
+/// `notes` on the database it answers.
+fn told_at(rt: &SimRuntime, texts: &[&str]) -> (Option<String>, Option<Error>) {
+    match open_in(rt, FILE, &log(texts), &options(1)) {
+        Ok(db) => {
+            let answered = call(&db, NOTE_IDS).err();
+            db.close().expect("the database closes");
+            (None, answered)
+        }
+        Err(e) => (Some(format!("{e:?}")), None),
+    }
 }
 
 /// Open the file at [`NOTES`] with [`ROWS`] rows, then at [`RANKED`], failing `fail`. Fail
-/// unless a sweep after the next open leaves the store as large as before the migration.
+/// unless a sweep after the next open leaves the store as large as before the migration, when
+/// `fail` is not a settle, or, when the open answers a database quarantined whole, unless the next
+/// open answers it too.
 fn migrated(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("migration {fail:?}");
     let mut sim = created_at(&[NOTES]);
@@ -202,23 +262,43 @@ fn migrated(fail: Option<(Site, usize)>) -> Ran {
         db.close().expect("the database closes");
     });
     let held = run(&mut sim, |rt| swept(&rt));
-    let runs = run(&mut sim, |rt| {
+    let (runs, failed, answered) = run(&mut sim, |rt| {
         arm(fail);
-        let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
-        let runs = armed::reached();
-        assert_eq!(fail.is_some(), changing(db.tested_pager()), "{what}");
-        db.close().expect("the database closes");
-        runs
+        let (failed, answered) = told_at(&rt, &[NOTES, RANKED]);
+        (armed::reached(), failed, answered)
     });
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let durable = run(&mut sim, |rt| version(&rt) == 2);
+    if answered.is_some() {
+        let again = run(&mut sim, |rt| told_at(&rt, &[NOTES, RANKED]));
+        assert_eq!((None, Some(quarantined())), again, "{what}");
+        return Ran {
+            runs,
+            failed,
+            answered,
+            durable: Some(durable),
+            found: Findings {
+                overcounted: 0,
+                unsettled: 0,
+            },
+            unmended,
+        };
+    }
     let found = run(&mut sim, |rt| {
-        reads(&rt, ROWS, &what);
+        assert_eq!(ROWS, ranked(&rt, &what), "{what}");
         findings(&rt, &what)
     });
-    assert_eq!(held, run(&mut sim, |rt| swept(&rt)), "{what}");
+    let swept = run(&mut sim, |rt| swept(&rt));
+    if fail.is_none_or(|(site, _)| site.step() != Step::Settle) {
+        assert_eq!(held, swept, "{what}");
+    }
     Ran {
         runs,
-        ok: true,
+        failed,
+        answered,
+        durable: Some(durable),
         found,
+        unmended,
     }
 }
 
@@ -244,46 +324,74 @@ fn settled(fail: Option<(Site, usize)>) -> Ran {
         assert_eq!(1, catalog.pending_drops().len());
         pager.close();
     });
-    let runs = run(&mut sim, |rt| {
+    let (runs, failed) = run(&mut sim, |rt| {
         let (pager, mut catalog, txns) = catalog_at(&rt);
         arm(fail);
-        catalog.settle(&pager, &txns).expect("the settle succeeds");
+        let failed = catalog
+            .settle(&pager, &txns)
+            .err()
+            .map(|e| format!("{e:?}"));
         let runs = armed::reached();
-        assert!(catalog.pending_drops().is_empty(), "{what}");
-        assert_eq!(fail.is_some(), changing(&pager), "{what}");
         pager.close();
-        runs
+        (runs, failed)
     });
-    let found = run(&mut sim, |rt| {
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let durable = run(&mut sim, |rt| {
         let (pager, catalog, _) = catalog_at(&rt);
-        assert!(catalog.pending_drops().is_empty(), "{what}");
+        let durable = catalog.pending_drops().is_empty();
         pager.close();
-        findings(&rt, &what)
+        durable
     });
+    let found = run(&mut sim, |rt| findings(&rt, &what));
     Ran {
         runs,
-        ok: true,
+        failed,
+        answered: None,
+        durable: Some(durable),
         found,
+        unmended,
     }
+}
+
+/// Run `call` on a file a create at `texts` left, opened at `texts` after `before` wrote its
+/// rows, failing `fail`. Returns the runs of steps it reached and the failure it was told.
+fn called(
+    sim: &mut Sim,
+    texts: &[&str],
+    before: &[String],
+    call: &str,
+    fail: Option<(Site, usize)>,
+) -> (Vec<Run>, Option<String>) {
+    run(sim, |rt| {
+        let db = opened(&rt, FILE, &log(texts), &options(1));
+        for text in before {
+            write(&db, text);
+        }
+        arm(fail);
+        let failed = self::call(&db, call).err().map(|e| format!("{e:?}"));
+        let runs = armed::reached();
+        db.close().expect("the database closes");
+        (runs, failed)
+    })
 }
 
 /// Insert [`ROWS`] rows into a file at [`RANKED`], failing `fail`.
 fn inserted(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("insert {fail:?}");
     let mut sim = created_at(&[NOTES, RANKED]);
-    let (runs, ok) = run(&mut sim, |rt| {
-        let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
-        arm(fail);
-        let ok = call(&db, &inserts(", rank: 7")).is_ok();
-        let runs = armed::reached();
-        db.close().expect("the database closes");
-        (runs, ok)
-    });
-    let found = run(&mut sim, |rt| {
-        reads(&rt, if ok { ROWS } else { 0 }, &what);
-        findings(&rt, &what)
-    });
-    Ran { runs, ok, found }
+    let (runs, failed) = called(&mut sim, &[NOTES, RANKED], &[], &inserts(", rank: 7"), fail);
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let rows = run(&mut sim, |rt| ranked(&rt, &what));
+    assert!(rows == 0 || rows == ROWS, "{what}: {rows} rows");
+    let found = run(&mut sim, |rt| findings(&rt, &what));
+    Ran {
+        runs,
+        failed,
+        answered: None,
+        durable: Some(rows == ROWS),
+        found,
+        unmended,
+    }
 }
 
 /// Insert [`ROWS`] rows into a file at [`RANKED`], vacuum, then update each keeping its body,
@@ -291,21 +399,21 @@ fn inserted(fail: Option<(Site, usize)>) -> Ran {
 fn updated(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("update {fail:?}");
     let mut sim = created_at(&[NOTES, RANKED]);
-    let (runs, ok) = run(&mut sim, |rt| {
-        let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
-        write(&db, &inserts(", rank: 7"));
-        write(&db, "vacuum notes");
-        arm(fail);
-        let ok = call(&db, "update n in notes set { n with rank: 8 }").is_ok();
-        let runs = armed::reached();
-        db.close().expect("the database closes");
-        (runs, ok)
-    });
-    let found = run(&mut sim, |rt| {
-        reads(&rt, if ok { 0 } else { ROWS }, &what);
-        findings(&rt, &what)
-    });
-    Ran { runs, ok, found }
+    let before = [inserts(", rank: 7"), "vacuum notes".into()];
+    let update = "update n in notes set { n with rank: 8 }";
+    let (runs, failed) = called(&mut sim, &[NOTES, RANKED], &before, update, fail);
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let rows = run(&mut sim, |rt| ranked(&rt, &what));
+    assert!(rows == 0 || rows == ROWS, "{what}: {rows} rows");
+    let found = run(&mut sim, |rt| findings(&rt, &what));
+    Ran {
+        runs,
+        failed,
+        answered: None,
+        durable: Some(rows == 0),
+        found,
+        unmended,
+    }
 }
 
 /// Insert [`ROWS`] rows of four large values each into `wides`, failing `fail`.
@@ -320,83 +428,216 @@ fn widened(fail: Option<(Site, usize)>) -> Ran {
         field('d')
     );
     let mut sim = created_at(&[WIDE]);
-    let (runs, ok) = run(&mut sim, |rt| {
-        let db = opened(&rt, FILE, &log(&[WIDE]), &options(1));
-        arm(fail);
-        let ok = call(&db, &format!("transact\n{}", row.repeat(ROWS))).is_ok();
-        let runs = armed::reached();
-        if fail.is_none() {
-            let retains = runs.iter().filter(|r| r.0.step() == Step::Retain);
-            assert_eq!(
-                2 * ROWS,
-                retains.count(),
-                "each row's counts take two updates"
-            );
-        }
-        db.close().expect("the database closes");
-        (runs, ok)
-    });
-    let found = run(&mut sim, |rt| {
+    let insert = format!("transact\n{}", row.repeat(ROWS));
+    let (runs, failed) = called(&mut sim, &[WIDE], &[], &insert, fail);
+    if fail.is_none() {
+        let retains = runs.iter().filter(|r| r.0.step() == Step::Retain);
+        assert_eq!(
+            2 * ROWS,
+            retains.count(),
+            "each row's counts take two updates"
+        );
+    }
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let rows = run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[WIDE]), &options(1));
         let rows = query(&db, "from w in wides select w.id");
-        assert_eq!(if ok { ROWS } else { 0 }, rows.len(), "{what}");
         assert_eq!(
             Vec::<String>::new(),
             printed(db.verify_holding().expect("verify runs")),
             "{what}"
         );
         db.close().expect("the database closes");
-        findings(&rt, &what)
+        rows.len()
     });
-    Ran { runs, ok, found }
+    assert!(rows == 0 || rows == ROWS, "{what}: {rows} rows");
+    let found = run(&mut sim, |rt| findings(&rt, &what));
+    Ran {
+        runs,
+        failed,
+        answered: None,
+        durable: Some(rows == ROWS),
+        found,
+        unmended,
+    }
 }
 
 /// Delete every row of a file at [`RANKED`], then vacuum, failing `fail`.
 fn vacuumed(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("vacuum {fail:?}");
     let mut sim = created_at(&[NOTES, RANKED]);
-    let (runs, ok) = run(&mut sim, |rt| {
-        let db = opened(&rt, FILE, &log(&[NOTES, RANKED]), &options(1));
-        write(&db, &inserts(", rank: 7"));
-        write(&db, "delete n in notes");
-        arm(fail);
-        let ok = call(&db, "vacuum notes").is_ok();
-        let runs = armed::reached();
-        db.close().expect("the database closes");
-        (runs, ok)
-    });
-    let found = run(&mut sim, |rt| {
-        reads(&rt, 0, &what);
-        findings(&rt, &what)
-    });
-    Ran { runs, ok, found }
+    let before = [inserts(", rank: 7"), "delete n in notes".into()];
+    let (runs, failed) = called(&mut sim, &[NOTES, RANKED], &before, "vacuum notes", fail);
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    assert_eq!(0, run(&mut sim, |rt| ranked(&rt, &what)), "{what}");
+    let found = run(&mut sim, |rt| findings(&rt, &what));
+    Ran {
+        runs,
+        failed,
+        answered: None,
+        durable: None,
+        found,
+        unmended,
+    }
 }
 
-type Case = (
-    &'static str,
-    fn(Option<(Site, usize)>) -> Ran,
-    &'static [Step],
-);
+/// Apply [`VIOLATED`] to the file at [`NOTES`] with [`ROWS`] rows, failing `fail`: its
+/// constraint refuses it after its rewrite made heaps, which the abort frees.
+fn aborted(fail: Option<(Site, usize)>) -> Ran {
+    let what = format!("aborted migration {fail:?}");
+    let mut sim = created_at(&[NOTES]);
+    run(&mut sim, |rt| {
+        let db = opened(&rt, FILE, &log(&[NOTES]), &options(1));
+        write(&db, &inserts(""));
+        db.close().expect("the database closes");
+    });
+    let (runs, failed) = run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        arm(fail);
+        let failed = catalog.migrate(&pager, &txns, VIOLATED).err();
+        let runs = armed::reached();
+        pager.close();
+        (runs, failed.map(|e| format!("{e:?}")))
+    });
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    let durable = run(&mut sim, |rt| version(&rt) == 2);
+    let found = run(&mut sim, |rt| findings(&rt, &what));
+    Ran {
+        runs,
+        failed,
+        answered: None,
+        durable: Some(durable),
+        found,
+        unmended,
+    }
+}
 
-const AFTER_COMMIT: &[Step] = &[Step::FreeLeaked, Step::EndChange];
-const AFTER_REWRITE: &[Step] = &[Step::FreeLeaked, Step::Release, Step::EndChange];
-const BEFORE_COMMIT: &[Step] = &[Step::Release, Step::Settle];
-const BEFORE_UPDATE: &[Step] = &[Step::ClearBit, Step::Reflect, Step::Write];
-const BEFORE_UPDATE_WIDE: &[Step] = &[Step::Retain, Step::Reflect, Step::Write];
+/// Returns the site of the free after a migration's commit.
+fn freeing_site() -> Site {
+    static SITE: OnceLock<Site> = OnceLock::new();
+    *SITE.get_or_init(|| {
+        let runs = migrated(None).runs;
+        let free = runs.iter().find(|r| r.0.step() == Step::FreeLeaked);
+        free.expect("a migration frees what it left").0
+    })
+}
+
+/// Open the catalog of a file whose migration to [`RANKED`] left its change on the catalog root,
+/// failing `fail`. The open's change is the end of the migration's.
+fn mended(fail: Option<(Site, usize)>) -> Ran {
+    let what = format!("mend at open {fail:?}");
+    let left = freeing_site();
+    let mut sim = created_at(&[NOTES]);
+    run(&mut sim, |rt| {
+        let db = opened(&rt, FILE, &log(&[NOTES]), &options(1));
+        write(&db, &inserts(""));
+        db.close().expect("the database closes");
+        arm(Some((left, 0)));
+        assert_eq!((None, None), told_at(&rt, &[NOTES, RANKED]));
+        armed::reached();
+    });
+    let (runs, failed) = run(&mut sim, |rt| {
+        let options = storage::Options {
+            page_size: 8192,
+            ..storage::Options::new(FILE)
+        };
+        let (pager, _) = Pager::open(rt.clone(), &options).expect("the file reopens");
+        assert!(changing(&pager), "{what}: the migration leaves its change");
+        arm(fail);
+        let opened = Catalog::open(rt, &pager);
+        let runs = armed::reached();
+        pager.close();
+        (runs, opened.err().map(|e| format!("{e:?}")))
+    });
+    let unmended = run(&mut sim, |rt| unmended(&rt));
+    assert_eq!(2, run(&mut sim, |rt| version(&rt)), "{what}");
+    let found = run(&mut sim, |rt| findings(&rt, &what));
+    Ran {
+        runs,
+        failed,
+        answered: None,
+        durable: Some(!unmended.1),
+        found,
+        unmended,
+    }
+}
+
+/// A change the search fails at every step it reaches.
+struct Case {
+    name: &'static str,
+    run: fn(Option<(Site, usize)>) -> Ran,
+    /// The failure the change is told with nothing failed.
+    refused: Option<&'static str>,
+    /// The failure the change is told when a failed step keeps it from committing.
+    failed: &'static str,
+}
 
 const CASES: &[Case] = &[
-    ("migration", migrated, AFTER_REWRITE),
-    ("pending drop", settled, AFTER_COMMIT),
-    ("insert", inserted, BEFORE_COMMIT),
-    ("vacuum", vacuumed, BEFORE_COMMIT),
-    ("update", updated, BEFORE_UPDATE),
-    ("wide insert", widened, BEFORE_UPDATE_WIDE),
+    Case {
+        name: "migration",
+        run: migrated,
+        refused: None,
+        failed: r#"Corrupt { detail: "Heap(Page(PageError { pid: Pid(0), damage: Unreadable }))" }"#,
+    },
+    Case {
+        name: "aborted migration",
+        run: aborted,
+        refused: Some(
+            r#"Refused(["constraint app::unranked is violated by \"t0\", \"t1\", \"t2\", \"t3\""])"#,
+        ),
+        failed: "Heap(Page(PageError { pid: Pid(0), damage: Unreadable }))",
+    },
+    Case {
+        name: "mend at open",
+        run: mended,
+        refused: None,
+        failed: "Page(PageError { pid: Pid(0), damage: Unreadable })",
+    },
+    Case {
+        name: "pending drop",
+        run: settled,
+        refused: None,
+        failed: "Heap(Page(PageError { pid: Pid(0), damage: Unreadable }))",
+    },
+    Case {
+        name: "insert",
+        run: inserted,
+        refused: None,
+        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+    },
+    Case {
+        name: "vacuum",
+        run: vacuumed,
+        refused: None,
+        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+    },
+    Case {
+        name: "update",
+        run: updated,
+        refused: None,
+        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+    },
+    Case {
+        name: "wide insert",
+        run: widened,
+        refused: None,
+        failed: r#"Fatal { reason: Storage { detail: "PageError { pid: Pid(0), damage: Unreadable }" } }"#,
+    },
 ];
 
-/// Returns the first and the last run of each site of `steps` among `runs`.
-fn ends(runs: &[Run], steps: &[Step]) -> BTreeSet<(Site, usize)> {
+/// Returns the failure every call on a database quarantined whole is told.
+fn quarantined() -> Error {
+    Error::Fatal {
+        reason: FatalReason::Quarantined {
+            what: "the database".into(),
+        },
+    }
+}
+
+/// Returns the first and the last run of each site among `runs`.
+fn ends(runs: &[Run]) -> BTreeSet<(Site, usize)> {
     let mut last: BTreeMap<Site, usize> = BTreeMap::new();
-    for (site, n, _) in runs.iter().filter(|r| steps.contains(&r.0.step())) {
+    for (site, n, _) in runs {
         last.insert(*site, *n);
     }
     last.into_iter()
@@ -404,58 +645,106 @@ fn ends(runs: &[Run], steps: &[Step]) -> BTreeSet<(Site, usize)> {
         .collect()
 }
 
+/// Returns the runs among `runs` the search fails: every one under the deep profile, else the
+/// first and the last of each site.
+fn searched(runs: &[Run]) -> BTreeSet<(Site, usize)> {
+    if profile::every_case() {
+        return runs.iter().map(|&(site, n, _)| (site, n)).collect();
+    }
+    ends(runs)
+}
+
+/// Returns the place of `step` in [`Step::EVERY`].
+fn listed(step: Step) -> usize {
+    match step {
+        Step::Retain => 0,
+        Step::ClearBit => 1,
+        Step::Reflect => 2,
+        Step::Write => 3,
+        Step::FreeLeaked => 4,
+        Step::ReadLeaked => 5,
+        Step::EndChange => 6,
+        Step::Settle => 7,
+        Step::Release => 8,
+        Step::Opening => 9,
+    }
+}
+
 #[test]
-fn a_step_failing_after_a_commit_fails_no_caller_and_one_before_it_fails_the_call() {
-    let mut struck: BTreeSet<Site> = BTreeSet::new();
-    for (case, run_case, steps) in CASES {
-        let clean = run_case(None);
-        assert!(clean.ok, "{case} fails with nothing failed");
-        let settled = Findings {
-            overcounted: 0,
-            unsettled: 0,
-        };
-        assert_eq!(settled, clean.found, "{case} with nothing failed");
-        let after = steps.contains(&Step::FreeLeaked);
-        for (site, n) in ends(&clean.runs, steps) {
-            let got = run_case(Some((site, n)));
+fn a_change_tells_its_caller_success_exactly_when_it_is_durable_whatever_step_fails() {
+    let every: Vec<usize> = Step::EVERY.iter().map(|s| listed(*s)).collect();
+    assert_eq!((0..Step::EVERY.len()).collect::<Vec<_>>(), every);
+    let settled = Findings {
+        overcounted: 0,
+        unsettled: 0,
+    };
+    let mut reached: BTreeSet<(&str, Step)> = BTreeSet::new();
+    let mut lowered = 0;
+    let mut wrong = Vec::new();
+    for case in CASES {
+        let name = case.name;
+        let clean = (case.run)(None);
+        assert_eq!(
+            case.refused,
+            clean.failed.as_deref(),
+            "{name} with nothing failed"
+        );
+        assert_eq!(None, clean.answered, "{name} with nothing failed");
+        assert_eq!(
+            case.refused.is_some(),
+            clean.durable == Some(false),
+            "{name} with nothing failed"
+        );
+        assert_eq!(settled, clean.found, "{name} with nothing failed");
+        for (site, n) in searched(&clean.runs) {
+            let what = format!("{name}: run {n} of {site:?}");
+            let got = (case.run)(Some((site, n)));
             assert!(
                 got.runs.contains(&(site, n, true)),
-                "{case}: run {n} of {site:?} armed and not failed: {:?}",
+                "{what} armed and not failed: {:?}",
                 got.runs
             );
-            assert_eq!(after, got.ok, "{case}: run {n} of {site:?}");
-            let skipped = usize::from(!after && site.step() == Step::Release);
-            assert_eq!(
-                skipped, got.found.overcounted,
-                "{case}: run {n} of {site:?}"
-            );
-            if site.step() != Step::Settle {
-                assert_eq!(0, got.found.unsettled, "{case}: run {n} of {site:?}");
+            let answered = (site.step() == Step::Opening).then(quarantined);
+            let durable = got.durable == Some(true);
+            let told: Vec<Option<&str>> = match (got.durable, case.refused) {
+                (Some(true), _) => vec![None],
+                (Some(false), Some(refused)) => vec![Some(case.failed), Some(refused)],
+                (Some(false), None) | (None, _) => vec![Some(case.failed)],
+            };
+            if !told.contains(&got.failed.as_deref()) || answered != got.answered {
+                wrong.push(format!(
+                    "{what}: durable {durable}, told {:?}, answered {:?}",
+                    got.failed, got.answered
+                ));
             }
-            struck.insert(site);
+            if site.step() == Step::Opening {
+                assert!(durable, "{what}");
+            }
+            let (unmended, left) = got.unmended;
+            let skipped = usize::from(!left && site.step() == Step::Release);
+            assert_eq!(skipped, got.found.overcounted, "{what}");
+            if site.step() != Step::Settle {
+                assert_eq!(0, got.found.unsettled, "{what}");
+            }
+            if site.step() == Step::ReadLeaked && unmended > 0 {
+                lowered += 1;
+            }
+            reached.insert((name, site.step()));
         }
     }
-    let mut sites: BTreeMap<(&str, Step), usize> = BTreeMap::new();
-    for s in struck {
-        *sites.entry((s.file_name(), s.step())).or_default() += 1;
+    assert_eq!(Vec::<String>::new(), wrong);
+    assert!(
+        lowered > 0,
+        "no failed read of a leaked page left a head overcounted for the open to lower"
+    );
+    let steps: BTreeSet<Step> = reached.iter().map(|r| r.1).collect();
+    assert_eq!(BTreeSet::from(Step::EVERY), steps);
+    for name in ["migration", "aborted migration", "mend at open"] {
+        assert!(
+            reached.contains(&(name, Step::ReadLeaked)),
+            "{name} reads no leaked page"
+        );
     }
-    let counted = BTreeMap::from([
-        (("migration.rs", Step::FreeLeaked), 1),
-        (("migration.rs", Step::EndChange), 1),
-        (("decode.rs", Step::Release), 1),
-        (("dir.rs", Step::Settle), 1),
-        (("pending.rs", Step::FreeLeaked), 1),
-        (("pending.rs", Step::EndChange), 1),
-        (("mod.rs", Step::Release), 1),
-        (("mod.rs", Step::Settle), 1),
-        (("put.rs", Step::Settle), 1),
-        (("large.rs", Step::Settle), 5),
-        (("large.rs", Step::Retain), 1),
-        (("write.rs", Step::ClearBit), 1),
-        (("write.rs", Step::Reflect), 1),
-        (("write.rs", Step::Write), 1),
-    ]);
-    assert_eq!(counted, sites);
 }
 
 const DOCS: &str = r"module app
@@ -642,7 +931,7 @@ fn wide(rt: &SimRuntime) -> Wide {
     let other_tid = other
         .insert(&pager, filler.xid(), &wide_row(WIDE_ROWS + 10))
         .expect("the row inserts");
-    txns.commit(&pager, filler).expect("the rows commit");
+    txns.commit(&pager, filler).expect("the rows commit").done();
     let pages = heap.pages(&pager).expect("the heap reads").len();
     assert!(pages > 4, "the rows fill {pages} pages");
     let writer = txns.begin(&pager).expect("a transaction begins");
@@ -1065,28 +1354,33 @@ const HEAP_CASES: &[HeapCase] = &[
     },
 ];
 
-/// Run `case` on a fresh [`wide`] world, failing `fail`. Returns the runs of steps it reached,
-/// whether it succeeded and what verify then finds.
-fn heap_ran(case: &HeapCase, fail: Option<(Site, usize)>, what: &str) -> Ran {
+/// What one run of a heap entry did: the runs of steps it reached, whether it succeeded, and what
+/// verify then found.
+struct HeapRan {
+    runs: Vec<Run>,
+    ok: bool,
+    found: Findings,
+}
+
+/// Run `case` on a fresh [`wide`] world, failing `fail`.
+fn heap_ran(case: &HeapCase, fail: Option<(Site, usize)>, what: &str) -> HeapRan {
     let mut sim = Sim::new(SEED, Config::default());
     run(&mut sim, |rt| {
         let w = wide(&rt);
         let (runs, ok) = (case.run)(&w, fail, what);
         let found = w.findings(case.dropped, what);
-        Ran { runs, ok, found }
+        HeapRan { runs, ok, found }
     })
 }
 
-/// Returns the runs of `steps` among `runs` the search fails: under the deep profile every one,
-/// otherwise the first and the last of each site.
-fn searched(runs: &[Run], steps: &[Step]) -> BTreeSet<(Site, usize)> {
-    if !profile::every_case() {
-        return ends(runs, steps);
-    }
-    runs.iter()
+/// Returns the runs of `steps` among `runs` the search fails.
+fn searched_of(runs: &[Run], steps: &[Step]) -> BTreeSet<(Site, usize)> {
+    let runs: Vec<Run> = runs
+        .iter()
         .filter(|r| steps.contains(&r.0.step()))
-        .map(|&(site, n, _)| (site, n))
-        .collect()
+        .copied()
+        .collect();
+    searched(&runs)
 }
 
 #[test]
@@ -1103,7 +1397,7 @@ fn a_heap_entry_failing_a_release_or_settle_after_its_update_fails_and_skips_no_
         assert_eq!(settled, clean.found, "{name} with nothing failed");
         let mut struck: BTreeSet<Site> = BTreeSet::new();
         let mut unsettled = false;
-        for (site, n) in searched(&clean.runs, case.steps) {
+        for (site, n) in searched_of(&clean.runs, case.steps) {
             let what = format!("{name}: run {n} of {site:?}");
             let got = heap_ran(case, Some((site, n)), &what);
             assert!(
@@ -1144,4 +1438,36 @@ fn a_heap_entry_failing_a_release_or_settle_after_its_update_fails_and_skips_no_
         retain_settles > 0,
         "no entry raised counts ahead of its update"
     );
+}
+
+#[test]
+fn a_registration_refused_after_a_migration_committed_fails_the_open_and_keeps_the_migration() {
+    let refused = Registration::new(
+        "notes-1",
+        "import app\nquery ranks () -> Set I64 = from n in notes select n.grade\n",
+    );
+    let mut sim = created_at(&[NOTES]);
+    run(&mut sim, |rt| {
+        let db = opened(&rt, FILE, &log(&[NOTES]), &options(1));
+        write(&db, &inserts(""));
+        db.close().expect("the database closes");
+    });
+    let got = run(&mut sim, |rt| {
+        let options = OpenOptions {
+            registrations: vec![refused.clone()],
+            ..options(1)
+        };
+        open_in(&rt, FILE, &log(&[NOTES, RANKED]), &options).map(drop)
+    });
+    let Err(OpenError::RegistrationRefused { bundle, reason }) = got else {
+        panic!("the open is no refused registration: {got:?}");
+    };
+    let invalid = Error::Rejected {
+        reason: RejectReason::Invalid {
+            detail: "query `ranks`: Note has no field `grade`".into(),
+        },
+    };
+    assert_eq!(("notes-1".to_owned(), invalid), (bundle, reason));
+    assert_eq!(2, run(&mut sim, |rt| version(&rt)));
+    assert_eq!(ROWS, run(&mut sim, |rt| ranked(&rt, "after the refusal")));
 }

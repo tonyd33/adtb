@@ -104,7 +104,7 @@ impl Catalog {
         match done {
             Ok(()) => {
                 let committed = txns.commit(pager, begun)?;
-                Ok(pager.position(committed.lsn()))
+                Ok(pager.position(committed.done()))
             }
             Err(e) => {
                 txns.abandon_failed(pager, begun)?;

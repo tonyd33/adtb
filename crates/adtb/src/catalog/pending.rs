@@ -337,12 +337,14 @@ impl Catalog {
         let committed = txns.commit(pager, begun)?;
         self.readers.pending = pending;
         self.readers.enforced = enforced;
-        if !freed.is_empty() {
-            for id in &freed {
-                self.indexes.remove(id);
-            }
-            self.end_committed(pager, txns, marked, &committed, &[]);
+        if freed.is_empty() {
+            committed.done();
+            return Ok(());
         }
+        for id in &freed {
+            self.indexes.remove(id);
+        }
+        self.end_committed(pager, txns, marked, committed, &[]);
         Ok(())
     }
 }

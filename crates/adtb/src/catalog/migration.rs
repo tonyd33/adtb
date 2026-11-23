@@ -191,7 +191,7 @@ impl Catalog {
                 let gone = self.heaps_gone_in(&c);
                 *self = c;
                 dormant.extend(written);
-                self.end_committed(pager, txns, marked, &committed, &gone);
+                self.end_committed(pager, txns, marked, committed, &gone);
                 Ok(dormant)
             }
             Err(e) => {

@@ -77,7 +77,7 @@ impl Db {
             assert!(db.index.insert(&db.pager, &entry).unwrap());
             db.tree.insert(&db.pager, &key.to_be_bytes()).unwrap();
         }
-        db.txns.commit(&db.pager, begun).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap().done();
         db.pager.flush_log();
         db
     }

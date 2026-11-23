@@ -1,5 +1,6 @@
 use super::vacuuming::{Busy, Holder, VacuumLock, Vacuuming};
 use std::collections::{BTreeMap, BTreeSet};
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLockReadGuard, Weak};
 use std::time::{Duration, SystemTime};
@@ -336,7 +337,7 @@ impl<R: Runtime> Transactions<R> {
 
     /// Commit the transaction of `begun` as [`Transactions::commit_with`] does, with nothing of
     /// its own to check or end in the serializer.
-    pub fn commit(&self, pager: &Pager<R>, begun: Begun) -> Result<DurableCommit, Error> {
+    pub fn commit(&self, pager: &Pager<R>, begun: Begun) -> Result<Committed<'_>, Error> {
         self.commit_with(pager, Some(begun), None, |_| Ok(()), |_| {})
     }
 
@@ -352,7 +353,7 @@ impl<R: Runtime> Transactions<R> {
         begun: Begun,
         pid: Pid,
         also: impl FnOnce(&mut [u8]),
-    ) -> Result<DurableCommit, Error> {
+    ) -> Result<Committed<'_>, Error> {
         self.commit_also(
             pager,
             Some(begun),
@@ -381,7 +382,7 @@ impl<R: Runtime> Transactions<R> {
         read: Option<Lsn>,
         check: impl FnOnce(&mut Serializer) -> Result<(), E>,
         then: impl FnOnce(&mut Serializer),
-    ) -> Result<DurableCommit, E> {
+    ) -> Result<Committed<'_>, E> {
         self.commit_also(pager, begun, read, check, then, (&[], |_| {}))
     }
 
@@ -395,7 +396,7 @@ impl<R: Runtime> Transactions<R> {
         check: impl FnOnce(&mut Serializer) -> Result<(), E>,
         then: impl FnOnce(&mut Serializer),
         also: (&[Pid], impl FnOnce(&mut [&mut [u8]])),
-    ) -> Result<DurableCommit, E> {
+    ) -> Result<Committed<'_>, E> {
         let mut ser = self.ser.lock(&self.rt);
         let checked = check(&mut ser);
         let own = match begun {
@@ -409,7 +410,10 @@ impl<R: Runtime> Transactions<R> {
         }
         let lsn = own.max(read).unwrap_or_else(|| pager.durable());
         pager.wait_durable(lsn);
-        Ok(DurableCommit { lsn })
+        Ok(Committed {
+            lsn,
+            txns: PhantomData,
+        })
     }
 
     /// End the running `x`: once `checked`, record its commit and publish it, else record its
@@ -1109,15 +1113,25 @@ impl Drop for Pinning {
 
 /// A transaction's commit, durable: a crash from here on keeps it and every commit it read,
 /// and its caller is told it succeeded. Only [`Transactions::commit_with`] makes one.
+///
+/// A step after the commit runs through [`Committed::then`], which hands back no error: a
+/// failed step is left for the next open to finish, never returned to the caller.
 #[derive(Debug)]
-pub struct DurableCommit {
+#[must_use = "a step after the commit runs through `then`, and `done` ends the change"]
+pub struct Committed<'t> {
     lsn: Lsn,
+    txns: PhantomData<&'t ()>,
 }
 
-impl DurableCommit {
+impl Committed<'_> {
     /// Returns the LSN the log is durable past: a writer's commit record, else the latest commit
     /// the reader read or the log's durable end.
     pub fn lsn(&self) -> Lsn {
+        self.lsn
+    }
+
+    /// End the change once every step after the commit ran. Returns [`Committed::lsn`].
+    pub fn done(self) -> Lsn {
         self.lsn
     }
 

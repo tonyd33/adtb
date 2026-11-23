@@ -15,7 +15,7 @@ use crate::catalog::codec::{
 use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, Rot, engine_relation};
 use crate::exec::{F64, Val};
 use crate::key::Value;
-use crate::mvcc::Xid;
+use crate::mvcc::{Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{Damage, PageError, Pager, Pid};
 use crate::verify::{self, Depth};
@@ -23,7 +23,7 @@ use crate::write::{self, Found, HoldWait, VerifyScope};
 
 use super::cause::Corruption;
 use super::text::{DynRows, rows};
-use super::{Engine, OpenError, corrupt, micros};
+use super::{Engine, OpenError, OpenOptions, corrupt, micros};
 
 /// The group of the kept row holding the next run number and finding id.
 const COUNTERS: &str = "counters";
@@ -911,3 +911,25 @@ impl<R: Runtime> Engine<R> {
 #[cfg(test)]
 #[path = "verify_tests.rs"]
 mod tests;
+
+/// Returns what `verify` holds of the file and the rows of the volatile relations, with no kept
+/// rows when the commit log's damage leaves them unreadable.
+pub(super) fn held_rows<R: Runtime>(
+    catalog: &Catalog,
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    schema: &Schema,
+    options: &OpenOptions,
+    clog_damaged: bool,
+) -> Result<(Findings, BTreeMap<RelId, BTreeSet<Val>>), OpenError> {
+    let kept = if clog_damaged {
+        Vec::new()
+    } else {
+        catalog.kept(pager, txns).map_err(corrupt)?
+    };
+    let table = engine_relation(schema, engine_rel::VERIFY_FINDINGS);
+    let findings = Findings::of(kept, schema, table)?;
+    let mut volatile = super::settings::process_options(schema, &options.shown());
+    volatile.insert(table, findings.vals());
+    Ok((findings, volatile))
+}
