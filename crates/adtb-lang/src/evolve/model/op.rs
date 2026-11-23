@@ -1,5 +1,8 @@
 use super::*;
+use std::cell::RefCell;
+
 use crate::ast::{self, CtorPlace, CtorSel, CtorTarget, Expr, OperatorKind, QName};
+use crate::canon::Names;
 use crate::lex::{Tok, lex};
 use crate::schema::Stage;
 use crate::span::{Diag, DiagKind, FileDiag, Span};
@@ -531,6 +534,8 @@ pub(super) struct Resolving<'a> {
     module: &'a str,
     /// The migration's text.
     text: &'a str,
+    /// The object each name resolved so far names, by its span.
+    ties: RefCell<Names>,
 }
 
 impl<'a> Resolving<'a> {
@@ -539,6 +544,7 @@ impl<'a> Resolving<'a> {
             model,
             module,
             text: "",
+            ties: RefCell::default(),
         }
     }
 
@@ -548,7 +554,23 @@ impl<'a> Resolving<'a> {
             model,
             module,
             text,
+            ties: RefCell::default(),
         }
+    }
+
+    /// Returns the object each name resolved names, by its span.
+    pub(super) fn into_ties(self) -> Names {
+        self.ties.into_inner()
+    }
+
+    fn tie(&self, span: Span, obj: Obj) {
+        self.ties.borrow_mut().tie(span, obj);
+    }
+
+    /// Returns `id`, tying the name at `span` to it in `space`.
+    fn tied(&self, span: Span, space: Space, id: u64) -> u64 {
+        self.tie(span, (space, id));
+        id
     }
 
     pub(super) fn module_of(&self, q: &QName) -> String {
@@ -560,7 +582,7 @@ impl<'a> Resolving<'a> {
     pub(super) fn ty(&self, q: &QName) -> Res<u64> {
         let m = self.module_of(q);
         match self.model.type_named(&m, &q.name.text) {
-            Some(t) => Ok(t),
+            Some(t) => Ok(self.tied(q.name.span, Space::Shared, t)),
             None => {
                 self.unheld(&m, Kind::Type, &q.name.text)?;
                 refuse_at(
@@ -574,7 +596,7 @@ impl<'a> Resolving<'a> {
     pub(super) fn relation(&self, q: &QName) -> Res<u64> {
         let m = self.module_of(q);
         match self.model.relation_named(&m, &q.name.text) {
-            Some(r) => Ok(r),
+            Some(r) => Ok(self.tied(q.name.span, Space::Shared, r)),
             None => {
                 self.unheld(&m, Kind::Relation, &q.name.text)?;
                 refuse_at(
@@ -600,7 +622,12 @@ impl<'a> Resolving<'a> {
     fn decl(&self, kind: Kind, q: &QName) -> Res<Item> {
         let m = self.module_of(q);
         match self.model.find(&m, kind, &q.name.text) {
-            Some(item) => Ok(item),
+            Some(item) => {
+                if let Some(obj) = self.named_obj(item) {
+                    self.tie(q.name.span, obj);
+                }
+                Ok(item)
+            }
             None => refuse_at(
                 q.span(),
                 format!("module `{m}` declares no {} `{}`", kind.word(), q.name.text),
@@ -610,11 +637,14 @@ impl<'a> Resolving<'a> {
 
     pub(super) fn set(&self, name: &ast::Ident, rel: &QName) -> Res<u64> {
         let m = self.module_of(rel);
+        if let Some(r) = self.model.relation_named(&m, &rel.name.text) {
+            self.tie(rel.name.span, (Space::Shared, r));
+        }
         match self
             .model
             .find(&m, Kind::Set, &format!("{}.{}", rel.name.text, name.text))
         {
-            Some(Item::Set(s)) => Ok(s),
+            Some(Item::Set(s)) => Ok(self.tied(name.span, Space::Set, s)),
             _ => refuse_at(
                 name.span,
                 format!("`{}` declares no named set `{}`", rel.name.text, name.text),
@@ -625,7 +655,7 @@ impl<'a> Resolving<'a> {
     fn ctor(&self, path: &ast::CtorPath) -> Res<(u64, u64)> {
         let t = self.ty(&path.ty)?;
         match self.model.ctor_named(t, &path.ctor.text) {
-            Some(c) => Ok((t, c)),
+            Some(c) => Ok((t, self.tied(path.ctor.span, Space::Shared, c))),
             None => refuse_at(
                 path.ctor.span,
                 format!(
@@ -644,10 +674,12 @@ impl<'a> Resolving<'a> {
         match (&ty.body, &path.ctor) {
             (TypeBody::New { .. }, _) => refuse(format!("newtype `{}` has no fields", ty.name)),
             (TypeBody::Record { ctor }, None) => Ok((t, Some(*ctor))),
-            (TypeBody::Record { ctor }, Some(c)) if c.text == ty.name => Ok((t, Some(*ctor))),
+            (TypeBody::Record { ctor }, Some(c)) if c.text == ty.name => {
+                Ok((t, Some(self.tied(c.span, Space::Shared, *ctor))))
+            }
             (TypeBody::Ctors(_), None) => Ok((t, None)),
             (TypeBody::Ctors(_), Some(c)) => match self.model.ctor_named(t, &c.text) {
-                Some(k) => Ok((t, Some(k))),
+                Some(k) => Ok((t, Some(self.tied(c.span, Space::Shared, k)))),
                 None => refuse_at(
                     c.span,
                     format!("`{}` is not a constructor of `{}`", c.text, ty.name),
@@ -668,7 +700,7 @@ impl<'a> Resolving<'a> {
             .into_iter()
             .find(|f| self.model.fields[f].name == path.field.text);
         match found {
-            Some(f) => Ok(f),
+            Some(f) => Ok(self.tied(path.field.span, Space::Field, f)),
             None => refuse_at(
                 path.field.span,
                 format!(
@@ -689,7 +721,7 @@ impl<'a> Resolving<'a> {
                         .model
                         .relation_type(r)
                         .and_then(|t| self.model.ctor_named(t, &c.text))
-                        .map(|k| (k, c)),
+                        .map(|k| (self.tied(c.span, Space::Shared, k), c)),
                     _ => None,
                 };
                 let Some((k, c)) = c else {
@@ -717,7 +749,7 @@ impl<'a> Resolving<'a> {
     fn field_at(&self, path: &ast::FieldPath) -> Res<((u64, Option<u64>), u64)> {
         let (t, c) = self.part(path)?;
         match self.model.field_of(t, c, &path.field.text) {
-            Some(f) => Ok(((t, c), f)),
+            Some(f) => Ok(((t, c), self.tied(path.field.span, Space::Field, f))),
             None => refuse_at(
                 path.field.span,
                 format!(
@@ -1035,6 +1067,228 @@ impl<'a> Resolving<'a> {
             OperatorKind::Uninstall(m) => Ok(Op::Uninstall(m)),
             OperatorKind::AdoptTzdb { release, from } => Ok(Op::AdoptTzdb { release, from }),
             OperatorKind::Revert { migration, fills } => Ok(Op::Revert { migration, fills }),
+        }
+    }
+}
+
+impl Resolving<'_> {
+    /// Returns the object a declaration names, for a name that names it.
+    fn named_obj(&self, item: Item) -> Option<Obj> {
+        match item {
+            Item::Type(x) | Item::Relation(x) => Some((Space::Shared, x)),
+            Item::Set(x) => Some((Space::Set, x)),
+            Item::Fn(x) | Item::Aggregate(x) => Some((Space::Function, x)),
+            Item::Constraint(x) | Item::Check(x) => Some((Space::Constraint, x)),
+            Item::Store(v) => Some((Space::Function, self.model.stores[&v].function)),
+            Item::Held(..) => None,
+        }
+    }
+
+    fn found(&self, span: Span, obj: Option<Obj>) -> Option<u64> {
+        let (space, id) = obj?;
+        Some(self.tied(span, space, id))
+    }
+
+    fn found_ty(&self, q: &QName) -> Option<u64> {
+        let t = self.model.type_named(&self.module_of(q), &q.name.text);
+        self.found(q.name.span, t.map(|t| (Space::Shared, t)))
+    }
+
+    fn found_relation(&self, q: &QName) -> Option<u64> {
+        let r = self.model.relation_named(&self.module_of(q), &q.name.text);
+        self.found(q.name.span, r.map(|r| (Space::Shared, r)))
+    }
+
+    fn found_ctor(&self, ty: Option<u64>, c: &ast::Ident) -> Option<u64> {
+        let k = self.model.ctor_named(ty?, &c.text);
+        self.found(c.span, k.map(|k| (Space::Shared, k)))
+    }
+
+    /// Ties each of `names`, a constructor of type `ty` or a named set of relation variable `rel`.
+    fn found_sel(&self, rel: Option<u64>, ty: Option<u64>, names: &[&ast::Ident]) {
+        for n in names {
+            if self.found_ctor(ty, n).is_some() {
+                continue;
+            }
+            let set = rel.and_then(|r| {
+                self.model
+                    .sets_of(r)
+                    .into_iter()
+                    .find(|s| self.model.sets[s].name == n.text)
+            });
+            self.found(n.span, set.map(|s| (Space::Set, s)));
+        }
+    }
+
+    fn found_relation_ref(&self, r: &ast::RelationRef) {
+        let rel = self.found_relation(&r.relation);
+        let ty = rel.and_then(|r| self.model.relation_type(r));
+        if let Some(sel) = &r.sel {
+            self.found_sel(rel, ty, &crate::evolve::sel_idents(sel));
+        }
+    }
+
+    /// Ties field `f` of constructor `ctor` of type `ty`, else of its header, else of the
+    /// constructor a record type names after itself.
+    fn found_field(&self, ty: Option<u64>, ctor: Option<u64>, f: &ast::Ident) {
+        let Some(t) = ty else { return };
+        let field = match ctor {
+            Some(c) => self.model.field_of(t, Some(c), &f.text),
+            None => self.model.field_of(t, None, &f.text).or_else(|| {
+                let record = self.model.ctor_named(t, &self.model.types[&t].name)?;
+                self.model.field_of(t, Some(record), &f.text)
+            }),
+        };
+        self.found(f.span, field.map(|x| (Space::Field, x)));
+    }
+
+    fn found_path(&self, p: &ast::FieldPath) {
+        let ty = self.found_ty(&p.ty);
+        let ctor = p.ctor.as_ref().and_then(|c| self.found_ctor(ty, c));
+        self.found_field(ty, ctor, &p.field);
+    }
+
+    /// Ties field `f` of the rows of relation variable `q`, of constructor `ctor` when named.
+    fn found_row_field(&self, q: &QName, ctor: Option<&ast::Ident>, f: &ast::Ident) {
+        let ty = self
+            .model
+            .relation_named(&self.module_of(q), &q.name.text)
+            .and_then(|r| self.model.relation_type(r));
+        let ctor = ctor.and_then(|c| self.found_ctor(ty, c));
+        self.found_field(ty, ctor, f);
+    }
+
+    fn found_computed(&self, rel: Option<u64>, f: &ast::Ident) {
+        let id = rel.and_then(|r| {
+            self.model.relations[&r]
+                .clauses
+                .iter()
+                .find_map(|c| match c {
+                    ClauseM::Computed { id, name, .. } if *name == f.text => *id,
+                    _ => None,
+                })
+        });
+        self.found(f.span, id.map(|x| (Space::Computed, x)));
+    }
+
+    fn found_decl(&self, q: &QName, kinds: &[Kind]) {
+        let m = self.module_of(q);
+        let item = kinds
+            .iter()
+            .find_map(|&k| self.model.find(&m, k, &q.name.text));
+        self.found(q.name.span, item.and_then(|i| self.named_obj(i)));
+    }
+
+    fn found_arm_targets<'x>(&self, arms: impl IntoIterator<Item = &'x ast::ArmClause>) {
+        for a in arms {
+            if let Some(f) = &a.field {
+                let rel = self.found_relation(&a.target);
+                self.found_computed(rel, f);
+            } else {
+                self.found_decl(&a.target, &[Kind::Fn, Kind::Constraint, Kind::Check]);
+            }
+        }
+    }
+
+    /// Tie each name of `op` that names an object of the model and that resolving it leaves
+    /// untied. Refuse nothing.
+    pub(super) fn tie_rest(&self, op: &OperatorKind) {
+        match op {
+            OperatorKind::AddConstructor {
+                path, place, joins, ..
+            } => {
+                let ty = self.found_ty(&path.ty);
+                if let Some(CtorPlace::Before(c) | CtorPlace::After(c)) = place {
+                    self.found_ctor(ty, c);
+                }
+                for j in joins {
+                    self.found_relation_ref(j);
+                }
+                self.found_arm_targets(op.arm_clauses());
+            }
+            OperatorKind::RemoveConstructor(p) | OperatorKind::UnnestConstructor(p, _) => {
+                let ty = self.found_ty(&p.ty);
+                self.found_ctor(ty, &p.ctor);
+                self.found_arm_targets(op.arm_clauses());
+            }
+            OperatorKind::SplitConstructor { .. } => self.found_arm_targets(op.arm_clauses()),
+            OperatorKind::MergeConstructor { ty, sel, .. }
+            | OperatorKind::NestConstructor { ty, sel, .. } => {
+                let t = self.found_ty(ty);
+                self.found_sel(None, t, &crate::evolve::sel_idents(sel));
+                self.found_arm_targets(op.arm_clauses());
+            }
+            OperatorKind::MoveField { to, sel, .. } => {
+                let ty = self.found_ty(to);
+                if let Some(sel) = sel {
+                    self.found_sel(None, ty, &crate::evolve::sel_idents(sel));
+                }
+            }
+            OperatorKind::AddUnique(_, on)
+            | OperatorKind::DropUnique(_, on)
+            | OperatorKind::AddIndex { on, .. }
+            | OperatorKind::DropIndex { on, .. } => self.found_relation_ref(on),
+            OperatorKind::Rekey {
+                relation,
+                key,
+                carry,
+            } => {
+                for k in key {
+                    self.found_row_field(relation, None, k);
+                }
+                for p in carry {
+                    self.found_path(p);
+                }
+            }
+            OperatorKind::AddDefault {
+                relation,
+                ctor,
+                field,
+                ..
+            }
+            | OperatorKind::DropDefault {
+                relation,
+                ctor,
+                field,
+            } => self.found_row_field(relation, ctor.as_ref(), field),
+            OperatorKind::RedefineFn(f) => {
+                let q = QName {
+                    module: None,
+                    name: f.name.clone(),
+                };
+                self.found_decl(&q, &[Kind::Fn]);
+            }
+            OperatorKind::RedefineComputed {
+                relation, field, ..
+            }
+            | OperatorKind::DropComputed(relation, field) => {
+                let rel = self.found_relation(relation);
+                self.found_computed(rel, field);
+            }
+            OperatorKind::Enable(CtorTarget::Relation(r))
+            | OperatorKind::Disable(CtorTarget::Relation(r))
+            | OperatorKind::Deprecate(CtorTarget::Relation(r)) => self.found_relation_ref(r),
+            OperatorKind::Revert { fills, .. } => {
+                for (p, _) in fills {
+                    self.found_path(p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Tie the name of the field an `add field` or `add computed` declares, this model being the
+    /// one after it.
+    pub(super) fn tie_declared(&self, op: &OperatorKind) {
+        match op {
+            OperatorKind::AddField { path, .. } => self.found_path(path),
+            OperatorKind::AddComputed {
+                relation, field, ..
+            } => {
+                let rel = self.found_relation(relation);
+                self.found_computed(rel, field);
+            }
+            _ => {}
         }
     }
 }

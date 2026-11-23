@@ -157,22 +157,7 @@ fn replayed(logged: &Logged, span: Span) -> Res<Replayed> {
             return refuse_at(span, format!("the log does not replay: {why}"));
         }
     };
-    let spelling = names.map(|mut names| {
-        for (k, op) in logged.operators.iter().enumerate() {
-            crate::evolve::operands::tie_operands(
-                &states[k],
-                &states[k + 1],
-                &logged.module,
-                op,
-                &mut names,
-            );
-        }
-        names
-    });
-    Ok(Replayed::new(
-        states,
-        Some(spelling.map_err(Failed::Refused)),
-    ))
+    Ok(Replayed::new(states, Some(names.map_err(Failed::Refused))))
 }
 
 /// Returns the refusal of the first of `ds`.

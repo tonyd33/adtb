@@ -6,8 +6,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::ast::{
-    self, CtorPlace, CtorSel, CtorTarget, Decl, Expr, Fill, MigrationFile, Operator, OperatorKind,
-    QName, RelationClause,
+    self, CtorSel, CtorTarget, Decl, Expr, Fill, MigrationFile, Operator, OperatorKind, QName,
+    RelationClause,
 };
 use crate::canon::Names;
 use crate::check::{self, Compiled, Ref};
@@ -35,7 +35,6 @@ pub(crate) mod meaning;
 mod memo;
 mod model;
 mod names;
-mod operands;
 mod recorded;
 mod resolved;
 mod revert;

@@ -96,7 +96,7 @@ impl Inverting<'_> {
     pub(super) fn op_text(&self, range: Range<usize>) -> R<Spelled> {
         let names = self
             .spelling
-            .get_or_init(|| self.logged.spelling())
+            .get_or_init(|| self.logged.names())
             .as_ref()
             .map_err(|f| f.clone().map_refused(|ds| unresolved(self.op.span, &ds)))?;
         let mut out = Spelled::default();
@@ -441,7 +441,7 @@ impl Cx<'_> {
                 };
                 let logged = &self.src.log[k];
                 let names = logged
-                    .spelling()
+                    .names()
                     .map_err(|f| f.map_refused(|ds| unresolved(op.span, &ds)))?;
                 let mut text = Spelled::default();
                 text.copy(&logged.text, 0..logged.text.len(), &names, 0);

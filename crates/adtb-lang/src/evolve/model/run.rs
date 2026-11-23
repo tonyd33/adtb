@@ -691,7 +691,7 @@ impl Model {
         }
     }
 
-    /// Give each clause of each relation variable, and each index its reference fields imply,
+    /// Give each default each default clause makes, and each index a reference field implies,
     /// the id `schema` gives it.
     fn adopt(&mut self, schema: &Schema) {
         let ids = schema.ids();
@@ -707,34 +707,17 @@ impl Model {
                 .relations
                 .get_mut(&r)
                 .expect("a declared relation variable");
-            let (mut ix, mut dx, mut cx) = (0, 0, 0);
+            let mut dx = 0;
             for c in &mut m.clauses {
-                match c {
-                    ClauseM::Key { id, generate, .. } => {
-                        *id = ids.key_id(rel).map(u64::from);
-                        if let Some((_, g)) = generate {
-                            *g = ids.generated_id(rel).map(u64::from);
-                        }
-                    }
-                    ClauseM::Index { id, .. } => {
-                        *id = ids.index_id(rel, ix).map(u64::from);
-                        ix += 1;
-                    }
-                    ClauseM::Default { ids: held, .. } => {
-                        *held = default_refs(schema, rel, dx)
-                            .into_iter()
-                            .filter_map(|f| {
-                                let d = ids.clause_default_ids(rel, dx).find(|(x, _)| *x == f)?.1;
-                                Some((field_id(f)?, d.raw()))
-                            })
-                            .collect();
-                        dx += 1;
-                    }
-                    ClauseM::Computed { id, .. } => {
-                        *id = ids.computed_id(rel, cx).map(u64::from);
-                        cx += 1;
-                    }
-                    ClauseM::Volatile => {}
+                if let ClauseM::Default { ids: held, .. } = c {
+                    *held = default_refs(schema, rel, dx)
+                        .into_iter()
+                        .filter_map(|f| {
+                            let d = ids.clause_default_ids(rel, dx).find(|(x, _)| *x == f)?.1;
+                            Some((field_id(f)?, d.raw()))
+                        })
+                        .collect();
+                    dx += 1;
                 }
             }
             m.implied = schema

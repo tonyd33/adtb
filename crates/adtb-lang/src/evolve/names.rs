@@ -38,7 +38,8 @@ impl Logged {
     /// operand resolves in the first later source that builds and declares every such name the
     /// declaration writes, else in the migration's result. The fields of a dropped unique or index
     /// resolve in the clause they match before the operator. A fill or a routing resolves as the
-    /// operator checks it.
+    /// operator checks it. Any other operand naming an object resolves in the source before the
+    /// operator, and the field an `add field` or `add computed` declares in the source after it.
     pub fn names(&self) -> Replaying<Names> {
         Ok(model::replay(self)?.1?)
     }
@@ -46,17 +47,6 @@ impl Logged {
     /// Returns the source before this migration's first operator and after each.
     pub fn states(&self) -> Replaying<Vec<Source>> {
         Ok(model::replay(self)?.0)
-    }
-
-    /// Returns the names of this migration's text as [`Logged::names`] does, with each operand
-    /// that names an object tied to its catalog id as [`operands::tie_operands`] resolves it.
-    pub(super) fn spelling(&self) -> Replaying<Names> {
-        let (states, names, _) = model::replay(self)?;
-        let mut names = names?;
-        for (k, op) in self.operators.iter().enumerate() {
-            operands::tie_operands(&states[k], &states[k + 1], &self.module, op, &mut names);
-        }
-        Ok(names)
     }
 
     /// Returns the source before operator `k` of this migration and the steps operator `k` takes

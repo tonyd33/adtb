@@ -244,8 +244,8 @@ enum Implied {
     Builtin(String, String),
 }
 
-/// A clause of a relation variable. An id is `None` until the schema the clause is in builds,
-/// when the clause takes the next id of its space.
+/// A clause of a relation variable. An id is `None` only inside the operator that made the
+/// clause, until a build or the operator's end gives it the next id of its space.
 #[derive(Clone, Debug)]
 enum ClauseM {
     Key {
@@ -402,9 +402,8 @@ impl Model {
         Ok(())
     }
 
-    /// Returns the next id of `space`, taking it.
-    /// Give each key, unique, index and computed field an operator made or changed without an id
-    /// a fresh one, in the order of their relation variables' ids and their clauses.
+    /// Give each key, generator, unique, index and computed field an operator made or changed
+    /// without an id a fresh one, in the order of their relation variables' ids and their clauses.
     fn identify(&mut self) {
         let mut next = std::mem::take(&mut self.next);
         let mut fresh = |space: Space| {
@@ -415,9 +414,15 @@ impl Model {
         for rel in self.relations.values_mut() {
             for c in &mut rel.clauses {
                 match c {
-                    ClauseM::Key { id: id @ None, .. } | ClauseM::Index { id: id @ None, .. } => {
-                        *id = Some(fresh(Space::Index));
+                    ClauseM::Key { id, generate, .. } => {
+                        if id.is_none() {
+                            *id = Some(fresh(Space::Index));
+                        }
+                        if let Some((_, g @ None)) = generate {
+                            *g = Some(fresh(Space::Default));
+                        }
                     }
+                    ClauseM::Index { id: id @ None, .. } => *id = Some(fresh(Space::Index)),
                     ClauseM::Computed { id: id @ None, .. } => *id = Some(fresh(Space::Computed)),
                     _ => {}
                 }
@@ -426,6 +431,7 @@ impl Model {
         self.next = next;
     }
 
+    /// Returns the next id of `space`, taking it.
     fn fresh(&mut self, space: Space) -> u64 {
         let n = self.next.entry(space).or_insert(FIRST_LOG_ID);
         *n += 1;

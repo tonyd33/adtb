@@ -645,7 +645,10 @@ impl Model {
         ) {
             self.schema_now(run)?;
         }
-        let resolved = Resolving::of(self, run.module(), run.text()).op(op)?;
+        let resolving = Resolving::of(self, run.module(), run.text());
+        let resolved = resolving.op(op)?;
+        resolving.tie_rest(op);
+        let mut ties = resolving.into_ties();
         let plain = |(op, clauses): (Resolved, Vec<Clause>)| (op, clauses, Ok(Vec::new()));
         let (out, clauses, maps) = match resolved {
             Op::AddModule(m) => plain(self.add_module(&m)?),
@@ -771,6 +774,12 @@ impl Model {
             Op::Revert { migration, fills } => self.revert(run, migration, fills)?,
         };
         self.settle();
+        if run.is_copying() {
+            let after = Resolving::of(self, run.module(), run.text());
+            after.tie_declared(op);
+            ties.extend(after.into_ties());
+            run.note_names(ties);
+        }
         Ok((ResolvedOp { op: out, clauses }, maps))
     }
 
