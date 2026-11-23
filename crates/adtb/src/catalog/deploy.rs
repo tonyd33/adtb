@@ -1,6 +1,6 @@
 //! The writes of deployment state: relations of the catalog whose rows no migration writes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use adtb_lang::ids::engine_rel;
 use adtb_lang::types::RelId;
@@ -142,7 +142,7 @@ impl Catalog {
         if let Err(e) = done {
             return Err(change.abandon(e));
         }
-        let lsn = self.end_landed(pager, txns, change.commit()?, (&[], &BTreeSet::new()));
+        let lsn = self.end_landed(pager, txns, change.commit()?, &[]);
         Ok(pager.position(lsn))
     }
 }

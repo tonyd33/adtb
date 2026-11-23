@@ -21,14 +21,15 @@ use crate::faults::armed::{self, Run, Site};
 use crate::heap::{self, Heap, Tested, Undo};
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{Begun, Fate, StatusError, Writers};
-use crate::storage::Walk;
 use crate::storage::{self, Pager};
+use crate::storage::{Quarantine, Walk};
 use crate::test_world;
 use crate::test_world::api::{printed, query};
 use crate::test_world::fixture::Storage;
 use crate::test_world::grants;
 use crate::test_world::load::{FILE, open_in, opened, options};
 use crate::test_world::rows::{EMAIL, key_of, row_type};
+use crate::testing::Plant;
 use crate::verify::{self, Depth, Finding, Inventory, Problem, Sum};
 use crate::{
     CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, Registration,
@@ -252,17 +253,41 @@ fn told_at(rt: &SimRuntime, texts: &[&str]) -> (Option<String>, Option<Error>) {
     }
 }
 
-/// Open the file at [`NOTES`] with [`ROWS`] rows, then at [`RANKED`], failing `fail`. Fail
-/// unless a sweep after the next open leaves the store as large as before the migration, when
-/// `fail` is not a settle, or, when the open answers a database quarantined whole, unless the next
-/// open answers it too.
+/// Returns the marks of `marks` the file holds as a recovered pager reads them.
+fn marks_left(rt: &SimRuntime, marks: &BTreeSet<Quarantine>) -> BTreeSet<Quarantine> {
+    let options = storage::Options {
+        page_size: 8192,
+        ..storage::Options::new(FILE)
+    };
+    let (pager, _) = Pager::open(rt.clone(), &options).expect("the file reopens");
+    let left = pager.quarantined().intersection(marks).copied().collect();
+    pager.close();
+    left
+}
+
+/// Open the file at [`NOTES`] with [`ROWS`] rows and both its indexes marked, then at
+/// [`RANKED`], which drops one and builds the other again, failing `fail`. Fail unless the marks
+/// are gone exactly when the migration is durable, unless a sweep after the next open leaves the
+/// store as large as before the migration, when `fail` is not a settle, or, when the open answers
+/// a database quarantined whole, unless the next open answers it too.
 fn migrated(fail: Option<(Site, usize)>) -> Ran {
     let what = format!("migration {fail:?}");
     let mut sim = created_at(&[NOTES]);
-    run(&mut sim, |rt| {
+    let marks = run(&mut sim, |rt| {
         let db = opened(&rt, FILE, &log(&[NOTES]), &options(1));
         write(&db, &inserts(""));
+        let t = db.testing();
+        let marks: BTreeSet<Quarantine> = ["key id", "index (title)"]
+            .into_iter()
+            .map(|clause| {
+                let index = t.index("app::notes", clause).expect("an index of notes");
+                let mark = t.own_mark(index).expect("the index's mark");
+                t.plant(Plant::Mark(mark)).expect("the mark is set");
+                mark
+            })
+            .collect();
         db.close().expect("the database closes");
+        marks
     });
     let held = run(&mut sim, |rt| swept(&rt));
     let (runs, failed, answered) = run(&mut sim, |rt| {
@@ -270,8 +295,11 @@ fn migrated(fail: Option<(Site, usize)>) -> Ran {
         let (failed, answered) = told_at(&rt, &[NOTES, RANKED]);
         (armed::reached(), failed, answered)
     });
+    let left = run(&mut sim, |rt| marks_left(&rt, &marks));
     let unmended = run(&mut sim, |rt| unmended(&rt));
     let durable = run(&mut sim, |rt| version(&rt) == 2);
+    let expected = if durable { BTreeSet::new() } else { marks };
+    assert_eq!(expected, left, "{what}: the marks of the indexes");
     if answered.is_some() {
         let again = run(&mut sim, |rt| told_at(&rt, &[NOTES, RANKED]));
         assert_eq!((None, Some(quarantined())), again, "{what}");

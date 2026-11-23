@@ -110,24 +110,45 @@ impl<'a, R: Runtime> Change<'a, R> {
         Ok(Landed { committed, mark })
     }
 
-    /// Release the snapshot and commit, changing the catalog root page `root` through `also` in
-    /// the log batch of the commit record. Returns the commit, its mark still recorded.
+    /// Release the snapshot and commit, changing the catalog root page `root` through `also` and
+    /// removing the mark of each heap and index of `gone` in the log batch of the commit record.
+    /// Returns the commit, its mark still recorded.
     ///
-    /// Fail as [`Transactions::commit`] does, the transaction aborted and its mark kept.
+    /// Precondition: the transaction drops each heap and index of `gone`, or builds it again
+    /// whole.
+    ///
+    /// Fail as [`Transactions::commit`] does, the transaction aborted, its mark and every mark of
+    /// `gone` kept.
     pub(super) fn commit_naming(
         self,
         root: Pid,
         also: impl FnOnce(&mut Root),
+        gone: &BTreeSet<Quarantine>,
     ) -> Result<Landed<'a>, Error> {
         let Change { begun, m, mark } = self;
         let (pager, txns) = (m.pager, m.txns);
         drop(m);
-        let committed = txns.commit_changing(pager, begun, root, |p| {
+        let name = |p: &mut [u8]| {
             let mut named = Root::read(p);
             also(&mut named);
             named.write(p);
-        })?;
-        Ok(Landed { committed, mark })
+        };
+        let Some(release) = pager.releasing(gone) else {
+            let committed = txns.commit_changing(pager, begun, root, name)?;
+            return Ok(Landed { committed, mark });
+        };
+        let pids = [root, release.page()];
+        let committed = txns.commit_changing_pages(pager, begun, &pids, |p| {
+            name(&mut *p[0]);
+            pager.release_on(&release, &mut *p[1]);
+        });
+        match committed {
+            Ok(committed) => Ok(Landed { committed, mark }),
+            Err(e) => {
+                pager.unrelease(&release);
+                Err(e.into())
+            }
+        }
     }
 
     /// Release the snapshot and commit, changing the page `pid` through `also` in the log batch
@@ -182,7 +203,7 @@ impl<'a, R: Runtime> Change<'a, R> {
             Mark::Began(began) => Some(began),
             Mark::Joined => None,
         };
-        let freed = catalog.free_leaked(pager, txns, (&made, &BTreeSet::new()));
+        let freed = catalog.free_leaked(pager, txns, &made);
         if freed.is_ok_and(|f| f.counted && f.released)
             && let Ok(lsn) = root::end_freed(pager, catalog.root, ended)
         {
@@ -297,18 +318,17 @@ impl Catalog {
     }
 
     /// Free every page a schema change `landed` left unreached, counting the versions of the
-    /// heaps it took out of the catalog, `gone.0`, off their large values, and remove the marks of
-    /// the heaps and indexes it dropped and of the indexes it rebuilt, `gone.1`; then end its mark
-    /// and wait until the end is durable. Leave the mark on the root for the next open when the
-    /// free fails or leaves a version not counted off, or a mark stays. Returns the LSN the log is
-    /// durable past.
+    /// heaps it took out of the catalog, `gone`, off their large values, and remove the mark of
+    /// each heap and index no structure holds; then end its mark and wait until the end is
+    /// durable. Leave the mark on the root for the next open when the free fails or leaves a
+    /// version not counted off, or a mark stays. Returns the LSN the log is durable past.
     #[track_caller]
     pub(super) fn end_landed<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         landed: Landed<'_>,
-        gone: (&[Arc<Heap>], &BTreeSet<Quarantine>),
+        gone: &[Arc<Heap>],
     ) -> Lsn {
         let Landed { committed, mark } = landed;
         let ended = match mark {

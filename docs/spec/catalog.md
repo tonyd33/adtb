@@ -2206,8 +2206,8 @@ include a quarantined constructor relation, open fails with
 }` naming that relation, and the migration changes nothing. A
 quarantined index refuses no migration. A migration that drops an
 index, drops its relation or rewrites its relation removes the index's
-quarantine with it: when open returns, no index it dropped or built
-again is quarantined. A quarantined constructor relation stays
+quarantine in its commit: once the migration commits, no index it
+dropped or built again is quarantined, across a crash too. A quarantined constructor relation stays
 quarantined through every migration that applies.
 
 A quarantined index is restored by `reindex` (§11.4). A quarantined

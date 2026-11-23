@@ -310,7 +310,7 @@ impl Catalog {
         };
         match change.commit() {
             Ok(landed) => {
-                self.end_landed(pager, txns, landed, (&[], &BTreeSet::new()));
+                self.end_landed(pager, txns, landed, &[]);
                 Ok(dormant)
             }
             Err(e) => {

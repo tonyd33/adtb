@@ -100,6 +100,19 @@ pub enum Quarantine {
     Index(u32),
 }
 
+/// The removal of marks a commit makes: the page holding the marks and the marks it removes.
+#[derive(Debug)]
+pub struct Release {
+    page: Pid,
+    gone: BTreeSet<Quarantine>,
+}
+
+impl Release {
+    pub fn page(&self) -> Pid {
+        self.page
+    }
+}
+
 const FORMAT: u16 = 1;
 const COUNT: usize = HEADER_LEN;
 const ENTRIES: usize = HEADER_LEN + 8;
@@ -862,6 +875,42 @@ impl<R: Runtime> Pager<R> {
             Err(Unwritable::Refused(e)) => Err(MarkFailure::Page(e)),
             Err(Unwritable::Unverified(page)) => Err(MarkFailure::Unverified { page }),
         }
+    }
+
+    /// Returns the removal of the marks of `gone` that are set, for a commit to make in its batch;
+    /// `None` when none is set, or when the page holding the marks is refused or was loaded at
+    /// this open with no check of its LSN.
+    pub fn releasing(&self, gone: &BTreeSet<Quarantine>) -> Option<Release> {
+        let gone: BTreeSet<Quarantine> = self
+            .quarantined()
+            .intersection(gone)
+            .filter(|o| **o != Quarantine::Database)
+            .copied()
+            .collect();
+        if gone.is_empty() {
+            return None;
+        }
+        let page = self.marks_page().ok()?;
+        Some(Release { page, gone })
+    }
+
+    /// Remove the marks of `r` in memory and write the marks left to `page`, the contents of the
+    /// page of `r` a commit's batch changes.
+    ///
+    /// Preconditions:
+    /// - The caller latches the page of `r` exclusively and logs the change in the batch of a
+    ///   commit that drops each structure `r` names or builds it again whole.
+    pub fn release_on(&self, r: &Release, page: &mut [u8]) {
+        let set = self
+            .marks()
+            .change_on_page(self.rt(), |set| set.retain(|o| !r.gone.contains(o)));
+        encode(page, &set);
+    }
+
+    /// Set the marks of `r` again in memory, after the commit that was to remove them failed.
+    pub fn unrelease(&self, r: &Release) {
+        self.marks()
+            .change_on_page(self.rt(), |set| set.extend(r.gone.iter().copied()));
     }
 
     /// Remove the mark on each heap and index `gone` accepts. Durable on return.

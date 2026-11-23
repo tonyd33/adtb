@@ -365,6 +365,18 @@ impl<R: Runtime> Transactions<R> {
         )
     }
 
+    /// Commit the transaction of `begun` as [`Transactions::commit_changing`] does, changing the
+    /// pages `pids` through `also`, which takes them in that order.
+    pub fn commit_changing_pages(
+        &self,
+        pager: &Pager<R>,
+        begun: Begun,
+        pids: &[Pid],
+        also: impl FnOnce(&mut [&mut [u8]]),
+    ) -> Result<Committed<'_>, Error> {
+        self.commit_also(pager, Some(begun), None, |_| Ok(()), |_| {}, (pids, also))
+    }
+
     /// Commit a transaction: a writer by `begun`, a reader by `begun` of `None`, whose snapshot
     /// reads the commits up to `read`. Under the serializer's lock, run `check`, then record the
     /// writer's commit with its time when history is kept, publish its position, and run `then`.

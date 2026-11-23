@@ -309,7 +309,7 @@ impl Catalog {
         for id in &freed {
             self.indexes.remove(id);
         }
-        self.end_landed(pager, txns, landed, (&[], &BTreeSet::new()));
+        self.end_landed(pager, txns, landed, &[]);
         Ok(())
     }
 }

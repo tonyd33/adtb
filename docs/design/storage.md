@@ -1053,9 +1053,12 @@ pager.map_fault(fault, holder, order)
 pager.replace_contents(page, from, Option<object>) -> Result<(), PageError>
                                                   // page takes from's contents, from is freed
                                                   // and any object's mark goes, in one batch
+pager.releasing(gone) -> Option<Release>          // the marks of `gone` a commit removes
+pager.release_on(release, page)                   // in the commit's batch, under its latch
+pager.unrelease(release)                          // the commit failed: set them again in memory
 pager.release_gone(gone) -> Result<(), MarkFailure>
-                                                  // the marks of heaps and indexes a schema
-                                                  // change dropped or built again go
+                                                  // the marks of heaps and indexes no
+                                                  // structure holds go
 pager.scrap(page) -> Result<(), PageError>        // free a damaged page, overwriting it
 pager.is_quarantined(object) -> bool              // its own mark or the database's
 pager.quarantined() -> BTreeSet<Quarantine>
@@ -1071,12 +1074,13 @@ page is reported and marks nothing. A mark or release is a logged change of that
 durable when the call returns, so the marks survive a crash and a
 restart and are read back at open. A heap or index stays quarantined
 across restarts until a repair removes its mark, or a schema change that
-drops it or builds it again whole removes the mark once it commits. The
-catalog removes the marks of the heaps and indexes no structure holds
-whenever it frees what a schema change left unreached, so a crash
-before the removal leaves them for the next open; that of an index
-built again under the same owner is removed only after the commit of
-its schema change, and a crash before it leaves the mark. A marks page that fails
+drops it or builds it again whole removes the mark in the log batch of its
+commit record, with the marks page latched for that commit: the mark goes
+exactly when the commit is durable. A marks page the open read with no
+check of its LSN is not written by a commit; the catalog then removes the
+marks of the heaps and indexes no structure holds whenever it frees what
+a schema change left unreached, and the mark of an index built again
+under the same owner stays. A marks page that fails
 verification at open quarantines the database, and every mark then fails
 with its damage.
 

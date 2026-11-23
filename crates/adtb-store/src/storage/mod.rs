@@ -87,7 +87,7 @@ pub use pager::{
     LATCHES_PER_THREAD, Options, PageError, PageExclusive, PageOptimistic, PageShared, Pager,
 };
 pub use quarantine::StaleCopy;
-pub use quarantine::{MarkFailure, Quarantine, Stopped};
+pub use quarantine::{MarkFailure, Quarantine, Release, Stopped};
 #[cfg(any(test, feature = "testing"))]
 pub use record::Edit;
 pub use record::{Malformed, Reader};

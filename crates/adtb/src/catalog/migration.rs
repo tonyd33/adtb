@@ -122,7 +122,8 @@ impl Catalog {
             }
         };
         let sequences = c.sequences;
-        let landed = match change.commit_naming(self.root, |r| r.sequences = sequences) {
+        let marks = self.marks_gone_in(&c);
+        let landed = match change.commit_naming(self.root, |r| r.sequences = sequences, &marks) {
             Ok(landed) => landed,
             Err(e) => {
                 (self.source.grants, self.sequences) = before;
@@ -130,9 +131,8 @@ impl Catalog {
             }
         };
         let gone = self.heaps_gone_in(&c);
-        let rebuilt = self.rebuilt_in(&c);
         *self = c;
-        self.end_landed(pager, txns, landed, (&gone, &rebuilt));
+        self.end_landed(pager, txns, landed, &gone);
         Ok(dormant)
     }
 

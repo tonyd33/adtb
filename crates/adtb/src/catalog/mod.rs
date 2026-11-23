@@ -671,7 +671,7 @@ impl Catalog {
         }
         let changing = Root::read(&pager.read(catalog.root)?).changing();
         if changing != Changing::None {
-            let freed = catalog.free_leaked(pager, &txns, (&[], &BTreeSet::new()));
+            let freed = catalog.free_leaked(pager, &txns, &[]);
             let lowered = freed.and_then(|f| {
                 catalog.lower_overcounted(pager, &f.report)?;
                 Ok(f.released)
@@ -845,23 +845,19 @@ impl Catalog {
     /// page of a heap of `gone` off the large values it points at. A page whose versions it
     /// could not count off is freed with its heads left overcounted, and so is a page it cannot
     /// read while `gone` is not empty: [`Freed::counted`] is then false. Then remove the mark on
-    /// each heap and index no structure holds, and on each index of `rebuilt`; [`Freed::released`]
-    /// is false when that fails.
+    /// each heap and index no structure holds; [`Freed::released`] is false when that fails.
     ///
     /// Errors:
     /// - The damage found, freeing nothing, if a damaged page keeps it from finding
     ///   every structure's pages.
     ///
-    /// Preconditions:
-    ///
-    /// - No structure reaches a heap of `gone`, no transaction reads one, and no call counted its
-    ///   versions off before.
-    /// - Each index of `rebuilt` was built whole from its heaps since its mark was set.
+    /// Precondition: no structure reaches a heap of `gone`, no transaction reads one, and no
+    /// call counted its versions off before.
     fn free_leaked<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        (gone, rebuilt): (&[Arc<Heap>], &BTreeSet<Quarantine>),
+        gone: &[Arc<Heap>],
     ) -> Result<Freed, Error> {
         let structures = self.structures();
         let report = {
@@ -893,9 +889,7 @@ impl Catalog {
             pager.free(p)?;
         }
         let objects = structures.objects();
-        let released = pager
-            .release_gone(|o| !objects.contains(&o) || rebuilt.contains(&o))
-            .is_ok();
+        let released = pager.release_gone(|o| !objects.contains(&o)).is_ok();
         Ok(Freed {
             report,
             counted,
@@ -937,16 +931,23 @@ impl Catalog {
         self.heaps.values().chain(self.kept.heaps())
     }
 
-    /// Returns the mark of each index whose tree `next` holds in place of this catalog's.
-    fn rebuilt_in(&self, next: &Catalog) -> BTreeSet<Quarantine> {
-        next.indexes
+    /// Returns the mark of each heap and index of this catalog that `next` does not hold, and of
+    /// each index whose tree `next` holds in place of this catalog's.
+    fn marks_gone_in(&self, next: &Catalog) -> BTreeSet<Quarantine> {
+        let held = next.structures().objects();
+        let dropped = self.structures().objects().into_iter();
+        let rebuilt = next
+            .indexes
             .iter()
             .filter(|(id, (_, index, _))| {
                 self.indexes
                     .get(id)
                     .is_some_and(|(_, was, _)| was.tree().root() != index.tree().root())
             })
-            .map(|(_, (_, index, _))| Quarantine::Index(index.tree().owner()))
+            .map(|(_, (_, index, _))| Quarantine::Index(index.tree().owner()));
+        dropped
+            .filter(|o| !held.contains(o))
+            .chain(rebuilt)
             .collect()
     }
 
