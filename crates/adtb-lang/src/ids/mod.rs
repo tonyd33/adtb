@@ -204,7 +204,8 @@ impl Slot {
 /// Returns the id a lookup found for a type, constructor, field, relation variable, relation key
 /// or index of a committed schema.
 ///
-/// Preconditions: the object is outside the temp module.
+/// Preconditions: the object is outside the temp module. On a schema that is not committed the
+/// precondition is unchecked: a lookup that found no id panics.
 #[track_caller]
 pub fn held_id<T>(id: Option<T>) -> T {
     id.expect("every such object of a committed schema outside the temp module has a catalog id")

@@ -475,7 +475,7 @@ impl Checker<'_> {
                 Ty::Fn(a, r) if *a == Ty::Unit => {
                     let unit = self.b().unit();
                     let unit = self.placed_as_is(unit);
-                    f = self.app_placed(f, unit);
+                    f = self.b().app(f, unit);
                     ty = *r;
                 }
                 _ => {
@@ -494,7 +494,7 @@ impl Checker<'_> {
                 ));
             };
             let x = self.check_placed(e, &a)?;
-            f = self.app_placed(f, x);
+            f = self.b().app(f, x);
             ty = *r;
         }
         Ok(Out {
@@ -568,7 +568,7 @@ impl Checker<'_> {
             type_args.push(t);
         }
         let result = def.result.subst(&type_args);
-        let mut o = Out::of(self.call_placed(f, type_args, tms), result);
+        let mut o = Out::of(self.b().call(f, type_args, tms), result);
         o.rows = self.fn_rows[f.0 as usize];
         if o.rows.is_some() {
             o.provenance = Provenance::Snapshot;

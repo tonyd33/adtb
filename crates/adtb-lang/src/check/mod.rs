@@ -25,6 +25,7 @@ mod names;
 mod order;
 mod pat;
 mod placed;
+use placed::SlotBuild;
 mod prelude;
 pub(crate) mod prim_ty;
 mod query;
@@ -326,17 +327,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Returns a checker of a body against `program`, the program of `schema`.
+    /// Returns a checker of a body against `c`.
     fn of_program(
-        schema: &'a Schema,
-        program: &'a Program,
+        c: &'a Compiled<impl AsSchema>,
         vis: Visible,
         ctx: Context,
         bundles: &'a Bundles,
         late_writer: Option<&'static str>,
         hidden: BTreeSet<RelId>,
     ) -> Self {
-        let mut c = Checker::with_rows(schema, vis, ctx, program.fn_rows.clone());
+        let program = c.program();
+        let mut c = Checker::with_rows(c.schema(), vis, ctx, program.fn_rows.clone());
         c.program = Some(program);
         c.bundles = bundles;
         c.late_writer = late_writer;
@@ -344,11 +345,10 @@ impl<'a> Checker<'a> {
         c
     }
 
-    /// Returns a checker of a registered query or transaction against `program`, the program of `schema`.
-    fn registered(schema: &'a Schema, program: &'a Program, vis: Visible) -> Self {
+    /// Returns a checker of a registered query or transaction against `c`.
+    fn registered(c: &'a Compiled<impl AsSchema>, vis: Visible) -> Self {
         Checker::of_program(
-            schema,
-            program,
+            c,
             vis,
             Context::Schema,
             &adhoc::NO_BUNDLES,
@@ -365,10 +365,12 @@ impl<'a> Checker<'a> {
         self.ctx == Context::Adhoc
     }
 
-    fn b(&mut self) -> Build<'_> {
-        Build::new(self.schema, &mut self.terms)
-            .counting(&mut self.type_nodes)
-            .classes(self.sums.parents())
+    fn b(&mut self) -> SlotBuild<'_> {
+        SlotBuild::new(
+            Build::new(self.schema, &mut self.terms)
+                .counting(&mut self.type_nodes)
+                .classes(self.sums.parents()),
+        )
     }
 
     /// Returns `tm` at the type of its node.
@@ -440,7 +442,7 @@ impl<'a> Checker<'a> {
 
     fn bool_tm(&mut self, value: bool) -> Tm {
         let ty = self.bool_ty();
-        self.ctor_placed(ctor::bool(value), Vec::new(), ty)
+        self.b().ctor(ctor::bool(value), Vec::new(), ty)
     }
 
     fn option_ty(&self, t: Ty) -> Ty {
@@ -556,32 +558,28 @@ fn call_order(schema: &Schema) -> Result<Vec<FnId>, FileDiag> {
 /// Fail with no diagnostic of a body that names a relation variable a refused operator left
 /// poisoned.
 pub fn check_schema<S: AsSchema>(schema: S) -> Result<Compiled<S>, Vec<FileDiag>> {
-    let program = checked_program(schema.as_schema())?;
-    Ok(Compiled::new(schema, program))
-}
-
-/// Type checks every body of `schema` as [`check_schema`] does, returning the program alone.
-pub(crate) fn checked_program(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
-    let order = call_order(schema).map_err(|d| vec![d])?;
-    let (program, mut diags) = bodies(schema, &order, None);
+    let order = call_order(schema.as_schema()).map_err(|d| vec![d])?;
+    let (program, mut diags) = bodies(schema.as_schema(), &order, None);
     let poisoned = diags.iter().any(|d| d.diag.kind == DiagKind::Poisoned);
     diags.retain(|d| d.diag.kind != DiagKind::Poisoned);
-    if diags.is_empty() && !poisoned {
-        diags = crate::analysis::schema_diags(schema, &program);
+    if !diags.is_empty() || poisoned {
+        return Err(diags);
     }
-    if diags.is_empty() && !poisoned {
-        for (root, t, free) in program.bodies() {
-            crate::kernel::assert_valid_bounded(
-                schema,
-                &program.terms,
-                &[(t, free)],
-                root.bounds(schema),
-            );
-        }
-        Ok(program)
-    } else {
-        Err(diags)
+    let c = Compiled::new(schema, program);
+    let diags = crate::analysis::schema_diags(&c);
+    if !diags.is_empty() {
+        return Err(diags);
     }
+    let (schema, program) = (c.schema(), c.program());
+    for (root, t, free) in program.bodies() {
+        crate::kernel::assert_valid_bounded(
+            schema,
+            &program.terms,
+            &[(t, free)],
+            root.bounds(schema),
+        );
+    }
+    Ok(c)
 }
 
 /// Returns every schema object the bodies of a schema name, by file and span, with each `match` the bodies hold.
@@ -872,52 +870,48 @@ pub fn check_adhoc_in(
     bundles: &Bundles,
     record: Option<&mut Vec<(Span, Ref)>>,
 ) -> Result<Adhoc, Vec<Diag>> {
-    let (schema, program) = (c.committed(), c.program());
+    let schema = c.committed();
     let mut diags = Vec::new();
     let vis = Visible::all(schema).scoped(scope.cloned());
     let temps = adhoc::temp_relations(schema, &vis, items, &mut diags);
     let (checked, declared) = match &temps {
-        Some((s, d)) => (s, d.clone()),
-        None => (schema, Vec::new()),
+        Some((s, d)) => (c.extended(s), d.clone()),
+        None => (c.extended(schema), Vec::new()),
     };
     let text = Text {
         scope,
-        program,
         items,
         params,
         bundles,
         late_writer: None,
         kind: RootKind::Adhoc,
     };
-    let mut adhoc = checked_items(checked, &text, declared, diags, record)?;
+    let mut adhoc = checked_items(&checked, &text, declared, diags, record)?;
     adhoc.temps = temps.map(|(s, _)| s);
     Ok(adhoc)
 }
 
-/// Type checks the write of a migration's `script` against `schema`, the schema the operators
-/// before it produce, as [`check_adhoc_recording`] does.
+/// Type checks the write of a migration's `script` against `c`, the schema the operators before
+/// it produce, as [`check_adhoc_recording`] does.
 pub(crate) fn check_script(
-    schema: &Schema,
-    program: &Program,
+    c: &Compiled<impl AsSchema>,
     write: &ast::Write,
     record: Option<&mut Vec<(Span, Ref)>>,
 ) -> Result<(), Vec<Diag>> {
     let text = Text {
         scope: None,
-        program,
         items: &[ast::AdhocItem::Write(Box::new(write.clone()))],
         params: &BTreeMap::new(),
         bundles: &Bundles::default(),
         late_writer: Some("script"),
         kind: RootKind::Script,
     };
-    checked_items(schema, &text, Vec::new(), Vec::new(), record).map(drop)
+    checked_items(c, &text, Vec::new(), Vec::new(), record).map(drop)
 }
 
 /// Ad hoc text and what it is checked with.
 struct Text<'a> {
     scope: Option<&'a crate::schema::Scope>,
-    program: &'a Program,
     items: &'a [ast::AdhocItem],
     params: &'a BTreeMap<String, Ty>,
     bundles: &'a Bundles,
@@ -925,10 +919,10 @@ struct Text<'a> {
     kind: RootKind,
 }
 
-/// Returns `text` checked against `checked`, each relation of `declared` hidden until its
+/// Returns `text` checked against `c`, each relation of `declared` hidden until its
 /// declaration, failing with `diags` and every diagnostic of its items.
 fn checked_items(
-    checked: &Schema,
+    c: &Compiled<impl AsSchema>,
     text: &Text<'_>,
     declared: Vec<Option<RelId>>,
     mut diags: Vec<Diag>,
@@ -936,24 +930,17 @@ fn checked_items(
 ) -> Result<Adhoc, Vec<Diag>> {
     let Text {
         scope,
-        program,
         items,
         params,
         bundles,
         late_writer,
         kind,
     } = *text;
+    let compiled = c;
+    let checked = compiled.schema();
     let vis = Visible::all(checked).scoped(scope.cloned());
     let hidden = declared.iter().flatten().copied().collect();
-    let mut c = Checker::of_program(
-        checked,
-        program,
-        vis,
-        Context::Adhoc,
-        bundles,
-        late_writer,
-        hidden,
-    );
+    let mut c = Checker::of_program(compiled, vis, Context::Adhoc, bundles, late_writer, hidden);
     for (name, ty) in params {
         let v = c.terms.var(name, ty.clone());
         c.params.insert(name.clone(), (v, ty.clone()));
@@ -1002,7 +989,7 @@ fn checked_items(
             _ => None,
         })
         .collect();
-    let diags = crate::analysis::adhoc_diags(checked, program, &adhoc, &spans);
+    let diags = crate::analysis::adhoc_diags(compiled, &adhoc, &spans);
     if !diags.is_empty() {
         return Err(diags);
     }
@@ -1032,14 +1019,15 @@ pub fn check_query_in(
     vis: Visible,
     q: &ast::QueryDecl,
 ) -> Result<Query, Diag> {
-    let (schema, program) = (c.schema(), c.program());
-    let mut c = Checker::registered(schema, program, vis);
+    let compiled = c;
+    let schema = compiled.schema();
+    let mut c = Checker::registered(compiled, vis);
     let term = c.query(q)?;
     let query = Query {
         terms: c.terms,
         term,
     };
-    crate::analysis::query_diag(schema, program, &query, q.span)?;
+    crate::analysis::query_diag(compiled, &query, q.span)?;
     crate::kernel::assert_valid(schema, &query.terms, &[(query.term, Vec::new())]);
     Ok(query)
 }

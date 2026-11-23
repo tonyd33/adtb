@@ -16,8 +16,7 @@ pub enum RowBody<'e> {
 /// Refuse, naming the body, a value it gives or matches where a key type with a late selection
 /// is expected.
 pub fn check_row(
-    schema: &Schema,
-    program: &Program,
+    compiled: &Compiled<impl AsSchema>,
     module: ModuleId,
     row: &Ty,
     body: RowBody,
@@ -29,22 +28,20 @@ pub fn check_row(
         _ => "fill",
     };
     let mut c = Checker::of_program(
-        schema,
-        program,
+        compiled,
         Visible::module(module),
         Context::Schema,
         &adhoc::NO_BUNDLES,
         Some(writer),
         BTreeSet::new(),
     );
-    row_body(&mut c, program, row, body, expected, kind)?;
+    row_body(&mut c, compiled, row, body, expected, kind)?;
     Ok(c.refs.take_checked())
 }
 
 /// Type checks `body` as [`check_row`] does, as a query whose one parameter is the row.
 pub fn row_query(
-    schema: &Schema,
-    program: &Program,
+    compiled: &Compiled<impl AsSchema>,
     module: ModuleId,
     row: &Ty,
     body: RowBody,
@@ -52,17 +49,19 @@ pub fn row_query(
     kind: RootKind,
 ) -> Result<Query, Diag> {
     let mut c = Checker::of_program(
-        schema,
-        program,
+        compiled,
         Visible::module(module),
         Context::Schema,
         &adhoc::NO_BUNDLES,
         None,
         BTreeSet::new(),
     );
-    let (v, tm, ty) = row_body(&mut c, program, row, body, expected, kind)?;
-    let term =
-        Build::new(schema, &mut c.terms).lam(v, tm, Ty::Fn(Box::new(row.clone()), Box::new(ty)));
+    let (v, tm, ty) = row_body(&mut c, compiled, row, body, expected, kind)?;
+    let term = Build::new(compiled.schema(), &mut c.terms).lam(
+        v,
+        tm,
+        Ty::Fn(Box::new(row.clone()), Box::new(ty)),
+    );
     Ok(Query {
         terms: c.terms,
         term,
@@ -71,7 +70,7 @@ pub fn row_query(
 
 fn row_body(
     c: &mut Checker<'_>,
-    program: &Program,
+    compiled: &Compiled<impl AsSchema>,
     row: &Ty,
     body: RowBody,
     expected: Option<&Ty>,
@@ -104,7 +103,7 @@ fn row_body(
             (out, e.span)
         }
     };
-    crate::capability::Judge::over(c.schema, program)
+    crate::capability::Judge::new(compiled)
         .judge(kind, &c.terms, out.tm)
         .map_err(|r| diag(span, r.to_string()))?;
     Ok((v, out.tm, out.ty))

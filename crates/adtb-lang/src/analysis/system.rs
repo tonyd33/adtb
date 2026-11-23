@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::check::Program;
+use crate::check::{AsSchema, Compiled};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::schema::Schema;
 use crate::types::RelId;
@@ -25,12 +25,12 @@ pub fn writable_relation(schema: &Schema, target: RelId) -> Result<(), Diag> {
 }
 
 pub(super) fn program(
-    schema: &Schema,
-    program: &Program,
+    c: &Compiled<impl AsSchema>,
     terms: &Terms,
     roots: impl IntoIterator<Item = Tm>,
     span: Span,
 ) -> Result<(), Diag> {
+    let (schema, program) = (c.schema(), c.program());
     let mut pending: Vec<_> = roots.into_iter().map(|root| (false, root)).collect();
     let mut visited = BTreeSet::new();
     while let Some((function, term)) = pending.pop() {

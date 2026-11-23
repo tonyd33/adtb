@@ -49,24 +49,68 @@ impl Checker<'_> {
     pub(super) fn singleton_checked(&mut self, x: Tm, set: Ty) -> Tm {
         let elem = ty::elem(&set).expect("a set type").clone();
         let x = self.placed_checked(x, &elem);
-        self.singleton_placed(x, set)
+        self.b().singleton(x, set)
     }
 
-    pub(super) fn call_placed(&mut self, f: FnId, type_args: Vec<Ty>, args: Vec<Placed>) -> Tm {
+    /// Returns the insert of `rows`, which the checker built as rows of `rel`.
+    pub(super) fn insert_checked(&mut self, rel: RelId, rows: Tm) -> Tm {
+        let slot = Ty::Set(Box::new(self.schema.relation(rel).elem.clone()));
+        let rows = self.placed_checked(rows, &slot);
+        self.b().insert(rel, rows)
+    }
+}
+
+/// A kernel builder whose call argument, constructor and record field, set element, union
+/// operand and inserted rows slots take only placed terms.
+pub(super) struct SlotBuild<'a>(Build<'a>);
+
+impl<'a> std::ops::Deref for SlotBuild<'a> {
+    type Target = Build<'a>;
+
+    fn deref(&self) -> &Build<'a> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SlotBuild<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<'a> SlotBuild<'a> {
+    pub(super) fn new(b: Build<'a>) -> SlotBuild<'a> {
+        SlotBuild(b)
+    }
+
+    pub(super) fn call(&mut self, f: FnId, type_args: Vec<Ty>, args: Vec<Placed>) -> Tm {
         let args = args.into_iter().map(Placed::tm).collect();
-        self.b().call(f, type_args, args)
+        self.0.call(f, type_args, args)
     }
 
-    pub(super) fn ctor_placed(&mut self, c: u32, fields: Vec<(String, Placed)>, ty: Ty) -> Tm {
+    pub(super) fn ctor(&mut self, c: u32, fields: Vec<(String, Placed)>, ty: Ty) -> Tm {
         let fields = fields.into_iter().map(|(n, p)| (n, p.tm())).collect();
-        self.b().ctor(c, fields, ty)
+        self.0.ctor(c, fields, ty)
     }
 
-    pub(super) fn singleton_placed(&mut self, x: Placed, ty: Ty) -> Tm {
-        self.b().singleton(x.tm(), ty)
+    pub(super) fn record(&mut self, fields: Vec<(String, Placed)>, ty: Ty) -> Tm {
+        let fields = fields.into_iter().map(|(n, p)| (n, p.tm())).collect();
+        self.0.record(fields, ty)
     }
 
-    pub(super) fn app_placed(&mut self, f: Tm, x: Placed) -> Tm {
-        self.b().app(f, x.tm())
+    pub(super) fn singleton(&mut self, x: Placed, ty: Ty) -> Tm {
+        self.0.singleton(x.tm(), ty)
+    }
+
+    pub(super) fn app(&mut self, f: Tm, x: Placed) -> Tm {
+        self.0.app(f, x.tm())
+    }
+
+    pub(super) fn union(&mut self, a: Placed, b: Placed, ty: Ty) -> Tm {
+        self.0.union(a.tm(), b.tm(), ty)
+    }
+
+    pub(super) fn insert(&mut self, rel: RelId, rows: Placed) -> Tm {
+        self.0.insert(rel, rows.tm())
     }
 }

@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
 
+use adtb_lang::ids::held_id;
 use adtb_lang::schema::{Committed, FieldDef, TypeDefKind};
 use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::types::{Base, Ctors, Fields, RelId, Ty, TypeId};
@@ -291,20 +292,11 @@ impl<'s> Module<'s> {
             format!("<{}>", bs.join(", "))
         };
         let name = &d.name;
-        let no_id = |what: String| Error::new(format!("{what} has no catalog id"));
-        let id = schema
-            .ids()
-            .type_id(t)
-            .ok_or_else(|| no_id(format!("type `{name}`")))?;
-        let ctor_ids = (0..d.ctors().len().max(1))
-            .map(|c| {
-                let id = d.ctor_at(c as u32).and_then(|c| schema.ids().ctor_id(c));
-                id.map(|id| id.to_string()).ok_or_else(|| {
-                    let ctor = d.ctors().get(c).map_or(name.as_str(), |c| &c.name);
-                    no_id(format!("constructor `{name}.{ctor}`"))
-                })
-            })
-            .collect::<Result<Vec<String>, Error>>()?;
+        let id = held_id(schema.ids().type_id(t));
+        let ctor_ids: Vec<String> = d
+            .ctor_refs()
+            .map(|c| held_id(schema.ids().ctor_id(c)).to_string())
+            .collect();
         match &d.kind {
             TypeDefKind::Newtype { base, .. } => {
                 let rep = self.host_ty(base, &format!("{name}Value"), &params)?;
@@ -393,10 +385,7 @@ impl<'s> Module<'s> {
                 self.host_ty(&Ty::Record(fs), &format!("{marker}Key"), &[])?
             }
         };
-        let id = schema
-            .ids()
-            .relation_id(rel)
-            .ok_or_else(|| Error::new(format!("relation `{}` has no catalog id", r.name)))?;
+        let id = held_id(schema.ids().relation_id(rel));
         let out = &mut self.out;
         writeln!(
             out,

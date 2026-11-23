@@ -139,16 +139,29 @@ impl<'a> Build<'a> {
     }
 
     /// Returns node `t` of this arena rebuilt over `children` in place of its own, as `kept`
-    /// rebuilds it at the type of `t`, a transport field when `t` is one.
+    /// rebuilds it at the type of `t`, a transport field when `t` is one. Record the arena broken
+    /// at a child whose type is not a subtype of the type of the child it replaces.
     ///
     /// Preconditions:
     /// - `children` are terms of this arena, as many as `t` has.
     pub fn rebuild_kept(&mut self, t: Tm, children: &[Tm]) -> Tm {
+        let old = self.terms.children(t);
         assert_eq!(
-            self.terms.children(t).len(),
+            old.len(),
             children.len(),
             "a rebuilt node keeps the number of children of {t:?}"
         );
+        for (&was, &now) in old.iter().zip(children) {
+            let (got, want) = (self.terms.ty(now), self.terms.ty(was));
+            if was != now && !crate::check::ty::subtype(self.schema, got, want) {
+                let reason = format!(
+                    "the replacement {now:?} of {was:?} is `{}`, not a subtype of `{}`",
+                    self.schema.show_ty(got),
+                    self.schema.show_ty(want)
+                );
+                self.terms.break_at(now, reason);
+            }
+        }
         let kind = self.terms.kind(t).with_children(children);
         let ty = self.terms.ty(t).clone();
         let rebuilt = self.kept(kind, &ty);

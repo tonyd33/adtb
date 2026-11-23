@@ -79,12 +79,6 @@ include = [
 rows = { sim_test_opens = "ratchet" }
 
 [[rule]]
-query = "placed-slots.tql"
-include = ["crates/adtb-lang/src/check/**/*.rs"]
-exclude = ["crates/adtb-lang/src/check/placed.rs"]
-rows = { placed_slots = "zero" }
-
-[[rule]]
 query = "holder-builders.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "crates/adtb/src/catalog/structures.rs"]

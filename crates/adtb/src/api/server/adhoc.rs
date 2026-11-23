@@ -80,25 +80,25 @@ pub(super) fn refused_text(role: &str) -> Error {
 }
 
 impl Holds {
-    fn of<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> Result<Holds, Error> {
+    fn of<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> Holds {
         let deployed = deployed(grants);
         let held = EffectiveGrants::of(e.schema(), &e.source.grants, &deployed, name);
         let covers = |relations: Vec<RelId>| {
             Requirements::whole(e.schema(), relations)
-                .map(|r| r.missing(&held, Mode::Ordinary).is_empty())
-                .map_err(no_identity)
+                .missing(&held, Mode::Ordinary)
+                .is_empty()
         };
         let catalog = schema_relations(e.schema());
         let user = (0..e.schema().relations.len() as u32)
             .map(RelId)
             .filter(|r| !e.schema().module(e.schema().relation(*r).module).engine)
             .collect();
-        let schema = covers(catalog)?;
-        let data = covers(user)?;
+        let schema = covers(catalog);
+        let data = covers(user);
         let has = |c| grants.iter().any(|g| g.capability(c, name));
         let calls = granted_calls(e, name, grants);
         let names = Nameable::of(e.schema(), &held, calls.clone());
-        Ok(Holds {
+        Holds {
             monitor: has(Capability::Monitor),
             cancel: has(Capability::Cancel),
             schema_capability: has(Capability::Schema),
@@ -107,7 +107,7 @@ impl Holds {
             calls,
             names,
             grants: held,
-        })
+        }
     }
 
     /// Returns what `needs`, of text over `schema`, asks beyond what the role holds. `monitor`
@@ -204,8 +204,9 @@ impl Holds {
             }
             RejectReason::KeyViolation { relation, key } => {
                 let held = match violated {
-                    Some(write::Violated::Key(r)) => Requirements::whole(e.schema(), [r])
-                        .is_ok_and(|needs| self.lacking(e.schema(), &needs).is_empty()),
+                    Some(write::Violated::Key(r)) => self
+                        .lacking(e.schema(), &Requirements::whole(e.schema(), [r]))
+                        .is_empty(),
                     _ => false,
                 };
                 RejectReason::KeyViolation {
@@ -240,8 +241,8 @@ fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTr
         .collect()
 }
 
-fn no_identity(e: permission::Error) -> Error {
-    Error::unanalysed(e, Broken::NoIdentity)
+fn unanalysed(e: permission::Error) -> Error {
+    Error::unanalysed(e, Broken::AdhocNoRequirements)
 }
 
 /// Returns whether `deployed` gives `role` the `monitor` capability.
@@ -278,7 +279,7 @@ impl<R: Runtime> RoleAuthority<R> {
         self.access(false, |e, tx, id, _| {
             let t = Tables::new(e.schema(), id);
             self.checked(session, &t, e, tx)?;
-            Holds::of(e, &session.name, &t.grants(e, tx)?)
+            Ok(Holds::of(e, &session.name, &t.grants(e, tx)?))
         })
     }
 
@@ -308,7 +309,7 @@ impl<R: Runtime> RoleAuthority<R> {
                         .audit_denied(&session.name, caller, &origin)
                         .map_or_else(|audit| audit, |()| refused_text(&session.name));
                 }
-                let err = no_identity(err);
+                let err = unanalysed(err);
                 e.audit_call(
                     &CallRow {
                         role: &session.name,
@@ -338,7 +339,7 @@ impl<R: Runtime> RoleAuthority<R> {
             let mut read = read_by_dump(p.schema());
             read.extend(schema_relations(p.schema()));
             let dumped = Requirements::whole(p.schema(), read);
-            lacking.extend(holds.lacking(p.schema(), &dumped.map_err(no_identity)?));
+            lacking.extend(holds.lacking(p.schema(), &dumped));
         }
         let uncalled = p.functions().iter().find(|f| {
             let def = &p.schema().functions[f.0 as usize];

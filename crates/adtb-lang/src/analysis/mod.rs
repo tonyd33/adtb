@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::capability::{self, Judge, Reach, RootKind};
-use crate::check::{Adhoc, Program, Query, Txn};
+use crate::check::{Adhoc, AsSchema, Compiled, Query, Txn};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, Root};
 use crate::schema::{DefaultValue, Schema};
@@ -95,7 +95,8 @@ fn root_site(schema: &Schema, root: Root) -> (FileId, Span) {
 }
 
 /// Normalise a checked schema's bodies and apply the acceptance rules over their normal forms.
-pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
+pub(crate) fn schema_diags(c: &Compiled<impl AsSchema>) -> Vec<FileDiag> {
+    let (schema, p) = (c.schema(), c.program());
     let site = |root: Root, message: String| {
         let (file, span) = root_site(schema, root);
         FileDiag {
@@ -103,7 +104,7 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
             diag: Diag::new(span, message),
         }
     };
-    let judge = Judge::over(schema, p);
+    let judge = Judge::new(c);
     let refused: Vec<FileDiag> = p
         .bodies()
         .into_iter()
@@ -115,7 +116,7 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
     if !refused.is_empty() {
         return refused;
     }
-    let n = match norm::program_of(schema, p) {
+    let n = match norm::program(c) {
         Ok(n) => n,
         Err(e) => {
             let (file, span) = root_site(schema, e.root);
@@ -135,7 +136,8 @@ const VOLATILE_WRITE: &str = "a write must not depend on a volatile relation: no
 
 /// Normalise checked ad hoc text and apply the acceptance rules over the normal forms of its
 /// items and its commands' terms, `spans` giving each item's span.
-pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span]) -> Vec<Diag> {
+pub(crate) fn adhoc_diags(c: &Compiled<impl AsSchema>, a: &Adhoc, spans: &[Span]) -> Vec<Diag> {
+    let schema = c.schema();
     let items = a.items.iter().zip(spans).map(|(t, span)| (*t, *span));
     let commands = a
         .commands
@@ -143,12 +145,12 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
         .flat_map(|c| c.command.terms().into_iter().map(|t| (t, c.span)));
     let denied: Vec<_> = items
         .chain(commands)
-        .filter_map(|(term, span)| system::program(schema, p, &a.terms, [term], span).err())
+        .filter_map(|(term, span)| system::program(c, &a.terms, [term], span).err())
         .collect();
     if !denied.is_empty() {
         return denied;
     }
-    let judge = Judge::over(schema, p);
+    let judge = Judge::new(c);
     let items = a.items.iter().zip(spans).map(|(t, span)| (*t, *span));
     let commands = a
         .commands
@@ -164,7 +166,7 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
     if !refused.is_empty() {
         return refused;
     }
-    let n = match norm::adhoc_of(schema, p, a) {
+    let n = match norm::adhoc_over(c, a) {
         Ok(n) => n,
         Err(e) => {
             let span = match e.root {
@@ -220,33 +222,23 @@ fn judged(
 }
 
 /// Normalise a checked registered query and apply the acceptance rules over its normal form.
-pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) -> Result<(), Diag> {
-    system::program(schema, p, &q.terms, [q.term], span)?;
-    judged(
-        schema,
-        &Judge::over(schema, p),
-        RootKind::Query,
-        &q.terms,
-        q.term,
-    )
-    .map_err(|m| Diag::new(span, m))?;
-    let n = norm::registered(schema, p, &q.terms, q.term, RootKind::Query)
+pub(crate) fn query_diag(c: &Compiled<impl AsSchema>, q: &Query, span: Span) -> Result<(), Diag> {
+    let schema = c.schema();
+    system::program(c, &q.terms, [q.term], span)?;
+    judged(schema, &Judge::new(c), RootKind::Query, &q.terms, q.term)
+        .map_err(|m| Diag::new(span, m))?;
+    let n = norm::registered(c, &q.terms, q.term, RootKind::Query)
         .map_err(|e| diag(schema, span, e))?;
     accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }
 
 /// Normalise a checked registered transaction and apply the acceptance rules over its normal form.
-pub(crate) fn txn_diag(schema: &Schema, p: &Program, t: &Txn, span: Span) -> Result<(), Diag> {
-    system::program(schema, p, &t.terms, [t.term], span)?;
-    judged(
-        schema,
-        &Judge::over(schema, p),
-        RootKind::Query,
-        &t.terms,
-        t.term,
-    )
-    .map_err(|m| Diag::new(span, m))?;
-    let n = norm::registered(schema, p, &t.terms, t.term, RootKind::Query)
+pub(crate) fn txn_diag(c: &Compiled<impl AsSchema>, t: &Txn, span: Span) -> Result<(), Diag> {
+    let schema = c.schema();
+    system::program(c, &t.terms, [t.term], span)?;
+    judged(schema, &Judge::new(c), RootKind::Query, &t.terms, t.term)
+        .map_err(|m| Diag::new(span, m))?;
+    let n = norm::registered(c, &t.terms, t.term, RootKind::Query)
         .map_err(|e| diag(schema, span, e))?;
     accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }

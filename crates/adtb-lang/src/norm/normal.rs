@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::{Error, FNS, MAIN, Normaliser, Root};
-use crate::check::{AdhocCommand, Program, ProgramBody};
+use crate::check::{AdhocCommand, AsSchema, Compiled, ProgramBody};
 use crate::kernel::{self, Body, IndexField, Invalid, Terms, Tm, Valid, Var};
 use crate::schema::Schema;
 use crate::types::*;
@@ -31,8 +31,9 @@ impl NormalProgram {
     /// typing invariant, is not closed over its body's variables, is not in normal form or sits
     /// where its kind may not, or with the first broken node of `p`'s arena or of the normal
     /// forms', charged to the first body.
-    pub(super) fn normalised(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
-        let mut n = Normaliser::new(schema, [&p.terms, &p.terms], p);
+    pub(super) fn normalised(c: &Compiled<impl AsSchema>) -> Result<NormalProgram, Error> {
+        let (schema, p) = (c.schema(), c.program());
+        let mut n = Normaliser::new(c, &p.terms);
         let mut functions = vec![None; p.functions.len()];
         let mut constraints = BTreeMap::new();
         let mut checks = BTreeMap::new();

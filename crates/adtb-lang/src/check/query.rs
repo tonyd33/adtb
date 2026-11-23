@@ -126,11 +126,11 @@ impl Checker<'_> {
             }
             labels.push((name, v));
         }
-        let mut fields: Vec<(String, Tm)> = Vec::new();
+        let mut fields = Vec::new();
         let mut tys: Vec<(String, Ty)> = Vec::new();
         for (l, v) in &labels {
             let t = self.var_tm(*v);
-            fields.push((l.clone(), t));
+            fields.push((l.clone(), self.placed_as_is(t)));
             tys.push((l.clone(), self.terms.var_info(*v).ty.clone()));
         }
         let ty = Ty::Record(Fields::new(tys));

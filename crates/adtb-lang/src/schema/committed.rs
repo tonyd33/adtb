@@ -18,11 +18,6 @@ impl Committed {
             .then_some(Committed(schema))
     }
 
-    /// Returns `schema`, built with no relation taken as added later.
-    pub(super) fn built(schema: Schema) -> Committed {
-        Committed(schema)
-    }
-
     /// Returns the schema with each of `temps` appended to the relations of module
     /// [`crate::check::TEMP_MODULE`], an anonymous record row declared as a record type of that
     /// module; returns the relation of each.

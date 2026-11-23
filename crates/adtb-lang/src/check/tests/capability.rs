@@ -278,23 +278,24 @@ fn expected(kind: RootKind, reaches: &[Reach], through: bool) -> Vec<String> {
     function.into_iter().chain(own).collect()
 }
 
-type Outside<'f> = &'f dyn Fn(&Committed, &Program) -> Result<(), Vec<String>>;
+type Outside<'f> = &'f dyn Fn(&Compiled) -> Result<(), Vec<String>>;
 
 /// Returns the messages checking `kind`'s text `body`, with `decl` declared in the schema, gives.
 fn outcome(kind: RootKind, decl: &str, body: &str) -> Vec<String> {
-    let outside = |f: Outside| program(decl).and_then(|c| f(c.committed(), c.program()));
+    let outside = |f: Outside| program(decl).and_then(|c| f(&c));
     let r = match kind {
-        RootKind::Query => outside(&|_, _| query(decl, body).map_err(|e| vec![e])),
-        RootKind::Adhoc => outside(&|_, _| adhoc_over(decl, body).map(drop)),
-        RootKind::Script => outside(&|s, p| {
+        RootKind::Query => outside(&|_| query(decl, body).map_err(|e| vec![e])),
+        RootKind::Adhoc => outside(&|_| adhoc_over(decl, body).map(drop)),
+        RootKind::Script => outside(&|c| {
             let items = parse_adhoc(body, Options::default()).ok().expect("parsed");
             let [ast::AdhocItem::Write(w)] = items.as_slice() else {
                 panic!("{body}: one write");
             };
-            let r = check_script(s, p, w, None);
+            let r = check_script(c, w, None);
             r.map_err(|ds| ds.into_iter().map(|d| d.message).collect())
         }),
-        RootKind::Fill | RootKind::Routing => outside(&|s, p| {
+        RootKind::Fill | RootKind::Routing => outside(&|compiled| {
+            let s = compiled.committed();
             let items = parse_adhoc(body, Options::default()).ok().expect("parsed");
             let [ast::AdhocItem::Expr(e)] = items.as_slice() else {
                 panic!("{body}: one expression");
@@ -306,7 +307,7 @@ fn outcome(kind: RootKind, decl: &str, body: &str) -> Vec<String> {
                 .expect("a known type");
             let b = c.bool_ty();
             let module = s.module_named("auth").expect("module auth");
-            let r = check_row(s, p, module, &row, RowBody::Expr(e), Some(&b), kind);
+            let r = check_row(compiled, module, &row, RowBody::Expr(e), Some(&b), kind);
             r.map(drop).map_err(|d| vec![d.message])
         }),
         _ => program(&format!("{decl}\n{body}")).map(drop),

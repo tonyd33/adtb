@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::FnBody;
-use crate::check::{AsSchema, Compiled, Program, ProgramBody};
+use crate::check::{AsSchema, Compiled, ProgramBody};
 use crate::kernel::{Agg, Kind, Prim, Terms, Tm};
 use crate::norm::Root;
 use crate::schema::Schema;
@@ -271,10 +271,7 @@ pub struct Judge<'a> {
 
 impl<'a> Judge<'a> {
     pub fn new(c: &'a Compiled<impl AsSchema>) -> Self {
-        Judge::over(c.schema(), c.program())
-    }
-
-    pub(crate) fn over(schema: &'a Schema, program: &'a Program) -> Self {
+        let (schema, program) = (c.schema(), c.program());
         let mut scans: HashMap<Callee, Scan> = HashMap::new();
         for (i, def) in schema.functions.iter().enumerate() {
             let scan = match &def.body {

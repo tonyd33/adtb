@@ -1,6 +1,0 @@
-main = do {
-  c <- descendants_of_kind :call_expression;
-  f <- pure c | #function;
-  guard $ text f ~ r"^self\s*\.b\(\)\s*\.(call|ctor|singleton|app)$";
-  return c;
-} | arr range;

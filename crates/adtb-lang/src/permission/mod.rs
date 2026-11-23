@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{Adhoc, AsCommitted, Compiled, Query, Txn};
-use crate::ids::{CatCtorId, CatFieldId, CatRelId};
+use crate::ids::{CatCtorId, CatFieldId, CatRelId, held_id};
 use crate::kernel::{Terms, Tm, Var};
 use crate::norm::NormalProgram;
 use crate::schema::{Committed, Schema};
@@ -55,49 +55,39 @@ impl Requirements {
         self.required.iter()
     }
 
-    /// Returns the requirements of reading every field of every constructor of `relations`.
-    pub fn whole(
-        schema: &Schema,
-        relations: impl IntoIterator<Item = RelId>,
-    ) -> Result<Requirements, Error> {
-        use crate::ids::Slot;
+    /// Returns the requirements of reading every field of every constructor of `relations`; a
+    /// temp relation requires nothing.
+    pub fn whole(schema: &Committed, relations: impl IntoIterator<Item = RelId>) -> Requirements {
         let mut out = Requirements::default();
-        for rel in relations {
+        for rel in relations
+            .into_iter()
+            .filter(|&r| schema.temp_id(r).is_none())
+        {
             let def = schema.relation(rel).elem_def;
-            let relation = schema
-                .ids()
-                .relation_id(rel)
-                .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?;
+            let relation = held_id(schema.ids().relation_id(rel));
             let td = schema.ty(def);
             for ctor in (0..td.ctors().len() as u32).filter_map(|at| td.ctor_at(at)) {
                 let target = Target {
                     relation,
-                    constructor: schema
-                        .ids()
-                        .ctor_id(ctor)
-                        .ok_or(Error::MissingIdentity(Slot::Ctor(ctor)))?,
+                    constructor: held_id(schema.ids().ctor_id(ctor)),
                 };
                 out.required.insert(Requirement::ReadConstructor(target));
                 let fields = td
                     .field_refs()
                     .filter(|(f, _)| f.ctor().is_none_or(|c| c == ctor.index()));
                 for (f, _) in fields {
-                    let id = schema
-                        .ids()
-                        .field_id(f)
-                        .ok_or(Error::MissingIdentity(Slot::Field(f)))?;
+                    let id = held_id(schema.ids().field_id(f));
                     out.required.insert(Requirement::ReadField(target, id));
                 }
             }
         }
-        Ok(out)
+        out
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Normalization(crate::norm::Error),
-    MissingIdentity(crate::ids::Slot),
     InvalidKernel(&'static str),
     /// The term asks more of the analysis than any one root may.
     TooLarge,
@@ -146,7 +136,7 @@ pub fn adhoc(c: &Compiled<impl AsCommitted>, adhoc: &Adhoc) -> Result<Vec<Requir
     let schema = adhoc.schema(c.committed());
     let normal = crate::norm::adhoc(c, adhoc).map_err(Error::Normalization)?;
     let params: Vec<Var> = normal.params().values().copied().collect();
-    let program = crate::norm::program_of(schema, c.program()).map_err(Error::Normalization)?;
+    let program = crate::norm::program(&c.of_adhoc(adhoc)).map_err(Error::Normalization)?;
     normal
         .items()
         .iter()

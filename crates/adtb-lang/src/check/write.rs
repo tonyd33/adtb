@@ -331,7 +331,7 @@ impl Checker<'_> {
             let row_ty = self.terms.var_info(n.var).ty.clone();
             let v = self.var_tm(n.var);
             let rows = self.singleton(v, &row_ty);
-            let ins = self.b().insert(n.rel, rows);
+            let ins = self.insert_checked(n.rel, rows);
             let both = self.b().par(vec![ins, w]);
             w = self.b().let_(n.var, n.row, both, Ty::Change);
         }
@@ -344,7 +344,7 @@ impl Checker<'_> {
             let row_ty = self.terms.var_info(n.var).ty.clone();
             let v = self.var_tm(n.var);
             let rows = self.singleton(v, &row_ty);
-            let ins = self.b().insert(n.rel, rows);
+            let ins = self.insert_checked(n.rel, rows);
             let blk = self.b().block(ins, k, ty.clone());
             k = self.b().let_(n.var, n.row, blk, ty.clone());
         }
@@ -375,7 +375,7 @@ impl Checker<'_> {
             } => {
                 let p = self.proposed(target, *from, source, w.span)?;
                 let rows = self.rows_of(&p);
-                let ins = self.b().insert(p.rel, rows);
+                let ins = self.insert_checked(p.rel, rows);
                 let tm = match rejects {
                     Some(j) => self.rejects(j, ins, source, *from, w.span)?,
                     None => ins,
@@ -1170,7 +1170,7 @@ impl Checker<'_> {
             } => {
                 let p = self.proposed(target, *from, source, w.span)?;
                 let rows = self.rows_of(&p);
-                let ins = self.b().insert(p.rel, rows);
+                let ins = self.insert_checked(p.rel, rows);
                 let tm = self.rejects(j, ins, source, *from, w.span)?;
                 Ok((LetKind::Bang(tm), Ty::Set(Box::new(p.row_ty)), p.rel))
             }

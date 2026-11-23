@@ -190,7 +190,7 @@ impl Checker<'_> {
                     LetKind::Insert { rel, value, single } => {
                         let vt = self.var_tm(v);
                         let rows = if single { self.singleton(vt, &ty) } else { vt };
-                        let ins = self.b().insert(rel, rows);
+                        let ins = self.insert_checked(rel, rows);
                         let blk = self.b().block(ins, k.tm, k.ty.clone());
                         self.b().let_(v, value, blk, k.ty.clone())
                     }
@@ -235,14 +235,15 @@ pub fn check_txn_in(
     vis: Visible,
     t: &ast::TxnDecl,
 ) -> Result<Txn, Diag> {
-    let (schema, program) = (c.schema(), c.program());
-    let mut c = Checker::registered(schema, program, vis);
+    let compiled = c;
+    let schema = compiled.schema();
+    let mut c = Checker::registered(compiled, vis);
     let term = c.txn(t)?;
     let txn = Txn {
         terms: c.terms,
         term,
     };
-    crate::analysis::txn_diag(schema, program, &txn, t.span)?;
+    crate::analysis::txn_diag(compiled, &txn, t.span)?;
     crate::kernel::assert_valid(schema, &txn.terms, &[(txn.term, Vec::new())]);
     Ok(txn)
 }

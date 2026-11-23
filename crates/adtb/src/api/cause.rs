@@ -28,7 +28,7 @@ pub(super) enum Broken {
     },
     UnprintableKey(PrintError),
     NoRows,
-    NoIdentity(permission::Error),
+    AdhocNoRequirements(permission::Error),
     NoRequirements(permission::Error),
     AdhocNotNormal(norm::Error),
     CallNotNormal(norm::Error),
@@ -69,7 +69,9 @@ impl fmt::Display for Broken {
             }
             Broken::UnprintableKey(e) => f.write_str(&e.message),
             Broken::NoRows => f.write_str("a command returns its rows"),
-            Broken::NoIdentity(e) => write!(f, "a relation of the schema has no identity: {e:?}"),
+            Broken::AdhocNoRequirements(e) => {
+                write!(f, "checked ad hoc text has no requirements: {e:?}")
+            }
             Broken::NoRequirements(e) => {
                 write!(f, "a checked registered call has no requirements: {e:?}")
             }

@@ -147,11 +147,7 @@ fn at<T>(root: Root, r: Result<T, Cause>) -> Result<T, Error> {
 
 /// Normalise every body of a checked schema.
 pub fn program(c: &Compiled<impl AsSchema>) -> Result<NormalProgram, Error> {
-    program_of(c.schema(), c.program())
-}
-
-pub(crate) fn program_of(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
-    let program = NormalProgram::normalised(schema, p)?;
+    let program = NormalProgram::normalised(c)?;
     within_run_bound(
         program.terms(),
         program
@@ -166,11 +162,15 @@ pub(crate) fn program_of(schema: &Schema, p: &Program) -> Result<NormalProgram, 
 
 /// Normalise checked ad hoc text, inlining the functions of `p`.
 pub fn adhoc(c: &Compiled<impl AsCommitted>, a: &Adhoc) -> Result<NormalAdhoc, Error> {
-    adhoc_of(a.schema(c.committed()), c.program(), a)
+    adhoc_over(&c.of_adhoc(a), a)
 }
 
-pub(crate) fn adhoc_of(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Error> {
-    let mut n = Normaliser::new(schema, [&a.terms, &p.terms], p);
+/// Normalise checked ad hoc text as [`adhoc`] does.
+///
+/// Preconditions: `c` is the pair `a` was checked against, its temp relations included.
+pub(crate) fn adhoc_over(c: &Compiled<impl AsSchema>, a: &Adhoc) -> Result<NormalAdhoc, Error> {
+    let (schema, p) = (c.schema(), c.program());
+    let mut n = Normaliser::new(c, &a.terms);
     n.text = a.kind();
     let params = a
         .params
@@ -220,7 +220,7 @@ pub fn query_as(
     q: &Query,
     kind: RootKind,
 ) -> Result<NormalQuery, Error> {
-    registered(c.schema(), c.program(), &q.terms, q.term, kind)
+    registered(c, &q.terms, q.term, kind)
 }
 
 /// Normalise a checked registered transaction, inlining the functions of `p`.
@@ -230,17 +230,17 @@ pub fn txn(c: &Compiled<impl AsSchema>, t: &Txn) -> Result<NormalQuery, Error> {
 
 /// Normalise a checked registered transaction as [`txn`] does, as a root of `kind`.
 pub fn txn_as(c: &Compiled<impl AsSchema>, t: &Txn, kind: RootKind) -> Result<NormalQuery, Error> {
-    registered(c.schema(), c.program(), &t.terms, t.term, kind)
+    registered(c, &t.terms, t.term, kind)
 }
 
 pub(crate) fn registered(
-    schema: &Schema,
-    p: &Program,
+    c: &Compiled<impl AsSchema>,
     terms: &Terms,
     term: Tm,
     kind: RootKind,
 ) -> Result<NormalQuery, Error> {
-    let mut n = Normaliser::new(schema, [terms, &p.terms], p);
+    let schema = c.schema();
+    let mut n = Normaliser::new(c, terms);
     n.text = kind;
     let (params, body) = n.under_lams(MAIN, term, usize::MAX);
     let params: Vec<Var> = params.into_iter().map(|v| n.free_var(MAIN, v)).collect();
@@ -378,7 +378,10 @@ struct Normaliser<'a> {
 }
 
 impl<'a> Normaliser<'a> {
-    fn new(schema: &'a Schema, src: [&'a Terms; 2], p: &'a Program) -> Self {
+    /// Returns the normaliser of `terms` over `c`, inlining the functions of its program.
+    fn new(c: &'a Compiled<impl AsSchema>, terms: &'a Terms) -> Self {
+        let (schema, p) = (c.schema(), c.program());
+        let src = [terms, &p.terms];
         let fns = &p.functions;
         Normaliser {
             schema,

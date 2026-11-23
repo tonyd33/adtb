@@ -132,7 +132,9 @@ impl Checker<'_> {
                 let x = self.check(a, expected)?;
                 let y = self.check(b, expected)?;
                 let rows = self.row_origin(&x).join(self.row_origin(&y));
-                let tm = self.b().union(x.tm, y.tm, expected.clone());
+                let x = self.place(x, expected, a.span)?;
+                let y = self.place(y, expected, b.span)?;
+                let tm = self.b().union(x, y, expected.clone());
                 let o = self.out(tm);
                 self.with_row_origin(o, rows)
             }
@@ -484,7 +486,7 @@ impl Checker<'_> {
             let a = self.var_tm(v);
             args.push(self.placed_as_is(a));
         }
-        let call = self.call_placed(f, Vec::new(), args);
+        let call = self.b().call(f, Vec::new(), args);
         let result = def.result.clone();
         let tm = self.lams(vars, call, result);
         let ty = self.terms.ty(tm).clone();
@@ -513,7 +515,7 @@ impl Checker<'_> {
             unreachable!("a grouped value is a function of its row")
         };
         let row = self.placed_checked(row, &param);
-        self.app_placed(f, row)
+        self.b().app(f, row)
     }
 
     /// A group binder used as a set: the values of its grouped expression.
@@ -702,7 +704,9 @@ impl Checker<'_> {
                     )
                 })?;
                 let rows = self.row_origin(&x).join(self.row_origin(&y));
-                let tm = self.b().union(x.tm, y.tm, j);
+                let x = self.place(x, &j, a.span)?;
+                let y = self.place(y, &j, b.span)?;
+                let tm = self.b().union(x, y, j);
                 let o = self.out(tm);
                 Ok(self.with_row_origin(o, rows))
             }
@@ -1202,7 +1206,8 @@ impl Checker<'_> {
                 unreachable!("an optional field is an `Option`")
             };
             let value = self.placed_checked(kappa.tm, &args[0]);
-            self.ctor_placed(ctor::SOME, vec![("value".into(), value)], fty)
+            self.b()
+                .ctor(ctor::SOME, vec![("value".into(), value)], fty)
         } else {
             kappa.tm
         };
@@ -1249,7 +1254,7 @@ impl Checker<'_> {
                         .iter()
                         .find(|(n, _)| n.text == *name)
                         .ok_or_else(|| diag(span, format!("key field `{name}` is missing")))?;
-                    out.push((name.clone(), self.check(e, fty)?.tm));
+                    out.push((name.clone(), self.check_placed(e, fty)?));
                 }
                 if let Some((n, _)) = ns
                     .iter()
@@ -1332,6 +1337,8 @@ impl Checker<'_> {
                 let (left, right) = sets.split_at(sets.len() / 2);
                 let a = self.balanced_union(left, ty);
                 let b = self.balanced_union(right, ty);
+                let a = self.placed_checked(a, ty);
+                let b = self.placed_checked(b, ty);
                 self.b().union(a, b, ty.clone())
             }
         }

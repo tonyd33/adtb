@@ -39,7 +39,7 @@ impl Checker<'_> {
                     Some(Ty::Record(ws)) => Some(ws.to_vec()),
                     _ => None,
                 };
-                let mut out: Vec<(String, Tm)> = Vec::new();
+                let mut out: Vec<(String, Placed)> = Vec::new();
                 let mut tys: Vec<(String, Ty)> = Vec::new();
                 for (name, e) in fs {
                     if out.iter().any(|(n, _)| *n == name.text) {
@@ -52,14 +52,14 @@ impl Checker<'_> {
                         .as_ref()
                         .and_then(|ws| ws.iter().find(|(n, _)| *n == name.text))
                     {
-                        Some((_, t)) => {
-                            let o = self.check(e, t)?;
-                            Out { ty: t.clone(), ..o }
+                        Some((_, t)) => (self.check_placed(e, t)?, t.clone()),
+                        None => {
+                            let o = self.synth(e)?;
+                            (self.placed_as_is(o.tm), o.ty)
                         }
-                        None => self.synth(e)?,
                     };
-                    out.push((name.text.clone(), o.tm));
-                    tys.push((name.text.clone(), o.ty));
+                    out.push((name.text.clone(), o.0));
+                    tys.push((name.text.clone(), o.1));
                 }
                 let tm = self.b().record(out, Ty::Record(Fields::new(tys)));
                 Ok(self.out(tm))
@@ -80,12 +80,12 @@ impl Checker<'_> {
                 for (name, fty) in bfs.clone() {
                     match fs.iter().find(|(n, _)| n.text == name) {
                         Some((_, e)) => {
-                            let o = self.check(e, &fty)?;
-                            out.push((name.clone(), o.tm));
+                            let o = self.check_placed(e, &fty)?;
+                            out.push((name.clone(), o));
                         }
                         None => {
                             let ft = self.b().transport_field(b.tm, name.clone());
-                            out.push((name.clone(), ft));
+                            out.push((name.clone(), self.placed_checked(ft, &fty)));
                         }
                     }
                     tys.push((name, fty));
@@ -262,7 +262,7 @@ impl Checker<'_> {
             tms.push((n.text.clone(), self.place(o.clone(), &o.ty, e.span)?));
         }
         let ty = self.open_sum(name, Fields::new(tys));
-        let tm = self.ctor_placed(0, tms, ty);
+        let tm = self.b().ctor(0, tms, ty);
         Ok(self.out(tm))
     }
 
@@ -282,7 +282,7 @@ impl Checker<'_> {
                     .map(|(n, t, _)| (n, t))
                     .collect();
                 let given = self.record_fields(&fields, record, span, &ty, c)?;
-                let tm = self.ctor_placed(c, given, ty);
+                let tm = self.b().ctor(c, given, ty);
                 return Ok(self.out(tm));
             }
             Target::Decl(def, args) => (def, args),
@@ -297,7 +297,7 @@ impl Checker<'_> {
             args: args_out,
             ctors: self.schema.normalize_ctors(def, vec![c]),
         };
-        let tm = self.ctor_placed(c, given, ty);
+        let tm = self.b().ctor(c, given, ty);
         Ok(self.out(tm))
     }
 

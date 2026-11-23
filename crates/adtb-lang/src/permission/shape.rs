@@ -1,6 +1,6 @@
 use super::value::{Changes, CopyToken, Keyed, Shape};
 use super::*;
-use crate::ids::Slot;
+use crate::ids::held_id;
 use crate::kernel::Transition;
 use crate::schema::TypeDefKind;
 
@@ -99,12 +99,8 @@ impl Analyzer<'_> {
             .ok_or(Error::InvalidKernel("a constructor of the relation's type"))?;
         let ids = &self.schema.ids();
         Ok(Some(Target {
-            relation: ids
-                .relation_id(rel)
-                .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?,
-            constructor: ids
-                .ctor_id(ctor)
-                .ok_or(Error::MissingIdentity(Slot::Ctor(ctor)))?,
+            relation: held_id(ids.relation_id(rel)),
+            constructor: held_id(ids.ctor_id(ctor)),
         }))
     }
 
@@ -113,10 +109,7 @@ impl Analyzer<'_> {
         let f = td
             .field(td.ctor_at(ctor), name)
             .ok_or(Error::InvalidKernel("a field of the relation's type"))?;
-        self.schema
-            .ids()
-            .field_id(f)
-            .ok_or(Error::MissingIdentity(Slot::Field(f)))
+        Ok(held_id(self.schema.ids().field_id(f)))
     }
 
     pub(super) fn relation(

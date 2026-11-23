@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
 
-use crate::check::{Compiled, Program};
+use crate::check::Compiled;
 use crate::evolve::{Clause, Code, Failed, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
 use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::kernel::{Kind, Terms, Tm};
@@ -116,7 +116,8 @@ pub struct Pinned<'a> {
     /// The source a fill was written at, while translating that fill's terms.
     fill_source: Option<&'a Source>,
     to_source: &'a Source,
-    to_program: &'a Program,
+    /// The later version's schema and program.
+    to: Compiled<&'a Schema>,
     hide_new: bool,
     ops: Rc<[Op]>,
     normal: Rc<RefCell<Option<Rc<NormalProgram>>>>,
@@ -142,7 +143,7 @@ impl<'a> Pinned<'a> {
         to_source: &'a Source,
         hide_new: bool,
     ) -> Result<Pinned<'a>, Refused> {
-        let to_program = to.program();
+        let compiled = to.viewed();
         let to = to.schema();
         let mut ops = Vec::new();
         for (i, logged) in to_source.log.iter().enumerate() {
@@ -172,7 +173,7 @@ impl<'a> Pinned<'a> {
             from_source,
             fill_source: None,
             to_source,
-            to_program,
+            to: compiled,
             hide_new,
             ops: ops.into(),
             normal: Rc::default(),
@@ -196,7 +197,7 @@ impl<'a> Pinned<'a> {
             from_source: self.from_source,
             fill_source,
             to_source: self.to_source,
-            to_program: self.to_program,
+            to: self.to.clone(),
             hide_new: self.hide_new,
             ops: self.ops.clone(),
             normal: self.normal.clone(),
@@ -562,10 +563,7 @@ impl<'a> Pinned<'a> {
         if let Some(n) = self.normal.borrow().as_ref() {
             return Ok(n.clone());
         }
-        let n = Rc::new(
-            norm::program_of(self.map.to, self.to_program)
-                .map_err(|e| refused(None, e.to_string()))?,
-        );
+        let n = Rc::new(norm::program(&self.to).map_err(|e| refused(None, e.to_string()))?);
         *self.normal.borrow_mut() = Some(n.clone());
         Ok(n)
     }

@@ -1324,7 +1324,15 @@ struct Builder<'a> {
 
 /// Build the schema the given module files declare, over the prelude.
 pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Committed, Vec<FileDiag>> {
-    build_ahead(files, &[]).map(Committed::built)
+    Committed::new(build_ahead(files, &[])?).ok_or_else(|| {
+        vec![FileDiag {
+            file: FileId::ENGINE,
+            diag: Diag::internal(
+                Span::default(),
+                "a built schema leaves an object without a catalog id",
+            ),
+        }]
+    })
 }
 
 /// A relation variable a later operator of the migration being applied adds.

@@ -63,6 +63,11 @@ impl<S: AsSchema> Compiled<S> {
     pub fn schema(&self) -> &Schema {
         self.schema.as_schema()
     }
+
+    /// Returns this pair with its schema borrowed.
+    pub(crate) fn viewed(&self) -> Compiled<&Schema> {
+        self.extended(self.schema())
+    }
 }
 
 impl<S> Compiled<S> {
@@ -80,6 +85,17 @@ impl<S> Compiled<S> {
     /// Returns the schema shared with every clone of this pair.
     pub fn shared_schema(&self) -> &Arc<S> {
         &self.schema
+    }
+
+    /// Returns `schema` with this pair's program.
+    ///
+    /// Preconditions: every object of this pair's schema the program names sits at the same
+    /// position in `schema`.
+    pub(crate) fn extended<T>(&self, schema: T) -> Compiled<T> {
+        Compiled {
+            schema: Arc::new(schema),
+            program: Arc::clone(&self.program),
+        }
     }
 
     /// Returns whether `other` is a clone of this pair.
@@ -105,6 +121,14 @@ impl Compiled {
             },
             None => self.clone(),
         }
+    }
+}
+
+impl<S: AsCommitted> Compiled<S> {
+    /// Returns the schema the terms of `a`, checked against this pair, name declarations of,
+    /// with this pair's program, both borrowed.
+    pub(crate) fn of_adhoc<'a>(&'a self, a: &'a Adhoc) -> Compiled<&'a Committed> {
+        self.extended(a.temps.as_ref().unwrap_or(self.committed()))
     }
 }
 
