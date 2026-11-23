@@ -223,6 +223,7 @@ pub enum OpenError {
     KeyRequired,
     WrongKey,
     FormatTooNew { written_by: String },
+    FormatTooOld { format: u16 },
     Corrupt { detail: String },
     Diverged { version: u64 },
     MigrationRefused { version: u64, reason: Error },
@@ -949,6 +950,10 @@ impl fmt::Display for OpenError {
             OpenError::FormatTooNew { written_by } => {
                 write!(f, "the file was written by the newer {written_by}")
             }
+            OpenError::FormatTooOld { format } => write!(
+                f,
+                "the file is of the older format {format}, which this release does not open"
+            ),
             OpenError::Corrupt { detail } => write!(f, "the file is corrupt: {detail}"),
             OpenError::Diverged { version } => {
                 write!(f, "the file's migration {version} differs from the log's")

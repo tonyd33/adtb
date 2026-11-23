@@ -309,6 +309,9 @@ pub(super) fn past_limits(e: &permission::Error) -> bool {
 pub(super) fn corrupt(cause: impl Into<Corruption>) -> OpenError {
     match cause.into() {
         Corruption::Catalog(catalog::Error::PastLimits(object)) => OpenError::PastLimits { object },
+        Corruption::Catalog(catalog::Error::FormatTooOld(format)) => {
+            OpenError::FormatTooOld { format }
+        }
         cause => match cause.page() {
             Some(e) if e.damage == storage::Damage::Unreadable => {
                 OpenError::Io(std::io::Error::other(Unreadable(e)))

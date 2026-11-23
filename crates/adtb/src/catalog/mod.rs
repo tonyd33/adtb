@@ -165,6 +165,8 @@ pub enum Error {
     Unchecked(String, Vec<Diag>),
     /// A stored body expands past this build's limits; the qualified name of its declaration.
     PastLimits(String),
+    /// The catalog root page is of this older format, which this engine does not open.
+    FormatTooOld(u16),
 }
 
 impl From<PageError> for Error {
@@ -748,7 +750,7 @@ impl Catalog {
                 return Err(Rot::RootPage { pid, found }.into());
             }
             if found.1 != root::FORMAT {
-                return Err(Rot::Format(found.1).into());
+                return Err(Error::FormatTooOld(found.1));
             }
             Root::read(&page)
         };

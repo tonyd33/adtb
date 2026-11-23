@@ -728,7 +728,8 @@ pub(super) fn restore_dump<R: Runtime>(
             | OpenError::NotFound
             | OpenError::KeyRequired
             | OpenError::WrongKey
-            | OpenError::FormatTooNew { .. }) => Error::invalid(format!(
+            | OpenError::FormatTooNew { .. }
+            | OpenError::FormatTooOld { .. }) => Error::invalid(format!(
                 "the file the restore builds, `{aside}`, does not open: {e}"
             )),
             e @ (OpenError::Diverged { .. }

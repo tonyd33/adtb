@@ -664,6 +664,7 @@ gives the second migration where the file's log has the first.
 | `HostFnMissing` | host function F is not bound | An index, constraint or key needs a host function the program did not supply. Supply it. |
 | `HostFnMismatch` | host function F is bound at another type | A supplied body's version or determinism is not the declared one. Register it as declared, or ship a migration that redefines it. |
 | `DowngradeRefused` | downgrade refused: CAUSE | A bundle pins an older version than the file's and would read a constructor enabled since, or a host function redefined since. Open with the newer program. |
+| `FormatTooOld` | the file is of the older format N, which this release does not open | An earlier release wrote the file in a catalog format this one no longer reads. Dump it with that release and restore the dump with this one. |
 | `Corrupt` | the file is corrupt: DETAIL | The file failed a check as it was read. Restore it from a backup. |
 | `Io` | the operating system's message | Fix what it names. |
 

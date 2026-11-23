@@ -180,6 +180,7 @@ pub enum OpenError {
     KeyRequired,
     WrongKey,
     FormatTooNew { written_by: String },
+    FormatTooOld { format: u16 },
     Corrupt { detail: String },
     Diverged { version: u64 },
     MigrationRefused { version: u64, reason: adtb::Error },
@@ -200,6 +201,8 @@ limits; a build whose limits admit it opens the file.
 
 `FormatTooNew` is returned by a release older than the one that last
 finalized the file's format ([catalog.md](catalog.md#122-upgrades-and-downgrade)).
+`FormatTooOld` is returned for a file whose catalog format, `format`,
+is older than any this release opens.
 A new engine release keeps writing the old format until the program
 finalizes the upgrade, which needs no `maintain` check in process. When
 readers-first refuses a catalog operator the upgrade applies,

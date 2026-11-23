@@ -72,13 +72,15 @@ fn a_file_of_an_older_catalog_format_is_refused_at_open_naming_its_format() {
     pager.close();
     drop(pager);
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
-    let detail = match Database::open_in(rt, "f.adt", &Log::default(), &options) {
-        Err(OpenError::Corrupt { detail }) => detail,
-        Err(other) => panic!("the open refuses the format, not {other:?}"),
-        Ok(_) => panic!("the open refuses"),
+    let Err(refused) = Database::open_in(rt, "f.adt", &Log::default(), &options) else {
+        panic!("the open refuses");
     };
     assert_eq!(
-        "the file is of catalog format 1; this engine opens only format 2",
-        detail
+        "the file is of the older format 1, which this release does not open",
+        refused.to_string()
+    );
+    assert!(
+        matches!(refused, OpenError::FormatTooOld { format: 1 }),
+        "{refused:?}"
     );
 }

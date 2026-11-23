@@ -47,6 +47,7 @@ pub(super) fn open_value(e: &OpenError) -> Result<String, String> {
         OpenError::KeyRequired => Ok("KeyRequired".into()),
         OpenError::WrongKey => Ok("WrongKey".into()),
         OpenError::FormatTooNew { written_by } => field("FormatTooNew", "written_by", written_by),
+        OpenError::FormatTooOld { format } => Ok(format!("FormatTooOld {{ format: {format} }}")),
         OpenError::Corrupt { detail } => field("Corrupt", "detail", detail),
         OpenError::Diverged { version } => Ok(format!("Diverged {{ version: {version} }}")),
         OpenError::MigrationRefused { version, reason } => Ok(format!(
