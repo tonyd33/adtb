@@ -40,6 +40,21 @@ mod rng;
 
 pub use rng::Rng;
 
+/// Returns the array of the values of type `$t` listed, in their order. Fail to compile unless the
+/// list names every value of `$t` once.
+#[macro_export]
+macro_rules! every {
+    ($t:ty; $($first:ident $(:: $seg:ident)* $(($($a:tt)*))?),+ $(,)?) => {{
+        #[deny(unreachable_patterns)]
+        const fn _named(x: $t) {
+            match x {
+                $($first $(:: $seg)* $(($($a)*))? => {})+
+            }
+        }
+        [$($first $(:: $seg)* $(($($a)*))?),+]
+    }};
+}
+
 /// Assert that `got` is the refusal `expected` and prints exactly `reason`.
 #[track_caller]
 pub fn refused_as<T, E>(got: Result<T, E>, expected: &E, reason: &str)

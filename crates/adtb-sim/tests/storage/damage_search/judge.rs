@@ -12,7 +12,7 @@ use adtb::Proof;
 use super::case::{self, Fault, Plan};
 use super::consumers::{Backup, Consumer, Copy, Dumped, Finding, Lookups, Observed, Read};
 use super::ledger::{self, Ended, Evidence, Record, SETTLED};
-use super::stated::{self, Class, Held, PHASES, Phase, Stated};
+use super::stated::{self, Class, Held, Holding, PHASES, Phase, Stated};
 use super::world::{self, Kind, Op, Ran, Rel, Rows, WriteOut};
 
 /// One way a case broke the contract, at the consumer that showed it. `what` names the shape
@@ -52,6 +52,11 @@ pub struct Verdicts {
     /// The damage records and the durable marks the file's evidence held, for a case judged on
     /// it.
     pub evidence: (usize, usize),
+    /// Whether the judge compared where the plan placed a damaged page with the mapping's walk.
+    pub walked: bool,
+    /// Whether the judge compared whether the commit log settled a status page with what the plan
+    /// and the retained log say.
+    pub settled: bool,
 }
 
 /// One fault of a case: the write-out it hit, the class of its page and the fault.
@@ -95,8 +100,16 @@ struct Page {
     pid: Pid,
     kind: Kind,
     fault: Fault,
-    /// The user relation holding the page, by its write-out's header.
+    /// The user relation the observing run placed the page in when it was written.
     rel: Option<Rel>,
+    /// Where the observing run placed the incarnation the faulted run left at its end, for a page
+    /// the faulted run wrote out as the plan's run did and that is not free then.
+    at_end: Option<Held>,
+    /// Whether the commit log settles the page, by the plan and the retained log, for a status
+    /// page that lost a write and whose first open after the loss the search can judge.
+    settles: Option<bool>,
+    /// The class of its damage the table is asked of, `None` for a tear.
+    class: Option<Class>,
     /// Whether the file's copy is damaged at the end: stale for a lost write, failing its
     /// checksum for a flip.
     stale: bool,
@@ -134,9 +147,6 @@ struct Facts<'a> {
     /// that open only.
     open_only: bool,
     baseline: BTreeSet<Quarantine>,
-    /// The pages the search could not classify, by their write-out.
-    unclassified: Vec<String>,
-    rows: BTreeSet<Row>,
 }
 
 impl Facts<'_> {
@@ -194,6 +204,7 @@ pub type Row = (Class, Held, Phase);
 /// What the stated table says of one damaged page.
 #[derive(Default)]
 struct Judged {
+    class: Option<Class>,
     mark: Option<Quarantine>,
     may: BTreeSet<Quarantine>,
     /// Whether the page's damage quarantines the database for the first open alone.
@@ -202,30 +213,32 @@ struct Judged {
     row: Option<Row>,
 }
 
-/// Returns what the stated table says of `fault` on the page of write-out `w`, by the phases its
-/// record may have been mapped in. The consumers read the marks in the session of the first open,
-/// which maps once each record it holds; a later record is mapped once, at a call end or a
-/// commit. An earlier session may have mapped the page in either phase only when the run held
-/// its record. Returns nothing stated for a tear. Fails with the write-out of a page the search
-/// cannot classify.
+/// Returns what the stated table says of `fault` on the page of write-out `w`, placed `end`
+/// when the consumers meet it, by the phases its record may have been mapped in. The consumers
+/// read the marks in the session of the first open, which maps once each record it holds; a later
+/// record is mapped once, at a call end or a commit. An earlier session may have mapped the page
+/// in either phase only when the run held its record, and then while the page was placed as it
+/// was when written. Returns nothing stated for a tear.
 ///
 /// The search cannot see whether the first open's mapping of a record was complete: in a case
 /// with an unreadable page, a page recorded at the open may be mapped at a later call end
 /// instead, so its expected mark is the one both phases state alike.
-fn judged(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Result<Judged, String> {
+fn judged(
+    case: &Case<'_>,
+    w: &WriteOut,
+    fault: Fault,
+    end: Holding,
+    settles: Option<bool>,
+) -> Judged {
     let o = case.observed;
-    let ids = &case.plan.ids;
-    let holding = ids
-        .holding(w.kind, w.owner, w.pid)
-        .ok_or_else(|| format!("page {} of kind {} and owner {}", w.pid.0, w.kind, w.owner))?;
     let met_in_open = o.met_in_open && !damages_file(fault);
     let class = match fault {
-        Fault::Torn => return Ok(Judged::default()),
-        _ if o.settled.contains(&w.pid) => Class::Settled,
+        Fault::Torn => return Judged::default(),
+        _ if settles == Some(true) => Class::Settled,
         Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled | Fault::Flipped => {
             Class::Damaged
         }
-        _ if met_in_open && holding.0 == Held::LsnMap => Class::Unarmed,
+        _ if met_in_open && end.0 == Held::LsnMap => Class::Unarmed,
         Fault::UnreadableOnce | Fault::UnreadableLasting => Class::Unread,
     };
     let earlier = case.ran.recorded.contains(&w.pid);
@@ -244,17 +257,82 @@ fn judged(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Result<Judged, String>
     if earlier || surely.is_none() {
         phases = PHASES.to_vec();
     }
-    let mark = |p| stated::durable(class, holding, p);
+    let mark = |p| stated::durable(class, end, p);
     let agreed = PHASES
         .iter()
         .map(|p| mark(*p))
         .reduce(|a, b| if a == b { a } else { None });
-    Ok(Judged {
-        mark: surely.map_or(agreed.flatten(), mark),
-        may: phases.iter().filter_map(|p| mark(*p)).collect(),
-        open: met_in_open && stated::stated(class, holding.0, Phase::Opening) == Stated::Open,
-        row: surely.map(|p| (class, holding.0, p)),
-    })
+    let written = case
+        .plan
+        .placed_written(*w)
+        .map(|placed| placed.0)
+        .filter(|_| earlier);
+    let held = [Some(end), written];
+    let unknown = is_lost(fault) && case.plan.ids.status.contains(&w.pid) && settles.is_none();
+    Judged {
+        class: Some(class),
+        mark: surely.map_or(agreed.flatten(), mark).filter(|_| !unknown),
+        may: phases
+            .iter()
+            .flat_map(|p| {
+                held.iter()
+                    .flatten()
+                    .filter_map(|h| stated::durable(class, *h, *p))
+            })
+            .collect(),
+        open: met_in_open && stated::stated(class, end.0, Phase::Opening) == Stated::Open,
+        row: surely.map(|p| (class, end.0, p)).filter(|_| !unknown),
+    }
+}
+
+/// Returns whether the commit log settles the status page `w` writes when `fault` lost the write,
+/// at the first open after the loss: the page is stale there, no later write-out of it having
+/// landed before it, and the copy the file holds, the one its last write-out before `w` wrote,
+/// holds no id in progress below the first id not reserved and from the truncation bound the
+/// plan's run had then, or the retained log holds a change or image of the page continuing from
+/// the copy up to `w`. Returns `false` for a page that is no status page that lost a write, and
+/// `None` when the search cannot judge that open: past a recycle of the log, beside a second
+/// fault, a lost write to the log or a crash the fault caused, for a write-out during an open, or
+/// when the log the file retains begins past the copy and holds no such record.
+fn settles(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Option<bool> {
+    let plan = case.plan;
+    if !is_lost(fault) || !plan.ids.status.contains(&w.pid) {
+        return Some(false);
+    }
+    if fault == Fault::Recycled
+        || case.hits.len() > 1
+        || case.lost_log.is_some()
+        || case.ran.cut.is_some()
+    {
+        return None;
+    }
+    let last = plan.clog.len().checked_sub(1)?;
+    let before = plan.opens.iter().rev().find(|open| open.0 <= w.op);
+    if before.is_some_and(|open| open.2 == w.during) {
+        return None;
+    }
+    let (outs, op) = plan
+        .opens
+        .iter()
+        .find(|open| open.0 > w.op)
+        .map_or((u64::MAX, last), |open| (open.0, open.1));
+    let writes = &plan.writes;
+    if writes
+        .iter()
+        .any(|x| x.pid == w.pid && x.op > w.op && x.op < outs)
+    {
+        return Some(false);
+    }
+    let Some(at) = writes.iter().rposition(|x| x.pid == w.pid && x.op < w.op) else {
+        return Some(false);
+    };
+    let copy = writes[at].lsn;
+    let image = plan.images.get(&at)?;
+    let (reserved, bound) = *plan.clog.get(op)?;
+    if !ledger::in_progress(image, reserved, bound) {
+        return Some(true);
+    }
+    ledger::continues(&case.ran.files, w.pid, copy, w.lsn)
 }
 
 pub fn is_lost(fault: Fault) -> bool {
@@ -284,12 +362,18 @@ fn incarnation_met(case: &Case<'_>, w: WriteOut) -> WriteOut {
     }
 }
 
+/// Returns whether the faulted run wrote out the pages the plan's run did, in its order.
+fn followed(case: &Case<'_>) -> bool {
+    case.ran.trace.writes == case.plan.writes
+}
+
 fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     let plan = case.plan;
     let ids = &plan.ids;
     let mut pages = Vec::new();
-    let mut unclassified = Vec::new();
     let mut open_only = false;
+    let end = case.ran.cut.unwrap_or(usize::MAX);
+    let follows = followed(case);
     for hit in &case.hits {
         let written = match hit.fault {
             Fault::UnreadableLasting => incarnation_met(case, hit.written),
@@ -308,14 +392,20 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
             let Some(kind) = world::class(w.kind, w.owner, ids) else {
                 continue;
             };
-            let rel = ids.owner(kind, w.owner);
+            let written = plan.placed_written(w);
+            let at_end = plan.placed_at(w.pid, end);
+            let placed = match (follows, at_end) {
+                (true, Some(at_end)) if hit.fault != Fault::UnreadableOnce => at_end,
+                _ => written.unwrap_or(world::FREE),
+            };
+            let rel = written.unwrap_or(placed).1;
             let copy = world::page(&case.observed.files, w.pid);
             let found = page::lsn(&copy).0;
             let stale = match hit.fault {
                 Fault::Flipped => !case::sealed(w.pid, &copy),
                 fault => is_lost(fault) && found < w.lsn,
             };
-            let alive = !freed(kind) || plan.held_at_end(w.pid);
+            let alive = at_end.is_none_or(|p| p.0.0 != Held::Free);
             let must_report = matches!(
                 hit.fault,
                 Fault::LostCurrent | Fault::Recycled | Fault::Flipped
@@ -328,16 +418,19 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
                     Fault::LostEarlier => !stale,
                     _ => false,
                 };
-            let judged = judged(case, &w, hit.fault).unwrap_or_else(|e| {
-                unclassified.push(e);
-                Judged::default()
-            });
+            let settles = settles(case, &w, hit.fault);
+            let judged = judged(case, &w, hit.fault, placed.0, settles);
             open_only |= judged.open;
             pages.push(Page {
                 pid: w.pid,
                 kind,
                 fault: hit.fault,
                 rel,
+                at_end: at_end
+                    .filter(|p| follows && p.0.0 != Held::Free)
+                    .map(|p| p.0.0),
+                settles,
+                class: judged.class,
                 stale,
                 must_report,
                 must_not_name,
@@ -386,19 +479,6 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         .flatten()
         .flat_map(|(_, at)| pages.iter().map(|p| p.pid).filter(|pid| names(at, *pid)))
         .collect();
-    let observed = case.observed.marks.is_some();
-    let rows = pages
-        .iter()
-        .filter(|p| {
-            let bites = p.must_report || p.open || named.contains(&p.pid);
-            if matches!(p.fault, Fault::UnreadableOnce | Fault::UnreadableLasting) {
-                bites || observed
-            } else {
-                (p.stale || case.observed.settled.contains(&p.pid)) && bites
-            }
-        })
-        .filter_map(|p| p.row)
-        .collect();
     let mut allowed_marks = lost_page_keeps_its_mark(&pages, &named);
     allowed_marks.extend(unused_slot_marks_its_index(&pages, ids));
     if open_only {
@@ -427,8 +507,6 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         unreadable,
         open_only,
         baseline,
-        unclassified,
-        rows,
     }
 }
 
@@ -473,15 +551,12 @@ fn past_lost<'a>(case: &'a Case<'_>, lost: &'a LostLog) -> impl Iterator<Item = 
 /// wrote after it at or past its LSN, the database for a page no heap or index holds, and the
 /// database for a lost batch before the log's last.
 fn past_lost_log(case: &Case<'_>, lost: &LostLog) -> BTreeSet<Quarantine> {
-    let ids = &case.plan.ids;
     let mut out = BTreeSet::new();
     if !lost.tail {
         out.insert(Quarantine::Database);
     }
     for w in past_lost(case, lost) {
-        let object = ids
-            .holding(w.kind, w.owner, w.pid)
-            .and_then(|(_, object)| object);
+        let object = case.plan.placed_written(*w).and_then(|placed| placed.0.1);
         out.insert(object.unwrap_or(Quarantine::Database));
     }
     out
@@ -544,8 +619,7 @@ fn unreadable_page_leaves_mapping_incomplete(f: &Facts<'_>) -> bool {
 
 /// Returns why the database is marked, by what the damaged pages are.
 fn database_cause(f: &Facts<'_>) -> &'static str {
-    let settled = &f.case.observed.settled;
-    if f.pages.iter().all(|p| settled.contains(&p.pid)) {
+    if f.pages.iter().all(|p| p.class == Some(Class::Settled)) {
         "for a settled status page"
     } else if f
         .pages
@@ -574,12 +648,9 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
     if let Some(p) = &o.panic {
         v(Consumer::Settle, "the engine panics".into(), p.clone());
     }
-    for page in &f.unclassified {
-        v(
-            Consumer::Settle,
-            "a damaged page the search cannot classify".into(),
-            page.clone(),
-        );
+    let (placing, walked, settled) = judge_placing(&f);
+    for (what, detail) in placing {
+        v(Consumer::Settle, what, detail);
     }
     if let Some(Err(e)) = &o.open
         && !f.lasting
@@ -645,12 +716,14 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
     }
     Verdicts {
         violations: out,
-        rows: f.rows.clone(),
+        rows: asked(&f),
         reached: reached(&f),
-        met: met(&f),
+        met: met(&f, &f.pages[0]),
         named: named(&f),
         ending: ending(&f),
         evidence: held,
+        walked,
+        settled,
     }
 }
 
@@ -772,7 +845,8 @@ fn judge_read(
         }
         Read::Failed(e) => {
             let explained = f.pages.iter().any(|p| {
-                p.fault == Fault::UnreadableLasting && (!relational(p.kind) || p.rel == Some(rel))
+                p.fault == Fault::UnreadableLasting
+                    && (names_pid(e, p.pid) || !relational(p.kind) || p.rel == Some(rel))
             });
             (!explained).then(|| (format!("{prefix}{name} fails"), e.clone()))
         }
@@ -922,11 +996,7 @@ fn judge_marks(f: &Facts<'_>) -> Vec<(String, String)> {
             "a mark the faults do not map to"
         } else if f.pages.iter().any(|p| p.rel.is_some()) {
             "the database is marked for pages that map to their relation"
-        } else if f
-            .pages
-            .iter()
-            .all(|p| f.case.observed.settled.contains(&p.pid))
-        {
+        } else if f.pages.iter().all(|p| p.class == Some(Class::Settled)) {
             "the database is marked for a settled status page"
         } else {
             "a mark the faults do not map to"
@@ -935,7 +1005,7 @@ fn judge_marks(f: &Facts<'_>) -> Vec<(String, String)> {
         out.push((
             shape.into(),
             format!(
-                "over {over:?}, expected {:?}; pages and staleness {pages:?}; settled {:?}",
+                "over {over:?}, expected {:?}; pages and staleness {pages:?}; engine settled {:?}",
                 f.expected, f.case.observed.settled
             ),
         ));
@@ -960,7 +1030,7 @@ fn judge_backup(f: &Facts<'_>, b: &Backup) -> Vec<(String, String)> {
         && !f.lasting
         && !marks.contains(&Quarantine::Database)
     {
-        out.push(("the backup fails".into(), e.clone()));
+        out.push(("the backup fails".into(), format!("{e:?}")));
     }
     if let Some(Ok(copy)) = &b.copy {
         out.extend(judge_copy(f, copy, "the backup's copy: "));
@@ -987,7 +1057,7 @@ fn judge_dump(f: &Facts<'_>, d: &Dumped) -> Vec<(String, String)> {
         && !f.lasting
         && marks.is_empty()
     {
-        out.push(("the dump fails".into(), e.clone()));
+        out.push(("the dump fails".into(), format!("{e:?}")));
     }
     if let Some(Ok(copy)) = &d.copy {
         out.extend(judge_copy(f, copy, "the dump's copy: "));
@@ -1022,45 +1092,151 @@ fn reached(f: &Facts<'_>) -> BTreeSet<Consumer> {
     .collect()
 }
 
-fn met(f: &Facts<'_>) -> BTreeSet<Consumer> {
+/// Returns the consumers whose answer carries page `p`: the open recorded, settled or could not
+/// read it, or failed naming it; a read was refused by a mark the page maps to or failed naming
+/// it, or an operation of the faulted run failed naming it; verify named it; the backup, its proof
+/// or its copy, or the dump or its copy, named it or was refused by a mark it maps to.
+fn met(f: &Facts<'_>, p: &Page) -> BTreeSet<Consumer> {
     let o = f.case.observed;
-    let pid = f.pages[0].pid;
-    let refused = |r: &Read| matches!(r, Read::Refused(_) | Read::Failed(_));
+    let pid = p.pid;
+    let by_page = |r: &Read| match r {
+        Read::Refused(what) => refused_marks(f, what)
+            .iter()
+            .any(|m| p.may.contains(m) || p.open && *m == Quarantine::Database),
+        Read::Failed(e) => names_pid(e, pid),
+        Read::Rows(_) | Read::Garbage(_) => false,
+    };
     let read = o
         .reads
         .values()
         .chain(o.lookups.values().map(|l| &l.read))
-        .any(refused);
-    let copy_refused = |c: &Option<Result<Copy, String>>| match c {
-        Some(Ok(copy)) => copy.reads.values().any(refused),
-        Some(Err(_)) => true,
+        .any(by_page)
+        || f.case.ran.failed.values().any(|e| names_pid(e, pid));
+    let copy = |c: &Option<Result<Copy, String>>| match c {
+        Some(Ok(copy)) => {
+            copy.reads.values().any(by_page)
+                || copy
+                    .verify
+                    .as_ref()
+                    .is_ok_and(|rows| rows.iter().any(|(_, at)| names(at, pid)))
+        }
+        Some(Err(e)) => names_pid(e, pid),
         None => false,
     };
+    let lasting = f
+        .case
+        .hits
+        .iter()
+        .any(|h| h.fault == Fault::UnreadableLasting && h.written.pid == pid);
+    let open = (lasting && o.met_in_open)
+        || o.recorded_at_open.contains(&pid)
+        || o.settled.contains(&pid)
+        || matches!(&o.open, Some(Err(e)) if names_pid(e, pid));
+    let verify = o.verify.as_ref().is_some_and(|r| {
+        r.as_ref()
+            .is_ok_and(|rows| rows.iter().any(|(_, at)| names(at, pid)))
+    });
+    let backup = o.backup.as_ref().is_some_and(|b| {
+        b.made.as_ref().is_err_and(&by_page)
+            || match &b.proof {
+                Some(Ok(Proof::Failed(found))) => found.iter().any(|t| names_pid(t, pid)),
+                Some(Err(e)) => names_pid(e, pid),
+                _ => false,
+            }
+            || copy(&b.copy)
+    });
+    let dump = o
+        .dump
+        .as_ref()
+        .is_some_and(|d| d.made.as_ref().is_err_and(&by_page) || copy(&d.copy));
     [
-        (
-            Consumer::Settle,
-            o.met_in_open || o.recorded_at_open.contains(&pid) || o.settled.contains(&pid),
-        ),
+        (Consumer::Settle, open),
         (Consumer::Read, read),
-        (Consumer::Verify, !named(f).is_empty()),
-        (
-            Consumer::Backup,
-            o.backup.as_ref().is_some_and(|b| {
-                b.made.is_err()
-                    || !matches!(b.proof, Some(Ok(Proof::Proven)))
-                    || copy_refused(&b.copy)
-            }),
-        ),
-        (
-            Consumer::Dump,
-            o.dump
-                .as_ref()
-                .is_some_and(|d| d.made.is_err() || copy_refused(&d.copy)),
-        ),
+        (Consumer::Verify, verify),
+        (Consumer::Backup, backup),
+        (Consumer::Dump, dump),
     ]
     .into_iter()
     .filter_map(|(c, met)| met.then_some(c))
     .collect()
+}
+
+/// Returns whether the text of an error or a finding names page `pid`, as `Pid(N)` or `page N`.
+fn names_pid(text: &str, pid: Pid) -> bool {
+    let bounded = |needle: String| {
+        text.match_indices(&needle)
+            .any(|(at, _)| !text[at + needle.len()..].starts_with(|c: char| c.is_ascii_digit()))
+    };
+    bounded(format!("Pid({})", pid.0)) || bounded(format!("page {}", pid.0))
+}
+
+/// Returns the rows of the stated table the case asked: for each page a consumer met, the row
+/// of the phase its mapping surely ran in, when the judge checked what the row states. A row
+/// stating a mark is asked when the judge required that mark held; a row stating nothing when it
+/// checked the marks held nothing beyond what the faults allow; a row holding the database for the
+/// open when it checked that the open held it.
+fn asked(f: &Facts<'_>) -> BTreeSet<Row> {
+    let Some(all) = &f.case.observed.marks else {
+        return BTreeSet::new();
+    };
+    let excused = unreadable_page_leaves_mapping_incomplete(f);
+    let covered = database_mark_covers_relations(f, all);
+    f.pages
+        .iter()
+        .filter(|p| !met(f, p).is_empty())
+        .filter_map(|p| {
+            let row = p.row?;
+            let checked = match stated::stated(row.0, row.1, row.2) {
+                Stated::Own | Stated::Database => {
+                    p.must_report
+                        && !excused
+                        && p.mark
+                            .is_some_and(|m| m == Quarantine::Database || !covered)
+                }
+                Stated::Nothing => true,
+                Stated::Open => p.open && f.open_only,
+            };
+            checked.then_some(row)
+        })
+        .collect()
+}
+
+/// Returns the violations of where the plan placed each damaged page against the engine: the
+/// holders the mapping's walk finds once the consumers ran, for a page placed at the end, and
+/// whether the commit log settled a status page, for one the search judges settled or not. Returns
+/// also whether it compared a walk and whether it compared a settle.
+fn judge_placing(f: &Facts<'_>) -> (Vec<(String, String)>, bool, bool) {
+    let o = f.case.observed;
+    let mut out = Vec::new();
+    let (mut walked, mut settled) = (false, false);
+    let read = o.relations.as_ref().is_some_and(|r| !r.is_empty());
+    for p in &f.pages {
+        if let (Some(Some(holders)), Some(at_end), true) = (o.walked.get(&p.pid), p.at_end, read) {
+            walked = true;
+            let held: BTreeSet<Held> = holders.iter().map(|h| stated::holding(*h).0).collect();
+            if !held.contains(&at_end) {
+                out.push((
+                    "the mapping's walk holds a page elsewhere than the plan placed it".into(),
+                    format!("page {}: placed {at_end:?}, walked {holders:?}", p.pid.0),
+                ));
+            }
+        }
+        if let (Some(settles), Some(Ok(()))) = (p.settles, &o.open)
+            && is_lost(p.fault)
+            && f.case.plan.ids.status.contains(&p.pid)
+        {
+            settled = true;
+            if settles != o.settled.contains(&p.pid) {
+                let what = if settles {
+                    "the commit log leaves unsettled a status page the plan and its log settle"
+                } else {
+                    "the commit log settles a status page the plan and its log do not settle"
+                };
+                out.push((what.into(), format!("page {}", p.pid.0)));
+            }
+        }
+    }
+    (out, walked, settled)
 }
 
 fn named(f: &Facts<'_>) -> Vec<String> {

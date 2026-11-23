@@ -15,7 +15,7 @@ use super::generate;
 use super::ledger::LogWrite;
 use super::pool;
 use super::stated::Held;
-use super::world::{Family, Ids, RELS, Rel, WriteOut};
+use super::world::{Ids, RELS, Rel, WriteOut};
 
 /// The most binaries whose plans are kept: each build of the storage binary a target directory
 /// runs at once, `-p adtb-sim` and the workspace's, and the ones before a rebuild.
@@ -144,6 +144,15 @@ impl Code for u32 {
     }
     fn take(input: &mut &[u8]) -> Self {
         u32::from_le_bytes(bytes(input))
+    }
+}
+
+impl Code for u8 {
+    fn put(&self, out: &mut Vec<u8>) {
+        out.push(*self);
+    }
+    fn take(input: &mut &[u8]) -> Self {
+        u8::from_le_bytes(bytes(input))
     }
 }
 
@@ -301,15 +310,6 @@ impl Code for Held {
     }
 }
 
-impl Code for Family {
-    fn put(&self, out: &mut Vec<u8>) {
-        put_one(&[Family::Heap, Family::Tree], self, out);
-    }
-    fn take(input: &mut &[u8]) -> Self {
-        take_one(&[Family::Heap, Family::Tree], input)
-    }
-}
-
 impl Code for Quarantine {
     fn put(&self, out: &mut Vec<u8>) {
         let (tag, id) = match *self {
@@ -393,10 +393,7 @@ impl Code for Ids {
         self.large.put(out);
         self.key_indexes.put(out);
         self.marks.put(out);
-        self.holders.put(out);
-        self.catalog_root.put(out);
-        self.counters.put(out);
-        self.retired.put(out);
+        self.status.put(out);
     }
     fn take(input: &mut &[u8]) -> Self {
         Ids {
@@ -405,10 +402,7 @@ impl Code for Ids {
             large: Code::take(input),
             key_indexes: Code::take(input),
             marks: Code::take(input),
-            holders: Code::take(input),
-            catalog_root: Code::take(input),
-            counters: Code::take(input),
-            retired: Code::take(input),
+            status: Code::take(input),
         }
     }
 }
@@ -420,6 +414,9 @@ fn encode(plan: &Plan) -> Vec<u8> {
     plan.list.put(&mut out);
     plan.ids.put(&mut out);
     plan.held.put(&mut out);
+    plan.clog.put(&mut out);
+    plan.images.put(&mut out);
+    plan.opens.put(&mut out);
     out
 }
 
@@ -438,6 +435,9 @@ fn decode(seed: u64, concurrent: bool, bytes: &[u8]) -> Plan {
         list: Code::take(&mut input),
         ids: Code::take(&mut input),
         held: Code::take(&mut input),
+        clog: Code::take(&mut input),
+        images: Code::take(&mut input),
+        opens: Code::take(&mut input),
     };
     assert!(
         input.is_empty(),

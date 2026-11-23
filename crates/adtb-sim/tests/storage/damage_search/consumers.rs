@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use adtb::runtime::{IoError, OpKind, Runtime};
-use adtb::testing::{Damage, Pid, Quarantine};
+use adtb::testing::{Damage, Holder, Phase as MapPhase, Pid, Quarantine};
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, OpenOptions, Proof, RestorePoint,
     prove_in, restore_in,
@@ -62,14 +62,14 @@ pub struct Copy {
 
 #[derive(Debug)]
 pub struct Backup {
-    pub made: Result<(), String>,
+    pub made: Result<(), Read>,
     pub proof: Option<Result<Proof, String>>,
     pub copy: Option<Result<Copy, String>>,
 }
 
 #[derive(Debug)]
 pub struct Dumped {
-    pub made: Result<(), String>,
+    pub made: Result<(), Read>,
     pub copy: Option<Result<Copy, String>>,
 }
 
@@ -109,6 +109,9 @@ pub struct Observed {
     pub marks: Option<BTreeSet<Quarantine>>,
     pub backup: Option<Backup>,
     pub dump: Option<Dumped>,
+    /// What the mapping's walk holds each damaged page by once every other consumer ran, `None`
+    /// for a walk that is incomplete.
+    pub walked: BTreeMap<Pid, Option<BTreeSet<Holder>>>,
     /// A panic of the engine, by its message.
     pub panic: Option<String>,
     /// The files once every consumer ran, after the recovery their open ran.
@@ -206,8 +209,8 @@ fn restored<R: Runtime>(rt: &R, archive: &str, path: &str, version: u8) -> Resul
 
 /// Run every consumer on the file `ran` left, on a simulation seeded `seed`, with every read
 /// of `pid` failing when `lasting`, the log holding the migrations up to `version`, and `keys`
-/// read by key from each relation. Under `lasting`, open the file again after with `pid`
-/// readable.
+/// read by key from each relation, then walk the structures for each of `damaged`. Under
+/// `lasting`, open the file again after with `pid` readable.
 pub fn run(
     seed: u64,
     ran: &Ran,
@@ -215,6 +218,7 @@ pub fn run(
     lasting: bool,
     version: u8,
     keys: &BTreeMap<Rel, Vec<i64>>,
+    damaged: &[Pid],
 ) -> Observed {
     let mut sim = Sim::with_files(seed, Config::default(), ran.files.clone());
     let mut seen = Observed::default();
@@ -229,7 +233,7 @@ pub fn run(
                 rt.plan(Plan::new().rule(unreadable, Action::Fail(IoError::Failed)));
             }
             let mut opened = || failed_in_open = failed.len();
-            consume(&rt, version, keys, &mut opened, &mut seen);
+            consume(&rt, version, keys, damaged, &mut opened, &mut seen);
         });
         if lasting {
             seen.reopened = Some(reopen(seed, sim.files(), version));
@@ -325,11 +329,12 @@ fn lookups<R: Runtime>(db: &Database<R>, rel: Rel, keys: &[i64]) -> Lookups {
 }
 
 /// Run the consumers on the source and on its copies, calling `opened` once the first open
-/// returns.
+/// returns, then walk the structures for each of `damaged`.
 fn consume(
     rt: &SimRuntime,
     version: u8,
     keys: &BTreeMap<Rel, Vec<i64>>,
+    damaged: &[Pid],
     opened: &mut dyn FnMut(),
     seen: &mut Observed,
 ) {
@@ -377,7 +382,7 @@ fn consume(
     let text = |t: &str| {
         db.query_text(t, &[], &CallOptions::default())
             .map(drop)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(|e| refusal(&e))
     };
     let made = text(&format!("backup to \"{BACKUP}\""));
     let (proof, copy) = if made.is_ok() {
@@ -396,6 +401,10 @@ fn consume(
         .is_ok()
         .then(|| restored(rt, DUMP, "dumped.adt", version));
     seen.dump = Some(Dumped { made, copy });
+    seen.walked = damaged
+        .iter()
+        .map(|p| (*p, db.testing().holders(*p, MapPhase::Running)))
+        .collect();
     if let Err(e) = db.close() {
         seen.open = Some(Err(format!("close: {e:?}")));
     }

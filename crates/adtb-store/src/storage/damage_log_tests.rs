@@ -127,7 +127,7 @@ fn refused_past_the_end(pager: &Pager<SimRuntime>, _: &SimRuntime, pid: Pid) -> 
     pager.damage(pid, Damage::Checksum).damage
 }
 
-const SHAPES: [Shape; 12] = [
+const SHAPES: [Shape; 12] = adtb_testkit::every![Shape;
     Shape::Blank,
     Shape::Kind,
     Shape::Owner,
@@ -286,7 +286,9 @@ fn detected(site: &Site, rt: &SimRuntime, close: bool) -> (Option<Damage>, Optio
 #[test]
 fn each_detection_leaves_a_record_a_crash_and_a_close_keep_but_an_unreadable_page_none() {
     let mut reached = BTreeSet::new();
-    for site in sites() {
+    let sites = sites();
+    let names = sites.len();
+    for site in sites {
         for close in [false, true] {
             let name = format!(
                 "{} then {}",
@@ -335,7 +337,7 @@ fn each_detection_leaves_a_record_a_crash_and_a_close_keep_but_an_unreadable_pag
             reached.insert(name);
         }
     }
-    assert_eq!(2 * 23, reached.len(), "{reached:?}");
+    assert_eq!(2 * names, reached.len(), "{reached:?}");
 }
 
 /// Write `p`, write it to the file, rot it there, evict it and read it. Returns the damage the

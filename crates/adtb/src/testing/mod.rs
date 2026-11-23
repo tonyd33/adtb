@@ -29,7 +29,7 @@ pub use crate::plan::{
     Check as PlanCheck, Checked as PlansChecked, Rewrites, checked as plans_checked, with_rewrites,
 };
 pub use crate::steps::{Change, Checkpoint, Map, Reindex, Retire, Step, StepFn, Vacuum};
-pub use crate::storage::policy::Holder;
+pub use crate::storage::policy::{Holder, Phase};
 pub use crate::storage::{
     Damage, LogFinding, LogProblem, Lsn, PageError, PageKind, Pid, Position as LogPosition,
     Quarantine, Shape, manifest_hash,

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::api::{DynRows, Error};
@@ -5,6 +6,7 @@ use crate::exec;
 use crate::key::{Entry, Value};
 use crate::mvcc::Xid;
 use crate::runtime::Runtime;
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
     ArchiveStatus, BackupError, BackupRun, Envelope, Finding, Manifest, PageError, PageExclusive,
     Pid, Verification,
@@ -51,6 +53,26 @@ impl<'a, R: Runtime> Testing<'a, R> {
     /// Returns the pages of trees a swap replaced that no sweep has freed.
     pub fn retired(self) -> Vec<Pid> {
         self.db.tested_pager().retired()
+    }
+
+    /// Returns what holds `page` during `phase` as a mapping of its damage finds it, reading the
+    /// pages of every structure the mapping walks, `None` when the walk is incomplete and found
+    /// no holder.
+    pub fn holders(self, page: Pid, phase: Phase) -> Option<BTreeSet<Holder>> {
+        let w = self.db.tested_db();
+        w.structures()
+            .holders(self.db.tested_pager(), w.txns(), page, phase)
+    }
+
+    /// Returns each page held with no walk, with its holder: an allocation bitmap page, the damage
+    /// list's page, the marks page or a page of the page LSN map, up to the end of the pages
+    /// `verify` checks.
+    pub fn unwalked(self) -> Vec<(Pid, Holder)> {
+        let pager = self.db.tested_pager();
+        (0..pager.pages_within())
+            .map(Pid)
+            .filter_map(|p| Some((p, pager.held_unwalked(p)?)))
+            .collect()
     }
 
     /// Write the log.

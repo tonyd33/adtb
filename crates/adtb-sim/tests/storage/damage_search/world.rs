@@ -251,6 +251,8 @@ pub struct WriteOut {
 #[derive(Clone, Debug, Default)]
 pub struct Trace {
     pub writes: Vec<WriteOut>,
+    /// The image each write-out of a commit log page wrote, by its index in `writes`.
+    pub images: BTreeMap<usize, Vec<u8>>,
 }
 
 /// The operation index of the write-outs of the create.
@@ -305,6 +307,9 @@ fn trace(writes: &OpLog, during: &[(usize, usize)]) -> Trace {
                 .enumerate()
                 .filter(|(_, (a, b))| a != b)
                 .fold(0, |mask, (u, _)| mask | (1 << u));
+            if page::kind(page) == PageKind::CommitLog as u16 {
+                trace.images.insert(trace.writes.len(), page.to_vec());
+            }
             trace.writes.push(WriteOut {
                 op: number as u64,
                 pid,
@@ -388,14 +393,21 @@ fn write<R: Runtime>(db: &Database<R>, op: &Op, rows: &Rows) -> Result<(), Error
     t.commit(None).map(drop)
 }
 
-/// The pages each relation's heap, directory, visibility map and key index held after an
-/// operation, by the catalog's names, and every other allocated page, by `None`; free pages are
-/// absent.
-pub type Holdings = BTreeMap<Pid, Option<Rel>>;
+/// Where a page is placed: its holder; the user relation it belongs to for a page of a
+/// relation's heap, history heap, key index or history index; and the owner the pages of the
+/// listed structure carry, for a structure listed by its object.
+pub type Placed = (Holding, Option<Rel>, Option<u32>);
+
+/// Where each allocated page was placed after an operation, by the structure listings of the
+/// observing run; free pages are absent.
+pub type Holdings = BTreeMap<Pid, Placed>;
+
+/// Where a free page is placed.
+pub const FREE: Placed = ((Held::Free, None), None, None);
 
 /// The owner each user relation's pages carry: its heap's and its history heap's, which their
 /// directory and visibility map pages carry too, its key index's and history index's, and its
-/// large-value store's; the marks a page of each takes; and the holder of every page.
+/// large-value store's; the marks a page of each takes; and the commit log's status pages.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ids {
     pub heaps: BTreeMap<u32, Rel>,
@@ -405,75 +417,11 @@ pub struct Ids {
     pub key_indexes: BTreeMap<Rel, u32>,
     /// The mark of each relation's heap and of its key index.
     pub marks: BTreeMap<Rel, (Quarantine, Quarantine)>,
-    /// The holder of the pages of each heap, large-value store and tree, by the family of its
-    /// pages and the owner they carry.
-    pub holders: BTreeMap<(Family, u32), Holding>,
-    pub catalog_root: Option<Pid>,
-    pub counters: Option<Pid>,
-    /// Every page a swap retired while the clean run was observed.
-    pub retired: BTreeSet<Pid>,
-}
-
-/// The pages a header's owner can name: a heap's or a large-value store's, or a tree's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Family {
-    Heap,
-    Tree,
-}
-
-impl Family {
-    fn of(kind: PageKind) -> Option<Family> {
-        match kind {
-            PageKind::HeapFixed
-            | PageKind::HeapSlotted
-            | PageKind::FreeSpaceMap
-            | PageKind::VisibilityMap => Some(Family::Heap),
-            PageKind::IndexLeaf | PageKind::IndexInner | PageKind::HashBucket => Some(Family::Tree),
-            _ => None,
-        }
-    }
-
-    fn of_object(object: Object) -> Option<Family> {
-        match object {
-            Object::Heap(_) | Object::History(_) | Object::Large(_) | Object::CatalogRows => {
-                Some(Family::Heap)
-            }
-            Object::Index(_) | Object::HistoryIndex(_) | Object::CommitTimes => Some(Family::Tree),
-            _ => None,
-        }
-    }
+    /// Every status page of the commit log while the clean run was observed.
+    pub status: BTreeSet<Pid>,
 }
 
 impl Ids {
-    /// Returns the holding of page `pid` whose header names `kind` and `owner`, `None` for a
-    /// page the search cannot classify.
-    pub fn holding(&self, kind: u16, owner: u32, pid: Pid) -> Option<Holding> {
-        let k = PageKind::from_u16(kind)?;
-        let held = match k {
-            _ if self.retired.contains(&pid) => Held::Retired,
-            PageKind::Catalog if self.catalog_root == Some(pid) => Held::CatalogRoot,
-            PageKind::Catalog if self.counters == Some(pid) => Held::Counters,
-            PageKind::Catalog => return None,
-            PageKind::CommitLog => Held::CommitLog,
-            PageKind::LsnMap => Held::LsnMap,
-            PageKind::DamageList => Held::DamageList,
-            PageKind::AllocationBitmap => Held::Bitmap,
-            PageKind::Quarantine => Held::MarksPage,
-            _ => return self.holders.get(&(Family::of(k)?, owner)).copied(),
-        };
-        Some((held, None))
-    }
-
-    /// Returns the user relation a page of `kind` carrying `owner` belongs to, `None` for a page
-    /// no user relation holds.
-    pub fn owner(&self, kind: Kind, owner: u32) -> Option<Rel> {
-        match kind {
-            Kind::Heap | Kind::Directory | Kind::VisibilityMap => self.heaps.get(&owner).copied(),
-            Kind::Index => self.indexes.get(&owner).copied(),
-            _ => None,
-        }
-    }
-
     /// Returns the relation whose heap or index mark `m` is, `None` for the database's.
     pub fn marked(&self, m: Quarantine) -> Option<Rel> {
         self.marks
@@ -510,20 +458,13 @@ fn unread<R: Runtime>(db: &Database<R>) -> bool {
 
 /// Returns whether the page of marks `db` writes holds the whole database's mark.
 fn durably_whole<R: Runtime>(db: &Database<R>) -> bool {
-    const DATABASE: u32 = 1;
     let t = db.testing();
-    if !t.probe().marked(Quarantine::Database) {
-        return false;
-    }
-    let Ok(page) = t.probe().page(t.root(Object::Marks).unwrap()) else {
-        return false;
-    };
-    if page::kind(&page) != PageKind::Quarantine as u16 {
-        return false;
-    }
-    let at = page::HEADER_LEN;
-    let word = |i: usize| u64::from_le_bytes(page[i..i + 8].try_into().unwrap());
-    (0..word(at) as usize).any(|n| word(at + 8 + n * 8) as u32 == DATABASE)
+    t.probe().marked(Quarantine::Database)
+        && t.probe()
+            .page(t.root(Object::Marks).unwrap())
+            .is_ok_and(|page| {
+                ledger::marks(&page).is_some_and(|m| m.contains(&Quarantine::Database))
+            })
 }
 
 /// Returns whether `db` holds a mark on the whole database, under which an open applies no
@@ -537,31 +478,80 @@ pub fn present(rel: Rel, version: u8) -> bool {
     rel != Rel::Tags || version == 1
 }
 
+/// Returns where `db` places each allocated page: the pages a swap retired, then the pages of
+/// each user relation present at schema `version`, then those of every other structure by its
+/// listing, then the pages placed with no walk, and every other allocated page unreached.
 fn holdings<R: Runtime>(db: &Database<R>, version: u8) -> Holdings {
     let t = db.testing();
     let mut out = Holdings::new();
+    let mut place = |pages: Vec<Pid>, holding: Holding, rel: Option<Rel>, owner: Option<u32>| {
+        for p in pages {
+            out.entry(p).or_insert((holding, rel, owner));
+        }
+    };
+    place(t.retired(), (Held::Retired, None), None, None);
+    let owner = |o: Object| Some(t.owner(o).expect("a listed object's owner"));
+    let held = |o: Object| stated::holding(t.holder(o).expect("a listed object's holder"));
+    let listed = |o: Object| match o {
+        Object::Index(_) | Object::HistoryIndex(_) | Object::CommitTimes => t.pages(o),
+        _ => t.owned(o),
+    };
     for rel in RELS.into_iter().filter(|r| present(*r, version)) {
         let q = rel.qualified();
         let heap = t.heap(&q, rel.ctor()).expect("the relation's heap");
         let index = t.index(&q, "key id").expect("the relation's key index");
-        let mut pages = t.owned(heap).expect("the heap's pages");
-        pages.extend(t.pages(index).expect("the index's pages"));
-        out.extend(pages.into_iter().map(|p| (p, Some(rel))));
-        if let Some(h) = t.history(&q, rel.ctor()) {
-            let pages = t.owned(h).expect("the history heap's pages");
-            out.extend(pages.into_iter().map(|p| (p, Some(rel))));
+        let history = [t.history(&q, rel.ctor()), t.history_index(&q)];
+        for o in [heap, index]
+            .into_iter()
+            .chain(history.into_iter().flatten())
+        {
+            place(
+                listed(o).expect("the relation's pages"),
+                held(o),
+                Some(rel),
+                owner(o),
+            );
         }
-        if let Some(ix) = t.history_index(&q) {
-            let pages = t.pages(ix).expect("the history index's pages");
-            out.extend(pages.into_iter().map(|p| (p, Some(rel))));
-        }
-        let large = t.large(&q, rel.ctor()).expect("the relation's store");
-        let large = t.owned(large).expect("the store's pages");
-        out.extend(large.into_iter().map(|p| (p, None)));
     }
-    for p in t.allocated().expect("the allocated pages") {
-        out.entry(p).or_insert(None);
+    for o in t.objects().into_iter().chain([Object::CatalogRows]) {
+        place(
+            listed(o).expect("a structure's pages"),
+            held(o),
+            None,
+            owner(o),
+        );
     }
+    if let Ok(pages) = listed(Object::CommitTimes) {
+        place(
+            pages,
+            held(Object::CommitTimes),
+            None,
+            owner(Object::CommitTimes),
+        );
+    }
+    let log = t.commit_log();
+    let mut clog = vec![log.root()];
+    clog.extend(log.directory());
+    clog.extend(log.status().values());
+    place(clog, (Held::CommitLog, None), None, None);
+    for (o, h) in [
+        (Object::Catalog, Held::CatalogRoot),
+        (Object::Sequences, Held::Counters),
+        (Object::Marks, Held::MarksPage),
+        (Object::DamageList, Held::DamageList),
+    ] {
+        place(
+            vec![t.root(o).expect("an engine page")],
+            (h, None),
+            None,
+            None,
+        );
+    }
+    for (p, holder) in t.unwalked() {
+        place(vec![p], stated::holding(holder), None, None);
+    }
+    let allocated = t.allocated().expect("the allocated pages");
+    place(allocated, (Held::Unreached, None), None, None);
     out
 }
 
@@ -595,28 +585,7 @@ fn ids<R: Runtime>(db: &Database<R>, version: u8, out: &mut Ids) {
             out.indexes.insert(t.owner(ix).unwrap(), rel);
         }
     }
-    out.catalog_root = Some(t.root(Object::Catalog).unwrap());
-    let listed = t
-        .objects()
-        .into_iter()
-        .map(|o| (o, t.owner(o).expect("a listed owner")));
-    out.counters = Some(t.root(Object::Sequences).unwrap());
-    out.retired.extend(t.retired());
-    let rows = t
-        .owner(Object::CatalogRows)
-        .expect("the heap of the catalog's rows");
-    let times = t.owner(Object::CommitTimes).ok();
-    let present = [
-        (Object::CatalogRows, Some(rows)),
-        (Object::CommitTimes, times),
-    ]
-    .into_iter()
-    .filter_map(|(o, owner)| Some((o, owner?)));
-    for (o, owner) in listed.chain(present) {
-        let family = Family::of_object(o).expect("a heap, store or tree");
-        let holding = stated::holding(t.holder(o).expect("a listed object's holder"));
-        out.holders.insert((family, owner), holding);
-    }
+    out.status.extend(t.commit_log().status().values());
 }
 
 /// What a run of a sequence observed: what it acknowledged, the write-outs it numbered and the
@@ -631,6 +600,12 @@ pub struct Ran {
     pub read_failed: bool,
     pub trace: Trace,
     pub held: Vec<Holdings>,
+    /// The first id not reserved and the commit log's truncation bound after each operation, by
+    /// the observing run.
+    pub clog: Vec<(u64, u64)>,
+    /// Each open of the run: the write-outs submitted before it, the operation after which its
+    /// commit log stands as it found it, and the operation its write-outs count as during.
+    pub opens: Vec<(u64, usize, usize)>,
     pub ids: Ids,
     /// Each operation's error, by its index, for one that failed.
     pub failed: BTreeMap<usize, String>,
@@ -679,6 +654,8 @@ struct Runner<'a> {
     during: Vec<(usize, usize)>,
     acked: Acked,
     held: Vec<Holdings>,
+    clog: Vec<(u64, u64)>,
+    opens: Vec<(u64, usize, usize)>,
     ids: Ids,
     failed: BTreeMap<usize, String>,
     pending: Option<Op>,
@@ -743,6 +720,9 @@ impl Runner<'_> {
     /// Run the operations from `next` up to the next crash or the end on one process. Returns
     /// whether every one ran.
     fn process(&mut self, rt: &SimRuntime) -> bool {
+        let crashed = self.next.saturating_sub(1);
+        self.opens
+            .push((self.writes.len() as u64, crashed, crashed));
         let opened = open_own(rt, self.acked.version, &options(), true);
         let Some((mut db, at)) = self.failing(opened, self.next.saturating_sub(1)) else {
             return false;
@@ -794,6 +774,8 @@ impl Runner<'_> {
                     } else {
                         self.acked.version
                     };
+                    self.opens
+                        .push((self.writes.len() as u64, i.saturating_sub(1), i));
                     let opened = open_own(rt, version, &options(), true);
                     let Some((again, opened_at)) = self.failing(opened, i) else {
                         return false;
@@ -826,6 +808,8 @@ impl Runner<'_> {
             self.note_records(&db);
             if self.observe {
                 self.held.push(holdings(&db, self.acked.version));
+                let log = db.testing().commit_log();
+                self.clog.push((log.reserved().0, log.bound().0));
                 ids(&db, self.acked.version, &mut self.ids);
             }
             if *op == Op::Crash {
@@ -952,6 +936,8 @@ pub fn run(
             version: 0,
         },
         held: Vec::new(),
+        clog: Vec::new(),
+        opens: Vec::new(),
         ids: Ids::default(),
         failed: BTreeMap::new(),
         pending: None,
@@ -1038,6 +1024,8 @@ pub fn run(
         read_failed,
         trace,
         held: runner.held,
+        clog: runner.clog,
+        opens: runner.opens,
         ids: runner.ids,
         failed: runner.failed,
         cut,
@@ -1105,7 +1093,7 @@ pub enum Kind {
     Marks,
 }
 
-pub const KINDS: [Kind; 11] = [
+pub const KINDS: [Kind; 11] = adtb_testkit::every![Kind;
     Kind::Heap,
     Kind::Directory,
     Kind::Index,
@@ -1118,3 +1106,36 @@ pub const KINDS: [Kind; 11] = [
     Kind::Bitmap,
     Kind::Marks,
 ];
+
+impl Kind {
+    /// Returns the one structure that holds every page of this kind, `None` for a kind more than
+    /// one structure holds.
+    pub fn sole_holder(self) -> Option<Held> {
+        match self {
+            Kind::Heap
+            | Kind::Directory
+            | Kind::Index
+            | Kind::VisibilityMap
+            | Kind::Large
+            | Kind::Engine => None,
+            Kind::CommitLog => Some(Held::CommitLog),
+            Kind::LsnMap => Some(Held::LsnMap),
+            Kind::DamageList => Some(Held::DamageList),
+            Kind::Bitmap => Some(Held::Bitmap),
+            Kind::Marks => Some(Held::MarksPage),
+        }
+    }
+
+    /// Returns whether `held` is a structure listed by no object that holds pages of this kind.
+    pub fn holds_unlisted(self, held: Held) -> bool {
+        match self {
+            Kind::Heap | Kind::Directory | Kind::Index | Kind::VisibilityMap | Kind::Large => false,
+            Kind::Engine => matches!(held, Held::CatalogRoot | Held::Counters),
+            Kind::CommitLog => held == Held::CommitLog,
+            Kind::LsnMap => held == Held::LsnMap,
+            Kind::DamageList => held == Held::DamageList,
+            Kind::Bitmap => held == Held::Bitmap,
+            Kind::Marks => held == Held::MarksPage,
+        }
+    }
+}

@@ -42,6 +42,8 @@ pub struct CommitLogPages {
     root: Pid,
     directory: Vec<Pid>,
     status: BTreeMap<u64, Pid>,
+    reserved: Xid,
+    bound: Xid,
 }
 
 impl CommitLogPages {
@@ -57,6 +59,16 @@ impl CommitLogPages {
     /// the ids per page.
     pub fn status(&self) -> &BTreeMap<u64, Pid> {
         &self.status
+    }
+
+    /// Returns the first id not reserved.
+    pub fn reserved(&self) -> Xid {
+        self.reserved
+    }
+
+    /// Returns the truncation bound: every id below it counts as committed.
+    pub fn bound(&self) -> Xid {
+        self.bound
     }
 }
 
@@ -230,6 +242,8 @@ impl<'a, R: Runtime> Testing<'a, R> {
             root: clog.root(),
             directory: clog.directory_pages(),
             status: clog.status_pages().clone(),
+            reserved: clog.reserved(),
+            bound: clog.bound(),
         }
     }
 

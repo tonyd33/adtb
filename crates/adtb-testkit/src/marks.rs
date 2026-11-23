@@ -31,7 +31,7 @@ pub enum Held {
 }
 
 impl Held {
-    pub const ALL: [Held; 16] = [
+    pub const ALL: [Held; 16] = crate::every![Held;
         Held::Relation,
         Held::EngineRelation,
         Held::LargeStore,

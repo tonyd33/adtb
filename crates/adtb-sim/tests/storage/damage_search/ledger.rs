@@ -43,6 +43,7 @@ pub enum Logged {
     },
     Image {
         pid: Pid,
+        prev: u64,
         page: Vec<u8>,
     },
     Change {
@@ -136,6 +137,7 @@ fn records(start: u64, data: &[u8], block: usize) -> Vec<(u64, Logged)> {
             FREED if len >= 8 => Logged::Freed { pid: pid() },
             IMAGE if len >= 16 => Logged::Image {
                 pid: pid(),
+                prev: u64_at(body, 8),
                 page: body[16..].to_vec(),
             },
             CHANGE if len >= 20 => Logged::Change {
@@ -265,7 +267,7 @@ fn redone(files: &Files, log: &[(u64, Logged)], pid: Pid) -> Vec<u8> {
     let mut lsn = page::lsn(&bytes).0;
     for (at, record) in log {
         match record {
-            Logged::Image { pid: p, page } if *p == pid && *at > lsn && page.len() == PAGE => {
+            Logged::Image { pid: p, page, .. } if *p == pid && *at > lsn && page.len() == PAGE => {
                 bytes.clone_from(page);
                 lsn = *at;
             }
@@ -312,7 +314,7 @@ fn list(bytes: &[u8]) -> Option<(BTreeSet<Pid>, bool)> {
 }
 
 /// The marks page's marks, `None` for a page that is no marks page.
-fn marks(bytes: &[u8]) -> Option<BTreeSet<Quarantine>> {
+pub fn marks(bytes: &[u8]) -> Option<BTreeSet<Quarantine>> {
     if page::kind(bytes) != PageKind::Quarantine as u16 {
         return None;
     }
@@ -502,6 +504,31 @@ pub fn last_logged(files: &Files, pid: Pid) -> Option<u64> {
         })
         .map(|(at, _)| at)
         .max()
+}
+
+/// Returns whether the log of `files` retains a change or image of page `pid` that continues from
+/// its LSN `from`, at an LSN up to `to`; `None` when it retains none and begins past `from`.
+pub fn continues(files: &Files, pid: Pid, from: u64, to: u64) -> Option<bool> {
+    let h = header(world::DATA.bytes(files))?;
+    let log = retained(files, &h);
+    let found = log.iter().any(|(at, r)| {
+        *at <= to
+            && matches!(r, Logged::Change { pid: p, prev, .. } | Logged::Image { pid: p, prev, .. }
+                if *p == pid && *prev == from)
+    });
+    (found || log.first().is_some_and(|(at, _)| *at <= from)).then_some(found)
+}
+
+/// Returns whether the status page `image` holds an id in progress at or past `bound` and below
+/// `reserved`.
+pub fn in_progress(image: &[u8], reserved: u64, bound: u64) -> bool {
+    let statuses = page::HEADER_LEN + 8;
+    let per_page = ((PAGE - statuses) * 4) as u64;
+    let base = u64_at(image, page::HEADER_LEN) * per_page;
+    (bound.max(base)..reserved.min(base + per_page)).any(|x| {
+        let index = (x - base) as usize;
+        image[statuses + index / 4] >> (index % 4 * 2) & 0b11 == 0
+    })
 }
 
 /// Returns the LSN of the checkpoint the file header names.

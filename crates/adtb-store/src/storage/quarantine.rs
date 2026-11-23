@@ -894,8 +894,9 @@ impl<R: Runtime> Pager<R> {
     /// - A walk stopped by damage holds the page, or leaves the mapping incomplete when its
     ///   holder's damage marks nothing. One stopped by an I/O failure, or on a shape it could not
     ///   follow in all its tries, leaves the mapping incomplete.
-    /// - An allocation bitmap page, the damage list's page and a page of the page LSN map are
-    ///   held as such, with no walk. A map page below a refused one is not found as one.
+    /// - An allocation bitmap page, the damage list's page, the marks page and a page of the page
+    ///   LSN map are held as such, with no walk. A map page below a refused one is not found as
+    ///   one.
     /// - A page no walk holds is unreached, once every walk is complete.
     #[cfg(any(test, feature = "testing"))]
     pub fn holders_of(
@@ -920,14 +921,17 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    /// Returns what holds `pid` with no walk: an allocation bitmap page, the damage list's page
-    /// or a page of the page LSN map.
+    /// Returns what holds `pid` with no walk: an allocation bitmap page, the damage list's page,
+    /// the marks page or a page of the page LSN map.
     pub fn held_unwalked(&self, pid: Pid) -> Option<Holder> {
         if self.is_bitmap_page(pid) {
             return Some(Holder::Bitmap);
         }
         if pid != Pid(0) && pid == self.damage_list_page() {
             return Some(Holder::DamageList);
+        }
+        if pid != Pid(0) && pid == self.quarantine_page() {
+            return Some(Holder::MarksPage);
         }
         if self.holds_map_page(pid) {
             return Some(Holder::LsnMap);
@@ -937,8 +941,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns what holds the damaged page `pid` during `phase` from the walks `walk` reports
     /// alone and the pages held as retired, `None` when the mapping is incomplete and found no
-    /// holder. No allocation bitmap, damage list or page LSN map page is held as such: a page no
-    /// walk holds is free or unreached by the allocation bitmap.
+    /// holder. No allocation bitmap, damage list, marks or page LSN map page is held as such: a
+    /// page no walk holds is free or unreached by the allocation bitmap.
     pub fn holders_walked(
         &self,
         pid: Pid,

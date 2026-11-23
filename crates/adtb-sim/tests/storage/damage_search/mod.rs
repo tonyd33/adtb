@@ -30,6 +30,9 @@ struct Tier {
     sequences: u64,
     /// The cases of each kind a shard runs.
     per_kind: usize,
+    /// The cases that reach each cell of a kind and a consumer the search reaches, and that
+    /// compare where the plan placed a page with the mapping's walk.
+    per_cell: usize,
     /// The most write-outs a shard steers to the pages of each holder of a row still to ask.
     steers: usize,
     /// Whether a shard runs sequences while a row of the stated table its fault can ask is unasked
@@ -38,13 +41,15 @@ struct Tier {
     every_row: bool,
 }
 
-/// Returns the tier the nextest profile asks: 32 cases of each kind and every row of the stated
-/// table under `deep`, else the per-change tier's one case of each kind.
+/// Returns the tier the nextest profile asks: 32 cases of each kind, 4 that reach each cell and
+/// every row of the stated table under `deep`, else the per-change tier's one case of each kind
+/// and cell.
 fn tier() -> Tier {
     if every_case() {
         Tier {
             sequences: 160,
             per_kind: 32,
+            per_cell: 4,
             steers: 32,
             every_row: true,
         }
@@ -52,6 +57,7 @@ fn tier() -> Tier {
         Tier {
             sequences: 60,
             per_kind: 1,
+            per_cell: 1,
             steers: 0,
             every_row: false,
         }
@@ -350,15 +356,16 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         (_, Held::Retired) => {
             return Some(Unasked::Never("no operation of a sequence swaps a tree"));
         }
+        (Class::Unread, Held::Free) if fault == Fault::UnreadableLasting && phase == Running => {}
         (_, Held::Free) => {
             return Some(Unasked::Never(
-                "the search judges a page by the holder its write-out named, never as free",
+                "a page free at the run's end is met only when the consumers allocate it again, \
+                 which only a read failure that lasts shows",
             ));
         }
         (_, Held::Unreached) => {
             return Some(Unasked::Never(
-                "the search classifies every page by a listed holder, and a page it cannot \
-                 classify fails the case",
+                "every page a sequence allocates is listed by the structure holding it",
             ));
         }
         _ => {}
@@ -389,12 +396,10 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         ) => Some(Unasked::Never(
             "a lost write of an earlier incarnation hits only a kind the engine's code frees",
         )),
-        (Fault::LostEarlier, _, Held::Relation | Held::LargeStore, Running) => {
-            Some(Unasked::AtTier(
-                "at the damage tier only the consumers' open meets a stale page of an earlier \
-             incarnation",
-            ))
-        }
+        (Fault::LostEarlier, _, Held::Relation | Held::LargeStore, _) => Some(Unasked::Never(
+            "a chain start or a free ends an incarnation, and nothing of one incarnation judges \
+             another",
+        )),
         (
             _,
             Class::Damaged,
@@ -412,12 +417,34 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         (_, Class::Damaged, Held::EngineRelation, Running) if lost => {
             Some(Unasked::AtTier(AT_THE_OPEN))
         }
+        (Fault::Recycled, Class::Settled, Held::CommitLog, Opening) => Some(Unasked::Never(
+            "a recycle past the lost write leaves the search no record of the log the open after \
+             the loss read",
+        )),
         (_, Class::Settled, Held::CommitLog, Running) => Some(Unasked::Never(
             "only the open of the commit log settles a status page",
         )),
         (Fault::UnreadableOnce, Class::Unarmed, Held::LsnMap, _) => Some(Unasked::Never(
             "whether the open met the page is observed only for a failure that lasts",
         )),
+        (
+            Fault::UnreadableOnce,
+            Class::Unread,
+            Held::CatalogRoot
+            | Held::CatalogRows
+            | Held::MarksPage
+            | Held::DamageList
+            | Held::LsnMap,
+            Running,
+        ) => Some(Unasked::Never(
+            "the faulted run reads this page only while it opens, and the read that failed once \
+             is not repeated by a consumer",
+        )),
+        (Fault::UnreadableOnce, Class::Unread, Held::EngineRelation, Running) => {
+            Some(Unasked::Never(
+                "no operation of a sequence reads a relation of an engine module while it runs",
+            ))
+        }
         (Fault::UnreadableOnce, Class::Unread, _, Opening) => Some(Unasked::AtTier(
             "at the damage tier a read failure that does not last leaves no record the open holds",
         )),
@@ -677,7 +704,8 @@ struct Searched {
     kinds: Vec<Kind>,
     cases: BTreeMap<Kind, usize>,
     endings: BTreeMap<judge::Ending, usize>,
-    reached: BTreeSet<(Kind, Consumer)>,
+    /// The cases that reached each cell.
+    reached: BTreeMap<(Kind, Consumer), usize>,
     /// The rows of the stated table the cases asked, with the cases that asked each.
     rows: BTreeMap<Row, usize>,
     /// The cases of each kind run on a write-out picked for a row still to ask, apart from
@@ -690,6 +718,10 @@ struct Searched {
     found: Vec<Found>,
     /// The cases a vacuum on a second thread ran during a write of.
     overlapped: usize,
+    /// The cases whose judge compared where the plan placed a page with the mapping's walk.
+    walked: usize,
+    /// The cases whose judge compared whether the commit log settled a status page.
+    settled: usize,
     /// The cases whose planned read failures struck again after a restart.
     failed_after_restart: usize,
     /// For a tear, the write-outs of each kind in the sequences searched, and those a tear splits.
@@ -714,11 +746,14 @@ impl Searched {
         if outcome.overlaps > 0 {
             self.overlapped += 1;
         }
+        self.walked += usize::from(outcome.verdicts.walked);
+        self.settled += usize::from(outcome.verdicts.settled);
         if outcome.failed_after_restart {
             self.failed_after_restart += 1;
         }
-        self.reached
-            .extend(outcome.verdicts.reached.iter().map(|c| (kind, *c)));
+        for c in &outcome.verdicts.reached {
+            *self.reached.entry((kind, *c)).or_default() += 1;
+        }
         for row in &outcome.verdicts.rows {
             *self.rows.entry(*row).or_default() += 1;
         }
@@ -732,6 +767,19 @@ impl Searched {
                 ops: plan.ops.clone(),
                 failed: outcome.failed.clone(),
             });
+        }
+    }
+
+    /// Tally every outcome of kind `k` of `q` run and not yet tallied, raising the panic of a case
+    /// that panicked.
+    fn drain(&mut self, q: &mut Sequence, k: usize) {
+        let (kind, ats) = &q.lists[k];
+        let first = q.asked[k] - q.got[k].len();
+        for (n, outcome) in q.got[k].drain(..).enumerate() {
+            if let Some(outcome) = outcome.unwrap_or_else(|p| p.raise()) {
+                *self.cases.entry(*kind).or_default() += 1;
+                self.tally(*kind, &q.plan, q.plan.seed, ats[first + n], outcome);
+            }
         }
     }
 }
@@ -880,15 +928,12 @@ fn steer(fault: Fault, plan: &case::Plan, s: &Searched, most: usize) -> Vec<(Hel
         .map(|r| r.1)
         .filter(|h| s.steer_tries.get(h).copied().unwrap_or(0) < most)
         .collect();
-    let ids = &plan.ids;
     let mut out: BTreeMap<Held, (Kind, usize)> = BTreeMap::new();
     for (at, w) in plan.writes.iter().enumerate() {
         let Some(kind) = plan.kind(at).filter(|k| s.kinds.contains(k)) else {
             continue;
         };
-        let Some((held, _)) = ids.holding(w.kind, w.owner, w.pid) else {
-            continue;
-        };
+        let held = plan.placed(w.pid, usize::MAX).unwrap_or(world::FREE).0.0;
         let injection = fault.injection();
         if due.contains(&held) && plan.fault(at, injection) == fault && plan.takes(at, injection) {
             out.entry(held).or_insert((kind, at));
@@ -904,13 +949,15 @@ fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Sear
         kinds: kinds.clone(),
         cases: BTreeMap::new(),
         endings: BTreeMap::new(),
-        reached: BTreeSet::new(),
+        reached: BTreeMap::new(),
         rows: BTreeMap::new(),
         steered: BTreeMap::new(),
         steer_tries: BTreeMap::new(),
         failed_opens: BTreeMap::new(),
         found: Vec::new(),
         overlapped: 0,
+        walked: 0,
+        settled: 0,
         failed_after_restart: 0,
         tearable: BTreeMap::new(),
     };
@@ -919,7 +966,7 @@ fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Sear
         let open = at_open(fault, kind).is_some();
         counted >= tier.per_kind
             && CONSUMERS.iter().all(|c| {
-                s.reached.contains(&(kind, *c))
+                s.reached.get(&(kind, *c)).copied().unwrap_or(0) >= tier.per_cell
                     || (open && *c != Consumer::Settle)
                     || unreached(fault, kind, *c).is_some()
             })
@@ -954,23 +1001,19 @@ fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Sear
                 }
             }
         }
-        let (mut k, mut i) = (0, 0);
+        let mut k = 0;
         loop {
             let q = w.first();
-            while let Some((kind, ats)) = q.lists.get(k) {
-                if i == ats.len() || done(*kind, &s) {
-                    (k, i) = (k + 1, 0);
-                    continue;
-                }
-                let Some(outcome) = q.got[k].pop_front() else {
+            while k < q.lists.len() {
+                if q.got[k].is_empty() {
+                    let (kind, ats) = &q.lists[k];
+                    if q.asked[k] == ats.len() || done(*kind, &s) {
+                        k += 1;
+                        continue;
+                    }
                     break;
-                };
-                let outcome = outcome.unwrap_or_else(|p| p.raise());
-                if let Some(outcome) = outcome {
-                    *s.cases.entry(*kind).or_default() += 1;
-                    s.tally(*kind, &q.plan, q.plan.seed, ats[i], outcome);
                 }
-                i += 1;
+                s.drain(q, k);
             }
             if k == q.lists.len() {
                 break;
@@ -993,6 +1036,11 @@ fn search(fault: Fault, kinds: Vec<Kind>, tier: &Tier, concurrent: bool) -> Sear
             }
         }
         w.planned.pop_front();
+    }
+    for q in &mut w.planned {
+        for k in 0..q.lists.len() {
+            s.drain(q, k);
+        }
     }
     s
 }
@@ -1020,9 +1068,12 @@ fn report(fault: Fault, s: &Searched, tier: &Tier) -> String {
         }
     }
     let mut text = format!(
-        "{fault:?}: cases {:?}, steered {:?}, endings {:?}, failed opens {:?}, stated rows asked {} \
-         of {}\n",
+        "{fault:?}: cases {:?}, reached {:?}, walks compared {}, settles compared {}, steered {:?}, \
+         endings {:?}, failed opens {:?}, stated rows asked {} of {}\n",
         s.cases,
+        s.reached,
+        s.walked,
+        s.settled,
         s.steered,
         s.endings,
         s.failed_opens,
@@ -1056,18 +1107,21 @@ fn report(fault: Fault, s: &Searched, tier: &Tier) -> String {
         "{fault:?}: kinds with fewer than {per_kind} cases\n{text}"
     );
     let cells = || s.kinds.iter().flat_map(|k| CONSUMERS.map(|c| (*k, c)));
-    let missed: Vec<(Kind, Consumer)> = cells()
+    let reached = |cell: &(Kind, Consumer)| s.reached.get(cell).copied().unwrap_or(0);
+    let missed: Vec<((Kind, Consumer), usize)> = cells()
         .filter(|(k, c)| at_open(fault, *k).is_none() || *c == Consumer::Settle)
         .filter(|(k, c)| unreached(fault, *k, *c).is_none())
-        .filter(|cell| !s.reached.contains(cell))
+        .map(|cell| (cell, reached(&cell)))
+        .filter(|(_, n)| *n < tier.per_cell)
         .collect();
     assert_eq!(
-        Vec::<(Kind, Consumer)>::new(),
+        Vec::<((Kind, Consumer), usize)>::new(),
         missed,
-        "{fault:?}: cells never reached\n{text}"
+        "{fault:?}: cells fewer than {} cases reached\n{text}",
+        tier.per_cell
     );
     let came: Vec<(Kind, Consumer)> = cells()
-        .filter(|(k, c)| unreached(fault, *k, *c).is_some() && s.reached.contains(&(*k, *c)))
+        .filter(|cell| unreached(fault, cell.0, cell.1).is_some() && reached(cell) > 0)
         .collect();
     assert_eq!(
         Vec::<(Kind, Consumer)>::new(),
@@ -1078,7 +1132,7 @@ fn report(fault: Fault, s: &Searched, tier: &Tier) -> String {
         let cases = s.cases.get(k).copied().unwrap_or(0) + s.steered.get(k).copied().unwrap_or(0);
         let past: Vec<_> = CONSUMERS
             .iter()
-            .filter(|c| **c != Consumer::Settle && s.reached.contains(&(*k, **c)))
+            .filter(|c| **c != Consumer::Settle && reached(&(*k, **c)) > 0)
             .collect();
         assert_eq!(
             (cases, Vec::<&Consumer>::new()),
@@ -1087,6 +1141,13 @@ fn report(fault: Fault, s: &Searched, tier: &Tier) -> String {
             at_open(fault, *k).unwrap_or_default()
         );
     }
+    assert!(
+        s.walked >= tier.per_cell,
+        "{fault:?}: {} cases compared the plan's placing with the mapping's walk, fewer than {}\n\
+         {text}",
+        s.walked,
+        tier.per_cell
+    );
     assert_rows_asked(fault, s, tier.every_row, &text);
     let unknown: Vec<_> = shapes
         .keys()
@@ -1157,6 +1218,19 @@ const PINNED: &[Pinned] = {
 /// catalog meets its page, the open only for a page the open finds and a read only for a page
 /// that is neither settled nor an index page's. Verify names a settled page
 /// `Settled` and a flipped one `Checksum`, and nothing else of it.
+/// Returns whether a dump meets a fault of `row` on a page of `kind`: it reads the rows of each
+/// heap and checks the commit log and the catalog, where a settled status page is no finding.
+fn dumped(kind: Kind, row: Row) -> bool {
+    match (row.0, kind) {
+        (Class::Settled | Class::Unarmed, _)
+        | (_, Kind::Index | Kind::LsnMap | Kind::Bitmap | Kind::Marks | Kind::DamageList) => false,
+        (_, Kind::Engine) => row.1 != Held::CommitTimes,
+        (_, Kind::Heap | Kind::Directory | Kind::VisibilityMap | Kind::Large | Kind::CommitLog) => {
+            true
+        }
+    }
+}
+
 fn pin_fails(plan: &case::Plan, &(fault, kind, _, _, row): &Pinned, at: usize) -> Option<String> {
     let injection = fault.injection();
     let cell = (plan.kind(at), plan.fault(at, injection));
@@ -1172,6 +1246,7 @@ fn pin_fails(plan: &case::Plan, &(fault, kind, _, _, row): &Pinned, at: usize) -
         .filter(|c| *c != Consumer::Catalog)
         .filter(|c| *c != Consumer::Settle || row.2 == Phase::Opening)
         .filter(|c| *c != Consumer::Read || (row.0 != Class::Settled && kind != Kind::Index))
+        .filter(|c| *c != Consumer::Dump || dumped(kind, row))
         .filter(|c| !v.met.contains(c))
         .collect();
     let named = match row.0 {
@@ -1300,6 +1375,7 @@ fn vacuum(of: impl Fn(Fault) -> bool) -> String {
     let tier = Tier {
         sequences: sequences * 4,
         per_kind,
+        per_cell: 1,
         steers: per_kind,
         every_row: every_case(),
     };

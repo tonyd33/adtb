@@ -1107,3 +1107,34 @@ fn a_stale_page_whose_header_names_another_structure_marks_only_the_structure_wh
         db.close().unwrap();
     });
 }
+
+#[test]
+fn the_page_of_marks_is_held_as_the_marks_page_in_either_phase() {
+    let mut sim = Sim::new(1, Config::default());
+    create(&mut sim);
+    with_pager(&mut sim, |p| {
+        p.quarantine(Quarantine::Heap(7), &ordered_for_test())
+            .unwrap();
+        p.close();
+    });
+    let files = sim.files();
+    let file = DataFile::new(NAME, PAGE);
+    let pages = file.bytes(&files).len() / PAGE;
+    let marks: Vec<Pid> = (0..pages as u64)
+        .filter(|&i| {
+            crate::storage::kind(file.page(&files, i))
+                == crate::storage::PageKind::Quarantine as u16
+        })
+        .map(Pid)
+        .collect();
+    assert_eq!(1, marks.len(), "the file holds one page of marks");
+    with_pager(&mut sim, |p| {
+        for phase in [Phase::Opening, Phase::Running] {
+            assert_eq!(
+                Some(BTreeSet::from([Holder::MarksPage])),
+                p.holders_of(marks[0], phase, |_| {}),
+                "{phase:?}"
+            );
+        }
+    });
+}

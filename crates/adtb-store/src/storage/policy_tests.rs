@@ -17,7 +17,7 @@ const H1: Holder = relation(HEAP, true);
 const I0: Holder = relation(INDEX, false);
 const I1: Holder = relation(INDEX, true);
 
-const CLASSES: [Class; 7] = [
+const CLASSES: [Class; 7] = adtb_testkit::every![Class;
     Class::Damaged,
     Class::Unproven,
     Class::Unread,
@@ -50,26 +50,27 @@ fn faults(class: Class) -> Vec<Fault> {
     }
 }
 
-const HOLDERS: [Holder; 18] = [
-    H0,
-    H1,
-    I0,
-    I1,
-    Holder::LargeStore,
-    Holder::CatalogRows,
-    Holder::CatalogRoot,
-    Holder::CommitLog,
-    Holder::Counters,
-    Holder::CommitTimes,
-    Holder::Bitmap,
-    Holder::MarksPage,
-    Holder::DamageList,
-    Holder::LsnMap,
-    Holder::Log,
-    Holder::Retired,
-    Holder::Free,
-    Holder::Unreached,
-];
+/// Returns the holders of a page of `held`: a heap and an index for a relation's.
+fn holders(held: Held) -> Vec<Holder> {
+    match held {
+        Held::Relation => vec![H0, I0],
+        Held::EngineRelation => vec![H1, I1],
+        Held::LargeStore => vec![Holder::LargeStore],
+        Held::CatalogRoot => vec![Holder::CatalogRoot],
+        Held::CatalogRows => vec![Holder::CatalogRows],
+        Held::Counters => vec![Holder::Counters],
+        Held::CommitLog => vec![Holder::CommitLog],
+        Held::CommitTimes => vec![Holder::CommitTimes],
+        Held::Bitmap => vec![Holder::Bitmap],
+        Held::MarksPage => vec![Holder::MarksPage],
+        Held::DamageList => vec![Holder::DamageList],
+        Held::LsnMap => vec![Holder::LsnMap],
+        Held::Log => vec![Holder::Log],
+        Held::Retired => vec![Holder::Retired],
+        Held::Free => vec![Holder::Free],
+        Held::Unreached => vec![Holder::Unreached],
+    }
+}
 
 fn held(holder: Holder) -> Held {
     match holder {
@@ -131,7 +132,7 @@ fn every_fault_and_holder_marks_as_storage_md_states() {
     let mut visits = [0; ROWS.len()];
     let mut differ = Vec::new();
     for class in CLASSES {
-        for holder in HOLDERS {
+        for holder in Held::ALL.into_iter().flat_map(holders) {
             for p in [Phase::Opening, Phase::Running]
                 .into_iter()
                 .filter(|p| reachable(class, holder, *p))

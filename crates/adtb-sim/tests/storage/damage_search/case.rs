@@ -12,7 +12,7 @@ use adtb_testkit::search::Files;
 use super::consumers;
 use super::judge::{self, Hit, Verdicts};
 use super::ledger;
-use super::world::{self, CREATING, Holdings, Ids, Kind, Op, Ran, Rel, Rows, WriteOut};
+use super::world::{self, CREATING, Holdings, Ids, Kind, Op, Placed, Ran, Rel, Rows, WriteOut};
 
 /// How a case damages its page, or after its write-out the log or a checkpoint. A fault of the
 /// log names a write to the log of the run with no fault, by its index.
@@ -128,6 +128,13 @@ pub struct Plan {
     /// The owners the observing run read.
     pub ids: Ids,
     pub held: Vec<Holdings>,
+    /// The first id not reserved and the commit log's truncation bound after each operation.
+    pub clog: Vec<(u64, u64)>,
+    /// The image each write-out of a commit log page wrote, by its index in `writes`.
+    pub images: BTreeMap<usize, Vec<u8>>,
+    /// Each open of the run: the write-outs submitted before it, the operation after which its
+    /// commit log stands as it found it, and the operation its write-outs count as during.
+    pub opens: Vec<(u64, usize, usize)>,
 }
 
 /// Returns the plan of `ops`: one run counting its write-outs, and one observing its holdings.
@@ -142,9 +149,12 @@ pub fn plan(seed: u64, ops: Vec<Op>, concurrent: bool) -> Plan {
         concurrent,
         list: ledger::list_page(&clean.files),
         writes: clean.trace.writes,
+        images: clean.trace.images,
+        opens: clean.opens,
         log: clean.log,
         ids: observed.ids,
         held: observed.held,
+        clog: observed.clog,
     }
 }
 
@@ -209,10 +219,74 @@ impl Plan {
         injection != Injection::Torn || self.tear(at).is_some()
     }
 
-    /// Returns the user relation the page write-out `at` writes belongs to.
+    /// Returns the user relation the page write-out `at` writes belongs to, by where the
+    /// observing run placed it.
     pub fn owner(&self, at: usize) -> Option<Rel> {
-        let w = self.writes[at];
-        self.ids.owner(self.kind(at)?, w.owner)
+        self.kind(at)?;
+        self.placed_written(self.writes[at])?.1
+    }
+
+    /// Returns where the observing run placed page `pid` after operation `op`, after the last for
+    /// an operation past it; `None` for a page free then.
+    pub fn placed(&self, pid: Pid, op: usize) -> Option<Placed> {
+        let last = self.held.len().checked_sub(1)?;
+        self.held[op.min(last)].get(&pid).copied()
+    }
+
+    /// Returns whether `placed` lists the incarnation of the page `w` writes: a structure listed by
+    /// its object whose pages carry `w`'s owner, or the one structure listed by no object that
+    /// holds a page of `w`'s kind.
+    fn lists(&self, placed: Placed, w: WriteOut) -> bool {
+        match placed.2 {
+            Some(owner) => owner == w.owner,
+            None => world::class(w.kind, w.owner, &self.ids)
+                .is_some_and(|kind| kind.holds_unlisted(placed.0.0)),
+        }
+    }
+
+    /// Returns where the observing run placed the incarnation of the page `w` writes, as the
+    /// operation nearest `w`'s that lists that incarnation lists it, else the one structure that
+    /// holds every page of `w`'s kind; `None` when neither places it.
+    pub fn placed_written(&self, w: WriteOut) -> Option<Placed> {
+        let op = w.during.min(self.held.len().checked_sub(1)?);
+        let mut ats: Vec<usize> = (0..self.held.len()).collect();
+        ats.sort_by_key(|at| (at.abs_diff(op), *at));
+        ats.into_iter()
+            .find_map(|at| {
+                self.held[at]
+                    .get(&w.pid)
+                    .copied()
+                    .filter(|placed| self.lists(*placed, w))
+            })
+            .or_else(|| self.sole(w))
+    }
+
+    /// Returns the placement of a page of the one structure that holds every page of `w`'s kind.
+    fn sole(&self, w: WriteOut) -> Option<Placed> {
+        let held = world::class(w.kind, w.owner, &self.ids)?.sole_holder()?;
+        Some(((held, None), None, None))
+    }
+
+    /// Returns where the observing run placed page `pid` after operation `op`, after the last for
+    /// an operation past it: [`world::FREE`] for a page free then. When it lists another
+    /// incarnation than the last write-out of the page up to then wrote, returns the one structure
+    /// that holds every page of that write-out's kind, `None` for a kind that has none.
+    pub fn placed_at(&self, pid: Pid, op: usize) -> Option<Placed> {
+        let last = self.held.len().checked_sub(1)?;
+        let Some(placed) = self.held[op.min(last)].get(&pid).copied() else {
+            return Some(world::FREE);
+        };
+        let written = self
+            .writes
+            .iter()
+            .rev()
+            .filter(|w| w.during == CREATING || op >= last || w.during <= op)
+            .find(|w| w.pid == pid)?;
+        if self.lists(placed, *written) {
+            Some(placed)
+        } else {
+            self.sole(*written)
+        }
     }
 
     /// Returns the cell's fault an `injection` at write-out `at` makes.
@@ -274,11 +348,6 @@ impl Plan {
         writes
             .find(|x| x.pid == w.pid && x.during != CREATING && x.during > freed)
             .unwrap_or(w)
-    }
-
-    /// Returns whether `pid` is allocated at the sequence's end, by the observing run.
-    pub fn held_at_end(&self, pid: Pid) -> bool {
-        self.held.last().is_some_and(|h| h.contains_key(&pid))
     }
 }
 
@@ -475,7 +544,16 @@ fn run_all(plan: &Plan, points: &[Point]) -> Option<Outcome> {
     };
     let allowed = allowed(&ran, lost_log.as_ref().map(|_| kept(&ran)));
     let keys = keys(&allowed);
-    let observed = consumers::run(plan.seed, &ran, pid, lasting.is_some(), started, &keys);
+    let damaged: Vec<Pid> = hits.iter().map(|h| h.written.pid).collect();
+    let observed = consumers::run(
+        plan.seed,
+        &ran,
+        pid,
+        lasting.is_some(),
+        started,
+        &keys,
+        &damaged,
+    );
     let evidence = paired.then(|| {
         let mut snapshots = ran.evidence.clone();
         snapshots.extend(ledger::evidence(&observed.files));
