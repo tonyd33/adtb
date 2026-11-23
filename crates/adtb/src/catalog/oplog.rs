@@ -171,6 +171,11 @@ fn two(p: Payload, (f, object): (Field, u64), (g, t): (Field, &str)) -> Nested {
     Nested::of(p, [(f, id(object)), (g, text(t))])
 }
 
+/// Returns `op` as a value of `catalog::Operator`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per operator; a split by family would need a catch-all arm in each part"
+)]
 fn operator(op: &Resolved) -> Nested {
     match op {
         Resolved::AddModule { module } => {
@@ -300,13 +305,6 @@ fn operator(op: &Resolved) -> Nested {
             (o::ADD_CHECK_BODY, body),
         ),
         Resolved::DropCheck { constraint: c } => one(o::DROP_CHECK, o::DROP_CHECK_CONSTRAINT, *c),
-        other => reshaped(other),
-    }
-}
-
-/// Returns the operator on constructors or fields `op` is, or what [`derived`] returns.
-fn reshaped(op: &Resolved) -> Nested {
-    match op {
         Resolved::AddConstructor {
             ctor,
             sum: of,
@@ -391,14 +389,6 @@ fn reshaped(op: &Resolved) -> Nested {
                 (o::MOVE_FIELD_FILL, optional(fill.as_deref())),
             ],
         ),
-        other => derived(other),
-    }
-}
-
-/// Returns the operator of a revert, or of an operator on defaults, computed fields, stored
-/// views, grants, extensions, zone rules or data.
-fn derived(op: &Resolved) -> Nested {
-    match op {
         Resolved::AddDefault {
             default,
             relation,
@@ -501,9 +491,6 @@ fn derived(op: &Resolved) -> Nested {
             ],
         ),
         Resolved::Script { write } => Nested::of(o::SCRIPT, [(o::SCRIPT_WRITE, text(write))]),
-        _ => {
-            panic!("{op:?} is a revert or an operator on derived data, grants, extensions or data")
-        }
     }
 }
 
