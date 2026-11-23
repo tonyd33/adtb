@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use super::super::{Action, Clause, Constraint, Ctor, Field, Rel, Scope, Stage, Ty, literal};
 use super::rows::{Effect, literal_value};
-use super::{AGGREGATE, Func, Kind, Model, Op, ROLE, broken, data, emptying, fill, op};
+use super::{AGGREGATE, Func, Kind, Model, Op, ROLE, Reach, broken, data, emptying, fill, op};
 use crate::Rng;
 
 impl Model {
@@ -385,12 +385,10 @@ impl Model {
                     .iter()
                     .chain(&b.fields)
                     .any(|f| matches!(f.action, Action::Retag | Action::Clear));
-                let staged = r.states[c] == r.states[d] || super::super::SEARCH_MERGE_ACROSS_STAGES;
                 let under = self.replaces_under(i, &[c, d], 1, kind);
                 if fits
                     && !apart
                     && !actions
-                    && staged
                     && let Some(switched) = under
                 {
                     pairs.push(((i, c, d), switched));
@@ -405,7 +403,9 @@ impl Model {
                 let i = *rng.pick_some(&self.sums())?;
                 let ty = self.rel(i).ty.clone();
                 let at = self.rel(i).ctors.len();
-                for _ in 0..2 {
+                let apart =
+                    super::super::SEARCH_REVERTED_MERGE_APART && self.version.is_multiple_of(2);
+                for _ in 0..2 + usize::from(apart) {
                     let name = self.ctor_name(i);
                     out.push(op(
                         Kind::AddConstructor,
@@ -418,7 +418,11 @@ impl Model {
                     });
                     r.states.push(Stage::Declared);
                 }
-                (i, at, at + 1)
+                if self.version.is_multiple_of(3) {
+                    out.push(op(Kind::Enable, format!("enable {}", self.ctor_ref(i, at))));
+                    self.s.rels[i].states[at] = Stage::Enabled;
+                }
+                (i, at, at + 1 + usize::from(apart))
             }
         };
         if !broke {
@@ -465,6 +469,7 @@ impl Model {
         };
         let apart = d != c + 1 && !super::super::SEARCH_REVERTED_MERGE_APART;
         let states = &self.rel(i).states;
+        let reach = (states[c] != states[d]).then_some(Reach::MergeAcrossStages);
         let declared = states[c] == Stage::Declared || states[d] == Stage::Declared;
         let state = if declared {
             Stage::Declared
@@ -483,7 +488,7 @@ impl Model {
             }],
             vec![state],
         );
-        let merged = op(kind, text).with(effect);
+        let merged = op(kind, text).with(effect).reaching(reach);
         out.extend([add_type, if apart { merged.inexact() } else { merged }]);
         Some(out)
     }
@@ -788,9 +793,7 @@ impl Model {
                 let to: Vec<usize> = (0..r.ctors.len())
                     .filter(|c| r.ctors[*c].field(&f.name).is_none() && !self.retag_target(i, *c))
                     .collect();
-                let acted = !matches!(f.action, Action::Unstated | Action::Restrict)
-                    && !super::super::SEARCH_MOVED_DOWN_ACTION;
-                if !to.is_empty() && !acted && !self.clause_names_field(i, None, &f.name) {
+                if !to.is_empty() && !self.clause_names_field(i, None, &f.name) {
                     can.push((i, f.clone(), to));
                 }
             }
@@ -813,12 +816,17 @@ impl Model {
             field: f.name.clone(),
             to: to.iter().map(|c| r.ctors[*c].name.clone()).collect(),
         };
+        let acted = !matches!(f.action, Action::Unstated | Action::Restrict);
         let r = &mut self.s.rels[i];
         r.header.retain(|g| g.name != f.name);
         for c in to {
             r.ctors[c].fields.push(f.clone());
         }
-        Some(vec![op(Kind::MoveFieldDown, text).with(effect)])
+        Some(vec![
+            op(Kind::MoveFieldDown, text)
+                .with(effect)
+                .reaching(acted.then_some(Reach::MovedDownAction)),
+        ])
     }
 
     pub(super) fn alter_field(&mut self, rng: &mut Rng, broke: bool) -> Option<Vec<Op>> {

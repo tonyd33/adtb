@@ -6,11 +6,6 @@ use std::sync::Mutex;
 
 use super::*;
 
-/// Whether a second module declares a type of the name and constructors of each sum of module
-/// `app`, and a function of a selection of it. A `rename constructor` in `app` rewrites that
-/// selection.
-const SEARCH_RENAME_IN_TWIN_MODULE: bool = false;
-
 /// The kinds the search schedules first in a migration.
 const RENAMES: [Kind; 5] = [
     Kind::RenameType,
@@ -404,6 +399,8 @@ fn misrewritten(
                                 "{at}: `{sb}` resolves to nothing and nothing before it binds it: `{near}`"
                             ));
                         }
+                    } else if sb == t.from && before.decls[i].module == TWIN {
+                        count("an object of the name in another module kept");
                     } else if sb == t.from {
                         count("another object of the name kept");
                     }
@@ -516,11 +513,7 @@ fn search(
         return failed(0, &walk.log, "", "the schema does not check".into());
     };
     let schema = compiled.schema();
-    let mut extra = vec![witnesses(schema)];
-    if SEARCH_RENAME_IN_TWIN_MODULE {
-        extra.push(twins(schema));
-    }
-    for text in extra {
+    for text in [witnesses(schema), twins(schema)] {
         match walk.apply(&text) {
             Ok(Some(_)) => {}
             Ok(None) => {
@@ -613,6 +606,7 @@ fn a_rename_rewrites_exactly_the_tokens_that_resolve_to_its_object() {
             "a comment spelling the name kept",
             "a binder spelling the name kept",
             "another object of the name kept",
+            "an object of the name in another module kept",
         ],
     );
 }

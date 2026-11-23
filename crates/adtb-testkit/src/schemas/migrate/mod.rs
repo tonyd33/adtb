@@ -154,6 +154,19 @@ impl Kind {
     }
 }
 
+/// A shape of operator a generated migration must reach under the profile `deep`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Reach {
+    /// A merge or nest of a declared and an enabled constructor.
+    MergeAcrossStages,
+    /// A `move field` down of a reference field whose delete action is not `restrict`.
+    MovedDownAction,
+}
+
+impl Reach {
+    pub const ALL: [Reach; 2] = [Reach::MergeAcrossStages, Reach::MovedDownAction];
+}
+
 /// An operator of a drawn migration.
 #[derive(Clone, Debug)]
 pub struct Op {
@@ -170,6 +183,7 @@ pub struct Op {
     effect: Effect,
     /// A `revert` right after the operator restores what it found.
     exact: bool,
+    reach: Option<Reach>,
 }
 
 impl Op {
@@ -197,6 +211,11 @@ impl Op {
     /// Returns whether the operator's preconditions read data.
     pub fn reads(&self) -> bool {
         self.data
+    }
+
+    /// Returns the shape the operator reaches, if any.
+    pub fn reach(&self) -> Option<Reach> {
+        self.reach
     }
 }
 
@@ -496,6 +515,7 @@ fn op(kind: Kind, text: String) -> Op {
         empties: None,
         effect: Effect::None,
         exact: kind.exact(),
+        reach: None,
     }
 }
 
@@ -503,6 +523,11 @@ impl Op {
     /// Returns the operator doing `effect` to the rows it finds.
     fn with(self, effect: Effect) -> Op {
         Op { effect, ..self }
+    }
+
+    /// Returns the operator, reaching `reach` when it is some.
+    fn reaching(self, reach: Option<Reach>) -> Op {
+        Op { reach, ..self }
     }
 
     /// Returns the operator, its revert steered off a known finding: not exact.

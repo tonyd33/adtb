@@ -8,7 +8,7 @@ mod migrate;
 
 use adtb_lang::schema::canonical_unique_name;
 use draw::Draw;
-pub use migrate::{Kind, Migration, Op, ROLE, Rows};
+pub use migrate::{Kind, Migration, Op, ROLE, Reach, Rows};
 
 use crate::Rng;
 
@@ -43,25 +43,17 @@ const SEARCH_REVERTED_REMOVE_OF_DEFAULTED: bool = false;
 /// revert puts them back side by side, not each at its place.
 const SEARCH_REVERTED_MERGE_APART: bool = false;
 
-/// Whether a migration adds a unique or an index over a field several constructors declare, not
-/// the header. The checker refuses it with "no `f` in scope".
-const SEARCH_CLAUSE_OVER_SHARED_FIELD: bool = false;
-
-/// Whether a `move field` down moves a reference field whose delete action is not `restrict`.
-/// The moved fields come out `restrict`.
-const SEARCH_MOVED_DOWN_ACTION: bool = false;
-
 /// Whether a migration drops a unique or an index clause its relation holds twice. The checker
 /// refuses the drop: it names neither clause alone.
 const SEARCH_DROP_OF_DUPLICATE_CLAUSE: bool = false;
 
+/// Whether a migration adds a unique or an index over a field several constructors declare, not
+/// the header. The checker refuses it with "no `f` in scope".
+const SEARCH_CLAUSE_OVER_SHARED_FIELD: bool = false;
+
 /// Whether a split constructor has a field typed by a reference to a constructor set holding
 /// it. The engine refuses the split with an internal error.
 const SEARCH_SPLIT_OF_SELF_REFERENCE: bool = false;
-
-/// Whether a merge or nest takes a declared and an enabled constructor. The product is declared
-/// and holds the enabled one's rows, so a later `enable` of it cannot be reverted.
-const SEARCH_MERGE_ACROSS_STAGES: bool = false;
 
 /// Whether a migration holding a `revoke` is reverted and the revert reverted. The second
 /// revert is refused: the `revoke` it applies again matches no grant.
@@ -89,6 +81,11 @@ const SEARCH_NEST_UNDER_CHECK: bool = false;
 /// the constraint first. The checker refuses it, naming the constructor as neither a constructor
 /// nor a named set.
 const SEARCH_MERGE_UNDER_CONSTRAINT: bool = false;
+
+/// Whether a `drop relation` takes a relation whose own type references its named set, dropping
+/// the set, the relation and the type in one migration. The checker refuses it: the type names a
+/// set no longer declared.
+const SEARCH_DROP_OF_SELF_SELECTED_SET: bool = false;
 
 /// Whether a `rename field` takes the name [`BOUND`]. A pattern binding it in a body that names
 /// the field then captures the renamed name.

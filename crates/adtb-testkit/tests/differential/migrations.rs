@@ -20,7 +20,7 @@ use adtb_reference::Value;
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_testkit::corpus;
 use adtb_testkit::fixture::Fixture;
-use adtb_testkit::schemas::{self, Kind, Migration, Rows};
+use adtb_testkit::schemas::{self, Kind, Migration, Reach, Rows};
 
 use super::schemas::{Reached as Written, statements};
 use super::{Got, close, engine_eval, panic_message, process, seeds_of, try_open};
@@ -58,12 +58,14 @@ const DRAWS: u64 = 4;
 /// The migrations a shrink of one finding may try.
 const SHRINK_TRIES: usize = 24;
 
-/// How often each operator kind was drawn, applied, and refused as the broken one.
+/// How often each operator kind was drawn, applied, and refused as the broken one, and each
+/// shape applied.
 #[derive(Debug, Default)]
 struct Reached {
     drawn: BTreeMap<Kind, usize>,
     committed: BTreeMap<Kind, usize>,
     refused: BTreeMap<Kind, usize>,
+    shapes: BTreeMap<Reach, usize>,
 }
 
 impl Reached {
@@ -77,9 +79,13 @@ impl Reached {
                 *to.entry(k).or_default() += n;
             }
         }
+        for (r, n) in other.shapes {
+            *self.shapes.entry(r).or_default() += n;
+        }
     }
 
-    /// Assert every operator kind was drawn, committed and refused as the broken one.
+    /// Assert every operator kind was drawn, committed and refused as the broken one, and every
+    /// shape committed.
     fn floors(&self) {
         let n = |m: &BTreeMap<Kind, usize>, kind| m.get(&kind).copied().unwrap_or(0);
         let missed: Vec<String> = Kind::ALL
@@ -96,6 +102,12 @@ impl Reached {
                 })
                 .map(move |(what, _)| format!("{kind:?} {what}"))
             })
+            .chain(
+                Reach::ALL
+                    .into_iter()
+                    .filter(|r| !self.shapes.contains_key(r))
+                    .map(|r| format!("{r:?} committed")),
+            )
             .collect();
         assert_eq!(missed, Vec::<String>::new(), "kinds under their floor of 1");
     }
@@ -1152,6 +1164,9 @@ fn run(seed: u64, reached: &mut Reached, last: u64, instead: Option<&Migration>)
                             (Ended::Refused, false) => continue,
                         };
                         *to.entry(o.kind()).or_default() += 1;
+                        if let (Ended::Committed, Some(r)) = (ended, o.reach()) {
+                            *reached.shapes.entry(r).or_default() += 1;
+                        }
                     }
                 }
                 Err(finding) => return Some((run.log.clone(), Some(m), finding)),
