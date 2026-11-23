@@ -15,7 +15,9 @@ mod key;
 mod named;
 mod objects;
 mod reach;
-pub use fixed::{FixedType, RELATIONS, TYPES, engine_ctor, engine_field, engine_rel, engine_type};
+pub use fixed::{
+    EngineRel, FixedType, RELATIONS, TYPES, engine_ctor, engine_field, engine_rel, engine_type,
+};
 pub use key::{KeyKind, ObjectKey, Owner, Path, PathStep, forget};
 pub use named::{is_named, named_ids};
 pub use objects::{Object, assign, objects};
@@ -199,13 +201,13 @@ impl Slot {
     }
 }
 
-/// Returns the id a lookup found for an object of a built schema.
+/// Returns the id a lookup found for a type, constructor, field, relation variable, relation key
+/// or index of a committed schema.
 ///
-/// Preconditions: `id` is `Some`; every object of a built schema outside the temp module has a
-/// catalog id.
+/// Preconditions: the object is outside the temp module.
 #[track_caller]
 pub fn held_id<T>(id: Option<T>) -> T {
-    id.expect("every object of a built schema outside the temp module has a catalog id")
+    id.expect("every such object of a committed schema outside the temp module has a catalog id")
 }
 
 impl CatalogIds {

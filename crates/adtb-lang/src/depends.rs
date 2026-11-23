@@ -134,10 +134,10 @@ pub fn changed(old: &Compiled<impl AsSchema>, new: &Compiled<impl AsSchema>) -> 
         .collect()
 }
 
-/// The position in one schema of each function, aggregate, relation and type of another that it
-/// also has: the same catalog id, or, for one with none, the same name in the same module. A type
-/// has an image only when its constructors are the same in both, in order, and a relation only
-/// when its indexes are and its element type's image is its element type.
+/// The position in one schema of each function, aggregate, relation and type of another with the
+/// same catalog id. A type has an image only when its constructors are the same in both, in
+/// order, and a relation only when its indexes are and its element type's image is its element
+/// type.
 struct Positions {
     functions: BTreeMap<FnId, FnId>,
     aggregates: BTreeMap<usize, usize>,
@@ -148,20 +148,10 @@ struct Positions {
 impl Positions {
     fn new(a: &Schema, b: &Schema) -> Positions {
         let (x, y) = (a.ids(), b.ids());
-        let module = |s: &Schema, m| s.module(m).name.clone();
-        let functions = images(
-            y.function_ids()
-                .filter_map(|(f, id)| Some((x.function_of(id)?, f))),
-            a.functions
-                .iter()
-                .map(|d| (module(a, d.module), d.name.clone())),
-            b.functions
-                .iter()
-                .map(|d| (module(b, d.module), d.name.clone())),
-            |i| FnId(i as u32),
-            |f| x.function_id(f).is_none(),
-            |f| y.function_id(f).is_none(),
-        );
+        let functions = y
+            .function_ids()
+            .filter_map(|(f, id)| Some((x.function_of(id)?, f)))
+            .collect();
         let aggregates = y
             .aggregate_ids()
             .filter_map(|(i, id)| Some((x.aggregate_of(id)?, i)))
@@ -171,41 +161,20 @@ impl Positions {
             let ids: Vec<_> = s.ids().type_ctor_ids(t).map(|(_, id)| id).collect();
             (names, ids)
         };
-        let types: BTreeMap<TypeId, TypeId> = images(
-            y.type_ids().filter_map(|(t, id)| Some((x.type_of(id)?, t))),
-            a.types
-                .iter()
-                .map(|d| (module(a, d.module), d.name.clone())),
-            b.types
-                .iter()
-                .map(|d| (module(b, d.module), d.name.clone())),
-            |i| TypeId(i as u32),
-            |t| x.type_id(t).is_none(),
-            |t| y.type_id(t).is_none(),
-        )
-        .into_iter()
-        .filter(|&(s, t)| ctors(a, s) == ctors(b, t))
-        .collect();
+        let types: BTreeMap<TypeId, TypeId> = y
+            .type_ids()
+            .filter_map(|(t, id)| Some((x.type_of(id)?, t)))
+            .filter(|&(s, t)| ctors(a, s) == ctors(b, t))
+            .collect();
         let indexes = |s: &Schema, r| s.ids().relation_index_ids(r).collect::<Vec<_>>();
-        let relations = images(
-            y.relation_ids()
-                .filter_map(|(r, id)| Some((x.relation_of(id)?, r))),
-            a.relations
-                .iter()
-                .map(|d| (module(a, d.module), d.name.clone())),
-            b.relations
-                .iter()
-                .map(|d| (module(b, d.module), d.name.clone())),
-            |i| RelId(i as u32),
-            |r| x.relation_id(r).is_none(),
-            |r| y.relation_id(r).is_none(),
-        )
-        .into_iter()
-        .filter(|&(r, s)| {
-            let (d, e) = (a.relation(r).elem_def, b.relation(s).elem_def);
-            types.get(&d) == Some(&e) && indexes(a, r) == indexes(b, s)
-        })
-        .collect();
+        let relations = y
+            .relation_ids()
+            .filter_map(|(r, id)| Some((x.relation_of(id)?, r)))
+            .filter(|&(r, s)| {
+                let (d, e) = (a.relation(r).elem_def, b.relation(s).elem_def);
+                types.get(&d) == Some(&e) && indexes(a, r) == indexes(b, s)
+            })
+            .collect();
         Positions {
             functions,
             aggregates,
@@ -357,33 +326,6 @@ impl Positions {
             Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => t.clone(),
         })
     }
-}
-
-/// Returns the image in `b` of each position of `a`: those `by_id` gives, and each position with
-/// no catalog id in `a` (`a_bare`) at the position with none in `b` (`b_bare`) of the same name.
-fn images<K: Ord + Copy>(
-    by_id: impl Iterator<Item = (K, K)>,
-    a: impl Iterator<Item = (String, String)>,
-    b: impl Iterator<Item = (String, String)>,
-    at: impl Fn(usize) -> K,
-    a_bare: impl Fn(K) -> bool,
-    b_bare: impl Fn(K) -> bool,
-) -> BTreeMap<K, K> {
-    let mut out: BTreeMap<K, K> = by_id.collect();
-    let named: BTreeMap<(String, String), K> = b
-        .enumerate()
-        .map(|(i, n)| (n, at(i)))
-        .filter(|&(_, k)| b_bare(k))
-        .collect();
-    for (i, n) in a.enumerate() {
-        let k = at(i);
-        if a_bare(k)
-            && let Some(&j) = named.get(&n)
-        {
-            out.insert(k, j);
-        }
-    }
-    out
 }
 
 /// Returns whether host or Wasm body `x` names the same code as `y`.

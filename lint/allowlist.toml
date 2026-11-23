@@ -92,6 +92,23 @@
 "crates/adtb/src/api/server/task.rs" = 1
 "crates/adtb/src/catalog/readers.rs" = 1
 
+[from_raw]
+"crates/adtb-lang/src/evolve/grant.rs" = 1
+"crates/adtb-lang/src/evolve/grant_text.rs" = 1
+"crates/adtb-lang/src/evolve/ids.rs" = 1
+"crates/adtb-lang/src/evolve/model/clause.rs" = 1
+"crates/adtb-lang/src/evolve/model/decl.rs" = 2
+"crates/adtb-lang/src/evolve/model/moved.rs" = 2
+"crates/adtb-lang/src/evolve/model/print.rs" = 1
+"crates/adtb-lang/src/evolve/model/source.rs" = 2
+"crates/adtb-lang/src/evolve/revert/by_id.rs" = 4
+"crates/adtb-lang/src/ids/fixed.rs" = 1
+"crates/adtb-lang/src/permission/grants.rs" = 1
+"crates/adtb-lang/src/translate/mod.rs" = 2
+"crates/adtb/src/api/dump.rs" = 1
+"crates/adtb/src/api/verify.rs" = 1
+"crates/adtb/src/catalog/roots.rs" = 4
+
 [pub_fields]
 "crates/adtb-codegen/src/lib.rs" = 3
 "crates/adtb-conformance/src/lib.rs" = 3

@@ -1,7 +1,7 @@
-pub use adtb_lang::ids::held_id;
 pub use adtb_lang::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId, CatSetId, CatTypeId,
 };
+pub use adtb_lang::ids::{EngineRel, held_id};
 use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::types::{RelId, TypeId};
 
@@ -43,10 +43,9 @@ pub fn relation(schema: &Schema, id: CatRelId) -> Option<RelId> {
     schema.ids().relation_of(id)
 }
 
-/// Returns the relation of `schema` the engine declares with fixed id `id`.
-///
-/// Preconditions: `id` is a constant of `engine_rel`.
-pub fn engine_relation(schema: &Schema, id: CatRelId) -> RelId {
+/// Returns the relation of `schema` the engine declares with fixed id `rel`.
+pub fn engine_relation(schema: &Schema, rel: EngineRel) -> RelId {
+    let id = rel.id();
     relation(schema, id).unwrap_or_else(|| panic!("the schema declares engine relation {id}"))
 }
 

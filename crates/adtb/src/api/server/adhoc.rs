@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use adtb_lang::check::Command;
 use adtb_lang::evolve::{DeployedGrant, Granted, Privilege};
-use adtb_lang::ids::{CatFieldId, CatFunctionId, CatRelId, engine_field, engine_rel};
+use adtb_lang::ids::{CatFieldId, CatFunctionId, EngineRel, engine_field, engine_rel};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{DenialIdx, FnId, RelId};
@@ -23,7 +23,7 @@ use super::tables::{CallOrigin, CallRow, Grant, Tables, deployed};
 use super::{Capability, RoleAuthority, denied};
 
 /// The catalog relations the printed schema states.
-const SCHEMA_RELATIONS: [CatRelId; 15] = [
+const SCHEMA_RELATIONS: [EngineRel; 15] = [
     engine_rel::TYPES,
     engine_rel::CONSTRUCTORS,
     engine_rel::CTOR_STATES,

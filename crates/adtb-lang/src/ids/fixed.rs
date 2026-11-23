@@ -632,32 +632,41 @@ const fn fixed_type(module: &str, ty: &str) -> super::CatTypeId {
 
 /// Returns the fixed id of relation `module::name` in [`RELATIONS`]. Fails to compile when
 /// [`RELATIONS`] has no such relation.
-const fn fixed_rel(module: &str, name: &str) -> super::CatRelId {
+const fn fixed_rel(module: &str, name: &str) -> EngineRel {
     let mut r = 0;
     while r < RELATIONS.len() {
         let (m, n, id) = RELATIONS[r];
         if same(m, module) && same(n, name) {
-            return super::CatRelId::from_raw(id);
+            return EngineRel(super::CatRelId::from_raw(id));
         }
         r += 1;
     }
     panic!("`engine_rel` names a relation `RELATIONS` holds")
 }
 
+/// The fixed id of a relation the engine declares, one of the constants of [`engine_rel`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EngineRel(super::CatRelId);
+
+impl EngineRel {
+    pub const fn id(self) -> super::CatRelId {
+        self.0
+    }
+}
+
 macro_rules! engine_rels {
     ($($module:literal { $($name:ident $rel:literal),* $(,)? })*) => {
-        $($(pub const $name: CatRelId = fixed_rel($module, $rel);)*)*
+        $($(pub const $name: EngineRel = fixed_rel($module, $rel);)*)*
 
         /// Every constant of this module with its module's and relation's names.
         #[cfg(test)]
-        pub(crate) const NAMED: &[(&str, &str, CatRelId)] = &[$($(($module, $rel, $name),)*)*];
+        pub(crate) const NAMED: &[(&str, &str, EngineRel)] = &[$($(($module, $rel, $name),)*)*];
     };
 }
 
 /// The fixed ids of the engine-defined relations the engine names.
 pub mod engine_rel {
-    use super::super::CatRelId;
-    use super::fixed_rel;
+    use super::{EngineRel, fixed_rel};
 
     engine_rels! {
         "catalog" {

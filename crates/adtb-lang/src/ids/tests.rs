@@ -125,7 +125,7 @@ fn each_engine_relation_constant_is_the_engine_relation_of_its_name() {
     for &(module, name, id) in engine_rel::NAMED {
         let r = s
             .ids()
-            .relation_of(id)
+            .relation_of(id.id())
             .unwrap_or_else(|| panic!("{id:?} names a relation"));
         let rel = s.relation(r);
         assert_eq!(

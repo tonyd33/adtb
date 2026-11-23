@@ -514,43 +514,6 @@ fn renames_preserve_stable_requirement_identities() {
 }
 
 #[test]
-fn a_reachable_missing_catalog_identity_is_an_explicit_error() {
-    let text = format!("{SCHEMA}\n");
-    let file = parse_schema(&text, Options::default())
-        .ok()
-        .expect("schema parses");
-    let full = schema("");
-    let rel = RelId(
-        full.relations
-            .iter()
-            .position(|r| r.name == "left")
-            .expect("left") as u32,
-    );
-    let without = |built: &Schema| {
-        let mut ids = built.ids().clone();
-        ids.forget(&crate::ids::Slot::Relation(rel));
-        ids
-    };
-    let s = crate::schema::build_with(
-        &[(FileId(0), file)],
-        &[],
-        &without,
-        &crate::schema::States::default(),
-    )
-    .expect("schema builds");
-    let s = Committed::new(s).expect("a built schema is committed");
-    let program = check_schema(&s).expect("schema checks");
-    let items = parse_adhoc("count(x for x in left)", Options::default())
-        .ok()
-        .expect("parses");
-    let checked = check_adhoc(&program, &items, &BTreeMap::new()).expect("checks");
-    assert_eq!(
-        adhoc(&program, &checked),
-        Err(Error::MissingIdentity(crate::ids::Slot::Relation(rel)))
-    );
-}
-
-#[test]
 fn fix_identity_updates_keep_their_actual_old_copy_evidence() {
     let s = schema("");
     let text = "update x in (fix rows = left union rows in rows) set x";

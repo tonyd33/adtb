@@ -48,6 +48,12 @@ exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
 rows = { engine_names = "ratchet" }
 
 [[rule]]
+query = "from-raw.tql"
+include = ["crates/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
+rows = { from_raw = "ratchet" }
+
+[[rule]]
 query = "prelude.tql"
 include = ["crates/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]

@@ -1,5 +1,5 @@
 use super::*;
-use crate::ids::{CatConstraintId, CatFunctionId, CatIndexId, CatRelId, CatSetId, CatTypeId};
+use crate::ids::{CatConstraintId, CatFunctionId, CatIndexId, CatRelId, CatSetId, CatTypeId, Slot};
 use crate::parse::{Options, parse_schema};
 
 const RUNNING: &str = r"
@@ -1495,4 +1495,53 @@ relation qs : Q (Key later) key k",
     ] {
         assert_eq!(want, s.holds_no_ahead_key(&ty), "{case}");
     }
+}
+
+#[test]
+fn a_schema_missing_the_catalog_id_of_any_identified_object_is_not_committed() {
+    let files = vec![(
+        FileId(0),
+        parse_schema(RUNNING, Options::default()).ok().unwrap(),
+    )];
+    let full = build(&files).expect("the schema builds");
+    let ids = full.ids();
+    let slots: Vec<Slot> = ids
+        .type_ids()
+        .map(|(t, _)| Slot::Type(t))
+        .chain(ids.ctor_ids().map(|(c, _)| Slot::Ctor(c)))
+        .chain(ids.field_ids().map(|(f, _)| Slot::Field(f)))
+        .chain(ids.relation_ids().map(|(r, _)| Slot::Relation(r)))
+        .chain(ids.key_ids().map(|(r, _)| Slot::Key(r)))
+        .chain(ids.index_ids().map(|((r, at), _)| Slot::Index(r, at)))
+        .collect();
+    let user = |s: &Slot| {
+        let module = match s {
+            Slot::Type(t) => full.ty(*t).module,
+            Slot::Ctor(c) => full.ty(c.def()).module,
+            Slot::Field(f) => full.ty(f.def()).module,
+            Slot::Relation(r) | Slot::Key(r) | Slot::Index(r, _) => full.relation(*r).module,
+            _ => unreachable!("only identified objects are drawn"),
+        };
+        full.module(module).name == "auth"
+    };
+    let kinds: std::collections::HashSet<_> = slots
+        .iter()
+        .filter(|s| user(s))
+        .map(std::mem::discriminant)
+        .collect();
+    assert_eq!(6, kinds.len(), "the schema holds every identified kind");
+    let committed: Vec<&Slot> = slots
+        .iter()
+        .filter(|slot| {
+            let without = |built: &Schema| {
+                let mut ids = built.ids().clone();
+                ids.forget(slot);
+                ids
+            };
+            let s =
+                build_with(&files, &[], &without, &States::default()).expect("the schema builds");
+            Committed::new(s).is_some()
+        })
+        .collect();
+    assert_eq!(Vec::<&Slot>::new(), committed);
 }

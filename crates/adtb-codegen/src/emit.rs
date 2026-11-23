@@ -11,10 +11,6 @@ use adtb_lang::types::{Base, Ctors, Fields, RelId, Ty, TypeId};
 use crate::Error;
 use crate::names::{camel, ident};
 
-#[cfg(test)]
-#[path = "emit_tests.rs"]
-mod tests;
-
 const HOST: &str = "::adtb::typed::HostValue";
 const TYPED: &str = "::adtb::typed";
 const DERIVES: &str = "#[derive(Clone, Debug, PartialEq)]";

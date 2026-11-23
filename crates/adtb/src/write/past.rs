@@ -189,10 +189,10 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
 impl<R: Runtime> Database<R> {
     pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
         let id = held_id(self.schema.ids().relation_id(rel));
-        if id == engine_rel::VACUUMS {
+        if id == engine_rel::VACUUMS.id() {
             return Ok(self.vacuum_rows());
         }
-        if id != engine_rel::COMMIT_TIMES && id != engine_rel::SAFE_SNAPSHOTS {
+        if id != engine_rel::COMMIT_TIMES.id() && id != engine_rel::SAFE_SNAPSHOTS.id() {
             return Ok(self
                 .volatile
                 .lock(&self.rt)
@@ -204,7 +204,7 @@ impl<R: Runtime> Database<R> {
         else {
             return Ok(BTreeSet::new());
         };
-        if id == engine_rel::COMMIT_TIMES {
+        if id == engine_rel::COMMIT_TIMES.id() {
             Ok(past
                 .commits(&self.pager)?
                 .into_iter()

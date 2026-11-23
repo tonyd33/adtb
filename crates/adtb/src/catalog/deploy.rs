@@ -11,11 +11,11 @@ use crate::runtime::Runtime;
 use crate::storage::{Pager, Position};
 
 use super::codec::{Codec, Decode, GrantKind, RoleGrant};
-use super::ids::{CatRelId, rel_id};
+use super::ids::{EngineRel, rel_id};
 use super::{Broken, Catalog, Change, Error, Fact, Snapshot, Writer, delete_rows};
 
 /// The relations of deployment state, the only relations a deploy writes.
-const DEPLOYED: [CatRelId; 4] = [
+const DEPLOYED: [EngineRel; 4] = [
     engine_rel::ROLES,
     engine_rel::GRANTS,
     engine_rel::BUNDLES,
@@ -88,7 +88,7 @@ impl Catalog {
         let grants = Codec::<RoleGrant>::new(self.schema());
         for w in writes {
             let id = rel_id(self.schema(), w.relation);
-            if !DEPLOYED.contains(&id) {
+            if !DEPLOYED.iter().any(|d| d.id() == id) {
                 return Err(Broken::Undeployed(id).into());
             }
             if w.relation != grants.relation() {

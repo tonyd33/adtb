@@ -3,7 +3,7 @@ use crate::ast::{
     AdhocItem, BundleName, CallArgs, CtorScope, CtorSel, ExplainTarget, Grant, PeerStmt, Privilege,
     RelationRef, Revoke, RoleStmt, TempDecl,
 };
-use crate::ids::{CatRelId, engine_rel, engine_type};
+use crate::ids::{EngineRel, engine_rel, engine_type};
 use crate::kernel::alpha_equal;
 use crate::schema::{Committed, FN_QUERY_RESULT, Temp, TempRow};
 
@@ -470,7 +470,8 @@ impl Checker<'_> {
     }
 
     /// Returns the type of a key of the engine's relation with fixed id `id`.
-    fn engine_key(&self, id: CatRelId) -> Ty {
+    fn engine_key(&self, rel: EngineRel) -> Ty {
+        let id = rel.id();
         let rel = self
             .schema
             .ids()
@@ -673,7 +674,7 @@ impl Checker<'_> {
     }
 
     fn command(&mut self, c: &ast::Command, span: Span) -> R<Command> {
-        let key = |c: &mut Self, e: &ast::Expr, id: CatRelId| -> R<Tm> {
+        let key = |c: &mut Self, e: &ast::Expr, id: EngineRel| -> R<Tm> {
             let ty = c.engine_key(id);
             c.check(e, &ty).map(|o| o.tm)
         };

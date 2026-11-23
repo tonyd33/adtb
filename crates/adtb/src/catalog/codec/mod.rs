@@ -14,7 +14,7 @@ use crate::heap::FieldType;
 use crate::key::{F64, Scalar, Value};
 
 use super::Rot;
-use super::ids::{CatCtorId, CatRelId};
+use super::ids::{CatCtorId, EngineRel};
 use super::layout;
 use super::oplog::Hash;
 
@@ -215,7 +215,7 @@ macro_rules! coded {
             pub const ALL: &'static [Coded] = &[$(Coded::$variant),*];
 
             /// Returns the fixed id of the relation.
-            pub const fn id(self) -> CatRelId {
+            pub const fn id(self) -> EngineRel {
                 match self {
                     $(Coded::$variant => engine_rel::$id),*
                 }

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ids::{CatRelId, engine_ctor as k, engine_rel, held_id};
+use adtb_lang::ids::{CatRelId, EngineRel, engine_ctor as k, engine_rel, held_id};
 use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::schema::{Committed, Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
@@ -49,7 +49,7 @@ const TEXT: &str = "txt";
 const INDEX: &str = "bundles/index";
 
 /// The catalog relations holding the key of every catalog object but a constructor.
-const KEYED: [CatRelId; 9] = [
+const KEYED: [EngineRel; 9] = [
     engine_rel::TYPES,
     engine_rel::FIELDS,
     engine_rel::RELATIONS,
@@ -61,18 +61,18 @@ const KEYED: [CatRelId; 9] = [
     engine_rel::COMPUTED,
 ];
 /// The catalog relations of the `security` entry, whose `grants` are its `Deployment` rows.
-const SECURED: [CatRelId; 4] = [
+const SECURED: [EngineRel; 4] = [
     engine_rel::ROLES,
     engine_rel::CREDENTIALS,
     engine_rel::GRANTS,
     engine_rel::PEER_MAPPINGS,
 ];
 /// The catalog relations whose keys the engine draws from a counter of its own.
-const DRAWN: [CatRelId; 1] = [engine_rel::AUDIT];
+const DRAWN: [EngineRel; 1] = [engine_rel::AUDIT];
 /// The relations of [`DRAWN`] a dump holds the counter of only with its `security` entry.
-const SECURED_DRAWN: [CatRelId; 2] = [engine_rel::ROLES, engine_rel::GRANTS];
+const SECURED_DRAWN: [EngineRel; 2] = [engine_rel::ROLES, engine_rel::GRANTS];
 /// The catalog relations of a bundle's entry, each holding the rows of that bundle alone.
-const BUNDLED: [CatRelId; 4] = [
+const BUNDLED: [EngineRel; 4] = [
     engine_rel::BUNDLES,
     engine_rel::REGISTERED,
     engine_rel::FEEDS,
@@ -125,7 +125,7 @@ pub(super) fn read_by_dump(schema: &Schema) -> Vec<RelId> {
         .collect()
 }
 
-fn catalog_relations(schema: &Schema, ids: &[CatRelId]) -> Vec<RelId> {
+fn catalog_relations(schema: &Schema, ids: &[EngineRel]) -> Vec<RelId> {
     ids.iter().map(|&id| engine_relation(schema, id)).collect()
 }
 
@@ -171,7 +171,7 @@ type Rows = BTreeMap<RelId, BTreeSet<Val>>;
 
 fn rows_of<E>(
     schema: &Schema,
-    ids: &[CatRelId],
+    ids: &[EngineRel],
     mut rows: impl FnMut(RelId) -> Result<Vec<Val>, E>,
 ) -> Result<Rows, E> {
     catalog_relations(schema, ids)
@@ -182,12 +182,12 @@ fn rows_of<E>(
 
 /// Returns the rows an entry of [`sections_text`] holds, once it holds a document for exactly
 /// the relations `ids`.
-fn read_sections(schema: &Schema, text: &str, e: &Envelope, ids: &[CatRelId]) -> Option<Rows> {
+fn read_sections(schema: &Schema, text: &str, e: &Envelope, ids: &[EngineRel]) -> Option<Rows> {
     sections(schema, text.strip_prefix(&header_line(e))?, ids)
 }
 
 /// Returns the rows of `rest`, once it holds a document for exactly the relations `ids`.
-fn sections(schema: &Schema, rest: &str, ids: &[CatRelId]) -> Option<Rows> {
+fn sections(schema: &Schema, rest: &str, ids: &[EngineRel]) -> Option<Rows> {
     let mut sections: Vec<String> = Vec::new();
     for line in rest.split_inclusive('\n') {
         if line.starts_with("data ") {
@@ -657,7 +657,7 @@ pub(super) fn restore_dump<R: Runtime>(
     let log = read_log(entry(LOG)?, e).ok_or_else(|| damaged(LOG))?;
     let generators = read_generators(entry(GENERATORS)?, e).ok_or_else(|| damaged(GENERATORS))?;
     let schema = catalog::engine_schema();
-    let section = |name: &str, ids: &[CatRelId]| {
+    let section = |name: &str, ids: &[EngineRel]| {
         read_sections(&schema, entry(name)?, e, ids).ok_or_else(|| damaged(name))
     };
     let security = entries
@@ -969,7 +969,12 @@ fn paired(
 
 /// Returns `rows`, rows of catalog relations of `from`, by the relations of `to` of those ids.
 fn on(from: &Schema, to: &Schema, rows: Rows) -> Rows {
-    let same = |r: RelId| engine_relation(to, held_id(from.ids().relation_id(r)));
+    let same = |r: RelId| {
+        let id = held_id(from.ids().relation_id(r));
+        to.ids()
+            .relation_of(id)
+            .unwrap_or_else(|| panic!("the schema declares engine relation {id}"))
+    };
     rows.into_iter().map(|(r, v)| (same(r), v)).collect()
 }
 
