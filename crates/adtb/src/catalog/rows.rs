@@ -838,7 +838,7 @@ impl Builder<'_> {
                 ),
                 Code::Wasm { module, .. } => {
                     panic!(
-                        "function `{}` names Wasm module `{module}`, which no migration installs",
+                        "function `{}` names Wasm module `{module}`: the engine does not run Wasm functions yet",
                         f.name
                     )
                 }

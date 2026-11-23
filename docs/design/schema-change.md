@@ -72,7 +72,7 @@ Postconditions:
   gives, writes the row `applied` gives at the pager's wall-clock time,
   and returns once the migration is durable. It refuses a migration
   whose operators do not resolve (§4.1), that defines a function over a
-  Wasm module no migration installs, whose result has a constraint with
+  Wasm module, which the engine does not run yet, whose result has a constraint with
   no index-bounded incremental check, or whose data contradicts it: a
   removed constructor or relation that holds rows, a disabled
   constructor relation that holds rows, a unique or key that two mapped

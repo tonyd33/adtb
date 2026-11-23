@@ -2087,7 +2087,8 @@ const BARE_PIN: [&str; 2] = [BARE, CODED];
 const CODED_READS: &str = "import auth\nquery q () -> Set Text = from h in hs select h.n\n";
 const TO_WASM: &str = "module auth\nredefine fn f (t: Text) -> Text = wasm \"m\" export \"e\"\n";
 const REDEFINED_WASM: &str = "redefine fn f (t: Text) -> Text = wasm \"m\" export \"e\"";
-const WASM_LINE: &str = "function `f` names Wasm module `m`, which no migration installs";
+const WASM_LINE: &str =
+    "function `f` names Wasm module `m`: the engine does not run Wasm functions yet";
 const DEFINE_WASM: &str = "module auth\ndefine fn w (t: Text) -> Text = wasm \"m\" export \"e\"\n";
 const REVERT_3: &str = "module auth\nrevert 0003\n";
 const INSTALL: &str = "module auth\ninstall geo \"1.2\" from \"geo.adtx\"\n";
@@ -2522,7 +2523,7 @@ fn wasm_and_extensions_change_no_pinned_code_because_the_engine_refuses_them() {
         (
             &[BARE, CODED, DEFINE_WASM],
             "",
-            "function `w` names Wasm module `m`, which no migration installs",
+            "function `w` names Wasm module `m`: the engine does not run Wasm functions yet",
         ),
         (
             &[BARE, CODED, INSTALL],

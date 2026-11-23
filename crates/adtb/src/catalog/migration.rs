@@ -856,7 +856,7 @@ fn recordable<'a>(
         Err(ds) => why.extend(ds.into_iter().map(|d| d.diag.message)),
         Ok(fs) => why.extend(fs.iter().filter_map(|f| match &f.code {
             Code::Wasm { module, .. } => Some(format!(
-                "function `{}` names Wasm module `{module}`, which no migration installs",
+                "function `{}` names Wasm module `{module}`: the engine does not run Wasm functions yet",
                 f.name
             )),
             _ => None,

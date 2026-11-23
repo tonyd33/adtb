@@ -7,7 +7,7 @@ use adtb_lang::ids::engine_ctor as k;
 use adtb_lang::schema::Schema;
 
 use crate::heap::{FieldType, put_uvarint};
-use crate::key::Value;
+use crate::key::{Scalar, Value};
 
 use super::Error;
 use super::codec::{Codec, Field, Nested, Payload, nullary};
@@ -98,11 +98,20 @@ pub struct Log {
 }
 
 impl Log {
+    /// Preconditions: no field the codecs encode is of type `ZonedDateTime`, whose encoding the
+    /// hash does not define.
     pub fn new(schema: &Schema) -> Log {
-        Log {
+        let log = Log {
             ops: Codec::new(schema),
             clauses: Codec::new(schema),
-        }
+        };
+        let op = log.ops.field_type(MIGRATION_OP_OP.field());
+        let clause = log.clauses.field_type(OP_CLAUSE_BODY.field());
+        assert!(
+            !zoned(op) && !zoned(clause),
+            "a catalog operator declares no zoned date-time field"
+        );
+        log
     }
 
     pub fn ops(&self) -> &Codec<MigrationOpRow> {
@@ -152,6 +161,15 @@ impl Log {
             }
         }
         out
+    }
+}
+
+/// Returns whether a value of type `t` can hold a zoned date-time.
+fn zoned(t: &FieldType) -> bool {
+    match t {
+        FieldType::Scalar(s) => *s == Scalar::ZonedDateTime,
+        FieldType::Record(ts) => ts.iter().any(zoned),
+        FieldType::Sum(cs) => cs.iter().any(|c| c.fields.iter().any(zoned)),
     }
 }
 
