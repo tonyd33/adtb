@@ -8,6 +8,7 @@ use crate::schema::{Committed, build};
 mod adhoc;
 mod binding_sites;
 mod capability;
+mod elaboration;
 mod or_patterns;
 mod principal;
 mod row_provenance;
