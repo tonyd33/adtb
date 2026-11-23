@@ -513,12 +513,12 @@ fn a_kept_row_written_into_a_full_roots_page_of_dead_versions_reuses_it() {
         };
         let keep = || {
             let begun = txns.begin(&pager).expect("a transaction");
-            let x = begun.xid();
+            let hold = txns.take(Scope::Every).expect("the hold");
             catalog
                 .replace_kept(
                     &pager,
                     &txns,
-                    x,
+                    super::Writer::new(&hold, begun.xid()),
                     (339, "database"),
                     std::slice::from_ref(&row),
                 )

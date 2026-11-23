@@ -5,13 +5,13 @@ use std::collections::BTreeSet;
 
 use adtb_lang::ids::CatCtorId;
 
-use crate::heap::WriteTarget;
-use crate::mvcc::{Scope, Transactions, Xid};
+use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::keyed::{self, Key, Writer};
 use super::roots::{self, RootsRow};
-use super::{Catalog, Error, ROOTS, admit_roots, insert_roots, visible};
+use super::{Catalog, Error, ROOTS, visible};
 
 /// The only encoding of a kept row's constructor and fields this engine reads.
 pub(super) const ROW_FORMAT: u64 = 2;
@@ -127,65 +127,25 @@ impl Catalog {
         Ok(out)
     }
 
-    /// Replace in transaction `x` the kept rows of `relation` and `group` by `rows`.
+    /// Replace in the transaction of `w` the kept rows of `relation` and `group` by `rows`.
     ///
-    /// Preconditions: `x` is a transaction of the write path, and no other transaction changes
-    /// the rows of `relation` and `group` while it runs.
+    /// Fail with a conflict when another transaction that is running, or that committed after
+    /// the snapshot of `w`, wrote a kept row of `relation`.
     pub fn replace_kept<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        x: Xid,
+        w: Writer<'_>,
         (relation, group): (u64, &str),
         rows: &[KeptRow],
     ) -> Result<(), Error> {
-        let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let judged = || -> Result<_, Error> {
-            let reader = txns.reader(pager, &hold, None);
-            'scan: loop {
-                let mut versions = Vec::new();
-                self.roots.scan(pager, |v| versions.push(v))?;
-                let mut gone = Vec::new();
-                for v in versions {
-                    let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
-                        continue 'scan;
-                    };
-                    if !seen.visible() {
-                        continue;
-                    }
-                    match RootsRow::decode(&v.row)? {
-                        RootsRow::Kept {
-                            relation: r,
-                            group: g,
-                            ..
-                        } if u64::try_from(r) == Ok(relation) && g == group => {
-                            gone.push((v.tid, v.header));
-                        }
-                        RootsRow::Kept { .. }
-                        | RootsRow::HeapRoot { .. }
-                        | RootsRow::IndexRoot { .. }
-                        | RootsRow::OrderKey { .. }
-                        | RootsRow::Migration { .. }
-                        | RootsRow::HistoryHeap { .. }
-                        | RootsRow::HistoryIndex { .. }
-                        | RootsRow::Held { .. }
-                        | RootsRow::Dormant { .. }
-                        | RootsRow::Deployment(_) => {}
-                    }
-                }
-                return Ok(gone);
-            }
-        };
-        let gone = judged();
-        drop(hold);
-        let gone = gone?;
-        for (tid, header) in gone {
-            self.roots
-                .delete(pager, WriteTarget::checked(tid, header), x)
-                .kept(&super::Abandoning(()))?
-                .unchecked(&super::Abandoning(()));
-        }
-        let rows = admit_roots(&self.roots, rows.iter().map(roots::kept))?;
-        insert_roots(pager, txns, &self.roots, x, &rows)
+        let id = i64::try_from(relation).expect("a catalog id fits 63 bits");
+        keyed::put(pager, txns, &self.roots, w, &Key::Kept(id), |now| {
+            now.iter()
+                .filter(|r| !matches!(r, RootsRow::Kept { group: g, .. } if g == group))
+                .cloned()
+                .chain(rows.iter().map(roots::kept))
+                .collect()
+        })
     }
 }

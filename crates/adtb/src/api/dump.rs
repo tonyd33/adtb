@@ -833,8 +833,8 @@ impl<R: Runtime> Engine<R> {
         };
         let failed = |w| self.write_error(super::TxnId(0), w);
         let tx = self.db.begin().map_err(failed)?;
-        let x = tx
-            .xid()
+        let w = tx
+            .catalog_writer()
             .expect("a write transaction of the write path has an id");
         let written = self
             .db
@@ -843,7 +843,7 @@ impl<R: Runtime> Engine<R> {
             .and_then(|_| {
                 let facts = self
                     .deployment
-                    .insert(&self.pager, self.db.txns(), x, facts);
+                    .insert(&self.pager, self.db.txns(), w, facts);
                 facts.map_err(write::Error::from)
             });
         match written {

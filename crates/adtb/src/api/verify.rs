@@ -15,7 +15,7 @@ use crate::catalog::codec::{
 use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow, Rot, engine_relation};
 use crate::exec::{F64, Val};
 use crate::key::Value;
-use crate::mvcc::{Transactions, Xid};
+use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::{Damage, PageError, Pager, Pid};
 use crate::verify::{self, Depth};
@@ -518,11 +518,11 @@ impl<R: Runtime> Verifier<R> {
         if !self.keeps() {
             return false;
         }
-        let kept = self.in_kept_transaction(|x| {
+        let kept = self.in_kept_transaction(|w| {
             let txns = self.db.txns();
             let group = (row.relation, CURSOR);
             self.catalog
-                .replace_kept(&self.pager, txns, x, group, std::slice::from_ref(&row))
+                .replace_kept(&self.pager, txns, w, group, std::slice::from_ref(&row))
         });
         if kept.is_ok() {
             self.findings.lock(&self.rt).cursor = Some(cursor);
@@ -638,22 +638,22 @@ impl<R: Runtime> Verifier<R> {
         gone: &BTreeSet<String>,
         counters: &KeptRow,
     ) -> Result<(), String> {
-        self.in_kept_transaction(|x| {
+        self.in_kept_transaction(|w| {
             let txns = self.db.txns();
             self.catalog
-                .replace_kept(&self.pager, txns, x, (id, group), written)?;
+                .replace_kept(&self.pager, txns, w, (id, group), written)?;
             let fail = self.fail_kept.lock(&self.rt).take();
             if let Some(text) = fail {
                 panic!("{text}");
             }
             for g in gone {
                 self.catalog
-                    .replace_kept(&self.pager, txns, x, (id, g), &[])?;
+                    .replace_kept(&self.pager, txns, w, (id, g), &[])?;
             }
             self.catalog.replace_kept(
                 &self.pager,
                 txns,
-                x,
+                w,
                 (id, COUNTERS),
                 std::slice::from_ref(counters),
             )
@@ -663,13 +663,13 @@ impl<R: Runtime> Verifier<R> {
     /// Run `write`, a change of kept rows, as one transaction of the write path.
     fn in_kept_transaction(
         &self,
-        write: impl FnOnce(Xid) -> Result<(), catalog::Error>,
+        write: impl FnOnce(catalog::Writer<'_>) -> Result<(), catalog::Error>,
     ) -> Result<(), String> {
         let tx = self.db.begin().map_err(|e| self.db.detail(&e))?;
-        let x = tx
-            .xid()
+        let w = tx
+            .catalog_writer()
             .ok_or_else(|| "a read-write transaction has an id".to_owned())?;
-        if let Err(e) = write(x) {
+        if let Err(e) = write(w) {
             let reply = self
                 .db
                 .abandon(tx, || catalog::detail(&e), |r| self.db.detail(&r));

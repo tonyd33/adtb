@@ -74,11 +74,11 @@ impl<R: Runtime> RoleAuthority<R> {
                     changes.delete(relation, row);
                 }
             });
-            let x = tx
-                .xid()
+            let w = tx
+                .catalog_writer()
                 .expect("a write transaction of the write path has an id");
             e.deployment
-                .insert(&e.pager, e.db.txns(), x, &claim.facts)
+                .insert(&e.pager, e.db.txns(), w, &claim.facts)
                 .map_err(|err| e.catalog_error(err))
         })?;
         serve(&writer, checked, &claim);

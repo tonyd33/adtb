@@ -1221,10 +1221,10 @@ impl<'a, R: Runtime> BundleWriter<'a, R> {
         }
         let facts: Vec<Fact> = due.iter().map(|r| Fact::Expired(r.id, r.renewed)).collect();
         let tx = e.db.begin()?;
-        let x = tx
-            .xid()
+        let w = tx
+            .catalog_writer()
             .expect("a write transaction of the write path has an id");
-        if let Err(err) = e.deployment.insert(&e.pager, e.db.txns(), x, &facts) {
+        if let Err(err) = e.deployment.insert(&e.pager, e.db.txns(), w, &facts) {
             return Err(e.db.abandoned(tx, err.into()));
         }
         e.db.commit(tx)?;

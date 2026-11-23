@@ -199,6 +199,12 @@ impl<R: Runtime> Release for Session<R> {
 }
 
 impl Txn {
+    /// Returns the transaction as keyed catalog storage writes in it, `None` for a read-only
+    /// one.
+    pub fn catalog_writer(&self) -> Option<crate::catalog::Writer<'_>> {
+        (self.xid).map(|x| crate::catalog::Writer::new(self.hold(), x))
+    }
+
     /// Returns the hold on the transaction's snapshot.
     pub(super) fn hold(&self) -> &Hold {
         self.held

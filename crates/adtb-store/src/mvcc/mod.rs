@@ -166,6 +166,12 @@ impl Conflict {
         Conflict::new(Cause::ConcurrentWrite, with, Some(heap))
     }
 
+    /// Returns the conflict of a write of a key of heap `heap` that running transaction `by` has
+    /// written too.
+    pub fn running(heap: u32, by: Xid) -> Conflict {
+        Conflict::new(Cause::RunningWrite, vec![by], Some(heap))
+    }
+
     pub fn cause(&self) -> Cause {
         self.cause
     }
@@ -191,6 +197,8 @@ pub enum Cause {
     ConcurrentWrite,
     /// A row or key it writes was written by a transaction that committed after its snapshot.
     LaterCommit,
+    /// A key it writes was written by a transaction still running.
+    RunningWrite,
     /// A rw-antidependency completed a dangerous structure that it was chosen to break.
     Dangerous,
     /// Waiting would have closed a cycle of transactions waiting for each other.

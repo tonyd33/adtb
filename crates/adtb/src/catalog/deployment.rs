@@ -5,11 +5,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::heap::Heap;
-use crate::mvcc::{Hold, Scope, Transactions, Xid};
+use crate::mvcc::{Hold, Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::keyed::{self, Writer};
 use super::roots::RootsRow;
+use super::rot::Rot;
 use super::{Catalog, Error, ROOTS, visible};
 
 /// Who registered a bundle: an open given it, or a role through the registration command.
@@ -111,10 +113,10 @@ impl Catalog {
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        x: Xid,
+        w: Writer<'_>,
         facts: &[Fact],
     ) -> Result<(), Error> {
-        self.deployment().insert(pager, txns, x, facts)
+        self.deployment().insert(pager, txns, w, facts)
     }
 }
 
@@ -127,9 +129,18 @@ impl Deployment {
         hold: &Hold,
     ) -> Result<Deployed, Error> {
         let mut out = Deployed::default();
+        let mut keys = Vec::new();
         for row in visible(pager, txns, hold, &self.roots)? {
-            match RootsRow::decode(&row)? {
-                RootsRow::Deployment(f) => out.record(std::slice::from_ref(&f)),
+            let row = RootsRow::decode(&row)?;
+            let key = row.key();
+            match row {
+                RootsRow::Deployment(f) => {
+                    if keys.contains(&key) {
+                        return Err(Rot::Twice(RootsRow::Deployment(f).what()).into());
+                    }
+                    keys.push(key);
+                    out.record(std::slice::from_ref(&f));
+                }
                 RootsRow::HeapRoot { .. }
                 | RootsRow::IndexRoot { .. }
                 | RootsRow::OrderKey { .. }
@@ -150,18 +161,35 @@ impl Deployment {
         &self.roots
     }
 
-    /// Write `facts` in transaction `x`, so that they commit or abort with it.
+    /// Write `facts` in the transaction of `w`, so that they commit or abort with it: each
+    /// replaces the fact of its key, and an expired renewal replaces only an earlier one.
     ///
-    /// Precondition: `x` is a transaction of the write path over the pager this catalog opened.
+    /// Fail with a conflict when another transaction that is running, or that committed after
+    /// the snapshot of `w`, wrote the key of one of `facts`.
     pub fn insert<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        x: Xid,
+        w: Writer<'_>,
         facts: &[Fact],
     ) -> Result<(), Error> {
-        let rows = facts.iter().map(|f| RootsRow::Deployment(f.clone()));
-        let rows = super::admit_roots(&self.roots, rows)?;
-        super::insert_roots(pager, txns, &self.roots, x, &rows)
+        for f in facts {
+            let row = RootsRow::Deployment(f.clone());
+            let key = row.key().expect("a deployment fact is keyed");
+            keyed::put(pager, txns, &self.roots, w, &key, |now| match f {
+                Fact::Expired(bundle, renewed) => {
+                    let latest = now
+                        .iter()
+                        .filter_map(|r| match r {
+                            RootsRow::Deployment(Fact::Expired(_, at)) => Some(*at),
+                            _ => None,
+                        })
+                        .fold(*renewed, i64::max);
+                    vec![RootsRow::Deployment(Fact::Expired(*bundle, latest))]
+                }
+                Fact::Deployed | Fact::Family(..) | Fact::Registered(..) => vec![row],
+            })?;
+        }
+        Ok(())
     }
 }

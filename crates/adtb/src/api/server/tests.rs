@@ -518,7 +518,7 @@ fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
         let got = authority.register(&owner, &bundle).map(drop);
         let unreadable = Error::Fatal {
             reason: crate::FatalReason::Storage {
-                detail: "page 509 is unreadable".into(),
+                detail: "page 505 is unreadable".into(),
             },
         };
         assert_eq!(Err(unreadable), got);

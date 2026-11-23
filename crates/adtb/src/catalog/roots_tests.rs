@@ -120,7 +120,10 @@ fn readers_of(seed: u64, row: &Value) -> Vec<(&'static str, Option<Error>)> {
         out.push(("kept", catalog.kept(&pager, &txns).err()));
         out.push(("deployed", catalog.deployed(&pager, &txns).err()));
         let begun = txns.begin(&pager).expect("a transaction");
-        let replaced = catalog.replace_kept(&pager, &txns, begun.xid(), (339, "g"), &[]);
+        let hold = txns.take(Scope::Every).expect("the hold");
+        let w = super::super::Writer::new(&hold, begun.xid());
+        let replaced = catalog.replace_kept(&pager, &txns, w, (339, "g"), &[]);
+        drop(hold);
         txns.abort(&pager, begun).expect("the abort");
         out.push(("replace_kept", replaced.err()));
         drop(txns);

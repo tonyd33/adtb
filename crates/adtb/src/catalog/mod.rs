@@ -14,6 +14,7 @@ mod hosts;
 mod ids;
 mod insert;
 mod kept;
+mod keyed;
 mod keying;
 mod limits;
 pub use crate::exec::layout;
@@ -56,6 +57,8 @@ mod hash_corpus_tests;
 #[cfg(test)]
 mod index_text_tests;
 #[cfg(test)]
+mod keyed_tests;
+#[cfg(test)]
 mod memo_tests;
 #[cfg(test)]
 mod oplog_tests;
@@ -92,6 +95,7 @@ pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
 pub use ids::engine_relation;
 pub use kept::{KeptField, KeptRow};
+pub use keyed::Writer;
 pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
@@ -167,6 +171,8 @@ pub enum Error {
     PastLimits(String),
     /// The catalog root page is of this older format, which this engine does not open.
     FormatTooOld(u16),
+    /// Another transaction wrote a key of keyed storage the transaction writes.
+    Conflict(mvcc::Conflict),
 }
 
 impl From<PageError> for Error {

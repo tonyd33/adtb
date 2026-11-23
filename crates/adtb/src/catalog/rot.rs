@@ -55,6 +55,8 @@ pub enum Rot {
     },
     UntaggedGrant(i64),
     KeptRow(Vec<Value>),
+    /// Two rows hold this keyed fact.
+    Twice(String),
     KeptFormat(u64),
     DroppedTwice {
         module: String,
@@ -123,6 +125,9 @@ pub fn detail(e: &Error) -> String {
                 .join("; ")
         ),
         Error::PastLimits(object) => format!("{object} expands past this build's limits"),
+        Error::Conflict(_) => {
+            "another transaction wrote a key of the catalog this one writes".into()
+        }
         Error::FormatTooOld(format) => format!(
             "the file is of catalog format {format}; this engine opens only format {}",
             super::root::FORMAT
@@ -175,6 +180,7 @@ impl fmt::Display for Rot {
             }
             Rot::UntaggedGrant(id) => write!(f, "grant row {id} records no grant of the log"),
             Rot::KeptRow(fields) => write!(f, "a kept row holds {}", listed(fields)),
+            Rot::Twice(what) => write!(f, "two rows hold {what}"),
             Rot::KeptFormat(format) => write!(
                 f,
                 "a kept row has format {format}; this engine reads format {}",

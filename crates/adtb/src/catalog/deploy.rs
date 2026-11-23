@@ -10,7 +10,7 @@ use crate::runtime::Runtime;
 use crate::storage::{Pager, Position};
 
 use super::codec::{Codec, Decode};
-use super::{Catalog, Change, Error, Fact, delete_rows};
+use super::{Catalog, Change, Error, Fact, Writer, delete_rows};
 
 /// The rows of one relation [`Catalog::deploy`] deletes and inserts, each a constructor and its
 /// stored fields.
@@ -90,7 +90,7 @@ impl Catalog {
                     .iter()
                     .try_for_each(|(c, row)| self.insert(m, w.relation, *c, row))
             })
-            .and_then(|()| self.write_facts(pager, txns, m.x, facts));
+            .and_then(|()| self.write_facts(pager, txns, Writer::new(&m.hold, m.x), facts));
         if let Err(e) = done {
             return Err(change.abandon(e));
         }

@@ -272,6 +272,7 @@ impl From<crate::catalog::Error> for Error {
             C::Corrupt(r) => Rot::Catalog(r).into(),
             C::Missing(what) => Rot::NoRoot(what).into(),
             C::Txn(e) => Error::Transactions(e),
+            C::Conflict(c) | C::Heap(crate::heap::Error::Changed(c)) => c.into(),
             other => Broken::CatalogError(other).into(),
         }
     }
