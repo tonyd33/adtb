@@ -985,7 +985,7 @@ fn unique_ids(schema: &Schema) -> BTreeSet<CatIndexId> {
         .ids()
         .index_ids()
         .filter(|&((r, i), _)| schema.relation(r).indexes[i].unique)
-        .map(|(_, id)| CatIndexId::from_raw(id.raw()))
+        .map(|(_, id)| id)
         .collect()
 }
 

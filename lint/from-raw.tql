@@ -1,8 +1,8 @@
--- from_raw: a call of `CatRelId::from_raw`, the decode of a stored relation id.
+-- from_raw: a call of a catalog id's `from_raw`, the decode of a stored raw as one id kind.
 
 main = collect (do {
   c <- descendants_of_kind :call_expression;
   f <- pure c | #function;
-  guard $ text f ~ r"CatRelId::from_raw$";
+  guard $ text f ~ r"Cat[A-Za-z]+Id::from_raw$";
   return c;
 }) | arr length;

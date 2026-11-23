@@ -155,6 +155,22 @@ fn id(v: &Value) -> Result<u64, Rot> {
     }
 }
 
+fn rel_id(v: &Value) -> Result<CatRelId, Rot> {
+    Ok(CatRelId::from_raw(id(v)?))
+}
+
+fn ctor_id(v: &Value) -> Result<CatCtorId, Rot> {
+    Ok(CatCtorId::from_raw(id(v)?))
+}
+
+fn index_id(v: &Value) -> Result<CatIndexId, Rot> {
+    Ok(CatIndexId::from_raw(id(v)?))
+}
+
+fn constraint_id(v: &Value) -> Result<CatConstraintId, Rot> {
+    Ok(CatConstraintId::from_raw(id(v)?))
+}
+
 fn heap_id(v: &Value) -> Result<u32, Rot> {
     let n = id(v)?;
     u32::try_from(n).map_err(|_| Rot::HeapIdWide(n))
@@ -328,8 +344,8 @@ impl RootsRow {
         let ctor = *ctor;
         Ok(match (ctor, fields.as_slice()) {
             (HEAP_ROOT, [rel, c, heap, at]) => RootsRow::HeapRoot {
-                rel: CatRelId::from_raw(id(rel)?),
-                ctor: CatCtorId::from_raw(id(c)?),
+                rel: rel_id(rel)?,
+                ctor: ctor_id(c)?,
                 heap: heap_id(heap)?,
                 at: pid(at)?,
             },
@@ -346,13 +362,13 @@ impl RootsRow {
                 text: text.clone(),
             },
             (HISTORY_HEAP, [rel, c, heap, at]) => RootsRow::HistoryHeap {
-                rel: CatRelId::from_raw(id(rel)?),
-                ctor: CatCtorId::from_raw(id(c)?),
+                rel: rel_id(rel)?,
+                ctor: ctor_id(c)?,
                 heap: heap_id(heap)?,
                 at: pid(at)?,
             },
             (HISTORY_INDEX, [rel, owner, at]) => RootsRow::HistoryIndex {
-                rel: CatRelId::from_raw(id(rel)?),
+                rel: rel_id(rel)?,
                 owner: heap_id(owner)?,
                 at: pid(at)?,
             },
@@ -409,17 +425,17 @@ fn held(ctor: u32, fields: &[Value]) -> Result<RootsRow, Rot> {
         return Err(corrupt());
     };
     let kind = match (ctor, index) {
-        (HELD_CONSTRAINT, [n]) => Kind::Constraint(CatConstraintId::from_raw(id(n)?)),
-        (HELD_CHECK, [n]) => Kind::Check(CatConstraintId::from_raw(id(n)?)),
-        (HELD_UNIQUE, [n]) => Kind::Unique(CatIndexId::from_raw(id(n)?)),
+        (HELD_CONSTRAINT, [n]) => Kind::Constraint(constraint_id(n)?),
+        (HELD_CHECK, [n]) => Kind::Check(constraint_id(n)?),
+        (HELD_UNIQUE, [n]) => Kind::Unique(index_id(n)?),
         (HELD_KEY, [index, rel, Value::Bytes(key)]) => {
             let (chunks, rest) = key.as_chunks::<8>();
             if !rest.is_empty() {
                 return Err(corrupt());
             }
             Kind::Key {
-                index: CatIndexId::from_raw(id(index)?),
-                relation: CatRelId::from_raw(id(rel)?),
+                index: index_id(index)?,
+                relation: rel_id(rel)?,
                 fields: chunks
                     .iter()
                     .map(|c| CatFieldId::from_raw(u64::from_le_bytes(*c)))
@@ -511,9 +527,9 @@ pub(super) fn kept_row(
     Ok(KeptRow {
         relation: id(&Value::I64(relation))?,
         group: group.into(),
-        ctor: match id(&Value::I64(ctor))? {
-            0 => None,
-            id => Some(CatCtorId::from_raw(id)),
+        ctor: match ctor_id(&Value::I64(ctor))? {
+            id if id.raw() == 0 => None,
+            id => Some(id),
         },
         fields: kept::decode(row).ok_or_else(bad)?,
     })

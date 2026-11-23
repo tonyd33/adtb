@@ -446,6 +446,35 @@ fn moved(d: &Desc, name: &str, from: Option<&str>, to: Option<&str>) -> Desc {
 /// The order generated shapes are tried in: every shape bit set, then none, then mixes.
 const SHAPES: [u64; 16] = [15, 0, 5, 10, 3, 12, 6, 9, 1, 14, 2, 13, 4, 11, 7, 8];
 
+/// The ids a schema built from its files holds are those its declarations, in order, give as
+/// the `add` and `define` operators of a first migration.
+#[test]
+fn a_built_schema_holds_the_ids_a_first_migration_of_its_declarations_gives() {
+    let mut texts: Vec<(String, &str)> = [
+        RUNNING, BADGES, WORLD, PLACES, SCALES, TWO_X, CTOR_REF, KEYED_XS,
+    ]
+    .map(|t| (t.to_owned(), "auth"))
+    .to_vec();
+    texts.extend((0..64).map(|seed| (adtb_testkit::fuzz::schema_file(seed), "m")));
+    let mut differ = Vec::new();
+    let mut compared = 0;
+    for (text, module) in &texts {
+        let src = source(text);
+        let replayed = applies(&Source::default(), &replay(&src, module));
+        let built = src
+            .built()
+            .unwrap_or_else(|e| panic!("builds: {e:?}\n{text}"));
+        let declared = by_desc(&built, text);
+        let replayed = by_desc(&ids_of(&replayed), text);
+        if declared != replayed {
+            differ.push(format!("{text}\n{declared:?}\n{replayed:?}"));
+        }
+        compared += 1;
+    }
+    assert_eq!(Vec::<String>::new(), differ);
+    assert_eq!(72, compared);
+}
+
 #[test]
 fn a_rename_or_move_keeps_the_id_of_every_object_it_does_not_create() {
     let count = (adtb_testkit::profile::count(SHAPES.len() as u64) as usize).min(SHAPES.len());

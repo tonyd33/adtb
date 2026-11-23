@@ -759,6 +759,11 @@ fn adhoc(rng: &mut Rng) -> String {
     }
 }
 
+/// Returns the schema file of `seed`, unmutated.
+pub fn schema_file(seed: u64) -> String {
+    schema_text(&mut Rng::new(seed))
+}
+
 /// Returns a schema file of a few types and relations, with functions, constraints and checks
 /// over them.
 fn schema_text(rng: &mut Rng) -> String {
