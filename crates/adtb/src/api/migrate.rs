@@ -2,10 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use adtb_lang::check::Program;
+use adtb_lang::check::Compiled;
 use adtb_lang::evolve::Privilege;
 use adtb_lang::norm::{self, NormalProgram};
-use adtb_lang::schema::Schema;
 
 use crate::catalog::{self, Catalog};
 use crate::faults::{self, Step};
@@ -115,17 +114,17 @@ impl<R: Runtime> Opened<R> {
         let Some(version) = unapplied else {
             return Ok(self);
         };
-        let reason = Error::of_whole_mark(&self.db, &self.parts.schema)
+        let reason = Error::of_whole_mark(&self.db, self.parts.compiled.committed())
             .expect("the whole-database mark an open found holds until the engine closes");
         Err(OpenError::MigrationRefused { version, reason })
     }
 }
 
-/// Returns the normal program of `schema`, refusing the file when a body expands past this
+/// Returns the normal program of `compiled`, refusing the file when a body expands past this
 /// build's limits.
-pub(super) fn normal(schema: &Schema, program: &Program) -> Result<NormalProgram, OpenError> {
-    norm::program(schema, program)
-        .map_err(|e| corrupt(catalog::not_normal(schema, e, stored_not_normal)))
+pub(super) fn normal(compiled: &Compiled) -> Result<NormalProgram, OpenError> {
+    norm::program(compiled)
+        .map_err(|e| corrupt(catalog::not_normal(compiled.schema(), e, stored_not_normal)))
 }
 
 fn stored_not_normal(e: norm::Error) -> catalog::Error {

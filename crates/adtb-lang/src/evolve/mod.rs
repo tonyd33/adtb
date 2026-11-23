@@ -10,7 +10,7 @@ use crate::ast::{
     QName, RelationClause,
 };
 use crate::canon::Names;
-use crate::check::{self, Program, Ref};
+use crate::check::{self, Compiled, Ref};
 use crate::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatFunctionId, CatIndexId, CatRelId, CatSetId,
     CatTypeId, ObjectKey, held_id,

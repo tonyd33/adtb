@@ -12,10 +12,10 @@ type SpineArm = (u32, Var, Spine);
 
 /// Returns the judgement of `p` over `catalog`, as of a plan built bounded when `bounded` is set.
 fn check_in(f: &Fixture, catalog: &Catalog, p: &Plan, bounded: bool) -> Result<(), Broken> {
-    let mut total = Totality::new(&f.schema, false)
+    let mut total = Totality::new(f.schema(), false)
         .with_aggregates(f.normal.terms(), f.normal.aggregate_parts());
     let mut facts = Facts::default();
-    let judges = Judges::new(&f.schema, catalog, &mut facts, &mut total, bounded);
+    let judges = Judges::new(f.schema(), catalog, &mut facts, &mut total, bounded);
     validate(judges, p)
 }
 
@@ -149,7 +149,7 @@ fn a_case_missing_repeating_or_inventing_an_arm_is_refused() {
     );
     let mut p = p.clone();
     let not_sum = Ty::Set(Box::new(Ty::Base(Base::I64)));
-    let empty = Build::new(&f.schema, Arc::make_mut(&mut p.terms)).empty_set(not_sum.clone());
+    let empty = Build::new(f.schema(), Arc::make_mut(&mut p.terms)).empty_set(not_sum.clone());
     let Spine::Case(s, _) = spine_mut(&mut p) else {
         panic!("a case at the spine's root")
     };
@@ -227,7 +227,7 @@ fn a_lookup_of_an_index_other_than_the_key_index_is_refused() {
     let f = running();
     let (mut p, _) = valid(&f, GID_PROBE, &[]);
     let gid = gid_index(&f);
-    let deref = Build::new(&f.schema, Arc::make_mut(&mut p.terms))
+    let deref = Build::new(f.schema(), Arc::make_mut(&mut p.terms))
         .empty_set(Ty::Set(Box::new(Ty::Base(Base::I64))));
     p.root = Eval::Lookup(Lookup {
         index: gid,
@@ -274,7 +274,7 @@ fn a_read_of_the_past_breaking_its_shape_is_refused() {
     a.body = Eval::At(Box::new(a.clone()));
     assert_eq!(Err(Broken::NestedPast), check(&f, &nested));
     let (mut probe, vars) = valid(&f, KEY_PROBE, &[("k", "Key identities")]);
-    let point = Build::new(&f.schema, Arc::make_mut(&mut probe.terms)).var(vars[0]);
+    let point = Build::new(f.schema(), Arc::make_mut(&mut probe.terms)).var(vars[0]);
     probe.root = Eval::At(Box::new(AtRead {
         instant: false,
         point,
@@ -324,7 +324,7 @@ fn an_expression_that_is_not_scalar_is_refused() {
 fn a_range_bound_not_of_its_fields_type_is_refused() {
     let f = running();
     let (mut p, _) = valid(&f, RANGE, &[]);
-    let two = Build::new(&f.schema, Arc::make_mut(&mut p.terms))
+    let two = Build::new(f.schema(), Arc::make_mut(&mut p.terms))
         .constant(Const::Int(2), Ty::Base(Base::I64));
     let index = f.catalog.relation(f.rel("orders")).key_index;
     let End::Range { lo: Some(lo), .. } = index_end(&mut p) else {
@@ -398,7 +398,7 @@ fn a_read_of_the_past_reading_a_grouping_outside_it_is_refused() {
     let point = at(&mut p).point;
     let ty = Ty::Set(Box::new(Ty::Base(Base::I64)));
     let g = Arc::make_mut(&mut p.terms).var("%groups", ty.clone());
-    let mut b = Build::new(&f.schema, Arc::make_mut(&mut p.terms));
+    let mut b = Build::new(f.schema(), Arc::make_mut(&mut p.terms));
     let (groups, empty) = (b.var(g), b.empty_set(ty));
     at(&mut p).body = Eval::GroupRows { groups, key: point };
     p.root = Eval::Let(g, Box::new(Eval::Expr(empty)), Box::new(p.root.clone()));
@@ -450,7 +450,7 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
         let (n, t) = f.normal(text, params);
         for (name, rw) in variants() {
             if let Err(e) = plan(
-                &f.schema,
+                f.schema(),
                 &f.normal,
                 &f.catalog,
                 n.valid(),
@@ -465,7 +465,7 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
     let q = f.query(SEARCH);
     for (name, rw) in variants() {
         plan(
-            &f.schema,
+            f.schema(),
             &f.normal,
             &f.catalog,
             q.valid(),
@@ -476,7 +476,7 @@ fn every_plan_of_the_planner_corpus_keeps_the_plan_invariants() {
         made += 1;
     }
     let (n, t) = f.normal(KEY_PROBE, &[("k", "Key identities")]);
-    for p in plan_bounded(&f.schema, &f.normal, &f.catalog, n.valid(), &[t]) {
+    for p in plan_bounded(f.schema(), &f.normal, &f.catalog, n.valid(), &[t]) {
         p.unwrap_or_else(|e| panic!("`{KEY_PROBE}` bounded: {e}"));
     }
     made += 1;

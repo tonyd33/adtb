@@ -34,7 +34,8 @@ impl Catalog {
         rewritten: &BTreeSet<CatRelId>,
         roots: &BTreeSet<Root>,
     ) -> Result<Vec<String>, Error> {
-        let (schema, program) = self.checking();
+        let compiled = self.checking();
+        let schema = compiled.committed();
         let changed: BTreeSet<CatConstraintId> = roots
             .iter()
             .filter_map(|root| match *root {
@@ -50,7 +51,7 @@ impl Catalog {
                 _ => None,
             })
             .collect();
-        let normal = norm::program(schema, program)
+        let normal = norm::program(compiled)
             .map_err(|e| not_normal(schema, e, |e| Error::from(Broken::NotNormal(e))))?;
         let existed: BTreeSet<CatConstraintId> = old
             .ids()
@@ -123,8 +124,9 @@ impl Catalog {
         store: &Arc<Store<R>>,
         keep: impl Fn(&BTreeSet<RelId>) -> bool,
     ) -> Result<Vec<Denial>, Error> {
-        let (schema, program) = self.checking();
-        let normal = norm::program(schema, program)
+        let compiled = self.checking();
+        let schema = compiled.committed();
+        let normal = norm::program(compiled)
             .map_err(|e| not_normal(schema, e, |e| Error::from(Broken::NotNormal(e))))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);

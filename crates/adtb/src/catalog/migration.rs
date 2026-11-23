@@ -2,13 +2,13 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::SystemTime;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
-use adtb_lang::check::Program;
+use adtb_lang::check::Compiled;
 use adtb_lang::depends;
 use adtb_lang::evolve::{self, Code, Privilege, Recorded, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, Root};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{Committed, Schema, Stage};
+use adtb_lang::schema::{Schema, Stage};
 use adtb_lang::textual::{self, Form, key_names};
 use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
@@ -165,7 +165,7 @@ impl Catalog {
             Ok(f) => f,
             Err(ds) => return refused(ds.into_iter().map(|d| d.message).collect()),
         };
-        let (next, (schema, program), recorded) = match self.source.record(&file, text, new) {
+        let (next, compiled, recorded) = match self.source.record(&file, text, new) {
             Ok(migrated) => migrated,
             Err(f) => {
                 let unstepped = match &f {
@@ -185,17 +185,17 @@ impl Catalog {
             self.sequences = self.counter_page(m.pager)?;
         }
         let operators = match recordable(&next, &recorded) {
-            Ok(ops) => oplog::Log::new(&schema).rows(ops),
+            Ok(ops) => oplog::Log::new(compiled.schema()).rows(ops),
             Err(why) => return refused(why),
         };
-        let next = Checked::new(next, schema, program)?;
+        let next = Checked::new(next, compiled)?;
         let stepped = steps::stepped(recorded.steps(), &file, text)?;
         let readers = self.held(&file, text, &next, &stepped)?;
-        let (schema, program, texts) = readers.checking(next.judged());
-        let (old, old_program) = self.checking();
-        let changed = depends::changed(old, old_program, schema, program);
-        let rewritten = change::rewritten(old, schema, &changed);
-        self.admits(schema, program, texts, &rewritten)?;
+        let (compiled, texts) = readers.checking(next.judged());
+        let old = self.checking();
+        let changed = depends::changed(old, compiled);
+        let rewritten = change::rewritten(old.committed(), compiled.committed(), &changed);
+        self.admits(compiled, texts, &rewritten)?;
         let prepared = Prepared {
             next,
             operators,
@@ -209,18 +209,18 @@ impl Catalog {
         Ok((c, dormant))
     }
 
-    /// Refuse `schema`, whose checked program is `program` and index element texts `texts`, when
+    /// Refuse the schema of `compiled`, whose index element texts are `texts`, when
     /// a constraint of it has no index-bounded incremental check over the heaps
     /// [`Catalog::heap_ids`] assigns a migration rewriting the relations `rewritten` names, and
     /// its indexes; each reason.
     fn admits(
         &self,
-        schema: &Committed,
-        program: &Program,
+        compiled: &Compiled,
         texts: &ElementTexts,
         rewritten: &BTreeSet<CatRelId>,
     ) -> Result<(), Error> {
-        let normal = norm::program(schema, program).map_err(|e| match e.cause {
+        let (schema, program) = (compiled.committed(), compiled.program());
+        let normal = norm::program(compiled).map_err(|e| match e.cause {
             norm::Cause::TooLarge => Error::Refused(vec![e.to_string()]),
             norm::Cause::Stuck(_) | norm::Cause::Invalid(_) => Error::from(Broken::NotNormal(e)),
         })?;
@@ -270,21 +270,21 @@ impl Catalog {
         } = prepared;
         let mut data = Data::new();
         for &rid in rewritten {
-            let Some(r) = relation(&self.schema, rid) else {
+            let Some(r) = relation(self.schema(), rid) else {
                 continue;
             };
-            let mut ctors: BTreeMap<CatCtorId, Vec<Vec<Value>>> = (0..ctor_count(&self.schema, r))
-                .map(|c| (ctor_id(&self.schema, r, c), Vec::new()))
+            let mut ctors: BTreeMap<CatCtorId, Vec<Vec<Value>>> = (0..ctor_count(self.schema(), r))
+                .map(|c| (ctor_id(self.schema(), r, c), Vec::new()))
                 .collect();
             for (c, row) in self.rows(&Snapshot::of(m), r)? {
                 ctors
-                    .get_mut(&ctor_id(&self.schema, r, c))
+                    .get_mut(&ctor_id(self.schema(), r, c))
                     .expect("a constructor of the relation")
                     .push(row);
             }
             data.insert(rid, ctors);
         }
-        let mut before: &Schema = &self.schema;
+        let mut before: &Schema = self.schema();
         let mut why = Vec::new();
         let mut blamed = None;
         for (op, steps) in stepped.ops() {
@@ -316,7 +316,7 @@ impl Catalog {
             }
         }
         let indexing = Indexing::new(self, &next, &readers)?;
-        let admitted = match admit::admit(m.pager, &next.schema, rewritten, &indexing, data) {
+        let admitted = match admit::admit(m.pager, next.schema(), rewritten, &indexing, data) {
             Ok(admitted) => Some(admitted),
             Err(Error::Refused(w)) => {
                 why.extend(w);
@@ -365,7 +365,7 @@ impl Catalog {
         let dormant = dormant?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;
         built.readers = readers;
-        let why = built.violations(m, self.checking().0, rewritten, &changed)?;
+        let why = built.violations(m, self.checking().committed(), rewritten, &changed)?;
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }
@@ -464,7 +464,7 @@ impl Catalog {
                         rows.iter().map(move |row| (k, row.clone()))
                     })
                     .collect(),
-                None => match relation(&self.schema, rid) {
+                None => match relation(self.schema(), rid) {
                     Some(old) => self.rows(&Snapshot::of(m), old)?,
                     None => continue,
                 },
@@ -495,10 +495,10 @@ impl Catalog {
         rid: CatRelId,
         cid: CatCtorId,
     ) -> Result<bool, Error> {
-        let Some(r) = relation(&self.schema, rid) else {
+        let Some(r) = relation(self.schema(), rid) else {
             return Ok(false);
         };
-        let c = ctor_index(&self.schema, r, cid).expect("a constructor of the relation");
+        let c = ctor_index(self.schema(), r, cid).expect("a constructor of the relation");
         self.holds_any(&Snapshot::of(m), r, c)
     }
 
@@ -514,13 +514,11 @@ impl Catalog {
         b: &Built,
     ) -> Result<Catalog, Error> {
         let pager = m.pager;
-        let schema = b.next.schema.clone();
         m.ids_from(self.next_heap);
         let mut next = Catalog {
             source: b.next.source.clone(),
             hash: VersionHash::of(std::sync::Arc::new(b.next.source.clone())),
-            schema,
-            program: b.next.program.clone(),
+            compiled: b.next.compiled.clone(),
             texts: b.next.texts.clone(),
             root: self.root,
             large: self.large,
@@ -543,15 +541,15 @@ impl Catalog {
             .heaps
             .keys()
             .map(|&(r, c)| {
-                let id = (rel_id(&self.schema, r), ctor_id(&self.schema, r, c));
+                let id = (rel_id(self.schema(), r), ctor_id(self.schema(), r, c));
                 (id, (r, c))
             })
             .collect();
         let mut named = Vec::new();
         let mut gone = Vec::new();
-        for (r, c) in ctor_relations(&next.schema) {
-            let rid = rel_id(&next.schema, r);
-            let cid = ctor_id(&next.schema, r, c);
+        for (r, c) in ctor_relations(next.schema()) {
+            let rid = rel_id(next.schema(), r);
+            let cid = ctor_id(next.schema(), r, c);
             if !b.rewritten.contains(&rid) {
                 let kept = old
                     .get(&(rid, cid))
@@ -559,7 +557,7 @@ impl Catalog {
                 next.heaps.insert((r, c), self.heaps[kept].clone());
                 continue;
             }
-            let heap = m.create_heap(row_type(&next.schema, r, c), self.large)?;
+            let heap = m.create_heap(row_type(next.schema(), r, c), self.large)?;
             named.push(heap_root(rid, cid, &heap));
             next.heaps.insert((r, c), heap);
         }
@@ -569,7 +567,7 @@ impl Catalog {
             }
         }
         for (&id, spec) in b.indexing.specs() {
-            let rid = rel_id(&next.schema, spec.relation);
+            let rid = rel_id(next.schema(), spec.relation);
             let keys = b.indexing.keyed(id).clone();
             if !b.rewritten.contains(&rid) {
                 let (_, index, _) = &self.indexes[&id];
@@ -594,7 +592,7 @@ impl Catalog {
             next.indexes.insert(id, (spec.clone(), index, keys));
         }
         for (&id, (spec, index, _)) in &self.indexes {
-            if b.rewritten.contains(&rel_id(&self.schema, spec.relation)) {
+            if b.rewritten.contains(&rel_id(self.schema(), spec.relation)) {
                 gone.push(RootsRow::IndexRoot {
                     index: id,
                     at: index.tree().root(),
@@ -603,10 +601,10 @@ impl Catalog {
         }
         let rebuilding = Rebuilding {
             m,
-            old: &self.schema,
-            next: &next.schema,
+            old: self.schema(),
+            next: next.schema(),
             rewritten: b.rewritten,
-            keys: key_indexes(&next.schema, &next.indexes),
+            keys: key_indexes(next.schema(), &next.indexes),
         };
         let kept = (self.kept).rebuilt(&rebuilding, &next.heaps, &mut named, &mut gone)?;
         next.kept = kept;
@@ -640,7 +638,7 @@ impl Catalog {
             .heaps
             .iter()
             .map(|(&(r, c), h)| {
-                let id = (rel_id(&self.schema, r), ctor_id(&self.schema, r, c));
+                let id = (rel_id(self.schema(), r), ctor_id(self.schema(), r, c));
                 (id, h.id().0)
             })
             .collect();
@@ -674,10 +672,10 @@ impl Catalog {
         let old: BTreeMap<CatRelId, Held> = b
             .old
             .iter()
-            .map(|(r, rows)| (rel_id(&self.schema, *r), (*r, rows.as_slice())))
+            .map(|(r, rows)| (rel_id(self.schema(), *r), (*r, rows.as_slice())))
             .collect();
         for (&r, rows) in b.next.objects() {
-            let rid = rel_id(&next.schema, r);
+            let rid = rel_id(next.schema(), r);
             let (was, before) = old.get(&rid).copied().unwrap_or((r, &[]));
             let had: HashSet<&(u32, Vec<Value>)> = before.iter().collect();
             let fresh = rows.iter().filter(|&row| !had.contains(row));
@@ -692,7 +690,7 @@ impl Catalog {
                 }
             }
             for (c, rows) in gone {
-                let key = |row: &[Value]| stored_key(&self.schema, was, c, row);
+                let key = |row: &[Value]| stored_key(self.schema(), was, c, row);
                 let keys = rows.iter().map(|row| key(row)).collect();
                 delete_keyed(m, self.heap(was, c), keys, key)?;
             }
@@ -701,10 +699,10 @@ impl Catalog {
             return Ok(());
         }
         let previous = self.stored_hash(m)?;
-        let hash = oplog::Log::new(&next.schema).chained(previous, b.operators);
+        let hash = oplog::Log::new(next.schema()).chained(previous, b.operators);
         next.hash.made(hash);
         for (r, rows) in rows::recorded(
-            &next.schema,
+            next.schema(),
             &next.source,
             b.operators,
             hash,
@@ -721,7 +719,7 @@ impl Catalog {
         if self.source.version == 0 {
             return Ok([0; 32]);
         }
-        let codec = Codec::<MigrationRow>::new(&self.schema);
+        let codec = Codec::<MigrationRow>::new(self.schema());
         for (c, row) in self.rows(&Snapshot::of(m), codec.relation())? {
             let row = codec.decode(c, &row)?;
             if row.version() == self.source.version {

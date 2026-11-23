@@ -53,14 +53,14 @@ fn refused_invalid(got: Result<(), Error>, detail: &str) {
 fn replace_grant(authority: &Authority, field: &str, value: Val) {
     authority
         .access(true, |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let grants = t.read(e, tx, t.grants)?;
             assert_eq!(1, grants.len());
             let row = &grants[0];
             let Val::Ctor(ctor, values) = row else {
                 panic!("the grant fixture is a constructor");
             };
-            let declared = layout::row(&e.schema, t.grants, *ctor);
+            let declared = layout::row(e.schema(), t.grants, *ctor);
             let mut fields: Vec<_> = declared
                 .iter()
                 .zip(values.iter())
@@ -72,9 +72,9 @@ fn replace_grant(authority: &Authority, field: &str, value: Val) {
             changes.insert(
                 t.grants,
                 fixture_row(
-                    &e.schema,
+                    e.schema(),
                     t.grants,
-                    e.schema.engine_ctors().role_grant(),
+                    e.schema().engine_ctors().role_grant(),
                     fields,
                 ),
             );
@@ -110,13 +110,13 @@ fn ctor_of(schema: &Schema, r: RelId, name: &str) -> CtorRef {
 fn seed_mappings(authority: &Authority) {
     authority
         .access(true, |e, _, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let relation = t.peers;
             for (ordinal, role) in [(1, "web"), (3, "other"), (7, "web")] {
                 let row = fixture_row(
-                    &e.schema,
+                    e.schema(),
                     relation,
-                    ctor_of(&e.schema, relation, "PeerMapping"),
+                    ctor_of(e.schema(), relation, "PeerMapping"),
                     vec![
                         ("listener", Val::text("local")),
                         ("ordinal", Val::Int(ordinal)),
@@ -134,13 +134,13 @@ fn seed_mappings(authority: &Authority) {
 fn seed_credentials(authority: &Authority) {
     authority
         .access(true, |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             for name in ["web", "other"] {
                 let role = t.role(e, tx, name)?;
                 let row = fixture_row(
-                    &e.schema,
+                    e.schema(),
                     t.credentials,
-                    ctor_of(&e.schema, t.credentials, "Credential"),
+                    ctor_of(e.schema(), t.credentials, "Credential"),
                     vec![
                         ("id", Val::Int(role.id.0)),
                         ("role", Val::Int(role.id.0)),
@@ -315,7 +315,7 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
             rt.clone().spawn("writer", move || {
                 let got = authority.access(true, |e, tx, id, changes| {
                     let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                    let t = Tables::new(&e.schema, id);
+                    let t = Tables::new(e.schema(), id);
                     t.role(e, tx, "web")?;
                     let grants = t.grants(e, tx)?;
                     assert!(grants.is_empty());
@@ -564,12 +564,12 @@ fn a_self_given_option_is_no_remaining_option_and_is_deleted_with_its_revoke() {
 fn dormant_owner_grant(authority: &Authority) {
     authority
         .access(true, |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             for row in t.read(e, tx, t.grants)? {
                 let Val::Ctor(ctor, values) = &row else {
                     panic!("the grant fixture is a constructor");
                 };
-                let declared = layout::row(&e.schema, t.grants, *ctor);
+                let declared = layout::row(e.schema(), t.grants, *ctor);
                 let mut fields: Vec<_> = declared
                     .iter()
                     .zip(values.iter())
@@ -588,9 +588,9 @@ fn dormant_owner_grant(authority: &Authority) {
                     changes.insert(
                         t.grants,
                         fixture_row(
-                            &e.schema,
+                            e.schema(),
                             t.grants,
-                            e.schema.engine_ctors().role_grant(),
+                            e.schema().engine_ctors().role_grant(),
                             fields,
                         ),
                     );
@@ -698,7 +698,7 @@ fn a_role_dropped_in_the_admit_window_refuses_with_its_audit_row() {
             let w = authority.session("w").unwrap();
             authority.drop_role("w").unwrap();
             let denied_rows = "from a in catalog::audit.Denied select a.seq";
-            let service = super::service(&db.engine.schema, "w");
+            let service = super::service(db.engine.schema(), "w");
             assert_eq!(0, rows(db, denied_rows).len());
             denied(
                 authority.admit_principal(
@@ -845,7 +845,7 @@ fn a_bundle_with_no_text_cannot_be_read_until_it_is_presented_or_retired() {
             s.deployed.registered.remove(&id);
         });
         let got = authority.access(false, |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let grants = t.grants(e, tx)?;
             let deleted = grants
                 .iter()

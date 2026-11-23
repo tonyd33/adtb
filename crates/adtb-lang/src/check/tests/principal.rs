@@ -29,7 +29,7 @@ fn root_principal_checks_in_unrelated_schema_functions_and_bundle_scopes() {
             let ExampleItem::BundleItem(BundleItem::Query(query)) = items.remove(0) else {
                 panic!("the example holds a query");
             };
-            check_query_in(&schema, &program, scope.clone(), &query)
+            check_query_in(&program, scope.clone(), &query)
                 .unwrap_or_else(|e| panic!("{scope:?}: {text}: {e:?}"));
         }
         let incomplete =
@@ -44,7 +44,7 @@ fn root_principal_checks_in_unrelated_schema_functions_and_bundle_scopes() {
                 Span::new(at, incomplete.len()),
                 "match does not cover `Anonymous`"
             )),
-            check_query_in(&schema, &program, scope.clone(), &query).map(|_| ()),
+            check_query_in(&program, scope.clone(), &query).map(|_| ()),
             "{scope:?}"
         );
     }

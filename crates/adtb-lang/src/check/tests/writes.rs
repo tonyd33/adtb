@@ -64,9 +64,9 @@ fn run(params: &[(&str, &str)], text: &str) -> Result<(Committed, Adhoc), Vec<St
     }
     let items = parsed.ok().expect("parsed");
     let program = check_schema(&s).expect("the schema checks");
-    match check_adhoc(&s, &program, &items, &tys) {
+    match check_adhoc(&program, &items, &tys) {
         Ok(a) => {
-            adhoc_one_binding_site(&s, &program, &a);
+            adhoc_one_binding_site(&program, &a);
             Ok((s, a))
         }
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
@@ -1335,7 +1335,8 @@ fn registered_transactions() {
 #[test]
 fn a_retag_action_is_elaborated_per_relation() {
     let s = wschema();
-    let p = check_schema(&s).expect("checks");
+    let compiled = check_schema(&s).expect("checks");
+    let p = compiled.program();
     let logins = rel_id(&s, "logins");
     let tm = p.retags[&logins];
     let Kind::Lam(x, body) = p.terms.kind(tm) else {

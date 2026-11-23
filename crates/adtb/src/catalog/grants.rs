@@ -138,7 +138,7 @@ impl Catalog {
         txns: &Transactions<R>,
         seen: (&Hold, Option<Xid>),
     ) -> Result<Vec<Stored>, Error> {
-        let codec = Codec::<RoleGrant>::new(&self.schema);
+        let codec = Codec::<RoleGrant>::new(self.schema());
         self.rows(&Snapshot::new(pager, txns, seen), codec.relation())?
             .into_iter()
             .map(|(c, row)| {
@@ -172,16 +172,16 @@ impl Catalog {
             }
             for o in rows
                 .iter()
-                .filter(|o| lost.supports(&self.schema, &NoCalls, o))
+                .filter(|o| lost.supports(self.schema(), &NoCalls, o))
             {
                 let logged = grants.iter().any(|g| {
-                    target(&into.schema, g)
-                        .is_ok_and(|t| log_grant_row(g, &t).keeps(&into.schema, &NoCalls, o))
+                    target(into.schema(), g)
+                        .is_ok_and(|t| log_grant_row(g, &t).keeps(into.schema(), &NoCalls, o))
                 });
                 let deployed = stored
                     .iter()
                     .zip(&rows)
-                    .any(|(d, r)| !d.log() && r.keeps(&self.schema, &NoCalls, o));
+                    .any(|(d, r)| !d.log() && r.keeps(self.schema(), &NoCalls, o));
                 if !logged && !deployed {
                     why.push(format!(
                         "revoking `{0}` from `{1}` takes the grant option of the grant of `{0}` on `{2}` that `{1}` gave to `{3}`",
@@ -198,9 +198,9 @@ impl Catalog {
                 .iter()
                 .zip(&rows)
                 .any(|(s, r)| Some(s.grant.id()) == g.row && r.grant_option);
-            let text = target(&into.schema, g)?;
+            let text = target(into.schema(), g)?;
             let new = log_grant_row(g, &text);
-            if !had && closes_option_cycle(&into.schema, &NoCalls, &rows, new) {
+            if !had && closes_option_cycle(into.schema(), &NoCalls, &rows, new) {
                 why.push(format!(
                     "`{}` on `{text}` with grant option to `{}` would close a cycle of grant options",
                     new.privilege, g.role
@@ -222,7 +222,7 @@ impl Catalog {
         txns: &Transactions<R>,
         seen: (&Hold, Option<Xid>),
     ) -> Result<BTreeMap<i64, String>, Error> {
-        let codec = Codec::<RoleRow>::new(&self.schema);
+        let codec = Codec::<RoleRow>::new(self.schema());
         self.rows(&Snapshot::new(pager, txns, seen), codec.relation())?
             .into_iter()
             .map(|(c, row)| {
@@ -271,13 +271,13 @@ impl Catalog {
         let hold = txns.take(Scope::Every)?;
         let stored = self.stored_grants(pager, txns, (&hold, None));
         drop(hold);
-        let shape = Shape::of(&self.schema);
+        let shape = Shape::of(self.schema());
         for s in stored?.into_iter().filter(Stored::log) {
             let id = s.grant.id();
             let at = self.source.grants.iter().position(|g| {
                 g.row.is_none()
                     && shape
-                        .log_row(&self.schema, g, id)
+                        .log_row(self.schema(), g, id)
                         .is_ok_and(|row| row == s.row)
             });
             let Some(at) = at else {
@@ -357,7 +357,7 @@ impl Catalog {
         named: &BTreeSet<String>,
         mode: Grantees,
     ) -> Result<Vec<Dormant>, Error> {
-        let schema = &into.schema;
+        let schema = &into.schema();
         let shape = Shape::of(schema);
         let stored = self.stored_grants(m.pager, m.txns, (&m.hold, Some(m.x)))?;
         let old: BTreeMap<i64, &Stored> = stored

@@ -39,13 +39,13 @@ impl Changes {
         let mut changes = Vec::new();
         for (rel, insert, row) in &self.rows {
             let ty = Ty::Set(Box::new(Ty::Data {
-                def: e.schema.relation(*rel).elem_def,
+                def: e.schema().relation(*rel).elem_def,
                 args: Vec::new(),
                 ctors: None,
             }));
             let var = terms.var("row·", ty.clone());
             params.push((var, Val::set([row.clone()].into())));
-            let mut b = Build::new(&e.schema, &mut terms);
+            let mut b = Build::new(e.schema(), &mut terms);
             let rows = b.var(var);
             changes.push(if *insert {
                 b.insert(*rel, rows)
@@ -53,9 +53,9 @@ impl Changes {
                 b.delete(*rel, rows)
             });
         }
-        let change = Build::new(&e.schema, &mut terms).par(changes);
+        let change = Build::new(e.schema(), &mut terms).par(changes);
         let text = Text {
-            schema: &e.schema,
+            schema: e.schema(),
             terms: &terms,
             items: &[change],
             params: &params,

@@ -406,9 +406,10 @@ fn migrated(source: &Source, text: &str) -> Source {
 fn a_redefinition_rewrites_the_relation_of_a_dependent_index_only_when_the_body_changes() {
     for via in Via::ALL.into_iter().filter(|v| v.reaches(Dependent::Index)) {
         let before = migrated(&Source::default(), &declared(Dependent::Index, via));
-        let (old, old_program) = before.check().expect("the source checks");
+        let old_compiled = before.check().expect("the source checks");
+        let old = old_compiled.schema();
         let items = rel_id(
-            &old,
+            old,
             *old.module(old.module_named("app").expect("app"))
                 .values
                 .get("items")
@@ -420,7 +421,8 @@ fn a_redefinition_rewrites_the_relation_of_a_dependent_index_only_when_the_body_
         );
         for body in [Body::Same, Body::Holds, Body::Breaks] {
             let after = migrated(&before, &redefined(via, body));
-            let (new, new_program) = after.check().expect("the source checks");
+            let new_compiled = after.check().expect("the source checks");
+            let new = new_compiled.schema();
             let want = match body {
                 Body::Same => BTreeSet::new(),
                 Body::Holds | Body::Breaks => BTreeSet::from([items]),
@@ -428,9 +430,9 @@ fn a_redefinition_rewrites_the_relation_of_a_dependent_index_only_when_the_body_
             assert_eq!(
                 want,
                 change::rewritten(
-                    &old,
-                    &new,
-                    &adtb_lang::depends::changed(&old, &old_program, &new, &new_program),
+                    old,
+                    new,
+                    &adtb_lang::depends::changed(&old_compiled, &new_compiled),
                 ),
                 "{via:?} under {body:?}"
             );

@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use adtb_lang::ast::{AdhocItem, BundleItem, ExampleItem};
-use adtb_lang::check::{Checker, Program, check_adhoc, check_query, check_schema, check_txn};
+use adtb_lang::check::{
+    Checker, Compiled, Program, check_adhoc, check_query, check_schema, check_txn,
+};
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Committed, States, ValueDef, build, build_with};
@@ -16,8 +18,7 @@ use adtb_reference::{
 #[derive(Debug)]
 pub struct Fixture {
     decls: Option<String>,
-    pub schema: Committed,
-    pub program: Program,
+    compiled: Compiled,
     pub db: Database,
     pub supply: Supply,
     /// The constructors not open for writes.
@@ -35,12 +36,10 @@ impl Fixture {
             .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"));
         let schema = build(&[(FileId(0), file)])
             .unwrap_or_else(|ds| panic!("the schema does not build: {ds:?}"));
-        let program =
-            check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
         Fixture {
             decls: Some(src.to_owned()),
-            schema,
-            program,
+            compiled: check_schema(schema)
+                .unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}")),
             db: Database::new(),
             supply: Supply::default(),
             closed: BTreeMap::new(),
@@ -48,12 +47,11 @@ impl Fixture {
         }
     }
 
-    /// Returns the fixture of `schema`, checked as `program`, holding no row.
-    pub fn of_schema(schema: Committed, program: Program) -> Fixture {
+    /// Returns the fixture of a checked schema holding no row.
+    pub fn of_schema(compiled: Compiled) -> Fixture {
         Fixture {
             decls: None,
-            schema,
-            program,
+            compiled,
             db: Database::new(),
             supply: Supply::default(),
             closed: BTreeMap::new(),
@@ -67,13 +65,25 @@ impl Fixture {
         self.decls.as_deref()
     }
 
+    pub fn compiled(&self) -> &Compiled {
+        &self.compiled
+    }
+
+    pub fn schema(&self) -> &Committed {
+        self.compiled.committed()
+    }
+
+    pub fn program(&self) -> &Program {
+        self.compiled.program()
+    }
+
     /// Rebuild the schema with constructor `c` of relation `rel` in write state `stage`, its ids
     /// unchanged.
     ///
     /// Preconditions: the fixture was made by [`Fixture::new`].
     pub fn stage_relation(&mut self, (rel, c): (RelId, u32), stage: adtb_lang::schema::Stage) {
-        let ids = self.schema.ids();
-        let def = self.schema.relation(rel).elem_def;
+        let ids = self.schema().ids();
+        let def = self.schema().relation(rel).elem_def;
         let key = (
             ids.relation_id(rel).expect("the relation has an id"),
             self.ctor_id(def, c),
@@ -96,11 +106,11 @@ impl Fixture {
 
     fn ctor_id(&self, t: TypeId, c: u32) -> adtb_lang::ids::CatCtorId {
         let c = self
-            .schema
+            .schema()
             .ty(t)
             .ctor_at(c)
             .expect("a constructor of the type");
-        self.schema
+        self.schema()
             .ids()
             .ctor_id(c)
             .expect("the constructor has an id")
@@ -114,33 +124,37 @@ impl Fixture {
         let file = parse_schema(&format!("module app\n{decls}"), Options::default())
             .ok()
             .expect("the fixture's schema parses");
-        let mut states = self.schema.states();
+        let mut states = self.schema().states();
         change(&mut states);
-        let ids = self.schema.ids().clone();
+        let ids = self.schema().ids().clone();
         let schema = build_with(&[(FileId(0), file)], &[], &|_| ids.clone(), &states)
             .unwrap_or_else(|ds| panic!("the fixture's schema does not build: {ds:?}"));
-        self.schema = Committed::new(schema).expect("a schema built with nothing ahead commits");
+        self.compiled = checked(schema);
     }
 
     /// Returns the declared type `name` of the module and the index of its constructor `ctor`.
     pub fn ctor(&self, name: &str, ctor: &str) -> (TypeId, u32) {
-        let t = self.schema.modules
-            [self.schema.module_named("app").expect("the module").0 as usize]
+        let t = self.schema().modules
+            [self.schema().module_named("app").expect("the module").0 as usize]
             .types[name];
-        let c = self.schema.ty(t).ctor_index(ctor).expect("the constructor");
+        let c = self
+            .schema()
+            .ty(t)
+            .ctor_index(ctor)
+            .expect("the constructor");
         (t, c)
     }
 
     pub fn rel(&self, name: &str) -> RelId {
-        let m = self.schema.module_named("app").expect("the module");
-        match self.schema.module(m).values.get(name) {
+        let m = self.schema().module_named("app").expect("the module");
+        match self.schema().module(m).values.get(name) {
             Some(&ValueDef::Relation(r)) => r,
             _ => panic!("no relation `{name}`"),
         }
     }
 
     pub fn interp(&self) -> Interpreter<'_> {
-        Interpreter::new(&self.schema, &self.program, &self.db)
+        Interpreter::new(self.schema(), self.program(), &self.db)
             .with_closed(self.closed.clone())
             .with_files(&self.files)
     }
@@ -167,7 +181,7 @@ impl Fixture {
         let parsed = parse_type(text, Options::default())
             .ok()
             .unwrap_or_else(|_| panic!("`{text}` is not a type"));
-        Checker::of_adhoc(&self.schema, Visible::all(&self.schema))
+        Checker::of_adhoc(self.schema(), Visible::all(self.schema()))
             .resolve_type(&parsed, adtb_lang::schema::FnTypes::Allowed)
             .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
     }
@@ -182,7 +196,7 @@ impl Fixture {
             .iter()
             .map(|(n, t, _)| (n.to_string(), self.ty(t)))
             .collect();
-        let adhoc = check_adhoc(&self.schema, &self.program, &items, &tys)
+        let adhoc = check_adhoc(&self.compiled, &items, &tys)
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
         let [item] = adhoc.items.as_slice() else {
             panic!("`{text}` holds one statement")
@@ -200,7 +214,7 @@ impl Fixture {
             return false;
         };
         matches!(items.as_slice(), [AdhocItem::Expr(_)])
-            && check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new()).is_ok()
+            && check_adhoc(&self.compiled, &items, &BTreeMap::new()).is_ok()
     }
 
     /// Run the one statement of ad hoc text `text` over `params`; when it succeeds, its state
@@ -217,7 +231,7 @@ impl Fixture {
             .iter()
             .map(|(n, t, _)| (n.to_string(), self.ty(t)))
             .collect();
-        let adhoc = check_adhoc(&self.schema, &self.program, &items, &tys)
+        let adhoc = check_adhoc(&self.compiled, &items, &tys)
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
         let [item] = adhoc.items.as_slice() else {
             panic!("`{text}` holds one statement")
@@ -226,7 +240,7 @@ impl Fixture {
             .iter()
             .map(|(n, _, v)| (adhoc.params[*n], v.clone()))
             .collect();
-        let normal = adtb_lang::norm::adhoc(&self.schema, &self.program, &adhoc)
+        let normal = adtb_lang::norm::adhoc(&self.compiled, &adhoc)
             .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
         let normal_bound: Vec<_> = params
             .iter()
@@ -258,7 +272,7 @@ impl Fixture {
         let items: Vec<AdhocItem> = parse_adhoc(text, Options::default())
             .ok()
             .unwrap_or_else(|ds| panic!("`{text}` does not parse: {ds:?}"));
-        let adhoc = check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new())
+        let adhoc = check_adhoc(&self.compiled, &items, &BTreeMap::new())
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
         let ordinals: Vec<usize> = items
             .iter()
@@ -271,8 +285,9 @@ impl Fixture {
             })
             .map(|(k, _)| k + 1)
             .collect();
-        let schema = adhoc.schema(&self.schema);
-        let normal = adtb_lang::norm::adhoc(schema, &self.program, &adhoc)
+        let schema = adhoc.schema(self.compiled.committed());
+        let program = self.compiled.program();
+        let normal = adtb_lang::norm::adhoc(&self.compiled, &adhoc)
             .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
         let mut db = self.db.clone();
         let mut normal_db = self.db.clone();
@@ -281,7 +296,7 @@ impl Fixture {
         let mut failed = None;
         for (i, (&item, &normal_item)) in adhoc.items.iter().zip(normal.items()).enumerate() {
             let run = |db: &Database, terms, item, supply: &mut Supply| {
-                Interpreter::new(schema, &self.program, db)
+                Interpreter::new(schema, program, db)
                     .with_closed(self.closed.clone())
                     .with_files(&self.files)
                     .run(terms, item, &[], supply)
@@ -309,7 +324,7 @@ impl Fixture {
         if let Some(f) = failed {
             return Err(f);
         }
-        let declared = self.schema.relations.len();
+        let declared = self.schema().relations.len();
         db.retain(|(r, _), _| (r.0 as usize) < declared);
         self.db = db;
         Ok(out)
@@ -347,10 +362,10 @@ impl Fixture {
         let [ExampleItem::BundleItem(BundleItem::Txn(t))] = items.as_slice() else {
             panic!("`{decl}` is one transaction")
         };
-        let module = self.schema.module_named("app").expect("the module");
-        let txn = check_txn(&self.schema, &self.program, module, t)
+        let module = self.schema().module_named("app").expect("the module");
+        let txn = check_txn(&self.compiled, module, t)
             .unwrap_or_else(|d| panic!("`{decl}` does not check: {}", d.message));
-        let normal = adtb_lang::norm::txn(&self.schema, &self.program, &txn)
+        let normal = adtb_lang::norm::txn(&self.compiled, &txn)
             .unwrap_or_else(|e| panic!("`{decl}` has no normal form: {e:?}"));
         let normal_bound: Vec<_> = if normal.params().len() == args.len() {
             normal
@@ -414,8 +429,8 @@ impl Fixture {
         let [ExampleItem::BundleItem(BundleItem::Query(q))] = items.as_slice() else {
             panic!("`{decl}` is one query")
         };
-        let module = self.schema.module_named("app").expect("the module");
-        let query = check_query(&self.schema, &self.program, module, q)
+        let module = self.schema().module_named("app").expect("the module");
+        let query = check_query(&self.compiled, module, q)
             .unwrap_or_else(|d| panic!("`{decl}` does not check: {}", d.message));
         self.interp().apply(&query.terms, query.term, args)
     }
@@ -460,4 +475,9 @@ pub fn key(i: i64) -> Value {
 
 pub fn keys(is: impl IntoIterator<Item = i64>) -> Value {
     Value::set(is.into_iter().map(key))
+}
+
+fn checked(schema: adtb_lang::schema::Schema) -> Compiled {
+    let schema = Committed::new(schema).expect("a schema built with nothing ahead commits");
+    check_schema(schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"))
 }

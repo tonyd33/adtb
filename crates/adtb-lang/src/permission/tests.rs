@@ -53,8 +53,8 @@ fn requirements(s: &Committed, params: &[(&str, &str)], text: &str) -> Requireme
         .ok()
         .expect("text parses");
     let checked =
-        check_adhoc(s, &program, &items, &params).unwrap_or_else(|e| panic!("{text}: {e:?}"));
-    adhoc(s, &program, &checked)
+        check_adhoc(&program, &items, &params).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+    adhoc(&program, &checked)
         .expect("requirements analyze")
         .remove(0)
 }
@@ -543,9 +543,9 @@ fn a_reachable_missing_catalog_identity_is_an_explicit_error() {
     let items = parse_adhoc("count(x for x in left)", Options::default())
         .ok()
         .expect("parses");
-    let checked = check_adhoc(&s, &program, &items, &BTreeMap::new()).expect("checks");
+    let checked = check_adhoc(&program, &items, &BTreeMap::new()).expect("checks");
     assert_eq!(
-        adhoc(&s, &program, &checked),
+        adhoc(&program, &checked),
         Err(Error::MissingIdentity(crate::ids::Slot::Relation(rel)))
     );
 }
@@ -755,13 +755,12 @@ fn registered(s: &Committed, text: &str) -> Requirements {
         .expect("declaration parses");
     match items.into_iter().next() {
         Some(ExampleItem::BundleItem(BundleItem::Query(q))) => {
-            let q =
-                check_query(s, &program, module, &q).unwrap_or_else(|e| panic!("{text}: {e:?}"));
-            query(s, &program, &q).expect("requirements analyze")
+            let q = check_query(&program, module, &q).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            query(&program, &q).expect("requirements analyze")
         }
         Some(ExampleItem::BundleItem(BundleItem::Txn(t))) => {
-            let t = check_txn(s, &program, module, &t).unwrap_or_else(|e| panic!("{text}: {e:?}"));
-            txn(s, &program, &t).expect("requirements analyze")
+            let t = check_txn(&program, module, &t).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            txn(&program, &t).expect("requirements analyze")
         }
         _ => panic!("{text}\nis not a query or transaction"),
     }
@@ -1235,7 +1234,7 @@ fn key_of_charges_only_what_follows_it() {
 
 fn constraint(s: &Committed) -> Requirements {
     let program = check_schema(s).expect("schema checks");
-    let normal = crate::norm::program(s, &program).expect("program normalizes");
+    let normal = crate::norm::program(&program).expect("program normalizes");
     let (_, t) = normal.constraints().next().expect("a constraint");
     analyze(s, &normal, normal.terms(), t, &[]).expect("requirements analyze")
 }

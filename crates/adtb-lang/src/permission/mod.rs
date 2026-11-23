@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::check::{Adhoc, Program, Query, Txn};
+use crate::check::{Adhoc, AsCommitted, Compiled, Query, Txn};
 use crate::ids::{CatCtorId, CatFieldId, CatRelId};
 use crate::kernel::{Terms, Tm, Var};
 use crate::norm::NormalProgram;
@@ -104,11 +104,11 @@ pub enum Error {
 }
 
 /// Returns the requirements of a checked registered query.
-pub fn query(schema: &Committed, program: &Program, query: &Query) -> Result<Requirements, Error> {
-    let normal = crate::norm::query(schema, program, query).map_err(Error::Normalization)?;
-    let program = normal_program(schema, program)?;
+pub fn query(c: &Compiled<impl AsCommitted>, query: &Query) -> Result<Requirements, Error> {
+    let normal = crate::norm::query(c, query).map_err(Error::Normalization)?;
+    let program = crate::norm::program(c).map_err(Error::Normalization)?;
     analyze(
-        schema,
+        c.committed(),
         &program,
         normal.terms(),
         normal.body(),
@@ -117,11 +117,11 @@ pub fn query(schema: &Committed, program: &Program, query: &Query) -> Result<Req
 }
 
 /// Returns the requirements of a checked registered transaction.
-pub fn txn(schema: &Committed, program: &Program, txn: &Txn) -> Result<Requirements, Error> {
-    let normal = crate::norm::txn(schema, program, txn).map_err(Error::Normalization)?;
-    let program = normal_program(schema, program)?;
+pub fn txn(c: &Compiled<impl AsCommitted>, txn: &Txn) -> Result<Requirements, Error> {
+    let normal = crate::norm::txn(c, txn).map_err(Error::Normalization)?;
+    let program = crate::norm::program(c).map_err(Error::Normalization)?;
     analyze(
-        schema,
+        c.committed(),
         &program,
         normal.terms(),
         normal.body(),
@@ -142,24 +142,16 @@ pub fn normal(
 }
 
 /// Returns the requirements of each statement in checked ad hoc text.
-pub fn adhoc(
-    schema: &Committed,
-    program: &Program,
-    adhoc: &Adhoc,
-) -> Result<Vec<Requirements>, Error> {
-    let schema = adhoc.schema(schema);
-    let normal = crate::norm::adhoc(schema, program, adhoc).map_err(Error::Normalization)?;
+pub fn adhoc(c: &Compiled<impl AsCommitted>, adhoc: &Adhoc) -> Result<Vec<Requirements>, Error> {
+    let schema = adhoc.schema(c.committed());
+    let normal = crate::norm::adhoc(c, adhoc).map_err(Error::Normalization)?;
     let params: Vec<Var> = normal.params().values().copied().collect();
-    let program = normal_program(schema, program)?;
+    let program = crate::norm::program_of(schema, c.program()).map_err(Error::Normalization)?;
     normal
         .items()
         .iter()
         .map(|&root| analyze(schema, &program, normal.terms(), root, &params))
         .collect()
-}
-
-fn normal_program(schema: &Schema, program: &Program) -> Result<NormalProgram, Error> {
-    crate::norm::program(schema, program).map_err(Error::Normalization)
 }
 
 fn analyze(

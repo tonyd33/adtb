@@ -55,7 +55,7 @@ use std::task::Waker;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adtb_file::Disk;
-use adtb_lang::check::{Bundles, Program};
+use adtb_lang::check::{Bundles, Compiled};
 use adtb_lang::evolve::{Logged, Privilege, Replaying, Source};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
@@ -354,10 +354,9 @@ impl<R: Runtime> Clone for Database<R> {
 
 struct Engine<R: Runtime> {
     rt: R,
-    schema: Arc<CommittedSchema>,
+    compiled: Compiled,
     sums: error_value::Sums,
     audit: catalog::codec::Codec<server::AuditRow>,
-    program: Arc<Program>,
     /// The source of the version the database is at.
     source: Source,
     /// The hash of the version the database is at.
@@ -429,6 +428,10 @@ impl<R: Runtime> Drop for Engine<R> {
 }
 
 impl<R: Runtime> Engine<R> {
+    fn schema(&self) -> &Arc<CommittedSchema> {
+        self.compiled.shared_schema()
+    }
+
     /// Returns the engine held open for one call, or refuses a call of a closed database.
     fn enter(&self) -> Result<std::sync::RwLockReadGuard<'_, bool>, Error> {
         let open = self.open.read(&self.rt);
@@ -536,7 +539,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the schema ad hoc text is checked against.
     pub fn schema(&self) -> &CommittedSchema {
-        &self.engine.schema
+        self.engine.schema()
     }
 
     /// Run ad hoc text as one transaction, each free name of it bound by `params` to a value of
@@ -556,7 +559,7 @@ impl<R: Runtime> Database<R> {
         let e = &*self.engine;
         let _open = e.enter()?;
         let caller = e.principal(opts.assert.as_ref())?;
-        let p = Prepared::new(&e.schema, &e.program, &e.explained(), text, params, caller);
+        let p = Prepared::new(&e.compiled, &e.explained(), text, params, caller);
         let p = e.admit_text(p)?;
         e.call(&p, opts, || {}).map(|done| done.value)
     }
@@ -578,7 +581,7 @@ impl<R: Runtime> Database<R> {
     pub(crate) fn verify_holding(&self) -> Result<DynRows, Error> {
         let e = &*self.engine;
         let _open = e.enter()?;
-        e.verified_holding(&e.schema)
+        e.verified_holding(e.schema())
             .map_err(|w| e.write_error(TxnId(0), w))
     }
 
@@ -752,8 +755,7 @@ struct Opened<R: Runtime> {
 
 /// What an engine holds besides its file and write path.
 struct Parts {
-    schema: Arc<CommittedSchema>,
-    program: Arc<Program>,
+    compiled: Compiled,
     registered: Vec<registered::Checked>,
     bundles: Bundles,
     deployed: bundle::Stored,
@@ -890,20 +892,19 @@ impl<R: Runtime> Engine<R> {
     ) -> Result<Opened<R>, OpenError> {
         let catalog = Catalog::unread(&pager).map_err(corrupt)?;
         let txns = Transactions::refusing(rt.clone(), &pager, damage);
-        let (schema, program) = catalog.checking();
-        let (schema, program) = (Arc::new(schema.clone()), program.clone());
-        let normal = migrate::normal(&schema, &program)?;
+        let compiled = catalog.checking().clone();
+        let schema = compiled.shared_schema().clone();
+        let normal = migrate::normal(&compiled)?;
         let (findings, volatile) =
             verify::held_rows(&catalog, &pager, &txns, &schema, options, true)?;
-        let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
+        let setup = setup_of(&catalog, schema, normal, &pager, txns, options);
         let db = write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
             .map_err(corrupt)?
             .with_volatile(volatile);
         Ok(Opened {
             rt,
             parts: Parts {
-                schema,
-                program,
+                compiled,
                 registered: Vec::new(),
                 bundles: Bundles::default(),
                 deployed: bundle::Stored::default(),
@@ -944,17 +945,19 @@ impl<R: Runtime> Engine<R> {
             findings: Lock::new(parts.findings),
             fail_kept: Lock::new(None),
         });
-        let background =
-            maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)?
-                .vacuuming(options.background_vacuum())
-                .owing(owed, !pager.refused_whole());
+        let background = maintenance::Background::new(
+            verifier.clone(),
+            parts.compiled.shared_schema().clone(),
+            &parts.settings,
+        )?
+        .vacuuming(options.background_vacuum())
+        .owing(owed, !pager.refused_whole());
         let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
         Ok(Engine {
             rt,
-            sums: error_value::Sums::new(&parts.schema),
-            audit: catalog::codec::Codec::new(&parts.schema),
-            schema: parts.schema,
-            program: parts.program,
+            sums: error_value::Sums::new(parts.compiled.committed()),
+            audit: catalog::codec::Codec::new(parts.compiled.committed()),
+            compiled: parts.compiled,
             source: catalog.source().clone(),
             hash: catalog.version_hash(),
             bundles: Lock::new(Arc::new(parts.bundles)),
@@ -1069,15 +1072,18 @@ impl<R: Runtime> Engine<R> {
         } else {
             migrate::Migrated::unwritten(&pager)
         };
-        let (schema, program) = catalog.checking();
-        let (schema, program) = (schema.clone(), program.clone());
-        let normal = migrated.then(|| migrate::normal(&schema, &program))?;
+        let compiled = catalog.checking().clone();
+        let normal = migrated.then(|| migrate::normal(&compiled))?;
         let pending = host::pending(log, catalog.source().log.len());
-        migrated.then(|| options.host_fns.bound(&schema, &normal, &pending))?;
-        let schema = Arc::new(schema);
+        migrated.then(|| {
+            options
+                .host_fns
+                .bound(compiled.committed(), &normal, &pending)
+        })?;
+        let schema = compiled.shared_schema().clone();
         let now = micros(pager.wall());
         let hash = catalog.version_hash();
-        let over = registered::Over::new(catalog.source(), &schema, &program, &hash);
+        let over = registered::Over::new(catalog.source(), &compiled, &hash);
         let registered = match unapplied {
             None => migrated.then(|| registered::register(&over, regs, &stored, now, &settings))?,
             Some(_) => Vec::new(),
@@ -1115,7 +1121,7 @@ impl<R: Runtime> Engine<R> {
         } else {
             None
         };
-        let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
+        let setup = setup_of(&catalog, schema, normal, &pager, txns, options);
         let db = migrated
             .then(|| {
                 write::Database::new(rt.clone(), setup, &catalog.declared_indexes())
@@ -1141,8 +1147,7 @@ impl<R: Runtime> Engine<R> {
         Ok(Opened {
             rt,
             parts: Parts {
-                schema,
-                program,
+                compiled,
                 registered,
                 bundles,
                 deployed,
@@ -1166,7 +1171,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     fn write_error(&self, txn: TxnId, e: write::Error) -> Error {
-        Error::of_write(&self.db, &self.schema, txn, self.db.fail(e))
+        Error::of_write(&self.db, self.schema(), txn, self.db.fail(e))
     }
 
     /// Returns the client error of `e`, met writing catalog rows.
@@ -1351,8 +1356,8 @@ impl<R: Runtime> Engine<R> {
     /// principal, else the schema owner's service principal. Refuses a service principal with
     /// `Denied` and a value of another type as invalid.
     fn principal(&self, assert: Option<&Val>) -> Result<Val, Error> {
-        let def = &self.schema.types[self.schema.principal.0 as usize];
-        let service = self.schema.engine_ctors().service().index();
+        let def = &self.schema().types[self.schema().principal.0 as usize];
+        let service = self.schema().engine_ctors().service().index();
         let Some(v) = assert else {
             return Ok(Val::ctor(service, vec![Val::text(OWNER_ROLE)]));
         };
@@ -1365,7 +1370,7 @@ impl<R: Runtime> Engine<R> {
             _ => None,
         };
         let principal = Ty::Data {
-            def: self.schema.principal,
+            def: self.schema().principal,
             args: Vec::new(),
             ctors: None,
         };
@@ -1374,7 +1379,7 @@ impl<R: Runtime> Engine<R> {
                 detail: "a service principal is the role the handle acts as; it is never asserted"
                     .into(),
             })),
-            Some(_) if value::valid(&self.schema, &principal, v) => Ok(v.clone()),
+            Some(_) if value::valid(self.schema(), &principal, v) => Ok(v.clone()),
             Some(_) | None => Err(Error::invalid(
                 "an asserted principal is a value of the schema's `Principal`",
             )),

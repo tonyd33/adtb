@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use adtb_lang::ast::{BundleItem, FnDecl, QName};
 use adtb_lang::capability::RootKind;
-use adtb_lang::check::{Program, check_adhoc};
+use adtb_lang::check::{Compiled, check_adhoc};
 use adtb_lang::ids::CatFunctionId;
 use adtb_lang::kernel::{self, Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc};
-use adtb_lang::schema::{Committed as CommittedSchema, Schema};
+use adtb_lang::schema::Schema;
 use adtb_lang::signature::{self, Item};
 use adtb_lang::types::{FnId, Ty};
 
@@ -23,7 +23,7 @@ use super::{Callable, Checked, Entry, Over, Registration, joined};
 /// Check and normalise registration `r` over `over`.
 pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
     let (imports, items) = r.body()?;
-    let vis = signature::visible(over.schema, &imports).map_err(Error::invalid)?;
+    let vis = signature::visible(over.compiled.schema(), &imports).map_err(Error::invalid)?;
     let fns: Vec<&FnDecl> = items
         .iter()
         .filter_map(|i| match i {
@@ -31,22 +31,16 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
             _ => None,
         })
         .collect();
-    let extended = signature::with_functions(over.source, over.schema, &vis, &fns, &r.text)
-        .map_err(|f| match catalog::refused_by(f) {
-            Ok(why) => Error::invalid(why),
-            Err(b) => Error::internal(Broken::Catalog(*b)),
-        })?
-        .map(|(s, p)| {
-            Ok::<_, Error>((
-                Arc::new(super::settled(s).map_err(Error::rejected)?),
-                Arc::new(p),
-            ))
-        })
-        .transpose()?;
-    let (schema, program) = match &extended {
-        Some((s, p)) => (s, p),
-        None => (over.schema, over.program),
-    };
+    let extended =
+        signature::with_functions(over.source, over.compiled.schema(), &vis, &fns, &r.text)
+            .map_err(|f| match catalog::refused_by(f) {
+                Ok(why) => Error::invalid(why),
+                Err(b) => Error::internal(Broken::Catalog(*b)),
+            })?
+            .map(|c| super::settled(c).map_err(Error::rejected))
+            .transpose()?;
+    let compiled = extended.as_ref().unwrap_or(over.compiled);
+    let (schema, program) = (compiled.committed(), compiled.program());
     let functions: String = fns
         .iter()
         .map(|f| format!("\n{}", spanned(&r.text, f.span)))
@@ -60,8 +54,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
             .to_owned();
         (signature, format!("{}{functions}", spanned(&r.text, span)))
     };
-    let calls =
-        signature::calls(schema, program, &vis, &imports, &items).map_err(Error::diagnostic)?;
+    let calls = signature::calls(compiled, &vis, &imports, &items).map_err(Error::diagnostic)?;
     let kind = match r.header() {
         Some(h) if h.hides_new => RootKind::HidingQuery,
         _ => RootKind::Query,
@@ -72,14 +65,14 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
         let mut e = match c.item {
             Item::Fn(f, id) => {
                 if let Some(Some(body)) = program.functions.get(id.0 as usize) {
-                    source_reads.add_source(schema, program, &program.terms, *body);
+                    source_reads.add_source(compiled, &program.terms, *body);
                 }
-                imported(schema, program, f, id)?
+                imported(compiled, f, id)?
             }
             Item::Query(q, checked) => {
-                source_reads.add_source(schema, program, &checked.terms, checked.term);
+                source_reads.add_source(compiled, &checked.terms, checked.term);
                 registered_valid(schema, &checked.terms, checked.term)?;
-                let normal = norm::query_as(schema, program, &checked, kind).map_err(not_normal)?;
+                let normal = norm::query_as(compiled, &checked, kind).map_err(not_normal)?;
                 let (signature, text) = decl(q.span, &q.name, &q.result);
                 let mut e = declared(&q.name.text, Callable::Query, &c.signature, normal)?;
                 e.row.signature = signature;
@@ -87,9 +80,9 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
                 e
             }
             Item::Txn(t, checked) => {
-                source_reads.add_source(schema, program, &checked.terms, checked.term);
+                source_reads.add_source(compiled, &checked.terms, checked.term);
                 registered_valid(schema, &checked.terms, checked.term)?;
-                let normal = norm::txn_as(schema, program, &checked, kind).map_err(not_normal)?;
+                let normal = norm::txn_as(compiled, &checked, kind).map_err(not_normal)?;
                 let (signature, text) = decl(t.span, &t.name, &t.result);
                 let mut e = declared(&t.name.text, Callable::Txn, &c.signature, normal)?;
                 e.row.signature = signature;
@@ -102,10 +95,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
     }
     Ok(Checked {
         name: r.name.clone(),
-        schema: extended
-            .as_ref()
-            .map_or_else(|| over.schema.clone(), |(s, _)| s.clone()),
-        program: extended.map_or_else(|| over.program.clone(), |(_, p)| p),
+        compiled: compiled.clone(),
         text: r.text.clone(),
         entries,
         source_reads,
@@ -204,12 +194,8 @@ fn shape(terms: &Terms, t: Tm) -> (bool, Option<u64>) {
 }
 
 /// Returns the entry that calls the schema function `id`, imported by the name `f`.
-fn imported(
-    schema: &CommittedSchema,
-    program: &Program,
-    f: &QName,
-    id: FnId,
-) -> Result<Entry, Error> {
+fn imported(compiled: &Compiled, f: &QName, id: FnId) -> Result<Entry, Error> {
+    let schema = compiled.committed();
     let failed = |m: String| Error::invalid(format!("fn `{}`: {m}", f.name.text));
     let def = schema.function(id);
     let names: Vec<String> = (0..def.params.len()).map(|i| format!("arg{i}")).collect();
@@ -223,13 +209,13 @@ fn imported(
         .cloned()
         .zip(def.params.iter().map(|(_, t)| t.clone()))
         .collect();
-    let adhoc = check_adhoc(schema, program, &items, &types).map_err(|mut ds| {
+    let adhoc = check_adhoc(compiled, &items, &types).map_err(|mut ds| {
         if let Some(first) = ds.first_mut() {
             first.message = format!("fn `{}`: {}", f.name.text, first.message);
         }
         Error::diagnostics(ds)
     })?;
-    let normal = norm::adhoc(schema, program, &adhoc).map_err(not_normal)?;
+    let normal = norm::adhoc(compiled, &adhoc).map_err(not_normal)?;
     let [body] = normal.items() else {
         return Err(Error::internal(Broken::CallNotOneItem));
     };

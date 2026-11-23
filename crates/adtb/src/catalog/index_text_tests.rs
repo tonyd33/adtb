@@ -325,20 +325,22 @@ fn a_migration_that_only_moves_an_index_declaration_rewrites_no_relation() {
         &before,
         "module app\nrename relation items to stock_items\n",
     );
-    let (old, old_program) = before.check().expect("the source checks");
-    let (new, new_program) = after.check().expect("the source checks");
+    let old_compiled = before.check().expect("the source checks");
+    let old = old_compiled.schema();
+    let new_compiled = after.check().expect("the source checks");
+    let new = new_compiled.schema();
     let span = |schema: &Schema, name: &str| schema.relation(relation(schema, "app", name)).span;
     assert_ne!(
-        span(&old, "items"),
-        span(&new, "stock_items"),
+        span(old, "items"),
+        span(new, "stock_items"),
         "the declaration moves"
     );
     assert_eq!(
         BTreeSet::new(),
         change::rewritten(
-            &old,
-            &new,
-            &adtb_lang::depends::changed(&old, &old_program, &new, &new_program),
+            old,
+            new,
+            &adtb_lang::depends::changed(&old_compiled, &new_compiled),
         )
     );
 }

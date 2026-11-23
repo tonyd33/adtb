@@ -104,7 +104,7 @@ fn row_body(
             (out, e.span)
         }
     };
-    crate::capability::Judge::new(c.schema, program)
+    crate::capability::Judge::over(c.schema, program)
         .judge(kind, &c.terms, out.tm)
         .map_err(|r| diag(span, r.to_string()))?;
     Ok((v, out.tm, out.ty))

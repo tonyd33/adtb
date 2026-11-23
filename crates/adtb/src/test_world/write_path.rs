@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use adtb_lang::check::{Checker, Program, check_adhoc};
+use adtb_lang::check::{Checker, Compiled, check_adhoc};
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc, parse_type};
@@ -29,8 +29,7 @@ pub struct WritePath<R: Runtime> {
     /// `None` once [`WritePath::into_db`] has taken it.
     db: Option<write::Database<R>>,
     catalog: Catalog,
-    schema: Arc<Committed>,
-    program: Arc<Program>,
+    compiled: Compiled,
 }
 
 impl<R: Runtime> Drop for WritePath<R> {
@@ -70,7 +69,7 @@ fn create_loaded<R: Runtime>(rt: &R, f: &Fixture) {
     catalog.counters(&pager).expect("the page of counters");
     pager.close();
     let path = WritePath::start(rt, None, None).expect("the migrated file opens");
-    load::load(&path, &f.schema, &f.db, Running::None);
+    load::load(&path, f.schema(), &f.db, Running::None);
     let pager = path.db().pager().clone();
     drop(path);
     pager.close();
@@ -142,23 +141,20 @@ impl<R: Runtime> WritePath<R> {
             pager.steps().lower_value_limit(limit);
         }
         let (catalog, txns) = Catalog::open(rt.clone(), &pager).expect("the catalog opens");
-        let schema = match staged_by {
-            Some(f) => Committed::new(
-                load::staged_source(catalog.source(), &f.schema)
-                    .schema()
-                    .expect("the staged source builds"),
-            )
-            .expect("a staged source is settled"),
-            None => catalog.schema().clone(),
+        let compiled = match staged_by {
+            Some(f) => load::staged_source(catalog.source(), f.schema())
+                .check()
+                .expect("the staged source checks")
+                .commit()
+                .expect("a staged source is settled"),
+            None => catalog.compiled().clone(),
         };
-        let program = catalog.program().clone();
-        let normal = norm::program(&schema, &program).expect("the schema normalises");
+        let normal = norm::program(&compiled).expect("the schema normalises");
         let bindings = catalog.bindings();
-        let schema = Arc::new(schema);
         let db = write::Database::new(
             rt.clone(),
             Setup {
-                schema: schema.clone(),
+                schema: compiled.shared_schema().clone(),
                 normal: Arc::new(normal),
                 catalog: Arc::new(catalog.plan()),
                 pager,
@@ -177,8 +173,7 @@ impl<R: Runtime> WritePath<R> {
         Some(WritePath {
             db: Some(db),
             catalog,
-            schema,
-            program,
+            compiled,
         })
     }
 
@@ -205,7 +200,7 @@ impl<R: Runtime> WritePath<R> {
     }
 
     pub fn schema(&self) -> &Arc<Committed> {
-        &self.schema
+        self.compiled.shared_schema()
     }
 
     /// Returns the write path's database, ending the write path.
@@ -219,8 +214,8 @@ impl<R: Runtime> WritePath<R> {
             .expect("a write path holds its database until it is taken")
     }
 
-    pub fn program(&self) -> &Arc<Program> {
-        &self.program
+    pub fn compiled(&self) -> &Compiled {
+        &self.compiled
     }
 
     /// Returns the type `text` names in the write path's schema.
@@ -228,7 +223,7 @@ impl<R: Runtime> WritePath<R> {
         let parsed = parse_type(text, Options::default())
             .ok()
             .unwrap_or_else(|_| panic!("`{text}` is not a type"));
-        Checker::of_adhoc(&self.schema, Visible::all(&self.schema))
+        Checker::of_adhoc(self.schema(), Visible::all(self.schema()))
             .resolve_type(&parsed, adtb_lang::schema::FnTypes::Allowed)
             .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
     }
@@ -248,9 +243,9 @@ impl<R: Runtime> WritePath<R> {
             .iter()
             .map(|(n, t)| ((*n).to_owned(), t.clone()))
             .collect();
-        let adhoc = check_adhoc(&self.schema, &self.program, &items, &tys)
+        let adhoc = check_adhoc(&self.compiled, &items, &tys)
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
-        let normal = norm::adhoc(&self.schema, &self.program, &adhoc)
+        let normal = norm::adhoc(&self.compiled, &adhoc)
             .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
         let [item] = normal.items() else {
             panic!("`{text}` holds one statement")
@@ -272,7 +267,7 @@ impl<R: Runtime> Session for WritePath<R> {
     type Txn = Txn;
 
     fn schema(&self) -> &Schema {
-        &self.schema
+        self.compiled.schema()
     }
 
     fn begin(&self) -> Txn {
@@ -289,7 +284,7 @@ impl<R: Runtime> Session for WritePath<R> {
         let values: Vec<_> = typed
             .iter()
             .zip(params)
-            .map(|((var, t), (_, _, v))| (*var, convert(&self.schema, t, v)))
+            .map(|((var, t), (_, _, v))| (*var, convert(self.compiled.schema(), t, v)))
             .collect();
         self.db()
             .statement(tx, &terms, item, &values, 0)

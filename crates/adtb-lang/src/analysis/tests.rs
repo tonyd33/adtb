@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::ast::{BundleItem, ExampleItem};
 use crate::check::tests::{adhoc_roots, assert_one_binding_site, program_roots};
-use crate::check::{Checker, check_adhoc, check_query, check_schema, check_txn};
+use crate::check::{Checker, Compiled, check_adhoc, check_query, check_schema, check_txn};
 use crate::kernel::{Agg, Const, Prim, Var};
 use crate::norm::{NormalAdhoc, NormalProgram, NormalQuery};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
@@ -51,12 +51,11 @@ fn schema(extra: &str) -> Committed {
     }
 }
 
-fn program(extra: &str) -> Result<(Committed, Program), Vec<String>> {
-    let s = schema(extra);
-    match check_schema(&s) {
-        Ok(p) => {
-            assert_one_binding_site("checked", &p.terms, &program_roots(&p));
-            Ok((s, p))
+fn program(extra: &str) -> Result<Compiled, Vec<String>> {
+    match check_schema(schema(extra)) {
+        Ok(c) => {
+            assert_one_binding_site("checked", &c.program().terms, &program_roots(c.program()));
+            Ok(c)
         }
         Err(ds) => Err(ds.into_iter().map(|d| d.diag.message).collect()),
     }
@@ -79,9 +78,9 @@ fn refuses(extra: &str, needle: &str) {
 }
 
 fn normal(extra: &str) -> (Committed, NormalProgram) {
-    let (s, p) = program(extra).unwrap_or_else(|e| panic!("{extra}\nrefused: {e:?}"));
-    let n = norm::program(&s, &p).expect("normalises");
-    (s, n)
+    let c = program(extra).unwrap_or_else(|e| panic!("{extra}\nrefused: {e:?}"));
+    let n = norm::program(&c).expect("normalises");
+    (c.committed().clone(), n)
 }
 
 /// The normal form of function `name`.
@@ -116,7 +115,7 @@ pub(super) fn adhoc(
     assert!(parsed.diags.is_empty(), "{text}\ndoes not parse");
     let items = parsed.ok().expect("parsed");
     let program = check_schema(&s).expect("the schema checks");
-    match check_adhoc(&s, &program, &items, &tys) {
+    match check_adhoc(&program, &items, &tys) {
         Ok(a) => {
             assert_one_binding_site("checked", &a.terms, &adhoc_roots(&a.items, &a.commands));
             Ok((s, a))
@@ -149,7 +148,7 @@ pub(super) fn adhoc_normal(
 ) -> (Committed, NormalAdhoc) {
     let (s, a) = adhoc(extra, params, text).unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
-    let n = norm::adhoc(&s, &p, &a).expect("normalises");
+    let n = norm::adhoc(&p, &a).expect("normalises");
     (s, n)
 }
 
@@ -178,7 +177,7 @@ fn query(extra: &str, text: &str) -> Result<(), String> {
     };
     let module = s.module_named("auth").expect("module auth");
     let program = check_schema(&s).expect("the schema checks");
-    check_query(&s, &program, module, &q)
+    check_query(&program, module, &q)
         .map(|_| ())
         .map_err(|d| d.message)
 }
@@ -447,8 +446,8 @@ fn a_registered_query_inlines_schema_functions() {
     };
     let module = s.module_named("auth").unwrap();
     let p = check_schema(&s).unwrap();
-    let checked = check_query(&s, &p, module, &q).expect("checks");
-    let n = norm::query(&s, &p, &checked).expect("normalises");
+    let checked = check_query(&p, module, &q).expect("checks");
+    let n = norm::query(&p, &checked).expect("normalises");
     assert_eq!(1, n.params().len());
     assert_normal(&s, n.terms(), n.body());
     let Kind::Prim(Prim::Add, xs) = n.terms().kind(n.body()) else {
@@ -830,8 +829,8 @@ fn txn(extra: &str, text: &str) -> Result<(Committed, NormalQuery), String> {
     };
     let module = s.module_named("auth").expect("module auth");
     let p = check_schema(&s).expect("the schema checks");
-    let t = check_txn(&s, &p, module, &t).map_err(|d| d.message)?;
-    let n = norm::txn(&s, &p, &t).expect("normalises");
+    let t = check_txn(&p, module, &t).map_err(|d| d.message)?;
+    let n = norm::txn(&p, &t).expect("normalises");
     Ok((s, n))
 }
 

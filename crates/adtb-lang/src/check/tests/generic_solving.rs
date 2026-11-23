@@ -67,8 +67,7 @@ impl Arg<'_> {
 }
 
 struct Calls {
-    schema: Committed,
-    program: Program,
+    compiled: Compiled,
     tys: Vec<Ty>,
     leaves: Vec<Ty>,
 }
@@ -89,7 +88,7 @@ impl Calls {
             text = text.replace(&format!("${name}"), written);
         }
         let items = parse_adhoc(&text, Options::default()).ok().expect("parsed");
-        check_adhoc(&self.schema, &self.program, &items, &params)
+        check_adhoc(&self.compiled, &items, &params)
             .map(|a| a.terms.ty(a.items[0]).clone())
             .map_err(|ds| ds[0].message.clone())
     }
@@ -116,7 +115,7 @@ impl Calls {
     }
 
     fn sub(&self, a: &Ty, b: &Ty) -> bool {
-        table(&self.schema, a, b)
+        table(self.compiled.committed(), a, b)
     }
 
     /// Returns the type of `tys` below every other.
@@ -142,11 +141,10 @@ fn calls() -> Calls {
         ));
     }
     let schema = schema(&text).expect("the schema builds");
-    let program = check_schema(&schema).expect("the schema checks");
     let tys = universe(&schema);
+    let compiled = check_schema(schema).expect("the schema checks");
     Calls {
-        schema,
-        program,
+        compiled,
         tys,
         leaves,
     }
@@ -162,19 +160,19 @@ fn literals(c: &Calls) -> Vec<Arg<'static>> {
                 def,
                 ctors: Some(cs),
                 ..
-            } => c.schema.ty(*def).name == "Status" && *cs == [0],
+            } => c.compiled.committed().ty(*def).name == "Status" && *cs == [0],
             _ => false,
         })
         .expect("`Status.Draft` is drawn")
         .clone();
     let option = |t: Ty| Ty::Data {
-        def: c.schema.prelude().option(),
+        def: c.compiled.committed().prelude().option(),
         args: vec![t],
         ctors: Some(vec![1]),
     };
     vec![
         Arg::Literal("1", i64()),
-        Arg::Open("None", c.schema.prelude().option(), 0),
+        Arg::Open("None", c.compiled.committed().prelude().option(), 0),
         Arg::Literal("Draft", status.clone()),
         Arg::Literal("Some { value: Draft }", option(status)),
         Arg::Literal("Some { value: 1 }", option(i64())),
@@ -205,7 +203,7 @@ fn a_covariant_type_argument_is_the_least_type_above_its_arguments_and_below_the
         sel: None,
     };
     let option = |t: Ty| Ty::Data {
-        def: c.schema.prelude().option(),
+        def: c.compiled.committed().prelude().option(),
         args: vec![t],
         ctors: Some(vec![1]),
     };

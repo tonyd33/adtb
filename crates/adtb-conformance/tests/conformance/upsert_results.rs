@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_conformance::{Script, parse, run_engine, run_reference};
-use adtb_lang::check::{Program, check_adhoc, check_schema};
+use adtb_lang::check::{Compiled, check_adhoc, check_schema};
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
-use adtb_lang::schema::{Committed, build};
+use adtb_lang::schema::build;
 use adtb_lang::span::FileId;
 use adtb_sim::{Config, Outcome, Sim};
 
@@ -35,21 +35,20 @@ fn transaction(branch: &str, read: &str) -> String {
     )
 }
 
-fn checked() -> (Committed, Program) {
+fn checked() -> Compiled {
     let file = parse_schema(NOTES, Options::default())
         .ok()
         .expect("the schema parses");
     let schema = build(&[(FileId(0), file)]).expect("the schema builds");
-    let program = check_schema(&schema).expect("the schema checks");
-    (schema, program)
+    check_schema(schema).expect("the schema checks")
 }
 
 /// Returns the refusal of `text`, each message.
-fn refusal(schema: &Committed, program: &Program, text: &str) -> Vec<String> {
+fn refusal(compiled: &Compiled, text: &str) -> Vec<String> {
     let items = parse_adhoc(text, Options::default())
         .ok()
         .unwrap_or_else(|d| panic!("{text}: {d:?}"));
-    match check_adhoc(schema, program, &items, &BTreeMap::new()) {
+    match check_adhoc(compiled, &items, &BTreeMap::new()) {
         Ok(_) => Vec::new(),
         Err(diags) => diags.into_iter().map(|d| d.message).collect(),
     }
@@ -95,7 +94,7 @@ fn an_upsert_result_types_every_row_a_completed_call_can_bind() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/upsert-results.txt"),
     )
     .expect("the upsert results are readable");
-    let (schema, program) = checked();
+    let compiled = checked();
     let mut reached = BTreeSet::new();
     let mut failures = Vec::new();
     let mut text = format!("schema\n{NOTES}");
@@ -113,11 +112,11 @@ fn an_upsert_result_types_every_row_a_completed_call_can_bind() {
             "deleted" => (&[DELETED], &[DELETED], ""),
             other => panic!("{name}: a read is field, match or deleted, not {other}"),
         };
-        let refused = refusal(&schema, &program, &field);
+        let refused = refusal(&compiled, &field);
         if refused != field_refused {
             failures.push(format!("{name}: the field read is refused by {refused:?}"));
         }
-        let refused = refusal(&schema, &program, &matched);
+        let refused = refusal(&compiled, &matched);
         if read != "field" && refused != matched_refused {
             failures.push(format!("{name}: the match read is refused by {refused:?}"));
         }

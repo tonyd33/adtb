@@ -163,10 +163,8 @@ impl Source {
     }
 
     /// Build and type check the schema.
-    pub fn check(&self) -> Result<(Schema, Program), Vec<FileDiag>> {
-        let schema = self.schema()?;
-        let program = check::check_schema(&schema)?;
-        Ok((schema, program))
+    pub fn check(&self) -> Result<Compiled<Schema>, Vec<FileDiag>> {
+        check::check_schema(self.schema()?)
     }
 
     pub(super) fn parsed(&self, i: usize) -> Option<Decl> {
@@ -226,7 +224,7 @@ impl Source {
         kept: &[Kept],
         accepting: bool,
         naming: bool,
-    ) -> Result<(Source, (Schema, Program), model::Migrated), Failed> {
+    ) -> Result<(Source, Compiled<Schema>, model::Migrated), Failed> {
         let got =
             model::migrated(self, m, text, kept, accepting, naming).map_err(Failed::Broken)?;
         let mut refusal = Refusal {

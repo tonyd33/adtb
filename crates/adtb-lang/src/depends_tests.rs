@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::{changed, reached};
-use crate::check::Program;
+use crate::check::Compiled;
 use crate::evolve::Source;
 use crate::norm::Root;
 use crate::parse::{Options, parse_migration};
@@ -38,7 +38,7 @@ fn migrated(source: &Source, text: &str) -> Source {
         .unwrap_or_else(|e| panic!("the migration applies: {e:?}"))
 }
 
-fn checked(source: &Source) -> (Schema, Program) {
+fn checked(source: &Source) -> Compiled<Schema> {
     source
         .check()
         .unwrap_or_else(|ds| panic!("the source checks: {ds:?}"))
@@ -91,12 +91,13 @@ fn every_kind() -> Source {
 #[test]
 fn every_kind_of_body_reaches_the_functions_it_calls() {
     let source = every_kind();
-    let (schema, program) = checked(&source);
-    let f = Root::Function(function(&schema, "f"));
-    let reached = reached(&program);
+    let program_compiled = checked(&source);
+    let (schema, program) = (program_compiled.schema(), program_compiled.program());
+    let f = Root::Function(function(schema, "f"));
+    let reached = reached(program);
     let mut kinds = BTreeSet::new();
     for (root, _, _) in program.bodies() {
-        if root == f || !of_app(&schema, root) {
+        if root == f || !of_app(schema, root) {
             continue;
         }
         assert!(
@@ -122,25 +123,26 @@ fn every_kind_of_body_reaches_the_functions_it_calls() {
 #[test]
 fn a_redefinition_changes_every_body_that_reaches_it_and_only_when_its_body_changes() {
     let before = every_kind();
-    let (a, old) = checked(&before);
+    let old_compiled = checked(&before);
     let same = migrated(
         &before,
         "module app\nredefine fn f (x: I64) -> I64 = x * 2\n",
     );
-    let (b, new) = checked(&same);
-    assert_eq!(BTreeSet::new(), changed(&a, &old, &b, &new));
+    let new_compiled = checked(&same);
+    assert_eq!(BTreeSet::new(), changed(&old_compiled, &new_compiled));
     let other = migrated(
         &before,
         "module app\nredefine fn f (x: I64) -> I64 = x + 2\n",
     );
-    let (b, new) = checked(&other);
+    let new_compiled = checked(&other);
+    let (b, new) = (new_compiled.schema(), new_compiled.program());
     let every: BTreeSet<Root> = new
         .bodies()
         .into_iter()
         .map(|(r, _, _)| r)
-        .filter(|&r| of_app(&b, r))
+        .filter(|&r| of_app(b, r))
         .collect();
-    assert_eq!(every, changed(&a, &old, &b, &new));
+    assert_eq!(every, changed(&old_compiled, &new_compiled));
 }
 
 #[test]
@@ -158,28 +160,30 @@ add relation items : Item key id generate sequence
   index (f(n))
 ",
     );
-    let (a, old) = checked(&before);
+    let old_compiled = checked(&before);
     let after = migrated(
         &before,
         "module app\nredefine fn f (x: I64) -> I64 = h(x)\ndrop fn g\n",
     );
-    let (b, new) = checked(&after);
+    let new_compiled = checked(&after);
+    let b = new_compiled.schema();
     assert_eq!(
         FnId(1),
-        function(&b, "h"),
+        function(b, "h"),
         "setup: `h` takes the position of `g`"
     );
-    let index = new
+    let index = new_compiled
+        .program()
         .bodies()
         .into_iter()
         .map(|(r, _, _)| r)
-        .filter(|&r| matches!(r, Root::IndexField(..)) && of_app(&b, r))
+        .filter(|&r| matches!(r, Root::IndexField(..)) && of_app(b, r))
         .collect::<Vec<_>>();
     let [index] = index.as_slice() else {
         panic!("one index element of `app`: {index:?}");
     };
-    let want = BTreeSet::from([Root::Function(function(&b, "f")), *index]);
-    assert_eq!(want, changed(&a, &old, &b, &new));
+    let want = BTreeSet::from([Root::Function(function(b, "f")), *index]);
+    assert_eq!(want, changed(&old_compiled, &new_compiled));
 }
 
 #[test]
@@ -199,7 +203,8 @@ add constraint big =
   from i in items where f(i.n) > 100 select i
 ",
     );
-    let (a, old) = checked(&before);
+    let old_compiled = checked(&before);
+    let a = old_compiled.schema();
     let shifts = [
         ("module app\ndrop fn a\n", None),
         (
@@ -210,16 +215,17 @@ add constraint big =
     ];
     for (text, added) in shifts {
         let after = migrated(&before, text);
-        let (b, new) = checked(&after);
+        let new_compiled = checked(&after);
+        let b = new_compiled.schema();
         let item = |s: &Schema| s.module(s.module_named("app").expect("app")).types["Item"];
         assert!(
-            function(&a, "f") != function(&b, "f") || item(&a) != item(&b),
+            function(a, "f") != function(b, "f") || item(a) != item(b),
             "setup: `{text}` shifts a position"
         );
         let want: BTreeSet<Root> = added
-            .map(|n| Root::Function(function(&b, n)))
+            .map(|n| Root::Function(function(b, n)))
             .into_iter()
             .collect();
-        assert_eq!(want, changed(&a, &old, &b, &new), "{text}");
+        assert_eq!(want, changed(&old_compiled, &new_compiled), "{text}");
     }
 }

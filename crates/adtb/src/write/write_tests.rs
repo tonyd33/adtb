@@ -292,7 +292,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
             let tx = w.db().begin().expect("a transaction");
             finals = Some(rekeyed(
                 &w.db().rows(&tx).expect("the rows"),
-                &f.schema,
+                f.schema(),
                 w.schema(),
             ));
             w.db().abort(tx).expect("an abort");
@@ -439,7 +439,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
                 .unwrap_or_else(|| panic!("seed {seed}: the database does not reopen"));
             let tag = prep(&w, TAG, true);
             let tx = w.db().begin().expect("a transaction");
-            let rows = rekeyed(&w.db().rows(&tx).expect("the rows"), &f.schema, w.schema());
+            let rows = rekeyed(&w.db().rows(&tx).expect("the rows"), f.schema(), w.schema());
             w.db().abort(tx).expect("an abort");
             let next =
                 run_txn(w.db(), w.schema(), &tag, "after").expect("an insert after recovery");
@@ -749,7 +749,7 @@ fn check_gate_image(
             .keeping_history(GATE_WINDOW);
         let db = w.db();
         let tx = db.begin().expect("a transaction");
-        let rows = rekeyed(&db.rows(&tx).expect("the rows"), &f.schema, w.schema());
+        let rows = rekeyed(&db.rows(&tx).expect("the rows"), f.schema(), w.schema());
         db.abort(tx).expect("an abort");
         let names: BTreeSet<String> = rows
             .get(&(f.rel("tags"), 0))

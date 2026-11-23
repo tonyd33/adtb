@@ -130,7 +130,7 @@ fn run(n: i64, body: impl FnOnce(&Database<SimRuntime>, &Fixture)) {
 #[test]
 fn a_later_snapshot_reads_exactly_the_loaded_rows() {
     run(2, |db, f| {
-        let _running = load::rows_with_noise(db, &f.schema, &f.db);
+        let _running = load::rows_with_noise(db, f.schema(), &f.db);
         let row = |id, v| Val::ctor(0, vec![Val::Int(id), v]);
         assert_eq!(
             BTreeSet::from([row(1, Val::text(&name(1))), row(2, Val::text(&name(2)))]),
@@ -168,7 +168,7 @@ fn noise_of(n: i64) -> (Versions, Versions) {
 #[test]
 fn every_noise_version_is_in_the_heap_and_hidden_from_a_later_snapshot() {
     run(2, |db, f| {
-        let running = load::rows_with_noise(db, &f.schema, &f.db);
+        let running = load::rows_with_noise(db, f.schema(), &f.db);
         let (items, counts) = noise_of(2);
         assert_eq!(items, versions(db, &running, "items"));
         assert_eq!(counts, versions(db, &running, "counts"));
@@ -178,7 +178,7 @@ fn every_noise_version_is_in_the_heap_and_hidden_from_a_later_snapshot() {
 #[test]
 fn every_committed_noise_version_over_several_pages_is_in_the_heap_and_hidden() {
     run(MANY, |db, f| {
-        let running = load::rows_with_noise(db, &f.schema, &f.db);
+        let running = load::rows_with_noise(db, f.schema(), &f.db);
         let heap = db
             .testing()
             .heap("app::items", "Item")

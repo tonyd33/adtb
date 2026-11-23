@@ -31,9 +31,10 @@ fn checked_once(p: &Program) {
 
 /// Returns function `f` of `text` checked and normalised, each printed in full.
 fn printed(text: &str) -> (String, String) {
-    let (s, p) = program(text).unwrap();
-    let checked = sexp(&p.terms, body_of(&s, &p, "f"));
-    let n = crate::norm::program(&s, &p).expect("normalises");
+    let c = program(text).unwrap();
+    let (s, p) = (c.committed(), c.program());
+    let checked = sexp(&p.terms, body_of(s, p, "f"));
+    let n = crate::norm::program(&c).expect("normalises");
     let i = s.functions.iter().position(|f| f.name == "f").unwrap();
     let (_, body) = n.functions()[i].clone().expect("a normal form");
     (checked, sexp(n.terms(), body))
@@ -51,8 +52,9 @@ fn every_match_binder_has_one_binding_site() {
         "fn rs () -> Set (A { n: I64 } | B { n: I64 } | C) = [C]
          fn f () -> Set I64 = from r in rs() select match r | A x | B x -> x.n | C -> 0",
     ] {
-        let (_, p) = program(text).unwrap();
-        checked_once(&p);
+        let c = program(text).unwrap();
+        let p = c.program();
+        checked_once(p);
     }
     let (_, a) = adhoc(
         &[("i", "Identity")],
@@ -153,9 +155,10 @@ fn sizes(alts: usize, uses: usize, apart: bool) -> (usize, usize) {
         pats.join(" | "),
         body.join(" + ")
     );
-    let (s, p) = program(&text).unwrap();
-    let checked = p.terms.tree_size(body_of(&s, &p, "f"), limit);
-    let n = crate::norm::program(&s, &p).expect("normalises");
+    let c = program(&text).unwrap();
+    let (s, p) = (c.committed(), c.program());
+    let checked = p.terms.tree_size(body_of(s, p, "f"), limit);
+    let n = crate::norm::program(&c).expect("normalises");
     let i = s.functions.iter().position(|f| f.name == "f").unwrap();
     let (_, body) = n.functions()[i].clone().expect("a normal form");
     let normal = n.terms().tree_size(body, limit);

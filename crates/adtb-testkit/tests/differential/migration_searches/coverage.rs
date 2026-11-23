@@ -774,10 +774,10 @@ fn search(seed: u64, at: &mut Option<Failed>, reached: &Mutex<Reached>) -> Optio
             None => (m, false),
         };
         let text = m.text();
-        let (Ok((pre_schema, _)), Ok(pre_names)) = (walk.source.check(), walk.source.names())
-        else {
+        let (Ok(pre_compiled), Ok(pre_names)) = (walk.source.check(), walk.source.names()) else {
             return failed(k, &walk.log, &text, "the source does not check".into());
         };
+        let pre_schema = pre_compiled.schema();
         let log = walk.log.clone();
         let mid_schema = match walk.apply(&text) {
             Ok(Some(s)) => s,
@@ -810,7 +810,7 @@ fn search(seed: u64, at: &mut Option<Failed>, reached: &Mutex<Reached>) -> Optio
             return failed(k, &log, &text, "the names do not resolve".into());
         };
         shapes(&m, &rows, &mut seen);
-        let was = covers(&pre_schema, &pre_names, &walk.case, &rows);
+        let was = covers(pre_schema, &pre_names, &walk.case, &rows);
         let mid = covers(&mid_schema, &mid_names, &migrated, &mid_rows);
         let judged = !m.ops().iter().any(|o| UNJUDGED.contains(&o.kind()));
         let image = |rel: &str, cs: &BTreeSet<String>| m.ctors(rel, cs).ok();

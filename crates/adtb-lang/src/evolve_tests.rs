@@ -3492,9 +3492,10 @@ add relation teams : Team key id generate sequence
 add type Member = { id: Key members, team: Key teams }
 add relation members : Member key id generate sequence",
     );
-    let (schema, _) = s.check().unwrap_or_else(|e| panic!("{e:?}"));
-    assert_eq!("Key members", field_ty(&schema, "Team", "lead"));
-    assert_eq!("Key teams", field_ty(&schema, "Member", "team"));
+    let compiled = s.check().unwrap_or_else(|e| panic!("{e:?}"));
+    let schema = compiled.schema();
+    assert_eq!("Key members", field_ty(schema, "Team", "lead"));
+    assert_eq!("Key teams", field_ty(schema, "Member", "team"));
 }
 
 #[test]
@@ -3579,7 +3580,8 @@ define fn same (t: Key teams) -> Key teams = t
 add type Team = { id: Key teams }
 add relation teams : Team key id generate sequence",
     );
-    let (schema, _) = s.check().unwrap_or_else(|e| panic!("{e:?}"));
+    let compiled = s.check().unwrap_or_else(|e| panic!("{e:?}"));
+    let schema = compiled.schema();
     let same = schema
         .functions
         .iter()
@@ -3756,9 +3758,10 @@ add type Member = { id: Key members, team: Key teams }
 add relation teams : Team key id generate sequence index (lead)
 add relation members : Member key id generate sequence index (team)",
     );
-    let (schema, _) = s.check().unwrap_or_else(|e| panic!("{e:?}"));
-    assert_eq!("Key members", field_ty(&schema, "Team", "lead"));
-    assert_eq!("Key teams", field_ty(&schema, "Member", "team"));
+    let compiled = s.check().unwrap_or_else(|e| panic!("{e:?}"));
+    let schema = compiled.schema();
+    assert_eq!("Key members", field_ty(schema, "Team", "lead"));
+    assert_eq!("Key teams", field_ty(schema, "Member", "team"));
     let indexed = |rel: &str| -> Vec<String> {
         let r = schema
             .relations

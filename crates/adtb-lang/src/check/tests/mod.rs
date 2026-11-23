@@ -57,16 +57,16 @@ fn schema(extra: &str) -> Result<Committed, Vec<String>> {
     build(&[(FileId(0), file)]).map_err(|ds| ds.into_iter().map(|d| d.diag.message).collect())
 }
 
-fn program(extra: &str) -> Result<(Committed, Program), Vec<String>> {
+fn program(extra: &str) -> Result<Compiled, Vec<String>> {
     check_program(schema(extra)?)
 }
 
-fn check_program(s: Committed) -> Result<(Committed, Program), Vec<String>> {
-    match check_schema(&s) {
-        Ok(p) => {
-            assert_one_binding_site("checked", &p.terms, &program_roots(&p));
-            one_binding_site(&s, &p);
-            Ok((s, p))
+fn check_program(s: Committed) -> Result<Compiled, Vec<String>> {
+    match check_schema(s) {
+        Ok(c) => {
+            assert_one_binding_site("checked", &c.program().terms, &program_roots(c.program()));
+            one_binding_site(&c);
+            Ok(c)
         }
         Err(ds) => Err(ds.into_iter().map(|d| d.diag.message).collect()),
     }
@@ -107,8 +107,8 @@ pub(crate) fn program_roots(p: &Program) -> Vec<Tm> {
 }
 
 /// Assert that every variable of the normal forms of the bodies of `p` has one binding site.
-fn one_binding_site(s: &Schema, p: &Program) {
-    let n = crate::norm::program(s, p).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+fn one_binding_site(c: &Compiled) {
+    let n = crate::norm::program(c).unwrap_or_else(|e| panic!("normalises: {e:?}"));
     let roots: Vec<Tm> = n
         .functions()
         .iter()
@@ -142,9 +142,9 @@ pub(crate) fn adhoc_roots(items: &[Tm], commands: &[AdhocCommand]) -> Vec<Tm> {
 }
 
 /// Assert that every variable of the normal forms of ad hoc `a` has one binding site.
-fn adhoc_one_binding_site(s: &Committed, p: &Program, a: &Adhoc) {
+fn adhoc_one_binding_site(c: &Compiled<&Committed>, a: &Adhoc) {
     assert_one_binding_site("checked", &a.terms, &adhoc_roots(&a.items, &a.commands));
-    let n = crate::norm::adhoc(a.schema(s), p, a).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+    let n = crate::norm::adhoc(c, a).unwrap_or_else(|e| panic!("normalises: {e:?}"));
     assert_one_binding_site(
         "normalised",
         n.terms(),
@@ -238,9 +238,9 @@ fn adhoc_in(
     }
     let items = parsed.ok().expect("parsed");
     let program = check_schema(&s).expect("the schema checks");
-    match check_adhoc_recording(&s, &program, &items, &tys, &known, None) {
+    match check_adhoc_recording(&program, &items, &tys, &known, None) {
         Ok(a) => {
-            adhoc_one_binding_site(&s, &program, &a);
+            adhoc_one_binding_site(&program, &a);
             Ok((s, a))
         }
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
@@ -268,9 +268,9 @@ fn adhoc_over(extra: &str, text: &str) -> Result<Adhoc, Vec<String>> {
     let s = schema(extra).expect("the schema builds");
     let program = check_schema(&s).expect("the schema checks");
     let items = parse_adhoc(text, Options::default()).ok().expect("parsed");
-    let a = check_adhoc(&s, &program, &items, &BTreeMap::new())
+    let a = check_adhoc(&program, &items, &BTreeMap::new())
         .map_err(|ds| ds.into_iter().map(|d| d.message).collect::<Vec<_>>())?;
-    adhoc_one_binding_site(&s, &program, &a);
+    adhoc_one_binding_site(&program, &a);
     Ok(a)
 }
 
@@ -285,10 +285,9 @@ fn query(extra: &str, text: &str) -> Result<(), String> {
     };
     let module = s.module_named("auth").expect("module auth");
     let program = check_schema(&s).expect("the schema checks");
-    let checked = check_query(&s, &program, module, &q).map_err(|d| d.message)?;
+    let checked = check_query(&program, module, &q).map_err(|d| d.message)?;
     assert_one_binding_site("checked", &checked.terms, &[checked.term]);
-    let n =
-        crate::norm::query(&s, &program, &checked).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+    let n = crate::norm::query(&program, &checked).unwrap_or_else(|e| panic!("normalises: {e:?}"));
     assert_one_binding_site("normalised", n.terms(), &[n.body()]);
     Ok(())
 }
@@ -304,11 +303,10 @@ fn txn_over(extra: &str, text: &str) -> Result<(Committed, Txn), String> {
     };
     let module = s.module_named("auth").expect("module auth");
     let program = check_schema(&s).expect("the schema checks");
-    match check_txn(&s, &program, module, &t) {
+    match check_txn(&program, module, &t) {
         Ok(t) => {
             assert_one_binding_site("checked", &t.terms, &[t.term]);
-            let n =
-                crate::norm::txn(&s, &program, &t).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+            let n = crate::norm::txn(&program, &t).unwrap_or_else(|e| panic!("normalises: {e:?}"));
             assert_one_binding_site("normalised", n.terms(), &[n.body()]);
             Ok((s, t))
         }
@@ -450,14 +448,16 @@ fn deref_flags(terms: &Terms, t: Tm) -> Vec<bool> {
 #[test]
 fn navigation_desugars_to_deref() {
     runtime::probes("navigation_desugars_to_deref", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let body = body_of(&s, &p, fixture.text("body"));
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let body = body_of(s, p, fixture.text("body"));
         assert_eq!(
             deref_flags(&p.terms, body),
             [fixture.number::<bool>("reference_deref")]
         );
-        let (s, p) = program(fixture.text("text_2")).unwrap();
-        let body = body_of(&s, &p, fixture.text("body"));
+        let c = program(fixture.text("text_2")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let body = body_of(s, p, fixture.text("body"));
         let Kind::Field(inner, name) = p.terms.kind(body) else {
             panic!("a field, found {:?}", p.terms.kind(body));
         };
@@ -478,8 +478,9 @@ fn a_backlink_desugars_to_a_filtered_comprehension() {
     runtime::probes(
         "a_backlink_desugars_to_a_filtered_comprehension",
         |fixture| {
-            let (s, p) = program(fixture.text("text")).unwrap();
-            let body = body_of(&s, &p, fixture.text("body"));
+            let c = program(fixture.text("text")).unwrap();
+            let (s, p) = (c.committed(), c.program());
+            let body = body_of(s, p, fixture.text("body"));
             let Kind::For(_, src, inner) = p.terms.kind(body) else {
                 panic!("a for, found {:?}", p.terms.kind(body));
             };
@@ -502,8 +503,9 @@ fn a_backlink_desugars_to_a_filtered_comprehension() {
 #[test]
 fn a_comprehension_is_nested_for_if_singleton() {
     runtime::probes("a_comprehension_is_nested_for_if_singleton", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let body = body_of(&s, &p, fixture.text("body"));
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let body = body_of(s, p, fixture.text("body"));
         let Kind::For(_, src, inner) = p.terms.kind(body) else {
             panic!("a for, found {:?}", p.terms.kind(body));
         };
@@ -522,9 +524,10 @@ fn a_comprehension_is_nested_for_if_singleton() {
 #[test]
 fn exists_tests_emptiness() {
     runtime::probes("exists_tests_emptiness", |fixture| {
-        let (s, p) = program(fixture.text("text_3")).unwrap();
+        let c = program(fixture.text("text_3")).unwrap();
+        let (s, p) = (c.committed(), c.program());
         assert!(matches!(
-            p.terms.kind(body_of(&s, &p, fixture.text("body"))),
+            p.terms.kind(body_of(s, p, fixture.text("body"))),
             Kind::Exists(_)
         ));
     });
@@ -533,8 +536,9 @@ fn exists_tests_emptiness() {
 #[test]
 fn and_or_not_are_ifs() {
     runtime::probes("and_or_not_are_ifs", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::If(_, rhs, f) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::If(_, rhs, f) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("an if");
         };
         assert!(
@@ -547,14 +551,16 @@ fn and_or_not_are_ifs() {
 #[test]
 fn constructor_relations_are_relations() {
     runtime::probes("constructor_relations_are_relations", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
         assert!(matches!(
-            p.terms.kind(body_of(&s, &p, fixture.text("body"))),
+            p.terms.kind(body_of(s, p, fixture.text("body"))),
             Kind::Rel(_, Some(_))
         ));
-        let (s, p) = program(fixture.text("text_2")).unwrap();
+        let c = program(fixture.text("text_2")).unwrap();
+        let (s, p) = (c.committed(), c.program());
         assert!(matches!(
-            p.terms.kind(body_of(&s, &p, fixture.text("body"))),
+            p.terms.kind(body_of(s, p, fixture.text("body"))),
             Kind::Restrict(..)
         ));
     });
@@ -584,8 +590,9 @@ fn a_match_on_a_relation_row_is_a_case_per_constructor() {
     runtime::probes(
         "a_match_on_a_relation_row_is_a_case_per_constructor",
         |fixture| {
-            let (s, p) = program(fixture.text("text")).unwrap();
-            let _ = body_of(&s, &p, fixture.text("body"));
+            let c = program(fixture.text("text")).unwrap();
+            let (s, p) = (c.committed(), c.program());
+            let _ = body_of(s, p, fixture.text("body"));
             let i = s
                 .functions
                 .iter()
@@ -620,8 +627,9 @@ fn a_match_on_a_constructor_set_cases_over_the_set() {
     runtime::probes(
         "a_match_on_a_constructor_set_cases_over_the_set",
         |fixture| {
-            let (s, p) = program(fixture.text("text")).unwrap();
-            let Kind::Let(_, _, case) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+            let c = program(fixture.text("text")).unwrap();
+            let (s, p) = (c.committed(), c.program());
+            let Kind::Let(_, _, case) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
                 panic!("a let");
             };
             let Kind::Case { arms, .. } = p.terms.kind(*case) else {
@@ -638,8 +646,9 @@ fn a_match_on_a_constructor_set_cases_over_the_set() {
 #[test]
 fn an_or_pattern_shares_its_body() {
     runtime::probes("an_or_pattern_shares_its_body", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Let(_, _, case) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Let(_, _, case) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("a let");
         };
         let Kind::Case { arms, .. } = p.terms.kind(*case) else {
@@ -660,8 +669,9 @@ fn an_or_pattern_shares_its_body() {
 #[test]
 fn a_scalar_match_is_a_chain_without_case() {
     runtime::probes("a_scalar_match_is_a_chain_without_case", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Let(_, _, chain) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Let(_, _, chain) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("a let");
         };
         let Kind::If(test, _, rest) = p.terms.kind(*chain) else {
@@ -675,13 +685,15 @@ fn a_scalar_match_is_a_chain_without_case() {
 #[test]
 fn a_match_on_a_key_derefs_it() {
     runtime::probes("a_match_on_a_key_derefs_it", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
         assert_eq!(
-            deref_flags(&p.terms, body_of(&s, &p, fixture.text("body"))),
+            deref_flags(&p.terms, body_of(s, p, fixture.text("body"))),
             [fixture.number::<bool>("reference_deref")]
         );
-        let (s, p) = program(fixture.text("text_2")).unwrap();
-        let Kind::Let(_, scrutinee, _) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text_2")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Let(_, scrutinee, _) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("a let");
         };
         assert!(matches!(
@@ -700,8 +712,9 @@ fn a_match_on_a_key_derefs_it() {
 #[test]
 fn a_group_desugars_to_group_over_binder_records() {
     runtime::probes("a_group_desugars_to_group_over_binder_records", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Let(_, value, body) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Let(_, value, body) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("a let of the grouped value");
         };
         assert!(matches!(p.terms.kind(*value), Kind::Lam(..)));
@@ -734,14 +747,15 @@ fn an_aggregate_over_a_group_has_a_nonempty_source() {
     runtime::probes(
         "an_aggregate_over_a_group_has_a_nonempty_source",
         |fixture| {
-            let (s, p) = program(fixture.text("text")).unwrap();
+            let c = program(fixture.text("text")).unwrap();
+            let (s, p) = (c.committed(), c.program());
             let expected = fixture.aggregates("aggregates");
             assert_eq!(
-                agg_sources(&p.terms, body_of(&s, &p, fixture.text("body"))),
+                agg_sources(&p.terms, body_of(s, p, fixture.text("body"))),
                 expected
             );
             if fixture.number::<bool>("normalize") {
-                let n = crate::norm::program(&s, &p).expect("normalises");
+                let n = crate::norm::program(&c).expect("normalises");
                 let (_, body) = n.functions()[s
                     .functions
                     .iter()
@@ -787,8 +801,9 @@ fn constructor_fields_pair_with_their_written_names() {
 #[test]
 fn an_aggregate_is_an_aggregate_node() {
     runtime::probes("an_aggregate_is_an_aggregate_node", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Agg { source, .. } = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Agg { source, .. } = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("an agg");
         };
         assert!(matches!(p.terms.kind(*source), Kind::For(..)));
@@ -810,9 +825,10 @@ fn top_is_a_set_at_any_depth() {
             fixture.text("parse_refusal").lines().collect::<Vec<_>>(),
             "exact parser diagnostic set"
         );
-        let (s, p) = program(fixture.text("text_4")).unwrap();
+        let c = program(fixture.text("text_4")).unwrap();
+        let (s, p) = (c.committed(), c.program());
         assert!(matches!(
-            p.terms.kind(body_of(&s, &p, fixture.text("body"))),
+            p.terms.kind(body_of(s, p, fixture.text("body"))),
             Kind::Top { .. }
         ));
     });
@@ -823,8 +839,9 @@ fn top_is_a_set_at_any_depth() {
 #[test]
 fn fix_is_a_kernel_fix() {
     runtime::probes("fix_is_a_kernel_fix", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Fix(binds, _) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Fix(binds, _) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("a fix");
         };
         assert_eq!(binds.len(), fixture.number::<usize>("binders"));
@@ -850,7 +867,8 @@ fn fix_is_a_kernel_fix() {
 #[test]
 fn a_function_is_one_lam_per_parameter() {
     runtime::probes("a_function_is_one_lam_per_parameter", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
         let i = s
             .functions
             .iter()
@@ -869,7 +887,8 @@ fn a_function_is_one_lam_per_parameter() {
 #[test]
 fn a_view_is_a_lam_over_unit() {
     runtime::probes("a_view_is_a_lam_over_unit", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
         let i = s
             .functions
             .iter()
@@ -885,8 +904,9 @@ fn a_view_is_a_lam_over_unit() {
 #[test]
 fn applying_a_function_value_nests_apps() {
     runtime::probes("applying_a_function_value_nests_apps", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::App(inner, two) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::App(inner, two) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("an app");
         };
         assert!(matches!(p.terms.kind(*two), Kind::Const(_)));
@@ -894,8 +914,9 @@ fn applying_a_function_value_nests_apps() {
             panic!("a nested app, found {:?}", p.terms.kind(*inner));
         };
         assert!(matches!(p.terms.kind(*g), Kind::Var(_)));
-        let (s, p) = program(fixture.text("text_2")).unwrap();
-        let Kind::App(_, unit) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text_2")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::App(_, unit) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("an app");
         };
         assert_eq!(p.terms.ty(*unit), &Ty::Unit);
@@ -905,8 +926,9 @@ fn applying_a_function_value_nests_apps() {
 #[test]
 fn a_declared_call_keeps_its_arguments() {
     runtime::probes("a_declared_call_keeps_its_arguments", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Call { args, .. } = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Call { args, .. } = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("a call");
         };
         assert_eq!(args.len(), fixture.number::<usize>("arity"));
@@ -918,8 +940,9 @@ fn a_function_named_without_a_call_is_nested_lams_over_its_call() {
     runtime::probes(
         "a_function_named_without_a_call_is_nested_lams_over_its_call",
         |fixture| {
-            let (s, p) = program(fixture.text("text")).unwrap();
-            let Kind::Lam(_, inner) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+            let c = program(fixture.text("text")).unwrap();
+            let (s, p) = (c.committed(), c.program());
+            let Kind::Lam(_, inner) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
                 panic!("a lam");
             };
             let Kind::Lam(_, call) = p.terms.kind(*inner) else {
@@ -935,8 +958,9 @@ fn a_function_named_without_a_call_is_nested_lams_over_its_call() {
 #[test]
 fn a_lambda_of_several_parameters_is_nested_lams() {
     runtime::probes("a_lambda_of_several_parameters_is_nested_lams", |fixture| {
-        let (s, p) = program(fixture.text("text")).unwrap();
-        let Kind::Lam(_, inner) = p.terms.kind(body_of(&s, &p, fixture.text("body"))) else {
+        let c = program(fixture.text("text")).unwrap();
+        let (s, p) = (c.committed(), c.program());
+        let Kind::Lam(_, inner) = p.terms.kind(body_of(s, p, fixture.text("body"))) else {
             panic!("a lam");
         };
         assert!(matches!(p.terms.kind(*inner), Kind::Lam(..)));
@@ -948,9 +972,10 @@ fn a_lambda_of_several_parameters_is_nested_lams() {
 #[test]
 fn text_literals_elaborate_to_nfc() {
     runtime::probes("text_literals_elaborate_to_nfc", |fixture| {
-        let (s, p) = program(fixture.text("text")).expect("checks");
+        let compiled = program(fixture.text("text")).expect("checks");
+        let (s, p) = (compiled.committed(), compiled.program());
         assert_eq!(
-            p.terms.kind(body_of(&s, &p, fixture.text("body"))),
+            p.terms.kind(body_of(s, p, fixture.text("body"))),
             &Kind::Const(Const::Text(fixture.text("expected_text").to_string()))
         );
     });
@@ -968,14 +993,15 @@ fn index_path(s: &Schema, p: &Program, name: &str, i: usize) -> Vec<PathStep> {
 
 #[test]
 fn an_index_scope_naming_every_constructor_reads_rows_of_the_whole_sum() {
-    let (s, p) = program(
+    let compiled = program(
         "type Note { id: Key notes, body: Text } = Plain | Other
 relation notes : Note
   key id generate sequence
   index (body) in (Plain | Other)",
     )
     .expect("the schema checks");
-    let value = p.index_fields[&(rel_id(&s, "notes"), 0, 0)].value;
+    let (s, p) = (compiled.committed(), compiled.program());
+    let value = p.index_fields[&(rel_id(s, "notes"), 0, 0)].value;
     let Kind::Lam(row, _) = p.terms.kind(value) else {
         panic!(
             "an index field is a `Lam` over the row: {:?}",
@@ -1008,9 +1034,10 @@ fn an_index_field_through_a_value_level_constructor_names_its_path() {
     runtime::probes(
         "an_index_field_through_a_value_level_constructor_names_its_path",
         |fixture| {
-            let (s, p) = program(fixture.text("text")).unwrap_or_else(|e| panic!("refused: {e:?}"));
+            let c = program(fixture.text("text")).unwrap_or_else(|e| panic!("refused: {e:?}"));
+            let (s, p) = (c.committed(), c.program());
             for (i, expected) in fixture.paths("paths").into_iter().enumerate() {
-                assert_eq!(expected, index_path(&s, &p, fixture.text("relation"), i));
+                assert_eq!(expected, index_path(s, p, fixture.text("relation"), i));
             }
         },
     );
@@ -1018,13 +1045,13 @@ fn an_index_field_through_a_value_level_constructor_names_its_path() {
 
 #[test]
 fn a_row_body_under_shared_branches_is_walked_once() {
-    let (s, p) = program("").expect("the running schema checks");
+    let compiled = program("").expect("the running schema checks");
     let mut terms = Terms::default();
     let c = terms.var("c", Ty::Unit);
     let test = terms.add_ill_typed(Kind::Var(c), Ty::Unit);
     let row = terms.var("row", Ty::Unit);
     let leaf = terms.add_ill_typed(Kind::Var(row), Ty::Unit);
     let body = terms.doubled(test, leaf, 64);
-    let judge = crate::capability::Judge::new(&s, &p);
+    let judge = crate::capability::Judge::new(&compiled);
     assert_eq!(Ok(()), judge.judge(RootKind::Fill, &terms, body));
 }

@@ -432,11 +432,11 @@ impl<R: Runtime> RoleSession<R> {
         if unseen.is_some_and(|h| {
             params
                 .iter()
-                .any(|(_, ty, _)| !declared(&e.schema, ty) || !h.names.may_type(&e.schema, ty))
+                .any(|(_, ty, _)| !declared(e.schema(), ty) || !h.names.may_type(e.schema(), ty))
         }) {
             return Err(refused());
         }
-        if let Some((name, ..)) = params.iter().find(|(_, ty, _)| !declared(&e.schema, ty)) {
+        if let Some((name, ..)) = params.iter().find(|(_, ty, _)| !declared(e.schema(), ty)) {
             let err = Error::invalid(format!("parameter `{name}` has no type of the schema"));
             return Err(failed(&names_hash(&names), err));
         }
@@ -447,7 +447,7 @@ impl<R: Runtime> RoleSession<R> {
                     .filter(|(n, ..)| !secret.contains(n))
                     .map(|(n, t, v)| (*n, t, v))
                     .collect();
-                match args_hash(&e.schema, &typed) {
+                match args_hash(e.schema(), &typed) {
                     Ok(args) => args,
                     Err(err) => return Err(failed(&names_hash(&names), err)),
                 }
@@ -460,18 +460,17 @@ impl<R: Runtime> RoleSession<R> {
         let hides = unseen.is_some() && parsed.is_ok() && !capability_only;
         let scope = unseen.map(|h| {
             let commanded = match &parsed {
-                Ok(items) if capability_only => commanded(&e.schema, items),
+                Ok(items) if capability_only => commanded(e.schema(), items),
                 _ => Vec::new(),
             };
-            h.names.naming(commanded).scope(&e.schema)
+            h.names.naming(commanded).scope(e.schema())
         });
         let checked = parsed
             .map_err(|err| TextError::Other(e.refusal().unwrap_or(err)))
             .and_then(|items| {
                 let p = Prepared::naming(
-                    &e.schema,
+                    &e.compiled,
                     scope.as_ref(),
-                    &e.program,
                     &e.explained(),
                     &items,
                     params,
@@ -848,8 +847,8 @@ mod tests {
         let e = db.engine.clone();
         let caller = e.principal(None).expect("principal");
         let items = Prepared::parsed("verify").expect("parses");
-        let p = Prepared::of_items(&e.schema, &e.program, &e.explained(), &items, &[], caller)
-            .expect("checks");
+        let p =
+            Prepared::of_items(&e.compiled, &e.explained(), &items, &[], caller).expect("checks");
         let call = RoleCall {
             role: "w".to_owned(),
             session: 0,

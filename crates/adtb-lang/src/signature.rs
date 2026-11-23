@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
-use crate::check::{Program, Query, Txn, check_query_in, check_txn_in};
+use crate::check::{AsSchema, Compiled, Query, Txn, check_query_in, check_txn_in};
 use crate::evolve::{Failed, Source, Uncommitted};
 use crate::parse::{Options, parse_adhoc, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
@@ -368,8 +368,8 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, Failed<String>> {
     let file = parse_bundle(text, Options::default())
         .ok()
         .map_err(|ds| joined(ds.iter().map(|d| d.message.as_str())))?;
-    let (base, base_program) = source.check().map_err(file_diags)?;
-    let vis = visible(&base, &file.imports)?;
+    let base = source.check().map_err(file_diags)?;
+    let vis = visible(base.schema(), &file.imports)?;
     let fns: Vec<&FnDecl> = file
         .items
         .iter()
@@ -378,16 +378,16 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, Failed<String>> {
             _ => None,
         })
         .collect();
-    let (schema, program) =
-        with_functions(source, &base, &vis, &fns, text)?.unwrap_or((base, base_program));
-    let calls = calls(&schema, &program, &vis, &file.imports, &file.items)
+    let compiled = with_functions(source, base.schema(), &vis, &fns, text)?.unwrap_or(base);
+    let calls = calls(&compiled, &vis, &file.imports, &file.items)
         .map_err(|diag| diag.message)?
         .into_iter()
         .map(|c| c.signature)
         .collect();
     Ok(Bundle {
         header: file.header,
-        schema: Committed::new(schema).ok_or_else(|| Uncommitted::Migrating.to_string())?,
+        schema: Committed::new(compiled.schema().clone())
+            .ok_or_else(|| Uncommitted::Migrating.to_string())?,
         calls,
     })
 }
@@ -399,12 +399,12 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, Failed<String>> {
 /// Fail with the first diagnostic: a callable that does not check, declares a limit or is
 /// declared twice, a generic imported function, and a feed or aggregate.
 pub fn calls<'a>(
-    schema: &Schema,
-    program: &Program,
+    c: &Compiled<impl AsSchema>,
     vis: &Visible,
     imports: &'a [Import],
     items: &'a [BundleItem],
 ) -> Result<Vec<Call<'a>>, Diag> {
+    let schema = c.schema();
     let mut calls = Vec::new();
     for i in imports {
         if let Import::Fn(f) = i {
@@ -419,11 +419,10 @@ pub fn calls<'a>(
                 if q.limit.is_some() {
                     return Err(Diag::new(q.span, failed(no_limit)));
                 }
-                let checked =
-                    check_query_in(schema, program, vis.clone(), q).map_err(|mut diag| {
-                        diag.message = failed(&diag.message);
-                        diag
-                    })?;
+                let checked = check_query_in(c, vis.clone(), q).map_err(|mut diag| {
+                    diag.message = failed(&diag.message);
+                    diag
+                })?;
                 let names = q.params.iter().map(|p| p.name.text.clone()).collect();
                 let ty = checked.terms.ty(checked.term);
                 calls.push(Call {
@@ -436,11 +435,10 @@ pub fn calls<'a>(
                 if t.limit.is_some() {
                     return Err(Diag::new(t.span, failed(no_limit)));
                 }
-                let checked =
-                    check_txn_in(schema, program, vis.clone(), t).map_err(|mut diag| {
-                        diag.message = failed(&diag.message);
-                        diag
-                    })?;
+                let checked = check_txn_in(c, vis.clone(), t).map_err(|mut diag| {
+                    diag.message = failed(&diag.message);
+                    diag
+                })?;
                 let names = t.params.iter().map(|p| p.name.text.clone()).collect();
                 let ty = checked.terms.ty(checked.term);
                 calls.push(Call {
@@ -499,7 +497,7 @@ pub fn with_functions(
     vis: &Visible,
     fns: &[&FnDecl],
     text: &str,
-) -> Result<Option<(Schema, Program)>, Failed<String>> {
+) -> Result<Option<Compiled<Schema>>, Failed<String>> {
     if fns.is_empty() {
         return Ok(None);
     }

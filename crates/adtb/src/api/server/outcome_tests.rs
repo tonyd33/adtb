@@ -530,7 +530,11 @@ fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
             got.sort();
             assert_eq!(errors.len(), got.len());
             let outcome_form = &fields[1].1;
-            let failed = prelude_ctor(&engine.schema, engine.schema.prelude().outcome(), "Failed");
+            let failed = prelude_ctor(
+                engine.schema(),
+                engine.schema().prelude().outcome(),
+                "Failed",
+            );
             let held = errors
                 .iter()
                 .zip(&got)
@@ -551,9 +555,9 @@ fn recorded(errors: &[Error]) -> (Vec<Val>, Form) {
                 })
                 .collect();
             let error_form = Form::of(
-                &engine.schema,
+                engine.schema(),
                 &Ty::Data {
-                    def: engine.schema.prelude().error(),
+                    def: engine.schema().prelude().error(),
                     args: Vec::new(),
                     ctors: None,
                 },

@@ -15,7 +15,6 @@ use adtb::{
     CallOptions, Called, CreateOptions, Database, Error, Limit, Log, OpenError, OpenOptions,
     Registration, RejectReason, TxnCallOptions, TxnOptions,
 };
-use adtb_lang::schema::Committed;
 use adtb_lang::textual;
 use adtb_lang::translate::Refused;
 use adtb_reference::Limit as ReferenceLimit;
@@ -804,12 +803,11 @@ fn engine_equals_reference() {
 /// Returns `items`, the ad hoc text `body`, checked, `None` when it is refused; fail when the
 /// refusal states a broken guarantee of the checker.
 fn adhoc_checked(
-    schema: &Committed,
-    program: &adtb_lang::check::Program,
+    compiled: &adtb_lang::check::Compiled,
     body: &str,
     items: &[adtb_lang::ast::AdhocItem],
 ) -> Result<Option<adtb_lang::check::Adhoc>, String> {
-    match adtb_lang::check::check_adhoc(schema, program, items, &Default::default()) {
+    match adtb_lang::check::check_adhoc(compiled, items, &Default::default()) {
         Ok(adhoc) => Ok(Some(adhoc)),
         Err(ds)
             if ds
@@ -843,22 +841,23 @@ fn query_bundles(log: &[String], case: &Case) -> Result<Vec<(usize, Registration
     use adtb_lang::parse::{Options, parse_adhoc};
     let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
         .map_err(|e| format!("the log does not replay: {e:?}"))?;
-    let (schema, program) = source
+    let compiled = source
         .check()
         .map_err(|e| format!("the version does not check: {e:?}"))?;
+    let schema = compiled.schema();
     let hash: String = adtb::version_hash(&source)
         .expect("the log resolves")
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let committed = Committed::new(schema.clone()).expect("a replayed log settles");
+    let committed = compiled.clone().commit().expect("a replayed log settles");
     let mut out = Vec::new();
     for (i, q) in case.queries.iter().enumerate() {
         let body = q.text();
         let Ok(items) = parse_adhoc(&body, Options::default()).ok() else {
             continue;
         };
-        let Some(adhoc) = adhoc_checked(&committed, &program, &body, &items)? else {
+        let Some(adhoc) = adhoc_checked(&committed, &body, &items)? else {
             continue;
         };
         let [item] = adhoc.items.as_slice() else {
@@ -1184,9 +1183,10 @@ fn walk_check(seed: u64, db: &Database<SimRuntime>, case: &Case, at: &str) -> Op
 fn constraints_differ(log: &[String], case: &Case) -> Option<String> {
     let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
         .unwrap_or_else(|e| panic!("the log replays: {e:?}"));
-    let (schema, _) = source
+    let compiled = source
         .check()
         .unwrap_or_else(|e| panic!("the version checks: {e:?}"));
+    let schema = compiled.schema();
     let app = |m| schema.module(m).name == "app";
     let uniques = schema
         .relations
@@ -1331,23 +1331,22 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
     let replayed = |log: &[String]| {
         let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
             .map_err(|e| format!("the log does not replay: {e:?}"))?;
-        let (schema, program) = source
+        let compiled = source
             .check()
             .map_err(|e| format!("the version does not check: {e:?}"))?;
-        Ok::<_, String>((source, schema, program))
+        Ok::<_, String>((source, compiled))
     };
-    let (source, schema, program) = replayed(log)?;
+    let (source, compiled) = replayed(log)?;
+    let schema = compiled.schema();
     let later = replayed(to)?;
     let translates = |body: &str| {
-        let p = adtb_lang::translate::Pinned::new(
-            &schema, &source, &later.1, &later.0, &later.2, false,
-        );
+        let p = adtb_lang::translate::Pinned::new(schema, &source, &later.1, &later.0, false);
         let p = match p {
             Ok(p) => p,
             Err(Refused::Untranslatable(_)) => return false,
             Err(e) => panic!("the translation to the later version fails: {e:?}"),
         };
-        normal(&schema, &program, body).is_some_and(|q| match p.query(&q) {
+        normal(&compiled, body).is_some_and(|q| match p.query(&q) {
             Ok(_) => true,
             Err(Refused::Untranslatable(_)) => false,
             Err(e) => panic!("`{body}` fails to translate: {e:?}"),
@@ -1364,14 +1363,14 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
             log.len()
         )
     };
-    let committed = Committed::new(schema.clone()).expect("a replayed log settles");
+    let committed = compiled.clone().commit().expect("a replayed log settles");
     let mut texts = Vec::new();
     for (i, q) in case.queries.iter().enumerate() {
         let body = q.text();
         let Ok(items) = parse_adhoc(&body, Options::default()).ok() else {
             continue;
         };
-        let Some(adhoc) = adhoc_checked(&committed, &program, &body, &items)? else {
+        let Some(adhoc) = adhoc_checked(&committed, &body, &items)? else {
             continue;
         };
         let [item] = adhoc.items.as_slice() else {
@@ -1387,7 +1386,7 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
         let text = format!("{}{item}", header(&name));
         texts.push((name, text, Some((i, body))));
     }
-    for (j, write) in rewrites(&schema).into_iter().enumerate() {
+    for (j, write) in rewrites(schema).into_iter().enumerate() {
         let item = format!("txn w () -> I64 =\n  transact\n    {write}\n    return 0\n");
         if !translates(&item) {
             continue;
@@ -1412,21 +1411,20 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
 }
 
 /// Returns the normal form of the one query or transaction of bundle body `item`, which imports
-/// module `app`, over `schema` checked as `program`.
+/// module `app`, over `compiled`.
 fn normal(
-    schema: &adtb_lang::schema::Schema,
-    program: &adtb_lang::check::Program,
+    compiled: &adtb_lang::check::Compiled<adtb_lang::schema::Schema>,
     item: &str,
 ) -> Option<adtb_lang::norm::NormalQuery> {
     use adtb_lang::parse::{Options, parse_bundle_body};
     use adtb_lang::signature::{self, Item};
     let text = format!("import app\n{item}");
     let (imports, items) = parse_bundle_body(&text, Options::default()).ok().ok()?;
-    let vis = signature::visible(schema, &imports).ok()?;
-    let calls = signature::calls(schema, program, &vis, &imports, &items).ok()?;
+    let vis = signature::visible(compiled.schema(), &imports).ok()?;
+    let calls = signature::calls(compiled, &vis, &imports, &items).ok()?;
     match &calls.first()?.item {
-        Item::Query(_, q) => sound(item, adtb_lang::norm::query(schema, program, q)),
-        Item::Txn(_, t) => sound(item, adtb_lang::norm::txn(schema, program, t)),
+        Item::Query(_, q) => sound(item, adtb_lang::norm::query(compiled, q)),
+        Item::Txn(_, t) => sound(item, adtb_lang::norm::txn(compiled, t)),
         Item::Fn(..) => None,
     }
 }

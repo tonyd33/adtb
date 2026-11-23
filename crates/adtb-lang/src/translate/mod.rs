@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
 
-use crate::check::Program;
+use crate::check::{Compiled, Program};
 use crate::evolve::{Clause, Code, Failed, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
 use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::kernel::{Kind, Terms, Tm};
@@ -133,16 +133,17 @@ fn refused(operator: Option<String>, reason: impl Into<String>) -> Failed<Untran
 
 impl<'a> Pinned<'a> {
     /// Returns the translation from `from`, the schema of `from_source` with any functions of
-    /// the bundle, to `to`, the schema of `to_source` checked as `to_program`, a later version
-    /// of the same log. A bundle that declares `hide new constructors` is `hide_new`.
+    /// the bundle, to `to`, the schema of `to_source` and its program, a later version of the
+    /// same log. A bundle that declares `hide new constructors` is `hide_new`.
     pub fn new(
         from: &'a Schema,
         from_source: &'a Source,
-        to: &'a Schema,
+        to: &'a Compiled<impl crate::check::AsSchema>,
         to_source: &'a Source,
-        to_program: &'a Program,
         hide_new: bool,
     ) -> Result<Pinned<'a>, Refused> {
+        let to_program = to.program();
+        let to = to.schema();
         let mut ops = Vec::new();
         for (i, logged) in to_source.log.iter().enumerate() {
             if logged.number <= from_source.version {
@@ -562,7 +563,7 @@ impl<'a> Pinned<'a> {
             return Ok(n.clone());
         }
         let n = Rc::new(
-            norm::program(self.map.to, self.to_program)
+            norm::program_of(self.map.to, self.to_program)
                 .map_err(|e| refused(None, e.to_string()))?,
         );
         *self.normal.borrow_mut() = Some(n.clone());

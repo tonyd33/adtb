@@ -288,7 +288,7 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Retained, Error> {
-        let schema = &self.schema;
+        let schema = &self.schema();
         let pasts: BTreeMap<(RelId, u32), Arc<Heap>> = (self.kept.heaps.iter())
             .map(|(&rc, (past, _))| (rc, past.clone()))
             .collect();

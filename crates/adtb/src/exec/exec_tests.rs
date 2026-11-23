@@ -53,14 +53,14 @@ fn planned(f: &Fixture) -> Fixture {
         PLANNED.with_borrow_mut(|p| p.insert(f.decls().to_owned(), got.clone()));
         got
     });
-    let rows = adtb_testkit::load::rows_of(&schema, &f.schema, &f.db);
+    let rows = adtb_testkit::load::rows_of(&schema, f.schema(), &f.db);
     f.rebound(schema, catalog, rows)
 }
 
 /// Returns a simulator of `seed` holding the database of `f`'s declarations with its rows loaded
 /// as [`load::committed_noise`] loads them, made once per declarations and rows.
 fn loaded(seed: u64, f: &Fixture) -> Sim {
-    let files = load::files(f.decls(), &f.schema, &f.db, &options());
+    let files = load::files(f.decls(), f.schema(), &f.db, &options());
     Sim::with_files(seed, Config::default(), files)
 }
 
@@ -123,7 +123,7 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
         .into_iter()
         .map(|(name, rewrites)| {
             let p = plan(
-                &f.schema,
+                f.schema(),
                 &f.normal,
                 &f.catalog,
                 n.valid(),
@@ -131,11 +131,11 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
                 PlanOptions { rewrites },
             )
             .unwrap_or_else(|e| panic!("`{text}` has no plan: {e}"));
-            let program = exec::compile(&f.schema, &f.catalog, &p, None)
+            let program = exec::compile(f.schema(), &f.catalog, &p, None)
                 .unwrap_or_else(|e| panic!("`{text}` does not compile: {e:?}"));
             let params = bound
                 .iter()
-                .map(|(v, x)| (*v, to_val(&f.schema, &p.terms.var_info(*v).ty, x)))
+                .map(|(v, x)| (*v, to_val(f.schema(), &p.terms.var_info(*v).ty, x)))
                 .collect();
             Case {
                 name: format!("`{text}` with {name}"),
@@ -215,7 +215,7 @@ fn with_database<T>(
     finished(&mut sim, |rt| {
         let db = load::open_with(&rt, f.decls(), &options());
         let _running =
-            (running == Running::Left).then(|| load::running_noise(&db, &f.schema, &f.db));
+            (running == Running::Left).then(|| load::running_noise(&db, f.schema(), &f.db));
         assert_eq!(
             f.catalog,
             db.testing().plan_catalog(),
@@ -266,7 +266,7 @@ fn run_all(
         for c in cases {
             let grant = budget.admit(64 << 20).expect("a grant fits");
             let v = exec::execute(rt.clone(), c.bound(), call(store, grant, pool, opts));
-            got.push(outcome(&f.schema, &c.ty, v));
+            got.push(outcome(f.schema(), &c.ty, v));
         }
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
         (got, pool.map_or(0, |p| p.ran()))
@@ -1012,9 +1012,9 @@ fn a_stopped_scan_over_ranges_conflicts_with_a_writer_of_its_deciding_row() {
 fn a_mistyped_value_is_an_internal_error_in_batches() {
     let f = running();
     let users = f.rel("users");
-    let row: Vec<FieldType> = row_ty(&f.schema, users, 0)
+    let row: Vec<FieldType> = row_ty(f.schema(), users, 0)
         .iter()
-        .map(|(_, t)| field_type(&f.schema, t))
+        .map(|(_, t)| field_type(f.schema(), t))
         .collect();
     let schema = batch::Schema::of_heap(&row);
     let text = |t: &str| Val::Text(t.into());
@@ -1049,7 +1049,7 @@ fn a_call_of_a_wasm_function_is_refused_before_it_reaches_the_executor_and_a_hos
     ] {
         let (n, t) = f.normal(q, &[]);
         let got = plan(
-            &f.schema,
+            f.schema(),
             &f.normal,
             &f.catalog,
             n.valid(),
@@ -1088,7 +1088,7 @@ fn run_spilling(
         for c in cases {
             let g = budget.admit(grant).expect("a grant fits");
             let v = exec::execute(rt.clone(), c.bound(), call(store, g.clone(), pool, opts));
-            got.push((outcome(&f.schema, &c.ty, v), g.spilled()));
+            got.push((outcome(f.schema(), &c.ty, v), g.spilled()));
         }
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
         got

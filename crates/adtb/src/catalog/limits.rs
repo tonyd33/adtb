@@ -1,4 +1,4 @@
-use adtb_lang::check::Program;
+use adtb_lang::check::Compiled;
 use adtb_lang::evolve::Failed;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::schema::Schema;
@@ -53,12 +53,11 @@ pub(super) fn unchecked(version: u64, ds: Vec<FileDiag>) -> Error {
     })
 }
 
-/// Returns the normal program of `schema`, whose checked program is `program`, when an index of
-/// `specs` has an element other than a field, `broken` making the error of a body that has none
-/// for a reason other than this build's limits.
+/// Returns the normal program of `compiled` when an index of `specs` has an element other than a
+/// field, `broken` making the error of a body that has none for a reason other than this build's
+/// limits.
 pub(super) fn index_program<'s>(
-    schema: &Schema,
-    program: &Program,
+    compiled: &Compiled,
     mut specs: impl Iterator<Item = &'s IndexSpec>,
     broken: impl FnOnce(Box<Broken>) -> Error,
 ) -> Result<Option<NormalProgram>, Error> {
@@ -70,7 +69,9 @@ pub(super) fn index_program<'s>(
     if !derived {
         return Ok(None);
     }
-    norm::program(schema, program)
-        .map(Some)
-        .map_err(|e| not_normal(schema, e, |e| broken(Box::new(Broken::StoredNotNormal(e)))))
+    norm::program(compiled).map(Some).map_err(|e| {
+        not_normal(compiled.schema(), e, |e| {
+            broken(Box::new(Broken::StoredNotNormal(e)))
+        })
+    })
 }

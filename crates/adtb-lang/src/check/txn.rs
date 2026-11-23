@@ -222,21 +222,20 @@ pub struct Txn {
 
 /// Type checks a registered transaction of a bundle that reads `module`, against `program`, the checked `schema`.
 pub fn check_txn(
-    schema: &Schema,
-    program: &Program,
+    c: &Compiled<impl AsSchema>,
     module: ModuleId,
     t: &ast::TxnDecl,
 ) -> Result<Txn, Diag> {
-    check_txn_in(schema, program, Visible::module(module), t)
+    check_txn_in(c, Visible::module(module), t)
 }
 
 /// Type checks a registered transaction of a bundle that reads the modules of `vis`, as [`check_txn`] does.
 pub fn check_txn_in(
-    schema: &Schema,
-    program: &Program,
+    c: &Compiled<impl AsSchema>,
     vis: Visible,
     t: &ast::TxnDecl,
 ) -> Result<Txn, Diag> {
+    let (schema, program) = (c.schema(), c.program());
     let mut c = Checker::registered(schema, program, vis);
     let term = c.txn(t)?;
     let txn = Txn {

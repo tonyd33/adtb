@@ -117,7 +117,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     fn run_reindex(&self, work: &Work, started: Started) {
-        let schema = self.schema.clone();
+        let schema = self.schema().clone();
         let schema = schema.as_ref();
         let job = self.reindex_row_of(schema, work.table, started);
         self.rebuild_all(schema, work, &job);

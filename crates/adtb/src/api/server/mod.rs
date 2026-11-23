@@ -66,7 +66,7 @@ impl<R: Runtime> RoleAuthority<R> {
     pub fn session(&self, name: &str) -> Result<RoleSession<R>, Error> {
         let name = role_name(name)?;
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let role = t.role(e, tx, &name)?;
             Ok(RoleSession {
                 serial: e.sessions.fetch_add(1, Ordering::Relaxed),
@@ -81,7 +81,7 @@ impl<R: Runtime> RoleAuthority<R> {
     pub fn create_role(&self, name: &str) -> Result<(), Error> {
         let name = role_name(name)?;
         self.access(true, |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let roles = t.roles(e, tx)?;
             if roles.iter().any(|r| r.name == name) {
                 return Err(Error::invalid(format!("role `{name}` already exists")));
@@ -105,7 +105,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _writer = engine.deployed.write(&engine.rt);
         self.access(true, |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let role = t.role(e, tx, &name)?;
             if name == OWNER_ROLE || e.role_mentions.contains(&name) {
                 return Err(denied("the role is required by the schema log"));
@@ -185,7 +185,7 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<(), Error> {
         let name = role_name(name)?;
         self.access(true, |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let grants = t.grants(e, tx)?;
             allowed(e, tx, &t, &grants)?;
             t.grantee(e, tx, &name)?;
@@ -250,14 +250,14 @@ impl<R: Runtime> RoleAuthority<R> {
         let _open = engine.enter()?;
         let _writer = engine.deployed.write(&engine.rt);
         store::run(&engine, true, &mut |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             allowed(e, tx, &t)?;
             let grants = t.grants(e, tx)?;
             refuse_relation_revoke(&grants, issuer, &statement)?;
             let calls = Calls::new(e);
             let mut deleted: BTreeSet<i64> = BTreeSet::new();
             for p in &statement.privileges {
-                let revoke = deployment_revoke(&e.schema, text, p)
+                let revoke = deployment_revoke(e.schema(), text, p)
                     .map_err(|ds| Error::invalid(diagnosed(&ds)))?;
                 let matching: Vec<i64> = grants
                     .iter()
@@ -265,7 +265,7 @@ impl<R: Runtime> RoleAuthority<R> {
                         g.kind == GrantKind::Deployment
                             && g.grantee == statement.from.text
                             && (issuer == OWNER_ROLE || g.grantor == issuer)
-                            && revoke.matches(&e.schema, &calls, g.privilege, g.target.as_deref())
+                            && revoke.matches(e.schema(), &calls, g.privilege, g.target.as_deref())
                     })
                     .map(|g| g.id)
                     .collect();
@@ -277,7 +277,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 deleted.extend(matching);
             }
             let gone = || grants.iter().filter(|g| deleted.contains(&g.id));
-            let orphans = orphans(&e.schema, &calls, &grants, &deleted);
+            let orphans = orphans(e.schema(), &calls, &grants, &deleted);
             if !orphans.is_empty() {
                 return Err(Error::invalid(format!(
                     "`{text}` takes a grant option these grants rely on: {}",
@@ -304,7 +304,7 @@ impl<R: Runtime> RoleAuthority<R> {
         grant_option: bool,
     ) -> Result<(), Error> {
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             self.checked(session, &t, e, tx)?;
             require(&t.grants(e, tx)?, session, capability, grant_option)
         })
@@ -424,7 +424,7 @@ fn give_capability<R: Runtime>(
         dormant: false,
     };
     let held: Vec<GrantRow<'_>> = rows.iter().map(Grant::row).collect();
-    if grant_option && closes_option_cycle(&e.schema, &NoCalls, &held, new) {
+    if grant_option && closes_option_cycle(e.schema(), &NoCalls, &held, new) {
         return Err(Error::invalid(format!(
             "`{}` with grant option from `{grantor}` to `{grantee}` would close a cycle of grant options",
             capability.name()

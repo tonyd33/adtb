@@ -756,9 +756,9 @@ fn prepare<R: Runtime>(w: &WritePath<R>, text: &str) -> Prepared {
     let items = parse_adhoc(text, Options::default())
         .ok()
         .unwrap_or_else(|_| panic!("`{text}` does not parse"));
-    let adhoc = check_adhoc(w.schema(), w.program(), &items, &BTreeMap::new())
+    let adhoc = check_adhoc(w.compiled(), &items, &BTreeMap::new())
         .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
-    let normal = norm::adhoc(w.schema(), w.program(), &adhoc)
+    let normal = norm::adhoc(w.compiled(), &adhoc)
         .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
     let (terms, items, ..) = normal.into_parts();
     Prepared { items, terms }

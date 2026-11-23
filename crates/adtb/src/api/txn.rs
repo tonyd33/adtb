@@ -1,7 +1,6 @@
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use adtb_lang::schema::Committed as CommittedSchema;
+use adtb_lang::check::Compiled;
 use adtb_lang::types::Ty;
 
 use crate::exec::Val;
@@ -69,7 +68,7 @@ pub struct AdHocTransaction<'a, R: Runtime = adtb_sys::os::OsRuntime> {
     state: State,
     /// The schema extended with the temp relations the transaction's texts declared, once one
     /// has.
-    temps: Option<Arc<CommittedSchema>>,
+    temps: Option<Compiled>,
     local: Local,
     /// The deadline and statement limit of every call of the transaction.
     deadline: Option<SystemTime>,
@@ -163,15 +162,8 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         opts: &TxnCallOptions,
     ) -> Result<Vec<DynRows>, Error> {
         let e = self.engine;
-        let schema = self.temps.as_ref().unwrap_or(&e.schema);
-        let p = Prepared::new(
-            schema,
-            &e.program,
-            &e.explained(),
-            text,
-            params,
-            self.caller.clone(),
-        )?;
+        let compiled = self.temps.as_ref().unwrap_or(&e.compiled);
+        let p = Prepared::new(compiled, &e.explained(), text, params, self.caller.clone())?;
         for c in p.commands() {
             super::command::outside_transaction(&c.command)?;
         }
@@ -184,7 +176,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             return Err(Error::invalid("a read-only transaction does not write"));
         }
         let rows = self.run(&p, opts, || {})?;
-        self.temps = Some(p.schema().clone());
+        self.temps = Some(p.compiled.clone());
         Ok(rows)
     }
 

@@ -46,9 +46,9 @@ impl Catalog {
     ) -> Result<(), Error> {
         for (&rid, ctors) in rows.rows() {
             let r =
-                relation(&self.schema, rid).expect("admitted rows are of the catalog's relations");
+                relation(self.schema(), rid).expect("admitted rows are of the catalog's relations");
             for (&cid, rows) in ctors {
-                let c = ctor_index(&self.schema, r, cid).expect("a constructor of the relation");
+                let c = ctor_index(self.schema(), r, cid).expect("a constructor of the relation");
                 self.insert_ctor(m, r, c, rows)?;
             }
         }
@@ -63,7 +63,7 @@ impl Catalog {
         rows: &[Vec<Value>],
     ) -> Result<(), Error> {
         let pager = m.pager;
-        let ctor = stored(ctor_id(&self.schema, r, c));
+        let ctor = stored(ctor_id(self.schema(), r, c));
         let keyed = rows.iter().map(|row| {
             let mut entries = Vec::new();
             for (spec, index, keys) in self.indexes.values() {

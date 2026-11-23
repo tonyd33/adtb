@@ -89,12 +89,12 @@ fn holds_call<R: Runtime>(
             match target.function {
                 Some(id) => {
                     g.kind == GrantKind::Log
-                        && row.and_then(|t| Granted::read_target(&e.schema, Privilege::Call, t))
+                        && row.and_then(|t| Granted::read_target(e.schema(), Privilege::Call, t))
                             == Some(Granted::CallFn(id))
                 }
                 None => {
                     g.kind == GrantKind::Deployment
-                        && target_covers(&e.schema, calls, Privilege::Call, row, Some(&call))
+                        && target_covers(e.schema(), calls, Privilege::Call, row, Some(&call))
                 }
             }
         })
@@ -136,7 +136,7 @@ impl<R: Runtime> RoleAuthority<R> {
             bundle: bundle.to_owned(),
             query: 0,
         };
-        let caller = service(&e.schema, &session.name);
+        let caller = service(e.schema(), &session.name);
         let held = self.record_refusal(session, &caller, &origin, held)?;
         let _open = e.enter()?;
         let row = e.deployed.read(&e.rt).bundles.get(bundle).cloned();
@@ -186,7 +186,7 @@ impl<R: Runtime> RoleAuthority<R> {
         registered: Option<&Registered<R>>,
     ) -> Result<Option<Vec<u32>>, Error> {
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             self.checked(session, &t, e, tx)?;
             let stored = e.deployed.read(&e.rt);
             let row = stored.bundles.get(bundle);
@@ -233,7 +233,7 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<Val, Error> {
         let bundle = registered.name();
         let observed = self.access(false, |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             let principal = self.derive(session, &t, e, tx, assertion)?;
             let stored = e.deployed.read(&e.rt);
             if owns(&stored, stored.bundles.get(bundle), session.id.0) {
@@ -255,7 +255,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 reason: RejectReason::Denied { .. },
             }) => {
                 let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-                service(&e.schema, &session.name)
+                service(e.schema(), &session.name)
             }
             Err(err) => return Err(err),
         };

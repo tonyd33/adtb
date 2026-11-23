@@ -40,7 +40,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let family_owner = stored.deployed.families.get(family).copied();
         drop(stored);
         store::run(&e, true, &mut |e, tx, id, changes| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             self.checked(session, &t, e, tx)?;
             let by = session.id.0;
             let roles = t.role_names(e, tx)?;
@@ -67,7 +67,7 @@ impl<R: Runtime> RoleAuthority<R> {
                     return Err(denied(lacks.join("\n")));
                 }
             }
-            claim.rows(&e.schema, &mut |relation, insert, row| {
+            claim.rows(e.schema(), &mut |relation, insert, row| {
                 if insert {
                     changes.insert(relation, row);
                 } else {
@@ -102,7 +102,7 @@ fn decide<R: Runtime>(
     }
     let now = e.clock();
     let s = *e.settings.lock(&e.rt);
-    let over = Over::new(&e.source, &e.schema, &e.program, &e.hash);
+    let over = Over::new(&e.source, &e.compiled, &e.hash);
     let checked =
         registered::registration(&over, bundle, stored, now, &s, &mut Default::default())?;
     let passed = checked

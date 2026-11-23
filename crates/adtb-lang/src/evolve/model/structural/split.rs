@@ -244,7 +244,7 @@ impl Model {
             RootKind::Routing,
         )
         .or_else(|d| refuse_at(d.span, d.message))?;
-        let query = crate::norm::query(&schema, &program, &q)
+        let query = crate::norm::registered(&schema, &program, &q.terms, q.term, RootKind::Query)
             .map_err(|e| Fail::Broken(format!("a routing does not normalise: {e:?}")))?;
         Ok(Routing {
             carries,

@@ -18,7 +18,7 @@ fn run(text: &str) -> Result<Adhoc, Vec<String>> {
     let items = parse_adhoc(text, Options::default())
         .ok()
         .expect("the provenance statement parses");
-    check_adhoc(&s, &program, &items, &BTreeMap::new())
+    check_adhoc(&program, &items, &BTreeMap::new())
         .map_err(|ds| ds.into_iter().map(|d| d.message).collect())
 }
 

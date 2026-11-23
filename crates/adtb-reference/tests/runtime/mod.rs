@@ -37,7 +37,7 @@ pub(super) fn finish(fields: &Fields) {
 }
 
 pub(super) fn parse(fixture: &Fixture, ty: &str, text: &str) -> Value {
-    textual::parse(&fixture.schema, text, &fixture.ty(ty))
+    textual::parse(fixture.schema(), text, &fixture.ty(ty))
         .unwrap_or_else(|error| panic!("expected/input {ty} `{text}`: {error}"))
 }
 

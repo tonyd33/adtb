@@ -103,7 +103,7 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
             diag: Diag::new(span, message),
         }
     };
-    let judge = Judge::new(schema, p);
+    let judge = Judge::over(schema, p);
     let refused: Vec<FileDiag> = p
         .bodies()
         .into_iter()
@@ -115,7 +115,7 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
     if !refused.is_empty() {
         return refused;
     }
-    let n = match norm::program(schema, p) {
+    let n = match norm::program_of(schema, p) {
         Ok(n) => n,
         Err(e) => {
             let (file, span) = root_site(schema, e.root);
@@ -148,7 +148,7 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
     if !denied.is_empty() {
         return denied;
     }
-    let judge = Judge::new(schema, p);
+    let judge = Judge::over(schema, p);
     let items = a.items.iter().zip(spans).map(|(t, span)| (*t, *span));
     let commands = a
         .commands
@@ -164,7 +164,7 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
     if !refused.is_empty() {
         return refused;
     }
-    let n = match norm::adhoc(schema, p, a) {
+    let n = match norm::adhoc_of(schema, p, a) {
         Ok(n) => n,
         Err(e) => {
             let span = match e.root {
@@ -224,13 +224,14 @@ pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) ->
     system::program(schema, p, &q.terms, [q.term], span)?;
     judged(
         schema,
-        &Judge::new(schema, p),
+        &Judge::over(schema, p),
         RootKind::Query,
         &q.terms,
         q.term,
     )
     .map_err(|m| Diag::new(span, m))?;
-    let n = norm::query(schema, p, q).map_err(|e| diag(schema, span, e))?;
+    let n = norm::registered(schema, p, &q.terms, q.term, RootKind::Query)
+        .map_err(|e| diag(schema, span, e))?;
     accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }
 
@@ -239,12 +240,13 @@ pub(crate) fn txn_diag(schema: &Schema, p: &Program, t: &Txn, span: Span) -> Res
     system::program(schema, p, &t.terms, [t.term], span)?;
     judged(
         schema,
-        &Judge::new(schema, p),
+        &Judge::over(schema, p),
         RootKind::Query,
         &t.terms,
         t.term,
     )
     .map_err(|m| Diag::new(span, m))?;
-    let n = norm::txn(schema, p, t).map_err(|e| diag(schema, span, e))?;
+    let n = norm::registered(schema, p, &t.terms, t.term, RootKind::Query)
+        .map_err(|e| diag(schema, span, e))?;
     accept(n.terms(), &[n.body()]).map_err(|m| Diag::new(span, m))
 }

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::ast::{BundleItem, ExampleItem};
 use adtb_lang::check::check_query;
-use adtb_lang::check::{Checker, Program, check_adhoc, check_schema};
+use adtb_lang::check::{Checker, Compiled, Program, check_adhoc, check_schema};
 use adtb_lang::kernel::Tm;
 use adtb_lang::norm::{self, NormalAdhoc, NormalProgram, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
@@ -21,8 +21,7 @@ use crate::plan::{
 #[derive(Debug)]
 pub struct Fixture {
     decls: String,
-    pub schema: Committed,
-    pub program: Program,
+    compiled: Compiled,
     pub normal: NormalProgram,
     pub catalog: Catalog,
     pub db: Database,
@@ -36,14 +35,13 @@ impl Fixture {
             .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"));
         let schema = build(&[(FileId(0), file)])
             .unwrap_or_else(|ds| panic!("the schema does not build: {ds:?}"));
-        let program =
-            check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
-        let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");
-        let catalog = catalog(&schema);
+        let compiled =
+            check_schema(schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
+        let normal = norm::program(&compiled).expect("the schema's bodies normalise");
+        let catalog = catalog(compiled.schema());
         Fixture {
             decls: src.to_owned(),
-            schema,
-            program,
+            compiled,
             normal,
             catalog,
             db: Database::new(),
@@ -55,16 +53,27 @@ impl Fixture {
         &self.decls
     }
 
+    pub fn compiled(&self) -> &Compiled {
+        &self.compiled
+    }
+
+    pub fn schema(&self) -> &Committed {
+        self.compiled.committed()
+    }
+
+    pub fn program(&self) -> &Program {
+        self.compiled.program()
+    }
+
     /// Returns the fixture of this one's declarations over `schema`, planned by `catalog`,
     /// holding `db`.
     pub fn rebound(&self, schema: Committed, catalog: Catalog, db: Database) -> Fixture {
-        let program =
-            check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
-        let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");
+        let compiled =
+            check_schema(schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
+        let normal = norm::program(&compiled).expect("the schema's bodies normalise");
         Fixture {
             decls: self.decls.clone(),
-            schema,
-            program,
+            compiled,
             normal,
             catalog,
             db,
@@ -72,8 +81,8 @@ impl Fixture {
     }
 
     pub fn rel(&self, name: &str) -> RelId {
-        let m = self.schema.module_named("app").expect("the module");
-        match self.schema.module(m).values.get(name) {
+        let m = self.schema().module_named("app").expect("the module");
+        match self.schema().module(m).values.get(name) {
             Some(&ValueDef::Relation(r)) => r,
             _ => panic!("no relation `{name}`"),
         }
@@ -83,7 +92,7 @@ impl Fixture {
         let parsed = parse_type(text, Options::default())
             .ok()
             .unwrap_or_else(|_| panic!("`{text}` is not a type"));
-        Checker::of_adhoc(&self.schema, Visible::all(&self.schema))
+        Checker::of_adhoc(self.schema(), Visible::all(self.schema()))
             .resolve_type(&parsed, adtb_lang::schema::FnTypes::Allowed)
             .unwrap_or_else(|d| panic!("`{text}`: {}", d.message))
     }
@@ -97,9 +106,9 @@ impl Fixture {
             .iter()
             .map(|(n, t)| (n.to_string(), self.ty(t)))
             .collect();
-        let adhoc = check_adhoc(&self.schema, &self.program, &items, &tys)
+        let adhoc = check_adhoc(&self.compiled, &items, &tys)
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
-        let normal = norm::adhoc(&self.schema, &self.program, &adhoc)
+        let normal = norm::adhoc(&self.compiled, &adhoc)
             .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
         let [item] = normal.items() else {
             panic!("`{text}` holds one statement")
@@ -116,10 +125,10 @@ impl Fixture {
         let [ExampleItem::BundleItem(BundleItem::Query(q))] = items.as_slice() else {
             panic!("`{decl}` is one query")
         };
-        let module = self.schema.module_named("app").expect("the module");
-        let query = check_query(&self.schema, &self.program, module, q)
+        let module = self.schema().module_named("app").expect("the module");
+        let query = check_query(&self.compiled, module, q)
             .unwrap_or_else(|d| panic!("`{decl}` does not check: {}", d.message));
-        norm::query(&self.schema, &self.program, &query)
+        norm::query(&self.compiled, &query)
             .unwrap_or_else(|e| panic!("`{decl}` has no normal form: {e:?}"))
     }
 
@@ -131,7 +140,7 @@ impl Fixture {
             .iter()
             .map(|(name, _, v)| (n.params()[*name], v.clone()))
             .collect();
-        Interpreter::new(&self.schema, &self.program, &self.db).eval(n.terms(), t, &bound)
+        Interpreter::new(self.schema(), self.program(), &self.db).eval(n.terms(), t, &bound)
     }
 
     /// Add to relation `rel` the rows the set expression `rows` denotes over `params`.

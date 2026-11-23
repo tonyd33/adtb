@@ -277,8 +277,9 @@ impl Catalog {
         } else {
             self.readers.holding(pending)
         };
-        let (held, _, texts) = readers.checking(self.version());
-        let stored = kept_indexes(held, texts, &readers.pending).map_err(Error::Internal)?;
+        let (held, texts) = readers.checking(self.version());
+        let stored =
+            kept_indexes(held.committed(), texts, &readers.pending).map_err(Error::Internal)?;
         let freed: Vec<u64> = self
             .indexes
             .keys()

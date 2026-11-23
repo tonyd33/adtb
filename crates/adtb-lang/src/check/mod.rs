@@ -19,6 +19,7 @@ use crate::types::*;
 mod adhoc;
 mod body;
 mod call;
+mod compiled;
 mod expr;
 mod names;
 mod order;
@@ -43,6 +44,7 @@ use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
 pub use body::ProgramBody;
+pub use compiled::{AsCommitted, AsSchema, Compiled};
 pub use order::{declaration_order, schema_migration};
 pub use row_body::{RowBody, check_row, row_query};
 pub use txn::{Txn, check_txn, check_txn_in};
@@ -549,11 +551,17 @@ fn call_order(schema: &Schema) -> Result<Vec<FnId>, FileDiag> {
     Ok(order)
 }
 
-/// Type checks every body of a schema and elaborates it to the kernel.
+/// Type checks every body of `schema` and elaborates it to the kernel, returning the two together.
 ///
 /// Fail with no diagnostic of a body that names a relation variable a refused operator left
 /// poisoned.
-pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
+pub fn check_schema<S: AsSchema>(schema: S) -> Result<Compiled<S>, Vec<FileDiag>> {
+    let program = checked_program(schema.as_schema())?;
+    Ok(Compiled::new(schema, program))
+}
+
+/// Type checks every body of `schema` as [`check_schema`] does, returning the program alone.
+pub(crate) fn checked_program(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
     let order = call_order(schema).map_err(|d| vec![d])?;
     let (program, mut diags) = bodies(schema, &order, None);
     let poisoned = diags.iter().any(|d| d.diag.kind == DiagKind::Poisoned);
@@ -834,39 +842,37 @@ pub const TEMP_MODULE: &str = "temp";
 /// Type checks ad hoc text, its free names typed by `params`, against `program`, the checked `schema`,
 /// knowing no bundle.
 pub fn check_adhoc(
-    schema: &Committed,
-    program: &Program,
+    c: &Compiled<impl AsCommitted>,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
 ) -> Result<Adhoc, Vec<Diag>> {
-    check_adhoc_recording(schema, program, items, params, &Bundles::default(), None)
+    check_adhoc_recording(c, items, params, &Bundles::default(), None)
 }
 
 /// Type checks ad hoc text as [`check_adhoc`] does, its `explain` of a registered call against
 /// `bundles`. With `record`, appends the schema objects the text names, as [`schema_refs`] reports
 /// them, those of items before a refused one included.
 pub fn check_adhoc_recording(
-    schema: &Committed,
-    program: &Program,
+    c: &Compiled<impl AsCommitted>,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
     bundles: &Bundles,
     record: Option<&mut Vec<(Span, Ref)>>,
 ) -> Result<Adhoc, Vec<Diag>> {
-    check_adhoc_in(schema, None, program, items, params, bundles, record)
+    check_adhoc_in(c, None, items, params, bundles, record)
 }
 
 /// Type checks ad hoc text as [`check_adhoc_recording`] does, its names finding only what `scope`
 /// holds when given.
 pub fn check_adhoc_in(
-    schema: &Committed,
+    c: &Compiled<impl AsCommitted>,
     scope: Option<&crate::schema::Scope>,
-    program: &Program,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
     bundles: &Bundles,
     record: Option<&mut Vec<(Span, Ref)>>,
 ) -> Result<Adhoc, Vec<Diag>> {
+    let (schema, program) = (c.committed(), c.program());
     let mut diags = Vec::new();
     let vis = Visible::all(schema).scoped(scope.cloned());
     let temps = adhoc::temp_relations(schema, &vis, items, &mut diags);
@@ -1013,21 +1019,20 @@ pub struct Query {
 
 /// Type checks a registered query of a bundle that reads `module`, against `program`, the checked `schema`.
 pub fn check_query(
-    schema: &Schema,
-    program: &Program,
+    c: &Compiled<impl AsSchema>,
     module: ModuleId,
     q: &ast::QueryDecl,
 ) -> Result<Query, Diag> {
-    check_query_in(schema, program, Visible::module(module), q)
+    check_query_in(c, Visible::module(module), q)
 }
 
 /// Type checks a registered query of a bundle that reads the modules of `vis`, as [`check_query`] does.
 pub fn check_query_in(
-    schema: &Schema,
-    program: &Program,
+    c: &Compiled<impl AsSchema>,
     vis: Visible,
     q: &ast::QueryDecl,
 ) -> Result<Query, Diag> {
+    let (schema, program) = (c.schema(), c.program());
     let mut c = Checker::registered(schema, program, vis);
     let term = c.query(q)?;
     let query = Query {

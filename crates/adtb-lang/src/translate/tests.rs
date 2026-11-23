@@ -45,10 +45,10 @@ fn named(schema: &Schema, name: &str) -> TypeId {
     TypeId(i as u32)
 }
 
-fn checked(log: &[&str]) -> (Source, Schema, Program) {
+fn checked(log: &[&str]) -> (Source, Compiled<Schema>) {
     let source = signature::replay(log.iter().copied()).expect("the log replays");
-    let (schema, program) = source.check().expect("the version checks");
-    (source, schema, program)
+    let compiled = source.check().expect("the version checks");
+    (source, compiled)
 }
 
 /// Returns the translation of the one query or transaction of `body`, checked at the version
@@ -69,7 +69,7 @@ fn translated_each(log: &[&str], pin: usize, body: &str, hide_new: bool) -> Vec<
 /// Returns the translation of each query or transaction of `body`, checked at `pinned`, the
 /// version some first migrations of `log` leave, to the version `log` leaves.
 fn translated_from(
-    pinned: &(Source, Schema, Program),
+    pinned: &(Source, Compiled<Schema>),
     log: &[&str],
     body: &str,
     hide_new: bool,
@@ -78,21 +78,22 @@ fn translated_from(
 }
 
 /// Returns each query or transaction of `body`, checked and normalised at `pinned`.
-fn normalised(pinned: &(Source, Schema, Program), body: &str) -> Vec<NormalQuery> {
-    let (_, from, from_program) = pinned;
+fn normalised(pinned: &(Source, Compiled<Schema>), body: &str) -> Vec<NormalQuery> {
+    let (_, from_compiled) = pinned;
+    let from = from_compiled.schema();
     let text = format!("import auth\n{body}");
     let (imports, items) = parse_bundle_body(&text, Options::default())
         .ok()
         .expect("the body parses");
     let vis = signature::visible(from, &imports).expect("auth is visible");
-    let calls = signature::calls(from, from_program, &vis, &imports, &items)
+    let calls = signature::calls(from_compiled, &vis, &imports, &items)
         .unwrap_or_else(|d| panic!("`{body}` checks at its pin: {}", d.message));
     calls
         .iter()
         .map(|c| {
             match &c.item {
-                Item::Query(_, q) => norm::query(from, from_program, q),
-                Item::Txn(_, t) => norm::txn(from, from_program, t),
+                Item::Query(_, q) => norm::query(from_compiled, q),
+                Item::Txn(_, t) => norm::txn(from_compiled, t),
                 Item::Fn(..) => panic!("the body holds a query or transaction"),
             }
             .expect("the callable normalises")
@@ -102,14 +103,14 @@ fn normalised(pinned: &(Source, Schema, Program), body: &str) -> Vec<NormalQuery
 
 /// Returns the translation of each of `queries`, normalised at `pinned`, to the version `to`.
 fn translated_to(
-    pinned: &(Source, Schema, Program),
+    pinned: &(Source, Compiled<Schema>),
     queries: &[NormalQuery],
-    to: &(Source, Schema, Program),
+    to: &(Source, Compiled<Schema>),
     hide_new: bool,
 ) -> Vec<R<NormalQuery>> {
-    let (from_source, from, _) = pinned;
-    let (to_source, to, to_program) = to;
-    let p = Pinned::new(from, from_source, to, to_source, to_program, hide_new);
+    let (from_source, from) = pinned;
+    let (to_source, to) = to;
+    let p = Pinned::new(from.schema(), from_source, to, to_source, hide_new);
     queries
         .iter()
         .map(
@@ -153,7 +154,8 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
     for (name, tail, probe) in [("new constructor", vec![grow, enable], vec![0, 2])] {
         let mut log = vec![V1, add];
         log.extend(tail);
-        let (_, current, _) = checked(&log);
+        let (_, current) = checked(&log);
+        let current = current.schema();
         for (hide_new, expected) in [(false, probe.clone()), (true, vec![0])] {
             let q = translated_with_hiding(&log, 2, body, hide_new)
                 .unwrap_or_else(|e| panic!("{name}: the upsert translates: {e:?}"));
@@ -198,11 +200,13 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
 
 #[test]
 fn a_rename_maps_every_object_by_its_catalog_id() {
-    let (_, from, _) = checked(&[V1]);
-    let (_, to, _) = checked(&[V1, RENAMES]);
-    let map = Map::new(&from, &to);
-    let tier = named(&from, "Tier");
-    let plan = named(&to, "Plan");
+    let (_, from) = checked(&[V1]);
+    let from = from.schema();
+    let (_, to) = checked(&[V1, RENAMES]);
+    let to = to.schema();
+    let map = Map::new(from, to);
+    let tier = named(from, "Tier");
+    let plan = named(to, "Plan");
     assert_eq!(Some(plan), map.def(tier));
     let users = RelId(
         from.relations
@@ -214,7 +218,7 @@ fn a_rename_maps_every_object_by_its_catalog_id() {
     assert_eq!("people", to.relation(people).name);
     assert_eq!(Some(1), map.ctor(tier, 1));
     assert_eq!("Pro", to.ty(plan).ctors()[1].name);
-    let user = named(&from, "User");
+    let user = named(from, "User");
     assert_eq!(
         Some("display".to_string()),
         map.field(user, Some(0), "name")
@@ -223,32 +227,38 @@ fn a_rename_maps_every_object_by_its_catalog_id() {
 
 #[test]
 fn a_removed_constructor_has_no_image_and_an_added_one_no_preimage() {
-    let (_, from, _) = checked(&[V1, ADD_GOLD]);
-    let (_, to, _) = checked(&[V1, ADD_GOLD, DEPRECATE_FREE, REMOVE_FREE]);
-    let map = Map::new(&from, &to);
-    let tier = named(&from, "Tier");
+    let (_, from) = checked(&[V1, ADD_GOLD]);
+    let from = from.schema();
+    let (_, to) = checked(&[V1, ADD_GOLD, DEPRECATE_FREE, REMOVE_FREE]);
+    let to = to.schema();
+    let map = Map::new(from, to);
+    let tier = named(from, "Tier");
     assert_eq!(None, map.ctor(tier, 0));
     assert_eq!(Some(0), map.ctor(tier, 1));
     assert_eq!(Some(1), map.ctor_back(tier, 0));
-    let (_, pin, _) = checked(&[V1]);
-    let (_, gold, _) = checked(&[V1, ADD_GOLD]);
-    let added = Map::new(&pin, &gold);
+    let (_, pin) = checked(&[V1]);
+    let pin = pin.schema();
+    let (_, gold) = checked(&[V1, ADD_GOLD]);
+    let gold = gold.schema();
+    let added = Map::new(pin, gold);
     assert_eq!(None, added.ctor_back(tier, 2));
 }
 
 #[test]
 fn every_pin_narrows_rows_to_its_constructors_and_keeps_keys_whole() {
     const ADD_APPLE: &str = "module auth\nadd constructor Identity.Apple { sub: Text }\n";
-    let (_, from, _) = checked(&[V1]);
-    let (_, to, _) = checked(&[V1, ADD_APPLE]);
-    let map = Map::new(&from, &to);
+    let (_, from) = checked(&[V1]);
+    let from = from.schema();
+    let (_, to) = checked(&[V1, ADD_APPLE]);
+    let to = to.schema();
+    let map = Map::new(from, to);
     let identities = RelId(
         from.relations
             .iter()
             .position(|r| r.name == "identities")
             .expect("identities") as u32,
     );
-    let identity = named(&from, "Identity");
+    let identity = named(from, "Identity");
     let key = Ty::Key {
         rel: RelRef::Declared(identities),
         ctors: KeyCtors::All,
@@ -259,7 +269,7 @@ fn every_pin_narrows_rows_to_its_constructors_and_keeps_keys_whole() {
         ctors: None,
     };
     let tier = Ty::Data {
-        def: named(&from, "Tier"),
+        def: named(from, "Tier"),
         args: Vec::new(),
         ctors: None,
     };
@@ -277,8 +287,9 @@ fn every_pin_narrows_rows_to_its_constructors_and_keeps_keys_whole() {
 
 #[test]
 fn a_key_whose_selection_resolves_at_its_migration_end_is_lost() {
-    let (_, from, _) = checked(&[V1]);
-    let map = Map::new(&from, &from);
+    let (_, from) = checked(&[V1]);
+    let from = from.schema();
+    let map = Map::new(from, from);
     let identities = RelId(
         from.relations
             .iter()
@@ -345,7 +356,8 @@ fn nodes<T>(q: &NormalQuery, mut pick: impl FnMut(&Kind) -> Option<T>) -> Vec<(T
 fn a_hiding_pin_dereferences_a_whole_key_admitting_the_pinned_constructors_only() {
     let body = "query q () -> Set (Key users) = from s in sessions select s.who.user\n";
     let log = [V1, SESSIONS, ADD_APPLE_ENABLED];
-    let (_, to, _) = checked(&log);
+    let (_, to) = checked(&log);
+    let to = to.schema();
     let identities = RelId(
         to.relations
             .iter()
@@ -382,7 +394,7 @@ fn a_hiding_pin_dereferences_a_whole_key_admitting_the_pinned_constructors_only(
             .iter()
             .position(|n| matches!(n.kind, Kind::Deref { .. }))
             .expect("the dereference");
-        let total = crate::analysis::Totality::new(&to, false).total(q.terms(), Tm(t as u32));
+        let total = crate::analysis::Totality::new(to, false).total(q.terms(), Tm(t as u32));
         assert_eq!(!hide_new, total, "hide_new {hide_new}");
     }
 }
@@ -392,10 +404,10 @@ fn a_hiding_pin_dereference_requires_reading_the_pinned_constructors_only() {
     use crate::permission::{Requirement, Target};
     let body = "query q () -> Set (Key users) = from s in sessions select s.who.user\n";
     let log = [V1, SESSIONS, ADD_APPLE_ENABLED];
-    let (_, to, to_program) = checked(&log);
-    let to = Committed::new(to).expect("a replayed log settles");
+    let (_, to_compiled) = checked(&log);
+    let to = Committed::new(to_compiled.schema().clone()).expect("a replayed log settles");
     let q = translated_with_hiding(&log, 2, body, true).expect("it translates");
-    let program = norm::program(&to, &to_program).expect("the program normalises");
+    let program = norm::program(&to_compiled).expect("the program normalises");
     let got: BTreeSet<Requirement> =
         crate::permission::normal(&to, &program, q.terms(), q.body(), q.params())
             .expect("requirements analyze")
@@ -439,10 +451,11 @@ fn a_hiding_pin_dereference_requires_reading_the_pinned_constructors_only() {
 fn a_field_of_a_sum_that_gained_a_constructor_keeps_its_declared_type_and_matches_it_unreachable() {
     let body =
         "query q () -> Set I64 = from u in users select match u.tier | Free -> 0 | Paid -> 1\n";
-    let (_, to, _) = checked(&[V1, ADD_GOLD]);
+    let (_, to) = checked(&[V1, ADD_GOLD]);
+    let to = to.schema();
     let q = translated(&[V1, ADD_GOLD], 1, body).expect("it translates");
     let tier = Ty::Data {
-        def: named(&to, "Tier"),
+        def: named(to, "Tier"),
         args: Vec::new(),
         ctors: None,
     };
@@ -498,9 +511,10 @@ fn an_arm_over_a_conflicting_row_binds_its_constructor_only() {
     return 0
 "#;
     let log = [V1, notes, link];
-    let (_, to, _) = checked(&log);
+    let (_, to) = checked(&log);
+    let to = to.schema();
     let q = translated(&log, 2, body).expect("it translates");
-    let note = named(&to, "Note");
+    let note = named(to, "Note");
     let bound: Vec<Ty> = q
         .terms()
         .iter()
@@ -523,10 +537,12 @@ fn an_arm_over_a_conflicting_row_binds_its_constructor_only() {
 
 #[test]
 fn a_dropped_field_has_no_image() {
-    let (_, from, _) = checked(&[V1]);
-    let (_, to, _) = checked(&[V1, DROP_GID]);
-    let map = Map::new(&from, &to);
-    let identity = named(&from, "Identity");
+    let (_, from) = checked(&[V1]);
+    let from = from.schema();
+    let (_, to) = checked(&[V1, DROP_GID]);
+    let to = to.schema();
+    let map = Map::new(from, to);
+    let identity = named(from, "Identity");
     assert_eq!(None, map.field(identity, Some(1), "gid"));
     assert_eq!(
         Some("email".to_string()),
@@ -760,8 +776,8 @@ fn a_wasm_function_taken_to_another_module_conflicts_with_a_pin_of_the_old_one()
         format!("module auth\n{op} fn f (t: Text) -> Text = wasm \"{m}\" export \"e\"\n")
     };
     let (define, redefine) = (wasm("m", "define"), wasm("n", "redefine"));
-    let (at_pin, _, _) = checked(&[V1, &define]);
-    let (next, _, _) = checked(&[V1, &define, &redefine]);
+    let (at_pin, _) = checked(&[V1, &define]);
+    let (next, _) = checked(&[V1, &define, &redefine]);
     assert_eq!(
         Some((
             "redefine fn f (t: Text) -> Text = wasm \"n\" export \"e\"".to_string(),
@@ -776,9 +792,9 @@ fn a_rename_rewriting_a_language_body_is_no_change_of_a_host_function_at_the_pin
     let host = "module auth\ndefine fn f (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\nadd type H { id: Key hs } = R { n: Text }\nadd relation hs : H key id generate sequence\n";
     let reader = "module auth\nredefine fn f (t: Text) -> Text = if count(h for h in hs) == 0 then t else t\n";
     let rename = "module auth\nrename relation hs to hz\n";
-    let (at_pin, _, _) = checked(&[V1, host]);
-    let (before, _, _) = checked(&[V1, host, reader]);
-    let (next, _, _) = checked(&[V1, host, reader, rename]);
+    let (at_pin, _) = checked(&[V1, host]);
+    let (before, _) = checked(&[V1, host, reader]);
+    let (next, _) = checked(&[V1, host, reader, rename]);
     let body = |s: &Source| {
         let f = s.functions().expect("the functions resolve").remove(0);
         assert_eq!("f", f.name);
@@ -998,10 +1014,12 @@ fn a_revert_is_judged_as_its_inverse_written_out_or_a_marked_stand_in() {
 fn a_field_moved_down_has_an_image_only_in_the_constructor_it_now_sits_in() {
     let add = "module auth\nadd field Identity.note: Text fill \"n\"\n";
     let down = "module auth\nmove field Identity.note to Identity.EmailPass\n";
-    let (_, from, _) = checked(&[V1, add]);
-    let (_, to, _) = checked(&[V1, add, down]);
-    let map = Map::new(&from, &to);
-    let def = named(&from, "Identity");
+    let (_, from) = checked(&[V1, add]);
+    let from = from.schema();
+    let (_, to) = checked(&[V1, add, down]);
+    let to = to.schema();
+    let map = Map::new(from, to);
+    let def = named(from, "Identity");
     let image = |c, f| map.field(def, c, f);
     assert_eq!(
         (Some("note".to_owned()), None, None),
@@ -1031,7 +1049,8 @@ const INSERT_USER: &str = "txn t (n: Text) -> Text =
 #[test]
 fn an_insert_takes_a_fill_whose_type_holds_a_key_of_a_relation_a_later_operator_adds() {
     let q = translated(&[V1, AHEAD_MIG], 1, INSERT_USER).expect("the insert takes the fill");
-    let (_, to, _) = checked(&[V1, AHEAD_MIG]);
+    let (_, to) = checked(&[V1, AHEAD_MIG]);
+    let to = to.schema();
     let later = to
         .relations
         .iter()
@@ -1225,9 +1244,9 @@ add relation xs : X3 key id generate sequence
 /// Returns the translation of each of `transactions`, normalised at `pinned`, to the version
 /// `to`: the catalog id of the relation its one insert targets, or its refusal.
 fn inserted(
-    pinned: &(Source, Schema, Program),
+    pinned: &(Source, Compiled<Schema>),
     transactions: &[NormalQuery],
-    to: &(Source, Schema, Program),
+    to: &(Source, Compiled<Schema>),
 ) -> Vec<Outcome> {
     translated_to(pinned, transactions, to, false)
         .into_iter()
@@ -1244,7 +1263,7 @@ fn inserted(
                 let [rel] = inserted.as_slice() else {
                     panic!("one insert, not {inserted:?}");
                 };
-                to.1.ids().relation_id(*rel)
+                to.1.schema().ids().relation_id(*rel)
             })
             .map_err(|u| (u.operator, u.reason))
         })
@@ -1340,9 +1359,9 @@ txn put_y () -> I64 =
                 continue;
             }
         };
-        let (to, program) = source.check().expect("a replayed version checks");
-        let target = (source, to, program);
-        let to = &target.1;
+        let compiled = source.check().expect("a replayed version checks");
+        let target = (source, compiled);
+        let to = target.1.schema();
         let id_of = |name: &str| {
             let rel = to
                 .relations

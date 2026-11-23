@@ -1079,7 +1079,7 @@ impl<R: Runtime> Engine<R> {
         let mut next = row.clone();
         if !matches!(row.state, State::Retired(_)) {
             next.state = State::Retired(now);
-            let t = Tables::of(&self.schema);
+            let t = Tables::of(self.schema());
             let role = p.issuer.as_ref().map_or(OWNER_ROLE, |i| &i.role);
             writer.retire_row(
                 t.bundles,
@@ -1128,13 +1128,13 @@ impl<R: Runtime> Engine<R> {
     }
 
     pub(super) fn bundle_rows(&self, row: &Row) -> DynRows {
-        let t = Tables::of(&self.schema);
+        let t = Tables::of(self.schema());
         let elem = Ty::Data {
-            def: self.schema.relation(t.bundles).elem_def,
+            def: self.schema().relation(t.bundles).elem_def,
             args: Vec::new(),
             ctors: None,
         };
-        rows(&self.schema, elem, vec![t.bundle_value(row)])
+        rows(self.schema(), elem, vec![t.bundle_value(row)])
     }
 }
 
@@ -1246,9 +1246,9 @@ impl<'a, R: Runtime> BundleWriter<'a, R> {
     /// Replace the row `old` of `catalog::bundles` by `new`, in a transaction of its own.
     fn replace_bundle(&self, old: &Row, new: &Row) -> Result<(), Error> {
         let e = self.engine;
-        let t = Tables::of(&e.schema);
+        let t = Tables::of(e.schema());
         e.swap_row(
-            &e.schema,
+            e.schema(),
             t.bundles,
             super::command::Old::Row(t.bundle_value(old)),
             t.bundle_value(new),

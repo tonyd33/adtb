@@ -2,8 +2,7 @@ use super::*;
 
 /// The running schema, its program and ad hoc parameters `p` and `q` of any types, checked once.
 struct Tables {
-    schema: Committed,
-    program: Program,
+    compiled: Compiled,
 }
 
 impl Tables {
@@ -13,15 +12,18 @@ impl Tables {
 
     fn with(extra: &str) -> Tables {
         let schema = schema(extra).expect("the schema builds");
-        let program = check_schema(&schema).expect("the schema checks");
-        Tables { schema, program }
+        let compiled = check_schema(schema).expect("the schema checks");
+        Tables { compiled }
     }
 
     fn ty(&self, t: &str) -> Ty {
         let parsed = parse_type(t, Options::default()).ok().expect("a type");
-        Checker::of_adhoc(&self.schema, Visible::all(&self.schema))
-            .resolve_type(&parsed, FnTypes::Allowed)
-            .expect("a known type")
+        Checker::of_adhoc(
+            self.compiled.committed(),
+            Visible::all(self.compiled.committed()),
+        )
+        .resolve_type(&parsed, FnTypes::Allowed)
+        .expect("a known type")
     }
 
     /// Returns the outcome of checking `text` with each parameter at its written type: `Ok` or the
@@ -32,7 +34,7 @@ impl Tables {
             .map(|(n, t)| (n.to_string(), self.ty(t)))
             .collect();
         let items = parse_adhoc(text, Options::default()).ok().expect("parsed");
-        check_adhoc(&self.schema, &self.program, &items, &tys)
+        check_adhoc(&self.compiled, &items, &tys)
             .map(drop)
             .map_err(|ds| ds[0].message.clone())
     }

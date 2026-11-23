@@ -132,7 +132,7 @@ impl Catalog {
 
     /// Returns the name a client sees of constructor `c` of relation `r`.
     fn ctor_named(&self, r: RelId, c: u32) -> String {
-        let schema = &self.schema;
+        let schema = &self.schema();
         let relation = schema.relation(r);
         let ctor = &schema.ty(relation.elem_def).ctors()[c as usize].name;
         format!(

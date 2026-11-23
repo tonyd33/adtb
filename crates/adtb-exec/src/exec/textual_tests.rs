@@ -81,7 +81,7 @@ fn engine_values_read_back_as_printed_for_every_type() {
     let f = Fixture::new(SCHEMA);
     let mut rng = Rng::new(0x7e47_0001);
     for name in TYPES {
-        let form = Form::of(&f.schema, &f.ty(name));
+        let form = Form::of(f.schema(), &f.ty(name));
         for i in 0..300 {
             let v: Val = draw(&mut rng, &form);
             let printed =
@@ -105,12 +105,12 @@ fn a_value_built_both_ways_prints_as_the_reference_prints_it() {
     let mut rng = Rng::new(0x7e47_0002);
     for name in TYPES {
         let ty = f.ty(name);
-        let form = Form::of(&f.schema, &ty);
+        let form = Form::of(f.schema(), &ty);
         for i in 0..300 {
             let mut again = rng.clone();
             let engine: Val = draw(&mut rng, &form);
             let reference: Value = draw(&mut again, &form);
-            let printed = adtb_reference::textual::print(&f.schema, &reference, &ty);
+            let printed = adtb_reference::textual::print(f.schema(), &reference, &ty);
             assert_eq!(
                 printed,
                 textual::print(&engine, &form),

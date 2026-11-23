@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::FnBody;
-use crate::check::Program;
+use crate::check::{AsSchema, Compiled, Program};
 use crate::kernel::{Agg, Kind, Terms, Tm, alpha_equal_under};
 use crate::norm::Root;
 use crate::schema::Schema;
@@ -67,7 +67,9 @@ fn calls(terms: &Terms, t: Tm) -> BTreeSet<Root> {
 ///
 /// Bodies are compared up to the names of their variables, each object an old body names by
 /// position taken to the position of the same object in `b`.
-pub fn changed(a: &Schema, old: &Program, b: &Schema, new: &Program) -> BTreeSet<Root> {
+pub fn changed(old: &Compiled<impl AsSchema>, new: &Compiled<impl AsSchema>) -> BTreeSet<Root> {
+    let (a, b) = (old.schema(), new.schema());
+    let (old, new) = (old.program(), new.program());
     let at = Positions::new(a, b);
     let kind = |k: &Kind| at.kind(k);
     let ty = |t: &Ty| at.ty(t);

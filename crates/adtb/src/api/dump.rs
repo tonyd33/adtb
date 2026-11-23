@@ -559,7 +559,7 @@ impl<R: Runtime> Engine<R> {
         let failed = |e| self.met(id, e);
         let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
         let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
-        let schema = &*self.schema;
+        let schema = self.schema();
         let grants = Codec::<RoleGrant>::new(schema);
         let (mut logged, mut given) = (BTreeSet::new(), BTreeSet::new());
         for g in rows(grants.relation())? {
@@ -745,7 +745,7 @@ pub(super) fn restore_dump<R: Runtime>(
         .and_then(|db| {
             let secured = db
                 .engine
-                .replace_rows(on(&parsed.schema, &db.engine.schema, security), &[]);
+                .replace_rows(on(&parsed.schema, db.engine.schema(), security), &[]);
             let closed = db.close();
             secured.and(closed)
         })
@@ -810,21 +810,21 @@ impl<R: Runtime> Engine<R> {
         let mut changes = Vec::new();
         for (r, rows) in rows {
             let set = Ty::Set(Box::new(Ty::Data {
-                def: self.schema.relation(r).elem_def,
+                def: self.schema().relation(r).elem_def,
                 args: Vec::new(),
                 ctors: None,
             }));
             let x = terms.var("row·", set.clone());
             params.push((x, Val::set(rows)));
-            let mut b = Build::new(&self.schema, &mut terms);
+            let mut b = Build::new(self.schema(), &mut terms);
             let gone = b.rel(r, None);
             changes.push(b.delete(r, gone));
             let new = b.var(x);
             changes.push(b.insert(r, new));
         }
-        let all = Build::new(&self.schema, &mut terms).par(changes);
+        let all = Build::new(self.schema(), &mut terms).par(changes);
         let text = Text {
-            schema: &self.schema,
+            schema: self.schema(),
             terms: &terms,
             items: &[all],
             params: &params,
@@ -868,7 +868,7 @@ fn fill<R: Runtime>(
     if header(&engine.envelope()?) != header(e) {
         return Err(damaged(LOG));
     }
-    let schema = &*engine.schema;
+    let schema = engine.schema();
     let data: Vec<(RelId, u32, String)> = dumped(schema)
         .flat_map(|r| {
             let ctors = schema.ty(schema.relation(r).elem_def).ctors().len();

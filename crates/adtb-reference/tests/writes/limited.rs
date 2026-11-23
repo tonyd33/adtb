@@ -33,23 +33,18 @@ impl Step {
         let items = parse_adhoc(&self.source, Options::default())
             .ok()
             .expect("the limited statement parses");
-        let checked = check_adhoc(
-            &fixture.schema,
-            &fixture.program,
-            &items,
-            &Default::default(),
-        )
-        .expect("the limited statement checks");
+        let checked = check_adhoc(fixture.compiled(), &items, &Default::default())
+            .expect("the limited statement checks");
         let [item] = checked.items.as_slice() else {
             panic!("a row-limit case holds exactly one statement")
         };
-        let normal = adtb_lang::norm::adhoc(&fixture.schema, &fixture.program, &checked)
+        let normal = adtb_lang::norm::adhoc(fixture.compiled(), &checked)
             .expect("the limited statement normalizes");
         let measured = Cell::new(0);
         let measure = |relation, _, row: &Value| {
             measured.set(measured.get() + 1);
-            let ty = fixture.schema.relation(relation).elem.clone();
-            let size = adtb_reference::textual::print(&fixture.schema, row, &ty)
+            let ty = fixture.schema().relation(relation).elem.clone();
+            let size = adtb_reference::textual::print(fixture.schema(), row, &ty)
                 .expect("a measured row prints")
                 .len();
             (size, self.limit)

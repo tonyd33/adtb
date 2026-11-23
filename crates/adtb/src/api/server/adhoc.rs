@@ -82,22 +82,22 @@ pub(super) fn refused_text(role: &str) -> Error {
 impl Holds {
     fn of<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> Result<Holds, Error> {
         let deployed = deployed(grants);
-        let held = EffectiveGrants::of(&e.schema, &e.source.grants, &deployed, name);
+        let held = EffectiveGrants::of(e.schema(), &e.source.grants, &deployed, name);
         let covers = |relations: Vec<RelId>| {
-            Requirements::whole(&e.schema, relations)
+            Requirements::whole(e.schema(), relations)
                 .map(|r| r.missing(&held, Mode::Ordinary).is_empty())
                 .map_err(no_identity)
         };
-        let catalog = schema_relations(&e.schema);
-        let user = (0..e.schema.relations.len() as u32)
+        let catalog = schema_relations(e.schema());
+        let user = (0..e.schema().relations.len() as u32)
             .map(RelId)
-            .filter(|r| !e.schema.module(e.schema.relation(*r).module).engine)
+            .filter(|r| !e.schema().module(e.schema().relation(*r).module).engine)
             .collect();
         let schema = covers(catalog)?;
         let data = covers(user)?;
         let has = |c| grants.iter().any(|g| g.capability(c, name));
         let calls = granted_calls(e, name, grants);
-        let names = Nameable::of(&e.schema, &held, calls.clone());
+        let names = Nameable::of(e.schema(), &held, calls.clone());
         Ok(Holds {
             monitor: has(Capability::Monitor),
             cancel: has(Capability::Cancel),
@@ -141,23 +141,23 @@ impl Holds {
         let normal = e.db.normal();
         let (t, module, name) = match d {
             DenialIdx::Constraint(c) => {
-                let def = e.schema.constraint(c);
+                let def = e.schema().constraint(c);
                 (normal.constraint(c), def.module, &def.name)
             }
             DenialIdx::Check(c) => {
-                let def = e.schema.check(c);
+                let def = e.schema().check(c);
                 (normal.check(c), def.module, &def.name)
             }
         };
         let Some(t) = t else {
             return Err(write::Broken::NoDenial(format!(
                 "{}::{name}",
-                e.schema.module(module).name
+                e.schema().module(module).name
             )));
         };
         Ok(
-            permission::normal(&e.schema, normal, normal.terms(), t, &[])
-                .is_ok_and(|needs| self.lacking(&e.schema, &needs).is_empty()),
+            permission::normal(e.schema(), normal, normal.terms(), t, &[])
+                .is_ok_and(|needs| self.lacking(e.schema(), &needs).is_empty()),
         )
     }
 
@@ -204,8 +204,8 @@ impl Holds {
             }
             RejectReason::KeyViolation { relation, key } => {
                 let held = match violated {
-                    Some(write::Violated::Key(r)) => Requirements::whole(&e.schema, [r])
-                        .is_ok_and(|needs| self.lacking(&e.schema, &needs).is_empty()),
+                    Some(write::Violated::Key(r)) => Requirements::whole(e.schema(), [r])
+                        .is_ok_and(|needs| self.lacking(e.schema(), &needs).is_empty()),
                     _ => false,
                 };
                 RejectReason::KeyViolation {
@@ -230,9 +230,9 @@ fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTr
                 && g.kind == GrantKind::Log
         })
         .filter_map(|g| {
-            match Granted::read_target(&e.schema, Privilege::Call, g.target.as_deref()?) {
+            match Granted::read_target(e.schema(), Privilege::Call, g.target.as_deref()?) {
                 Some(Granted::CallFn(id)) => {
-                    e.schema.ids().function_of(CatFunctionId::from_raw(id))
+                    e.schema().ids().function_of(CatFunctionId::from_raw(id))
                 }
                 _ => None,
             }
@@ -276,7 +276,7 @@ impl<R: Runtime> RoleAuthority<R> {
     /// Returns what `session`'s role holds now.
     pub(super) fn holds(&self, session: &RoleSession<R>) -> Result<Holds, Error> {
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             self.checked(session, &t, e, tx)?;
             Holds::of(e, &session.name, &t.grants(e, tx)?)
         })

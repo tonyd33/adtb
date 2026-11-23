@@ -33,11 +33,11 @@ fn fixture() -> Fixture {
 }
 
 fn print(f: &Fixture, v: &Value, ty: &str) -> String {
-    textual::print(&f.schema, v, &f.ty(ty)).unwrap_or_else(|e| panic!("at {ty}: {e}"))
+    textual::print(f.schema(), v, &f.ty(ty)).unwrap_or_else(|e| panic!("at {ty}: {e}"))
 }
 
 fn parse(f: &Fixture, t: &str, ty: &str) -> Result<Value, textual::ParseError> {
-    textual::parse(&f.schema, t, &f.ty(ty))
+    textual::parse(f.schema(), t, &f.ty(ty))
 }
 
 fn reads(f: &Fixture, t: &str, ty: &str) -> Value {
@@ -374,7 +374,7 @@ fn a_document_states_its_edition_and_version() {
     let doc = format!(
         "text 2026-10 pins 42 ({HASH})\ndata users\nUser {{ id: users.key(4), name: \"bo\" }}\nUser {{ id: users.key(3), name: \"ann\" }}\n"
     );
-    let d = textual::read_document(&f.schema, &doc).unwrap();
+    let d = textual::read_document(f.schema(), &doc).unwrap();
     assert_eq!(
         Some(Header {
             edition: "2026-10".into(),
@@ -385,20 +385,20 @@ fn a_document_states_its_edition_and_version() {
     );
     assert_eq!(f.rel("users"), d.relation);
     assert_eq!(2, d.rows.len());
-    let printed = textual::print_document(&f.schema, &d).expect("the document prints");
+    let printed = textual::print_document(f.schema(), &d).expect("the document prints");
     assert_eq!(
         format!(
             "text 2026-10 pins 42 ({HASH})\ndata app::users\nUser {{ id: users.key(3), name: \"ann\" }}\nUser {{ id: users.key(4), name: \"bo\" }}\n"
         ),
         printed
     );
-    assert_eq!(Ok(d), textual::read_document(&f.schema, &printed));
+    assert_eq!(Ok(d), textual::read_document(f.schema(), &printed));
 }
 
 #[test]
 fn a_document_without_a_header_is_at_the_readers_version() {
     let f = fixture();
-    let d = textual::read_document(&f.schema, "data members\n").unwrap();
+    let d = textual::read_document(f.schema(), "data members\n").unwrap();
     assert_eq!(None, d.header);
     assert_eq!(f.rel("members"), d.relation);
     assert!(d.rows.is_empty());
@@ -410,12 +410,12 @@ fn a_document_without_a_header_is_at_the_readers_version() {
             vec![("id".into(), key(1)), ("name".into(), text("a"))],
         )]),
     };
-    let printed = textual::print_document(&f.schema, &d).expect("the document prints");
+    let printed = textual::print_document(f.schema(), &d).expect("the document prints");
     assert_eq!(
         "data app::users\nUser { id: users.key(1), name: \"a\" }\n",
         printed
     );
-    assert_eq!(Ok(d), textual::read_document(&f.schema, &printed));
+    assert_eq!(Ok(d), textual::read_document(f.schema(), &printed));
 }
 
 #[test]
@@ -456,7 +456,7 @@ fn a_malformed_document_is_refused() {
             message: message.to_string(),
         };
         adtb_testkit::refused_as(
-            textual::read_document(&f.schema, &doc),
+            textual::read_document(f.schema(), &doc),
             &expected,
             &format!("at byte {offset}: {message}"),
         );
@@ -525,11 +525,11 @@ fn print_then_parse_gives_the_value_back_for_every_type() {
     let mut rng = Rng::new(0x00ad_7b00);
     for name in TYPES {
         let ty = f.ty(name);
-        let form = Form::of(&f.schema, &ty);
+        let form = Form::of(f.schema(), &ty);
         for i in 0..300 {
             let v: Value = draw(&mut rng, &form);
             let printed = print(&f, &v, name);
-            let back = textual::parse(&f.schema, &printed, &ty).unwrap_or_else(|e| {
+            let back = textual::parse(f.schema(), &printed, &ty).unwrap_or_else(|e| {
                 panic!("draw {i}: `{printed}` does not read back at {name}: {e}")
             });
             assert_eq!(v, back, "draw {i}: `{printed}` at {name}");

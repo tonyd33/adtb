@@ -164,7 +164,7 @@ fn check(label: &str, schema: &str, text: Option<&str>) -> Result<Vec<AdhocItem>
     let items = parse_adhoc(text, Options::default())
         .ok()
         .map_err(rendered)?;
-    check_adhoc(&built, &program, &items, &BTreeMap::new()).map_err(rendered)?;
+    check_adhoc(&program, &items, &BTreeMap::new()).map_err(rendered)?;
     Ok(items)
 }
 

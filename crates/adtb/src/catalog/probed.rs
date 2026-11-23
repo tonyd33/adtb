@@ -26,7 +26,7 @@ impl Catalog {
         pager: &Pager<R>,
         engine: bool,
     ) -> Result<Vec<String>, PageError> {
-        let schema: &Schema = &self.schema;
+        let schema: &Schema = self.schema();
         let declared = |r| schema.module(schema.relation(r).module).engine;
         let own = self.heaps.iter().filter(|((r, _), _)| declared(*r));
         let base = own
@@ -59,7 +59,7 @@ impl Catalog {
 
     /// Add the lines of the heaps and indexes of each relation of `m` to `out`.
     fn relations_of(&self, m: &ModuleDef, base: u32, out: &mut Vec<String>) {
-        let schema: &Schema = &self.schema;
+        let schema: &Schema = self.schema();
         for (name, value) in &m.values {
             let &ValueDef::Relation(r) = value else {
                 continue;
@@ -94,7 +94,7 @@ impl Catalog {
     /// Add a line of the constructors of each sum of several constructors `m` declares, in order
     /// key order, to `out`.
     fn orders_of(&self, m: &ModuleDef, out: &mut Vec<String>) {
-        let schema: &Schema = &self.schema;
+        let schema: &Schema = self.schema();
         for (name, &t) in &m.types {
             let ty = schema.ty(t);
             if ty.ctors().len() < 2 {
@@ -130,16 +130,16 @@ impl Catalog {
     }
 
     fn qualified(&self, r: RelId) -> String {
-        let relation = self.schema.relation(r);
+        let relation = self.schema().relation(r);
         format!(
             "{}::{}",
-            self.schema.module(relation.module).name,
+            self.schema().module(relation.module).name,
             relation.name
         )
     }
 
     fn heap_named(&self, id: u32) -> String {
-        let schema: &Schema = &self.schema;
+        let schema: &Schema = self.schema();
         let found = self.heaps.iter().find(|(_, h)| h.id().0 == id);
         found.map_or_else(
             || "another heap".to_owned(),
@@ -151,7 +151,7 @@ impl Catalog {
     }
 
     fn index_named(&self, root: Pid, ctors: &BTreeSet<CtorId>) -> String {
-        let schema: &Schema = &self.schema;
+        let schema: &Schema = self.schema();
         let found = self
             .indexes
             .values()

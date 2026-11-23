@@ -82,8 +82,7 @@ fn reference_fixture(case: &Case) -> Fixture {
     let source = adtb_lang::signature::replay([case.get("decls")]).expect("case log applies");
     let schema = source.schema().expect("case schema");
     let schema = adtb_lang::schema::Committed::new(schema).expect("a replayed log commits");
-    let program = check_schema(&schema).expect("case checks");
-    Fixture::of_schema(schema, program)
+    Fixture::of_schema(check_schema(schema).expect("case checks"))
 }
 
 fn form(schema: &Schema) -> Form {
@@ -105,7 +104,7 @@ fn state(db: &Database<adtb_sim::SimRuntime>) -> Vec<Value> {
 fn reference(case: &Case, f: &mut Fixture, constraint: &str) {
     let ty = f.ty("Row");
     let read = |text: &str| {
-        adtb_reference::textual::parse(&f.schema, text, &ty).expect("external reference value")
+        adtb_reference::textual::parse(f.schema(), text, &ty).expect("external reference value")
     };
     let before = RefValue::set(case.get("before").lines().map(read));
     let report = case

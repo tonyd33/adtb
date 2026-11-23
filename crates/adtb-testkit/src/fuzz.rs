@@ -6,14 +6,14 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use adtb_lang::check::{Program, check_adhoc, check_schema};
+use adtb_lang::check::{Compiled, check_adhoc, check_schema};
 use adtb_lang::kernel::{Terms, Tm};
 use adtb_lang::norm;
 use adtb_lang::parse::{
     Options, parse_adhoc, parse_bundle, parse_bundle_body, parse_example, parse_expr,
     parse_migration, parse_schema, parse_type,
 };
-use adtb_lang::schema::{Committed, build};
+use adtb_lang::schema::build;
 use adtb_lang::signature::{self, Item};
 use adtb_lang::span::{Diag, DiagKind, FileId};
 
@@ -64,8 +64,7 @@ pub enum Reached {
 /// The front end over [`SCHEMA`], built once and shared by every case.
 #[derive(Debug)]
 pub struct Front {
-    schema: Committed,
-    program: Program,
+    compiled: Compiled,
     registered: AtomicU64,
 }
 
@@ -82,11 +81,10 @@ impl Front {
             .unwrap_or_else(|ds| panic!("the fuzz schema does not parse: {ds:?}"));
         let schema = build(&[(FileId(0), file)])
             .unwrap_or_else(|ds| panic!("the fuzz schema does not build: {ds:?}"));
-        let program = check_schema(&schema)
+        let compiled = check_schema(schema)
             .unwrap_or_else(|ds| panic!("the fuzz schema does not check: {ds:?}"));
         Front {
-            schema,
-            program,
+            compiled,
             registered: AtomicU64::new(0),
         }
     }
@@ -122,14 +120,14 @@ impl Front {
         let Ok(items) = parse_adhoc(text, Options::default()).ok() else {
             return Reached::Refused;
         };
-        let adhoc = match check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new()) {
+        let adhoc = match check_adhoc(&self.compiled, &items, &BTreeMap::new()) {
             Ok(adhoc) => adhoc,
             Err(ds) => {
                 sound(ds.iter());
                 return Reached::Parsed;
             }
         };
-        let reached = reached(norm::adhoc(&self.schema, &self.program, &adhoc).map(|_| ()));
+        let reached = reached(norm::adhoc(&self.compiled, &adhoc).map(|_| ()));
         if let [item] = adhoc.items.as_slice()
             && adhoc.commands.is_empty()
             && adhoc.temps.is_none()
@@ -143,7 +141,7 @@ impl Front {
     /// query, or of a registered transaction when it writes, when that checks.
     fn registered(&self, text: &str, terms: &Terms, item: Tm) {
         let body = text.trim().replace('\n', "\n  ");
-        let ty = self.schema.show_ty(terms.ty(item));
+        let ty = self.compiled.schema().show_ty(terms.ty(item));
         let decl = if terms.writes(item) {
             format!("txn t () -> {ty} =\n  {body}\n")
         } else {
@@ -153,16 +151,16 @@ impl Front {
         let Ok((imports, items)) = parse_bundle_body(&text, Options::default()).ok() else {
             return;
         };
-        let Ok(vis) = signature::visible(&self.schema, &imports) else {
+        let Ok(vis) = signature::visible(self.compiled.schema(), &imports) else {
             return;
         };
-        let calls = match signature::calls(&self.schema, &self.program, &vis, &imports, &items) {
+        let calls = match signature::calls(&self.compiled, &vis, &imports, &items) {
             Ok(calls) => calls,
             Err(d) => return sound([&d]),
         };
         let normal = match &calls.first().map(|c| &c.item) {
-            Some(Item::Query(_, q)) => norm::query(&self.schema, &self.program, q).map(|_| ()),
-            Some(Item::Txn(_, t)) => norm::txn(&self.schema, &self.program, t).map(|_| ()),
+            Some(Item::Query(_, q)) => norm::query(&self.compiled, q).map(|_| ()),
+            Some(Item::Txn(_, t)) => norm::txn(&self.compiled, t).map(|_| ()),
             Some(Item::Fn(..)) | None => return,
         };
         if reached(normal) == Reached::Normalised {
@@ -203,14 +201,14 @@ fn schema(text: &str) -> Reached {
     let Ok(schema) = build(&[(FileId(0), file)]) else {
         return Reached::Parsed;
     };
-    let program = match check_schema(&schema) {
-        Ok(program) => program,
+    let compiled = match check_schema(&schema) {
+        Ok(compiled) => compiled,
         Err(ds) => {
             sound(ds.iter().map(|d| &d.diag));
             return Reached::Parsed;
         }
     };
-    reached(norm::program(&schema, &program).map(|_| ()))
+    reached(norm::program(&compiled).map(|_| ()))
 }
 
 /// Returns the text of every `adt` block in the markdown files of `dir`, in file name order.

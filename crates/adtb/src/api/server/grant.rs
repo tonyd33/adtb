@@ -56,12 +56,7 @@ impl<'e, R: Runtime> Calls<'e, R> {
         let mark = self.stored.deployed.registered.get(&row.id)?;
         let mut reread = self.reread.borrow_mut();
         let got = reread.entry(name.clone()).or_insert_with(|| {
-            let over = Over::new(
-                &self.e.source,
-                &self.e.schema,
-                &self.e.program,
-                &self.e.hash,
-            );
+            let over = Over::new(&self.e.source, &self.e.compiled, &self.e.hash);
             registered::reread(&over, &mark.text)
                 .map(Arc::new)
                 .map_err(|why| why.to_string())
@@ -277,12 +272,12 @@ impl<R: Runtime> Giving<'_, R> {
     fn option_covers(&self, rows: &[Grant], target: &str) -> bool {
         let new = self.new_row(target);
         rows.iter()
-            .any(|g| g.row().keeps(&self.e.schema, self.calls, &new))
+            .any(|g| g.row().keeps(self.e.schema(), self.calls, &new))
     }
 
     fn refuse_cycle(&self, rows: &[Grant], target: &str, option: bool) -> Result<(), Error> {
         let held: Vec<GrantRow<'_>> = rows.iter().map(Grant::row).collect();
-        if option && closes_option_cycle(&self.e.schema, self.calls, &held, self.new_row(target)) {
+        if option && closes_option_cycle(self.e.schema(), self.calls, &held, self.new_row(target)) {
             return Err(Error::invalid(format!(
                 "`call` on `{target}` with grant option from `{}` to `{}` would close a cycle of grant options",
                 self.session.name, self.grantee
@@ -311,7 +306,7 @@ impl<R: Runtime> Giving<'_, R> {
     /// Fail with `Denied` for a grant on `catalog::credentials` by any role but the schema owner,
     /// and with `Invalid` for any privilege but `read`.
     fn relation(&self, rows: &mut Vec<Grant>, stated: &Stated) -> Result<(), Error> {
-        let credentials = held_id(self.e.schema.ids().relation_id(self.t.credentials)).raw();
+        let credentials = held_id(self.e.schema().ids().relation_id(self.t.credentials)).raw();
         if stated.names(credentials) && self.session.id.0 != OWNER_ID {
             return Err(denied(format!(
                 "only the schema owner grants on `catalog::credentials`, not role `{}`",
@@ -319,7 +314,7 @@ impl<R: Runtime> Giving<'_, R> {
             )));
         }
         let privilege = stated.privilege();
-        let target = stated.target_text(&self.e.schema).ok_or_else(|| {
+        let target = stated.target_text(self.e.schema()).ok_or_else(|| {
             Error::internal(Broken::UnresolvedGrant {
                 privilege: privilege.name().to_owned(),
             })
@@ -335,7 +330,7 @@ impl<R: Runtime> Giving<'_, R> {
             ..self.new_row(&target)
         };
         let held: Vec<GrantRow<'_>> = rows.iter().map(Grant::row).collect();
-        if self.grant_option && closes_option_cycle(&self.e.schema, self.calls, &held, new) {
+        if self.grant_option && closes_option_cycle(self.e.schema(), self.calls, &held, new) {
             return Err(Error::invalid(format!(
                 "`{privilege}` on `{target}` with grant option from `{}` to `{}` would close a cycle of grant options",
                 self.session.name, self.grantee
@@ -476,7 +471,7 @@ impl<R: Runtime> Giving<'_, R> {
         let old = rows.remove(i);
         let id = self.t.next_grant_id(self.e, self.tx)?;
         let new = self.t.deployment_grant(id, given, option);
-        let schema = &self.e.schema;
+        let schema = &self.e.schema();
         let uncovered: Vec<String> = rows
             .iter()
             .filter(|o| {
@@ -532,7 +527,7 @@ impl<R: Runtime> RoleAuthority<R> {
         changes: &mut Changes,
         (session, statement, grantee, text): (&RoleSession<R>, &Statement, &str, &str),
     ) -> Result<(), Error> {
-        let t = Tables::new(&e.schema, id);
+        let t = Tables::new(e.schema(), id);
         self.checked(session, &t, e, tx)?;
         let calls = Calls::new(e);
         let before = t.grants(e, tx)?;
@@ -550,7 +545,7 @@ impl<R: Runtime> RoleAuthority<R> {
             if on_relation(p) {
                 require(&rows, session, Capability::Schema, false)?;
             }
-            match deployment_grant(&e.schema, text, p)
+            match deployment_grant(e.schema(), text, p)
                 .map_err(|ds| Error::invalid(diagnosed(&ds)))?
             {
                 DeploymentGrant::Capability(c) => giving.capability(&mut rows, c)?,

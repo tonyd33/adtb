@@ -71,7 +71,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, OnceLock};
 
-use adtb_lang::check::Program;
+use adtb_lang::check::Compiled;
 use adtb_lang::evolve::{Privilege, Source};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::parse::{Options, parse_migration};
@@ -224,9 +224,7 @@ pub struct Catalog {
     source: Source,
     /// The hash of the version `source` is at.
     hash: VersionHash,
-    schema: Committed,
-    /// The checked program of `source`.
-    program: Arc<Program>,
+    compiled: Compiled,
     texts: ElementTexts,
     root: Pid,
     large: LargeStore,
@@ -273,9 +271,11 @@ fn engine_declarations() -> &'static Committed {
     &SCHEMA
 }
 
-/// Returns `schema`, the schema of a settled source.
-fn committed(schema: Schema) -> Result<Committed, Error> {
-    Committed::new(schema).ok_or_else(|| Error::from(Broken::Unsettled))
+/// Returns `compiled` with its schema committed, the schema of a settled source.
+fn committed(compiled: Compiled<Schema>) -> Result<Compiled, Error> {
+    compiled
+        .commit()
+        .ok_or_else(|| Error::from(Broken::Unsettled))
 }
 
 fn int(n: u64) -> Value {
@@ -468,7 +468,7 @@ fn named<R: Runtime>(
 type Log = (BTreeMap<u64, String>, BTreeMap<u64, BTreeSet<String>>);
 
 /// The source a log folds to, its schema and its checked program.
-type Folded = (Source, Committed, Arc<Program>, VersionHash);
+type Folded = (Source, Compiled, VersionHash);
 
 /// The most logs [`FOLDED`] holds: the distinct logs a process reopens while it works. A server
 /// on one database reopens 1 or 2; a test sweep reopens one for each schema it sweeps.
@@ -510,9 +510,9 @@ fn fold_from_empty(
             }
         }
     }
-    let (schema, program) = source.check().map_err(|ds| unchecked(source.version, ds))?;
+    let compiled = source.check().map_err(|ds| unchecked(source.version, ds))?;
     let hash = VersionHash::of(Arc::new(source.clone()));
-    Ok((source, committed(schema)?, Arc::new(program), hash))
+    Ok((source, committed(compiled)?, hash))
 }
 
 /// Returns whether `keys` holds an order key for each constructor of every declared sum of
@@ -593,8 +593,7 @@ impl Catalog {
         let empty = Catalog {
             source: Source::default(),
             hash: VersionHash::of(Arc::default()),
-            schema: engine_schema(),
-            program: next.program.clone(),
+            compiled: next.compiled.clone(),
             texts: next.texts.clone(),
             root: pid,
             large,
@@ -612,7 +611,7 @@ impl Catalog {
             objects: Arc::default(),
         };
         let every = empty
-            .schema
+            .schema()
             .ids()
             .relation_ids()
             .map(|(_, id)| id)
@@ -620,7 +619,7 @@ impl Catalog {
         let change = Change::begin(pager, txns, Scope::Every)?;
         let none = Readers::default();
         let built = Indexing::new(&empty, &next, &none).and_then(|indexing| {
-            let data = admit::admit(pager, &next.schema, &every, &indexing, Data::new())?;
+            let data = admit::admit(pager, next.schema(), &every, &indexing, Data::new())?;
             empty.build(
                 change.writes(),
                 &Built {
@@ -738,25 +737,27 @@ impl Catalog {
         let large = LargeStore::open(root.large.0, root.large.1);
         let roots = Roots::open(pager, root.roots, large)?;
         let named = named(pager, &txns, &roots)?;
-        let (source, schema, program, hash) = fold(&named.migrations, &named.dormant)?;
-        check_order_keys(&schema, &named.keys)?;
+        let (source, compiled, hash) = fold(&named.migrations, &named.dormant)?;
+        let schema = compiled.committed();
+        check_order_keys(schema, &named.keys)?;
         let readers = Readers::reopened(&source, named.pending)?;
         let mut heaps = BTreeMap::new();
-        for (r, c) in ctor_relations(&schema) {
-            let rid = rel_id(&schema, r);
-            let cid = ctor_id(&schema, r, c);
+        for (r, c) in ctor_relations(schema) {
+            let rid = rel_id(schema, r);
+            let cid = ctor_id(schema, r, c);
             let Some(&(id, at)) = named.heaps.get(&(rid, cid)) else {
                 let name = &schema.relation(r).name;
                 return Err(Error::Missing(format!("heap of {name} constructor {cid}")));
             };
-            let heap = Heap::open(pager, id, at, row_type(&schema, r, c), large)?;
+            let heap = Heap::open(pager, id, at, row_type(schema, r, c), large)?;
             heaps.insert((r, c), Arc::new(heap));
         }
-        let texts = ElementTexts::of(&source, &schema)?;
-        let (held, held_program, held_texts) = readers.checking((&schema, &program, &texts));
+        let texts = ElementTexts::of(&source, schema)?;
+        let (held_compiled, held_texts) = readers.checking((&compiled, &texts));
+        let held = held_compiled.committed();
         let specs =
             pending::kept_indexes(held, held_texts, &readers.pending).map_err(Rot::KeptIndexes)?;
-        let normal = index_program(held, held_program, specs.values(), |b| {
+        let normal = index_program(held_compiled, specs.values(), |b| {
             Error::Corrupt(Rot::KeptIndexes(b))
         })?;
         let mut stored = BTreeMap::new();
@@ -776,17 +777,16 @@ impl Catalog {
         }
         let kept = Kept::open(
             pager,
-            &schema,
+            schema,
             &root,
             &named.history,
             &heaps,
-            &key_indexes(&schema, &stored),
+            &key_indexes(schema, &stored),
         )?;
         let catalog = Catalog {
             source,
             hash,
-            schema,
-            program,
+            compiled,
             texts,
             root: pid,
             large,
@@ -809,16 +809,15 @@ impl Catalog {
     /// Returns the catalog of a file whose own cannot be read: the engine's declarations with no
     /// heap, index or page behind them.
     pub fn unread<R: Runtime>(pager: &Pager<R>) -> Result<Catalog, Error> {
-        let (schema, program) = Source::default()
+        let compiled = Source::default()
             .check()
             .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
         let large = LargeStore::open(0, Pid(0));
         Ok(Catalog {
-            texts: ElementTexts::of(&Source::default(), &schema)?,
+            texts: ElementTexts::of(&Source::default(), compiled.schema())?,
             source: Source::default(),
             hash: VersionHash::of(Arc::default()),
-            schema: committed(schema)?,
-            program: Arc::new(program),
+            compiled: committed(compiled)?,
             root: pager.catalog_root(),
             large,
             roots: Roots::open(pager, (ROOTS, Pid(0)), large)?,
@@ -934,7 +933,7 @@ impl Catalog {
     /// Returns the name a client sees of the heap or index of this catalog that `mark` marks, and
     /// "the database" for any other.
     fn mark_named(&self, mark: Quarantine) -> String {
-        let schema = &self.schema;
+        let schema = self.schema();
         let relation = |r: RelId| {
             let relation = schema.relation(r);
             format!("{}::{}", schema.module(relation.module).name, relation.name)
@@ -984,30 +983,29 @@ impl Catalog {
 
     /// Returns the schema and program constraint checks and validation run against: the
     /// version's, with every pending-dropped object kept.
-    pub fn checking(&self) -> (&Committed, &Arc<Program>) {
-        let (schema, program, _) = self.readers.checking(self.version());
-        (schema, program)
+    pub fn checking(&self) -> &Compiled {
+        self.readers.checking(self.version()).0
     }
 
     /// Returns the schema, checked program and index element texts of the catalog's version.
     fn version(&self) -> Judged<'_> {
-        (&self.schema, &self.program, &self.texts)
+        (&self.compiled, &self.texts)
     }
 
     /// Returns the catalog rows of the objects of the catalog's version.
     fn objects(&self) -> &Rows {
         self.objects
-            .get_or_init(|| rows::objects(&self.schema, &self.source, &self.texts))
+            .get_or_init(|| rows::objects(self.schema(), &self.source, &self.texts))
     }
 
     /// Returns the index element texts of the schema [`Catalog::checking`] returns.
     fn checking_texts(&self) -> &ElementTexts {
-        self.readers.checking(self.version()).2
+        self.readers.checking(self.version()).1
     }
 
     /// Returns every index of the schema [`Catalog::checking`] returns, by index id.
     pub fn declared_indexes(&self) -> BTreeMap<u64, IndexSpec> {
-        indexes(self.checking().0, self.checking_texts())
+        indexes(self.checking().committed(), self.checking_texts())
     }
 
     /// Set the memory a migration's validation of its constraints may hold: the query memory
@@ -1017,12 +1015,12 @@ impl Catalog {
     }
 
     pub fn schema(&self) -> &Committed {
-        &self.schema
+        self.compiled.committed()
     }
 
-    /// Returns the checked program of the catalog's source.
-    pub fn program(&self) -> &Arc<Program> {
-        &self.program
+    /// Returns the schema of the catalog's source with its checked program.
+    pub fn compiled(&self) -> &Compiled {
+        &self.compiled
     }
 
     /// Returns the source the catalog's migrations fold to.
@@ -1071,7 +1069,11 @@ impl Catalog {
         pages.extend(self.sequences());
         pages.extend(self.roots.owned_pages(pager)?);
         for (&(r, _), heap) in &self.heaps {
-            if self.schema.module(self.schema.relation(r).module).engine {
+            if self
+                .schema()
+                .module(self.schema().relation(r).module)
+                .engine
+            {
                 pages.extend(heap.owned_pages(pager)?);
             }
         }
@@ -1086,7 +1088,7 @@ impl Catalog {
     /// Returns the heap of every constructor relation and every index, as the executor and the
     /// write path bind them.
     pub fn bindings(&self) -> exec::Bindings {
-        let schema = &self.schema;
+        let schema = self.schema();
         let heaps = self
             .heaps
             .iter()
@@ -1143,7 +1145,7 @@ impl Catalog {
             .map(|(rc, h)| (*rc, HeapId(u64::from(h.id().0))))
             .collect();
         planned(
-            &self.schema,
+            self.schema(),
             self.indexes.values().map(|(s, _, _)| s),
             &heaps,
         )
@@ -1166,8 +1168,7 @@ struct Built<'a> {
 #[derive(Clone, Debug)]
 struct Checked {
     source: Source,
-    schema: Committed,
-    program: Arc<Program>,
+    compiled: Compiled,
     texts: ElementTexts,
     objects: Arc<OnceLock<Rows>>,
 }
@@ -1175,14 +1176,19 @@ struct Checked {
 impl Checked {
     /// Returns its schema, checked program and index element texts.
     fn judged(&self) -> Judged<'_> {
-        (&self.schema, &self.program, &self.texts)
+        (&self.compiled, &self.texts)
+    }
+
+    fn schema(&self) -> &Committed {
+        self.compiled.committed()
     }
 
     /// Returns `source` with its schema and program. Fail with [`Broken::Unsettled`] when the
     /// schema takes a relation as added later, and with [`Error::Refused`] when an index element
     /// is a set.
-    fn new(source: Source, schema: Schema, program: Program) -> Result<Checked, Error> {
-        let texts = ElementTexts::of(&source, &schema)?;
+    fn new(source: Source, compiled: Compiled<Schema>) -> Result<Checked, Error> {
+        let (schema, program) = (compiled.schema(), compiled.program());
+        let texts = ElementTexts::of(&source, schema)?;
         let sets: Vec<String> = program
             .index_fields
             .iter()
@@ -1202,8 +1208,7 @@ impl Checked {
         }
         Ok(Checked {
             source,
-            schema: committed(schema)?,
-            program: Arc::new(program),
+            compiled: committed(compiled)?,
             texts,
             objects: Arc::default(),
         })
@@ -1215,17 +1220,17 @@ impl Checked {
         if let Some(checked) = ENGINE.get() {
             return Ok(checked.clone());
         }
-        let (schema, program) = Source::default()
+        let compiled = Source::default()
             .check()
             .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
-        let checked = Checked::new(Source::default(), schema, program)?;
+        let checked = Checked::new(Source::default(), compiled)?;
         Ok(ENGINE.get_or_init(|| checked).clone())
     }
 
     /// Returns the catalog rows of the objects of the version.
     fn objects(&self) -> &Rows {
         self.objects
-            .get_or_init(|| rows::objects(&self.schema, &self.source, &self.texts))
+            .get_or_init(|| rows::objects(self.schema(), &self.source, &self.texts))
     }
 }
 

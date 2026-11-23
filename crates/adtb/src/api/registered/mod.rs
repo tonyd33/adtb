@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{BundleItem, Import};
-use adtb_lang::check::{Bundles, Program};
+use adtb_lang::check::{Bundles, Compiled};
 use adtb_lang::evolve::{DeployedGrant, LogGrant, Source};
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalProgram, NormalQuery};
@@ -154,8 +154,7 @@ struct Entry {
 #[derive(Debug)]
 struct Served {
     /// The schema it runs over and the program of its functions.
-    schema: Arc<CommittedSchema>,
-    program: Arc<Program>,
+    compiled: Compiled,
     terms: Arc<Terms>,
     body: Tm,
     params: Vec<Option<Var>>,
@@ -166,9 +165,9 @@ struct Served {
 #[derive(Debug)]
 pub(super) struct Checked {
     name: String,
-    /// The schema its callables run over: the version's, with the registration's functions.
-    schema: Arc<CommittedSchema>,
-    program: Arc<Program>,
+    /// The schema its callables run over, the version's with the registration's functions, and
+    /// its program.
+    compiled: Compiled,
     /// The text of the registration's file.
     text: String,
     entries: Vec<Entry>,
@@ -179,6 +178,10 @@ pub(super) struct Checked {
 }
 
 impl Checked {
+    fn schema(&self) -> &Arc<CommittedSchema> {
+        self.compiled.shared_schema()
+    }
+
     fn entry(&self, ordinal: u32) -> Option<&Entry> {
         let i = usize::try_from(ordinal).ok()?.checked_sub(1)?;
         self.entries.get(i)
@@ -213,7 +216,7 @@ impl Checked {
     /// Returns the identity of the signature of the query or transaction `query`.
     pub(super) fn call_ids(&self, query: &str) -> Option<signature::Ids> {
         let e = self.declared(query)?;
-        Some(signature::Ids::of(&self.schema, &e.types, &e.result))
+        Some(signature::Ids::of(self.schema(), &e.types, &e.result))
     }
 
     /// Returns the version the bundle pins and the family call target of its query or transaction
@@ -223,7 +226,7 @@ impl Checked {
         let h = self.header.as_ref()?;
         let params: Vec<(String, Ty)> = e.names.iter().cloned().zip(e.types.clone()).collect();
         let target =
-            signature::family_target(&self.schema, &h.family, query, h.pins, &params, &e.result);
+            signature::family_target(self.schema(), &h.family, query, h.pins, &params, &e.result);
         Some((h.pins, target))
     }
 
@@ -232,9 +235,9 @@ impl Checked {
         let h = self.header.as_ref()?;
         let mut reads = self.source_reads.clone();
         for e in &self.entries {
-            reads.add(&self.schema, &e.terms, e.body);
+            reads.add(self.schema(), &e.terms, e.body);
         }
-        Some(reads.reader(&self.schema, &h.name, h.pins, h.hides_new))
+        Some(reads.reader(self.schema(), &h.name, h.pins, h.hides_new))
     }
 
     /// Returns `rows`, the result of a call of `entry`, encoded at the version the registration
@@ -243,7 +246,7 @@ impl Checked {
         let Some(served) = &entry.served else {
             return Ok(rows);
         };
-        let map = pinned::Versions::new(&self.schema, &served.schema);
+        let map = pinned::Versions::new(self.schema(), served.schema());
         let ty = match entry.terms.ty(entry.body) {
             Ty::Set(t) | Ty::NonEmpty(t) => t.as_ref().clone(),
             t => t.clone(),
@@ -256,7 +259,7 @@ impl Checked {
                 out.push(v);
             }
         }
-        Ok(super::text::rows(&self.schema, ty, out))
+        Ok(super::text::rows(self.schema(), ty, out))
     }
 
     /// Record the queries and transactions of a bundle whose calls run in `bundles`.
@@ -281,8 +284,7 @@ pub(super) struct Lacking<'a> {
 
 /// What every callable over one schema and program shares.
 struct Held {
-    schema: Arc<CommittedSchema>,
-    program: Arc<Program>,
+    compiled: Compiled,
     normal: NormalProgram,
     roles: BTreeMap<String, EffectiveGrants>,
 }
@@ -305,8 +307,7 @@ impl<'a> Lacking<'a> {
             None => (
                 e,
                 Run {
-                    schema: &c.schema,
-                    program: &c.program,
+                    compiled: &c.compiled,
                     terms: &e.terms,
                     body: e.body,
                     params: &e.params,
@@ -331,11 +332,13 @@ impl<'a> Lacking<'a> {
             let held = self.held[at]
                 .roles
                 .entry(role.to_owned())
-                .or_insert_with(|| EffectiveGrants::of(run.schema, log, deployed, role));
+                .or_insert_with(|| {
+                    EffectiveGrants::of(run.compiled.committed(), log, deployed, role)
+                });
             let monitor = holds_monitor(deployed, role);
             let missing = needs.missing(held, Mode::Registration).into_iter();
-            for r in missing.filter(|r| !(monitor && monitored(run.schema, r))) {
-                let (does, privilege) = r.text(run.schema);
+            for r in missing.filter(|r| !(monitor && monitored(run.compiled.committed(), r))) {
+                let (does, privilege) = r.text(run.compiled.committed());
                 out.push(if matches!(r, Requirement::ReadFiles) {
                     format!("{} {does}; {role} lacks {privilege}", e.name)
                 } else {
@@ -351,16 +354,13 @@ impl<'a> Lacking<'a> {
 
     /// Returns where `self.held` holds the schema and program of `run`.
     fn held_at(&mut self, run: &Run<'_>) -> Result<usize, Error> {
-        let same =
-            |h: &Held| Arc::ptr_eq(&h.schema, run.schema) && Arc::ptr_eq(&h.program, run.program);
-        if let Some(at) = self.held.iter().position(same) {
+        if let Some(at) = self.held.iter().position(|h| h.compiled.same(run.compiled)) {
             return Ok(at);
         }
-        let normal = norm::program(run.schema, run.program)
+        let normal = norm::program(run.compiled)
             .map_err(|e| Error::not_normal(e, Broken::RegistrationNotNormal))?;
         self.held.push(Held {
-            schema: run.schema.clone(),
-            program: run.program.clone(),
+            compiled: run.compiled.clone(),
             normal,
             roles: BTreeMap::new(),
         });
@@ -368,11 +368,10 @@ impl<'a> Lacking<'a> {
     }
 }
 
-/// What a callable runs: its normal term over its parameters, the schema and program it runs
+/// What a callable runs: its normal term over its parameters and the schema and program it runs
 /// over.
 struct Run<'a> {
-    schema: &'a Arc<CommittedSchema>,
-    program: &'a Arc<Program>,
+    compiled: &'a Compiled,
     terms: &'a Terms,
     body: Tm,
     params: &'a [Option<Var>],
@@ -380,10 +379,13 @@ struct Run<'a> {
 }
 
 impl Served {
+    fn schema(&self) -> &Arc<CommittedSchema> {
+        self.compiled.shared_schema()
+    }
+
     fn run(&self) -> Run<'_> {
         Run {
-            schema: &self.schema,
-            program: &self.program,
+            compiled: &self.compiled,
             terms: &self.terms,
             body: self.body,
             params: &self.params,
@@ -400,8 +402,14 @@ fn requirements(run: &Run<'_>, program: &NormalProgram) -> Result<Requirements, 
         .copied()
         .chain(run.unit)
         .collect();
-    permission::normal(run.schema, program, run.terms, run.body, &params)
-        .map_err(|e| Error::unanalysed(e, Broken::NoRequirements))
+    permission::normal(
+        run.compiled.committed(),
+        program,
+        run.terms,
+        run.body,
+        &params,
+    )
+    .map_err(|e| Error::unanalysed(e, Broken::NoRequirements))
 }
 
 /// Refuse a bundle of `checked`, recorded in `stored` with an owner other than the schema
@@ -466,8 +474,7 @@ pub(super) fn role_name(
 /// The schema a registration checks against and the program of its functions.
 pub(super) struct Over<'a> {
     pub(super) source: &'a Source,
-    pub(super) schema: &'a Arc<CommittedSchema>,
-    pub(super) program: &'a Arc<Program>,
+    pub(super) compiled: &'a Compiled,
     /// The hash of the version `source` is at.
     hash: &'a VersionHash,
 }
@@ -475,30 +482,28 @@ pub(super) struct Over<'a> {
 impl<'a> Over<'a> {
     pub(super) fn new(
         source: &'a Source,
-        schema: &'a Arc<CommittedSchema>,
-        program: &'a Arc<Program>,
+        compiled: &'a Compiled,
         hash: &'a VersionHash,
     ) -> Over<'a> {
         Over {
             source,
-            schema,
-            program,
+            compiled,
             hash,
         }
     }
 }
 
-/// Returns `schema`, the schema of a settled source.
-pub(super) fn settled(schema: Schema) -> Result<CommittedSchema, RejectReason> {
-    CommittedSchema::new(schema)
+/// Returns `compiled` with its schema committed, the schema of a settled source.
+pub(super) fn settled(compiled: Compiled<Schema>) -> Result<Compiled, RejectReason> {
+    compiled
+        .commit()
         .ok_or_else(|| internal(Broken::Catalog(catalog::Broken::Unsettled)))
 }
 
 /// A version a bundle pins: its source, schema and program.
 struct Pin {
     source: Source,
-    schema: Arc<CommittedSchema>,
-    program: Arc<Program>,
+    compiled: Compiled,
     hash: VersionHash,
 }
 
@@ -506,8 +511,7 @@ impl Pin {
     fn over(&self) -> Over<'_> {
         Over {
             source: &self.source,
-            schema: &self.schema,
-            program: &self.program,
+            compiled: &self.compiled,
             hash: &self.hash,
         }
     }
@@ -577,7 +581,7 @@ pub(super) fn registration(
             let first = c.entries.first().map_or("", |e| e.name.as_str());
             return Err(untranslatable(stored, h, now, s, &c.name, first, &u));
         }
-        let served = translations(&c, &pin.source, over.schema, over.source, over.program)
+        let served = translations(&c, &pin.source, over.compiled, over.source)
             .map_err(|b| Error::internal(*b))?
             .map_err(|(query, u)| untranslatable(stored, h, now, s, &c.name, &query, &u))?;
         for (e, s) in c.entries.iter_mut().zip(served) {
@@ -642,12 +646,10 @@ fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
 /// Refuse an open whose bundles pin a version before the file's and would read a constructor
 /// enabled since. A bundle that does not check at its pin is left for registration to refuse.
 pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), OpenError> {
-    let schema = Arc::new(catalog.schema().clone());
     let hash = catalog.version_hash();
     let now = Over {
         source: catalog.source(),
-        schema: &schema,
-        program: catalog.program(),
+        compiled: catalog.compiled(),
         hash: &hash,
     };
     let version = catalog.source().version;
@@ -722,14 +724,13 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
             h.name, h.pins
         ))
     })?;
-    let (schema, program) = source
+    let compiled = source
         .check()
         .map_err(|ds| Error::invalid(joined(ds.iter().map(|d| d.diag.message.as_str()))))?;
     let hash = VersionHash::of(Arc::new(source.clone()));
     let pin = Arc::new(Pin {
         source,
-        schema: Arc::new(settled(schema).map_err(Error::rejected)?),
-        program: Arc::new(program),
+        compiled: settled(compiled).map_err(Error::rejected)?,
         hash,
     });
     pins.0.insert(h.pins, pin.clone());
@@ -742,7 +743,7 @@ fn stale(now: &Over<'_>, c: &Checked) -> Result<Option<String>, Error> {
     let Some(reader) = c.reader() else {
         return Ok(None);
     };
-    catalog::stale(now.source, now.schema, &reader).map_err(catalog_error)
+    catalog::stale(now.source, now.compiled.committed(), &reader).map_err(catalog_error)
 }
 
 fn catalog_error(e: catalog::Error) -> Error {
@@ -774,8 +775,7 @@ pub(super) fn readers(
 ) -> Result<Vec<Live>, OpenError> {
     let mut out = Vec::new();
     let mut pins = Pins::default();
-    let schema = Arc::new(catalog.schema().clone());
-    let program = catalog.program().clone();
+    let compiled = catalog.compiled().clone();
     for r in regs {
         let Some(h) = r.header.as_ref().filter(|h| live.contains(&h.name)) else {
             continue;
@@ -787,8 +787,7 @@ pub(super) fn readers(
         let hash = catalog.version_hash();
         let now = Over {
             source: catalog.source(),
-            schema: &schema,
-            program: &program,
+            compiled: &compiled,
             hash: &hash,
         };
         let (c, source) = match pinned(&now, h, &mut pins).map_err(refused)? {
@@ -835,11 +834,10 @@ pub(super) fn recheck(
             return catalog::model_fault(&f).map_or(Ok(()), |b| Err(internal(Broken::Catalog(b))));
         }
     };
-    let Ok((schema, program)) = next.check() else {
+    let Ok(compiled) = next.check() else {
         return Ok(());
     };
-    let schema = Arc::new(settled(schema)?);
-    let program = Arc::new(program);
+    let compiled = settled(compiled)?;
     let mut lacking = Lacking::new(&next.grants, deployed);
     let mut operator = None;
     let mut blocked: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -857,18 +855,17 @@ pub(super) fn recheck(
             ));
             continue;
         }
-        let served =
-            match translations(c, &l.source, &schema, &next, &program).map_err(|b| internal(*b))? {
-                Ok(served) => served,
-                Err((query, u)) => {
-                    operator.get_or_insert_with(|| u.operator.clone().unwrap_or_default());
-                    lines.push(format!(
-                        "bundle {} pins {pins}: `{query}` has no translation: {}",
-                        c.name, u.reason
-                    ));
-                    continue;
-                }
-            };
+        let served = match translations(c, &l.source, &compiled, &next).map_err(|b| internal(*b))? {
+            Ok(served) => served,
+            Err((query, u)) => {
+                operator.get_or_insert_with(|| u.operator.clone().unwrap_or_default());
+                lines.push(format!(
+                    "bundle {} pins {pins}: `{query}` has no translation: {}",
+                    c.name, u.reason
+                ));
+                continue;
+            }
+        };
         let Some(owner) = &l.definer else {
             continue;
         };
@@ -897,20 +894,19 @@ pub(super) fn recheck(
 type Translated = Result<Vec<Served>, (String, Untranslatable)>;
 
 /// Returns the translation of each callable of `c`, checked at the version of `pin`, to `now`,
-/// the schema of `now_source` checked as `program`, or the name of the first callable that has
-/// none, and why. Fail when a stored body or a translation breaks an invariant of the kernel.
+/// the schema of `now_source` and its program, or the name of the first callable that has none,
+/// and why. Fail when a stored body or a translation breaks an invariant of the kernel.
 fn translations(
     c: &Checked,
     pin: &Source,
-    now: &Arc<CommittedSchema>,
+    now: &Compiled,
     now_source: &Source,
-    program: &Arc<Program>,
 ) -> Result<Translated, Box<Broken>> {
     let Some(first) = c.entries.first() else {
         return Ok(Ok(Vec::new()));
     };
     let hides = c.header.as_ref().is_some_and(|h| h.hides_new);
-    let p = match Pinned::new(&c.schema, pin, now, now_source, program, hides) {
+    let p = match Pinned::new(c.schema(), pin, now, now_source, hides) {
         Ok(p) => p,
         Err(Refused::Untranslatable(u)) => return Ok(Err((first.name.clone(), u))),
         Err(Refused::Broken(n)) => return Err(Box::new(Broken::TranslationNotNormal(n))),
@@ -921,7 +917,7 @@ fn translations(
     let mut out = Vec::with_capacity(c.entries.len());
     for e in &c.entries {
         let q = NormalQuery::validated(
-            &c.schema,
+            c.schema(),
             (*e.terms).clone(),
             e.params.iter().flatten().copied().chain(e.unit).collect(),
             e.body,
@@ -948,8 +944,7 @@ fn translations(
         let params = e.params.iter().map(|x| x.map(|_| next())).collect();
         let unit = e.unit.map(|_| next());
         out.push(Served {
-            schema: now.clone(),
-            program: program.clone(),
+            compiled: now.clone(),
             terms: Arc::new(terms),
             body,
             params,
@@ -1075,7 +1070,7 @@ impl<R: Runtime> Registered<R> {
             Called::Rows(rows) => rows,
             Called::Committed(done) => done.value,
         };
-        arrow::stream(&self.checked.schema, rows)
+        arrow::stream(self.checked.schema(), rows)
     }
 
     fn checked(&self) -> &Checked {
@@ -1156,7 +1151,7 @@ fn arguments(checked: &Checked, entry: &Entry, args: &[Val]) -> Result<(), Error
         )));
     }
     for (i, (ty, value)) in entry.types.iter().zip(args).enumerate() {
-        if !super::value::valid(&checked.schema, ty, value) {
+        if !super::value::valid(checked.schema(), ty, value) {
             return Err(Error::invalid(format!(
                 "argument {} of `{}` is not a value of its declared parameter type",
                 i + 1,
@@ -1170,10 +1165,10 @@ fn arguments(checked: &Checked, entry: &Entry, args: &[Val]) -> Result<(), Error
 /// Returns the call of `entry` with `args` for `caller`, through its translation when it has
 /// one, its arguments carried to the version the database is at.
 fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prepared {
-    let (schema, terms, body, vars, unit) = match &entry.served {
-        Some(s) => (&s.schema, &s.terms, s.body, &s.params, s.unit),
+    let (compiled, terms, body, vars, unit) = match &entry.served {
+        Some(s) => (&s.compiled, &s.terms, s.body, &s.params, s.unit),
         None => (
-            &checked.schema,
+            &checked.compiled,
             &entry.terms,
             entry.body,
             &entry.params,
@@ -1183,7 +1178,7 @@ fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prep
     let map = entry
         .served
         .as_ref()
-        .map(|s| pinned::Versions::new(&checked.schema, &s.schema));
+        .map(|s| pinned::Versions::new(checked.schema(), s.schema()));
     let carried = |ty: &Ty, v: &Val| match &map {
         Some(m) => pinned::forward(m, ty, v),
         None => v.clone(),
@@ -1195,7 +1190,7 @@ fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prep
         .collect();
     params.extend(unit.map(|u| (u, Val::record(Vec::new()))));
     Prepared {
-        schema: schema.clone(),
+        compiled: compiled.clone(),
         terms: terms.clone(),
         items: vec![body],
         commands: Vec::new(),
@@ -1213,7 +1208,7 @@ fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prep
 fn one<R: Runtime>(e: &Engine<R>, entry: &Entry, mut out: Vec<DynRows>) -> DynRows {
     out.pop().unwrap_or_else(|| {
         rows(
-            &e.schema,
+            e.schema(),
             entry.terms.ty(entry.body).clone(),
             vec![Val::record(Vec::new())],
         )
@@ -1310,7 +1305,7 @@ impl<R: Runtime> Registered<R> {
 
     /// Returns the schema of the version the registration is checked at.
     pub(super) fn schema(&self) -> &Arc<CommittedSchema> {
-        &self.checked.schema
+        self.checked.schema()
     }
 
     /// Refuse `args` unless they are the arguments of the callable of `ordinal`.
@@ -1330,7 +1325,7 @@ impl Bound {
 
     /// Returns the schema the registration is checked against.
     pub(super) fn schema(&self) -> &Arc<CommittedSchema> {
-        &self.checked.schema
+        self.checked.schema()
     }
 
     /// Returns the one result among `rows`, the rows of the call's one item, encoded at the

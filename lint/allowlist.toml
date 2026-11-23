@@ -35,7 +35,7 @@
 "crates/adtb-testkit/src/cases/world.rs" = 31
 "crates/adtb/src/api/bundle.rs" = 34
 "crates/adtb/src/api/mod.rs" = 3
-"crates/adtb/src/api/registered/mod.rs" = 13
+"crates/adtb/src/api/registered/mod.rs" = 12
 "crates/adtb/src/api/reindex.rs" = 2
 "crates/adtb/src/api/server/adhoc.rs" = 5
 "crates/adtb/src/api/server/call.rs" = 5
@@ -109,7 +109,7 @@
 "crates/adtb-exec/src/exec/store.rs" = 13
 "crates/adtb-exec/src/plan/catalog.rs" = 10
 "crates/adtb-exec/src/plan/explain.rs" = 16
-"crates/adtb-exec/src/plan/fixture.rs" = 5
+"crates/adtb-exec/src/plan/fixture.rs" = 3
 "crates/adtb-exec/src/plan/mod.rs" = 62
 "crates/adtb-file/src/lib.rs" = 4
 "crates/adtb-heap/src/heap/dir.rs" = 4
@@ -186,7 +186,7 @@
 "crates/adtb-testkit/src/cases/walk.rs" = 8
 "crates/adtb-testkit/src/common.rs" = 2
 "crates/adtb-testkit/src/corpus.rs" = 1
-"crates/adtb-testkit/src/fixture.rs" = 6
+"crates/adtb-testkit/src/fixture.rs" = 4
 "crates/adtb-testkit/src/fuzz.rs" = 3
 "crates/adtb-testkit/src/inhabit.rs" = 4
 "crates/adtb-testkit/src/isolation/harness.rs" = 2
@@ -194,7 +194,7 @@
 "crates/adtb-testkit/src/running.rs" = 5
 "crates/adtb-testkit/src/search.rs" = 5
 "crates/adtb-testkit/src/sections.rs" = 4
-"crates/adtb-testkit/src/spec.rs" = 10
+"crates/adtb-testkit/src/spec.rs" = 9
 "crates/adtb/src/api/arrow.rs" = 3
 "crates/adtb/src/api/backup.rs" = 3
 "crates/adtb/src/api/load.rs" = 4

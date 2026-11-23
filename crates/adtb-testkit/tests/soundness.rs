@@ -174,9 +174,7 @@ fn statements(
         .iter()
         .map(|(n, t, _)| (n.clone(), t.clone()))
         .collect();
-    let Ok(adhoc) =
-        check_adhoc_recording(&fx.schema, &fx.program, items, &tys, &given.bundles, None)
-    else {
+    let Ok(adhoc) = check_adhoc_recording(fx.compiled(), items, &tys, &given.bundles, None) else {
         return false;
     };
     let names: Vec<String> = items
@@ -189,10 +187,11 @@ fn statements(
         })
         .map(|s| format!("`{}`", source[s.range()].trim()))
         .collect();
-    let schema = adhoc.schema(&fx.schema);
+    let compiled = fx.compiled().clone();
+    let schema = adhoc.schema(compiled.committed());
     let run = Run {
         schema,
-        program: &fx.program,
+        program: compiled.program(),
         files,
         db: &fx.db,
     };
@@ -202,7 +201,7 @@ fn statements(
             .map(|(n, _, v)| (vars[n], v.clone()))
             .collect()
     };
-    if let Ok(normal) = norm::adhoc(schema, &fx.program, &adhoc) {
+    if let Ok(normal) = norm::adhoc(fx.compiled(), &adhoc) {
         let names: Vec<String> = names
             .iter()
             .map(|n| format!("the normal form of {n}"))
@@ -228,7 +227,7 @@ fn statements(
     );
     fx.supply = supply;
     if keep && let Some(mut db) = after {
-        let declared = fx.schema.relations.len();
+        let declared = fx.schema().relations.len();
         db.retain(|(r, _), _| (r.0 as usize) < declared);
         fx.db = db;
     }
@@ -284,21 +283,21 @@ fn call_query(
     rng: &mut Rng,
     out: &mut Report,
 ) {
-    let Ok(checked) = check_query(&fx.schema, &fx.program, module, q) else {
+    let Ok(checked) = check_query(fx.compiled(), module, q) else {
         return;
     };
     let ty = checked.terms.ty(checked.term);
-    let Some((args, result)) = draw_args(&fx.schema, ty, q.params.len(), rng) else {
+    let Some((args, result)) = draw_args(fx.schema(), ty, q.params.len(), rng) else {
         return;
     };
     let name = format!("{at}: query {}", q.name.text);
-    let got = Interpreter::new(&fx.schema, &fx.program, &fx.db)
+    let got = Interpreter::new(fx.schema(), fx.program(), &fx.db)
         .with_fix_limit(FIX_ROUNDS)
         .apply(&checked.terms, checked.term, args);
     match got {
         Ok(v) => {
             out.judged += 1;
-            let judge = Judge::over(&fx.schema, &fx.program, &fx.db);
+            let judge = Judge::over(fx.schema(), fx.program(), &fx.db);
             if let Err(m) = judge.result(&v, &result) {
                 out.failures.push(format!("{name}: its result: {m}"));
             }
@@ -317,21 +316,21 @@ fn call_txn(
     rng: &mut Rng,
     out: &mut Report,
 ) {
-    let Ok(checked) = check_txn(&fx.schema, &fx.program, module, t) else {
+    let Ok(checked) = check_txn(fx.compiled(), module, t) else {
         return;
     };
     let ty = checked.terms.ty(checked.term);
-    let Some((args, result)) = draw_args(&fx.schema, ty, t.params.len(), rng) else {
+    let Some((args, result)) = draw_args(fx.schema(), ty, t.params.len(), rng) else {
         return;
     };
     let name = format!("{at}: transaction {}", t.name.text);
     let run = Run {
-        schema: &fx.schema,
-        program: &fx.program,
+        schema: fx.schema(),
+        program: fx.program(),
         files: &fx.files,
         db: &fx.db,
     };
-    let got = Interpreter::new(&fx.schema, &fx.program, &fx.db)
+    let got = Interpreter::new(fx.schema(), fx.program(), &fx.db)
         .with_fix_limit(FIX_ROUNDS)
         .run_call(&checked.terms, checked.term, args, &mut fx.supply.clone());
     match got {
@@ -357,16 +356,16 @@ fn spec_corpus_results_inhabit_their_types() {
             continue;
         };
         let at = format!("{}:{}", b.file, b.line);
-        let (tys, unresolved) = given_types(b, &p.schema);
+        let (tys, unresolved) = given_types(b, p.compiled.schema());
         let mut params = Vec::new();
         for (name, ty) in tys {
-            let form = Form::of(&p.schema, &ty);
+            let form = Form::of(p.compiled.schema(), &ty);
             if form.has_syntax() {
                 params.push((name, ty, draw(&mut rng, &form)));
             }
         }
         let (queries, txns, module, adhoc) = (p.queries, p.txns, p.module, p.adhoc);
-        let mut fx = Fixture::of_schema(p.schema, p.program);
+        let mut fx = Fixture::of_schema(p.compiled);
         for q in &queries {
             call_query(&fx, module, q, &at, &mut rng, &mut out);
         }
@@ -376,7 +375,7 @@ fn spec_corpus_results_inhabit_their_types() {
         if unresolved.is_empty() && !adhoc.is_empty() {
             let given = Given {
                 params,
-                bundles: bundles(&fx.schema, &registered).0,
+                bundles: bundles(fx.schema(), &registered).0,
             };
             statements(
                 &mut fx,
@@ -501,8 +500,7 @@ fn conformance_schema(body: &str) -> Option<Fixture> {
         ));
     }
     let schema = build(&files).ok()?;
-    let program = check_schema(&schema).ok()?;
-    Some(Fixture::of_schema(schema, program))
+    Some(Fixture::of_schema(check_schema(schema).ok()?))
 }
 
 /// Run the statements of every script of the conformance suite in order, each script on a

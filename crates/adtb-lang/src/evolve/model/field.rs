@@ -41,7 +41,7 @@ impl Model {
             Ok(s) => s,
             Err(ds) => return unchecked(&ds),
         };
-        match check::check_schema(&schema) {
+        match check::checked_program(&schema) {
             Ok(p) => Ok((schema, p)),
             Err(ds) => unchecked(&ds),
         }
@@ -183,7 +183,7 @@ impl Model {
             RootKind::Fill,
         )
         .or_else(|d| refuse_at(d.span, d.message))?;
-        let query = crate::norm::query(&schema, &program, &q)
+        let query = crate::norm::registered(&schema, &program, &q.terms, q.term, RootKind::Query)
             .map_err(|e| Fail::Broken(format!("a fill does not normalise: {e:?}")))?;
         Ok((RowFn { schema, query }, text))
     }

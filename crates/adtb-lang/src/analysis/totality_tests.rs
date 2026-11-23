@@ -268,7 +268,7 @@ fn judge(case: &Case, text: &str) -> Result<(bool, Vec<Prim>), String> {
         .collect();
     let (s, a) = adhoc(&case.schema, &params, text).map_err(|e| format!("refused: {e:?}"))?;
     let p = check_schema(&s).expect("the schema checks");
-    let n = norm::adhoc(&s, &p, &a).map_err(|e| format!("not normalised: {e:?}"))?;
+    let n = norm::adhoc(&p, &a).map_err(|e| format!("not normalised: {e:?}"))?;
     let item = n.items()[0];
     let prims = reachable(n.terms(), item)
         .into_iter()
@@ -277,7 +277,7 @@ fn judge(case: &Case, text: &str) -> Result<(bool, Vec<Prim>), String> {
             _ => None,
         })
         .collect();
-    let normal = norm::program(&s, &p).map_err(|e| format!("schema not normalised: {e:?}"))?;
+    let normal = norm::program(&p).map_err(|e| format!("schema not normalised: {e:?}"))?;
     let mut totality =
         Totality::new(&s, case.hiding).with_aggregates(normal.terms(), normal.aggregate_parts());
     Ok((totality.total(n.terms(), item), prims))

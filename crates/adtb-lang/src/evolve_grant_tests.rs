@@ -1432,21 +1432,25 @@ merge constructor Identity.(Google | Apple) into Social
 /// each as its text and privilege.
 fn lacking(src: &Source, role: &str, text: &str) -> Vec<(String, &'static str)> {
     use crate::permission::{EffectiveGrants, Mode};
-    let (schema, program) = src.check().expect("the source checks");
-    let schema = Committed::new(schema).expect("an applied migration settles");
+    let program = src
+        .check()
+        .expect("the source checks")
+        .commit()
+        .expect("an applied migration settles");
+    let schema = program.committed();
     let items = crate::parse::parse_adhoc(text, Options::default())
         .ok()
         .expect("the text parses");
-    let checked = check::check_adhoc(&schema, &program, &items, &BTreeMap::new())
+    let checked = check::check_adhoc(&program, &items, &BTreeMap::new())
         .unwrap_or_else(|e| panic!("{text}: {e:?}"));
-    let needs = crate::permission::adhoc(&schema, &program, &checked)
+    let needs = crate::permission::adhoc(&program, &checked)
         .expect("requirements analyze")
         .remove(0);
-    let held = EffectiveGrants::of(&schema, &src.grants, &[], role);
+    let held = EffectiveGrants::of(schema, &src.grants, &[], role);
     needs
         .missing(&held, Mode::Registration)
         .iter()
-        .map(|r| r.text(&schema))
+        .map(|r| r.text(schema))
         .collect()
 }
 

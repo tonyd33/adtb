@@ -120,11 +120,10 @@ impl Witness {
                 let items = parse_adhoc(&text, Options::default())
                     .ok()
                     .unwrap_or_else(|ds| panic!("`{text}` does not parse: {ds:?}"));
-                let (adhoc, w) =
-                    work(|| check_adhoc(&f.schema, &f.program, &items, &BTreeMap::new()));
+                let (adhoc, w) = work(|| check_adhoc(f.compiled(), &items, &BTreeMap::new()));
                 out.insert(Pass::Check, w);
                 let adhoc = adhoc.unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
-                let (normal, w) = work(|| norm::adhoc(&f.schema, &f.program, &adhoc));
+                let (normal, w) = work(|| norm::adhoc(f.compiled(), &adhoc));
                 out.insert(Pass::Normalise, w);
                 let normal =
                     normal.unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
@@ -132,12 +131,12 @@ impl Witness {
                     panic!("`{text}` is one item")
                 };
                 let (required, w) =
-                    work(|| permission::normal(&f.schema, &f.normal, normal.terms(), *root, &[]));
+                    work(|| permission::normal(f.schema(), &f.normal, normal.terms(), *root, &[]));
                 out.insert(Pass::Permission, w);
                 required.unwrap_or_else(|e| panic!("`{text}` has no requirements: {e:?}"));
                 let (planned, w) = work(|| {
                     plan::plan(
-                        &f.schema,
+                        f.schema(),
                         &f.normal,
                         &f.catalog,
                         normal.valid(),
@@ -147,7 +146,7 @@ impl Witness {
                 });
                 out.insert(Pass::Plan, w);
                 let planned = planned.unwrap_or_else(|e| panic!("`{text}` has no plan: {e:?}"));
-                let (code, w) = work(|| exec::compile(&f.schema, &f.catalog, &planned, None));
+                let (code, w) = work(|| exec::compile(f.schema(), &f.catalog, &planned, None));
                 out.insert(Pass::Code, w);
                 code.unwrap_or_else(|e| panic!("`{text}` does not compile: {e:?}"));
             }
@@ -155,7 +154,7 @@ impl Witness {
                 let text = text.replace("{n}", &links.to_string());
                 let f = Fixture::new(&format!("{}constraint c = {text}\n", chain.decls(links)));
                 let (refused, w) =
-                    work(|| crate::write::refusals(&f.schema, &f.normal, &f.catalog));
+                    work(|| crate::write::refusals(f.schema(), &f.normal, &f.catalog));
                 out.insert(Pass::Delta, w);
                 refused.unwrap_or_else(|e| panic!("`{text}` breaks the checker: {e}"));
             }

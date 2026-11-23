@@ -5,10 +5,10 @@ use crate::kernel::Search;
 const FS: &str = "fn fs () -> Set Follow = from f in follows where f.src != f.dst select f";
 
 /// Assert that the checked bodies of schema text `extra` bind each variable once, and return them.
-fn checked_once(extra: &str) -> (Committed, Program) {
-    let (s, p) = program(extra).unwrap_or_else(|e| panic!("{extra}\nrefused: {e:?}"));
-    assert_one_binding_site("checked", &p.terms, &program_roots(&p));
-    (s, p)
+fn checked_once(extra: &str) -> Compiled {
+    let c = program(extra).unwrap_or_else(|e| panic!("{extra}\nrefused: {e:?}"));
+    assert_one_binding_site("checked", &c.program().terms, &program_roots(c.program()));
+    c
 }
 
 /// Returns the normal form of function `name` of `p`.
@@ -64,10 +64,11 @@ fn a_presented_query_binds_its_element_apart_from_its_generator() {
 
 #[test]
 fn top_binds_its_element_apart_from_its_generator() {
-    let (s, p) = checked_once(
+    let c = checked_once(
         "fn f () -> Set Post = top 3 by (p.created_at desc, key p) (from p in posts select p)",
     );
-    let Kind::Top { var, source, .. } = p.terms.kind(body_of(&s, &p, "f")) else {
+    let (s, p) = (c.committed(), c.program());
+    let Kind::Top { var, source, .. } = p.terms.kind(body_of(s, p, "f")) else {
         panic!("a top");
     };
     assert_ne!(*var, generator_var(&p.terms, *source));
@@ -123,9 +124,10 @@ fn a_for_over_a_generator_binds_it_afresh_in_one_root() {
     let text = format!(
         "{FS}\nfn g () -> I64 = count(y for y in fs()) + count(z for z in (from x in fs() select key x))"
     );
-    let (s, p) = checked_once(&text);
-    let n = crate::norm::program(&s, &p).expect("normalises");
-    assert_one_binding_site("normalised", n.terms(), &[normal_body(&s, &n, "g")]);
+    let c = checked_once(&text);
+    let s = c.committed();
+    let n = crate::norm::program(&c).expect("normalises");
+    assert_one_binding_site("normalised", n.terms(), &[normal_body(s, &n, "g")]);
 }
 
 #[test]
@@ -135,15 +137,16 @@ fn a_for_over_a_generator_binds_it_afresh_across_roots() {
          fn a () -> Set (Key follows) = from x in fs() select key x
          fn b () -> Set (Key users) = from x in fs() select x.src"
     );
-    let (s, p) = checked_once(&text);
-    let n = crate::norm::program(&s, &p).expect("normalises");
+    let c = checked_once(&text);
+    let s = c.committed();
+    let n = crate::norm::program(&c).expect("normalises");
     for name in ["a", "b"] {
-        assert_one_binding_site("normalised", n.terms(), &[normal_body(&s, &n, name)]);
+        assert_one_binding_site("normalised", n.terms(), &[normal_body(s, &n, name)]);
     }
     assert_one_binding_site(
         "normalised",
         n.terms(),
-        &[normal_body(&s, &n, "a"), normal_body(&s, &n, "b")],
+        &[normal_body(s, &n, "a"), normal_body(s, &n, "b")],
     );
 }
 
@@ -176,11 +179,12 @@ fn nested_groups(depth: u32) -> String {
 #[test]
 fn a_closed_group_value_is_shared_by_each_use_of_its_group() {
     let sizes = [4, 8].map(|d| {
-        let (s, p) = checked_once(&nested_groups(d));
-        let n = crate::norm::program(&s, &p).expect("normalises");
+        let c = checked_once(&nested_groups(d));
+        let (s, p) = (c.committed(), c.program());
+        let n = crate::norm::program(&c).expect("normalises");
         (
-            reachable(&p.terms, body_of(&s, &p, "f")).len(),
-            reachable(n.terms(), normal_body(&s, &n, "f")).len(),
+            reachable(&p.terms, body_of(s, p, "f")).len(),
+            reachable(n.terms(), normal_body(s, &n, "f")).len(),
         )
     });
     let [(checked4, normal4), (checked8, normal8)] = sizes;
@@ -223,11 +227,12 @@ fn one_use_folded(j: u32) -> String {
 /// `at` makes for depths 2, 3 and 4.
 fn sizes_by_depth(at: impl Fn(u32) -> String) -> [(usize, usize); 3] {
     [2, 3, 4].map(|d| {
-        let (s, p) = checked_once(&at(d));
-        let n = crate::norm::program(&s, &p).expect("normalises");
+        let c = checked_once(&at(d));
+        let (s, p) = (c.committed(), c.program());
+        let n = crate::norm::program(&c).expect("normalises");
         (
-            reachable(&p.terms, body_of(&s, &p, "f")).len(),
-            reachable(n.terms(), normal_body(&s, &n, "f")).len(),
+            reachable(&p.terms, body_of(s, p, "f")).len(),
+            reachable(n.terms(), normal_body(s, &n, "f")).len(),
         )
     })
 }

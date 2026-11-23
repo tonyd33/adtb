@@ -78,7 +78,7 @@ impl Catalog {
             return out;
         }
         out.rows = Some(self.roots.verified());
-        let schema = &self.schema;
+        let schema = &self.schema();
         for (r, _) in schema.ids().relation_ids() {
             let heaps = self
                 .heaps

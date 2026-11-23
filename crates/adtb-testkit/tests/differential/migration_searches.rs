@@ -101,9 +101,10 @@ impl Walk {
         let file = parse_migration(text, Options::default())
             .ok()
             .map_err(|ds| format!("the migration does not parse: {ds:?}"))?;
-        let Ok((next, (schema, _), recorded)) = self.source.record(&file, text, true) else {
+        let Ok((next, compiled, recorded)) = self.source.record(&file, text, true) else {
             return Ok(None);
         };
+        let schema = compiled.schema().clone();
         let ops = recorded
             .resolved()
             .map_err(|ds| format!("the migration does not resolve as it applies: {ds:?}"))?
@@ -181,7 +182,7 @@ impl Walk {
     /// the operators each migration resolved to as it applied, and the one chained over their
     /// resolution on replay `folded` differ, or why the last differs from the version hash.
     fn hashes(&self, folded: &Source) -> Option<String> {
-        let schema = |s: &Source| s.check().map(|(schema, _)| schema).ok();
+        let schema = |s: &Source| s.check().map(|c| c.schema().clone()).ok();
         let (Some(applied), Some(replayed)) = (schema(&self.source), schema(folded)) else {
             return Some("the source does not check".into());
         };

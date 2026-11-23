@@ -7,7 +7,7 @@ use super::*;
 
 fn plan_with(f: &Fixture, terms: adtb_lang::kernel::Valid<'_>, t: Tm, rewrites: Rewrites) -> Plan {
     let options = Options { rewrites };
-    plan(&f.schema, &f.normal, &f.catalog, terms, t, options)
+    plan(f.schema(), &f.normal, &f.catalog, terms, t, options)
         .unwrap_or_else(|e| panic!("no plan: {e}"))
 }
 
@@ -100,7 +100,7 @@ fn emits(c: &Chain) -> Vec<Tm> {
 }
 
 fn routes_by_tag(f: &Fixture, terms: &Terms, t: Tm) -> bool {
-    crate::exec::routes_by_tag(&f.schema, terms, t).expect("an emitted term compiles")
+    crate::exec::routes_by_tag(f.schema(), terms, t).expect("an emitted term compiles")
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn a_write_is_refused() {
     let f = running();
     let (n, t) = f.normal("delete u in users where u.name == \"cy\"", &[]);
     let got = plan(
-        &f.schema,
+        f.schema(),
         &f.normal,
         &f.catalog,
         n.valid(),
@@ -193,7 +193,7 @@ fn a_write_is_refused() {
 fn bounded(f: &Fixture, text: &str, ty: &str) -> Result<Plan, Error> {
     let (normal, t) = f.normal(text, &[("xs", ty)]);
     let [plan] = <[_; 1]>::try_from(plan_bounded(
-        &f.schema,
+        f.schema(),
         &f.normal,
         &f.catalog,
         normal.valid(),

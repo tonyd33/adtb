@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::AdhocItem;
-use adtb_lang::check::{AdhocCommand, Bundles, Command, Explained, Program, Ref, check_adhoc_in};
+use adtb_lang::check::{AdhocCommand, Bundles, Command, Compiled, Explained, Ref, check_adhoc_in};
 use adtb_lang::kernel::{Const, Kind, Node, Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
@@ -54,8 +54,9 @@ impl Iterator for DynRows {
 
 /// Ad hoc text checked and normalised against one schema, its parameters bound.
 pub(super) struct Prepared {
-    /// The schema checked against, extended with the temp relations the text declares.
-    pub schema: Arc<CommittedSchema>,
+    /// The schema checked against, extended with the temp relations the text declares, with the
+    /// program of its functions.
+    pub compiled: Compiled,
     pub terms: Arc<Terms>,
     pub items: Vec<Tm>,
     pub commands: Vec<AdhocCommand>,
@@ -93,18 +94,17 @@ pub(super) struct Issuer {
 }
 
 impl Prepared {
-    /// Returns `text` checked against `program` of `schema`, each free name typed and bound by
-    /// `params`, run for `caller`.
+    /// Returns `text` checked against `compiled`, each free name typed and bound by `params`, run
+    /// for `caller`.
     pub fn new(
-        schema: &Arc<CommittedSchema>,
-        program: &Program,
+        compiled: &Compiled,
         bundles: &Bundles,
         text: &str,
         params: &[(&str, Ty, Val)],
         caller: Val,
     ) -> Result<Prepared, Error> {
         let items = Self::parsed(text)?;
-        Self::of_items(schema, program, bundles, &items, params, caller)
+        Self::of_items(compiled, bundles, &items, params, caller)
     }
 
     /// Returns the items of `text`, reading no schema.
@@ -116,14 +116,13 @@ impl Prepared {
 
     /// Returns `items` checked as [`Prepared::new`] checks the text they were parsed from.
     pub fn of_items(
-        schema: &Arc<CommittedSchema>,
-        program: &Program,
+        compiled: &Compiled,
         bundles: &Bundles,
         items: &[AdhocItem],
         params: &[(&str, Ty, Val)],
         caller: Val,
     ) -> Result<Prepared, Error> {
-        Self::naming(schema, None, program, bundles, items, params, caller).map_err(|e| match e {
+        Self::naming(compiled, None, bundles, items, params, caller).map_err(|e| match e {
             TextError::Checker(e) | TextError::Other(e) => e,
         })
     }
@@ -131,9 +130,8 @@ impl Prepared {
     /// Returns `items` checked as [`Prepared::of_items`] does, its names finding only what `scope`
     /// holds when given.
     pub(super) fn naming(
-        schema: &Arc<CommittedSchema>,
+        compiled: &Compiled,
         scope: Option<&Scope>,
-        program: &Program,
         bundles: &Bundles,
         items: &[AdhocItem],
         params: &[(&str, Ty, Val)],
@@ -154,7 +152,10 @@ impl Prepared {
                  text in process",
             )));
         }
-        if let Some((name, ..)) = params.iter().find(|(_, ty, _)| !declared(schema, ty)) {
+        if let Some((name, ..)) = params
+            .iter()
+            .find(|(_, ty, _)| !declared(compiled.committed(), ty))
+        {
             return Err(TextError::Other(Error::invalid(format!(
                 "parameter `{name}` has no type of the schema"
             ))));
@@ -164,16 +165,8 @@ impl Prepared {
             .map(|(n, ty, _)| ((*n).to_owned(), ty.clone()))
             .collect();
         let mut named = Vec::new();
-        let adhoc = check_adhoc_in(
-            schema,
-            scope,
-            program,
-            items,
-            &types,
-            bundles,
-            Some(&mut named),
-        )
-        .map_err(|d| TextError::Checker(Error::diagnostics(d)))?;
+        let adhoc = check_adhoc_in(compiled, scope, items, &types, bundles, Some(&mut named))
+            .map_err(|d| TextError::Checker(Error::diagnostics(d)))?;
         let functions = named
             .into_iter()
             .filter_map(|(_, r)| match r {
@@ -181,7 +174,7 @@ impl Prepared {
                 _ => None,
             })
             .collect();
-        let normal = norm::adhoc(adhoc.schema(schema), program, &adhoc)
+        let normal = norm::adhoc(compiled, &adhoc)
             .map_err(|e| TextError::Other(Error::not_normal(e, Broken::AdhocNotNormal)))?;
         let bound = params
             .iter()
@@ -216,7 +209,7 @@ impl Prepared {
         }
         let (terms, items, commands, _) = normal.into_parts();
         Ok(Prepared {
-            schema: adhoc.temps.map_or_else(|| schema.clone(), Arc::new),
+            compiled: compiled.of_text(&adhoc),
             terms: Arc::new(terms),
             items,
             commands,
@@ -237,7 +230,7 @@ impl Prepared {
 
     /// Returns the schema the text's terms name declarations of.
     pub fn schema(&self) -> &Arc<CommittedSchema> {
-        &self.schema
+        self.compiled.shared_schema()
     }
 
     pub fn terms(&self) -> &Terms {

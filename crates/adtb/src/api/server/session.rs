@@ -48,7 +48,7 @@ impl<R: Runtime> RoleAuthority<R> {
         assertion: Option<&Val>,
     ) -> Result<Val, Error> {
         self.access(false, |e, tx, id, _| {
-            self.derive(session, &Tables::new(&e.schema, id), e, tx, assertion)
+            self.derive(session, &Tables::new(e.schema(), id), e, tx, assertion)
         })
     }
 
@@ -62,7 +62,7 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<Val, Error> {
         self.checked(session, t, e, tx)?;
         let Some(assertion) = assertion else {
-            return Ok(service(&e.schema, &session.name));
+            return Ok(service(e.schema(), &session.name));
         };
         require(&t.grants(e, tx)?, session, Capability::Assert, false)?;
         e.principal(Some(assertion))
@@ -79,7 +79,7 @@ impl<R: Runtime> RoleAuthority<R> {
         assertion: Option<&Val>,
     ) -> Result<Val, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let service = service(&e.schema, &session.name);
+        let service = service(e.schema(), &session.name);
         let origin = CallOrigin::AdHoc(*text);
         if session.name == OWNER_ROLE && assertion.is_none() && e.db.admit_database().is_err() {
             return Ok(service);
@@ -119,7 +119,7 @@ impl<R: Runtime> RoleAuthority<R> {
         if session.name == OWNER_ROLE {
             return Ok(None);
         }
-        let params = free_params(&e.schema, params);
+        let params = free_params(e.schema(), params);
         let origin = CallOrigin::AdHoc(*text);
         let refuse = |detail: String| -> Result<Option<Issuer>, Error> {
             if let Some(quarantined) = e.refusal() {
@@ -275,7 +275,7 @@ impl<R: Runtime> Engine<R> {
     ) -> Result<(), Error> {
         self.audit_unless_marked(|| {
             store::run(self, true, &mut |e, _, id, changes| {
-                Tables::new(&e.schema, id).audit_denied(e, changes, role, caller, origin)
+                Tables::new(e.schema(), id).audit_denied(e, changes, role, caller, origin)
             })
         })
     }
@@ -290,7 +290,7 @@ impl<R: Runtime> Engine<R> {
         self.audit_unless_marked(|| {
             let seq = self.audit_seq()?;
             store::run_under(self, true, grant, &mut |e, _, id, changes| {
-                let t = Tables::new(&e.schema, id);
+                let t = Tables::new(e.schema(), id);
                 changes.insert(t.audit_relation(), t.call_row(e, seq, call)?);
                 Ok(())
             })
@@ -313,7 +313,7 @@ impl<R: Runtime> Engine<R> {
     /// Returns the failure of a change that must record a row of `catalog::audit`, while a mark
     /// on the database, or on a constructor or index of the audit, stops that row.
     pub(super) fn audit_unwritable(&self) -> Option<Error> {
-        let audit = Tables::new(&self.schema, TxnId(0)).audit_relation();
+        let audit = Tables::new(self.schema(), TxnId(0)).audit_relation();
         let marked = self.db.admit_relation(audit).err()?;
         Some(self.write_error(TxnId(0), marked))
     }
@@ -328,7 +328,7 @@ impl<R: Runtime> Engine<R> {
         grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
         let seq = self.audit_seq()?;
-        let t = Tables::new(&self.schema, id);
+        let t = Tables::new(self.schema(), id);
         let mut changes = Changes::default();
         changes.insert(t.audit_relation(), t.call_row(self, seq, call)?);
         changes
@@ -340,14 +340,14 @@ impl<R: Runtime> Engine<R> {
     /// that concurrent calls do not conflict over it.
     pub(super) fn audit_seq(&self) -> Result<i64, Error> {
         if self.audit_seeded.load(Ordering::Acquire) {
-            let audit = Tables::new(&self.schema, TxnId(0)).audit_relation();
+            let audit = Tables::new(self.schema(), TxnId(0)).audit_relation();
             return self
                 .db
                 .deployment_id(audit, 1)
                 .map_err(|error| self.write_error(TxnId(0), error));
         }
         let seq = store::run(self, false, &mut |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
+            let t = Tables::new(e.schema(), id);
             t.next_seq(e, tx)
         })?;
         self.audit_seeded.store(true, Ordering::Release);
@@ -368,7 +368,7 @@ impl<R: Runtime> BundleWriter<'_, R> {
         store::run(self.engine(), true, &mut |e, _, id, changes| {
             changes.delete(bundles, old.clone());
             changes.insert(bundles, new.clone());
-            Tables::new(&e.schema, id).audit_retire(e, changes, who, bundle)
+            Tables::new(e.schema(), id).audit_retire(e, changes, who, bundle)
         })
     }
 }

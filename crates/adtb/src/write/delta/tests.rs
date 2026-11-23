@@ -11,7 +11,7 @@ constraint grown = from p in prior(events) where not exists n in events where n.
 ",
     );
     let mut terms = f.normal.terms().clone();
-    compile(&f.schema, &f.normal, &mut terms, &f.catalog)
+    compile(f.schema(), &f.normal, &mut terms, &f.catalog)
         .unwrap_or_else(|e| panic!("the constraints are admitted: {e:?}"));
     let kept = f.normal.terms().len();
     assert!(
@@ -68,7 +68,7 @@ relation grants : Grant key id generate sequence{}
 fn admission(src: &str) -> Vec<String> {
     let f = Fixture::new(src);
     let mut terms = f.normal.terms().clone();
-    match compile(&f.schema, &f.normal, &mut terms, &f.catalog) {
+    match compile(f.schema(), &f.normal, &mut terms, &f.catalog) {
         Ok(_) => Vec::new(),
         Err(super::Unadmitted::Refused(rs)) => rs
             .into_iter()

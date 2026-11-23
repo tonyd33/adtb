@@ -22,9 +22,9 @@ use std::fmt;
 use std::path::Path;
 
 use adtb_lang::ast::SchemaFile;
-use adtb_lang::check::{Program, check_adhoc, check_schema};
+use adtb_lang::check::{Compiled, check_adhoc, check_schema};
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
-use adtb_lang::schema::{Committed, build};
+use adtb_lang::schema::build;
 use adtb_lang::span::FileId;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Database, Disk, Interpreter, Rejection, Supply, Value, textual};
@@ -132,8 +132,7 @@ fn unread(u: Unread) -> Difference {
 pub(crate) const FIX_ROUNDS: usize = 200;
 
 struct Run {
-    schema: Committed,
-    program: Program,
+    compiled: Compiled,
     db: Database,
     supply: Supply,
     files: Disk,
@@ -193,10 +192,9 @@ fn schema(body: &str, dir: &Path) -> Result<Run, String> {
         files.push((FileId(i as u32), file));
     }
     let schema = build(&files).map_err(|ds| format!("{ds:?}"))?;
-    let program = check_schema(&schema).map_err(|ds| format!("{ds:?}"))?;
+    let compiled = check_schema(schema).map_err(|ds| format!("{ds:?}"))?;
     Ok(Run {
-        schema,
-        program,
+        compiled,
         db: Database::new(),
         supply: Supply::default(),
         files: Disk::new(dir),
@@ -235,7 +233,7 @@ enum Ended {
 
 impl Run {
     fn show(&self, v: &Value, ty: &Ty) -> String {
-        textual::print(&self.schema, v, ty)
+        textual::print(self.compiled.committed(), v, ty)
             .unwrap_or_else(|e| format!("a value that does not print: {e}"))
     }
 
@@ -323,21 +321,21 @@ impl Run {
                 return Ok((vec![Ended::Refused("Invalid".into(), detail)], 1));
             }
         };
-        let adhoc = match check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new()) {
+        let adhoc = match check_adhoc(&self.compiled, &items, &BTreeMap::new()) {
             Ok(a) => a,
             Err(ds) => {
                 let detail = messages(body, ds.iter().map(|d| (d.span.range().start, &d.message)));
                 return Ok((vec![Ended::Refused("Invalid".into(), detail)], 1));
             }
         };
-        let schema = adhoc.schema(&self.schema);
+        let schema = adhoc.schema(self.compiled.committed());
         let mut out = Vec::new();
         for &item in &adhoc.items {
             let ty = match adhoc.terms.ty(item) {
                 Ty::Change => Ty::Unit,
                 t => t.clone(),
             };
-            let it = Interpreter::new(schema, &self.program, &self.db)
+            let it = Interpreter::new(schema, self.compiled.program(), &self.db)
                 .with_fix_limit(FIX_ROUNDS)
                 .with_files(&self.files);
             match it.run(&adhoc.terms, item, &[], &mut self.supply) {
@@ -358,7 +356,7 @@ impl Run {
                 }
             }
         }
-        let declared = self.schema.relations.len();
+        let declared = self.compiled.committed().relations.len();
         self.db.retain(|(r, _), _| (r.0 as usize) < declared);
         Ok((out, adhoc.items.len()))
     }
@@ -377,7 +375,7 @@ impl Run {
         };
         let mut want = Vec::new();
         for (i, r) in rows.iter().enumerate() {
-            match textual::parse(&self.schema, r, &elem) {
+            match textual::parse(self.compiled.committed(), r, &elem) {
                 Ok(v) => want.push(v),
                 Err(e) => {
                     return Err(differ(

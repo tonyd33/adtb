@@ -52,8 +52,8 @@ impl Step {
         let items = parse_adhoc(&self.source, Options::default())
             .ok()
             .expect("the upsert parses");
-        let mut checked = check_adhoc(&fixture.schema, &fixture.program, &items, &BTreeMap::new())
-            .expect("the upsert checks");
+        let mut checked =
+            check_adhoc(fixture.compiled(), &items, &BTreeMap::new()).expect("the upsert checks");
         let olds: Vec<_> = checked
             .terms
             .iter()
@@ -69,7 +69,7 @@ impl Step {
             panic!("exactly one restricted-old statement")
         };
         let narrowed = checked.terms.var("old", self.old_type);
-        let schema = &fixture.schema;
+        let schema = &fixture.schema();
         let mut upserts = 0;
         let item = checked
             .terms

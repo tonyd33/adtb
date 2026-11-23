@@ -85,9 +85,9 @@ impl Catalog {
         writes: &[Rewrite],
         facts: &[Fact],
     ) -> Result<Position, Error> {
-        let grants = Codec::<RoleGrant>::new(&self.schema);
+        let grants = Codec::<RoleGrant>::new(self.schema());
         for w in writes {
-            let id = rel_id(&self.schema, w.relation);
+            let id = rel_id(self.schema(), w.relation);
             if !DEPLOYED.contains(&id) {
                 return Err(Broken::Undeployed(id).into());
             }

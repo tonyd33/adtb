@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use adtb_lang::check::Program;
+use adtb_lang::check::Compiled;
 use adtb_lang::kernel::{Kind, Search, Terms, Tm, Var};
 use adtb_lang::schema::{Committed as CommittedSchema, Schema};
 use adtb_lang::types::{CtorSet, FnId, RelId, Ty, TypeId};
@@ -48,16 +48,11 @@ impl Reads {
     }
 
     /// Add what the term `root` of `terms`, as written, reads by occurrence, and what the functions
-    /// of `program` it calls read.
+    /// of the program of `compiled` it calls read.
     ///
     /// Preconditions: `root` is not normalised.
-    pub(super) fn add_source(
-        &mut self,
-        schema: &CommittedSchema,
-        program: &Program,
-        terms: &Terms,
-        root: Tm,
-    ) {
+    pub(super) fn add_source(&mut self, compiled: &Compiled, terms: &Terms, root: Tm) {
+        let (schema, program) = (compiled.committed(), compiled.program());
         let mut calls = self.occurrences(schema, terms, root);
         let mut followed = BTreeSet::new();
         while let Some(f) = calls.pop_first() {

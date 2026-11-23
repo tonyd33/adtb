@@ -91,12 +91,13 @@ impl<'a> Indexing<'a> {
         readers: &'a Readers,
     ) -> Result<Indexing<'a>, Error> {
         let mut keys = catalog.keys.clone();
-        let fresh = layout::new_order_keys(&next.schema, &keys);
+        let fresh = layout::new_order_keys(next.schema(), &keys);
         keys.extend(fresh.clone());
-        let (held, program, texts) = readers.checking(next.judged());
+        let (compiled, texts) = readers.checking(next.judged());
+        let held = compiled.committed();
         let pending = &readers.pending[..];
         let specs = pending::kept_indexes(held, texts, pending).map_err(Error::Internal)?;
-        let normal = index_program(held, program, specs.values(), Error::Internal)?;
+        let normal = index_program(compiled, specs.values(), Error::Internal)?;
         let mut keyed = BTreeMap::new();
         for (id, spec) in &specs {
             keyed.insert(
@@ -232,7 +233,7 @@ impl Catalog {
         rows: impl IntoIterator<Item = Vec<Value>>,
     ) -> Result<Admitted, Error> {
         let rows: Vec<Vec<Value>> = rows.into_iter().collect();
-        let cid = ctor_id(&self.schema, r, c);
+        let cid = ctor_id(self.schema(), r, c);
         for row in &rows {
             self.heap(r, c).check_row(row)?;
             for (spec, index, keys) in self.indexes.values() {
@@ -243,13 +244,16 @@ impl Catalog {
                     continue;
                 };
                 if let Err(e) = index.check_key(pager.page_size(), &key, stored(cid)) {
-                    let why = too_long(&self.schema, spec, index.schema(), &key, e)?;
+                    let why = too_long(self.schema(), spec, index.schema(), &key, e)?;
                     return Err(Error::Refused(vec![why]));
                 }
             }
         }
         let ctors = BTreeMap::from([(cid, rows)]);
-        Ok(Admitted(BTreeMap::from([(rel_id(&self.schema, r), ctors)])))
+        Ok(Admitted(BTreeMap::from([(
+            rel_id(self.schema(), r),
+            ctors,
+        )])))
     }
 }
 

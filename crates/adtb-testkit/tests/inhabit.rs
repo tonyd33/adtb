@@ -27,14 +27,14 @@ fn fixture() -> Fixture {
 
 fn holds(f: &Fixture, v: &Value, ty: &str) {
     let t = f.ty(ty);
-    if let Err(m) = inhabits(v, &t, &f.schema) {
+    if let Err(m) = inhabits(v, &t, f.schema()) {
         panic!("{v:?} inhabits `{ty}`: {m}");
     }
 }
 
 fn fails(f: &Fixture, v: &Value, ty: &str) -> Mismatch {
     let t = f.ty(ty);
-    inhabits(v, &t, &f.schema).expect_err(&format!("{v:?} does not inhabit `{ty}`"))
+    inhabits(v, &t, f.schema()).expect_err(&format!("{v:?} does not inhabit `{ty}`"))
 }
 
 fn mismatch(path: &str, value: &Value, ty: &str, why: &str) -> Mismatch {
@@ -170,8 +170,8 @@ fn a_row_type_holds_only_its_constructors() {
         args: vec![],
         ctors: Some(vec![small]),
     };
-    assert_eq!(inhabits(&row, &all, &f.schema), Ok(()));
-    let m = inhabits(&row, &only_small, &f.schema).expect_err("a `Large` is no `Small`");
+    assert_eq!(inhabits(&row, &all, f.schema()), Ok(()));
+    let m = inhabits(&row, &only_small, f.schema()).expect_err("a `Large` is no `Small`");
     assert!(m.why.contains("constructor set"), "{m}");
 }
 
@@ -223,10 +223,10 @@ fn an_anonymous_sum_holds_its_selected_constructors() {
         sel: None,
     };
     let a = ctor(0, vec![("x", int(1))]);
-    assert_eq!(inhabits(&a, &ty, &f.schema), Ok(()));
+    assert_eq!(inhabits(&a, &ty, f.schema()), Ok(()));
     let past = ctor(2, vec![]);
     refused_as(
-        inhabits(&past, &ty, &f.schema),
+        inhabits(&past, &ty, f.schema()),
         &mismatch(
             "",
             &past,
@@ -236,7 +236,7 @@ fn an_anonymous_sum_holds_its_selected_constructors() {
         "Ctor(2, []) is not a `A { x: I64 } | B`: its constructor is not one of the sum's",
     );
     refused_as(
-        inhabits(&ctor(0, vec![("x", text("1"))]), &ty, &f.schema),
+        inhabits(&ctor(0, vec![("x", text("1"))]), &ty, f.schema()),
         &mismatch("#A.x", &text("1"), "I64", "its shape is of another type"),
         "at `#A.x`: Text(\"1\") is not a `I64`: its shape is of another type",
     );
@@ -245,7 +245,7 @@ fn an_anonymous_sum_holds_its_selected_constructors() {
         sel: Some(vec![1]),
     };
     refused_as(
-        inhabits(&a, &only_b, &f.schema),
+        inhabits(&a, &only_b, f.schema()),
         &mismatch(
             "",
             &a,
@@ -255,7 +255,7 @@ fn an_anonymous_sum_holds_its_selected_constructors() {
         "Ctor(0, [(\"x\", Int(1))]) is not a `(A { x: I64 } | B).B`: its constructor is outside \
          the type's constructor set",
     );
-    assert_eq!(inhabits(&ctor(1, vec![]), &only_b, &f.schema), Ok(()));
+    assert_eq!(inhabits(&ctor(1, vec![]), &only_b, f.schema()), Ok(()));
 }
 
 #[test]
@@ -306,11 +306,11 @@ fn a_set_holds_values_of_its_element_type() {
     fails(&f, &Value::List(vec![int(1)]), "Set I8");
     let nonempty = Ty::NonEmpty(Box::new(Ty::Base(Base::I64)));
     refused_as(
-        inhabits(&set([]), &nonempty, &f.schema),
+        inhabits(&set([]), &nonempty, f.schema()),
         &mismatch("", &set([]), "Set I64", "it is empty"),
         "Set({}) is not a `Set I64`: it is empty",
     );
-    assert_eq!(inhabits(&set([int(1)]), &nonempty, &f.schema), Ok(()));
+    assert_eq!(inhabits(&set([int(1)]), &nonempty, f.schema()), Ok(()));
 }
 
 #[test]
@@ -323,9 +323,9 @@ fn a_group_is_its_key_and_its_nonempty_rows() {
     let group = |rows: Vec<Value>| {
         Value::Record(vec![("key".into(), text("k")), ("rows".into(), set(rows))])
     };
-    assert_eq!(inhabits(&group(vec![int(1)]), &ty, &f.schema), Ok(()));
+    assert_eq!(inhabits(&group(vec![int(1)]), &ty, f.schema()), Ok(()));
     refused_as(
-        inhabits(&group(vec![]), &ty, &f.schema),
+        inhabits(&group(vec![]), &ty, f.schema()),
         &mismatch(
             "",
             &group(vec![]),
@@ -336,7 +336,7 @@ fn a_group_is_its_key_and_its_nonempty_rows() {
          group's rows are empty",
     );
     refused_as(
-        inhabits(&group(vec![text("1")]), &ty, &f.schema),
+        inhabits(&group(vec![text("1")]), &ty, f.schema()),
         &mismatch(
             ".rows[0]",
             &text("1"),
@@ -351,7 +351,7 @@ fn a_group_is_its_key_and_its_nonempty_rows() {
 fn parameters_and_change_sets_have_no_values() {
     let f = fixture();
     refused_as(
-        inhabits(&int(1), &Ty::Param(0), &f.schema),
+        inhabits(&int(1), &Ty::Param(0), f.schema()),
         &mismatch(
             "",
             &int(1),
@@ -361,7 +361,7 @@ fn parameters_and_change_sets_have_no_values() {
         "Int(1) is not a `t0`: a type parameter has no values of its own",
     );
     refused_as(
-        inhabits(&Value::unit(), &Ty::Change, &f.schema),
+        inhabits(&Value::unit(), &Ty::Change, f.schema()),
         &mismatch("", &Value::unit(), "a write", "a change set is not a value"),
         "Record([]) is not a `a write`: a change set is not a value",
     );
@@ -370,7 +370,7 @@ fn parameters_and_change_sets_have_no_values() {
 #[test]
 fn a_result_ordered_by_order_by_is_a_list_of_distinct_elements() {
     let f = fixture();
-    let judge = Judge::new(&f.schema);
+    let judge = Judge::new(f.schema());
     let ty = f.ty("Set I64");
     assert_eq!(
         judge.result(&Value::List(vec![int(2), int(1)]), &ty),
@@ -398,7 +398,7 @@ fn a_result_ordered_by_order_by_is_a_list_of_distinct_elements() {
 #[test]
 fn a_key_of_a_constructor_set_names_a_row_of_that_set() {
     let f = fixture();
-    let judge = Judge::over(&f.schema, &f.program, &f.db);
+    let judge = Judge::over(f.schema(), f.program(), &f.db);
     let small = f.ty("Key tags.Small");
     let large_key = f.one("from t in tags.Large select key t");
     let small_key = f.one("from t in tags.Small select key t");
@@ -419,13 +419,13 @@ fn a_key_of_a_constructor_set_names_a_row_of_that_set() {
          database",
     );
     assert_eq!(judge.value(&key(99), &f.ty("Key tags")), Ok(()));
-    assert_eq!(inhabits(&large_key, &small, &f.schema), Ok(()));
+    assert_eq!(inhabits(&large_key, &small, f.schema()), Ok(()));
 }
 
 #[test]
 fn a_stored_row_references_rows_that_exist() {
     let f = fixture();
-    let judge = Judge::over(&f.schema, &f.program, &f.db);
+    let judge = Judge::over(f.schema(), f.program(), &f.db);
     let tags = f.rel("tags");
     let (_, small) = f.ctor("Tagged", "Small");
     let good = ctor(0, vec![("id", key(1)), ("item", key(1)), ("size", int(3))]);
@@ -440,7 +440,7 @@ fn a_stored_row_references_rows_that_exist() {
 #[test]
 fn a_stored_row_holds_newtype_values_within_their_domain() {
     let f = fixture();
-    let judge = Judge::over(&f.schema, &f.program, &f.db);
+    let judge = Judge::over(f.schema(), f.program(), &f.db);
     let items = f.rel("items");
     let row = |n: i64| {
         ctor(

@@ -41,8 +41,7 @@ fn a_call_dropped_holding_its_read_leaves_nothing_of_its_transaction() {
     let e = db.engine.clone();
     let caller = e.principal(None).expect("principal");
     let items = Prepared::parsed("from u in users select u").expect("parses");
-    let p = Prepared::of_items(&e.schema, &e.program, &e.explained(), &items, &[], caller)
-        .expect("checks");
+    let p = Prepared::of_items(&e.compiled, &e.explained(), &items, &[], caller).expect("checks");
     let shared = Arc::new(Shared {
         rt: e.rt.clone(),
         state: Lock::new(State::default()),
@@ -109,8 +108,8 @@ fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
         let caller = e.principal(None).expect("principal");
         let text = format!("{RENAME}\nfail \"no\"");
         let items = Prepared::parsed(&text).expect("parses");
-        let p = Prepared::of_items(&e.schema, &e.program, &e.explained(), &items, &[], caller)
-            .expect("checks");
+        let p =
+            Prepared::of_items(&e.compiled, &e.explained(), &items, &[], caller).expect("checks");
         let shared = Arc::new(Shared {
             rt: e.rt.clone(),
             state: Lock::new(State::default()),

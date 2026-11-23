@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::analysis::Totality;
 use crate::capability::{self, RootKind};
 use crate::check::prim_ty::Bounds;
-use crate::check::{Adhoc, AdhocCommand, Program, Query, Txn};
+use crate::check::{Adhoc, AdhocCommand, AsCommitted, AsSchema, Compiled, Program, Query, Txn};
 use crate::kernel::{Agg, Build, Frees, Invalid, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
@@ -146,7 +146,11 @@ fn at<T>(root: Root, r: Result<T, Cause>) -> Result<T, Error> {
 }
 
 /// Normalise every body of a checked schema.
-pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
+pub fn program(c: &Compiled<impl AsSchema>) -> Result<NormalProgram, Error> {
+    program_of(c.schema(), c.program())
+}
+
+pub(crate) fn program_of(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
     let program = NormalProgram::normalised(schema, p)?;
     within_run_bound(
         program.terms(),
@@ -161,7 +165,11 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
 }
 
 /// Normalise checked ad hoc text, inlining the functions of `p`.
-pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Error> {
+pub fn adhoc(c: &Compiled<impl AsCommitted>, a: &Adhoc) -> Result<NormalAdhoc, Error> {
+    adhoc_of(a.schema(c.committed()), c.program(), a)
+}
+
+pub(crate) fn adhoc_of(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Error> {
     let mut n = Normaliser::new(schema, [&a.terms, &p.terms], p);
     n.text = a.kind();
     let params = a
@@ -202,31 +210,30 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
 }
 
 /// Normalise a checked registered query, inlining the functions of `p`.
-pub fn query(schema: &Schema, p: &Program, q: &Query) -> Result<NormalQuery, Error> {
-    query_as(schema, p, q, RootKind::Query)
+pub fn query(c: &Compiled<impl AsSchema>, q: &Query) -> Result<NormalQuery, Error> {
+    query_as(c, q, RootKind::Query)
 }
 
 /// Normalise a checked registered query as [`query`] does, as a root of `kind`.
 pub fn query_as(
-    schema: &Schema,
-    p: &Program,
+    c: &Compiled<impl AsSchema>,
     q: &Query,
     kind: RootKind,
 ) -> Result<NormalQuery, Error> {
-    registered(schema, p, &q.terms, q.term, kind)
+    registered(c.schema(), c.program(), &q.terms, q.term, kind)
 }
 
 /// Normalise a checked registered transaction, inlining the functions of `p`.
-pub fn txn(schema: &Schema, p: &Program, t: &Txn) -> Result<NormalQuery, Error> {
-    txn_as(schema, p, t, RootKind::Query)
+pub fn txn(c: &Compiled<impl AsSchema>, t: &Txn) -> Result<NormalQuery, Error> {
+    txn_as(c, t, RootKind::Query)
 }
 
 /// Normalise a checked registered transaction as [`txn`] does, as a root of `kind`.
-pub fn txn_as(schema: &Schema, p: &Program, t: &Txn, kind: RootKind) -> Result<NormalQuery, Error> {
-    registered(schema, p, &t.terms, t.term, kind)
+pub fn txn_as(c: &Compiled<impl AsSchema>, t: &Txn, kind: RootKind) -> Result<NormalQuery, Error> {
+    registered(c.schema(), c.program(), &t.terms, t.term, kind)
 }
 
-fn registered(
+pub(crate) fn registered(
     schema: &Schema,
     p: &Program,
     terms: &Terms,

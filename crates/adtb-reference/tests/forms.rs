@@ -582,8 +582,7 @@ fn an_unbounded_fix_reaches_the_statement_limit() {
     let items = adtb_lang::parse::parse_adhoc(text, adtb_lang::parse::Options::default())
         .ok()
         .unwrap();
-    let adhoc =
-        adtb_lang::check::check_adhoc(&f.schema, &f.program, &items, &Default::default()).unwrap();
+    let adhoc = adtb_lang::check::check_adhoc(f.compiled(), &items, &Default::default()).unwrap();
     let got = f
         .interp()
         .with_fix_limit(50)
@@ -593,33 +592,33 @@ fn an_unbounded_fix_reaches_the_statement_limit() {
 
 fn constraint(f: &Fixture, name: &str) -> Tm {
     let (c, _) = f
-        .schema
+        .schema()
         .constraint_defs()
         .find(|(_, d)| d.name == name)
         .expect("the constraint is declared");
-    f.program.constraint(c).expect("the constraint checks")
+    f.program().constraint(c).expect("the constraint checks")
 }
 
 fn check(f: &Fixture, name: &str) -> Tm {
     let (c, _) = f
-        .schema
+        .schema()
         .check_defs()
         .find(|(_, d)| d.name == name)
         .expect("the check is declared");
-    f.program.check(c).expect("the check checks")
+    f.program().check(c).expect("the check checks")
 }
 
 #[test]
 fn a_constraint_returns_its_violations() {
     let f = fixture();
     let c = constraint(&f, "no_empty_names");
-    let got = f.interp().eval(&f.program.terms, c, &[]).unwrap();
+    let got = f.interp().eval(&f.program().terms, c, &[]).unwrap();
     assert_eq!(
         set([f.one(r#"from u in users where u.name == "" select u"#)]),
         got
     );
     let check = check(&f, "positive");
-    let got = f.interp().eval(&f.program.terms, check, &[]).unwrap();
+    let got = f.interp().eval(&f.program().terms, check, &[]).unwrap();
     assert_eq!(
         2,
         got.as_set().unwrap().len(),
@@ -633,7 +632,7 @@ fn a_transition_constraint_reads_the_change() {
     let c = constraint(&f, "new_users");
     assert_eq!(
         Ok(set([])),
-        f.interp().eval(&f.program.terms, c, &[]),
+        f.interp().eval(&f.program().terms, c, &[]),
         "nothing is inserted on the empty change"
     );
     let users = f.rel("users");
@@ -649,7 +648,7 @@ fn a_transition_constraint_reads_the_change() {
         Ok(set([ann])),
         f.interp()
             .with_change(&change)
-            .eval(&f.program.terms, c, &[])
+            .eval(&f.program().terms, c, &[])
     );
 }
 
@@ -659,8 +658,7 @@ fn caller_is_the_given_principal() {
     let items = adtb_lang::parse::parse_adhoc("caller", adtb_lang::parse::Options::default())
         .ok()
         .unwrap();
-    let adhoc =
-        adtb_lang::check::check_adhoc(&f.schema, &f.program, &items, &Default::default()).unwrap();
+    let adhoc = adtb_lang::check::check_adhoc(f.compiled(), &items, &Default::default()).unwrap();
     let anon = Value::Ctor(2, Vec::new());
     assert_eq!(
         Ok(anon.clone()),

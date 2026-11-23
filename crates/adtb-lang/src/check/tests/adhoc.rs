@@ -452,14 +452,14 @@ fn past_the_limits(what: &str, text: &str) {
 fn normalises(what: &str, text: &str) {
     let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{what} does not check: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
-    crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{what} has no normal form: {e:?}"));
+    crate::norm::adhoc(&p, &a).unwrap_or_else(|e| panic!("{what} has no normal form: {e:?}"));
 }
 
 /// Returns the schema and the normal form of ad hoc `text`, asserting the normal form valid.
 fn valid_normal_form(text: &str) -> (Committed, crate::norm::NormalAdhoc) {
     let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{text} does not check: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
-    let n = crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+    let n = crate::norm::adhoc(&p, &a).unwrap_or_else(|e| panic!("{text}: {e:?}"));
     let got = crate::kernel::validate_normal(&s, n.terms(), &n.roots())
         .map_err(|e| e.reason().to_string());
     assert_eq!(Ok(()), got, "{text}");
@@ -770,8 +770,8 @@ fn checked_and_normal(text: &str) -> (Adhoc, crate::norm::NormalAdhoc) {
     let (s, a) = adhoc(&[("n", "I64"), ("m", "I64")], text)
         .unwrap_or_else(|e| panic!("{text}\ndoes not check: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
-    let n = crate::norm::adhoc(&s, &p, &a)
-        .unwrap_or_else(|e| panic!("{text}\nhas no normal form: {e:?}"));
+    let n =
+        crate::norm::adhoc(&p, &a).unwrap_or_else(|e| panic!("{text}\nhas no normal form: {e:?}"));
     (a, n)
 }
 
@@ -1341,7 +1341,7 @@ explain web-2.4::login_key(u)",
     )
     .expect("checks");
     let program = check_schema(&s).expect("the schema checks");
-    let n = crate::norm::adhoc(&s, &program, &a).expect("normalises");
+    let n = crate::norm::adhoc(&program, &a).expect("normalises");
     assert_eq!(1, n.items().len());
     assert_eq!(2, n.commands().len());
     for (c, d) in a.commands.iter().zip(n.commands()) {

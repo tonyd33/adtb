@@ -13,7 +13,7 @@ pub type OpSteps = Result<Vec<Step>, Vec<Diag>>;
 
 /// The source a migration leaves, its schema and checked program, and the migration as
 /// [`Recorded`].
-pub type Migrated = (Source, (Schema, Program), Recorded);
+pub type Migrated = (Source, Compiled<Schema>, Recorded);
 
 impl Recorded {
     /// Returns the steps of each operator in order, each taken from the source the operators

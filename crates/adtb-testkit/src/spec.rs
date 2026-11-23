@@ -8,11 +8,11 @@ use adtb_lang::ast::{
     AdhocItem, BundleItem, Decl, ExampleItem, FeedDecl, Import, MigrationFile, Operator,
     OperatorKind, QueryDecl, TxnDecl,
 };
-use adtb_lang::check::{Bundles, Checker, Program, check_feed};
+use adtb_lang::check::{Bundles, Checker, Compiled, check_feed};
 use adtb_lang::evolve::{Failed, Source, SourceDecl};
 use adtb_lang::parse::{Options, parse_example, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::{Committed, Schema};
+use adtb_lang::schema::Schema;
 use adtb_lang::span::{FileDiag, Span};
 use adtb_lang::types::{ModuleId, Ty};
 
@@ -297,8 +297,7 @@ pub fn registered_queries(blocks: &[Block]) -> Vec<Registered> {
 /// bundle reads, and the queries, transactions and ad hoc items it holds.
 #[derive(Debug)]
 pub struct Prepared {
-    pub schema: Committed,
-    pub program: Program,
+    pub compiled: Compiled,
     pub module: ModuleId,
     pub queries: Vec<QueryDecl>,
     pub txns: Vec<TxnDecl>,
@@ -406,19 +405,20 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
             }
         }
     }
-    let (schema, program) = match src.check() {
-        Ok((s, p)) => (Committed::new(s).expect("an applied migration settles"), p),
+    let compiled = match src.check() {
+        Ok(c) => c.commit().expect("an applied migration settles"),
         Err(ds) => {
             errs.extend(ds.iter().map(|d| render_in(&src, &entries, Some(b), d)));
             return Err(errs);
         }
     };
     let reads = reads.unwrap_or_else(|| "auth".to_string());
-    let module = schema
+    let module = compiled
+        .committed()
         .module_named(&reads)
         .expect("the bundle reads a module");
     for f in &feeds {
-        if let Err(d) = check_feed(&schema, module, f) {
+        if let Err(d) = check_feed(compiled.schema(), module, f) {
             errs.push(at(b, d.span, &d.message));
         }
     }
@@ -426,8 +426,7 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
         return Err(errs);
     }
     Ok(Prepared {
-        schema,
-        program,
+        compiled,
         module,
         queries,
         txns,

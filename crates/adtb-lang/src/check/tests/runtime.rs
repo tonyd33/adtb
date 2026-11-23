@@ -193,8 +193,8 @@ fn schema_outcome(text: &str, fields: &mut BTreeMap<String, String>) -> Outcome 
         }
     };
     let errors = match result {
-        Ok((s, p)) => {
-            schema_probes(&s, &p, fields);
+        Ok(c) => {
+            schema_probes(c.committed(), c.program(), fields);
             None
         }
         Err(errors) => Some(errors),

@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
-use adtb_lang::check::Program;
+use adtb_lang::check::Compiled;
 use adtb_lang::evolve::{Kept, Source};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{Committed, Schema, Stage, ValueDef};
+use adtb_lang::schema::{Schema, Stage, ValueDef};
 use adtb_lang::span::Diag;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -404,7 +404,7 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
         Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
     })
     .map_err(|e| unaccepted_at(version, e))?;
-    keeps_ids(&enforced.schema, pending).map_err(|e| unaccepted_at(version, e))?;
+    keeps_ids(enforced.schema(), pending).map_err(|e| unaccepted_at(version, e))?;
     Ok(Some(enforced))
 }
 
@@ -454,7 +454,7 @@ fn keeps_ids(schema: &Schema, pending: &[Pending]) -> Result<(), Error> {
 }
 
 /// A schema with its checked program and the texts of its index elements.
-pub(super) type Judged<'a> = (&'a Committed, &'a Arc<Program>, &'a ElementTexts);
+pub(super) type Judged<'a> = (&'a Compiled, &'a ElementTexts);
 
 /// The live readers of a catalog, the drops they hold back, and the schema that keeps every
 /// held object.
@@ -490,7 +490,7 @@ impl Readers {
     /// Returns what rows are judged against at `version`: `version`, or, while a drop is
     /// pending, the version that keeps every pending-dropped object.
     pub(super) fn checking<'a>(&'a self, version: Judged<'a>) -> Judged<'a> {
-        (self.enforced.as_deref()).map_or(version, |e| (&e.schema, &e.program, &e.texts))
+        (self.enforced.as_deref()).map_or(version, |e| (&e.compiled, &e.texts))
     }
 
     /// Returns the source of what [`Readers::checking`] returns at `source`.
@@ -558,8 +558,8 @@ impl Catalog {
         next: &Checked,
         stepped: &Stepped,
     ) -> Result<Readers, Error> {
-        let changes = changes(&self.source, &self.schema, stepped)?;
-        let now = &next.schema;
+        let changes = changes(&self.source, self.schema(), stepped)?;
+        let now = &next.schema();
         let mut refused = Vec::new();
         for &(rid, cid) in &changes.enabled {
             if let Some((r, c)) = ctor_of(now, rid, cid) {
@@ -626,14 +626,14 @@ impl Catalog {
             Error::Refused(ds.iter().map(|d| no_image(&d.message)).collect())
         })?;
         if !enforced
-            .schema
+            .schema()
             .ids()
             .relation_ids()
             .eq(now.ids().relation_ids())
         {
             return Err(Error::from(Broken::PendingRelations));
         }
-        keeps_ids(&enforced.schema, &readers.pending)?;
+        keeps_ids(enforced.schema(), &readers.pending)?;
         readers.enforced = Some(Arc::new(enforced));
         Ok(readers)
     }
@@ -736,7 +736,7 @@ impl Catalog {
     fn uniques_held(&self, next: &Schema, dropped: &[DroppedUnique]) -> Vec<String> {
         let kept = unique_ids(next);
         let mut why = Vec::new();
-        for (id, (r, clause)) in uniques(&self.schema, &self.texts) {
+        for (id, (r, clause)) in uniques(self.schema(), &self.texts) {
             if kept.contains(&id) || dropped.iter().any(|u| u.id == id) {
                 continue;
             }
@@ -750,7 +750,7 @@ impl Catalog {
                     "the drop of `{clause}` in {} is refused: bundle {bundle}, pinned at version {}, \
                      relies on it, and only a `drop unique` holds a unique pending; it applies \
                      once the bundle is released",
-                    self.schema.relation(r).name,
+                    self.schema().relation(r).name,
                     p.version
                 ));
             }
@@ -761,14 +761,14 @@ impl Catalog {
     /// Returns the pending drop of the old key of each relaxing rekey from this catalog to
     /// `applying` that a live reader holds, its index allocated beside those of `pending`.
     fn relaxed_keys(&self, applying: &Checked, pending: &[Pending]) -> Vec<Pending> {
-        let next = &applying.schema;
+        let next = &applying.schema();
         let mut out: Vec<Pending> = Vec::new();
-        for (r, id) in self.schema.ids().relation_ids() {
+        for (r, id) in self.schema().ids().relation_ids() {
             let Some(after) = relation(next, id) else {
                 continue;
             };
-            let rel = self.schema.relation(r);
-            let Some(old) = super::pending::key_fields(&self.schema, r, &rel.key) else {
+            let rel = self.schema().relation(r);
+            let Some(old) = super::pending::key_fields(self.schema(), r, &rel.key) else {
                 continue;
             };
             let new = super::pending::key_fields(next, after, &next.relation(after).key);
@@ -786,9 +786,9 @@ impl Catalog {
                 continue;
             }
             let index = super::pending::held_key_index(&[pending, &out].concat());
-            let spec = super::IndexSpec::key(&self.schema, r, index.raw(), rel.key.clone());
+            let spec = super::IndexSpec::key(self.schema(), r, index.raw(), rel.key.clone());
             let named = (
-                self.schema.module(rel.module).name.clone(),
+                self.schema().module(rel.module).name.clone(),
                 format!("{} {}", rel.name, spec.clause),
             );
             let kind = Kind::Key {
@@ -1024,9 +1024,9 @@ pub(super) fn checked(
     source: Source,
     refused: impl FnOnce(Vec<Diag>) -> Error,
 ) -> Result<Checked, Error> {
-    let (schema, program) = source.check().map_err(|ds| {
+    let compiled = source.check().map_err(|ds| {
         super::past_limits(ds.iter().map(|d| &d.diag))
             .unwrap_or_else(|| refused(ds.into_iter().map(|d| d.diag).collect()))
     })?;
-    Checked::new(source, schema, program)
+    Checked::new(source, compiled)
 }

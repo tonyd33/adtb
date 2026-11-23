@@ -2,9 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use adtb_lang::ast::ExampleItem;
-use adtb_lang::check::{Program, check_adhoc_recording, check_query, check_schema, check_txn};
+use adtb_lang::check::{Compiled, check_adhoc_recording, check_query, check_schema, check_txn};
 use adtb_lang::parse::{Options, parse_example, parse_schema};
-use adtb_lang::schema::{Committed, build};
+use adtb_lang::schema::build;
 use adtb_lang::span::{FileDiag, FileId};
 use adtb_testkit::profile::assert_reached;
 use adtb_testkit::running::{self, Entry, decl_key, decl_span};
@@ -349,13 +349,12 @@ impl Files {
     }
 }
 
-fn schema_of(entries: &[Entry]) -> Result<(Committed, Program), Vec<String>> {
+fn schema_of(entries: &[Entry]) -> Result<Compiled, Vec<String>> {
     let fs = files(entries)?;
     let render =
         |ds: Vec<FileDiag>| -> Vec<String> { ds.iter().map(|d| fs.render(entries, d)).collect() };
     let schema = build(&fs.files).map_err(render)?;
-    let program = check_schema(&schema).map_err(render)?;
-    Ok((schema, program))
+    check_schema(schema).map_err(render)
 }
 
 /// Type checks block `b` against the running schema `part`.
@@ -366,8 +365,7 @@ fn check_block(
     registered: &[Registered],
 ) -> Result<(), Vec<String>> {
     let Prepared {
-        schema,
-        program,
+        compiled: program,
         module,
         queries,
         txns,
@@ -375,21 +373,21 @@ fn check_block(
     } = prepare(b, part, prelude)?;
     let mut errs = Vec::new();
     for q in &queries {
-        if let Err(d) = check_query(&schema, &program, module, q) {
+        if let Err(d) = check_query(&program, module, q) {
             errs.push(at(b, d.span, &d.message));
         }
     }
     for t in &txns {
-        if let Err(d) = check_txn(&schema, &program, module, t) {
+        if let Err(d) = check_txn(&program, module, t) {
             errs.push(at(b, d.span, &d.message));
         }
     }
-    let (params, mut unresolved) = given_types(b, &schema);
+    let (params, mut unresolved) = given_types(b, program.schema());
     errs.append(&mut unresolved);
-    let (bundles, mut unresolved) = bundles(&schema, registered);
+    let (bundles, mut unresolved) = bundles(program.schema(), registered);
     errs.append(&mut unresolved);
     if !adhoc.is_empty()
-        && let Err(ds) = check_adhoc_recording(&schema, &program, &adhoc, &params, &bundles, None)
+        && let Err(ds) = check_adhoc_recording(&program, &adhoc, &params, &bundles, None)
     {
         errs.extend(ds.iter().map(|d| at(b, d.span, &d.message)));
     }

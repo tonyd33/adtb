@@ -208,7 +208,8 @@ type Declared = BTreeMap<usize, BTreeMap<(usize, usize), BTreeSet<(Space, u64)>>
 /// Returns the declaring name of each type, constructor, field, relation and named set of `s`,
 /// each the first token spelling its name within the span of its declaration.
 fn declared(s: &Source) -> Result<Declared, String> {
-    let (schema, _) = s.check().map_err(|e| format!("{e:?}"))?;
+    let compiled = s.check().map_err(|e| format!("{e:?}"))?;
+    let schema = compiled.schema();
     let ids = schema.ids();
     let mut sites: Vec<(FileId, adtb_lang::span::Span, String, (Space, u64))> = Vec::new();
     for (t, id) in ids.type_ids() {
@@ -511,12 +512,13 @@ fn search(
         Ok(w) => w,
         Err(e) => return failed(0, &[], "", e),
     };
-    let Ok((schema, _)) = walk.source.check() else {
+    let Ok(compiled) = walk.source.check() else {
         return failed(0, &walk.log, "", "the schema does not check".into());
     };
-    let mut extra = vec![witnesses(&schema)];
+    let schema = compiled.schema();
+    let mut extra = vec![witnesses(schema)];
     if SEARCH_RENAME_IN_TWIN_MODULE {
-        extra.push(twins(&schema));
+        extra.push(twins(schema));
     }
     for text in extra {
         match walk.apply(&text) {
@@ -561,10 +563,11 @@ fn search(
                 Err(_) => break,
             };
             if renames {
-                let Ok((schema, _)) = before.check() else {
+                let Ok(compiled) = before.check() else {
                     break;
                 };
-                let Some(t) = target(&schema, o.text()) else {
+                let schema = compiled.schema();
+                let Some(t) = target(schema, o.text()) else {
                     return failed(k, &walk.log, &text, format!("`{}` names nothing", o.text()));
                 };
                 let wrong = misrewritten(&before, &after, &t, &mut seen);

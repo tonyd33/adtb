@@ -282,7 +282,7 @@ type Outside<'f> = &'f dyn Fn(&Committed, &Program) -> Result<(), Vec<String>>;
 
 /// Returns the messages checking `kind`'s text `body`, with `decl` declared in the schema, gives.
 fn outcome(kind: RootKind, decl: &str, body: &str) -> Vec<String> {
-    let outside = |f: Outside| program(decl).and_then(|(s, p)| f(&s, &p));
+    let outside = |f: Outside| program(decl).and_then(|c| f(c.committed(), c.program()));
     let r = match kind {
         RootKind::Query => outside(&|_, _| query(decl, body).map_err(|e| vec![e])),
         RootKind::Adhoc => outside(&|_, _| adhoc_over(decl, body).map(drop)),
@@ -370,8 +370,8 @@ fn normal_derefs(text: &str) -> Vec<bool> {
     let s = schema("").expect("the running schema builds");
     let p = check_schema(&s).expect("the schema checks");
     let items = parse_adhoc(text, Options::default()).ok().expect("parsed");
-    let a = check_adhoc(&s, &p, &items, &BTreeMap::new()).expect("checks");
-    let n = crate::norm::adhoc(&s, &p, &a).expect("normalises");
+    let a = check_adhoc(&p, &items, &BTreeMap::new()).expect("checks");
+    let n = crate::norm::adhoc(&p, &a).expect("normalises");
     deref_flags(n.terms(), n.items()[0])
 }
 

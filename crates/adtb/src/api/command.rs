@@ -4,7 +4,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
-use adtb_lang::check::{Command, Explained, Program};
+use adtb_lang::check::{Command, Compiled, Explained};
 use adtb_lang::ids::{CatConstraintId, engine_rel};
 use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
@@ -319,12 +319,8 @@ pub(super) fn word(c: &Command) -> &'static str {
 /// Returns the positions among `rel`'s indexes of those `reindex` rebuilds: every one when
 /// `index` is `None`, else every one declared with the same fields over the same constructor
 /// set as the one at `index`.
-pub(super) fn reindexed(
-    schema: &Schema,
-    program: &Program,
-    rel: RelId,
-    index: Option<usize>,
-) -> Vec<usize> {
+pub(super) fn reindexed(compiled: &Compiled, rel: RelId, index: Option<usize>) -> Vec<usize> {
+    let (schema, program) = (compiled.committed(), compiled.program());
     let r = schema.relation(rel);
     let Some(i) = index else {
         return (0..r.indexes.len()).collect();
@@ -411,7 +407,7 @@ impl<R: Runtime> Engine<R> {
                 index,
                 online,
             } => {
-                let at = index.map(|_| reindexed(schema, &self.program, *relation, *index));
+                let at = index.map(|_| reindexed(&p.compiled, *relation, *index));
                 self.reindex_job(schema, *relation, at.as_deref(), *online)
             }
             Command::SetSetting { setting, value } => {
@@ -901,22 +897,22 @@ relation identities : Identity key id generate sequence
     fn a_clause_two_declared_indexes_match_rebuilds_both() {
         let f = Fixture::new(SCHEMA);
         let r = f.rel("identities");
-        assert_eq!(vec![0, 1], reindexed(&f.schema, &f.program, r, Some(0)));
-        assert_eq!(vec![0, 1], reindexed(&f.schema, &f.program, r, Some(1)));
+        assert_eq!(vec![0, 1], reindexed(f.compiled(), r, Some(0)));
+        assert_eq!(vec![0, 1], reindexed(f.compiled(), r, Some(1)));
     }
 
     #[test]
     fn a_clause_over_another_constructor_set_or_other_fields_rebuilds_its_index_alone() {
         let f = Fixture::new(SCHEMA);
         let r = f.rel("identities");
-        assert_eq!(vec![2], reindexed(&f.schema, &f.program, r, Some(2)));
-        assert_eq!(vec![3], reindexed(&f.schema, &f.program, r, Some(3)));
+        assert_eq!(vec![2], reindexed(f.compiled(), r, Some(2)));
+        assert_eq!(vec![3], reindexed(f.compiled(), r, Some(3)));
     }
 
     #[test]
     fn reindex_of_a_relation_rebuilds_every_index() {
         let f = Fixture::new(SCHEMA);
         let r = f.rel("identities");
-        assert_eq!(vec![0, 1, 2, 3], reindexed(&f.schema, &f.program, r, None));
+        assert_eq!(vec![0, 1, 2, 3], reindexed(f.compiled(), r, None));
     }
 }
