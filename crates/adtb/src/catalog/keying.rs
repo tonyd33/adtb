@@ -10,8 +10,7 @@ use crate::exec::{self, Conv, Val, conv, from_stored_row, to_key};
 use crate::key::{KeySchema, KeyType, Value};
 use crate::plan::Element;
 
-use super::Rot;
-use super::hosts::unbound;
+use super::hosts::classify;
 use super::layout;
 use super::rows::{IndexSpec, Step, at_path, path_steps};
 use super::{Broken, Error};
@@ -221,18 +220,6 @@ fn fields_read(terms: &Terms, t: Tm, x: Var) -> Option<BTreeSet<String>> {
     Some(out)
 }
 
-/// Returns `e`, a failure of the executor on a guarantee of the checker or of a stored row, or a
-/// call of a host function with no body bound, as the catalog's.
-pub(super) fn broken(e: exec::Error) -> Error {
-    if let Some(e) = unbound(&e) {
-        return e;
-    }
-    match e {
-        exec::Error::Corrupt(r) => Rot::Exec(r).into(),
-        other => Error::from(Broken::IndexKey(other)),
-    }
-}
-
 /// Returns the keying of index `spec` of `schema`, whose normal program is `normal`, its
 /// expression elements calling the host function bodies of `hosts`.
 ///
@@ -245,13 +232,7 @@ pub(super) fn index_keys(
     hosts: &Arc<exec::Hosts>,
 ) -> Result<Arc<IndexKeys>, Error> {
     let mut keys = IndexKeys::new(schema, normal, spec.relation, &spec.ctors, &spec.elements)
-        .map_err(|e| match e {
-            exec::Error::Unsupported(why) => Error::Refused(vec![format!(
-                "index `{}` is not admitted: {why}",
-                spec.clause
-            )]),
-            e => broken(e),
-        })?;
+        .map_err(|e| classify(&format!("index `{}`", spec.clause), e, Broken::IndexKey))?;
     keys.set_hosts(hosts);
     Ok(Arc::new(keys))
 }
@@ -272,7 +253,7 @@ pub(super) fn row_key(
             "an index expression faults with {} on a row",
             f.name()
         )]),
-        other => broken(other),
+        other => classify("an index key", other, Broken::IndexKey),
     })
 }
 

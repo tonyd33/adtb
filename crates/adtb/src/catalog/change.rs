@@ -166,8 +166,9 @@ pub enum Failed {
     Refused(String),
     /// A guarantee of the checker or the executor does not hold; the one named.
     Internal(Box<Broken>),
-    /// A call reached a host function with no body bound at the version its declaration names.
-    Unbound(Error),
+    /// The map met damage, a page failure, or a call of a host function with no body bound at the
+    /// version its declaration names.
+    Aborted(Error),
 }
 
 /// Map `data` from schema `a` to schema `b`, the schemas before and after one operator.
@@ -209,7 +210,7 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
                             Vec::new()
                         }
                         Err(Failed::Internal(e)) => return Err(Error::Internal(e)),
-                        Err(Failed::Unbound(e)) => return Err(e),
+                        Err(Failed::Aborted(e)) => return Err(e),
                     }
                 }
                 None => moved.routed.remove(&(rid, cid)).unwrap_or_default(),

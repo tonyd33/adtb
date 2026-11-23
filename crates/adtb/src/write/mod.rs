@@ -76,6 +76,7 @@ pub use adtb_lang::schema::Stage;
 
 pub use adtb_store::panic_text;
 pub use broken::{Broken, TermKind, detail};
+pub use check::refusals;
 pub use delta::{CheckPlan, Part};
 pub use eval::{Violated, Violator};
 pub use input::Local;
@@ -281,27 +282,6 @@ impl From<crate::catalog::Error> for Error {
 impl From<exec::Error> for Error {
     fn from(e: exec::Error) -> Error {
         Error::Exec(e)
-    }
-}
-
-/// Returns each constraint and check of `schema` without an index-bounded incremental check
-/// over the indexes `catalog` describes, by qualified name, with why; empty when the schema
-/// admits every one.
-///
-/// Errors:
-/// - The guarantee of the checker that compiling a check breaks.
-pub fn refusals(
-    schema: &Committed,
-    normal: &NormalProgram,
-    catalog: &Catalog,
-) -> Result<Vec<(String, String)>, Broken> {
-    let mut terms = normal.terms().clone();
-    match delta::compile(schema, normal, &mut terms, catalog) {
-        Ok(_) => Ok(Vec::new()),
-        Err(delta::Unadmitted::Refused(why)) => {
-            Ok(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
-        }
-        Err(delta::Unadmitted::Internal(b)) => Err(b),
     }
 }
 

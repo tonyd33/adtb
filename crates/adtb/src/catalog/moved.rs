@@ -13,7 +13,7 @@ use crate::heap::FieldType;
 use crate::key::Value;
 
 use super::change::{Data, Failed, Field, Fill, Moved, Route, convert, fields};
-use super::hosts::unbound;
+use super::hosts::classify;
 use super::ids::{
     CatCtorId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation, type_ctor_id,
     type_ctor_index, type_def, type_id,
@@ -68,7 +68,7 @@ pub fn moved(
             Ok(()) => {}
             Err(Failed::Refused(e)) => why.push(e),
             Err(Failed::Internal(e)) => return Err(Error::Internal(e)),
-            Err(Failed::Unbound(e)) => return Err(e),
+            Err(Failed::Aborted(e)) => return Err(e),
         }
     }
     if why.is_empty() {
@@ -139,14 +139,14 @@ fn compiled(f: &RowFn, hosts: &Arc<exec::Hosts>) -> Result<Scalar, Failed> {
 }
 
 fn shown(e: exec::Error) -> Failed {
-    if let Some(e) = unbound(&e) {
-        return Failed::Unbound(e);
-    }
     match e {
         exec::Error::Fault(f) => Failed::Refused(format!("the map faults with {}", f.name())),
         exec::Error::Rejected(why) => Failed::Refused(format!("the map rejects: {why}")),
-        exec::Error::Unsupported(why) => Failed::Refused(format!("the map is not admitted: {why}")),
-        other => Failed::from(Broken::Map(other)),
+        other => match classify("the map", other, Broken::Map) {
+            Error::Refused(why) => Failed::Refused(why.concat()),
+            Error::Internal(b) => Failed::Internal(b),
+            e => Failed::Aborted(e),
+        },
     }
 }
 

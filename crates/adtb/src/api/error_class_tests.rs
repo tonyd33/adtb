@@ -362,6 +362,12 @@ fn store_broken_rows() -> Vec<Row> {
     vec![
         broken_row(B::BoundedPlan(plan()), c, "a group has a key and rows"),
         broken_row(B::StatementPlan(plan()), c, "a group has a key and rows"),
+        broken_row(B::WholePlan(plan()), c, "a group has a key and rows"),
+        broken_row(
+            B::Compile(exec::Error::NoCaller),
+            c,
+            "the plan reads `caller` and the statement has none",
+        ),
         broken_row(
             B::DuplicateKey(vec![1]),
             c,
@@ -549,7 +555,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 73;
+const SLOTS: usize = 75;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -636,6 +642,8 @@ fn slot(e: &write::Error) -> usize {
             B::Unadmitted { .. } => 69,
             B::UniqueUnnamed { .. } => 70,
             B::UnsortedBuild(_) => 71,
+            B::WholePlan(_) => 73,
+            B::Compile(_) => 74,
         },
     }
 }

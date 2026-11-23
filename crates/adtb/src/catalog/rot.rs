@@ -60,6 +60,8 @@ pub enum Rot {
     Unborn(u32),
     /// No roots row names the heap of this id.
     Nameless(u32),
+    /// An entry of the index of this id names no version.
+    Orphaned(u32),
     /// Two rows hold this keyed fact.
     Twice(String),
     KeptFormat(u64),
@@ -223,6 +225,7 @@ impl fmt::Display for Rot {
             }
             Rot::NoMigration(v) => write!(f, "missing migration {v}"),
             Rot::Exec(r) => write!(f, "{r}"),
+            Rot::Orphaned(index) => write!(f, "an entry of index {index} names no version"),
         }
     }
 }

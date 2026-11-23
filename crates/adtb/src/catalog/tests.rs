@@ -196,13 +196,41 @@ fn an_index_path_naming_no_field_is_internal() {
 }
 
 #[test]
-fn an_executor_damage_in_index_keying_stays_damage_and_its_internal_stays_internal() {
-    let rot = crate::exec::Rot::SpillCut;
-    let got = super::broken(rot.clone().into());
-    assert_eq!(Error::Corrupt(Rot::Exec(rot)), got);
-    let internal = || crate::exec::Error::from(crate::exec::Broken::EmptyRange);
-    let want = Error::from(Broken::IndexKey(internal()));
-    assert_eq!(want, super::broken(internal()));
+fn an_executor_failure_is_a_refusal_naming_its_object_damage_its_own_error_or_internal() {
+    use crate::exec;
+    let classify = |e| super::hosts::classify("index `x`", e, Broken::IndexKey);
+    let rot = exec::Rot::SpillCut;
+    let internal = || exec::Error::from(exec::Broken::EmptyRange);
+    let cases = [
+        (
+            exec::Error::Unsupported("a form".into()),
+            Error::Refused(vec!["index `x` is not admitted: a form".into()]),
+        ),
+        (
+            exec::Error::Corrupt(rot.clone()),
+            Error::Corrupt(Rot::Exec(rot)),
+        ),
+        (
+            exec::Error::OrphanEntry(7),
+            Error::Corrupt(Rot::Orphaned(7)),
+        ),
+        (
+            exec::Error::MissingFunction("f".into()),
+            Error::MissingFunction("f".into()),
+        ),
+        (
+            exec::Error::OtherVersion("f".into()),
+            Error::OtherVersion("f".into()),
+        ),
+        (internal(), Error::from(Broken::IndexKey(internal()))),
+        (
+            exec::Error::NoCaller,
+            Error::from(Broken::IndexKey(exec::Error::NoCaller)),
+        ),
+    ];
+    for (e, want) in cases {
+        assert_eq!(want, classify(e));
+    }
 }
 
 #[test]

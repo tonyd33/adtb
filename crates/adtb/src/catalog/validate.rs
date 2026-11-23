@@ -12,7 +12,7 @@ use crate::plan;
 use crate::runtime::Runtime;
 use crate::storage::PageError;
 
-use super::hosts::unbound;
+use super::hosts::classify;
 use super::ids::{CatConstraintId, CatRelId};
 use super::{Broken, Catalog, Error, Migrating, not_normal};
 
@@ -378,13 +378,8 @@ impl<R: Runtime> Query<'_, R> {
         for t in domains {
             if let Some((v, body)) = self.normal.domains().get(t) {
                 let compiled = exec::Scalar::new(schema, self.normal.valid(), *v, *body);
-                let mut scalar = compiled.map_err(|e| match e {
-                    exec::Error::Unsupported(why) => Error::Refused(vec![format!(
-                        "constraint {} is not admitted: {why}",
-                        name(*t)
-                    )]),
-                    e => failed(e),
-                })?;
+                let object = format!("constraint {}", name(*t));
+                let mut scalar = compiled.map_err(|e| classify(&object, e, Broken::Validation))?;
                 scalar.set_hosts(self.hosts.clone());
                 checks.insert(*t, scalar);
             }
@@ -513,11 +508,5 @@ fn damaged(e: exec::Error) -> Result<Denied, Error> {
 }
 
 fn failed(e: exec::Error) -> Error {
-    if let Some(e) = unbound(&e) {
-        return e;
-    }
-    match e {
-        exec::Error::Page(p) => Error::Page(p),
-        other => Error::from(Broken::Validation(other)),
-    }
+    classify("a constraint query", e, Broken::Validation)
 }

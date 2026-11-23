@@ -66,12 +66,19 @@ pub struct Checks {
     /// The relation variables the query reads.
     pub reads: BTreeSet<RelId>,
     pub deltas: Vec<Delta>,
+    whole: Option<Tm>,
 }
 
 impl Checks {
     /// Returns the constraint or check these are the incremental checks of.
     pub fn of(&self) -> DenialIdx {
         self.of
+    }
+
+    /// Returns the whole query of the constraint or check in the normal program's arena, or
+    /// `None` when it reads a transition.
+    pub fn whole(&self) -> Option<Tm> {
+        self.whole
     }
 }
 
@@ -165,6 +172,7 @@ pub fn compile(
             &mut found_transitions,
             &mut reads,
         );
+        let whole = found_transitions.is_empty().then_some(t);
         let mut vars = HashMap::new();
         let mut own = Vec::new();
         for (at, x, r, s) in found_transitions {
@@ -179,7 +187,7 @@ pub fn compile(
         let free = own.iter().map(|(v, ..)| *v).collect();
         adtb_lang::kernel::validate(schema, terms, &[(t, free)])
             .map_err(|e| Unadmitted::Internal(Broken::IllTyped(e)))?;
-        found.push((of, qualified, t, reads));
+        found.push((of, qualified, t, reads, whole));
         transitions.extend(own);
     }
     let mut cx = Compiler {
@@ -197,7 +205,7 @@ pub fn compile(
         inputs: BTreeMap::new(),
     };
     let mut out = Vec::new();
-    for (of, name, t, reads) in found {
+    for (of, name, t, reads, whole) in found {
         cx.inputs.clear();
         match cx.constraint(t) {
             Ok(deltas) => out.push(Checks {
@@ -205,6 +213,7 @@ pub fn compile(
                 name,
                 reads,
                 deltas,
+                whole,
             }),
             Err(Outside::Refused(why)) => refused.extend(why.into_iter().map(|detail| Refusal {
                 constraint: name.clone(),

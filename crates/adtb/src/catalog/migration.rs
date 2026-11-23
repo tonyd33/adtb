@@ -27,8 +27,8 @@ use super::admit::{self, Indexing};
 use super::codec::{Codec, MigrationRow};
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
+use super::hosts::classify;
 use super::ids::{stored, type_ctor_id};
-use super::keying::broken;
 use super::roots::RootsRow;
 use super::steps::Stepped;
 use super::{
@@ -754,8 +754,8 @@ fn duplicates(b: &Built) -> Result<(), Error> {
         let mut seen = BTreeSet::new();
         let mut shared = Vec::new();
         for &c in &spec.ctors {
-            let types =
-                element_types(schema, normal, spec.relation, c, &spec.elements).map_err(broken)?;
+            let types = element_types(schema, normal, spec.relation, c, &spec.elements)
+                .map_err(|e| classify(&format!("index `{}`", spec.clause), e, Broken::IndexKey))?;
             for row in &ctors[&ctor_id(schema, spec.relation, c)] {
                 if let Some(key) = row_key(b.indexing.keyed(*id), &ks, c, row)?
                     && !seen.insert(ks.encode(&key)?)
@@ -782,6 +782,7 @@ fn duplicates(b: &Built) -> Result<(), Error> {
 
 /// Returns the components of index key `key`, of types `types`, in the textual syntax of values.
 fn shown_key(schema: &Schema, types: &[Ty], key: &[Value]) -> Result<String, Error> {
+    let broken = |e| classify("an index key", e, Broken::IndexKey);
     if types.len() != key.len() {
         return Err(broken(
             exec::Broken::KeyComponents {

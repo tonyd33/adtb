@@ -55,6 +55,8 @@ impl Broken {
         match self {
             Broken::BoundedPlan(_)
             | Broken::StatementPlan(_)
+            | Broken::WholePlan(_)
+            | Broken::Compile(_)
             | Broken::DuplicateKey(_)
             | Broken::UnsortedBuild(_)
             | Broken::DenialNotSet(_)

@@ -3,7 +3,7 @@ use std::fmt;
 use adtb_lang::kernel::{Const, Invalid, Kind};
 use adtb_lang::textual::PrintError;
 
-use crate::exec::Val;
+use crate::exec::{self, Val};
 use crate::plan;
 use crate::{api, catalog};
 
@@ -18,6 +18,11 @@ pub enum Broken {
     BoundedPlan(plan::Error),
     /// Planning a statement's read breaks a guarantee of the checker or the normaliser.
     StatementPlan(plan::Error),
+    /// Planning the whole query of a constraint or check breaks a guarantee of the checker or the
+    /// normaliser.
+    WholePlan(plan::Error),
+    /// Compiling a plan breaks a guarantee of the planner.
+    Compile(exec::Error),
     DuplicateKey(Vec<u8>),
     /// A bulk build was handed this entry after one not below it.
     UnsortedBuild(Vec<u8>),
@@ -117,7 +122,7 @@ pub(super) fn detail_naming(e: &Error, name: impl Fn(Quarantine) -> String) -> S
         Error::Denied(detail) => detail.clone(),
         Error::SequenceExhausted => "the generated counter exhausted its integer range".to_owned(),
         Error::Internal(b) => b.to_string(),
-        Error::Exec(e) => crate::exec::detail(e),
+        Error::Exec(e) => exec::detail(e),
         Error::Refused(why) => why
             .iter()
             .map(|(c, d)| format!("constraint {c} is not admitted: {d}"))
@@ -168,8 +173,12 @@ impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Broken::BoundedPlan(plan::Error::Internal(b))
-            | Broken::StatementPlan(plan::Error::Internal(b)) => write!(f, "{b}"),
-            Broken::BoundedPlan(e) | Broken::StatementPlan(e) => write!(f, "{e}"),
+            | Broken::StatementPlan(plan::Error::Internal(b))
+            | Broken::WholePlan(plan::Error::Internal(b)) => write!(f, "{b}"),
+            Broken::BoundedPlan(e) | Broken::StatementPlan(e) | Broken::WholePlan(e) => {
+                write!(f, "{e}")
+            }
+            Broken::Compile(e) => f.write_str(&exec::detail(e)),
             Broken::DuplicateKey(key) => write!(f, "a duplicate of key {key:?} in a unique index"),
             Broken::UnsortedBuild(entry) => {
                 write!(

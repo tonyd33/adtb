@@ -8,7 +8,7 @@ use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
 use crate::exec::{self, Held, Val};
-use crate::plan::Catalog;
+use crate::plan::{self, Catalog};
 use crate::runtime::Runtime;
 
 use super::delta::{self, Delta, Input, Part};
@@ -65,6 +65,55 @@ pub fn denials(
         });
     }
     Ok(out)
+}
+
+/// Returns each constraint and check of `schema` without an index-bounded incremental check
+/// over the indexes `catalog` describes, or with an incremental check or a whole query reading no
+/// transition that the executor cannot compile, by qualified name, with why; empty when the schema admits every one.
+///
+/// Errors:
+/// - The guarantee of the checker that compiling a check breaks.
+pub fn refusals(
+    schema: &Committed,
+    normal: &NormalProgram,
+    catalog: &Catalog,
+) -> Result<Vec<(String, String)>, Broken> {
+    let mut terms = normal.terms().clone();
+    let checks = match delta::compile(schema, normal, &mut terms, catalog) {
+        Ok(checks) => checks,
+        Err(delta::Unadmitted::Refused(why)) => {
+            return Ok(why.into_iter().map(|r| (r.constraint, r.detail)).collect());
+        }
+        Err(delta::Unadmitted::Internal(b)) => return Err(b),
+    };
+    let mut out = Vec::new();
+    for c in &checks {
+        for d in &c.deltas {
+            let why = uncompiled(exec::compile(schema, catalog, &d.plan, None))?;
+            out.extend(why.map(|why| (c.name.clone(), why)));
+        }
+    }
+    for c in &checks {
+        let Some(t) = c.whole() else {
+            continue;
+        };
+        let options = plan::Options::default();
+        let whole = plan::plan(schema, normal, catalog, normal.valid(), t, options)
+            .map_err(Broken::WholePlan)?;
+        let why = uncompiled(exec::compile(schema, catalog, &whole, None))?;
+        out.extend(why.map(|why| (c.name.clone(), why)));
+    }
+    out.dedup();
+    Ok(out)
+}
+
+/// Returns why the executor cannot compile a program, or `None` when it compiled.
+fn uncompiled<T>(compiled: Result<T, exec::Error>) -> Result<Option<String>, Broken> {
+    match compiled {
+        Ok(_) => Ok(None),
+        Err(exec::Error::Unsupported(why)) => Ok(Some(why)),
+        Err(e) => Err(Broken::Compile(e)),
+    }
 }
 
 impl<R: Runtime> Stmt<'_, R> {

@@ -94,11 +94,12 @@ pub use broken::{Broken, model_fault, refused_by, unresolved};
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
+use hosts::classify;
 pub use ids::engine_relation;
 pub use kept::{KeptField, KeptRow};
 pub use keyed::Writer;
 pub use keying::{IndexKeys, element_types};
-use keying::{broken, index_keys, row_key};
+use keying::{index_keys, row_key};
 pub use layout::OrderKeys;
 use limits::{index_program, unaccepted, unchecked};
 pub(crate) use limits::{not_normal, past_limits};
@@ -286,7 +287,7 @@ fn key_schema(
     spec: &IndexSpec,
 ) -> Result<KeySchema, Error> {
     let types = element_types(schema, normal, spec.relation, spec.ctors[0], &spec.elements)
-        .map_err(broken)?;
+        .map_err(|e| classify(&format!("index `{}`", spec.clause), e, Broken::IndexKey))?;
     Ok(KeySchema::new(
         types
             .iter()
