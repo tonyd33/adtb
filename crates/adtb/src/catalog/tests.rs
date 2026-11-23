@@ -379,3 +379,39 @@ fn the_fields_of_one_constructor_are_written_in_name_order() {
         names
     );
 }
+
+#[test]
+fn a_refusal_met_enforcing_pending_drops_is_unaccepted_and_every_other_failure_keeps_its_class() {
+    use super::readers::unaccepted_at;
+    let damaged = crate::storage::PageError {
+        pid: crate::storage::Pid(3),
+        damage: crate::storage::Damage::Unreadable,
+    };
+    let refusals = [
+        (
+            Error::Refused(vec!["no `name` in scope".into()]),
+            Error::Unaccepted(4, vec!["no `name` in scope".into()]),
+        ),
+        (
+            Error::RefusedBy {
+                operator: "drop field User.name".into(),
+                why: vec!["a row holds it".into()],
+            },
+            Error::Unaccepted(4, vec!["`drop field User.name`: a row holds it".into()]),
+        ),
+    ];
+    for (e, want) in refusals {
+        assert_eq!(want, unaccepted_at(4, e));
+    }
+    let kept = [
+        Error::Page(damaged),
+        Error::Corrupt(Rot::DropVersion(9)),
+        Error::Unaccepted(2, vec!["no `x` in scope".into()]),
+        Error::Internal(Box::new(Broken::PendingRelations)),
+        Error::PastLimits("auth::users".into()),
+        Error::Unchecked("the schema keeping the pending drops".into(), Vec::new()),
+    ];
+    for e in kept {
+        assert_eq!(e.clone(), unaccepted_at(4, e));
+    }
+}

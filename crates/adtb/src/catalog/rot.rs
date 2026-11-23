@@ -58,6 +58,8 @@ pub enum Rot {
     /// Heap of this id is named by a transaction that applied no migration and is not the
     /// create's.
     Unborn(u32),
+    /// No roots row names the heap of this id.
+    Nameless(u32),
     /// Two rows hold this keyed fact.
     Twice(String),
     KeptFormat(u64),
@@ -184,6 +186,7 @@ impl fmt::Display for Rot {
             Rot::UntaggedGrant(id) => write!(f, "grant row {id} records no grant of the log"),
             Rot::KeptRow(fields) => write!(f, "a kept row holds {}", listed(fields)),
             Rot::Twice(what) => write!(f, "two rows hold {what}"),
+            Rot::Nameless(heap) => write!(f, "no roots row names heap {heap}"),
             Rot::Unborn(heap) => write!(
                 f,
                 "heap {heap} is named by a transaction that applied no migration"

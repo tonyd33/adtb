@@ -325,6 +325,42 @@ fn born_after(seed: u64) -> (BTreeSet<u64>, Option<Error>) {
 }
 
 #[test]
+fn a_heap_no_roots_row_names_is_damage_to_the_history() {
+    let mut out = None;
+    let mut sim = Sim::new(12, Config::default());
+    finished(&mut sim, |rt: SimRuntime| {
+        let pager = Pager::create(rt.clone(), &options(64)).expect("create");
+        let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let roots = catalog.roots.heap();
+        let mut versions = Vec::new();
+        roots
+            .scan(&pager, |v| versions.push(v))
+            .expect("the roots scan");
+        let (v, heap) = versions
+            .into_iter()
+            .find_map(|v| match RootsRow::decode(&v.row) {
+                Ok(RootsRow::HeapRoot { heap, .. }) => Some((v, heap)),
+                _ => None,
+            })
+            .expect("the create names a heap");
+        let begun = txns.begin(&pager).expect("a transaction");
+        roots
+            .delete(
+                &pager,
+                crate::heap::WriteTarget::checked(v.tid, v.header),
+                begun.xid(),
+            )
+            .kept(&Abandoning(()))
+            .expect("the row is deleted")
+            .unchecked(&Abandoning(()));
+        txns.commit(&pager, begun).expect("the commit").done();
+        out = Some((heap, catalog.retained(&pager, &txns).err()));
+    });
+    let (heap, refused) = out.expect("the case ran");
+    assert_eq!(Some(Error::Corrupt(Rot::Nameless(heap))), refused);
+}
+
+#[test]
 fn every_heap_is_born_at_the_create_or_a_migration_and_one_named_by_neither_is_damage() {
     let (versions, refused) = born_after(11);
     assert_eq!(BTreeSet::from([0, 1]), versions);

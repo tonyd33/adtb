@@ -340,30 +340,21 @@ fn skipping(file: &MigrationFile, skipped: &BTreeSet<usize>) -> MigrationFile {
 /// constraint and check put back after the operators that drop it, and each `drop unique` of a
 /// kept unique skipped.
 ///
-/// Fail with [`Unenforced::Corrupt`] when a drop names a version the log does not hold or a
-/// unique its migration does not drop, and with [`Unenforced::Unaccepted`] when a migration of
-/// the log does not apply keeping the drops.
-pub(super) fn enforcing(
-    source: &Source,
-    pending: &[Pending],
-) -> Result<Option<Checked>, Unenforced> {
+/// Fail with [`Error::Corrupt`] when a drop names a version the log does not hold or a unique
+/// its migration does not drop, and with [`Error::Unaccepted`] when a migration of the log does
+/// not apply keeping the drops. Every other failure keeps its class.
+pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<Checked>, Error> {
     let Some(first) = pending.iter().map(|p| p.dropped).min() else {
         return Ok(None);
     };
     let Some(start) = source.log.iter().find(|l| l.number == first) else {
-        return Err(Unenforced::Corrupt(Rot::DropVersion(first)));
+        return Err(Rot::DropVersion(first).into());
     };
     let mut at = (*start.before).clone();
     let mut version = first;
-    let failed = |version: u64, e: Error| match e {
-        Error::Corrupt(r) => Unenforced::Corrupt(r),
-        Error::Unaccepted(n, why) => Unenforced::Unaccepted(n, why),
-        Error::Refused(why) => Unenforced::Unaccepted(version, why),
-        other => Unenforced::Unaccepted(version, vec![super::rot::detail(&other)]),
-    };
     for l in source.log.iter().filter(|l| l.number >= first) {
         version = l.number;
-        let refused = |why: Vec<String>| Unenforced::Unaccepted(l.number, why);
+        let refused = |why: Vec<String>| Error::Unaccepted(l.number, why);
         let mut file = parse_migration(&l.text, Options::default())
             .ok()
             .map_err(|ds| refused(ds.into_iter().map(|d| d.message).collect()))?;
@@ -385,11 +376,11 @@ pub(super) fn enforcing(
             let steps = l
                 .before
                 .record_steps(&file, &l.text)
-                .map_err(|r| failed(l.number, super::refusal(r, Error::Refused)))?;
-            let stepped =
-                super::steps::stepped(&steps, &file, &l.text).map_err(|e| failed(l.number, e))?;
+                .map_err(|r| unaccepted_at(l.number, super::refusal(r, Error::Refused)))?;
+            let stepped = super::steps::stepped(&steps, &file, &l.text)
+                .map_err(|e| unaccepted_at(l.number, e))?;
             let drops = changes(&l.before, &before, &stepped)
-                .map_err(|e| failed(l.number, e))?
+                .map_err(|e| unaccepted_at(l.number, e))?
                 .uniques;
             let skipped: BTreeSet<usize> = drops
                 .iter()
@@ -397,40 +388,49 @@ pub(super) fn enforcing(
                 .map(|u| u.op)
                 .collect();
             if let Some(id) = held.iter().find(|id| !drops.iter().any(|u| u.id == **id)) {
-                return Err(Unenforced::Corrupt(Rot::UniqueNotDropped {
+                return Err(Rot::UniqueNotDropped {
                     index: *id,
                     version: l.number,
-                }));
+                }
+                .into());
             }
             file = skipping(&file, &skipped);
         }
         at = at
             .migrate_keeping(&file, &l.text, &kept)
-            .map_err(|r| failed(l.number, super::unaccepted(l.number, r)))?;
+            .map_err(|r| unaccepted_at(l.number, super::unaccepted(l.number, r)))?;
     }
     let enforced = checked(at, |ds| {
         Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
     })
-    .map_err(|e| failed(version, e))?;
-    keeps_ids(&enforced.schema, pending).map_err(|e| failed(version, e))?;
+    .map_err(|e| unaccepted_at(version, e))?;
+    keeps_ids(&enforced.schema, pending).map_err(|e| unaccepted_at(version, e))?;
     Ok(Some(enforced))
 }
 
-/// Why the schema keeping a catalog's pending drops is not built.
-#[derive(Debug)]
-pub(super) enum Unenforced {
-    /// The stored drops do not read as the catalog writes them.
-    Corrupt(Rot),
-    /// The migration of this version does not apply keeping the drops; each reason.
-    Unaccepted(u64, Vec<String>),
-}
-
-impl From<Unenforced> for Error {
-    fn from(e: Unenforced) -> Error {
-        match e {
-            Unenforced::Corrupt(r) => Error::Corrupt(r),
-            Unenforced::Unaccepted(n, why) => Error::Unaccepted(n, why),
-        }
+/// Returns `e`, met applying the migration of `version` keeping pending drops, with a refusal as
+/// that migration being unaccepted.
+pub(super) fn unaccepted_at(version: u64, e: Error) -> Error {
+    match e {
+        Error::Refused(why) => Error::Unaccepted(version, why),
+        Error::RefusedBy { operator, why } => Error::Unaccepted(
+            version,
+            why.iter().map(|w| format!("`{operator}`: {w}")).collect(),
+        ),
+        e @ (Error::Page(_)
+        | Error::Heap(_)
+        | Error::Index(_)
+        | Error::Txn(_)
+        | Error::Missing(_)
+        | Error::Corrupt(_)
+        | Error::Unaccepted(..)
+        | Error::Internal(_)
+        | Error::MissingFunction(_)
+        | Error::OtherVersion(_)
+        | Error::Unchecked(..)
+        | Error::PastLimits(_)
+        | Error::FormatTooOld(_)
+        | Error::Conflict(_)) => e,
     }
 }
 

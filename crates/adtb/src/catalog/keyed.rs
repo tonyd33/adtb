@@ -1,5 +1,6 @@
-//! The engine's keyed storage: the deployment facts and kept rows of the roots heap, each under
-//! a key that two writers of conflict over.
+//! The engine's keyed storage: the deployment facts and kept rows, held as rows of the roots
+//! heap, each under a key that two writers of conflict over. They are engine-internal: no
+//! system relation holds them, and no format or engine hash names them.
 
 use std::fmt;
 

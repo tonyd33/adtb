@@ -30,6 +30,8 @@ pub enum Broken {
     Unsettled,
     /// A deploy names a relation of this catalog id that is not deployment state.
     Undeployed(CatRelId),
+    /// A deploy writes a grant of the log.
+    LogGrantDeployed,
     /// A checked schema has no normal form.
     NotNormal(norm::Error),
     /// A term of a checked schema or of its normal form breaks the kernel's invariants.
@@ -152,6 +154,7 @@ impl fmt::Display for Broken {
             Broken::Unsettled => {
                 f.write_str("a settled source's schema takes no relation as added later")
             }
+            Broken::LogGrantDeployed => f.write_str("a deploy writes a grant of the log"),
             Broken::Undeployed(id) => {
                 write!(f, "a deploy writes relation {id}, not deployment state")
             }

@@ -235,8 +235,23 @@ fn a_crash_at_every_flush_of_recording_a_legacy_grant_keeps_or_writes_its_row() 
             .filter(|(_, row)| row[kind] == log)
             .collect();
         assert_eq!(1, rows.len());
+        let deployed = catalog.deploy(
+            &pager,
+            &txns,
+            &[crate::catalog::Rewrite {
+                relation: r,
+                deleted: rows.clone(),
+                inserted: Vec::new(),
+            }],
+        );
+        assert_eq!(
+            Some(CatalogError::Internal(Box::new(
+                crate::catalog::Broken::LogGrantDeployed
+            ))),
+            deployed.err()
+        );
         catalog
-            .deploy(
+            .forge(
                 &pager,
                 &txns,
                 &[crate::catalog::Rewrite {

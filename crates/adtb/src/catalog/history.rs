@@ -327,11 +327,12 @@ impl Catalog {
         let born = self
             .heaps
             .values()
-            .filter_map(|h| {
-                let v = made.get(&h.id().0)?;
-                Some((HeapId(u64::from(h.id().0)), *v))
+            .map(|h| {
+                let id = h.id().0;
+                let v = made.get(&id).ok_or(Rot::Nameless(id))?;
+                Ok((HeapId(u64::from(id)), *v))
             })
-            .collect();
+            .collect::<Result<_, Error>>()?;
         Ok(Retained {
             record: Past::open(self.kept.record),
             heaps,

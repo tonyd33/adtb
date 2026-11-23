@@ -10,7 +10,7 @@ use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::{Pager, Position};
 
-use super::codec::{Codec, Decode};
+use super::codec::{Codec, Decode, GrantKind, RoleGrant};
 use super::ids::{CatRelId, rel_id};
 use super::{Broken, Catalog, Change, Error, Fact, Writer, delete_rows};
 
@@ -62,7 +62,8 @@ impl Catalog {
     /// once it is durable.
     ///
     /// Fail as broken, writing nothing, when `writes` names a relation other than the engine's
-    /// `roles`, `grants`, `bundles` and `registered`.
+    /// `roles`, `grants`, `bundles` and `registered`, or a row of `grants` that is not a
+    /// deployment grant.
     ///
     /// Precondition: every deleted row is a row the latest commit holds.
     pub fn deploy<R: Runtime>(
@@ -84,10 +85,19 @@ impl Catalog {
         writes: &[Rewrite],
         facts: &[Fact],
     ) -> Result<Position, Error> {
+        let grants = Codec::<RoleGrant>::new(&self.schema);
         for w in writes {
             let id = rel_id(&self.schema, w.relation);
             if !DEPLOYED.contains(&id) {
                 return Err(Broken::Undeployed(id).into());
+            }
+            if w.relation != grants.relation() {
+                continue;
+            }
+            for (c, row) in w.deleted.iter().chain(&w.inserted) {
+                if grants.decode(*c, row)?.kind() != GrantKind::Deployment {
+                    return Err(Broken::LogGrantDeployed.into());
+                }
             }
         }
         self.rewrite(pager, txns, writes, facts)
