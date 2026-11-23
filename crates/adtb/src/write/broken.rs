@@ -27,6 +27,9 @@ pub enum Broken {
     /// A bulk build was handed this entry after one not below it.
     UnsortedBuild(Vec<u8>),
     DenialNotSet(Val),
+    /// An incremental check of the named constraint whose triggering change is empty reports a
+    /// violation.
+    IdleDeltaReports(String),
     UniqueUnindexed {
         position: usize,
         relation: String,
@@ -187,6 +190,10 @@ impl fmt::Display for Broken {
                 )
             }
             Broken::DenialNotSet(v) => write!(f, "a denial query returns a set, found {v:?}"),
+            Broken::IdleDeltaReports(c) => write!(
+                f,
+                "an incremental check of `{c}` whose triggering change is empty reports a violation"
+            ),
             Broken::UniqueUnindexed { position, relation } => {
                 write!(f, "unique {position} of relation {relation} has an index")
             }

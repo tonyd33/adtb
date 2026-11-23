@@ -60,6 +60,7 @@ impl Broken {
             | Broken::DuplicateKey(_)
             | Broken::UnsortedBuild(_)
             | Broken::DenialNotSet(_)
+            | Broken::IdleDeltaReports(_)
             | Broken::UniqueUnindexed { .. }
             | Broken::UniqueUnnamed { .. }
             | Broken::KeyNotFields(_)

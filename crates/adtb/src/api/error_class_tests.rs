@@ -384,6 +384,11 @@ fn store_broken_rows() -> Vec<Row> {
             "a denial query returns a set, found Int(1)",
         ),
         broken_row(
+            B::IdleDeltaReports("c".to_owned()),
+            c,
+            "an incremental check of `c` whose triggering change is empty reports a violation",
+        ),
+        broken_row(
             B::UniqueUnindexed {
                 position: 1,
                 relation: "r".into(),
@@ -555,7 +560,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 75;
+const SLOTS: usize = 76;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -644,6 +649,7 @@ fn slot(e: &write::Error) -> usize {
             B::UnsortedBuild(_) => 71,
             B::WholePlan(_) => 73,
             B::Compile(_) => 74,
+            B::IdleDeltaReports(_) => 75,
         },
     }
 }

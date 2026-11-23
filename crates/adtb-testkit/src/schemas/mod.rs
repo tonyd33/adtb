@@ -584,12 +584,18 @@ impl Schema {
                 _ if holding.len() > 1 && rng.below(2) == 0 => rel.uniques.push(clause),
                 2 => rel.indexes.push(clause),
                 3 if ty == Ty::Int => rel.checks.push(clause),
-                4 if ty == Ty::Int => constraints.push(Constraint {
-                    rel: i,
-                    ctors: vec![holding[0]],
-                    field: name,
-                    name: String::new(),
-                }),
+                4 if ty == Ty::Int => {
+                    let c = Constraint {
+                        rel: i,
+                        ctors: vec![holding[0]],
+                        field: name,
+                        name: String::new(),
+                    };
+                    if rng.below(2) == 0 {
+                        constraints.push(c.clone());
+                    }
+                    constraints.push(c);
+                }
                 _ => {}
             }
         }
@@ -952,6 +958,17 @@ impl Case {
         c.fields
             .iter()
             .any(|f| f.action == Action::Clear && d.field(&f.name).is_some())
+    }
+
+    /// Returns whether `constraint` names a constraint that another refuses the same rows of.
+    pub fn twinned(&self, constraint: &str) -> bool {
+        let cs = &self.schema.constraints;
+        cs.iter().any(|c| {
+            format!("app::{}", c.name) == constraint
+                && cs.iter().any(|d| {
+                    d.name != c.name && d.rel == c.rel && d.ctors == c.ctors && d.field == c.field
+                })
+        })
     }
 
     /// Returns whether `constraint` is the canonical name of a reference field whose delete

@@ -75,6 +75,7 @@ pub(super) struct Reached {
     cross_sum: usize,
     sum_key: usize,
     set_unique: usize,
+    twinned: usize,
 }
 
 /// A row's constructor and value, by its key.
@@ -110,6 +111,7 @@ impl Reached {
         match ended {
             Ended::Not(Got::Rejected(Reason::Violated { constraint })) => {
                 self.set_unique += usize::from(constraint.contains(") in ("));
+                self.twinned += usize::from(case.twinned(constraint));
                 let delete = s.text().starts_with("delete");
                 self.restrict += usize::from(delete && case.restricts(constraint));
                 return;
@@ -163,6 +165,7 @@ impl Reached {
                 "a unique over a constructor set refusing a write",
                 self.set_unique,
             ),
+            ("a write violating two constraints at once", self.twinned),
         ];
         for (what, n) in rows {
             adtb_testkit::profile::assert_reached(what, n, scale(1));
@@ -321,6 +324,7 @@ fn shrink(seed: u64, case: &schemas::Case, f: &Finding) -> (schemas::Case, Findi
 fn generated_schemas_keep_engine_equal_to_reference() {
     let seeds = seeds_of(CASES);
     let mut reached = Reached::default();
+    let idle = adtb::testing::idle_deltas_checked();
     let mut found = Vec::new();
     for seed in seeds.clone() {
         let c = schemas::case(seed, STATEMENTS);
@@ -345,4 +349,9 @@ fn generated_schemas_keep_engine_equal_to_reference() {
     }
     let cases = (seeds.end - seeds.start).min(CASES) as usize;
     reached.floors(|n| n * cases / CASES as usize);
+    adtb_testkit::profile::assert_reached(
+        "an incremental check whose triggering change is empty",
+        (adtb::testing::idle_deltas_checked() - idle) as usize,
+        cases.min(1),
+    );
 }

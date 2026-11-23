@@ -107,6 +107,15 @@ pub fn refusals(
     Ok(out)
 }
 
+#[cfg(any(test, feature = "testing"))]
+static IDLE_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Returns how many incremental checks whose triggering change was empty this process has run.
+#[cfg(any(test, feature = "testing"))]
+pub fn idle_deltas_checked() -> u64 {
+    IDLE_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Returns why the executor cannot compile a program, or `None` when it compiled.
 fn uncompiled<T>(compiled: Result<T, exec::Error>) -> Result<Option<String>, Broken> {
     match compiled {
@@ -182,7 +191,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         .iter()
                         .any(|(v, rows)| *v == t && matches!(rows, Val::Set(s) if s.is_empty()))
                 });
-                if idle {
+                if idle && !cfg!(any(test, feature = "testing")) {
                     continue;
                 }
                 let call = self
@@ -195,6 +204,13 @@ impl<R: Runtime> Stmt<'_, R> {
                         .map(|(_, rows)| rows.clone())
                 })?;
                 match exec::execute(self.db.rt.clone(), bound, call)? {
+                    Val::Set(report) if idle => {
+                        #[cfg(any(test, feature = "testing"))]
+                        IDLE_CHECKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if !report.is_empty() {
+                            return Err(Broken::IdleDeltaReports(d.name.clone()).into());
+                        }
+                    }
                     Val::Set(report) => {
                         violate(
                             viol,
