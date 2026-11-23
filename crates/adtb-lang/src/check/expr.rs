@@ -954,14 +954,13 @@ impl Checker<'_> {
                 .cloned()
         {
             let elem = self.schema.relation(rel).elem.clone();
-            let (v, body) = self.in_relation(rel, |x| {
+            let (v, body) = self.in_relation(rel, f.span, |x| {
                 x.scope.push();
                 let v = x.bind("self", elem, Some(rel), o.provenance);
                 let body = x.check(&c.expr, &c.ty);
                 x.scope.pop();
-                (v, body)
-            });
-            let body = body?;
+                Ok((v, body?))
+            })?;
             let tm = self.b().let_(v, o.tm, body.tm, c.ty);
             return Ok(self.out(tm));
         }

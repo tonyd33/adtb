@@ -615,10 +615,12 @@ impl Checker<'_> {
         }
     }
 
-    /// The value of field `f` of constructor `c` that a constructor at `site` omits, if the row or the relation supplies one.
+    /// The value of field `f` of constructor `c` that a constructor at `site`, written at `span`,
+    /// omits, if the row or the relation supplies one.
     pub(super) fn fill(
         &mut self,
         site: &Site,
+        span: Span,
         c: u32,
         f: &str,
         header: bool,
@@ -642,14 +644,16 @@ impl Checker<'_> {
             (Some(DefaultValue::Generate(g)), _) | (None, Some(g)) => {
                 Ok(Some(self.b().fresh(g, site.rel)))
             }
-            (Some(DefaultValue::Expr(e)), _) => Ok(Some(self.default_expr(site.rel, &e, &fty)?)),
+            (Some(DefaultValue::Expr(e)), _) => {
+                Ok(Some(self.default_expr(site.rel, span, &e, &fty)?))
+            }
             (None, None) => Ok(None),
         }
     }
 
     /// Check a relation's default expression where it was declared.
-    fn default_expr(&mut self, rel: RelId, e: &Expr, fty: &Ty) -> R<Tm> {
-        self.in_relation(rel, |c| {
+    fn default_expr(&mut self, rel: RelId, span: Span, e: &Expr, fty: &Ty) -> R<Tm> {
+        self.in_relation(rel, span, |c| {
             let scope = std::mem::take(&mut c.scope);
             let ctx = std::mem::replace(&mut c.ctx, Context::Schema);
             let tparams = std::mem::take(&mut c.tparams);

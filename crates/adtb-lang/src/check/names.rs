@@ -50,8 +50,15 @@ impl Refs {
 
 impl Checker<'_> {
     /// Run `f` over an expression relation `rel` declares, such as a default or a computed
-    /// field: names resolve in `rel`'s module and are recorded in its file.
-    pub(super) fn in_relation<T>(&mut self, rel: RelId, f: impl FnOnce(&mut Self) -> T) -> T {
+    /// field: names resolve in `rel`'s module and are recorded in its file. Fail at `site`, the
+    /// text that reached the expression: a schema body poisons it, since the expression's own
+    /// check reports its failure.
+    pub(super) fn in_relation<T>(
+        &mut self,
+        rel: RelId,
+        site: Span,
+        f: impl FnOnce(&mut Self) -> R<T>,
+    ) -> R<T> {
         let decl = self.schema.relation(rel);
         let home = Visible::module(decl.module).scoped(self.vis.scope().cloned());
         let vis = std::mem::replace(&mut self.vis, home);
@@ -59,7 +66,11 @@ impl Checker<'_> {
         let out = f(self);
         self.refs.at.set(was);
         self.vis = vis;
-        out
+        let schema = matches!(self.ctx, Context::Schema);
+        out.map_err(|d| match d.kind {
+            DiagKind::Invalid | DiagKind::Poisoned if schema => Diag::poisoned(site),
+            _ => Diag { span: site, ..d },
+        })
     }
 
     /// Returns every name resolved so far in the text being checked, leaving none.

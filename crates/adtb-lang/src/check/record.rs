@@ -505,7 +505,7 @@ impl Checker<'_> {
                     given.push((f.clone(), ft));
                 }
                 _ => match shape.site {
-                    Some(s) => match self.fill(s, c, f, *header, fty.clone())? {
+                    Some(s) => match self.fill(s, shape.span, c, f, *header, fty.clone())? {
                         Some(ft) => {
                             let ft = self.place(self.out(ft), &fty, shape.span)?;
                             given.push((f.clone(), ft));
