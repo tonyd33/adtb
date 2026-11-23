@@ -708,6 +708,25 @@ fn text(db: &Database, query: &str) -> Vec<String> {
         .collect()
 }
 
+/// How long a test on a real file sleeps between looks at the background worker.
+const WORKER_POLL: Duration = Duration::from_millis(5);
+
+/// How many looks a test on a real file takes at the background worker before it fails: a
+/// minute of sleep at the least.
+const WORKER_LOOKS: u32 = 12_000;
+
+/// Returns the first value `poll` gives, sleeping [`WORKER_POLL`] between looks. Fail naming
+/// `what` after [`WORKER_LOOKS`] looks.
+fn awaited<T>(what: &str, mut poll: impl FnMut() -> Option<T>) -> T {
+    for _ in 0..WORKER_LOOKS {
+        if let Some(v) = poll() {
+            return v;
+        }
+        std::thread::sleep(WORKER_POLL);
+    }
+    panic!("{what} within {WORKER_LOOKS} looks {WORKER_POLL:?} apart");
+}
+
 #[test]
 fn a_real_file_rots_and_the_worker_finds_it() {
     let dir = scratch("rot");
@@ -725,13 +744,10 @@ fn a_real_file_rots_and_the_worker_finds_it() {
         &db,
         "set setting ScrubInterval = { every: Some { value: 1ms } }",
     );
-    let rows = loop {
+    let rows = awaited("the worker finds the rot", || {
         let rows = text(&db, FINDINGS);
-        if !rows.is_empty() {
-            break rows;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
+        (!rows.is_empty()).then_some(rows)
+    });
     assert!(rows[0].starts_with("Checksum"), "{rows:?}");
 }
 
@@ -822,8 +838,8 @@ fn scrubbing_under_real_writers_finds_nothing() {
         stop.store(true, Ordering::Relaxed);
     });
     assert!(writes.load(Ordering::Relaxed) > 100, "the writers wrote");
+    awaited("the worker ends a pass", || db.testing().scrub());
     assert_eq!(Vec::<String>::new(), text(&db, FINDINGS));
-    assert!(db.testing().scrub().is_some(), "the worker made passes");
 }
 
 #[test]
