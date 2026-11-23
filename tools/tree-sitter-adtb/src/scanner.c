@@ -29,7 +29,7 @@ enum Symbol {
   KEYS_LPAREN, GEN_COMMA, CTOR_DOT, TCALL_DOT, KEY_DOT, FIELD_CALL_BAD, ELISION_DOT, CTOR_LBRACE,
   MIDLINE_BAD, NEVER, END, UNION_OP, OR_OP, AND_OP, CMP_OP, ADD_OP, MUL_OP, FIELD_DOT, SELECTION_DOT,
   BACKLINK_DOT, ARM_BAR, QUALIFIER, TEXT_MORE, RECORD_ELISION, FIELD_COLON, WILDCARD, INT, DECIMAL, FLOAT, DURATION, MIGRATION, HASH,
-  BUNDLE_NAME, FAMILY_NAME, REFUSED,
+  BUNDLE_NAME, FAMILY_NAME, REFUSED, COMMENT,
 };
 
 enum Kind {
@@ -642,8 +642,20 @@ typedef struct {
   bool line_start;
 } State;
 
+// Emit a comment from `--` to the end of the line or the text, whatever it holds.
+static bool scan_comment(TSLexer *lexer) {
+  while (lexer->lookahead != '\n' && !lexer->eof(lexer)) advance(lexer);
+  lexer->mark_end(lexer);
+  return emit(lexer, COMMENT);
+}
+
 static bool scan(State *state, TSLexer *lexer, const bool *valid) {
-  if (valid[NEVER]) return false;
+  if (valid[NEVER]) {
+    while (is_space(lexer->lookahead)) lexer->advance(lexer, true);
+    if (lexer->lookahead != '-') return false;
+    advance(lexer);
+    return lexer->lookahead == '-' && valid[COMMENT] && scan_comment(lexer);
+  }
   if (valid[HASH]) return scan_hash(lexer, valid);
 
   bool first_on_line = !state->seen && lexer->get_column(lexer) == 0;
@@ -676,7 +688,7 @@ static bool scan(State *state, TSLexer *lexer, const bool *valid) {
     found = valid[WILDCARD] && emit(lexer, WILDCARD);
   } else if (c == '-') {
     advance(lexer);
-    if (lexer->lookahead == '-') return false;
+    if (lexer->lookahead == '-') return valid[COMMENT] && scan_comment(lexer);
     if (lexer->lookahead == '>') {
       found = end_or_bare(lexer, valid, first_on_line, false);
     } else {

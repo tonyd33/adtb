@@ -91,6 +91,7 @@ module.exports = grammar({
     $.bundle_name,
     $.family_name,
     $._refused,
+    $.comment,
   ],
 
 
@@ -125,7 +126,6 @@ module.exports = grammar({
       expr($),
     ),
 
-    comment: () => token(seq('--', /.*/)),
     text: () => token(seq(
       '"',
       repeat(choice(
