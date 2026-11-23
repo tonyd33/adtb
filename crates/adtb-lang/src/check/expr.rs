@@ -472,9 +472,10 @@ impl Checker<'_> {
         for (name, ty) in &def.params {
             let v = self.terms.var(name, ty.clone());
             vars.push(v);
-            args.push(self.var_tm(v));
+            let a = self.var_tm(v);
+            args.push(self.placed_as_is(a));
         }
-        let call = self.b().call(f, Vec::new(), args);
+        let call = self.call_placed(f, Vec::new(), args);
         let result = def.result.clone();
         let tm = self.lams(vars, call, result);
         let ty = self.terms.ty(tm).clone();
@@ -499,7 +500,11 @@ impl Checker<'_> {
     /// The grouped value for one row of a group.
     pub(super) fn group_value(&mut self, g: &GroupInfo, row: Tm) -> Tm {
         let f = self.var_tm(g.value);
-        self.b().app(f, row)
+        let Ty::Fn(param, _) = self.terms.ty(f).clone() else {
+            unreachable!("a grouped value is a function of its row")
+        };
+        let row = self.placed_checked(row, &param);
+        self.app_placed(f, row)
     }
 
     /// A group binder used as a set: the values of its grouped expression.
@@ -511,7 +516,7 @@ impl Checker<'_> {
         let xt = self.var_tm(xi);
         let value = self.group_value(g, xt);
         let set_ty = Ty::NonEmpty(Box::new(g.value_ty.clone()));
-        let one = self.b().singleton(value, set_ty.clone());
+        let one = self.singleton_checked(value, set_ty.clone());
         let tm = self.b().for_(xi, rows_tm, one, set_ty.clone());
         Out {
             tm,
@@ -1184,15 +1189,18 @@ impl Checker<'_> {
         let xt = self.var_tm(xi);
         let field = self.b().field(xt, f.text.clone());
         let rhs = if optional {
-            self.b()
-                .ctor(ctor::SOME, vec![("value".into(), kappa.tm)], fty)
+            let Ty::Data { args, .. } = &fty else {
+                unreachable!("an optional field is an `Option`")
+            };
+            let value = self.placed_checked(kappa.tm, &args[0]);
+            self.ctor_placed(ctor::SOME, vec![("value".into(), value)], fty)
         } else {
             kappa.tm
         };
         let test = self.b().prim_typed(Prim::Eq, vec![field, rhs], None);
         let set_ty = Ty::Set(Box::new(elem));
         let xt = self.var_tm(xi);
-        let one = self.b().singleton(xt, set_ty.clone());
+        let one = self.singleton_checked(xt, set_ty.clone());
         let none = self.b().empty_set(set_ty.clone());
         let body = self.b().if_(test, one, none, set_ty.clone());
         let tm = self.b().for_(xi, source.tm, body, set_ty);
@@ -1295,7 +1303,7 @@ impl Checker<'_> {
             .unwrap_or(Provenance::Built);
         let ones: Vec<Tm> = outs
             .into_iter()
-            .map(|o| self.b().singleton(o.tm, set_ty.clone()))
+            .map(|o| self.singleton_checked(o.tm, set_ty.clone()))
             .collect();
         let tm = self.balanced_union(&ones, &set_ty);
         Ok(Out {

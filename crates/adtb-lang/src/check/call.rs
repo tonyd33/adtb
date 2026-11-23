@@ -1,4 +1,5 @@
 use super::expr::wants_expected;
+use super::placed::Placed;
 use super::*;
 use crate::ast::{CallArgs, Expr, ExprKind};
 use crate::kernel::{Agg, Prim};
@@ -24,7 +25,7 @@ impl Checker<'_> {
         es: &[&Expr],
         result: Option<(&Ty, &Ty)>,
         span: Span,
-    ) -> R<(Vec<Tm>, Vec<Option<Ty>>)> {
+    ) -> R<(Vec<Placed>, Vec<Option<Ty>>)> {
         let n = callee.1.len();
         let mut bounds: Vec<Bounds> = vec![Bounds::default(); n];
         let mut literals: Vec<Bounds> = vec![Bounds::default(); n];
@@ -145,14 +146,13 @@ impl Checker<'_> {
         let mut tms = Vec::new();
         for (i, (e, pty)) in es.iter().zip(params).enumerate() {
             let want = pty.subst(&solved(&sol));
-            let o = match outs[i].take() {
-                Some(o) if wants_expected(e) && !self.subtype(&o.ty, &want) => {
-                    self.check(e, &want)?
+            let placed = match outs[i].take() {
+                Some(o) if !wants_expected(e) || self.subtype(&o.ty, &want) => {
+                    self.place(o, &want, e.span)?
                 }
-                Some(o) => self.subsume(o, &want, e.span)?,
-                None => self.check(e, &want)?,
+                _ => self.check_placed(e, &want)?,
             };
-            tms.push(o.tm);
+            tms.push(placed);
         }
         Ok((tms, sol))
     }
@@ -375,7 +375,8 @@ impl Checker<'_> {
             match ty {
                 Ty::Fn(a, r) if *a == Ty::Unit => {
                     let unit = self.b().unit();
-                    f = self.b().app(f, unit);
+                    let unit = self.placed_as_is(unit);
+                    f = self.app_placed(f, unit);
                     ty = *r;
                 }
                 _ => {
@@ -393,8 +394,8 @@ impl Checker<'_> {
                     format!("too many arguments for {}", self.show(&local.ty)),
                 ));
             };
-            let x = self.check(e, &a)?.tm;
-            f = self.b().app(f, x);
+            let x = self.check_placed(e, &a)?;
+            f = self.app_placed(f, x);
             ty = *r;
         }
         Ok(Out {
@@ -468,7 +469,7 @@ impl Checker<'_> {
             type_args.push(t);
         }
         let result = def.result.subst(&type_args);
-        let mut o = Out::of(self.b().call(f, type_args, tms), result);
+        let mut o = Out::of(self.call_placed(f, type_args, tms), result);
         o.rows = self.fn_rows[f.0 as usize];
         if o.rows.is_some() {
             o.provenance = Provenance::Snapshot;

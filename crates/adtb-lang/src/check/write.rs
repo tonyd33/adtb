@@ -313,7 +313,7 @@ fn payload_lits(rec: Option<&RecordExpr>) -> Option<Payload> {
 
 impl Checker<'_> {
     pub(super) fn singleton(&mut self, x: Tm, elem: &Ty) -> Tm {
-        self.b().singleton(x, Ty::Set(Box::new(elem.clone())))
+        self.singleton_checked(x, Ty::Set(Box::new(elem.clone())))
     }
 
     /// Check `e` with nested inserts in it allowed when `ok` and nothing forbids them here.

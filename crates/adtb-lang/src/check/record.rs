@@ -1,3 +1,4 @@
+use super::placed::Placed;
 use super::write::Site;
 use super::*;
 use crate::ast::{Expr, RecordExpr};
@@ -257,11 +258,11 @@ impl Checker<'_> {
         let mut tys = Vec::new();
         for (n, e) in &fields {
             let o = self.synth(e)?;
-            tms.push((n.text.clone(), o.tm));
-            tys.push((n.text.clone(), o.ty));
+            tys.push((n.text.clone(), o.ty.clone()));
+            tms.push((n.text.clone(), self.place(o.clone(), &o.ty, e.span)?));
         }
         let ty = self.open_sum(name, Fields::new(tys));
-        let tm = self.b().ctor(0, tms, ty);
+        let tm = self.ctor_placed(0, tms, ty);
         Ok(self.out(tm))
     }
 
@@ -281,7 +282,7 @@ impl Checker<'_> {
                     .map(|(n, t, _)| (n, t))
                     .collect();
                 let given = self.record_fields(&fields, record, span, &ty, c)?;
-                let tm = self.b().ctor(c, given, ty);
+                let tm = self.ctor_placed(c, given, ty);
                 return Ok(self.out(tm));
             }
             Target::Decl(def, args) => (def, args),
@@ -296,7 +297,7 @@ impl Checker<'_> {
             args: args_out,
             ctors: self.schema.normalize_ctors(def, vec![c]),
         };
-        let tm = self.b().ctor(c, given, ty);
+        let tm = self.ctor_placed(c, given, ty);
         Ok(self.out(tm))
     }
 
@@ -493,17 +494,22 @@ impl Checker<'_> {
             match base {
                 Some(b) if same_ctor || *header => {
                     let ft = self.b().transport_field(b.tm, f.clone());
+                    let ft = self.place(self.out(ft), &fty, shape.span)?;
                     given.push((f.clone(), ft));
                 }
                 None if *header && self.carry.is_some_and(|(_, d)| d == shape.def) => {
                     let (row, _) = self.carry.expect("a carried row");
                     let rt = self.var_tm(row);
                     let ft = self.b().transport_field(rt, f.clone());
+                    let ft = self.place(self.out(ft), &fty, shape.span)?;
                     given.push((f.clone(), ft));
                 }
                 _ => match shape.site {
-                    Some(s) => match self.fill(s, c, f, *header, fty)? {
-                        Some(ft) => given.push((f.clone(), ft)),
+                    Some(s) => match self.fill(s, c, f, *header, fty.clone())? {
+                        Some(ft) => {
+                            let ft = self.place(self.out(ft), &fty, shape.span)?;
+                            given.push((f.clone(), ft));
+                        }
                         None => {
                             return Err(diag(
                                 shape.span,
@@ -534,7 +540,7 @@ impl Checker<'_> {
         span: Span,
         ty: &Ty,
         c: u32,
-    ) -> R<Vec<(String, Tm)>> {
+    ) -> R<Vec<(String, Placed)>> {
         let name = ty::ctor_names(self.schema, ty)
             .and_then(|ns| ns.into_iter().find(|(i, _)| *i == c).map(|(_, n)| n))
             .unwrap_or_default();
@@ -556,7 +562,7 @@ impl Checker<'_> {
             let Some((_, fty)) = fields.iter().find(|(f, _)| *f == n.text) else {
                 return Err(diag(n.span, format!("`{name}` has no field `{}`", n.text)));
             };
-            out.push((n.text.clone(), self.check(e, fty)?.tm));
+            out.push((n.text.clone(), self.check_placed(e, fty)?));
         }
         if let Some((f, _)) = fields
             .iter()
@@ -577,7 +583,7 @@ pub(super) enum Target {
 
 type Named<'e> = Vec<(String, &'e Expr)>;
 
-type Given = Vec<(String, Tm)>;
+type Given = Vec<(String, Placed)>;
 
 /// A declared constructor being built, with its fields over the type's own parameters.
 struct CtorShape<'s> {

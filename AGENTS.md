@@ -63,8 +63,9 @@ For a fresh clone, host prerequisites and optional editor setup, read
   differs from its entry in `lint/allowlist.toml` (none counts as 0): the counts only fall.
   `--counts` prints the allowlist for the tree; `--against REV` fails on an entry above the
   allowlist at REV, so a rise is a maintainer's act on main. The rows: the comment rules of
-  `house.tql`, struct fields visible past their module, decode panics, engine names, sim test
-  open helpers and weak refusal assertions (`is_err()`, `is_ok()`, `matches!(.., Err(_))`, a
+  `house.tql`, struct fields visible past their module, decode panics, engine names, a checker
+  argument, field or element slot built outside `check/placed.rs` from other than a `Placed`
+  term, sim test open helpers and weak refusal assertions (`is_err()`, `is_ok()`, `matches!(.., Err(_))`, a
   substring of error text, a bare `unwrap_err()`, a call of `refused_with`): assert a refusal with
   `adtb_testkit::refused_as`, its value and whole reason.
 

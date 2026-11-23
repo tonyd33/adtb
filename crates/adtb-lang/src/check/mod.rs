@@ -23,6 +23,7 @@ mod expr;
 mod names;
 mod order;
 mod pat;
+mod placed;
 mod prelude;
 pub(crate) mod prim_ty;
 mod query;
@@ -434,7 +435,7 @@ impl<'a> Checker<'a> {
 
     fn bool_tm(&mut self, value: bool) -> Tm {
         let ty = self.bool_ty();
-        self.b().ctor(ctor::bool(value), Vec::new(), ty)
+        self.ctor_placed(ctor::bool(value), Vec::new(), ty)
     }
 
     fn option_ty(&self, t: Ty) -> Ty {
@@ -1251,7 +1252,7 @@ impl Checker<'_> {
         let set_ty = Ty::Set(Box::new(elem));
         let empty = self.b().empty_set(set_ty.clone());
         let xt = self.var_tm(x);
-        let one = self.b().singleton(xt, set_ty.clone());
+        let one = self.singleton_checked(xt, set_ty.clone());
         let body = self.b().if_(pred.tm, empty, one, set_ty.clone());
         Ok(self.b().for_(x, source.tm, body, set_ty))
     }

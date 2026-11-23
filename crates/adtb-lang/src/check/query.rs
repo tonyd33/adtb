@@ -165,7 +165,7 @@ impl Checker<'_> {
             let key = self.synth(&g.by)?;
             let (labels, rec, rec_ty) = self.binder_record(&binders);
             let b_ty = Ty::Set(Box::new(rec_ty.clone()));
-            let one = self.b().singleton(rec, b_ty.clone());
+            let one = self.singleton_checked(rec, b_ty.clone());
             let b_tm = self.assemble(std::mem::take(&mut frames), one, &b_ty);
             let xi = self.fresh(rec_ty.clone());
             let xt = self.var_tm(xi);
@@ -218,7 +218,7 @@ impl Checker<'_> {
     pub(super) fn finish(&mut self, body: Body, elem: Option<&Ty>) -> Out {
         let ty = elem.cloned().unwrap_or_else(|| body.select.ty.clone());
         let set_ty = Ty::Set(Box::new(ty));
-        let one = self.b().singleton(body.select.tm, set_ty.clone());
+        let one = self.singleton_checked(body.select.tm, set_ty.clone());
         let key_preserving = match self.terms.kind(body.select.tm) {
             Kind::Var(v) => body.binders.contains(v),
             _ => false,
@@ -282,7 +282,7 @@ impl Checker<'_> {
         r?;
         let set_ty = Ty::Set(Box::new(Ty::Unit));
         let unit = self.b().unit();
-        let one = self.b().singleton(unit, set_ty.clone());
+        let one = self.singleton_checked(unit, set_ty.clone());
         let tm = self.assemble(frames, one, &set_ty);
         let tm = self.b().exists(tm);
         Ok(self.out(tm))
@@ -812,7 +812,7 @@ impl Checker<'_> {
                     let pt = self.check(p, &bt)?;
                     let set_ty = Ty::Set(Box::new(elem));
                     let xt = self.var_tm(v);
-                    let one = self.b().singleton(xt, set_ty.clone());
+                    let one = self.singleton_checked(xt, set_ty.clone());
                     let none = self.b().empty_set(set_ty.clone());
                     let body = self.b().if_(pt.tm, one, none, set_ty.clone());
                     self.for_afresh(v, src.tm, body, set_ty)
@@ -841,7 +841,7 @@ impl Checker<'_> {
                     binders.push(xi);
                     let xt = self.var_tm(xi);
                     let gv = self.group_value(&info, xt);
-                    let one = self.b().singleton(gv, set_of(info.value_ty.clone()));
+                    let one = self.singleton_checked(gv, set_of(info.value_ty.clone()));
                     let y = self.bind(
                         &g.binder.text,
                         info.value_ty.clone(),
@@ -864,7 +864,7 @@ impl Checker<'_> {
             }
             let (labels, rec, rec_ty) = self.binder_record(&binders);
             let set_ty = set_of(rec_ty.clone());
-            let one = self.b().singleton(rec, set_ty.clone());
+            let one = self.singleton_checked(rec, set_ty.clone());
             let source = self.assemble(frames, one, &set_ty);
             let xi = self.fresh(rec_ty);
             (xi, source, nonempty, labels)
