@@ -1,0 +1,56 @@
+# A read of the past past its memory grant spills the deleted versions it passes, and gives every
+# row it read before the rows were rewritten and deleted.
+use stocked
+option morsel_rows 16
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin f
+
+in f run
+  update s in stock where key s == stock.key(1) set { s with name: "y" }
+
+commit f position first
+
+run
+  update s in stock set { s with name: "x" }
+
+run
+  delete n in notes
+  delete s in stock
+
+option query_memory_bytes 32768
+reopen
+
+query
+  count(v for v in (at commit $first { from s in stock select s.v }))
+----
+101
+
+query
+  count(s for s in (at commit $first { from s in stock select s }))
+----
+300
+
+query
+  sum(s.v for s in (at commit $first { from s in stock select s }))
+----
+15059
+
+query
+  count(k for k in (at commit $first { from s in stock select key s }))
+----
+300
+
+query rowsort
+  at commit $first { from s in stock where s.v == 0 select s.name }
+----
+"item101"
+"item202"
+
+option spill_bytes 0
+reopen
+
+error StatementLimit { limit: Memory { bytes: 32768 } }
+  count(v for v in (at commit $first { from s in stock select s.v }))

@@ -88,6 +88,29 @@ impl<R: Runtime> Engine<R> {
         self.db.abandon(tx, cause, |e| self.write_error(id, e))
     }
 
+    /// Run the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
+    /// the rows of each item that yields a result, or the failure.
+    pub(super) fn statements(
+        &self,
+        id: TxnId,
+        tx: &Txn,
+        p: &Prepared,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<Vec<DynRows>, Failure> {
+        let bounds = Bounds {
+            suspend: false,
+            ..bounds
+        };
+        self.resumable(id, tx, p, local, bounds)
+            .map_err(|f| match f {
+                Halted::Blocked { .. } => {
+                    unreachable!("a run with `suspend: false` never suspends")
+                }
+                Halted::Failed(failure) => failure,
+            })
+    }
+
     /// Run the items of `p` as [`statements`](Engine::statements) does, except that a
     /// statement suspending on a transaction wait halts with `Blocked`. A command after the first,
     /// and an item after a command, polls with its stops instead.

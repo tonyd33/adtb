@@ -9,6 +9,7 @@ mod delta;
 mod eval;
 mod explain;
 mod fresh;
+mod grant;
 mod input;
 mod keyed;
 mod past;
@@ -42,7 +43,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::task::Waker;
 use std::time::Duration;
 
 use adtb_file::Disk;
@@ -58,8 +58,7 @@ use crate::catalog::{IndexSpec, Structures};
 use crate::exec::{self, Budget, Scheduler, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
-    Begun, Conflict, Hold, Limits, Safety, SerialId, Serializer, Snapshot, Taken, Transactions,
-    Watch, Xid,
+    Begun, Conflict, Hold, Limits, Safety, SerialId, Serializer, Snapshot, Taken, Transactions, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -368,6 +367,8 @@ pub struct Txn {
     /// `None` for a read-only transaction.
     xid: Option<Xid>,
     sid: SerialId,
+    /// The instant of the runtime's clock at which it began.
+    began: Instant,
     taken: Taken,
     /// What its statements that succeeded wrote into the file.
     written: RefCell<quarantine::Touched>,
@@ -434,6 +435,10 @@ impl Txn {
         self.xid
     }
 
+    pub fn began(&self) -> Instant {
+        self.began
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn snapshot(&self) -> &Snapshot {
         self.hold().snapshot()
@@ -481,7 +486,7 @@ pub struct Bounds {
     /// The `rerun` of the `Blocked` failure of an earlier run of the same statements.
     pub rerun: Option<Rerun>,
     /// The grant every execution of the statements takes its memory from, else one admitted
-    /// for each.
+    /// for the run.
     pub grant: Option<Arc<exec::Grant>>,
     /// Read files only within the file roots.
     pub confined: bool,
@@ -533,8 +538,6 @@ pub struct Stop {
     /// Fail with `Blocked`, carrying this, at a wait for another transaction, instead of
     /// holding the thread.
     pub suspend: Option<Rerun>,
-    /// The grant every execution takes its memory from, else one admitted for each.
-    pub grant: Option<Arc<exec::Grant>>,
     /// Read files only within the file roots.
     pub confined: bool,
 }
@@ -568,7 +571,6 @@ impl Stop {
             cancel: bounds.cancel.clone().unwrap_or_default(),
             deadline: [limit, deadline].into_iter().flatten().min_by_key(|d| d.at),
             suspend,
-            grant: bounds.grant.clone(),
             confined: bounds.confined,
         }
     }
@@ -607,6 +609,7 @@ pub struct Database<R: Runtime> {
     pacer: Arc<vacuum::Pacer>,
     /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
     rebuild_waits: AtomicU64,
+    charged: grant::Charged,
     /// How many times a call asked a background vacuum to give up the vacuum lock.
     vacuum_yields: AtomicU64,
     /// The relations an offline rebuild holds writes to, with the rebuild's thread.
@@ -735,6 +738,7 @@ impl<R: Runtime> Database<R> {
             vacuums: vacuums::Vacuums::default(),
             pacer: Arc::new(vacuum::Pacer::new(0.1)),
             rebuild_waits: AtomicU64::new(0),
+            charged: grant::Charged::default(),
             vacuum_yields: AtomicU64::new(0),
             offline: Lock::default(),
             waiting: Lock::default(),
@@ -891,23 +895,6 @@ impl<R: Runtime> Database<R> {
         })
     }
 
-    /// Register `waker` to be woken once transaction `on` has ended, as [`Waits::watch`] does.
-    /// `me` is the waiting transaction, if it has an xid, waiting to write a version of `heap`,
-    /// or at a gate for `None`.
-    pub fn watch(
-        &self,
-        me: Option<Xid>,
-        (on, heap): (Xid, Option<u32>),
-        waker: &Waker,
-    ) -> Result<Watch, Conflict> {
-        self.session.waits().watch(me, on, heap, waker)
-    }
-
-    /// Withdraw the registration of `waker` on `on` made as `me`, if `on` has not ended.
-    pub fn withdraw(&self, me: Option<Xid>, on: Xid, waker: &Waker) {
-        self.session.waits().withdraw(me, on, waker);
-    }
-
     /// Run term `t` of `terms`, a `Transact`, a write or a query, as one statement of `tx`, each
     /// variable of `params` bound to its value. `clock` is the instant, in microseconds, every
     /// `generate clock` of the statement takes.
@@ -986,6 +973,9 @@ impl<R: Runtime> Database<R> {
     ) -> Result<Vec<Outcome>, Failed> {
         let _writing = tx.xid.map(|_| Writing::enter());
         self.admit(&text).map_err(|error| Failed::new(0, error))?;
+        let (bounds, _peak) = self
+            .granted(tx, bounds)
+            .map_err(|error| Failed::new(0, error))?;
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         let before = local.clone();
@@ -1033,6 +1023,9 @@ impl<R: Runtime> Database<R> {
         bounds: Bounds,
     ) -> Result<Vec<Outcome>, Failed> {
         self.admit(&text).map_err(|error| Failed::new(0, error))?;
+        let (bounds, _peak) = self
+            .granted(tx, bounds)
+            .map_err(|error| Failed::new(0, error))?;
         let before = local.clone();
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
@@ -1128,7 +1121,8 @@ impl<R: Runtime> Database<R> {
             limited.then_some(rerun.since),
             (bounds.suspend && bounds.polls_from.is_none_or(|from| item < from)).then_some(rerun),
         );
-        eval::Stmt::new(self, tx, text, t, options, stop)
+        let grant = self.grant_of(tx, bounds)?;
+        eval::Stmt::new(self, tx, text, t, options, (stop, grant))
     }
 
     /// Take back the statements of `ran` unless `failed` ends the transaction. Returns `failed`,
@@ -1160,7 +1154,9 @@ impl<R: Runtime> Database<R> {
     /// Returns every row of every relation variable the catalog describes, as `tx` reads them.
     #[cfg(test)]
     pub fn rows(&self, tx: &Txn) -> Result<Rows, Error> {
-        let s = eval::Stmt::reader(self, tx);
+        let grant =
+            self.admit_grant(exec::Priority::AdHoc, (tx.began(), None), &Stop::default())?;
+        let s = eval::Stmt::reader(self, tx, grant);
         let mut out = Rows::new();
         for rel in self.rels.keys() {
             for (c, v) in s.rows(*rel, None)? {
@@ -1170,9 +1166,11 @@ impl<R: Runtime> Database<R> {
         Ok(out)
     }
 
-    /// Returns the rows of `rel` visible to `tx`.
+    /// Returns the rows of `rel` visible to `tx`, read under a grant of no budget.
     pub(crate) fn relation_rows(&self, tx: &Txn, rel: RelId) -> Result<Vec<Val>, Error> {
-        let rows = eval::Stmt::reader(self, tx).rows(rel, None);
+        let grant = Budget::new(usize::MAX).admit(usize::MAX);
+        let grant = grant.expect("a budget admits its whole limit");
+        let rows = eval::Stmt::reader(self, tx, grant).rows(rel, None);
         tx.noted(rows.map(|rows| rows.into_iter().map(|(_, row)| row).collect()))
     }
 
@@ -1354,17 +1352,6 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Returns a grant of the database's per-call memory from its budget.
-    pub fn admit_grant(&self) -> Result<Arc<exec::Grant>, Error> {
-        self.budget
-            .admit(self.grant)
-            .ok_or(Error::Exec(exec::Error::StatementLimit(
-                exec::Exceeded::Memory {
-                    limit: self.budget.limit(),
-                },
-            )))
-    }
-
     /// Returns the page of the database's generated counters, for [`Setup::sequences`] when
     /// it is opened again.
     #[cfg(any(test, feature = "testing"))]
@@ -1408,14 +1395,11 @@ impl<R: Runtime> Database<R> {
         store: &Arc<exec::Store<R>>,
         options: exec::Options,
         stop: &Stop,
+        grant: &Arc<exec::Grant>,
     ) -> Result<exec::Call<R>, Error> {
-        let grant = match &stop.grant {
-            Some(g) => g.clone(),
-            None => self.admit_grant()?,
-        };
         let call = exec::Call::new(
             store.clone(),
-            grant,
+            grant.clone(),
             options,
             stop.cancel.clone(),
             stop.deadline.clone(),

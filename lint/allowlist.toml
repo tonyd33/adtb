@@ -219,7 +219,7 @@
 "crates/adtb/src/write/check.rs" = 3
 "crates/adtb/src/write/delta/mod.rs" = 14
 "crates/adtb/src/write/eval.rs" = 6
-"crates/adtb/src/write/mod.rs" = 39
+"crates/adtb/src/write/mod.rs" = 38
 "crates/adtb/src/write/past.rs" = 6
 "crates/adtb/src/write/reindex.rs" = 6
 "crates/adtb/src/write/schema.rs" = 32

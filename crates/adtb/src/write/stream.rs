@@ -84,7 +84,7 @@ impl<R: Runtime> Database<R> {
             ..self.options
         };
         let stop = Stop::of(bounds, Some(started), None);
-        let call = self.call(&self.store(tx), options, &stop)?;
+        let call = self.call(&self.store(tx), options, &stop, &self.grant_of(tx, bounds)?)?;
         let bound = std::sync::Arc::new(program).bind(|v| {
             text.params
                 .iter()

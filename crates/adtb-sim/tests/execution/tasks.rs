@@ -1063,6 +1063,136 @@ fn an_audited_task_runs_under_one_grant() {
     });
 }
 
+/// Under the default budget of four grants, a fifth call waits for a grant while four calls hold
+/// theirs, and completes once one of them ends.
+#[test]
+fn a_call_whose_grant_does_not_fit_waits_until_a_grant_is_released() {
+    sim_once(|rt| {
+        let f = open_with(rt, 10, 5);
+        let held: Vec<Task<SimRuntime>> = (0..4).map(|_| f.submit(4, read_opts())).collect();
+        while f.db.testing().granted_and_waiting() != (4 << 26, 0) {
+            rt.yield_now();
+        }
+        let fifth = f.submit(2, read_opts());
+        while f.db.testing().granted_and_waiting() != (4 << 26, 1) {
+            rt.yield_now();
+        }
+        assert!(matches!(fifth.observe(Waker::noop()), Observation::Pending));
+        f.gate.release(rt);
+        let (_, done) = drive(rt, &held[0]);
+        assert!(matches!(done, Completion::Read { .. }), "{done:?}");
+        let (rows, done) = drive(rt, &fifth);
+        assert!(matches!(done, Completion::Read { .. }), "{done:?}");
+        assert_eq!(vec![Value::Int(10)], rows);
+        for t in &held[1..] {
+            let (_, done) = drive(rt, t);
+            assert!(matches!(done, Completion::Read { .. }), "{done:?}");
+        }
+    });
+}
+
+/// Under the default budget of four grants, four writes waiting on an embedded transaction's
+/// row hold no grant, so the transaction's next statement runs and it commits, and each write
+/// then commits.
+#[test]
+fn writes_waiting_on_a_transaction_leave_its_next_statement_a_grant() {
+    sim_once(|rt| {
+        let f = open_with(rt, 0, 5);
+        let mut txn = f.db.begin(&TxnOptions::default()).unwrap();
+        txn.query_text(UPDATE, &[], &TxnCallOptions::default())
+            .unwrap();
+        let ticks: Vec<Task<SimRuntime>> = (0..4).map(|_| f.submit(5, read_opts())).collect();
+        wait_for(rt, || f.seen.rows.load(Ordering::Acquire) >= 4);
+        sleep(rt, Duration::from_millis(10));
+        assert_eq!((0, 0), f.db.testing().granted_and_waiting());
+        txn.query_text(UPDATE, &[], &TxnCallOptions::default())
+            .unwrap();
+        txn.commit(None).unwrap();
+        for t in &ticks {
+            let (_, done) = drive(rt, t);
+            assert!(matches!(done, Completion::Committed { .. }), "{done:?}");
+        }
+        assert_eq!(
+            vec![vec![Value::Int(6)]],
+            text(&f.db, "from c in counters select c.value")
+        );
+    });
+}
+
+/// Under the default budget of four grants, four embedded writes blocked on a transaction's
+/// row hold every grant, and the transaction's next statement, queued for a grant, closes a
+/// cycle: one write is refused with a serialization failure while the others still wait, and
+/// the statement runs.
+#[test]
+fn a_grant_wait_that_closes_a_cycle_refuses_one_blocked_write() {
+    sim_once(|rt| {
+        let f = open_with(rt, 0, 5);
+        let (wrote, go, ran) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (db, t1_wrote, t1_go, t1_ran, clock) = (
+            f.db.clone(),
+            wrote.clone(),
+            go.clone(),
+            ran.clone(),
+            rt.clone(),
+        );
+        let next = rt.spawn("t1", move || {
+            let mut t1 = db.begin(&TxnOptions::default()).unwrap();
+            t1.query_text(UPDATE, &[], &TxnCallOptions::default())
+                .unwrap();
+            t1_wrote.store(true, Ordering::Release);
+            wait_for(&clock, || t1_go.load(Ordering::Acquire));
+            t1.query_text(UPDATE, &[], &TxnCallOptions::default())
+                .unwrap();
+            t1_ran.store(true, Ordering::Release);
+            t1.commit(None).unwrap();
+        });
+        wait_for(rt, || wrote.load(Ordering::Acquire));
+        let ended = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writers: Vec<ThreadId> = (0..4)
+            .map(|n| {
+                let (db, ended) = (f.db.clone(), ended.clone());
+                rt.spawn(&format!("writer {n}"), move || {
+                    let mut t = db.begin(&TxnOptions::default()).unwrap();
+                    let id = t.id();
+                    let got = t
+                        .query_text(UPDATE, &[], &TxnCallOptions::default())
+                        .map(|_| ());
+                    ended.lock().unwrap().push((id, got));
+                })
+            })
+            .collect();
+        wait_for(rt, || f.db.testing().granted_and_waiting() == (4 << 26, 0));
+        sleep(rt, Duration::from_millis(10));
+        go.store(true, Ordering::Release);
+        let until = rt.now() + Duration::from_secs(10);
+        while !ran.load(Ordering::Acquire) {
+            assert!(rt.now() < until, "the statement queued for a grant runs");
+            sleep(rt, Duration::from_millis(1));
+        }
+        let first = ended.lock().unwrap().clone();
+        let [(id, got)] = &first[..] else {
+            panic!("one write refused before the statement runs: {first:?}")
+        };
+        assert_eq!(
+            &Err(Error::Retry {
+                reason: RetryReason::Serialization {
+                    txn: *id,
+                    on: "shop::counters.Counter".to_owned(),
+                },
+            }),
+            got
+        );
+        rt.join(next);
+        for w in writers {
+            rt.join(w);
+        }
+    });
+}
+
 /// Under a budget of one grant, a call submitted as soon as the last one's `Done` is observed is
 /// admitted, the finished tasks' handles still held.
 #[test]

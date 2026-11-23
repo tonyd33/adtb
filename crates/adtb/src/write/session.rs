@@ -94,6 +94,7 @@ impl<R: Runtime> Session<R> {
         Txn {
             xid,
             sid,
+            began: self.rt.now(),
             taken: hold.taken(),
             written: RefCell::default(),
             held: Held {

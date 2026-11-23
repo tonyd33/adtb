@@ -50,6 +50,18 @@ pub fn allocations() -> usize {
     HEAP.allocations.load(Relaxed)
 }
 
+/// Returns the bytes of heap live now.
+#[must_use]
+pub fn live() -> usize {
+    HEAP.live()
+}
+
+/// Returns the most heap live at once since the last call, or since the process began, and
+/// starts the next span at the heap live now.
+pub fn take_peak() -> usize {
+    HEAP.peak.swap(HEAP.live(), Relaxed)
+}
+
 /// Returns the nextest slots a test with a cap of `bytes` holds.
 #[must_use]
 pub const fn slots_for(bytes: usize) -> usize {
@@ -75,6 +87,7 @@ const fn layout_cost(layout: Layout) -> usize {
 #[derive(Debug)]
 pub struct HeapCap {
     live: AtomicUsize,
+    peak: AtomicUsize,
     cap: AtomicUsize,
     allocations: AtomicUsize,
 }
@@ -86,6 +99,7 @@ impl HeapCap {
     pub const fn new(cap: usize) -> Self {
         Self {
             live: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
             cap: AtomicUsize::new(cap),
             allocations: AtomicUsize::new(0),
         }
@@ -120,6 +134,7 @@ impl HeapCap {
     fn charge(&self, size: usize) {
         self.allocations.fetch_add(1, Relaxed);
         let live = self.live.fetch_add(size, Relaxed) + size;
+        self.peak.fetch_max(live, Relaxed);
         let cap = self.cap();
         if live > cap {
             abort_over_cap(live, cap);

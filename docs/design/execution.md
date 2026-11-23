@@ -749,8 +749,8 @@ from its grant for what it holds: the batch a scan is filling and the
 rows of each morsel while the morsel runs, the values its sinks
 collect, build tables, group records, the sets of each fixpoint round,
 and the deleted versions a scan of the past has passed from a current
-heap, held unspilled until that scan ends. Each arena returns to the
-grant when dropped. Plans carry no grant estimate yet.
+heap, held until that scan ends. Each arena returns to the grant when
+dropped. Plans carry no grant estimate yet.
 
 Operators spill to one spill file per call, in the directory `spill`
 beside the database, made on the first spill and removed when the call
@@ -777,6 +777,10 @@ limit.
 - A `Group` sink passes key and element pairs through a spilling
   distinct set and forms one group at a time; one group's elements must
   fit the grant.
+- A scan of the past holds the deleted versions it passes in a current
+  heap as a spilling distinct set. Once that set has spilled, the
+  deleted versions of the history heap go into a second one, and the
+  scan passes on, at its end, those the first does not hold.
 - `Top` and `Present` keep only the elements they return.
 - An `Agg` or `Fold` sink folds its values a morsel at a time.
 

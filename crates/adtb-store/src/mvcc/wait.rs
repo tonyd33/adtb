@@ -14,6 +14,13 @@ struct State {
     /// The wakers registered on each running transaction, each with the transaction it waits as.
     watchers: BTreeMap<Xid, Vec<(Option<Xid>, Waker)>>,
     waits_for: BTreeMap<Xid, Xid>,
+    /// The transactions whose statements hold a memory grant, with how many they hold.
+    granted: BTreeMap<Xid, usize>,
+    /// The transactions waiting in the budget's queue for a grant. Each waits for every
+    /// transaction in `granted`.
+    queued: BTreeSet<Xid>,
+    /// The waiters refused to break a cycle through a grant wait, with the cycle.
+    refused: BTreeMap<Xid, Vec<Xid>>,
     /// The thread each running transaction began on.
     #[cfg(any(test, feature = "testing"))]
     begun_on: BTreeMap<Xid, ThreadId>,
@@ -148,6 +155,8 @@ impl<R: Runtime> Waits<R> {
             #[cfg(any(test, feature = "testing"))]
             st.begun_on.remove(&x);
             st.waits_for.remove(&x);
+            st.refused.remove(&x);
+            st.queued.remove(&x);
             let watchers = st.watchers.remove(&x).unwrap_or_default();
             for (me, _) in &watchers {
                 if let Some(me) = me
@@ -188,6 +197,11 @@ impl<R: Runtime> Waits<R> {
                     return Err(deadlock(cycle, heap));
                 }
                 cycle.push(next);
+            }
+            if cycle.last().is_some_and(|last| st.queued.contains(last))
+                && st.granted.contains_key(&me)
+            {
+                return Err(deadlock(cycle, heap));
             }
             st.waits_for.insert(me, on);
         }
@@ -239,12 +253,93 @@ impl<R: Runtime> Waits<R> {
         if self.watch(Some(me), on, heap, waker)? == Watch::Ended {
             return Ok(());
         }
-        while self.state.lock(&self.rt).running.contains(&on) {
+        loop {
+            {
+                let mut st = self.state.lock(&self.rt);
+                if let Some(cycle) = st.refused.remove(&me) {
+                    drop(st);
+                    self.withdraw(Some(me), on, waker);
+                    return Err(deadlock(cycle, heap).into());
+                }
+                if !st.running.contains(&on) {
+                    st.refused.remove(&me);
+                    return Ok(());
+                }
+            }
             if let Err(e) = pause() {
                 self.withdraw(Some(me), on, waker);
                 return Err(e);
             }
         }
-        Ok(())
+    }
+
+    /// Count a memory grant the statements of `x` hold, until [`Waits::released_grant`].
+    pub fn holds_grant(&self, x: Xid) {
+        *self.state.lock(&self.rt).granted.entry(x).or_default() += 1;
+    }
+
+    pub fn released_grant(&self, x: Xid) {
+        let mut st = self.state.lock(&self.rt);
+        if let Some(n) = st.granted.get_mut(&x) {
+            *n -= 1;
+            if *n == 0 {
+                st.granted.remove(&x);
+            }
+        }
+    }
+
+    /// Record `me` as waiting in the budget's queue, for every transaction holding a grant, until
+    /// [`Waits::left_queue`], and break a cycle that wait closes, as [`Waits::break_cycle`] does.
+    pub fn queued(&self, me: Xid) {
+        self.state.lock(&self.rt).queued.insert(me);
+        self.break_cycle(me);
+    }
+
+    pub fn left_queue(&self, me: Xid) {
+        self.state.lock(&self.rt).queued.remove(&me);
+    }
+
+    /// Refuse, with a deadlock, one transaction holding a grant that waits, directly or through
+    /// others, for `me`, queued for a grant, unless one refused still holds its grant. Its
+    /// [`Waits::wait_pausing`] fails, and its grant goes back to the budget.
+    pub fn break_cycle(&self, me: Xid) {
+        let mut st = self.state.lock(&self.rt);
+        let pending = st.refused.keys().any(|r| st.granted.contains_key(r));
+        if pending {
+            return;
+        }
+        let closed = st.granted.keys().filter(|h| **h != me).find_map(|&h| {
+            let (mut cycle, mut at) = (vec![h], h);
+            while let Some(&next) = st.waits_for.get(&at) {
+                if next == me {
+                    cycle.push(me);
+                    return Some((h, cycle));
+                }
+                if cycle.contains(&next) {
+                    return None;
+                }
+                cycle.push(next);
+                at = next;
+            }
+            None
+        });
+        let Some((refused, mut cycle)) = closed else {
+            return;
+        };
+        cycle.remove(0);
+        let Some(&on) = st.waits_for.get(&refused) else {
+            return;
+        };
+        let woken: Vec<Waker> = st.watchers.get(&on).map_or_else(Vec::new, |ws| {
+            ws.iter()
+                .filter(|(m, _)| *m == Some(refused))
+                .map(|(_, w)| w.clone())
+                .collect()
+        });
+        st.refused.insert(refused, cycle);
+        drop(st);
+        for w in woken {
+            w.wake();
+        }
     }
 }

@@ -815,7 +815,13 @@ fn a_bulk_build_stops_between_pages_and_names_what_it_wrote() {
             asked.set(asked.get() + 1);
             asked.get() == 3
         };
-        let got = BTree::bulk(&pager, 7, entries, &mut made, &stop);
+        let got = BTree::bulk(
+            &pager,
+            7,
+            entries.into_iter().map(Ok::<_, BuildError>),
+            &mut made,
+            &stop,
+        );
         assert_eq!(Some(BuildError::Stopped), got.err());
         assert_eq!(2, made.len(), "every page written is named");
     });

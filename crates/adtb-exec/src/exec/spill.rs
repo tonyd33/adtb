@@ -37,6 +37,14 @@ pub struct Spill<R: Runtime> {
     file: Lock<Option<File<R>>>,
 }
 
+impl<R: Runtime> std::fmt::Debug for Spill<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Spill")
+            .field("limit", &self.limit)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Extent {
     at: u64,
@@ -162,7 +170,7 @@ impl Stream {
     }
 }
 
-/// A stream being written: whole records in a buffer of at most one chunk past the last write.
+/// A stream being written: the bytes past the last write, in a buffer of less than one chunk.
 #[derive(Debug, Default)]
 pub struct Writer {
     buf: Vec<u8>,
@@ -170,20 +178,26 @@ pub struct Writer {
 }
 
 impl Writer {
-    /// Append one record of `vals`.
+    /// Append one record of `vals`, writing out each chunk as it fills.
     pub fn put<R: Runtime>(&mut self, sp: &Spill<R>, vals: &[&Val]) -> Result<(), Error> {
-        let start = self.buf.len();
-        self.buf.extend_from_slice(&[0; 4]);
+        let mut len = Count(0);
         for v in vals {
-            put(v, &mut self.buf);
+            put(v, &mut len);
         }
-        let len = u32::try_from(self.buf.len() - start - 4)
-            .expect("a spilled record is smaller than 4 GiB");
-        self.buf[start..start + 4].copy_from_slice(&len.to_le_bytes());
-        if self.buf.len() >= CHUNK {
-            self.flush(sp)?;
+        let len = u32::try_from(len.0).expect("a spilled record is smaller than 4 GiB");
+        let mut out = Chunks {
+            w: self,
+            sp,
+            failed: None,
+        };
+        out.bytes(&len.to_le_bytes());
+        for v in vals {
+            put(v, &mut out);
         }
-        Ok(())
+        match out.failed {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     fn flush<R: Runtime>(&mut self, sp: &Spill<R>) -> Result<(), Error> {
@@ -198,6 +212,47 @@ impl Writer {
     pub fn finish<R: Runtime>(mut self, sp: &Spill<R>) -> Result<Stream, Error> {
         self.flush(sp)?;
         Ok(self.stream)
+    }
+}
+
+/// Where an encoded value's bytes go.
+pub(super) trait Out {
+    fn bytes(&mut self, b: &[u8]);
+}
+
+impl Out for Vec<u8> {
+    fn bytes(&mut self, b: &[u8]) {
+        self.extend_from_slice(b);
+    }
+}
+
+/// The length of the bytes put.
+struct Count(usize);
+
+impl Out for Count {
+    fn bytes(&mut self, b: &[u8]) {
+        self.0 += b.len();
+    }
+}
+
+/// A writer's buffer, written out to the spill file each time it reaches a chunk. Holds the
+/// first failure, and takes no bytes after it.
+struct Chunks<'a, R: Runtime> {
+    w: &'a mut Writer,
+    sp: &'a Spill<R>,
+    failed: Option<Error>,
+}
+
+impl<R: Runtime> Out for Chunks<'_, R> {
+    fn bytes(&mut self, mut b: &[u8]) {
+        while !b.is_empty() && self.failed.is_none() {
+            let n = (CHUNK - self.w.buf.len()).min(b.len());
+            self.w.buf.extend_from_slice(&b[..n]);
+            b = &b[n..];
+            if self.w.buf.len() == CHUNK {
+                self.failed = self.w.flush(self.sp).err();
+            }
+        }
     }
 }
 
@@ -257,36 +312,36 @@ fn malformed() -> Error {
     Rot::SpillUndecoded.into()
 }
 
-fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
+fn put_bytes(out: &mut impl Out, b: &[u8]) {
     let n = u32::try_from(b.len()).expect("a spilled value is smaller than 4 GiB");
-    out.extend_from_slice(&n.to_le_bytes());
-    out.extend_from_slice(b);
+    out.bytes(&n.to_le_bytes());
+    out.bytes(b);
 }
 
-fn put_seq<'a>(out: &mut Vec<u8>, vs: impl ExactSizeIterator<Item = &'a Val>) {
+fn put_seq<'a>(out: &mut impl Out, vs: impl ExactSizeIterator<Item = &'a Val>) {
     let n = u32::try_from(vs.len()).expect("a spilled value has fewer than 2^32 parts");
-    out.extend_from_slice(&n.to_le_bytes());
+    out.bytes(&n.to_le_bytes());
     for v in vs {
         put(v, out);
     }
 }
 
-pub(super) fn put(v: &Val, out: &mut Vec<u8>) {
+pub(super) fn put(v: &Val, out: &mut impl Out) {
     match v {
         Val::Int(i) => tagged(out, 0, &i.to_le_bytes()),
         Val::F32(x) => tagged(out, 1, &x.get().to_bits().to_le_bytes()),
         Val::F64(x) => tagged(out, 2, &x.get().to_bits().to_le_bytes()),
         Val::Decimal(d) => tagged(out, 3, &d.to_le_bytes()),
         Val::Text(t) => {
-            out.push(4);
+            out.bytes(&[4]);
             put_bytes(out, t.as_bytes());
         }
         Val::Bytes(b) => {
-            out.push(5);
+            out.bytes(&[5]);
             put_bytes(out, b);
         }
         Val::SortKey(b) => {
-            out.push(6);
+            out.bytes(&[6]);
             put_bytes(out, b);
         }
         Val::Instant(i) => tagged(out, 7, &i.to_le_bytes()),
@@ -300,22 +355,22 @@ pub(super) fn put(v: &Val, out: &mut Vec<u8>) {
         Val::Duration(i) => tagged(out, 12, &i.to_le_bytes()),
         Val::Period { months, days } => {
             tagged(out, 13, &months.to_le_bytes());
-            out.extend_from_slice(&days.to_le_bytes());
+            out.bytes(&days.to_le_bytes());
         }
         Val::Ctor(c, fs) => {
             tagged(out, 14, &c.to_le_bytes());
             put_seq(out, fs.iter());
         }
         Val::Record(fs) => {
-            out.push(15);
+            out.bytes(&[15]);
             put_seq(out, fs.iter());
         }
         Val::Set(s) => {
-            out.push(16);
+            out.bytes(&[16]);
             put_seq(out, s.iter());
         }
         Val::List(xs) => {
-            out.push(17);
+            out.bytes(&[17]);
             put_seq(out, xs.iter());
         }
         Val::Placeholder { occurrence, scope } => {
@@ -325,9 +380,9 @@ pub(super) fn put(v: &Val, out: &mut Vec<u8>) {
     }
 }
 
-fn tagged(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) {
-    out.push(tag);
-    out.extend_from_slice(bytes);
+fn tagged(out: &mut impl Out, tag: u8, bytes: &[u8]) {
+    out.bytes(&[tag]);
+    out.bytes(bytes);
 }
 
 fn fixed<const N: usize>(r: &mut Reader<'_>) -> Result<[u8; N], Malformed> {
@@ -390,6 +445,7 @@ fn get(r: &mut Reader<'_>) -> Result<Val, Malformed> {
 
 /// A set of distinct values held in memory up to an eighth of its grant, the rest in sorted
 /// runs of the spill file.
+#[derive(Debug)]
 pub struct Distinct {
     set: BTreeSet<Val>,
     arena: Arena,
@@ -420,6 +476,11 @@ impl Distinct {
 
     pub fn is_empty(&self) -> bool {
         self.set.is_empty() && self.runs.is_empty()
+    }
+
+    /// Returns whether the set holds `v`, or `None` once part of it has spilled.
+    pub fn holds(&self, v: &Val) -> Option<bool> {
+        self.runs.is_empty().then(|| self.set.contains(v))
     }
 
     /// Add `v`, spilling what memory holds past the cap or when the grant has no room for it.
@@ -519,6 +580,14 @@ pub struct Merge<'a, R: Runtime> {
     last: Option<Val>,
 }
 
+impl<R: Runtime> std::fmt::Debug for Merge<'_, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Merge")
+            .field("sources", &self.sources.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, R: Runtime> Merge<'a, R> {
     fn of(
         sp: &'a Spill<R>,
@@ -567,5 +636,41 @@ impl<'a, R: Runtime> Merge<'a, R> {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use adtb_sim::{Config, Outcome, Sim};
+
+    use super::{CHUNK, Records, Spill, Writer};
+    use crate::exec::Budget;
+    use crate::exec::value::Val;
+
+    #[test]
+    fn a_writer_holds_less_than_a_chunk_and_its_records_read_back_whole() {
+        let mut sim = Sim::new(0, Config::default());
+        let outcome = sim.run(|rt| {
+            let grant = Budget::new(1 << 20).admit(1 << 20).expect("a grant fits");
+            let sp = Spill::new(rt, grant, usize::MAX);
+            let records: Vec<Vec<Val>> = (0..=3 * CHUNK)
+                .step_by(97)
+                .map(|n| vec![Val::text(&"x".repeat(n)), Val::Int(n as i64)])
+                .collect();
+            let mut w = Writer::default();
+            for r in &records {
+                w.put(&sp, &r.iter().collect::<Vec<_>>())
+                    .expect("a spill write");
+                assert!(w.buf.len() < CHUNK, "a writer holds {} bytes", w.buf.len());
+            }
+            let stream = w.finish(&sp).expect("a spill write");
+            let mut read = Records::new(&sp, &stream);
+            let mut back = Vec::new();
+            while let Some(r) = read.read().expect("a spill read") {
+                back.push(r);
+            }
+            assert_eq!(records, back);
+        });
+        assert_eq!(Outcome::Finished, outcome);
     }
 }

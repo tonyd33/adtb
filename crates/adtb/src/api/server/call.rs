@@ -9,9 +9,11 @@ use std::task::Waker;
 use adtb_lang::schema::Committed as CommittedSchema;
 use adtb_lang::types::Ty;
 
-use crate::exec::{self, Arena, Exceeded, Grant, Resumable, Step, Stopped, Val};
+use crate::exec::{
+    self, Arena, Entry, Exceeded, Grant, Requested, Resumable, Step, Stopped, Ticket, Val,
+};
 use crate::mvcc::{Watch, Xid};
-use crate::runtime::Runtime;
+use crate::runtime::{Instant, Runtime};
 use crate::write::{
     self, Deferral, Local, Outcome, Produced, Production, Rerun, Text, Txn, either,
 };
@@ -61,6 +63,32 @@ enum Phase<R: Runtime> {
     /// A read's output is formed; its transaction stays open until the drain is acknowledged.
     Drain(Option<(TxnId, Txn)>),
     Over,
+}
+
+impl<R: Runtime> Phase<R> {
+    fn runs_statements(&self) -> bool {
+        matches!(
+            self,
+            Phase::Start | Phase::Deferring(_) | Phase::Writing(_) | Phase::Commanding(_)
+        )
+    }
+
+    /// Returns the id of the phase's open transaction, if it writes.
+    fn xid(&self) -> Option<Xid> {
+        match self {
+            Phase::Writing(w) => w.tx.as_ref().and_then(|(_, tx)| tx.xid()),
+            _ => None,
+        }
+    }
+
+    /// Returns when the phase's open transaction began.
+    fn began(&self) -> Option<Instant> {
+        match self {
+            Phase::Deferring(d) => Some(d.tx.began()),
+            Phase::Writing(w) => w.tx.as_ref().map(|(_, tx)| tx.began()),
+            _ => None,
+        }
+    }
 }
 
 /// A deferrable read waiting for its snapshot to be safe.
@@ -127,6 +155,9 @@ pub(super) struct Call<R: Runtime> {
     /// A role's call not yet recorded in the audit.
     role_call: Option<RoleCall<R>>,
     opts: TaskOptions,
+    /// Where the call waits in the budget's queue for its grant.
+    entry: Entry,
+    ticket: Option<Ticket>,
     grant: Option<Arc<Grant>>,
     phase: Phase<R>,
     /// Set once an abort record of the call's transaction failed: that failure is then the
@@ -159,7 +190,7 @@ impl<R: Runtime> Call<R> {
         shared: Arc<Shared<R>>,
         work: Work,
         role_call: Option<RoleCall<R>>,
-        opts: TaskOptions,
+        (opts, entry): (TaskOptions, Entry),
     ) -> Call<R> {
         Call {
             engine: Arc::downgrade(engine),
@@ -168,6 +199,8 @@ impl<R: Runtime> Call<R> {
             work,
             role_call,
             opts,
+            entry,
+            ticket: None,
             grant: None,
             phase: Phase::Start,
             unrecorded: Cell::new(false),
@@ -242,8 +275,14 @@ impl<R: Runtime> Call<R> {
         }
     }
 
+    /// Run the call's phases until one waits. A phase that runs statements holds the call's
+    /// grant only while it runs: the grant goes back to the budget before any wait, and the
+    /// call queues for it again, ordered by its transaction's start, before the phase resumes.
     fn advance(&mut self, e: &Engine<R>, waker: &Waker) -> Result<Step, Error> {
         loop {
+            if !self.admitted(e, waker)? {
+                return Ok(self.entry.deadline.map_or(Step::Wait, Step::WaitUntil));
+            }
             let then = match std::mem::replace(&mut self.phase, Phase::Over) {
                 Phase::Start => self.start(e)?,
                 Phase::Deferring(d) => self.defer(e, d, waker)?,
@@ -254,9 +293,74 @@ impl<R: Runtime> Call<R> {
                 Phase::Over => Then::Step(Step::Done),
             };
             if let Then::Step(s) = then {
+                if self.phase.runs_statements() {
+                    self.give_back_grant();
+                }
                 return Ok(s);
             }
         }
+    }
+
+    /// Returns whether the call holds its grant, taking it from the budget's queue when its
+    /// phase runs statements; else register `waker` with the queue. Fail with what stops the
+    /// call while it waits.
+    fn admitted(&mut self, e: &Engine<R>, waker: &Waker) -> Result<bool, Error> {
+        if self.grant.is_some() || !self.phase.runs_statements() {
+            return Ok(true);
+        }
+        let me = self.phase.xid();
+        let ticket = match self.ticket.take() {
+            Some(t) => t,
+            None => {
+                let entry = Entry {
+                    start: self.phase.began().unwrap_or(self.entry.start),
+                    ..self.entry
+                };
+                match e.db.request_grant(&entry) {
+                    Ok(Requested::Granted(g)) => {
+                        self.take_grant(g);
+                        return Ok(true);
+                    }
+                    Ok(Requested::Queued(t)) => {
+                        if let Some(x) = me {
+                            e.db.queued_for_grant(x);
+                        }
+                        t
+                    }
+                    Err(err) => return Err(e.write_error(TxnId(0), err)),
+                }
+            }
+        };
+        if let Some(g) = ticket.poll(waker) {
+            if let Some(x) = me {
+                e.db.left_grant_queue(x);
+            }
+            self.take_grant(g);
+            return Ok(true);
+        }
+        let requested = self.shared.state.lock(&self.shared.rt).request;
+        if let Some(r) = requested {
+            return Err(r.error());
+        }
+        self.opts.call.stops().check(&e.rt)?;
+        self.ticket = Some(ticket);
+        Ok(false)
+    }
+
+    fn take_grant(&mut self, grant: Arc<Grant>) {
+        self.shared.defer(|s| {
+            s.granted(&grant);
+            ((), [None, None])
+        });
+        self.grant = Some(grant);
+    }
+
+    fn give_back_grant(&mut self) {
+        self.grant = None;
+        self.shared.defer(|s| {
+            s.released();
+            ((), [None, None])
+        });
     }
 
     fn start(&mut self, e: &Engine<R>) -> Result<Then, Error> {
@@ -267,14 +371,6 @@ impl<R: Runtime> Call<R> {
         if let Some(r) = requested {
             return Err(r.error());
         }
-        let grant =
-            e.db.admit_grant()
-                .map_err(|err| e.write_error(TxnId(0), err))?;
-        self.shared.defer(|s| {
-            s.granted(&grant);
-            ((), [None, None])
-        });
-        self.grant = Some(grant);
         self.opts.call.stops().check(&e.rt)?;
         e.reads_after(self.opts.call.after)?;
         if let Work::Registered(b) = &self.work

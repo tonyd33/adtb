@@ -11,7 +11,7 @@ use adtb_lang::schema::{Committed, Generator, OnDelete, Schema, Stage};
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
-use crate::exec::{self, Val, from_stored_row, to_key};
+use crate::exec::{self, Held, Val, from_stored_row, to_key};
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
@@ -41,14 +41,17 @@ impl Eff {
 
 pub type Effects = BTreeSet<Eff>;
 
+/// Rows of a relation by key, each with its constructor, held in a statement's grant.
+pub type Referring = Held<BTreeMap<Val, (u32, Val)>>;
+
 /// The rows a statement's deletes remove.
 struct Deleted {
     /// Each row a delete or replace removes.
-    minus_written: BTreeSet<(RelId, Val)>,
+    minus_written: Held<BTreeSet<(RelId, Val)>>,
     /// The key of each row that goes, cascades included.
-    gone: BTreeSet<(RelId, Val)>,
+    gone: Held<BTreeSet<(RelId, Val)>>,
     /// The row of each key a cascade removes.
-    pre_rows: BTreeMap<(RelId, Val), Val>,
+    pre_rows: Held<BTreeMap<(RelId, Val), Val>>,
 }
 
 /// What a statement's write violates, besides the key of a relation.
@@ -200,6 +203,10 @@ pub struct Stmt<'a, R: Runtime> {
     caller: Option<Val>,
     pub options: exec::Options,
     pub stop: super::Stop,
+    /// The grant the statement's reads and executions take their memory from.
+    grant: Arc<exec::Grant>,
+    /// The spill file of the statement's own reads.
+    spill: exec::Spill<R>,
     pub store: Arc<exec::Store<R>>,
     drawn: RefCell<BTreeMap<(Arena, Val), Val>>,
     load: Cell<Option<i64>>,
@@ -214,7 +221,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         text: super::Text<'a>,
         root: Tm,
         options: exec::Options,
-        stop: super::Stop,
+        (stop, grant): (super::Stop, Arc<exec::Grant>),
     ) -> Result<Self, Error> {
         let schema = text.schema;
         let mut terms = text.terms.clone();
@@ -243,6 +250,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             caller: text.caller.cloned(),
             options,
             stop,
+            spill: exec::Spill::new(db.rt.clone(), grant.clone(), options.spill_bytes),
+            grant,
             store: db.store(tx),
             drawn: RefCell::default(),
             load: Cell::default(),
@@ -251,8 +260,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         })
     }
 
-    /// Returns a statement that only reads.
-    pub fn reader(db: &'a Database<R>, tx: &'a Txn) -> Self {
+    /// Returns the grant the statement's reads and executions take their memory from.
+    pub(super) fn grant(&self) -> &Arc<exec::Grant> {
+        &self.grant
+    }
+
+    /// Returns a statement that only reads, under `grant`.
+    pub fn reader(db: &'a Database<R>, tx: &'a Txn, grant: Arc<exec::Grant>) -> Self {
         let (terms, root) = ValidTerms::unit(&db.schema);
         Stmt {
             db,
@@ -269,6 +283,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             caller: None,
             options: db.options,
             stop: super::Stop::default(),
+            spill: exec::Spill::new(db.rt.clone(), grant.clone(), db.options.spill_bytes),
+            grant,
             store: db.store(tx),
             drawn: RefCell::default(),
             load: Cell::default(),
@@ -434,7 +450,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 x
             }
         };
-        let call = self.db.call(&self.store, self.options, &self.stop)?;
+        let call = self
+            .db
+            .call(&self.store, self.options, &self.stop, &self.grant)?;
         let bound = program.bind(|v| env.get(&v).cloned())?;
         let v = exec::execute(self.db.rt.clone(), bound, call)?;
         self.fill(a, v)
@@ -969,16 +987,6 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(Val::ctor(c, from_stored_row(&ctor.convs, stored)?))
     }
 
-    /// Returns the statement's grant, else an unlimited one.
-    fn grant(&self) -> Arc<exec::Grant> {
-        match &self.stop.grant {
-            Some(g) => g.clone(),
-            None => exec::Budget::new(usize::MAX)
-                .admit(usize::MAX)
-                .expect("a budget admits a grant of its whole limit"),
-        }
-    }
-
     /// Fail with what stops the statement, if it is stopped.
     pub(super) fn stopped(&self) -> Result<(), exec::Error> {
         self.stop.check(self.db.rt.now())
@@ -990,21 +998,19 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         id: IndexId,
         prefix: &[crate::key::Value],
         routes: &exec::Routes,
-    ) -> Result<Vec<exec::Named>, exec::Error> {
-        let grant = self.grant();
+    ) -> Result<Held<Vec<exec::Named>>, exec::Error> {
         let bounds = exec::ProbeBounds {
-            grant: &grant,
+            grant: &self.grant,
             check: &|| self.stopped(),
         };
         self.store.probe(id, prefix, routes, bounds)
     }
 
     /// Returns every row of `rel` the statement's reads see, of the constructors `of`, or all,
-    /// holding the batches it reads in the statement's grant when it has one.
-    pub fn rows(&self, rel: RelId, of: Option<&[u32]>) -> Result<Vec<(u32, Val)>, Error> {
+    /// held in the statement's grant.
+    pub fn rows(&self, rel: RelId, of: Option<&[u32]>) -> Result<Held<Vec<(u32, Val)>>, Error> {
         let r = self.rel(rel);
-        let grant = self.grant();
-        let mut out = Vec::new();
+        let mut out: Held<Vec<(u32, Val)>> = self.grant.held();
         for (c, ctor) in r.ctors.iter().enumerate() {
             let c = c as u32;
             if of.is_some_and(|s| !s.contains(&c)) {
@@ -1012,12 +1018,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
             let listing = self.store.pages(ctor.heap)?;
             let morsel = self.db.options.morsel_rows;
-            self.store.scan(ctor.heap, listing, morsel, &grant, |b| {
-                for i in 0..b.len() {
-                    out.push((c, self.row(rel, c, &b.row(i))?));
-                }
-                Ok(ControlFlow::Continue(()))
-            })?;
+            self.store
+                .scan(ctor.heap, listing, morsel, &self.grant, &self.spill, |b| {
+                    for i in 0..b.len() {
+                        out.push((c, self.row(rel, c, &b.row(i))?))?;
+                    }
+                    Ok(ControlFlow::Continue(()))
+                })?;
         }
         Ok(out)
     }
@@ -1074,21 +1081,20 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     }
 
     /// Returns each row of `rel` the statement's reads see in which a field of `fields`, by
-    /// constructor, names a key of `keys`, by target, found by probing the field's index.
+    /// constructor, names a key of `keys`, each with its target, found by probing the field's
+    /// index. The rows are held in the statement's grant, by key.
     pub fn referring(
         &self,
         rel: RelId,
         fields: &[Vec<&RefField>],
-        keys: &BTreeMap<RelId, BTreeSet<Val>>,
-    ) -> Result<Vec<(u32, Val)>, Error> {
+        keys: &BTreeSet<(RelId, Val)>,
+    ) -> Result<Referring, Error> {
         let r = self.rel(rel);
         let mut probed = BTreeSet::new();
-        let mut out = BTreeMap::new();
+        let mut out: Referring = self.grant.held();
         for (c, fs) in fields.iter().enumerate() {
             for f in fs {
-                let Some(targets) = keys.get(&f.target) else {
-                    continue;
-                };
+                let targets = keys.iter().filter(|(t, _)| *t == f.target).map(|(_, k)| k);
                 let at = (!f.header).then_some(c);
                 if !probed.insert((at, f.name.as_str())) {
                     continue;
@@ -1118,13 +1124,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         };
                         let v = self.row(rel, d, &stored)?;
                         if Self::names(f, &v)?.as_ref() == Some(k) {
-                            out.insert(self.key_of(rel, &v)?, (d, v));
+                            out.insert(self.key_of(rel, &v)?, (d, v))?;
                         }
                     }
                 }
             }
         }
-        Ok(out.into_values().collect())
+        Ok(out)
     }
 
     /// Derive the delete actions of the written effects, form the statement's change set,
@@ -1137,29 +1143,35 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Returns the rows the written effects delete, with every row a cascade deletes.
     fn deleted(&self, written: &Effects) -> Result<Deleted, Error> {
-        let mut minus_written: BTreeSet<(RelId, Val)> = BTreeSet::new();
-        let mut kept_keys: BTreeSet<(RelId, Val)> = BTreeSet::new();
-        let mut removed: BTreeSet<(RelId, Val)> = BTreeSet::new();
+        let mut minus_written: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
+        let mut kept_keys: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
+        let mut removed: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
         for e in written {
             match e {
                 Eff::Del(r, v) => {
-                    minus_written.insert((*r, v.clone()));
-                    removed.insert((*r, self.key_of(*r, v)?));
+                    minus_written.insert((*r, v.clone()))?;
+                    removed.insert((*r, self.key_of(*r, v)?))?;
                 }
                 Eff::Rep(r, v, n) => {
-                    minus_written.insert((*r, v.clone()));
-                    kept_keys.insert((*r, self.key_of(*r, n)?));
+                    minus_written.insert((*r, v.clone()))?;
+                    kept_keys.insert((*r, self.key_of(*r, n)?))?;
                 }
                 Eff::Ins(r, n) => {
-                    kept_keys.insert((*r, self.key_of(*r, n)?));
+                    kept_keys.insert((*r, self.key_of(*r, n)?))?;
                 }
             }
         }
-        let mut gone: BTreeSet<(RelId, Val)> = removed.difference(&kept_keys).cloned().collect();
-        let mut pre_rows: BTreeMap<(RelId, Val), Val> = BTreeMap::new();
+        let mut gone: Held<BTreeSet<(RelId, Val)>> = self.grant.held();
+        for k in removed {
+            if !kept_keys.contains(&k) {
+                gone.insert(k)?;
+            }
+        }
+        drop(kept_keys);
+        let mut pre_rows: Held<BTreeMap<(RelId, Val), Val>> = self.grant.held();
         loop {
             let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
-            let mut more = Vec::new();
+            let mut more: Held<Vec<(RelId, Val)>> = self.grant.held();
             for (r, fields) in self.referrers(&targets) {
                 if !fields
                     .iter()
@@ -1168,7 +1180,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 {
                     continue;
                 }
-                for (c, u) in self.referring(r, &fields, &by_target(&gone))? {
+                for (_, (c, u)) in self.referring(r, &fields, &gone)? {
                     let k = (r, self.key_of(r, &u)?);
                     if minus_written.contains(&(r, u.clone())) || gone.contains(&k) {
                         continue;
@@ -1178,15 +1190,17 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         hit |= f.action == OnDelete::Cascade && Self::names_gone(f, &u, &gone)?;
                     }
                     if hit {
-                        pre_rows.insert(k.clone(), u.clone());
-                        more.push(k);
+                        pre_rows.insert(k.clone(), u.clone())?;
+                        more.push(k)?;
                     }
                 }
             }
             if more.is_empty() {
                 break;
             }
-            gone.extend(more);
+            for k in more {
+                gone.insert(k)?;
+            }
         }
         Ok(Deleted {
             minus_written,
@@ -1205,9 +1219,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         } = deleted;
         let mut all = written;
         let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
-        let gone_keys = by_target(gone);
         for (r, fields) in self.referrers(&targets) {
-            for (c, u) in self.referring(r, &fields, &gone_keys)? {
+            for (_, (c, u)) in self.referring(r, &fields, gone)? {
                 if minus_written.contains(&(r, u.clone()))
                     || gone.contains(&(r, self.key_of(r, &u)?))
                 {
@@ -1255,7 +1268,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 add(&mut minus, *r, v.clone())?;
             }
         }
-        for (r, k) in gone {
+        for (r, k) in gone.iter() {
             let row = match pre_rows.get(&(*r, k.clone())) {
                 Some(u) => Some(u.clone()),
                 None => self.by_key(*r, k)?.map(|(_, _, u)| u),
@@ -1378,15 +1391,6 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
         Ok(())
     }
-}
-
-/// Returns the keys of `rows` by relation.
-fn by_target(rows: &BTreeSet<(RelId, Val)>) -> BTreeMap<RelId, BTreeSet<Val>> {
-    let mut out: BTreeMap<RelId, BTreeSet<Val>> = BTreeMap::new();
-    for (r, k) in rows {
-        out.entry(*r).or_default().insert(k.clone());
-    }
-    out
 }
 
 fn at<'v>(v: &'v Val, path: &[usize]) -> Option<&'v Val> {

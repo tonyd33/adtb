@@ -1,0 +1,33 @@
+# A delete whose cascade holds more rows than its statement's memory grant is refused for the
+# grant, and deletes every referrer under the default grant.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, n: I64 }
+  add relation users : User key id generate sequence
+  add type Post = { id: Key posts, owner: Key users on delete cascade, body: Text }
+  add relation posts : Post key id generate sequence
+
+run
+  insert users { id: users.key(1), n: 1 }
+  insert posts from (
+    from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    select { id: posts.key(a * 100 + b * 10 + c + 1), owner: users.key(1),
+             body: "post" ++ print(a * 100 + b * 10 + c + 1) })
+
+option query_memory_bytes 8192
+reopen
+
+error StatementLimit { limit: Memory { bytes: 8192 } }
+  delete u in users
+
+option query_memory_bytes default
+reopen
+
+run
+  delete u in users
+
+query
+  count(p for p in posts)
+----
+0

@@ -124,6 +124,18 @@ impl<R: Runtime> Engine<R> {
     }
 
     fn rebuild_all(&self, schema: &Schema, work: &Work, job: &Job<'_, R>) {
+        let grant = match self.db.rebuild_grant() {
+            Ok(g) => g,
+            Err(cause) => {
+                if let Some(c) = cause {
+                    let at = format!("reindex of {}: {c}", work.target);
+                    for &id in &work.indexes {
+                        self.keep_outcome(schema, id, work.run, Some(at.clone()));
+                    }
+                }
+                return;
+            }
+        };
         let no_vacuum = self.db.holding_off_vacuum();
         let phase = |p: Reindex| job.phase(p.name(), p.done());
         let marked = match self.catalog.begin_reindexing(&self.pager) {
@@ -144,7 +156,7 @@ impl<R: Runtime> Engine<R> {
                 online: work.online,
                 phase: &phase,
             };
-            match no_vacuum.rebuild(&rebuild) {
+            match no_vacuum.rebuild(&rebuild, &grant) {
                 Ok(all_freed) => {
                     reclaimed &= all_freed;
                     self.keep_outcome(schema, index, work.run, None);

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, ControlFlow, RangeBounds};
 use std::sync::Arc;
 
@@ -10,15 +10,17 @@ use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
 use crate::heap::{FieldType, Heap, HeapNo, Link, Version, refuse_named, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{Logged, Reader, ScanId, SerialId, Serializer, Writers};
+use crate::mvcc::{Logged, Reader, ScanId, SerialId, Serializer};
 use crate::plan::{self, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::steps::{Step, Steps};
 use crate::storage::{PageError, Pager, Pid, Quarantine};
 use adtb_sys::lock::Ranked;
 
-use super::memory::{Arena, Grant};
+use super::memory::{Arena, Footprint, Grant, Held};
+use super::passed::Passed;
 use super::reads::{AtMarker, AtSnapshot, Reads};
+use super::spill::Spill;
 use super::types::{ctors, repr};
 use super::value::{F32, F64, Val};
 use super::{Broken, Error, Rot};
@@ -32,6 +34,25 @@ pub struct Named {
     pub tid: Tid,
     entry: Option<(IndexId, Entry)>,
 }
+
+impl Footprint for Named {
+    fn footprint(&self) -> usize {
+        size_of::<Named>() + self.entry.as_ref().map_or(0, |(_, e)| row_size(&e.key))
+    }
+}
+
+/// An entry found in a heap: its encoding, constructor position and TID.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Found(Vec<u8>, u32, Tid);
+
+impl Footprint for Found {
+    fn footprint(&self) -> usize {
+        size_of::<Found>() + self.0.len()
+    }
+}
+
+/// One end of a range of an index field: its value and whether it is included, if it has one.
+pub type Edge = Option<(Value, bool)>;
 
 /// The heap of each constructor position an index probe reads, by position.
 pub type Routes = BTreeMap<u32, HeapId>;
@@ -437,38 +458,6 @@ impl Filling {
     }
 }
 
-/// The deleted versions a read of the past passed from a current heap, by inserter and deleter,
-/// held in an arena of the call's grant.
-struct Passed {
-    versions: HashMap<Writers, HashSet<Vec<Value>>>,
-    held: Arena,
-}
-
-impl Passed {
-    fn new(grant: &Arc<Grant>) -> Passed {
-        Passed {
-            versions: HashMap::new(),
-            held: grant.arena(),
-        }
-    }
-
-    fn hold(&mut self, v: &Version) -> Result<(), Error> {
-        self.held.grow(Writers::LEN + row_size(&v.row))?;
-        self.versions
-            .entry(v.header.writers)
-            .or_default()
-            .insert(v.row.clone());
-        Ok(())
-    }
-
-    /// Returns whether a version with `v`'s inserter, deleter and row was passed.
-    fn holds(&self, v: &Version) -> bool {
-        self.versions
-            .get(&v.header.writers)
-            .is_some_and(|rows| rows.contains(v.row.as_slice()))
-    }
-}
-
 /// Returns an estimate of the bytes `row` occupies.
 fn row_size(row: &[Value]) -> usize {
     row.iter().map(value_size).sum()
@@ -482,6 +471,21 @@ fn value_size(v: &Value) -> usize {
             Value::Record(fs) | Value::Sum { fields: fs, .. } => row_size(fs),
             _ => 0,
         }
+}
+
+/// The failure of a read of an index, its tree's failures mapped as [`index_error`] maps them.
+struct IndexRead(Error);
+
+impl From<btree::Error> for IndexRead {
+    fn from(e: btree::Error) -> IndexRead {
+        IndexRead(index_error(e))
+    }
+}
+
+impl From<Error> for IndexRead {
+    fn from(e: Error) -> IndexRead {
+        IndexRead(e)
+    }
 }
 
 fn index_error(e: btree::Error) -> Error {
@@ -600,10 +604,11 @@ impl<R: Runtime> Store<R> {
         listing: Listing,
         rows: usize,
         grant: &Arc<Grant>,
+        sp: &Spill<R>,
         each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
     ) -> Result<(), Error> {
         if let Some(past) = self.past_heap(id)? {
-            return self.scan_past(id, &listing.pages, past, rows, grant, each);
+            return self.scan_past(id, &listing.pages, past, (rows, grant, sp), each);
         }
         let flow = self.scan_pages(id, &listing.pages, rows, grant, each)?;
         if let ControlFlow::Break((early, n)) = flow {
@@ -616,19 +621,26 @@ impl<R: Runtime> Store<R> {
     /// Pass the visible rows on `pages` of heap `id` and then on every page of `past`, its
     /// history heap, to `each` as [`Store::scan_pages`] does, each version once though vacuum has
     /// copied it to `past` and not yet freed it. Hold every deleted version passed from `pages`
-    /// in `grant` until the scan ends.
+    /// in `grant`, spilling to `sp`, until the scan ends.
     fn scan_past(
         &self,
         id: HeapId,
         pages: &[Pid],
         past: &StoredHeap,
-        rows: usize,
-        grant: &Arc<Grant>,
+        (rows, grant, sp): (usize, &Arc<Grant>, &Spill<R>),
         mut each: impl FnMut(Batch) -> Result<ControlFlow<StopsEarly>, Error>,
     ) -> Result<(), Error> {
         let h = self.heap(id)?;
         let mut b = Filling::new(&h.row, rows, grant);
         let mut deleted = Passed::new(grant);
+        let mut pass = |row: &[Value]| {
+            if let Some((full, _held)) = b.push(row)?
+                && each(full)?.is_break()
+            {
+                return Ok(ControlFlow::Break(()));
+            }
+            Ok(ControlFlow::Continue(()))
+        };
         for now in [true, false] {
             let history;
             let (heap, pages) = if now {
@@ -641,22 +653,20 @@ impl<R: Runtime> Store<R> {
                 let flow = self.each_seen(heap, pid, |v| {
                     if v.header.writers.deleted() {
                         if now {
-                            deleted.hold(&v)?;
-                        } else if deleted.holds(&v) {
+                            deleted.hold(&v, sp)?;
+                        } else if !deleted.admits(&v, sp)? {
                             return Ok(ControlFlow::Continue(()));
                         }
                     }
-                    if let Some((full, _held)) = b.push(&v.row)?
-                        && each(full)?.is_break()
-                    {
-                        return Ok(ControlFlow::Break(()));
-                    }
-                    Ok(ControlFlow::Continue(()))
+                    pass(&v.row)
                 })?;
                 if flow.is_break() {
                     return Ok(());
                 }
             }
+        }
+        if deleted.rest(sp, |row| pass(&row))?.is_break() {
+            return Ok(());
         }
         match b.rest() {
             Some((last, _held)) => each(last).map(|_last| ()),
@@ -875,26 +885,40 @@ impl<R: Runtime> Store<R> {
         prefix: &[Value],
         routes: &Routes,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<Named>, Error> {
-        let bytes = self.encode_prefix(id, prefix)?;
-        let end = prefix_end(&bytes);
-        self.entries(id, Bound::Included(bytes), end, routes, bounds)
+    ) -> Result<Held<Vec<Named>>, Error> {
+        let mut held: Held<Vec<Named>> = bounds.grant.held();
+        self.probe_each(id, prefix, routes, bounds, &mut |n| held.push(n))?;
+        Ok(held)
     }
 
-    /// Returns the entries of index `id` whose leading key fields are `prefix` and whose next
-    /// field lies within `lo` and `hi` in the language's order, each bound its value and whether
-    /// it is included, as [`Store::probe`] does.
-    ///
-    /// Preconditions: the index has a field after `prefix`, and the field's type is ordered.
-    pub fn range(
+    /// Pass the entries [`Store::probe`] returns to `each`, in order, as the index is read.
+    pub fn probe_each(
         &self,
         id: IndexId,
         prefix: &[Value],
-        lo: Option<(Value, bool)>,
-        hi: Option<(Value, bool)>,
         routes: &Routes,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<Named>, Error> {
+        each: &mut dyn FnMut(Named) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let bytes = self.encode_prefix(id, prefix)?;
+        let end = prefix_end(&bytes);
+        self.entries(id, (Bound::Included(bytes), end), routes, bounds, each)
+    }
+
+    /// Pass the entries of index `id` whose leading key fields are `prefix` and whose next
+    /// field lies within `lo` and `hi` in the language's order, each bound its value and whether
+    /// it is included, to `each` as [`Store::probe_each`] does.
+    ///
+    /// Preconditions: the index has a field after `prefix`, and the field's type is ordered.
+    pub fn range_each(
+        &self,
+        id: IndexId,
+        prefix: &[Value],
+        (lo, hi): (Edge, Edge),
+        routes: &Routes,
+        bounds: ProbeBounds<'_>,
+        each: &mut dyn FnMut(Named) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let base = self.encode_prefix(id, prefix)?;
         let next = self.index(id)?.index.schema().components()[prefix.len()].clone();
         let dir = next.1;
@@ -913,7 +937,7 @@ impl<R: Runtime> Store<R> {
             Some((v, true)) => Bound::Included(at(&v)?),
             Some((v, false)) => match prefix_end(&at(&v)?) {
                 Bound::Excluded(end) => Bound::Included(end),
-                _ => return Ok(Vec::new()),
+                _ => return Ok(()),
             },
         };
         let end = match hi {
@@ -921,7 +945,7 @@ impl<R: Runtime> Store<R> {
             Some((v, true)) => prefix_end(&at(&v)?),
             Some((v, false)) => Bound::Excluded(at(&v)?),
         };
-        self.entries(id, start, end, routes, bounds)
+        self.entries(id, (start, end), routes, bounds, each)
     }
 
     fn encode_prefix(&self, id: IndexId, prefix: &[Value]) -> Result<Vec<u8>, Error> {
@@ -929,16 +953,16 @@ impl<R: Runtime> Store<R> {
         Ok(KeySchema::new(components[..prefix.len()].to_vec()).encode(prefix)?)
     }
 
-    /// Returns the entries of index `id` whose encodings lie between `lo` and `hi`, each with
-    /// its constructor position, for the constructors of `routes`.
+    /// Pass the entries of index `id` whose encodings lie between `lo` and `hi`, each with its
+    /// constructor position, for the constructors of `routes`, to `each` in order.
     fn entries(
         &self,
         id: IndexId,
-        lo: Bound<Vec<u8>>,
-        hi: Bound<Vec<u8>>,
+        (lo, hi): (Bound<Vec<u8>>, Bound<Vec<u8>>),
         routes: &Routes,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<Named>, Error> {
+        each: &mut dyn FnMut(Named) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         for &heap in routes.values() {
             self.heap(heap)?;
         }
@@ -949,7 +973,10 @@ impl<R: Runtime> Store<R> {
                 .pager
                 .is_quarantined(Quarantine::Index(ix.index.tree().owner()))
         {
-            return self.entries_from_heaps(id, rows, (&lo, &hi), routes, bounds);
+            for n in self.entries_from_heaps(id, rows, (&lo, &hi), routes, bounds)? {
+                each(n)?;
+            }
+            return Ok(());
         }
         let ctors: BTreeSet<CtorId> = ix
             .ctors
@@ -960,26 +987,24 @@ impl<R: Runtime> Store<R> {
         self.reads
             .probed(ix.index.tree().root(), lo.clone(), hi.clone(), ctors)
             .map_err(Error::Serialization)?;
-        let entries = ix
-            .index
-            .scan(
+        ix.index
+            .scan_each(
                 &self.pager,
                 lo.as_ref().map(Vec::as_slice),
                 hi.as_ref().map(Vec::as_slice),
+                |e| {
+                    let c = self.mapped(&ix.index, &ix.ctors, &e)?;
+                    if routes.contains_key(&c) {
+                        each(Named {
+                            ctor: c,
+                            tid: e.tid,
+                            entry: Some((id, e)),
+                        })?;
+                    }
+                    Ok::<_, IndexRead>(())
+                },
             )
-            .map_err(index_error)?;
-        let mut named = Vec::new();
-        for e in entries {
-            let c = self.mapped(&ix.index, &ix.ctors, &e)?;
-            if routes.contains_key(&c) {
-                named.push(Named {
-                    ctor: c,
-                    tid: e.tid,
-                    entry: Some((id, e)),
-                });
-            }
-        }
-        Ok(named)
+            .map_err(|IndexRead(e)| e)
     }
 
     /// Returns the constructor position `ctors` maps the constructor of `e`, an entry of `index`,
@@ -1007,12 +1032,11 @@ impl<R: Runtime> Store<R> {
         range: (&Bound<Vec<u8>>, &Bound<Vec<u8>>),
         routes: &Routes,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<Named>, Error> {
+    ) -> Result<Held<Vec<Named>>, Error> {
         let schema = self.index(id)?.index.schema();
         let types = self.key_types(id)?;
         let (lo, hi) = range;
-        let mut found = Vec::new();
-        let mut held = bounds.grant.arena();
+        let mut found: Held<Vec<Found>> = bounds.grant.held();
         for (&c, &heap) in rows.heaps.iter().filter(|(c, _)| routes.contains_key(c)) {
             let listing = self.pages(heap)?;
             let stored = &self.heap(heap)?.heap;
@@ -1039,24 +1063,26 @@ impl<R: Runtime> Store<R> {
                             hi.as_ref().map(Vec::as_slice),
                         );
                         if span.contains(bytes.as_slice()) {
-                            on_page.push((bytes, c, v.tid));
+                            on_page.push(Found(bytes, c, v.tid));
                         }
                     }
                     break on_page;
                 };
-                for (bytes, c, tid) in on_page {
-                    held.grow(bytes.len() + size_of::<(u32, Tid)>())?;
-                    found.push((bytes, c, tid));
+                for f in on_page {
+                    found.push(f)?;
                 }
             }
         }
         found.sort();
-        let named = |(_, ctor, tid)| Named {
-            ctor,
-            tid,
-            entry: None,
-        };
-        Ok(found.into_iter().map(named).collect())
+        let mut named: Held<Vec<Named>> = bounds.grant.held();
+        for Found(_, ctor, tid) in found {
+            named.push(Named {
+                ctor,
+                tid,
+                entry: None,
+            })?;
+        }
+        Ok(named)
     }
 
     /// Returns the key types of index `id`'s fields.

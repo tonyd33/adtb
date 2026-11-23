@@ -20,7 +20,7 @@ use super::ir::{
     Step,
 };
 use super::join::{Deferred, Probed, Table};
-use super::memory::Grant;
+use super::memory::{Grant, Held};
 use super::sched::Scheduler;
 use super::spill::{Distinct, Spill};
 use super::store::{Listing, Named, ProbeBounds, Routes, Store, from_stored_row, to_key};
@@ -669,10 +669,14 @@ impl<R: Runtime> Ctx<R> {
                     Some(listing) => listing,
                     None => self.store.pages(*heap)?,
                 };
-                self.store
-                    .scan(*heap, listing, self.options.morsel_rows, &self.grant, |b| {
-                        self.morsel(run, p, env, &b, out)
-                    })
+                self.store.scan(
+                    *heap,
+                    listing,
+                    self.options.morsel_rows,
+                    &self.grant,
+                    &self.spill,
+                    |b| self.morsel(run, p, env, &b, out),
+                )
             }
         }
     }
@@ -819,8 +823,9 @@ impl<R: Runtime> Ctx<R> {
                     grant: &self.grant,
                     check: &check,
                 };
-                let found =
-                    |_: u32, prefix: &[Value]| self.store.probe(*index, prefix, &ctors, bounds);
+                let found = |_: u32, prefix: &[Value], each: &mut Each<'_>| {
+                    self.store.probe_each(*index, prefix, &ctors, bounds, each)
+                };
                 let at = IndexEnd {
                     index: *index,
                     keys: &keys,
@@ -858,9 +863,10 @@ impl<R: Runtime> Ctx<R> {
                     grant: &self.grant,
                     check: &check,
                 };
-                let found = |r: u32, prefix: &[Value]| {
-                    let (l, h) = (los.get(&r).cloned(), his.get(&r).cloned());
-                    self.store.range(*index, prefix, l, h, &ctors, bounds)
+                let found = |r: u32, prefix: &[Value], each: &mut Each<'_>| {
+                    let span = (los.get(&r).cloned(), his.get(&r).cloned());
+                    self.store
+                        .range_each(*index, prefix, span, &ctors, bounds, each)
                 };
                 let at = IndexEnd {
                     index: *index,
@@ -881,7 +887,7 @@ impl<R: Runtime> Ctx<R> {
         at: &IndexEnd,
         f: &Frame,
         sel: &Sel,
-        mut found: impl FnMut(u32, &[Value]) -> Result<Vec<Named>, Error>,
+        mut found: impl FnMut(u32, &[Value], &mut Each<'_>) -> Result<(), Error>,
         out: &mut Distinct,
     ) -> Result<(), Error> {
         let types = self.store.key_types(at.index)?;
@@ -897,20 +903,21 @@ impl<R: Runtime> Ctx<R> {
                 .zip(k)
                 .map(|(t, v)| to_key(t, v))
                 .collect::<Result<_, _>>()?;
-            let mut seen = BTreeSet::new();
-            for n in found(r, &prefix)? {
+            let mut seen: Held<BTreeSet<Tid>> = self.grant.held();
+            found(r, &prefix, &mut |n| {
                 let Some(i) = at.routes.iter().position(|(rt, _)| rt.ctor == n.ctor) else {
                     unreachable!("the store returns only entries of routed constructors");
                 };
                 let Some((t, v)) = self.fetch(&at.routes[i].0, &n, k)? else {
-                    continue;
+                    return Ok(());
                 };
-                if seen.insert(t)
+                if seen.insert(t)?
                     && let Some((g, s)) = hits[i].push(r, v)
                 {
                     self.chain(run, &at.routes[i].1, 0, g, s, out)?;
                 }
-            }
+                Ok(())
+            })?;
         }
         for (rows, (_, chain)) in hits.into_iter().zip(at.routes) {
             if let Some((g, s)) = rows.rest() {
@@ -920,6 +927,9 @@ impl<R: Runtime> Ctx<R> {
         Ok(())
     }
 }
+
+/// What an index end passes each entry it reads to.
+type Each<'a> = dyn FnMut(Named) -> Result<(), Error> + 'a;
 
 /// An index end's probe: its index, each row's key values, its variable and its routes.
 struct IndexEnd<'a> {

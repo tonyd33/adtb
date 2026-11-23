@@ -27,6 +27,8 @@ use adtb_testkit::fixture::Fixture;
 use adtb_testkit::fuzz::{self, Kind};
 use adtb_testkit::{Rng, profile};
 
+#[path = "differential/memory.rs"]
+mod memory;
 #[path = "differential/migration_searches.rs"]
 mod migration_searches;
 #[path = "differential/migrations.rs"]

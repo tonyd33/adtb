@@ -9,6 +9,7 @@ mod ir;
 mod join;
 pub mod layout;
 mod memory;
+mod passed;
 mod prim;
 mod reads;
 mod rot;
@@ -33,7 +34,7 @@ pub use class::Class;
 pub use host::admit;
 pub use host::{HostBody, HostError, Hosts};
 pub use ir::{Bound, Program, compile};
-pub use memory::{Arena, Budget, Grant};
+pub use memory::{Arena, Budget, Footprint, Grant, Held, Released, Requested, Ticket};
 pub use prim::print;
 #[cfg(any(test, feature = "testing"))]
 pub use reads::Reads;
@@ -41,9 +42,10 @@ pub use rot::{Rot, detail};
 #[cfg(any(test, feature = "testing"))]
 pub use sched::{Admission, Task};
 pub use sched::{Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped};
+pub use spill::{Distinct, Merge, Spill};
 pub use store::{
-    Bindings, Histories, IndexedRows, Named, PastReads, ProbeBounds, Routes, RowKeys, Store,
-    StoredHeap, StoredIndex,
+    Bindings, Histories, IndexedRows, Listing, Named, PastReads, ProbeBounds, Routes, RowKeys,
+    Store, StoredHeap, StoredIndex,
 };
 pub use store::{Conv, conv, from_stored, from_stored_row, to_key, to_stored};
 pub use stream::{Produced, Production, produce};
@@ -166,6 +168,8 @@ pub enum Error {
     /// The evaluation reached `reject` with this text.
     Rejected(String),
     Cancelled,
+    /// The queue of calls waiting for memory was full.
+    Overloaded,
     /// The call's deadline passed.
     DeadlineExceeded,
     /// The evaluation reached a host function, by its name, with no body bound.
@@ -390,7 +394,7 @@ fn start<R: Runtime>(
         ..program.shared.clone()
     };
     let cx = Arc::new(run::Ctx {
-        spill: spill::Spill::new(rt.clone(), call.grant.clone(), call.options.spill_bytes),
+        spill: Spill::new(rt.clone(), call.grant.clone(), call.options.spill_bytes),
         rt,
         shared,
         program,

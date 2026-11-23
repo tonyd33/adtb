@@ -647,6 +647,9 @@ impl Planner<'_> {
         if self.scalar(t) {
             return Ok(Eval::Expr(t));
         }
+        if let Some(past) = self.folded_in_the_past(t) {
+            return past;
+        }
         let ty = self.ty(t);
         match self.kind(t) {
             Kind::Fix(..) if self.bounded => Err(Error::Outside("fix")),
@@ -777,6 +780,38 @@ impl Planner<'_> {
                 Ok(wrap_eval(lets, Eval::Expr(e)))
             }
         }
+    }
+
+    /// Returns `t`, a fold over a read of the past whose body reads nothing, planned as that read
+    /// of the fold over the read's body.
+    fn folded_in_the_past(&mut self, t: Tm) -> Option<Result<Eval, Error>> {
+        let (source, parts) = match self.kind(t) {
+            Kind::Agg {
+                op, source, body, ..
+            } if !matches!(op, Agg::User(_)) => (source, vec![body]),
+            Kind::Exists(s) | Kind::IsEmpty(s) => (s, Vec::new()),
+            _ => return None,
+        };
+        let Kind::At {
+            instant,
+            point,
+            pins,
+            body,
+        } = self.kind(source)
+        else {
+            return None;
+        };
+        if self.past || !parts.into_iter().all(|p| self.scalar(p)) {
+            return None;
+        }
+        let new: Vec<Tm> = self
+            .t
+            .children(t)
+            .into_iter()
+            .map(|c| if c == source { body } else { c })
+            .collect();
+        let folded = self.b().rebuild_kept(t, &new);
+        Some(self.at(instant, point, pins, folded))
     }
 
     /// Returns the read of `body` at the state `point` names, planned apart from every query

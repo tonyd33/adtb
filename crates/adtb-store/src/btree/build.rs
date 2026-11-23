@@ -60,30 +60,82 @@ pub fn merge_runs(
             heads.push(Reverse((e, i)));
         }
     }
-    let mut out: Vec<Vec<u8>> = Vec::new();
-    let mut counted: Option<Vec<u8>> = None;
-    while let Some(Reverse((e, i))) = heads.pop() {
-        if stop() {
-            return Err(BuildError::Stopped);
-        }
+    let sorted = std::iter::from_fn(|| {
+        let Reverse((e, i)) = heads.pop()?;
         if let Some(next) = runs[i].next() {
             heads.push(Reverse((next, i)));
         }
-        let key = &e.entry[..e.key_len];
-        if counted.as_ref().is_some_and(|c| !c.starts_with(key)) {
-            counted = None;
-        }
-        if unique && e.counted {
-            if counted.as_ref().is_some_and(|c| *c != e.entry) {
-                return Err(BuildError::Duplicate(key.to_vec()));
-            }
-            counted = Some(e.entry.clone());
-        }
-        if out.last() != Some(&e.entry) {
-            out.push(e.entry);
+        Some(Ok(e))
+    });
+    Merged::new(sorted, unique, stop).collect()
+}
+
+/// The entries of runs merged in order, each once.
+///
+/// Its items fail with `Duplicate` when `unique` and two different entries of one key both
+/// count, and with `Stopped` once `stop` returns true, which it is asked before each entry.
+pub struct Merged<'s, I> {
+    sorted: I,
+    unique: bool,
+    stop: &'s dyn Fn() -> bool,
+    /// The entry of the current key that counts, if one has.
+    counted: Option<Vec<u8>>,
+    last: Option<Vec<u8>>,
+}
+
+impl<I> std::fmt::Debug for Merged<'_, I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Merged")
+            .field("unique", &self.unique)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'s, I> Merged<'s, I> {
+    /// Returns the distinct entries of `sorted`, the entries of runs in order.
+    pub fn new(sorted: I, unique: bool, stop: &'s dyn Fn() -> bool) -> Merged<'s, I> {
+        Merged {
+            sorted,
+            unique,
+            stop,
+            counted: None,
+            last: None,
         }
     }
-    Ok(out)
+}
+
+impl<I, E> Iterator for Merged<'_, I>
+where
+    I: Iterator<Item = Result<RunEntry, E>>,
+    E: From<BuildError>,
+{
+    type Item = Result<Vec<u8>, E>;
+
+    fn next(&mut self) -> Option<Result<Vec<u8>, E>> {
+        loop {
+            let e = match self.sorted.next()? {
+                Ok(e) => e,
+                Err(err) => return Some(Err(err)),
+            };
+            if (self.stop)() {
+                return Some(Err(BuildError::Stopped.into()));
+            }
+            let key = &e.entry[..e.key_len];
+            if self.counted.as_ref().is_some_and(|c| !c.starts_with(key)) {
+                self.counted = None;
+            }
+            if self.unique && e.counted {
+                if self.counted.as_ref().is_some_and(|c| *c != e.entry) {
+                    return Some(Err(BuildError::Duplicate(key.to_vec()).into()));
+                }
+                self.counted = Some(e.entry.clone());
+            }
+            if self.last.as_ref() != Some(&e.entry) {
+                self.last = Some(e.entry.clone());
+                return Some(Ok(e.entry));
+            }
+        }
+    }
 }
 
 /// The trees of one index: its own, and its history tree when history is kept.
@@ -184,86 +236,109 @@ fn page_end(page_size: usize, items: &[Item], start: usize, low: usize, level: u
     end
 }
 
-/// Write `items` as the pages of `level`, left to right, each logged once. Returns each page's
-/// low key, empty for the leftmost, and its id; every page written is added to `made`.
-fn write_level<R: Runtime>(
+/// Write `items` as the pages of `level`, left to right, each logged once, holding at most a
+/// page of them past the page being written. Returns each page's low key, empty for the
+/// leftmost, and its id; every page written is added to `made`.
+fn write_level<R: Runtime, E: From<BuildError>>(
     pager: &Pager<R>,
     owner: u32,
     level: u16,
-    items: &[Item],
+    items: &mut dyn Iterator<Item = Result<Item, E>>,
     made: &mut Vec<Pid>,
     stop: &dyn Fn() -> bool,
-) -> Result<Vec<(Vec<u8>, Pid)>, BuildError> {
+) -> Result<Vec<(Vec<u8>, Pid)>, E> {
+    let capacity = node::capacity(pager.page_size());
+    let mut buf: Vec<Item> = Vec::new();
+    let mut held = 0;
+    let mut more = true;
     let mut out = Vec::new();
     let mut new = pager.reserve();
-    let mut pid = new.page(FORMAT, kind_of(level), owner)?;
-    let mut start = 0;
+    let mut pid = new
+        .page(FORMAT, kind_of(level), owner)
+        .map_err(BuildError::from)?;
     let mut low: Option<Vec<u8>> = None;
     loop {
         if stop() {
-            return Err(BuildError::Stopped);
+            return Err(BuildError::Stopped.into());
+        }
+        while more && (held <= capacity || buf.len() < 2) {
+            match items.next().transpose()? {
+                Some(item) => {
+                    held += item.cost();
+                    buf.push(item);
+                }
+                None => more = false,
+            }
         }
         let fence = low.as_ref().map_or(0, |l| node::item_cost(l.len(), level));
-        let end = page_end(pager.page_size(), items, start, fence, level);
-        let high = (end < items.len()).then(|| {
+        let end = page_end(pager.page_size(), &buf, 0, fence, level);
+        let high = (end < buf.len()).then(|| {
             if level == 0 {
-                separator(&items[end - 1].last(), &items[end].first())
+                separator(&buf[end - 1].last(), &buf[end].first())
             } else {
-                items[end].first()
+                buf[end].first()
             }
         });
         let mut next = pager.reserve();
         let right = high
             .is_some()
             .then(|| next.page(FORMAT, kind_of(level), owner))
-            .transpose()?;
-        pager.update_with(new, &[pid], |p| {
-            let bounds = Bounds {
-                low: low.as_deref(),
-                high: high.as_deref(),
-                right,
-            };
-            node::build(p[0], level, &items[start..end], bounds);
-        })?;
+            .transpose()
+            .map_err(BuildError::from)?;
+        pager
+            .update_with(new, &[pid], |p| {
+                let bounds = Bounds {
+                    low: low.as_deref(),
+                    high: high.as_deref(),
+                    right,
+                };
+                node::build(p[0], level, &buf[..end], bounds);
+            })
+            .map_err(BuildError::from)?;
         made.push(pid);
         out.push((low.take().unwrap_or_default(), pid));
         let Some(right) = right else {
             return Ok(out);
         };
+        held -= buf.drain(..end).map(|i| i.cost()).sum::<usize>();
         new = next;
         pid = right;
-        start = end;
         low = high;
     }
 }
 
 impl BTree {
-    /// Returns a new tree of `entries`, sorted and distinct, whose pages carry `owner`. Leaves are
-    /// filled left to right and each level is built from the first keys of the level below.
+    /// Returns a new tree of `entries`, sorted and distinct, whose pages carry `owner`, reading
+    /// them as its leaves are written. Leaves are filled left to right and each level is built
+    /// from the first keys of the level below.
     ///
-    /// Every page written is added to `made`, a failed build's included. Fail with `Stopped` once
-    /// `stop` returns true, which it is asked before each page, and with `Unsorted` before
-    /// writing any page when an entry is not above the one before it.
-    pub fn bulk<R: Runtime>(
+    /// Every page written is added to `made`, a failed build's included. Fail with the first
+    /// failure of `entries`, with `Stopped` once `stop` returns true, which it is asked before each
+    /// page, and with `Unsorted` at an entry not above the one before it.
+    pub fn bulk<R: Runtime, E: From<BuildError>>(
         pager: &Pager<R>,
         owner: u32,
-        entries: Vec<Vec<u8>>,
+        entries: impl IntoIterator<Item = Result<Vec<u8>, E>>,
         made: &mut Vec<Pid>,
         stop: &dyn Fn() -> bool,
-    ) -> Result<BTree, BuildError> {
-        if let Some(w) = entries.windows(2).find(|w| w[1] <= w[0]) {
-            return Err(BuildError::Unsorted(w[1].clone()));
-        }
-        let items: Vec<Item> = entries.into_iter().map(Item::entry).collect();
+    ) -> Result<BTree, E> {
+        let mut before: Option<Vec<u8>> = None;
+        let mut leaves = entries.into_iter().map(|e| -> Result<Item, E> {
+            let e = e?;
+            if before.as_ref().is_some_and(|b| e <= *b) {
+                return Err(BuildError::Unsorted(e).into());
+            }
+            before = Some(e.clone());
+            Ok(Item::entry(e))
+        });
         let mut level = 0;
-        let mut pages = write_level(pager, owner, level, &items, made, stop)?;
+        let mut pages = write_level(pager, owner, level, &mut leaves, made, stop)?;
         while pages.len() > 1 {
             level += 1;
-            let links: Vec<Item> = pages
+            let mut links = pages
                 .into_iter()
-                .map(|(low, pid)| Item::link(low, pid))
-                .collect();
-            pages = write_level(pager, owner, level, &links, made, stop)?;
+                .map(|(low, pid)| Ok::<_, E>(Item::link(low, pid)));
+            pages = write_level(pager, owner, level, &mut links, made, stop)?;
         }
         Ok(BTree::open(pages[0].1, owner))
     }

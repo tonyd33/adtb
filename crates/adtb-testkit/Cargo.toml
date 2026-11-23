@@ -18,6 +18,7 @@ adtb-sys = { workspace = true, optional = true }
 unicode-normalization = { version = "0.1.26", default-features = false }
 
 [dev-dependencies]
+adtb-heap-cap.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb = { workspace = true, features = ["testing"] }
 adtb-conformance.workspace = true

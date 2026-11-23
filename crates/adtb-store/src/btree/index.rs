@@ -141,16 +141,29 @@ impl Index {
     fn decode_all<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        mut cursor: Cursor,
+        cursor: Cursor,
     ) -> Result<Vec<Entry>, Error> {
         let mut out = Vec::new();
+        self.decode_each(pager, cursor, |e| {
+            out.push(e);
+            Ok::<_, Error>(())
+        })?;
+        Ok(out)
+    }
+
+    fn decode_each<R: Runtime, E: From<Error>>(
+        &self,
+        pager: &Pager<R>,
+        mut cursor: Cursor,
+        mut each: impl FnMut(Entry) -> Result<(), E>,
+    ) -> Result<(), E> {
         while let Some(bytes) = cursor.next(pager)? {
             match self.schema.decode_entry(&bytes) {
-                Ok(e) => out.push(e),
-                Err(e) => return Err(self.undecoded(pager, &bytes, e)),
+                Ok(e) => each(e)?,
+                Err(e) => return Err(self.undecoded(pager, &bytes, e).into()),
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Returns the entries whose encoding starts with `prefix`, in order.
@@ -170,6 +183,18 @@ impl Index {
         hi: Bound<&[u8]>,
     ) -> Result<Vec<Entry>, Error> {
         self.decode_all(pager, self.tree.range(lo, hi))
+    }
+
+    /// Pass the entries whose encodings lie between `lo` and `hi` to `each`, in order, stopping
+    /// at its first failure.
+    pub fn scan_each<R: Runtime, E: From<Error>>(
+        &self,
+        pager: &Pager<R>,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        each: impl FnMut(Entry) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.decode_each(pager, self.tree.range(lo, hi), each)
     }
 
     /// Refuse the leaf holding `entry` as a stray. Returns the refusal, the error reaching

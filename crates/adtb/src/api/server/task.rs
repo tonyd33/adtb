@@ -659,7 +659,7 @@ pub(super) fn submit<R: Runtime>(
         let id = t.on_cancel(Waker::from(stopper.clone()));
         (t, id)
     });
-    let call = Call::new(e, shared.clone(), work, role_call, opts);
+    let call = Call::new(e, shared.clone(), work, role_call, (opts, entry));
     match sched.admit(entry, Box::new(call)) {
         Ok(admitted) => {
             if stopper.admitted.set(admitted.clone()).is_err() {

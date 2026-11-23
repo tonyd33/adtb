@@ -450,6 +450,11 @@ impl Error {
                 detail,
             }),
             exec::Error::Cancelled => Error::rejected(RejectReason::Cancelled),
+            exec::Error::Overloaded => Error::Retry {
+                reason: RetryReason::Overloaded {
+                    retry_after: Duration::ZERO,
+                },
+            },
             exec::Error::DeadlineExceeded => Error::rejected(RejectReason::DeadlineExceeded),
             exec::Error::MissingFunction(function) => Error::Fatal {
                 reason: FatalReason::MissingFunction { function },

@@ -516,6 +516,20 @@ fn roomy() -> Arc<exec::Grant> {
     Budget::new(1 << 30).admit(64 << 20).expect("a grant fits")
 }
 
+/// Pass the visible rows of `listing` to `each` as [`Store::scan`] does, under a roomy grant
+/// and an unbounded spill.
+fn scan(
+    store: &Store<SimRuntime>,
+    heap: HeapId,
+    listing: exec::Listing,
+    rows: usize,
+    each: impl FnMut(batch::Batch) -> Result<ControlFlow<StopsEarly>, Error>,
+) -> Result<(), Error> {
+    let grant = roomy();
+    let sp = exec::Spill::new(store.pager().rt().clone(), grant.clone(), usize::MAX);
+    store.scan(heap, listing, rows, &grant, &sp, each)
+}
+
 /// The reads that count the versions whose visibility they decide.
 struct Counted {
     inner: Arc<dyn Reads>,
@@ -587,11 +601,10 @@ fn rereading(store: &Store<SimRuntime>, reads: Arc<dyn Reads>) -> Store<SimRunti
 fn versions(store: &Store<SimRuntime>, count: &Counted, heap: HeapId) -> usize {
     count.take();
     let listing = store.pages(heap).expect("a listing");
-    store
-        .scan(heap, listing, 1000, &roomy(), |_| {
-            Ok(ControlFlow::Continue(()))
-        })
-        .expect("a scan");
+    scan(store, heap, listing, 1000, |_| {
+        Ok(ControlFlow::Continue(()))
+    })
+    .expect("a scan");
     count.take()
 }
 
@@ -604,19 +617,17 @@ fn a_scan_passes_its_first_batch_before_it_reads_the_heap_s_last_page() {
         let total = versions(&store, &count, heap);
         let mut first = None;
         let listing = store.pages(heap).expect("a listing");
-        store
-            .scan(heap, listing, 7, &roomy(), |_| {
-                first.get_or_insert(count.take());
-                Ok(ControlFlow::Continue(()))
-            })
-            .expect("a scan");
+        scan(&store, heap, listing, 7, |_| {
+            first.get_or_insert(count.take());
+            Ok(ControlFlow::Continue(()))
+        })
+        .expect("a scan");
         let listing = store.pages(heap).expect("a listing");
         count.take();
-        store
-            .scan(heap, listing, 7, &roomy(), |_| {
-                Ok(ControlFlow::Break(StopsEarly::tested()))
-            })
-            .expect("a stopped scan");
+        scan(&store, heap, listing, 7, |_| {
+            Ok(ControlFlow::Break(StopsEarly::tested()))
+        })
+        .expect("a stopped scan");
         (total, first.expect("a batch"), count.take())
     });
     assert!(
@@ -649,7 +660,7 @@ fn probed(
     store: &Store<SimRuntime>,
     index: IndexId,
     routes: &Routes,
-) -> Result<Vec<exec::Named>, Error> {
+) -> Result<exec::Held<Vec<exec::Named>>, Error> {
     let grant = roomy();
     let bounds = ProbeBounds {
         grant: &grant,
@@ -673,7 +684,7 @@ fn a_store_reads_the_heaps_of_its_reader_s_scope_and_refuses_another() {
                 scoped
                     .pages(heap)
                     .and_then(|listing| {
-                        scoped.scan(heap, listing, 1000, &roomy(), |b| {
+                        scan(&scoped, heap, listing, 1000, |b| {
                             n += b.len();
                             Ok(ControlFlow::Continue(()))
                         })
@@ -770,7 +781,7 @@ fn a_store_narrowed_to_a_plan_s_reads_refuses_a_heap_or_index_they_do_not_list()
                 narrowed
                     .pages(heap)
                     .and_then(|listing| {
-                        narrowed.scan(heap, listing, 1000, &roomy(), |b| {
+                        scan(&narrowed, heap, listing, 1000, |b| {
                             n += b.len();
                             Ok(ControlFlow::Continue(()))
                         })

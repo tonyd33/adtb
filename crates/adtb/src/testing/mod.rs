@@ -246,6 +246,17 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.tested_db().pacer().charged(rt)
     }
 
+    /// Returns the bytes the memory grants now admitted hold and how many calls wait for one.
+    pub fn granted_and_waiting(self) -> (usize, usize) {
+        self.db.tested_db().granted_and_waiting()
+    }
+
+    /// Returns the most the last call's statements held of their memory grant at once, and the
+    /// bytes they spilled.
+    pub fn charged_peak(self) -> (usize, usize) {
+        self.db.tested_db().charged()
+    }
+
     /// Returns how many pauses calls have made at a rebuild's gate or for the vacuum lock.
     pub fn rebuild_waits(self) -> u64 {
         self.db.tested_db().rebuild_waits()

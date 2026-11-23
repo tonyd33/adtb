@@ -275,6 +275,12 @@ impl Val {
     }
 }
 
+impl super::memory::Footprint for Val {
+    fn footprint(&self) -> usize {
+        self.size()
+    }
+}
+
 pub(crate) fn mistyped(want: &'static str, v: &Val) -> Error {
     Broken::Mistyped {
         want,

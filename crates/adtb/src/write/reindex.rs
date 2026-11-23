@@ -17,7 +17,7 @@ use std::time::Duration;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::HeldRank;
 
-use crate::btree::build::{BuildError, IndexLatched, LatchedTree, RunEntry, merge_runs, retire};
+use crate::btree::build::{BuildError, IndexLatched, LatchedTree, Merged, RunEntry, retire};
 use crate::btree::{self, BTree};
 use crate::exec;
 use crate::heap::{Heap, Refused};
@@ -124,10 +124,12 @@ impl<'d, R: Runtime> VacuumHold<'d, R> {
         &self.vacuuming
     }
 
-    /// Rebuild one index under this lock and swap it in, clearing its mark in the same atomic
-    /// step. Returns whether every old page was freed.
-    pub fn rebuild(&self, job: &Rebuild<'_>) -> Result<bool, Failure> {
-        self.db.rebuild(job)
+    /// Rebuild one index under this lock within `grant` and swap it in, clearing its mark in the
+    /// same atomic step. Returns whether every old page was freed.
+    ///
+    /// Precondition: `grant` was taken before this lock.
+    pub fn rebuild(&self, job: &Rebuild<'_>, grant: &Arc<exec::Grant>) -> Result<bool, Failure> {
+        self.db.rebuild(job, grant)
     }
 }
 
@@ -178,32 +180,50 @@ impl<R: Runtime> Drop for Offline<'_, R> {
     }
 }
 
-/// How the rows of one index's constructors give its entries.
+/// How the rows of one index's constructors give its entries, held in a grant and spilled.
 pub(super) struct Scan<'d, R: Runtime> {
     pub(super) db: &'d Database<R>,
     pub(super) rel: &'d Rel,
     pub(super) id: IndexId,
     pub(super) ix: &'d Indexed,
+    grant: Arc<exec::Grant>,
+    spill: exec::Spill<R>,
 }
 
-impl<R: Runtime> Scan<'_, R> {
-    /// Returns a sorted run of the entries of every version in the constructor's heap, on pages
-    /// changed at or after `since`. An entry counts when `tx` sees its version.
+impl<'d, R: Runtime> Scan<'d, R> {
+    /// Returns the scan of index `id` of `rel`, under `grant`.
+    pub(super) fn new(
+        db: &'d Database<R>,
+        rel: &'d Rel,
+        (id, ix): (IndexId, &'d Indexed),
+        grant: Arc<exec::Grant>,
+    ) -> Result<Scan<'d, R>, Error> {
+        Ok(Scan {
+            db,
+            rel,
+            id,
+            ix,
+            spill: exec::Spill::new(db.rt.clone(), grant.clone(), db.options.spill_bytes),
+            grant,
+        })
+    }
+
+    /// Add to `out` the entries of every version in the constructor's heap, on pages changed at
+    /// or after `since`. An entry counts when `tx` sees its version.
     ///
     /// Fail with `Cancelled` once rebuilds are stopped.
     fn run(
         &self,
         heap: &Heap,
         (ctor, c): (CtorId, u32),
-        since: Option<Lsn>,
-        tx: Option<&Txn>,
-    ) -> Result<Vec<RunEntry>, Error> {
+        (since, tx): (Option<Lsn>, Option<&Txn>),
+        out: &mut exec::Distinct,
+    ) -> Result<(), Error> {
         let db = self.db;
         let stored = &db.bindings.indexes()[&self.id];
         let schema = stored.index.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
         let reader = tx.map(|tx| db.session.txns.reader(&db.pager, tx.hold(), None));
-        let mut out = Vec::new();
         for pid in heap.pages(&db.pager)? {
             db.rebuild_stopped()?;
             if let Some(since) = since
@@ -239,55 +259,94 @@ impl<R: Runtime> Scan<'_, R> {
                         ctor,
                         tid: root,
                     })?;
-                    out.push(RunEntry {
-                        entry,
-                        key_len,
-                        counted,
-                    });
+                    out.insert(
+                        held(RunEntry {
+                            entry,
+                            key_len,
+                            counted,
+                        }),
+                        &self.spill,
+                    )?;
                 }
             }
         }
-        out.sort_unstable();
-        Ok(out)
+        Ok(())
     }
 
+    /// Returns the entries of every version in the heaps of the index's constructors, on pages
+    /// changed at or after `since`, each counting when `tx` sees its version.
     pub(super) fn runs(
         &self,
         since: Option<Lsn>,
         tx: Option<&Txn>,
-    ) -> Result<Vec<Vec<RunEntry>>, Error> {
-        self.db.bindings.indexes()[&self.id]
-            .ctors
-            .iter()
-            .map(|(&ctor, &c)| {
-                let heap = &self.db.bindings.heaps()[&self.rel.ctors[c as usize].heap].heap;
-                self.run(heap, (ctor, c), since, tx)
-            })
-            .collect()
+    ) -> Result<exec::Distinct, Error> {
+        let mut out = exec::Distinct::new(&self.grant);
+        for (&ctor, &c) in &self.db.bindings.indexes()[&self.id].ctors {
+            let heap = &self.db.bindings.heaps()[&self.rel.ctors[c as usize].heap].heap;
+            self.run(heap, (ctor, c), (since, tx), &mut out)?;
+        }
+        Ok(out)
     }
 
-    /// Returns a sorted run of the entries of every version in each history heap of `retained`.
-    fn past_runs(&self, retained: &Retained) -> Result<Vec<Vec<RunEntry>>, Error> {
-        self.db.bindings.indexes()[&self.id]
-            .ctors
-            .iter()
-            .map(|(&ctor, &c)| {
-                let heap = &retained.heaps[&self.rel.ctors[c as usize].heap].heap;
-                self.run(heap, (ctor, c), None, None)
-            })
-            .collect()
+    /// Returns the entries of every version in each history heap of `retained`.
+    fn past_runs(&self, retained: &Retained) -> Result<exec::Distinct, Error> {
+        let mut out = exec::Distinct::new(&self.grant);
+        for (&ctor, &c) in &self.db.bindings.indexes()[&self.id].ctors {
+            let heap = &retained.heaps[&self.rel.ctors[c as usize].heap].heap;
+            self.run(heap, (ctor, c), (None, None), &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// Returns the entries of `runs` in order and each once, as [`Merged`] does.
+    pub(super) fn merged<'s>(
+        &'s self,
+        runs: exec::Distinct,
+        unique: bool,
+        stop: &'s dyn Fn() -> bool,
+    ) -> Result<impl Iterator<Item = Result<Vec<u8>, Error>> + 's, Error> {
+        let mut m = runs.merge(&self.spill)?;
+        let sorted = std::iter::from_fn(move || match m.pop() {
+            Ok(v) => v.map(unheld),
+            Err(e) => Some(Err(e.into())),
+        });
+        Ok(Merged::new(sorted, unique, stop))
     }
 
     /// Insert into `tree` the entries of versions on pages changed at or after `since`. Returns
     /// the log's end when it started.
     fn catch_up(&self, tree: BTree, since: Lsn) -> Result<Lsn, Error> {
         let end = self.db.pager.appended();
-        for run in self.runs(Some(since), None)? {
-            for e in run {
-                tree.insert(&self.db.pager, &e.entry)?;
-            }
+        let runs = self.runs(Some(since), None)?;
+        for e in self.merged(runs, false, &|| false)? {
+            tree.insert(&self.db.pager, &e?)?;
         }
         Ok(end)
+    }
+}
+
+/// Returns `e` as a value a spilling set holds, ordered as entries are.
+fn held(e: RunEntry) -> exec::Val {
+    exec::Val::record(vec![
+        exec::Val::Bytes(Arc::from(e.entry)),
+        exec::Val::Int(i64::try_from(e.key_len).expect("a key is shorter than 2^63 bytes")),
+        exec::Val::bool(e.counted),
+    ])
+}
+
+/// Returns the entry of a value [`held`] returned.
+fn unheld(v: exec::Val) -> Result<RunEntry, Error> {
+    let rot = || Error::Exec(exec::Rot::SpillUndecoded.into());
+    let exec::Val::Record(fs) = v else {
+        return Err(rot());
+    };
+    match &fs[..] {
+        [exec::Val::Bytes(entry), exec::Val::Int(key_len), counted] => Ok(RunEntry {
+            entry: entry.to_vec(),
+            key_len: usize::try_from(*key_len).map_err(|_| rot())?,
+            counted: counted.truth().map_err(|_| rot())?,
+        }),
+        _ => Err(rot()),
     }
 }
 
@@ -409,6 +468,22 @@ impl<R: Runtime> Database<R> {
         }
     }
 
+    /// Returns a grant for the rebuilds of one job, waiting in the budget's queue. Fail with
+    /// the cause of the failure, `None` once the engine closes.
+    ///
+    /// Precondition: the caller holds no vacuum lock.
+    pub fn rebuild_grant(&self) -> Result<Arc<exec::Grant>, Option<String>> {
+        self.admit_grant(
+            exec::Priority::Background,
+            (self.rt.now(), None),
+            &Stop::default(),
+        )
+        .map_err(|e| match e {
+            Error::Exec(exec::Error::Cancelled) => None,
+            e => Some(self.detail(self.fail(e).error())),
+        })
+    }
+
     /// Returns how many pauses calls have made at a rebuild's gate or for the vacuum lock.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn rebuild_waits(&self) -> u64 {
@@ -495,7 +570,7 @@ impl<R: Runtime> Database<R> {
         self.pager.steps().at(Step::Reindex(phase));
     }
 
-    fn rebuild(&self, job: &Rebuild<'_>) -> Result<bool, Failure> {
+    fn rebuild(&self, job: &Rebuild<'_>, grant: &Arc<exec::Grant>) -> Result<bool, Failure> {
         let mut pages = Pages {
             built: Vec::new(),
             built_past: Vec::new(),
@@ -504,7 +579,7 @@ impl<R: Runtime> Database<R> {
                 found: true,
             },
         };
-        match self.rebuild_and_swap(job, &mut pages) {
+        match self.rebuild_and_swap(job, grant, &mut pages) {
             Ok(()) => {
                 self.began(job, Reindex::Reclaim);
                 let freed = retire(&self.pager, &pages.old.pages);
@@ -521,6 +596,18 @@ impl<R: Runtime> Database<R> {
                 reclaimed &= pages.old.found && retire(&self.pager, &pages.old.pages).is_ok();
                 let cause = match e {
                     Error::Exec(exec::Error::Cancelled) => None,
+                    Error::Exec(exec::Error::StatementLimit(exec::Exceeded::Memory { limit })) => {
+                        Some(format!(
+                            "the build needs more than its memory grant of {limit} bytes"
+                        ))
+                    }
+                    Error::Exec(exec::Error::StatementLimit(exec::Exceeded::Spill {
+                        limit,
+                        grant,
+                    })) => Some(format!(
+                        "the build needs more than its memory grant of {grant} bytes and its spill \
+                         bound of {limit} bytes"
+                    )),
                     e => Some(self.detail(self.fail(e).error())),
                 };
                 Err(Failure { cause, reclaimed })
@@ -529,7 +616,7 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Free the pages of an abandoned build. Returns whether all of them were.
-    fn free_built(&self, owner: u32, made: &[Pid]) -> bool {
+    pub(super) fn free_built(&self, owner: u32, made: &[Pid]) -> bool {
         let top = made.last().map(|p| BTree::open(*p, owner));
         let mut pages: BTreeSet<Pid> = made.iter().copied().collect();
         let mut complete = true;
@@ -544,7 +631,12 @@ impl<R: Runtime> Database<R> {
         complete
     }
 
-    fn rebuild_and_swap(&self, job: &Rebuild<'_>, pages: &mut Pages) -> Result<(), Error> {
+    fn rebuild_and_swap(
+        &self,
+        job: &Rebuild<'_>,
+        grant: &Arc<exec::Grant>,
+        pages: &mut Pages,
+    ) -> Result<(), Error> {
         self.admit_reindex(job.rel)?;
         let r = &self.rels[&job.rel];
         let (_, ix) = r
@@ -553,12 +645,7 @@ impl<R: Runtime> Database<R> {
             .find(|(i, _)| *i == job.index)
             .unwrap_or_else(|| panic!("{:?} is an index of {}", job.index, r.name));
         let tree = self.bindings.indexes()[&job.index].index.tree();
-        let scan = Scan {
-            db: self,
-            rel: r,
-            id: job.index,
-            ix,
-        };
+        let scan = Scan::new(self, r, (job.index, ix), grant.clone())?;
         let _offline = (!job.online).then(|| {
             let gated = self.session.waits().gate(Gate::Offline);
             let me = self.rt.current();
@@ -577,7 +664,7 @@ impl<R: Runtime> Database<R> {
         self.rebuild_stopped()?;
         self.began(job, Reindex::Build);
         let stop = self.build_stop();
-        let entries = merge_runs(runs, ix.desc.unique, &stop)?;
+        let entries = scan.merged(runs, ix.desc.unique, &stop)?;
         let built = BTree::bulk(&self.pager, tree.owner(), entries, &mut pages.built, &stop)?;
         self.began(job, Reindex::CatchUp);
         if job.online {
@@ -628,7 +715,7 @@ impl<R: Runtime> Database<R> {
             Err(_) => {}
         }
         let stop = self.build_stop();
-        let entries = merge_runs(scan.past_runs(retained)?, false, &stop)?;
+        let entries = scan.merged(scan.past_runs(retained)?, false, &stop)?;
         let built = BTree::bulk(
             &self.pager,
             tree.owner(),

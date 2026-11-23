@@ -14,7 +14,7 @@ use std::time::Duration;
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::testing::{Damage, Pid, Plant, Quarantine, Reindex, page::HEADER_LEN, panic_text};
-use adtb::{Database, Error, FatalReason, Log, OpenOptions};
+use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
@@ -619,7 +619,109 @@ fn a_deleted_row_and_a_new_one_of_one_key_are_no_duplicate() {
     });
 }
 
+/// Returns the findings of a rebuild of the key index of 1000 users under a grant of 32768
+/// bytes and `spill` bytes of spill space, the engine's bound with `None`, and the name of user
+/// 500 the key index then finds.
+fn rebuilt_past_its_grant(spill: Option<usize>) -> (Vec<String>, Vec<String>) {
+    process::once(13, |rt| {
+        let db = open_app(rt.clone());
+        api::results(
+            &db,
+            r#"insert users from (
+                 from a in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                      c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+                 select { id: users.key(a * 100 + b * 10 + c + 1),
+                          name: "n" ++ print(a * 100 + b * 10 + c + 1) })"#,
+        );
+        db.close().unwrap();
+        let options = OpenOptions {
+            query_memory_bytes: Some(32768),
+            testing: adtb::testing::Knobs::default().with_spill_bytes(spill),
+            ..open::options(2)
+        };
+        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &options)
+            .expect("the database opens");
+        api::results(&db, "reindex users");
+        while !api::query(&db, "from j in sys::jobs select j.id").is_empty() {
+            for _ in 0..256 {
+                rt.yield_now();
+            }
+        }
+        let found = api::query(
+            &db,
+            "from u in users where key u == users.key(500) select u.name",
+        );
+        let got = (findings(&db), found);
+        db.close().unwrap();
+        got
+    })
+}
+
+#[test]
+fn a_rebuild_past_its_memory_grant_spills_its_entries_and_is_refused_with_no_spill_space() {
+    let (findings, found) = rebuilt_past_its_grant(None);
+    assert_eq!(Vec::<String>::new(), findings);
+    assert_eq!(vec![r#""n500""#.to_owned()], found);
+    let (findings, found) = rebuilt_past_its_grant(Some(0));
+    let stated: Vec<&str> = findings
+        .iter()
+        .filter_map(|f| f.split_once("where: ").map(|(_, w)| w))
+        .collect();
+    let refused = r#""reindex of app::users key id: the build needs more than its memory grant of 32768 bytes and its spill bound of 0 bytes" }"#;
+    assert_eq!(vec![refused], stated);
+    assert_eq!(vec![r#""n500""#.to_owned()], found);
+}
+
 /// Returns whether a write of a row and of a row's name went through during the rebuild.
+/// Under the default budget of four grants, four vacuums waiting for the vacuum lock a rebuild of
+/// several indexes holds take every grant the rebuild does not, and the rebuild, whose grant
+/// serves each index, still ends, and each vacuum then runs.
+#[test]
+fn vacuums_waiting_on_a_rebuild_leave_it_a_grant_for_each_index() {
+    process::once(15, |rt| {
+        let db = open_app(rt.clone());
+        seed_rows(&db, 5);
+        let vacuums = Arc::new(Mutex::new(Vec::new()));
+        let during = Arc::new(Mutex::new(None));
+        let (spawned, saw, clock, inner) =
+            (vacuums.clone(), during.clone(), rt.clone(), db.clone());
+        steps::on_reindex(&db, move |phase| {
+            if phase != Reindex::Build || saw.lock().unwrap().is_some() {
+                return;
+            }
+            for n in 0..4 {
+                let v = inner.clone();
+                spawned
+                    .lock()
+                    .unwrap()
+                    .push(clock.spawn(&format!("vacuum {n}"), move || {
+                        api::results(&v, "vacuum identities");
+                    }));
+            }
+            for _ in 0..2000 {
+                clock.yield_now();
+            }
+            *saw.lock().unwrap() = Some(inner.testing().granted_and_waiting());
+        });
+        api::results(&db, "reindex identities");
+        wait_for_jobs(&rt, &db);
+        let full = during
+            .lock()
+            .unwrap()
+            .map(|(granted, waiting)| (granted, waiting > 0));
+        assert_eq!(
+            Some((4 << 26, true)),
+            full,
+            "the budget is full while the rebuild runs"
+        );
+        for t in vacuums.lock().unwrap().drain(..) {
+            rt.join(t);
+        }
+        assert_eq!(Vec::<String>::new(), verified_live(&db));
+        db.close().unwrap();
+    });
+}
+
 fn writes_during(seed: u64, how: &str) -> bool {
     process::once(seed, |rt| {
         let db = open_app(rt.clone());
@@ -801,10 +903,8 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     let path = path.to_str().unwrap().to_owned();
     let log = Log::new([APP]);
     let db = Database::open(&path, &log, &real_options()).unwrap();
-    let run = |db: &Database, text: &str| {
-        db.query_text(text, &[], &adtb::CallOptions::default())
-            .unwrap()
-    };
+    let run =
+        |db: &Database, text: &str| db.query_text(text, &[], &CallOptions::default()).unwrap();
     for i in 1..=5 {
         run(
             &db,
@@ -829,7 +929,7 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     let db = Database::open(&path, &log, &real_options()).unwrap();
     let probe = "from g in identities.Google where g.user == users.key(5) select g.gid";
     refused_as(
-        db.query_text(probe, &[], &adtb::CallOptions::default()),
+        db.query_text(probe, &[], &CallOptions::default()),
         &Error::Fatal {
             reason: FatalReason::Quarantined {
                 what: "app::identities index (user) in (Google | Apple)".to_owned(),

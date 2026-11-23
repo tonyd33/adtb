@@ -979,6 +979,15 @@ fn a_history_heap_write_that_fails_on_a_page_is_a_page_error() {
 
 #[test]
 fn store_scan_sees_history_pages_created_during_its_current_walk() {
+    for grant in [64 << 20, 256] {
+        scan_beside_a_move(grant);
+    }
+}
+
+/// Scan a heap of 1000 rows under a grant of `grant` bytes while two of its deleted versions are
+/// copied to the history heap, one of them then pruned. Under 256 bytes the deleted versions the
+/// scan holds spill before the copies are read.
+fn scan_beside_a_move(grant: usize) {
     let mut sim = Sim::new(19, Config::default());
     finished(&mut sim, |rt| {
         let (mut db, _) = Db::create(rt, LONG);
@@ -1022,13 +1031,14 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
         )
         .expect("the store's bindings bind what it lists");
         let grant = crate::exec::Budget::new(1 << 30)
-            .admit(64 << 20)
+            .admit(grant)
             .expect("a grant fits");
+        let sp = crate::exec::Spill::new(db.pager.rt().clone(), grant.clone(), usize::MAX);
         let mut moved = false;
         let mut rows = Vec::new();
         let listing = store.pages(id).expect("a listing");
         store
-            .scan(id, listing, 1, &grant, |batch| {
+            .scan(id, listing, 1, &grant, &sp, |batch| {
                 rows.extend((0..batch.len()).map(|r| pair(&batch.row(r))));
                 if !moved {
                     for tid in [first, last] {
@@ -1063,12 +1073,17 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             })
             .expect("historical scan");
         rows.sort_unstable();
-        assert_eq!(rows.len(), 1000);
         assert_eq!(rows, (0..1000).map(|k| (k, k)).collect::<Vec<_>>());
+        assert_eq!(
+            grant.limit() == 256,
+            grant.spilled() > 0,
+            "spilled under {}",
+            grant.limit()
+        );
         let mut calls = 0;
         let listing = store.pages(id).expect("a listing");
         store
-            .scan(id, listing, 1, &grant, |_| {
+            .scan(id, listing, 1, &grant, &sp, |_| {
                 calls += 1;
                 Ok(std::ops::ControlFlow::Break(
                     crate::exec::StopsEarly::tested(),
@@ -1337,7 +1352,7 @@ fn fetch_beside_vacuum(
         .probe(ix, &[Value::I64(1)], &BTreeMap::from([(0, id)]), bounds)
         .expect("probe");
     let mut found = Vec::new();
-    for n in &named {
+    for n in named.iter() {
         if let Some((_, row)) = store.fetch(id, n).expect("fetch") {
             found.push(row);
         }

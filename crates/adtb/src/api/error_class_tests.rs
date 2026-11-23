@@ -282,6 +282,16 @@ fn exec_rows() -> Vec<Row> {
             reject(RejectReason::Cancelled),
         ),
         exec_row(
+            exec::Error::Overloaded,
+            Class::Retry,
+            true,
+            Error::Retry {
+                reason: RetryReason::Overloaded {
+                    retry_after: Duration::ZERO,
+                },
+            },
+        ),
+        exec_row(
             exec::Error::DeadlineExceeded,
             Class::Reject,
             false,
@@ -537,7 +547,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 72;
+const SLOTS: usize = 73;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -582,6 +592,7 @@ fn slot(e: &write::Error) -> usize {
             exec::Error::Internal(_) => 30,
             exec::Error::HistoryUnavailable { .. } => 31,
             exec::Error::WrongVersion { .. } => 32,
+            exec::Error::Overloaded => 72,
         },
         write::Error::Internal(b) => match b.as_ref() {
             B::BoundedPlan(_) => 33,

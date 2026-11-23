@@ -37,7 +37,7 @@ impl Class {
 impl Error {
     pub fn class(&self) -> Class {
         match self {
-            Error::Serialization(_) => Class::Retry,
+            Error::Serialization(_) | Error::Overloaded => Class::Retry,
             Error::Fault(_)
             | Error::StatementLimit(_)
             | Error::Spill(_)

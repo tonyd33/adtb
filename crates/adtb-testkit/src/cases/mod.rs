@@ -323,6 +323,22 @@ impl Drawn {
     }
 }
 
+/// Returns the case of `seed`, holding `queries` queries, and the same case whose load draws
+/// as many rows again.
+pub fn case_doubled(seed: u64, queries: usize) -> (Case, Case) {
+    let mut rng = Rng::new(seed);
+    let mut world = World::draw(&mut rng);
+    let load = world.load(&mut rng);
+    let more = world.load(&mut rng);
+    let world = Arc::new(world);
+    let queries: Vec<Query> = (0..queries).map(|_| query(&mut rng, &world)).collect();
+    let doubled = [load.clone(), more].concat();
+    (
+        Case::drawn(world.clone(), load, queries.clone()),
+        Case::drawn(world, doubled, queries),
+    )
+}
+
 /// Returns the case of `seed`, holding `queries` queries.
 pub fn case(seed: u64, queries: usize) -> Case {
     let mut rng = Rng::new(seed);

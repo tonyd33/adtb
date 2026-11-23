@@ -1,0 +1,27 @@
+# A count of the whole rows a read of the past returns, past its memory grant, gives what the same
+# read of the present gives.
+use stocked
+option morsel_rows 16
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin f
+
+in f run
+  update s in stock where key s == stock.key(1) set { s with name: "y" }
+
+commit f position first
+
+option query_memory_bytes 32768
+reopen
+
+query
+  count(s for s in (from s in stock select s))
+----
+300
+
+query
+  count(s for s in (at commit $first { from s in stock select s }))
+----
+300

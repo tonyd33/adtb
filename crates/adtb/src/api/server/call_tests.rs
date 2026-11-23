@@ -4,7 +4,7 @@ use std::task::Waker;
 use adtb_sys::lock::Lock;
 use adtb_sys::os::{Backend, OsRuntime};
 
-use crate::exec::{Resumable, Step};
+use crate::exec::{Entry, Priority, Resumable, Step};
 
 use adtb_sim::SimRuntime;
 
@@ -48,7 +48,7 @@ fn a_call_dropped_holding_its_read_leaves_nothing_of_its_transaction() {
         state: Lock::new(State::default()),
     });
     let work = Work::Text(Box::new(p));
-    let mut call = Call::new(&e, shared, work, None, TaskOptions::default());
+    let mut call = Call::new(&e, shared, work, None, (TaskOptions::default(), entry(&e)));
     assert_eq!(
         Step::Wait,
         call.run(Waker::noop()),
@@ -116,7 +116,13 @@ fn waiting_write(then: impl FnOnce(Waiting<'_>)) -> (Left, Error) {
             state: Lock::new(State::default()),
         });
         let work = Work::Text(Box::new(p));
-        let call = Call::new(&e, shared.clone(), work, None, TaskOptions::default());
+        let call = Call::new(
+            &e,
+            shared.clone(),
+            work,
+            None,
+            (TaskOptions::default(), entry(&e)),
+        );
         let mut call = Box::new(call);
         let waits = call.run(Waker::noop());
         assert_eq!(Step::Wait, waits, "the call waits on the other");
@@ -177,4 +183,14 @@ fn a_write_call_released_while_its_abort_record_fails_settles_the_records_failur
         );
     });
     assert_eq!((Some(Completion::Failed(failed)), 1), left);
+}
+
+fn entry<R: crate::runtime::Runtime>(e: &super::super::Engine<R>) -> Entry {
+    Entry {
+        priority: Priority::AdHoc,
+        rank: u8::MAX,
+        start: e.rt.now(),
+        bytes: 0,
+        deadline: None,
+    }
 }

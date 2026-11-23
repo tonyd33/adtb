@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use adtb_lang::kernel::{Terms, Var};
@@ -7,7 +7,7 @@ use adtb_lang::schema::{Committed, Schema, TypeDefKind};
 use adtb_lang::types::{DenialIdx, RelId, Ty, TypeId};
 
 use crate::exec::types::ctors;
-use crate::exec::{self, Val};
+use crate::exec::{self, Held, Val};
 use crate::plan::Catalog;
 use crate::runtime::Runtime;
 
@@ -90,21 +90,21 @@ impl<R: Runtime> Stmt<'_, R> {
     /// newtype domains, and the schema's constraints and checks.
     pub fn check(&self, plus: &Rows, minus: &Rows, viol: &mut Violations) -> Result<(), Error> {
         self.check_rows(plus, viol)?;
-        let mut moved: BTreeMap<RelId, BTreeSet<Val>> = BTreeMap::new();
+        let mut moved: Held<BTreeSet<(RelId, Val)>> = self.grant().held();
         for ((r, c), rows) in minus {
             for v in rows {
                 let k = self.key_of(*r, v)?;
                 if !self.all_by_key(*r, &k)?.iter().any(|(d, _, _)| d == c) {
-                    moved.entry(*r).or_default().insert(k);
+                    moved.insert((*r, k))?;
                 }
             }
         }
-        let targets: BTreeSet<RelId> = moved.keys().copied().collect();
+        let targets: BTreeSet<RelId> = moved.iter().map(|(r, _)| *r).collect();
         for (r, fields) in self.referrers(&targets) {
-            for (c, u) in self.referring(r, &fields, &moved)? {
+            for (_, (c, u)) in self.referring(r, &fields, &moved)? {
                 for f in &fields[c as usize] {
                     if let Some(k) = Self::names(f, &u)?
-                        && moved.get(&f.target).is_some_and(|ks| ks.contains(&k))
+                        && moved.contains(&(f.target, k.clone()))
                         && !self.reaches(f, &k)?
                     {
                         violate(
@@ -136,7 +136,9 @@ impl<R: Runtime> Stmt<'_, R> {
                 if idle {
                     continue;
                 }
-                let call = self.db.call(&self.store, self.options, &self.stop)?;
+                let call = self
+                    .db
+                    .call(&self.store, self.options, &self.stop, self.grant())?;
                 let bound = program.clone().bind(|v| {
                     params
                         .iter()

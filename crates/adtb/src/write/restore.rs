@@ -7,11 +7,11 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::btree::BTree;
-use crate::btree::build::{BuildError, merge_runs};
 use crate::exec::Val;
 use crate::heap::Abandons;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
+use crate::storage::Pid;
 
 use super::admit::Admitted;
 use super::eval::{Stmt, Violations, Violator, pairs, refuse, violate, violate_key};
@@ -42,11 +42,18 @@ impl<R: Runtime> Restoring<'_, R> {
     /// entering no index entry.
     pub fn write(&self, rows: Rows) -> Result<(), Error> {
         let tx = self.db.begin()?;
-        let stmt = Stmt::reader(self.db, &tx);
-        let written = stmt
-            .check_sizes(rows, Rows::new())
-            .and_then(|set| self.insert(&stmt, &tx, &set));
-        drop(stmt);
+        let written = self
+            .db
+            .admit_grant(
+                crate::exec::Priority::AdHoc,
+                (tx.began(), None),
+                &Stop::default(),
+            )
+            .map(|grant| Stmt::reader(self.db, &tx, grant))
+            .and_then(|stmt| {
+                stmt.check_sizes(rows, Rows::new())
+                    .and_then(|set| self.insert(&stmt, &tx, &set))
+            });
         match written {
             Ok(()) => self.db.commit(tx).map(drop),
             Err(e) => Err(self.db.abandoned(tx, e)),
@@ -97,12 +104,21 @@ impl<R: Runtime> Restoring<'_, R> {
         }
         let mut viol = Violations::new();
         let tx = db.begin_read(false)?;
-        let stmt = Stmt::reader(db, &tx);
-        let checked = duplicated
-            .iter()
-            .try_for_each(|&(r, id, ix, name)| duplicates(&stmt, r, (id, ix, name), &mut viol))
-            .and_then(|()| self.check(&stmt, rels, &mut viol));
-        drop(stmt);
+        let checked = db
+            .admit_grant(
+                crate::exec::Priority::AdHoc,
+                (tx.began(), None),
+                &Stop::default(),
+            )
+            .map(|grant| Stmt::reader(db, &tx, grant))
+            .and_then(|stmt| {
+                duplicated
+                    .iter()
+                    .try_for_each(|&(r, id, ix, name)| {
+                        duplicates(&stmt, r, (id, ix, name), &mut viol)
+                    })
+                    .and_then(|()| self.check(&stmt, rels, &mut viol))
+            });
         db.abort_returning(tx, checked)?;
         refuse(viol)
     }
@@ -119,26 +135,36 @@ impl<R: Runtime> Restoring<'_, R> {
         ix: &'i Indexed,
     ) -> Result<Option<&'i str>, Error> {
         let db = self.db;
-        let scan = Scan {
-            db,
-            rel: &db.rels[&rel],
-            id,
-            ix,
-        };
-        let runs = || {
+        let grant = db.admit_grant(
+            crate::exec::Priority::Background,
+            (db.rt.now(), None),
+            &Stop::default(),
+        )?;
+        let scan = Scan::new(db, &db.rels[&rel], (id, ix), grant)?;
+        let stop = || false;
+        let owner = db.bindings.indexes()[&id].index.tree().owner();
+        let build = |unique, made: &mut Vec<Pid>| {
             let tx = db.begin_read(false)?;
             let runs = scan.runs(None, Some(&tx));
-            db.abort_returning(tx, runs)
+            let runs = db.abort_returning(tx, runs)?;
+            BTree::bulk(
+                &db.pager,
+                owner,
+                scan.merged(runs, unique, &stop)?,
+                made,
+                &stop,
+            )
         };
-        let stop = || false;
         let unique = ix.unique.as_deref();
-        let (entries, duplicated) = match merge_runs(runs()?, unique.is_some(), &stop) {
-            Ok(entries) => (entries, None),
-            Err(BuildError::Duplicate(_)) => (merge_runs(runs()?, false, &stop)?, unique),
-            Err(e) => return Err(e.into()),
+        let mut made = Vec::new();
+        let (built, duplicated) = match build(unique.is_some(), &mut made) {
+            Ok(built) => (built, None),
+            Err(Error::Internal(b)) if matches!(*b, Broken::DuplicateKey(_)) => {
+                db.free_built(owner, &made);
+                (build(false, &mut Vec::new())?, unique)
+            }
+            Err(e) => return Err(e),
         };
-        let tree = db.bindings.indexes()[&id].index.tree();
-        let built = BTree::bulk(&db.pager, tree.owner(), entries, &mut Vec::new(), &stop)?;
         let held = db.latches[&id].lock(&db.rt);
         held.index().take_over(&db.pager, built, None)?;
         Ok(duplicated)
@@ -189,7 +215,14 @@ impl<R: Runtime> Restoring<'_, R> {
                 clock: 0,
                 caller: None,
             };
-            let denial = Stmt::new(db, stmt.tx, text, t, db.options, Stop::default())?;
+            let denial = Stmt::new(
+                db,
+                stmt.tx,
+                text,
+                t,
+                db.options,
+                (Stop::default(), stmt.grant().clone()),
+            )?;
             match denial.run(&[], &mut Local::default())?.result {
                 Val::Set(report) => violate(viol, of, &name, report.iter().cloned()),
                 other => return Err(Broken::DenialNotSet(other).into()),
