@@ -23,7 +23,7 @@ use super::codec::{
 };
 use super::roots::RootsRow;
 use super::values::{self, boolean};
-use super::{Broken, Catalog, Error, Migrating, OWNER_ROLE, admit_roots, delete_rows};
+use super::{Broken, Catalog, Change, Error, Migrating, OWNER_ROLE, admit_roots, delete_rows};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -302,28 +302,19 @@ impl Catalog {
             return Ok(Vec::new());
         }
         self.counters(pager)?;
-        let begun = txns.begin(pager)?;
-        let x = begun.xid();
-        let hold = txns.take(Scope::Every)?;
-        let m = Migrating {
-            pager,
-            txns,
-            x,
-            hold,
-            made: Default::default(),
-            top: Default::default(),
+        let change = Change::begin(pager, txns, Scope::Every)?;
+        let before = self.source.grants.clone();
+        let dormant = match self.record_in(change.writes()) {
+            Ok(dormant) => dormant,
+            Err(e) => return Err(change.abandon(e)),
         };
-        let mut grants = self.source.grants.clone();
-        let done = self.write_grants(&m, self, &mut grants, &BTreeSet::new(), Grantees::Dormant);
-        drop(m);
-        match done {
-            Ok(dormant) => {
-                txns.commit(pager, begun)?.done();
-                self.source.grants = grants;
+        match change.commit() {
+            Ok(landed) => {
+                self.end_landed(pager, txns, landed, &[]);
                 Ok(dormant)
             }
             Err(e) => {
-                txns.abandon_failed(pager, begun)?;
+                self.source.grants = before;
                 Err(e)
             }
         }
