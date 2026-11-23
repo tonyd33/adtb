@@ -309,10 +309,9 @@ impl Model {
             );
             let applied = next.operator(&mut run, &op.kind).and_then(|x| {
                 if renames {
-                    next.faithful(&model, &mut run).map(|()| x)
-                } else {
-                    Ok(x)
+                    next.faithful(&model, &mut run)?;
                 }
+                next.ids_fit().map(|()| x)
             });
             match applied {
                 Ok((r, m)) => {

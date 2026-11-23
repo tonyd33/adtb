@@ -171,7 +171,12 @@ impl Model {
         let mut out = Vec::new();
         match after {
             Ok(after) => {
-                self.arms_refused(&after.errors(), &written)?;
+                let read = |f: FileId| {
+                    written
+                        .iter()
+                        .any(|w| self.decl_at(w.item) == Some(f.0 as usize))
+                };
+                self.arms_refused(&after.unbound(read)?, &written)?;
                 for w in written {
                     let arm = match self.arms_written.remove(&w.key) {
                         Some(Ok(Some(arm))) => arm,

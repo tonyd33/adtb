@@ -108,10 +108,16 @@ mod tests {
         let file = parse_migration(TEXT, Options::default())
             .ok()
             .expect("the migration parses");
+        let pair = Source::new(vec![SourceDecl {
+            module: "app".to_string(),
+            text: "type Pair = { a: I64 }\n".to_string(),
+        }])
+        .expect("the source builds");
+        let schema = pair.schema().expect("the source builds");
+        let (_, a) = schema.ids().field_ids().next().expect("`a` has an id");
         let step = unbuilt(vec![RowMap::Copy {
             def: TypeId(0),
-            ctors: vec![0],
-            field: "a".to_string(),
+            copied: vec![(0, a, a)],
         }]);
         match built(&step, &file.operators[0], TEXT) {
             Err(Error::Refused(why)) => {

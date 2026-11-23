@@ -363,14 +363,10 @@ impl Model {
     pub(super) fn schema_states(&self) -> schema::States {
         let mut states = schema::States::default();
         for (&(r, c), s) in &self.states {
-            states.set_relation(
-                crate::ids::CatRelId::from_raw(r),
-                crate::ids::CatCtorId::from_raw(c),
-                s.stage,
-            );
+            states.set_relation(cat_rel(r), cat_ctor(c), s.stage);
         }
         for (&c, s) in &self.value_states {
-            states.set_value(crate::ids::CatCtorId::from_raw(c), s.stage);
+            states.set_value(cat_ctor(c), s.stage);
         }
         states
     }

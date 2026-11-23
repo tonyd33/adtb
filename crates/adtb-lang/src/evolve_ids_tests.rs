@@ -1848,3 +1848,43 @@ fn a_relation_over_a_parametric_prelude_type_at_a_key_type_takes_an_id_for_each_
     ]);
     assert_eq!(expected, found);
 }
+
+#[test]
+fn an_operator_taking_an_id_past_its_space_width_is_refused() {
+    let migrate = |src: &Source, text: &str| {
+        let m = parse_migration(text, Options::default())
+            .ok()
+            .expect("the migration parses");
+        src.migrate(&m, text)
+    };
+    let base = migrate(&Source::default(), "module app\nadd module app").expect("the module adds");
+    let add_type = "module app\nadd type T = { x: I64 }";
+    let at = |space: Space, next: u64| {
+        let mut src = base.clone();
+        src.next.insert(space, next);
+        src
+    };
+    let refusal = |src: &Source, text: &str| match migrate(src, text) {
+        Err(Failed::Refused(r)) => r
+            .operators
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>(),
+        Err(other) => panic!("not a refusal: {other:?}"),
+        Ok(_) => Vec::new(),
+    };
+    assert_eq!(
+        Vec::<String>::new(),
+        refusal(&at(Space::Shared, (1 << 32) - 2), add_type)
+    );
+    assert_eq!(
+        vec!["no type, constructor and relation id is left: those ids fit 32 bits".to_string()],
+        refusal(&at(Space::Shared, (1 << 32) - 1), add_type)
+    );
+    let mut src = migrate(&base, add_type).expect("the type adds");
+    src.next.insert(Space::Field, 1 << 63);
+    assert_eq!(
+        vec!["no field id is left: those ids fit 63 bits".to_string()],
+        refusal(&src, "module app\nadd field T.y: I64 fill 0")
+    );
+}

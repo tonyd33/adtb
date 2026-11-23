@@ -154,7 +154,7 @@ impl Model {
     /// Returns the relation variables of `t` in `built`'s order, with their modules and names.
     pub(super) fn rels_of(&self, built: &Built, t: u64) -> Vec<(u64, String, String)> {
         let schema = built.schema();
-        let Some(def) = schema.ids().type_of(crate::ids::CatTypeId::from_raw(t)) else {
+        let Some(def) = schema.ids().type_of(cat_type(t)) else {
             return Vec::new();
         };
         Cx::relations_of(schema, def)
@@ -415,13 +415,10 @@ impl Model {
         let tname = self.types[&t].name.clone();
         let name = self.ctors[&c].name.clone();
         let schema = built.schema();
-        let def = schema
-            .ids()
-            .type_of(crate::ids::CatTypeId::from_raw(t))
-            .expect("the type");
+        let def = schema.ids().type_of(cat_type(t)).expect("the type");
         let ci = schema
             .ids()
-            .ctor_of(crate::ids::CatCtorId::from_raw(c))
+            .ctor_of(cat_ctor(c))
             .expect("the constructor")
             .index();
         let rels = Cx::relations_of(schema, def);

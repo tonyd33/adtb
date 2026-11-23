@@ -4,14 +4,42 @@ use crate::ast::{self, CtorSel};
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::element_head;
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Res, broken, refuse, refuse_at};
+use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::Mode;
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
 use crate::evolve::{Clause, Resolved, RowMap};
+use crate::ids::CatCtorId;
 use crate::schema::{Schema, TypeDefKind};
 use crate::span::{FileDiag, FileId};
 use crate::types::{Ty, TypeId};
+
+/// Returns each of `sources` of `def` in `before` with the id of the constructor of `inner`, a
+/// sum of `after`, named as it.
+fn nested_tags(
+    before: &Schema,
+    after: &Schema,
+    def: TypeId,
+    sources: &[u32],
+    inner: &Ty,
+) -> Res<Vec<(u32, CatCtorId)>> {
+    let Ty::Data { def: s, .. } = inner else {
+        return broken("a nesting field not typed by a sum");
+    };
+    let sum = after.ty(*s);
+    sources
+        .iter()
+        .map(|&k| {
+            let name = &before.ty(def).ctors()[k as usize].name;
+            let id = sum
+                .ctor_index(name)
+                .and_then(|j| sum.ctor_at(j))
+                .and_then(|c| after.ids().ctor_id(c))
+                .ok_or_else(|| Fail::Broken("a nested constructor without an id".into()))?;
+            Ok((k, id))
+        })
+        .collect()
+}
 
 /// Returns whether the field of nesting constructor `nc` of type `def` in `after` holds a sum
 /// without a header whose constructors are `sources` of `def` in `before`, by name and fields.
@@ -174,6 +202,7 @@ impl Model {
                 ),
             );
         }
+        let tags = nested_tags(schema, ps, def, &src_ix, inner)?;
         let stages = self.restated(&built, t, &sources, true)?;
         let c = self.new_ctor(run, t, &n, Some(fields));
         let plan = self.carry_plan(
@@ -211,8 +240,8 @@ impl Model {
             .collect();
         let maps = vec![RowMap::Nest {
             def,
-            from: src_ix,
-            into: n.clone(),
+            into: cat_ctor(c),
+            from: tags,
         }];
         let members: Vec<Clause> = sel_idents(sel)
             .iter()
@@ -319,6 +348,11 @@ impl Model {
             );
             made.push(p);
         }
+        let unnested: Vec<(CatCtorId, CatCtorId)> = inner_ctors
+            .iter()
+            .zip(&made)
+            .map(|(&ic, &p)| (cat_ctor(ic), cat_ctor(p)))
+            .collect();
         let plan = self.carry_plan(run, &built, Structural::Unnest, t, (&[c], &products));
         let mut edits = Vec::new();
         let rewrites = self.unnest_clauses(&built, t, (c, &made), &products, &f)?;
@@ -358,7 +392,11 @@ impl Model {
         Ok((
             Resolved::Unnest { ctor: c },
             clauses,
-            Ok(vec![RowMap::Unnest { def, from: ci }]),
+            Ok(vec![RowMap::Unnest {
+                def,
+                from: ci,
+                products: unnested,
+            }]),
         ))
     }
 

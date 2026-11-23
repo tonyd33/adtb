@@ -6,7 +6,6 @@ use super::*;
 use crate::ast::{self, Expr, RelationClause};
 use crate::canon::canonical_term;
 use crate::evolve::{Clause, Resolved};
-use crate::ids::CatRelId;
 use crate::lex::{Tok, lex};
 use crate::span::{FileId, Span};
 use crate::types::RelId;
@@ -104,7 +103,7 @@ impl Model {
 
     /// Returns the relation variable `r` is in `schema`.
     fn rel_in(schema: &crate::schema::Schema, r: u64) -> Res<RelId> {
-        match schema.ids().relation_of(CatRelId::from_raw(r)) {
+        match schema.ids().relation_of(cat_rel(r)) {
             Some(rel) => Ok(rel),
             None => broken("a relation variable the built schema does not hold"),
         }
@@ -827,7 +826,10 @@ impl Model {
         };
         let file = FileId(i as u32);
         let (span, ds) = match built {
-            Some(b) => (written_span(b, file, k)?, b.errors_in(file)),
+            Some(b) => {
+                let ds = b.unbound(|f| f == file)?.into_iter();
+                (written_span(b, file, k)?, ds.map(|d| d.diag).collect())
+            }
             None => {
                 let Err(ds) = self.built(&[], &run.ahead(self)) else {
                     return Ok(());

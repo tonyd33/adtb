@@ -7,11 +7,12 @@ use crate::check::{self, Ref};
 use crate::evolve::carry::{self, Structural};
 use crate::evolve::ctor::{Carries, arm_image, element_head};
 use crate::evolve::model::field::Applied;
-use crate::evolve::model::op::{Res, broken, refuse, refuse_at};
+use crate::evolve::model::op::{Fail, Res, broken, refuse, refuse_at};
 use crate::evolve::model::reselect::{Edit, Mode, sel_range};
 use crate::evolve::model::run::{Built, Late, Run};
 use crate::evolve::model::*;
-use crate::evolve::{Clause, Resolved, RowMap};
+use crate::evolve::{Clause, Merged, Resolved, RowMap};
+use crate::ids::{CatCtorId, CatFieldId};
 use crate::schema::{FieldDef, Schema, TypeDef, TypeDefKind};
 use crate::span::{FileId, Span};
 use crate::types::Ty;
@@ -99,14 +100,18 @@ fn sel_text(names: &[String]) -> String {
     }
 }
 
+/// A discriminator field's name and the constructor of its sum each merged source takes.
+type Discriminator = (String, Vec<CatCtorId>);
+
 /// Returns the one field of `mfields` typed by a declared nullary sum whose constructors are
-/// exactly `sources`, in `after`.
+/// exactly `sources`, in `after`, with the id of the constructor of that sum named as each of
+/// `sources`.
 fn named_disc(
     after: &Schema,
     mfields: &[FieldDef],
     into: &ast::CtorDef,
     sources: &[String],
-) -> Res<String> {
+) -> Res<Discriminator> {
     let m = &into.name.text;
     let wanted: BTreeSet<&str> = sources.iter().map(String::as_str).collect();
     let discs: Vec<&FieldDef> = mfields
@@ -126,7 +131,24 @@ fn named_disc(
         })
         .collect();
     match discs.as_slice() {
-        [one] => Ok(one.name.clone()),
+        [one] => {
+            let Ty::Data { def, .. } = &one.ty else {
+                return broken("a discriminator not typed by a sum");
+            };
+            let sum = after.ty(*def);
+            let tags = sources
+                .iter()
+                .map(|s| {
+                    sum.ctor_index(s)
+                        .and_then(|k| sum.ctor_at(k))
+                        .and_then(|c| after.ids().ctor_id(c))
+                        .ok_or_else(|| {
+                            Fail::Broken("a discriminator constructor without an id".into())
+                        })
+                })
+                .collect::<Res<_>>()?;
+            Ok((one.name.clone(), tags))
+        }
         [] => refuse_at(
             into.name.span,
             format!(
@@ -249,9 +271,12 @@ impl Model {
             None => None,
         };
         let (mfields, disc) = self.merged_shape(run, t, into, &names)?;
-        let disc = match arms {
-            Some(a) if derived => fixed_disc(run.text(), a),
-            _ => Disc::named(disc?, &names),
+        let (disc, tags) = match arms {
+            Some(a) if derived => (fixed_disc(run.text(), a), Vec::new()),
+            _ => {
+                let (field, tags) = disc?;
+                (Disc::named(field, &names), tags)
+            }
         };
         let carries: Carries = match (arms, &routing) {
             (Some(_), Some(r)) if derived => r.carries.clone(),
@@ -263,6 +288,13 @@ impl Model {
         };
         let stages = self.restated(&built, t, &sources, true)?;
         let c = self.new_ctor(run, t, &m, into.record.as_deref());
+        if let Some(r) = &routing {
+            r.typed_for(self, &[c])?;
+        }
+        let merged = match (&routing, disc.fields.first()) {
+            (None, Some(d)) => Some(self.merged_rows(c, &sources, &src_ix, d, &tags)?),
+            _ => None,
+        };
         let plan = self.carry_plan(
             run,
             &built,
@@ -342,15 +374,12 @@ impl Model {
         };
         self.settle_ids(run);
         self.carry_grants(t, plan, (&reaches, &routed), &disc.fields, &[]);
-        let map = match routing.as_ref() {
-            Some(_) => None,
-            None => Some(RowMap::Merge {
-                def,
-                from: src_ix.clone(),
-                into: m.clone(),
-                discriminator: disc.fields[0].clone(),
-            }),
-        };
+        let map = merged.map(|(discriminator, rows)| RowMap::Merge {
+            def,
+            into: cat_ctor(c),
+            discriminator,
+            rows,
+        });
         let (routing_text, map) = match routing {
             Some(r) => (
                 Some(r.text),
@@ -381,7 +410,7 @@ impl Model {
         t: u64,
         into: &ast::CtorDef,
         names: &[String],
-    ) -> Res<(Vec<FieldDef>, Res<String>)> {
+    ) -> Res<(Vec<FieldDef>, Res<Discriminator>)> {
         let mut probe = self.clone();
         let pc = probe.new_ctor(run, t, &into.name.text, into.record.as_deref());
         if let TypeBody::Ctors(cs) = &mut probe.types.get_mut(&t).expect("the type").body {
@@ -397,6 +426,41 @@ impl Model {
             .clone();
         let disc = named_disc(ps, &mfields, into, names);
         Ok((mfields, disc))
+    }
+
+    /// Returns the discriminator field `disc` of merged constructor `c` and how the rows of each
+    /// of `sources`, at `src_ix` before the merge, become rows of `c`, the discriminator holding
+    /// the tag of `tags` at the source's position.
+    fn merged_rows(
+        &self,
+        c: u64,
+        sources: &[u64],
+        src_ix: &[u32],
+        disc: &str,
+        tags: &[CatCtorId],
+    ) -> Res<(CatFieldId, Vec<Merged>)> {
+        let own = |c: u64| self.ctors[&c].fields.clone().unwrap_or_default();
+        let Some(&d) = own(c).iter().find(|f| self.fields[f].name == disc) else {
+            return broken("a merged constructor without its discriminator");
+        };
+        let rows = sources
+            .iter()
+            .zip(src_ix)
+            .zip(tags)
+            .map(|((&s, &from), &tag)| {
+                let fields = own(c)
+                    .into_iter()
+                    .filter(|&g| g != d)
+                    .filter_map(|g| {
+                        let name = &self.fields[&g].name;
+                        let f = own(s).into_iter().find(|f| self.fields[f].name == *name)?;
+                        Some((cat_field(g), cat_field(f)))
+                    })
+                    .collect();
+                Merged::new(from, tag, fields)
+            })
+            .collect();
+        Ok((cat_field(d), rows))
     }
 
     /// Returns, by relation variable, how the merge rewrites each unique and index clause over

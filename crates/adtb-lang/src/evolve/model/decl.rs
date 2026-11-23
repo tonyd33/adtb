@@ -9,6 +9,7 @@ use crate::ast::{self, OperatorKind};
 use crate::check;
 use crate::evolve::{Clause, Resolved, SourceDecl, Target, mentions_def, mentions_rel};
 use crate::ids::named_ids;
+use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::schema::{self, PRELUDE, Stage};
 use crate::span::{FileDiag, FileId, Span};
 
@@ -428,7 +429,7 @@ impl Model {
             }
         };
         let schema = built.schema();
-        let Some(def) = schema.ids().type_of(crate::ids::CatTypeId::from_raw(t)) else {
+        let Some(def) = schema.ids().type_of(cat_type(t)) else {
             return broken("a dropped type the schema does not hold");
         };
         let name = &self.types[&t].name;
@@ -475,7 +476,7 @@ impl Model {
     fn drop_relation_allowed(&self, run: &mut Run, r: u64) -> Res<()> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
-        let Some(rel) = schema.ids().relation_of(crate::ids::CatRelId::from_raw(r)) else {
+        let Some(rel) = schema.ids().relation_of(cat_rel(r)) else {
             return broken("a dropped relation variable the schema does not hold");
         };
         let name = &self.relations[&r].name;
@@ -680,12 +681,12 @@ impl Model {
             let schema = built.schema();
             let rel = schema
                 .ids()
-                .relation_of(crate::ids::CatRelId::from_raw(r))
+                .relation_of(cat_rel(r))
                 .expect("a relation variable the model holds");
             let def = schema.relation(rel).elem_def;
             let k = schema
                 .ids()
-                .ctor_of(crate::ids::CatCtorId::from_raw(c))
+                .ctor_of(cat_ctor(c))
                 .expect("a constructor the model holds")
                 .index();
             if let Some(f) = crate::evolve::retag_into(schema, def, k) {
@@ -718,4 +719,24 @@ impl Model {
         };
         Ok((resolved, Vec::new()))
     }
+}
+
+/// Returns the catalog id of the type the model holds as `raw`.
+pub(super) fn cat_type(raw: u64) -> CatTypeId {
+    CatTypeId::from_raw(raw)
+}
+
+/// Returns the catalog id of the constructor the model holds as `raw`.
+pub(super) fn cat_ctor(raw: u64) -> CatCtorId {
+    CatCtorId::from_raw(raw)
+}
+
+/// Returns the catalog id of the relation variable the model holds as `raw`.
+pub(super) fn cat_rel(raw: u64) -> CatRelId {
+    CatRelId::from_raw(raw)
+}
+
+/// Returns the catalog id of the field the model holds as `raw`.
+pub(super) fn cat_field(raw: u64) -> CatFieldId {
+    CatFieldId::from_raw(raw)
 }

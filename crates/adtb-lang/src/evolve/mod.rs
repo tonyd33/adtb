@@ -69,7 +69,7 @@ use resolved::Reached;
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,
 };
-pub use rowmap::{RowFn, RowMap, Step};
+pub use rowmap::{Merged, RowFn, RowMap, Step};
 
 /// A stage and the version whose migration set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,8 +100,9 @@ pub struct Logged {
 pub enum Uncommitted {
     /// The source does not build.
     Unbuilt(Vec<FileDiag>),
-    /// A migration is being applied to the source.
-    Migrating,
+    /// The source's schema takes a relation as added later, resolves a selection late, or
+    /// leaves an object without a catalog id.
+    Unsettled,
 }
 
 impl std::fmt::Display for Uncommitted {
@@ -111,7 +112,9 @@ impl std::fmt::Display for Uncommitted {
                 let ms: Vec<&str> = ds.iter().map(|d| d.diag.message.as_str()).collect();
                 f.write_str(&ms.join("\n"))
             }
-            Uncommitted::Migrating => f.write_str("a migration is being applied to the source"),
+            Uncommitted::Unsettled => {
+                f.write_str("the source is mid-migration or leaves an object without a catalog id")
+            }
         }
     }
 }

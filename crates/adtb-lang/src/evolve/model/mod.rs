@@ -32,6 +32,7 @@ mod tests;
 mod undo;
 
 pub(super) use apply::Migrated;
+use decl::{cat_ctor, cat_field, cat_rel, cat_type};
 pub(super) use revert::{logged_file, replay};
 use term::Term;
 
@@ -403,6 +404,27 @@ impl Model {
         for e in self.ahead.iter_mut().filter(|e| e.by == by) {
             e.added = added;
         }
+    }
+
+    /// Refuse when an id taken so far, by an operator or a build, lies past its space's width:
+    /// 32 bits for types, constructors, relation variables and indexes, 63 for the others.
+    fn ids_fit(&self) -> op::Res<()> {
+        for (&space, &next) in &self.next {
+            let (bits, kind) = match space {
+                Space::Shared => (32, "type, constructor and relation"),
+                Space::Index => (32, "unique and index"),
+                Space::Field => (63, "field"),
+                Space::Set => (63, "named set"),
+                Space::Constraint => (63, "constraint and check"),
+                Space::Function => (63, "function"),
+                Space::Default => (63, "default"),
+                Space::Computed => (63, "computed field"),
+            };
+            if next.saturating_sub(1) >> bits != 0 {
+                return op::refuse(format!("no {kind} id is left: those ids fit {bits} bits"));
+            }
+        }
+        Ok(())
     }
 
     /// Returns the next id of `space`, taking it.

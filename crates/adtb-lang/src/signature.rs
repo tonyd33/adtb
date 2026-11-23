@@ -387,7 +387,7 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, Failed<String>> {
     Ok(Bundle {
         header: file.header,
         schema: Committed::new(compiled.schema().clone())
-            .ok_or_else(|| Uncommitted::Migrating.to_string())?,
+            .ok_or_else(|| Uncommitted::Unsettled.to_string())?,
         calls,
     })
 }

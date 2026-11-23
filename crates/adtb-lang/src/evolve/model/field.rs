@@ -49,14 +49,11 @@ impl Model {
 
     /// Returns the type `t` is in `schema`.
     pub(super) fn def_in(&self, schema: &Schema, t: u64) -> Option<TypeId> {
-        schema.ids().type_of(crate::ids::CatTypeId::from_raw(t))
+        schema.ids().type_of(cat_type(t))
     }
 
     pub(super) fn ctor_index(&self, schema: &Schema, c: u64) -> Option<u32> {
-        schema
-            .ids()
-            .ctor_of(crate::ids::CatCtorId::from_raw(c))
-            .map(CtorRef::index)
+        schema.ids().ctor_of(cat_ctor(c)).map(CtorRef::index)
     }
 
     /// Lift the type and delete action of field `f` from `built`, every name in them resolving
@@ -258,7 +255,7 @@ impl Model {
         let (_, fill_text) = self.fill(run, t, at.clone(), &fty, fill)?;
         let mut before = self.clone();
         before.remove_field(id);
-        let maps = match before.fill_map(run, t, at, &fty, fill, &name) {
+        let maps = match before.fill_map(run, t, at, &fty, fill, id) {
             Ok(map) => Ok(vec![map]),
             Err(Fail::Refused(r)) => Err(r.into_why()),
             Err(e) => return Err(e),
@@ -274,7 +271,7 @@ impl Model {
         ))
     }
 
-    /// Returns the map that gives field `name` of the rows of constructors `at` of `t`, the
+    /// Returns the map that gives field `field` of the rows of constructors `at` of `t`, the
     /// whole sum when `None`, their fill, over the declarations now.
     pub(super) fn fill_map(
         &self,
@@ -283,7 +280,7 @@ impl Model {
         at: Option<Vec<u32>>,
         fty: &Ty,
         fill: &Fill,
-        name: &str,
+        field: u64,
     ) -> Res<RowMap> {
         let checked = self.checked(run)?;
         let before = checked.schema();
@@ -293,7 +290,7 @@ impl Model {
         Ok(RowMap::Fill {
             def,
             ctors: at.unwrap_or(all),
-            field: name.to_string(),
+            field: cat_field(field),
             fill: row_fn,
         })
     }

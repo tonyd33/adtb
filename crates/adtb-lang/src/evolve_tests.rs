@@ -3712,9 +3712,9 @@ add relation teams : Team key id generate sequence";
     let s = afters(&running(), text).remove(0);
     assert_eq!(
         (
-            Err(Uncommitted::Migrating),
+            Err(Uncommitted::Unsettled),
             Err(Failed::Refused(
-                "a migration is being applied to the source".to_string()
+                "the source is mid-migration or leaves an object without a catalog id".to_string()
             ))
         ),
         (

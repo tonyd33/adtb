@@ -1,6 +1,6 @@
 use super::*;
 use crate::evolve::expected;
-use crate::ids::{CatCtorId, CatRelId, KeyKind, Owner, keyed};
+use crate::ids::{KeyKind, Owner, keyed};
 
 impl Model {
     /// Returns the source the model holds: its declarations printed, a name of dropped objects as
@@ -17,12 +17,12 @@ impl Model {
             states: self
                 .states
                 .iter()
-                .map(|(&(r, c), &s)| ((CatRelId::from_raw(r), CatCtorId::from_raw(c)), s))
+                .map(|(&(r, c), &s)| ((cat_rel(r), cat_ctor(c)), s))
                 .collect(),
             value_states: self
                 .value_states
                 .iter()
-                .map(|(&c, &s)| (CatCtorId::from_raw(c), s))
+                .map(|(&c, &s)| (cat_ctor(c), s))
                 .collect(),
             version: self.version,
             log: self.logged.clone(),
@@ -42,7 +42,7 @@ impl Model {
                     Added::Not => expected::Added::Not,
                     Added::Applying => expected::Added::Applying,
                     Added::Refused => expected::Added::Refused,
-                    Added::As(r) => expected::Added::As(CatRelId::from_raw(r)),
+                    Added::As(r) => expected::Added::As(cat_rel(r)),
                 };
                 crate::evolve::Expected::added(
                     a.module.clone(),

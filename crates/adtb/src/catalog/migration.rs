@@ -834,10 +834,10 @@ fn holds_ctor(t: &FieldType, v: &Value, id: CtorId) -> bool {
 /// Returns whether a map of `maps` carries the rows or values of constructor `c` of type `def`.
 fn carried(maps: &[RowMap], def: TypeId, c: u32) -> bool {
     maps.iter().any(|m| match m {
-        RowMap::Route { def: d, from, .. }
-        | RowMap::Merge { def: d, from, .. }
-        | RowMap::Nest { def: d, from, .. } => *d == def && from.contains(&c),
-        RowMap::Unnest { def: d, from } => *d == def && *from == c,
+        RowMap::Route { def: d, from, .. } => *d == def && from.contains(&c),
+        RowMap::Merge { def: d, rows, .. } => *d == def && rows.iter().any(|r| r.from() == c),
+        RowMap::Nest { def: d, from, .. } => *d == def && from.iter().any(|(k, _)| *k == c),
+        RowMap::Unnest { def: d, from, .. } => *d == def && *from == c,
         _ => false,
     })
 }

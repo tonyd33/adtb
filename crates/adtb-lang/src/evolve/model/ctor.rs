@@ -17,7 +17,7 @@ impl Model {
     fn record_to_sum(&mut self, run: &mut Run, t: u64) -> Res<()> {
         let built = self.schema_now(run)?;
         let schema = built.schema();
-        let Some(def) = schema.ids().type_of(crate::ids::CatTypeId::from_raw(t)) else {
+        let Some(def) = schema.ids().type_of(cat_type(t)) else {
             return broken("a type the built schema does not hold");
         };
         let keys = Cx::key_fields(schema, def);

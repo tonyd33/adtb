@@ -6,7 +6,7 @@ use super::*;
 use crate::ast::{self, Fill};
 use crate::check::{self, Ref};
 use crate::evolve::revert::{DeclOf, Late as Gone, NamedId, PlacedArms, Spelled, Undo, dropped};
-use crate::evolve::{Resolved, RowMap, holds, match_arms};
+use crate::evolve::{Resolved, holds, match_arms};
 use crate::ids::{CatCtorId, CatSetId, KeyKind};
 use crate::parse::{Options, parse_schema};
 use crate::span::FileId;
@@ -218,10 +218,7 @@ impl Model {
         }
         let built = self.schema_now(run)?;
         let schema = built.schema();
-        let def = schema
-            .ids()
-            .type_of(crate::ids::CatTypeId::from_raw(ty))
-            .expect("a held type");
+        let def = schema.ids().type_of(cat_type(ty)).expect("a held type");
         let refs = check::schema_refs(schema);
         let mut placed = Vec::new();
         for (c, n, beside, texts) in arms {
@@ -500,9 +497,7 @@ impl Model {
             Some(self.fill(run, t, Some(ks), &fty, fill)?.1)
         };
         self.built_for(run)?;
-        let ctors: Vec<u64> = moved.iter().map(|(c, _)| *c).collect();
-        let maps = before.up_maps(run, t, &ctors, &others, &name, fill);
-        let maps = maps.map(|ms: Vec<RowMap>| ms);
+        let maps = before.up_maps(run, t, &moved, holder, &others, fill);
         Ok((
             Resolved::MoveField {
                 field: holder,

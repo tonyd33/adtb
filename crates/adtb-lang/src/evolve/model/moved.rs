@@ -7,7 +7,7 @@ use crate::canon::{Names, canonical_term};
 use crate::evolve::ctor::fill_image;
 use crate::evolve::field::{carried_fields, path_text};
 use crate::evolve::{Clause, Granted, Resolved, RowMap};
-use crate::ids::CatRelId;
+use crate::ids::CatFieldId;
 use crate::schema::Schema;
 
 fn sel_names(sel: &CtorSel) -> Vec<&ast::Ident> {
@@ -125,15 +125,14 @@ impl Model {
                 fs.ids.dedup();
             }
         }
-        let ks: Vec<u32> = targets
+        let copied = targets
             .iter()
-            .filter_map(|&c| before.ctor_index(&schema, c))
+            .filter_map(|&c| {
+                let k = before.ctor_index(&schema, c)?;
+                Some((k, cat_field(f), cat_field(given[&c])))
+            })
             .collect();
-        let maps = Ok(vec![RowMap::Copy {
-            def,
-            ctors: ks,
-            field: held.name,
-        }]);
+        let maps = Ok(vec![RowMap::Copy { def, copied }]);
         Ok((
             Resolved::MoveField {
                 field: given[&targets[0]],
@@ -178,7 +177,7 @@ impl Model {
         self.place_field(t, None, f);
         if others.is_empty() {
             self.built_for(run)?;
-            let maps = before.up_maps(run, t, &[c], &[], &name, None);
+            let maps = before.up_maps(run, t, &[(c, f)], f, &[], None);
             return Ok((
                 Resolved::MoveField {
                     field: f,
@@ -217,7 +216,7 @@ impl Model {
         };
         let (_, text) = self.fill(run, t, Some(ks), &fty, fill)?;
         self.lift_grants(built.schema(), t, c, f, fill);
-        let maps = before.up_maps(run, t, &[c], &others, &name, Some(fill));
+        let maps = before.up_maps(run, t, &[(c, f)], f, &others, Some(fill));
         Ok((
             Resolved::MoveField {
                 field: f,
@@ -229,38 +228,37 @@ impl Model {
         ))
     }
 
-    /// Returns the maps of a move of field `name` of each constructor of `from` of `t` to the
-    /// header over the declarations now, the constructors `others` taking `fill`.
+    /// Returns the maps of a move of field `f` of each `(c, f)` of `moved`, a constructor of `t`
+    /// and its field, to header field `holder` over the declarations now, the constructors
+    /// `others` taking `fill`.
     pub(super) fn up_maps(
         &self,
         run: &mut Run,
         t: u64,
-        from: &[u64],
+        moved: &[(u64, u64)],
+        holder: u64,
         others: &[u64],
-        name: &str,
         fill: Option<&Fill>,
     ) -> Maps {
         let refused = Fail::reason;
         let built = self.schema_now(run).map_err(refused)?;
         let schema = built.schema();
         let def = self.def_in(schema, t).expect("the type");
-        let ks: Vec<u32> = from
+        let copied: Vec<(u32, CatFieldId, CatFieldId)> = moved
             .iter()
-            .map(|&c| self.ctor_index(schema, c).expect("the constructor"))
+            .map(|&(c, f)| {
+                let k = self.ctor_index(schema, c).expect("the constructor");
+                (k, cat_field(f), cat_field(holder))
+            })
             .collect();
-        let Some(fty) = schema
-            .ty(def)
-            .field_named(ks[0], name)
-            .map(|x| x.ty.clone())
+        let Some(fty) = moved
+            .first()
+            .and_then(|&(_, f)| schema.ids().field_of(cat_field(f)))
+            .map(|x| schema.ty(x.def()).field_def(x).ty.clone())
         else {
-            let names: Vec<&str> = from.iter().map(|c| self.ctors[c].name.as_str()).collect();
-            return Err(format!("`{}` has no field `{name}`", names.join(" | ")));
+            return Err("a moved field the schema does not hold".to_string());
         };
-        let mut maps = vec![RowMap::Copy {
-            def,
-            ctors: ks,
-            field: name.to_string(),
-        }];
+        let mut maps = vec![RowMap::Copy { def, copied }];
         if let Some(fill) = fill
             && !others.is_empty()
         {
@@ -269,7 +267,7 @@ impl Model {
                 .filter_map(|&o| self.ctor_index(schema, o))
                 .collect();
             maps.push(
-                self.fill_map(run, t, Some(at), &fty, fill, name)
+                self.fill_map(run, t, Some(at), &fty, fill, holder)
                     .map_err(refused)?,
             );
         }
@@ -334,7 +332,7 @@ impl Model {
         let resolving = Resolving::new(self, run.module());
         let rel = schema
             .ids()
-            .relation_of(CatRelId::from_raw(r))
+            .relation_of(cat_rel(r))
             .expect("a held relation variable");
         let rname = schema.relation(rel).name.clone();
         let needed = carried_fields(schema, rel);
@@ -434,10 +432,7 @@ impl Model {
     /// Returns the id of the key of relation variable `r` in `built`.
     pub(super) fn key_id(built: &Built, r: u64) -> Res<u64> {
         let ids = built.schema().ids();
-        match ids
-            .relation_of(CatRelId::from_raw(r))
-            .and_then(|rel| ids.key_id(rel))
-        {
+        match ids.relation_of(cat_rel(r)).and_then(|rel| ids.key_id(rel)) {
             Some(k) => Ok(k.raw()),
             None => broken("a rekeyed relation variable without a key id"),
         }

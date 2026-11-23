@@ -10,6 +10,7 @@ use crate::check;
 use crate::evolve::{SourceDecl, decl_exprs, each_type, walk_type};
 use crate::ids::{CatalogIds, objects, placing};
 use crate::lex::{Tok, lex};
+use crate::resolve::{Visible, lookup_type, lookup_value};
 use crate::schema::{self, Adder, Ahead, AheadKind, AheadState, PRELUDE, Schema};
 use crate::span::Diag;
 use crate::span::{FileDiag, FileId, Span};
@@ -422,6 +423,75 @@ impl Built {
     /// Returns the errors of checking the schema.
     pub(super) fn errors(&self) -> Vec<FileDiag> {
         check::check_schema(&self.schema).err().unwrap_or_default()
+    }
+
+    /// Returns the errors of checking the schema in a file `read` takes at a name that denotes
+    /// no value, type or constructor of the schema from its file's module.
+    ///
+    /// Errors: `Fail::Broken` naming an error of such a file whose span lies outside it.
+    pub(super) fn unbound(&self, read: impl Fn(FileId) -> bool) -> Res<Vec<FileDiag>> {
+        let mut out = Vec::new();
+        for d in self.errors().into_iter().filter(|d| read(d.file)) {
+            if self.names_nothing(&d)? {
+                out.push(d);
+            }
+        }
+        Ok(out)
+    }
+
+    fn names_nothing(&self, d: &FileDiag) -> Res<bool> {
+        let written = self
+            .texts
+            .get(d.file.0 as usize)
+            .and_then(|text| Some((text, text.get(d.diag.span.range())?)));
+        let Some((text, written)) = written else {
+            return broken(format!(
+                "a checker error at {:?} lies outside file {}: {}",
+                d.diag.span, d.file.0, d.diag.message
+            ));
+        };
+        let module = text
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("module "))
+            .and_then(|m| self.schema.module_named(m.trim()));
+        let (Some(name), Some(module)) = (qname(written), module) else {
+            return Ok(false);
+        };
+        let (s, vis) = (&self.schema, Visible::module(module));
+        Ok(lookup_value(s, &vis, &name).is_err()
+            && lookup_type(s, &vis, &name).is_err()
+            && (name.module.is_some()
+                || !s
+                    .types
+                    .iter()
+                    .any(|t| t.ctors().iter().any(|c| c.name == name.name.text))))
+    }
+}
+
+/// Returns `text` as a name, qualified or not, when it is one.
+fn qname(text: &str) -> Option<ast::QName> {
+    let toks: Vec<_> = lex(text)
+        .0
+        .into_iter()
+        .filter(|t| t.tok != Tok::Eof)
+        .collect();
+    let ident = |t: &crate::lex::Token| {
+        matches!(t.tok, Tok::Lower | Tok::Upper).then(|| ast::Ident {
+            text: text[t.span.range()].to_string(),
+            span: t.span,
+        })
+    };
+    match toks.as_slice() {
+        [n] => Some(ast::QName {
+            module: None,
+            name: ident(n)?,
+        }),
+        [m, c, n] if c.tok == Tok::ColonColon => Some(ast::QName {
+            module: Some(ident(m)?),
+            name: ident(n)?,
+        }),
+        _ => None,
     }
 }
 

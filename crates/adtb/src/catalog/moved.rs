@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::evolve::{RowFn, RowMap};
+use adtb_lang::evolve::{Merged, RowFn, RowMap};
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::NormalQuery;
 use adtb_lang::schema::Schema;
@@ -10,13 +10,13 @@ use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
 
 use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, from_stored_row, to_stored};
 use crate::heap::FieldType;
-use crate::key::{Value, catalog};
+use crate::key::Value;
 
 use super::change::{Data, Failed, Field, Fill, Moved, Route, convert, fields};
 use super::hosts::{self, classify};
 use super::ids::{
-    CatCtorId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation, type_ctor_id,
-    type_ctor_index, type_def, type_id,
+    CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
+    type_ctor_id, type_ctor_index, type_def, type_id,
 };
 use super::{Broken, Error, layout, oplog};
 
@@ -48,20 +48,24 @@ pub fn moved(
                 ctors,
                 field,
                 fill,
-            } => m.fills(*def, ctors, field, fill),
-            RowMap::Copy { def, ctors, field } => {
-                m.copies(*def, ctors, field);
+            } => m.fills(*def, ctors, *field, fill),
+            RowMap::Copy { def, copied } => {
+                m.copies(*def, copied);
                 Ok(())
             }
             RowMap::Route { def, from, routing } => m.route(*def, from, routing),
             RowMap::Merge {
                 def,
-                from,
                 into,
                 discriminator,
-            } => m.merge(*def, from, into, discriminator),
-            RowMap::Nest { def, from, into } => m.nest(*def, from, into),
-            RowMap::Unnest { def, from } => m.unnest(*def, *from),
+                rows,
+            } => m.merge(*def, *into, *discriminator, rows),
+            RowMap::Nest { def, into, from } => m.nest(*def, *into, from),
+            RowMap::Unnest {
+                def,
+                from,
+                products,
+            } => m.unnest(*def, *from, products),
             RowMap::Rekey { relation } => m.rekey(*relation),
         };
         match got {
@@ -113,11 +117,6 @@ fn row_val(c: u32, convs: &[Conv], row: &[Value]) -> Result<Val, Failed> {
     Ok(Val::ctor(c, from_stored_row(convs, row).map_err(shown)?))
 }
 
-/// Returns the constructor of relation `r` named `name`.
-fn ctor_named(schema: &Schema, r: RelId, name: &str) -> Option<u32> {
-    schema.ty(schema.relation(r).elem_def).ctor_index(name)
-}
-
 fn ctor_name(schema: &Schema, def: TypeId, c: u32) -> &str {
     &schema.ty(def).ctors()[c as usize].name
 }
@@ -135,6 +134,14 @@ fn map_named(schema: &Schema, def: TypeId, field: Option<&str>) -> String {
     match field {
         Some(f) => format!("the fill of `{ty}.{f}`"),
         None => format!("the routing of `{ty}`"),
+    }
+}
+
+/// Returns the name of field `id` of `schema`, or the id where `schema` lacks it.
+fn field_name(schema: &Schema, id: CatFieldId) -> String {
+    match schema.ids().field_of(id) {
+        Some(f) => schema.ty(f.def()).field_def(f).name.clone(),
+        None => id.to_string(),
     }
 }
 
@@ -175,11 +182,11 @@ fn failed(e: Error) -> Failed {
 }
 
 /// A constructor of a type in a routing's schema: its name, its position and fields in the schema
-/// after the operator, and the names and conversions of its fields.
+/// after the operator, and the ids and conversions of its fields.
 struct Routed {
     name: String,
     product: Option<(u32, Vec<Field>)>,
-    names: Vec<String>,
+    ids: Vec<Option<CatFieldId>>,
     convs: Vec<Conv>,
 }
 
@@ -199,8 +206,38 @@ fn instance(schema: &Schema, def: TypeId, args: &[Ty], c: u32) -> Vec<(String, T
 }
 
 /// Returns the catalog id of constructor `name` of type `def` of `b`.
-fn b_ctor(b: &Schema, def: TypeId, name: &str) -> Option<CatCtorId> {
-    b.ty(def).ctor_index(name).map(|k| type_ctor_id(b, def, k))
+/// Returns the fields of constructor `c` of type `def` at arguments `args` with their ids, the
+/// header's first.
+fn instance_ids(
+    schema: &Schema,
+    def: TypeId,
+    args: &[Ty],
+    c: u32,
+) -> Vec<(Option<CatFieldId>, Ty)> {
+    instance(schema, def, args, c)
+        .into_iter()
+        .map(|(n, t)| (field_id(schema, def, c, &n), t))
+        .collect()
+}
+
+/// Returns the position in `def` of `b` of the product `products` pairs with `inner`.
+fn product(
+    b: &Schema,
+    def: TypeId,
+    products: &[(CatCtorId, CatCtorId)],
+    inner: CatCtorId,
+) -> Option<u32> {
+    let (_, p) = products.iter().find(|(i, _)| *i == inner)?;
+    type_ctor_index(b, def, *p)
+}
+
+/// Returns the field `pairs` gives field `id` from, `id` itself where it pairs none.
+fn paired(pairs: &[(CatFieldId, CatFieldId)], id: Option<CatFieldId>) -> Option<CatFieldId> {
+    pairs
+        .iter()
+        .find(|(to, _)| Some(*to) == id)
+        .map(|(_, from)| *from)
+        .or(id)
 }
 
 /// Returns the one constructor the routing `query` gives every row of constructor `c`, or `None`
@@ -279,13 +316,19 @@ impl Lift {
     }
 }
 
-/// Returns field `name` of type `t` of `b` as lifted from the field of the same name of `from`,
-/// fields of `a`.
-fn lift(a: &Schema, from: &[(String, Ty)], b: &Schema, name: &str, t: &Ty) -> Result<Lift, Failed> {
+/// Returns field `id` of type `t` of `b` as lifted from the field of `from`, fields of `a`,
+/// with that id.
+fn lift(
+    a: &Schema,
+    from: &[(Option<CatFieldId>, Ty)],
+    b: &Schema,
+    id: Option<CatFieldId>,
+    t: &Ty,
+) -> Result<Lift, Failed> {
     let at = from
         .iter()
-        .position(|(n, _)| n == name)
-        .ok_or_else(|| Failed::from(Broken::NoCounterpart(name.to_owned())))?;
+        .position(|(f, _)| f.is_some() && *f == id)
+        .ok_or_else(|| Failed::from(Broken::NoCounterpart(shown_id(id))))?;
     Ok(Lift::At(
         at,
         layout::field_type(a, &from[at].1),
@@ -293,24 +336,37 @@ fn lift(a: &Schema, from: &[(String, Ty)], b: &Schema, name: &str, t: &Ty) -> Re
     ))
 }
 
-/// Returns `vals`, the fields of a value named `names`, as a row of fields `to`.
-fn by_name(names: &[String], vals: &[Val], to: &[Field]) -> Result<Vec<Value>, Failed> {
+fn shown_id(id: Option<CatFieldId>) -> String {
+    id.map_or_else(|| "without an id".to_owned(), |id| id.to_string())
+}
+
+fn field_ids(fs: &[Field]) -> Vec<Option<CatFieldId>> {
+    fs.iter().map(|f| f.id).collect()
+}
+
+/// Returns `vals`, the fields of a value with ids `ids`, as a row of fields `to`.
+fn by_id(ids: &[Option<CatFieldId>], vals: &[Val], to: &[Field]) -> Result<Vec<Value>, Failed> {
     to.iter()
         .map(|t| {
-            let at = names
+            let at = ids
                 .iter()
-                .position(|n| *n == t.name)
+                .position(|n| n.is_some() && *n == t.id)
                 .ok_or_else(|| Failed::from(Broken::Unrouted(t.name.clone())))?;
             to_stored(&t.ty, &vals[at]).map_err(shown)
         })
         .collect()
 }
 
-/// Returns the field of `row`, with fields `from`, named as `to`, stored as `to` stores it.
-fn carried(from: &[Field], row: &[Value], to: &Field) -> Result<Value, Failed> {
+/// Returns the field `id` of `row`, with fields `from`, stored as `to` stores it.
+fn carried(
+    from: &[Field],
+    row: &[Value],
+    id: Option<CatFieldId>,
+    to: &Field,
+) -> Result<Value, Failed> {
     let at = from
         .iter()
-        .position(|f| f.name == to.name)
+        .position(|f| f.id.is_some() && f.id == id)
         .ok_or_else(|| Failed::from(Broken::NoCounterpart(to.name.clone())))?;
     convert(&from[at].ty, &to.ty, &row[at]).map_err(Failed::Refused)
 }
@@ -449,31 +505,31 @@ impl Mapping<'_> {
         &mut self,
         def: TypeId,
         ctors: &[u32],
-        field: &str,
+        field: CatFieldId,
         fill: &RowFn,
     ) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
-        let object = map_named(a, def, Some(field));
+        let object = map_named(a, def, Some(&field_name(b, field)));
         let f = Arc::new(compiled(fill, &object, self.hosts)?);
         for (ra, rid, rb) in relations_of(a, b, def) {
             for &c in ctors {
                 let Some(cb) = ctor_index(b, rb, ctor_id(a, ra, c)) else {
                     continue;
                 };
-                let to = fields(b, rb, cb);
-                let Some(id) = field_named(&to, field)?.id else {
-                    return Err(Failed::from(Broken::NoFieldId(field.to_owned())));
+                let Some(to) = fields(b, rb, cb).into_iter().find(|t| t.id == Some(field)) else {
+                    return Err(Failed::from(Broken::NoField(field_name(b, field))));
                 };
-                let ty = field_named(&to, field)?.ty.clone();
                 let convs = row_convs(&fill.schema, ra, c);
                 let (f, object) = (f.clone(), object.clone());
                 let fill: Box<Fill<'static>> = Box::new(move |_, row| {
                     let v = f
                         .eval(row_val(c, &convs, row)?)
                         .map_err(|e| evaluated(&object, e))?;
-                    to_stored(&ty, &v).map_err(shown)
+                    to_stored(&to.ty, &v).map_err(shown)
                 });
-                self.out.fills.insert((rid, ctor_id(b, rb, cb), id), fill);
+                self.out
+                    .fills
+                    .insert((rid, ctor_id(b, rb, cb), field), fill);
             }
         }
         self.held_fills(def, ctors, field, fill, &f)
@@ -485,68 +541,65 @@ impl Mapping<'_> {
         &mut self,
         def: TypeId,
         ctors: &[u32],
-        field: &str,
+        field: CatFieldId,
         fill: &RowFn,
         f: &Arc<Scalar>,
     ) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
-        let Some(tid) = type_id(a, def) else {
-            return Ok(());
-        };
-        let Some(db) = type_def(b, tid) else {
+        let Some((tid, db)) = self.held_type(def) else {
             return Ok(());
         };
         if !b.ty(db).params.is_empty() {
             return Ok(());
         }
-        let after = layout::ctors(b, &data(db, &[]));
         let before = layout::ctor_fields(&fill.schema, &data(def, &[]));
         for &c in ctors {
             let Some(cb) = type_ctor_index(b, db, type_ctor_id(a, def, c)) else {
                 continue;
             };
-            let (cid, to) = &after[cb as usize];
-            let Some(ty) = to.iter().find(|(n, _)| n == field).map(|(_, t)| t) else {
+            let Some((_, ty)) = instance_ids(b, db, &[], cb)
+                .into_iter()
+                .find(|(id, _)| *id == Some(field))
+            else {
                 continue;
             };
-            let Some(id) = field_id(b, db, cb, field) else {
-                return Err(Failed::from(Broken::NoFieldId(field.to_owned())));
-            };
-            let ty = layout::field_type(b, ty);
+            let ty = layout::field_type(b, &ty);
             let convs: Vec<Conv> = before[c as usize]
                 .iter()
                 .map(|(_, t)| conv(&fill.schema, t))
                 .collect();
-            let (f, object) = (f.clone(), map_named(a, def, Some(field)));
+            let object = map_named(a, def, Some(&field_name(b, field)));
+            let f = f.clone();
             let fill: Box<Fill<'static>> = Box::new(move |_, vals| {
                 let v = f
                     .eval(row_val(c, &convs, vals)?)
                     .map_err(|e| evaluated(&object, e))?;
                 to_stored(&ty, &v).map_err(shown)
             });
-            self.out.values.insert((tid, catalog(*cid), id), fill);
+            self.out
+                .values
+                .insert((tid, type_ctor_id(b, db, cb), field), fill);
         }
         Ok(())
     }
 
-    fn copies(&mut self, def: TypeId, ctors: &[u32], field: &str) {
+    fn copies(&mut self, def: TypeId, copied: &[(u32, CatFieldId, CatFieldId)]) {
         let (a, b) = (self.a, self.b);
         for (ra, rid, rb) in relations_of(a, b, def) {
-            for &c in ctors {
+            for &(c, from, to) in copied {
                 let Some(cb) = ctor_index(b, rb, ctor_id(a, ra, c)) else {
                     continue;
                 };
-                let Some(to) = fields(b, rb, cb).into_iter().find(|f| f.name == field) else {
+                let Some(to) = fields(b, rb, cb).into_iter().find(|f| f.id == Some(to)) else {
                     continue;
                 };
-                let Some(id) = to.id else { continue };
-                let name = field.to_string();
-                let fill: Box<Fill<'static>> = Box::new(move |from, row| {
-                    let at = from
+                let id = to.id.expect("a field found by its id");
+                let fill: Box<Fill<'static>> = Box::new(move |held, row| {
+                    let at = held
                         .iter()
-                        .position(|f| f.name == name)
-                        .ok_or_else(|| Failed::from(Broken::NotCopied(name.clone())))?;
-                    convert(&from[at].ty, &to.ty, &row[at]).map_err(Failed::Refused)
+                        .position(|f| f.id == Some(from))
+                        .ok_or_else(|| Failed::from(Broken::NotCopied(to.name.clone())))?;
+                    convert(&held[at].ty, &to.ty, &row[at]).map_err(Failed::Refused)
                 });
                 self.out.fills.insert((rid, ctor_id(b, rb, cb), id), fill);
             }
@@ -570,20 +623,14 @@ impl Mapping<'_> {
                     let Val::Ctor(k, vals) = routed.map_err(|e| evaluated(&object, e))? else {
                         return Err(Failed::from(Broken::RoutedNotCtor));
                     };
-                    let name = ctor_name(&routing.schema, def, k);
-                    let cb = ctor_named(b, rb, name).ok_or_else(|| {
+                    let id = ctor_id(&routing.schema, ra, k);
+                    let cb = ctor_index(b, rb, id).ok_or_else(|| {
+                        let name = ctor_name(&routing.schema, def, k);
                         Failed::Refused(format!("the routing gives `{name}`, no product"))
                     })?;
-                    let names: Vec<String> = layout::row(&routing.schema, ra, k)
-                        .into_iter()
-                        .map(|(n, _)| n)
-                        .collect();
-                    let routed = by_name(&names, &vals, &fields(b, rb, cb))?;
-                    self.out
-                        .routed
-                        .entry((rid, ctor_id(b, rb, cb)))
-                        .or_default()
-                        .push(routed);
+                    let ids = field_ids(&fields(&routing.schema, ra, k));
+                    let routed = by_id(&ids, &vals, &fields(b, rb, cb))?;
+                    self.out.routed.entry((rid, id)).or_default().push(routed);
                 }
                 self.out.consumed.insert((rid, cid));
             }
@@ -612,8 +659,8 @@ impl Mapping<'_> {
             let tag = match p {
                 Some(p) if products.iter().filter(|q| *q == &Some(*p)).count() > 1 => continue,
                 Some(p) => {
-                    let name = &schema.ty(def).ctors()[*p as usize].name;
-                    b_ctor(self.b, db, name)
+                    let id = type_ctor_id(&schema, def, *p);
+                    type_ctor_index(self.b, db, id).map(|_| id)
                 }
                 None => None,
             };
@@ -627,23 +674,29 @@ impl Mapping<'_> {
             let route: Box<Route> = Box::new(move |a, b, aa, ab| {
                 unreached(a, def, aa)?;
                 let d = schema.ty(def);
-                let routed: Vec<Routed> = d
-                    .ctors()
-                    .iter()
+                let routed: Vec<Routed> = (0..d.ctors().len() as u32)
                     .map(|k| {
-                        let fs: Vec<_> = d.header().iter().chain(&k.fields).collect();
-                        let product = b.ty(db).ctor_index(&k.name).map(|p| {
-                            let to = instance(b, db, ab, p).into_iter().map(|(name, t)| Field {
-                                id: None,
-                                name,
+                        let fs: Vec<_> = d
+                            .header()
+                            .iter()
+                            .chain(&d.ctors()[k as usize].fields)
+                            .collect();
+                        let id = type_ctor_id(&schema, def, k);
+                        let product = type_ctor_index(b, db, id).map(|p| {
+                            let to = instance_ids(b, db, ab, p).into_iter().map(|(id, t)| Field {
+                                id,
+                                name: String::new(),
                                 ty: layout::field_type(b, &t),
                             });
                             (p, to.collect())
                         });
                         Routed {
-                            name: k.name.clone(),
+                            name: d.ctors()[k as usize].name.clone(),
                             product,
-                            names: fs.iter().map(|f| f.name.clone()).collect(),
+                            ids: fs
+                                .iter()
+                                .map(|f| field_id(&schema, def, k, &f.name))
+                                .collect(),
                             convs: fs.iter().map(|f| conv(&schema, &f.ty.subst(aa))).collect(),
                         }
                     })
@@ -659,7 +712,7 @@ impl Mapping<'_> {
                     let (cb, product) = to.product.as_ref().ok_or_else(|| {
                         Failed::Refused(format!("the routing gives `{}`, no product", to.name))
                     })?;
-                    Ok(shaped(record, *cb, by_name(&to.names, &out, product)?))
+                    Ok(shaped(record, *cb, by_id(&to.ids, &out, product)?))
                 }))
             });
             self.out
@@ -668,36 +721,43 @@ impl Mapping<'_> {
         }
     }
 
-    /// Add to `out.routes` the merge of each constructor `from` of type `def` into `into`, for
-    /// the values of `def` other rows hold.
-    fn held_merges(&mut self, def: TypeId, from: &[u32], into: &str, discriminator: &str) {
+    /// Add to `out.routes` the merge of each constructor of `rows` of type `def` into `into`,
+    /// for the values of `def` other rows hold.
+    fn held_merges(
+        &mut self,
+        def: TypeId,
+        into: CatCtorId,
+        discriminator: CatFieldId,
+        rows: &[Merged],
+    ) {
         let Some((tid, db)) = self.held_type(def) else {
             return;
         };
-        for &c in from {
-            let name = ctor_name(self.a, def, c).to_owned();
-            let (into, discriminator) = (into.to_owned(), discriminator.to_owned());
+        for row in rows {
+            let (c, tag, pairs) = (row.from(), row.tag(), row.fields().to_vec());
             let route: Box<Route> = Box::new(move |a, b, aa, ab| {
                 unreached(a, def, aa)?;
-                let m = b
-                    .ty(db)
-                    .ctor_index(&into)
-                    .ok_or_else(|| Failed::from(Broken::NoCtor(into.clone())))?;
-                let fa = instance(a, def, aa, c);
-                let parts = instance(b, db, ab, m)
+                let m = type_ctor_index(b, db, into)
+                    .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_string())))?;
+                let fa = instance_ids(a, def, aa, c);
+                let parts = instance_ids(b, db, ab, m)
                     .into_iter()
-                    .map(|(n, t)| {
-                        if n == discriminator {
+                    .map(|(id, t)| {
+                        if id == Some(discriminator) {
                             let Ty::Data { def: disc, .. } = layout::repr(b, &t) else {
-                                return Err(Failed::from(Broken::NoDiscriminator(n)));
+                                return Err(Failed::from(Broken::NoDiscriminator(
+                                    discriminator.to_string(),
+                                )));
                             };
-                            let tag = b.ty(disc).ctor_index(&name).ok_or_else(|| {
-                                Failed::from(Broken::NotDiscriminated(name.clone()))
+                            let tag = type_ctor_index(b, disc, tag).ok_or_else(|| {
+                                Failed::from(Broken::NotDiscriminated(
+                                    ctor_name(a, def, c).to_owned(),
+                                ))
                             })?;
                             let v = to_stored(&layout::field_type(b, &t), &Val::tag(tag));
                             return Ok(Lift::Value(v.map_err(shown)?));
                         }
-                        lift(a, &fa, b, &n, &t)
+                        lift(a, &fa, b, paired(&pairs, id), &t)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let record = layout::is_record(b, &data(db, ab));
@@ -715,37 +775,32 @@ impl Mapping<'_> {
         }
     }
 
-    /// Add to `out.routes` the nest of each constructor `from` of type `def` into `into`, for
+    /// Add to `out.routes` the nest of each constructor of `from` of type `def` into `into`, for
     /// the values of `def` other rows hold.
-    fn held_nests(&mut self, def: TypeId, from: &[u32], into: &str) {
+    fn held_nests(&mut self, def: TypeId, into: CatCtorId, from: &[(u32, CatCtorId)]) {
         let Some((tid, db)) = self.held_type(def) else {
             return;
         };
         let header = self.a.ty(def).header().len();
-        for &c in from {
-            let name = ctor_name(self.a, def, c).to_owned();
-            let into = into.to_owned();
+        for &(c, inner) in from {
             let route: Box<Route> = Box::new(move |a, b, aa, ab| {
                 unreached(a, def, aa)?;
-                let n = b
-                    .ty(db)
-                    .ctor_index(&into)
-                    .ok_or_else(|| Failed::from(Broken::NoCtor(into.clone())))?;
-                let fa = instance(a, def, aa, c);
-                let fb = instance(b, db, ab, n);
+                let n = type_ctor_index(b, db, into)
+                    .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_string())))?;
+                let fa = instance_ids(a, def, aa, c);
+                let fb = instance_ids(b, db, ab, n);
                 let Some(((_, held), outer)) = fb.split_last() else {
-                    return Err(Failed::from(Broken::Fieldless(into.clone())));
+                    return Err(Failed::from(Broken::Fieldless(into.to_string())));
                 };
                 let Ty::Data { def: s, .. } = layout::repr(b, held) else {
                     return Err(Failed::from(Broken::LastNotSum));
                 };
-                let k = b
-                    .ty(s)
-                    .ctor_index(&name)
-                    .ok_or_else(|| Failed::from(Broken::NotNested(name.clone())))?;
+                let k = type_ctor_index(b, s, inner).ok_or_else(|| {
+                    Failed::from(Broken::NotNested(ctor_name(a, def, c).to_owned()))
+                })?;
                 let parts = outer
                     .iter()
-                    .map(|(n, t)| lift(a, &fa[..header], b, n, t))
+                    .map(|(id, t)| lift(a, &fa[..header], b, *id, t))
                     .collect::<Result<Vec<_>, _>>()?;
                 let held = layout::field_type(b, held);
                 let convs: Vec<Conv> = fa[header..].iter().map(|(_, t)| conv(a, t)).collect();
@@ -766,41 +821,37 @@ impl Mapping<'_> {
         }
     }
 
-    /// Add to `out.routes` the unnest of constructor `from` of type `def`, for the values of
-    /// `def` other rows hold.
-    fn held_unnests(&mut self, def: TypeId, from: u32) {
+    /// Add to `out.routes` the unnest of constructor `from` of type `def` into `products`, for
+    /// the values of `def` other rows hold.
+    fn held_unnests(&mut self, def: TypeId, from: u32, products: &[(CatCtorId, CatCtorId)]) {
         let Some((tid, db)) = self.held_type(def) else {
             return;
         };
         let header = self.a.ty(def).header().len();
         let outer = ctor_name(self.a, def, from).to_owned();
+        let products = products.to_vec();
         let route: Box<Route> = Box::new(move |a, b, aa, ab| {
             unreached(a, def, aa)?;
-            let fa = instance(a, def, aa, from);
+            let fa = instance_ids(a, def, aa, from);
             let Some((_, held)) = fa.last() else {
                 return Err(Failed::from(Broken::Fieldless(outer.clone())));
             };
             let s = layout::repr(a, held);
-            let lifted = layout::ctors(a, &s)
-                .into_iter()
-                .enumerate()
-                .map(|(k, _)| {
-                    let Ty::Data { def: sd, .. } = &s else {
-                        return Err(Failed::from(Broken::LastNotSum));
-                    };
-                    let inner = &a.ty(*sd).ctors()[k];
-                    let p = b
-                        .ty(db)
-                        .ctor_index(&inner.name)
-                        .ok_or_else(|| Failed::from(Broken::NoCtor(inner.name.clone())))?;
-                    let parts = instance(b, db, ab, p)
+            let Ty::Data { def: sd, .. } = &s else {
+                return Err(Failed::from(Broken::LastNotSum));
+            };
+            let lifted = (0..a.ty(*sd).ctors().len() as u32)
+                .map(|k| {
+                    let p = product(b, db, &products, type_ctor_id(a, *sd, k))
+                        .ok_or_else(|| Failed::from(Broken::NoCtor(ctor_name(a, *sd, k).into())))?;
+                    let hb = b.ty(db).header().len();
+                    let parts = instance_ids(b, db, ab, p)
                         .into_iter()
-                        .map(
-                            |(n, t)| match inner.fields.iter().position(|f| f.name == n) {
-                                Some(at) => Ok(Lift::Inner(at, layout::field_type(b, &t))),
-                                None => lift(a, &fa[..header], b, &n, &t),
-                            },
-                        )
+                        .enumerate()
+                        .map(|(at, (id, t))| match at.checked_sub(hb) {
+                            Some(at) => Ok(Lift::Inner(at, layout::field_type(b, &t))),
+                            None => lift(a, &fa[..header], b, id, &t),
+                        })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok((p, parts))
                 })
@@ -828,51 +879,46 @@ impl Mapping<'_> {
     fn merge(
         &mut self,
         def: TypeId,
-        from: &[u32],
-        into: &str,
-        discriminator: &str,
+        into: CatCtorId,
+        discriminator: CatFieldId,
+        rows: &[Merged],
     ) -> Result<(), Failed> {
-        self.held_merges(def, from, into, discriminator);
+        self.held_merges(def, into, discriminator, rows);
         let (a, b) = (self.a, self.b);
         for (ra, rid, rb) in relations_of(a, b, def) {
-            let Some(rows) = self.data.get(&rid) else {
+            let Some(data) = self.data.get(&rid) else {
                 continue;
             };
-            let cb = ctor_named(b, rb, into)
-                .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_owned())))?;
+            let cb = ctor_index(b, rb, into)
+                .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_string())))?;
             let to = fields(b, rb, cb);
-            let disc = layout::row(b, rb, cb)
-                .into_iter()
-                .find(|(n, _)| n == discriminator)
-                .and_then(|(_, t)| match t {
-                    Ty::Data { def, .. } => Some(def),
+            let disc = to
+                .iter()
+                .position(|t| t.id == Some(discriminator))
+                .and_then(|at| match &layout::row(b, rb, cb)[at].1 {
+                    Ty::Data { def, .. } => Some(*def),
                     _ => None,
                 })
-                .ok_or_else(|| Failed::from(Broken::NoDiscriminator(discriminator.to_owned())))?;
-            for &c in from {
+                .ok_or_else(|| Failed::from(Broken::NoDiscriminator(discriminator.to_string())))?;
+            for row in rows {
+                let c = row.from();
                 let cid = ctor_id(a, ra, c);
-                let name = ctor_name(a, def, c);
-                let tag = b
-                    .ty(disc)
-                    .ctor_index(name)
-                    .ok_or_else(|| Failed::from(Broken::NotDiscriminated(name.to_owned())))?;
+                let tag = type_ctor_index(b, disc, row.tag()).ok_or_else(|| {
+                    Failed::from(Broken::NotDiscriminated(ctor_name(a, def, c).to_owned()))
+                })?;
                 let from_fields = fields(a, ra, c);
-                for row in rows.get(&cid).into_iter().flatten() {
+                for values in data.get(&cid).into_iter().flatten() {
                     let merged = to
                         .iter()
                         .map(|t| {
-                            if t.name == discriminator {
+                            if t.id == Some(discriminator) {
                                 to_stored(&t.ty, &Val::tag(tag)).map_err(shown)
                             } else {
-                                carried(&from_fields, row, t)
+                                carried(&from_fields, values, paired(row.fields(), t.id), t)
                             }
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    self.out
-                        .routed
-                        .entry((rid, ctor_id(b, rb, cb)))
-                        .or_default()
-                        .push(merged);
+                    self.out.routed.entry((rid, into)).or_default().push(merged);
                 }
                 self.out.consumed.insert((rid, cid));
             }
@@ -880,42 +926,41 @@ impl Mapping<'_> {
         Ok(())
     }
 
-    fn nest(&mut self, def: TypeId, from: &[u32], into: &str) -> Result<(), Failed> {
-        self.held_nests(def, from, into);
+    fn nest(
+        &mut self,
+        def: TypeId,
+        into: CatCtorId,
+        from: &[(u32, CatCtorId)],
+    ) -> Result<(), Failed> {
+        self.held_nests(def, into, from);
         let (a, b) = (self.a, self.b);
         let header = a.ty(def).header().len();
         for (ra, rid, rb) in relations_of(a, b, def) {
             let Some(rows) = self.data.get(&rid) else {
                 continue;
             };
-            let cb = ctor_named(b, rb, into)
-                .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_owned())))?;
+            let cb = ctor_index(b, rb, into)
+                .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_string())))?;
             let to = fields(b, rb, cb);
             let Some((held, outer)) = to.split_last() else {
-                return Err(Failed::from(Broken::Fieldless(into.to_owned())));
+                return Err(Failed::from(Broken::Fieldless(into.to_string())));
             };
             let s = last_field_def(b, rb, cb)?;
-            for &c in from {
+            for &(c, inner) in from {
                 let cid = ctor_id(a, ra, c);
-                let name = ctor_name(a, def, c);
-                let k = b
-                    .ty(s)
-                    .ctor_index(name)
-                    .ok_or_else(|| Failed::from(Broken::NotNested(name.to_owned())))?;
+                let k = type_ctor_index(b, s, inner).ok_or_else(|| {
+                    Failed::from(Broken::NotNested(ctor_name(a, def, c).to_owned()))
+                })?;
                 let from_fields = fields(a, ra, c);
                 let convs = row_convs(a, ra, c);
                 for row in rows.get(&cid).into_iter().flatten() {
                     let mut nested = outer
                         .iter()
-                        .map(|t| carried(&from_fields, row, t))
+                        .map(|t| carried(&from_fields, row, t.id, t))
                         .collect::<Result<Vec<_>, _>>()?;
                     let inner = from_stored_row(&convs[header..], &row[header..]).map_err(shown)?;
                     nested.push(to_stored(&held.ty, &Val::ctor(k, inner)).map_err(shown)?);
-                    self.out
-                        .routed
-                        .entry((rid, ctor_id(b, rb, cb)))
-                        .or_default()
-                        .push(nested);
+                    self.out.routed.entry((rid, into)).or_default().push(nested);
                 }
                 self.out.consumed.insert((rid, cid));
             }
@@ -923,8 +968,13 @@ impl Mapping<'_> {
         Ok(())
     }
 
-    fn unnest(&mut self, def: TypeId, from: u32) -> Result<(), Failed> {
-        self.held_unnests(def, from);
+    fn unnest(
+        &mut self,
+        def: TypeId,
+        from: u32,
+        products: &[(CatCtorId, CatCtorId)],
+    ) -> Result<(), Failed> {
+        self.held_unnests(def, from, products);
         let (a, b) = (self.a, self.b);
         for (ra, rid, rb) in relations_of(a, b, def) {
             let Some(rows) = self.data.get(&rid) else {
@@ -939,27 +989,34 @@ impl Mapping<'_> {
                     ctor_name(a, def, from).to_owned(),
                 )));
             };
+            let header = b.ty(b.relation(rb).elem_def).header().len();
             for row in rows.get(&cid).into_iter().flatten() {
                 let last = row.last().map(|v| from_stored(held, v)).transpose();
                 let Some(Val::Ctor(k, vals)) = last.map_err(shown)? else {
                     return Err(Failed::from(Broken::UnnestedNotCtor));
                 };
-                let inner = &a.ty(s).ctors()[k as usize];
-                let cb = ctor_named(b, rb, &inner.name)
-                    .ok_or_else(|| Failed::from(Broken::NoCtor(inner.name.clone())))?;
-                let names: Vec<String> = inner.fields.iter().map(|f| f.name.clone()).collect();
-                let lifted = fields(b, rb, cb)
+                let p = products
                     .iter()
-                    .map(|t| match names.iter().position(|n| *n == t.name) {
-                        Some(at) => to_stored(&t.ty, &vals[at]).map_err(shown),
-                        None => carried(&from_fields, row, t),
-                    })
+                    .find(|(inner, _)| *inner == type_ctor_id(a, s, k))
+                    .map(|(_, p)| *p)
+                    .ok_or_else(|| Failed::from(Broken::NoCtor(ctor_name(a, s, k).to_owned())))?;
+                let cb = ctor_index(b, rb, p)
+                    .ok_or_else(|| Failed::from(Broken::NoCtor(p.to_string())))?;
+                let to = fields(b, rb, cb);
+                let (outer, own) = to.split_at(header.min(to.len()));
+                if own.len() != vals.len() {
+                    return Err(Failed::from(Broken::NoCounterpart(p.to_string())));
+                }
+                let lifted = outer
+                    .iter()
+                    .map(|t| carried(&from_fields, row, t.id, t))
+                    .chain(
+                        own.iter()
+                            .zip(vals.iter())
+                            .map(|(t, v)| to_stored(&t.ty, v).map_err(shown)),
+                    )
                     .collect::<Result<Vec<_>, _>>()?;
-                self.out
-                    .routed
-                    .entry((rid, ctor_id(b, rb, cb)))
-                    .or_default()
-                    .push(lifted);
+                self.out.routed.entry((rid, p)).or_default().push(lifted);
             }
             self.out.consumed.insert((rid, cid));
         }

@@ -2,7 +2,7 @@ mod merge;
 mod nest;
 mod split;
 
-use super::op::{Res, refuse, refuse_at};
+use super::op::{Res, broken, refuse, refuse_at};
 use super::reselect::{Edit, reselected, sel_range};
 use super::run::{Built, Run};
 use super::*;
@@ -11,7 +11,6 @@ use crate::check::{self, Ref};
 use crate::evolve::RowFn;
 use crate::evolve::carry::{self, Carry, Plan, Structural};
 use crate::evolve::ctor::Carries;
-use crate::ids::{CatCtorId, CatTypeId};
 use crate::schema::{Schema, Stage};
 use crate::span::FileId;
 use crate::types::TypeId;
@@ -24,7 +23,7 @@ pub(super) type Stages = Vec<(Option<u64>, Stage)>;
 pub(super) fn def_in(schema: &Schema, t: u64) -> TypeId {
     schema
         .ids()
-        .type_of(CatTypeId::from_raw(t))
+        .type_of(cat_type(t))
         .expect("a type the model holds")
 }
 
@@ -32,7 +31,7 @@ pub(super) fn def_in(schema: &Schema, t: u64) -> TypeId {
 pub(super) fn ctor_in(schema: &Schema, c: u64) -> u32 {
     schema
         .ids()
-        .ctor_of(CatCtorId::from_raw(c))
+        .ctor_of(cat_ctor(c))
         .expect("a constructor the model holds")
         .index()
 }
@@ -458,4 +457,21 @@ pub(super) struct Routing {
     carries: Carries,
     rows: RowFn,
     text: String,
+    made: Vec<(u64, Option<Vec<u64>>)>,
+}
+
+impl Routing {
+    /// Refuse as broken unless `made`, the products of `model`, have the ids of the products
+    /// the routing was typed against.
+    fn typed_for(&self, model: &Model, made: &[u64]) -> Res<()> {
+        let held: Vec<(u64, Option<Vec<u64>>)> = made
+            .iter()
+            .map(|c| (*c, model.ctors[c].fields.clone()))
+            .collect();
+        if held == self.made {
+            Ok(())
+        } else {
+            broken("a routing typed against products of other ids")
+        }
+    }
 }

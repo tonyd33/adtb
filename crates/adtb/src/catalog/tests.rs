@@ -167,10 +167,11 @@ fn a_rekey_of_a_relation_the_schema_after_lacks_is_internal() {
 #[test]
 fn a_copy_from_a_row_without_the_field_is_internal() {
     let (sa, sb, r, data) = gaining_a_field();
+    let def = sa.relation(r).elem_def;
+    let n = super::ids::field_id(&sb, sb.relation(r).elem_def, 0, "n").expect("`n` has an id");
     let maps = [adtb_lang::evolve::RowMap::Copy {
-        def: sa.relation(r).elem_def,
-        ctors: vec![0],
-        field: "n".into(),
+        def,
+        copied: vec![(0, n, n)],
     }];
     let moved =
         super::moved::moved(&sa, &sb, &maps, &data, &Default::default()).expect("the copy maps");

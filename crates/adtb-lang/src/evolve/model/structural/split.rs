@@ -246,6 +246,10 @@ impl Model {
         .or_else(|d| refuse_at(d.span, d.message))?;
         let query = crate::norm::registered(&compiled, &q.terms, q.term, RootKind::Query)
             .map_err(|e| Fail::Broken(format!("a routing does not normalise: {e:?}")))?;
+        let made = made
+            .iter()
+            .map(|c| (*c, probe.ctors[c].fields.clone()))
+            .collect();
         Ok(Routing {
             carries,
             rows: RowFn {
@@ -253,6 +257,7 @@ impl Model {
                 query,
             },
             text,
+            made,
         })
     }
 
@@ -324,6 +329,7 @@ impl Model {
             .iter()
             .map(|d| self.new_ctor(run, t, &d.name.text, d.record.as_deref()))
             .collect();
+        routing.typed_for(self, &made)?;
         self.reselect_products(run, t, &[c], &made)?;
         let products: Vec<String> = into.iter().map(|d| d.name.text.clone()).collect();
         let plan = self.carry_plan(run, &built, Structural::Split, t, (&[c], &products));
