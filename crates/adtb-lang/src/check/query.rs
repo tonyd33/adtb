@@ -639,7 +639,7 @@ impl Checker<'_> {
                     };
                     let next = match &tys[i] {
                         None => el,
-                        Some(t) => self.join(t, &el).ok_or_else(|| {
+                        Some(t) => self.join(&t.clone(), &el, op.span)?.ok_or_else(|| {
                             diag(
                                 op.span,
                                 format!(

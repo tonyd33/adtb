@@ -207,6 +207,13 @@ impl Checker<'_> {
     /// Check one ad hoc item. Returns its term when it is a query, a write or a `transact` block,
     /// and its checked form when it is a command.
     pub(super) fn adhoc_item(&mut self, item: &AdhocItem) -> R<Checked> {
+        self.sums.begin(self.terms.len(), self.terms.vars().len());
+        let checked = self.adhoc_item_open(item);
+        self.close_sums();
+        checked
+    }
+
+    fn adhoc_item_open(&mut self, item: &AdhocItem) -> R<Checked> {
         match item {
             AdhocItem::Expr(e) => {
                 let o = self.statement(e)?;
@@ -782,130 +789,6 @@ impl Checker<'_> {
                 RestorePoint::AtPosition(self.check(e, &position)?.tm)
             }
         })
-    }
-}
-
-/// Returns whether a value of `from` is numbered differently at `to`: an anonymous sum, or a set of one, with other constructors.
-fn renumbers(from: &Ty, to: &Ty) -> bool {
-    match (from, to) {
-        (Ty::Sum { ctors: a, .. }, Ty::Sum { ctors: b, .. }) => {
-            a.len() != b.len() || a.iter().zip(b).any(|(x, y)| x.0 != y.0)
-        }
-        (Ty::Set(x) | Ty::NonEmpty(x), Ty::Set(y) | Ty::NonEmpty(y)) => renumbers(x, y),
-        _ => false,
-    }
-}
-
-fn index_in(ctors: &Ctors, name: &str) -> u32 {
-    ctors
-        .iter()
-        .position(|(c, _)| c == name)
-        .expect("a joined sum has every constructor of its operands") as u32
-}
-
-impl Checker<'_> {
-    /// Returns `o` at `to`, a join of its type, with its anonymous constructors numbered in `to`.
-    pub(super) fn widen(&mut self, o: Out, to: &Ty) -> Out {
-        if !renumbers(&o.ty, to) {
-            return o;
-        }
-        let tm = self.renumber(o.tm, to);
-        let origin = self.row_origin(&o);
-        self.with_row_origin(
-            Out {
-                tm,
-                ty: to.clone(),
-                rows: None,
-                provenance: Provenance::Built,
-            },
-            origin,
-        )
-    }
-
-    /// Returns `t` at `to`, a join of its type, with its anonymous constructors numbered in `to`.
-    pub(super) fn renumber(&mut self, t: Tm, to: &Ty) -> Tm {
-        let from = self.terms.ty(t).clone();
-        if !renumbers(&from, to) {
-            return t;
-        }
-        let to = to.clone();
-        match self.terms.kind(t).clone() {
-            Kind::If(c, a, b) => {
-                let (a, b) = (self.renumber(a, &to), self.renumber(b, &to));
-                self.b().if_(c, a, b, to)
-            }
-            Kind::Let(x, e, b) => {
-                let b = self.renumber(b, &to);
-                self.b().let_(x, e, b, to)
-            }
-            Kind::Case { scrutinee, arms } => {
-                let arms = arms
-                    .into_iter()
-                    .map(|(c, x, b)| (c, x, self.renumber(b, &to)))
-                    .collect();
-                self.b().case(scrutinee, arms, to)
-            }
-            Kind::Unreachable => self.b().unreachable(to),
-            kind => match (&from, &to) {
-                (Ty::Sum { ctors, .. }, Ty::Sum { ctors: into, .. }) => match kind {
-                    Kind::Ctor { ctor, fields } => {
-                        let i = index_in(into, &ctors[ctor as usize].0);
-                        let row = ty::restrict(self.schema, &to, vec![i]);
-                        self.b().ctor(i, fields, row)
-                    }
-                    _ => self.retag_anon(t, &from, &to),
-                },
-                (_, Ty::Set(elem) | Ty::NonEmpty(elem)) => match kind {
-                    Kind::EmptySet => self.b().empty_set(to),
-                    Kind::Singleton(e) => {
-                        let e = self.renumber(e, elem);
-                        self.b().singleton(e, to)
-                    }
-                    Kind::Union(a, b) => {
-                        let (a, b) = (self.renumber(a, &to), self.renumber(b, &to));
-                        self.b().union(a, b, to)
-                    }
-                    Kind::For(x, src, b) => {
-                        let b = self.renumber(b, &to);
-                        self.b().for_(x, src, b, to)
-                    }
-                    _ => {
-                        let x = self.fresh(self.elem_ty(&from).expect("a set"));
-                        let xt = self.var_tm(x);
-                        let one = self.renumber(xt, elem);
-                        let one = self.b().singleton(one, to.clone());
-                        self.b().for_(x, t, one, to)
-                    }
-                },
-                _ => unreachable!("only sums and sets are renumbered"),
-            },
-        }
-    }
-
-    /// A `case` over `t`, of anonymous sum `from`, rebuilding each constructor's value at `to`.
-    fn retag_anon(&mut self, t: Tm, from: &Ty, to: &Ty) -> Tm {
-        let (Ty::Sum { ctors, sel }, Ty::Sum { ctors: into, .. }) = (from, to) else {
-            unreachable!("both are anonymous sums")
-        };
-        let mut arms = Vec::new();
-        for (c, (name, fields)) in ctors.iter().enumerate() {
-            let c = c as u32;
-            if sel.as_ref().is_some_and(|s| !s.contains(&c)) {
-                continue;
-            }
-            let y = self.fresh(ty::restrict(self.schema, from, vec![c]));
-            let mut given = Vec::new();
-            for (f, _) in fields {
-                let yt = self.var_tm(y);
-                let ft = self.b().transport_field(yt, f.clone());
-                given.push((f.clone(), ft));
-            }
-            let i = index_in(into, name);
-            let row = ty::restrict(self.schema, to, vec![i]);
-            let body = self.b().ctor(i, given, row);
-            arms.push((c, y, body));
-        }
-        self.b().case(t, arms, to.clone())
     }
 }
 

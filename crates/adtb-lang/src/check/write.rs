@@ -583,7 +583,9 @@ impl Checker<'_> {
                     let body = body?;
                     joined = Some(match joined {
                         None => body.ty.clone(),
-                        Some(j) => self.join(&j, &body.ty).unwrap_or_else(|| expected.clone()),
+                        Some(j) => self
+                            .join(&j, &body.ty, arm.body.span)?
+                            .unwrap_or_else(|| expected.clone()),
                     });
                     ir.guard = guard;
                     ir.body = Some(body);
@@ -859,7 +861,7 @@ impl Checker<'_> {
     /// else branch writes into the relation, and with `kept`, the type of a stored row the branch
     /// can leave in place.
     fn upsert_binding(
-        &self,
+        &mut self,
         eff: &Effect,
         rel: RelId,
         row_ty: &Ty,
@@ -878,7 +880,7 @@ impl Checker<'_> {
         });
         let wrote = written.filter(|(r, _)| *r == rel).map(|(_, t)| t);
         wrote.chain(kept).try_fold(row_ty.clone(), |joined, t| {
-            self.join(&joined, t).ok_or_else(|| {
+            self.join(&joined, t, span)?.ok_or_else(|| {
                 diag(
                     span,
                     format!(

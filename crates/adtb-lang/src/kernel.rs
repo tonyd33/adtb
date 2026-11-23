@@ -445,6 +445,38 @@ impl Terms {
         self.add(kind, ty)
     }
 
+    /// Replace the type of each term from `tm` on, each type argument it applies, and the type
+    /// of each variable from `var` on by `f` of it.
+    pub(crate) fn map_types(&mut self, tm: usize, var: usize, mut f: impl FnMut(&Ty) -> Ty) {
+        for node in &mut self.nodes[tm..] {
+            node.ty = f(&node.ty);
+            if let Kind::Call { type_args, .. } = &mut node.kind {
+                for t in type_args {
+                    *t = f(t);
+                }
+            }
+        }
+        for info in &mut self.vars[var..] {
+            info.ty = f(&info.ty);
+        }
+    }
+
+    pub(crate) fn set_var_type(&mut self, x: Var, ty: Ty) {
+        self.vars[x.0 as usize].ty = ty;
+    }
+
+    /// Replace the kind and type of each term from `tm` on, in order, and the type of each
+    /// variable from `var` on.
+    pub(crate) fn retype(&mut self, tm: usize, var: usize, nodes: Vec<(Kind, Ty)>, vars: Vec<Ty>) {
+        for (node, (kind, ty)) in self.nodes[tm..].iter_mut().zip(nodes) {
+            node.kind = kind;
+            node.ty = ty;
+        }
+        for (info, ty) in self.vars[var..].iter_mut().zip(vars) {
+            info.ty = ty;
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.nodes.len()
     }

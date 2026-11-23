@@ -1,4 +1,5 @@
-use super::ty::{join_adhoc, subtype};
+use super::sums::mentions_open;
+use super::ty::{join, subtype};
 use crate::kernel::{Const, Kind, Prim, Terms, Tm};
 use crate::schema::prelude::ctor;
 use crate::schema::{Schema, TypeDefKind};
@@ -140,7 +141,7 @@ impl Signature<'_> {
             Prim::Eq | Prim::Ne | Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge => {
                 let [a, b] = self.arity()?;
                 let decimals = is_decimal(a) && is_decimal(b);
-                let joined = join_adhoc(self.schema, a, b);
+                let joined = comparable(self.schema, a, b);
                 self.admits(decimals || joined.is_some(), &[a, b])?;
                 if let Some(j) = &joined {
                     expect(!j.mentions_fn(), || format!("`{p:?}` compares functions"))?;
@@ -394,7 +395,7 @@ impl Signature<'_> {
         match p {
             Prim::Span => {
                 let [a, b] = self.arity()?;
-                let t = join_adhoc(self.schema, a, b).ok_or_else(|| self.refused(&[a, b]))?;
+                let t = comparable(self.schema, a, b).ok_or_else(|| self.refused(&[a, b]))?;
                 self.ordered(&t)?;
                 Ok(Ty::Data {
                     def: self.schema.prelude().span(),
@@ -673,6 +674,12 @@ fn data(def: TypeId) -> Ty {
 
 fn expect(holds: bool, what: impl FnOnce() -> String) -> Result<(), String> {
     if holds { Ok(()) } else { Err(what()) }
+}
+
+/// Returns the join of `a` and `b`, or `a` when both hold sums still being inferred, which the
+/// types of the closed terms judge again.
+fn comparable(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
+    join(schema, a, b).or_else(|| (mentions_open(a) && mentions_open(b)).then(|| a.clone()))
 }
 
 fn show_all(schema: &Schema, tys: &[&Ty]) -> String {

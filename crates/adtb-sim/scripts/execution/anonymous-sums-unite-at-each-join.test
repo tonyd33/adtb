@@ -1,0 +1,58 @@
+# Each join an ad hoc statement makes unites the anonymous sums at the positions it joins, so a
+# constructor both operands build holds, in its field, the constructors of both; a join that
+# would make a sum hold itself is refused.
+
+migrate
+  module app
+  add module app
+  add type R = { id: Key rs, v: I64 }
+  add relation rs : R key id generate sequence
+  define fn two [a] (x: a, y: a) -> a = y
+
+run
+  insert rs { v: 1 }
+  insert rs { v: 2 }
+
+query rowsort
+  from r in rs select match r.v | 1 -> A { x: P { n: 1 } } | _ -> A { x: Q { m: 2 } }
+----
+  A { x: P { n: 1 } }
+  A { x: Q { m: 2 } }
+
+query rowsort
+  from r in rs select if r.v == 1 then A { x: P { n: 1 } } else A { x: Q { m: 2 } }
+----
+  A { x: P { n: 1 } }
+  A { x: Q { m: 2 } }
+
+query rowsort
+  (from r in rs where r.v == 1 select A { x: P { n: 1 } })
+    union (from r in rs where r.v == 2 select A { x: Q { m: 2 } })
+----
+  A { x: P { n: 1 } }
+  A { x: Q { m: 2 } }
+
+query rowsort
+  [A { x: P { n: 1 } }, A { x: Q { m: 2 } }]
+----
+  A { x: P { n: 1 } }
+  A { x: Q { m: 2 } }
+
+query
+  A { x: P { n: 1 } } == A { x: Q { m: 1 } }
+----
+  false
+
+query
+  two(A { x: P { n: 1 } }, A { x: Q { m: 2 } })
+----
+  A { x: Q { m: 2 } }
+
+query rowsort
+  fix s = [A { x: P { n: 1 } }] union (from a in s select A { x: Q { m: 2 } }) in s
+----
+  A { x: P { n: 1 } }
+  A { x: Q { m: 2 } }
+
+error Invalid { detail: "the anonymous sum of `P` and `Q` holds itself in field `p` of `Q`" }
+  from r in rs from v in [P { n: r.v }] select if r.v == 1 then v else Q { p: v }

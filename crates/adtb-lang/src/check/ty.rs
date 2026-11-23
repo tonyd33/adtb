@@ -106,7 +106,8 @@ fn same_fields(schema: &Schema, a: &Fields, b: &Fields) -> bool {
 
 /// Returns whether two anonymous sums have the same constructors with equivalent fields.
 fn same_ctors(schema: &Schema, a: &Ctors, b: &Ctors) -> bool {
-    a.len() == b.len()
+    a.class() == b.class()
+        && a.len() == b.len()
         && a.iter()
             .zip(b)
             .all(|((c, fs), (d, gs))| c == d && same_fields(schema, fs, gs))
@@ -160,7 +161,7 @@ pub fn subtype(schema: &Schema, a: &Ty, b: &Ty) -> bool {
         (Ty::Record(x), Ty::Record(y)) => same_fields(schema, x, y),
         (Ty::Tag(x), Ty::Tag(y)) => equiv(schema, x, y),
         (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 }) => {
-            same_ctors(schema, x, y) && {
+            (one_class(x, y) || same_ctors(schema, x, y)) && {
                 let want = sum_selected(y, s2);
                 sum_selected(x, s1).iter().all(|c| want.contains(c))
             }
@@ -266,17 +267,30 @@ pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
             Some(Ty::Set(Box::new(join(schema, x, y)?)))
         }
         (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 })
-            if same_ctors(schema, x, y) =>
+            if one_class(x, y) || same_ctors(schema, x, y) =>
         {
+            let ctors = both_forms(x, y);
             let mut names = sum_selected(x, s1);
             names.extend(sum_selected(y, s2));
             Some(Ty::Sum {
-                ctors: x.clone(),
-                sel: sum_sel(x, &names),
+                sel: sum_sel(&ctors, &names),
+                ctors,
             })
         }
         _ => None,
     }
+}
+
+/// Returns whether `a` and `b` are forms of one sum the checker is inferring, which agree on
+/// every constructor both hold.
+fn one_class(a: &Ctors, b: &Ctors) -> bool {
+    a.class().is_some() && a.class() == b.class()
+}
+
+/// Returns the constructors of `a` with those of `b` it lacks.
+fn both_forms(a: &Ctors, b: &Ctors) -> Ctors {
+    let lacking = b.iter().filter(|(c, _)| a.iter().all(|(d, _)| d != c));
+    Ctors::open(a.iter().chain(lacking).cloned(), a.class())
 }
 
 /// The greatest lower bound of `a` and `b`, where one exists.
@@ -343,16 +357,17 @@ pub fn meet(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
             Some(Ty::NonEmpty(Box::new(meet(schema, x, y)?)))
         }
         (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 })
-            if same_ctors(schema, x, y) =>
+            if one_class(x, y) || same_ctors(schema, x, y) =>
         {
+            let ctors = both_forms(x, y);
             let theirs = sum_selected(y, s2);
             let names: Vec<&str> = sum_selected(x, s1)
                 .into_iter()
                 .filter(|c| theirs.contains(c))
                 .collect();
             (!names.is_empty()).then(|| Ty::Sum {
-                ctors: x.clone(),
-                sel: sum_sel(x, &names),
+                sel: sum_sel(&ctors, &names),
+                ctors,
             })
         }
         _ => None,
@@ -373,34 +388,6 @@ fn intersection(
             let both: CtorSet = a.iter().filter(|c| b.contains(c)).copied().collect();
             (!both.is_empty()).then(|| schema.normalize_ctors(def, both))
         }
-    }
-}
-
-/// Returns the join of `a` and `b` in ad hoc text, where two anonymous sums join at the union of their constructors.
-pub fn join_adhoc(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
-    if let Some(j) = join(schema, a, b) {
-        return Some(j);
-    }
-    match (a, b) {
-        (Ty::Sum { ctors: x, sel: s1 }, Ty::Sum { ctors: y, sel: s2 }) => {
-            let mut out = x.to_vec();
-            for (c, fs) in y {
-                match out.iter().find(|(d, _)| d == c) {
-                    Some((_, gs)) if !same_fields(schema, gs, fs) => return None,
-                    Some(_) => {}
-                    None => out.push((c.clone(), fs.clone())),
-                }
-            }
-            let out = Ctors::new(out);
-            let mut names = sum_selected(x, s1);
-            names.extend(sum_selected(y, s2));
-            let sel = sum_sel(&out, &names);
-            Some(Ty::Sum { ctors: out, sel })
-        }
-        (Ty::Set(x) | Ty::NonEmpty(x), Ty::Set(y) | Ty::NonEmpty(y)) => {
-            Some(Ty::Set(Box::new(join_adhoc(schema, x, y)?)))
-        }
-        _ => None,
     }
 }
 

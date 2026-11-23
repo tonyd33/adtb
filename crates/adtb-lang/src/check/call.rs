@@ -36,8 +36,9 @@ impl Checker<'_> {
                     outs[i] = Some(o);
                 }
             }
+            let unbounded: Vec<bool> = bounds.iter().map(Bounds::is_empty).collect();
             for (i, (e, pty)) in es.iter().zip(params).enumerate() {
-                let open = (0..n).any(|j| bounds[j].is_empty() && mentions(pty, j as u32));
+                let open = (0..n).any(|j| unbounded[j] && mentions(pty, j as u32));
                 if outs[i].is_none() && open {
                     let o = self.synth(e)?;
                     bound(self.schema, pty, &o.ty, Side::Lower, true, &mut bounds);
@@ -48,44 +49,69 @@ impl Checker<'_> {
                 bound(self.schema, res, exp, Side::Upper, false, &mut bounds);
             }
         }
-        for (b, name) in bounds.iter().zip(callee.1) {
-            let say = |t: &Ty| self.show(t);
-            let refused = match (&b.clash, &b.lower, &b.upper) {
-                (Some((Side::Lower, x, y)), ..) => {
-                    Some(format!("no type is above both {} and {}", say(x), say(y)))
-                }
-                (Some((Side::Upper, x, y)), ..) => {
-                    Some(format!("no type is below both {} and {}", say(x), say(y)))
-                }
-                (None, Some(l), Some(u)) if !subtype(self.schema, l, u) => Some(format!(
-                    "its lower bound {} is not below its upper bound {}",
-                    say(l),
-                    say(u)
-                )),
-                _ => None,
-            };
-            if let Some(why) = refused {
-                return Err(diag(
+        let mut sol: Vec<Option<Ty>> = Vec::new();
+        for (j, (b, name)) in bounds.iter().zip(callee.1).enumerate() {
+            let refused = |why: String| {
+                diag(
                     span,
                     format!(
                         "the type argument `{name}` of `{}` has no solution: {why}",
                         callee.0
                     ),
-                ));
+                )
+            };
+            let mut lower: Option<Ty> = None;
+            for t in &b.lower {
+                lower = Some(match lower {
+                    None => t.clone(),
+                    Some(l) => self.join(&l, t, span)?.ok_or_else(|| {
+                        refused(format!(
+                            "no type is above both {} and {}",
+                            self.show(&l),
+                            self.show(t)
+                        ))
+                    })?,
+                });
             }
+            let mut upper: Option<Ty> = None;
+            for t in &b.upper {
+                let t = self.current(t);
+                upper = Some(match upper {
+                    None => t,
+                    Some(u) => ty::meet(self.schema, &u, &t).ok_or_else(|| {
+                        refused(format!(
+                            "no type is below both {} and {}",
+                            self.show(&u),
+                            self.show(&t)
+                        ))
+                    })?,
+                });
+            }
+            if let (Some(l), Some(u)) = (&lower, &upper)
+                && !self.subtype(l, u)
+            {
+                return Err(refused(format!(
+                    "its lower bound {} is not below its upper bound {}",
+                    self.show(l),
+                    self.show(u)
+                )));
+            }
+            let contra = result.and_then(|(res, _)| variance(self.schema, res, j as u32))
+                == Some(Variance {
+                    co: false,
+                    contra: true,
+                });
+            sol.push(if contra {
+                upper.or(lower)
+            } else {
+                lower.or(upper)
+            });
         }
-        let sol: Vec<Option<Ty>> = bounds
-            .iter()
-            .enumerate()
-            .map(|(j, b)| {
-                b.chosen(result.and_then(|(res, _)| variance(self.schema, res, j as u32)))
-            })
-            .collect();
         let mut tms = Vec::new();
         for (i, (e, pty)) in es.iter().zip(params).enumerate() {
             let want = pty.subst(&solved(&sol));
             let o = match outs[i].take() {
-                Some(o) if wants_expected(e) && !subtype(self.schema, &o.ty, &want) => {
+                Some(o) if wants_expected(e) && !self.subtype(&o.ty, &want) => {
                     self.check(e, &want)?
                 }
                 Some(o) => self.subsume(o, &want, e.span)?,
@@ -425,34 +451,22 @@ pub(super) fn mentions(t: &Ty, i: u32) -> bool {
     }
 }
 
-/// The bounds the arguments and the expected result give one type parameter.
+/// The types the arguments and the expected result give one type parameter: types it must be
+/// above, and types it must be below.
 #[derive(Clone, Default)]
 struct Bounds {
-    lower: Option<Ty>,
-    upper: Option<Ty>,
-    clash: Option<(Side, Ty, Ty)>,
+    lower: Vec<Ty>,
+    upper: Vec<Ty>,
 }
 
 impl Bounds {
     fn is_empty(&self) -> bool {
-        self.lower.is_none() && self.upper.is_none() && self.clash.is_none()
-    }
-
-    /// Returns the parameter's type: the lower bound where it occurs only covariantly in the
-    /// result, the upper bound where only contravariantly, else the lower bound if any.
-    fn chosen(&self, variance: Option<Variance>) -> Option<Ty> {
-        match variance {
-            Some(Variance {
-                co: false,
-                contra: true,
-            }) => self.upper.clone().or_else(|| self.lower.clone()),
-            _ => self.lower.clone().or_else(|| self.upper.clone()),
-        }
+        self.lower.is_empty() && self.upper.is_empty()
     }
 }
 
 /// Whether an actual type stands below or above the pattern it is matched against.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Side {
     Lower,
     Upper,
@@ -490,21 +504,9 @@ fn bound(
             let Some(b) = bounds.get_mut(*i as usize) else {
                 return;
             };
-            let slot = match side {
-                Side::Lower => &mut b.lower,
-                Side::Upper => &mut b.upper,
-            };
-            let combined = slot.as_ref().map(|s| match side {
-                Side::Lower => join(schema, s, t),
-                Side::Upper => ty::meet(schema, s, t),
-            });
-            match combined {
-                None => *slot = Some(t.clone()),
-                Some(Some(c)) => *slot = Some(c),
-                Some(None) => {
-                    let had = slot.clone().expect("a bound to combine with");
-                    b.clash.get_or_insert((side, had, t.clone()));
-                }
+            match side {
+                Side::Lower => b.lower.push(t.clone()),
+                Side::Upper => b.upper.push(t.clone()),
             }
         }
         (

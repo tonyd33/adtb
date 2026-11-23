@@ -94,4 +94,4 @@ fn runtime_query_cases() {
     );
 }
 
-const ORIGINAL_HASH: u64 = 0xce0b2c3608118e71;
+const ORIGINAL_HASH: u64 = 0xe6cc0042fefe1e;

@@ -425,38 +425,76 @@ impl<'a> IntoIterator for &'a Fields {
     }
 }
 
+/// A sum the checker is still inferring: the anonymous constructors one statement joins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SumClass(u32);
+
+impl SumClass {
+    pub(crate) fn new(i: u32) -> SumClass {
+        SumClass(i)
+    }
+
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// The constructors of an anonymous sum, in name order, each with its fields.
+///
+/// While a statement is checked, `class` names the sum its constructors belong to, and the
+/// constructors are those the class held when the type was formed; a checked term never holds
+/// one with a class.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Ctors(Vec<(String, Fields)>);
+pub struct Ctors {
+    ctors: Vec<(String, Fields)>,
+    class: Option<SumClass>,
+}
 
 impl Ctors {
     /// Returns `ctors` in name order.
     pub fn new(ctors: impl IntoIterator<Item = (String, Fields)>) -> Ctors {
+        Ctors::open(ctors, None)
+    }
+
+    /// Returns `ctors` in name order, of sum `class`.
+    pub fn open(
+        ctors: impl IntoIterator<Item = (String, Fields)>,
+        class: Option<SumClass>,
+    ) -> Ctors {
         let mut ctors: Vec<(String, Fields)> = ctors.into_iter().collect();
         ctors.sort_by(|a, b| a.0.cmp(&b.0));
-        Ctors(ctors)
+        Ctors { ctors, class }
+    }
+
+    pub fn class(&self) -> Option<SumClass> {
+        self.class
     }
 
     /// Returns the constructors with each field type mapped by `f`, in the same order.
     #[must_use]
     pub fn map(&self, mut f: impl FnMut(&Ty) -> Ty) -> Ctors {
-        Ctors(
-            self.0
+        Ctors {
+            ctors: self
+                .ctors
                 .iter()
                 .map(|(c, fs)| (c.clone(), fs.map(&mut f)))
                 .collect(),
-        )
+            class: self.class,
+        }
     }
 
     /// Returns the constructors with each field type mapped by `f`, failing as the first failing
     /// type fails.
     pub fn try_map<E>(&self, mut f: impl FnMut(&Ty) -> Result<Ty, E>) -> Result<Ctors, E> {
-        let out = self
-            .0
+        let ctors = self
+            .ctors
             .iter()
             .map(|(c, fs)| Ok((c.clone(), fs.try_map(&mut f)?)))
             .collect::<Result<_, E>>()?;
-        Ok(Ctors(out))
+        Ok(Ctors {
+            ctors,
+            class: self.class,
+        })
     }
 }
 
@@ -464,7 +502,7 @@ impl std::ops::Deref for Ctors {
     type Target = [(String, Fields)];
 
     fn deref(&self) -> &[(String, Fields)] {
-        &self.0
+        &self.ctors
     }
 }
 
@@ -473,7 +511,7 @@ impl IntoIterator for Ctors {
     type IntoIter = std::vec::IntoIter<(String, Fields)>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
+        self.ctors.into_iter()
     }
 }
 
@@ -494,7 +532,7 @@ impl<'a> IntoIterator for &'a Ctors {
     type IntoIter = std::slice::Iter<'a, (String, Fields)>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.ctors.iter()
     }
 }
 

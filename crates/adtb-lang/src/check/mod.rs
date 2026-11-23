@@ -30,6 +30,7 @@ mod record;
 pub(crate) mod rel;
 mod row_body;
 mod rows;
+pub(crate) mod sums;
 mod txn;
 pub(crate) mod ty;
 mod write;
@@ -257,6 +258,7 @@ pub struct Checker<'a> {
     late_writer: Option<&'static str>,
     /// The `at` bodies around the expression being checked.
     at_bodies: u32,
+    sums: sums::Sums,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -314,6 +316,7 @@ impl<'a> Checker<'a> {
             bundles: &adhoc::NO_BUNDLES,
             late_writer: None,
             at_bodies: 0,
+            sums: sums::Sums::default(),
         }
     }
 
@@ -357,7 +360,9 @@ impl<'a> Checker<'a> {
     }
 
     fn b(&mut self) -> Build<'_> {
-        Build::new(self.schema, &mut self.terms).counting(&mut self.type_nodes)
+        Build::new(self.schema, &mut self.terms)
+            .counting(&mut self.type_nodes)
+            .classes(self.sums.parents())
     }
 
     /// Returns `tm` at the type of its node.

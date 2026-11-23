@@ -70,16 +70,3 @@ scalar
 anonymous
 --- expected
 0|
-=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-8 eval
---- source
-if true then z else Alpha
---- params
-z|Zed { n: I64 }|Zed { n: 3 }
---- raw-param
-z|0
---- shape
-scalar
---- raw
-anonymous
---- expected
-1|3

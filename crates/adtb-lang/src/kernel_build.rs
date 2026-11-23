@@ -1,8 +1,9 @@
 use super::{Agg, Conflict, Const, Kind, Prim, Terms, Tm, Transition, TxnOptions, Var};
 use crate::check::prim_ty::{Bounds, prim_ty};
+use crate::check::sums::canonical;
 use crate::check::ty::{elem, fields, restrict};
 use crate::schema::{Generator, Schema};
-use crate::types::{Base, CtorSet, Fields, FnId, KeyCtors, RelId, RelRef, Ty};
+use crate::types::{Base, CtorSet, Fields, FnId, KeyCtors, RelId, RelRef, SumClass, Ty};
 
 /// Build kernel terms into one arena, typing each node from its children where its kind's rule
 /// fixes the type and at a given type where the rule leaves it open. Sort record and constructor
@@ -18,6 +19,7 @@ pub struct Build<'a> {
     schema: &'a Schema,
     terms: &'a mut Terms,
     type_nodes: Option<&'a mut usize>,
+    classes: &'a [SumClass],
 }
 
 impl<'a> Build<'a> {
@@ -26,7 +28,14 @@ impl<'a> Build<'a> {
             schema,
             terms,
             type_nodes: None,
+            classes: &[],
         }
+    }
+
+    /// Give each built node's sums still being inferred the class each of `parents` leads to.
+    pub(crate) fn classes(mut self, parents: &'a [SumClass]) -> Self {
+        self.classes = parents;
+        self
     }
 
     /// Add the size of each built node's type to `count`.
@@ -35,7 +44,23 @@ impl<'a> Build<'a> {
         self
     }
 
-    fn put(&mut self, kind: Kind, ty: Ty) -> Tm {
+    fn put(&mut self, mut kind: Kind, mut ty: Ty) -> Tm {
+        if !self.classes.is_empty() {
+            ty = canonical(&ty, self.classes);
+            if let Kind::Call { type_args, .. } = &mut kind {
+                for t in type_args {
+                    *t = canonical(t, self.classes);
+                }
+            }
+            let named = match &kind {
+                Kind::Var(x) => vec![*x],
+                k => k.bound().concat(),
+            };
+            for x in named {
+                let t = canonical(&self.terms.var_info(x).ty, self.classes);
+                self.terms.set_var_type(x, t);
+            }
+        }
         if let Some(n) = self.type_nodes.as_deref_mut() {
             *n = n.saturating_add(ty.nodes());
         }

@@ -442,7 +442,7 @@ impl Checker<'_> {
                 .skip(1)
                 .flat_map(|bs| bs.iter().filter(|o| o.name == b.name))
             {
-                ty = self.join(&ty, &other.ty).ok_or_else(|| {
+                ty = self.join(&ty, &other.ty, other.span)?.ok_or_else(|| {
                     diag(
                         other.span,
                         format!(
@@ -1064,21 +1064,18 @@ impl Checker<'_> {
                 if expected.is_none() {
                     joined = Some(match &joined {
                         None => body.ty.clone(),
-                        Some(j) => self
-                            .join(j, &body.ty)
-                            .ok_or_else(|| self.no_join(j, &body.ty, arm.body.span))?,
+                        Some(j) => {
+                            let j = j.clone();
+                            self.join(&j, &body.ty, arm.body.span)?
+                                .ok_or_else(|| self.no_join(&j, &body.ty, arm.body.span))?
+                        }
                     });
                 }
                 irs[i].guard = guard;
                 irs[i].body = Some(body);
             }
         }
-        let joined = joined.expect("a match has an arm");
-        for ir in irs.iter_mut() {
-            let body = ir.body.take().expect("checked");
-            ir.body = Some(self.widen(body, &joined));
-        }
-        Ok(joined)
+        Ok(joined.expect("a match has an arm"))
     }
 
     /// Check guard `g` with `check` under the arm's guard binders.
@@ -1342,14 +1339,10 @@ impl Checker<'_> {
     fn let_binder(&mut self, cx: &Cx, n: &str, y: Tm, k: Tm) -> Tm {
         match cx.binds {
             Binding::Lets(binds) => match binds.get(n) {
-                Some(v) => {
-                    let joined = self.terms.var_info(*v).ty.clone();
-                    let y = self.renumber(y, &joined);
-                    self.b().let_(*v, y, k, cx.res.clone())
-                }
+                Some(v) => self.b().let_(*v, y, k, cx.res.clone()),
                 None => k,
             },
-            Binding::Value(s) if s == n => self.renumber(y, cx.res),
+            Binding::Value(s) if s == n => y,
             Binding::Value(_) | Binding::None => k,
         }
     }
@@ -1409,11 +1402,7 @@ impl Checker<'_> {
         };
         let cols = self.ctor_cols(y_ty, c);
         let selects = matches!((cx.binds, binder), (Binding::Value(s), Some(n)) if s == n);
-        let mut out = if selects {
-            self.renumber(y, cx.res)
-        } else {
-            cont.k
-        };
+        let mut out = if selects { y } else { cont.k };
         for (name, sub) in fields.iter().rev() {
             let fty = cols
                 .iter()

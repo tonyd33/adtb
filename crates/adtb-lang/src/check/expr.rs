@@ -1,3 +1,4 @@
+use super::sums::mentions_open;
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind, Lit, UnOp};
 use crate::kernel::{Const, Prim};
@@ -147,8 +148,14 @@ impl Checker<'_> {
         self.subsume(out, expected, e.span)
     }
 
-    pub(super) fn subsume(&self, out: Out, expected: &Ty, span: Span) -> R<Out> {
-        if !subtype(self.schema, &out.ty, expected) {
+    pub(super) fn subsume(&mut self, out: Out, expected: &Ty, span: Span) -> R<Out> {
+        let united = |c: &mut Self| -> R<bool> {
+            Ok(mentions_open(&out.ty)
+                && mentions_open(expected)
+                && c.join(&out.ty, expected, span)?.is_some()
+                && c.subtype(&out.ty, expected))
+        };
+        if !self.subtype(&out.ty, expected) && !united(self)? {
             return Err(diag(
                 span,
                 format!(
@@ -173,17 +180,10 @@ impl Checker<'_> {
         Ok(out)
     }
 
-    pub(super) fn join(&self, a: &Ty, b: &Ty) -> Option<Ty> {
-        if self.adhoc() {
-            ty::join_adhoc(self.schema, a, b)
-        } else {
-            join(self.schema, a, b)
-        }
-    }
-
     /// Synthesize the type of `e`.
     pub fn synth(&mut self, e: &Expr) -> R<Out> {
-        let out = self.synthesized(e)?;
+        let mut out = self.synthesized(e)?;
+        out.ty = self.current(&out.ty);
         self.sized(out, e.span)
     }
 
@@ -671,7 +671,7 @@ impl Checker<'_> {
                 let (x, y) = self.union_pair(a, b)?;
                 let j = match (&x.ty, &y.ty) {
                     (Ty::Set(_) | Ty::NonEmpty(_), Ty::Set(_) | Ty::NonEmpty(_)) => {
-                        self.join(&x.ty, &y.ty)
+                        self.join(&x.ty, &y.ty, span)?
                     }
                     _ => {
                         return Err(diag(span, "`union` combines two sets"));
@@ -688,7 +688,6 @@ impl Checker<'_> {
                     )
                 })?;
                 let rows = self.row_origin(&x).join(self.row_origin(&y));
-                let (x, y) = (self.widen(x, &j), self.widen(y, &j));
                 let tm = self.b().union(x.tm, y.tm, j);
                 let o = self.out(tm);
                 Ok(self.with_row_origin(o, rows))
@@ -702,7 +701,7 @@ impl Checker<'_> {
                 let j = if decimals {
                     Some(x.ty.clone())
                 } else {
-                    self.join(&x.ty, &y.ty)
+                    self.join(&x.ty, &y.ty, span)?
                 }
                 .ok_or_else(|| {
                     diag(
@@ -717,7 +716,6 @@ impl Checker<'_> {
                 if j.mentions_fn() {
                     return Err(diag(span, "`==` never applies to a function"));
                 }
-                let (x, y) = (self.widen(x, &j), self.widen(y, &j));
                 let ordering = !matches!(op, BinOp::Eq | BinOp::Ne);
                 if ordering && !self.ordered(&j, span)? {
                     return Err(diag(span, format!("{} has no order", self.show(&j))));
@@ -1283,13 +1281,13 @@ impl Checker<'_> {
                 let mut j = first.ty.clone();
                 for o in it {
                     j = self
-                        .join(&j, &o.ty)
+                        .join(&j, &o.ty, span)?
                         .ok_or_else(|| diag(span, "the elements of a set have no common type"))?;
                 }
                 j
             }
         };
-        let set_ty = Ty::Set(Box::new(elem.clone()));
+        let set_ty = Ty::Set(Box::new(elem));
         let provenance = outs
             .iter()
             .map(|o| o.provenance)
@@ -1297,10 +1295,7 @@ impl Checker<'_> {
             .unwrap_or(Provenance::Built);
         let ones: Vec<Tm> = outs
             .into_iter()
-            .map(|o| {
-                let o = self.widen(o, &elem);
-                self.b().singleton(o.tm, set_ty.clone())
-            })
+            .map(|o| self.b().singleton(o.tm, set_ty.clone()))
             .collect();
         let tm = self.balanced_union(&ones, &set_ty);
         Ok(Out {
@@ -1345,7 +1340,7 @@ impl Checker<'_> {
                     let y = self.arm_against(b, Some(&x.ty))?;
                     (x, y)
                 };
-                let j = self.join(&x.ty, &y.ty).ok_or_else(|| {
+                let j = self.join(&x.ty, &y.ty, b.span)?.ok_or_else(|| {
                     diag(
                         b.span,
                         format!(
@@ -1355,7 +1350,7 @@ impl Checker<'_> {
                         ),
                     )
                 })?;
-                (self.widen(x, &j), self.widen(y, &j), j)
+                (x, y, j)
             }
         };
         let rows = self.row_origin(&x).join(self.row_origin(&y));

@@ -151,7 +151,7 @@ impl Checker<'_> {
                     .ty(*def)
                     .ctor_index(name)
                     .map(|c| (Target::Decl(*def, Some(args.clone())), c)),
-                Some(Ty::Sum { ctors, sel }) => ctors
+                Some(Ty::Sum { ctors, sel }) if ctors.class().is_none() => ctors
                     .iter()
                     .position(|(c, _)| c == name)
                     .filter(|i| sel.as_ref().is_none_or(|s| s.contains(&(*i as u32))))
@@ -260,10 +260,7 @@ impl Checker<'_> {
             tms.push((n.text.clone(), o.tm));
             tys.push((n.text.clone(), o.ty));
         }
-        let ty = Ty::Sum {
-            ctors: Ctors::new([(name.to_string(), Fields::new(tys))]),
-            sel: None,
-        };
+        let ty = self.open_sum(name, Fields::new(tys));
         let tm = self.b().ctor(0, tms, ty);
         Ok(self.out(tm))
     }

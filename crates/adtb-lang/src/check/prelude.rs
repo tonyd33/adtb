@@ -134,7 +134,7 @@ impl Checker<'_> {
                 };
                 let (x, y) = self.operands(a, b, None)?;
                 let t = self
-                    .join(&x.ty, &y.ty)
+                    .join(&x.ty, &y.ty, span)?
                     .ok_or_else(|| self.wrong(name, &[&x.ty, &y.ty], span))?;
                 if !self.ordered(&t, span)? {
                     return Err(diag(

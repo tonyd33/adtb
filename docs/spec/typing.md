@@ -575,6 +575,36 @@ names. Ad hoc queries are never rechecked.
 match i | Google g -> g.gid | _ -> "other"     -- ad hoc only
 ```
 
+An ad hoc statement infers the anonymous sums it builds. Each
+anonymous constructor expression begins a sum of that one constructor.
+Each join the statement makes unites the sums of the positions it
+joins: an or-pattern binder, the arms of a `match`, the branches of an
+`if`, the operands of `union` and of a comparison, the elements of a
+set literal, the arguments that fix one type argument of a call, and
+the operands of a `fix`. Where two united sums each have a constructor
+of one name, the fields of that name in the two are joined the same
+way, and fields of any other type must be equal. Once the statement is
+checked, each united sum is one type holding every constructor of its
+members, and every value built by one of its constructors has that
+type or a row type of it.
+
+```adt
+from v in (from i in identities select match i
+             | Google g -> A { x: P { n: 1 } }
+             | _        -> B { x: Q { m: 2 } })
+select match v | A { x } | B { x } -> x
+```
+
+The `match` in the source unites `A` and `B`; the or-pattern binder
+unites `P` and `Q`, so the field `x` of both `A` and `B` has type
+`P { n: I64 } | Q { m: I64 }`, the type of each selected value.
+
+A join that would make a sum hold itself through a field is refused:
+for `v` built as `P { n: 1 }`, `if c then v else Q { p: v }` is
+refused. A join adds no constructor to an anonymous sum written in a
+type: `if c then z else Alpha`, for a parameter `z: Zed { n: I64 }`,
+is refused.
+
 Rulings: lang/wildcard/verbosity/adhoc-wildcard
 
 ## 10. Totality and faults

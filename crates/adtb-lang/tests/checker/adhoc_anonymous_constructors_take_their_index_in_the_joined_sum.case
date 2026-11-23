@@ -46,9 +46,10 @@ Alpha|Zed	1	Zed	n
 --- text
 if true then z else Alpha
 --- expect
-accept
---- constructors
-Alpha|Zed	0	Alpha	
-Alpha|Zed	1	Zed	n
+refuse
+--- errors
+the branches of `if` have no common type: Zed { n: I64 } and Alpha
+--- phase
+adhoc
 --- params
 z	Zed { n: I64 }
