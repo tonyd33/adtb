@@ -88,17 +88,13 @@ impl<'a> Indexing<'a> {
     pub fn new(
         catalog: &Catalog,
         next: &'a Checked,
-        readers: Option<&'a Readers>,
+        readers: &'a Readers,
     ) -> Result<Indexing<'a>, Error> {
         let mut keys = catalog.keys.clone();
         let fresh = layout::new_order_keys(&next.schema, &keys);
         keys.extend(fresh.clone());
-        let (held, program, texts) = readers
-            .and_then(Readers::enforced)
-            .map_or((&next.schema, &next.program, &next.texts), |e| {
-                (&e.schema, &e.program, &e.texts)
-            });
-        let pending = readers.map_or(&[][..], |r| &r.pending);
+        let (held, program, texts) = readers.checking(next.judged());
+        let pending = &readers.pending[..];
         let specs = pending::kept_indexes(held, texts, pending).map_err(Error::Internal)?;
         let normal = index_program(held, program, specs.values(), Error::Internal)?;
         let mut keyed = BTreeMap::new();

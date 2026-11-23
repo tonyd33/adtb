@@ -1,0 +1,28 @@
+# Only a `drop unique` holds a unique pending: a migration that removes a unique a live reader's
+# version holds in any other way is refused, and applies once the reader is released.
+seed 131
+use states
+log
+  module auth
+  add unique (note) in accounts
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+reopen
+
+bundle web-2.0 pins 2 edition "2026-10"
+  import auth
+  query count () -> I64 = count(key s for s in sessions)
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "the drop of `unique (note)` in accounts is refused: bundle web-2.0, pinned at version 2, relies on it, and only a `drop unique` holds a unique pending; it applies once the bundle is released" } } }
+  module auth
+  revert 0002
+
+reopen
+
+migrate
+  module auth
+  revert 0002
+
+run
+  insert accounts { provider: Local, note: "n" }
+  insert accounts { provider: Remote, note: "n" }

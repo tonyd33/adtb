@@ -182,11 +182,7 @@ impl Catalog {
         let next = Checked::new(next, schema, program)?;
         let stepped = steps::stepped(recorded.steps(), &file, text)?;
         let readers = self.held(&file, text, &next, &stepped)?;
-        let (schema, program, texts) = readers
-            .enforced()
-            .map_or((&next.schema, &next.program, &next.texts), |e| {
-                (&e.schema, &e.program, &e.texts)
-            });
+        let (schema, program, texts) = readers.checking(next.judged());
         let (old, old_program) = self.checking();
         let changed = depends::changed(old, old_program, schema, program);
         let rewritten = change::rewritten(old, schema, &changed);
@@ -310,7 +306,7 @@ impl Catalog {
                 blamed = Some(operator_text(text, &op));
             }
         }
-        let indexing = Indexing::new(self, &next, Some(&readers))?;
+        let indexing = Indexing::new(self, &next, &readers)?;
         let admitted = match admit::admit(m.pager, &next.schema, rewritten, &indexing, data) {
             Ok(admitted) => Some(admitted),
             Err(Error::Refused(w)) => {

@@ -207,11 +207,7 @@ impl Readers {
     /// Fail as [`enforcing`] does.
     pub(super) fn reopened(source: &Source, pending: Vec<Pending>) -> Result<Readers, Error> {
         let enforced = enforcing(source, &pending)?.map(Arc::new);
-        Ok(Readers {
-            live: Default::default(),
-            pending,
-            enforced,
-        })
+        Ok(Readers::new(BTreeMap::new(), pending, enforced))
     }
 }
 
@@ -275,15 +271,14 @@ impl Catalog {
         }
         let done = pending.iter().any(|p| p.blocking.is_empty());
         pending.retain(|p| !p.blocking.is_empty());
-        let enforced = if done {
-            enforcing(&self.source, &pending)?.map(Arc::new)
+        let readers = if done {
+            let enforced = enforcing(&self.source, &pending)?.map(Arc::new);
+            Readers::new(self.readers.live.clone(), pending, enforced)
         } else {
-            self.readers.enforced.clone()
+            self.readers.holding(pending)
         };
-        let (held, texts) = enforced
-            .as_ref()
-            .map_or((&self.schema, &self.texts), |e| (&e.schema, &e.texts));
-        let stored = kept_indexes(held, texts, &pending).map_err(Error::Internal)?;
+        let (held, _, texts) = readers.checking(self.version());
+        let stored = kept_indexes(held, texts, &readers.pending).map_err(Error::Internal)?;
         let freed: Vec<u64> = self
             .indexes
             .keys()
@@ -304,14 +299,13 @@ impl Catalog {
             })
             .collect();
         let m = change.writes();
-        let wrote = rewrite(m, &self.roots, &self.readers.pending, &pending)
+        let wrote = rewrite(m, &self.roots, &self.readers.pending, &readers.pending)
             .and_then(|()| self.roots.delete(m, &roots));
         if let Err(e) = wrote {
             return Err(change.fail(self, e));
         }
         let landed = change.commit()?;
-        self.readers.pending = pending;
-        self.readers.enforced = enforced;
+        self.readers = readers;
         for id in &freed {
             self.indexes.remove(id);
         }

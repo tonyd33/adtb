@@ -48,7 +48,7 @@
 "crates/adtb/src/api/txn.rs" = 3
 "crates/adtb/src/api/verify.rs" = 9
 "crates/adtb/src/catalog/history.rs" = 5
-"crates/adtb/src/catalog/readers.rs" = 8
+"crates/adtb/src/catalog/readers.rs" = 7
 "crates/adtb/src/write/past.rs" = 5
 "crates/adtb/src/write/reindex.rs" = 4
 "crates/adtb/src/write/vacuums.rs" = 2

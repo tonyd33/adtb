@@ -120,7 +120,7 @@ use admit::{Admitted, Indexing};
 use change::Data;
 use history::{Kept, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
-use readers::{Pending, Readers};
+use readers::{Judged, Pending, Readers};
 use root::Root;
 use roots::RootsRow;
 use roots_heap::Roots;
@@ -644,7 +644,8 @@ impl Catalog {
             .map(|(_, id)| id)
             .collect();
         let change = Change::begin(pager, txns, Scope::Every)?;
-        let built = Indexing::new(&empty, &next, None).and_then(|indexing| {
+        let none = Readers::default();
+        let built = Indexing::new(&empty, &next, &none).and_then(|indexing| {
             let data = admit::admit(pager, &next.schema, &every, &indexing, Data::new())?;
             empty.build(
                 change.writes(),
@@ -773,11 +774,7 @@ impl Catalog {
             heaps.insert((r, c), Arc::new(heap));
         }
         let texts = ElementTexts::of(&source, &schema)?;
-        let (held, held_program, held_texts) = readers
-            .enforced()
-            .map_or((&schema, &*program, &texts), |e| {
-                (&e.schema, &*e.program, &e.texts)
-            });
+        let (held, held_program, held_texts) = readers.checking((&schema, &program, &texts));
         let specs =
             pending::kept_indexes(held, held_texts, &readers.pending).map_err(Rot::KeptIndexes)?;
         let normal = index_program(held, held_program, specs.values(), |b| {
@@ -960,9 +957,13 @@ impl Catalog {
     /// Returns the schema and program constraint checks and validation run against: the
     /// version's, with every pending-dropped object kept.
     pub fn checking(&self) -> (&Committed, &Arc<Program>) {
-        self.readers
-            .enforced()
-            .map_or((&self.schema, &self.program), |e| (&e.schema, &e.program))
+        let (schema, program, _) = self.readers.checking(self.version());
+        (schema, program)
+    }
+
+    /// Returns the schema, checked program and index element texts of the catalog's version.
+    fn version(&self) -> Judged<'_> {
+        (&self.schema, &self.program, &self.texts)
     }
 
     /// Returns the catalog rows of the objects of the catalog's version.
@@ -973,7 +974,7 @@ impl Catalog {
 
     /// Returns the index element texts of the schema [`Catalog::checking`] returns.
     fn checking_texts(&self) -> &ElementTexts {
-        self.readers.enforced().map_or(&self.texts, |e| &e.texts)
+        self.readers.checking(self.version()).2
     }
 
     /// Returns every index of the schema [`Catalog::checking`] returns, by index id.
@@ -1176,6 +1177,11 @@ struct Checked {
 }
 
 impl Checked {
+    /// Returns its schema, checked program and index element texts.
+    fn judged(&self) -> Judged<'_> {
+        (&self.schema, &self.program, &self.texts)
+    }
+
     /// Returns `source` with its schema and program. Fail with [`Broken::Unsettled`] when the
     /// schema takes a relation as added later, and with [`Error::Refused`] when an index element
     /// is a set.

@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::{MigrationFile, OperatorKind};
+use adtb_lang::check::Program;
 use adtb_lang::evolve::{Kept, Source};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{Schema, Stage, ValueDef};
+use adtb_lang::schema::{Committed, Schema, Stage, ValueDef};
 use adtb_lang::span::Diag;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -138,6 +139,23 @@ pub(super) struct Pending {
 }
 
 impl Pending {
+    /// Returns the drop of `kind`, `name` in `module`, that the migration whose result is
+    /// `applying` makes and `blocking` holds back.
+    fn of(
+        applying: &Checked,
+        (module, name): (String, String),
+        kind: Kind,
+        blocking: BTreeSet<String>,
+    ) -> Pending {
+        Pending {
+            module,
+            name,
+            kind,
+            dropped: applying.source.version,
+            blocking,
+        }
+    }
+
     pub(super) fn object(&self) -> String {
         format!("{}::{}", self.module, self.name)
     }
@@ -322,19 +340,30 @@ fn skipping(file: &MigrationFile, skipped: &BTreeSet<usize>) -> MigrationFile {
 /// constraint and check put back after the operators that drop it, and each `drop unique` of a
 /// kept unique skipped.
 ///
-/// Fail with [`Error::Corrupt`] when a drop names a version the log does not hold or a unique
-/// its migration does not drop, and with [`Error::Unaccepted`] when a migration of the log does
-/// not apply keeping the drops.
-pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<Checked>, Error> {
+/// Fail with [`Unenforced::Corrupt`] when a drop names a version the log does not hold or a
+/// unique its migration does not drop, and with [`Unenforced::Unaccepted`] when a migration of
+/// the log does not apply keeping the drops.
+pub(super) fn enforcing(
+    source: &Source,
+    pending: &[Pending],
+) -> Result<Option<Checked>, Unenforced> {
     let Some(first) = pending.iter().map(|p| p.dropped).min() else {
         return Ok(None);
     };
     let Some(start) = source.log.iter().find(|l| l.number == first) else {
-        return Err(Rot::DropVersion(first).into());
+        return Err(Unenforced::Corrupt(Rot::DropVersion(first)));
     };
     let mut at = (*start.before).clone();
+    let mut version = first;
+    let failed = |version: u64, e: Error| match e {
+        Error::Corrupt(r) => Unenforced::Corrupt(r),
+        Error::Unaccepted(n, why) => Unenforced::Unaccepted(n, why),
+        Error::Refused(why) => Unenforced::Unaccepted(version, why),
+        other => Unenforced::Unaccepted(version, vec![super::rot::detail(&other)]),
+    };
     for l in source.log.iter().filter(|l| l.number >= first) {
-        let refused = |why: Vec<String>| Error::Unaccepted(l.number, why);
+        version = l.number;
+        let refused = |why: Vec<String>| Unenforced::Unaccepted(l.number, why);
         let mut file = parse_migration(&l.text, Options::default())
             .ok()
             .map_err(|ds| refused(ds.into_iter().map(|d| d.message).collect()))?;
@@ -356,32 +385,53 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
             let steps = l
                 .before
                 .record_steps(&file, &l.text)
-                .map_err(|r| super::refusal(r, Error::Refused))?;
-            let stepped = super::steps::stepped(&steps, &file, &l.text)?;
-            let drops = changes(&l.before, &before, &stepped)?.uniques;
+                .map_err(|r| failed(l.number, super::refusal(r, Error::Refused)))?;
+            let stepped =
+                super::steps::stepped(&steps, &file, &l.text).map_err(|e| failed(l.number, e))?;
+            let drops = changes(&l.before, &before, &stepped)
+                .map_err(|e| failed(l.number, e))?
+                .uniques;
             let skipped: BTreeSet<usize> = drops
                 .iter()
                 .filter(|u| held.contains(&u.id))
                 .map(|u| u.op)
                 .collect();
             if let Some(id) = held.iter().find(|id| !drops.iter().any(|u| u.id == **id)) {
-                return Err(Rot::UniqueNotDropped {
+                return Err(Unenforced::Corrupt(Rot::UniqueNotDropped {
                     index: *id,
                     version: l.number,
-                }
-                .into());
+                }));
             }
             file = skipping(&file, &skipped);
         }
         at = at
             .migrate_keeping(&file, &l.text, &kept)
-            .map_err(|r| super::unaccepted(l.number, r))?;
+            .map_err(|r| failed(l.number, super::unaccepted(l.number, r)))?;
     }
     let enforced = checked(at, |ds| {
         Error::Unchecked("the schema keeping the pending drops".to_string(), ds)
-    })?;
-    keeps_ids(&enforced.schema, pending)?;
+    })
+    .map_err(|e| failed(version, e))?;
+    keeps_ids(&enforced.schema, pending).map_err(|e| failed(version, e))?;
     Ok(Some(enforced))
+}
+
+/// Why the schema keeping a catalog's pending drops is not built.
+#[derive(Debug)]
+pub(super) enum Unenforced {
+    /// The stored drops do not read as the catalog writes them.
+    Corrupt(Rot),
+    /// The migration of this version does not apply keeping the drops; each reason.
+    Unaccepted(u64, Vec<String>),
+}
+
+impl From<Unenforced> for Error {
+    fn from(e: Unenforced) -> Error {
+        match e {
+            Unenforced::Corrupt(r) => Error::Corrupt(r),
+            Unenforced::Unaccepted(n, why) => Error::Unaccepted(n, why),
+        }
+    }
 }
 
 /// Fail with [`Broken::KeptConstraint`] when `schema` holds no constraint or check of the id a
@@ -401,6 +451,9 @@ fn keeps_ids(schema: &Schema, pending: &[Pending]) -> Result<(), Error> {
     Ok(())
 }
 
+/// A schema with its checked program and the texts of its index elements.
+pub(super) type Judged<'a> = (&'a Committed, &'a Arc<Program>, &'a ElementTexts);
+
 /// The live readers of a catalog, the drops they hold back, and the schema that keeps every
 /// held object.
 #[derive(Clone, Debug, Default)]
@@ -408,12 +461,39 @@ pub(super) struct Readers {
     pub(super) live: BTreeMap<String, Pinned>,
     pub(super) pending: Vec<Pending>,
     /// The source with every pending-dropped object kept, while one is pending.
-    pub(super) enforced: Option<Arc<Checked>>,
+    enforced: Option<Arc<Checked>>,
 }
 
 impl Readers {
-    pub(super) fn enforced(&self) -> Option<&Checked> {
-        self.enforced.as_deref()
+    /// Returns the readers `live` holding back the drops of `pending`, whose kept source is
+    /// `enforced`.
+    pub(super) fn new(
+        live: BTreeMap<String, Pinned>,
+        pending: Vec<Pending>,
+        enforced: Option<Arc<Checked>>,
+    ) -> Readers {
+        Readers {
+            live,
+            pending,
+            enforced,
+        }
+    }
+
+    /// Returns these readers holding back the drops of `pending` instead, under the kept
+    /// source they have.
+    pub(super) fn holding(&self, pending: Vec<Pending>) -> Readers {
+        Readers::new(self.live.clone(), pending, self.enforced.clone())
+    }
+
+    /// Returns what rows are judged against at `version`: `version`, or, while a drop is
+    /// pending, the version that keeps every pending-dropped object.
+    pub(super) fn checking<'a>(&'a self, version: Judged<'a>) -> Judged<'a> {
+        (self.enforced.as_deref()).map_or(version, |e| (&e.schema, &e.program, &e.texts))
+    }
+
+    /// Returns the source of what [`Readers::checking`] returns at `source`.
+    fn checking_source<'a>(&'a self, source: &'a Source) -> &'a Source {
+        (self.enforced.as_deref()).map_or(source, |e| &e.source)
     }
 }
 
@@ -498,14 +578,14 @@ impl Catalog {
         let dropped: Vec<Pending> = changes
             .dropped
             .into_iter()
-            .filter_map(|d| self.dropping(d))
+            .filter_map(|d| self.dropping(next, d))
             .collect();
         refused.extend(names_held(now, self.readers.pending.iter().chain(&dropped)));
         if !refused.is_empty() {
             return Err(Error::Refused(refused));
         }
         let mut pending = self.readers.pending.clone();
-        let keys = self.relaxed_keys(now, &pending);
+        let keys = self.relaxed_keys(next, &pending);
         pending.extend(keys);
         let lost = super::pending::imageless_keys(now, &pending);
         if !lost.is_empty() {
@@ -515,7 +595,7 @@ impl Catalog {
         let mut skipped = BTreeSet::new();
         for u in changes.uniques {
             let op = u.op;
-            if let Some(p) = self.dropping_unique(u) {
+            if let Some(p) = self.dropping_unique(next, u) {
                 skipped.insert(op);
                 pending.push(p);
             }
@@ -528,7 +608,7 @@ impl Catalog {
         if readers.pending.is_empty() {
             return Ok(readers);
         }
-        let base = self.readers.enforced().map_or(&self.source, |e| &e.source);
+        let base = self.readers.checking_source(&self.source);
         let kept: Vec<Kept> = readers.pending.iter().filter_map(Pending::kept).collect();
         let objects: Vec<String> = readers.pending.iter().map(Pending::object).collect();
         let no_image =
@@ -617,8 +697,9 @@ impl Catalog {
             .collect()
     }
 
-    /// Returns the pending drop of `d` when a live reader holds it.
-    fn dropping(&self, d: Dropped) -> Option<Pending> {
+    /// Returns the pending drop of `d` by the migration whose result is `next` when a live
+    /// reader holds it.
+    fn dropping(&self, next: &Checked, d: Dropped) -> Option<Pending> {
         let blocking: BTreeSet<String> = self
             .readers
             .live
@@ -631,17 +712,12 @@ impl Catalog {
         } else {
             Kind::Constraint(d.id)
         };
-        (!blocking.is_empty()).then(|| Pending {
-            module: d.module,
-            name: d.name,
-            kind,
-            dropped: self.source.version + 1,
-            blocking,
-        })
+        (!blocking.is_empty()).then(|| Pending::of(next, (d.module, d.name), kind, blocking))
     }
 
-    /// Returns the pending drop of `u` when a live reader holds it.
-    fn dropping_unique(&self, u: DroppedUnique) -> Option<Pending> {
+    /// Returns the pending drop of `u` by the migration whose result is `next` when a live
+    /// reader holds it.
+    fn dropping_unique(&self, next: &Checked, u: DroppedUnique) -> Option<Pending> {
         let blocking: BTreeSet<String> = self
             .readers
             .live
@@ -649,13 +725,8 @@ impl Catalog {
             .filter(|(_, p)| p.uniques.contains(&u.id))
             .map(|(b, _)| b.clone())
             .collect();
-        (!blocking.is_empty()).then(|| Pending {
-            module: u.module,
-            name: u.name,
-            kind: Kind::Unique(u.id),
-            dropped: self.source.version + 1,
-            blocking,
-        })
+        (!blocking.is_empty())
+            .then(|| Pending::of(next, (u.module, u.name), Kind::Unique(u.id), blocking))
     }
 
     /// Returns why the live readers refuse a migration whose result is `next` for each unique
@@ -686,8 +757,9 @@ impl Catalog {
     }
 
     /// Returns the pending drop of the old key of each relaxing rekey from this catalog to
-    /// `next` that a live reader holds, its index allocated beside those of `pending`.
-    fn relaxed_keys(&self, next: &Schema, pending: &[Pending]) -> Vec<Pending> {
+    /// `applying` that a live reader holds, its index allocated beside those of `pending`.
+    fn relaxed_keys(&self, applying: &Checked, pending: &[Pending]) -> Vec<Pending> {
+        let next = &applying.schema;
         let mut out: Vec<Pending> = Vec::new();
         for (r, id) in self.schema.ids().relation_ids() {
             let Some(after) = relation(next, id) else {
@@ -713,17 +785,16 @@ impl Catalog {
             }
             let index = super::pending::held_key_index(&[pending, &out].concat());
             let spec = super::IndexSpec::key(&self.schema, r, index.raw(), rel.key.clone());
-            out.push(Pending {
-                module: self.schema.module(rel.module).name.clone(),
-                name: format!("{} {}", rel.name, spec.clause),
-                kind: Kind::Key {
-                    index,
-                    relation: id,
-                    fields: old,
-                },
-                dropped: self.source.version + 1,
-                blocking,
-            });
+            let named = (
+                self.schema.module(rel.module).name.clone(),
+                format!("{} {}", rel.name, spec.clause),
+            );
+            let kind = Kind::Key {
+                index,
+                relation: id,
+                fields: old,
+            };
+            out.push(Pending::of(applying, named, kind, blocking));
         }
         out
     }
