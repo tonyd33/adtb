@@ -38,6 +38,7 @@ catalog.inventory(&commit_log) -> verify::Inventory
 catalog::declared(&schema, &source) -> rows by relation
 catalog::applied(&schema, &source, applied) -> rows by relation
 catalog::version_hash(&source) -> Hash
+catalog.version_hash() -> VersionHash
 ```
 
 Preconditions:
@@ -96,6 +97,15 @@ Postconditions:
   the hash at `n - 1` followed by migration `n`'s resolved operators
   in the wire value encoding. It panics if a migration of the log does
   not resolve.
+- `version_hash()` gives the hash of each version up to the catalog's
+  as the `hash` of that version's row of `migrations`, which the
+  migration that made the version wrote in the transaction that
+  committed it, chained from the stored hash of the version before;
+  version 0's is 32 zero bytes. It reads the rows on its first ask,
+  and a failure to read them is that ask's error. No read recomputes a
+  hash from the log; `verify` reports a stored hash that differs from
+  `version_hash` of the log. A file's operator encoding is fixed once
+  written; changing it needs a catalog version step.
 - After a crash during `migrate`, `open` finds either the whole
   migration or none of it, and frees every page the migration
   allocated if it did not commit, or every page of the structures it
@@ -310,8 +320,8 @@ Obligations of the registrant, for every bundle it serves:
 
 - It checks each query and transaction at the bundle's pinned version,
   the source `source_at` returns, and refuses the bundle when the
-  pinned hash differs from `version_hash` of that source or when
-  `stale` names a constructor.
+  pinned hash differs from the hash `version_hash()` gives for the
+  pinned version or when `stale` names a constructor.
 - A live bundle is a reader of the catalog (`Catalog::register`)
   whenever `migrate` runs, except one the running open recorded and has
   not yet registered, and it is released once the bundle is retired,

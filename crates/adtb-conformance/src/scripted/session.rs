@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
@@ -128,8 +129,21 @@ impl Differs {
     }
 }
 
+/// The version hash of each pinned log this process hashed, by its texts.
+static HASHED: Mutex<BTreeMap<Vec<String>, Result<String, String>>> = Mutex::new(BTreeMap::new());
+
 /// Returns the version hash of `migrations` as 64 hex digits, or why it has none.
 fn hash(migrations: &[String]) -> Result<String, String> {
+    let hashed = || HASHED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(h) = hashed().get(migrations) {
+        return h.clone();
+    }
+    let h = replayed_hash(migrations);
+    hashed().insert(migrations.to_vec(), h.clone());
+    h
+}
+
+fn replayed_hash(migrations: &[String]) -> Result<String, String> {
     let mut source = Source::default();
     for (v, text) in (1..).zip(migrations) {
         let file = parse_migration(text, Options::default())
