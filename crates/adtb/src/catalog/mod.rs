@@ -723,12 +723,7 @@ impl Catalog {
                 return Err(refused());
             }
             let mut kept = BTreeSet::from([pid]);
-            {
-                let clog = txns.commit_log();
-                kept.insert(clog.root());
-                kept.extend(clog.status_pages().values().copied());
-                kept.extend(clog.directory_pages());
-            }
+            kept.extend(txns.commit_log().pages());
             for p in pager.allocated()? {
                 if !kept.contains(&p) {
                     pager.free(p)?;
@@ -1065,10 +1060,8 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<BTreeSet<Pid>, PageError> {
-        let clog = txns.commit_log();
-        let mut pages = BTreeSet::from([self.root, clog.root()]);
-        pages.extend(clog.status_pages().values());
-        pages.extend(clog.directory_pages());
+        let mut pages = BTreeSet::from([self.root]);
+        pages.extend(txns.commit_log().pages());
         pages.extend(self.sequences());
         pages.extend(self.roots.owned_pages(pager)?);
         for (&(r, _), heap) in &self.heaps {
