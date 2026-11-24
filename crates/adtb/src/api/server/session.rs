@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
 use adtb_lang::types::RelId;
@@ -126,7 +125,7 @@ impl<R: Runtime> Entered<'_, R> {
         call: &CallRow<'_>,
         grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
-        let seq = self.audit_seq(grant)?;
+        let seq = self.audit_seq()?;
         let t = Tables::new(self.schema(), id, grant);
         let mut changes = Changes::default();
         changes.insert(t.audit_relation(), t.call_row(self, seq, call)?);
@@ -135,23 +134,13 @@ impl<R: Runtime> Entered<'_, R> {
             .map_err(|error| self.write_error(id, error))
     }
 
-    /// Returns the next audit sequence number, read outside any transaction that adds a row so
-    /// that concurrent calls do not conflict over it, under `grant`, the grant of the call that
-    /// adds the row.
-    pub(super) fn audit_seq(&self, grant: Option<&Arc<Grant>>) -> Result<i64, Error> {
-        if self.audit_seeded.load(Ordering::Acquire) {
-            let audit = Tables::new(self.schema(), TxnId(0), None).audit_relation();
-            return self
-                .db
-                .deployment_id(audit, 1)
-                .map_err(|error| self.write_error(TxnId(0), error));
-        }
-        let seq = store::run_under(self, false, grant, &mut |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id, grant);
-            t.next_seq(e, tx)
-        })?;
-        self.audit_seeded.store(true, Ordering::Release);
-        Ok(seq)
+    /// Returns the next audit sequence number, drawn outside any transaction that adds a row so
+    /// that concurrent calls do not conflict over it.
+    pub(super) fn audit_seq(&self) -> Result<i64, Error> {
+        let audit = Tables::new(self.schema(), TxnId(0), None).audit_relation();
+        self.db
+            .deployment_id(audit, 1)
+            .map_err(|error| self.write_error(TxnId(0), error))
     }
 
     /// Returns the failure of a change that must record a row of `catalog::audit`, while a mark
@@ -170,7 +159,7 @@ impl<R: Runtime> Entered<'_, R> {
         grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
         self.audit_unless_marked(|| {
-            let seq = self.audit_seq(grant)?;
+            let seq = self.audit_seq()?;
             store::run_under(self, true, grant, &mut |e, _, id, changes| {
                 let t = Tables::new(e.schema(), id, grant);
                 changes.insert(t.audit_relation(), t.call_row(e, seq, call)?);

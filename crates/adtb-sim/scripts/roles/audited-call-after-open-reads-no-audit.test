@@ -1,0 +1,31 @@
+# The first audited call after an open, under a grant smaller than the audit's rows, runs: its
+# row's number is drawn from the audit's counter, past every row before the open, and no call
+# reads the audit.
+use adhoc
+
+query
+  count(a for a in catalog::audit)
+----
+34
+
+option query_memory_bytes 8192
+reopen
+
+as reader query
+  count(d for d in docs.Draft)
+----
+1
+
+option query_memory_bytes default
+reopen
+
+query
+  count(b for b in (from c in catalog::audit.Call, b in catalog::audit
+                    where c.role == "reader" and b.seq >= c.seq select b))
+----
+1
+
+query
+  count(a for a in catalog::audit)
+----
+35

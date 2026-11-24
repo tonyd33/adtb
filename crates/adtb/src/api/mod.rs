@@ -54,7 +54,7 @@ use failed_open::{failed_create, finish_create, open_damage};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::task::Waker;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -378,8 +378,6 @@ struct Engine<R: Runtime> {
     sessions: AtomicU64,
     /// The calls of role sessions, by the key of their row of `sys::calls`.
     calls: Lock<server::Running<R>>,
-    /// Whether this process has drawn an audit sequence number past the highest row.
-    audit_seeded: AtomicBool,
     /// The file settings, as the latest commit holds them.
     settings: Lock<Settings>,
     role_mentions: BTreeSet<String>,
@@ -970,7 +968,6 @@ impl<R: Runtime> Engine<R> {
             background,
             archiver,
             open: RwLock::new(true),
-            audit_seeded: AtomicBool::new(false),
             closing: Lock::new(()),
             close: Arc::default(),
             sched: Lock::new(None),

@@ -369,14 +369,6 @@ impl<'s> Tables<'s> {
         self.drawn(e, self.grants, highest)
     }
 
-    /// Returns a new sequence number of `catalog::audit`.
-    pub(super) fn next_seq<R: Runtime>(&self, e: &Entered<'_, R>, tx: &Txn) -> Result<i64, Error> {
-        let codec = Codec::<AuditRow>::new(self.schema);
-        let rows = self.typed(e, tx, &codec)?;
-        let highest = rows.iter().map(|(a, _)| a.seq).max();
-        self.drawn(e, self.audit, highest)
-    }
-
     /// Returns a new id of `relation` past `highest`, the highest it holds.
     fn drawn<R: Runtime>(
         &self,
@@ -509,7 +501,7 @@ impl<'s> Tables<'s> {
         who: (&str, &Val),
         event: (Field, Val),
     ) -> Result<(), Error> {
-        let seq = e.audit_seq(self.grant.as_ref())?;
+        let seq = e.audit_seq()?;
         let row = self.event_row(e, seq, ctor, who, vec![event])?;
         changes.insert(self.audit, row);
         Ok(())
@@ -625,9 +617,16 @@ impl Decode for PeerRow {
     })];
 }
 
-/// A row of `catalog::audit`, read for its sequence number.
+/// A row of `catalog::audit`, its codec encoding the rows the engine writes.
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(crate) struct AuditRow {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the codec's read-back test reads it; remove it once the engine reads an audit row"
+        )
+    )]
     seq: i64,
 }
 
