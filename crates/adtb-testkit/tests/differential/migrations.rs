@@ -70,6 +70,7 @@ struct Reached {
     /// Each kind refused for a constructor it replaces that an object with no exact image under
     /// it names.
     unimaged: BTreeMap<Kind, usize>,
+    /// Each shape committed, or refused as the broken operator.
     shapes: BTreeMap<Reach, usize>,
 }
 
@@ -92,7 +93,7 @@ impl Reached {
     }
 
     /// Assert every operator kind was drawn, committed and refused as the broken one, and every
-    /// shape committed.
+    /// shape committed, or refused as the broken operator.
     fn floors(&self) {
         let n = |m: &BTreeMap<Kind, usize>, kind| m.get(&kind).copied().unwrap_or(0);
         let missed: Vec<String> = Kind::ALL
@@ -113,7 +114,7 @@ impl Reached {
                 Reach::ALL
                     .into_iter()
                     .filter(|r| !self.shapes.contains_key(r))
-                    .map(|r| format!("{r:?} committed")),
+                    .map(|r| format!("{r:?} reached")),
             )
             .chain(
                 TAGGED
@@ -1240,7 +1241,7 @@ fn run(seed: u64, reached: &mut Reached, last: u64, instead: Option<&Migration>)
                         if ended != Ended::Committed && o.unimaged() {
                             *reached.unimaged.entry(o.kind()).or_default() += 1;
                         }
-                        if let (Ended::Committed, Some(r)) = (ended, o.reach()) {
+                        if let (Ended::Committed | Ended::Refused, Some(r)) = (ended, o.reach()) {
                             *reached.shapes.entry(r).or_default() += 1;
                         }
                     }

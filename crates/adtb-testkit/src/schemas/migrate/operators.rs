@@ -43,7 +43,13 @@ impl Model {
         };
         let text = format!("{verb} {}", self.ctor_ref(i, c));
         if broke {
-            return Some(vec![broken(kind, text)]);
+            let enabled = st(self, (i, c)) == Stage::Enabled;
+            let reach = match kind {
+                Kind::Disable => Reach::DisableRetagTarget,
+                _ => Reach::DeprecateRetagTarget,
+            };
+            let retags = enabled && kind != Kind::Enable;
+            return Some(vec![broken(kind, text).reaching(retags.then_some(reach))]);
         }
         let mut out: Vec<Op> = Vec::new();
         if kind == Kind::Deprecate {

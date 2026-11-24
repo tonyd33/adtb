@@ -171,16 +171,25 @@ pub enum Reach {
     RewrittenWaiting,
     /// An `add relation` after a `drop type` of a type whose field names its key.
     DroppedWaiting,
+    /// A split of a constructor a unique names while the declarations do not build.
+    ReplacedWhileUnbuilt,
+    /// A broken `disable` of an enabled constructor a delete action retags into.
+    DisableRetagTarget,
+    /// A broken `deprecate` of an enabled constructor a delete action retags into.
+    DeprecateRetagTarget,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 6] = [
+    pub const ALL: [Reach; 9] = [
         Reach::MergeAcrossStages,
         Reach::MovedDownAction,
         Reach::ArmLater,
         Reach::MergeUnderCheck,
         Reach::RewrittenWaiting,
         Reach::DroppedWaiting,
+        Reach::ReplacedWhileUnbuilt,
+        Reach::DisableRetagTarget,
+        Reach::DeprecateRetagTarget,
     ];
 }
 
@@ -560,6 +569,8 @@ struct Model {
     keys: Keys,
     /// The version the migration produces.
     version: u64,
+    /// Whether the declarations do not build before the operator drawn next.
+    unbuilt: bool,
 }
 
 /// What a scope of constructors becomes when constructors are replaced: each old constructor's
@@ -725,6 +736,7 @@ impl Case {
             s: self.schema.clone(),
             keys: self.keys.clone(),
             version,
+            unbuilt: false,
         };
         let mut ops = m.draw(&mut rng, kind, broke)?;
         let mut steps = vec![(ops.len(), m.s.clone(), m.keys.clone())];

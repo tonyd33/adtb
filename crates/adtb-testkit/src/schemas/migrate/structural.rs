@@ -27,6 +27,9 @@ impl Model {
                 }
                 let two = self.flagged((i, c)) && self.replaces_under(i, &[c], 2, Kind::Split);
                 let seeds = !self.clone().seeded(i, c).is_empty();
+                if self.unbuilt {
+                    return Some(((i, c), !seeds && self.unique_scoped(i, c)));
+                }
                 Some(((i, c), two || seeds))
             })
             .collect();
@@ -37,11 +40,7 @@ impl Model {
         };
         let wrong = broke && shape.is_none();
         let mut out = if broke { Vec::new() } else { self.seeded(i, c) };
-        let steer = self
-            .rel(i)
-            .uniques
-            .iter()
-            .any(|k| k.ctors.as_deref() == Some(&[c][..]));
+        let steer = self.unique_alone(i, c);
         let path = self.ctor_path(i, c);
         let src = self.rel(i).ctors[c].clone();
         let decl = |m: &Model, fs: &[&Field]| -> String {
@@ -150,9 +149,27 @@ impl Model {
             products: names,
         };
         let states = vec![state; made.len()];
+        let unbuilt =
+            (self.unbuilt && self.unique_scoped(i, c)).then_some(Reach::ReplacedWhileUnbuilt);
         self.replace(i, &[c], made, states);
-        out.push(op(Kind::Split, text).with(effect));
+        out.push(op(Kind::Split, text).with(effect).reaching(unbuilt));
         Some(out)
+    }
+
+    /// Returns whether a unique of relation `i` is scoped to constructor `c` alone.
+    fn unique_alone(&self, i: usize, c: usize) -> bool {
+        self.rel(i)
+            .uniques
+            .iter()
+            .any(|k| k.ctors.as_deref() == Some(&[c][..]))
+    }
+
+    /// Returns whether a unique of relation `i` is scoped to constructors that include `c`.
+    fn unique_scoped(&self, i: usize, c: usize) -> bool {
+        self.rel(i)
+            .uniques
+            .iter()
+            .any(|k| k.ctors.as_ref().is_some_and(|cs| cs.contains(&c)))
     }
 
     /// Returns whether constructor `c` of relation `i` holds a reference to a constructor set

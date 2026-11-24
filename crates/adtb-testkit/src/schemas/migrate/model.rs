@@ -764,7 +764,7 @@ impl Model {
                 if joins {
                     text.push_str(&format!("\n  joins {}.{}", r.name, r.set_name));
                 }
-                let matcher = (rng.below(2) == 0).then(|| {
+                let matcher = (rng.below(4) != 0).then(|| {
                     let f = self.fresh("f");
                     let names: Vec<String> =
                         self.rel(i).ctors.iter().map(|c| c.name.clone()).collect();
@@ -784,15 +784,27 @@ impl Model {
                 if joins && let Some(set) = &mut r.set {
                     set.push(c);
                 }
-                Some(match matcher {
-                    None => vec![op(kind, text)],
-                    Some((f, without, with)) => vec![
-                        op(Kind::DefineFn, format!("define fn {without}")),
-                        op(kind, text).reaching(Some(super::Reach::ArmLater)),
-                        op(Kind::RedefineFn, format!("redefine fn {with}")),
-                        op(Kind::DropFn, format!("drop fn {f}")),
-                    ],
-                })
+                let Some((f, without, with)) = matcher else {
+                    return Some(vec![op(kind, text)]);
+                };
+                let mut out = vec![
+                    op(Kind::DefineFn, format!("define fn {without}")),
+                    op(kind, text).reaching(Some(super::Reach::ArmLater)),
+                ];
+                let before = self.clone();
+                self.unbuilt = true;
+                let own = format!("split constructor {ty}.");
+                let split = self
+                    .split(rng, false)
+                    .filter(|ops| ops.len() == 1 && !ops[0].text().starts_with(&own));
+                self.unbuilt = false;
+                match split {
+                    Some(ops) => out.extend(ops),
+                    None => *self = before,
+                }
+                out.push(op(Kind::RedefineFn, format!("redefine fn {with}")));
+                out.push(op(Kind::DropFn, format!("drop fn {f}")));
+                Some(out)
             }
             Kind::RemoveConstructor => {
                 let mut can = Vec::new();
