@@ -1182,10 +1182,20 @@ impl<R: Runtime> Database<R> {
         Ok(out)
     }
 
-    /// Returns the rows of `rel` visible to `tx`, read under a grant of no budget.
-    pub(crate) fn relation_rows(&self, tx: &Txn, rel: RelId) -> Result<Vec<Val>, Error> {
-        let grant = Budget::new(usize::MAX).admit(usize::MAX);
-        let grant = grant.expect("a budget admits its whole limit");
+    /// Returns the rows of `rel` visible to `tx`, read under `grant`, else under a grant of no
+    /// budget.
+    pub(crate) fn relation_rows(
+        &self,
+        tx: &Txn,
+        rel: RelId,
+        grant: Option<&Arc<exec::Grant>>,
+    ) -> Result<Vec<Val>, Error> {
+        let grant = match grant {
+            Some(g) => g.clone(),
+            None => Budget::new(usize::MAX)
+                .admit(usize::MAX)
+                .expect("a budget admits its whole limit"),
+        };
         let rows = eval::Stmt::reader(self, tx, grant).rows(rel, None);
         tx.noted(rows.map(|rows| rows.into_iter().map(|(_, row)| row).collect()))
     }

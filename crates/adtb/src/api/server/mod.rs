@@ -68,7 +68,7 @@ impl<R: Runtime> RoleAuthority<R> {
     pub fn session(&self, name: &str) -> Result<RoleSession<R>, Error> {
         let name = role_name(name)?;
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let role = t.role(e, tx, &name)?;
             Ok(RoleSession {
                 serial: e.sessions.fetch_add(1, Ordering::Relaxed),
@@ -83,7 +83,7 @@ impl<R: Runtime> RoleAuthority<R> {
     pub fn create_role(&self, name: &str) -> Result<(), Error> {
         let name = role_name(name)?;
         self.access(true, |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let roles = t.roles(e, tx)?;
             if roles.iter().any(|r| r.name == name) {
                 return Err(Error::invalid(format!("role `{name}` already exists")));
@@ -107,7 +107,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _writer = engine.deployed.write(&engine.rt);
         self.access(true, |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let role = t.role(e, tx, &name)?;
             if name == OWNER_ROLE || e.role_mentions.contains(&name) {
                 return Err(denied("the role is required by the schema log"));
@@ -192,7 +192,7 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<(), Error> {
         let name = role_name(name)?;
         self.access(true, |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let grants = t.grants(e, tx)?;
             allowed(e, tx, &t, &grants)?;
             t.grantee(e, tx, &name)?;
@@ -257,7 +257,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let engine = &engine.enter()?;
         let _writer = engine.deployed.write(&engine.rt);
         store::run(engine, true, &mut |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             allowed(e, tx, &t)?;
             let grants = t.grants(e, tx)?;
             refuse_relation_revoke(&grants, issuer, &statement)?;
@@ -311,7 +311,7 @@ impl<R: Runtime> RoleAuthority<R> {
         grant_option: bool,
     ) -> Result<(), Error> {
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             self.checked(session, &t, e, tx)?;
             require(&t.grants(e, tx)?, session, capability, grant_option)
         })

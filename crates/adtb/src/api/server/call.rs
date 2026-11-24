@@ -239,7 +239,7 @@ impl<R: Runtime> Call<R> {
         };
         if failed.is_some_and(is_denied) {
             let caller = self.admitted.prepared().caller();
-            return e.audit_denied(&call.role, caller, &call.origin);
+            return e.audit_denied(&call.role, caller, &call.origin, self.grant.as_ref());
         }
         e.audit_call(&self.call_row(&call, failed), self.grant.as_ref())
     }

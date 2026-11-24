@@ -72,7 +72,7 @@ impl<R: Runtime> RoleSession<R> {
             if let Some(quarantined) = e.refusal() {
                 return quarantined;
             }
-            match e.audit_denied(&self.name, &caller, &origin) {
+            match e.audit_denied(&self.name, &caller, &origin, None) {
                 Ok(()) => refused_text(&self.name),
                 Err(err) => err,
             }
@@ -329,7 +329,7 @@ impl<R: Runtime> RoleAuthority<R> {
             if let Some(quarantined) = e.refusal() {
                 return Err(quarantined);
             }
-            e.audit_denied(&session.name, caller, &origin)?;
+            e.audit_denied(&session.name, caller, &origin, None)?;
             Err(denied(detail))
         };
         for item in items {
@@ -416,7 +416,7 @@ impl<R: Runtime> RoleAuthority<R> {
                         return quarantined;
                     }
                     return e
-                        .audit_denied(&session.name, caller, &origin)
+                        .audit_denied(&session.name, caller, &origin, None)
                         .map_or_else(|audit| audit, |()| refused_text(&session.name));
                 }
                 let err = unanalysed(err);
@@ -474,7 +474,7 @@ impl<R: Runtime> RoleAuthority<R> {
         if let Some(quarantined) = e.refusal() {
             return Err(quarantined);
         }
-        e.audit_denied(&session.name, caller, &origin)?;
+        e.audit_denied(&session.name, caller, &origin, None)?;
         Err(if holds.schema {
             denied(format!(
                 "role `{}` {} and lacks {}",
@@ -497,7 +497,7 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<Val, Error> {
         let bundle = registered.name();
         let observed = self.access(false, |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let principal = self.derive(session, &t, e, tx, assertion)?;
             let stored = e.deployed.read(&e.rt);
             if owns(&stored, stored.bundles.get(bundle), session.id.0) {

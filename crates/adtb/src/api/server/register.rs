@@ -40,7 +40,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let family_owner = stored.deployed.families.get(family).copied();
         drop(stored);
         store::run(e, true, &mut |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             self.checked(session, &t, e, tx)?;
             let by = session.id.0;
             let roles = t.role_names(e, tx)?;

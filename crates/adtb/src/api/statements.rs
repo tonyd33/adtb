@@ -120,7 +120,7 @@ impl<R: Runtime> Entered<'_, R> {
             let commands = p.commands().iter().enumerate();
             for (nth, c) in commands.filter(|(_, c)| c.at == at) {
                 let run = self
-                    .deployment_command(&c.command, p)
+                    .deployment_command(&c.command, p, bounds.grant.as_ref())
                     .map(|done| done.map_err(Refusal::own))
                     .or_else(|| self.file_command(id, tx, &c.command, p, local, &bounds));
                 match run {

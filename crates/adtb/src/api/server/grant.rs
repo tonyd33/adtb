@@ -527,7 +527,7 @@ impl<R: Runtime> RoleAuthority<R> {
         changes: &mut Changes,
         (session, statement, grantee, text): (&RoleSession<R>, &Statement, &str, &str),
     ) -> Result<(), Error> {
-        let t = Tables::new(e.schema(), id);
+        let t = Tables::new(e.schema(), id, None);
         self.checked(session, &t, e, tx)?;
         let calls = Calls::new(e);
         let before = t.grants(e, tx)?;

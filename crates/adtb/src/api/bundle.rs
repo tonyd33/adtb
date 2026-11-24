@@ -1153,14 +1153,16 @@ impl<R: Runtime> Entered<'_, R> {
     }
 
     /// Run `c` when it is a command on deployment state, `retire bundle` or `supersede
-    /// bundle`, which no transaction holds. Returns its rows, `None` for any other command.
+    /// bundle`, which no transaction holds, its audit row charged to the call's `grant`. Returns
+    /// its rows, `None` for any other command.
     pub(super) fn deployment_command(
         &self,
         c: &Command,
         p: &Prepared,
+        grant: Option<&Arc<exec::Grant>>,
     ) -> Option<Result<DynRows, Error>> {
         match c {
-            Command::RetireBundle(b) => Some(self.retire(&bundle_name(b), p)),
+            Command::RetireBundle(b) => Some(self.retire(&bundle_name(b), p, grant)),
             Command::SupersedeBundle(b, by) => {
                 Some(self.supersede(&bundle_name(b), &bundle_name(by)))
             }
@@ -1169,8 +1171,13 @@ impl<R: Runtime> Entered<'_, R> {
     }
 
     /// Retire bundle `name` for the issuer of `p`, the row and its `Retire` audit row committing
-    /// together. Returns its row.
-    pub(super) fn retire(&self, name: &str, p: &Prepared) -> Result<DynRows, Error> {
+    /// together under the call's `grant`. Returns its row.
+    pub(super) fn retire(
+        &self,
+        name: &str,
+        p: &Prepared,
+        grant: Option<&Arc<exec::Grant>>,
+    ) -> Result<DynRows, Error> {
         let writer = self.bundle_writer();
         let now = self.clock();
         let row = known(&self.deployed.read(&self.rt).bundles, name)?.clone();
@@ -1183,8 +1190,8 @@ impl<R: Runtime> Entered<'_, R> {
                 self,
                 t.bundles,
                 (t.bundle_value(&row), t.bundle_value(&next)),
-                (role, p.caller()),
-                name,
+                ((role, p.caller()), name),
+                grant,
             )?;
         }
         let out = self.bundle_rows(&next);

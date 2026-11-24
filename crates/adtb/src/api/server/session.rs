@@ -42,7 +42,13 @@ impl<R: Runtime> RoleAuthority<R> {
         assertion: Option<&Val>,
     ) -> Result<Val, Error> {
         self.access(false, |e, tx, id, _| {
-            self.derive(session, &Tables::new(e.schema(), id), e, tx, assertion)
+            self.derive(
+                session,
+                &Tables::new(e.schema(), id, None),
+                e,
+                tx,
+                assertion,
+            )
         })
     }
 
@@ -80,7 +86,7 @@ impl<R: Runtime> RoleAuthority<R> {
             if let Some(quarantined) = e.refusal() {
                 return Err(quarantined);
             }
-            e.audit_denied(&session.name, caller, origin)?;
+            e.audit_denied(&session.name, caller, origin, None)?;
         }
         got
     }
@@ -88,19 +94,19 @@ impl<R: Runtime> RoleAuthority<R> {
 
 impl<R: Runtime> BundleWriter<'_, R> {
     /// Replace `old` of the relation `bundles` by `new` and record that `who` retired `bundle`, in
-    /// a transaction of its own.
+    /// a transaction of its own charged to the call's `grant`.
     pub(in super::super) fn retire_row(
         &self,
         e: &Entered<'_, R>,
         bundles: RelId,
         (old, new): (Val, Val),
-        who: (&str, &Val),
-        bundle: &str,
+        (who, bundle): ((&str, &Val), &str),
+        grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
-        store::run(e, true, &mut |e, _, id, changes| {
+        store::run_under(e, true, grant, &mut |e, _, id, changes| {
             changes.delete(bundles, old.clone());
             changes.insert(bundles, new.clone());
-            Tables::new(e.schema(), id).audit_retire(e, changes, who, bundle)
+            Tables::new(e.schema(), id, grant).audit_retire(e, changes, who, bundle)
         })
     }
 }
@@ -120,8 +126,8 @@ impl<R: Runtime> Entered<'_, R> {
         call: &CallRow<'_>,
         grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
-        let seq = self.audit_seq()?;
-        let t = Tables::new(self.schema(), id);
+        let seq = self.audit_seq(grant)?;
+        let t = Tables::new(self.schema(), id, grant);
         let mut changes = Changes::default();
         changes.insert(t.audit_relation(), t.call_row(self, seq, call)?);
         changes
@@ -130,17 +136,18 @@ impl<R: Runtime> Entered<'_, R> {
     }
 
     /// Returns the next audit sequence number, read outside any transaction that adds a row so
-    /// that concurrent calls do not conflict over it.
-    pub(super) fn audit_seq(&self) -> Result<i64, Error> {
+    /// that concurrent calls do not conflict over it, under `grant`, the grant of the call that
+    /// adds the row.
+    pub(super) fn audit_seq(&self, grant: Option<&Arc<Grant>>) -> Result<i64, Error> {
         if self.audit_seeded.load(Ordering::Acquire) {
-            let audit = Tables::new(self.schema(), TxnId(0)).audit_relation();
+            let audit = Tables::new(self.schema(), TxnId(0), None).audit_relation();
             return self
                 .db
                 .deployment_id(audit, 1)
                 .map_err(|error| self.write_error(TxnId(0), error));
         }
-        let seq = store::run(self, false, &mut |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
+        let seq = store::run_under(self, false, grant, &mut |e, tx, id, _| {
+            let t = Tables::new(e.schema(), id, grant);
             t.next_seq(e, tx)
         })?;
         self.audit_seeded.store(true, Ordering::Release);
@@ -150,7 +157,7 @@ impl<R: Runtime> Entered<'_, R> {
     /// Returns the failure of a change that must record a row of `catalog::audit`, while a mark
     /// on the database, or on a constructor or index of the audit, stops that row.
     pub(super) fn audit_unwritable(&self) -> Option<Error> {
-        let audit = Tables::new(self.schema(), TxnId(0)).audit_relation();
+        let audit = Tables::new(self.schema(), TxnId(0), None).audit_relation();
         let marked = self.db.admit_relation(audit).err()?;
         Some(self.write_error(TxnId(0), marked))
     }
@@ -163,9 +170,9 @@ impl<R: Runtime> Entered<'_, R> {
         grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
         self.audit_unless_marked(|| {
-            let seq = self.audit_seq()?;
+            let seq = self.audit_seq(grant)?;
             store::run_under(self, true, grant, &mut |e, _, id, changes| {
-                let t = Tables::new(e.schema(), id);
+                let t = Tables::new(e.schema(), id, grant);
                 changes.insert(t.audit_relation(), t.call_row(e, seq, call)?);
                 Ok(())
             })
@@ -185,17 +192,18 @@ impl<R: Runtime> Entered<'_, R> {
         })
     }
 
-    /// Record, in a transaction of its own, that `role` running for `caller` was refused the call
-    /// of `origin`, unless a mark stops the row.
+    /// Record, in a transaction of its own charged to the call's `grant`, that `role` running for
+    /// `caller` was refused the call of `origin`, unless a mark stops the row.
     pub(in super::super) fn audit_denied(
         &self,
         role: &str,
         caller: &Val,
         origin: &CallOrigin,
+        grant: Option<&Arc<Grant>>,
     ) -> Result<(), Error> {
         self.audit_unless_marked(|| {
-            store::run(self, true, &mut |e, _, id, changes| {
-                Tables::new(e.schema(), id).audit_denied(e, changes, role, caller, origin)
+            store::run_under(self, true, grant, &mut |e, _, id, changes| {
+                Tables::new(e.schema(), id, grant).audit_denied(e, changes, role, caller, origin)
             })
         })
     }

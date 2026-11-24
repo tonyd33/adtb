@@ -13,7 +13,7 @@ use crate::catalog::codec::{
     ROLE_NAME, Relation, RoleGrant, RoleRow, field, relation,
 };
 use crate::catalog::{Rot, engine_relation};
-use crate::exec::Val;
+use crate::exec::{self, Val};
 use crate::runtime::Runtime;
 use crate::write::{self, Txn};
 
@@ -103,6 +103,7 @@ pub(super) struct Given<'a> {
 pub(super) struct Tables<'s> {
     schema: &'s Schema,
     call: TxnId,
+    grant: Option<Arc<exec::Grant>>,
     pub(super) roles: RelId,
     pub(super) grants: RelId,
     pub(super) credentials: RelId,
@@ -179,11 +180,14 @@ impl<'s> Tables<'s> {
         }
     }
 
-    pub(super) fn new(schema: &'s Schema, call: TxnId) -> Self {
+    /// Returns the tables read under `grant`, the grant of the call running `call`, else under a
+    /// grant of no budget.
+    pub(super) fn new(schema: &'s Schema, call: TxnId, grant: Option<&Arc<exec::Grant>>) -> Self {
         let relation = |id| engine_relation(schema, id);
         Tables {
             schema,
             call,
+            grant: grant.cloned(),
             roles: relation(engine_rel::ROLES),
             grants: relation(engine_rel::GRANTS),
             credentials: relation(engine_rel::CREDENTIALS),
@@ -193,7 +197,7 @@ impl<'s> Tables<'s> {
     }
 
     fn read<R: Runtime>(&self, e: &Entered<'_, R>, tx: &Txn, r: RelId) -> Result<Vec<Val>, Error> {
-        e.db.relation_rows(tx, r)
+        e.db.relation_rows(tx, r, self.grant.as_ref())
             .map_err(|error| e.write_error(self.call, error))
     }
 
@@ -505,7 +509,7 @@ impl<'s> Tables<'s> {
         who: (&str, &Val),
         event: (Field, Val),
     ) -> Result<(), Error> {
-        let seq = e.audit_seq()?;
+        let seq = e.audit_seq(self.grant.as_ref())?;
         let row = self.event_row(e, seq, ctor, who, vec![event])?;
         changes.insert(self.audit, row);
         Ok(())

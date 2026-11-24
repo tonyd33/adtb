@@ -279,7 +279,7 @@ impl<R: Runtime> RoleAuthority<R> {
     /// Returns what `session`'s role holds now.
     pub(super) fn holds(&self, session: &RoleSession<R>) -> Result<Holds, Error> {
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             self.checked(session, &t, e, tx)?;
             Ok(Holds::of(e, &session.name, &t.grants(e, tx)?))
         })

@@ -53,7 +53,7 @@ fn refused_invalid(got: Result<(), Error>, detail: &str) {
 fn replace_grant(authority: &Authority, field: &str, value: Val) {
     authority
         .access(true, |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let grants = t.read(e, tx, t.grants)?;
             assert_eq!(1, grants.len());
             let row = &grants[0];
@@ -110,7 +110,7 @@ fn ctor_of(schema: &Schema, r: RelId, name: &str) -> CtorRef {
 fn seed_mappings(authority: &Authority) {
     authority
         .access(true, |e, _, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let relation = t.peers;
             for (ordinal, role) in [(1, "web"), (3, "other"), (7, "web")] {
                 let row = fixture_row(
@@ -134,7 +134,7 @@ fn seed_mappings(authority: &Authority) {
 fn seed_credentials(authority: &Authority) {
     authority
         .access(true, |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             for name in ["web", "other"] {
                 let role = t.role(e, tx, name)?;
                 let row = fixture_row(
@@ -315,7 +315,7 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
             rt.clone().spawn("writer", move || {
                 let got = authority.access(true, |e, tx, id, changes| {
                     let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                    let t = Tables::new(e.schema(), id);
+                    let t = Tables::new(e.schema(), id, None);
                     t.role(e, tx, "web")?;
                     let grants = t.grants(e, tx)?;
                     assert!(grants.is_empty());
@@ -416,7 +416,7 @@ fn opening_an_empty_legacy_roles_table_preserves_a_full_counter_page() {
 fn legacy_roles(rt: &SimRuntime, roles: &[(i64, &str)]) {
     let pager = Pager::create(rt.clone(), &load::options(1).storage(load::FILE)).unwrap();
     let (catalog, txns) = Catalog::open(rt.clone(), &pager).unwrap();
-    let t = Tables::new(catalog.schema(), crate::api::TxnId(1));
+    let t = Tables::new(catalog.schema(), crate::api::TxnId(1), None);
     let inserted = roles
         .iter()
         .map(|(id, name)| {
@@ -564,7 +564,7 @@ fn a_self_given_option_is_no_remaining_option_and_is_deleted_with_its_revoke() {
 fn dormant_owner_grant(authority: &Authority) {
     authority
         .access(true, |e, tx, id, changes| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             for row in t.read(e, tx, t.grants)? {
                 let Val::Ctor(ctor, values) = &row else {
                     panic!("the grant fixture is a constructor");
@@ -845,7 +845,7 @@ fn a_bundle_with_no_text_cannot_be_read_until_it_is_presented_or_retired() {
             s.deployed.registered.remove(&id);
         });
         let got = authority.access(false, |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             let grants = t.grants(e, tx)?;
             let deleted = grants
                 .iter()

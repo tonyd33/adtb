@@ -194,7 +194,7 @@ impl<R: Runtime> RoleAuthority<R> {
         registered: Option<&Registered<R>>,
     ) -> Result<Option<Vec<u32>>, Error> {
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(e.schema(), id);
+            let t = Tables::new(e.schema(), id, None);
             self.checked(session, &t, e, tx)?;
             let stored = e.deployed.read(&e.rt);
             let row = stored.bundles.get(bundle);

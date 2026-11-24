@@ -951,7 +951,7 @@ impl<R: Runtime> Entered<'_, R> {
         let envelope = self.envelope().map_err(Refusal::own)?;
         let failed = |e| self.met(id, e);
         let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
-        let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
+        let rows = |r| self.db.relation_rows(tx, r, None).map_err(failed);
         let schema = self.schema();
         let grants = Codec::<RoleGrant>::new(schema);
         let (mut logged, mut given) = (BTreeSet::new(), BTreeSet::new());
@@ -990,7 +990,7 @@ impl<R: Runtime> Entered<'_, R> {
         let mut streams = Vec::new();
         for r in dumped(schema) {
             let mut by_ctor: BTreeMap<u32, BTreeSet<Val>> = BTreeMap::new();
-            for row in self.db.relation_rows(tx, r).map_err(failed)? {
+            for row in self.db.relation_rows(tx, r, None).map_err(failed)? {
                 by_ctor.entry(ctor_of(&row)).or_default().insert(row);
             }
             let ctors = schema.ty(schema.relation(r).elem_def).ctors().len();
