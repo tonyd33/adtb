@@ -1,0 +1,28 @@
+-- change_begins: a call of `Change::begin`, which begins a catalog transaction, outside the
+-- functions the open and create sequence runs: a deploy's rewrite, the record of grants, the
+-- release of held drops, a migration, and the fill of a new catalog.
+
+opening = r"^(rewrite|record_grants|unhold|migrate_with|fill)$";
+
+begins = do {
+  c <- descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f == "Change::begin";
+  return c;
+};
+
+opened = do {
+  d <- descendants_of_kind :function_item;
+  name <- pure d | #name;
+  guard $ text name ~ opening;
+  c <- pure d | descendants_of_kind :call_expression;
+  f <- pure c | #function;
+  guard $ text f == "Change::begin";
+  return c;
+};
+
+main = do {
+  b <- collect begins | arr length;
+  o <- collect opened | arr length;
+  return (b - o);
+};

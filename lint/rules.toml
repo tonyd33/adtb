@@ -231,3 +231,9 @@ query = "failure-text.tql"
 include = ["crates/adtb/src/**/*.rs", "crates/adtb-exec/src/**/*.rs", "crates/adtb-heap/src/verify/**/*.rs"]
 exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**", "**/testing/**", "**/testing.rs", "**/*_testing.rs"]
 rows = { debug_text = "zero" }
+
+[[rule]]
+query = "catalog-begins.tql"
+include = ["crates/adtb/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/*_tests.rs", "**/tests/**", "**/test_world/**"]
+rows = { change_begins = "zero" }
