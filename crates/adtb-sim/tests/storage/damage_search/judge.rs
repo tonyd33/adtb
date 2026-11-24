@@ -122,6 +122,9 @@ struct Page {
     may: BTreeSet<Quarantine>,
     /// Whether the page's damage quarantines the database for the first open alone.
     open: bool,
+    /// Whether the first open met the page, an LSN map page, out of shape and so could not
+    /// prove the expected LSNs.
+    unproven: bool,
     /// The row of the stated table its mark comes from.
     row: Option<Row>,
 }
@@ -197,6 +200,8 @@ struct Judged {
     open: bool,
     /// Whether the first open met the page unreadable while arming its read-in gate.
     unarmed: bool,
+    /// Whether the first open met the page, an LSN map page, out of shape.
+    unproven: bool,
     /// The row of the phase the page's mapping surely ran in.
     row: Option<Row>,
 }
@@ -269,6 +274,10 @@ fn judged(
             .collect(),
         open: met_in_open && stated::stated(class, end.0, Phase::Opening) == Stated::Open,
         unarmed: met_in_open && class == Class::Unread && end.0 == Held::LsnMap,
+        unproven: class == Class::Damaged
+            && end.0 == Held::LsnMap
+            && surely == Some(Phase::Opening)
+            && !unknown,
         row: surely.map(|p| (class, end.0, p)).filter(|_| !unknown),
     }
 }
@@ -409,7 +418,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
                 };
             let settles = settles(case, &w, hit.fault);
             let judged = judged(case, &w, hit.fault, placed.0, settles);
-            open_only |= judged.open;
+            open_only |= judged.open || judged.unproven;
             if judged.unarmed {
                 unarmed.insert(w.pid);
             }
@@ -429,6 +438,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
                 mark: judged.mark,
                 may: judged.may,
                 open: judged.open,
+                unproven: judged.unproven,
                 row: judged.row,
             });
         }
@@ -1182,19 +1192,20 @@ fn names_pid(text: &str, pid: Pid) -> bool {
 /// of the phase its mapping surely ran in, when the judge checked what the row states. A row
 /// stating a mark is asked when the judge required that mark held; a row stating nothing when it
 /// checked the marks held nothing beyond what the faults allow; a row holding the database for the
-/// open when it checked that the open held it.
+/// open when it checked that the open held it, and for an LSN map page out of shape at the open
+/// also the row of the open that could not prove the expected LSNs.
 fn asked(f: &Facts<'_>) -> BTreeSet<Row> {
     let Some(all) = &f.case.observed.marks else {
         return BTreeSet::new();
     };
     let excused = unreadable_page_leaves_mapping_incomplete(f);
     let covered = database_mark_covers_relations(f, all);
+    let unproven = (Class::Unarmed, Held::LsnMap, Phase::Opening);
     f.pages
         .iter()
         .filter(|p| !met(f, p).is_empty())
-        .filter_map(|p| {
-            let row = p.row?;
-            let checked = match stated::stated(row.0, row.1, row.2) {
+        .flat_map(|p| {
+            let checked = |row: Row| match stated::stated(row.0, row.1, row.2) {
                 Stated::Own | Stated::Database => {
                     p.must_report
                         && !excused
@@ -1202,9 +1213,13 @@ fn asked(f: &Facts<'_>) -> BTreeSet<Row> {
                             .is_some_and(|m| m == Quarantine::Database || !covered)
                 }
                 Stated::Nothing => true,
-                Stated::Open => p.open && f.open_only,
+                Stated::Open => (p.open || p.unproven) && f.open_only,
             };
-            checked.then_some(row)
+            let unproven = p.unproven.then_some(unproven);
+            p.row
+                .into_iter()
+                .chain(unproven)
+                .filter(move |r| checked(*r))
         })
         .collect()
 }

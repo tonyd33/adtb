@@ -202,9 +202,9 @@ const UNREACHED: &[(Fault, Kind, Option<Consumer>, &str)] = &[
 fn classes(fault: Fault) -> &'static [Class] {
     match fault {
         Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled => {
-            &[Class::Damaged, Class::Settled]
+            &[Class::Damaged, Class::Settled, Class::Unarmed]
         }
-        Fault::Flipped => &[Class::Damaged],
+        Fault::Flipped => &[Class::Damaged, Class::Unarmed],
         Fault::UnreadableOnce | Fault::UnreadableLasting => &[Class::Unread],
         Fault::Torn => &[],
     }
@@ -238,11 +238,15 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
         (Class::Settled, h) if h != Held::CommitLog => {
             return Some(Unasked::Never("only a commit log status page settles"));
         }
-        (Class::Unarmed, _) => {
+        (Class::Unarmed, h) if h != Held::LsnMap => {
             return Some(Unasked::Never(
-                "only a gap in the retained log or an LSN map page out of shape leaves the open \
-                 unproven, and the search judges such a map page by its damage, which marks the \
-                 database",
+                "of the pages a fault hits only an LSN map page out of shape leaves the open \
+                 unproven",
+            ));
+        }
+        (Class::Unarmed, _) if phase == Running => {
+            return Some(Unasked::Never(
+                "only an open's recovery reads the map to prove the expected LSNs",
             ));
         }
         (_, Held::Retired) => {
@@ -1068,11 +1072,12 @@ fn known(
 type Pinned = (Fault, Kind, u64, usize, Row);
 
 /// The cases the default profile runs: a lost write of each structure whose damage is refused and
-/// marked, a settled status page, a flipped byte, an LSN map page unreadable at the open and a
-/// lost write past a recycle and past the map's entry of its page.
+/// marked, a settled status page, a flipped byte, an LSN map page stale at the open, which leaves
+/// it unproven, an LSN map page unreadable at the open and a lost write past a recycle and past
+/// the map's entry of its page.
 #[rustfmt::skip]
 const PINNED: &[Pinned] = {
-    use Class::{Damaged, Settled, Unread};
+    use Class::{Damaged, Settled, Unarmed, Unread};
     use Fault::{Flipped, LostCurrent, Recycled, UnreadableLasting};
     use Held::{Bitmap, CatalogRoot, CommitLog, CommitTimes, Counters, LsnMap, MarksPage, Relation};
     use Phase::{Opening, Running};
@@ -1085,6 +1090,7 @@ const PINNED: &[Pinned] = {
         (LostCurrent, Kind::CommitLog, 1001, 639, (Damaged, CommitLog, Opening)),
         (LostCurrent, Kind::CommitLog, 5, 658, (Settled, CommitLog, Opening)),
         (LostCurrent, Kind::LsnMap, 5, 660, (Damaged, LsnMap, Opening)),
+        (LostCurrent, Kind::LsnMap, 5, 660, (Unarmed, LsnMap, Opening)),
         (LostCurrent, Kind::Bitmap, 5, 648, (Damaged, Bitmap, Opening)),
         (LostCurrent, Kind::Marks, 5, 655, (Damaged, MarksPage, Opening)),
         (LostCurrent, Kind::Heap, 1001, 641, (Damaged, Relation, Running)),
