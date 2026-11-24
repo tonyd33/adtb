@@ -130,6 +130,13 @@ r.S` holds when every value it holds is the key of a row of `r.S`.
 Both are declared where [model.md](model.md#7-keys) says and are checked
 at the same boundaries as every other constraint (§4).
 
+A relation variable holds each unique and each index once. Two uniques
+are one when their canonical names (§7.1) agree. Two indexes are one
+when they are of one kind (`index` or `interval index`), their elements
+are written alike, and their `in` names the same constructors and named
+sets, in any order. A declaration of a relation variable holding one
+twice is refused, naming it.
+
 Each reference field has an implied index on that field, over the
 constructors of the relation variable that hold the field, unless a
 declared key, unique or index ranging over at least those constructors

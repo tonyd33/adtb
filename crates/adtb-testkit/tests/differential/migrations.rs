@@ -900,7 +900,7 @@ impl Run {
         sweep?;
         let source = self.replays(&log, &migrated, &cat, hash.as_ref(), &want_rows)?;
         if m.exact() {
-            self.law(&log, &source, &migrated, &want_rows, m.rereverted())?;
+            self.law(&log, &source, &migrated, &want_rows)?;
         }
         let mut fx = reference(&migrated, &want_rows)?;
         let probes = migrated.probes();
@@ -1046,7 +1046,7 @@ impl Run {
     }
 
     /// Check, on a copy of the store, that a revert of the migration `log` ends with restores
-    /// the source and the rows before it, and when `twice`, that a revert of that revert gives
+    /// the source and the rows before it, and that a revert of that revert gives
     /// the schema of `migrated` and the rows `after` the migration left.
     fn law(
         &mut self,
@@ -1054,7 +1054,6 @@ impl Run {
         mid: &Source,
         migrated: &schemas::Case,
         after: &Rows,
-        twice: bool,
     ) -> Result<(), Finding> {
         let mut copy = Sim::with_files(self.seed, Config::default(), self.sim.files());
         let mut reverted = log.to_vec();
@@ -1087,9 +1086,6 @@ impl Run {
                     format!("migration {n}: {ds:?}"),
                 ));
             }
-        }
-        if !twice {
-            return Ok(());
         }
         reverted.push(format!("module app\nrevert {:04}\n", reverted.len()));
         let again =

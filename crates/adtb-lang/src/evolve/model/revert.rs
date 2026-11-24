@@ -446,6 +446,12 @@ impl Model {
                 }
                 self.restore_module(run, &name, present, installed, texts)
             }
+            Inverse::PlaceCtors {
+                ty, order, placed, ..
+            } => {
+                self.place_ctors(ty.raw(), &order, &placed);
+                Ok(())
+            }
             Inverse::Reorder {
                 ty,
                 ctor,
@@ -467,8 +473,13 @@ impl Model {
                 self.key_clause(r, &text)
             }
             Inverse::Replay {
-                text, again, of, ..
+                text,
+                again,
+                then,
+                of,
+                ..
             } => {
+                let text = text.unheld(&then);
                 let text = self.spell(&text, &of, gone)?;
                 self.replay(run, &text, again, &of, undone)
             }
@@ -832,6 +843,33 @@ impl Model {
         self.replaying = replaying;
         self.ahead = ahead;
         out
+    }
+
+    /// Put each constructor of `placed` of type `ty`, in turn, after the nearest constructor
+    /// before it in `order` the type holds, else first.
+    fn place_ctors(
+        &mut self,
+        ty: u64,
+        order: &[crate::ids::CatCtorId],
+        placed: &[crate::ids::CatCtorId],
+    ) {
+        let Some(TypeBody::Ctors(list)) = self.types.get_mut(&ty).map(|t| &mut t.body) else {
+            return;
+        };
+        for x in placed {
+            let (Some(at), Some(k)) = (
+                list.iter().position(|c| *c == x.raw()),
+                order.iter().position(|c| c == x),
+            ) else {
+                continue;
+            };
+            let c = list.remove(at);
+            let anchor = order[..k]
+                .iter()
+                .rev()
+                .find_map(|y| list.iter().position(|c| *c == y.raw()));
+            list.insert(anchor.map_or(0, |p| p + 1), c);
+        }
     }
 
     /// Put the fields of constructor `ctor` of type `ty`, or of its header, in `order`, refusing

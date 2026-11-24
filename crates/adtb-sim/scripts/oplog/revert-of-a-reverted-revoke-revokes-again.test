@@ -1,0 +1,19 @@
+# A revert of a revert applies the reverted migration's grants and revokes again.
+seed 89
+use shop
+
+role support
+
+migrate
+  module shop
+  grant read customers to support
+  module shop
+  revoke read customers from support
+  module shop
+  revert 0003
+  module shop
+  revert 0004
+
+query rowsort
+  from g in catalog::grants where g.grantee == "support" select g.privilege
+----

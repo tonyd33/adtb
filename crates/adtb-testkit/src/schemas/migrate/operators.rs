@@ -347,8 +347,7 @@ impl Model {
                 let i = *rng.pick_some(&self.sums())?;
                 let ty = self.rel(i).ty.clone();
                 let at = self.rel(i).ctors.len();
-                let apart =
-                    super::super::SEARCH_REVERTED_MERGE_APART && self.version.is_multiple_of(2);
+                let apart = self.version.is_multiple_of(2);
                 for _ in 0..2 + usize::from(apart) {
                     let name = self.ctor_name(i);
                     out.push(op(
@@ -410,7 +409,6 @@ impl Model {
             product: product.clone(),
             field: field.clone(),
         };
-        let apart = d != c + 1 && !super::super::SEARCH_REVERTED_MERGE_APART;
         let states = &self.rel(i).states;
         let reach = (states[c] != states[d]).then_some(Reach::MergeAcrossStages);
         let declared = states[c] == Stage::Declared || states[d] == Stage::Declared;
@@ -432,7 +430,7 @@ impl Model {
             vec![state],
         );
         let merged = op(kind, text).with(effect).reaching(reach);
-        out.push(if apart { merged.inexact() } else { merged });
+        out.push(merged);
         Some(out)
     }
 
@@ -462,7 +460,7 @@ impl Model {
         let Ty::Tag(_, cs) = self.rel(i).ctors[c].fields[0].ty.clone() else {
             unreachable!("an unnested constructor holds a sum");
         };
-        out.extend(self.tag_of(rng, i, &[c], false));
+        out.extend(self.tag_of(rng, i, &[c], true));
         let effect = Effect::Unnest {
             rel: self.rel(i).name.clone(),
             ty: self.rel(i).ty.clone(),
@@ -571,17 +569,25 @@ impl Model {
     }
 
     /// Returns, always when `always` and otherwise on half its draws, an `add field` to an
-    /// enabled constructor of another relation of a field of type `Tag` of relation `i`'s sum,
-    /// filled with the tag of one of constructors `cs` of it.
-    fn tag_of(&mut self, rng: &mut Rng, i: usize, cs: &[usize], always: bool) -> Option<Op> {
+    /// enabled constructor of another relation, a record's when one has one, of a field of type
+    /// `Tag` of relation `i`'s sum, filled with the tag of one of constructors `cs` of it.
+    pub(super) fn tag_of(
+        &mut self,
+        rng: &mut Rng,
+        i: usize,
+        cs: &[usize],
+        always: bool,
+    ) -> Option<Op> {
         if !self.rel(i).sum || (!always && rng.below(2) == 0) {
             return None;
         }
-        let holders: Vec<(usize, usize)> = (0..self.s.rels.len())
+        let holders: Vec<((usize, usize), bool)> = (0..self.s.rels.len())
             .filter(|&h| h != i)
             .flat_map(|h| self.rel(h).enabled().into_iter().map(move |d| (h, d)))
             .filter(|&(h, d)| !self.retag_target(h, d))
+            .map(|(h, d)| ((h, d), !self.rel(h).sum))
             .collect();
+        let holders = Self::steered(holders);
         let &(h, d) = rng.pick_some(&holders)?;
         let ctor = self.rel(i).ctors[*rng.pick(cs)].name.clone();
         let name = self.field_name(h);
@@ -886,8 +892,19 @@ impl Model {
             "index"
         };
         let r = self.rel(i);
+        let held = if kind == Kind::AddUnique {
+            &r.uniques
+        } else {
+            &r.indexes
+        };
         if broke {
-            let text = format!("add {verb} (zz) in {}", r.name);
+            let text = match held.is_empty() || rng.below(2) == 0 {
+                true => format!("add {verb} (zz) in {}", r.name),
+                false => {
+                    let c = rng.pick(held);
+                    format!("add {verb} ({}) in {}", c.field, r.target(c.ctors.as_ref()))
+                }
+            };
             return Some(vec![broken(kind, text)]);
         }
         let mut fields: Vec<(String, Option<Vec<usize>>)> = r
@@ -905,11 +922,6 @@ impl Model {
                 }
             }
         }
-        let held = if kind == Kind::AddUnique {
-            &r.uniques
-        } else {
-            &r.indexes
-        };
         let same = |a: &Option<Vec<usize>>, b: &Option<Vec<usize>>| {
             let set = |x: &Option<Vec<usize>>| {
                 x.as_ref()
@@ -924,12 +936,10 @@ impl Model {
         };
         if kind == Kind::AddUnique {
             fields.retain(|f| !r.holds_unique(&clause(f)));
+        } else {
+            fields.retain(|(f, cs)| !held.iter().any(|c| c.field == *f && same(&c.ctors, cs)));
         }
         let (field, ctors) = rng.pick_some(&fields)?.clone();
-        let duplicate = held
-            .iter()
-            .any(|c| c.field == field && same(&c.ctors, &ctors))
-            && !super::super::SEARCH_DUPLICATE_CLAUSE;
         let clause = clause(&(field.clone(), ctors.clone()));
         let text = format!("add {verb} ({field}) in {}", r.target(ctors.as_ref()));
         let r = &mut self.s.rels[i];
@@ -940,7 +950,7 @@ impl Model {
             r.indexes.push(clause);
             op(kind, text)
         };
-        Some(vec![if duplicate { added.inexact() } else { added }])
+        Some(vec![added])
     }
 
     pub(super) fn drop_clause(
@@ -961,22 +971,7 @@ impl Model {
         let mut can = Vec::new();
         for (i, r) in self.s.rels.iter().enumerate() {
             let clauses = if unique { &r.uniques } else { &r.indexes };
-            let twice = |k: usize| {
-                let same = |c: &Clause| {
-                    let set = |c: &Clause| {
-                        c.ctors
-                            .as_ref()
-                            .map(|cs| cs.iter().copied().collect::<BTreeSet<usize>>())
-                    };
-                    c.field == clauses[k].field && set(c) == set(&clauses[k])
-                };
-                clauses.iter().filter(|c| same(c)).count() > 1
-            };
-            can.extend(
-                (0..clauses.len())
-                    .filter(|k| super::super::SEARCH_DROP_OF_DUPLICATE_CLAUSE || !twice(*k))
-                    .map(|k| (i, k)),
-            );
+            can.extend((0..clauses.len()).map(|k| (i, k)));
         }
         let &(i, k) = rng.pick_some(&can)?;
         let r = &mut self.s.rels[i];

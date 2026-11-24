@@ -55,7 +55,9 @@ fn broken(kind: Kind) -> &'static [&'static str] {
         Kind::DropField | Kind::MoveFieldDown | Kind::AddDefault => &["`*` has no field `*`"],
         Kind::MoveFieldUp => &["`*` already has a field `*`; the header cannot take it"],
         Kind::AlterField => &["`on delete` is allowed only on a `Key` field or an `Option` of one"],
-        Kind::AddUnique | Kind::AddIndex | Kind::AddCheck | Kind::Grant => &["no `zz` in scope"],
+        Kind::AddUnique => &["no `zz` in scope", "`*` is declared twice"],
+        Kind::AddIndex => &["no `zz` in scope", "`*` declares `index *` twice"],
+        Kind::AddCheck | Kind::Grant => &["no `zz` in scope"],
         Kind::Store => &[
             "no `zz` in scope",
             "a stored view is a function with no parameters",

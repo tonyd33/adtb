@@ -1,4 +1,4 @@
-use super::Schema;
+use super::{Schema, ScopePart};
 use crate::ast::{CtorSel, Expr, ExprKind};
 use crate::types::RelId;
 
@@ -34,6 +34,36 @@ impl Schema {
             scope.as_deref(),
             ctors.len(),
         ))
+    }
+
+    /// Returns the index at `index` of `rel` as written: its kind, its elements and the scope
+    /// its `in` names.
+    pub(crate) fn index_shown(&self, rel: RelId, index: usize) -> String {
+        let r = self.relation(rel);
+        let ix = &r.indexes[index];
+        let verb = if ix.interval {
+            "interval index"
+        } else {
+            "index"
+        };
+        let texts: Vec<&str> = (0..ix.fields.len()).map(|k| ix.text(k)).collect();
+        let mut out = format!("{verb} ({})", texts.join(", "));
+        let ctors = self.ty(r.elem_def).ctors();
+        let parts: Vec<&str> = ix
+            .written()
+            .unwrap_or_default()
+            .iter()
+            .map(|p| match p {
+                ScopePart::Ctor(c) => ctors[*c as usize].name.as_str(),
+                ScopePart::Set(k) => r.sets[*k].name.as_str(),
+            })
+            .collect();
+        match parts.as_slice() {
+            [] => {}
+            [one] => out.push_str(&format!(" in {one}")),
+            many => out.push_str(&format!(" in ({})", many.join(" | "))),
+        }
+        out
     }
 }
 

@@ -794,6 +794,10 @@ fn search(seed: u64, at: &mut Option<Failed>, reached: &Mutex<Reached>) -> Optio
                 continue;
             }
         }
+        // The engine refuses a migration replacing a constructor a stored tag names.
+        if m.tag_refusal(&rows).is_some() {
+            continue;
+        }
         let setup = m
             .ops()
             .iter()

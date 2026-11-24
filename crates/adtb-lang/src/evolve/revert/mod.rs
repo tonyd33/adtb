@@ -136,11 +136,14 @@ pub(in crate::evolve) enum Inverse {
     },
     /// Apply a logged migration's operators again, as `text`, a `revert` among them naming each
     /// object the migration removed and the operator inverted created again by its id in
-    /// `again`; `of` is the text of the operator inverted.
+    /// `again`; `of` is the text of the operator inverted. A name in `text` is spelled as its
+    /// objects are named now when `then`, the names after the inverted operator, names them as
+    /// written, and as written otherwise.
     Replay {
         logged: Box<Logged>,
         text: Spelled,
         again: Recreated,
+        then: BTreeMap<(Space, u64), String>,
         of: String,
     },
     /// Set a relation's key clause to its text, generator included; `of` is the text of the
@@ -156,6 +159,14 @@ pub(in crate::evolve) enum Inverse {
         ty: CatTypeId,
         ctor: Option<CatCtorId>,
         order: Vec<CatFieldId>,
+        of: String,
+    },
+    /// Put each constructor of `placed` of a type, in turn, after the nearest constructor before
+    /// it in `order` the type holds, else first; `of` is the text of the operator inverted.
+    PlaceCtors {
+        ty: CatTypeId,
+        order: Vec<CatCtorId>,
+        placed: Vec<CatCtorId>,
         of: String,
     },
 }
@@ -481,11 +492,14 @@ impl Cx<'_> {
                 continue;
             }
             let mut step: Vec<Inverse> = group.drain(..).rev().flatten().collect();
-            let (gone, kept) = grants_back(&start, state);
-            if let Some(gone) = gone {
-                step.insert(0, gone);
+            // A replay applies the grants and revokes of the migration it applies again.
+            if !step.iter().any(|s| matches!(s, Inverse::Replay { .. })) {
+                let (gone, kept) = grants_back(&start, state);
+                if let Some(gone) = gone {
+                    step.insert(0, gone);
+                }
+                step.extend(kept);
             }
-            step.extend(kept);
             steps.push((step, removed(&start, state)));
             start = state.clone();
         }

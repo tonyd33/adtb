@@ -92,6 +92,11 @@ impl DeclOf {
 /// The id each object an inverse created again takes, by the space and id it had.
 pub(in crate::evolve) type Recreated = BTreeMap<(Space, u64), u64>;
 
+/// Returns the id `again` maps constructor `c` to.
+fn ctor_again(again: &Recreated, c: CatCtorId) -> CatCtorId {
+    CatCtorId::from_raw(again_id(again, Space::Shared, c.raw()))
+}
+
 pub(super) fn again_id(again: &Recreated, space: Space, id: u64) -> u64 {
     again.get(&(space, id)).copied().unwrap_or(id)
 }
@@ -143,9 +148,27 @@ pub(in crate::evolve) fn recreate(
     }
 }
 
+impl NamedId {
+    /// Returns the object, its id the one `again` maps it to.
+    fn mapped(self, again: &Recreated) -> NamedId {
+        let shared = |id: u64| again_id(again, Space::Shared, id);
+        match self {
+            NamedId::Type(t) => NamedId::Type(CatTypeId::from_raw(shared(t.raw()))),
+            NamedId::Ctor(c) => NamedId::Ctor(ctor_again(again, c)),
+            NamedId::Relation(r) => NamedId::Relation(CatRelId::from_raw(shared(r.raw()))),
+            NamedId::Set(x) => {
+                NamedId::Set(CatSetId::from_raw(again_id(again, Space::Set, x.raw())))
+            }
+            NamedId::Field(f) => {
+                NamedId::Field(CatFieldId::from_raw(again_id(again, Space::Field, f.raw())))
+            }
+        }
+    }
+}
+
 impl StateOf {
     fn mapped(self, again: &Recreated) -> StateOf {
-        let ctor = |c: CatCtorId| CatCtorId::from_raw(again_id(again, Space::Shared, c.raw()));
+        let ctor = |c: CatCtorId| ctor_again(again, c);
         match self {
             StateOf::Relation(r, c) => StateOf::Relation(
                 CatRelId::from_raw(again_id(again, Space::Shared, r.raw())),
@@ -178,17 +201,7 @@ impl Inverse {
         let shared = |id: u64| again_id(again, Space::Shared, id);
         match self {
             Inverse::Rename { object, to, of } => Inverse::Rename {
-                object: match object {
-                    NamedId::Type(t) => NamedId::Type(CatTypeId::from_raw(shared(t.raw()))),
-                    NamedId::Ctor(c) => NamedId::Ctor(CatCtorId::from_raw(shared(c.raw()))),
-                    NamedId::Relation(r) => NamedId::Relation(CatRelId::from_raw(shared(r.raw()))),
-                    NamedId::Set(x) => {
-                        NamedId::Set(CatSetId::from_raw(again_id(again, Space::Set, x.raw())))
-                    }
-                    NamedId::Field(f) => {
-                        NamedId::Field(CatFieldId::from_raw(again_id(again, Space::Field, f.raw())))
-                    }
-                },
+                object: object.mapped(again),
                 to,
                 of,
             },
@@ -204,10 +217,7 @@ impl Inverse {
             } => Inverse::AddSet {
                 relation: CatRelId::from_raw(shared(relation.raw())),
                 name,
-                members: members
-                    .into_iter()
-                    .map(|c| CatCtorId::from_raw(shared(c.raw())))
-                    .collect(),
+                members: members.into_iter().map(|c| ctor_again(again, c)).collect(),
                 of,
             },
             Inverse::States { states, of } => Inverse::States {
@@ -235,6 +245,7 @@ impl Inverse {
                 logged,
                 text,
                 again: own,
+                then,
                 of,
             } => {
                 let mut all = again.clone();
@@ -242,10 +253,15 @@ impl Inverse {
                     let space = k.0;
                     all.insert(k, again_id(again, space, v));
                 }
+                let then = then
+                    .into_iter()
+                    .map(|((space, id), n)| ((space, again_id(&all, space, id)), n))
+                    .collect();
                 Inverse::Replay {
                     logged,
                     text: text.mapped(&all),
                     again: all,
+                    then,
                     of,
                 }
             }
@@ -312,11 +328,22 @@ impl Inverse {
                 of,
             } => Inverse::Reorder {
                 ty: CatTypeId::from_raw(shared(ty.raw())),
-                ctor: ctor.map(|c| CatCtorId::from_raw(shared(c.raw()))),
+                ctor: ctor.map(|c| ctor_again(again, c)),
                 order: order
                     .into_iter()
                     .map(|f| CatFieldId::from_raw(again_id(again, Space::Field, f.raw())))
                     .collect(),
+                of,
+            },
+            Inverse::PlaceCtors {
+                ty,
+                order,
+                placed,
+                of,
+            } => Inverse::PlaceCtors {
+                ty: CatTypeId::from_raw(shared(ty.raw())),
+                order: order.into_iter().map(|c| ctor_again(again, c)).collect(),
+                placed: placed.into_iter().map(|c| ctor_again(again, c)).collect(),
                 of,
             },
         }

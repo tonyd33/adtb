@@ -284,13 +284,7 @@ impl Model {
                 ));
             }
             [k] => *k,
-            many => {
-                return refuse(format!(
-                    "`{rname}` has {} clauses {word} ({}){shown}, so the drop names none of them alone",
-                    many.len(),
-                    want.join(", ")
-                ));
-            }
+            _ => return broken("a relation variable holds a unique or an index twice"),
         };
         if run.is_copying() {
             let Some(i) = self.decl_at(Item::Relation(r)) else {

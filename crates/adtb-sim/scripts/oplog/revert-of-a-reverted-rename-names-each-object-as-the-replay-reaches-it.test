@@ -1,0 +1,22 @@
+# A revert of a revert applies the reverted migration again: a name its own rename gave keeps
+# its spelling, and a name a later migration renamed takes the new one.
+seed 66
+use shop
+use customers
+
+migrate
+  module shop
+  rename field Customer.name to title
+  add index (title) in customers
+  module shop
+  revert 0002
+  module shop
+  rename field Customer.name to label
+  module shop
+  revert 0003
+
+query rowsort
+  from c in customers select c.title
+----
+"ann"
+"bob"

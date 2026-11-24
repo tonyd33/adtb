@@ -336,7 +336,7 @@ fn a_migration_resolves_as_it_applies_on_every_replay_of_the_log() {
             let mut texts = vec![(m.text(), false)];
             if m.exact() && k % 2 == 0 {
                 texts.push((String::new(), true));
-                if m.rereverted() && k % 4 == 0 {
+                if k % 4 == 0 {
                     texts.push((String::new(), true));
                 }
             }

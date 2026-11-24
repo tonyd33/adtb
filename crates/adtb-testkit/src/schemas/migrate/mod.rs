@@ -161,10 +161,17 @@ pub enum Reach {
     MergeAcrossStages,
     /// A `move field` down of a reference field whose delete action is not `restrict`.
     MovedDownAction,
+    /// An `add constructor` that a function's match lacks an arm for until a later `redefine
+    /// fn` of the migration.
+    ArmLater,
 }
 
 impl Reach {
-    pub const ALL: [Reach; 2] = [Reach::MergeAcrossStages, Reach::MovedDownAction];
+    pub const ALL: [Reach; 3] = [
+        Reach::MergeAcrossStages,
+        Reach::MovedDownAction,
+        Reach::ArmLater,
+    ];
 }
 
 /// An operator of a drawn migration.
@@ -181,8 +188,6 @@ pub struct Op {
     /// that a precondition asking it empty can hold.
     empties: Option<String>,
     effect: Effect,
-    /// A `revert` right after the operator restores what it found.
-    exact: bool,
     reach: Option<Reach>,
 }
 
@@ -294,7 +299,7 @@ impl Migration {
     /// Returns whether a `revert` of the migration, right after it, restores the data and
     /// schema before it, each operator drawn where no switch steers a known finding.
     pub fn exact(&self) -> bool {
-        self.ops.iter().all(|o| !o.broken && o.exact)
+        self.ops.iter().all(|o| !o.broken && o.kind.exact())
     }
 
     /// Returns the rows the migration leaves of `rows`, those of the case it was drawn over, or
@@ -457,24 +462,6 @@ impl Migration {
         self.steps.len()
     }
 
-    /// Returns whether a `revert` of the `revert` of an exact migration is drawn.
-    pub fn rereverted(&self) -> bool {
-        let revoked = self.ops.iter().any(|o| o.kind == Kind::Revoke);
-        let renamed = self.ops.iter().rev().skip(1).any(|o| {
-            matches!(
-                o.kind,
-                Kind::RenameType
-                    | Kind::RenameRelation
-                    | Kind::RenameSet
-                    | Kind::RenameConstructor
-                    | Kind::RenameField
-            )
-        });
-        self.exact()
-            && (super::SEARCH_REVERT_OF_REVERTED_REVOKE || !revoked)
-            && (super::SEARCH_REVERT_OF_REVERTED_RENAME || !renamed)
-    }
-
     /// Returns the migration of the operators before `k`, and the migration of those from `k`
     /// on, which leaves the schema this one does.
     pub fn split_at(&self, k: usize) -> (Migration, Migration) {
@@ -575,7 +562,6 @@ fn op(kind: Kind, text: String) -> Op {
         data: false,
         empties: None,
         effect: Effect::None,
-        exact: kind.exact(),
         reach: None,
     }
 }
@@ -589,14 +575,6 @@ impl Op {
     /// Returns the operator, reaching `reach` when it is some.
     fn reaching(self, reach: Option<Reach>) -> Op {
         Op { reach, ..self }
-    }
-
-    /// Returns the operator, its revert steered off a known finding: not exact.
-    fn inexact(self) -> Op {
-        Op {
-            exact: false,
-            ..self
-        }
     }
 }
 

@@ -31,33 +31,9 @@ const SET: &str = "Pair";
 /// order its clause writes them.
 const SEARCH_DROP_INDEX_REVERSED_SCOPE: bool = true;
 
-/// Whether a migration adds an index clause its relation already holds. Its revert is refused:
-/// the inverse drop names neither clause alone.
-const SEARCH_DUPLICATE_CLAUSE: bool = false;
-
-/// Whether a migration removes a constructor a default names. Its revert does not restore the
-/// default.
-const SEARCH_REVERTED_REMOVE_OF_DEFAULTED: bool = false;
-
-/// Whether a merge or nest replaces two constructors with others declared between them. Its
-/// revert puts them back side by side, not each at its place.
-const SEARCH_REVERTED_MERGE_APART: bool = false;
-
-/// Whether a migration drops a unique or an index clause its relation holds twice. The checker
-/// refuses the drop: it names neither clause alone.
-const SEARCH_DROP_OF_DUPLICATE_CLAUSE: bool = false;
-
 /// Whether a split constructor has a field typed by a reference to a constructor set holding
 /// it. The engine refuses the split with an internal error.
 const SEARCH_SPLIT_OF_SELF_REFERENCE: bool = false;
-
-/// Whether a migration holding a `revoke` is reverted and the revert reverted. The second
-/// revert is refused: the `revoke` it applies again matches no grant.
-const SEARCH_REVERT_OF_REVERTED_REVOKE: bool = false;
-
-/// Whether a migration holding a rename before another operator is reverted and the revert
-/// reverted. The second revert is refused: the later operator names the object by its old name.
-const SEARCH_REVERT_OF_REVERTED_RENAME: bool = false;
 
 /// Whether a `drop relation` takes a relation whose own type references its named set, dropping
 /// the set, the relation and the type in one migration. The checker refuses it: the type names a

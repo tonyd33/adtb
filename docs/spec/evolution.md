@@ -923,6 +923,14 @@ the relation variable's clauses. Adding a unique validates the data
 like a dropped constraint (§6.4). Indexes do not change what
 any query returns.
 
+A relation variable holds each unique and each index once
+([constraints.md §2.1](constraints.md#21-keys-uniques-and-references)).
+An `add unique` or `add index` of one it holds is refused naming the
+held one, and so is an operator whose image of two of them is one: a
+`remove constructor T.C` that narrows `index (n) in (A | C)` to
+`index (n) in A` while the relation variable holds `index (n) in A`.
+A drop therefore names at most one clause.
+
 `unique` may range over deterministic expressions of the row's fields
 as well as fields: `add unique (lower(email)) in identities.EmailPass`
 ([derived.md §5.2](derived.md#52-expression-indexes)).

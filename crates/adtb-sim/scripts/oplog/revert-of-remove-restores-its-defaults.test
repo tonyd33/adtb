@@ -1,0 +1,31 @@
+seed 5
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 }
+  add relation ts : T key id generate sequence
+    default B.n = 7
+
+migrate
+  module m
+  deprecate ts.B
+
+migrate
+  module m
+  remove constructor T.B
+
+migrate
+  module m
+  revert 0003
+
+migrate
+  module m
+  enable ts.B
+
+run
+  insert ts.B {}
+
+query rowsort
+  from t in ts.B select t.n
+----
+7

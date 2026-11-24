@@ -106,6 +106,19 @@ impl Spelled {
         });
     }
 
+    /// Returns the text with each name spelled as written unless `then` names each of its
+    /// objects as written.
+    pub(in crate::evolve) fn unheld(mut self, then: &BTreeMap<(Space, u64), String>) -> Spelled {
+        for p in &mut self.pieces {
+            if let Piece::Name { written, ids, .. } = p
+                && !ids.iter().all(|i| then.get(i) == Some(written))
+            {
+                ids.clear();
+            }
+        }
+        self
+    }
+
     /// Returns the text with each name held by id `id` of `space` also held by id `also` of it.
     pub(super) fn aliased(mut self, space: Space, id: u64, also: u64) -> Spelled {
         for p in &mut self.pieces {

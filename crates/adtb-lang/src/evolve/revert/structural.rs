@@ -130,6 +130,33 @@ impl Inverting<'_> {
         Ok((drops, adds))
     }
 
+    /// Returns the `add default` operators that put back each default over constructor `ctor`
+    /// of each relation variable of type `def` of `schema`, the schema before the operator.
+    fn defaults_back(&self, schema: &Schema, def: TypeId, ctor: &str) -> R<Spelled> {
+        let before = self.before();
+        let mut out = Spelled::default();
+        for (rel, ..) in Cx::relations_of(schema, def) {
+            let Some((i, d, ranges)) = relation_clauses(before, schema, rel) else {
+                continue;
+            };
+            for (cl, range) in d.clauses.iter().zip(&ranges) {
+                let RelationClause::Default { ctor: Some(c), .. } = cl else {
+                    continue;
+                };
+                if c.text != ctor {
+                    continue;
+                }
+                let clause = before.decls[i].text[range.clone()].trim_end();
+                let start = range.start + "default ".len();
+                out.push("\nadd default ");
+                out.append(relation_spelled(schema, rel));
+                out.push(".");
+                out.append(self.decl_range(i, start..range.start + clause.len())?);
+            }
+        }
+        Ok(out)
+    }
+
     /// Returns the `arm` clauses that put back, for each declaration an `arm` of `clauses`
     /// names, its arms over a constructor of type `ty` named in `ctors` as `before` declares
     /// them.
@@ -493,7 +520,32 @@ impl Cx<'_> {
         op.append(out_arms);
         op.append(at.restored_arms(clauses, ty, &sources)?);
         let checks = self.carried_checks_back(at, &schema, ty, &sources)?;
-        Ok(vec![at.restructure(ty, op, Undo::Written, checks)?])
+        Ok(vec![
+            at.restructure(ty, op, Undo::Written, checks)?,
+            self.placed_back(at, ty, &sources)?,
+        ])
+    }
+
+    /// Returns the step that puts constructors `ctors` of type `ty` back each at its place in
+    /// the source before the operator.
+    fn placed_back(&self, at: &Inverting, ty: &QName, ctors: &[String]) -> R<Inverse> {
+        let schema = at
+            .before()
+            .schema()
+            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
+        let def = self.type_id(&schema, ty)?;
+        let td = schema.ty(def);
+        let ids = schema.ids();
+        let missing = || vec![Diag::new(self.span, "the log does not hold the type")];
+        Ok(Inverse::PlaceCtors {
+            ty: ids.type_id(def).ok_or_else(missing)?,
+            order: td.ctor_refs().filter_map(|c| ids.ctor_id(c)).collect(),
+            placed: ctors
+                .iter()
+                .filter_map(|c| td.ctor_named(c).and_then(|c| ids.ctor_id(c)))
+                .collect(),
+            of: at.of(),
+        })
     }
 
     /// Returns each check over some of `sources` of type `ty`, by id, with its text in the source
@@ -584,12 +636,15 @@ impl Cx<'_> {
         op.append(type_spelled(before, &m, t));
         op.push(format!(".{}", into.name.text));
         op.append(arms);
-        Ok(vec![at.restructure(
-            ty,
-            op,
-            Undo::Unnest(CatTypeId::from_raw(ty_id), products),
-            Vec::new(),
-        )?])
+        Ok(vec![
+            at.restructure(
+                ty,
+                op,
+                Undo::Unnest(CatTypeId::from_raw(ty_id), products),
+                Vec::new(),
+            )?,
+            self.placed_back(at, ty, &names)?,
+        ])
     }
 
     pub(super) fn unnest_inverse(
@@ -839,7 +894,8 @@ impl Cx<'_> {
             arms,
             of: at.of(),
         }];
-        let (drops, adds) = at.clauses_back(&m, t)?;
+        let (drops, mut adds) = at.clauses_back(&m, t)?;
+        adds.append(at.defaults_back(&schema, def, &path.ctor.text)?);
         if !drops.is_empty() || !adds.is_empty() {
             out.push(Inverse::Restructure {
                 drops,

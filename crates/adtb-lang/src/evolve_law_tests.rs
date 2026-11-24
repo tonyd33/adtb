@@ -466,13 +466,6 @@ deprecate ts.C",
                 .then("deprecate zs.C", Some("deprecate zs.C"))
                 .labelled(OTHER_TYPE),
             Case::new(&remove)
-                .after(&self.keeping_s("add index (n) in ts.(B | C)\ndeprecate ts.C"))
-                .then(
-                    "add index (n) in ts.B\nadd index (n) in ts.B",
-                    Some("add index (n) in ts.B\nadd index (n) in ts.B"),
-                )
-                .labelled(CLAUSE_TWIN),
-            Case::new(&remove)
                 .after(&self.keeping_s(&format!(
                     "add constraint cz = from t in ts where match t
   | A a -> a.x == \"\"
@@ -862,9 +855,6 @@ add relation us2 : U2 key id generate sequence";
 /// The label of a case whose revert inverts a structural operator over `T` after a later
 /// migration renames `T`, a new type taking its name.
 const TYPE_REUSED: &str = "type's name reused";
-
-/// The label of a case whose revert drops a clause a later migration then adds twins of.
-const CLAUSE_TWIN: &str = "clause twin added";
 
 /// The label of a case whose revert puts back an arm of a constraint.
 const CONSTRAINT_ARM: &str = "constraint arm";
@@ -1789,7 +1779,7 @@ fn unknown(name: &str, bits: u64, o: &Outcome) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (165, 2, 5);
+const CASES: (usize, usize, usize) = (164, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
 const REFUSED: usize = 16;

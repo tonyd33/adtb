@@ -446,7 +446,11 @@ fn spec_examples_check() {
             continue;
         }
         checked += 1;
-        let part = parts.get(b.file.as_str()).unwrap_or(&base);
+        let before = running::before_extension(&blocks, &base, b);
+        let part = before
+            .as_ref()
+            .or_else(|| parts.get(b.file.as_str()))
+            .unwrap_or(&base);
         if let Err(es) = check_block(b, part, &prelude, &registered) {
             failures.push(format!("{}:{}:\n  {}", b.file, b.line, es.join("\n  ")));
         }

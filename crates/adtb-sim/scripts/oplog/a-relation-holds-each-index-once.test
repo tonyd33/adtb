@@ -1,0 +1,30 @@
+# A relation variable holds each index once, whether a declaration, an `add index` or an
+# operator's image of two indexes makes the second.
+seed 21
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "add relation ts : T key id generate sequence", detail: "`ts` declares `index (n) in A` twice" } } }
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 } | C { n: I64 }
+  add relation ts : T key id generate sequence
+    index (n) in A
+    index (n) in A
+
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 } | C { n: I64 }
+  add relation ts : T key id generate sequence
+    index (n) in (A | B)
+    index (n) in (A | C)
+  deprecate ts.B
+  deprecate ts.C
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "remove constructor T.C", detail: "`ts` declares `index (n) in A` twice" } } }
+  module m
+  remove constructor T.B
+  remove constructor T.C
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add index (n) in ts.(B | A)", detail: "`ts` declares `index (n) in (A | B)` twice" } } }
+  module m
+  add index (n) in ts.(B | A)

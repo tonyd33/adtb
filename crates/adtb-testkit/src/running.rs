@@ -411,6 +411,21 @@ pub fn differences(a: &[Entry], b: &[Entry]) -> Vec<String> {
 }
 
 /// The running schema of each part that extends version 12, by file name.
+/// Returns the running schema of part `b.file` made of `base` and the part's extensions before
+/// `b`, when `b` is one of them.
+pub fn before_extension(blocks: &[Block], base: &[Entry], b: &Block) -> Option<Vec<Entry>> {
+    let (_, exts) = EXTENSIONS.iter().find(|(part, _)| *part == b.file)?;
+    let at = exts.iter().position(|&x| {
+        let e = find(blocks, x);
+        e.file == b.file && e.text == b.text
+    })?;
+    let mut schema = base.to_vec();
+    for &x in &exts[..at] {
+        declare(&mut schema, find(blocks, x));
+    }
+    Some(schema)
+}
+
 pub fn parts(blocks: &[Block], base: &[Entry]) -> BTreeMap<&'static str, Vec<Entry>> {
     let mut out = BTreeMap::new();
     for &(part, exts) in EXTENSIONS {

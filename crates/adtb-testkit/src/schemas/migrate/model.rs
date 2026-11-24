@@ -728,6 +728,19 @@ impl Model {
                 if joins {
                     text.push_str(&format!("\n  joins {}.{}", r.name, r.set_name));
                 }
+                let matcher = (rng.below(2) == 0).then(|| {
+                    let f = self.fresh("f");
+                    let names: Vec<String> =
+                        self.rel(i).ctors.iter().map(|c| c.name.clone()).collect();
+                    let body = |names: &[String]| {
+                        let arms: String =
+                            names.iter().map(|c| format!("\n  | {c} x -> 1")).collect();
+                        format!("{f} (t: {ty}) -> I64 = match t{arms}")
+                    };
+                    let mut all = names.clone();
+                    all.push(name.clone());
+                    (f.clone(), body(&names), body(&all))
+                });
                 let r = &mut self.s.rels[i];
                 let c = r.ctors.len();
                 r.ctors.push(Ctor { name, fields });
@@ -735,7 +748,15 @@ impl Model {
                 if joins && let Some(set) = &mut r.set {
                     set.push(c);
                 }
-                Some(vec![op(kind, text)])
+                Some(match matcher {
+                    None => vec![op(kind, text)],
+                    Some((f, without, with)) => vec![
+                        op(Kind::DefineFn, format!("define fn {without}")),
+                        op(kind, text).reaching(Some(super::Reach::ArmLater)),
+                        op(Kind::RedefineFn, format!("redefine fn {with}")),
+                        op(Kind::DropFn, format!("drop fn {f}")),
+                    ],
+                })
             }
             Kind::RemoveConstructor => {
                 let mut can = Vec::new();
@@ -757,24 +778,20 @@ impl Model {
                     let text = format!("remove constructor {}", self.ctor_path(i, c));
                     return Some(vec![broken(kind, text)]);
                 }
+                let can =
+                    Self::steered(can.iter().map(|&(i, c)| ((i, c), self.tagged(i))).collect());
                 let (i, c) = *rng.pick_some(&can)?;
                 let text = format!("remove constructor {}", self.ctor_path(i, c));
                 let target = self.rel(i).target(Some(&vec![c]));
-                let defaulted = self.rel(i).defaults.iter().any(|(d, _, _)| *d == c);
                 let effect = Effect::RemoveCtor {
                     rel: self.rel(i).name.clone(),
                     ty: self.rel(i).ty.clone(),
                     ctor: self.rel(i).ctors[c].name.clone(),
                 };
+                let mut out: Vec<Op> = self.tag_of(rng, i, &[c], false).into_iter().collect();
                 self.replace(i, &[c], Vec::new(), Vec::new());
-                let removed = emptying(kind, text, target).with(effect);
-                Some(vec![
-                    if defaulted && !super::super::SEARCH_REVERTED_REMOVE_OF_DEFAULTED {
-                        removed.inexact()
-                    } else {
-                        removed
-                    },
-                ])
+                out.push(emptying(kind, text, target).with(effect));
+                Some(out)
             }
             Kind::RenameConstructor => {
                 let i = *rng.pick_some(&self.sums())?;

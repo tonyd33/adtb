@@ -88,6 +88,26 @@ impl<'a> Inverting<'a> {
 }
 
 impl Inverting<'_> {
+    /// Returns the id of the one index the operator adds, when the sources before and after it
+    /// build.
+    fn added_index(&self) -> Option<CatIndexId> {
+        let ids = |src: &Source| -> Option<BTreeSet<CatIndexId>> {
+            Some(
+                src.schema()
+                    .ok()?
+                    .ids()
+                    .index_ids()
+                    .map(|(_, id)| id)
+                    .collect(),
+            )
+        };
+        let (a, b) = (ids(self.before)?, ids(self.after)?);
+        match b.difference(&a).collect::<Vec<_>>().as_slice() {
+            [id] => Some(**id),
+            _ => None,
+        }
+    }
+
     pub(super) fn of(&self) -> String {
         self.text(self.op.span)
     }
@@ -449,6 +469,10 @@ impl Cx<'_> {
                     logged: Box::new(logged.clone()),
                     text,
                     again: self.src.recreated_by(k, before, after),
+                    then: spellings(after)
+                        .into_iter()
+                        .map(|(k, n)| (k, n.to_string()))
+                        .collect(),
                     of: at.of(),
                 }])
             }
@@ -570,9 +594,18 @@ impl Cx<'_> {
                 },
                 set,
             )),
-            OperatorKind::AddUnique(_, on) | OperatorKind::AddIndex { on, .. } => {
-                apply(at.clause("drop", on)?, at.of())
-            }
+            OperatorKind::AddIndex { on, .. } => match at.added_index() {
+                Some(id) => Ok(vec![Inverse::Restructure {
+                    drops: vec![id],
+                    op: Spelled::default(),
+                    adds: Spelled::default(),
+                    how: Undo::Written,
+                    checks: Vec::new(),
+                    of: at.of(),
+                }]),
+                None => apply(at.clause("drop", on)?, at.of()),
+            },
+            OperatorKind::AddUnique(_, on) => apply(at.clause("drop", on)?, at.of()),
             OperatorKind::DropUnique(_, on) | OperatorKind::DropIndex { on, .. } => {
                 apply(at.clause("add", on)?, at.of())
             }

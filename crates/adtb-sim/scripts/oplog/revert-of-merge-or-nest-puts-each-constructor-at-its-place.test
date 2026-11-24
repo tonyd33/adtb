@@ -1,0 +1,47 @@
+# A revert of a merge or a nest puts each constructor it brings back at its place: after the
+# nearest constructor before it that the type still holds.
+seed 61
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { n: I64 } | B { n: I64 } | C { n: I64 } | D { n: I64 }
+  add relation ts : T key id generate sequence
+
+migrate
+  module m
+  add type K = A | C
+  merge constructor T.(A | C) into M { k: K, n: I64 }
+    by match
+      | A a -> M { k: A, n: a.n }
+      | C c -> M { k: C, n: c.n }
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from c in catalog::constructors, t in catalog::types where c.sum == t.id and t.name == "T"
+    select { name: c.name, position: c.position }
+----
+{ name: "A", position: 1 }
+{ name: "B", position: 2 }
+{ name: "C", position: 3 }
+{ name: "D", position: 4 }
+
+migrate
+  module m
+  add type Inner = B { n: I64 } | D { n: I64 }
+  nest constructor T.(B | D) into N { inner: Inner }
+
+migrate
+  module m
+  revert 0004
+
+query rowsort
+  from c in catalog::constructors, t in catalog::types where c.sum == t.id and t.name == "T"
+    select { name: c.name, position: c.position }
+----
+{ name: "A", position: 1 }
+{ name: "B", position: 2 }
+{ name: "C", position: 3 }
+{ name: "D", position: 4 }
