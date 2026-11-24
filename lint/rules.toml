@@ -273,3 +273,8 @@ include = [
   "crates/adtb/src/write/change.rs",
 ]
 rows = { write_collections = "ratchet" }
+
+[[rule]]
+query = "evolve-builds.tql"
+include = ["crates/adtb-lang/src/evolve/**/*.rs"]
+rows = { evolve_builds = "zero" }

@@ -24,9 +24,17 @@ fn printed(schema: &Schema) -> String {
     format!("{schema:?}")
 }
 
+fn built_uncached(src: &Source) -> Result<Arc<Schema>, Vec<FileDiag>> {
+    Ok(src
+        .inputs()
+        .build(&memo::ParsedMemo::default())?
+        .schema()
+        .clone())
+}
+
 /// Assert that `src` builds what an uncached build gives, on a miss or hit and on the hit after.
 fn builds_uncached(src: &Source) -> String {
-    let uncached = printed(&src.built_uncached().unwrap());
+    let uncached = printed(&built_uncached(src).unwrap());
     assert_eq!(uncached, printed(&src.built().unwrap()));
     assert_eq!(uncached, printed(&src.built().unwrap()));
     uncached
@@ -67,14 +75,27 @@ fn expecting_alone_is_rebuilt(src: &Source, text: &str) {
     }
 }
 
+/// Returns `src` after `text`, every hit of a memo its migration makes checked against an
+/// uncached build.
+fn apply_checked(src: &Source, text: &str) -> Source {
+    crate::sampled::checking_every_hit(|| apply(src, text))
+}
+
 #[test]
 fn a_memoised_build_equals_an_uncached_one_across_a_migration_walk() {
     let mut src = base();
     let mut cold = base();
     builds_uncached(&src);
+    let checked = || {
+        (
+            crate::sampled::BUILDS.checked(),
+            crate::sampled::MODEL_BUILDS.checked(),
+        )
+    };
+    let before = checked();
     for (i, text) in WALK.iter().enumerate() {
         expecting_alone_is_rebuilt(&src, text);
-        src = apply(&src, text);
+        src = apply_checked(&src, text);
         cold.memo = memo::BuiltMemo::default();
         cold = apply(&cold, text);
         assert_eq!(
@@ -88,6 +109,11 @@ fn a_memoised_build_equals_an_uncached_one_across_a_migration_walk() {
             "after step {i}"
         );
     }
+    let after = checked();
+    assert!(
+        after.0 > before.0 && after.1 > before.1,
+        "the walk's migrations hit a source's memo and a model's: {before:?} then {after:?}"
+    );
 }
 
 #[test]
@@ -198,8 +224,8 @@ fn the_memo_keeps_the_most_recently_used_builds_up_to_its_bound() {
     src.built().unwrap();
     numbered(&src, memo::BOUND).built().unwrap();
     assert_eq!(memo::BOUND, src.memo.len());
-    assert!(src.memo.get(&src).is_some());
-    assert!(src.memo.get(&first).is_none());
+    assert!(src.memo.get(&src.inputs()).is_some());
+    assert!(src.memo.get(&first.inputs()).is_none());
     builds_uncached(&first);
     assert_eq!(memo::BOUND, src.memo.len());
 }
@@ -216,10 +242,13 @@ fn the_memo_does_not_show_in_a_sources_debug_output() {
 fn a_second_build_of_a_source_is_served_from_the_memo() {
     let src = base();
     src.built().unwrap();
-    let held = src.memo.get(&src).unwrap();
+    let held = src.memo.get(&src.inputs()).unwrap().schema().clone();
     let entries = src.memo.len();
     src.built().unwrap();
-    assert!(Arc::ptr_eq(&held, &src.memo.get(&src).unwrap()));
+    assert!(Arc::ptr_eq(
+        &held,
+        src.memo.get(&src.inputs()).unwrap().schema()
+    ));
     assert_eq!(entries, src.memo.len());
 }
 

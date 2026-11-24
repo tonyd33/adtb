@@ -22,6 +22,8 @@ pub mod pattern;
 pub mod permission;
 pub mod privilege;
 pub mod resolve;
+#[cfg(any(test, feature = "testing"))]
+pub mod sampled;
 pub mod schema;
 pub mod signature;
 pub mod span;

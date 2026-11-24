@@ -257,6 +257,7 @@ impl Model {
         let module = m.module.text.as_str();
         let mut run = Run::new(m, text).accepting(accepting);
         let mut model = self.clone();
+        model.new_memo();
         model.version += 1;
         model.lifted.clear();
         model.expecting(m);

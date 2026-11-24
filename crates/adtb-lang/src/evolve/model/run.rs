@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use super::lift::Lifting;
 use super::op::{Res, broken, refuse_first};
@@ -7,11 +8,12 @@ use super::*;
 use crate::ast::{self, MigrationFile};
 use crate::canon::{self, Names, canonical_term};
 use crate::check;
+use crate::evolve::memo::{BuildInputs, BuiltMemo, Owner};
 use crate::evolve::{SourceDecl, decl_exprs, each_type, walk_type};
 use crate::ids::{CatalogIds, objects, placing};
 use crate::lex::{Tok, lex};
 use crate::resolve::{Visible, lookup_type, lookup_value};
-use crate::schema::{self, Adder, Ahead, AheadKind, AheadState, PRELUDE, Schema};
+use crate::schema::{Adder, Ahead, AheadKind, AheadState, PRELUDE, Schema};
 use crate::span::Diag;
 use crate::span::{FileDiag, FileId, Span};
 use crate::types::ModuleId;
@@ -297,7 +299,7 @@ impl Decls for Built {
 /// A schema built from a model's declarations and the files and texts it was built from.
 pub(super) struct Built {
     schema: Schema,
-    files: Vec<(FileId, ast::SchemaFile)>,
+    files: Arc<[(FileId, ast::SchemaFile)]>,
     texts: Vec<String>,
 }
 
@@ -367,7 +369,7 @@ impl Built {
     /// Returns the names of file `file`, as [`Source::names`] gives them.
     pub(super) fn names(&self, file: FileId) -> Names {
         let mut names = Names::default();
-        for (f, sf) in &self.files {
+        for (f, sf) in self.files.iter() {
             if *f != file {
                 continue;
             }
@@ -566,6 +568,31 @@ impl Model {
         out
     }
 
+    /// Returns the inputs of the build of the declarations and `more` after them, the relation
+    /// variables `ahead` lists added later.
+    fn inputs(&self, more: &[SourceDecl], ahead: &[Ahead]) -> Result<BuildInputs, Vec<FileDiag>> {
+        let held = self.printed().map_err(|why| {
+            vec![FileDiag {
+                file: FileId::EMPTY_MODULE,
+                diag: Diag::new(Span::new(0, 0), why),
+            }]
+        })?;
+        Ok(BuildInputs::new(
+            held.into_iter().chain(more.iter().cloned()).collect(),
+            self.modules.clone(),
+            ahead.to_vec(),
+        ))
+    }
+
+    /// Returns the files of the declarations, declaration `i` file `i`, then one file of each of
+    /// `more`, and a file of each module that holds nothing.
+    pub(super) fn files(
+        &self,
+        more: &[SourceDecl],
+    ) -> Result<Vec<(FileId, ast::SchemaFile)>, Vec<FileDiag>> {
+        self.inputs(more, &[])?.files(&self.parsed)
+    }
+
     /// Build the schema of the declarations and `more` after them. Returns it with the id
     /// counters after the objects no declaration holds an id for took theirs.
     pub(super) fn built(
@@ -573,20 +600,15 @@ impl Model {
         more: &[SourceDecl],
         ahead: &[Ahead],
     ) -> Result<(Built, BTreeMap<Space, u64>), Vec<FileDiag>> {
-        let files = self.files(more)?;
-        let held = self.printed().expect("the files printed");
-        let texts: Vec<String> = held
-            .iter()
-            .chain(more)
-            .map(|d| format!("module {}\n{}", d.module, d.text))
-            .collect();
+        let inputs = self.inputs(more, ahead)?;
+        let texts = inputs.texts();
+        let built = self.memo.built(inputs, &self.parsed, Owner::Model)?;
+        let files = built.files().clone();
         let next = RefCell::new(self.next.clone());
-        let schema = schema::build_with(
-            &files,
-            ahead,
+        let schema = built.schema().relabelled(
             &|s| self.assigned(s, &files, &texts, &mut next.borrow_mut()),
             &self.schema_states(),
-        )?;
+        );
         Ok((
             Built {
                 schema,
@@ -595,6 +617,20 @@ impl Model {
             },
             next.into_inner(),
         ))
+    }
+
+    /// Hold in `src`'s memo the build of its declarations this model's memo holds, if any.
+    pub(super) fn seeded(&self, src: Source) -> Source {
+        let inputs = src.inputs();
+        if let Some(built) = self.memo.get(&inputs) {
+            src.memo.put(inputs, built);
+        }
+        src
+    }
+
+    /// Take a new memo of builds, for a migration run.
+    pub(super) fn new_memo(&mut self) {
+        self.memo = BuiltMemo::default();
     }
 
     /// Build as `built` does, the objects no declaration holds an id for taking theirs, and

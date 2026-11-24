@@ -1367,6 +1367,16 @@ fn generated_migrations_keep_their_invariants() {
         }
         panic!("{report}");
     }
+    adtb_testkit::profile::assert_reached(
+        "a source's build memo hit checked against an uncached build",
+        adtb_lang::sampled::BUILDS.checked() as usize,
+        1,
+    );
+    adtb_testkit::profile::assert_reached(
+        "a model's build memo hit checked against an uncached build",
+        adtb_lang::sampled::MODEL_BUILDS.checked() as usize,
+        1,
+    );
     if adtb_testkit::profile::every_case() {
         reached.floors();
     } else {

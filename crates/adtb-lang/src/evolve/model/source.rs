@@ -7,7 +7,7 @@ impl Model {
     /// written, and each object of them by its key with the id the model holds, of each named
     /// one alone while they do not build.
     pub(super) fn source(&self) -> Source {
-        Source {
+        self.seeded(Source {
             decls: self.printed().expect("the declarations print"),
             ids: self.ids().unwrap_or_else(|_| self.named_keys()),
             modules: self.modules.clone(),
@@ -27,8 +27,9 @@ impl Model {
             version: self.version,
             log: self.logged.clone(),
             next: self.next.clone(),
+            parsed: self.parsed.clone(),
             ..Source::default()
-        }
+        })
     }
 
     /// Returns the source the model holds as [`Model::source`] does, with the relation variables
@@ -54,10 +55,10 @@ impl Model {
                 )
             })
             .collect();
-        Source {
+        self.seeded(Source {
             ahead,
             ..self.source()
-        }
+        })
     }
 
     /// Returns the catalog id of each object of the declarations, by its key.

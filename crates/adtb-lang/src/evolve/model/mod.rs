@@ -122,6 +122,8 @@ pub(super) struct Model {
     arms_written: BTreeMap<u64, Result<Option<String>, String>>,
     /// The names of the text of the migration being applied that its operators copied.
     naming: naming::Naming,
+    memo: super::memo::BuiltMemo,
+    parsed: super::memo::ParsedMemo,
 }
 
 /// A declaration held as its text: the name it is found by and its text without the module

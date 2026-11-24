@@ -40,19 +40,7 @@ impl Source {
 
     /// Returns the module files of the declarations, file `i` holding declaration `i`.
     pub fn files(&self) -> Result<Vec<(FileId, ast::SchemaFile)>, Vec<FileDiag>> {
-        let mut out = Vec::new();
-        let mut errs = Vec::new();
-        for (i, d) in self.decls.iter().enumerate() {
-            let text = format!("{}{}", header(&d.module), d.text);
-            match self.parsed.parsed(&text) {
-                Ok(f) => out.push((FileId(i as u32), f)),
-                Err(ds) => errs.extend(ds.into_iter().map(|diag| FileDiag {
-                    file: FileId(i as u32),
-                    diag,
-                })),
-            }
-        }
-        if errs.is_empty() { Ok(out) } else { Err(errs) }
+        self.parsed.files(&self.decls)
     }
 
     /// The text of file `file` of [`Source::files`], module header included.
@@ -84,27 +72,22 @@ impl Source {
         Committed::new(schema).ok_or(Uncommitted::Unsettled)
     }
 
-    /// Build the schema the declarations state, its ids those of declaration order.
-    pub(super) fn built(&self) -> Result<Arc<Schema>, Vec<FileDiag>> {
-        if let Some(schema) = self.memo.get(self) {
-            return Ok(schema);
-        }
-        let schema = Arc::new(self.built_uncached()?);
-        self.memo.put(self, schema.clone());
-        Ok(schema)
+    /// Returns the inputs of the build of the declarations.
+    pub(super) fn inputs(&self) -> memo::BuildInputs {
+        memo::BuildInputs::new(
+            self.decls.clone(),
+            self.modules.clone(),
+            self.ahead_inputs(),
+        )
     }
 
-    pub(super) fn built_uncached(&self) -> Result<Schema, Vec<FileDiag>> {
-        let mut files = self.files()?;
-        for m in &self.modules {
-            if !files.iter().any(|(_, f)| f.module.text == *m) {
-                let empty = parse_schema(&header(m), Options::default())
-                    .ok()
-                    .expect("a module header parses");
-                files.push((FileId::EMPTY_MODULE, empty));
-            }
-        }
-        schema::build_ahead(&files, &self.ahead_inputs())
+    /// Build the schema the declarations state, its ids those of declaration order.
+    pub(super) fn built(&self) -> Result<Arc<Schema>, Vec<FileDiag>> {
+        Ok(self
+            .memo
+            .built(self.inputs(), &self.parsed, memo::Owner::Source)?
+            .schema()
+            .clone())
     }
 
     /// Prepare the source for the operators `ops` of a migration of `module`, applied one at a

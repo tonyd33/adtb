@@ -1,0 +1,25 @@
+-- evolve_builds: a call of `build_ahead` or `build_with` in the migration checker outside
+-- `BuildInputs::build`, the build whose only input is the key its memo compares.
+
+calls_in f = do {
+  c <- pure f | descendants_of_kind :call_expression;
+  g <- pure c | #function;
+  guard $ text g ~ r"(^|::)(build_ahead|build_with)$";
+  return c;
+};
+
+free = do {
+  f <- children_of_kind :function_item;
+  calls_in f;
+};
+
+methods = do {
+  i <- descendants_of_kind :impl_item;
+  t <- pure i | #type;
+  f <- pure i | descendants_of_kind :function_item;
+  name <- pure f | #name;
+  guard $ not ((text t == "BuildInputs") `and` (text name == "build"));
+  calls_in f;
+};
+
+main = (free `alt` methods) | arr range;

@@ -1,9 +1,6 @@
 use super::*;
-use crate::ast;
 use crate::evolve::SourceDecl;
-use crate::parse::{Options, parse_schema};
 use crate::schema;
-use crate::span::{FileDiag, FileId, Span};
 
 /// A declaration being printed, with the range each term of it takes.
 #[derive(Default)]
@@ -318,45 +315,6 @@ impl Model {
                 text: self.print(i),
             })
             .collect())
-    }
-
-    /// Returns the files of the declarations, declaration `i` file `i`, then one file of each of
-    /// `more`, and a file of each module that holds nothing.
-    pub(super) fn files(
-        &self,
-        more: &[SourceDecl],
-    ) -> Result<Vec<(FileId, ast::SchemaFile)>, Vec<FileDiag>> {
-        let mut out = Vec::new();
-        let mut errs = Vec::new();
-        let held = self.printed().map_err(|why| {
-            vec![FileDiag {
-                file: FileId::EMPTY_MODULE,
-                diag: crate::span::Diag::new(Span::new(0, 0), why),
-            }]
-        })?;
-        let all = held.into_iter().chain(more.iter().cloned());
-        for (i, d) in all.enumerate() {
-            let text = format!("module {}\n{}", d.module, d.text);
-            match parse_schema(&text, Options { elisions: true }).ok() {
-                Ok(f) => out.push((FileId(i as u32), f)),
-                Err(ds) => errs.extend(ds.into_iter().map(|diag| FileDiag {
-                    file: FileId(i as u32),
-                    diag,
-                })),
-            }
-        }
-        if !errs.is_empty() {
-            return Err(errs);
-        }
-        for m in &self.modules {
-            if !out.iter().any(|(_, f)| f.module.text == *m) {
-                let empty = parse_schema(&format!("module {m}\n"), Options::default())
-                    .ok()
-                    .expect("a module header parses");
-                out.push((FileId::EMPTY_MODULE, empty));
-            }
-        }
-        Ok(out)
     }
 
     /// Returns the write states as a schema takes them.
