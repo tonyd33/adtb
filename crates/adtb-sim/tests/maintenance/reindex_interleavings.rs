@@ -77,7 +77,7 @@ enum Racer {
     /// A vacuum of the relation.
     Vacuum,
     Checkpoint,
-    /// A transaction reading [`POINT`], through the damaged leaf while the old tree stands, and
+    /// A transaction reading [`POINT`], whose key the old tree's damaged leaf holds, and
     /// committing.
     Mapper,
     /// A transaction reading [`POINT`] and committing, stopped where a descent read a child's page
@@ -456,11 +456,11 @@ fn quarantined() -> Reply {
 }
 
 /// Returns each way `r`, a run of `racer` in `search`, breaks what a rebuild raced by a step
-/// function leaves. `refused` says whether a statement through the index meets the old tree's
-/// damaged leaf, and `stop` is the rebuild's boundary when it stopped first.
+/// function leaves. `refused` says whether a statement of the racer fails as quarantined, and
+/// `stop` is the rebuild's boundary when it stopped first.
 ///
-/// - the rebuild replies as it does alone, and so does the racer, but for a statement that meets
-///   the damaged leaf, which fails as quarantined;
+/// - the rebuild replies as it does alone, and so does the racer, but for a refused statement,
+///   which fails as quarantined;
 /// - when the rebuild stopped first, the pages of the old tree free at its stop are the damaged
 ///   leaf once the sound pages are marked deleted, and one more for each free it reached;
 /// - the index holds an entry for every version of its relation and no other, as one built fresh
@@ -484,7 +484,7 @@ fn judged(
     let done = vec![Ok(vec![]), Ok(vec![])];
     let mut list = FIRST.to_vec();
     match racer {
-        Racer::Append | Racer::Mapper if refused => {
+        Racer::Append if refused => {
             expect(
                 "the statement's replies",
                 r.raced == [quarantined()],
@@ -566,12 +566,13 @@ fn declared(stops: &[Step], runs: &dyn Fn(usize) -> Runs) -> Vec<Pair> {
     pairs
 }
 
-/// Returns the boundaries `racer` reaches run alone in `search`. A read through the damaged leaf
-/// meets the damage before any.
+/// Returns the boundaries `racer` reaches run alone in `search`. In a retirement search the
+/// begin of its transaction maps the damage planted on the old tree's leaf: a read finds the
+/// index quarantined and reads the heap, and an append is refused before any boundary.
 fn alone(search: Search, racer: Racer) -> Vec<Step> {
     let read = Step::VersionRead;
     match racer {
-        Racer::Mapper if search != Search::Phases => vec![],
+        Racer::Append if search == Search::Retire => vec![],
         Racer::Append => vec![read, read, read, Step::WriteInserted],
         Racer::Read => vec![read; 3],
         Racer::Mapper => vec![read],
@@ -587,8 +588,8 @@ fn alone(search: Search, racer: Racer) -> Vec<Step> {
 /// Search `racer` against the rebuild in `search` with the rebuild stopped first, and under the
 /// deep profile each side stopped first in turn, judging every case, and check that each side stopped first stopped at its declared boundaries, the
 /// rebuild's `stops`, and that the pairs run are those `runs` declares for the side stopped
-/// first and its boundary. `refused` says whether a statement run with the rebuild stopped at
-/// its `i`th boundary meets the old tree's damaged leaf.
+/// first and its boundary. `refused` says whether a statement of the racer fails as quarantined,
+/// given the side stopped first and the rebuild's boundary `i`.
 fn race(
     (search, racer): (Search, Racer),
     stops: &[Step],
@@ -672,10 +673,10 @@ fn a_rebuild_raced_at_each_phase_leaves_the_index_one_built_fresh_would() {
 }
 
 /// The retirement of the pages of an old tree with a damaged leaf, raced at each of its
-/// boundaries by a read through that leaf, an append and a read: a sound page of the old tree is
-/// free only once the rebuild freed it, a read through the leaf before the rebuild met it fails
-/// as quarantined, a write while the rebuild's mark stands before the swap fails as quarantined,
-/// every other statement runs as alone, and the swap leaves nothing marked. A write waits for
+/// boundaries by a read of a key that leaf holds, an append and a read: a sound page of the old
+/// tree is free only once the rebuild freed it, a write fails as quarantined while the index's
+/// mark stands, set by the begin of a transaction that maps the planted damage or by the rebuild
+/// before the swap, a read runs as alone, and the swap leaves nothing marked. A write waits for
 /// the index's write lock the sweep of the old tree holds.
 #[test]
 fn a_retired_tree_raced_at_each_boundary_frees_its_pages_after_the_swap_and_leaves_no_mark() {
@@ -685,16 +686,15 @@ fn a_retired_tree_raced_at_each_boundary_frees_its_pages_after_the_swap_and_leav
             match (first, racer, i) {
                 (First::Rebuild, Racer::Append, 1) => (vec![], Second::Whole),
                 (First::Rebuild, Racer::Append, 2) => {
-                    (alone(Search::Retire, racer), Second::Blocked)
+                    (alone(Search::Phases, racer), Second::Blocked)
                 }
-                (First::Rebuild, Racer::Mapper, _) => (alone(Search::Phases, racer), Second::Whole),
-                (First::Rebuild, _, _) => (alone(Search::Retire, racer), Second::Whole),
+                (First::Rebuild, _, _) => (alone(Search::Phases, racer), Second::Whole),
                 (First::Racer, _, _) => (stops.to_vec(), Second::Whole),
             }
         };
         let refused = |first, i| match (first, racer) {
             (First::Rebuild, Racer::Append) => i == 1,
-            (First::Racer, Racer::Mapper) => true,
+            (First::Racer, Racer::Append) => true,
             _ => false,
         };
         race((Search::Retire, racer), &stops, &runs, &refused);
