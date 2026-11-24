@@ -127,7 +127,13 @@ impl Builder<'_> {
         if let Some(elem) = self.resolve_type(file, &scope, &r.ty, FnTypes::Refused(FN_RELATION)) {
             self.schema.defs_mut().relations[id.0 as usize].elem = elem;
         }
-        let def = self.schema.ty(elem_def).clone();
+        let mut cx = Clauses {
+            schema: &self.schema,
+            diags: &mut self.diags,
+            ordered_args: &mut self.ordered_args,
+            file,
+        };
+        let def = cx.schema.ty(elem_def);
         let mut key: Option<Vec<String>> = None;
         let mut generate = None;
         let mut indexes = Vec::new();
@@ -135,7 +141,7 @@ impl Builder<'_> {
         let mut computed = Vec::new();
         let mut volatile = false;
         type Scoped = (Option<CtorSet>, Option<Vec<ScopePart>>);
-        let scope_of = |b: &mut Self, s: &Option<ast::CtorScope>| -> Scoped {
+        let scope_of = |cx: &mut Clauses, s: &Option<ast::CtorScope>| -> Scoped {
             let Some(s) = s.as_ref() else {
                 return (None, None);
             };
@@ -144,12 +150,12 @@ impl Builder<'_> {
                 ast::CtorScope::Many(cs) => ast::CtorSel::Many(cs.clone()),
             };
             match (
-                b.schema.relation_sel(id, &sel),
-                b.schema.written_scope(id, Some(&sel)),
+                cx.schema.relation_sel(id, &sel),
+                cx.schema.written_scope(id, Some(&sel)),
             ) {
                 (Ok(cs), Ok(written)) => (Some(cs), written),
                 (Err(e), _) | (_, Err(e)) => {
-                    b.err(file, r.span, e);
+                    cx.err(r.span, e);
                     (None, None)
                 }
             }
@@ -158,9 +164,9 @@ impl Builder<'_> {
             match clause {
                 ast::RelationClause::Key(fields, gen_name) => {
                     if key.is_some() {
-                        self.err(file, r.name.span(), "a relation declares one key");
+                        cx.err(r.name.span(), "a relation declares one key");
                     }
-                    let (names, g) = self.key_clause(file, id, &def, fields, gen_name.as_ref());
+                    let (names, g) = cx.key_clause(id, def, fields, gen_name.as_ref());
                     key = Some(names);
                     if g.is_some() {
                         generate = g;
@@ -169,15 +175,14 @@ impl Builder<'_> {
                 ast::RelationClause::Volatile => {
                     volatile = true;
                     if !file.is_engine() {
-                        self.err(
-                            file,
+                        cx.err(
                             r.name.span(),
                             "`volatile` appears only in the engine's own declarations",
                         );
                     }
                 }
                 ast::RelationClause::Unique(fields, s, texts) => {
-                    let (scope, written) = scope_of(self, s);
+                    let (scope, written) = scope_of(&mut cx, s);
                     indexes.push(IndexDef {
                         fields: fields.clone(),
                         texts: texts.clone(),
@@ -193,7 +198,7 @@ impl Builder<'_> {
                     texts,
                     scope: s,
                 } => {
-                    let (scope, written) = scope_of(self, s);
+                    let (scope, written) = scope_of(&mut cx, s);
                     indexes.push(IndexDef {
                         fields: fields.clone(),
                         texts: texts.clone(),
@@ -204,15 +209,14 @@ impl Builder<'_> {
                     });
                 }
                 ast::RelationClause::Default { ctor, field, value } => {
-                    let Some(d) = self.default_clause(file, &def, ctor.as_ref(), field, value)
-                    else {
+                    let Some(d) = cx.default_clause(def, ctor.as_ref(), field, value) else {
                         continue;
                     };
                     if defaults
                         .iter()
                         .any(|x: &DefaultDef| x.ctor == d.ctor && x.field == d.field)
                     {
-                        self.err(file, field.span, "this default is declared twice");
+                        cx.err(field.span, "this default is declared twice");
                     }
                     defaults.push(d);
                 }
@@ -223,14 +227,13 @@ impl Builder<'_> {
                         mode: TypeMode::Field,
                         names: None,
                     };
-                    let ty = self
-                        .resolve_type(file, &scope, ty, FnTypes::Refused(FN_FIELD))
+                    let ty = cx
+                        .resolve_type(&scope, ty, FnTypes::Refused(FN_FIELD))
                         .unwrap_or(Ty::Unit);
                     if (0..def.ctors().len() as u32)
                         .any(|i| def.field_named(i, &name.text).is_some())
                     {
-                        self.err(
-                            file,
+                        cx.err(
                             name.span,
                             format!("`{}` already has a field `{}`", def.name, name.text),
                         );
@@ -244,7 +247,7 @@ impl Builder<'_> {
             }
         }
         if key.is_none() {
-            self.err(file, r.name.span(), "a relation declares exactly one key");
+            cx.err(r.name.span(), "a relation declares exactly one key");
         }
         let rel = &mut self.schema.defs_mut().relations[id.0 as usize];
         rel.key = key.unwrap_or_default();
@@ -264,11 +267,40 @@ impl Builder<'_> {
             );
         }
     }
+}
+
+/// The parts of a builder a relation's clauses use while its element type is borrowed.
+struct Clauses<'b> {
+    schema: &'b Schema,
+    diags: &'b mut Vec<FileDiag>,
+    ordered_args: &'b mut Vec<(Ty, FileId, Span)>,
+    file: FileId,
+}
+
+impl Clauses<'_> {
+    fn err(&mut self, span: Span, msg: impl Into<String>) {
+        self.diags.push(FileDiag {
+            file: self.file,
+            diag: Diag::new(span, msg),
+        });
+    }
+
+    fn resolve_type(&mut self, scope: &TypeScope, t: &ast::Type, fns: FnTypes) -> Option<Ty> {
+        match resolve_type(self.schema, scope, t, fns, self.ordered_args, self.file) {
+            Ok(ty) => Some(ty),
+            Err(diag) => {
+                self.diags.push(FileDiag {
+                    file: self.file,
+                    diag,
+                });
+                None
+            }
+        }
+    }
 
     /// Returns the fields of a `key` clause and its generator.
     fn key_clause(
         &mut self,
-        file: FileId,
         id: RelId,
         def: &TypeDef,
         fields: &[ast::Ident],
@@ -287,7 +319,6 @@ impl Builder<'_> {
         for f in fields {
             if !key_candidates.iter().any(|c| c.name == f.text) {
                 self.err(
-                    file,
                     f.span,
                     format!(
                         "key field `{}` is not a header field or a field of the only constructor of `{}`",
@@ -295,11 +326,7 @@ impl Builder<'_> {
                     ),
                 );
             } else if names.contains(&f.text) {
-                self.err(
-                    file,
-                    f.span,
-                    format!("key field `{}` is named twice", f.text),
-                );
+                self.err(f.span, format!("key field `{}` is named twice", f.text));
             }
             names.push(f.text.clone());
         }
@@ -311,7 +338,6 @@ impl Builder<'_> {
             };
             match gen_kind {
                 None => self.err(
-                    file,
                     g.span,
                     format!(
                         "`{}` is not a key generator; use `sequence` or `uuidv7`",
@@ -325,7 +351,6 @@ impl Builder<'_> {
                     });
                     if !self_key {
                         self.err(
-                            file,
                             g.span,
                             "a generated key is one field of type `Key` of its own relation",
                         );
@@ -341,7 +366,6 @@ impl Builder<'_> {
     /// or no field.
     fn default_clause(
         &mut self,
-        file: FileId,
         def: &TypeDef,
         ctor: Option<&ast::Ident>,
         field: &ast::Ident,
@@ -353,7 +377,6 @@ impl Builder<'_> {
                 Some(i) => Some(i),
                 None => {
                     self.err(
-                        file,
                         c.span,
                         format!("`{}` is not a constructor of `{}`", c.text, def.name),
                     );
@@ -369,7 +392,6 @@ impl Builder<'_> {
         };
         let Some(field_ty) = field_ty else {
             self.err(
-                file,
                 field.span,
                 format!("`{}` has no field `{}`", def.name, field.text),
             );
@@ -379,12 +401,11 @@ impl Builder<'_> {
             ast::DefaultValue::Generate(g) => {
                 if g.text != "clock" {
                     self.err(
-                        file,
                         g.span,
                         "a default generates only `clock`; keys generate in the `key` clause",
                     );
                 } else if field_ty != Ty::Base(Base::Instant) {
-                    self.err(file, g.span, "`generate clock` fills an `Instant` field");
+                    self.err(g.span, "`generate clock` fills an `Instant` field");
                 }
                 DefaultValue::Generate(Generator::Clock)
             }

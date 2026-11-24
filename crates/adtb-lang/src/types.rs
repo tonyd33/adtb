@@ -1,5 +1,8 @@
 //! Define the resolved types and the ids of types, relations, functions and modules.
 
+use std::collections::HashSet;
+use std::sync::LazyLock;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeId(pub u32);
 
@@ -159,11 +162,16 @@ pub const BOUNDS: &[&str] = &["Eq", "Ord", "Hash", "Num"];
 
 /// Returns whether `name` names a prelude type: a scalar, a built-in type constructor or a prelude sum.
 pub fn is_prelude_type(name: &str) -> bool {
+    static NAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+        crate::ids::TYPES
+            .iter()
+            .filter(|&&(module, ..)| module == "prelude")
+            .map(|&(_, name, ..)| name)
+            .collect()
+    });
     matches!(name, "Set" | "Key" | "Group" | "Decimal" | "Tag")
         || Base::from_name(name).is_some()
-        || crate::ids::TYPES
-            .iter()
-            .any(|&(module, type_name, _, _)| module == "prelude" && type_name == name)
+        || NAMES.contains(name)
 }
 
 macro_rules! prelude_functions {
