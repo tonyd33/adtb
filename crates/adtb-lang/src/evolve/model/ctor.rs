@@ -308,8 +308,6 @@ impl Model {
                 .map(|&(_, id)| id)
                 .collect();
             fs.ids.extend(gained);
-            fs.ids.sort_unstable();
-            fs.ids.dedup();
         }
     }
 

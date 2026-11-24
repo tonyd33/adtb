@@ -2397,10 +2397,10 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
         privilege: Granted::Read(
             GrantTarget {
                 relation: identities,
-                sel: GrantSel::Ctors(vec![ctor("EmailPass"), ctor("Google")]),
+                sel: GrantSel::Ctors([ctor("EmailPass"), ctor("Google")].into_iter().collect()),
             },
             GrantFields {
-                ids: vec![user],
+                ids: [user].into_iter().collect(),
                 listed: true,
             },
         ),

@@ -460,8 +460,8 @@ impl Carry {
 
     /// Returns excepted pairs `except` with each source replaced by every product it reaches,
     /// without a pair of a constructor with itself.
-    fn excepted(&self, except: &[(u64, u64)], products: &[(String, u64)]) -> Vec<(u64, u64)> {
-        let mut out: Vec<(u64, u64)> = except
+    fn excepted(&self, except: &[(u64, u64)], products: &[(String, u64)]) -> Ascending<(u64, u64)> {
+        except
             .iter()
             .flat_map(|&(x, y)| {
                 let to = self.images(y, products);
@@ -470,10 +470,7 @@ impl Carry {
                     .flat_map(move |x| to.clone().into_iter().map(move |y| (x, y)))
             })
             .filter(|(x, y)| x != y)
-            .collect();
-        out.sort_unstable();
-        out.dedup();
-        out
+            .collect()
     }
 
     /// Returns whether a merge or nest replaces sources that excepted pairs `except` tell
@@ -570,13 +567,9 @@ impl Carry {
                 );
                 if let GrantSel::Ctors(cs) = &mut t.sel {
                     cs.extend(out.ctors);
-                    cs.sort_unstable();
-                    cs.dedup();
                 }
                 if let Some(fs) = fields {
                     fs.ids.extend(out.fields);
-                    fs.ids.sort_unstable();
-                    fs.ids.dedup();
                 }
                 for p in out.unstated {
                     note(self.unstated(&role, t.relation, kind, p));
@@ -605,8 +598,6 @@ impl Carry {
                                     .map(|&(_, y)| (*x, y)),
                             );
                         }
-                        except.sort_unstable();
-                        except.dedup();
                     }
                 }
                 Granted::CallFn(_) => {}

@@ -1558,15 +1558,24 @@ fn a_grant_target_covers_only_its_relations_constructors_in_the_schema_it_is_rea
         ),
         (target(users, GrantSel::Whole), vec![user]),
         (
-            target(identities, GrantSel::Ctors(vec![google])),
+            target(identities, GrantSel::Ctors([google].into_iter().collect())),
             vec![google],
         ),
         (
-            target(identities, GrantSel::Ctors(vec![google, apple])),
+            target(
+                identities,
+                GrantSel::Ctors([google, apple].into_iter().collect()),
+            ),
             vec![google, apple],
         ),
-        (target(identities, GrantSel::Ctors(vec![99_999])), vec![]),
-        (target(identities, GrantSel::Ctors(vec![user])), vec![]),
+        (
+            target(identities, GrantSel::Ctors([99_999].into_iter().collect())),
+            vec![],
+        ),
+        (
+            target(identities, GrantSel::Ctors([user].into_iter().collect())),
+            vec![],
+        ),
         (
             target(identities, GrantSel::Set(oauth)),
             vec![google, apple],
@@ -1585,7 +1594,10 @@ fn a_grant_target_covers_only_its_relations_constructors_in_the_schema_it_is_rea
     let merged = [
         (target(identities, GrantSel::Whole), vec![email, social]),
         (
-            target(identities, GrantSel::Ctors(vec![google, apple])),
+            target(
+                identities,
+                GrantSel::Ctors([google, apple].into_iter().collect()),
+            ),
             vec![],
         ),
         (target(identities, GrantSel::Set(oauth)), vec![social]),

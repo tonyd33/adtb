@@ -121,8 +121,6 @@ impl Model {
                         .filter(|(c, _)| covered.contains(c))
                         .map(|(_, x)| *x),
                 );
-                fs.ids.sort_unstable();
-                fs.ids.dedup();
             }
         }
         let copied = targets

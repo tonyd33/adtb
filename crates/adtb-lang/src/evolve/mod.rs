@@ -53,9 +53,9 @@ pub use crate::schema::{Adder, Stage};
 pub use expected::{Expected, Listed};
 use grant::HeldGrant;
 pub use grant::{
-    CallSignatures, DeployedGrant, DeploymentGrant, DeploymentRevoke, GrantFields, GrantRow,
-    GrantSel, GrantTarget, Granted, LogGrant, NoCalls, OWNER_ROLE, Stated, closes_option_cycle,
-    deployment_grant, deployment_revoke, family_query, target_covers,
+    Ascending, CallSignatures, DeployedGrant, DeploymentGrant, DeploymentRevoke, GrantFields,
+    GrantRow, GrantSel, GrantTarget, Granted, LogGrant, NoCalls, OWNER_ROLE, Stated,
+    closes_option_cycle, deployment_grant, deployment_revoke, family_query, target_covers,
 };
 pub use keep::Kept;
 pub use recorded::{Migrated, OpSteps, Recorded};

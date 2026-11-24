@@ -27,8 +27,8 @@ pub enum Granted {
     Update(GrantTarget, GrantFields),
     Delete(GrantTarget),
     /// A retag between the two targets, except between each pair of constructor ids of the
-    /// third, held in ascending order.
-    Retag(GrantTarget, GrantTarget, Vec<(u64, u64)>),
+    /// third.
+    Retag(GrantTarget, GrantTarget, Ascending<(u64, u64)>),
     CallFn(u64),
 }
 
@@ -63,21 +63,66 @@ impl GrantTarget {
     }
 }
 
-/// The constructors a grant selects. `Ctors` holds its ids in ascending order.
+/// The constructors a grant selects.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GrantSel {
     Whole,
-    Ctors(Vec<u64>),
+    Ctors(Ascending<u64>),
     Set(u64),
 }
 
-/// The fields a `read` or `update` grant covers, by catalog id in ascending order. `listed` is
+/// Ids in ascending order, each once.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Ascending<T>(Vec<T>);
+
+impl<T: Ord> FromIterator<T> for Ascending<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(items: I) -> Self {
+        let mut items: Vec<T> = items.into_iter().collect();
+        items.sort_unstable();
+        items.dedup();
+        Ascending(items)
+    }
+}
+
+impl<T> Ascending<T> {
+    /// Keep only the items `keep` holds for.
+    pub fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
+        self.0.retain(keep);
+    }
+}
+
+impl<T: Ord> Extend<T> for Ascending<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, items: I) {
+        self.0.extend(items);
+        self.0.sort_unstable();
+        self.0.dedup();
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Ascending<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<T> std::ops::Deref for Ascending<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        &self.0
+    }
+}
+
+/// The fields a `read` or `update` grant covers, by catalog id. `listed` is
 /// false when the grant states no field list: `ids` then holds the fields its constructors had
 /// when it was applied, and for a grant on the whole relation variable also every field of each
 /// constructor added since.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrantFields {
-    pub ids: Vec<u64>,
+    pub ids: Ascending<u64>,
     pub listed: bool,
 }
 
@@ -110,9 +155,7 @@ impl GrantTarget {
             GrantSel::Whole => GrantSel::Whole,
             GrantSel::Set(s) => GrantSel::Set(f(IdKind::Set, *s)?),
             GrantSel::Ctors(cs) => {
-                let mut cs: Vec<u64> = cs.iter().filter_map(|&c| f(IdKind::Ctor, c)).collect();
-                cs.sort_unstable();
-                cs.dedup();
+                let cs: Ascending<u64> = cs.iter().filter_map(|&c| f(IdKind::Ctor, c)).collect();
                 if cs.is_empty() {
                     return None;
                 }
@@ -128,15 +171,12 @@ impl GrantTarget {
 
 impl GrantFields {
     fn mapped(&self, f: &mut dyn FnMut(IdKind, u64) -> Option<u64>) -> GrantFields {
-        let mut ids: Vec<u64> = self
-            .ids
-            .iter()
-            .filter_map(|&x| f(IdKind::Field, x))
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
         GrantFields {
-            ids,
+            ids: self
+                .ids
+                .iter()
+                .filter_map(|&x| f(IdKind::Field, x))
+                .collect(),
             listed: self.listed,
         }
     }
@@ -153,12 +193,10 @@ impl Granted {
             Granted::Insert(t) => Granted::Insert(t.mapped(f)?),
             Granted::Delete(t) => Granted::Delete(t.mapped(f)?),
             Granted::Retag(a, b, except) => {
-                let mut pairs: Vec<(u64, u64)> = except
+                let pairs = except
                     .iter()
                     .filter_map(|&(x, y)| Some((f(IdKind::Ctor, x)?, f(IdKind::Ctor, y)?)))
                     .collect();
-                pairs.sort_unstable();
-                pairs.dedup();
                 Granted::Retag(a.mapped(f)?, b.mapped(f)?, pairs)
             }
             Granted::CallFn(x) => Granted::CallFn(f(IdKind::Function, *x)?),
@@ -379,12 +417,11 @@ impl Resolving<'_> {
                         GrantSel::Set(ids.set_id(rel, &x.text).expect(USER_IDS).raw())
                     }
                     _ => {
-                        let mut out = sel_idents(sel)
+                        let out = sel_idents(sel)
                             .iter()
                             .map(|x| self.ctor_id(rel, x))
                             .collect::<R<Vec<u64>>>()?;
-                        out.sort_unstable();
-                        GrantSel::Ctors(out)
+                        GrantSel::Ctors(out.into_iter().collect())
                     }
                 };
                 (sel, ctors)
@@ -406,14 +443,12 @@ impl Resolving<'_> {
         let def = schema.relation(rel).elem_def;
         let ids = &schema.ids();
         let Some(list) = list else {
-            let mut out: Vec<u64> = ids
-                .type_field_ids(def)
-                .filter(|(f, _)| f.ctor().is_none_or(|c| ctors.contains(&c)))
-                .map(|(_, id)| id.raw())
-                .collect();
-            out.sort_unstable();
             return Ok(GrantFields {
-                ids: out,
+                ids: ids
+                    .type_field_ids(def)
+                    .filter(|(f, _)| f.ctor().is_none_or(|c| ctors.contains(&c)))
+                    .map(|(_, id)| id.raw())
+                    .collect(),
                 listed: false,
             });
         };
@@ -468,10 +503,8 @@ impl Resolving<'_> {
                 out.extend(found);
             }
         }
-        out.sort_unstable();
-        out.dedup();
         Ok(GrantFields {
-            ids: out,
+            ids: out.into_iter().collect(),
             listed: !list.frozen,
         })
     }
@@ -481,14 +514,12 @@ impl Resolving<'_> {
         from: RelId,
         to: RelId,
         e: Option<&ast::Excepted>,
-    ) -> R<Vec<(u64, u64)>> {
+    ) -> R<Ascending<(u64, u64)>> {
         let mut pairs = Vec::new();
         for (x, y) in e.iter().flat_map(|e| &e.pairs) {
             pairs.push((self.ctor_id(from, x)?, self.ctor_id(to, y)?));
         }
-        pairs.sort_unstable();
-        pairs.dedup();
-        Ok(pairs)
+        Ok(pairs.into_iter().collect())
     }
 
     /// Record the name `c` and return the index of the constructor it names in the type of `rel`.

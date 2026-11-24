@@ -70,7 +70,10 @@ impl Granted {
                 let (rel, t) = r.target(schema)?;
                 let listed = !r.eat("frozen");
                 let ids = r.fields(schema, rel)?;
-                let fs = GrantFields { ids, listed };
+                let fs = GrantFields {
+                    ids: ids.into_iter().collect(),
+                    listed,
+                };
                 if privilege == Privilege::Read {
                     Granted::Read(t, fs)
                 } else {
@@ -96,9 +99,8 @@ impl Granted {
                         }
                     }
                     r.expect(")")?;
-                    except.sort_unstable();
                 }
-                Granted::Retag(a, b, except)
+                Granted::Retag(a, b, except.into_iter().collect())
             }
             Privilege::Call => {
                 let word = r.word()?;
@@ -239,12 +241,11 @@ impl Reader {
                 }
             }
             self.expect(")")?;
-            cs.sort_unstable();
-            GrantSel::Ctors(cs)
+            GrantSel::Ctors(cs.into_iter().collect())
         } else {
             let word = self.word()?;
             match ctor_id(schema, rel, &word) {
-                Some(c) => GrantSel::Ctors(vec![c]),
+                Some(c) => GrantSel::Ctors([c].into_iter().collect()),
                 None => GrantSel::Set(schema.ids().set_id(rel, &word)?.raw()),
             }
         };
@@ -275,7 +276,6 @@ impl Reader {
             }
         }
         self.expect(")")?;
-        ids.sort_unstable();
         Some(ids)
     }
 }
