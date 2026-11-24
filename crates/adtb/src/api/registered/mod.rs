@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use adtb_lang::ast::{BundleItem, Import, OperatorKind};
 use adtb_lang::check::{Bundles, Compiled};
 use adtb_lang::evolve::{DeployedGrant, LogGrant, Source};
-use adtb_lang::kernel::{Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalProgram, NormalQuery};
 use adtb_lang::parse::{Options, parse_bundle, parse_bundle_body, parse_migration};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirement, Requirements};
@@ -624,28 +624,9 @@ fn untranslatable(
     })
 }
 
-/// Refuse a callable of `c` with an `at` block pinned at a version after the one `over` is at,
-/// or stating a version with another hash than the log's.
+/// Refuse a callable of `c` stating a version past the log `over` reads or with another hash.
 fn pinned_within(c: &Checked, over: &Over<'_>) -> Result<(), Error> {
-    let version = over.source.version();
     for e in &c.entries {
-        let mut seen = BTreeSet::new();
-        let mut todo = vec![e.body];
-        while let Some(t) = todo.pop() {
-            if !seen.insert(t) {
-                continue;
-            }
-            if let Kind::At { pins: Some(v), .. } = e.terms.kind(t)
-                && v.number() > version
-            {
-                return Err(Error::invalid(format!(
-                    "`{}` reads the past at version {}, and the database is at version {version}",
-                    e.name,
-                    v.number()
-                )));
-            }
-            todo.extend(e.terms.children(t));
-        }
         stated::held(&e.terms, over.hash)?;
     }
     Ok(())
@@ -722,12 +703,8 @@ fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>
     if let Some(pin) = pins.0.get(&h.pins) {
         return hashed(&pin.over()).map(|()| Some(pin.clone()));
     }
-    let source = catalog::source_at(now.source, h.pins).ok_or_else(|| {
-        Error::invalid(format!(
-            "bundle {} pins version {}, which the log does not hold: it is at version {at}",
-            h.name, h.pins
-        ))
-    })?;
+    let source = catalog::source_at(now.source, h.pins)
+        .ok_or_else(|| stated::unheld(&format!("bundle {}", h.name), h.pins, at))?;
     let compiled = source
         .check()
         .map_err(|ds| Error::invalid(joined(ds.iter().map(|d| d.diag.message.as_str()))))?;

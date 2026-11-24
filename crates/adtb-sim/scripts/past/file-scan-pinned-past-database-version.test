@@ -1,0 +1,12 @@
+seed 32
+use stock
+
+# Migrations past the database's version 1, which no open applies.
+log
+  module stock
+  rename field Item.Open.qty to count
+  module stock
+  rename field Item.Open.count to qty
+
+error Invalid { detail: "a file scan pins version 3, which the log does not hold: it is at version 1" }
+  from r in read_csv("items.csv", Item) pins 3 select r.name

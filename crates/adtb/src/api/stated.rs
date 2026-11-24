@@ -7,9 +7,9 @@ use crate::catalog::VersionHash;
 use super::cause::Broken;
 use super::error::Error;
 
-/// Refuse a version an `at` block or a file scan of `terms` states without its hash or with a
-/// hash other than the log's, read from `hash`, the hash of the version the database is at. Leave
-/// a version after the database's to the caller.
+/// Refuse a version an `at` block or a file scan of `terms` states without its hash, past the
+/// log, or with a hash other than the log's, read from `hash`, the hash of the version the
+/// database is at.
 pub(super) fn held(terms: &Terms, hash: &VersionHash) -> Result<(), Error> {
     for node in terms.iter() {
         let (what, v) = match &node.kind {
@@ -25,7 +25,10 @@ pub(super) fn held(terms: &Terms, hash: &VersionHash) -> Result<(), Error> {
         let logged = hash
             .at(v.number())
             .map_err(|e| Error::internal(Broken::CatalogError(e)))?;
-        if let Some(logged) = logged.filter(|l| l != stated) {
+        let Some(logged) = logged else {
+            return Err(unheld(what, v.number(), hash.version()));
+        };
+        if logged != *stated {
             return Err(differs(what, v.number(), &hex(stated), &hex(&logged)));
         }
     }
@@ -37,6 +40,13 @@ pub(super) fn held(terms: &Terms, hash: &VersionHash) -> Result<(), Error> {
 pub(super) fn differs(what: &str, v: u64, stated: &str, logged: &str) -> Error {
     Error::invalid(format!(
         "{what} pins version {v} with hash {stated}, and the log's version {v} has hash {logged}"
+    ))
+}
+
+/// Returns the refusal of `what` pinning version `v`, past the log's version `at`.
+pub(super) fn unheld(what: &str, v: u64, at: u64) -> Error {
+    Error::invalid(format!(
+        "{what} pins version {v}, which the log does not hold: it is at version {at}"
     ))
 }
 

@@ -46,6 +46,11 @@ impl VersionHash {
         Ok(*self.hash.get_or_init(|| h))
     }
 
+    /// Returns the version `source` is at.
+    pub fn version(&self) -> u64 {
+        self.source.version()
+    }
+
     /// Returns the hash of version `v` of the log, `None` for a version after the one `source` is
     /// at.
     pub fn at(&self, v: u64) -> Result<Option<Hash>, Error> {

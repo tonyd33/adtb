@@ -8,5 +8,5 @@ log
   module stock
   rename field Item.Open.count to qty
 
-error Invalid { detail: "an `at` block pinned at version 3, after the database's version 1 does not run in this engine yet" }
+error Invalid { detail: "an `at` block pins version 3, which the log does not hold: it is at version 1" }
   at commit $first pins 3 { from i in items select i.name }
