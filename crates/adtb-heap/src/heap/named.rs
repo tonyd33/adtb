@@ -54,15 +54,7 @@ pub fn refuse_named<R: Runtime, E: From<PageError> + From<OrphanEntry>>(
     index: u32,
     named: impl FnOnce() -> Result<bool, E>,
 ) -> Result<(), E> {
-    let latched = pager.latched_here();
-    assert!(
-        latched == 0,
-        "an entry is refused while this thread latches {latched} pages"
-    );
-    assert!(
-        !ranks::INDEX_LATCH.held_here(),
-        "an entry is refused under an index latch"
-    );
+    ranks::unlatched(format_args!("an entry is refused"));
     #[cfg(any(test, feature = "testing"))]
     if let Some(hook) = BEFORE_LOOK.with(|b| b.borrow_mut().take()) {
         hook();

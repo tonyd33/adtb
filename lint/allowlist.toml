@@ -65,7 +65,6 @@
 "crates/adtb-heap/src/heap/handle/mod.rs" = 14
 "crates/adtb-heap/src/heap/handle/observe.rs" = 1
 "crates/adtb-heap/src/heap/large.rs" = 12
-"crates/adtb-heap/src/heap/named.rs" = 2
 "crates/adtb-heap/src/heap/page.rs" = 4
 "crates/adtb-heap/src/heap/prune.rs" = 3
 "crates/adtb-heap/src/heap/rooted.rs" = 2

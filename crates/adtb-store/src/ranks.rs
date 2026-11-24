@@ -16,6 +16,17 @@ pub const TASK_QUEUE: Rank = Rank::new(9, "the task queue lock");
 pub const CALLS: Rank = Rank::new(10, "the calls lock");
 pub const IDLE: Rank = Rank::new(11, "the idle workers lock");
 
+/// Panic, in debug builds and under `latch-checks`, if the calling thread holds a page latch or
+/// an index latch as it does `what`.
+pub fn unlatched(what: std::fmt::Arguments<'_>) {
+    let latched = adtb_sys::pages::latched_by_this_thread();
+    assert!(
+        latched == 0,
+        "{what} while this thread latches {latched} pages"
+    );
+    assert!(!INDEX_LATCH.held_here(), "{what} under an index latch");
+}
+
 /// Returns the message of the panic `f` ends in.
 #[cfg(any(test, feature = "testing"))]
 pub fn order_broken(f: impl FnOnce()) -> String {

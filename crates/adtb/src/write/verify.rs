@@ -209,10 +209,9 @@ type Held = BTreeSet<(Vec<u8>, CtorId, Tid)>;
 
 impl<R: Runtime> Database<R> {
     /// Begin the read-only transaction of a run of `verify`, waiting until its snapshot is safe.
-    ///
-    /// Precondition: the calling thread holds no transaction with an id.
+    /// Fail as [`super::outside_writer`] does on a thread holding a read-write transaction.
     pub fn begin_verify(&self) -> Result<VerifySnapshot<'_, R>, Error> {
-        super::outside_writer();
+        super::outside_writer()?;
         let mut tx = self.session.begin_reader(true)?;
         loop {
             let safety = self.session.ser.lock(&self.rt).safety(tx.sid);

@@ -176,6 +176,8 @@ impl<R: Runtime> Waits<R> {
     /// has an xid, waiting to write a version of `heap`, or at a gate for `None`.
     ///
     /// Fail, registering nothing, if `on` already waits for `me` directly or through others.
+    /// Panic, in debug builds and under `latch-checks`, if the calling thread holds a page latch
+    /// or an index latch.
     ///
     /// Postconditions: on `Pending`, `me` waits for `on`, and unless the registration is
     /// withdrawn first, `waker` is woken once `on` has ended.
@@ -186,6 +188,7 @@ impl<R: Runtime> Waits<R> {
         heap: Option<u32>,
         waker: &Waker,
     ) -> Result<Watch, Conflict> {
+        crate::ranks::unlatched(format_args!("a wait on {on:?} is registered"));
         let mut st = self.state.lock(&self.rt);
         if !st.running.contains(&on) {
             return Ok(Watch::Ended);

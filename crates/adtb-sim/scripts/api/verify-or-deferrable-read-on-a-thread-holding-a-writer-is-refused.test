@@ -1,0 +1,26 @@
+# A verify or a deferrable read waits for every running read-write transaction, so on a thread
+# holding one open, written to or not, it is refused; once that transaction ends it runs.
+use paid-shop
+
+begin w
+
+adhoc error Invalid { detail: "this thread holds an open read-write transaction, which a verify or a deferrable read would wait for" }
+  verify
+
+begin read only deferrable r error Invalid { detail: "this thread holds an open read-write transaction, which a verify or a deferrable read would wait for" }
+
+adhoc error Invalid { detail: "this thread holds an open read-write transaction, which a verify or a deferrable read would wait for" }
+  transact read_only deferrable
+    return count(c for c in customers)
+
+rollback w
+
+command
+  verify
+----
+
+query
+  transact read_only deferrable
+    return count(c for c in customers)
+----
+0

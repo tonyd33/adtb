@@ -38,7 +38,10 @@ pub enum Step {
     /// lock.
     Recycle(Checkpoint),
     /// A descent of a B-tree read a child's page id from its parent and has yet to read the
-    /// child.
+    /// child, holding the lock its search runs under, if any: the vacuum lock, the bundle writer
+    /// lock, an index latch, or the serialization lock with the readers lock as a commit records
+    /// safe snapshot markers. A descent of the record of the window may hold the latch of a heap
+    /// page whose versions it judges.
     Descended,
 }
 
@@ -173,6 +176,40 @@ impl Step {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
+impl Step {
+    /// Returns the ranks of the engine locks a thread reaching this step may hold. A statement
+    /// runs under the vacuum lock when a setting change runs it, and under the bundle writer
+    /// lock when a registration does.
+    fn holds(self) -> &'static [adtb_sys::lock::Rank] {
+        use crate::ranks::{BUNDLE_WRITER, INDEX_LATCH, READERS, SERIALIZER, VACUUM};
+        match self {
+            Step::VersionRead
+            | Step::ScanRead
+            | Step::ScanStopped
+            | Step::WriteChanged(_)
+            | Step::WriteChecked
+            | Step::WriteInserted
+            | Step::TakeBack => &[VACUUM, BUNDLE_WRITER],
+            Step::Checkpoint(_) | Step::Recycle(_) => &[],
+            Step::CommitMap(_) => &[SERIALIZER],
+            Step::Map(_) | Step::Vacuum(_) | Step::Retire(Retire::Deleted | Retire::Freed) => {
+                &[VACUUM]
+            }
+            Step::Reindex(Reindex::Sweep) | Step::Retire(Retire::Held) => &[VACUUM, INDEX_LATCH],
+            Step::Reindex(_) => &[VACUUM],
+            Step::Descended => &[VACUUM, BUNDLE_WRITER, INDEX_LATCH, SERIALIZER, READERS],
+        }
+    }
+
+    /// Returns whether a thread reaching this step may hold a page latch: a descent of the
+    /// record of the window may run while the latch of a heap page whose versions it judges is
+    /// held.
+    fn may_latch(self) -> bool {
+        self == Step::Descended
+    }
+}
+
 /// What a statement's write did to a version it superseded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
@@ -184,8 +221,8 @@ pub enum Change {
     Retag,
 }
 
-/// Called with each step on the thread that reaches it, holding no latch, and no engine lock but
-/// the one its step names.
+/// Called with each step on the thread that reaches it, holding no latch but one
+/// [`Step::Descended`] names, and no engine lock but those its step names.
 #[cfg(any(test, feature = "testing"))]
 pub type StepHook = std::sync::Arc<dyn Fn(Step) + Send + Sync>;
 
@@ -209,9 +246,17 @@ impl std::fmt::Debug for Steps {
 impl Steps {
     /// Call the hook with `step`.
     ///
-    /// Precondition: the calling thread holds no latch, and no engine lock but the one `step`
-    /// names.
+    /// Panic, in debug builds and under `latch-checks`, if the calling thread holds a page latch,
+    /// or an engine lock `step` does not name.
     pub fn at(&self, step: Step) {
+        let latched = adtb_sys::pages::latched_by_this_thread();
+        assert!(
+            latched == 0 || step.may_latch(),
+            "{step:?} is reached while this thread latches {latched} pages"
+        );
+        if let Some(held) = adtb_sys::lock::held_beside(step.holds()) {
+            panic!("{step:?} is reached holding {held}");
+        }
         let hook = self
             .hook
             .lock()

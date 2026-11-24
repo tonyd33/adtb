@@ -906,15 +906,13 @@ impl<R: Runtime> Entered<'_, R> {
     }
 
     /// Run `verify` over `rel`, or the whole database. Returns the rows it wrote.
-    ///
-    /// Precondition: the calling thread holds no transaction with an id.
     pub(super) fn verified(
         &self,
         schema: &Schema,
         rel: Option<RelId>,
         waiting: HoldWait<'_>,
     ) -> Result<DynRows, write::Error> {
-        write::outside_writer();
+        write::outside_writer()?;
         let scope = rel.map_or(VerifyScope::Database, VerifyScope::Relation);
         self.verify_run(schema, scope, false, waiting)
     }

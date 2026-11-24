@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard, TryLockErr
 
 use crate::runtime::Threads;
 
-pub use rank::{HeldRank, Rank};
+pub use rank::{HeldRank, Rank, held_beside};
 
 /// Ranks kept per thread, in debug builds and when `latch-checks` is on.
 #[cfg(any(debug_assertions, feature = "latch-checks"))]
@@ -64,6 +64,17 @@ mod rank {
         }
     }
 
+    /// Returns the name of a lock the calling thread holds whose rank is none of `allowed`.
+    pub fn held_beside(allowed: &[Rank]) -> Option<&'static str> {
+        HELD.try_with(|h| {
+            (h.borrow().iter())
+                .find(|r| allowed.iter().all(|a| a.level != r.level))
+                .map(|r| r.name)
+        })
+        .ok()
+        .flatten()
+    }
+
     /// A lock of one rank the calling thread holds. Not `Send`: it is released on the thread
     /// that took it.
     #[derive(Debug)]
@@ -110,6 +121,11 @@ mod rank {
         pub fn hold(self) -> HeldRank {
             HeldRank(PhantomData)
         }
+    }
+
+    /// Returns `None`: no rank is kept.
+    pub fn held_beside(_allowed: &[Rank]) -> Option<&'static str> {
+        None
     }
 
     /// A lock of one rank the calling thread holds, unrecorded.

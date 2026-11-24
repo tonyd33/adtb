@@ -5,7 +5,7 @@ use adtb_lang::types::Ty;
 
 use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
-use crate::write::{Local, Txn};
+use crate::write::{Local, Txn, Writing};
 
 use super::admitted::{Admitted, Authority, CALL_BYTES, Queued};
 use super::error::FatalReason;
@@ -52,7 +52,11 @@ pub struct Committed<T> {
 
 #[derive(Debug)]
 enum State {
-    Open(Box<Txn>),
+    Open {
+        tx: Box<Txn>,
+        /// The count of a read-write transaction on the thread that began it.
+        _writing: Option<Writing>,
+    },
     /// Aborted by the engine with this error.
     Ended(Error),
     Closed,
@@ -106,7 +110,10 @@ impl<R: Runtime> Database<R> {
             id,
             read_only: opts.read_only,
             caller,
-            state: State::Open(Box::new(tx)),
+            state: State::Open {
+                tx: Box::new(tx),
+                _writing: (!opts.read_only).then(Writing::enter),
+            },
             temps: None,
             local: Local::default(),
             deadline: opts.deadline,
@@ -201,7 +208,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         on_ready: impl FnOnce(),
     ) -> Result<Vec<DynRows>, Error> {
         let tx = match &self.state {
-            State::Open(tx) => tx,
+            State::Open { tx, .. } => tx,
             State::Ended(err) => return Err(err.clone()),
             State::Closed => unreachable!("a transaction is closed only as it is consumed"),
         };
@@ -234,7 +241,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     pub fn commit(mut self, _durability: Option<Durability>) -> Result<Position, Error> {
         let e = &self.engine.enter()?;
         match std::mem::replace(&mut self.state, State::Closed) {
-            State::Open(tx) => {
+            State::Open { tx, .. } => {
                 e.db.commit(*tx)
                     .map(Position::from)
                     .map_err(|err| e.write_error(self.id, err))
@@ -256,7 +263,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
                 clippy::disallowed_methods,
                 reason = "permanent: a rollback ends the transaction with no failure"
             )]
-            State::Open(tx) => e.abort(self.id, *tx),
+            State::Open { tx, .. } => e.abort(self.id, *tx),
             State::Ended(_) | State::Closed => Ok(()),
         }
     }
@@ -265,7 +272,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn tested_snapshot(&self) -> Option<&crate::mvcc::Snapshot> {
         match &self.state {
-            State::Open(tx) => Some(tx.snapshot()),
+            State::Open { tx, .. } => Some(tx.snapshot()),
             State::Ended(_) | State::Closed => None,
         }
     }
@@ -274,7 +281,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn tested_txn(&self) -> Option<&Txn> {
         match &self.state {
-            State::Open(tx) => Some(tx),
+            State::Open { tx, .. } => Some(tx),
             State::Ended(_) | State::Closed => None,
         }
     }
@@ -289,7 +296,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     /// with `cause`. Returns the failing call's reply.
     fn end(&mut self, e: &Entered<'_, R>, cause: Error) -> Error {
         match std::mem::replace(&mut self.state, State::Ended(cause.clone())) {
-            State::Open(tx) => crate::write::either(e.abandon(self.id, *tx, || cause)),
+            State::Open { tx, .. } => crate::write::either(e.abandon(self.id, *tx, || cause)),
             State::Ended(_) | State::Closed => cause,
         }
     }
@@ -311,7 +318,7 @@ impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
         reason = "permanent: a dropped transaction ends with no failure"
     )]
     fn drop(&mut self) {
-        if let State::Open(tx) = std::mem::replace(&mut self.state, State::Closed)
+        if let State::Open { tx, .. } = std::mem::replace(&mut self.state, State::Closed)
             && let Ok(entered) = self.engine.enter()
             && let Err(e) = entered.abort(self.id, *tx)
             && !std::thread::panicking()

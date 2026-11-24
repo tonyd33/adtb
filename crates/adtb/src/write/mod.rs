@@ -90,8 +90,7 @@ pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;
 pub use verify::{Found, VerifyScope};
-use writing::Writing;
-pub(crate) use writing::outside_writer;
+pub(crate) use writing::{Writing, outside_writer};
 
 use schema::Rels;
 pub(crate) use sequence::Sequences;
@@ -842,6 +841,9 @@ impl<R: Runtime> Database<R> {
     /// taking a new snapshot each time one is found unsafe, and then never fails with a
     /// serialization failure.
     pub fn begin_read(&self, deferrable: bool) -> Result<Txn, Error> {
+        if deferrable {
+            outside_writer()?;
+        }
         let mut tx = self.session.begin_reader(deferrable)?;
         if !deferrable {
             return Ok(tx);

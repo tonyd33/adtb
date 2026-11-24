@@ -221,14 +221,3 @@ fn damage_mapped_under_the_serializer_panics() {
         );
     });
 }
-
-#[test]
-fn a_verify_begun_while_the_thread_runs_a_writer_panics() {
-    at(17, |db| {
-        let _writing = super::Writing::enter();
-        assert_eq!(
-            "this thread waits on writers while it runs a transaction with an id",
-            order_broken(|| drop(db.begin_verify()))
-        );
-    });
-}
