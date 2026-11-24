@@ -617,6 +617,29 @@ fn unreadable_page_leaves_mapping_incomplete(f: &Facts<'_>) -> bool {
     })
 }
 
+/// Returns whether `e`, the failure of the consumers' open, is the I/O failure of a damage list
+/// page unreadable for good, which leaves the open unarmed, and the open was given the migration
+/// whose open failed in the run: an unarmed open given a migration fails naming the failure.
+fn unarmed_open_given_a_migration(f: &Facts<'_>, e: &str) -> bool {
+    let case = f.case;
+    let list_unread = case.hits.iter().any(|h| {
+        h.fault == Fault::UnreadableLasting
+            && h.kind == Kind::DamageList
+            && e.contains(&format!(
+                "Unarmed(Page(PageError {{ pid: Pid({}), damage: Unreadable }}))",
+                h.written.pid.0
+            ))
+    });
+    let end = case.ran.cut.map_or(case.plan.ops.len(), |c| c + 1);
+    let last_migration = (0..end)
+        .rev()
+        .find(|i| case.plan.ops[*i] == Op::Migrate && !case.ran.refused_under_mark.contains(i));
+    let unapplied = last_migration
+        .and_then(|i| case.ran.failed.get(&i))
+        .is_some_and(|failed| failed.starts_with("open: "));
+    list_unread && unapplied
+}
+
 /// Returns why the database is marked, by what the damaged pages are.
 fn database_cause(f: &Facts<'_>) -> &'static str {
     if f.pages.iter().all(|p| p.class == Some(Class::Settled)) {
@@ -654,6 +677,7 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
     }
     if let Some(Err(e)) = &o.open
         && !f.lasting
+        && !unarmed_open_given_a_migration(&f, e)
     {
         v(Consumer::Settle, "the open fails".into(), e.clone());
     }
